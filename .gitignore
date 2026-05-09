@@ -37,7 +37,8 @@ playwright/.cache
 Thumbs.db
 
 # Vercel
-.vercel
+.vercel/output
+.vercel/cache
 
 # Sentry
 .sentryclirc
