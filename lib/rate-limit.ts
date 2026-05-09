@@ -35,9 +35,19 @@ export async function checkLimit(
   }
   try {
     return await checkLimitPg(key, cfg);
-  } catch {
-    // If the DB is briefly unavailable, fall back to the in-memory limiter so
-    // we don't disable the limit entirely. Logged at the call site.
+  } catch (err) {
+    // GAP-12: when the durable backend is unreachable, the per-Lambda
+    // in-memory limiter is effectively no protection (each cold start has a
+    // fresh map). For SECURITY-CRITICAL keys (login, password reset) fail
+    // CLOSED — a brief 503 is far better than uncapped brute-force. For
+    // non-critical limits (form rate, photo serve) fall through to the
+    // in-memory limiter so legitimate users keep working.
+    const isSecurityCritical =
+      key.startsWith('login:') || key.startsWith('passwordreset:');
+    if (isSecurityCritical) {
+      return { ok: false, retryAfterSec: 30 };
+    }
+    void err;
     return checkLimitMemory(key, cfg);
   }
 }

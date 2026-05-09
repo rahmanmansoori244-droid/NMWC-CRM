@@ -13,10 +13,21 @@ export default async function UsersPage() {
   if (!session?.user) redirect('/login');
   if (session.user.role !== Role.MANAGER) redirect('/home');
 
+  // RBAC-05-023: drop email/phone from the listing for everyone (the admin
+  // tier doesn't need each other's PII; salesman PII is in the underlying
+  // User row but kept off the table). The Manager can still reach a user's
+  // detail (future) for legitimate cases.
   const [users, supervisors, routes] = await Promise.all([
     prisma.user.findMany({
       orderBy: [{ role: 'asc' }, { fullName: 'asc' }],
-      include: {
+      select: {
+        id: true,
+        username: true,
+        fullName: true,
+        role: true,
+        isActive: true,
+        lastLoginAt: true,
+        ownedRouteId: true,
         supervisor: { select: { fullName: true, username: true } },
         ownedRoute: { select: { code: true, name: true } },
       },

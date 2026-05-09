@@ -8,11 +8,14 @@ import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer } from '@/lib/completeness';
 
+// RBAC-05-009: PRD §4 reserves duplicate merge to STEWARD. Previous code
+// also accepted MANAGER which conflated master-data ops with people-ops
+// privileges. Tightened to STEWARD only.
 async function requireSteward() {
   const session = await auth();
   if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (session.user.role !== Role.STEWARD && session.user.role !== Role.MANAGER) {
-    throw new ForbiddenError('Only the Data Steward or a Manager can merge customers.');
+  if (session.user.role !== Role.STEWARD) {
+    throw new ForbiddenError('Only the Data Steward can merge customers.');
   }
   return session.user;
 }

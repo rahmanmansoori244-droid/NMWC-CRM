@@ -2,10 +2,11 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { Role } from '@prisma/client';
+import { Role, type Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
+import { loadScope } from '@/lib/access';
 
 export const metadata = { title: 'Approvals · NMWC' };
 
@@ -16,10 +17,31 @@ export default async function ApprovalsPage() {
     redirect('/home');
   }
 
-  const where =
-    session.user.role === Role.SUPERVISOR
-      ? { state: 'SUBMITTED' as const, submittedBy: { supervisorId: session.user.id } }
-      : { state: 'SUBMITTED' as const };
+  // RBAC-05-003 (Critical): Manager queue must be region-scoped. Previously
+  // any Manager saw the global queue and could approve cross-region. Now we
+  // intersect with their `managedRegionIds`; a Manager with no managed
+  // regions sees an empty queue (fail-closed).
+  let where: Prisma.CustomerEditWhereInput;
+  if (session.user.role === Role.SUPERVISOR) {
+    where = {
+      state: 'SUBMITTED',
+      submittedBy: { supervisorId: session.user.id },
+    };
+  } else {
+    const scope = await loadScope(session.user.id);
+    if (scope.managedRegionIds.length === 0) {
+      where = { state: 'SUBMITTED', id: '__none__' };
+    } else {
+      where = {
+        state: 'SUBMITTED',
+        customer: {
+          branches: {
+            some: { regionId: { in: scope.managedRegionIds }, deletedAt: null },
+          },
+        },
+      };
+    }
+  }
 
   const items = await prisma.customerEdit.findMany({
     where,

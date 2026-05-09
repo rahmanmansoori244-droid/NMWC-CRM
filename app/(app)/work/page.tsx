@@ -80,14 +80,26 @@ export default async function WorkPage() {
       when: e.submittedAt,
     }));
   } else if (role === Role.MANAGER) {
-    const stale = await prisma.customerEdit.findMany({
-      where: {
-        state: 'SUBMITTED',
-        submittedAt: { lt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
-      },
-      include: { customer: { select: { id: true, legalName: true } } },
-      take: 50,
-    });
+    // RBAC-05-010: Manager work queue must be region-scoped. Without this,
+    // the inbox shows stale approvals from every region globally.
+    const { loadScope } = await import('@/lib/access');
+    const scope = await loadScope(userId);
+    const stale =
+      scope.managedRegionIds.length === 0
+        ? []
+        : await prisma.customerEdit.findMany({
+            where: {
+              state: 'SUBMITTED',
+              submittedAt: { lt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
+              customer: {
+                branches: {
+                  some: { regionId: { in: scope.managedRegionIds }, deletedAt: null },
+                },
+              },
+            },
+            include: { customer: { select: { id: true, legalName: true } } },
+            take: 50,
+          });
     items = stale.map((e) => ({
       id: e.id,
       category: 'Stale approval (>3 days)',
@@ -117,7 +129,7 @@ export default async function WorkPage() {
       <PageHeader title="Work items" subtitle="Things that need your attention" />
       <div className="p-4 sm:p-6">
         {items.length === 0 ? (
-          <EmptyState title="All clear ✨" description="Nothing is waiting on you right now." />
+          <EmptyState title="All clear" description="Nothing is waiting on you right now." />
         ) : (
           <ul className="grid gap-3">
             {items.map((it) => (

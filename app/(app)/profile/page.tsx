@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { logoutAction } from '@/app/actions/auth';
@@ -43,14 +44,23 @@ export default async function ProfilePage() {
               value={user.lastLoginAt?.toLocaleString('en-GB') ?? 'never'}
             />
           </dl>
-          <form action={logoutAction} className="mt-6">
-            <button
-              type="submit"
-              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          <div className="mt-6 flex flex-wrap gap-2">
+            {/* AUTH-16: self-service password change. */}
+            <Link
+              href="/profile/change-password"
+              className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
             >
-              Sign out
-            </button>
-          </form>
+              Change password
+            </Link>
+            <form action={logoutAction}>
+              <button
+                type="submit"
+                className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Sign out
+              </button>
+            </form>
+          </div>
         </section>
       </div>
     </main>

@@ -23,37 +23,51 @@ const LABELS: Record<PhotoSlotKind, string> = {
 };
 
 async function compressImage(file: File, maxLong = 1920, quality = 0.85): Promise<Blob> {
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const im = new Image();
-    im.onload = () => resolve(im);
-    im.onerror = () => reject(new Error('Image decode failed'));
-    im.src = dataUrl;
-  });
-  let { width, height } = img;
-  if (width > maxLong || height > maxLong) {
-    const scale = maxLong / Math.max(width, height);
-    width = Math.round(width * scale);
-    height = Math.round(height * scale);
+  // UXI-024: stream via URL.createObjectURL instead of FileReader.readAsDataURL.
+  // Old path created a ~16 MB base64 string for a 12 MB HEIC and could OOM
+  // older iPhones. createObjectURL is constant-time and ~1/3 the memory.
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => {
+        // NEW-PHOTO-012: HEIC inputs on Chrome/Android cannot decode here.
+        // Surface a useful hint instead of generic "decode failed".
+        if (file.type === 'image/heic' || file.type === 'image/heif') {
+          reject(
+            new Error(
+              "Your phone is sending HEIC photos. Open Settings → Camera → Formats and switch to 'Most Compatible' (JPEG)."
+            )
+          );
+        } else {
+          reject(new Error('Image decode failed.'));
+        }
+      };
+      im.src = objectUrl;
+    });
+    let { width, height } = img;
+    if (width > maxLong || height > maxLong) {
+      const scale = maxLong / Math.max(width, height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas context unavailable');
+    ctx.drawImage(img, 0, 0, width, height);
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error('Compression failed'))),
+        'image/jpeg',
+        quality
+      );
+    });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
   }
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas context unavailable');
-  ctx.drawImage(img, 0, 0, width, height);
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error('Compression failed'))),
-      'image/jpeg',
-      quality
-    );
-  });
 }
 
 async function sha256Hex(blob: Blob): Promise<string> {
@@ -170,7 +184,14 @@ export function PhotoCaptureSlot({
     }
   }
 
-  async function clear() {
+  // UXI-001 (Critical): photo deletion is destructive. The user must
+  // explicitly confirm — no more "one bad tap blanks a mandatory CR slot".
+  // Required photos (CR / SHOP / SIGNBOARD) get a stronger warning since
+  // losing them blocks customer submit until the salesman is back at the
+  // shop.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  async function actuallyClear() {
     if (photo?.previewUrl) URL.revokeObjectURL(photo.previewUrl);
     if (photo?.attachmentId && attachTo) {
       try {
@@ -182,6 +203,7 @@ export function PhotoCaptureSlot({
     setPhoto(null);
     setProgress('idle');
     setError(null);
+    setConfirmingDelete(false);
     onChange?.(null);
   }
 
@@ -241,25 +263,55 @@ export function PhotoCaptureSlot({
           e.currentTarget.value = '';
         }}
       />
-      {!busy && (
+      {!busy && !confirmingDelete && (
         <div className="absolute right-1 top-1 z-20 flex gap-1">
           {filled && (
             <button
               type="button"
-              onClick={clear}
-              className="rounded-full bg-white/90 p-1 text-red-600 shadow-sm hover:bg-white"
+              onClick={() => setConfirmingDelete(true)}
+              className="flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-red-600 shadow-sm hover:bg-white"
               aria-label="Remove photo"
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              <Trash2 className="h-4 w-4" />
             </button>
           )}
           <label
             htmlFor={inputId}
-            className="cursor-pointer rounded-full bg-white/90 p-1 text-brand-700 shadow-sm hover:bg-white"
+            className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-full bg-white/90 text-brand-700 shadow-sm hover:bg-white"
             aria-label={filled ? 'Retake photo' : 'Capture photo'}
           >
-            {filled ? <RefreshCw className="h-3.5 w-3.5" /> : <Camera className="h-3.5 w-3.5" />}
+            {filled ? <RefreshCw className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
           </label>
+        </div>
+      )}
+      {/* UXI-001: confirm dialog overlay. Required photos get a stronger
+          warning because losing one mid-pilot means a return field visit. */}
+      {confirmingDelete && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-white/95 p-3 text-center text-xs text-slate-900">
+          <p className="font-semibold">
+            Remove this {LABELS[kind]} photo?
+          </p>
+          {required && (
+            <p className="text-[11px] text-red-700">
+              This is required. You will need to capture a new one before submitting.
+            </p>
+          )}
+          <div className="mt-1 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmingDelete(false)}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              onClick={actuallyClear}
+              className="rounded-md bg-red-600 px-3 py-2 text-xs font-semibold text-white hover:bg-red-700"
+            >
+              Remove
+            </button>
+          </div>
         </div>
       )}
     </div>

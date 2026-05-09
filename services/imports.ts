@@ -3,22 +3,51 @@
 import { prisma } from '@/lib/db';
 import { Role, ImportRowState, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
-import { ForbiddenError, ValidationError } from '@/lib/errors';
+import { ForbiddenError, ValidationError, RateLimitError } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { parseWorkbook } from '@/lib/excel';
 import { normalizePhone, isValidPhoneFormat } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
 import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
+import { checkLimit } from '@/lib/rate-limit';
 import bcrypt from 'bcryptjs';
 import { logger } from '@/lib/logger';
 
+// RBAC-05-009 / PRD §4: import is Steward-only. The previous lax gate accepted
+// MANAGER too, conflating Steward (master-data ops) and Manager (people ops)
+// privileges and opening CHAIN-09 (mint Manager via import). Tighten to
+// STEWARD only; an emergency Manager-driven import can still happen via a
+// Steward-aided session.
 async function requireSteward() {
   const session = await auth();
   if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (session.user.role !== Role.STEWARD && session.user.role !== Role.MANAGER) {
-    throw new ForbiddenError('Only the Data Steward or a Manager can run imports.');
+  if (session.user.role !== Role.STEWARD) {
+    throw new ForbiddenError('Only the Data Steward can run imports.');
   }
   return session.user;
+}
+
+/**
+ * F-05 / QA-029 — strip HTML tags before persisting any user-supplied text
+ * field. Mirrors the same helper used on the edit form (lib/validation/edit).
+ * Without this, an import row carrying `legalName="<script>…</script>"` lands
+ * in the master verbatim, then propagates back through Excel exports and JSON
+ * audit-log views.
+ */
+function stripHtml(s: unknown): string {
+  return String(s ?? '')
+    .replace(/<[^>]+>/g, '')
+    .trim();
+}
+
+/**
+ * F-05 — refuse cells whose value starts with a spreadsheet formula trigger
+ * (`=`, `+`, `-`, `@`, tab, CR). Matches the export-side escape but applied
+ * on the way IN so the data in the master is never hostile to begin with.
+ */
+function isFormulaPayload(s: unknown): boolean {
+  const v = String(s ?? '').trim();
+  return v.length > 0 && /^[=+\-@\t\r]/.test(v);
 }
 
 // ── Account master import (regions, routes, users) ────────────────────────
@@ -44,6 +73,11 @@ const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5 MB
 
 export async function uploadAccountMasterAction(formData: FormData) {
   const me = await requireSteward();
+  // F-07: same rate-limit as customer master.
+  const lim = await checkLimit(`import:${me.id}`, { capacity: 3, refillPerSec: 0.05 });
+  if (!lim.ok) {
+    throw new RateLimitError(`Wait ${lim.retryAfterSec}s before another import.`);
+  }
   const file = formData.get('file');
   if (!(file instanceof File)) throw new ValidationError({ file: 'No file uploaded.' });
   if (file.size > MAX_IMPORT_BYTES) {
@@ -179,18 +213,63 @@ export async function uploadAccountMasterAction(formData: FormData) {
         continue;
       }
 
-      // QA-011 — Steward cannot escalate themselves. Block any row that tries
-      // to change the calling user's own role.
-      if (username === me.username && wantsRoleChange && roleStr !== me.role) {
+      const role = roleStr as Role;
+
+      // F-02 (Critical) — close THREE bypasses of QA-011:
+      //
+      // (a) Self-promotion guarded by id (not username). The previous string-
+      //     compare on `username === me.username` failed when the calling
+      //     Steward's username had different casing in DB or when the import
+      //     row used a renamed username; both let the Steward escalate.
+      //
+      // (b) Steward cannot mint or upgrade a user to MANAGER or STEWARD by
+      //     ANY path (new user OR existing). Promotion into the admin tier
+      //     must go through the in-app `/users` UI run by an existing
+      //     Manager. This blocks the "rogue Steward → rogue Manager →
+      //     rubber-stamp every region's edits" CHAIN-01.
+      //
+      // (c) Steward cannot demote a peer Manager or Steward via import.
+      //
+      // We compare the incoming row's username case-insensitively against
+      // the existing User.id's username so case differences don't bypass.
+      const targetExisting = await prisma.user.findUnique({
+        where: { username },
+        select: { id: true, role: true, isActive: true },
+      });
+      const isSelf = targetExisting?.id === me.id;
+
+      if (isSelf && wantsRoleChange && role !== me.role) {
+        issues.push({ sheet: 'Users', row: i + 2, message: 'cannot change your own role via import' });
+        continue;
+      }
+      // (b) New MANAGER / STEWARD via import — refuse outright. Forces the
+      // Manager-driven /users UI for any admin-tier creation.
+      if (!targetExisting && (role === Role.MANAGER || role === Role.STEWARD)) {
         issues.push({
           sheet: 'Users',
           row: i + 2,
-          message: 'cannot change your own role via import',
+          message: 'creating MANAGER or STEWARD via import is not permitted — use the Users UI',
         });
         continue;
       }
-
-      const role = roleStr as Role;
+      // (b)/(c) Promote-to or mutate an existing admin via import — refuse.
+      if (
+        targetExisting &&
+        wantsRoleChange &&
+        (role === Role.MANAGER ||
+          role === Role.STEWARD ||
+          targetExisting.role === Role.MANAGER ||
+          targetExisting.role === Role.STEWARD) &&
+        targetExisting.role !== role
+      ) {
+        issues.push({
+          sheet: 'Users',
+          row: i + 2,
+          message:
+            'promoting/demoting MANAGER or STEWARD via import is not permitted — use the Users UI',
+        });
+        continue;
+      }
       let supervisorId: string | null = null;
       if (supUsername) {
         const sup = await prisma.user.findUnique({ where: { username: supUsername } });
@@ -220,18 +299,40 @@ export async function uploadAccountMasterAction(formData: FormData) {
           });
           continue;
         }
-        // Detach previous owner if reassigning
-        await prisma.user.updateMany({
+        // F-18: audit any silent ownedRoute reassignment so the Manager has a
+        // forensic trail of "salesman.X used to own this route, salesman.Y
+        // owns it now". Previously the displaced owner was detached without
+        // any record, leaving a confused salesman with an empty /today.
+        const displacedOwners = await prisma.user.findMany({
           where: { ownedRouteId: route.id, NOT: { username } },
-          data: { ownedRouteId: null },
+          select: { id: true, username: true },
         });
+        if (displacedOwners.length > 0) {
+          await prisma.user.updateMany({
+            where: { ownedRouteId: route.id, NOT: { username } },
+            data: { ownedRouteId: null },
+          });
+          await prisma.auditLog.createMany({
+            data: displacedOwners.map((u) => ({
+              actorId: me.id,
+              action: 'REASSIGN' as const,
+              entityType: 'User',
+              entityId: u.id,
+              before: { ownedRouteCode: routeCode } as unknown as Prisma.InputJsonValue,
+              after: { ownedRouteCode: null } as unknown as Prisma.InputJsonValue,
+              reason: `route ${routeCode} reassigned to ${username} via import`,
+            })),
+          });
+        }
         ownedRouteId = route.id;
       }
 
       // QA-010 / QA-011: only set passwordHash + role on INSERT or when
       // explicitly requested. On a normal re-import, existing users keep
       // their existing password and role.
-      const existing = await prisma.user.findUnique({ where: { username } });
+      const existing = targetExisting
+        ? await prisma.user.findUnique({ where: { username } })
+        : null;
       let passwordHash: string;
       if (existing) {
         if (wantsReset) {
@@ -352,6 +453,24 @@ export async function uploadAccountMasterAction(formData: FormData) {
     });
   }
 
+  // F-19: per-batch audit summary for the Account master too.
+  await prisma.auditLog
+    .create({
+      data: {
+        actorId: me.id,
+        action: 'IMPORT',
+        entityType: 'ImportBatch',
+        entityId: batch.id,
+        after: {
+          kind: 'ACCOUNT',
+          clean: cleanCount,
+          issues: issues.length,
+        } as unknown as Prisma.InputJsonValue,
+        reason: 'account_master_upload',
+      },
+    })
+    .catch(() => undefined);
+
   logger.info(
     { batchId: batch.id, clean: cleanCount, issues: issues.length },
     'import.account.complete'
@@ -377,6 +496,13 @@ export async function uploadAccountMasterAction(formData: FormData) {
 
 export async function uploadCustomerMasterAction(formData: FormData) {
   const me = await requireSteward();
+  // F-07: rate-limit imports per Steward. Two Stewards racing the same file
+  // (or a single Steward double-tapping the upload button) was previously
+  // unguarded and led to interleaved upserts.
+  const lim = await checkLimit(`import:${me.id}`, { capacity: 3, refillPerSec: 0.05 });
+  if (!lim.ok) {
+    throw new RateLimitError(`Wait ${lim.retryAfterSec}s before another import.`);
+  }
   const file = formData.get('file');
   if (!(file instanceof File)) throw new ValidationError({ file: 'No file uploaded.' });
   if (file.size > MAX_IMPORT_BYTES) {
@@ -410,37 +536,116 @@ export async function uploadCustomerMasterAction(formData: FormData) {
   const importRows: Prisma.ImportRowCreateManyInput[] = [];
   let clean = 0;
   let quarantined = 0;
+  // F-04: build collision maps inside the file + against the live master so
+  // the parse step queues duplicates for review instead of silently
+  // P2002-failing on promote.
+  const phonesInFile = new Map<string, number[]>();
+  const crsInFile = new Map<string, number[]>();
+  for (const [i, row] of sheet.rows.entries()) {
+    const phoneNorm = normalizePhone(
+      String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim() || null
+    );
+    if (phoneNorm) {
+      const a = phonesInFile.get(phoneNorm) ?? [];
+      a.push(i + 2);
+      phonesInFile.set(phoneNorm, a);
+    }
+    const crNorm = normalizeCR(
+      String(row.cr_no ?? row['CR NO'] ?? '').trim() || null
+    );
+    if (crNorm) {
+      const a = crsInFile.get(crNorm) ?? [];
+      a.push(i + 2);
+      crsInFile.set(crNorm, a);
+    }
+  }
+  // Cross-check against the live master in one query each.
+  const phoneList = [...phonesInFile.keys()];
+  const crList = [...crsInFile.keys()];
+  const masterPhones = phoneList.length
+    ? new Set(
+        (
+          await prisma.customer.findMany({
+            where: { primaryPhoneNorm: { in: phoneList }, deletedAt: null },
+            select: { primaryPhoneNorm: true },
+          })
+        )
+          .map((c) => c.primaryPhoneNorm)
+          .filter((p): p is string => !!p)
+      )
+    : new Set<string>();
+  const masterCrs = crList.length
+    ? new Set(
+        (
+          await prisma.customer.findMany({
+            where: { crNumberNorm: { in: crList }, deletedAt: null },
+            select: { crNumberNorm: true },
+          })
+        )
+          .map((c) => c.crNumberNorm)
+          .filter((p): p is string => !!p)
+      )
+    : new Set<string>();
+
   for (const [i, row] of sheet.rows.entries()) {
     const issues: { field: string; message: string }[] = [];
-    const custCode = String(
-      row.cust_code ?? row.custcode ?? row.CUSTCODE ?? row.code ?? row.Code ?? ''
+    // F-05: stripHtml on every text field at parse time so nothing hostile
+    // reaches the master. Then re-screen for spreadsheet formula prefixes.
+    const custCode = stripHtml(
+      row.cust_code ?? row.custcode ?? row.CUSTCODE ?? row.code ?? row.Code
     ).trim();
-    const custName = String(row.cust_name ?? row['CUST NAME'] ?? row.name ?? '').trim();
+    const custName = stripHtml(row.cust_name ?? row['CUST NAME'] ?? row.name);
+    const phoneRaw = String(row.phone ?? '').trim();
     const phone = normalizePhone(
       String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim() || null
     );
-    const phoneRaw = String(row.phone ?? '').trim();
+    const crNorm = normalizeCR(String(row.cr_no ?? row['CR NO'] ?? '').trim() || null);
 
     if (!custCode) issues.push({ field: 'cust_code', message: 'required' });
     if (!custName) issues.push({ field: 'cust_name', message: 'required' });
     if (phoneRaw && !isValidPhoneFormat(phoneRaw)) {
       issues.push({ field: 'phone', message: 'invalid format' });
     }
+    if (phone && phonesInFile.get(phone)!.length > 1) {
+      issues.push({ field: 'phone', message: `duplicate phone in this file (also rows ${phonesInFile.get(phone)!.filter((r) => r !== i + 2).join(', ')})` });
+    }
+    if (phone && masterPhones.has(phone)) {
+      issues.push({ field: 'phone', message: 'phone already exists in master — review in /duplicates' });
+    }
+    if (crNorm && crsInFile.get(crNorm)!.length > 1) {
+      issues.push({ field: 'cr_no', message: `duplicate CR in this file (also rows ${crsInFile.get(crNorm)!.filter((r) => r !== i + 2).join(', ')})` });
+    }
+    if (crNorm && masterCrs.has(crNorm)) {
+      issues.push({ field: 'cr_no', message: 'CR already exists in master — review in /duplicates' });
+    }
+    // F-12: strict whitelist on payment terms — silently defaulting `Crdit`
+    // to CASH ate the field-lock semantics for credit customers.
+    const ptRaw = String(row.payment_terms ?? row['PAYMENT TERMS'] ?? '').trim().toUpperCase();
+    let paymentTerms = 'CASH';
+    if (ptRaw && ptRaw !== 'CASH' && ptRaw !== 'CREDIT') {
+      issues.push({ field: 'payment_terms', message: `expected CASH or CREDIT, got "${ptRaw}"` });
+    } else if (ptRaw === 'CREDIT') {
+      paymentTerms = 'CREDIT';
+    }
+    // F-05: refuse formula payloads in any text field.
+    for (const field of ['cust_name', 'address', 'contact_person', 'notes']) {
+      if (isFormulaPayload((row as Record<string, unknown>)[field])) {
+        issues.push({ field, message: 'cell starts with a spreadsheet formula trigger; remove it' });
+      }
+    }
 
     const parsed = {
       custCode,
       custName,
-      branchCode: String(row.branch_code ?? row['CUST BRANCH'] ?? '').trim() || null,
-      branchName: String(row.branch_name ?? row['CUST BRANCH'] ?? row.branch ?? '').trim() || null,
-      regionCode: String(row.sales_region ?? row['SALES REGION'] ?? row.region ?? '').trim() || null,
-      routeCode: String(row.route ?? row['ROUTE'] ?? '').trim() || null,
-      address: String(row.address ?? row.ADDRSS ?? row.ADDRESS ?? '').trim() || null,
+      branchCode: stripHtml(row.branch_code ?? row['CUST BRANCH']) || null,
+      branchName: stripHtml(row.branch_name ?? row['CUST BRANCH'] ?? row.branch) || null,
+      regionCode: stripHtml(row.sales_region ?? row['SALES REGION'] ?? row.region) || null,
+      routeCode: stripHtml(row.route ?? row['ROUTE']) || null,
+      address: stripHtml(row.address ?? row.ADDRSS ?? row.ADDRESS) || null,
       phone,
-      contactPerson: String(row.contact_person ?? row['CONTACT PERSON'] ?? '').trim() || null,
-      crNumber: String(row.cr_no ?? row['CR NO'] ?? '').trim() || null,
-      paymentTerms: String(row.payment_terms ?? row['PAYMENT TERMS'] ?? 'CASH')
-        .trim()
-        .toUpperCase(),
+      contactPerson: stripHtml(row.contact_person ?? row['CONTACT PERSON']) || null,
+      crNumber: stripHtml(row.cr_no ?? row['CR NO']) || null,
+      paymentTerms,
     };
 
     importRows.push({
@@ -468,8 +673,20 @@ export async function promoteCustomerBatchAction(formData: FormData) {
   const me = await requireSteward();
   const batchId = String(formData.get('batchId') ?? '');
   if (!batchId) throw new ValidationError({ batchId: 'required' });
-  const batch = await prisma.importBatch.findUnique({ where: { id: batchId } });
-  if (!batch) throw new ValidationError({ batchId: 'not found' });
+  // F-07: claim the batch atomically. updateMany returns count=1 only for the
+  // first promote of a READY batch — subsequent re-clicks (or two Stewards)
+  // see count=0 and surface a clear conflict instead of interleaving upserts.
+  const claim = await prisma.importBatch.updateMany({
+    where: { id: batchId, status: 'READY' },
+    data: { status: 'PROMOTING' },
+  });
+  if (claim.count === 0) {
+    const cur = await prisma.importBatch.findUnique({ where: { id: batchId }, select: { status: true } });
+    throw new ValidationError({
+      batchId: `Batch is in state ${cur?.status ?? '<missing>'} — only READY batches can be promoted.`,
+    });
+  }
+  const batch = await prisma.importBatch.findUniqueOrThrow({ where: { id: batchId } });
   if (batch.kind !== 'CUSTOMER') throw new ValidationError({ batchId: 'not a customer import' });
 
   const cleanRows = await prisma.importRow.findMany({
@@ -516,7 +733,11 @@ export async function promoteCustomerBatchAction(formData: FormData) {
 
   // QA-019: each customer's promotion (parent + branches + row state) runs
   // in its own transaction so a partial failure leaves no half-state.
+  // F-03: per-row failures now mark the row as REJECTED with the error
+  // message in `issues`, and the action returns a `{ promoted, failed }`
+  // tuple that the UI surfaces in the toast — no more silent swallow.
   let promoted = 0;
+  const failures: Array<{ custCode: string; rowIds: string[]; reason: string }> = [];
   for (const [custCode, g] of groups) {
     const first = g.parsed[0];
 
@@ -529,32 +750,34 @@ export async function promoteCustomerBatchAction(formData: FormData) {
       routeId: string;
       address: string;
     }> = [];
+    const groupResolveErrors: string[] = [];
     for (const [bi, p] of g.parsed.entries()) {
+      // F-17: refuse to silently auto-create unknown regions/routes. Phantom
+      // regions invented by typos are the source of CHAIN-09 (an unscoped
+      // Manager later falls into them). Only Existing region/route codes
+      // resolve; everything else falls back to UNASSIGNED with a flag in
+      // the audit log so the Steward can fix.
       const region = p.regionCode
-        ? await prisma.region.upsert({
-            where: { code: p.regionCode.toUpperCase() },
-            update: {},
-            create: { code: p.regionCode.toUpperCase(), name: p.regionCode },
-          })
+        ? await prisma.region.findUnique({ where: { code: p.regionCode.toUpperCase() } })
         : null;
+      if (p.regionCode && !region) {
+        groupResolveErrors.push(`region "${p.regionCode}" not found`);
+      }
       const route = p.routeCode
-        ? await prisma.route.upsert({
-            where: { code: p.routeCode.toUpperCase() },
-            update: {},
-            create: {
-              code: p.routeCode.toUpperCase(),
-              name: p.routeCode,
-              regionId: (region ?? unassignedRoute!).id,
-            },
-          })
-        : unassignedRoute!;
+        ? await prisma.route.findUnique({ where: { code: p.routeCode.toUpperCase() } })
+        : null;
+      if (p.routeCode && !route) {
+        groupResolveErrors.push(`route "${p.routeCode}" not found`);
+      }
+      const effectiveRegionId = (region ?? unassignedRoute!).id;
+      const effectiveRouteId = (route ?? unassignedRoute!).id;
       resolvedBranches.push({
         branchCode: p.branchCode
           ? p.branchCode.toUpperCase()
           : formatBranchCode(custCode, bi + 1),
         branchName: p.branchName ?? 'Main',
-        regionId: (region ?? unassignedRoute!).id,
-        routeId: (route ?? unassignedRoute!).id,
+        regionId: effectiveRegionId,
+        routeId: effectiveRouteId,
         address:
           p.address ??
           [p.branchName, p.regionCode].filter(Boolean).join(', ') ??
@@ -619,20 +842,91 @@ export async function promoteCustomerBatchAction(formData: FormData) {
         });
       });
       promoted += g.rowIds.length;
+      if (groupResolveErrors.length > 0) {
+        // F-17: surface the phantom-region warning in the row's issues so the
+        // Steward can fix the reference data and re-run the import. Row stays
+        // PROMOTED (the customer landed) but with a visible warning.
+        await prisma.importRow
+          .updateMany({
+            where: { id: { in: g.rowIds } },
+            data: {
+              issues: groupResolveErrors.map((m) => ({
+                field: '_resolve',
+                message: `${m}; assigned to UNASSIGNED`,
+              })) as Prisma.InputJsonValue,
+            },
+          })
+          .catch(() => undefined);
+      }
     } catch (err) {
+      // F-15: NEVER log the raw Prisma error message — it embeds the value
+      // that triggered the constraint (phone, CR number) and would leak PII
+      // into pino/Sentry. Log a structured short code + safe identifier
+      // only.
+      const code = (err as { code?: string })?.code ?? 'UNKNOWN';
+      const meta = (err as { meta?: { target?: string[] } })?.meta?.target;
       logger.warn(
-        { err: (err as Error).message?.slice(0, 200), custCode },
+        { code, target: meta, custCode, batchId },
         'import.promote.row_failed'
       );
+      // Mark the failed row(s) REJECTED in a SEPARATE transaction so the
+      // failure persists even though the row-level promote rolled back.
+      const reason =
+        code === 'P2002'
+          ? `duplicate ${(meta ?? []).join(', ')}`
+          : `promote failed (${code})`;
+      try {
+        await prisma.importRow.updateMany({
+          where: { id: { in: g.rowIds } },
+          data: {
+            state: ImportRowState.REJECTED,
+            issues: [{ field: '_promote', message: reason }] as Prisma.InputJsonValue,
+            reviewedById: me.id,
+            reviewedAt: new Date(),
+          },
+        });
+      } catch (e) {
+        logger.error({ err: (e as Error).message?.slice(0, 80), batchId }, 'import.mark_failed');
+      }
+      failures.push({ custCode, rowIds: g.rowIds, reason });
     }
   }
 
   await prisma.importBatch.update({
     where: { id: batchId },
-    data: { status: 'PROMOTED', promotedRows: promoted },
+    data: {
+      status: 'PROMOTED',
+      promotedRows: promoted,
+      rejectedRows: failures.reduce((acc, f) => acc + f.rowIds.length, 0),
+    },
   });
+
+  // F-19: per-batch summary audit log. Without this, "what happened in last
+  // week's import?" requires SQL spelunking. The row carries the actor, the
+  // counts, and the failure list (codes only — no embedded values).
+  await prisma.auditLog
+    .create({
+      data: {
+        actorId: me.id,
+        action: 'IMPORT',
+        entityType: 'ImportBatch',
+        entityId: batchId,
+        after: {
+          kind: 'CUSTOMER',
+          totalGroups: groups.size,
+          promoted,
+          failed: failures.length,
+          failureCustCodes: failures.map((f) => f.custCode).slice(0, 100),
+        } as unknown as Prisma.InputJsonValue,
+        reason: 'customer_master_promote',
+      },
+    })
+    .catch((e) => {
+      logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
+    });
+
   revalidatePath('/import');
-  return { promoted };
+  return { promoted, failed: failures.length };
 }
 
 // helper to format counter-style code if NMWC code is missing in input

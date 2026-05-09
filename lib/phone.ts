@@ -5,17 +5,30 @@
  *   +968XXXXXXXX  (8 local digits)
  *
  * Rules:
- * - Strip everything that is not a digit or '+'.
- * - If input has 8 digits and starts with 7,9 (Oman mobile/landline), prepend +968.
- * - If input has 11 digits and starts with 968, prepend '+'.
- * - If input has 11 digits and starts with '00968', strip the 00 and prepend '+'.
- * - Otherwise, keep the original digits prefixed with '+' if a country code looks present.
- *   We never reject — we keep the best-effort string.
+ * - Convert Arabic-Indic digits (٠..٩) to ASCII digits — Arabic keyboards on
+ *   Omani Android phones are common and JS `\d` is ASCII-only by default
+ *   (UXI-006). Without this, perfectly typed `٩١٢٣٤٥٦٧` returned null.
+ * - Strip everything else that is not a digit or '+'.
+ * - Accept 8 local digits, or 11 digits with country prefix `968`, or `00968`.
+ * - Reject anything that doesn't match those — previous code returned a
+ *   "best-effort" 12-digit junk string, which the partial unique index later
+ *   collided on. Better to reject loudly so the user can fix the source.
  */
+
+const ARABIC_INDIC_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+
+function asciifyDigits(s: string): string {
+  let out = '';
+  for (const ch of s) {
+    const idx = ARABIC_INDIC_DIGITS.indexOf(ch);
+    out += idx >= 0 ? String(idx) : ch;
+  }
+  return out;
+}
 
 export function normalizePhone(input: string | null | undefined): string | null {
   if (!input) return null;
-  const trimmed = input.trim();
+  const trimmed = asciifyDigits(input.trim());
   if (!trimmed) return null;
 
   // Keep + and digits only
@@ -33,14 +46,19 @@ export function normalizePhone(input: string | null | undefined): string | null 
   if (digits.length === 8) {
     return '+968' + digits;
   }
-  // Fallback: best-effort with leading + if length suggests country code
-  if (digits.length >= 10) return '+' + digits;
-  return digits; // probably partial; leave to caller's validation
+  // UXI-006: don't fall back to a "best-effort" string. A 6-digit or 12-digit
+  // input is almost certainly a typo (extension grafted on, missing zero,
+  // pasted with extra junk). Returning null forces the validator at the call
+  // site to surface a real "phone format invalid" error.
+  return null;
 }
 
-const PHONE_REGEX = /^[\d\s\-+()]{7,20}$/;
+const PHONE_REGEX = /^[\d\s\-+()٠-٩]{7,20}$/;
 
 export function isValidPhoneFormat(input: string | null | undefined): boolean {
   if (!input) return false;
-  return PHONE_REGEX.test(input);
+  // Validate AFTER asciifying so an Arabic-keyboard input doesn't fail the
+  // length / character check.
+  const ascii = asciifyDigits(input);
+  return PHONE_REGEX.test(ascii) && normalizePhone(input) !== null;
 }

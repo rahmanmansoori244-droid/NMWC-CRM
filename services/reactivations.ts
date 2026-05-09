@@ -54,7 +54,12 @@ export async function requestReactivationAction(formData: FormData) {
 
   // Photo evidence must:
   //   1) exist, 2) be captured by this salesman, 3) be ≤24h old, 4) belong to this branch
-  const att = await prisma.attachment.findUnique({ where: { id: attachmentId } });
+  // UXI-008: filter soft-deleted. EL-11/EL-12: photo evidence must have been
+  // captured AFTER the most recent status change on this branch — otherwise
+  // a salesman can use a pre-closure shop photo to "prove" the shop reopened.
+  const att = await prisma.attachment.findFirst({
+    where: { id: attachmentId, deletedAt: null },
+  });
   if (!att) throw new ValidationError({ attachmentId: 'Photo not found.' });
   if (att.capturedById !== me.id) {
     throw new ValidationError({ attachmentId: 'You did not capture that photo.' });
@@ -63,6 +68,15 @@ export async function requestReactivationAction(formData: FormData) {
   if (ageMs > 24 * 60 * 60 * 1000) {
     throw new ValidationError({
       attachmentId: 'Photo is older than 24 hours — capture a fresh one.',
+    });
+  }
+  if (
+    branch.lastStatusChangeAt &&
+    new Date(att.capturedAt).getTime() <= new Date(branch.lastStatusChangeAt).getTime()
+  ) {
+    throw new ValidationError({
+      attachmentId:
+        'Photo was captured before the last status change. Take a new photo at the shop today.',
     });
   }
   if (att.branchId !== branch.id && att.branchExtraId !== branch.id) {
@@ -127,7 +141,12 @@ export async function markBranchClosedAction(formData: FormData) {
     throw new ValidationError({ branchId: 'Branch is already CLOSED.' });
   }
 
-  const att = await prisma.attachment.findUnique({ where: { id: attachmentId } });
+  // UXI-008: filter soft-deleted. EL-11/EL-12: photo evidence must have been
+  // captured AFTER the most recent status change on this branch — otherwise
+  // a salesman can use a pre-closure shop photo to "prove" the shop reopened.
+  const att = await prisma.attachment.findFirst({
+    where: { id: attachmentId, deletedAt: null },
+  });
   if (!att) throw new ValidationError({ attachmentId: 'Photo not found.' });
   if (att.capturedById !== me.id) {
     throw new ValidationError({ attachmentId: 'You did not capture that photo.' });
@@ -136,6 +155,15 @@ export async function markBranchClosedAction(formData: FormData) {
   if (ageMs > 24 * 60 * 60 * 1000) {
     throw new ValidationError({
       attachmentId: 'Photo is older than 24 hours — capture a fresh one.',
+    });
+  }
+  if (
+    branch.lastStatusChangeAt &&
+    new Date(att.capturedAt).getTime() <= new Date(branch.lastStatusChangeAt).getTime()
+  ) {
+    throw new ValidationError({
+      attachmentId:
+        'Photo was captured before the last status change. Take a new photo at the shop today.',
     });
   }
   if (att.branchId !== branch.id && att.branchExtraId !== branch.id) {
@@ -178,7 +206,7 @@ export async function approveReactivationAction(formData: FormData) {
 
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
-    include: { branch: true, customer: true },
+    include: { branch: true, customer: true, submittedBy: { select: { id: true } } },
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (!edit.isReactivation) throw new ValidationError({ editId: 'Not a reactivation.' });
@@ -186,11 +214,30 @@ export async function approveReactivationAction(formData: FormData) {
     throw new ValidationError({ editId: `Edit is in state ${edit.state}.` });
   }
   if (!edit.branch || !edit.customer) throw new NotFoundError('Branch / customer missing.');
+  // RBAC-05-008: a Manager can only approve reactivations in regions they
+  // manage. Without this, Manager A could rubber-stamp a reactivation in
+  // Manager B's region with no paper trail of cross-region action.
+  const { loadScope } = await import('@/lib/access');
+  const actorScope = await loadScope(me.id);
+  if (actorScope.managedRegionIds.length === 0) {
+    throw new ForbiddenError('You have no managed regions assigned.');
+  }
+  if (!actorScope.managedRegionIds.includes(edit.branch.regionId)) {
+    throw new ForbiddenError('This branch is not in your managed regions.');
+  }
+  // EL-15: cannot approve your own reactivation.
+  if (edit.submittedBy?.id === me.id) {
+    throw new ForbiddenError('Cannot approve your own reactivation.');
+  }
 
   await prisma.$transaction(async (tx) => {
     await tx.branch.update({
       where: { id: edit.branchId! },
-      data: { status: 'ACTIVE', lastEditedById: me.id },
+      data: {
+        status: 'ACTIVE',
+        lastEditedById: me.id,
+        lastStatusChangeAt: new Date(),
+      },
     });
     // If any branch active, customer is active
     const others = await tx.branch.findMany({
@@ -243,6 +290,26 @@ export async function rejectReactivationAction(formData: FormData) {
   const reason = String(formData.get('reason') ?? '').trim();
   if (!editId) throw new ValidationError({ editId: 'required' });
   if (reason.length < 5) throw new ValidationError({ reason: '5+ chars required' });
+
+  // RBAC-05-008: same region scope as approve. Reject is not a privilege
+  // escalation but it still touches another Manager's queue.
+  const edit = await prisma.customerEdit.findUnique({
+    where: { id: editId },
+    include: { branch: true, submittedBy: { select: { id: true } } },
+  });
+  if (!edit) throw new NotFoundError('Edit not found.');
+  if (!edit.branch) throw new NotFoundError('Branch missing.');
+  const { loadScope } = await import('@/lib/access');
+  const actorScope = await loadScope(me.id);
+  if (
+    actorScope.managedRegionIds.length === 0 ||
+    !actorScope.managedRegionIds.includes(edit.branch.regionId)
+  ) {
+    throw new ForbiddenError('This branch is not in your managed regions.');
+  }
+  if (edit.submittedBy?.id === me.id) {
+    throw new ForbiddenError('Cannot reject your own request.');
+  }
 
   await prisma.customerEdit.update({
     where: { id: editId },

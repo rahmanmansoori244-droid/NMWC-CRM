@@ -62,6 +62,29 @@ export default async function CustomersPage({
     where.status = statusFilter as 'ACTIVE' | 'CLOSED' | 'SUSPENDED';
   }
 
+  // RBAC-05-002: scope-aware primary branch. Previously the eager-load took
+  // `branches: { take: 1, orderBy: { createdAt: 'asc' } }` which picked the
+  // OLDEST branch regardless of the caller's scope. For a multi-branch
+  // customer (Lulu, Carrefour) the salesman's list could show a Dhofar
+  // address as the subtitle for a Muscat customer.
+  const branchInclude: Prisma.Customer$branchesArgs = {
+    take: 1,
+    orderBy: { createdAt: 'asc' },
+  };
+  if (me.role === Role.SALESMAN && me.ownedRouteId) {
+    branchInclude.where = { routeId: me.ownedRouteId, deletedAt: null };
+  } else if (me.role === Role.SUPERVISOR) {
+    const routeIds = me.reports.map((r) => r.ownedRouteId).filter((id): id is string => !!id);
+    branchInclude.where = { routeId: { in: routeIds }, deletedAt: null };
+  } else if (me.role === Role.MANAGER) {
+    const regionIds = me.managedRegions.map((r) => r.id);
+    branchInclude.where = regionIds.length > 0
+      ? { regionId: { in: regionIds }, deletedAt: null }
+      : { id: '__none__' };
+  } else {
+    branchInclude.where = { deletedAt: null };
+  }
+
   const [total, customers] = await Promise.all([
     prisma.customer.count({ where }),
     prisma.customer.findMany({
@@ -69,9 +92,7 @@ export default async function CustomersPage({
       orderBy: { legalName: 'asc' },
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
-      include: {
-        branches: { take: 1, orderBy: { createdAt: 'asc' } },
-      },
+      include: { branches: branchInclude },
     }),
   ]);
 

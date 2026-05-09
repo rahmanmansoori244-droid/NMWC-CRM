@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { auth } from '@/lib/auth';
 import { buildCustomerExport, type ExportFilters } from '@/services/exports';
+import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
@@ -17,20 +19,36 @@ const filterSchema = z.object({
 });
 
 export async function GET(req: NextRequest) {
-  const sp = req.nextUrl.searchParams;
-  const filters: ExportFilters = filterSchema.parse({
-    regionIds: sp.getAll('regionId').length ? sp.getAll('regionId') : undefined,
-    routeIds: sp.getAll('routeId').length ? sp.getAll('routeId') : undefined,
-    statuses: sp.getAll('status').length
-      ? (sp.getAll('status') as ExportFilters['statuses'])
-      : undefined,
-    paymentTerms: sp.getAll('paymentTerms').length
-      ? (sp.getAll('paymentTerms') as ExportFilters['paymentTerms'])
-      : undefined,
-    minCompleteness: sp.get('minCompleteness') ?? undefined,
-    maxCompleteness: sp.get('maxCompleteness') ?? undefined,
-    updatedSince: sp.get('updatedSince') ?? undefined,
-  });
+  // F-21: auth FIRST. Previously the Zod parse ran before the session check, so
+  // an unauthenticated attacker could probe the schema (`?minCompleteness=999`)
+  // and read the validation error structure for free.
+  const session = await auth();
+  if (!session?.user) {
+    return NextResponse.json({ error: 'Not signed in' }, { status: 401 });
+  }
+
+  let filters: ExportFilters;
+  try {
+    filters = filterSchema.parse({
+      regionIds: req.nextUrl.searchParams.getAll('regionId').length
+        ? req.nextUrl.searchParams.getAll('regionId')
+        : undefined,
+      routeIds: req.nextUrl.searchParams.getAll('routeId').length
+        ? req.nextUrl.searchParams.getAll('routeId')
+        : undefined,
+      statuses: req.nextUrl.searchParams.getAll('status').length
+        ? (req.nextUrl.searchParams.getAll('status') as ExportFilters['statuses'])
+        : undefined,
+      paymentTerms: req.nextUrl.searchParams.getAll('paymentTerms').length
+        ? (req.nextUrl.searchParams.getAll('paymentTerms') as ExportFilters['paymentTerms'])
+        : undefined,
+      minCompleteness: req.nextUrl.searchParams.get('minCompleteness') ?? undefined,
+      maxCompleteness: req.nextUrl.searchParams.get('maxCompleteness') ?? undefined,
+      updatedSince: req.nextUrl.searchParams.get('updatedSince') ?? undefined,
+    });
+  } catch {
+    return NextResponse.json({ error: 'Invalid filter parameters' }, { status: 400 });
+  }
 
   try {
     const { bytes, filename } = await buildCustomerExport(filters);
@@ -43,8 +61,14 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
+    // F-22: distinguish 401/403/500 by error class, not by message substring.
     logger.error({ err: (err as Error).message }, 'export.fail');
-    const status = (err as Error).message.includes('signed in') ? 401 : 500;
-    return NextResponse.json({ error: (err as Error).message }, { status });
+    if (err instanceof ForbiddenError) {
+      return NextResponse.json(
+        { error: err.message },
+        { status: err.message.includes('signed in') ? 401 : 403 }
+      );
+    }
+    return NextResponse.json({ error: 'Export failed' }, { status: 500 });
   }
 }

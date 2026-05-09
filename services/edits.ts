@@ -181,9 +181,33 @@ export async function submitEditAction(input: SubmitEditInput): Promise<{ editId
   }
   const parsed = submitEditSchema.safeParse(input);
   if (!parsed.success) {
-    throw new ValidationError(
-      Object.fromEntries(parsed.error.issues.map((i) => [i.path.join('.'), i.message]))
-    );
+    // EL-02: map Zod issue paths to the form's `customer.<f>` / `branch.<id>.<f>`
+    // keying so the EnrichmentForm can render the error inline next to the
+    // offending field. Without this, salesmen on UAE-edge routes (Buraimi /
+    // Khasab) would see a silent submit failure when their GPS captured outside
+    // the bounding box.
+    const fields: Record<string, string> = {};
+    for (const issue of parsed.error.issues) {
+      const p = issue.path;
+      if (p[0] === 'branches' && typeof p[1] === 'number') {
+        const idx = p[1] as number;
+        const branchId = (input as { branches?: Array<{ branchId?: string }> })
+          .branches?.[idx]?.branchId;
+        if (branchId) {
+          const sub = p.slice(2).join('.');
+          // gpsLat/gpsLng both render under one `gps` slot in the form.
+          const key = sub === 'gpsLat' || sub === 'gpsLng' ? 'gps' : sub;
+          fields[`branch.${branchId}.${key}`] = issue.message;
+          continue;
+        }
+      }
+      if (p[0] === 'customer') {
+        fields[`customer.${p.slice(1).join('.')}`] = issue.message;
+        continue;
+      }
+      fields[p.join('.') || '_form'] = issue.message;
+    }
+    throw new ValidationError(fields);
   }
   const { customerId, isDraft, customer: cInput, branches: bInputs } = parsed.data;
 
@@ -231,6 +255,28 @@ export async function submitEditAction(input: SubmitEditInput): Promise<{ editId
     delete customerProposed.crNumber;
   }
 
+  // EL-01 (Critical): customer-level CLOSED/SUSPENDED transitions must go
+  // through the dedicated reactivation flow, exactly like the branch-level
+  // guard further down. Without this, a Salesman could pick "Closed" from the
+  // Status select on the edit form and have a Supervisor approve it — fully
+  // bypassing the photo-evidence + Manager-only reactivation gate. Mirrors
+  // the branch-status guard at the same severity.
+  if (
+    typeof customerProposed.status === 'string' &&
+    customerProposed.status !== customer.status &&
+    (customer.status === 'CLOSED' ||
+      customer.status === 'SUSPENDED' ||
+      customerProposed.status === 'CLOSED' ||
+      customerProposed.status === 'SUSPENDED')
+  ) {
+    // Even Steward/Manager: route status flips through the dedicated action.
+    // RBAC-05-021 — no silent bypass via the regular edit form for any role.
+    throw new ValidationError({
+      'customer.status':
+        'Use the close-shop or reactivation action for status changes — not the edit form.',
+    });
+  }
+
   // Normalize phone, CR
   if (typeof customerProposed.primaryPhone === 'string') {
     customerProposed.primaryPhone = normalizePhone(customerProposed.primaryPhone) ?? undefined;
@@ -242,7 +288,13 @@ export async function submitEditAction(input: SubmitEditInput): Promise<{ editId
     customerProposed.crNumber = customerProposed.crNumber.trim() || undefined;
   }
 
-  // Hard duplicate phone check across DIFFERENT customers
+  // Hard duplicate phone check across DIFFERENT customers.
+  //
+  // EL-03: do NOT leak the colliding customer's `legalName` / NMWC code when
+  // the caller has no scope on it. A Muscat salesman trying random phones used
+  // to harvest the entire master through the error message. We resolve scope
+  // and only show the friendly identifier when the caller can already see the
+  // customer; otherwise the message is generic and the detail goes to the log.
   if (typeof customerProposed.primaryPhone === 'string') {
     const norm = customerProposed.primaryPhone;
     const collision = await prisma.customer.findFirst({
@@ -251,11 +303,30 @@ export async function submitEditAction(input: SubmitEditInput): Promise<{ editId
         id: { not: customer.id },
         deletedAt: null,
       },
-      select: { id: true, nmwcCode: true, legalName: true },
+      select: {
+        id: true,
+        nmwcCode: true,
+        legalName: true,
+        branches: { select: { routeId: true, regionId: true, deletedAt: true } },
+      },
     });
     if (collision) {
+      const { canSeeCustomer, loadScope } = await import('@/lib/access');
+      const sessionUser = { id: me.id, role: me.role, username: session.username };
+      const scope = await loadScope(me.id);
+      const visible = canSeeCustomer(sessionUser, collision, scope);
+      logger.warn(
+        { actor: me.id, phone: norm, dupId: collision.id, dupNmwc: collision.nmwcCode, visible },
+        'edit.phone_collision'
+      );
+      if (visible) {
+        throw new ValidationError({
+          'customer.primaryPhone': `Phone already used by ${collision.legalName} (${collision.nmwcCode}).`,
+        });
+      }
       throw new ValidationError({
-        'customer.primaryPhone': `Phone already used by ${collision.legalName} (${collision.nmwcCode}).`,
+        'customer.primaryPhone':
+          'This phone is already registered to another customer. Ask your supervisor to reconcile.',
       });
     }
   }
@@ -378,15 +449,15 @@ export async function submitEditAction(input: SubmitEditInput): Promise<{ editId
         },
       });
     } catch (err) {
-      // QA-017 — partial unique index `CustomerEdit_open_per_customer`
-      // enforces "one SUBMITTED edit per customer" at the DB level. Translate
-      // the constraint violation into a friendly conflict response.
-      if (
-        err &&
-        typeof err === 'object' &&
-        'code' in err &&
-        (err as { code?: string }).code === 'P2002'
-      ) {
+      // QA-017 / EL-09 — partial unique index `CustomerEdit_open_per_customer`
+      // enforces "one SUBMITTED edit per customer" at the DB level. The
+      // PrismaClientKnownRequestError exposes `code` lazily, and through the
+      // Server Action SuperJSON wrapper the error sometimes arrives as a plain
+      // Error losing its code. We detect both by code and by message substring
+      // so the user gets the friendly conflict instead of a 500.
+      const code = (err as { code?: string })?.code;
+      const message = err instanceof Error ? err.message : '';
+      if (code === 'P2002' || /Unique constraint failed/i.test(message)) {
         throw new ConflictError(
           'EDIT_LOCKED',
           'Another submission for this customer was just made. Refresh to see it.'
@@ -442,6 +513,18 @@ async function applyEditChanges(
     }
     if (Object.keys(branchUpdate).length === 0) continue;
     branchUpdate.lastEditedById = actorId;
+    // EL-11/EL-12: stamp lastStatusChangeAt whenever status actually changes
+    // so reactivation evidence freshness is anchored to the closure event,
+    // not just calendar time.
+    if (branchUpdate.status !== undefined) {
+      const current = await tx.branch.findUnique({
+        where: { id: bp.branchId },
+        select: { status: true },
+      });
+      if (current && current.status !== branchUpdate.status) {
+        branchUpdate.lastStatusChangeAt = new Date();
+      }
+    }
     await tx.branch.update({
       where: { id: bp.branchId },
       data: branchUpdate as Prisma.BranchUpdateInput,
@@ -480,12 +563,24 @@ export async function approveEditAction(formData: FormData) {
   if (edit.state !== EditState.SUBMITTED) {
     throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
   }
-  if (!canApproveSpecificEdit({ id: session.id, role: session.role, username: session.username }, edit.submittedBy)) {
-    throw new ForbiddenError('You are not the supervisor for this edit.');
-  }
   // QA-038: customer might have been merged or soft-deleted between submit and approve.
   if (!edit.customer || edit.customer.deletedAt) {
     throw new NotFoundError('Customer no longer exists (may have been merged or deleted).');
+  }
+  // RBAC-05-003 / EL-15: pull caller's region scope and pass into
+  // canApproveSpecificEdit so a Manager can only approve edits whose customer
+  // has at least one branch in their managed regions, and no one can approve
+  // their own submission.
+  const { loadScope } = await import('@/lib/access');
+  const actorScope = await loadScope(session.id);
+  const sessionUser = { id: session.id, role: session.role, username: session.username };
+  if (
+    !canApproveSpecificEdit(sessionUser, edit.submittedBy, {
+      customerBranches: edit.customer.branches,
+      managedRegionIds: actorScope.managedRegionIds,
+    })
+  ) {
+    throw new ForbiddenError('You are not authorized to approve this edit.');
   }
 
   // Reconstruct payloads from fieldChanges array
@@ -543,15 +638,56 @@ export async function approveEditAction(formData: FormData) {
     }
   }
 
-  // QA-039: drop branches that have been deleted since submission.
+  // QA-039 + EL-10: drop branches that have been deleted OR reassigned to a
+  // different customer since submission. The submitter's scope on those
+  // branches at submit time may no longer hold; rather than write data without
+  // a paper trail, we drop them and log the discrepancy.
   const liveBranches = await prisma.branch.findMany({
     where: { id: { in: [...branchProposedById.keys()] }, deletedAt: null },
-    select: { id: true },
+    select: { id: true, customerId: true, routeId: true },
   });
-  const liveBranchIds = new Set(liveBranches.map((b) => b.id));
+  const liveBranchIds = new Set(
+    liveBranches.filter((b) => b.customerId === edit.customerId).map((b) => b.id)
+  );
+  const droppedBranchIds = [...branchProposedById.keys()].filter((id) => !liveBranchIds.has(id));
+  if (droppedBranchIds.length > 0) {
+    logger.warn(
+      { editId, customerId: edit.customerId, droppedBranchIds },
+      'edit.approve.branches_dropped'
+    );
+  }
   const branchesPayload = Array.from(branchProposedById.entries())
     .filter(([id]) => liveBranchIds.has(id))
     .map(([branchId, obj]) => ({ branchId, ...obj })) as SubmitEditInput['branches'];
+
+  // EL-04 (Critical): re-run the mandatory-field gate at approve time. The
+  // submit-time gate enforces "salesman cannot submit a half-empty record",
+  // but photos and other slot data live OUTSIDE `fieldChanges` and can be
+  // detached after submit. Without this re-check, an APPROVED record could
+  // land with no CR photo / no shop photo simply because the salesman tapped
+  // the trash icon between submit and approve. Skip when the submitter was
+  // not a Salesman (Steward/Manager direct-write bypasses the gate by design).
+  if (submitterUser?.role === Role.SALESMAN) {
+    const liveCustomer = await prisma.customer.findUniqueOrThrow({
+      where: { id: edit.customerId! },
+      include: { branches: { where: { deletedAt: null } } },
+    });
+    const missing = collectMissingMandatory(
+      liveCustomer,
+      customerProposed,
+      branchProposedById
+    );
+    if (Object.keys(missing).length > 0) {
+      throw new ConflictError(
+        'NEEDS_REUPLOAD',
+        `Required fields are now missing on this customer (${
+          Object.keys(missing).length
+        } missing). Reject the edit so the salesman can refill: ${Object.values(missing)
+          .slice(0, 3)
+          .join(' · ')}${Object.keys(missing).length > 3 ? ' · …' : ''}`
+      );
+    }
+  }
 
   await prisma.$transaction(async (tx) => {
     // PROD-001 fix: claim the edit atomically by transitioning SUBMITTED→APPROVED
@@ -573,13 +709,21 @@ export async function approveEditAction(formData: FormData) {
       );
     }
     await applyEditChanges(tx, edit.customerId!, customerProposed, branchesPayload, session.id);
+    // EL-05: persist the actual diff in the audit log, not just a count, so a
+    // forensic Manager can answer "what did Supervisor X approve last week"
+    // from `/audit` alone without joining CustomerEdit.fieldChanges manually.
     await tx.auditLog.create({
       data: {
         actorId: session.id,
         action: 'APPROVE',
         entityType: 'CustomerEdit',
         entityId: editId,
-        after: { customerId: edit.customerId, changes: fieldChanges.length } as unknown as Prisma.InputJsonValue,
+        after: {
+          customerId: edit.customerId,
+          changes: fieldChanges.length,
+          fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
+          droppedBranchIds: droppedBranchIds.length > 0 ? droppedBranchIds : undefined,
+        } as unknown as Prisma.InputJsonValue,
       },
     });
   });
@@ -602,19 +746,32 @@ export async function rejectEditAction(formData: FormData) {
 
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
-    include: { submittedBy: { select: { id: true, supervisorId: true } } },
+    include: {
+      submittedBy: { select: { id: true, supervisorId: true } },
+      customer: {
+        select: { branches: { select: { regionId: true, deletedAt: true } } },
+      },
+    },
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (edit.state !== EditState.SUBMITTED) {
     throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
   }
+  // RBAC-05-003 / EL-15: same scope rules as approve. Manager rejecting is
+  // also a privileged decision; require region overlap and forbid self-reject.
+  const { loadScope: loadScopeReject } = await import('@/lib/access');
+  const rejectScope = await loadScopeReject(session.id);
   if (
     !canApproveSpecificEdit(
       { id: session.id, role: session.role, username: session.username },
-      edit.submittedBy
+      edit.submittedBy,
+      {
+        customerBranches: edit.customer?.branches ?? [],
+        managedRegionIds: rejectScope.managedRegionIds,
+      }
     )
   ) {
-    throw new ForbiddenError('You are not the supervisor for this edit.');
+    throw new ForbiddenError('You are not authorized to act on this edit.');
   }
 
   await prisma.customerEdit.update({

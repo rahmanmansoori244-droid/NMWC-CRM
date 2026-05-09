@@ -72,11 +72,43 @@ export function canSeeCustomer(
         (b) => !b.deletedAt && scope.teamRouteIds.includes(b.routeId)
       );
     case Role.MANAGER:
-      // Managers without explicitly assigned regions see everything (until they're scoped).
-      if (scope.managedRegionIds.length === 0) return true;
+      // RBAC-05-012: fail-closed. A Manager whose `managedRegions` join table
+      // is empty (freshly created, region just deactivated, mid-migration row)
+      // previously got "see everything" — combined with imports auto-creating
+      // phantom regions (CHAIN-09) this turned an unscoped manager into a
+      // global-read backdoor. Default to "see nothing until a Steward assigns
+      // regions"; surface the empty-scope state in the dashboard banner.
+      if (scope.managedRegionIds.length === 0) return false;
       return customer.branches.some(
         (b) => !b.deletedAt && scope.managedRegionIds.includes(b.regionId)
       );
+  }
+}
+
+/**
+ * RBAC-05-001 / RBAC-05-002 / RBAC-05-022: filter a customer's branches array
+ * down to the subset the caller is allowed to see. Multi-branch customers
+ * (Lulu, Carrefour, fuel chains) span regions, so a salesman who legitimately
+ * sees the customer (one branch on his route) used to see all the *other*
+ * branches' addresses, GPS, photos. Call this after `canSeeCustomer` and
+ * before rendering or shipping branches to the client.
+ */
+export function filterBranchesByScope<
+  B extends Pick<Branch, 'routeId' | 'regionId' | 'deletedAt'>,
+>(user: SessionUser, branches: B[], scope: Scope): B[] {
+  const live = branches.filter((b) => !b.deletedAt);
+  switch (user.role) {
+    case Role.STEWARD:
+    case Role.VIEWER:
+      return live;
+    case Role.SALESMAN:
+      if (!scope.ownedRouteId) return [];
+      return live.filter((b) => b.routeId === scope.ownedRouteId);
+    case Role.SUPERVISOR:
+      return live.filter((b) => scope.teamRouteIds.includes(b.routeId));
+    case Role.MANAGER:
+      if (scope.managedRegionIds.length === 0) return [];
+      return live.filter((b) => scope.managedRegionIds.includes(b.regionId));
   }
 }
 
@@ -134,8 +166,14 @@ export async function assertCanAccessAttachment(
 ): Promise<void> {
   if (user.role === Role.STEWARD || user.role === Role.VIEWER) return;
 
-  // Attachments still owned by the uploader (not wired yet) — uploader can see them.
-  if (attachment.capturedById === user.id) return;
+  // RBAC-05-014: only allow the uploader bypass when the attachment is
+  // genuinely orphan — not yet wired to any customer/branch slot. If it has
+  // already been wired, route the access check through the customer's scope
+  // so a route-reassigned salesman cannot keep pulling photos he uploaded
+  // months ago against customers he no longer covers.
+  const isOrphan =
+    !attachment.customerId && !attachment.branchId && !attachment.branchExtraId;
+  if (isOrphan && attachment.capturedById === user.id) return;
 
   // Resolve to a customer
   let customerId: string | null = attachment.customerId ?? null;
@@ -171,8 +209,13 @@ export async function assertCanAccessAttachment(
  * Pure-function variant when the caller has already loaded a customer for
  * something else and wants to gate writes on the attachment based on the
  * customer's branch scope. Used during attachPhoto.
+ *
+ * RBAC-05-011: SUPERVISOR and VIEWER must never call attach. STEWARD and
+ * MANAGER retain the bypass for legitimate "rewire an orphan upload" cases
+ * but the call site is expected to log a FORCE_OVERRIDE audit row.
  */
 export function userOwnsCapture(user: SessionUser, attachment: Pick<Attachment, 'capturedById'>): boolean {
+  if (user.role === Role.SUPERVISOR || user.role === Role.VIEWER) return false;
   return attachment.capturedById === user.id || user.role === Role.STEWARD || user.role === Role.MANAGER;
 }
 

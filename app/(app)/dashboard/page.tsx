@@ -9,18 +9,41 @@ export const metadata = { title: 'Dashboard · NMWC' };
 export default async function DashboardPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
-  if (session.user.role !== Role.MANAGER && session.user.role !== Role.VIEWER) redirect('/home');
+  // RBAC-05-013: PRD §4 says Steward sees the global dashboard. Add STEWARD.
+  if (
+    session.user.role !== Role.MANAGER &&
+    session.user.role !== Role.VIEWER &&
+    session.user.role !== Role.STEWARD
+  ) {
+    redirect('/home');
+  }
 
-  // QA-007 fix: scope by manager's assigned regions. VIEWER stays global.
+  // QA-007 fix: scope by manager's assigned regions. VIEWER + STEWARD global.
+  // RBAC-05-012: Manager with no managed regions sees a "no regions" state
+  // rather than the global dashboard.
   let regionIds: string[] = [];
+  let unscopedManager = false;
   if (session.user.role === Role.MANAGER) {
     const me = await prisma.user.findUnique({
       where: { id: session.user.id },
       select: { managedRegions: { select: { id: true } } },
     });
     regionIds = me?.managedRegions.map((r) => r.id) ?? [];
+    if (regionIds.length === 0) unscopedManager = true;
   }
   const isScoped = regionIds.length > 0;
+
+  if (unscopedManager) {
+    return (
+      <main className="p-6">
+        <PageHeader title="Dashboard" subtitle="No regions assigned" />
+        <div className="rounded-md bg-amber-50 p-4 text-sm text-amber-800 ring-1 ring-amber-200">
+          You have no managed regions. Ask a Steward to assign your regions; you
+          will not see any data on the dashboard until then.
+        </div>
+      </main>
+    );
+  }
 
   // Customer scope = "has any non-deleted branch in a managed region"
   const customerWhere: Prisma.CustomerWhereInput = isScoped
@@ -91,12 +114,17 @@ export default async function DashboardPage() {
       owner: { select: { fullName: true } },
     },
   });
+  // UXI-018: drop empty routes from the leaderboards. Empty routes (count=0)
+  // previously appeared at the top with avg=100% (or bottom with 0%) just
+  // because they had no data, distorting the manager's read of "which
+  // routes need attention".
   const routeStats = routes
     .map((r) => {
       const scores = r.branches.map((b) => b.completenessScore);
       const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
       return { ...r, avg, count: scores.length };
     })
+    .filter((r) => r.count > 0)
     .sort((a, b) => b.avg - a.avg);
   const top = routeStats.slice(0, 10);
   const bottom = [...routeStats].reverse().slice(0, 5);

@@ -13,16 +13,33 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { loadScope, assertCanAccessAttachment } from '@/lib/access';
 import { AppError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
+import { checkLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   const { id } = await ctx.params;
 
-  const att = await prisma.attachment.findUnique({ where: { id } });
+  // NEW-PHOTO-010: rate-limit per-user photo fetches. Bursts of ~30 are
+  // legitimate (a customer profile loads several photos at once); sustained
+  // 1/s is fine. Anything above is enumeration / DoS.
+  const lim = await checkLimit(`photo-get:${session.user.id}`, { capacity: 60, refillPerSec: 1 });
+  if (!lim.ok) {
+    return NextResponse.json(
+      { error: 'TOO_MANY_REQUESTS' },
+      { status: 429, headers: { 'Retry-After': String(lim.retryAfterSec) } }
+    );
+  }
+
+  // UXI-008 / RBAC-05-015: filter soft-deleted attachments. Returning 404 is
+  // the same response as "doesn't exist" so a soft-delete cannot be observed
+  // through status-code timing.
+  const att = await prisma.attachment.findFirst({
+    where: { id, deletedAt: null },
+  });
   if (!att) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
 
   const sessionUser = {
@@ -46,11 +63,17 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     const out = await r2().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: att.r2Key }));
     const stream = out.Body as ReadableStream<Uint8Array> | null;
     if (!stream) return NextResponse.json({ error: 'EMPTY_BODY' }, { status: 502 });
+    // NEW-PHOTO-009: CR documents are PII; never cache them. Shop/signboard
+    // photos are non-confidential and can keep the short 60s cache.
+    const cache =
+      att.kind === 'CR'
+        ? 'private, no-store, no-cache, must-revalidate'
+        : 'private, max-age=60, must-revalidate';
+    void req; // intentionally unused — kept for future Origin-check defense-in-depth
     return new NextResponse(stream, {
       headers: {
         'Content-Type': att.mimeType,
-        // Tighter cache so revoked access takes effect within 60s.
-        'Cache-Control': 'private, max-age=60, must-revalidate',
+        'Cache-Control': cache,
         'Content-Length': String(att.bytes),
       },
     });

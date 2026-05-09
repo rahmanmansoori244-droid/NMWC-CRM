@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition, useEffect } from 'react';
+import { useState, useTransition, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Role, type CustomerStatus, type DayOfWeek, type PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
@@ -25,6 +25,10 @@ type CustomerWithBranches = {
   status: CustomerStatus;
   notes: string | null;
   crPhotoId: string | null;
+  // UXI-003: server-side updatedAt is the freshness anchor for the
+  // localStorage draft restore. If the customer has been touched server-side
+  // since the draft was saved we warn the user before overwriting the form.
+  updatedAt: Date;
   branches: Array<{
     id: string;
     branchName: string;
@@ -63,17 +67,25 @@ export function EnrichmentForm({
   lockNameAndCr,
   userRole,
   canSubmit,
+  sessionUserId,
 }: {
   customer: CustomerWithBranches;
   channels: ChannelWithSubs[];
   lockNameAndCr: boolean;
   userRole: Role;
   canSubmit: boolean;
+  // UXI-002: scope localStorage drafts by user. A shared device used by two
+  // salesmen on the same customer would otherwise inject one user's typing
+  // into the other's session.
+  sessionUserId: string;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [info, setInfo] = useState<string | null>(null);
+  // UXI-004: synchronous lock so a rapid double-tap on Submit never fires the
+  // server action twice. `pending` from useTransition flips asynchronously.
+  const submitLockRef = useRef(false);
 
   // Customer-level state
   const [legalName, setLegalName] = useState(customer.legalName);
@@ -163,12 +175,30 @@ export function EnrichmentForm({
       : '';
 
   // ── Local draft auto-save (IndexedDB-lite via localStorage for v1) ───────
-  const draftKey = `nmwc:draft:${customer.id}`;
+  // UXI-002: scope by user. UXI-003: scope by customer.updatedAt as well —
+  // when the customer has been edited server-side since the draft was
+  // written, the next mount uses a fresh key (so old draft is ignored) and
+  // we warn the user that there are newer server changes.
+  const customerUpdatedAtMs = new Date(customer.updatedAt).getTime();
+  const draftKey = `nmwc:draft:${sessionUserId}:${customer.id}`;
   useEffect(() => {
     const saved = typeof window !== 'undefined' ? window.localStorage.getItem(draftKey) : null;
     if (!saved) return;
     try {
       const d = JSON.parse(saved);
+      // UXI-003: stale-draft guard. If the server has been updated after the
+      // draft was saved, prefer server data and tell the user.
+      if (typeof d.savedAt === 'number' && d.savedAt < customerUpdatedAtMs) {
+        setInfo(
+          'Your offline draft is older than the latest server changes. The form has been refreshed — re-enter anything you still need.'
+        );
+        try {
+          window.localStorage.removeItem(draftKey);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
       if (typeof d.legalName === 'string') setLegalName(d.legalName);
       if (typeof d.crNumber === 'string') setCrNumber(d.crNumber);
       if (typeof d.channelId === 'string') setChannelId(d.channelId);
@@ -183,7 +213,7 @@ export function EnrichmentForm({
     } catch {
       /* ignore */
     }
-  }, [draftKey]);
+  }, [draftKey, customerUpdatedAtMs]);
 
   // Auto-save every change (debounced)
   useEffect(() => {
@@ -226,8 +256,19 @@ export function EnrichmentForm({
   }
 
   async function submit(isDraft: boolean) {
+    // UXI-004: synchronous lock so a fast double-tap on the Submit button
+    // can't fire two parallel server actions before useTransition flips.
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
     setErrors({});
     setInfo(null);
+
+    // EL-01 mirror: salesmen cannot SUBMIT a customer-level status flip via
+    // the regular edit form. Drop the status field from the payload entirely
+    // for SALESMAN — the server-side guard rejects it anyway, but stripping
+    // here gives a cleaner UX (no "Use the close action" error if the user
+    // never touched the field).
+    const submittedStatus = userRole === Role.SALESMAN ? customer.status : status;
 
     const customerPayload = {
       legalName: lockNameAndCr ? undefined : legalName.trim() || undefined,
@@ -238,7 +279,7 @@ export function EnrichmentForm({
       altPhone: altPhone.trim() || undefined,
       contactPerson: contactPerson.trim() || undefined,
       contactRole: contactRole.trim() || undefined,
-      status,
+      status: submittedStatus,
       notes: notes.trim() || undefined,
     };
     const branches = Object.entries(branchStates).map(([branchId, s]) => ({
@@ -270,10 +311,12 @@ export function EnrichmentForm({
           setInfo('✓ Draft saved.');
         } else if (res.state === 'APPROVED') {
           setInfo('✓ Saved (auto-approved as ' + userRole + ').');
-          router.push(`/customers/${customer.id}`);
+          // UXI-005: router.replace (not push) so Back doesn't return to a
+          // stale, fully-populated form that encourages a duplicate submit.
+          router.replace(`/customers/${customer.id}`);
         } else {
           setInfo('✓ Submitted to your supervisor for approval.');
-          router.push(`/customers/${customer.id}`);
+          router.replace(`/customers/${customer.id}`);
         }
       } catch (err) {
         if (err instanceof ValidationError && err.fields) {
@@ -283,6 +326,8 @@ export function EnrichmentForm({
         } else {
           setErrors({ _form: err instanceof Error ? err.message : 'Failed to save.' });
         }
+      } finally {
+        submitLockRef.current = false;
       }
     });
   }
@@ -386,18 +431,23 @@ export function EnrichmentForm({
               ))}
             </select>
           </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">Status</label>
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.currentTarget.value as CustomerStatus)}
-              className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
-            >
-              <option value="ACTIVE">Active</option>
-              <option value="CLOSED">Closed</option>
-              <option value="SUSPENDED">Suspended</option>
-            </select>
-          </div>
+          {/* EL-01 mirror: salesmen cannot flip customer-level status from
+              this form. Status changes go through the dedicated
+              close-shop / reactivation actions on the customer profile. */}
+          {userRole !== Role.SALESMAN && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-700">Status</label>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.currentTarget.value as CustomerStatus)}
+                className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
+              >
+                <option value="ACTIVE">Active</option>
+                <option value="CLOSED">Closed</option>
+                <option value="SUSPENDED">Suspended</option>
+              </select>
+            </div>
+          )}
         </div>
       </FormSection>
 

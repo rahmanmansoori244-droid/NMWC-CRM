@@ -97,16 +97,66 @@ export function assert(condition: unknown, message = 'Forbidden'): asserts condi
 }
 
 /**
- * Convenience: ensure the calling user is the supervisor of `submittedById` or
- * a manager. Used in approval flows.
+ * Whether the calling user may approve a specific edit.
+ *
+ * RBAC-05-003 (Critical): Manager approve scope. Previously Manager returned
+ * true unconditionally — any Manager could approve any edit anywhere. Now
+ * requires region overlap with at least one branch of the edited customer.
+ *
+ * EL-15: block self-approval. The submitter cannot also be the approver,
+ * regardless of role.
+ *
+ * Caller must pass `customerBranches` (the branches of the edit's customer)
+ * and `actorScope.managedRegionIds` for Manager checks. Passing an empty
+ * `customerBranches` for a Manager will deny — caller must supply them.
  */
 export function canApproveSpecificEdit(
   user: SessionUser,
-  submittedBy: Pick<User, 'supervisorId'>
+  submittedBy: Pick<User, 'id' | 'supervisorId'>,
+  context: {
+    customerBranches?: Pick<Branch, 'regionId' | 'deletedAt'>[];
+    managedRegionIds?: string[];
+  } = {}
 ): boolean {
-  if (user.role === Role.MANAGER) return true;
+  // EL-15: separation of duty — submitter can never approve their own edit.
+  if (user.id === submittedBy.id) return false;
+  if (user.role === Role.MANAGER) {
+    const branches = (context.customerBranches ?? []).filter((b) => !b.deletedAt);
+    const managed = context.managedRegionIds ?? [];
+    // Fail-closed: Manager with no scope cannot approve anything.
+    if (managed.length === 0) return false;
+    if (branches.length === 0) return false;
+    return branches.some((b) => managed.includes(b.regionId));
+  }
   if (user.role === Role.SUPERVISOR) return submittedBy.supervisorId === user.id;
   return false;
+}
+
+/**
+ * RBAC-05-006 / AUTH-07 / AUTH-08: peer-Manager and last-Manager protections.
+ * `canMutateUser` decides whether `actor` may toggle isActive / reset password
+ * / change role on `target`. Used by services/users.ts.
+ */
+export function canMutateUser(
+  actor: SessionUser,
+  target: Pick<User, 'id' | 'role'>
+): { ok: true } | { ok: false; reason: string } {
+  if (actor.role !== Role.MANAGER && actor.role !== Role.STEWARD) {
+    return { ok: false, reason: 'Only Manager or Steward can mutate users.' };
+  }
+  // No self-mutation through these flows. Self-service goes through /profile.
+  if (actor.id === target.id) {
+    return { ok: false, reason: 'Use /profile to change your own account.' };
+  }
+  // Peer-tier protection: a MANAGER cannot disable / reset / demote another
+  // MANAGER or any STEWARD. Steward administration must come from another
+  // Steward (or out-of-band DB access).
+  if (actor.role === Role.MANAGER) {
+    if (target.role === Role.MANAGER || target.role === Role.STEWARD) {
+      return { ok: false, reason: 'Cannot mutate a peer Manager or Steward — ask a Steward.' };
+    }
+  }
+  return { ok: true };
 }
 
 export type { Role };

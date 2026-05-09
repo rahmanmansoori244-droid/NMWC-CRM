@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
-import { loadScope, canSeeCustomer } from '@/lib/access';
+import { loadScope, canSeeCustomer, filterBranchesByScope } from '@/lib/access';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
@@ -59,6 +59,14 @@ export default async function CustomerProfilePage({
   };
   // Convert "out of scope" into a clean 404 to avoid leaking ID validity.
   if (!canSeeCustomer(sessionUser, customer, scope)) notFound();
+
+  // RBAC-05-001 (Critical): a multi-branch customer (Lulu, Carrefour, fuel
+  // chains) can have branches in regions the caller has no scope over.
+  // Filter the branches array down to the in-scope subset BEFORE rendering
+  // so a Salesman on Route MCT-01 doesn't see Dhofar branches' addresses,
+  // GPS, photos. The customer is already known to be visible (one branch
+  // matches), but other branches may not be.
+  customer.branches = filterBranchesByScope(sessionUser, customer.branches, scope);
 
   const canEdit =
     session.user.role !== Role.VIEWER &&

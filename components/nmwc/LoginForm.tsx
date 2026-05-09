@@ -61,6 +61,11 @@ export function LoginForm() {
       >
         {pending ? 'Signing in…' : 'Sign in'}
       </button>
+      {/* AUTH-15: there is no self-serve password reset flow in v1. Surface
+          the recovery path so a locked-out user knows what to do. */}
+      <p className="pt-2 text-center text-xs text-slate-500">
+        Forgot your password? Contact your Manager — they can reset it for you.
+      </p>
     </form>
   );
 }

@@ -38,24 +38,52 @@ export type ExportFilters = {
 export async function buildCustomerExport(filters: ExportFilters) {
   const me = await requireExport();
 
-  // Per-role base scope
+  // F-01 (Critical): role scope must be intersected with the user's filter,
+  // never replaced. Previously a Supervisor could pass `?routeId=DHF-04` and
+  // dump Dhofar's master because the role-scope `routeId = { in: teamRoutes }`
+  // was overwritten by the user's filter. Now we compute the role-scoped
+  // allowed sets first, then narrow by user filters within those.
   const branchWhere: Prisma.BranchWhereInput = { deletedAt: null };
+
+  // Compute allowed sets per role.
+  let allowedRouteIds: string[] | null = null;     // null = unrestricted
+  let allowedRegionIds: string[] | null = null;
   if (me.role === Role.SUPERVISOR) {
     const reports = await prisma.user.findMany({
       where: { supervisorId: me.id, ownedRouteId: { not: null } },
       select: { ownedRouteId: true },
     });
-    branchWhere.routeId = { in: reports.map((r) => r.ownedRouteId!).filter(Boolean) };
+    allowedRouteIds = reports.map((r) => r.ownedRouteId!).filter(Boolean);
+    // Fail-closed: a Supervisor with no team reports gets no rows.
+    if (allowedRouteIds.length === 0) allowedRouteIds = ['__none__'];
   } else if (me.role === Role.MANAGER) {
     const managed = await prisma.region.findMany({
       where: { managers: { some: { id: me.id } } },
       select: { id: true },
     });
-    if (managed.length > 0) branchWhere.regionId = { in: managed.map((r) => r.id) };
+    allowedRegionIds = managed.map((r) => r.id);
+    // RBAC-05-012: Manager with no managed regions gets nothing (fail-closed).
+    if (allowedRegionIds.length === 0) allowedRegionIds = ['__none__'];
   }
+  // STEWARD and VIEWER have no role scope by design; allowed* stays null.
 
-  if (filters.regionIds?.length) branchWhere.regionId = { in: filters.regionIds };
-  if (filters.routeIds?.length) branchWhere.routeId = { in: filters.routeIds };
+  // Apply user filters as an INTERSECTION with role scope.
+  if (filters.regionIds?.length) {
+    const intersected = allowedRegionIds
+      ? filters.regionIds.filter((id) => allowedRegionIds!.includes(id))
+      : filters.regionIds;
+    branchWhere.regionId = { in: intersected.length > 0 ? intersected : ['__none__'] };
+  } else if (allowedRegionIds) {
+    branchWhere.regionId = { in: allowedRegionIds };
+  }
+  if (filters.routeIds?.length) {
+    const intersected = allowedRouteIds
+      ? filters.routeIds.filter((id) => allowedRouteIds!.includes(id))
+      : filters.routeIds;
+    branchWhere.routeId = { in: intersected.length > 0 ? intersected : ['__none__'] };
+  } else if (allowedRouteIds) {
+    branchWhere.routeId = { in: allowedRouteIds };
+  }
   if (filters.statuses?.length) branchWhere.status = { in: filters.statuses };
 
   const customerWhere: Prisma.CustomerWhereInput = { deletedAt: null };
@@ -74,10 +102,24 @@ export async function buildCustomerExport(filters: ExportFilters) {
   }
   if (filters.updatedSince) customerWhere.updatedAt = { gte: filters.updatedSince };
 
+  // F-16: hard cap rows. At ~3k customers × ~1.7 branches/customer the export
+  // is ~5k rows, well under the cap. Anything bigger needs the streaming path
+  // which is v1.1.
+  const EXPORT_ROW_CAP = 10000;
+  const totalCount = await prisma.branch.count({
+    where: { ...branchWhere, customer: customerWhere },
+  });
+  if (totalCount > EXPORT_ROW_CAP) {
+    throw new ForbiddenError(
+      `Export too large: ${totalCount} rows. Apply more filters to narrow the result (max ${EXPORT_ROW_CAP}).`
+    );
+  }
+
   // We export one row per branch (mirrors import shape)
   const rows = await prisma.branch.findMany({
     where: { ...branchWhere, customer: customerWhere },
     orderBy: [{ regionId: 'asc' }, { branchCode: 'asc' }],
+    take: EXPORT_ROW_CAP,
     include: {
       customer: {
         include: { channel: true, subChannel: true },

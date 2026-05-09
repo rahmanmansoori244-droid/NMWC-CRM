@@ -11,7 +11,9 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp'];
-const MAX_BYTES = 10 * 1024 * 1024; // 10 MB raw upload limit
+// NEW-PHOTO-005: cap raw upload at 3 MB. Client compresses to ~500 KB; nothing
+// legitimate exceeds this. Aligns with the finalize-time HeadObject check.
+const MAX_BYTES = 3 * 1024 * 1024;
 
 const presignSchema = z.object({
   kind: z.enum(['SHOP', 'SIGNBOARD', 'CR', 'FREE']),

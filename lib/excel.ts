@@ -36,10 +36,27 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
           obj[h] = v;
         } else if (v instanceof Date) {
           obj[h] = v.toISOString();
+        } else if (typeof v === 'object' && 'richText' in (v as object)) {
+          // F-10: handle rich-text runs (mixed scripts like
+          // `Lulu هايبر` produce {richText: [{text:'Lulu'},{text:'هايبر'}]}).
+          // Previous code took only the first run and silently dropped the rest.
+          const rt = (v as { richText: { text: string }[] }).richText;
+          obj[h] = rt.map((r) => r.text).join('');
+        } else if (typeof v === 'object' && 'error' in (v as object)) {
+          // F-10: cell evaluates to an Excel error (#N/A / #REF! / #VALUE!)
+          // — surface it explicitly so the row gets quarantined with a
+          // useful message instead of `[object Object]`.
+          obj[h] = `#ERROR:${(v as { error: string }).error}`;
         } else if (typeof v === 'object' && 'text' in (v as object)) {
           obj[h] = String((v as { text: string }).text);
         } else if (typeof v === 'object' && 'result' in (v as object)) {
-          obj[h] = String((v as { result: unknown }).result ?? '');
+          const r = (v as { result: unknown }).result;
+          // F-10: a formula whose `result` is itself an Excel error.
+          if (r && typeof r === 'object' && 'error' in (r as object)) {
+            obj[h] = `#ERROR:${(r as { error: string }).error}`;
+          } else {
+            obj[h] = String(r ?? '');
+          }
         } else {
           obj[h] = String(v);
         }

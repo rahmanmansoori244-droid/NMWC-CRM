@@ -25,7 +25,14 @@ export default async function ApprovalDetailPage({
   const edit = await prisma.customerEdit.findUnique({
     where: { id },
     include: {
-      customer: { select: { id: true, legalName: true, nmwcCode: true } },
+      customer: {
+        select: {
+          id: true,
+          legalName: true,
+          nmwcCode: true,
+          branches: { select: { regionId: true, deletedAt: true } },
+        },
+      },
       submittedBy: { select: { id: true, fullName: true, supervisorId: true } },
       reviewedBy: { select: { fullName: true } },
     },
@@ -37,7 +44,19 @@ export default async function ApprovalDetailPage({
     session.user.role === Role.SUPERVISOR &&
     edit.submittedBy.supervisorId !== session.user.id
   ) {
-    redirect('/approvals');
+    notFound(); // hide existence — same posture as other scope misses
+  }
+  // RBAC-05-003: Manager region scope on the detail page too. Without this,
+  // a Manager could deep-link to /approvals/<id> and see another region's
+  // edit even though the list filter excluded it.
+  if (session.user.role === Role.MANAGER) {
+    const { loadScope } = await import('@/lib/access');
+    const scope = await loadScope(session.user.id);
+    const branches = edit.customer?.branches ?? [];
+    const inScope = branches.some(
+      (b) => !b.deletedAt && scope.managedRegionIds.includes(b.regionId)
+    );
+    if (!inScope) notFound();
   }
 
   const changes = (edit.fieldChanges as unknown as FieldChange[]) ?? [];

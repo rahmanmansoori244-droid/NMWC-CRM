@@ -41,7 +41,20 @@ export function StepperInput({
           value={value}
           min={min}
           max={max}
-          onChange={(e) => set(Number(e.currentTarget.value))}
+          // UXI-013: Android `type=number` allows comma decimals which silently
+          // produced NaN under `Number(...)`. Clamp inputMode to numeric keypad,
+          // strip non-digits, and parse safely to avoid the NaN→empty bug.
+          inputMode="numeric"
+          pattern="[0-9]*"
+          onChange={(e) => {
+            const raw = e.currentTarget.value.replace(/[^0-9]/g, '');
+            if (!raw) {
+              set(min);
+              return;
+            }
+            const n = parseInt(raw, 10);
+            if (Number.isFinite(n)) set(n);
+          }}
           className="w-14 rounded-md border-0 bg-transparent text-center text-lg font-semibold tabular-nums focus:outline-none focus:ring-2 focus:ring-brand-500"
         />
         <button

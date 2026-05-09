@@ -10,6 +10,16 @@ describe('lib/phone — Oman phone normalization', () => {
     expect(normalizePhone('99 75 89 80')).toBe('+96899758980');
     expect(normalizePhone('99-75-89-80')).toBe('+96899758980');
   });
+  // UXI-006 — Arabic-Indic digits should normalize to ASCII canonical form
+  it('Arabic-Indic digits', () => {
+    expect(normalizePhone('٩٩٧٥٨٩٨٠')).toBe('+96899758980');
+    expect(normalizePhone('٩٩ ٧٥ ٨٩ ٨٠')).toBe('+96899758980');
+  });
+  // UXI-006 — ambiguous lengths (12 digits, 6 digits) must reject loudly
+  it('rejects ambiguous lengths', () => {
+    expect(normalizePhone('123456')).toBeNull();
+    expect(normalizePhone('123456789012')).toBeNull();
+  });
   it('country code 968 prefix', () => {
     expect(normalizePhone('96899758980')).toBe('+96899758980');
     expect(normalizePhone('+96899758980')).toBe('+96899758980');
@@ -38,10 +48,14 @@ describe('lib/phone — format validator', () => {
 });
 
 describe('lib/cr — CR normalization', () => {
-  it('uppercases + strips separators', () => {
+  // UXI-014: PRD §8 says strip whitespace + uppercase only. Hyphens / slashes
+  // / underscores were previously also stripped which collapsed `1234567/2024`
+  // and `12345672024` to the same value (false-positive dedupe matches).
+  it('strips whitespace + uppercases — preserves other punctuation', () => {
     expect(normalizeCR('1234567')).toBe('1234567');
-    expect(normalizeCR('1234567-OM')).toBe('1234567OM');
+    expect(normalizeCR('1234567-OM')).toBe('1234567-OM');
     expect(normalizeCR(' 12 345 67 ')).toBe('1234567');
-    expect(normalizeCR('cr_1234-567')).toBe('CR1234567');
+    expect(normalizeCR('cr_1234-567')).toBe('CR_1234-567');
+    expect(normalizeCR('1234567/2024')).toBe('1234567/2024');
   });
 });

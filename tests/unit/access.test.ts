@@ -44,10 +44,17 @@ describe('lib/access — canSeeCustomer', () => {
     expect(canSeeCustomer(MGR(), customerInScopeRegion, baseScope)).toBe(true);
     expect(canSeeCustomer(MGR(), customerOnRouteX, baseScope)).toBe(false);
   });
-  it('Manager with NO managedRegions: defaults to global (until assigned)', () => {
+  // RBAC-05-012: an unscoped Manager used to default to "see everything" —
+  // combined with imports auto-creating phantom regions (CHAIN-09) this turned
+  // a freshly-created or mid-migration Manager into a global-read backdoor.
+  // Now defaults to fail-closed.
+  it('Manager with NO managedRegions: fail-closed (sees nothing until assigned)', () => {
     expect(
       canSeeCustomer(MGR(), customerOnRouteX, { ...baseScope, managedRegionIds: [] })
-    ).toBe(true);
+    ).toBe(false);
+    expect(
+      canSeeCustomer(MGR(), customerInScopeRegion, { ...baseScope, managedRegionIds: [] })
+    ).toBe(false);
   });
   it('Steward and Viewer: see everything', () => {
     expect(canSeeCustomer(STW(), customerOnRouteX, baseScope)).toBe(true);

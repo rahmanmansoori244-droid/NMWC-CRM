@@ -25,6 +25,20 @@ function expectedPrefixes(userId: string): string[] {
   return out;
 }
 
+/**
+ * NEW-PHOTO-001: pull the kind segment out of the key path and require it to
+ * match the body kind. Without this, a scripted client can presign as SHOP and
+ * finalize as CR, sliding a signboard photo into the CR slot at attach time.
+ */
+function kindFromKey(key: string): AttachmentKind | null {
+  const m = /^[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/[a-z0-9]+\/(SHOP|SIGNBOARD|CR|FREE)\//.exec(key);
+  return m ? (m[1] as AttachmentKind) : null;
+}
+
+// NEW-PHOTO-005: cap finalize content-length at 3 MB. Client compresses to
+// ~500 KB; anything bigger is malicious or a misconfigured device.
+const MAX_FINALIZE_BYTES = 3 * 1024 * 1024;
+
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -57,13 +71,24 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  const { key, kind, hash, width, height, capturedLat, capturedLng, capturedAt } = parsed.data;
+  // NEW-PHOTO-007: ignore client-supplied capturedAt. Reactivation evidence
+  // checks freshness against this timestamp; if the client controls it, the
+  // "fresh photo" gate is trivially bypassed by retroactively stamping an old
+  // photo. We pull the time from R2's HeadObject (LastModified) below.
+  const { key, kind, hash, width, height, capturedLat, capturedLng } = parsed.data;
 
   // QA-005 fix: bind the key to the calling user's presign prefix.
   const allowed = expectedPrefixes(session.user.id);
   if (!allowed.some((p) => key.startsWith(p))) {
     logger.warn({ userId: session.user.id, key }, 'photo.finalize.key_mismatch');
     return NextResponse.json({ error: 'KEY_MISMATCH' }, { status: 403 });
+  }
+  // NEW-PHOTO-001: server-side kind check derived from the key path so the
+  // attachment.kind cannot be swapped at finalize time.
+  const keyKind = kindFromKey(key);
+  if (!keyKind || keyKind !== kind) {
+    logger.warn({ userId: session.user.id, key, body_kind: kind, key_kind: keyKind }, 'photo.finalize.kind_mismatch');
+    return NextResponse.json({ error: 'KIND_MISMATCH' }, { status: 403 });
   }
 
   // Confirm object exists in R2
@@ -77,12 +102,26 @@ export async function POST(req: NextRequest) {
 
   const bytes = head.ContentLength ?? 0;
   const mimeType = head.ContentType ?? 'application/octet-stream';
+  // NEW-PHOTO-005: enforce server-side size cap at finalize time. Presign
+  // signs ContentLength but a malicious client can re-PUT with a different
+  // size and still finalize.
+  if (bytes > MAX_FINALIZE_BYTES) {
+    return NextResponse.json({ error: 'TOO_LARGE', limit: MAX_FINALIZE_BYTES }, { status: 413 });
+  }
 
-  // Hash dedupe — if any attachment exists with same hash, return that one (ref-counting can come later)
-  const existing = await prisma.attachment.findFirst({ where: { hash } });
+  // NEW-PHOTO-002: hash dedupe ONLY within the same uploader. Cross-user
+  // dedupe was a confirmation oracle ("does this exact JPEG already exist in
+  // any customer's master?") and tangled multiple customers' slots into a
+  // single Attachment row.
+  const existing = await prisma.attachment.findFirst({
+    where: { hash, capturedById: session.user.id, deletedAt: null },
+  });
   if (existing) {
     return NextResponse.json({ attachmentId: existing.id, deduped: true });
   }
+
+  // NEW-PHOTO-007: capturedAt is the R2 upload time, not a client claim.
+  const capturedAt = head.LastModified ?? new Date();
 
   const att = await prisma.attachment.create({
     data: {
@@ -93,7 +132,7 @@ export async function POST(req: NextRequest) {
       width,
       height,
       capturedById: session.user.id,
-      capturedAt: capturedAt ?? new Date(),
+      capturedAt,
       capturedLat,
       capturedLng,
       hash,

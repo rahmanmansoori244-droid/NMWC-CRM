@@ -61,32 +61,76 @@ describe('lib/permissions — Cash/Credit field lock', () => {
 });
 
 describe('lib/permissions — approval scope', () => {
-  it('Manager can approve any edit', () => {
+  it('Manager can approve only edits whose customer overlaps their managed regions', () => {
+    // Customer with branches in regions [r1, r2]; Manager managing [r1].
     expect(
       canApproveSpecificEdit(
         { id: 'm1', role: Role.MANAGER, username: 'm' },
-        { supervisorId: 'someoneelse' }
+        { id: 'submitter', supervisorId: 'someoneelse' },
+        {
+          customerBranches: [
+            { regionId: 'r1', deletedAt: null },
+            { regionId: 'r2', deletedAt: null },
+          ],
+          managedRegionIds: ['r1'],
+        }
       )
     ).toBe(true);
+  });
+  it('Manager cannot approve out-of-region edits (RBAC-05-003)', () => {
+    expect(
+      canApproveSpecificEdit(
+        { id: 'm1', role: Role.MANAGER, username: 'm' },
+        { id: 'submitter', supervisorId: 'someoneelse' },
+        {
+          customerBranches: [{ regionId: 'r2', deletedAt: null }],
+          managedRegionIds: ['r1'],
+        }
+      )
+    ).toBe(false);
+  });
+  it('Manager with no managed regions cannot approve (fail-closed)', () => {
+    expect(
+      canApproveSpecificEdit(
+        { id: 'm1', role: Role.MANAGER, username: 'm' },
+        { id: 'submitter', supervisorId: null },
+        { customerBranches: [{ regionId: 'r1', deletedAt: null }], managedRegionIds: [] }
+      )
+    ).toBe(false);
+  });
+  it('No one can self-approve (EL-15)', () => {
+    expect(
+      canApproveSpecificEdit(
+        { id: 'm1', role: Role.MANAGER, username: 'm' },
+        { id: 'm1', supervisorId: null },
+        {
+          customerBranches: [{ regionId: 'r1', deletedAt: null }],
+          managedRegionIds: ['r1'],
+        }
+      )
+    ).toBe(false);
   });
   it('Supervisor can approve only their own team\'s edits', () => {
     expect(
       canApproveSpecificEdit(
         { id: 'sup1', role: Role.SUPERVISOR, username: 's' },
-        { supervisorId: 'sup1' }
+        { id: 'sub1', supervisorId: 'sup1' }
       )
     ).toBe(true);
     expect(
       canApproveSpecificEdit(
         { id: 'sup1', role: Role.SUPERVISOR, username: 's' },
-        { supervisorId: 'sup2' }
+        { id: 'sub1', supervisorId: 'sup2' }
       )
     ).toBe(false);
   });
   it('Salesman / Steward / Viewer cannot approve', () => {
     for (const r of [Role.SALESMAN, Role.STEWARD, Role.VIEWER]) {
       expect(
-        canApproveSpecificEdit({ id: 'x', role: r, username: 'x' }, { supervisorId: null })
+        canApproveSpecificEdit(
+          { id: 'x', role: r, username: 'x' },
+          { id: 'sub1', supervisorId: null }
+        )
       ).toBe(false);
     }
   });

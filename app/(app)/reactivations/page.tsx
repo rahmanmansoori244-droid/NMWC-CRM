@@ -1,10 +1,11 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { Role } from '@prisma/client';
+import { Role, type Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { ReactivationDecisionForm } from './ReactivationDecisionForm';
+import { loadScope } from '@/lib/access';
 
 export const metadata = { title: 'Reactivations · NMWC' };
 
@@ -13,8 +14,21 @@ export default async function ReactivationsPage() {
   if (!session?.user) redirect('/login');
   if (session.user.role !== Role.MANAGER) redirect('/home');
 
+  // RBAC-05-008: filter the queue to the Manager's region. Without this,
+  // Manager A could see + decide on Manager B's region's requests.
+  const scope = await loadScope(session.user.id);
+  const where: Prisma.CustomerEditWhereInput = {
+    isReactivation: true,
+    state: 'SUBMITTED',
+  };
+  if (scope.managedRegionIds.length === 0) {
+    where.id = '__none__';
+  } else {
+    where.branch = { regionId: { in: scope.managedRegionIds } };
+  }
+
   const items = await prisma.customerEdit.findMany({
-    where: { isReactivation: true, state: 'SUBMITTED' },
+    where,
     include: {
       submittedBy: { select: { fullName: true } },
       customer: { select: { id: true, legalName: true, nmwcCode: true } },

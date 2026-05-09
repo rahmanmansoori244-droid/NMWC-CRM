@@ -128,6 +128,13 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   lastLoginAt  DateTime?
+  // AUTH-12 / AUTH-01 / AUTH-02: bumped on logout, disable, role change, password
+  // reset. JWT freshness check rejects tokens whose `iat * 1000` is older than
+  // this timestamp. Allows immediate session revocation without an 8h JWT TTL.
+  sessionsRevokedAt DateTime?
+  // AUTH-09: forces redirect to /profile/change-password on next login. Cleared
+  // by a successful change-password action.
+  mustChangePassword Boolean   @default(false)
 
   // Hierarchy
   supervisorId String?
@@ -254,6 +261,10 @@ model Branch {
 
   status            CustomerStatus @default(ACTIVE)
   completenessScore Int            @default(0)
+  // EL-11/EL-12: stamped whenever `status` changes. Reactivation evidence must
+  // have `attachment.capturedAt > lastStatusChangeAt`, so a salesman cannot
+  // reuse a pre-closure photo to "prove" a reopening.
+  lastStatusChangeAt DateTime?
 
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -326,6 +337,11 @@ model Attachment {
   capturedLng  Float?
   hash         String?
   createdAt    DateTime       @default(now())
+  // UXI-008: real soft-delete column. Replaces the previous "rename r2Key to
+  // __deleted__/..." sentinel — every Attachment lookup now filters on
+  // `deletedAt: null` so soft-deleted rows can never satisfy fresh-photo or
+  // scope checks.
+  deletedAt    DateTime?
 
   capturedBy   User    @relation("AttachmentCapturer", fields: [capturedById], references: [id])
   branchExtra  Branch? @relation("BranchExtraPhotos", fields: [branchExtraId], references: [id])
@@ -338,6 +354,8 @@ model Attachment {
   @@index([branchId])
   @@index([customerId])
   @@index([branchExtraId])
+  @@index([deletedAt])
+  @@index([hash])
 }
 
 // ── IMPORT ──────────────────────────────────────────
