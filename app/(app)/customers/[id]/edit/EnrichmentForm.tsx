@@ -128,6 +128,40 @@ export function EnrichmentForm({
   // Available sub-channels for chosen channel
   const subChannels = channels.find((c) => c.id === channelId)?.subChannels ?? [];
 
+  // Client-side mandatory-field gate. Mirrors the server check in
+  // services/edits.ts so the salesman gets immediate feedback and can't
+  // even press "Submit for approval" until everything is filled. Photos
+  // come from the initial server snapshot (PhotoCaptureSlot wires the
+  // attachment server-side; user refreshes to see updated state).
+  const missingMandatory: string[] = [];
+  if (userRole === Role.SALESMAN) {
+    if (!legalName.trim()) missingMandatory.push('Legal name');
+    if (!channelId) missingMandatory.push('Channel');
+    if (!subChannelId) missingMandatory.push('Sub-channel');
+    if (!primaryPhone.trim()) missingMandatory.push('Primary phone');
+    if (!contactPerson.trim()) missingMandatory.push('Contact person');
+    if (!crNumber.trim()) missingMandatory.push('CR number');
+    if (!customer.crPhotoId) missingMandatory.push('CR document photo');
+    customer.branches.forEach((b, i) => {
+      const s = branchStates[b.id];
+      const tag = `Branch ${i + 1}`;
+      if (!s) return;
+      if (!s.address.trim() || s.address.trim().length < 3)
+        missingMandatory.push(`${tag} address`);
+      if (!s.gps || s.gps.lat == null || s.gps.lng == null)
+        missingMandatory.push(`${tag} GPS`);
+      if (!s.dayOfVisit) missingMandatory.push(`${tag} day of visit`);
+      if (!b.shopPhotoId) missingMandatory.push(`${tag} shop photo`);
+      if (!b.signboardPhotoId) missingMandatory.push(`${tag} signboard photo`);
+    });
+  }
+  const submitBlocked = !canSubmit || (userRole === Role.SALESMAN && missingMandatory.length > 0);
+  const submitTitle = !canSubmit
+    ? 'Pending edit already in review'
+    : missingMandatory.length > 0
+      ? `Missing: ${missingMandatory.join(', ')}`
+      : '';
+
   // ── Local draft auto-save (IndexedDB-lite via localStorage for v1) ───────
   const draftKey = `nmwc:draft:${customer.id}`;
   useEffect(() => {
@@ -557,14 +591,21 @@ export function EnrichmentForm({
         </button>
         <button
           type="button"
-          disabled={pending || !canSubmit}
+          disabled={pending || submitBlocked}
           onClick={() => submit(false)}
           className="rounded-md bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-          title={!canSubmit ? 'Pending edit already in review' : ''}
+          title={submitTitle}
         >
           {pending ? 'Submitting…' : 'Submit for approval ▶'}
         </button>
       </div>
+
+      {userRole === Role.SALESMAN && missingMandatory.length > 0 && canSubmit && (
+        <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-200">
+          <strong className="font-semibold">Cannot submit yet — missing:</strong>{' '}
+          {missingMandatory.join(', ')}. Save as a draft and finish the rest before submitting.
+        </div>
+      )}
     </div>
   );
 }

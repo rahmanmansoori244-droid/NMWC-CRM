@@ -5,10 +5,9 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { CustomerCard } from '@/components/nmwc/CustomerCard';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { Role } from '@prisma/client';
+import { omanDayOfWeek } from '@/lib/tz';
 
 export const metadata = { title: 'Today · NMWC' };
-
-const DAY_BY_INDEX = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'] as const;
 
 export default async function TodayPage() {
   const session = await auth();
@@ -34,8 +33,9 @@ export default async function TodayPage() {
     );
   }
 
-  // Day-of-visit = today
-  const today = DAY_BY_INDEX[new Date().getDay()];
+  // PROD-004: compute Oman-local day-of-week. Vercel runs in UTC; without this
+  // the server returned yesterday's customer list between Oman 00:00 and 04:00.
+  const today = omanDayOfWeek();
 
   const branches = await prisma.branch.findMany({
     where: {

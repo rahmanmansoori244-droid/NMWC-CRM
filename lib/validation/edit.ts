@@ -53,8 +53,19 @@ export const branchEditSchema = z.object({
   address: z.string().min(3).max(500).transform(stripHtml).optional(),
   areaDescription: z.string().max(500).transform(stripHtml).optional().or(z.literal('').transform(() => undefined)),
 
-  gpsLat: z.number().min(-90).max(90).optional(),
-  gpsLng: z.number().min(-180).max(180).optional(),
+  // PROD-005: bound to Oman's actual envelope so a faulty device or a
+  // copy/paste error can't land coordinates in the Indian Ocean. Oman spans
+  // roughly 16°N–27°N and 51°E–60°E; we add ~1° of slack on each edge.
+  gpsLat: z
+    .number()
+    .min(16, 'Latitude must be inside Oman (≥16°N).')
+    .max(27, 'Latitude must be inside Oman (≤27°N).')
+    .optional(),
+  gpsLng: z
+    .number()
+    .min(51, 'Longitude must be inside Oman (≥51°E).')
+    .max(61, 'Longitude must be inside Oman (≤61°E).')
+    .optional(),
   gpsAccuracy: z.number().min(0).max(10000).optional(),
   gpsCapturedAt: z.coerce.date().optional(),
 
