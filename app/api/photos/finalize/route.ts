@@ -7,6 +7,24 @@ import { prisma } from '@/lib/db';
 import { AttachmentKind } from '@prisma/client';
 import { logger } from '@/lib/logger';
 
+/**
+ * Build the expected key prefix that this user's presign would have issued.
+ * Matches the format used in /api/photos/presign/route.ts:
+ *   `${YYYY}/${MM}/${DD}/${userId}/${kind}/${uuid}.${ext}`
+ *
+ * Accept today and yesterday (UTC) to allow for upload duration around midnight.
+ */
+function expectedPrefixes(userId: string): string[] {
+  const out: string[] = [];
+  const now = new Date();
+  for (const offset of [0, -1]) {
+    const d = new Date(now.getTime() + offset * 86400_000);
+    const ymd = `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`;
+    out.push(`${ymd}/${userId}/`);
+  }
+  return out;
+}
+
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -40,6 +58,13 @@ export async function POST(req: NextRequest) {
     );
   }
   const { key, kind, hash, width, height, capturedLat, capturedLng, capturedAt } = parsed.data;
+
+  // QA-005 fix: bind the key to the calling user's presign prefix.
+  const allowed = expectedPrefixes(session.user.id);
+  if (!allowed.some((p) => key.startsWith(p))) {
+    logger.warn({ userId: session.user.id, key }, 'photo.finalize.key_mismatch');
+    return NextResponse.json({ error: 'KEY_MISMATCH' }, { status: 403 });
+  }
 
   // Confirm object exists in R2
   let head;

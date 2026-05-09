@@ -28,7 +28,7 @@ export async function loginAction(formData: FormData): Promise<LoginResult | voi
   const ip =
     hdrs.get('x-forwarded-for')?.split(',')[0]?.trim() ?? hdrs.get('x-real-ip') ?? 'unknown';
   for (const key of [`login:user:${parsed.data.username}`, `login:ip:${ip}`]) {
-    const lim = checkLimit(key, LOGIN_LIMIT);
+    const lim = await checkLimit(key, LOGIN_LIMIT);
     if (!lim.ok) {
       logger.warn({ key, retryAfterSec: lim.retryAfterSec }, 'rate-limit.login');
       return {

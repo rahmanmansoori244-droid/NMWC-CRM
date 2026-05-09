@@ -39,10 +39,18 @@ function uc(v: unknown): string {
   return String(v ?? '').trim().toUpperCase();
 }
 
+// QA-012: hard cap on uploaded xlsx (zip-bomb defense)
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5 MB
+
 export async function uploadAccountMasterAction(formData: FormData) {
   const me = await requireSteward();
   const file = formData.get('file');
   if (!(file instanceof File)) throw new ValidationError({ file: 'No file uploaded.' });
+  if (file.size > MAX_IMPORT_BYTES) {
+    throw new ValidationError({
+      file: `File is too large (${Math.round(file.size / 1024)} KB). Maximum is 5 MB.`,
+    });
+  }
   const buf = Buffer.from(await file.arrayBuffer());
 
   let sheets;
@@ -134,18 +142,27 @@ export async function uploadAccountMasterAction(formData: FormData) {
       const username = lc(row.username);
       const fullName = String(row.full_name ?? row.fullName ?? row.name ?? '').trim();
       const roleStr = uc(row.role);
-      const password = String(row.password ?? '').trim();
+      const passwordRaw = String(row.password ?? '').trim();
+      // QA-010: passwords must be EXPLICITLY requested via reset_password column,
+      // OR provided ONLY for new users. Existing users keep their existing hash.
+      const wantsReset = String(row.reset_password ?? row.resetPassword ?? '')
+        .trim()
+        .toLowerCase() === 'yes';
+      // QA-011: role changes must be EXPLICITLY requested via change_role column.
+      const wantsRoleChange = String(row.change_role ?? row.changeRole ?? '')
+        .trim()
+        .toLowerCase() === 'yes';
       const supUsername = lc(row.supervisor_username ?? row.supervisorUsername ?? '');
       const routeCode = uc(row.route_code ?? row.routeCode ?? '');
       const regionCodesRaw = String(row.region_codes ?? row.regionCodes ?? '').trim();
       const email = String(row.email ?? '').trim() || null;
       const phone = String(row.phone ?? '').trim() || null;
 
-      if (!username || !fullName || !roleStr || !password) {
+      if (!username || !fullName || !roleStr) {
         issues.push({
           sheet: 'Users',
           row: i + 2,
-          message: 'username, full_name, role, password required',
+          message: 'username, full_name, role required',
         });
         continue;
       }
@@ -157,8 +174,19 @@ export async function uploadAccountMasterAction(formData: FormData) {
         });
         continue;
       }
-      if (password.length < 12) {
+      if (passwordRaw && passwordRaw.length < 12) {
         issues.push({ sheet: 'Users', row: i + 2, message: 'password must be 12+ chars' });
+        continue;
+      }
+
+      // QA-011 — Steward cannot escalate themselves. Block any row that tries
+      // to change the calling user's own role.
+      if (username === me.username && wantsRoleChange && roleStr !== me.role) {
+        issues.push({
+          sheet: 'Users',
+          row: i + 2,
+          message: 'cannot change your own role via import',
+        });
         continue;
       }
 
@@ -200,7 +228,48 @@ export async function uploadAccountMasterAction(formData: FormData) {
         ownedRouteId = route.id;
       }
 
-      const passwordHash = await bcrypt.hash(password, 12);
+      // QA-010 / QA-011: only set passwordHash + role on INSERT or when
+      // explicitly requested. On a normal re-import, existing users keep
+      // their existing password and role.
+      const existing = await prisma.user.findUnique({ where: { username } });
+      let passwordHash: string;
+      if (existing) {
+        if (wantsReset) {
+          if (!passwordRaw) {
+            issues.push({
+              sheet: 'Users',
+              row: i + 2,
+              message: 'reset_password=yes but no password provided',
+            });
+            continue;
+          }
+          passwordHash = await bcrypt.hash(passwordRaw, 12);
+        } else {
+          passwordHash = existing.passwordHash;
+        }
+      } else {
+        if (!passwordRaw) {
+          issues.push({
+            sheet: 'Users',
+            row: i + 2,
+            message: 'new user needs a password',
+          });
+          continue;
+        }
+        passwordHash = await bcrypt.hash(passwordRaw, 12);
+      }
+
+      const update: Prisma.UserUpdateInput = {
+        fullName,
+        email,
+        phone,
+        supervisor: supervisorId ? { connect: { id: supervisorId } } : { disconnect: true },
+        ownedRoute: ownedRouteId ? { connect: { id: ownedRouteId } } : { disconnect: true },
+      };
+      // Only rotate password / role when explicitly authorised
+      if (wantsReset) update.passwordHash = passwordHash;
+      if (!existing || wantsRoleChange) update.role = role;
+
       const data: Prisma.UserCreateInput = {
         username,
         passwordHash,
@@ -215,17 +284,34 @@ export async function uploadAccountMasterAction(formData: FormData) {
       try {
         const user = await prisma.user.upsert({
           where: { username },
-          update: {
-            passwordHash,
-            fullName,
-            role,
-            email,
-            phone,
-            supervisorId,
-            ownedRouteId,
-          },
+          update,
           create: data,
         });
+        // Audit any sensitive change
+        if (existing && wantsReset) {
+          await prisma.auditLog.create({
+            data: {
+              actorId: me.id,
+              action: 'UPDATE',
+              entityType: 'User',
+              entityId: user.id,
+              reason: 'password_reset_via_import',
+            },
+          });
+        }
+        if (existing && wantsRoleChange && existing.role !== role) {
+          await prisma.auditLog.create({
+            data: {
+              actorId: me.id,
+              action: 'UPDATE',
+              entityType: 'User',
+              entityId: user.id,
+              before: { role: existing.role } as unknown as Prisma.InputJsonValue,
+              after: { role } as unknown as Prisma.InputJsonValue,
+              reason: 'role_change_via_import',
+            },
+          });
+        }
 
         // Manager region assignments
         if (role === Role.MANAGER && regionCodesRaw) {
@@ -293,6 +379,11 @@ export async function uploadCustomerMasterAction(formData: FormData) {
   const me = await requireSteward();
   const file = formData.get('file');
   if (!(file instanceof File)) throw new ValidationError({ file: 'No file uploaded.' });
+  if (file.size > MAX_IMPORT_BYTES) {
+    throw new ValidationError({
+      file: `File is too large (${Math.round(file.size / 1024)} KB). Maximum is 5 MB.`,
+    });
+  }
   const buf = Buffer.from(await file.arrayBuffer());
 
   let sheets;
@@ -423,97 +514,116 @@ export async function promoteCustomerBatchAction(formData: FormData) {
     });
   }
 
+  // QA-019: each customer's promotion (parent + branches + row state) runs
+  // in its own transaction so a partial failure leaves no half-state.
   let promoted = 0;
   for (const [custCode, g] of groups) {
     const first = g.parsed[0];
-    try {
-      const customer = await prisma.customer.upsert({
-        where: { nmwcCode: custCode },
-        update: {
-          legalName: first.custName,
-          paymentTerms: first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH',
-          primaryPhone: first.phone,
-          primaryPhoneNorm: first.phone,
-          contactPerson: first.contactPerson,
-          crNumber: first.crNumber,
-          crNumberNorm: normalizeCR(first.crNumber),
-          lastEditedById: me.id,
-        },
-        create: {
-          nmwcCode: custCode,
-          legalName: first.custName,
-          paymentTerms: first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH',
-          primaryPhone: first.phone,
-          primaryPhoneNorm: first.phone,
-          contactPerson: first.contactPerson,
-          crNumber: first.crNumber,
-          crNumberNorm: normalizeCR(first.crNumber),
-          createdById: me.id,
-          lastEditedById: me.id,
-          importBatchId: batchId,
-        },
-      });
 
-      for (const [bi, p] of g.parsed.entries()) {
-        const region = p.regionCode
-          ? await prisma.region.upsert({
-              where: { code: p.regionCode.toUpperCase() },
-              update: {},
-              create: {
-                code: p.regionCode.toUpperCase(),
-                name: p.regionCode,
-              },
-            })
-          : null;
-        const route = p.routeCode
-          ? await prisma.route.upsert({
-              where: { code: p.routeCode.toUpperCase() },
-              update: {},
-              create: {
-                code: p.routeCode.toUpperCase(),
-                name: p.routeCode,
-                regionId: (region ?? unassignedRoute!).id,
-              },
-            })
-          : unassignedRoute!;
-        const branchCode = p.branchCode
+    // Pre-resolve regions and routes outside the transaction (these are upserts
+    // that can be repeated safely across batches).
+    const resolvedBranches: Array<{
+      branchCode: string;
+      branchName: string;
+      regionId: string;
+      routeId: string;
+      address: string;
+    }> = [];
+    for (const [bi, p] of g.parsed.entries()) {
+      const region = p.regionCode
+        ? await prisma.region.upsert({
+            where: { code: p.regionCode.toUpperCase() },
+            update: {},
+            create: { code: p.regionCode.toUpperCase(), name: p.regionCode },
+          })
+        : null;
+      const route = p.routeCode
+        ? await prisma.route.upsert({
+            where: { code: p.routeCode.toUpperCase() },
+            update: {},
+            create: {
+              code: p.routeCode.toUpperCase(),
+              name: p.routeCode,
+              regionId: (region ?? unassignedRoute!).id,
+            },
+          })
+        : unassignedRoute!;
+      resolvedBranches.push({
+        branchCode: p.branchCode
           ? p.branchCode.toUpperCase()
-          : formatBranchCode(custCode, bi + 1);
-        const address =
+          : formatBranchCode(custCode, bi + 1),
+        branchName: p.branchName ?? 'Main',
+        regionId: (region ?? unassignedRoute!).id,
+        routeId: (route ?? unassignedRoute!).id,
+        address:
           p.address ??
           [p.branchName, p.regionCode].filter(Boolean).join(', ') ??
-          'Address pending';
+          'Address pending',
+      });
+    }
 
-        await prisma.branch.upsert({
-          where: { branchCode },
+    try {
+      await prisma.$transaction(async (tx) => {
+        const customer = await tx.customer.upsert({
+          where: { nmwcCode: custCode },
           update: {
-            branchName: p.branchName ?? 'Main',
-            regionId: (region ?? unassignedRoute!).id,
-            routeId: (route ?? unassignedRoute!).id,
-            address,
-            customerId: customer.id,
+            legalName: first.custName,
+            paymentTerms: first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH',
+            primaryPhone: first.phone,
+            primaryPhoneNorm: first.phone,
+            contactPerson: first.contactPerson,
+            crNumber: first.crNumber,
+            crNumberNorm: normalizeCR(first.crNumber),
             lastEditedById: me.id,
           },
           create: {
-            branchCode,
-            branchName: p.branchName ?? 'Main',
-            regionId: (region ?? unassignedRoute!).id,
-            routeId: (route ?? unassignedRoute!).id,
-            address,
-            customerId: customer.id,
+            nmwcCode: custCode,
+            legalName: first.custName,
+            paymentTerms: first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH',
+            primaryPhone: first.phone,
+            primaryPhoneNorm: first.phone,
+            contactPerson: first.contactPerson,
+            crNumber: first.crNumber,
+            crNumberNorm: normalizeCR(first.crNumber),
             createdById: me.id,
             lastEditedById: me.id,
+            importBatchId: batchId,
           },
         });
-      }
-      // Mark rows promoted
-      await prisma.importRow.updateMany({
-        where: { id: { in: g.rowIds } },
-        data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() },
+        for (const r of resolvedBranches) {
+          await tx.branch.upsert({
+            where: { branchCode: r.branchCode },
+            update: {
+              branchName: r.branchName,
+              regionId: r.regionId,
+              routeId: r.routeId,
+              address: r.address,
+              customerId: customer.id,
+              lastEditedById: me.id,
+            },
+            create: {
+              branchCode: r.branchCode,
+              branchName: r.branchName,
+              regionId: r.regionId,
+              routeId: r.routeId,
+              address: r.address,
+              customerId: customer.id,
+              createdById: me.id,
+              lastEditedById: me.id,
+            },
+          });
+        }
+        await tx.importRow.updateMany({
+          where: { id: { in: g.rowIds } },
+          data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() },
+        });
       });
       promoted += g.rowIds.length;
     } catch (err) {
-      logger.warn({ err, custCode }, 'import.promote.row_failed');
+      logger.warn(
+        { err: (err as Error).message?.slice(0, 200), custCode },
+        'import.promote.row_failed'
+      );
     }
   }
 

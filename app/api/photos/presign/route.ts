@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
   if (!session?.user) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
-  const lim = checkLimit(`photo:${session.user.id}`, PHOTO_LIMIT);
+  const lim = await checkLimit(`photo:${session.user.id}`, PHOTO_LIMIT);
   if (!lim.ok) {
     return NextResponse.json(
       { error: 'RATE_LIMITED', retryAfterSec: lim.retryAfterSec },

@@ -377,6 +377,17 @@ model ImportRow {
   @@index([batchId, state])
 }
 
+// ── RATE LIMIT ──────────────────────────────────────
+// QA-015: durable rate limiter that survives across Vercel function instances.
+// Token-bucket: each row holds the bucket's current tokens and the last refill
+// time. Reads/writes happen in a single SQL UPDATE to avoid race conditions.
+model RateLimit {
+  key        String   @id
+  tokens     Float    @default(0)
+  lastRefill DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
 // ── EXPORT ──────────────────────────────────────────
 model ExportJob {
   id            String    @id @default(cuid())

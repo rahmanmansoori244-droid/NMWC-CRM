@@ -3,10 +3,12 @@ import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
+import { loadScope, assertCanSeeCustomer } from '@/lib/access';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
+import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
 import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil } from 'lucide-react';
 
 export const metadata = { title: 'Customer · NMWC' };
@@ -47,6 +49,15 @@ export default async function CustomerProfilePage({
     },
   });
   if (!customer) notFound();
+
+  // QA-001 fix — scope check before exposing the customer to the caller.
+  const scope = await loadScope(session.user.id);
+  const sessionUser = {
+    id: session.user.id,
+    role: session.user.role,
+    username: session.user.username,
+  };
+  assertCanSeeCustomer(sessionUser, customer, scope);
 
   const canEdit =
     session.user.role !== Role.VIEWER &&
@@ -143,6 +154,13 @@ export default async function CustomerProfilePage({
                 <div className="mt-3 flex gap-2">
                   <PhotoTile label="Shop" photo={b.shopPhoto} />
                   <PhotoTile label="Signboard" photo={b.signboardPhoto} />
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <StatusBadge status={b.status} />
+                  {/* QA-008/009 — branch-level close/reactivation buttons (Salesman only) */}
+                  {session.user.role === Role.SALESMAN && (
+                    <BranchStatusActions branchId={b.id} status={b.status} />
+                  )}
                 </div>
               </article>
             ))}

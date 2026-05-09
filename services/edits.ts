@@ -85,7 +85,7 @@ const BRANCH_FIELDS = [
  */
 export async function submitEditAction(input: SubmitEditInput): Promise<{ editId: string; state: EditState }> {
   const session = await requireUser();
-  const lim = checkLimit(`edit:${session.id}`, FORM_LIMIT);
+  const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
     throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
   }
@@ -196,6 +196,26 @@ export async function submitEditAction(input: SubmitEditInput): Promise<{ editId
       bpClean.gpsCapturedAt = new Date(bpClean.gpsCapturedAt);
     }
 
+    // QA-009 fix: status flips between CLOSED/SUSPENDED and ACTIVE must go
+    // through the dedicated reactivation flow (Manager-only review with photo
+    // evidence), not the regular edit flow.
+    if (
+      typeof bpClean.status === 'string' &&
+      bpClean.status !== branch.status &&
+      (branch.status === 'CLOSED' ||
+        branch.status === 'SUSPENDED' ||
+        bpClean.status === 'CLOSED' ||
+        bpClean.status === 'SUSPENDED')
+    ) {
+      // Steward/Manager direct-write may still flip (admin override).
+      if (me.role !== Role.STEWARD && me.role !== Role.MANAGER) {
+        throw new ValidationError({
+          [`branch.${branch.id}.status`]:
+            'Use the close-shop or reactivation action for status changes — not the edit form.',
+        });
+      }
+    }
+
     diffFields(branchBefore, bpClean, BRANCH_FIELDS).forEach((c) =>
       fieldChanges.push({ ...c, field: `branch.${branch.id}.${c.field}` })
     );
@@ -241,17 +261,35 @@ export async function submitEditAction(input: SubmitEditInput): Promise<{ editId
       return e;
     });
   } else {
-    edit = await prisma.customerEdit.create({
-      data: {
-        target: EditTarget.CUSTOMER,
-        customerId: customer.id,
-        state: editState,
-        submittedById: me.id,
-        submittedAt,
-        fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
-        attachmentChanges: [] as unknown as Prisma.InputJsonValue,
-      },
-    });
+    try {
+      edit = await prisma.customerEdit.create({
+        data: {
+          target: EditTarget.CUSTOMER,
+          customerId: customer.id,
+          state: editState,
+          submittedById: me.id,
+          submittedAt,
+          fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
+          attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+        },
+      });
+    } catch (err) {
+      // QA-017 — partial unique index `CustomerEdit_open_per_customer`
+      // enforces "one SUBMITTED edit per customer" at the DB level. Translate
+      // the constraint violation into a friendly conflict response.
+      if (
+        err &&
+        typeof err === 'object' &&
+        'code' in err &&
+        (err as { code?: string }).code === 'P2002'
+      ) {
+        throw new ConflictError(
+          'EDIT_LOCKED',
+          'Another submission for this customer was just made. Refresh to see it.'
+        );
+      }
+      throw err;
+    }
   }
 
   logger.info(
@@ -341,7 +379,10 @@ export async function approveEditAction(formData: FormData) {
   if (!canApproveSpecificEdit({ id: session.id, role: session.role, username: session.username }, edit.submittedBy)) {
     throw new ForbiddenError('You are not the supervisor for this edit.');
   }
-  if (!edit.customer) throw new NotFoundError('Customer is gone.');
+  // QA-038: customer might have been merged or soft-deleted between submit and approve.
+  if (!edit.customer || edit.customer.deletedAt) {
+    throw new NotFoundError('Customer no longer exists (may have been merged or deleted).');
+  }
 
   // Reconstruct payloads from fieldChanges array
   const fieldChanges = edit.fieldChanges as unknown as FieldChange[];
@@ -361,10 +402,52 @@ export async function approveEditAction(formData: FormData) {
       branchProposedById.set(branchId, obj);
     }
   }
-  const branchesPayload = Array.from(branchProposedById.entries()).map(([branchId, obj]) => ({
-    branchId,
-    ...obj,
-  })) as SubmitEditInput['branches'];
+
+  // QA-013: re-evaluate field locks against the CURRENT customer state. If
+  // payment terms changed CASH→CREDIT between submit and approve, the locked
+  // fields should now be dropped.
+  const submitter = edit.submittedBy as { id: string; supervisorId: string | null; fullName: string };
+  const submitterUser = await prisma.user.findUnique({ where: { id: submitter.id }, select: { role: true } });
+  if (
+    submitterUser?.role === Role.SALESMAN &&
+    isFieldLocked(
+      'legalName',
+      { id: submitter.id, role: Role.SALESMAN, username: '' },
+      edit.customer
+    )
+  ) {
+    delete customerProposed.legalName;
+    delete customerProposed.crNumber;
+  }
+
+  // QA-014: re-check duplicate phone against the current state of the master.
+  if (typeof customerProposed.primaryPhone === 'string') {
+    const norm = customerProposed.primaryPhone;
+    const collision = await prisma.customer.findFirst({
+      where: {
+        primaryPhoneNorm: norm,
+        id: { not: edit.customerId! },
+        deletedAt: null,
+      },
+      select: { nmwcCode: true, legalName: true },
+    });
+    if (collision) {
+      throw new ConflictError(
+        'DUPLICATE_PHONE',
+        `Phone now belongs to ${collision.legalName} (${collision.nmwcCode}). Reject and ask the salesman to fix.`
+      );
+    }
+  }
+
+  // QA-039: drop branches that have been deleted since submission.
+  const liveBranches = await prisma.branch.findMany({
+    where: { id: { in: [...branchProposedById.keys()] }, deletedAt: null },
+    select: { id: true },
+  });
+  const liveBranchIds = new Set(liveBranches.map((b) => b.id));
+  const branchesPayload = Array.from(branchProposedById.entries())
+    .filter(([id]) => liveBranchIds.has(id))
+    .map(([branchId, obj]) => ({ branchId, ...obj })) as SubmitEditInput['branches'];
 
   await prisma.$transaction(async (tx) => {
     await applyEditChanges(tx, edit.customerId!, customerProposed, branchesPayload, session.id);

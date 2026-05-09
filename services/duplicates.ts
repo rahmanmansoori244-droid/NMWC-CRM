@@ -184,6 +184,9 @@ export async function mergeCustomersAction(formData: FormData) {
   const session = await requireSteward();
   const winnerId = String(formData.get('winnerId') ?? '');
   const loserId = String(formData.get('loserId') ?? '');
+  // QA-018: explicit confirmation token required when the merge crosses regions.
+  const confirmCrossRegion = String(formData.get('confirmCrossRegion') ?? '') === 'yes';
+  const reason = String(formData.get('reason') ?? '').trim();
   if (!winnerId || !loserId || winnerId === loserId) {
     throw new ValidationError({ _form: 'Pick a winner and a different loser.' });
   }
@@ -191,20 +194,41 @@ export async function mergeCustomersAction(formData: FormData) {
   const [winner, loser] = await Promise.all([
     prisma.customer.findFirst({
       where: { id: winnerId, deletedAt: null },
-      include: { branches: { where: { deletedAt: null } } },
+      include: { branches: { where: { deletedAt: null }, select: { id: true, regionId: true, routeId: true } } },
     }),
     prisma.customer.findFirst({
       where: { id: loserId, deletedAt: null },
-      include: { branches: { where: { deletedAt: null } } },
+      include: { branches: { where: { deletedAt: null }, select: { id: true, regionId: true, routeId: true } } },
     }),
   ]);
   if (!winner || !loser) throw new NotFoundError('Customer pair not found.');
+
+  // QA-018 — detect cross-region merge.
+  const winnerRegions = new Set(winner.branches.map((b) => b.regionId));
+  const loserRegions = new Set(loser.branches.map((b) => b.regionId));
+  const isCrossRegion =
+    [...loserRegions].some((r) => !winnerRegions.has(r)) ||
+    [...winnerRegions].some((r) => !loserRegions.has(r));
+  if (isCrossRegion && !confirmCrossRegion) {
+    throw new ValidationError({
+      _form:
+        'Cross-region merge requires explicit confirmation (confirmCrossRegion=yes) and a reason.',
+    });
+  }
+  if (isCrossRegion && reason.length < 5) {
+    throw new ValidationError({ reason: 'Cross-region merges require a reason (5+ chars).' });
+  }
 
   await prisma.$transaction(async (tx) => {
     // Move branches
     await tx.branch.updateMany({
       where: { customerId: loser.id, deletedAt: null },
       data: { customerId: winner.id, lastEditedById: session.id },
+    });
+    // QA-028: also move the loser's CustomerEdit history into the winner.
+    await tx.customerEdit.updateMany({
+      where: { customerId: loser.id },
+      data: { customerId: winner.id },
     });
     // Move CR photo if winner has none
     if (!winner.crPhotoId && loser.crPhotoId) {
@@ -238,8 +262,11 @@ export async function mergeCustomersAction(formData: FormData) {
         before: {
           loser: { id: loser.id, nmwcCode: loser.nmwcCode, legalName: loser.legalName },
           winner: { id: winner.id, nmwcCode: winner.nmwcCode },
+          crossRegion: isCrossRegion,
         } as unknown as Prisma.InputJsonValue,
-        reason: `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,
+        reason: isCrossRegion
+          ? `Cross-region merge: ${loser.nmwcCode} -> ${winner.nmwcCode}. ${reason}`
+          : `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,
       },
     });
   });
