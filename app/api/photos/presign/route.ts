@@ -5,6 +5,7 @@ import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { logger } from '@/lib/logger';
+import { checkLimit, PHOTO_LIMIT } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,6 +23,13 @@ export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+  }
+  const lim = checkLimit(`photo:${session.user.id}`, PHOTO_LIMIT);
+  if (!lim.ok) {
+    return NextResponse.json(
+      { error: 'RATE_LIMITED', retryAfterSec: lim.retryAfterSec },
+      { status: 429, headers: { 'Retry-After': String(lim.retryAfterSec) } }
+    );
   }
   let body: unknown;
   try {

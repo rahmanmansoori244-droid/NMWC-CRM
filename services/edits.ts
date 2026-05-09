@@ -3,7 +3,7 @@
 import { prisma } from '@/lib/db';
 import { Role, EditState, EditTarget, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
-import { ForbiddenError, ValidationError, ConflictError, NotFoundError } from '@/lib/errors';
+import { ForbiddenError, ValidationError, ConflictError, NotFoundError, RateLimitError } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { isFieldLocked, canApproveSpecificEdit } from '@/lib/permissions';
@@ -11,6 +11,7 @@ import { submitEditSchema, type SubmitEditInput } from '@/lib/validation/edit';
 import { normalizePhone } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
+import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
 
 async function requireUser() {
   const session = await auth();
@@ -84,6 +85,10 @@ const BRANCH_FIELDS = [
  */
 export async function submitEditAction(input: SubmitEditInput): Promise<{ editId: string; state: EditState }> {
   const session = await requireUser();
+  const lim = checkLimit(`edit:${session.id}`, FORM_LIMIT);
+  if (!lim.ok) {
+    throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
+  }
   const parsed = submitEditSchema.safeParse(input);
   if (!parsed.success) {
     throw new ValidationError(

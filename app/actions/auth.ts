@@ -3,6 +3,9 @@
 import { signIn, signOut } from '@/lib/auth';
 import { AuthError } from 'next-auth';
 import { z } from 'zod';
+import { headers } from 'next/headers';
+import { checkLimit, LOGIN_LIMIT } from '@/lib/rate-limit';
+import { logger } from '@/lib/logger';
 
 const loginSchema = z.object({
   username: z.string().min(3).max(50),
@@ -18,6 +21,21 @@ export async function loginAction(formData: FormData): Promise<LoginResult | voi
   });
   if (!parsed.success) {
     return { ok: false, error: 'Please enter your username and password.' };
+  }
+
+  // Rate-limit by username (auth-stuffing guard) and by IP if available
+  const hdrs = await headers();
+  const ip =
+    hdrs.get('x-forwarded-for')?.split(',')[0]?.trim() ?? hdrs.get('x-real-ip') ?? 'unknown';
+  for (const key of [`login:user:${parsed.data.username}`, `login:ip:${ip}`]) {
+    const lim = checkLimit(key, LOGIN_LIMIT);
+    if (!lim.ok) {
+      logger.warn({ key, retryAfterSec: lim.retryAfterSec }, 'rate-limit.login');
+      return {
+        ok: false,
+        error: `Too many attempts. Try again in ${lim.retryAfterSec}s.`,
+      };
+    }
   }
 
   try {
