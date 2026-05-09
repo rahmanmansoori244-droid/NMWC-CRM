@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
-import { loadScope, assertCanSeeCustomer } from '@/lib/access';
+import { loadScope, canSeeCustomer } from '@/lib/access';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
@@ -57,7 +57,8 @@ export default async function CustomerProfilePage({
     role: session.user.role,
     username: session.user.username,
   };
-  assertCanSeeCustomer(sessionUser, customer, scope);
+  // Convert "out of scope" into a clean 404 to avoid leaking ID validity.
+  if (!canSeeCustomer(sessionUser, customer, scope)) notFound();
 
   const canEdit =
     session.user.role !== Role.VIEWER &&
