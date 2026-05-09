@@ -77,6 +77,96 @@ const BRANCH_FIELDS = [
 ] as const;
 
 /**
+ * Validate that the would-be customer state (existing record + proposed
+ * patches) has every mandatory field populated. Returns a flat map of
+ * `path -> human message` suitable for ValidationError. Empty map ⇒ complete.
+ *
+ * Mandatory fields per PRD §6 / completeness scoring:
+ *  Customer: legalName, channelId, subChannelId, primaryPhone, contactPerson,
+ *            crNumber, crPhotoId
+ *  Branch:   address (≥3 chars), gpsLat, gpsLng, dayOfVisit, shopPhotoId,
+ *            signboardPhotoId
+ */
+function collectMissingMandatory(
+  customer: {
+    legalName: string;
+    channelId: string | null;
+    subChannelId: string | null;
+    primaryPhone: string | null;
+    contactPerson: string | null;
+    crNumber: string | null;
+    crPhotoId: string | null;
+    branches: Array<{
+      id: string;
+      branchCode: string;
+      address: string | null;
+      gpsLat: number | null;
+      gpsLng: number | null;
+      dayOfVisit: string | null;
+      shopPhotoId: string | null;
+      signboardPhotoId: string | null;
+    }>;
+  },
+  customerProposed: Record<string, unknown>,
+  branchProposedById: Map<string, Record<string, unknown>>
+): Record<string, string> {
+  const errors: Record<string, string> = {};
+  const merged = (k: keyof typeof customer, fallback: unknown) =>
+    customerProposed[k as string] !== undefined ? customerProposed[k as string] : fallback;
+  const isStr = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+  const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+  if (!isStr(merged('legalName', customer.legalName))) {
+    errors['customer.legalName'] = 'Legal name is required.';
+  }
+  if (!isStr(merged('channelId', customer.channelId))) {
+    errors['customer.channelId'] = 'Channel is required.';
+  }
+  if (!isStr(merged('subChannelId', customer.subChannelId))) {
+    errors['customer.subChannelId'] = 'Sub-channel is required.';
+  }
+  if (!isStr(merged('primaryPhone', customer.primaryPhone))) {
+    errors['customer.primaryPhone'] = 'Primary phone is required.';
+  }
+  if (!isStr(merged('contactPerson', customer.contactPerson))) {
+    errors['customer.contactPerson'] = 'Contact person is required.';
+  }
+  if (!isStr(merged('crNumber', customer.crNumber))) {
+    errors['customer.crNumber'] = 'CR number is required.';
+  }
+  // Photos are wired via attachPhotoAction, so we read from the live customer
+  // (the edit payload does not carry photoId fields).
+  if (!customer.crPhotoId) {
+    errors['customer.crPhoto'] = 'CR document photo is required.';
+  }
+
+  for (const b of customer.branches) {
+    const bp = branchProposedById.get(b.id) ?? {};
+    const bMerged = (k: string, fallback: unknown) =>
+      bp[k] !== undefined ? bp[k] : fallback;
+    const tag = b.branchCode || b.id;
+    const addr = bMerged('address', b.address);
+    if (!isStr(addr) || (addr as string).trim().length < 3) {
+      errors[`branch.${b.id}.address`] = `Branch ${tag}: address is required.`;
+    }
+    if (!isNum(bMerged('gpsLat', b.gpsLat)) || !isNum(bMerged('gpsLng', b.gpsLng))) {
+      errors[`branch.${b.id}.gps`] = `Branch ${tag}: GPS coordinates are required.`;
+    }
+    if (!isStr(bMerged('dayOfVisit', b.dayOfVisit))) {
+      errors[`branch.${b.id}.dayOfVisit`] = `Branch ${tag}: day of visit is required.`;
+    }
+    if (!b.shopPhotoId) {
+      errors[`branch.${b.id}.shopPhoto`] = `Branch ${tag}: shop photo is required.`;
+    }
+    if (!b.signboardPhotoId) {
+      errors[`branch.${b.id}.signboardPhoto`] = `Branch ${tag}: signboard photo is required.`;
+    }
+  }
+
+  return errors;
+}
+
+/**
  * Salesman submits an edit. We collect ALL field changes across the customer
  * and any branches into a single CustomerEdit record (target=CUSTOMER), so
  * the supervisor reviews it as one decision.
@@ -223,6 +313,20 @@ export async function submitEditAction(input: SubmitEditInput): Promise<{ editId
 
   if (fieldChanges.length === 0 && !isDraft) {
     throw new ValidationError({ _form: 'No changes to submit.' });
+  }
+
+  // Mandatory-field gate: salesmen cannot SUBMIT a customer for approval until
+  // every required field is populated on the would-be-result. They can still
+  // save partial work as a DRAFT (isDraft=true) and come back to it. Stewards
+  // and Managers (direct-write) bypass this — they may legitimately patch a
+  // single field on an incomplete legacy record.
+  if (!isDraft && me.role === Role.SALESMAN) {
+    const branchProposedById = new Map<string, Record<string, unknown>>();
+    for (const bp of bInputs) branchProposedById.set(bp.branchId, bp as Record<string, unknown>);
+    const missing = collectMissingMandatory(customer, customerProposed, branchProposedById);
+    if (Object.keys(missing).length > 0) {
+      throw new ValidationError(missing);
+    }
   }
 
   const editState: EditState = isDraft ? EditState.DRAFT : EditState.SUBMITTED;
@@ -450,15 +554,25 @@ export async function approveEditAction(formData: FormData) {
     .map(([branchId, obj]) => ({ branchId, ...obj })) as SubmitEditInput['branches'];
 
   await prisma.$transaction(async (tx) => {
-    await applyEditChanges(tx, edit.customerId!, customerProposed, branchesPayload, session.id);
-    await tx.customerEdit.update({
-      where: { id: editId },
+    // PROD-001 fix: claim the edit atomically by transitioning SUBMITTED→APPROVED
+    // in a single statement. If two approvals race, only one updateMany returns
+    // count=1; the loser sees count=0 and surfaces a conflict instead of writing
+    // a duplicate audit row + replaying applyEditChanges twice.
+    const claim = await tx.customerEdit.updateMany({
+      where: { id: editId, state: EditState.SUBMITTED },
       data: {
         state: EditState.APPROVED,
         reviewedById: session.id,
         reviewedAt: new Date(),
       },
     });
+    if (claim.count === 0) {
+      throw new ConflictError(
+        'NOT_PENDING',
+        'This edit was just decided by another reviewer. Refresh to see the current state.'
+      );
+    }
+    await applyEditChanges(tx, edit.customerId!, customerProposed, branchesPayload, session.id);
     await tx.auditLog.create({
       data: {
         actorId: session.id,

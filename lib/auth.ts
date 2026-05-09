@@ -53,8 +53,15 @@ declare module '@auth/core/jwt' {
     role: Role;
     username: string;
     userId: string;
+    lastCheck?: number;
   }
 }
+
+// PROD-002/003: how often the JWT callback re-reads the User row to honour
+// disable / role-change. Five minutes is short enough that an incident
+// responder can revoke a session without waiting on the 8h JWT TTL, but long
+// enough that we don't hit the DB on every request.
+const JWT_FRESHNESS_MS = 5 * 60 * 1000;
 
 async function clientIpHash(): Promise<string> {
   try {
@@ -84,13 +91,52 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
       return baseUrl;
     },
-    jwt({ token, user }) {
+    async jwt({ token, user }) {
+      // Fresh login: copy claims from the authorize() result and stamp the
+      // freshness clock so we don't immediately re-query the DB.
       if (user) {
         token.userId = user.id!;
         token.role = (user as { role: Role }).role;
         token.username = (user as { username: string }).username;
+        token.lastCheck = Date.now();
+        return token;
       }
-      return token;
+      // PROD-002/003: periodically reconcile the in-flight JWT with the User
+      // row so disabling a user or changing their role takes effect within
+      // ~5 minutes instead of the full 8h JWT TTL.
+      const lastCheck = token.lastCheck ?? 0;
+      if (Date.now() - lastCheck < JWT_FRESHNESS_MS) return token;
+      try {
+        const fresh = await prisma.user.findUnique({
+          where: { id: String(token.userId) },
+          select: { id: true, role: true, isActive: true, username: true },
+        });
+        if (!fresh || !fresh.isActive) {
+          // Returning null invalidates the session; the next auth() call
+          // resolves to no user and the protected route redirects to /login.
+          logger.warn(
+            { userId: token.userId, reason: !fresh ? 'missing' : 'inactive' },
+            'session.revoked'
+          );
+          return null;
+        }
+        if (fresh.role !== token.role) {
+          logger.info(
+            { userId: token.userId, oldRole: token.role, newRole: fresh.role },
+            'session.role_refreshed'
+          );
+          token.role = fresh.role;
+        }
+        token.username = fresh.username;
+        token.lastCheck = Date.now();
+        return token;
+      } catch (err) {
+        // DB hiccup: don't kill the session, just defer the next check by a
+        // short grace window so we retry soon rather than every request.
+        logger.warn({ err: String(err) }, 'session.refresh_failed');
+        token.lastCheck = Date.now() - JWT_FRESHNESS_MS + 30_000;
+        return token;
+      }
     },
     session({ session, token }) {
       session.user.id = String(token.userId);
