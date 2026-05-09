@@ -1,11 +1,13 @@
+import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
-import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon } from 'lucide-react';
+import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil } from 'lucide-react';
 
 export const metadata = { title: 'Customer · NMWC' };
 
@@ -46,6 +48,10 @@ export default async function CustomerProfilePage({
   });
   if (!customer) notFound();
 
+  const canEdit =
+    session.user.role !== Role.VIEWER &&
+    session.user.role !== Role.SUPERVISOR; // supervisors approve, don't edit directly
+
   return (
     <main>
       <PageHeader
@@ -56,6 +62,15 @@ export default async function CustomerProfilePage({
             <PaymentTermsPill terms={customer.paymentTerms} />
             <StatusBadge status={customer.status} />
             <CompletenessRing value={customer.completenessScore} size={48} />
+            {canEdit && (
+              <Link
+                href={`/customers/${customer.id}/edit`}
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+              >
+                <Pencil className="h-4 w-4" />
+                Enrich
+              </Link>
+            )}
           </div>
         }
       />
