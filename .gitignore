@@ -1,0 +1,50 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Next.js
+.next
+out
+build
+dist
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage
+playwright-report
+test-results
+playwright/.cache
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel
+
+# Sentry
+.sentryclirc
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Local R2 cache
+.r2-cache

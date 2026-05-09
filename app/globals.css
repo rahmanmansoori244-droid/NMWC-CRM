@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --brand-600: 37 99 235;
+  }
+  html { -webkit-tap-highlight-color: transparent; }
+  body { font-feature-settings: 'cv11', 'ss01'; }
+}

@@ -1,0 +1,141 @@
+// NMWC Customer Master — Prisma schema
+// Phase 4 spec: docs/TECH-SPEC.md §3
+// This file evolves milestone by milestone. Initial M0/M1 covers users + org hierarchy + channels.
+// Full Customer/Branch/Edit/Attachment/Import models land in M2/M3/M5/M7.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ── ENUMS ────────────────────────────────────────────────
+enum Role {
+  SALESMAN
+  SUPERVISOR
+  MANAGER
+  STEWARD
+  VIEWER
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  APPROVE
+  REJECT
+  IMPORT
+  MERGE
+  REASSIGN
+  CLOSE
+  REACTIVATE
+  LOGIN
+  LOGOUT
+  FORCE_OVERRIDE
+}
+
+// ── ORG HIERARCHY ────────────────────────────────────────
+model Region {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  code      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  routes   Route[]
+  managers User[]   @relation("ManagerRegions")
+}
+
+model Route {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  regionId  String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  region Region @relation(fields: [regionId], references: [id])
+  owner  User?  @relation("RouteOwner")
+
+  @@unique([regionId, code])
+  @@index([regionId])
+}
+
+// ── USERS ────────────────────────────────────────────────
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  fullName     String
+  role         Role
+  isActive     Boolean  @default(true)
+  email        String?  @unique
+  phone        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastLoginAt  DateTime?
+  // Hierarchy
+  supervisorId String?
+  supervisor   User?    @relation("UserHierarchy", fields: [supervisorId], references: [id])
+  reports      User[]   @relation("UserHierarchy")
+  // Salesman owns exactly one route (1:1)
+  ownedRouteId String?  @unique
+  ownedRoute   Route?   @relation("RouteOwner", fields: [ownedRouteId], references: [id])
+  // Manager regions (M:N)
+  managedRegions Region[] @relation("ManagerRegions")
+
+  auditLogs AuditLog[]
+
+  @@index([role, isActive])
+}
+
+// ── CHANNELS (locked taxonomy from PRD Appendix A) ──────
+model Channel {
+  id           String       @id @default(cuid())
+  key          String       @unique // HORECA, MODERN_TRADE, etc.
+  label        String
+  displayOrder Int
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+
+  subChannels  SubChannel[]
+}
+
+model SubChannel {
+  id        String   @id @default(cuid())
+  key       String
+  label     String
+  channelId String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  channel   Channel  @relation(fields: [channelId], references: [id])
+
+  @@unique([channelId, key])
+}
+
+// ── AUDIT (immutable) ────────────────────────────────────
+model AuditLog {
+  id         String      @id @default(cuid())
+  actorId    String
+  action     AuditAction
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  reason     String?
+  ip         String?
+  userAgent  String?
+  at         DateTime    @default(now())
+
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId, at(sort: Desc)])
+  @@index([actorId, at(sort: Desc)])
+  @@index([action, at(sort: Desc)])
+}
