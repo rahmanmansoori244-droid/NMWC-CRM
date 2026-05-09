@@ -11,8 +11,8 @@ export const metadata = { title: 'Imports · NMWC' };
 export default async function ImportPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
-  if (session.user.role !== Role.STEWARD && session.user.role !== Role.MANAGER)
-    redirect('/home');
+  // RBAC-05-009: PRD §4 reserves imports to STEWARD. Manager has no role here.
+  if (session.user.role !== Role.STEWARD) redirect('/home');
 
   const batches = await prisma.importBatch.findMany({
     orderBy: { uploadedAt: 'desc' },

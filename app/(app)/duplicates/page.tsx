@@ -12,9 +12,8 @@ export const metadata = { title: 'Duplicates · NMWC' };
 export default async function DuplicatesPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
-  if (session.user.role !== Role.STEWARD && session.user.role !== Role.MANAGER) {
-    redirect('/home');
-  }
+  // RBAC-05-009: PRD §4 reserves duplicate merge to STEWARD only.
+  if (session.user.role !== Role.STEWARD) redirect('/home');
 
   const candidates = await findDuplicateCandidates(50);
 

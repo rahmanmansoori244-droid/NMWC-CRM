@@ -14,8 +14,8 @@ export default async function ImportBatchPage({
 }) {
   const session = await auth();
   if (!session?.user) redirect('/login');
-  if (session.user.role !== Role.STEWARD && session.user.role !== Role.MANAGER)
-    redirect('/home');
+  // RBAC-05-009: STEWARD-only.
+  if (session.user.role !== Role.STEWARD) redirect('/home');
   const { batchId } = await params;
 
   const batch = await prisma.importBatch.findUnique({
