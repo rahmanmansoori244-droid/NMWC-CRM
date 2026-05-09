@@ -25,9 +25,9 @@ assertAuthSecret();
 // queried username doesn't exist, so attackers cannot distinguish "no such user"
 // from "wrong password" by latency.
 //
-// Generated once via: bcrypt.hash('not-a-real-password', 12)
+// Generated once via: bcrypt.hashSync('not-a-real-password', 12)
 const DUMMY_BCRYPT_HASH =
-  '$2b$12$abcdefghijklmnopqrstuO9G7v0qZP9NfYqXq3iKgGyT8xIwG6m6S';
+  '$2b$12$Y8HEku/bk858NwrptFSON.JoO5GZCKFOj2vays4.6KnHQ8.M8thOO';
 
 const credentialsSchema = z.object({
   username: z.string().min(3).max(50),
