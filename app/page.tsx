@@ -3,5 +3,6 @@ import { redirect } from 'next/navigation';
 
 export default async function RootPage() {
   const session = await auth();
-  redirect(session?.user ? '/home' : '/login');
+  if (!session?.user) redirect('/login');
+  redirect('/home');
 }

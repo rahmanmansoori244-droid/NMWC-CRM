@@ -49,3 +49,4 @@ prisma/*.db-journal
 
 # Local R2 cache
 .r2-cache
+.claude/

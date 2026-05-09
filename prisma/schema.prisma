@@ -1,7 +1,5 @@
 // NMWC Customer Master — Prisma schema
-// Phase 4 spec: docs/TECH-SPEC.md §3
-// This file evolves milestone by milestone. Initial M0/M1 covers users + org hierarchy + channels.
-// Full Customer/Branch/Edit/Attachment/Import models land in M2/M3/M5/M7.
+// Full v1 data model. See docs/TECH-SPEC.md §3.
 
 generator client {
   provider = "prisma-client-js"
@@ -20,6 +18,55 @@ enum Role {
   MANAGER
   STEWARD
   VIEWER
+}
+
+enum PaymentTerms {
+  CASH
+  CREDIT
+}
+
+enum CustomerStatus {
+  ACTIVE
+  CLOSED
+  SUSPENDED
+}
+
+enum DayOfWeek {
+  SAT
+  SUN
+  MON
+  TUE
+  WED
+  THU
+  FRI
+}
+
+enum EditState {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  NEEDS_CORRECTION
+}
+
+enum EditTarget {
+  CUSTOMER
+  BRANCH
+}
+
+enum AttachmentKind {
+  SHOP
+  SIGNBOARD
+  CR
+  FREE
+}
+
+enum ImportRowState {
+  PENDING
+  CLEAN
+  QUARANTINED
+  PROMOTED
+  REJECTED
 }
 
 enum AuditAction {
@@ -47,6 +94,7 @@ model Region {
   updatedAt DateTime @updatedAt
 
   routes   Route[]
+  branches Branch[]
   managers User[]   @relation("ManagerRegions")
 }
 
@@ -59,8 +107,9 @@ model Route {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  region Region @relation(fields: [regionId], references: [id])
-  owner  User?  @relation("RouteOwner")
+  region   Region   @relation(fields: [regionId], references: [id])
+  owner    User?    @relation("RouteOwner")
+  branches Branch[]
 
   @@unique([regionId, code])
   @@index([regionId])
@@ -68,28 +117,37 @@ model Route {
 
 // ── USERS ────────────────────────────────────────────────
 model User {
-  id           String   @id @default(cuid())
-  username     String   @unique
+  id           String    @id @default(cuid())
+  username     String    @unique
   passwordHash String
   fullName     String
   role         Role
-  isActive     Boolean  @default(true)
-  email        String?  @unique
+  isActive     Boolean   @default(true)
+  email        String?   @unique
   phone        String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   lastLoginAt  DateTime?
+
   // Hierarchy
   supervisorId String?
-  supervisor   User?    @relation("UserHierarchy", fields: [supervisorId], references: [id])
-  reports      User[]   @relation("UserHierarchy")
+  supervisor   User?   @relation("UserHierarchy", fields: [supervisorId], references: [id])
+  reports      User[]  @relation("UserHierarchy")
+
   // Salesman owns exactly one route (1:1)
-  ownedRouteId String?  @unique
-  ownedRoute   Route?   @relation("RouteOwner", fields: [ownedRouteId], references: [id])
+  ownedRouteId String? @unique
+  ownedRoute   Route?  @relation("RouteOwner", fields: [ownedRouteId], references: [id])
+
   // Manager regions (M:N)
   managedRegions Region[] @relation("ManagerRegions")
 
-  auditLogs AuditLog[]
+  auditLogs       AuditLog[]
+  submittedEdits  CustomerEdit[] @relation("EditSubmitter")
+  reviewedEdits   CustomerEdit[] @relation("EditReviewer")
+  capturedAttachments Attachment[] @relation("AttachmentCapturer")
+  uploadedImports ImportBatch[]  @relation("ImportUploader")
+  reviewedImports ImportRow[]    @relation("ImportReviewer")
+  requestedExports ExportJob[]   @relation("ExportRequester")
 
   @@index([role, isActive])
 }
@@ -97,13 +155,14 @@ model User {
 // ── CHANNELS (locked taxonomy from PRD Appendix A) ──────
 model Channel {
   id           String       @id @default(cuid())
-  key          String       @unique // HORECA, MODERN_TRADE, etc.
+  key          String       @unique
   label        String
   displayOrder Int
   isActive     Boolean      @default(true)
   createdAt    DateTime     @default(now())
 
-  subChannels  SubChannel[]
+  subChannels SubChannel[]
+  customers   Customer[]
 }
 
 model SubChannel {
@@ -114,9 +173,223 @@ model SubChannel {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  channel   Channel  @relation(fields: [channelId], references: [id])
+  channel   Channel    @relation(fields: [channelId], references: [id])
+  customers Customer[]
 
   @@unique([channelId, key])
+}
+
+// ── CUSTOMER & BRANCH ─────────────────────────────────
+model Customer {
+  id             String       @id @default(cuid())
+  nmwcCode       String       @unique
+  legalName      String
+  paymentTerms   PaymentTerms @default(CASH)
+  crNumber       String?
+  crNumberNorm   String?      // normalized for dedupe
+  channelId      String?
+  subChannelId   String?
+  primaryPhone   String?
+  primaryPhoneNorm String?    // normalized; partial unique index added in migration SQL
+  altPhone       String?
+  contactPerson  String?
+  contactRole    String?
+  status         CustomerStatus @default(ACTIVE)
+  notes          String?      @db.Text
+  completenessScore Int       @default(0)
+
+  // Lineage
+  importBatchId String?
+  importRowId   String? @unique
+
+  // CR photo lives here (legal entity attribute)
+  crPhotoId String? @unique
+
+  // Audit
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  createdById    String?
+  lastEditedById String?
+  deletedAt      DateTime?
+
+  channel    Channel?    @relation(fields: [channelId], references: [id])
+  subChannel SubChannel? @relation(fields: [subChannelId], references: [id])
+  importRow  ImportRow?  @relation(fields: [importRowId], references: [id])
+  crPhoto    Attachment? @relation("CrPhoto", fields: [crPhotoId], references: [id])
+
+  branches Branch[]
+  edits    CustomerEdit[]
+
+  @@index([status, deletedAt])
+  @@index([channelId])
+  @@index([legalName])
+  @@index([paymentTerms])
+}
+
+model Branch {
+  id              String         @id @default(cuid())
+  customerId      String
+  branchCode      String         @unique
+  branchName      String
+  regionId        String
+  routeId         String
+  address         String         @db.Text
+  areaDescription String?        @db.Text
+
+  gpsLat        Float?
+  gpsLng        Float?
+  gpsAccuracy   Float?
+  gpsCapturedAt DateTime?
+
+  dayOfVisit     DayOfWeek?
+  openingHours   String?
+  deliveryWindow String?
+
+  coolersCount      Int @default(0)
+  standsCount       Int @default(0)
+  emptyBottlesCount Int @default(0)
+
+  shopPhotoId      String? @unique
+  signboardPhotoId String? @unique
+
+  status            CustomerStatus @default(ACTIVE)
+  completenessScore Int            @default(0)
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  createdById    String?
+  lastEditedById String?
+  deletedAt      DateTime?
+
+  customer       Customer    @relation(fields: [customerId], references: [id])
+  region         Region      @relation(fields: [regionId], references: [id])
+  route          Route       @relation(fields: [routeId], references: [id])
+  shopPhoto      Attachment? @relation("ShopPhoto", fields: [shopPhotoId], references: [id])
+  signboardPhoto Attachment? @relation("SignboardPhoto", fields: [signboardPhotoId], references: [id])
+
+  extraPhotos Attachment[] @relation("BranchExtraPhotos")
+  edits       CustomerEdit[]
+
+  @@index([routeId, status, deletedAt])
+  @@index([customerId])
+  @@index([regionId])
+}
+
+// ── EDITS / APPROVAL ─────────────────────────────────
+model CustomerEdit {
+  id               String     @id @default(cuid())
+  target           EditTarget
+  customerId       String?
+  branchId         String?
+  state            EditState  @default(DRAFT)
+  submittedById    String
+  submittedAt      DateTime?
+  reviewedById     String?
+  reviewedAt       DateTime?
+  decisionReason   String?    @db.Text
+  decisionCategory String?
+  fieldChanges     Json
+  attachmentChanges Json
+  isReactivation  Boolean    @default(false)
+  isWrongRoute    Boolean    @default(false)
+  newRouteId      String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  customer    Customer? @relation(fields: [customerId], references: [id])
+  branch      Branch?   @relation(fields: [branchId], references: [id])
+  submittedBy User      @relation("EditSubmitter", fields: [submittedById], references: [id])
+  reviewedBy  User?     @relation("EditReviewer", fields: [reviewedById], references: [id])
+
+  @@index([state, submittedAt])
+  @@index([submittedById, state])
+  @@index([customerId, state])
+  @@index([branchId, state])
+}
+
+// ── ATTACHMENTS ──────────────────────────────────────
+model Attachment {
+  id           String         @id @default(cuid())
+  kind         AttachmentKind
+  customerId   String?
+  branchId     String?
+  // Used by Branch.extraPhotos relation
+  branchExtraId String?
+  r2Key        String         @unique
+  mimeType     String
+  bytes        Int
+  width        Int?
+  height       Int?
+  capturedById String
+  capturedAt   DateTime
+  capturedLat  Float?
+  capturedLng  Float?
+  hash         String?
+  createdAt    DateTime       @default(now())
+
+  capturedBy   User    @relation("AttachmentCapturer", fields: [capturedById], references: [id])
+  branchExtra  Branch? @relation("BranchExtraPhotos", fields: [branchExtraId], references: [id])
+
+  // Inverse relations to single-photo slots
+  customerCrPhoto       Customer? @relation("CrPhoto")
+  branchShopPhoto       Branch?   @relation("ShopPhoto")
+  branchSignboardPhoto  Branch?   @relation("SignboardPhoto")
+
+  @@index([branchId])
+  @@index([customerId])
+  @@index([branchExtraId])
+}
+
+// ── IMPORT ──────────────────────────────────────────
+model ImportBatch {
+  id             String      @id @default(cuid())
+  filename       String
+  kind           String      @default("CUSTOMER") // "CUSTOMER" or "ACCOUNT"
+  uploadedById   String
+  uploadedAt     DateTime    @default(now())
+  status         String      // PARSING / READY / PROMOTED / FAILED
+  totalRows      Int         @default(0)
+  cleanRows      Int         @default(0)
+  quarantinedRows Int        @default(0)
+  promotedRows   Int         @default(0)
+  rejectedRows   Int         @default(0)
+
+  uploadedBy User       @relation("ImportUploader", fields: [uploadedById], references: [id])
+  rows       ImportRow[]
+}
+
+model ImportRow {
+  id                 String         @id @default(cuid())
+  batchId            String
+  rowNumber          Int
+  raw                Json
+  parsed             Json?
+  state              ImportRowState @default(PENDING)
+  issues             Json?
+  reviewedById       String?
+  reviewedAt         DateTime?
+  createdAt          DateTime       @default(now())
+
+  batch        ImportBatch @relation(fields: [batchId], references: [id])
+  reviewedBy   User?       @relation("ImportReviewer", fields: [reviewedById], references: [id])
+  promotedCustomer Customer?
+
+  @@index([batchId, state])
+}
+
+// ── EXPORT ──────────────────────────────────────────
+model ExportJob {
+  id            String    @id @default(cuid())
+  requestedById String
+  filters       Json
+  status        String    // PENDING / RUNNING / DONE / FAILED
+  r2Key         String?
+  rowCount      Int?
+  startedAt     DateTime  @default(now())
+  completedAt   DateTime?
+  errorMessage  String?
+
+  requestedBy User @relation("ExportRequester", fields: [requestedById], references: [id])
 }
 
 // ── AUDIT (immutable) ────────────────────────────────────
