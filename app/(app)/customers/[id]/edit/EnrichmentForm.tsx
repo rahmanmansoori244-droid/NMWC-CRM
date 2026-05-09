@@ -6,6 +6,7 @@ import { Role, type CustomerStatus, type DayOfWeek, type PaymentTerms } from '@p
 import { FormSection } from '@/components/nmwc/FormSection';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
+import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import { submitEditAction } from '@/services/edits';
 import { ValidationError, ConflictError } from '@/lib/errors';
 
@@ -23,6 +24,7 @@ type CustomerWithBranches = {
   contactRole: string | null;
   status: CustomerStatus;
   notes: string | null;
+  crPhotoId: string | null;
   branches: Array<{
     id: string;
     branchName: string;
@@ -39,6 +41,8 @@ type CustomerWithBranches = {
     standsCount: number;
     emptyBottlesCount: number;
     status: CustomerStatus;
+    shopPhotoId: string | null;
+    signboardPhotoId: string | null;
     region: { name: string };
     route: { code: string };
   }>;
@@ -285,6 +289,21 @@ export function EnrichmentForm({
           />
           <Field label="NMWC code" value={customer.nmwcCode} onChange={() => {}} disabled mono />
           <div>
+            <label className="mb-1 block text-xs font-medium text-slate-700">CR document photo *</label>
+            <div className="w-48">
+              <PhotoCaptureSlot
+                kind="CR"
+                required
+                initial={
+                  customer.crPhotoId
+                    ? { attachmentId: customer.crPhotoId, remoteUrl: `/api/photos/${customer.crPhotoId}` }
+                    : null
+                }
+                attachTo={{ kind: 'customer', customerId: customer.id, slot: 'CR' }}
+              />
+            </div>
+          </div>
+          <div>
             <label className="mb-1 block text-xs font-medium text-slate-700">Notes</label>
             <textarea
               value={notes}
@@ -470,18 +489,56 @@ export function EnrichmentForm({
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700">
-                  Photos (M3 — coming when Cloudflare R2 is enabled)
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Photos
                 </label>
-                <div className="grid grid-cols-3 gap-2 md:grid-cols-5">
-                  {['Shop', 'Signboard', 'CR', 'Free', 'Free'].map((p, i) => (
-                    <div
-                      key={i}
-                      className="flex h-20 items-center justify-center rounded-md border border-dashed border-slate-300 bg-slate-50 text-[11px] font-medium text-slate-500"
-                    >
-                      {p}
-                    </div>
-                  ))}
+                <p className="mb-2 text-[11px] text-slate-500">
+                  Tap each slot to capture from your camera. Required: shop front, signboard. CR
+                  document (in Identity section above) and 2 free photos optional.
+                </p>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                  <PhotoCaptureSlot
+                    kind="SHOP"
+                    required
+                    capturedLat={s.gps?.lat}
+                    capturedLng={s.gps?.lng}
+                    initial={
+                      b.shopPhotoId
+                        ? {
+                            attachmentId: b.shopPhotoId,
+                            remoteUrl: `/api/photos/${b.shopPhotoId}`,
+                          }
+                        : null
+                    }
+                    attachTo={{ kind: 'branch', branchId: b.id, slot: 'SHOP' }}
+                  />
+                  <PhotoCaptureSlot
+                    kind="SIGNBOARD"
+                    required
+                    capturedLat={s.gps?.lat}
+                    capturedLng={s.gps?.lng}
+                    initial={
+                      b.signboardPhotoId
+                        ? {
+                            attachmentId: b.signboardPhotoId,
+                            remoteUrl: `/api/photos/${b.signboardPhotoId}`,
+                          }
+                        : null
+                    }
+                    attachTo={{ kind: 'branch', branchId: b.id, slot: 'SIGNBOARD' }}
+                  />
+                  <PhotoCaptureSlot
+                    kind="FREE"
+                    capturedLat={s.gps?.lat}
+                    capturedLng={s.gps?.lng}
+                    attachTo={{ kind: 'branch', branchId: b.id, slot: 'FREE' }}
+                  />
+                  <PhotoCaptureSlot
+                    kind="FREE"
+                    capturedLat={s.gps?.lat}
+                    capturedLng={s.gps?.lng}
+                    attachTo={{ kind: 'branch', branchId: b.id, slot: 'FREE' }}
+                  />
                 </div>
               </div>
             </div>
