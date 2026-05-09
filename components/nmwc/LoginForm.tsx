@@ -1,11 +1,9 @@
 'use client';
 
 import { useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
 import { loginAction } from '@/app/actions/auth';
 
 export function LoginForm() {
-  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
@@ -15,18 +13,16 @@ export function LoginForm() {
     const formData = new FormData(e.currentTarget);
     startTransition(async () => {
       const result = await loginAction(formData);
-      if (result.ok) {
-        router.push('/');
-        router.refresh();
-      } else {
-        setError(result.error);
-      }
+      if (result && !result.ok) setError(result.error);
+      // On success: Auth.js redirects via NEXT_REDIRECT; this code does not run.
     });
   }
-  const submitting = pending;
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4 rounded-lg bg-white p-6 shadow-sm ring-1 ring-slate-200">
+    <form
+      onSubmit={onSubmit}
+      className="space-y-4 rounded-lg bg-white p-6 shadow-sm ring-1 ring-slate-200"
+    >
       <div>
         <label htmlFor="username" className="mb-1 block text-sm font-medium text-slate-700">
           Username
@@ -60,10 +56,10 @@ export function LoginForm() {
       )}
       <button
         type="submit"
-        disabled={submitting}
+        disabled={pending}
         className="block w-full rounded-md bg-brand-600 px-4 py-3 text-base font-semibold text-white shadow-sm transition hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-300"
       >
-        {submitting ? 'Signing in…' : 'Sign in'}
+        {pending ? 'Signing in…' : 'Sign in'}
       </button>
     </form>
   );

@@ -9,9 +9,9 @@ const loginSchema = z.object({
   password: z.string().min(1).max(200),
 });
 
-export type LoginResult = { ok: true } | { ok: false; error: string };
+export type LoginResult = { ok: false; error: string };
 
-export async function loginAction(formData: FormData): Promise<LoginResult> {
+export async function loginAction(formData: FormData): Promise<LoginResult | void> {
   const parsed = loginSchema.safeParse({
     username: formData.get('username'),
     password: formData.get('password'),
@@ -24,17 +24,17 @@ export async function loginAction(formData: FormData): Promise<LoginResult> {
     await signIn('credentials', {
       username: parsed.data.username,
       password: parsed.data.password,
-      redirect: false,
+      redirectTo: '/home',
     });
-    return { ok: true };
-  } catch (err) {
-    if (err instanceof AuthError) {
+  } catch (error) {
+    if (error instanceof AuthError) {
       return { ok: false, error: 'Invalid username or password.' };
     }
-    throw err;
+    // NEXT_REDIRECT must bubble up so Next.js performs the redirect.
+    throw error;
   }
 }
 
 export async function logoutAction() {
-  await signOut({ redirect: false });
+  await signOut({ redirectTo: '/login' });
 }
