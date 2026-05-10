@@ -7,7 +7,7 @@ This is the operator's manual: what to do when something breaks, how to deploy, 
 ## 1. Production URL
 
 - App: **https://nmwc-cm.vercel.app** (Vercel-issued; custom domain TBD)
-- Health: https://nmwc-cm.vercel.app/api/health → returns `{app, db, r2}` checks
+- Health: https://nmwc-cm.vercel.app/api/health → public callers always see `{ "status": "ok" }` with HTTP 200 (B-12; no information leak about DB/R2 state). Authenticated monitoring with `Authorization: Bearer $HEALTH_BEARER` gets the full `{app, db, r2}` checks payload and a 503 status when any check fails.
 
 ## 2. Where data lives
 
@@ -72,8 +72,32 @@ Vercel's build pipeline runs `prisma generate` automatically (configured in `pac
 ## 6. Backups
 
 - **Neon PITR:** point-in-time recovery, 7 days on the Launch plan.
+- **Off-Neon daily dump (B-01):** GitHub Actions workflow `.github/workflows/db-backup.yml` runs at 02:00 UTC daily and on manual dispatch. It `pg_dump`s `DIRECT_URL` (`--no-owner --no-privileges --format=plain --no-unlogged-table-data`), gzips, and uploads to R2 bucket `nmwc-backups` at key `db/<YYYY-MM-DD>.sql.gz`. Failures (any non-zero exit from pg_dump or aws s3 cp) surface as a red workflow run.
+  - **Required GitHub secrets:** `DIRECT_URL`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET=nmwc-backups`. For the restore-drill job: also `NEON_API_KEY`, `NEON_PROJECT_ID=snowy-haze-29025382`.
+  - **Restore drill:** `Actions → DB Backup → Run workflow` runs the `restore-drill` job, which downloads the most recent dump and restores it into a Neon branch named `restore-drill-<DATE>`. After verifying, delete the branch in the Neon console (it costs storage, not free).
 - **Manual logical dump:** `npx prisma db pull` exports schema; for data, run `pg_dump` against `DIRECT_URL`.
 - **R2 photos:** R2 has 11 nines durability; we keep originals indefinitely. To take a copy, use `rclone copy r2:nmwc-photos /backup/path` (configure rclone with the same R2 keys).
+
+### R2 backup & versioning
+
+Two independent buckets, each with its own lifecycle policy.
+
+**`nmwc-photos` (production photo storage)** — operator must configure once in the Cloudflare R2 dashboard:
+
+1. **Object Versioning:** enable on the bucket. This way, if the photo-gc cron tags an object incorrectly or someone overwrites a key, the previous version is recoverable.
+2. **Lifecycle rule — `gc-marked` expiry:** `nmwc-photos` → Settings → Lifecycle rules → "Add rule":
+   - Condition: object tag `gc-marked=true`.
+   - Action: expire objects 7 days after the tag is applied.
+   - Why: `app/api/cron/photo-gc/route.ts` no longer hard-deletes from R2 (B-02). Instead it tags soft-deleted attachments with `gc-marked=true` and `gc-marked-at=<isoDate>`. The bucket lifecycle is what permanently removes them, leaving a 7-day window to recover from a faulty cron run or operator mistake.
+3. **Optional non-current version expiry:** with versioning on, set non-current versions to expire after 30 days so old overwrites don't accumulate forever.
+
+**`nmwc-backups` (off-Neon SQL dumps from B-01)** — operator must configure once:
+
+1. **Lifecycle rule — 30-day retention:** `nmwc-backups` → Settings → Lifecycle rules → "Add rule":
+   - Condition: object age greater than 30 days under prefix `db/`.
+   - Action: delete.
+2. **No versioning needed** — dumps are immutable per-day artifacts; `db/<DATE>.sql.gz` is overwritten only if a same-day re-run happens.
+3. **Separate credentials from `nmwc-photos`.** The GitHub Actions workflow uses `BACKUP_R2_*` secrets, never the production photo R2 keys. Compromise of one bucket does not expose the other.
 
 ## 7. Common operations
 
@@ -108,6 +132,10 @@ The rotation is audit-logged.
 ## 8. Incident playbook
 
 ### Symptom: `/api/health` returns degraded
+Public `/api/health` always returns 200 + `{ "status": "ok" }` (B-12). To see real status, hit it with `Authorization: Bearer $HEALTH_BEARER`:
+```bash
+curl -fsSL -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health | jq
+```
 - `db: fail` → Neon project may be sleeping (free tier auto-suspends). Hit any page; first load wakes it. If persistent: check Neon console.
 - `r2: fail` → check R2 bucket exists and the API token isn't revoked. Test: `curl -X HEAD https://<account>.r2.cloudflarestorage.com/nmwc-photos -H "Authorization: ..."`.
 

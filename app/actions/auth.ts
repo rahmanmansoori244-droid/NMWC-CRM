@@ -7,6 +7,7 @@ import { headers } from 'next/headers';
 import { checkLimit, LOGIN_LIMIT } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/db';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 const loginSchema = z.object({
   username: z.string().min(3).max(50),
@@ -80,6 +81,17 @@ export async function logoutAction() {
         where: { id: session.user.id },
         data: { sessionsRevokedAt: new Date() },
       });
+      // B-04: emit a LOGOUT audit row so the audit trail captures explicit
+      // sign-outs (vs. session-revoked-via-marker, which is logged only).
+      try {
+        await writeAudit(null, await getAuditEnvelope(session.user.id), {
+          action: 'LOGOUT',
+          entityType: 'User',
+          entityId: session.user.id,
+        });
+      } catch (err) {
+        logger.warn({ err: String(err), userId: session.user.id }, 'audit.logout.failed');
+      }
     }
   } catch (err) {
     logger.warn({ err: String(err) }, 'logout.revoke_failed');

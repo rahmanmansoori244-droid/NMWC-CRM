@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role } from '@prisma/client';
+import { Role, type Prisma } from '@prisma/client';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import {
@@ -15,6 +15,7 @@ import { auth } from '@/lib/auth';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { canMutateUser } from '@/lib/permissions';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 async function requireManager() {
   const session = await auth();
@@ -157,14 +158,11 @@ async function createUserCore(formData: FormData) {
     throw err;
   }
 
-  await prisma.auditLog.create({
-    data: {
-      actorId: me.id,
-      action: 'CREATE',
-      entityType: 'User',
-      entityId: user.id,
-      after: { username: user.username, role: user.role },
-    },
+  await writeAudit(null, await getAuditEnvelope(me.id), {
+    action: 'CREATE',
+    entityType: 'User',
+    entityId: user.id,
+    after: { username: user.username, role: user.role },
   });
   logger.info({ actorId: me.id, userId: user.id, role: user.role }, 'user.create');
 
@@ -224,16 +222,13 @@ async function toggleUserActiveCore(formData: FormData) {
     },
   });
 
-  await prisma.auditLog.create({
-    data: {
-      actorId: me.id,
-      action: 'UPDATE',
-      entityType: 'User',
-      entityId: userId,
-      before: { isActive: user.isActive },
-      after: { isActive: updated.isActive },
-      reason: newActive ? 'enabled' : 'disabled',
-    },
+  await writeAudit(null, await getAuditEnvelope(me.id), {
+    action: 'UPDATE',
+    entityType: 'User',
+    entityId: userId,
+    before: { isActive: user.isActive },
+    after: { isActive: updated.isActive },
+    reason: newActive ? 'enabled' : 'disabled',
   });
   revalidatePath('/users');
 }
@@ -265,23 +260,29 @@ async function resetPasswordCore(formData: FormData) {
   );
   if (!guard.ok) throw new ForbiddenError(guard.reason);
 
+  // B-15: refuse reuse against the target's last 5 historical hashes AND
+  // their current hash (the current hash is not yet in history).
+  await assertPasswordNotReused(userId, target.passwordHash, parsed.data);
+
   const passwordHash = await bcrypt.hash(parsed.data, 12);
-  await prisma.user.update({
-    where: { id: userId },
-    data: {
-      passwordHash,
-      mustChangePassword: true,
-      sessionsRevokedAt: new Date(),
-    },
-  });
-  await prisma.auditLog.create({
-    data: {
-      actorId: me.id,
+  const env = await getAuditEnvelope(me.id);
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        passwordHash,
+        mustChangePassword: true,
+        sessionsRevokedAt: new Date(),
+      },
+    });
+    // B-15: stash the OLD hash in PasswordHistory and prune to 5 entries.
+    await rotatePasswordHistory(tx, userId, target.passwordHash);
+    await writeAudit(tx, env, {
       action: 'UPDATE',
       entityType: 'User',
       entityId: userId,
       reason: 'password_reset',
-    },
+    });
   });
   revalidatePath('/users');
 }
@@ -394,16 +395,13 @@ async function updateUserRoleCore(formData: FormData) {
       sessionsRevokedAt: new Date(),
     },
   });
-  await prisma.auditLog.create({
-    data: {
-      actorId: me.id,
-      action: 'UPDATE',
-      entityType: 'User',
-      entityId: userId,
-      before: { role: target.role, ownedRouteId: target.ownedRouteId },
-      after: { role: newRole, ownedRouteId: resolvedRouteId },
-      reason: 'role_change',
-    },
+  await writeAudit(null, await getAuditEnvelope(me.id), {
+    action: 'UPDATE',
+    entityType: 'User',
+    entityId: userId,
+    before: { role: target.role, ownedRouteId: target.ownedRouteId },
+    after: { role: newRole, ownedRouteId: resolvedRouteId },
+    reason: 'role_change',
   });
   revalidatePath('/users');
 }
@@ -445,23 +443,101 @@ async function changeOwnPasswordCore(formData: FormData) {
   if (parsed.data.currentPassword === parsed.data.newPassword) {
     throw new ValidationError({ newPassword: 'New password must differ from current.' });
   }
+  // B-15: also reject if the chosen new password matches any of the last
+  // 5 hashes for this user. The current hash is checked above (current ===
+  // new short-circuits earlier), so only history needs checking here.
+  await assertPasswordNotReused(me.id, me.passwordHash, parsed.data.newPassword);
+
   const passwordHash = await bcrypt.hash(parsed.data.newPassword, 12);
-  await prisma.user.update({
-    where: { id: me.id },
-    data: {
-      passwordHash,
-      mustChangePassword: false,
-      sessionsRevokedAt: new Date(),
-    },
-  });
-  await prisma.auditLog.create({
-    data: {
-      actorId: me.id,
+  const env = await getAuditEnvelope(me.id);
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: me.id },
+      data: {
+        passwordHash,
+        mustChangePassword: false,
+        sessionsRevokedAt: new Date(),
+      },
+    });
+    // B-15: stash the OLD hash in PasswordHistory and prune to 5 entries.
+    await rotatePasswordHistory(tx, me.id, me.passwordHash);
+    await writeAudit(tx, env, {
       action: 'UPDATE',
       entityType: 'User',
       entityId: me.id,
       reason: 'self_password_change',
-    },
+    });
   });
   revalidatePath('/profile');
+}
+
+/**
+ * B-15: Password reuse prevention.
+ *
+ * Walks the user's last 5 PasswordHistory rows AND the user's current hash,
+ * comparing each against the proposed plaintext. We compare against current
+ * as well as history because the current hash isn't moved into history
+ * until after a successful change — without that check, a user could
+ * "rotate" to the same password they already have.
+ *
+ * bcrypt.compare is intentionally serial (we await each one). Five
+ * sequential bcrypt compares at cost-12 is ~250-500ms total — fine for an
+ * interactive password-change form, and parallelising leaks little.
+ */
+async function assertPasswordNotReused(
+  userId: string,
+  currentHash: string,
+  proposedPlain: string
+): Promise<void> {
+  if (await bcrypt.compare(proposedPlain, currentHash)) {
+    throw new ValidationError({
+      password: 'You cannot reuse one of your last 5 passwords.',
+      newPassword: 'You cannot reuse one of your last 5 passwords.',
+    });
+  }
+  const recent = await prisma.passwordHistory.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+    select: { hash: true },
+  });
+  for (const row of recent) {
+    if (await bcrypt.compare(proposedPlain, row.hash)) {
+      throw new ValidationError({
+        password: 'You cannot reuse one of your last 5 passwords.',
+        newPassword: 'You cannot reuse one of your last 5 passwords.',
+      });
+    }
+  }
+}
+
+/**
+ * B-15: Push the user's previous hash onto PasswordHistory and prune so
+ * only the most recent 5 rows remain. Runs inside the same transaction
+ * as the User.update so a partial failure doesn't desync.
+ */
+async function rotatePasswordHistory(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  oldHash: string
+): Promise<void> {
+  await tx.passwordHistory.create({
+    data: { userId, hash: oldHash },
+  });
+  // Find the cutoff: the 6th-most-recent row (index 5). Anything
+  // strictly older is pruned. Keeps the table at ≤5 rows per user.
+  const keepers = await tx.passwordHistory.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+    select: { id: true },
+  });
+  if (keepers.length === 5) {
+    await tx.passwordHistory.deleteMany({
+      where: {
+        userId,
+        id: { notIn: keepers.map((k) => k.id) },
+      },
+    });
+  }
 }

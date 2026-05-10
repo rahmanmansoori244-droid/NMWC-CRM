@@ -60,6 +60,29 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCan
     },
   });
 
+  // B-23 (Senior-audit 2026-05-10): Honor dismissed pairs from the steward
+  // audit trail. dismissDuplicateCore writes an AuditLog row with
+  // entityType='CustomerPair' and entityId='aId|bId'. Pull the union of those
+  // keys and skip any pair the detector would otherwise re-surface — without
+  // this, the same false-positive pair haunts the steward queue forever.
+  // Stores both order permutations because the dismiss path doesn't sort the
+  // pair before keying.
+  const dismissedAuditRows = await prisma.auditLog.findMany({
+    where: { entityType: 'CustomerPair' },
+    select: { entityId: true },
+  });
+  const dismissedKeys = new Set<string>();
+  for (const r of dismissedAuditRows) {
+    if (!r.entityId.includes('|')) continue;
+    const [a, b] = r.entityId.split('|');
+    if (a && b) {
+      dismissedKeys.add(`${a}|${b}`);
+      dismissedKeys.add(`${b}|${a}`);
+    }
+  }
+  const isDismissed = (a: string, b: string) =>
+    dismissedKeys.has(`${a}|${b}`) || dismissedKeys.has(`${b}|${a}`);
+
   const out: DuplicateCandidate[] = [];
 
   // Index by phone + CR
@@ -84,6 +107,7 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCan
     a: (typeof customers)[number],
     b: (typeof customers)[number]
   ) {
+    if (isDismissed(a.id, b.id)) return; // B-23
     out.push({
       reason,
       similarity,

@@ -85,7 +85,7 @@ export default async function CustomerProfilePage({
             {canEdit && (
               <Link
                 href={`/customers/${customer.id}/edit`}
-                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-brand-700"
               >
                 <Pencil className="h-4 w-4" />
                 Enrich
@@ -130,12 +130,12 @@ export default async function CustomerProfilePage({
             {customer.branches.map((b) => (
               <article
                 key={b.id}
-                className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm"
+                className="rounded-md border border-slate-200 bg-slate-50 p-4 text-base"
               >
                 <header className="mb-2 flex items-start justify-between gap-2">
                   <div>
                     <h3 className="font-semibold text-slate-900">{b.branchName}</h3>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-sm text-slate-500">
                       {b.branchCode} · {b.region.name} · {b.route.name}
                     </p>
                   </div>
@@ -178,7 +178,7 @@ export default async function CustomerProfilePage({
 
         {customer.edits.length > 0 && (
           <Section title="Recent activity" className="lg:col-span-2">
-            <ul className="divide-y divide-slate-200 text-sm">
+            <ul className="divide-y divide-slate-200 text-base">
               {customer.edits.map((e) => (
                 <li key={e.id} className="flex items-start justify-between gap-3 py-2">
                   <div className="min-w-0">
@@ -186,7 +186,7 @@ export default async function CustomerProfilePage({
                       {e.submittedBy.fullName} submitted{' '}
                       {Array.isArray(e.fieldChanges) ? e.fieldChanges.length : 0} change(s)
                     </div>
-                    <div className="text-xs text-slate-500">
+                    <div className="text-sm text-slate-500">
                       {e.submittedAt?.toLocaleString('en-GB') ?? 'draft'}
                     </div>
                   </div>
@@ -212,7 +212,7 @@ function Section({
 }) {
   return (
     <section className={`rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200 ${className ?? ''}`}>
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">{title}</h2>
+      <h2 className="mb-3 text-base font-semibold uppercase tracking-wide text-slate-500">{title}</h2>
       <dl className="grid gap-2">{children}</dl>
     </section>
   );
@@ -230,10 +230,10 @@ function Row({
   icon?: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[120px_1fr] items-start gap-2 text-sm">
+    <div className="grid grid-cols-[120px_1fr] items-start gap-2 text-base">
       <dt className="text-slate-500">{label}</dt>
       <dd
-        className={`flex items-start gap-2 break-words text-slate-900 ${mono ? 'font-mono text-[13px]' : ''}`}
+        className={`flex items-start gap-2 break-words text-slate-900 ${mono ? 'font-mono text-[15px]' : ''}`}
       >
         {icon}
         <span>{value}</span>
@@ -244,15 +244,15 @@ function Row({
 
 function PhotoRow({ label, photo }: { label: string; photo: { id: string } | null }) {
   return (
-    <div className="grid grid-cols-[120px_1fr] items-start gap-2 text-sm">
+    <div className="grid grid-cols-[120px_1fr] items-start gap-2 text-base">
       <dt className="text-slate-500">{label}</dt>
       <dd>
         {photo ? (
-          <span className="inline-flex items-center gap-2 rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
+          <span className="inline-flex items-center gap-2 rounded-md bg-emerald-50 px-2 py-1 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200">
             <Camera className="h-3 w-3" /> Captured
           </span>
         ) : (
-          <span className="inline-flex items-center gap-2 rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-500">
+          <span className="inline-flex items-center gap-2 rounded-md bg-slate-100 px-2 py-1 text-sm text-slate-500">
             <ImageIcon className="h-3 w-3" /> Missing
           </span>
         )}
@@ -264,7 +264,7 @@ function PhotoRow({ label, photo }: { label: string; photo: { id: string } | nul
 function PhotoTile({ label, photo }: { label: string; photo: { id: string } | null }) {
   return (
     <div
-      className={`flex h-16 flex-1 items-center justify-center rounded-md border text-xs font-medium ${
+      className={`flex h-16 flex-1 items-center justify-center rounded-md border text-sm font-medium ${
         photo
           ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
           : 'border-dashed border-slate-300 bg-slate-50 text-slate-400'

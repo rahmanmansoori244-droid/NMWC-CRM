@@ -342,12 +342,12 @@ export function EnrichmentForm({
   return (
     <div className="space-y-4 p-4 sm:p-6">
       {info && (
-        <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200">
+        <div className="rounded-md bg-emerald-50 px-3 py-2 text-base font-medium text-emerald-700 ring-1 ring-emerald-200">
           {info}
         </div>
       )}
       {errors._form && (
-        <div className="rounded-md bg-red-50 px-3 py-2 text-sm font-medium text-red-700 ring-1 ring-red-200">
+        <div className="rounded-md bg-red-50 px-3 py-2 text-base font-medium text-red-700 ring-1 ring-red-200">
           {errors._form}
         </div>
       )}
@@ -375,7 +375,7 @@ export function EnrichmentForm({
           />
           <Field label="NMWC code" value={customer.nmwcCode} onChange={() => {}} disabled mono />
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">CR document photo *</label>
+            <label className="mb-1 block text-sm font-medium text-slate-700">CR document photo *</label>
             <div className="w-48">
               <PhotoCaptureSlot
                 kind="CR"
@@ -390,12 +390,12 @@ export function EnrichmentForm({
             </div>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">Notes</label>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Notes</label>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.currentTarget.value)}
               maxLength={5000}
-              className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
+              className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
               rows={3}
             />
           </div>
@@ -405,14 +405,14 @@ export function EnrichmentForm({
       <FormSection title="Channel & classification">
         <div className="grid gap-3 md:grid-cols-2">
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">Channel *</label>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Channel *</label>
             <select
               value={channelId}
               onChange={(e) => {
                 setChannelId(e.currentTarget.value);
                 setSubChannelId('');
               }}
-              className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
+              className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm"
             >
               <option value="">— Pick a channel —</option>
               {channels.map((c) => (
@@ -423,12 +423,12 @@ export function EnrichmentForm({
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">Sub-channel *</label>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Sub-channel *</label>
             <select
               value={subChannelId}
               onChange={(e) => setSubChannelId(e.currentTarget.value)}
               disabled={!channelId}
-              className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm disabled:bg-slate-100"
+              className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm disabled:bg-slate-100"
             >
               <option value="">— Pick a sub-channel —</option>
               {subChannels.map((s) => (
@@ -443,11 +443,11 @@ export function EnrichmentForm({
               close-shop / reactivation actions on the customer profile. */}
           {userRole !== Role.SALESMAN && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-700">Status</label>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Status</label>
               <select
                 value={status}
                 onChange={(e) => setStatus(e.currentTarget.value as CustomerStatus)}
-                className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
+                className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm"
               >
                 <option value="ACTIVE">Active</option>
                 <option value="CLOSED">Closed</option>
@@ -510,7 +510,7 @@ export function EnrichmentForm({
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700">
+                <label className="mb-1 block text-sm font-medium text-slate-700">
                   Location * (required to submit)
                 </label>
                 <GpsCaptureButton
@@ -522,13 +522,13 @@ export function EnrichmentForm({
 
               <div className="grid gap-3 md:grid-cols-3">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-700">Day of visit</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Day of visit</label>
                   <select
                     value={s.dayOfVisit}
                     onChange={(e) =>
                       setBranch(b.id, { dayOfVisit: e.currentTarget.value as DayOfWeek | '' })
                     }
-                    className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
+                    className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm"
                   >
                     <option value="">—</option>
                     {DAYS.map((d) => (
@@ -553,7 +553,7 @@ export function EnrichmentForm({
               </div>
 
               <div>
-                <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <label className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500">
                   Equipment at the shop
                 </label>
                 <div className="grid gap-2 md:grid-cols-3">
@@ -580,10 +580,10 @@ export function EnrichmentForm({
               </div>
 
               <div>
-                <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <label className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500">
                   Photos
                 </label>
-                <p className="mb-2 text-[11px] text-slate-500">
+                <p className="mb-2 text-xs text-slate-500">
                   Tap each slot to capture from your camera. Required: shop front, signboard. CR
                   document (in Identity section above) and 2 free photos optional.
                 </p>
@@ -637,28 +637,33 @@ export function EnrichmentForm({
         );
       })}
 
-      <div className="sticky bottom-0 -mx-4 mt-4 flex items-center justify-between gap-2 border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
-        <button
-          type="button"
-          disabled={pending}
-          onClick={() => submit(true)}
-          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-        >
-          {pending ? 'Saving…' : 'Save draft'}
-        </button>
+      {/* B-25: sticky bar — Submit on the LEFT (left-thumb in market when
+          phone is held in left hand holding the customer profile sheet),
+          Save Draft on the right. gap-3 prevents fat-finger confusion, and
+          mb-3 above the bar gives a 12px safe-zone over the previous content. */}
+      <div className="mb-3" />
+      <div className="sticky bottom-0 -mx-4 mt-4 flex items-center justify-start gap-3 border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
         <button
           type="button"
           disabled={pending || submitBlocked}
           onClick={() => submit(false)}
-          className="rounded-md bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          className="rounded-md bg-brand-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           title={submitTitle}
         >
           {pending ? 'Submitting…' : 'Submit for approval ▶'}
         </button>
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => submit(true)}
+          className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+        >
+          {pending ? 'Saving…' : 'Save draft'}
+        </button>
       </div>
 
       {userRole === Role.SALESMAN && missingMandatory.length > 0 && canSubmit && (
-        <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-200">
+        <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-200">
           <strong className="font-semibold">Cannot submit yet — missing:</strong>{' '}
           {missingMandatory.join(', ')}. Save as a draft and finish the rest before submitting.
         </div>
@@ -686,10 +691,10 @@ function Field({
   mono?: boolean;
   textarea?: boolean;
 }) {
-  const cls = `block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500 ${mono ? 'font-mono text-[13px]' : ''} ${disabled ? 'cursor-not-allowed bg-slate-100' : ''}`;
+  const cls = `block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500 ${mono ? 'font-mono text-[15px]' : ''} ${disabled ? 'cursor-not-allowed bg-slate-100' : ''}`;
   return (
     <div>
-      <label className="mb-1 block text-xs font-medium text-slate-700">{label}</label>
+      <label className="mb-1 block text-sm font-medium text-slate-700">{label}</label>
       {textarea ? (
         <textarea
           value={value}
@@ -708,7 +713,7 @@ function Field({
           className={cls}
         />
       )}
-      {error && <p className="mt-0.5 text-[11px] font-medium text-red-600">{error}</p>}
+      {error && <p className="mt-0.5 text-xs font-medium text-red-600">{error}</p>}
     </div>
   );
 }

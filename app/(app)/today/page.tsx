@@ -85,7 +85,7 @@ export default async function TodayPage() {
       </div>
 
       <section className="px-4 py-4 sm:px-6">
-        <h2 className="mb-3 text-sm font-semibold text-slate-700">
+        <h2 className="mb-3 text-base font-semibold text-slate-700">
           Today&apos;s visits ({branches.length})
         </h2>
         {branches.length === 0 ? (
@@ -128,7 +128,7 @@ function Stat({
   return (
     <div className={`rounded-lg ring-1 ring-inset ${toneClass} px-3 py-2.5 text-center`}>
       <div className="text-xl font-bold">{value}</div>
-      <div className="text-[11px] font-medium text-slate-600">{label}</div>
+      <div className="text-xs font-medium text-slate-600">{label}</div>
     </div>
   );
 }

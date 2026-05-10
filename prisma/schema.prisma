@@ -82,6 +82,27 @@ enum AuditAction {
   LOGIN
   LOGOUT
   FORCE_OVERRIDE
+  // Senior-audit B-03/B-04: granular auth + delete + photo-view actions
+  LOGIN_FAIL
+  SESSION_REVOKE
+  DELETE
+  SOFT_DELETE
+  PHOTO_VIEW
+}
+
+enum ImportBatchStatus {
+  PARSING
+  READY
+  PROMOTING
+  PROMOTED
+  FAILED
+}
+
+enum ExportJobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
 }
 
 // ── ORG HIERARCHY ────────────────────────────────────────
@@ -117,21 +138,21 @@ model Route {
 
 // ── USERS ────────────────────────────────────────────────
 model User {
-  id           String    @id @default(cuid())
-  username     String    @unique
-  passwordHash String
-  fullName     String
-  role         Role
-  isActive     Boolean   @default(true)
-  email        String?   @unique
-  phone        String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  lastLoginAt  DateTime?
+  id                 String    @id @default(cuid())
+  username           String    @unique
+  passwordHash       String
+  fullName           String
+  role               Role
+  isActive           Boolean   @default(true)
+  email              String?   @unique
+  phone              String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  lastLoginAt        DateTime?
   // AUTH-12 / AUTH-01 / AUTH-02: bumped on logout, disable, role change, password
   // reset. JWT freshness check rejects tokens whose `iat * 1000` is older than
   // this timestamp. Allows immediate session revocation without an 8h JWT TTL.
-  sessionsRevokedAt DateTime?
+  sessionsRevokedAt  DateTime?
   // AUTH-09: forces redirect to /profile/change-password on next login. Cleared
   // by a successful change-password action.
   mustChangePassword Boolean   @default(false)
@@ -148,25 +169,41 @@ model User {
   // Manager regions (M:N)
   managedRegions Region[] @relation("ManagerRegions")
 
-  auditLogs       AuditLog[]
-  submittedEdits  CustomerEdit[] @relation("EditSubmitter")
-  reviewedEdits   CustomerEdit[] @relation("EditReviewer")
-  capturedAttachments Attachment[] @relation("AttachmentCapturer")
-  uploadedImports ImportBatch[]  @relation("ImportUploader")
-  reviewedImports ImportRow[]    @relation("ImportReviewer")
-  requestedExports ExportJob[]   @relation("ExportRequester")
+  auditLogs           AuditLog[]
+  submittedEdits      CustomerEdit[]    @relation("EditSubmitter")
+  reviewedEdits       CustomerEdit[]    @relation("EditReviewer")
+  capturedAttachments Attachment[]      @relation("AttachmentCapturer")
+  uploadedImports     ImportBatch[]     @relation("ImportUploader")
+  reviewedImports     ImportRow[]       @relation("ImportReviewer")
+  requestedExports    ExportJob[]       @relation("ExportRequester")
+  // B-15: previous password hashes used to block reuse on change-password.
+  passwordHistory     PasswordHistory[]
 
   @@index([role, isActive])
 }
 
+// B-15: Password reuse prevention. New change-password flow rejects any hash
+// that matches the user's most-recent N entries. Service layer prunes old
+// rows; the index supports the "last N for this user" lookup.
+model PasswordHistory {
+  id        String   @id @default(cuid())
+  userId    String
+  hash      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+}
+
 // ── CHANNELS (locked taxonomy from PRD Appendix A) ──────
 model Channel {
-  id           String       @id @default(cuid())
-  key          String       @unique
+  id           String   @id @default(cuid())
+  key          String   @unique
   label        String
   displayOrder Int
-  isActive     Boolean      @default(true)
-  createdAt    DateTime     @default(now())
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
 
   subChannels SubChannel[]
   customers   Customer[]
@@ -188,22 +225,26 @@ model SubChannel {
 
 // ── CUSTOMER & BRANCH ─────────────────────────────────
 model Customer {
-  id             String       @id @default(cuid())
-  nmwcCode       String       @unique
-  legalName      String
-  paymentTerms   PaymentTerms @default(CASH)
-  crNumber       String?
-  crNumberNorm   String?      // normalized for dedupe
-  channelId      String?
-  subChannelId   String?
-  primaryPhone   String?
-  primaryPhoneNorm String?    // normalized; partial unique index added in migration SQL
-  altPhone       String?
-  contactPerson  String?
-  contactRole    String?
-  status         CustomerStatus @default(ACTIVE)
-  notes          String?      @db.Text
-  completenessScore Int       @default(0)
+  id                String         @id @default(cuid())
+  nmwcCode          String         @unique
+  legalName         String
+  paymentTerms      PaymentTerms   @default(CASH)
+  crNumber          String?
+  crNumberNorm      String? // normalized for dedupe
+  channelId         String?
+  subChannelId      String?
+  primaryPhone      String?
+  primaryPhoneNorm  String? // normalized; partial unique index added in migration SQL
+  altPhone          String?
+  contactPerson     String?
+  contactRole       String?
+  status            CustomerStatus @default(ACTIVE)
+  notes             String?        @db.Text
+  completenessScore Int            @default(0)
+
+  // B-05: optimistic locking. Service layer increments on every UPDATE and
+  // includes `version` in the WHERE clause to detect concurrent edits.
+  version Int @default(0)
 
   // Lineage
   importBatchId String?
@@ -234,14 +275,14 @@ model Customer {
 }
 
 model Branch {
-  id              String         @id @default(cuid())
+  id              String  @id @default(cuid())
   customerId      String
-  branchCode      String         @unique
+  branchCode      String  @unique
   branchName      String
   regionId        String
   routeId         String
-  address         String         @db.Text
-  areaDescription String?        @db.Text
+  address         String  @db.Text
+  areaDescription String? @db.Text
 
   gpsLat        Float?
   gpsLng        Float?
@@ -259,12 +300,16 @@ model Branch {
   shopPhotoId      String? @unique
   signboardPhotoId String? @unique
 
-  status            CustomerStatus @default(ACTIVE)
-  completenessScore Int            @default(0)
+  status             CustomerStatus @default(ACTIVE)
+  completenessScore  Int            @default(0)
   // EL-11/EL-12: stamped whenever `status` changes. Reactivation evidence must
   // have `attachment.capturedAt > lastStatusChangeAt`, so a salesman cannot
   // reuse a pre-closure photo to "prove" a reopening.
   lastStatusChangeAt DateTime?
+
+  // B-05: optimistic locking. Service layer increments on every UPDATE and
+  // includes `version` in the WHERE clause to detect concurrent edits.
+  version Int @default(0)
 
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -278,7 +323,7 @@ model Branch {
   shopPhoto      Attachment? @relation("ShopPhoto", fields: [shopPhotoId], references: [id])
   signboardPhoto Attachment? @relation("SignboardPhoto", fields: [signboardPhotoId], references: [id])
 
-  extraPhotos Attachment[] @relation("BranchExtraPhotos")
+  extraPhotos Attachment[]   @relation("BranchExtraPhotos")
   edits       CustomerEdit[]
 
   @@index([routeId, status, deletedAt])
@@ -288,24 +333,24 @@ model Branch {
 
 // ── EDITS / APPROVAL ─────────────────────────────────
 model CustomerEdit {
-  id               String     @id @default(cuid())
-  target           EditTarget
-  customerId       String?
-  branchId         String?
-  state            EditState  @default(DRAFT)
-  submittedById    String
-  submittedAt      DateTime?
-  reviewedById     String?
-  reviewedAt       DateTime?
-  decisionReason   String?    @db.Text
-  decisionCategory String?
-  fieldChanges     Json
+  id                String     @id @default(cuid())
+  target            EditTarget
+  customerId        String?
+  branchId          String?
+  state             EditState  @default(DRAFT)
+  submittedById     String
+  submittedAt       DateTime?
+  reviewedById      String?
+  reviewedAt        DateTime?
+  decisionReason    String?    @db.Text
+  decisionCategory  String?
+  fieldChanges      Json
   attachmentChanges Json
-  isReactivation  Boolean    @default(false)
-  isWrongRoute    Boolean    @default(false)
-  newRouteId      String?
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
+  isReactivation    Boolean    @default(false)
+  isWrongRoute      Boolean    @default(false)
+  newRouteId        String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
 
   customer    Customer? @relation(fields: [customerId], references: [id])
   branch      Branch?   @relation(fields: [branchId], references: [id])
@@ -320,36 +365,36 @@ model CustomerEdit {
 
 // ── ATTACHMENTS ──────────────────────────────────────
 model Attachment {
-  id           String         @id @default(cuid())
-  kind         AttachmentKind
-  customerId   String?
-  branchId     String?
+  id            String         @id @default(cuid())
+  kind          AttachmentKind
+  customerId    String?
+  branchId      String?
   // Used by Branch.extraPhotos relation
   branchExtraId String?
-  r2Key        String         @unique
-  mimeType     String
-  bytes        Int
-  width        Int?
-  height       Int?
-  capturedById String
-  capturedAt   DateTime
-  capturedLat  Float?
-  capturedLng  Float?
-  hash         String?
-  createdAt    DateTime       @default(now())
+  r2Key         String         @unique
+  mimeType      String
+  bytes         Int
+  width         Int?
+  height        Int?
+  capturedById  String
+  capturedAt    DateTime
+  capturedLat   Float?
+  capturedLng   Float?
+  hash          String?
+  createdAt     DateTime       @default(now())
   // UXI-008: real soft-delete column. Replaces the previous "rename r2Key to
   // __deleted__/..." sentinel — every Attachment lookup now filters on
   // `deletedAt: null` so soft-deleted rows can never satisfy fresh-photo or
   // scope checks.
-  deletedAt    DateTime?
+  deletedAt     DateTime?
 
-  capturedBy   User    @relation("AttachmentCapturer", fields: [capturedById], references: [id])
-  branchExtra  Branch? @relation("BranchExtraPhotos", fields: [branchExtraId], references: [id])
+  capturedBy  User    @relation("AttachmentCapturer", fields: [capturedById], references: [id])
+  branchExtra Branch? @relation("BranchExtraPhotos", fields: [branchExtraId], references: [id])
 
   // Inverse relations to single-photo slots
-  customerCrPhoto       Customer? @relation("CrPhoto")
-  branchShopPhoto       Branch?   @relation("ShopPhoto")
-  branchSignboardPhoto  Branch?   @relation("SignboardPhoto")
+  customerCrPhoto      Customer? @relation("CrPhoto")
+  branchShopPhoto      Branch?   @relation("ShopPhoto")
+  branchSignboardPhoto Branch?   @relation("SignboardPhoto")
 
   @@index([branchId])
   @@index([customerId])
@@ -360,36 +405,37 @@ model Attachment {
 
 // ── IMPORT ──────────────────────────────────────────
 model ImportBatch {
-  id             String      @id @default(cuid())
-  filename       String
-  kind           String      @default("CUSTOMER") // "CUSTOMER" or "ACCOUNT"
-  uploadedById   String
-  uploadedAt     DateTime    @default(now())
-  status         String      // PARSING / READY / PROMOTED / FAILED
-  totalRows      Int         @default(0)
-  cleanRows      Int         @default(0)
-  quarantinedRows Int        @default(0)
-  promotedRows   Int         @default(0)
-  rejectedRows   Int         @default(0)
+  id              String            @id @default(cuid())
+  filename        String
+  kind            String            @default("CUSTOMER") // "CUSTOMER" or "ACCOUNT"
+  uploadedById    String
+  uploadedAt      DateTime          @default(now())
+  // B-18: typed status enum (was loose string).
+  status          ImportBatchStatus
+  totalRows       Int               @default(0)
+  cleanRows       Int               @default(0)
+  quarantinedRows Int               @default(0)
+  promotedRows    Int               @default(0)
+  rejectedRows    Int               @default(0)
 
-  uploadedBy User       @relation("ImportUploader", fields: [uploadedById], references: [id])
+  uploadedBy User        @relation("ImportUploader", fields: [uploadedById], references: [id])
   rows       ImportRow[]
 }
 
 model ImportRow {
-  id                 String         @id @default(cuid())
-  batchId            String
-  rowNumber          Int
-  raw                Json
-  parsed             Json?
-  state              ImportRowState @default(PENDING)
-  issues             Json?
-  reviewedById       String?
-  reviewedAt         DateTime?
-  createdAt          DateTime       @default(now())
+  id           String         @id @default(cuid())
+  batchId      String
+  rowNumber    Int
+  raw          Json
+  parsed       Json?
+  state        ImportRowState @default(PENDING)
+  issues       Json?
+  reviewedById String?
+  reviewedAt   DateTime?
+  createdAt    DateTime       @default(now())
 
-  batch        ImportBatch @relation(fields: [batchId], references: [id])
-  reviewedBy   User?       @relation("ImportReviewer", fields: [reviewedById], references: [id])
+  batch            ImportBatch @relation(fields: [batchId], references: [id])
+  reviewedBy       User?       @relation("ImportReviewer", fields: [reviewedById], references: [id])
   promotedCustomer Customer?
 
   @@index([batchId, state])
@@ -408,13 +454,14 @@ model RateLimit {
 
 // ── EXPORT ──────────────────────────────────────────
 model ExportJob {
-  id            String    @id @default(cuid())
+  id            String          @id @default(cuid())
   requestedById String
   filters       Json
-  status        String    // PENDING / RUNNING / DONE / FAILED
+  // B-18: typed status enum (was loose string).
+  status        ExportJobStatus
   r2Key         String?
   rowCount      Int?
-  startedAt     DateTime  @default(now())
+  startedAt     DateTime        @default(now())
   completedAt   DateTime?
   errorMessage  String?
 

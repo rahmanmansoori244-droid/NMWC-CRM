@@ -8,6 +8,7 @@ import { logger } from '@/lib/logger';
 import { Role } from '@prisma/client';
 import { authConfig } from '../auth.config';
 import { checkLimit, LOGIN_LIMIT } from '@/lib/rate-limit';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 // QA-023 / AUTH-17: assert AUTH_SECRET is present, of sufficient length, AND
 // not trivially low-entropy. Length alone (≥32) is a poor proxy — `aaaa…`
@@ -88,6 +89,41 @@ async function clientIpHash(): Promise<string> {
     return ip;
   } catch {
     return 'unknown';
+  }
+}
+
+/**
+ * B-04: Write a LOGIN_FAIL audit row.
+ *
+ * The AuditLog.actorId column has a real FK to User.id, so when the
+ * attempted username doesn't exist in our DB we cannot insert a row
+ * (the FK would reject it). For known users we write the row with both
+ * actorId and entityId set to user.id and `reason` describing the
+ * failure category. For unknown users we drop down to a logger.warn so
+ * the attempt is still captured for log-shipping / SIEM, just not in
+ * the immutable AuditLog table.
+ *
+ * `entityId` accepts the sentinel `'unknown:<username-prefix>'` for the
+ * known-user-but-no-actor case (e.g. rate_limited fired before we even
+ * loaded the user) — but in practice we only call this with a real
+ * userId or the sentinel string, and skip the DB write for sentinels.
+ */
+async function writeLoginFail(entityId: string, reason: string): Promise<void> {
+  try {
+    if (entityId.startsWith('unknown:')) {
+      // No actor row to point at. Captured in logs only.
+      logger.warn({ entityId, reason }, 'login.fail.unknown_user');
+      return;
+    }
+    await writeAudit(null, await getAuditEnvelope(entityId), {
+      action: 'LOGIN_FAIL',
+      entityType: 'User',
+      entityId,
+      reason,
+    });
+  } catch (err) {
+    // Audit failure must never block the auth flow.
+    logger.warn({ err: String(err), entityId, reason }, 'audit.login_fail.failed');
   }
 }
 
@@ -221,6 +257,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             // avoid leaking which usernames are real.
             // Still pay equalized bcrypt cost so timing doesn't out the limit.
             await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
+            // B-04: surface rate-limit hits in the audit trail with a
+            // sentinel entityId so forensics can spot pattern attacks.
+            await writeLoginFail(`unknown:${username.slice(0, 50)}`, 'rate_limited');
             return null;
           }
         }
@@ -236,6 +275,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (isDemo && process.env.DEMO_ACCOUNTS_DISABLED === 'true') {
           await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
           logger.warn({ username }, 'login.demo_disabled');
+          await writeLoginFail(
+            user?.id ?? `unknown:${username.slice(0, 50)}`,
+            'demo_disabled'
+          );
           return null;
         }
 
@@ -243,12 +286,35 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // or not the user exists.
         const hashToCheck = user?.isActive ? user.passwordHash : DUMMY_BCRYPT_HASH;
         const ok = await bcrypt.compare(password, hashToCheck);
-        if (!user || !user.isActive || !ok) return null;
+        if (!user || !user.isActive || !ok) {
+          // B-04: write a LOGIN_FAIL audit row with a category. For an
+          // unknown username we use a sentinel entityId so we can trace the
+          // attempted username for forensics without revealing whether it
+          // existed in any other surface.
+          const entityId = user?.id ?? `unknown:${username.slice(0, 50)}`;
+          const reason = !user ? 'not_found' : !user.isActive ? 'inactive' : 'wrong_password';
+          await writeLoginFail(entityId, reason);
+          return null;
+        }
 
         await prisma.user.update({
           where: { id: user.id },
           data: { lastLoginAt: new Date() },
         });
+
+        // B-04: audit successful logins. The existing logger.info call is
+        // kept so log-shipping continues to see the event.
+        try {
+          await writeAudit(null, await getAuditEnvelope(user.id), {
+            action: 'LOGIN',
+            entityType: 'User',
+            entityId: user.id,
+          });
+        } catch (err) {
+          // A failed audit write must not break the login. We log and
+          // continue — the user gets a session, the operator gets a log.
+          logger.warn({ err: String(err), userId: user.id }, 'audit.login.failed');
+        }
 
         logger.info({ userId: user.id, username: user.username }, 'login.success');
 

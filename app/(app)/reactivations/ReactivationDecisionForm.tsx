@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { approveReactivationAction, rejectReactivationAction } from '@/services/reactivations';
+import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 
 export function ReactivationDecisionForm({ editId }: { editId: string }) {
   const router = useRouter();
@@ -10,9 +11,11 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
   const [showReject, setShowReject] = useState(false);
   const [reason, setReason] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  // B-14: replace window.confirm() with the accessible modal.
+  const [confirmingApprove, setConfirmingApprove] = useState(false);
 
   function approve() {
-    if (!confirm('Reactivate this shop? It goes back to ACTIVE immediately.')) return;
+    setConfirmingApprove(false);
     setErr(null);
     const fd = new FormData();
     fd.set('editId', editId);
@@ -69,7 +72,7 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
           </button>
           <button
             type="button"
-            onClick={approve}
+            onClick={() => setConfirmingApprove(true)}
             disabled={pending}
             className="rounded-md bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-300"
           >
@@ -106,6 +109,17 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
           </div>
         </form>
       )}
+
+      {/* B-14: replace window.confirm() with an accessible modal. */}
+      <ConfirmModal
+        open={confirmingApprove}
+        title="Reactivate this shop?"
+        message="The shop will return to ACTIVE immediately and reappear in the salesman's route."
+        confirmLabel="Reactivate"
+        confirmTone="primary"
+        onConfirm={approve}
+        onCancel={() => setConfirmingApprove(false)}
+      />
     </div>
   );
 }

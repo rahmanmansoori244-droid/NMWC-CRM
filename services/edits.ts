@@ -505,6 +505,18 @@ async function applyEditChanges(
   branches: SubmitEditInput['branches'],
   actorId: string
 ) {
+  // B-05 (Senior-audit 2026-05-10): Optimistic locking on Customer + Branch.
+  // We re-read `version` inside the tx (Read Committed sees the latest
+  // committed value at statement time) and the updateMany then atomically
+  // checks version-match while bumping. If a concurrent direct-write or
+  // approve already committed against this customer/branch, count=0 and we
+  // throw VERSION_CONFLICT — the actor sees an actionable message instead of
+  // silently last-write-wins.
+  //
+  // The PROD-001 atomic-claim on CustomerEdit prevents two supervisors from
+  // approving the same edit in parallel; this protects the orthogonal race —
+  // a Manager direct-write landing simultaneously with a Supervisor approve.
+
   // Build customer update payload
   const updateCustomer: Record<string, unknown> = {};
   for (const f of CUSTOMER_FIELDS) {
@@ -516,13 +528,23 @@ async function applyEditChanges(
   }
   if (Object.keys(updateCustomer).length > 0) {
     updateCustomer.lastEditedById = actorId;
-    await tx.customer.update({
+    const currentCustomer = await tx.customer.findUniqueOrThrow({
       where: { id: customerId },
-      data: updateCustomer as Prisma.CustomerUpdateInput,
+      select: { version: true },
     });
+    const customerResult = await tx.customer.updateMany({
+      where: { id: customerId, version: currentCustomer.version },
+      data: { ...updateCustomer, version: { increment: 1 } } as Prisma.CustomerUpdateManyMutationInput,
+    });
+    if (customerResult.count === 0) {
+      throw new ConflictError(
+        'VERSION_CONFLICT',
+        'This customer was modified by someone else while your changes were processing. Refresh and try again.'
+      );
+    }
   }
 
-  // Branches
+  // Branches — same versioned-updateMany pattern per branch.
   for (const bp of branches) {
     const branchUpdate: Record<string, unknown> = {};
     for (const f of BRANCH_FIELDS) {
@@ -532,22 +554,26 @@ async function applyEditChanges(
     }
     if (Object.keys(branchUpdate).length === 0) continue;
     branchUpdate.lastEditedById = actorId;
+    const currentBranch = await tx.branch.findUniqueOrThrow({
+      where: { id: bp.branchId },
+      select: { version: true, status: true },
+    });
     // EL-11/EL-12: stamp lastStatusChangeAt whenever status actually changes
     // so reactivation evidence freshness is anchored to the closure event,
     // not just calendar time.
-    if (branchUpdate.status !== undefined) {
-      const current = await tx.branch.findUnique({
-        where: { id: bp.branchId },
-        select: { status: true },
-      });
-      if (current && current.status !== branchUpdate.status) {
-        branchUpdate.lastStatusChangeAt = new Date();
-      }
+    if (branchUpdate.status !== undefined && currentBranch.status !== branchUpdate.status) {
+      branchUpdate.lastStatusChangeAt = new Date();
     }
-    await tx.branch.update({
-      where: { id: bp.branchId },
-      data: branchUpdate as Prisma.BranchUpdateInput,
+    const branchResult = await tx.branch.updateMany({
+      where: { id: bp.branchId, version: currentBranch.version },
+      data: { ...branchUpdate, version: { increment: 1 } } as Prisma.BranchUpdateManyMutationInput,
     });
+    if (branchResult.count === 0) {
+      throw new ConflictError(
+        'VERSION_CONFLICT',
+        'A branch was modified by someone else while your changes were processing. Refresh and try again.'
+      );
+    }
   }
 
   // Recompute completeness
@@ -783,6 +809,114 @@ async function approveEditCore(formData: FormData) {
   revalidatePath(`/approvals`);
   revalidatePath(`/work`);
   revalidatePath(`/customers/${edit.customerId}`);
+}
+
+/**
+ * B-11 (Senior-audit 2026-05-10): Bulk approve. Reviewer multi-selects edits
+ * in the queue and approves them in one round trip. Each edit goes through
+ * `approveEditAction` in its own transaction, so partial failures (a single
+ * VERSION_CONFLICT, NEEDS_REUPLOAD, DUPLICATE_PHONE, etc.) don't block the
+ * other approvals. The result reports per-edit outcomes so the form can
+ * surface "12 approved, 1 needs your attention" inline.
+ *
+ * Hard cap: 50 edits per call to bound the round-trip and keep approveEditCore
+ * isolated transactions sane on Neon.
+ */
+export async function bulkApproveEditsAction(
+  formData: FormData
+): SafeAction<{
+  successes: string[];
+  failures: Array<{ editId: string; code: string; message: string }>;
+}> {
+  return runAction(async () => {
+    await requireUser();
+    const raw = String(formData.get('editIds') ?? '[]');
+    let editIds: string[];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('not an array');
+      editIds = parsed.map((x) => String(x));
+    } catch {
+      throw new ValidationError({ editIds: 'editIds must be a JSON array of strings.' });
+    }
+    if (editIds.length === 0) {
+      throw new ValidationError({ editIds: 'Pick at least one edit.' });
+    }
+    if (editIds.length > 50) {
+      throw new ValidationError({ editIds: 'Bulk limit is 50 edits per call.' });
+    }
+    const successes: string[] = [];
+    const failures: Array<{ editId: string; code: string; message: string }> = [];
+    for (const editId of editIds) {
+      const fd = new FormData();
+      fd.set('editId', editId);
+      const res = await approveEditAction(fd);
+      if (res.ok) {
+        successes.push(editId);
+      } else {
+        failures.push({ editId, code: res.code, message: res.message });
+      }
+    }
+    logger.info(
+      { successes: successes.length, failures: failures.length },
+      'edit.bulk.approve'
+    );
+    return { successes, failures };
+  });
+}
+
+/**
+ * B-11: Bulk reject. Same shape as bulkApprove but applies a single
+ * `category` + `reason` to every selected edit.
+ */
+export async function bulkRejectEditsAction(
+  formData: FormData
+): SafeAction<{
+  successes: string[];
+  failures: Array<{ editId: string; code: string; message: string }>;
+}> {
+  return runAction(async () => {
+    await requireUser();
+    const raw = String(formData.get('editIds') ?? '[]');
+    const reason = String(formData.get('reason') ?? '').trim();
+    const category = String(formData.get('category') ?? 'other').trim();
+    if (reason.length < 5 || reason.length > 1000) {
+      throw new ValidationError({ reason: 'Reason must be 5–1000 characters.' });
+    }
+    let editIds: string[];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('not an array');
+      editIds = parsed.map((x) => String(x));
+    } catch {
+      throw new ValidationError({ editIds: 'editIds must be a JSON array of strings.' });
+    }
+    if (editIds.length === 0) {
+      throw new ValidationError({ editIds: 'Pick at least one edit.' });
+    }
+    if (editIds.length > 50) {
+      throw new ValidationError({ editIds: 'Bulk limit is 50 edits per call.' });
+    }
+    const successes: string[] = [];
+    const failures: Array<{ editId: string; code: string; message: string }> = [];
+    for (const editId of editIds) {
+      const fd = new FormData();
+      fd.set('editId', editId);
+      fd.set('reason', reason);
+      fd.set('category', category);
+      const res = await rejectEditAction(fd);
+      if (res.ok) {
+        successes.push(editId);
+      } else {
+        failures.push({ editId, code: res.code, message: res.message });
+      }
+    }
+    logger.info(
+      { successes: successes.length, failures: failures.length },
+      'edit.bulk.reject'
+    );
+    return { successes, failures };
+  });
 }
 
 export async function rejectEditAction(formData: FormData): SafeAction<void> {

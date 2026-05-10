@@ -4,8 +4,14 @@ const r2AccountId = process.env.R2_ACCOUNT_ID ?? '*';
 
 // QA-016 / QA-053 / QA-054: tightened security headers.
 //   - dropped 'unsafe-eval' from script-src (Next.js production code does not need it)
-//   - kept 'unsafe-inline' temporarily — required by Next.js until we plumb a nonce;
-//     mitigated by the absence of 'unsafe-eval'
+//   - B-13: dropped 'unsafe-inline' from script-src as well. Real responses
+//     receive a per-request CSP from middleware.ts that uses a nonce; this
+//     static block is only the fallback that Next.js applies before
+//     middleware runs (e.g. on framework-level redirect responses with no
+//     HTML body). Anything that actually serves <script> tags goes through
+//     the middleware path and gets the nonce'd CSP.
+//   - 'unsafe-inline' remains on style-src — Tailwind's runtime/JIT injects
+//     inline <style> blocks; lifting that is a separate piece of work.
 //   - narrowed connect-src to our R2 account, not the whole tenant
 //   - added Cross-Origin-* hardening
 const securityHeaders = [
@@ -21,7 +27,7 @@ const securityHeaders = [
     value:
       `default-src 'self'; ` +
       `img-src 'self' blob: data:; ` +
-      `script-src 'self' 'unsafe-inline'; ` +
+      `script-src 'self'; ` +
       `style-src 'self' 'unsafe-inline'; ` +
       `font-src 'self' data:; ` +
       `connect-src 'self' https://${r2AccountId}.r2.cloudflarestorage.com https://*.ingest.sentry.io https://*.ingest.de.sentry.io; ` +

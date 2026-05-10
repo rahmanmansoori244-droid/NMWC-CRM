@@ -7,7 +7,9 @@ import {
   toggleRegionActiveAction,
   toggleRouteActiveAction,
 } from '@/services/routes';
-import { ValidationError } from '@/lib/errors';
+
+// B-17: actions now return `{ ok, ... }` (runAction wrapping) instead of
+// throwing AppError. The form translates that shape into inline errors.
 
 export function CreateRegionForm() {
   const [pending, start] = useTransition();
@@ -16,14 +18,16 @@ export function CreateRegionForm() {
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErrors({});
-    const fd = new FormData(e.currentTarget);
+    const form = e.currentTarget;
+    const fd = new FormData(form);
     start(async () => {
-      try {
-        await createRegionAction(fd);
-        (e.target as HTMLFormElement).reset();
-      } catch (err) {
-        if (err instanceof ValidationError && err.fields) setErrors(err.fields);
-        else setErrors({ _form: err instanceof Error ? err.message : 'Failed' });
+      const res = await createRegionAction(fd);
+      if (res.ok) {
+        form.reset();
+      } else if (res.fields) {
+        setErrors(res.fields);
+      } else {
+        setErrors({ _form: res.message });
       }
     });
   }
@@ -55,14 +59,16 @@ export function CreateRouteForm({
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErrors({});
-    const fd = new FormData(e.currentTarget);
+    const form = e.currentTarget;
+    const fd = new FormData(form);
     start(async () => {
-      try {
-        await createRouteAction(fd);
-        (e.target as HTMLFormElement).reset();
-      } catch (err) {
-        if (err instanceof ValidationError && err.fields) setErrors(err.fields);
-        else setErrors({ _form: err instanceof Error ? err.message : 'Failed' });
+      const res = await createRouteAction(fd);
+      if (res.ok) {
+        form.reset();
+      } else if (res.fields) {
+        setErrors(res.fields);
+      } else {
+        setErrors({ _form: res.message });
       }
     });
   }
@@ -120,8 +126,15 @@ export function ToggleButton({
     const fd = new FormData();
     fd.set('id', id);
     start(async () => {
-      if (kind === 'region') await toggleRegionActiveAction(fd);
-      else await toggleRouteActiveAction(fd);
+      const res =
+        kind === 'region'
+          ? await toggleRegionActiveAction(fd)
+          : await toggleRouteActiveAction(fd);
+      if (!res.ok) {
+        // Toggle is a button without an inline error slot; surface the
+        // server message as an alert. Rare path (network or perm change).
+        alert(res.message);
+      }
     });
   }
 

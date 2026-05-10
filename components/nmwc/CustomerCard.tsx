@@ -18,13 +18,13 @@ export function CustomerCard({ customer, primaryBranch, href }: CardProps) {
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-sm font-semibold text-slate-900">{customer.legalName}</h3>
-            <p className="truncate text-xs text-slate-500">{customer.nmwcCode}</p>
+            <h3 className="truncate text-base font-semibold text-slate-900">{customer.legalName}</h3>
+            <p className="truncate text-sm text-slate-500">{customer.nmwcCode}</p>
           </div>
           <PaymentTermsPill terms={customer.paymentTerms as PaymentTerms} />
         </div>
         {primaryBranch && (
-          <div className="mt-1.5 flex items-start gap-1.5 text-xs text-slate-600">
+          <div className="mt-1.5 flex items-start gap-1.5 text-sm text-slate-600">
             <MapPin className="mt-0.5 h-3 w-3 shrink-0 text-slate-400" />
             <span className="line-clamp-1">{primaryBranch.address}</span>
           </div>

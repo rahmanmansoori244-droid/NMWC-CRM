@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { approveEditAction, rejectEditAction } from '@/services/edits';
+import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 
 const REJECT_CATEGORIES = [
   { value: 'bad_photo', label: 'Bad photo' },
@@ -12,6 +13,41 @@ const REJECT_CATEGORIES = [
   { value: 'other', label: 'Other' },
 ];
 
+// B-21: canned reason templates per category. Click a pill to prefill the
+// textarea — supervisors can still type freely afterward.
+const REJECT_TEMPLATES: Record<string, string[]> = {
+  bad_photo: [
+    'Shop sign not clearly visible',
+    'Photo is blurry, retake',
+    'Photo was taken from too far',
+    'Lighting too dark — retake during daytime',
+    'Wrong subject — capture the storefront',
+  ],
+  wrong_gps: [
+    'GPS pin is far from the actual shop',
+    'Coordinates fall outside Oman',
+    'GPS captured from your home, not the shop',
+    'Re-capture GPS while standing at the entrance',
+  ],
+  missing_field: [
+    'Contact person name is missing',
+    'Primary phone is empty',
+    'CR number not entered',
+    'Day of visit not selected',
+    'Address is too short — add full street + landmark',
+  ],
+  wrong_info: [
+    'Channel/sub-channel does not match the shop type',
+    'Phone number format is incorrect',
+    'CR number does not match the photo',
+    'Legal name on CR document differs from what was entered',
+  ],
+  other: [
+    'Please re-verify and resubmit',
+    'Need to discuss in person before approving',
+  ],
+};
+
 export function ApproveRejectActions({ editId }: { editId: string }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -19,9 +55,11 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
   const [reason, setReason] = useState('');
   const [category, setCategory] = useState('other');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // B-14: replace window.confirm() with a modal for the Approve action.
+  const [confirmingApprove, setConfirmingApprove] = useState(false);
 
   function approve() {
-    if (!confirm('Approve this edit? Changes will go live on the customer immediately.')) return;
+    setConfirmingApprove(false);
     setErrors({});
     const fd = new FormData();
     fd.set('editId', editId);
@@ -66,6 +104,8 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
     });
   }
 
+  const templates = REJECT_TEMPLATES[category] ?? [];
+
   return (
     <div>
       {errors._form && (
@@ -84,7 +124,7 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
           <button
             type="button"
             disabled={pending}
-            onClick={approve}
+            onClick={() => setConfirmingApprove(true)}
             className="rounded-md bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-300"
           >
             {pending ? 'Working…' : '✓ Approve'}
@@ -108,6 +148,27 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
               ))}
             </select>
           </div>
+          {/* B-21: canned templates per category. Click a pill to prefill the
+              textarea; user can still edit afterward. */}
+          {templates.length > 0 && (
+            <div>
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Quick reasons
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {templates.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setReason(t)}
+                    className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-700 hover:border-brand-400 hover:bg-brand-50 hover:text-brand-700"
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-700">
               Reason for the salesman *
@@ -143,6 +204,17 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
           </div>
         </form>
       )}
+
+      {/* B-14: replace window.confirm() with an accessible modal. */}
+      <ConfirmModal
+        open={confirmingApprove}
+        title="Approve this edit?"
+        message="Changes will go live on the customer immediately. This cannot be undone."
+        confirmLabel="Approve"
+        confirmTone="primary"
+        onConfirm={approve}
+        onCancel={() => setConfirmingApprove(false)}
+      />
     </div>
   );
 }

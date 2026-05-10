@@ -77,7 +77,7 @@ export function BranchStatusActions({
           <button
             type="button"
             onClick={() => setOpen('reactivate')}
-            className="rounded-md border border-emerald-300 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+            className="rounded-md border border-emerald-300 bg-white px-3 py-2.5 text-base font-semibold text-emerald-700 hover:bg-emerald-50"
           >
             Request reactivation
           </button>
@@ -85,7 +85,7 @@ export function BranchStatusActions({
           <button
             type="button"
             onClick={() => setOpen('close')}
-            className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
+            className="rounded-md border border-red-300 bg-white px-3 py-2.5 text-base font-semibold text-red-700 hover:bg-red-50"
           >
             Mark closed
           </button>
@@ -97,13 +97,13 @@ export function BranchStatusActions({
   return (
     <form
       onSubmit={submit}
-      className="flex flex-col gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm"
+      className="flex flex-col gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-base"
     >
-      <h4 className="text-sm font-semibold text-slate-900">
+      <h4 className="text-base font-semibold text-slate-900">
         {action === 'close' ? 'Mark this branch closed' : 'Reactivate this branch'}
       </h4>
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-700">
+        <label className="mb-1 block text-sm font-medium text-slate-700">
           Photo evidence (must be fresh — captured today)
         </label>
         <div className="w-40">
@@ -116,7 +116,7 @@ export function BranchStatusActions({
         </div>
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-700">
+        <label className="mb-1 block text-sm font-medium text-slate-700">
           Reason (5+ chars)
         </label>
         <textarea
@@ -130,10 +130,10 @@ export function BranchStatusActions({
               ? 'Shop is permanently closed, signage removed.'
               : 'Shop has reopened under same owner.'
           }
-          className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
+          className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm"
         />
       </div>
-      {err && <p className="text-xs font-medium text-red-600">{err}</p>}
+      {err && <p className="text-sm font-medium text-red-600">{err}</p>}
       <div className="flex items-center justify-end gap-2">
         <button
           type="button"
@@ -144,14 +144,14 @@ export function BranchStatusActions({
             setErr(null);
           }}
           disabled={pending}
-          className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700"
+          className="rounded-md border border-slate-300 px-3 py-2.5 text-base font-medium text-slate-700"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={pending || !ready}
-          className={`rounded-md px-3 py-1.5 text-xs font-semibold text-white disabled:bg-slate-300 ${
+          className={`rounded-md px-3 py-2.5 text-base font-semibold text-white disabled:bg-slate-300 ${
             action === 'close'
               ? 'bg-red-600 hover:bg-red-700'
               : 'bg-emerald-600 hover:bg-emerald-700'
