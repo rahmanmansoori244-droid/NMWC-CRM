@@ -38,18 +38,20 @@ jobs:
       BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
     steps:
-      - name: Install Postgres 16 client
+      - name: Install Postgres 17 client
         run: |
           set -euo pipefail
-          # Match Neon's server major (16). Ubuntu 22.04 ships pg 14, which
-          # cannot pg_dump from a 16 server (refuses with version mismatch).
+          # Match Neon's server major (17 as of 2026-05). Ubuntu's default
+          # ships an older pg, which refuses to pg_dump a newer server with
+          # `aborting because of server version mismatch`. Bump this number
+          # if Neon upgrades the cluster again.
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
             https://www.postgresql.org/media/keys/ACCC4CF8.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
           pg_dump --version
 
       - name: Compute backup metadata
@@ -149,7 +151,7 @@ jobs:
       NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
     steps:
-      - name: Install Postgres 16 client
+      - name: Install Postgres 17 client
         run: |
           set -euo pipefail
           sudo install -d /usr/share/postgresql-common/pgdg
@@ -158,7 +160,7 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
 
       - name: Find latest dump in R2
         run: |
