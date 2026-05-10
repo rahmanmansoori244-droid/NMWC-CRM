@@ -26,7 +26,7 @@ import { resolve } from 'node:path';
 // ────────────────────────────────────────────────────────────────────
 
 type Lang = 'en' | 'ar';
-type Role = 'salesman' | 'supervisor' | 'manager';
+type Role = 'salesman' | 'supervisor' | 'manager' | 'steward';
 
 type Callout = {
   kind: 'info' | 'tip' | 'warn' | 'danger';
@@ -96,6 +96,7 @@ p  { margin: 8pt 0; }
 .cover.salesman { background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%); }
 .cover.supervisor { background: linear-gradient(135deg, #064e3b 0%, #10b981 100%); }
 .cover.manager { background: linear-gradient(135deg, #78350f 0%, #f59e0b 100%); }
+.cover.steward { background: linear-gradient(135deg, #312e81 0%, #6366f1 100%); }
 .cover .brand { font-size: 36pt; font-weight: 800; letter-spacing: -0.03em; }
 .cover .sub { font-size: 14pt; opacity: 0.85; margin-top: 6pt; }
 .cover .title { font-size: 30pt; font-weight: 800; line-height: 1.1; max-width: 14em; }
@@ -112,11 +113,14 @@ p  { margin: 8pt 0; }
 [dir="rtl"] .section-opener { border-left: none; border-right: 6px solid #1d4ed8; }
 .section-opener.green { border-left-color: #10b981; background: linear-gradient(180deg, #ecfdf5 0%, #fff 100%); }
 .section-opener.amber { border-left-color: #f59e0b; background: linear-gradient(180deg, #fffbeb 0%, #fff 100%); }
+.section-opener.indigo { border-left-color: #6366f1; background: linear-gradient(180deg, #eef2ff 0%, #fff 100%); }
 [dir="rtl"] .section-opener.green { border-right-color: #10b981; }
 [dir="rtl"] .section-opener.amber { border-right-color: #f59e0b; }
+[dir="rtl"] .section-opener.indigo { border-right-color: #6366f1; }
 .section-opener h2 { border: none; padding: 0; margin: 0 0 6pt; font-size: 22pt; color: #1e3a8a; }
 .section-opener.green h2 { color: #064e3b; }
 .section-opener.amber h2 { color: #78350f; }
+.section-opener.indigo h2 { color: #312e81; }
 .section-opener .intro { font-size: 11pt; color: #334155; max-width: 36em; }
 
 .step-list { counter-reset: step; padding: 0; margin: 0; list-style: none; }
@@ -182,8 +186,8 @@ function renderCallout(c: Callout): string {
   return `<div class="callout ${c.kind}"><strong class="label">${c.title}</strong>${c.body}</div>`;
 }
 
-function renderSection(s: Section, opener: 'blue' | 'green' | 'amber'): string {
-  const openerCls = opener === 'green' ? 'green' : opener === 'amber' ? 'amber' : '';
+function renderSection(s: Section, opener: 'blue' | 'green' | 'amber' | 'indigo'): string {
+  const openerCls = opener === 'green' ? 'green' : opener === 'amber' ? 'amber' : opener === 'indigo' ? 'indigo' : '';
   const intro = s.intro ? `<p class="intro">${s.intro}</p>` : '';
   const ul = s.ul?.length ? `<ul>${s.ul.map((x) => `<li>${x}</li>`).join('')}</ul>` : '';
   const callouts = s.callouts?.map(renderCallout).join('') ?? '';
@@ -206,8 +210,14 @@ function renderSection(s: Section, opener: 'blue' | 'green' | 'amber'): string {
 
 function renderHtml(g: Guide): string {
   const dir = g.lang === 'ar' ? 'rtl' : 'ltr';
-  const opener: 'blue' | 'green' | 'amber' =
-    g.role === 'supervisor' ? 'green' : g.role === 'manager' ? 'amber' : 'blue';
+  const opener: 'blue' | 'green' | 'amber' | 'indigo' =
+    g.role === 'supervisor'
+      ? 'green'
+      : g.role === 'manager'
+        ? 'amber'
+        : g.role === 'steward'
+          ? 'indigo'
+          : 'blue';
   const sectionsHtml = g.sections.map((s) => renderSection(s, opener)).join('');
   const refHtml = `<section class="page page-break"><h2>${g.ref.title}</h2>${
     g.ref.intro ? `<p>${g.ref.intro}</p>` : ''
@@ -711,6 +721,254 @@ const MANAGER_EN: Guide = {
 };
 
 // ────────────────────────────────────────────────────────────────────
+// Content — Steward (English only, head-office data role)
+// ────────────────────────────────────────────────────────────────────
+
+const STEWARD_EN: Guide = {
+  role: 'steward',
+  lang: 'en',
+  rolePill: 'FOR DATA STEWARDS',
+  brandLine: 'Customer Master — Data Operations',
+  coverTitle: 'Data Steward User Guide',
+  coverSubtitle: 'NMWC Customer Master · v1.0 · 2026-05',
+  filename: 'NMWC-Steward-Guide-EN',
+  welcome: {
+    heading: 'Welcome',
+    body: 'You own the integrity of the customer master from head office. Your work is heavier than the field roles — you bulk-import lists from the ERP, merge duplicates that the field can\'t see across regions, monitor the entire audit trail, and export the cleaned master back to downstream systems. This guide covers every screen you will use, with a focus on the safety rules: every steward action is high-trust, immediately visible across the company, and logged forever.',
+  },
+  sections: [
+    {
+      number: 1,
+      title: 'Logging in and your scope',
+      intro: 'Your account sees everything: every region, every route, every customer. Other roles cannot.',
+      steps: [
+        { html: 'Open <strong>https://nmwc-cm.vercel.app</strong> on your laptop. The steward workflow is desktop-first because of the bulk-import / export / duplicate-review screens.', img: '01-login.png' },
+        { html: 'Sign in with your steward credentials.' },
+        { html: 'After login you land on the <strong>Import</strong> page by default. The left sidebar shows your full menu: Import, Export, Customers, Duplicates, Work items.' },
+      ],
+      callouts: [
+        {
+          kind: 'danger',
+          title: 'Your power and your responsibility',
+          body: 'You can edit, soft-delete, and merge any customer in any region. There is no four-eyes approval on most steward actions — the audit log is your accountability. Always cross-check before any bulk action.',
+        },
+      ],
+    },
+    {
+      number: 2,
+      title: 'Browse the customer master',
+      intro: 'See the full master across all regions and routes.',
+      steps: [
+        { html: 'Tap <strong>Customers</strong> in the sidebar.', img: 'steward-02-customers.png' },
+        { html: 'You see every customer in every region. Filter by region, channel, payment terms, or completeness score.' },
+        { html: 'The search box runs on legal name, NMWC code, or primary phone — partial matches work (e.g. "lulu" finds every Lulu branch).' },
+        { html: 'Click any row to open the customer profile and see the full record + branches + edit history + audit trail.' },
+      ],
+    },
+    {
+      number: 3,
+      title: 'Import — bulk upload from xlsx',
+      intro: 'Two distinct importers, one entry point. Pick the right one.',
+      steps: [
+        { html: 'Tap <strong>Import</strong> in the sidebar.', img: 'steward-03-import.png' },
+        { html: '<strong>Account Master</strong> (left card): a workbook with three sheets — <strong>Regions</strong>, <strong>Routes</strong>, <strong>Users</strong>. Existing rows with matching keys are <em>updated</em> in place. New rows are <em>added</em>. Use this to bring the field-team org-chart from HR into the app.' },
+        { html: '<strong>Customer Master</strong> (right card): a single-sheet workbook of customer rows. Goes to a <em>staged batch</em> first — nothing changes in the live master until you review and promote.' },
+        { html: 'Both cards have an <strong>Expected columns</strong> expandable — read it once before your first import to confirm header names match.' },
+        { html: 'Click <strong>Choose File</strong>, pick the .xlsx, then click <strong>Upload</strong>. Wait for the upload to finish.' },
+      ],
+      callouts: [
+        {
+          kind: 'tip',
+          title: 'Recommended monthly cadence',
+          body: 'Import account master changes (new salesman, retired route) within 24h of HR notifying you. Import customer master refreshes from the ERP at month-end after the ERP team confirms their export is final.',
+        },
+        {
+          kind: 'warn',
+          title: 'Account master writes immediately',
+          body: 'Unlike the customer master, the account-master path applies its changes the moment the upload completes (after Zod validation). There is no staging step. Double-check the workbook before clicking Upload.',
+        },
+      ],
+    },
+    {
+      number: 4,
+      title: 'Review and promote a staged customer batch',
+      intro: 'Customer master imports go through a 3-state pipeline before they hit the live master.',
+      steps: [
+        { html: 'After the customer-master upload finishes, you land on the batch detail page. The <strong>Recent batches</strong> table on the Import page also lists every batch.' },
+        { html: 'Each row in the batch has one of three states: <strong>CLEAN</strong> (passed every validation), <strong>QUARANTINED</strong> (failed at least one rule — review and fix), <strong>REJECTED</strong> (you decided not to promote).' },
+        { html: 'Filter to <strong>QUARANTINED</strong> first. Each row shows the issues — bad phone format, missing required field, stale CR, duplicate phone, etc. Fix the source row in your local copy of the xlsx, or mark the row Rejected.' },
+        { html: 'When the QUARANTINED set is empty (or you have rejected the rest), click <strong>Promote</strong>. The CLEAN rows become real Customer + Branch records in the master. The promotion is one big atomic transaction.' },
+      ],
+      callouts: [
+        {
+          kind: 'info',
+          title: 'Why staging?',
+          body: 'A bad bulk-import that lands directly into the master is hard to undo. The staged-batch model lets you see exactly what would change, fix the bad rows, and only commit when the batch is clean. Promotion creates a single audit-log row referencing the batch — full traceability.',
+        },
+      ],
+    },
+    {
+      number: 5,
+      title: 'Find and merge duplicates',
+      intro: 'Duplicates are the master\'s biggest enemy. The steward\'s queue surfaces three kinds.',
+      steps: [
+        { html: 'Tap <strong>Duplicates</strong> in the sidebar.', img: 'steward-06-duplicates.png' },
+        { html: 'Each pair card shows the match reason at the top — <strong>PHONE</strong> (exact phone number match across two customers), <strong>CR</strong> (same Commercial Registration number), or <strong>NAME</strong> (fuzzy similarity ≥ 0.7).' },
+        { html: 'Compare the two cards side-by-side: NMWC code, phone, CR, branch count. The customer with more branches and a higher completeness score is usually the better keeper.' },
+        { html: 'Three actions:<ul><li><strong>Mark distinct</strong> — these are NOT duplicates. The pair is recorded in the audit log and will not surface again.</li><li><strong>Keep ←</strong> — the LEFT customer is the survivor. The right one is soft-deleted. Its branches and edit history move to the survivor.</li><li><strong>Keep →</strong> — same, but the RIGHT customer survives.</li></ul>' },
+      ],
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'Cross-region merges need a reason',
+          body: 'If the two customers are in different regions, the merge requires you to confirm explicitly and write a 5+ character reason. The reason ends up in the audit trail.',
+        },
+        {
+          kind: 'danger',
+          title: 'Merges are permanent',
+          body: 'A merge soft-deletes one customer. It can be reversed only by a steward intervention via the audit log + a manual restore. Be sure before you click Keep.',
+        },
+      ],
+    },
+    {
+      number: 6,
+      title: 'Export — send the cleaned master to the ERP',
+      intro: 'When the field team has enriched enough records, you push the cleaned master back downstream.',
+      steps: [
+        { html: 'Tap <strong>Export</strong> in the sidebar.', img: 'steward-05-export.png' },
+        { html: 'Pick filters: region(s), payment terms (cash / credit), channel, completeness threshold (e.g. only export records ≥ 80% complete).' },
+        { html: 'Click <strong>Generate export</strong>. The job runs in the background and lands in the <strong>Recent exports</strong> table at the bottom.' },
+        { html: 'When status is DONE, click the row to download the .xlsx. Hand off to the ERP team.' },
+        { html: 'Failed jobs (status FAILED) show an error message — typically a transient network issue. Re-run with the same filters.' },
+      ],
+      callouts: [
+        {
+          kind: 'tip',
+          title: 'A good completeness threshold',
+          body: 'For mid-pilot exports use 60% — gets you the rows with names, phones, GPS, and at least one photo. For year-end exports use 90% — gives you only the records the field has fully validated.',
+        },
+      ],
+    },
+    {
+      number: 7,
+      title: 'Audit log — your investigation tool',
+      intro: 'Every action by every user, immutable, queryable.',
+      steps: [
+        { html: 'Tap <strong>Audit log</strong> in the sidebar.', img: 'steward-07-audit.png' },
+        { html: 'Each row: who, when, from what IP and user-agent, what action (CREATE / UPDATE / APPROVE / REJECT / MERGE / IMPORT / REACTIVATE / LOGIN / LOGIN_FAIL / FORCE_OVERRIDE / DELETE / SOFT_DELETE / PHOTO_VIEW), on what entity, with old and new values stored as JSON.' },
+        { html: 'Filter by user (e.g. investigate one salesman), date range (e.g. last week), entity type (Customer / Branch / CustomerEdit / User), or action type.' },
+        { html: 'For an HR investigation: filter by user + date range + entity type Customer to see exactly what they changed.' },
+        { html: 'For a "what happened" investigation on one customer: open the customer, click <strong>History</strong> — same data filtered to that record.' },
+      ],
+      callouts: [
+        {
+          kind: 'info',
+          title: 'Audit logs are immutable',
+          body: 'Once written, no one — not even you — can edit or delete an audit row. By design. This is the trustworthy paper trail. Even FORCE_OVERRIDE actions by managers leave a row.',
+        },
+      ],
+    },
+    {
+      number: 8,
+      title: 'Routes, regions, and channel taxonomy',
+      intro: 'The fixed reference tables that everything else depends on.',
+      steps: [
+        { html: 'Tap <strong>Routes &amp; regions</strong> in the sidebar.', img: 'steward-08-routes.png' },
+        { html: 'You see every region (e.g. Muscat) and every route under it (C1, C4, MH01, etc.).' },
+        { html: 'Add a new route when a new salesman starts. Mark a route inactive when it\'s consolidated. Don\'t delete — it would break audit trails for past customers.' },
+        { html: 'The <strong>Channel taxonomy</strong> (General Trade, HORECA, Modern Trade, sub-channels) is locked — see PRD Appendix A. If a sub-channel is missing, file an ops ticket; do not edit the taxonomy live.' },
+      ],
+    },
+    {
+      number: 9,
+      title: 'User management — view-only for stewards',
+      intro: 'Stewards see all users for visibility but most user-edit actions belong to managers.',
+      steps: [
+        { html: 'Tap <strong>Users</strong> in the sidebar.', img: 'steward-09-users.png' },
+        { html: 'You see every user in every region. Useful for understanding "who reports to whom" and confirming the org chart matches what HR has.' },
+        { html: 'Reset password, disable, and reassign-route actions live with the user\'s manager. Forward HR requests to the right manager.' },
+        { html: 'You CAN onboard a new manager (since managers don\'t have a higher-rank approver) — head office hands you the request, you create the user record with the MANAGER role and the regions they cover.' },
+      ],
+    },
+    {
+      number: 10,
+      title: 'Backup, recovery, and your responsibilities',
+      intro: 'You are not the database admin, but you are the first to know when something goes wrong.',
+      table: {
+        headers: ['Concern', 'What you do'],
+        rows: [
+          ['<strong>Daily DB backup</strong> — check the GitHub Actions tab once a week to confirm the nightly run is green.', 'If a run is red two days in a row, alert ops. The dump goes to the <code>nmwc-backups</code> R2 bucket as <code>db/&lt;DATE&gt;.sql.gz</code>.'],
+          ['<strong>Photo storage</strong> — R2 lifecycle deletes "gc-marked" photos after 7 days.', 'You don\'t touch this. It runs on its own. If you suspect lost photos, check the audit log first.'],
+          ['<strong>"I deleted the wrong customer"</strong>', 'Open the audit log, find the SOFT_DELETE row for that customer, get the JSON of the prior state, and restore it via a steward-only Prisma script (head-office ops can write this).'],
+          ['<strong>"I promoted a bad batch"</strong>', 'Audit log filters action=IMPORT — find the batch row, then write a one-off undo script with ops. Don\'t try to revert via the UI.'],
+          ['<strong>Quarterly drill</strong>', 'Run the manual <em>restore-drill</em> GitHub Action. Confirms the latest dump can actually be restored into a Neon branch.'],
+        ],
+      },
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'Never run scripts against the production DB without ops',
+          body: 'Stewards have full read access to everything. Direct write scripts to fix mistakes must be run by head-office ops, peer-reviewed, and committed to git. Never run an unsaved one-off SQL command on prod.',
+        },
+      ],
+    },
+    {
+      number: 11,
+      title: 'Common situations',
+      table: {
+        headers: ['Situation', 'What to do'],
+        rows: [
+          ['"Cannot promote — quarantined rows"', 'Open the batch, fix or reject the QUARANTINED rows, then re-promote.'],
+          ['"Phone now belongs to X (Y) — reject and ask the salesman"', 'A salesman submitted a phone that conflicts with another customer in the master. Reject the edit; the salesman fixes at the shop.'],
+          ['"Manager creates regions silently"', 'A new region was added without the usual ticket. Check audit log for action=CREATE entityType=Region. If unauthorized, escalate.'],
+          ['"Customer master has many duplicates"', 'Run a duplicate review session. Sort by similarity. Tackle PHONE matches first (1.0 similarity = same phone), then CR, then NAME.'],
+          ['"Export failed"', 'Check the row\'s error message. Most are network blips — re-run. If it persists, check the date range — exports over 50k rows can time out.'],
+          ['"User left the company"', 'Forward to their manager. The manager uses the Users page → Disable. Their audit trail stays.'],
+        ],
+      },
+    },
+  ],
+  ref: {
+    title: '12. Quick reference card',
+    intro: 'For your desk.',
+    tables: [
+      {
+        title: 'Steward-only actions',
+        rows: [
+          ['<strong>Upload account master</strong>', 'Bulk upload Regions/Routes/Users xlsx. Applied immediately after validation.'],
+          ['<strong>Upload customer master</strong>', 'Bulk upload customer xlsx. Goes to staged batch first.'],
+          ['<strong>Promote batch</strong>', 'Apply CLEAN rows to the live master.'],
+          ['<strong>Mark distinct</strong>', 'A pair the detector flagged is actually two different customers.'],
+          ['<strong>Keep ← / Keep →</strong>', 'Merge a duplicate. The chosen side survives.'],
+          ['<strong>Generate export</strong>', 'Produce a filtered xlsx for the ERP team.'],
+          ['<strong>Audit log</strong>', 'Every action ever taken — searchable.'],
+        ],
+      },
+      {
+        title: 'When to use which action',
+        rows: [
+          ['HR sends new org-chart', 'Edit account-master xlsx → Upload account master.'],
+          ['ERP team sends month-end customer list', 'Upload customer master → review staged batch → fix QUARANTINED → Promote.'],
+          ['Salesman flags a duplicate at the shop', 'Open Duplicates, find the pair, decide Keep ← or Keep → after reviewing both records.'],
+          ['ERP team asks for the cleaned master', 'Export with completeness ≥ 60% (mid-pilot) or ≥ 90% (year-end).'],
+          ['HR investigates a salesman', 'Audit log → filter by user + date range.'],
+          ['Customer profile shows wrong info, no one knows why', 'Audit log → filter by entity Customer + entityId from URL.'],
+        ],
+      },
+      {
+        title: 'Severity guide',
+        rows: [
+          ['<strong>🟢 Routine</strong>', 'Customer-master uploads, weekly duplicate review, monthly exports.'],
+          ['<strong>🟡 Care needed</strong>', 'Cross-region merges, batch promotions, account-master uploads.'],
+          ['<strong>🔴 High-stakes</strong>', 'Restoring soft-deleted customers, undoing a bad import, anything that touches data outside the staging pipeline.'],
+        ],
+      },
+    ],
+  },
+  footer: 'NMWC Customer Master · Data Steward Guide · v1.0 · 2026-05-10',
+};
+
+// ────────────────────────────────────────────────────────────────────
 // Content — Arabic (translations of the same content)
 // ────────────────────────────────────────────────────────────────────
 
@@ -1181,6 +1439,7 @@ const ALL_GUIDES: Guide[] = [
   SUPERVISOR_AR,
   MANAGER_EN,
   MANAGER_AR,
+  STEWARD_EN,
 ];
 
 async function main() {
