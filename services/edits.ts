@@ -602,6 +602,28 @@ export async function approveEditAction(formData: FormData) {
     }
   }
 
+  // EL-01 (defense-in-depth): the submit-time guard rejects salesman /
+  // supervisor / steward / manager attempts to flip customer.status to
+  // CLOSED or SUSPENDED through the regular edit form — those must go
+  // through markBranchClosedAction / requestReactivationAction with photo
+  // evidence. But if a fieldChange of `customer.status` somehow ended up
+  // in a SUBMITTED edit anyway (DB tampering, future bug, internal abuse),
+  // the approve path used to apply it without question. Reject at approve
+  // time too so the close-and-reactivate workflow is the only path.
+  if (
+    typeof customerProposed.status === 'string' &&
+    customerProposed.status !== edit.customer.status &&
+    (edit.customer.status === 'CLOSED' ||
+      edit.customer.status === 'SUSPENDED' ||
+      customerProposed.status === 'CLOSED' ||
+      customerProposed.status === 'SUSPENDED')
+  ) {
+    throw new ConflictError(
+      'STATUS_BYPASS',
+      'This edit changes customer.status — that route is forbidden. Use the close-shop or reactivation action.'
+    );
+  }
+
   // QA-013: re-evaluate field locks against the CURRENT customer state. If
   // payment terms changed CASH→CREDIT between submit and approve, the locked
   // fields should now be dropped.
