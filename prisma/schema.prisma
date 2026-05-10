@@ -178,6 +178,8 @@ model User {
   requestedExports    ExportJob[]       @relation("ExportRequester")
   // B-15: previous password hashes used to block reuse on change-password.
   passwordHistory     PasswordHistory[]
+  // P2.2 (2026-05-10): per-user saved /customers filter views.
+  savedViews          SavedView[]
 
   @@index([role, isActive])
 }
@@ -189,6 +191,21 @@ model PasswordHistory {
   id        String   @id @default(cuid())
   userId    String
   hash      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+// P2.2 (2026-05-10): saved filter views for the /customers list. Each row is a
+// named snapshot of a user's URL search params. Per-user only — there is no
+// "share with team" flow yet. Index supports "list my views, newest first".
+model SavedView {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  urlParams String   @db.Text
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

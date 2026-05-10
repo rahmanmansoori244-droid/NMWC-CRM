@@ -72,11 +72,6 @@ async function shot(page: Page, name: string) {
   console.log(`  → ${path}`);
 }
 
-async function shotFull(page: Page, name: string) {
-  const path = join(OUT, `${name}.png`);
-  await page.screenshot({ path, fullPage: true });
-  console.log(`  → ${path}`);
-}
 
 async function main() {
   await mkdir(OUT, { recursive: true });

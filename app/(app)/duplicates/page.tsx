@@ -41,18 +41,14 @@ export default async function DuplicatesPage() {
                   <div className="flex items-center gap-2 text-xs">
                     <span
                       className={`inline-flex rounded-full px-2 py-0.5 font-medium ${
-                        c.reason === 'PHONE'
+                        c.reason === 'CR'
                           ? 'bg-red-50 text-red-700'
-                          : c.reason === 'CR'
-                            ? 'bg-amber-50 text-amber-700'
-                            : 'bg-sky-50 text-sky-700'
+                          : 'bg-amber-50 text-amber-700'
                       }`}
                     >
-                      {c.reason} match
+                      {c.reason === 'CR' ? 'CR-number match' : 'Name + phone + region match'}
                     </span>
-                    <span className="text-slate-500">
-                      similarity {Math.round(c.similarity * 100)}%
-                    </span>
+                    <span className="text-slate-500">high confidence</span>
                   </div>
                 </header>
                 <div className="grid gap-0 md:grid-cols-2">

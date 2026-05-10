@@ -6,6 +6,12 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 
 export const metadata = { title: 'Dashboard · NMWC' };
 
+// P3.3: cache the rendered output for 30s. The dashboard runs ~10 aggregate
+// queries (counts, region rollups, route leaderboards) and a manager rarely
+// needs sub-30s freshness on these — they're trend dashboards, not live
+// queues. Approvals + audit pages are NOT cached so they stay live.
+export const revalidate = 30;
+
 export default async function DashboardPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');

@@ -1,0 +1,557 @@
+{
+  "executedAt": "2026-05-10T15:05:54.542Z",
+  "plan": [
+    {
+      "parentCustomerId": "cmozfay5m0003tvfkupla658l",
+      "parentNmwcCode": "CAA0367",
+      "branchId": "cmozfayjl0007tvfkn9u4c2zt",
+      "branchCode": "CAA0367-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA0367-02"
+    },
+    {
+      "parentCustomerId": "cmozfazwm000htvfkgvtas8t3",
+      "parentNmwcCode": "CAA2239",
+      "branchId": "cmozfb0ai000ltvfk00djah9v",
+      "branchCode": "CAA2239-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA2239-02"
+    },
+    {
+      "parentCustomerId": "cmozfb0hh000mtvfkpanbby20",
+      "parentNmwcCode": "CAA2247",
+      "branchId": "cmozfb0ve000qtvfk6a8h1qzk",
+      "branchCode": "CAA2247-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA2247-02"
+    },
+    {
+      "parentCustomerId": "cmozfb2870010tvfkg8egq755",
+      "parentNmwcCode": "CAA2482",
+      "branchId": "cmozfb2m30014tvfk2n4m26h3",
+      "branchCode": "CAA2482-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA2482-02"
+    },
+    {
+      "parentCustomerId": "cmozfb6oi001ztvfkjztney49",
+      "parentNmwcCode": "CAA3089",
+      "branchId": "cmozfb79b0023tvfk0dcv2mq2",
+      "branchCode": "CAA3089-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA3089-02"
+    },
+    {
+      "parentCustomerId": "cmozfb7ga0024tvfkjxv6fr94",
+      "parentNmwcCode": "CAA3107",
+      "branchId": "cmozfb7u70028tvfkn10qxtr2",
+      "branchCode": "CAA3107-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA3107-02"
+    },
+    {
+      "parentCustomerId": "cmozfbcnz0039tvfksz2vt9bg",
+      "parentNmwcCode": "CAF0242",
+      "branchId": "cmozfbd1v003dtvfkfjqs6t9p",
+      "branchCode": "CAF0242-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAF0242-02"
+    },
+    {
+      "parentCustomerId": "cmozfbeek003ntvfk8b48l3fj",
+      "parentNmwcCode": "CAH0311",
+      "branchId": "cmozfbesg003rtvfk2jx0drql",
+      "branchCode": "CAH0311-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAH0311-02"
+    },
+    {
+      "parentCustomerId": "cmozfbigj004jtvfk5q33fgya",
+      "parentNmwcCode": "CAJ0056",
+      "branchId": "cmozfbj1b004ntvfkvmdcu6ap",
+      "branchCode": "CAJ0056-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAJ0056-02"
+    },
+    {
+      "parentCustomerId": "cmozfbn3m005itvfk0lnvo26w",
+      "parentNmwcCode": "CAM1211",
+      "branchId": "cmozfbnhk005mtvfkocf2gx7m",
+      "branchCode": "CAM1211-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAM1211-02"
+    },
+    {
+      "parentCustomerId": "cmozfbo2g005qtvfkk528ck9j",
+      "parentNmwcCode": "CAN0188",
+      "branchId": "cmozfbogd005utvfk3laetwho",
+      "branchCode": "CAN0188-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAN0188-02"
+    },
+    {
+      "parentCustomerId": "cmozfbpf40061tvfkm7qjd7u7",
+      "parentNmwcCode": "CAN0242",
+      "branchId": "cmozfbpt10065tvfkofcf58v6",
+      "branchCode": "CAN0242-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAN0242-02"
+    },
+    {
+      "parentCustomerId": "cmozfc5cd0096tvfksrzd3lgt",
+      "parentNmwcCode": "CAI1129",
+      "branchId": "cmozfc5qa009atvfk2tb7v7oq",
+      "branchCode": "CAI1129-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAI1129-02"
+    },
+    {
+      "parentCustomerId": "cmozfcdux00aztvfk01tl0d7a",
+      "parentNmwcCode": "CCH0005",
+      "branchId": "cmozfce8t00b3tvfkjr0bpant",
+      "branchCode": "CCH0005-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCH0005-02"
+    },
+    {
+      "parentCustomerId": "cmozfdbig00i4tvfkghqw2fuv",
+      "parentNmwcCode": "CAU0095",
+      "branchId": "cmozfdbwd00i8tvfkdaixzqcv",
+      "branchCode": "CAU0095-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAU0095-02"
+    },
+    {
+      "parentCustomerId": "cmozfdth800lxtvfk71ux1qnf",
+      "parentNmwcCode": "CAS0517",
+      "branchId": "cmozfdtv500m1tvfk9bvxspi9",
+      "branchCode": "CAS0517-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAS0517-02"
+    },
+    {
+      "parentCustomerId": "cmozff3hr00vqtvfk3obwt0a7",
+      "parentNmwcCode": "CAA2295",
+      "branchId": "cmozff3vs00vutvfkfh51p46z",
+      "branchCode": "CAA2295-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA2295-02"
+    },
+    {
+      "parentCustomerId": "cmozfgrmh018gtvfky7lu3s1m",
+      "parentNmwcCode": "CAB3164",
+      "branchId": "cmozfgs0e018ktvfkcao0r3rj",
+      "branchCode": "CAB3164-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAB3164-02"
+    },
+    {
+      "parentCustomerId": "cmozfj22v01p3tvfknfcqv2cp",
+      "parentNmwcCode": "CAT0414-C7",
+      "branchId": "cmozfj2ha01p7tvfk8buvg6jg",
+      "branchCode": "CAT0414-C7-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAT0414-C7-02"
+    },
+    {
+      "parentCustomerId": "cmozfj4oi01pntvfkqe4bmzk8",
+      "parentNmwcCode": "CCC0028-ANSAB",
+      "branchId": "cmozfj52w01prtvfkf12i9ljf",
+      "branchCode": "CCC0028-ANSAB-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCC0028-ANSAB-02"
+    },
+    {
+      "parentCustomerId": "cmozfj5a301pstvfkkysdy1ai",
+      "parentNmwcCode": "CCC0028-FALAJ",
+      "branchId": "cmozfj5oi01pwtvfk2eg61bg0",
+      "branchCode": "CCC0028-FALAJ-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCC0028-FALAJ-02"
+    },
+    {
+      "parentCustomerId": "cmozfjvx901v9tvfk9xvqxfe1",
+      "parentNmwcCode": "CAA2911",
+      "branchId": "cmozfjwbr01vdtvfkgtpwidlo",
+      "branchCode": "CAA2911-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA2911-02"
+    },
+    {
+      "parentCustomerId": "cmozfkiyl01zztvfk997nfkf4",
+      "parentNmwcCode": "CAS0328",
+      "branchId": "cmozfkjd00203tvfknqz4m9zf",
+      "branchCode": "CAS0328-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAS0328-02"
+    },
+    {
+      "parentCustomerId": "cmozfks5w021vtvfk53wfspyu",
+      "parentNmwcCode": "CCB0001",
+      "branchId": "cmozfkskb021ztvfkhrd6mgek",
+      "branchCode": "CCB0001-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCB0001-02"
+    },
+    {
+      "parentCustomerId": "cmozfkxkk0230tvfk8cr8m6v5",
+      "parentNmwcCode": "CCT0005-SUG6",
+      "branchId": "cmozfky630234tvfk6dv1x0z3",
+      "branchCode": "CCT0005-SUG6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCT0005-SUG6-02"
+    },
+    {
+      "parentCustomerId": "cmozflayu025qtvfkhls3r01d",
+      "parentNmwcCode": "CAD0244-RUSG6",
+      "branchId": "cmozflbdf025utvfks3mcyejz",
+      "branchCode": "CAD0244-RUSG6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAD0244-RUSG6-02"
+    },
+    {
+      "parentCustomerId": "cmozfljk7027jtvfkajcx45sy",
+      "parentNmwcCode": "CAA2260-SUMC6",
+      "branchId": "cmozfljyl027ntvfkcefuk8f4",
+      "branchCode": "CAA2260-SUMC6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA2260-SUMC6-02"
+    },
+    {
+      "parentCustomerId": "cmozflkyi027utvfk8690oob4",
+      "parentNmwcCode": "CAK0280-SUMC6",
+      "branchId": "cmozfllcv027ytvfku3dlsinm",
+      "branchCode": "CAK0280-SUMC6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAK0280-SUMC6-02"
+    },
+    {
+      "parentCustomerId": "cmozflwje02a8tvfkro8rwhta",
+      "parentNmwcCode": "CCW0005-SUMLC6",
+      "branchId": "cmozflwxu02actvfkbooiebg4",
+      "branchCode": "CCW0005-SUMLC6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCW0005-SUMLC6-02"
+    },
+    {
+      "parentCustomerId": "cmozflxqj02agtvfkktzwe5dn",
+      "parentNmwcCode": "CCU0007-KOMC6",
+      "branchId": "cmozfly4w02aktvfkgz0v4r3y",
+      "branchCode": "CCU0007-KOMC6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCU0007-KOMC6-02"
+    },
+    {
+      "parentCustomerId": "cmozflyc302altvfk5pgwlzim",
+      "parentNmwcCode": "CAN0420-FANC6",
+      "branchId": "cmozflyqg02aptvfke0p4eiie",
+      "branchCode": "CAN0420-FANC6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAN0420-FANC6-02"
+    },
+    {
+      "parentCustomerId": "cmozflyxm02aqtvfkvo8tjbg7",
+      "parentNmwcCode": "CAN0420-LIZC6",
+      "branchId": "cmozflzbz02autvfkt84al5vj",
+      "branchCode": "CAN0420-LIZC6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAN0420-LIZC6-02"
+    },
+    {
+      "parentCustomerId": "cmozfm34q02bmtvfk8wo8ebs2",
+      "parentNmwcCode": "CAC0094-AKC6",
+      "branchId": "cmozfm3j302bqtvfkkdqvpy8w",
+      "branchCode": "CAC0094-AKC6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAC0094-AKC6-02"
+    },
+    {
+      "parentCustomerId": "cmozfmhxe02eotvfkmuiv7djn",
+      "parentNmwcCode": "CAQ0086-C6AL",
+      "branchId": "cmozfmibs02estvfkrbmdu69m",
+      "branchCode": "CAQ0086-C6AL-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAQ0086-C6AL-02"
+    },
+    {
+      "parentCustomerId": "cmozfmpxx02gbtvfkmcud2xmu",
+      "parentNmwcCode": "CCA0226-C6",
+      "branchId": "cmozfmqca02gftvfk7ffsuxl4",
+      "branchCode": "CCA0226-C6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCA0226-C6-02"
+    },
+    {
+      "parentCustomerId": "cmozfmqjh02ggtvfkxrk05ez7",
+      "parentNmwcCode": "CCA0226-C6F",
+      "branchId": "cmozfmqxw02gktvfkryn0l3c9",
+      "branchCode": "CCA0226-C6F-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCA0226-C6F-02"
+    },
+    {
+      "parentCustomerId": "cmozfmrji02gotvfkwdj4qy6v",
+      "parentNmwcCode": "CAB3164-C7M",
+      "branchId": "cmozfmrxx02gstvfkcn4h1jb2",
+      "branchCode": "CAB3164-C7M-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAB3164-C7M-02"
+    },
+    {
+      "parentCustomerId": "cmozfms5402gttvfktxk98x69",
+      "parentNmwcCode": "CCA0226-C6SEIH",
+      "branchId": "cmozfmsjh02gxtvfkiovkhrz4",
+      "branchCode": "CCA0226-C6SEIH-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCA0226-C6SEIH-02"
+    },
+    {
+      "parentCustomerId": "cmozfnbxq02kvtvfk04ooqal8",
+      "parentNmwcCode": "CCU0007-C6",
+      "branchId": "cmozfncc402kztvfkz8hi1f23",
+      "branchCode": "CCU0007-C6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCU0007-C6-02"
+    },
+    {
+      "parentCustomerId": "cmozfncjc02l0tvfkghu1duqy",
+      "parentNmwcCode": "CAD142",
+      "branchId": "cmozfncxt02l4tvfklh3pzgvm",
+      "branchCode": "CAD142-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAD142-02"
+    },
+    {
+      "parentCustomerId": "cmozfndjf02l8tvfkely0et96",
+      "parentNmwcCode": "CCC0028-FANJA",
+      "branchId": "cmozfndxr02lctvfkddfyswk1",
+      "branchCode": "CCC0028-FANJA-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCC0028-FANJA-02"
+    },
+    {
+      "parentCustomerId": "cmozfnfqe02lptvfk5z2xrxfy",
+      "parentNmwcCode": "CAA8362-C7",
+      "branchId": "cmozfng4s02lttvfkm5w28pej",
+      "branchCode": "CAA8362-C7-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA8362-C7-02"
+    },
+    {
+      "parentCustomerId": "cmozfniqa02mctvfkk3v56k2j",
+      "parentNmwcCode": "CAD1045-C6",
+      "branchId": "cmozfnj4n02mgtvfkl98jouh0",
+      "branchCode": "CAD1045-C6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAD1045-C6-02"
+    },
+    {
+      "parentCustomerId": "cmozfnl4f02mttvfkd9la3cbo",
+      "parentNmwcCode": "CAA3410-FANJA",
+      "branchId": "cmozfnlit02mxtvfknmdugwdm",
+      "branchCode": "CAA3410-FANJA-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA3410-FANJA-02"
+    },
+    {
+      "parentCustomerId": "cmozfnnbg02natvfkfmdphx3t",
+      "parentNmwcCode": "CAE0163-C6",
+      "branchId": "cmozfnnpv02netvfklb05m114",
+      "branchCode": "CAE0163-C6-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAE0163-C6-02"
+    },
+    {
+      "parentCustomerId": "cmozfnqpn02o0tvfk4ka7vtcc",
+      "parentNmwcCode": "CAT1594",
+      "branchId": "cmozfnr4102o4tvfkooeosc0v",
+      "branchCode": "CAT1594-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAT1594-02"
+    },
+    {
+      "parentCustomerId": "cmozfozri02x8tvfksp70mve5",
+      "parentNmwcCode": "CAS0832-BOUSHE",
+      "branchId": "cmozfp05c02xctvfkcphapi9a",
+      "branchCode": "CAS0832-BOUSHE-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAS0832-BOUSHE-02"
+    },
+    {
+      "parentCustomerId": "cmozfpwdz0347tvfkzmyahk0o",
+      "parentNmwcCode": "CAE0058-SEEBG8",
+      "branchId": "cmozfpwrs034btvfka8220xzz",
+      "branchCode": "CAE0058-SEEBG8-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAE0058-SEEBG8-02"
+    },
+    {
+      "parentCustomerId": "cmozfqf7b0389tvfkr0143igr",
+      "parentNmwcCode": "CCH0018-V162C7",
+      "branchId": "cmozfqfl4038dtvfktox837hv",
+      "branchCode": "CCH0018-V162C7-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCH0018-V162C7-02"
+    },
+    {
+      "parentCustomerId": "cmozfqfs2038etvfkc7vxxemp",
+      "parentNmwcCode": "CCH0018-V30C7",
+      "branchId": "cmozfqgcp038itvfk1plwl0yh",
+      "branchCode": "CCH0018-V30C7-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCH0018-V30C7-02"
+    },
+    {
+      "parentCustomerId": "cmozfqhb7038ptvfk45rf5447",
+      "parentNmwcCode": "CAB3169",
+      "branchId": "cmozfqhp1038ttvfkcafsntte",
+      "branchCode": "CAB3169-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAB3169-02"
+    },
+    {
+      "parentCustomerId": "cmozfr8dc03eitvfkwbb66e59",
+      "parentNmwcCode": "CCU0007-C7 AL",
+      "branchId": "cmozfr8r503emtvfkx9jrktt6",
+      "branchCode": "CCU0007-C7 AL-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCU0007-C7 AL-02"
+    },
+    {
+      "parentCustomerId": "cmozfrfgv03g2tvfk8f47uie4",
+      "parentNmwcCode": "CAM1342-C7",
+      "branchId": "cmozfrg1o03g6tvfk333ojnv8",
+      "branchCode": "CAM1342-C7-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAM1342-C7-02"
+    },
+    {
+      "parentCustomerId": "cmozfrhe303ggtvfkck563yvm",
+      "parentNmwcCode": "CCC0028-HAILN",
+      "branchId": "cmozfrhry03gktvfkan7h8bf6",
+      "branchCode": "CCC0028-HAILN-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCC0028-HAILN-02"
+    },
+    {
+      "parentCustomerId": "cmozfrqeq03iftvfkqqynyuxv",
+      "parentNmwcCode": "CAE0163-C7",
+      "branchId": "cmozfrqsj03ijtvfkoti8wa2t",
+      "branchCode": "CAE0163-C7-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAE0163-C7-02"
+    },
+    {
+      "parentCustomerId": "cmozfsskr03qktvfkqdi0lbz7",
+      "parentNmwcCode": "CAY0092",
+      "branchId": "cmozfssyl03qotvfkt9xqfro1",
+      "branchCode": "CAY0092-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAY0092-02"
+    },
+    {
+      "parentCustomerId": "cmozftsnw03yatvfketk4j30c",
+      "parentNmwcCode": "CAA2859-C3",
+      "branchId": "cmozftt1p03yetvfkl3dccll4",
+      "branchCode": "CAA2859-C3-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAA2859-C3-02"
+    },
+    {
+      "parentCustomerId": "cmozftwb203z3tvfkk1qo7pd2",
+      "parentNmwcCode": "CAN852",
+      "branchId": "cmozftwov03z7tvfkonsuaale",
+      "branchCode": "CAN852-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAN852-02"
+    },
+    {
+      "parentCustomerId": "cmozftyst03zntvfkpd1ow3ff",
+      "parentNmwcCode": "CAQ0086-C12",
+      "branchId": "cmozftz6n03zrtvfkefzk4uny",
+      "branchCode": "CAQ0086-C12-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAQ0086-C12-02"
+    },
+    {
+      "parentCustomerId": "cmozfu5bl0411tvfkbujdxogv",
+      "parentNmwcCode": "CCC0053",
+      "branchId": "cmozfu5pe0415tvfkoi8e7dp8",
+      "branchCode": "CCC0053-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CCC0053-02"
+    },
+    {
+      "parentCustomerId": "cmozfuh030436tvfk0vvbalig",
+      "parentNmwcCode": "CAO6097-C12 RU",
+      "branchId": "cmozfuhe0043atvfk8glttafy",
+      "branchCode": "CAO6097-C12 RU-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAO6097-C12 RU-02"
+    },
+    {
+      "parentCustomerId": "cmozfutsb045wtvfkq18j8ud5",
+      "parentNmwcCode": "CAF3771-C12",
+      "branchId": "cmozfuu690460tvfkdusioinq",
+      "branchCode": "CAF3771-C12-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAF3771-C12-02"
+    },
+    {
+      "parentCustomerId": "cmozfvnzi04catvfkd2luz469",
+      "parentNmwcCode": "CAM9992",
+      "branchId": "cmozfvodg04cetvfknghv9z4l",
+      "branchCode": "CAM9992-02",
+      "newCustomerId": "",
+      "newNmwcCode": "CAM9992-02"
+    },
+    {
+      "parentCustomerId": "cmozfyipr04y3tvfktutf21x9",
+      "parentNmwcCode": "MCT0109",
+      "branchId": "cmozfyj3o04y7tvfkyvlxoy4n",
+      "branchCode": "MCT0109-02",
+      "newCustomerId": "",
+      "newNmwcCode": "MCT0109-02"
+    },
+    {
+      "parentCustomerId": "cmozfytxk050htvfkvut23kto",
+      "parentNmwcCode": "MCT3052",
+      "branchId": "cmozfyubh050ltvfkjbu1vzdt",
+      "branchCode": "MCT3052-02",
+      "newCustomerId": "",
+      "newNmwcCode": "MCT3052-02"
+    },
+    {
+      "parentCustomerId": "cmozfyuig050mtvfkalxcp7xo",
+      "parentNmwcCode": "MCT3053",
+      "branchId": "cmozfyuwd050qtvfkhfasys2k",
+      "branchCode": "MCT3053-02",
+      "newCustomerId": "",
+      "newNmwcCode": "MCT3053-02"
+    },
+    {
+      "parentCustomerId": "cmozg04q305aftvfk0h318gqu",
+      "parentNmwcCode": "MCT3405",
+      "branchId": "cmozg054005ajtvfknxoiy0oo",
+      "branchCode": "MCT3405-02",
+      "newCustomerId": "",
+      "newNmwcCode": "MCT3405-02"
+    },
+    {
+      "parentCustomerId": "cmozg07tf05b2tvfkxst2nf4n",
+      "parentNmwcCode": "MCT3452",
+      "branchId": "cmozg087d05b6tvfko0m5qza5",
+      "branchCode": "MCT3452-02",
+      "newCustomerId": "",
+      "newNmwcCode": "MCT3452-02"
+    },
+    {
+      "parentCustomerId": "cmozg1uec05mmtvfkdmrzqyx4",
+      "parentNmwcCode": "MCT3906",
+      "branchId": "cmozg1ut105mqtvfknvnf1yjq",
+      "branchCode": "MCT3906-02",
+      "newCustomerId": "",
+      "newNmwcCode": "MCT3906-02"
+    }
+  ]
+}

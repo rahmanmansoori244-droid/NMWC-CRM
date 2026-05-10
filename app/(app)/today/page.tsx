@@ -9,6 +9,14 @@ import { omanDayOfWeek } from '@/lib/tz';
 
 export const metadata = { title: 'Today · NMWC' };
 
+// P3.3: cache the rendered output for 30s. /today is a salesman's daily
+// route view — the visit list comes from `dayOfVisit` which only changes
+// when a salesman or supervisor edits a branch. 30s of staleness is fine
+// (and the salesman would refresh anyway when they open the app at the
+// next stop). We don't cache /approvals, /audit, /reactivations because
+// those need live data.
+export const revalidate = 30;
+
 export default async function TodayPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');

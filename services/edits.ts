@@ -307,46 +307,22 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
     customerProposed.crNumber = customerProposed.crNumber.trim() || undefined;
   }
 
-  // Hard duplicate phone check across DIFFERENT customers.
-  //
-  // EL-03: do NOT leak the colliding customer's `legalName` / NMWC code when
-  // the caller has no scope on it. A Muscat salesman trying random phones used
-  // to harvest the entire master through the error message. We resolve scope
-  // and only show the friendly identifier when the caller can already see the
-  // customer; otherwise the message is generic and the detail goes to the log.
+  // P1.3 (2026-05-10): phone duplicates are now ALLOWED across customers.
+  // NMWC's real-world data has many shops sharing one owner-phone; the prior
+  // hard-block was rejecting legitimate field submissions. We log a soft
+  // notice when a phone is already on another customer (useful in steward
+  // forensic reviews) but never throw.
   if (typeof customerProposed.primaryPhone === 'string') {
     const norm = customerProposed.primaryPhone;
     const collision = await prisma.customer.findFirst({
-      where: {
-        primaryPhoneNorm: norm,
-        id: { not: customer.id },
-        deletedAt: null,
-      },
-      select: {
-        id: true,
-        nmwcCode: true,
-        legalName: true,
-        branches: { select: { routeId: true, regionId: true, deletedAt: true } },
-      },
+      where: { primaryPhoneNorm: norm, id: { not: customer.id }, deletedAt: null },
+      select: { id: true, nmwcCode: true },
     });
     if (collision) {
-      const { canSeeCustomer, loadScope } = await import('@/lib/access');
-      const sessionUser = { id: me.id, role: me.role, username: session.username };
-      const scope = await loadScope(me.id);
-      const visible = canSeeCustomer(sessionUser, collision, scope);
-      logger.warn(
-        { actor: me.id, phone: norm, dupId: collision.id, dupNmwc: collision.nmwcCode, visible },
-        'edit.phone_collision'
+      logger.info(
+        { actor: me.id, customerId: customer.id, dupId: collision.id, dupNmwc: collision.nmwcCode },
+        'edit.phone_shared_with_other_customer'
       );
-      if (visible) {
-        throw new ValidationError({
-          'customer.primaryPhone': `Phone already used by ${collision.legalName} (${collision.nmwcCode}).`,
-        });
-      }
-      throw new ValidationError({
-        'customer.primaryPhone':
-          'This phone is already registered to another customer. Ask your supervisor to reconcile.',
-      });
     }
   }
 
@@ -595,7 +571,7 @@ async function applyEditChanges(
 /**
  * SafeAction-wrapped public entry. Production-critical: every error
  * thrown inside `approveEditCore` (STATUS_BYPASS, NEEDS_REUPLOAD,
- * DUPLICATE_PHONE, etc.) is converted to a returned `{ ok: false, ... }`
+ * VERSION_CONFLICT, etc.) is converted to a returned `{ ok: false, ... }`
  * payload so the form can render the actionable message inline.
  */
 export async function approveEditAction(formData: FormData): SafeAction<void> {
@@ -696,21 +672,18 @@ async function approveEditCore(formData: FormData) {
     delete customerProposed.crNumber;
   }
 
-  // QA-014: re-check duplicate phone against the current state of the master.
+  // P1.3 (2026-05-10): phone duplicates are now ALLOWED. Log a soft note
+  // for the steward queue but do not block the approval.
   if (typeof customerProposed.primaryPhone === 'string') {
     const norm = customerProposed.primaryPhone;
     const collision = await prisma.customer.findFirst({
-      where: {
-        primaryPhoneNorm: norm,
-        id: { not: edit.customerId! },
-        deletedAt: null,
-      },
-      select: { nmwcCode: true, legalName: true },
+      where: { primaryPhoneNorm: norm, id: { not: edit.customerId! }, deletedAt: null },
+      select: { id: true, nmwcCode: true },
     });
     if (collision) {
-      throw new ConflictError(
-        'DUPLICATE_PHONE',
-        `Phone now belongs to ${collision.legalName} (${collision.nmwcCode}). Reject and ask the salesman to fix.`
+      logger.info(
+        { editId, customerId: edit.customerId, dupId: collision.id, dupNmwc: collision.nmwcCode },
+        'approve.phone_shared_with_other_customer'
       );
     }
   }
@@ -815,7 +788,7 @@ async function approveEditCore(formData: FormData) {
  * B-11 (Senior-audit 2026-05-10): Bulk approve. Reviewer multi-selects edits
  * in the queue and approves them in one round trip. Each edit goes through
  * `approveEditAction` in its own transaction, so partial failures (a single
- * VERSION_CONFLICT, NEEDS_REUPLOAD, DUPLICATE_PHONE, etc.) don't block the
+ * VERSION_CONFLICT, NEEDS_REUPLOAD, etc.) don't block the
  * other approvals. The result reports per-edit outcomes so the form can
  * surface "12 approved, 1 needs your attention" inline.
  *

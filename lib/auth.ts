@@ -3,6 +3,7 @@ import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { headers } from 'next/headers';
+import { cache } from 'react';
 import { prisma } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { Role } from '@prisma/client';
@@ -330,3 +331,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
 });
+
+/**
+ * P3.4: per-request memoized variant of `auth()`.
+ *
+ * Every server component on a typical NMWC page calls `auth()` (page itself,
+ * the layout that renders <Sidebar/>, sometimes a child server component).
+ * `auth()` is non-trivial — it parses the cookie, runs the JWT callback (which
+ * may issue a freshness DB read), and decodes the session. Wrapping it in
+ * `cache()` from React turns the per-request invocations into a single call.
+ *
+ * The cache lifetime is the in-flight RSC render — it does NOT cross requests
+ * and does NOT persist any cookie/JWT state, so the security model is
+ * unchanged. New callers can opt-in by importing `cachedAuth` instead of
+ * `auth`; existing call sites keep working unchanged.
+ *
+ * Pages that benefit from `cachedAuth`: any page where the page + a child
+ * component or server action both need `session` in the same render. The
+ * /customers, /dashboard and /today pages currently do.
+ */
+export const cachedAuth = cache(auth);

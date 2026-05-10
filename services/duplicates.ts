@@ -27,24 +27,38 @@ async function requireSteward() {
 }
 
 export type DuplicateCandidate = {
-  reason: 'PHONE' | 'CR' | 'NAME';
+  reason: 'CR' | 'EXACT_TRIPLE'; // CR-number match (high-confidence) OR exact name+phone+region match
   similarity: number; // 0–1
   a: { id: string; nmwcCode: string; legalName: string; primaryPhone: string | null; crNumber: string | null; completenessScore: number; branchCount: number };
   b: { id: string; nmwcCode: string; legalName: string; primaryPhone: string | null; crNumber: string | null; completenessScore: number; branchCount: number };
 };
 
 /**
- * Find duplicate candidate pairs across the live customer master.
- * Three rules:
- *   1. EXACT phone match across different parent customers (hard duplicate)
- *   2. EXACT CR match across different parent customers
- *   3. FUZZY name match (case-insensitive Jaro-like via shared 4-grams)
+ * P1.4 (2026-05-10) — find duplicate candidate pairs across the live
+ * customer master, but ONLY high-confidence pairs.
+ *
+ * NMWC reality:
+ *   - One owner often runs many shops with the same primaryPhone — phone
+ *     duplicates are LEGITIMATE, not a duplicate signal.
+ *   - Chain shops (e.g. "ABU RETAJ AL M-…") share legalName prefixes across
+ *     different areas — name fuzziness produced ~50 false positives per run
+ *     and caused the steward to lose trust in the queue.
+ *
+ * New rules (only the ones that survive both real-world tests):
+ *   1. EXACT CR-number match across different customers (rare, almost
+ *      always a true duplicate — same legal entity registered twice).
+ *   2. EXACT legalName + EXACT primaryPhone + same regionId — a very
+ *      strong signal that the same shop was entered twice.
+ *
+ * Dropped: PHONE-only (legitimate), NAME-fuzzy (too noisy).
  *
  * Returns up to `limit` pairs sorted by reason strength.
  */
 export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCandidate[]> {
   await requireSteward();
 
+  // We need region context for the EXACT_TRIPLE rule. Pull the customer's
+  // first branch's region (post-flatten there's exactly one).
   const customers = await prisma.customer.findMany({
     where: { deletedAt: null },
     select: {
@@ -56,17 +70,17 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCan
       crNumber: true,
       crNumberNorm: true,
       completenessScore: true,
+      branches: {
+        where: { deletedAt: null },
+        select: { regionId: true },
+        take: 1,
+      },
       _count: { select: { branches: { where: { deletedAt: null } } } },
     },
   });
 
-  // B-23 (Senior-audit 2026-05-10): Honor dismissed pairs from the steward
-  // audit trail. dismissDuplicateCore writes an AuditLog row with
-  // entityType='CustomerPair' and entityId='aId|bId'. Pull the union of those
-  // keys and skip any pair the detector would otherwise re-surface — without
-  // this, the same false-positive pair haunts the steward queue forever.
-  // Stores both order permutations because the dismiss path doesn't sort the
-  // pair before keying.
+  // Honor steward-dismissed pairs (writes AuditLog row with
+  // entityType='CustomerPair', entityId='aId|bId').
   const dismissedAuditRows = await prisma.auditLog.findMany({
     where: { entityType: 'CustomerPair' },
     select: { entityId: true },
@@ -84,22 +98,7 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCan
     dismissedKeys.has(`${a}|${b}`) || dismissedKeys.has(`${b}|${a}`);
 
   const out: DuplicateCandidate[] = [];
-
-  // Index by phone + CR
-  const byPhone = new Map<string, typeof customers>();
-  const byCr = new Map<string, typeof customers>();
-  for (const c of customers) {
-    if (c.primaryPhoneNorm) {
-      const arr = byPhone.get(c.primaryPhoneNorm) ?? [];
-      arr.push(c);
-      byPhone.set(c.primaryPhoneNorm, arr);
-    }
-    if (c.crNumberNorm) {
-      const arr = byCr.get(c.crNumberNorm) ?? [];
-      arr.push(c);
-      byCr.set(c.crNumberNorm, arr);
-    }
-  }
+  const seen = new Set<string>();
 
   function pushPair(
     reason: DuplicateCandidate['reason'],
@@ -107,53 +106,53 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCan
     a: (typeof customers)[number],
     b: (typeof customers)[number]
   ) {
-    if (isDismissed(a.id, b.id)) return; // B-23
-    out.push({
-      reason,
-      similarity,
-      a: pickSummary(a),
-      b: pickSummary(b),
-    });
+    if (isDismissed(a.id, b.id)) return;
+    const key = `${a.id}|${b.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ reason, similarity, a: pickSummary(a), b: pickSummary(b) });
   }
 
-  for (const [, group] of byPhone) {
-    if (group.length < 2) continue;
-    for (let i = 0; i < group.length; i++) {
-      for (let j = i + 1; j < group.length; j++) {
-        pushPair('PHONE', 1.0, group[i], group[j]);
-      }
-    }
+  // Rule 1: CR-number exact match.
+  const byCr = new Map<string, typeof customers>();
+  for (const c of customers) {
+    if (!c.crNumberNorm) continue;
+    const arr = byCr.get(c.crNumberNorm) ?? [];
+    arr.push(c);
+    byCr.set(c.crNumberNorm, arr);
   }
-  const seenPhonePair = new Set(out.map((p) => `${p.a.id}|${p.b.id}`));
   for (const [, group] of byCr) {
     if (group.length < 2) continue;
     for (let i = 0; i < group.length; i++) {
-      for (let j = i + 1; j < group.length; j++) {
-        const key = `${group[i].id}|${group[j].id}`;
-        if (!seenPhonePair.has(key)) pushPair('CR', 1.0, group[i], group[j]);
+      for (let j = i + 1; j < group.length && out.length < limit; j++) {
+        pushPair('CR', 1.0, group[i], group[j]);
       }
     }
   }
 
-  // Fuzzy name: 4-gram Jaccard. O(N²) but fine at our scale.
-  const grams = customers.map((c) => ({ c, g: ngrams(normalizeName(c.legalName), 4) }));
-  const seenAny = new Set(out.map((p) => `${p.a.id}|${p.b.id}`));
-  for (let i = 0; i < grams.length && out.length < limit; i++) {
-    for (let j = i + 1; j < grams.length && out.length < limit; j++) {
-      const sim = jaccard(grams[i].g, grams[j].g);
-      if (sim < 0.7) continue;
-      const key = `${grams[i].c.id}|${grams[j].c.id}`;
-      if (seenAny.has(key)) continue;
-      seenAny.add(key);
-      pushPair('NAME', sim, grams[i].c, grams[j].c);
+  // Rule 2: same legalName + same primaryPhone + same region.
+  // Build a triple-key and look for collisions.
+  const byTriple = new Map<string, typeof customers>();
+  for (const c of customers) {
+    if (!c.legalName || !c.primaryPhoneNorm || !c.branches[0]?.regionId) continue;
+    const triple = `${c.legalName.toLowerCase().trim()}|${c.primaryPhoneNorm}|${c.branches[0].regionId}`;
+    const arr = byTriple.get(triple) ?? [];
+    arr.push(c);
+    byTriple.set(triple, arr);
+  }
+  for (const [, group] of byTriple) {
+    if (group.length < 2) continue;
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length && out.length < limit; j++) {
+        pushPair('EXACT_TRIPLE', 1.0, group[i], group[j]);
+      }
     }
   }
 
-  // Sort: exact matches first, then by similarity
+  // Sort: CR first (strongest), then triple matches.
   out.sort((a, b) => {
-    const rank = (r: DuplicateCandidate['reason']) =>
-      r === 'PHONE' ? 0 : r === 'CR' ? 1 : 2;
-    return rank(a.reason) - rank(b.reason) || b.similarity - a.similarity;
+    const rank = (r: DuplicateCandidate['reason']) => (r === 'CR' ? 0 : 1);
+    return rank(a.reason) - rank(b.reason);
   });
 
   return out.slice(0, limit);
@@ -181,30 +180,8 @@ function pickSummary(
   };
 }
 
-function normalizeName(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function ngrams(s: string, n: number): Set<string> {
-  const out = new Set<string>();
-  if (s.length < n) {
-    out.add(s);
-    return out;
-  }
-  for (let i = 0; i <= s.length - n; i++) out.add(s.slice(i, i + n));
-  return out;
-}
-
-function jaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 0;
-  let inter = 0;
-  for (const x of a) if (b.has(x)) inter++;
-  return inter / (a.size + b.size - inter);
-}
+// (P1.4 2026-05-10) — fuzzy-name + n-gram + Jaccard helpers were removed
+// alongside the noisy NAME-similarity rule. Kept the file clean.
 
 /**
  * Merge two customers: branches of `loserId` are reassigned to `winnerId`,

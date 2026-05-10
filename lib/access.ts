@@ -14,6 +14,7 @@
  * the attacker a confirmation oracle for IDs.
  */
 import { Role, type User, type Customer, type Branch, type Attachment } from '@prisma/client';
+import { cache } from 'react';
 import { prisma } from './db';
 import { NotFoundError, ForbiddenError } from './errors';
 import type { SessionUser } from './permissions';
@@ -24,10 +25,18 @@ type CustomerWithBranches = Customer & {
 
 /**
  * Resolve the current user's scope context (route they own, routes their team
- * owns, regions they manage). Cached per-request via the closure of a server
- * action / server component — caller should call once per request.
+ * owns, regions they manage).
+ *
+ * P3.4: wrapped in React `cache()` so multiple call sites in the same render
+ * (a page + a child server component, or a service that re-loads scope)
+ * share a single DB read per request. The cache keys on `userId`, so two
+ * different users in the same request (we don't have any today, but a
+ * service-to-service path could) still resolve correctly.
+ *
+ * This was previously a plain async function — many of our pages already
+ * call loadScope twice per render (page + a server-action import path).
  */
-export async function loadScope(userId: string): Promise<{
+async function _loadScope(userId: string): Promise<{
   ownedRouteId: string | null;
   teamRouteIds: string[];
   managedRegionIds: string[];
@@ -46,6 +55,8 @@ export async function loadScope(userId: string): Promise<{
     managedRegionIds: me.managedRegions.map((r) => r.id),
   };
 }
+
+export const loadScope = cache(_loadScope);
 
 export type Scope = Awaited<ReturnType<typeof loadScope>>;
 
