@@ -146,12 +146,12 @@ jobs:
   # `restore-drill-<DATE>` via the Neon REST API. The branch must be deleted
   # by hand after verification (cheap, but not free).
   #
-  # TODO operator (one-time): set GitHub secret `NEON_API_KEY` (Neon console
-  # → Settings → API keys) and `NEON_PROJECT_ID` (snowy-haze-29025382 from
-  # OPERATIONS.md). Without them this job fails at the "create branch" step.
+  # The job is gated on the presence of NEON_API_KEY so an operator who
+  # hasn't set up the optional secrets yet doesn't see a permanent red ❌
+  # on every workflow_dispatch backup. Without the secret it skips cleanly.
   restore-drill:
     name: Restore drill (manual)
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && vars.NEON_DRILL_ENABLED == 'true'
     needs: backup
     runs-on: ubuntu-latest
     timeout-minutes: 30
