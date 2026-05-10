@@ -69,6 +69,44 @@ npx prisma migrate deploy
 
 Vercel's build pipeline runs `prisma generate` automatically (configured in `package.json`). Migrations are NOT auto-deployed on Vercel — you run `prisma migrate deploy` manually before the deploy that needs the new schema.
 
+## 5b. First-time post-deploy operator checklist
+
+Run these once after the senior-audit remediation deploy. Each item is needed by a senior-audit blocker; none auto-resolve themselves.
+
+### A. Reconnect Vercel ↔ GitHub auto-deploy (op note 1)
+The CLI cannot toggle this on its own. Do it via UI:
+1. Open https://vercel.com/rahmanmansoori244-6893s-projects/nmwc-cm/settings/git
+2. Under "Connected Git Repository", click "Connect" and select `rahmanmansoori244-droid/NMWC-CRM` on `main`.
+3. Confirm in https://github.com/rahmanmansoori244-droid/NMWC-CRM/settings/installations that the Vercel app is installed.
+4. From now on, every `git push origin main` triggers a Vercel build automatically. Until then, the deploy must be done manually with `npx vercel --prod`.
+
+### B. Configure GitHub Actions secrets for the daily DB backup (op note 2)
+The workflow `.github/workflows/db-backup.yml` will fail at the upload step until these secrets exist.
+1. Run `npm run ops:print-secrets` locally — it lists exactly which secret names are needed and shows which values are already present in your `.env`.
+2. Create a separate R2 bucket `nmwc-backups` (Cloudflare → R2 → "Create bucket"). Keep it separate from `nmwc-photos` so a leaked photo token cannot also touch the backups.
+3. Create an R2 API token scoped only to that bucket: Cloudflare → R2 → API tokens → "Create token" → permission "Object Read & Write" → restrict to bucket `nmwc-backups`. Save the access key + secret immediately (R2 only shows the secret once).
+4. At https://github.com/rahmanmansoori244-droid/NMWC-CRM/settings/secrets/actions, add: `DIRECT_URL`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET=nmwc-backups`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`. For the restore-drill job: also `NEON_API_KEY` (Neon console → Settings → API keys) and `NEON_PROJECT_ID=snowy-haze-29025382`.
+5. Trigger a manual run: Actions tab → "DB Backup" → "Run workflow". Confirm green, then check the bucket has `db/<TODAY>.sql.gz`.
+
+### C. R2 lifecycle rules for the photos bucket (op note 3)
+Two options — **A is preferred for full automation; B is the fallback if you don't want to mint a new token.**
+
+**Option A (recommended):** create a second R2 token with bucket-admin scope and let our script configure lifecycle rules end-to-end.
+1. Cloudflare → R2 → API tokens → "Create token" → permission "Admin Read & Write" (scoped to the photos account).
+2. Add the new key/secret to your local `.env` as `R2_ADMIN_ACCESS_KEY_ID` and `R2_ADMIN_SECRET_ACCESS_KEY` (separate from the existing `R2_ACCESS_KEY_ID` which is object-only and should stay untouched).
+3. Run `npm run ops:r2-setup`. The script enables Object Versioning and writes the `gc-marked-7d` lifecycle rule + `incomplete-multipart-1d` rule. Re-run any time; idempotent.
+4. The script will fall back to the regular R2 token if the admin key isn't set, so it's safe to run either way — it just prints a warning.
+
+**Option B (manual UI):** Cloudflare R2 dashboard → bucket `nmwc-photos` → Settings → Lifecycle rules → Add rule:
+- Tag filter: `gc-marked=true` → Expire 7 days after tag applied.
+- Also add: Multipart upload abort after 1 day.
+- Versioning toggle on the same Settings page.
+
+### D. (Optional) Mint a dedicated R2 admin token to remove the warnings
+Even if you finish steps A–C, the daily R2 setup script (`npm run ops:r2-setup`) will continue printing a warning about the photos token lacking bucket-admin scope. To silence it cleanly: follow Option A above and add the admin token vars to `.env`.
+
+---
+
 ## 6. Backups
 
 - **Neon PITR:** point-in-time recovery, 7 days on the Launch plan.

@@ -25,9 +25,11 @@ const securityHeaders = [
   {
     key: 'Content-Security-Policy',
     value:
+      // B-13: static fallback is the strictest. Real responses go through
+      // middleware.ts which adds a per-request nonce + 'strict-dynamic'.
       `default-src 'self'; ` +
       `img-src 'self' blob: data:; ` +
-      `script-src 'self' 'unsafe-inline'; ` +
+      `script-src 'self'; ` +
       `style-src 'self' 'unsafe-inline'; ` +
       `font-src 'self' data:; ` +
       `connect-src 'self' https://${r2AccountId}.r2.cloudflarestorage.com https://*.ingest.sentry.io https://*.ingest.de.sentry.io; ` +

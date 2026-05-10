@@ -21,7 +21,9 @@
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
     "db:synthetic": "tsx prisma/synthetic.ts",
-    "db:synthetic:reset": "tsx prisma/synthetic.ts --reset"
+    "db:synthetic:reset": "tsx prisma/synthetic.ts --reset",
+    "ops:r2-setup": "tsx scripts/r2-setup-lifecycle.ts",
+    "ops:print-secrets": "tsx scripts/print-required-secrets.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",
