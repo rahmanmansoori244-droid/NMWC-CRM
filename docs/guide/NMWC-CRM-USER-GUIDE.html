@@ -1,0 +1,663 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>NMWC Customer Master — User Guide</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  /* ───────────────  Print + screen base  ─────────────── */
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: #1e293b;
+    line-height: 1.55;
+    font-size: 12pt;
+    background: #f8fafc;
+  }
+  @media print {
+    body { background: #fff; font-size: 10.5pt; }
+    .page-break { page-break-before: always; }
+    .avoid-break { page-break-inside: avoid; }
+    .no-print { display: none !important; }
+    a { color: inherit; text-decoration: none; }
+  }
+  @media screen {
+    body { padding: 24px; }
+    .page { background: #fff; max-width: 820px; margin: 0 auto 24px; padding: 48px; box-shadow: 0 6px 24px rgba(15,23,42,0.06); border-radius: 8px; }
+  }
+
+  /* ───────────────  NMWC palette  ─────────────── */
+  :root {
+    --brand-50: #eff6ff;
+    --brand-100: #dbeafe;
+    --brand-600: #2563eb;
+    --brand-700: #1d4ed8;
+    --brand-900: #1e3a8a;
+    --slate-50: #f8fafc;
+    --slate-100: #f1f5f9;
+    --slate-200: #e2e8f0;
+    --slate-500: #64748b;
+    --slate-700: #334155;
+    --slate-900: #0f172a;
+    --emerald-50: #ecfdf5;
+    --emerald-500: #10b981;
+    --emerald-700: #047857;
+    --amber-50: #fffbeb;
+    --amber-700: #b45309;
+    --red-50: #fef2f2;
+    --red-700: #b91c1c;
+  }
+
+  h1, h2, h3, h4 { font-weight: 700; color: var(--slate-900); margin: 0; }
+  h1 { font-size: 26pt; letter-spacing: -0.02em; }
+  h2 { font-size: 20pt; margin-top: 24pt; padding-bottom: 6pt; border-bottom: 2px solid var(--brand-700); color: var(--brand-900); }
+  h3 { font-size: 14pt; margin-top: 18pt; color: var(--brand-700); }
+  h4 { font-size: 11pt; margin-top: 12pt; color: var(--slate-700); text-transform: uppercase; letter-spacing: 0.05em; }
+  p  { margin: 8pt 0; }
+
+  /* ───────────────  Cover page  ─────────────── */
+  .cover {
+    min-height: 270mm;
+    display: flex; flex-direction: column; justify-content: space-between;
+    background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+    color: #fff;
+    padding: 40mm 24mm;
+    border-radius: 0;
+  }
+  @media screen { .cover { border-radius: 8px; } }
+  .cover .brand { font-size: 36pt; font-weight: 800; letter-spacing: -0.03em; }
+  .cover .sub { font-size: 14pt; opacity: 0.85; margin-top: 6pt; }
+  .cover .title { font-size: 38pt; font-weight: 800; line-height: 1.05; max-width: 14em; }
+  .cover .role-badges { display: flex; gap: 14pt; margin-top: 14pt; }
+  .cover .role-badge { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.25); padding: 8pt 14pt; border-radius: 999px; font-weight: 600; font-size: 11pt; }
+  .cover .footer { font-size: 10pt; opacity: 0.7; }
+
+  /* ───────────────  Layout helpers  ─────────────── */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18pt; }
+  .role-card { background: #fff; border: 1px solid var(--slate-200); border-radius: 10px; padding: 14pt 16pt; }
+  .role-card h3 { color: var(--brand-700); margin: 0 0 6pt; }
+  .role-card.salesman { border-left: 4px solid var(--brand-700); }
+  .role-card.supervisor { border-left: 4px solid var(--emerald-500); }
+  .role-card.manager { border-left: 4px solid #f59e0b; }
+  .role-card .what { font-weight: 600; font-size: 10.5pt; color: var(--slate-700); }
+
+  /* ───────────────  Step list  ─────────────── */
+  .step-list { counter-reset: step; padding: 0; margin: 0 0 12pt; list-style: none; }
+  .step-list > li {
+    counter-increment: step;
+    position: relative;
+    padding: 10pt 14pt 10pt 42pt;
+    margin-bottom: 8pt;
+    background: #fff;
+    border: 1px solid var(--slate-200);
+    border-radius: 8px;
+    page-break-inside: avoid;
+  }
+  .step-list > li::before {
+    content: counter(step);
+    position: absolute; left: 10pt; top: 9pt;
+    width: 22pt; height: 22pt; border-radius: 999px;
+    background: var(--brand-700); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 10.5pt;
+  }
+  .step-list strong { color: var(--brand-900); }
+
+  /* ───────────────  Screenshot frame  ─────────────── */
+  .screenshot {
+    margin: 14pt auto;
+    max-width: 320px;
+    border: 1px solid var(--slate-200);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 2px 12px rgba(15,23,42,0.08);
+    page-break-inside: avoid;
+    background: #000;
+  }
+  .screenshot img { width: 100%; height: auto; display: block; }
+  .screenshot .caption {
+    background: var(--slate-900);
+    color: #cbd5e1;
+    padding: 6pt 10pt;
+    font-size: 9.5pt;
+    text-align: center;
+  }
+  .screenshot.wide { max-width: 480px; }
+
+  /* Side-by-side layout */
+  .step-with-image { display: grid; grid-template-columns: 320px 1fr; gap: 20pt; align-items: start; page-break-inside: avoid; margin: 12pt 0; }
+  .step-with-image.left { grid-template-columns: 1fr 320px; }
+  @media print { .step-with-image, .step-with-image.left { grid-template-columns: 280px 1fr; } }
+
+  /* ───────────────  Callouts  ─────────────── */
+  .callout {
+    border-left: 4px solid var(--brand-700);
+    background: var(--brand-50);
+    padding: 10pt 14pt;
+    border-radius: 0 8px 8px 0;
+    margin: 12pt 0;
+    page-break-inside: avoid;
+  }
+  .callout.tip { border-left-color: var(--emerald-500); background: var(--emerald-50); }
+  .callout.warn { border-left-color: #f59e0b; background: var(--amber-50); }
+  .callout.danger { border-left-color: #dc2626; background: var(--red-50); }
+  .callout strong { display: block; font-size: 10pt; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4pt; color: var(--brand-700); }
+  .callout.tip strong { color: var(--emerald-700); }
+  .callout.warn strong { color: var(--amber-700); }
+  .callout.danger strong { color: var(--red-700); }
+
+  /* ───────────────  Tables  ─────────────── */
+  table { border-collapse: collapse; width: 100%; margin: 10pt 0; font-size: 10.5pt; }
+  th, td { padding: 8pt 10pt; text-align: left; border-bottom: 1px solid var(--slate-200); vertical-align: top; }
+  thead th { background: var(--slate-100); font-weight: 600; color: var(--slate-700); font-size: 10pt; }
+  tr.role-header td { background: var(--slate-50); font-weight: 700; }
+
+  code, .mono { font-family: "SF Mono", Consolas, "Courier New", monospace; font-size: 0.92em; background: var(--slate-100); padding: 1px 6px; border-radius: 4px; }
+
+  .toc-row { display: flex; justify-content: space-between; align-items: baseline; padding: 6pt 0; border-bottom: 1px dotted var(--slate-200); }
+  .toc-row .num { color: var(--slate-500); font-variant-numeric: tabular-nums; }
+
+  .credentials-card {
+    border: 2px dashed var(--brand-700);
+    background: var(--brand-50);
+    border-radius: 10px;
+    padding: 16pt;
+    margin: 14pt 0;
+    page-break-inside: avoid;
+  }
+  .credentials-card .label { font-size: 9pt; text-transform: uppercase; color: var(--slate-500); letter-spacing: 0.06em; }
+  .credentials-card .value { font-family: "SF Mono", Consolas, monospace; font-weight: 700; font-size: 13pt; color: var(--brand-900); }
+
+  /* Footer running on every page (print only) */
+  @media print {
+    .footer-strip {
+      position: running(footer);
+      font-size: 9pt; color: var(--slate-500);
+      border-top: 1px solid var(--slate-200);
+      padding-top: 4pt;
+    }
+    @page { @bottom-center { content: element(footer); } }
+  }
+
+  /* Section opener */
+  .section-opener {
+    background: linear-gradient(180deg, var(--brand-50) 0%, #fff 100%);
+    border-radius: 12px;
+    padding: 28pt 24pt;
+    margin-bottom: 18pt;
+    border-left: 6px solid var(--brand-700);
+  }
+  .section-opener.green { border-left-color: var(--emerald-500); background: linear-gradient(180deg, var(--emerald-50) 0%, #fff 100%); }
+  .section-opener.amber { border-left-color: #f59e0b; background: linear-gradient(180deg, var(--amber-50) 0%, #fff 100%); }
+  .section-opener .role-pill {
+    display: inline-block; padding: 4pt 10pt; border-radius: 999px;
+    background: var(--brand-700); color: #fff; font-size: 10pt; font-weight: 600;
+  }
+  .section-opener.green .role-pill { background: var(--emerald-500); }
+  .section-opener.amber .role-pill { background: #f59e0b; }
+  .section-opener h2 { border: none; padding: 0; margin: 8pt 0 4pt; font-size: 26pt; }
+  .section-opener .blurb { color: var(--slate-700); font-size: 11.5pt; max-width: 36em; }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════════
+     COVER
+     ════════════════════════════════════════════════════════════════ -->
+<section class="cover page">
+  <div>
+    <div class="brand">NMWC</div>
+    <div class="sub">Customer Master — Field App</div>
+  </div>
+  <div>
+    <div class="title">User Guide for Salesmen, Supervisors, and Managers</div>
+    <div class="role-badges">
+      <span class="role-badge">For salesmen</span>
+      <span class="role-badge">For supervisors</span>
+      <span class="role-badge">For managers</span>
+    </div>
+  </div>
+  <div class="footer">National Mineral Water Company — Oman pilot · v1.0 · 2026-05-10</div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     WELCOME + WHO'S WHO
+     ════════════════════════════════════════════════════════════════ -->
+<section class="page page-break">
+  <h1>Welcome</h1>
+  <p>The NMWC Customer Master app helps every team keep our shop information clean, complete, and up-to-date — directly from the field. This guide shows you exactly what to do, depending on your role.</p>
+
+  <h3>Who does what</h3>
+  <div class="grid-2">
+    <div class="role-card salesman">
+      <div class="what">SALESMAN</div>
+      <h3>You visit the shop</h3>
+      <p>You go to the shop, fix the missing customer info, take photos of the shop and the CR, and submit. If a shop has closed, you mark it closed. If one reopens, you request reactivation.</p>
+    </div>
+    <div class="role-card supervisor">
+      <div class="what">SUPERVISOR</div>
+      <h3>You review the work</h3>
+      <p>You see all submissions from your team in one queue. You approve good ones, reject bad ones with a clear reason, or send them back for correction. Bulk-approve when you're confident.</p>
+    </div>
+    <div class="role-card manager">
+      <div class="what">MANAGER</div>
+      <h3>You own the region</h3>
+      <p>You review reactivations (bringing closed shops back), reset passwords for your team, manage routes and users, and watch overall completeness.</p>
+    </div>
+    <div class="role-card" style="border-left-color: #6366f1;">
+      <div class="what">STEWARD (head office)</div>
+      <h3>You own the master</h3>
+      <p>You bulk-import customer lists from the ERP, merge duplicates, and export the cleaned master back to the ERP. Not part of the daily field cycle.</p>
+    </div>
+  </div>
+
+  <h3>Table of contents</h3>
+  <div class="toc-row"><span>1 · Logging in (everyone)</span><span class="num">3</span></div>
+  <div class="toc-row"><span>2 · Salesman: Visit a shop and update its info</span><span class="num">5</span></div>
+  <div class="toc-row"><span>3 · Salesman: Mark a shop closed</span><span class="num">10</span></div>
+  <div class="toc-row"><span>4 · Salesman: Request reactivation of a closed shop</span><span class="num">11</span></div>
+  <div class="toc-row"><span>5 · Supervisor: Review your team's work</span><span class="num">12</span></div>
+  <div class="toc-row"><span>6 · Manager: Approve reactivations + manage users</span><span class="num">15</span></div>
+  <div class="toc-row"><span>7 · Common situations + answers</span><span class="num">18</span></div>
+  <div class="toc-row"><span>8 · Quick reference card</span><span class="num">19</span></div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     1 — LOGIN
+     ════════════════════════════════════════════════════════════════ -->
+<section class="page page-break">
+  <h2>1. Logging in</h2>
+  <p>Everybody — salesman, supervisor, manager — uses the same way to log in.</p>
+
+  <div class="step-with-image">
+    <div class="screenshot"><img src="img/01-login.png" alt="Login page" /><div class="caption">Sign-in screen</div></div>
+    <ol class="step-list">
+      <li>Open this link on your phone or laptop:<br/><strong style="font-family: monospace;">https://nmwc-cm.vercel.app</strong></li>
+      <li>Type your <strong>Username</strong> (your manager gives this to you).</li>
+      <li>Type your <strong>Password</strong>.</li>
+      <li>Tap the blue <strong>Sign in</strong> button.</li>
+    </ol>
+  </div>
+
+  <div class="callout warn">
+    <strong>First time logging in?</strong>
+    The app may ask you to set a new password before you can do anything else. This is for your security — a temporary password isn't a permanent password.
+  </div>
+
+  <div class="callout tip">
+    <strong>Forgot your password?</strong>
+    Don't try to guess it more than 5 times — the system will lock you out for a minute. Just message your <strong>Manager</strong> and they will reset it for you in seconds.
+  </div>
+
+  <h3>Recommended</h3>
+  <ul>
+    <li>Save the link as a bookmark on your home screen so you can open it with one tap.</li>
+    <li>Don't share your password with anyone, including a colleague — every action is logged in your name.</li>
+  </ul>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     2 — SALESMAN: ENRICH A CUSTOMER
+     ════════════════════════════════════════════════════════════════ -->
+<section class="page page-break">
+  <div class="section-opener">
+    <span class="role-pill">FOR SALESMEN</span>
+    <h2>2. Visit a shop and update its info</h2>
+    <p class="blurb">This is your daily job. You visit a shop, find it in the app, fix what's missing, take photos, and submit. Your supervisor approves, and the master is updated.</p>
+  </div>
+
+  <h3>Step 1 — Find the shop you're visiting</h3>
+  <div class="step-with-image">
+    <div class="screenshot"><img src="img/02-salesman-today.png" alt="Today's route" /><div class="caption">"Today" — your route for the day</div></div>
+    <ol class="step-list">
+      <li>Tap <strong>Today</strong> in the menu (or go to the home screen). You'll see the customers on your route who have visits scheduled today.</li>
+      <li>If the shop you're at isn't on today's list, tap <strong>Customers</strong> to search the full list.</li>
+      <li>Tap a customer to open their profile.</li>
+    </ol>
+  </div>
+
+  <div class="step-with-image left">
+    <ol class="step-list" start="4">
+      <li>The <strong>Customers</strong> page shows all the shops on your route. Use the search at the top to find one quickly by name or NMWC code.</li>
+      <li>Each row shows the shop's <strong>completeness</strong> — the green ring tells you how much info is missing.</li>
+    </ol>
+    <div class="screenshot"><img src="img/03-salesman-customers-list.png" alt="Customer list" /><div class="caption">Search and pick a customer</div></div>
+  </div>
+
+  <h3>Step 2 — Open the customer profile</h3>
+  <div class="step-with-image">
+    <div class="screenshot"><img src="img/04-salesman-customer-profile.png" alt="Customer profile" /><div class="caption">A shop's profile screen</div></div>
+    <ol class="step-list">
+      <li>You'll see the basic info we already have on this shop: name, NMWC code, phone, channel, contact, etc.</li>
+      <li>Empty fields and a low completeness score tell you what to fill in.</li>
+      <li>Scroll down to see the <strong>branches</strong> of this customer. Most shops have one branch ("Main") but big chains may have several.</li>
+      <li>Tap the blue <strong>Enrich</strong> button at the top right to start updating.</li>
+    </ol>
+  </div>
+
+  <div class="callout">
+    <strong>What's a branch?</strong>
+    A "customer" is the legal entity (the company name on the CR). A "branch" is the physical shop you visit. One customer can have many branches if it's a chain.
+  </div>
+</section>
+
+<section class="page page-break">
+  <h3>Step 3 — Fill in what's missing</h3>
+  <div class="step-with-image">
+    <div class="screenshot"><img src="img/05-salesman-enrichment-top.png" alt="Top of enrichment form" /><div class="caption">The enrichment form — top section</div></div>
+    <ol class="step-list">
+      <li><strong>Identity</strong> section: legal name, NMWC code, CR number, channel and sub-channel, contact person, primary phone.</li>
+      <li>Required fields are marked with <strong>*</strong>. The phone number must be a valid Oman number (e.g. +96891234567).</li>
+      <li><strong>Channel</strong> tells the company what kind of shop this is: General Trade, HORECA, Modern Trade, etc. Pick the closest match.</li>
+      <li>Tap into a field to edit it. Empty fields show a placeholder text — type what you see at the shop.</li>
+    </ol>
+  </div>
+
+  <h3>Step 4 — Capture photos</h3>
+  <div class="step-with-image left">
+    <ol class="step-list" start="5">
+      <li>Three photos are required:
+        <ul>
+          <li><strong>Shop front</strong> — clearly shows the entrance.</li>
+          <li><strong>Signboard</strong> — the shop's sign. Helps verify the legal name.</li>
+          <li><strong>CR document</strong> — the commercial registration paper.</li>
+        </ul>
+      </li>
+      <li>Tap an empty photo slot. Your phone's camera opens.</li>
+      <li>Take the photo. The app uploads it automatically.</li>
+      <li>If the upload fails (weak network), the app retries by itself. If after a few retries it still doesn't work, tap <strong>Retry upload</strong> — your photo is saved, you don't need to retake it.</li>
+    </ol>
+    <div class="screenshot"><img src="img/06-salesman-enrichment-photos.png" alt="Photos section" /><div class="caption">Photo capture slots</div></div>
+  </div>
+
+  <div class="callout warn">
+    <strong>Take fresh photos at the shop</strong>
+    Old photos from your gallery don't count. The app rejects photos older than 24 hours, and supervisors can see when each photo was taken. Take it now, on the spot.
+  </div>
+</section>
+
+<section class="page page-break">
+  <h3>Step 5 — Capture the GPS location</h3>
+  <ol class="step-list">
+    <li>The form has a <strong>Capture GPS</strong> button. Tap it once you're at the shop's entrance.</li>
+    <li>Your phone will ask permission to share your location — tap <strong>Allow</strong>.</li>
+    <li>The app reads the latitude / longitude and stamps the time of capture.</li>
+    <li>If the GPS doesn't work (you're indoors, or signal is weak), tap <strong>Enter coordinates manually</strong> and either tap on a map or type the numbers — but you'll need to write a short reason so your supervisor sees this is a special case.</li>
+  </ol>
+
+  <h3>Step 6 — Submit</h3>
+  <div class="step-with-image">
+    <div class="screenshot"><img src="img/07-salesman-enrichment-bottom.png" alt="Submit bar" /><div class="caption">Sticky submit bar at the bottom</div></div>
+    <ol class="step-list">
+      <li>Scroll to the bottom. You'll see a sticky bar with two buttons.</li>
+      <li><strong>Submit for approval</strong> (left, blue) — sends the changes to your supervisor for review.</li>
+      <li><strong>Save draft</strong> (right) — saves what you've typed so far. Useful if a customer interrupts you. You can come back and finish later. Drafts stay on your phone for 7 days.</li>
+      <li>After submitting, you see a confirmation. The shop's status becomes <strong>Pending review</strong> until the supervisor decides.</li>
+    </ol>
+  </div>
+
+  <div class="callout tip">
+    <strong>What happens after I submit?</strong>
+    Your supervisor sees your submission in their queue. If they approve, the master is updated immediately. If they reject, you get a clear reason, and the shop appears in your <strong>Needs correction</strong> list. Fix what they asked for and re-submit.
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     3 — SALESMAN: MARK CLOSED
+     ════════════════════════════════════════════════════════════════ -->
+<section class="page page-break">
+  <div class="section-opener">
+    <span class="role-pill">FOR SALESMEN</span>
+    <h2>3. Mark a shop closed</h2>
+    <p class="blurb">If a shop has shut down (gone out of business, moved, etc.), tell the system. This is different from a temporary closure — be sure before you mark it.</p>
+  </div>
+
+  <ol class="step-list">
+    <li>Open the customer profile for the shop.</li>
+    <li>On the branch tile, tap the red <strong>Mark closed</strong> button.</li>
+    <li>A small form opens. Take a fresh photo of the shop showing it's clearly closed (shutters down, signage removed, empty premises).</li>
+    <li>Type a reason in your own words — e.g. "Shop has shut down, signage removed, owner moved to another location." (5 characters minimum.)</li>
+    <li>Tap <strong>Submit closure</strong>. Your supervisor will review it.</li>
+  </ol>
+
+  <div class="callout warn">
+    <strong>Marking a shop closed is reversible — but evidence matters</strong>
+    The supervisor needs to see proof. A photo from far away or a blurry one will be rejected. Show the closed entrance clearly.
+  </div>
+
+  <h3>What if it was a mistake?</h3>
+  <p>If you marked the wrong shop closed, contact your supervisor immediately. They can reject the request before it takes effect. Once approved, the shop status is "CLOSED" until a manager re-activates it.</p>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     4 — SALESMAN: REACTIVATION
+     ════════════════════════════════════════════════════════════════ -->
+<section class="page">
+  <div class="section-opener">
+    <span class="role-pill">FOR SALESMEN</span>
+    <h2>4. Request reactivation of a closed shop</h2>
+    <p class="blurb">If a previously closed shop has reopened (same location, may be same or new owner), use this to bring it back into the active master.</p>
+  </div>
+
+  <ol class="step-list">
+    <li>Open the customer profile of the closed shop. The branch will show a <strong>Closed</strong> tag.</li>
+    <li>Tap the green <strong>Request reactivation</strong> button.</li>
+    <li>Take a fresh photo of the shop today, clearly showing it's open and operating.</li>
+    <li>Type a reason — e.g. "Shop has reopened, signage back up, owner returned, accepts deliveries again."</li>
+    <li>Tap <strong>Request reactivation</strong>.</li>
+    <li>Important: the <strong>manager</strong> approves reactivations (not the supervisor), because bringing a shop back is more sensitive than a routine update.</li>
+  </ol>
+
+  <div class="callout">
+    <strong>Why a fresh photo?</strong>
+    The system checks that your photo was taken AFTER the shop was marked closed. This stops anyone from using an old "before-closure" photo to fake a reactivation.
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     5 — SUPERVISOR
+     ════════════════════════════════════════════════════════════════ -->
+<section class="page page-break">
+  <div class="section-opener green">
+    <span class="role-pill">FOR SUPERVISORS</span>
+    <h2>5. Review your team's work</h2>
+    <p class="blurb">Every submission your team makes lands in your approvals queue. Approve good ones, reject bad ones with a clear reason. You can also bulk-approve when you trust the batch.</p>
+  </div>
+
+  <h3>Step 1 — Open the queue</h3>
+  <div class="step-with-image">
+    <div class="screenshot"><img src="img/08-supervisor-approvals-queue.png" alt="Approvals queue" /><div class="caption">Your supervisor queue</div></div>
+    <ol class="step-list">
+      <li>Tap <strong>Approvals</strong> in the menu.</li>
+      <li>You'll see every pending submission from salesmen who report to you, oldest first.</li>
+      <li>Each row shows: customer name, NMWC code, number of changes, who submitted, and how long ago.</li>
+      <li>The colored age tag tells you urgency: <strong>green</strong> &lt; 24 hours, <strong>amber</strong> 1–3 days, <strong>red</strong> over 3 days. Try to clear reds first.</li>
+    </ol>
+  </div>
+
+  <h3>Step 2 — Review one edit at a time</h3>
+  <div class="step-with-image left">
+    <ol class="step-list" start="5">
+      <li>Tap a row to open it. You'll see a <strong>Before / After</strong> diff for every field that changed.</li>
+      <li>Compare the values. Anything wrong, missing, or suspicious?</li>
+      <li>If a photo changed, tap it to view full size.</li>
+      <li>Tap <strong>Open profile</strong> to see the full customer record (other fields, branches, history).</li>
+    </ol>
+    <div class="screenshot"><img src="img/09-supervisor-approval-diff.png" alt="Approval diff" /><div class="caption">Before / After diff view</div></div>
+  </div>
+</section>
+
+<section class="page page-break">
+  <h3>Step 3 — Approve, reject, or send back</h3>
+  <div class="callout tip">
+    <strong>✓ Approve</strong>
+    The change is correct and complete. Tap the green <strong>Approve</strong> button. A confirmation popup asks you to confirm. The change goes live on the master <em>immediately</em>.
+  </div>
+  <div class="callout warn">
+    <strong>✗ Reject (send back for correction)</strong>
+    Something needs fixing. Tap the red <strong>Reject</strong> button. Pick a category (Bad photo, Wrong GPS, Missing field, Wrong info, Other), then either pick a canned reason from the suggestions, or type your own (5 characters minimum). The salesman will see this exactly and can re-submit after fixing.
+  </div>
+  <div class="callout">
+    <strong>Open profile (just looking)</strong>
+    Click "Open profile" if you want to look at the full customer record without making a decision.
+  </div>
+
+  <h3>Bulk approve / bulk reject</h3>
+  <ol class="step-list">
+    <li>On the queue page, tick the checkbox next to each edit you want to handle.</li>
+    <li>Use <strong>Select all</strong> at the top to grab everything on the page.</li>
+    <li>A sticky bar appears at the bottom with <strong>Approve N</strong> and <strong>Reject N</strong> buttons.</li>
+    <li>Bulk-approve runs each one in its own transaction — if a few fail (concurrent edits, missing fields), the others still go through and you'll see a clear list of which ones need attention.</li>
+    <li>Bulk-reject sends the same category and reason to every selected edit. Use only when the issue is truly the same on all of them.</li>
+  </ol>
+
+  <div class="callout danger">
+    <strong>Don't approve your own work</strong>
+    The system blocks you from approving your own submissions. If you accidentally end up reviewing an edit you submitted, send it to another supervisor or to your manager.
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     6 — MANAGER
+     ════════════════════════════════════════════════════════════════ -->
+<section class="page page-break">
+  <div class="section-opener amber">
+    <span class="role-pill">FOR MANAGERS</span>
+    <h2>6. Manager — Reactivations and team management</h2>
+    <p class="blurb">As a manager, you handle the high-trust decisions: approving reopenings of closed shops, resetting team passwords, and managing routes.</p>
+  </div>
+
+  <h3>Step 1 — See your dashboard</h3>
+  <div class="step-with-image">
+    <div class="screenshot"><img src="img/10-manager-dashboard.png" alt="Manager dashboard" /><div class="caption">Manager home — at a glance</div></div>
+    <ol class="step-list">
+      <li>The <strong>Dashboard</strong> shows totals for your region: active customers, pending approvals, reactivation requests, recent activity.</li>
+      <li>Use it as a daily morning check.</li>
+    </ol>
+  </div>
+
+  <h3>Step 2 — Review reactivations</h3>
+  <div class="step-with-image left">
+    <ol class="step-list" start="3">
+      <li>Tap <strong>Reactivations</strong> in the menu.</li>
+      <li>You see all the closed shops your salesmen have asked to reopen.</li>
+      <li>Each row shows the salesman's reason and the photo they captured at the shop today.</li>
+      <li>Tap the photo to see it full size and confirm the shop is genuinely open.</li>
+      <li>Tap <strong>✓ Reactivate</strong> if you're satisfied — the branch goes back to ACTIVE.</li>
+      <li>Tap <strong>Keep closed</strong> if you don't agree — the salesman gets a notification.</li>
+    </ol>
+    <div class="screenshot"><img src="img/11-manager-reactivations.png" alt="Reactivations queue" /><div class="caption">Reactivation queue</div></div>
+  </div>
+</section>
+
+<section class="page page-break">
+  <h3>Step 3 — Manage users</h3>
+  <div class="step-with-image">
+    <div class="screenshot"><img src="img/12-manager-users.png" alt="Users page" /><div class="caption">Users — your team</div></div>
+    <ol class="step-list">
+      <li>Tap <strong>Users</strong> in the menu.</li>
+      <li>You see every user in your region: salesmen, supervisors, anyone reporting up to you.</li>
+      <li>Common actions:
+        <ul>
+          <li><strong>Reset password</strong> — for a salesman who forgot theirs. Set a temporary password; the system forces them to change it on next login.</li>
+          <li><strong>Disable</strong> — when a salesman leaves the company. They can no longer log in. Their history stays in audit logs.</li>
+          <li><strong>Reassign route</strong> — if a salesman switches routes.</li>
+        </ul>
+      </li>
+    </ol>
+  </div>
+
+  <h3>Other manager actions</h3>
+  <table>
+    <tr><td><strong>Routes &amp; regions</strong></td><td>Add a new route, mark one inactive, see which salesman owns each route.</td></tr>
+    <tr><td><strong>Audit log</strong></td><td>See every action by every user, with timestamp, IP, and old/new values. Use when investigating something unusual.</td></tr>
+    <tr><td><strong>Approvals (override)</strong></td><td>You see your region's full approval queue. You can approve edits if a supervisor is unavailable.</td></tr>
+  </table>
+
+  <div class="callout warn">
+    <strong>Direct-write power — use sparingly</strong>
+    As a manager you can edit customer fields directly without going through approval. This is logged with FORCE_OVERRIDE in the audit. Use only for emergencies — it bypasses the team's training cycle.
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     7 — COMMON SITUATIONS
+     ════════════════════════════════════════════════════════════════ -->
+<section class="page page-break">
+  <h2>7. Common situations and answers</h2>
+
+  <h3>For salesmen</h3>
+  <table>
+    <tr><td><strong>"My photo upload keeps failing"</strong></td><td>Move outside, near a window, or wait 30 seconds for signal. The app retries automatically. If it still doesn't work, tap "Retry upload" — your photo is saved, you don't need to retake it.</td></tr>
+    <tr><td><strong>"GPS won't capture"</strong></td><td>Tap "Enter coordinates manually" inside the GPS section, then tap on the map or type the lat/lng. Add a short reason. Your supervisor will see it's manual and may verify it themselves.</td></tr>
+    <tr><td><strong>"This customer isn't on my route"</strong></td><td>You can only enrich customers on your assigned route. Ask your manager to reassign it if you really did visit it.</td></tr>
+    <tr><td><strong>"My submission was rejected"</strong></td><td>Read the reason your supervisor gave. The shop is now in your "Needs correction" list. Open it, fix what they asked for, take a fresh photo if needed, and submit again.</td></tr>
+    <tr><td><strong>"I'm in the middle of a form and need to leave"</strong></td><td>Tap "Save draft" — you can come back within 7 days and finish where you left off.</td></tr>
+  </table>
+
+  <h3>For supervisors</h3>
+  <table>
+    <tr><td><strong>"Edit was just decided by another reviewer"</strong></td><td>This means another supervisor (or a manager) approved or rejected it before you did. Refresh the queue.</td></tr>
+    <tr><td><strong>"This value conflicts with an existing record"</strong></td><td>Two salesmen submitted the same phone or CR number. Reject one and ask them to verify which customer is correct.</td></tr>
+    <tr><td><strong>"Required fields are missing"</strong></td><td>The salesman deleted a required field (like the CR photo) between submitting and your approving. Reject and ask them to re-upload at the shop.</td></tr>
+  </table>
+
+  <h3>For managers</h3>
+  <table>
+    <tr><td><strong>"Photo was captured before the last status change"</strong></td><td>The salesman tried to use an old photo for a reactivation. Reject — they need to take a fresh photo at the shop today.</td></tr>
+    <tr><td><strong>"My team can't log in"</strong></td><td>Check the audit log for "LOGIN_FAIL" entries. Usually it's a typed password (the system locks them out for 1 minute after 5 wrong tries).</td></tr>
+  </table>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     8 — QUICK REFERENCE CARD
+     ════════════════════════════════════════════════════════════════ -->
+<section class="page page-break">
+  <h2>8. Quick reference card</h2>
+  <p>Print this page and keep it near you for the first few weeks.</p>
+
+  <h3>Common buttons</h3>
+  <table>
+    <thead><tr><th>You see…</th><th>It means…</th></tr></thead>
+    <tr><td><strong>Enrich</strong> (blue, top-right of customer profile)</td><td>Open the form to update this customer.</td></tr>
+    <tr><td><strong>Save draft</strong></td><td>Save your work without sending to supervisor. Stays for 7 days.</td></tr>
+    <tr><td><strong>Submit for approval</strong></td><td>Send your changes to your supervisor.</td></tr>
+    <tr><td><strong>Mark closed</strong> (red)</td><td>Tell the system this shop is permanently closed.</td></tr>
+    <tr><td><strong>Request reactivation</strong> (green)</td><td>This shop has reopened — send to manager for approval.</td></tr>
+    <tr><td><strong>✓ Approve</strong></td><td>(Supervisor / Manager) Apply the change to the master.</td></tr>
+    <tr><td><strong>✗ Reject</strong></td><td>(Supervisor / Manager) Send back to salesman with a reason.</td></tr>
+    <tr><td><strong>Sign out</strong></td><td>End your session. Always sign out on shared devices.</td></tr>
+  </table>
+
+  <h3>Status tags</h3>
+  <table>
+    <tr><td><strong>Active</strong> (green)</td><td>Shop is operating normally.</td></tr>
+    <tr><td><strong>Closed</strong> (red)</td><td>Shop has shut down. No active orders.</td></tr>
+    <tr><td><strong>Suspended</strong> (amber)</td><td>Temporarily paused (rare — usually credit issues).</td></tr>
+    <tr><td><strong>Pending review</strong> (blue)</td><td>An edit is waiting for supervisor or manager.</td></tr>
+    <tr><td><strong>Approved</strong> (green)</td><td>Your last submission was approved — change is live.</td></tr>
+    <tr><td><strong>Needs correction</strong> (amber)</td><td>Supervisor sent it back. Fix the issue and re-submit.</td></tr>
+  </table>
+
+  <h3>Who to contact</h3>
+  <table>
+    <tr><td><strong>Forgot password / locked out</strong></td><td>Your manager — they can reset in 30 seconds.</td></tr>
+    <tr><td><strong>Photo / GPS not working</strong></td><td>Try the manual fallback shown in this guide; if still stuck, your supervisor.</td></tr>
+    <tr><td><strong>Customer master mistake</strong></td><td>Your manager.</td></tr>
+    <tr><td><strong>Anything else technical</strong></td><td>Head office (the steward team).</td></tr>
+  </table>
+
+  <div class="credentials-card">
+    <div class="label">PRODUCTION URL · keep handy</div>
+    <div class="value">https://nmwc-cm.vercel.app</div>
+  </div>
+
+  <p style="text-align: center; margin-top: 28pt; color: var(--slate-500); font-size: 10pt;">
+    NMWC Customer Master · v1.0 · 2026-05-10 · National Mineral Water Company, Oman
+  </p>
+</section>
+
+</body>
+</html>
