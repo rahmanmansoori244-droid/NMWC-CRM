@@ -70,6 +70,26 @@ jobs:
             echo "::error::DIRECT_URL secret is not set"
             exit 1
           fi
+          # Defensive trim: secrets pasted via the GitHub UI sometimes pick up
+          # a trailing CR/LF/whitespace from the clipboard (especially when
+          # copied out of Windows Notepad). pg_dump receives the URL with the
+          # whitespace appended and silently falls back to the local Unix
+          # socket — which manifests as the cryptic
+          #   "connection to server on socket /var/run/postgresql/... failed"
+          # error. Stripping CR/LF/space here makes the workflow recover.
+          DIRECT_URL="$(printf '%s' "$DIRECT_URL" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
+          # Diagnose without leaking the password: print length + sanitized
+          # head/tail so the operator can immediately see if the secret was
+          # pasted with the `DIRECT_URL=` prefix, with quotes, or truncated.
+          URL_LEN="${#DIRECT_URL}"
+          URL_HEAD="$(printf '%s' "${DIRECT_URL:0:13}")"   # `postgresql://`
+          URL_TAIL="$(printf '%s' "${DIRECT_URL: -25}")"   # `…channel_binding=require`
+          echo "::notice::DIRECT_URL length=${URL_LEN} head='${URL_HEAD}' tail='${URL_TAIL}'"
+          case "$DIRECT_URL" in
+            postgresql://*|postgres://*) ;;
+            "") echo "::error::DIRECT_URL is empty after trim"; exit 1;;
+            *)  echo "::error::DIRECT_URL does not start with 'postgresql://' — re-paste the value from .env without the 'DIRECT_URL=' prefix and without quotes"; exit 1;;
+          esac
           # --no-owner / --no-privileges: portable across roles
           # --format=plain: SQL text, easy to inspect and partial-restore
           # --no-unlogged-table-data: skip ephemeral / cache-style tables
