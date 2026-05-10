@@ -33,6 +33,20 @@ export function r2(): S3Client {
     // they're unaffected.
     requestChecksumCalculation: 'WHEN_REQUIRED',
     responseChecksumValidation: 'WHEN_REQUIRED',
+    // NEW-PHOTO-014: force path-style URLs
+    // (https://account.r2.cloudflarestorage.com/bucket/key) instead of the
+    // S3 SDK's default virtual-host style
+    // (https://bucket.account.r2.cloudflarestorage.com/key). Our `connect-src`
+    // CSP allows `https://${accountId}.r2.cloudflarestorage.com` — a single
+    // wildcard. Bucket-subdomain would need a NESTED wildcard
+    // (`*.*.r2.cloudflarestorage.com`), which CSP does not permit. With
+    // path-style every signed PUT URL stays on the CSP-allowed host so the
+    // browser never blocks the upload before it leaves the page.
+    //
+    // Repro before fix: photo capture → presign 200 → PUT NETWORK_ERROR
+    // "Failed to fetch" with no R2 server-side log entry (CSP block, request
+    // never made it out of the browser).
+    forcePathStyle: true,
   });
   return _client;
 }
