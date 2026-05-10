@@ -31,6 +31,33 @@ export const authConfig = {
     },
   },
   callbacks: {
+    /**
+     * Edge-safe session callback. Bubbles simple JWT fields (id, role,
+     * username, mustChangePassword) into `session.user` so the Edge
+     * middleware can read them via `auth.user.*`. Heavy DB-touching
+     * logic lives in `lib/auth.ts` which spreads + overrides this.
+     *
+     * Without this, the Edge middleware sees only the DefaultSession
+     * user (name/email/image) and custom fields like
+     * `mustChangePassword` come through as undefined — silently
+     * disabling the AUTH-09 forced-change redirect.
+     */
+    session({ session, token }) {
+      const t = token as {
+        userId?: string;
+        role?: string;
+        username?: string;
+        mustChangePassword?: boolean;
+      };
+      if (session?.user) {
+        const u = session.user as unknown as Record<string, unknown>;
+        if (t.userId) u.id = t.userId;
+        if (t.role) u.role = t.role;
+        if (t.username) u.username = t.username;
+        u.mustChangePassword = t.mustChangePassword === true;
+      }
+      return session;
+    },
     authorized({ auth, request }) {
       const { pathname } = request.nextUrl;
       const isPublic =
