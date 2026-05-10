@@ -160,16 +160,31 @@ export function PhotoCaptureSlot({
       if (!finalize.ok) throw new Error('Finalize failed.');
       const { attachmentId } = (await finalize.json()) as { attachmentId: string };
 
-      // 4) Wire to a customer/branch slot if requested
+      // 4) Wire to a customer/branch slot if requested.
+      // PROD-006: the action returns `{ ok, code, message, fields? }` shape —
+      // see lib/errors.ts (runAction). Surface the error message directly so
+      // photo wiring failures (slot/kind mismatch, route scope, soft-deleted
+      // attachment) reach the salesman instead of being lost to a generic SC
+      // render error.
       if (attachTo) {
-        if (attachTo.kind === 'customer') {
-          await attachPhotoAction({ attachmentId, customerId: attachTo.customerId, slot: 'CR' });
-        } else {
-          await attachPhotoAction({
-            attachmentId,
-            branchId: attachTo.branchId,
-            slot: attachTo.slot,
-          });
+        const attachRes =
+          attachTo.kind === 'customer'
+            ? await attachPhotoAction({
+                attachmentId,
+                customerId: attachTo.customerId,
+                slot: 'CR',
+              })
+            : await attachPhotoAction({
+                attachmentId,
+                branchId: attachTo.branchId,
+                slot: attachTo.slot,
+              });
+        if (!attachRes.ok) {
+          throw new Error(
+            attachRes.fields
+              ? Object.values(attachRes.fields).join(' ')
+              : attachRes.message
+          );
         }
       }
 
@@ -195,6 +210,9 @@ export function PhotoCaptureSlot({
     if (photo?.previewUrl) URL.revokeObjectURL(photo.previewUrl);
     if (photo?.attachmentId && attachTo) {
       try {
+        // detachPhotoAction returns the new ActionResult shape; we still
+        // best-effort-clear locally on any failure (network / 404). The
+        // form's stale state will reconcile on next refresh.
         await detachPhotoAction({ attachmentId: photo.attachmentId });
       } catch {
         /* still clear locally */

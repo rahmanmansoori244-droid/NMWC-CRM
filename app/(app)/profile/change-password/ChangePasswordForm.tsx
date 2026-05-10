@@ -3,7 +3,6 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { changeOwnPasswordAction } from '@/services/users';
-import { ValidationError } from '@/lib/errors';
 
 export function ChangePasswordForm() {
   const router = useRouter();
@@ -17,15 +16,21 @@ export function ChangePasswordForm() {
         setErrors({});
         start(async () => {
           try {
-            await changeOwnPasswordAction(fd);
+            // PROD-006: server actions return `{ ok, code, message, fields? }`
+            // shape — see lib/errors.ts (runAction).
+            const res = await changeOwnPasswordAction(fd);
+            if (!res.ok) {
+              if (res.fields) setErrors(res.fields);
+              else setErrors({ _form: res.message });
+              return;
+            }
             setDone(true);
             // AUTH-12: the action bumps sessionsRevokedAt which kills the
             // current JWT at the next freshness check. Force a hard reload
             // to /login so the user re-authenticates with the new password.
             setTimeout(() => router.replace('/login'), 1500);
           } catch (err) {
-            if (err instanceof ValidationError && err.fields) setErrors(err.fields);
-            else setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
+            setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
           }
         });
       }}

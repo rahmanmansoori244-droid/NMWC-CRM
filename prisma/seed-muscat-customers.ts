@@ -221,6 +221,12 @@ async function main() {
           routeMisses++;
           continue;
         }
+        // DB-01 fix: enforce the same `address.length >= 3` rule that the
+        // runtime app's mandatory-fields gate uses. Source xlsx had stray
+        // 2-char addresses ("WK") that bypassed Zod and then permanently
+        // blocked salesmen from submitting any edit on those customers.
+        const cleanAddress =
+          r.address && r.address.trim().length >= 3 ? r.address.trim() : 'Address pending';
         await prisma.branch.upsert({
           where: { branchCode },
           update: {
@@ -228,7 +234,7 @@ async function main() {
             customerId: customer.id,
             regionId: muscat.id,
             routeId: branchRouteId,
-            address: r.address ?? 'Address pending',
+            address: cleanAddress,
             lastEditedById: stewardId,
           },
           create: {
@@ -237,7 +243,7 @@ async function main() {
             customerId: customer.id,
             regionId: muscat.id,
             routeId: branchRouteId,
-            address: r.address ?? 'Address pending',
+            address: cleanAddress,
             createdById: stewardId,
           },
         });

@@ -32,7 +32,19 @@ export function MergeForm({
     fd.set('loserId', loserId);
     start(async () => {
       try {
-        await mergeCustomersAction(fd);
+        // PROD-006: action returns `{ ok, code, message, fields? }` shape.
+        // Cross-region merge prompts (ValidationError on `_form` / `reason`)
+        // must surface verbatim — they tell the steward exactly what's
+        // wrong (confirmCrossRegion missing, reason too short).
+        const res = await mergeCustomersAction(fd);
+        if (!res.ok) {
+          setMsg(
+            res.fields
+              ? Object.values(res.fields).join(' ')
+              : res.message
+          );
+          return;
+        }
         setMsg('✓ Merged.');
         router.refresh();
       } catch (err) {
@@ -48,7 +60,15 @@ export function MergeForm({
     fd.set('bId', bId);
     start(async () => {
       try {
-        await dismissDuplicateAction(fd);
+        const res = await dismissDuplicateAction(fd);
+        if (!res.ok) {
+          setMsg(
+            res.fields
+              ? Object.values(res.fields).join(' ')
+              : res.message
+          );
+          return;
+        }
         setMsg('Marked as distinct.');
         router.refresh();
       } catch (err) {

@@ -8,7 +8,6 @@ import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import { submitEditAction } from '@/services/edits';
-import { ValidationError, ConflictError } from '@/lib/errors';
 
 type CustomerWithBranches = {
   id: string;
@@ -300,12 +299,24 @@ export function EnrichmentForm({
 
     start(async () => {
       try {
-        const res = await submitEditAction({
+        // PROD-006: server actions return `{ ok, data?, code, message,
+        // fields? }` — they no longer throw AppError across the SC boundary.
+        // See lib/errors.ts (runAction).
+        const result = await submitEditAction({
           customerId: customer.id,
           isDraft,
           customer: customerPayload,
           branches,
         });
+        if (!result.ok) {
+          if (result.fields) {
+            setErrors(result.fields);
+          } else {
+            setErrors({ _form: result.message });
+          }
+          return;
+        }
+        const res = result.data;
         if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
         if (isDraft) {
           setInfo('✓ Draft saved.');
@@ -319,13 +330,9 @@ export function EnrichmentForm({
           router.replace(`/customers/${customer.id}`);
         }
       } catch (err) {
-        if (err instanceof ValidationError && err.fields) {
-          setErrors(err.fields);
-        } else if (err instanceof ConflictError) {
-          setErrors({ _form: err.message });
-        } else {
-          setErrors({ _form: err instanceof Error ? err.message : 'Failed to save.' });
-        }
+        // Genuine 500s only reach here — AppError is converted to the
+        // returned shape above.
+        setErrors({ _form: err instanceof Error ? err.message : 'Failed to save.' });
       } finally {
         submitLockRef.current = false;
       }

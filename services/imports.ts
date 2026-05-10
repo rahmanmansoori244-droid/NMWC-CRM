@@ -3,7 +3,13 @@
 import { prisma } from '@/lib/db';
 import { Role, ImportRowState, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
-import { ForbiddenError, ValidationError, RateLimitError } from '@/lib/errors';
+import {
+  ForbiddenError,
+  ValidationError,
+  RateLimitError,
+  runAction,
+  type SafeAction,
+} from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { parseWorkbook } from '@/lib/excel';
 import { normalizePhone, isValidPhoneFormat } from '@/lib/phone';
@@ -71,7 +77,15 @@ function uc(v: unknown): string {
 // QA-012: hard cap on uploaded xlsx (zip-bomb defense)
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5 MB
 
-export async function uploadAccountMasterAction(formData: FormData) {
+export async function uploadAccountMasterAction(
+  formData: FormData
+): SafeAction<{ batchId: string; clean: number; issues: number }> {
+  return runAction(() => uploadAccountMasterCore(formData));
+}
+
+async function uploadAccountMasterCore(
+  formData: FormData
+): Promise<{ batchId: string; clean: number; issues: number }> {
   const me = await requireSteward();
   // F-07: same rate-limit as customer master.
   const lim = await checkLimit(`import:${me.id}`, { capacity: 3, refillPerSec: 0.05 });
@@ -494,7 +508,15 @@ export async function uploadAccountMasterAction(formData: FormData) {
 // promotes a batch when ready. v1.1 will add an inline review screen; for
 // now, we expose a "promote" action that creates customers in bulk.
 
-export async function uploadCustomerMasterAction(formData: FormData) {
+export async function uploadCustomerMasterAction(
+  formData: FormData
+): SafeAction<{ batchId: string; clean: number; quarantined: number }> {
+  return runAction(() => uploadCustomerMasterCore(formData));
+}
+
+async function uploadCustomerMasterCore(
+  formData: FormData
+): Promise<{ batchId: string; clean: number; quarantined: number }> {
   const me = await requireSteward();
   // F-07: rate-limit imports per Steward. Two Stewards racing the same file
   // (or a single Steward double-tapping the upload button) was previously
@@ -669,7 +691,15 @@ export async function uploadCustomerMasterAction(formData: FormData) {
   return { batchId: batch.id, clean, quarantined };
 }
 
-export async function promoteCustomerBatchAction(formData: FormData) {
+export async function promoteCustomerBatchAction(
+  formData: FormData
+): SafeAction<{ promoted: number; failed: number }> {
+  return runAction(() => promoteCustomerBatchCore(formData));
+}
+
+async function promoteCustomerBatchCore(
+  formData: FormData
+): Promise<{ promoted: number; failed: number }> {
   const me = await requireSteward();
   const batchId = String(formData.get('batchId') ?? '');
   if (!batchId) throw new ValidationError({ batchId: 'required' });

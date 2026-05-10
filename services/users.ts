@@ -4,7 +4,13 @@ import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
-import { ForbiddenError, ValidationError, NotFoundError } from '@/lib/errors';
+import {
+  ForbiddenError,
+  ValidationError,
+  NotFoundError,
+  runAction,
+  type SafeAction,
+} from '@/lib/errors';
 import { auth } from '@/lib/auth';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
@@ -44,7 +50,11 @@ const createUserSchema = z.object({
  * AUTH-06: validate supervisorId actually points at an active SUPERVISOR.
  * AUTH-10: pre-check username uniqueness with friendly error.
  */
-export async function createUserAction(formData: FormData) {
+export async function createUserAction(formData: FormData): SafeAction<void> {
+  return runAction(() => createUserCore(formData));
+}
+
+async function createUserCore(formData: FormData) {
   const me = await requireManager();
   const parsed = createUserSchema.safeParse({
     username: String(formData.get('username') ?? '').toLowerCase().trim(),
@@ -170,7 +180,11 @@ export async function createUserAction(formData: FormData) {
  *   • AUTH-12 — bumps `sessionsRevokedAt` on disable so the JWT freshness
  *     loop in lib/auth.ts kicks the disabled user out at the next request.
  */
-export async function toggleUserActiveAction(formData: FormData) {
+export async function toggleUserActiveAction(formData: FormData): SafeAction<void> {
+  return runAction(() => toggleUserActiveCore(formData));
+}
+
+async function toggleUserActiveCore(formData: FormData) {
   const me = await requireManager();
   const userId = String(formData.get('userId') ?? '');
   if (!userId) throw new ValidationError({ userId: 'required' });
@@ -229,7 +243,11 @@ export async function toggleUserActiveAction(formData: FormData) {
  * password from this UI. AUTH-09: forces a change-on-first-login flag.
  * AUTH-12: bumps `sessionsRevokedAt` so the target's old session dies.
  */
-export async function resetPasswordAction(formData: FormData) {
+export async function resetPasswordAction(formData: FormData): SafeAction<void> {
+  return runAction(() => resetPasswordCore(formData));
+}
+
+async function resetPasswordCore(formData: FormData) {
   const me = await requireManager();
   const userId = String(formData.get('userId') ?? '');
   if (!userId) throw new ValidationError({ userId: 'required' });
@@ -289,7 +307,11 @@ const updateRoleSchema = z.object({
   ownedRouteId: z.string().cuid().optional().or(z.literal('').transform(() => undefined)),
 });
 
-export async function updateUserRoleAction(formData: FormData) {
+export async function updateUserRoleAction(formData: FormData): SafeAction<void> {
+  return runAction(() => updateUserRoleCore(formData));
+}
+
+async function updateUserRoleCore(formData: FormData) {
   const me = await requireManager();
   const parsed = updateRoleSchema.safeParse({
     userId: formData.get('userId'),
@@ -396,7 +418,11 @@ const changePasswordSchema = z.object({
   newPassword: passwordRule,
 });
 
-export async function changeOwnPasswordAction(formData: FormData) {
+export async function changeOwnPasswordAction(formData: FormData): SafeAction<void> {
+  return runAction(() => changeOwnPasswordCore(formData));
+}
+
+async function changeOwnPasswordCore(formData: FormData) {
   const session = await auth();
   if (!session?.user) throw new ForbiddenError('Not signed in.');
 

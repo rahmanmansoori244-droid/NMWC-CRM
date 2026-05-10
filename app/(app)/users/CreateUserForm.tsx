@@ -3,7 +3,6 @@
 import { useState, useTransition } from 'react';
 import { Role } from '@prisma/client';
 import { createUserAction } from '@/services/users';
-import { ValidationError } from '@/lib/errors';
 
 const ROLE_LABELS: Record<Role, string> = {
   SALESMAN: 'Salesman',
@@ -32,14 +31,19 @@ export function CreateUserForm({
     const fd = new FormData(e.currentTarget);
     start(async () => {
       try {
-        await createUserAction(fd);
+        // PROD-006: server actions return `{ ok, code, message, fields? }`
+        // shape — see lib/errors.ts (runAction).
+        const res = await createUserAction(fd);
+        if (!res.ok) {
+          if (res.fields) setErrors(res.fields);
+          else setErrors({ _form: res.message });
+          return;
+        }
         setSuccess('User created.');
         (e.target as HTMLFormElement).reset();
         setRole(Role.SALESMAN);
       } catch (err) {
-        if (err instanceof ValidationError && err.fields) {
-          setErrors(err.fields);
-        } else if (err instanceof Error) {
+        if (err instanceof Error) {
           setErrors({ _form: err.message });
         }
       }

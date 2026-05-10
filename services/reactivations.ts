@@ -3,7 +3,13 @@
 import { prisma } from '@/lib/db';
 import { Role, EditState, EditTarget, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
-import { ForbiddenError, ValidationError, NotFoundError } from '@/lib/errors';
+import {
+  ForbiddenError,
+  ValidationError,
+  NotFoundError,
+  runAction,
+  type SafeAction,
+} from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
@@ -25,7 +31,13 @@ async function require(role?: Role[]) {
  * sets Attachment.branchExtraId or shopPhotoId), then submits this action with
  * the attachment id.
  */
-export async function requestReactivationAction(formData: FormData) {
+export async function requestReactivationAction(
+  formData: FormData
+): SafeAction<{ editId: string }> {
+  return runAction(() => requestReactivationCore(formData));
+}
+
+async function requestReactivationCore(formData: FormData): Promise<{ editId: string }> {
   const me = await require([Role.SALESMAN]);
   const branchId = String(formData.get('branchId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim();
@@ -114,7 +126,13 @@ export async function requestReactivationAction(formData: FormData) {
  * Salesman marks a branch as CLOSED. Requires a fresh photo (≤24h old) of the
  * closed shop attached as the `shopPhotoId` slot or as a free photo.
  */
-export async function markBranchClosedAction(formData: FormData) {
+export async function markBranchClosedAction(
+  formData: FormData
+): SafeAction<{ editId: string }> {
+  return runAction(() => markBranchClosedCore(formData));
+}
+
+async function markBranchClosedCore(formData: FormData): Promise<{ editId: string }> {
   const me = await require([Role.SALESMAN]);
   const branchId = String(formData.get('branchId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim();
@@ -199,7 +217,11 @@ export async function markBranchClosedAction(formData: FormData) {
 /**
  * Manager approves the reactivation: branch goes back to ACTIVE, customer too if all branches now active.
  */
-export async function approveReactivationAction(formData: FormData) {
+export async function approveReactivationAction(formData: FormData): SafeAction<void> {
+  return runAction(() => approveReactivationCore(formData));
+}
+
+async function approveReactivationCore(formData: FormData) {
   const me = await require([Role.MANAGER]);
   const editId = String(formData.get('editId') ?? '');
   if (!editId) throw new ValidationError({ editId: 'required' });
@@ -284,7 +306,11 @@ export async function approveReactivationAction(formData: FormData) {
   revalidatePath(`/customers/${edit.customerId}`);
 }
 
-export async function rejectReactivationAction(formData: FormData) {
+export async function rejectReactivationAction(formData: FormData): SafeAction<void> {
+  return runAction(() => rejectReactivationCore(formData));
+}
+
+async function rejectReactivationCore(formData: FormData) {
   const me = await require([Role.MANAGER]);
   const editId = String(formData.get('editId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim();

@@ -7,7 +7,6 @@ import {
   markBranchClosedAction,
   requestReactivationAction,
 } from '@/services/reactivations';
-import { ValidationError } from '@/lib/errors';
 
 /**
  * Branch-level status actions: "Mark closed" (when ACTIVE) or
@@ -45,21 +44,28 @@ export function BranchStatusActions({
     fd.set('attachmentId', photo.attachmentId);
     start(async () => {
       try {
-        if (action === 'close') {
-          await markBranchClosedAction(fd);
-        } else if (action === 'reactivate') {
-          await requestReactivationAction(fd);
+        // PROD-006: action returns `{ ok, code, message, fields? }` shape —
+        // see lib/errors.ts (runAction). Photo-evidence errors (capturedAt
+        // before lastStatusChangeAt, >24h old, wrong branch) must reach
+        // the salesman so they take a fresh photo at the shop.
+        const res =
+          action === 'close'
+            ? await markBranchClosedAction(fd)
+            : action === 'reactivate'
+              ? await requestReactivationAction(fd)
+              : null;
+        if (res && !res.ok) {
+          setErr(
+            res.fields ? Object.values(res.fields).join(' ') : res.message
+          );
+          return;
         }
         setOpen(null);
         setReason('');
         setPhoto(null);
         router.refresh();
       } catch (e) {
-        if (e instanceof ValidationError && e.fields) {
-          setErr(Object.values(e.fields).join(' '));
-        } else {
-          setErr(e instanceof Error ? e.message : 'Failed.');
-        }
+        setErr(e instanceof Error ? e.message : 'Failed.');
       }
     });
   }

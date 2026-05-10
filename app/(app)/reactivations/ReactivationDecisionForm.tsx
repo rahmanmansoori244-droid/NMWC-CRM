@@ -18,7 +18,14 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
     fd.set('editId', editId);
     start(async () => {
       try {
-        await approveReactivationAction(fd);
+        // PROD-006: action returns `{ ok, code, message, fields? }` shape.
+        const res = await approveReactivationAction(fd);
+        if (!res.ok) {
+          setErr(
+            res.fields ? Object.values(res.fields).join(' ') : res.message
+          );
+          return;
+        }
         router.refresh();
       } catch (e) {
         setErr(e instanceof Error ? e.message : 'Failed.');
@@ -33,7 +40,13 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
     fd.set('editId', editId);
     start(async () => {
       try {
-        await rejectReactivationAction(fd);
+        const res = await rejectReactivationAction(fd);
+        if (!res.ok) {
+          setErr(
+            res.fields ? Object.values(res.fields).join(' ') : res.message
+          );
+          return;
+        }
         router.refresh();
       } catch (er) {
         setErr(er instanceof Error ? er.message : 'Failed.');

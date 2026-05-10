@@ -3,7 +3,13 @@
 import { prisma } from '@/lib/db';
 import { Role, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
-import { ForbiddenError, ValidationError, NotFoundError } from '@/lib/errors';
+import {
+  ForbiddenError,
+  ValidationError,
+  NotFoundError,
+  runAction,
+  type SafeAction,
+} from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer } from '@/lib/completeness';
@@ -183,7 +189,13 @@ function jaccard(a: Set<string>, b: Set<string>): number {
  * Caller picks the winner. The winner keeps its identity; the loser's
  * NMWC code is preserved in the audit `before` payload for traceability.
  */
-export async function mergeCustomersAction(formData: FormData) {
+export async function mergeCustomersAction(
+  formData: FormData
+): SafeAction<{ winnerId: string }> {
+  return runAction(() => mergeCustomersCore(formData));
+}
+
+async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: string }> {
   const session = await requireSteward();
   const winnerId = String(formData.get('winnerId') ?? '');
   const loserId = String(formData.get('loserId') ?? '');
@@ -277,10 +289,14 @@ export async function mergeCustomersAction(formData: FormData) {
   logger.info({ winnerId, loserId, by: session.id }, 'customer.merge');
   revalidatePath('/duplicates');
   revalidatePath('/customers');
-  return { ok: true as const, winnerId };
+  return { winnerId };
 }
 
-export async function dismissDuplicateAction(formData: FormData) {
+export async function dismissDuplicateAction(formData: FormData): SafeAction<void> {
+  return runAction(() => dismissDuplicateCore(formData));
+}
+
+async function dismissDuplicateCore(formData: FormData) {
   const session = await requireSteward();
   const aId = String(formData.get('aId') ?? '');
   const bId = String(formData.get('bId') ?? '');

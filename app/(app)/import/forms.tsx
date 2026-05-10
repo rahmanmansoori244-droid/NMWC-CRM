@@ -2,16 +2,16 @@
 
 import { useState, useTransition } from 'react';
 import { uploadAccountMasterAction, uploadCustomerMasterAction } from '@/services/imports';
-import { ValidationError } from '@/lib/errors';
+import type { ActionResult } from '@/lib/errors';
 
-type UploadResult = Record<string, string | number>;
+type UploadOk = Record<string, string | number>;
 
 function UploadForm({
   label,
   action,
 }: {
   label: string;
-  action: (formData: FormData) => Promise<UploadResult>;
+  action: (formData: FormData) => Promise<ActionResult<UploadOk>>;
 }) {
   const [pending, start] = useTransition();
   const [result, setResult] = useState<{ message: string; ok: boolean } | null>(null);
@@ -22,22 +22,30 @@ function UploadForm({
     const fd = new FormData(e.currentTarget);
     start(async () => {
       try {
+        // PROD-006: action returns `{ ok, code, message, fields? }` shape —
+        // Steward sees real upload errors (file too big, oversize formula
+        // payload, P2002 phone collision) instead of an SC-render generic.
         const res = await action(fd);
-        const summary = Object.entries(res)
+        if (!res.ok) {
+          setResult({
+            ok: false,
+            message: res.fields
+              ? Object.values(res.fields).join(', ')
+              : res.message,
+          });
+          return;
+        }
+        const summary = Object.entries(res.data)
           .filter(([k]) => k !== 'batchId')
           .map(([k, v]) => `${v} ${k}`)
           .join(' · ');
         setResult({ ok: true, message: `Uploaded — ${summary}` });
         (e.target as HTMLFormElement).reset();
       } catch (err) {
-        if (err instanceof ValidationError && err.fields) {
-          setResult({ ok: false, message: Object.values(err.fields).join(', ') });
-        } else {
-          setResult({
-            ok: false,
-            message: err instanceof Error ? err.message : 'Upload failed.',
-          });
-        }
+        setResult({
+          ok: false,
+          message: err instanceof Error ? err.message : 'Upload failed.',
+        });
       }
     });
   }
@@ -73,7 +81,7 @@ export function UploadAccountForm() {
   return (
     <UploadForm
       label="Upload account master"
-      action={uploadAccountMasterAction as (fd: FormData) => Promise<UploadResult>}
+      action={uploadAccountMasterAction as (fd: FormData) => Promise<ActionResult<UploadOk>>}
     />
   );
 }
@@ -82,7 +90,7 @@ export function UploadCustomerForm() {
   return (
     <UploadForm
       label="Upload customer master"
-      action={uploadCustomerMasterAction as (fd: FormData) => Promise<UploadResult>}
+      action={uploadCustomerMasterAction as (fd: FormData) => Promise<ActionResult<UploadOk>>}
     />
   );
 }

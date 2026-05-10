@@ -21,7 +21,14 @@ export function UserRowActions({
     const fd = new FormData();
     fd.set('userId', userId);
     start(async () => {
-      await toggleUserActiveAction(fd);
+      // PROD-006: action returns `{ ok, code, message, fields? }` shape —
+      // last-Manager-lockout and peer-Manager guards must surface to the UI.
+      const res = await toggleUserActiveAction(fd);
+      if (!res.ok) {
+        setResetMsg(
+          res.fields ? Object.values(res.fields).join(' ') : res.message
+        );
+      }
     });
   }
 
@@ -31,7 +38,13 @@ export function UserRowActions({
     fd.set('userId', userId);
     start(async () => {
       try {
-        await resetPasswordAction(fd);
+        const res = await resetPasswordAction(fd);
+        if (!res.ok) {
+          setResetMsg(
+            res.fields ? Object.values(res.fields).join(' ') : res.message
+          );
+          return;
+        }
         setResetMsg('Password updated.');
         (e.target as HTMLFormElement).reset();
         setTimeout(() => setShowReset(false), 1200);

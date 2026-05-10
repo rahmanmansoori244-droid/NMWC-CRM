@@ -18,8 +18,16 @@ export function PromoteButton({ batchId, cleanCount }: { batchId: string; cleanC
     fd.set('batchId', batchId);
     start(async () => {
       try {
+        // PROD-006: action returns `{ ok, code, message, fields? }` shape —
+        // a not-READY batch surfaces the actual state ("Batch is in state
+        // PROMOTING — only READY batches can be promoted") instead of a
+        // generic SC-render error.
         const res = await promoteCustomerBatchAction(fd);
-        setMsg(`✓ Promoted ${(res as { promoted: number }).promoted} rows.`);
+        if (!res.ok) {
+          setMsg(res.fields ? Object.values(res.fields).join(' ') : res.message);
+          return;
+        }
+        setMsg(`✓ Promoted ${res.data.promoted} rows.`);
       } catch (err) {
         setMsg(err instanceof Error ? err.message : 'Failed.');
       }

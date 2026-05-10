@@ -3,7 +3,15 @@
 import { prisma } from '@/lib/db';
 import { Role, EditState, EditTarget, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
-import { ForbiddenError, ValidationError, ConflictError, NotFoundError, RateLimitError } from '@/lib/errors';
+import {
+  ForbiddenError,
+  ValidationError,
+  ConflictError,
+  NotFoundError,
+  RateLimitError,
+  runAction,
+  type SafeAction,
+} from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { isFieldLocked, canApproveSpecificEdit } from '@/lib/permissions';
@@ -173,7 +181,18 @@ function collectMissingMandatory(
  *
  * Concurrency: if there is already a SUBMITTED edit for this customer, block.
  */
-export async function submitEditAction(input: SubmitEditInput): Promise<{ editId: string; state: EditState }> {
+/**
+ * SafeAction-wrapped public entry. The form receives `{ ok, data?, code?,
+ * message?, fields? }` — see lib/errors.ts. Throws are reserved for
+ * programmer errors / framework signals (NEXT_REDIRECT).
+ */
+export async function submitEditAction(
+  input: SubmitEditInput
+): SafeAction<{ editId: string; state: EditState }> {
+  return runAction(() => submitEditCore(input));
+}
+
+async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string; state: EditState }> {
   const session = await requireUser();
   const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
@@ -547,7 +566,17 @@ async function applyEditChanges(
 /**
  * Supervisor approves an edit: applies the changes atomically and writes audit log.
  */
-export async function approveEditAction(formData: FormData) {
+/**
+ * SafeAction-wrapped public entry. Production-critical: every error
+ * thrown inside `approveEditCore` (STATUS_BYPASS, NEEDS_REUPLOAD,
+ * DUPLICATE_PHONE, etc.) is converted to a returned `{ ok: false, ... }`
+ * payload so the form can render the actionable message inline.
+ */
+export async function approveEditAction(formData: FormData): SafeAction<void> {
+  return runAction(() => approveEditCore(formData));
+}
+
+async function approveEditCore(formData: FormData) {
   const session = await requireUser();
   const editId = String(formData.get('editId') ?? '');
   if (!editId) throw new ValidationError({ editId: 'required' });
@@ -756,7 +785,11 @@ export async function approveEditAction(formData: FormData) {
   revalidatePath(`/customers/${edit.customerId}`);
 }
 
-export async function rejectEditAction(formData: FormData) {
+export async function rejectEditAction(formData: FormData): SafeAction<void> {
+  return runAction(() => rejectEditCore(formData));
+}
+
+async function rejectEditCore(formData: FormData) {
   const session = await requireUser();
   const editId = String(formData.get('editId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim();

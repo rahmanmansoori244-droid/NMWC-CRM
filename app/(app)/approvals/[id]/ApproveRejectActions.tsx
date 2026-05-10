@@ -3,7 +3,6 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { approveEditAction, rejectEditAction } from '@/services/edits';
-import { ValidationError } from '@/lib/errors';
 
 const REJECT_CATEGORIES = [
   { value: 'bad_photo', label: 'Bad photo' },
@@ -27,9 +26,19 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
     const fd = new FormData();
     fd.set('editId', editId);
     start(async () => {
+      // PROD-006: server actions return `{ ok, code, message, fields? }` —
+      // they no longer throw AppError across the SC boundary. See
+      // lib/errors.ts (runAction). Throws here are now reserved for genuine
+      // 500s, which we still surface as a generic message.
       try {
-        await approveEditAction(fd);
-        router.push('/approvals');
+        const res = await approveEditAction(fd);
+        if (res.ok) {
+          router.push('/approvals');
+        } else if (res.fields) {
+          setErrors(res.fields);
+        } else {
+          setErrors({ _form: res.message });
+        }
       } catch (err) {
         setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
       }
@@ -43,11 +52,16 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
     fd.set('editId', editId);
     start(async () => {
       try {
-        await rejectEditAction(fd);
-        router.push('/approvals');
+        const res = await rejectEditAction(fd);
+        if (res.ok) {
+          router.push('/approvals');
+        } else if (res.fields) {
+          setErrors(res.fields);
+        } else {
+          setErrors({ _form: res.message });
+        }
       } catch (err) {
-        if (err instanceof ValidationError && err.fields) setErrors(err.fields);
-        else setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
+        setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
       }
     });
   }

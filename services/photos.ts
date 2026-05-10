@@ -4,7 +4,13 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { auth } from '@/lib/auth';
 import { Role, AttachmentKind, type Prisma } from '@prisma/client';
-import { ForbiddenError, ValidationError, NotFoundError } from '@/lib/errors';
+import {
+  ForbiddenError,
+  ValidationError,
+  NotFoundError,
+  runAction,
+  type SafeAction,
+} from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
@@ -40,7 +46,20 @@ const attachSchema = z.union([customerAttach, branchAttach]);
  *   • Replacing an existing slot soft-deletes the previous Attachment so it
  *     no longer dedupes against future uploads and is eligible for R2 GC.
  */
-export async function attachPhotoAction(input: z.input<typeof attachSchema>) {
+/**
+ * SafeAction-wrapped public entry. Photo attach errors (slot/kind mismatch,
+ * route scope, soft-deleted attachment) must be visible to the salesman so
+ * they can act — the SC-render-omitted generic was useless for diagnosis.
+ */
+export async function attachPhotoAction(
+  input: z.input<typeof attachSchema>
+): SafeAction<void> {
+  return runAction(async () => {
+    await attachPhotoCore(input);
+  });
+}
+
+async function attachPhotoCore(input: z.input<typeof attachSchema>) {
   const session = await auth();
   if (!session?.user) throw new ForbiddenError('Not signed in.');
   const parsed = attachSchema.safeParse(input);
@@ -239,7 +258,15 @@ export async function attachPhotoAction(input: z.input<typeof attachSchema>) {
  * scoped to the caller's reachable customer/branch so a Steward detach
  * doesn't blank a slot on a customer the actor never had scope over.
  */
-export async function detachPhotoAction(input: { attachmentId: string }) {
+export async function detachPhotoAction(
+  input: { attachmentId: string }
+): SafeAction<void> {
+  return runAction(async () => {
+    await detachPhotoCore(input);
+  });
+}
+
+async function detachPhotoCore(input: { attachmentId: string }) {
   const session = await auth();
   if (!session?.user) throw new ForbiddenError('Not signed in.');
   const att = await prisma.attachment.findFirst({
