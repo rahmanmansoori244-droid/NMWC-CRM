@@ -27,7 +27,7 @@ const securityHeaders = [
     value:
       `default-src 'self'; ` +
       `img-src 'self' blob: data:; ` +
-      `script-src 'self'; ` +
+      `script-src 'self' 'unsafe-inline'; ` +
       `style-src 'self' 'unsafe-inline'; ` +
       `font-src 'self' data:; ` +
       `connect-src 'self' https://${r2AccountId}.r2.cloudflarestorage.com https://*.ingest.sentry.io https://*.ingest.de.sentry.io; ` +
