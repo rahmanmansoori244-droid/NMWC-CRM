@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<title>دليل مندوب المبيعات</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+@page { size: A4; margin: 14mm 12mm; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  color: #1e293b;
+  line-height: 1.55;
+  font-size: 12pt;
+  background: #fff;
+}
+[dir="rtl"] body { font-family: "Tajawal", "Cairo", "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+@media screen { body { padding: 24px; background: #f8fafc; } .page { background: #fff; max-width: 820px; margin: 0 auto 24px; padding: 48px; box-shadow: 0 6px 24px rgba(15,23,42,0.06); border-radius: 8px; } }
+@media print { .page-break { page-break-before: always; } .avoid-break { page-break-inside: avoid; } }
+
+h1, h2, h3, h4 { font-weight: 700; color: #0f172a; margin: 0; }
+h1 { font-size: 26pt; letter-spacing: -0.02em; }
+h2 { font-size: 20pt; margin-top: 18pt; padding-bottom: 6pt; border-bottom: 2px solid #1d4ed8; color: #1e3a8a; }
+h3 { font-size: 14pt; margin-top: 16pt; color: #1d4ed8; }
+h4 { font-size: 11pt; margin-top: 12pt; color: #334155; text-transform: uppercase; letter-spacing: 0.05em; }
+p  { margin: 8pt 0; }
+
+.cover {
+  min-height: 250mm;
+  display: flex; flex-direction: column; justify-content: space-between;
+  background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+  color: #fff;
+  padding: 36mm 22mm;
+}
+.cover.salesman { background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%); }
+.cover.supervisor { background: linear-gradient(135deg, #064e3b 0%, #10b981 100%); }
+.cover.manager { background: linear-gradient(135deg, #78350f 0%, #f59e0b 100%); }
+.cover .brand { font-size: 36pt; font-weight: 800; letter-spacing: -0.03em; }
+.cover .sub { font-size: 14pt; opacity: 0.85; margin-top: 6pt; }
+.cover .title { font-size: 30pt; font-weight: 800; line-height: 1.1; max-width: 14em; }
+.cover .role-pill { display: inline-block; padding: 8pt 16pt; border-radius: 999px; background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3); font-weight: 600; font-size: 12pt; margin-top: 12pt; }
+.cover .footer { font-size: 10pt; opacity: 0.7; }
+
+.section-opener {
+  background: linear-gradient(180deg, #eff6ff 0%, #fff 100%);
+  border-radius: 12px;
+  padding: 22pt 22pt;
+  margin: 0 0 16pt;
+  border-left: 6px solid #1d4ed8;
+}
+[dir="rtl"] .section-opener { border-left: none; border-right: 6px solid #1d4ed8; }
+.section-opener.green { border-left-color: #10b981; background: linear-gradient(180deg, #ecfdf5 0%, #fff 100%); }
+.section-opener.amber { border-left-color: #f59e0b; background: linear-gradient(180deg, #fffbeb 0%, #fff 100%); }
+[dir="rtl"] .section-opener.green { border-right-color: #10b981; }
+[dir="rtl"] .section-opener.amber { border-right-color: #f59e0b; }
+.section-opener h2 { border: none; padding: 0; margin: 0 0 6pt; font-size: 22pt; color: #1e3a8a; }
+.section-opener.green h2 { color: #064e3b; }
+.section-opener.amber h2 { color: #78350f; }
+.section-opener .intro { font-size: 11pt; color: #334155; max-width: 36em; }
+
+.step-list { counter-reset: step; padding: 0; margin: 0; list-style: none; }
+.step-list > li {
+  counter-increment: step;
+  position: relative;
+  padding: 10pt 14pt 10pt 42pt;
+  margin-bottom: 8pt;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  page-break-inside: avoid;
+}
+[dir="rtl"] .step-list > li { padding: 10pt 42pt 10pt 14pt; }
+.step-list > li::before {
+  content: counter(step);
+  position: absolute; left: 10pt; top: 9pt;
+  width: 22pt; height: 22pt; border-radius: 999px;
+  background: #1d4ed8; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 10.5pt;
+}
+[dir="rtl"] .step-list > li::before { left: auto; right: 10pt; }
+
+.step-with-image { display: grid; grid-template-columns: 280px 1fr; gap: 18pt; align-items: start; page-break-inside: avoid; margin: 12pt 0; }
+[dir="rtl"] .step-with-image { grid-template-columns: 1fr 280px; }
+
+.screenshot {
+  border: 1px solid #e2e8f0; border-radius: 14px; overflow: hidden;
+  box-shadow: 0 2px 12px rgba(15,23,42,0.08); background: #000;
+}
+.screenshot img { width: 100%; height: auto; display: block; }
+.screenshot .caption { background: #0f172a; color: #cbd5e1; padding: 6pt 10pt; font-size: 9.5pt; text-align: center; }
+
+.callout { border-left: 4px solid #1d4ed8; background: #eff6ff; padding: 10pt 14pt; border-radius: 0 8px 8px 0; margin: 10pt 0; page-break-inside: avoid; }
+[dir="rtl"] .callout { border-left: none; border-right: 4px solid #1d4ed8; border-radius: 8px 0 0 8px; }
+.callout.tip { border-left-color: #10b981; background: #ecfdf5; }
+.callout.warn { border-left-color: #f59e0b; background: #fffbeb; }
+.callout.danger { border-left-color: #dc2626; background: #fef2f2; }
+[dir="rtl"] .callout.tip { border-right-color: #10b981; }
+[dir="rtl"] .callout.warn { border-right-color: #f59e0b; }
+[dir="rtl"] .callout.danger { border-right-color: #dc2626; }
+.callout strong.label { display: block; font-size: 10pt; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4pt; color: #1d4ed8; }
+.callout.tip strong.label { color: #047857; }
+.callout.warn strong.label { color: #b45309; }
+.callout.danger strong.label { color: #b91c1c; }
+
+table { border-collapse: collapse; width: 100%; margin: 10pt 0; font-size: 10.5pt; }
+th, td { padding: 8pt 10pt; text-align: left; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+[dir="rtl"] th, [dir="rtl"] td { text-align: right; }
+thead th { background: #f1f5f9; font-weight: 600; color: #334155; font-size: 10pt; }
+
+.credentials-card { border: 2px dashed #1d4ed8; background: #eff6ff; border-radius: 10px; padding: 14pt; margin: 12pt 0; page-break-inside: avoid; text-align: center; }
+.credentials-card .label { font-size: 9pt; text-transform: uppercase; color: #64748b; letter-spacing: 0.06em; }
+.credentials-card .value { font-family: "SF Mono", Consolas, monospace; font-weight: 700; font-size: 14pt; color: #1e3a8a; direction: ltr; }
+</style>
+</head>
+<body>
+<section class="cover page salesman">
+  <div>
+    <div class="brand">NMWC</div>
+    <div class="sub">نظام بيانات العملاء — تطبيق الميدان</div>
+  </div>
+  <div>
+    <div class="title">دليل مندوب المبيعات</div>
+    <span class="role-pill">لمندوبي المبيعات</span>
+  </div>
+  <div class="footer">NMWC نظام إدارة بيانات العملاء · الإصدار 1.0 · 2026-05</div>
+</section>
+<section class="page page-break">
+  <h1>مرحبًا</h1>
+  <p>هذا دليلك اليومي. تطبيق NMWC لإدارة بيانات العملاء يساعدك في تحديث بيانات كل محل في خط سيرك مباشرةً من الميدان. هذا الدليل يأخذك خطوة بخطوة في كل ما ستحتاج إليه: تسجيل الدخول، إيجاد المحل، إصلاح البيانات الناقصة، التقاط الصور، تحديد الموقع، إرسال للموافقة، والتعامل مع المحلات المغلقة أو المعاد فتحها.</p>
+</section>
+<section class="page page-break"><div class="section-opener "><h2>1. تسجيل الدخول</h2><p class="intro">تقوم بهذا في أول مرة فقط، ثم مرة في اليوم أو الأسبوع.</p></div><ol class="step-list"><li>افتح من هاتفك: <strong>https://nmwc-cm.vercel.app</strong>. احفظه كاختصار في شاشة هاتفك الرئيسية.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/01-login.png" alt="" /></div></div></li><li>اكتب <strong>اسم المستخدم</strong> الخاص بك. مديرك يعطيك إياه في أول يوم.</li><li>اكتب <strong>كلمة المرور</strong>. اضغط زر <strong>تسجيل الدخول</strong> الأزرق.</li><li>هل هذه أول مرة؟ قد يطلب منك التطبيق تعيين كلمة مرور جديدة. هذا لحماية حسابك — اختر شيئًا تعرفه أنت فقط.</li></ol><div class="callout tip"><strong class="label">هل نسيت كلمة المرور؟</strong>لا تحاول تخمينها أكثر من 5 مرات — النظام سيقفل حسابك مدة دقيقة. كلّم مديرك مباشرة — يستطيع إعادة ضبطها خلال 30 ثانية.</div></section><section class="page page-break"><div class="section-opener "><h2>2. البحث عن المحل الذي ستزوره</h2><p class="intro">افتح بيانات العميل بضغطتين فقط.</p></div><ol class="step-list"><li>اضغط على <strong>اليوم</strong> في القائمة. ترى المحلات المجدولة في خط سيرك اليوم.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/02-salesman-today.png" alt="" /></div></div></li><li>إذا لم يكن المحل في قائمة اليوم، اضغط على <strong>العملاء</strong> وابحث بالاسم أو برقم NMWC.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/03-salesman-customers-list.png" alt="" /></div></div></li><li>اضغط على أي صف لفتح ملف ذلك المحل.</li></ol><div class="callout info"><strong class="label">ما الفرق بين العميل والفرع؟</strong>"العميل" هو الكيان القانوني (اسم الشركة في السجل التجاري). "الفرع" هو المحل الفعلي الذي تزوره. أغلب العملاء لديهم فرع واحد ("الرئيسي"). السلاسل الكبيرة لديها عدة فروع.</div></section><section class="page page-break"><div class="section-opener "><h2>3. تحديث بيانات المحل</h2><p class="intro">املأ ما هو ناقص. الحقول الإلزامية معلّمة بـ *.</p></div><ol class="step-list"><li>في ملف العميل، اضغط زر <strong>تحديث البيانات</strong> الأزرق في أعلى يسار الشاشة.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/04-salesman-customer-profile.png" alt="" /></div></div></li><li>قسم <strong>الهوية</strong>: الاسم القانوني، رمز NMWC، رقم السجل التجاري، القناة، القناة الفرعية، الشخص المسؤول، الهاتف الرئيسي.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/05-salesman-enrichment-top.png" alt="" /></div></div></li><li>يجب أن يكون رقم الهاتف رقمًا عمانيًا صحيحًا، مثل: <strong>+96891234567</strong>.</li><li>القناة تحدد نوع المحل — اختر الأقرب (تجارة عامة، فنادق ومطاعم، تجارة حديثة، إلخ).</li></ol></section><section class="page page-break"><div class="section-opener "><h2>4. التقاط الصور الثلاث المطلوبة</h2><p class="intro">دائمًا التقط صورًا جديدة في المحل اليوم. الصور القديمة من المعرض مرفوضة.</p></div><ol class="step-list"><li>اضغط على خانة صورة فارغة. الكاميرا ستفتح.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/06-salesman-enrichment-photos.png" alt="" /></div></div></li><li><strong>واجهة المحل</strong> — تظهر مدخل المحل بوضوح.</li><li><strong>اللافتة</strong> — لافتة المحل التي يظهر عليها الاسم.</li><li><strong>السجل التجاري</strong> — وثيقة السجل التجاري الرسمية.</li><li>التطبيق يرفع الصورة تلقائيًا. إذا كانت شبكتك ضعيفة، يحاول مرة أخرى لوحده. إذا فشل، اضغط <strong>إعادة الرفع</strong> — صورتك محفوظة، لا تحتاج لإعادة التقاطها.</li></ol><div class="callout warn"><strong class="label">التقط الصور في المحل، ليس من المعرض</strong>الصور التي عمرها أكثر من 24 ساعة مرفوضة. المشرفون يرون متى التُقطت كل صورة. التقاطها على الفور هو الطريقة الوحيدة.</div></section><section class="page page-break"><div class="section-opener "><h2>5. تحديد الموقع الجغرافي (GPS)</h2></div><ol class="step-list"><li>اضغط زر <strong>تحديد الموقع</strong> وأنت واقف عند مدخل المحل.</li><li>هاتفك سيطلب الإذن — اضغط <strong>السماح</strong>.</li><li>إذا لم يعمل GPS (داخل مبنى، إشارة ضعيفة)، اضغط <strong>إدخال الإحداثيات يدويًا</strong>. اضغط على الخريطة في موقع المحل، أو اكتب خطي العرض والطول. أضف سببًا قصيرًا حتى يفهم المشرف أن الإدخال يدوي.</li></ol></section><section class="page page-break"><div class="section-opener "><h2>6. إرسال للموافقة</h2></div><ol class="step-list"><li>انزل إلى أسفل الصفحة — سترى شريطًا ثابتًا فيه زرّان.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/07-salesman-enrichment-bottom.png" alt="" /></div></div></li><li>اضغط زر <strong>إرسال للموافقة</strong> الأزرق (على اليسار).</li><li>سترى رسالة تأكيد. حالة المحل تصبح <strong>قيد المراجعة</strong> حتى يقرر مشرفك.</li><li>إذا قطعك أحد، اضغط <strong>حفظ مسودة</strong> بدلًا من ذلك — تبقى في هاتفك 7 أيام.</li></ol></section><section class="page page-break"><div class="section-opener "><h2>7. تأشير المحل كمغلق نهائيًا</h2><p class="intro">استخدم هذا فقط إذا أُغلق المحل فعلًا (ترك العمل، انتقل، إلخ).</p></div><ol class="step-list"><li>في ملف العميل، اضغط زر <strong>تأشير كمغلق</strong> الأحمر على بطاقة الفرع.</li><li>التقط صورة جديدة تظهر فيها أن المحل مغلق بوضوح (الأبواب منزّلة، اللافتة مرفوعة، فارغ).</li><li>اكتب سببًا قصيرًا — على الأقل 5 أحرف. مثلاً: "أغلق المحل، اللافتة مرفوعة."</li><li>اضغط <strong>إرسال الإغلاق</strong>. مشرفك يراجعه.</li></ol><div class="callout warn"><strong class="label">تأكد قبل أن تأشره</strong>الصورة المشوّشة أو الملتقطة من بعيد سترفض. أظهر المدخل المغلق بوضوح.</div></section><section class="page page-break"><div class="section-opener "><h2>8. طلب إعادة تفعيل محل مغلق</h2><p class="intro">استخدم هذا عندما يعيد محل مغلق فتح أبوابه.</p></div><ol class="step-list"><li>افتح ملف المحل المغلق. الفرع يظهر عليه وسم <strong>مغلق</strong>.</li><li>اضغط زر <strong>طلب إعادة التفعيل</strong> الأخضر.</li><li>التقط صورة جديدة تظهر أن المحل مفتوح ويعمل اليوم.</li><li>اكتب سببًا وأرسل. <strong>المدير</strong> (وليس مشرفك) يوافق على إعادة التفعيل.</li></ol><div class="callout info"><strong class="label">لماذا صورة جديدة؟</strong>النظام يتحقق أن الصورة التُقطت بعد إغلاق المحل. هذا يمنع أي شخص من استخدام صورة قديمة لتزوير إعادة فتح.</div></section><section class="page page-break"><div class="section-opener "><h2>9. مواقف شائعة</h2></div><table><thead><tr><th>الموقف</th><th>ما العمل</th></tr></thead><tbody><tr><td>رفع الصورة يفشل باستمرار</td><td>انتقل إلى الخارج أو قرب نافذة. انتظر بضع ثوانٍ. التطبيق يحاول تلقائيًا. إذا استمر التعذر، اضغط "إعادة الرفع" — صورتك محفوظة.</td></tr><tr><td>GPS لا يلتقط</td><td>اضغط "إدخال الإحداثيات يدويًا" داخل قسم GPS. اضغط على الخريطة أو اكتب الأرقام. أضف سببًا قصيرًا.</td></tr><tr><td>"هذا العميل ليس في خط سيرك"</td><td>يمكنك تحديث المحلات في خط سيرك المحدد فقط. اطلب من المدير إعادة تعيينه إن لزم.</td></tr><tr><td>طلبي مرفوض</td><td>اقرأ سبب المشرف. المحل يظهر في قائمة "يحتاج تصحيح". افتحه، صحّح ما طلبه، وأعد الإرسال.</td></tr><tr><td>أنا في وسط النموذج وأحتاج للمغادرة</td><td>اضغط "حفظ مسودة". يمكنك العودة خلال 7 أيام والإكمال.</td></tr></tbody></table></section>
+<section class="page page-break"><h2>10. بطاقة مرجعية سريعة</h2><p>احتفظ بهذه الصفحة معك في أول أسابيعك.</p><h3>الأزرار التي ستستخدمها</h3><table><tbody><tr><td><strong>تحديث البيانات</strong> (أزرق، أعلى يسار)</td><td>افتح النموذج لتحديث المحل.</td></tr><tr><td><strong>حفظ مسودة</strong></td><td>احفظ عملك دون إرسال. تبقى 7 أيام.</td></tr><tr><td><strong>إرسال للموافقة</strong></td><td>أرسل تغييراتك إلى المشرف.</td></tr><tr><td><strong>تأشير كمغلق</strong> (أحمر)</td><td>أخبر النظام أن هذا المحل أُغلق نهائيًا.</td></tr><tr><td><strong>طلب إعادة التفعيل</strong> (أخضر)</td><td>محل مغلق أُعيد فتحه — يُرسل إلى المدير.</td></tr><tr><td><strong>إعادة الرفع</strong></td><td>إعادة إرسال صورة فشل رفعها دون إعادة التقاطها.</td></tr><tr><td><strong>تسجيل خروج</strong></td><td>إنهاء جلستك. سجّل خروج دومًا على أي جهاز مشترك.</td></tr></tbody></table><h3>وسوم الحالات التي ستراها</h3><table><tbody><tr><td><strong>نشط</strong> (أخضر)</td><td>المحل يعمل بشكل طبيعي.</td></tr><tr><td><strong>مغلق</strong> (أحمر)</td><td>المحل أُغلق. لا توجد طلبيات نشطة.</td></tr><tr><td><strong>قيد المراجعة</strong></td><td>أرسلت ولم يقرر المشرف بعد.</td></tr><tr><td><strong>تمت الموافقة</strong></td><td>آخر إرسال لك تم اعتماده — التغيير حيّ.</td></tr><tr><td><strong>يحتاج تصحيح</strong></td><td>المشرف أعاده. افتحه وصحّحه.</td></tr></tbody></table><h3>بمن تتصل</h3><table><tbody><tr><td>نسيت كلمة المرور / مقفل</td><td>مديرك — يعيد ضبطها خلال 30 ثانية.</td></tr><tr><td>الصورة أو GPS لا يعمل</td><td>جرّب البديل اليدوي. ثم مشرفك.</td></tr><tr><td>بيانات خاطئة في النظام</td><td>أرسل تحديثًا فيه التصحيح.</td></tr></tbody></table><div class="credentials-card"><div class="label">رابط النظام</div><div class="value">https://nmwc-cm.vercel.app</div></div><p style="text-align:center;margin-top:24pt;color:#64748b;font-size:10pt;">NMWC نظام بيانات العملاء · دليل المندوب · الإصدار 1.0 · 2026-05-10</p></section>
+</body></html>

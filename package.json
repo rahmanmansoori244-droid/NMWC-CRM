@@ -26,7 +26,8 @@
     "ops:print-secrets": "tsx scripts/print-required-secrets.ts",
     "guide:capture": "tsx scripts/capture-guide-screenshots.ts",
     "guide:pdf": "tsx scripts/guide-html-to-pdf.ts",
-    "guide:build": "tsx scripts/capture-guide-screenshots.ts && tsx scripts/guide-html-to-pdf.ts"
+    "guide:build": "tsx scripts/capture-guide-screenshots.ts && tsx scripts/guide-html-to-pdf.ts",
+    "guide:roles": "tsx scripts/build-role-guides.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",

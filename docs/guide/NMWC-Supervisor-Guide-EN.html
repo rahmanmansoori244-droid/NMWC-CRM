@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8" />
+<title>Supervisor User Guide</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+
+<style>
+@page { size: A4; margin: 14mm 12mm; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  color: #1e293b;
+  line-height: 1.55;
+  font-size: 12pt;
+  background: #fff;
+}
+[dir="rtl"] body { font-family: "Tajawal", "Cairo", "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+@media screen { body { padding: 24px; background: #f8fafc; } .page { background: #fff; max-width: 820px; margin: 0 auto 24px; padding: 48px; box-shadow: 0 6px 24px rgba(15,23,42,0.06); border-radius: 8px; } }
+@media print { .page-break { page-break-before: always; } .avoid-break { page-break-inside: avoid; } }
+
+h1, h2, h3, h4 { font-weight: 700; color: #0f172a; margin: 0; }
+h1 { font-size: 26pt; letter-spacing: -0.02em; }
+h2 { font-size: 20pt; margin-top: 18pt; padding-bottom: 6pt; border-bottom: 2px solid #1d4ed8; color: #1e3a8a; }
+h3 { font-size: 14pt; margin-top: 16pt; color: #1d4ed8; }
+h4 { font-size: 11pt; margin-top: 12pt; color: #334155; text-transform: uppercase; letter-spacing: 0.05em; }
+p  { margin: 8pt 0; }
+
+.cover {
+  min-height: 250mm;
+  display: flex; flex-direction: column; justify-content: space-between;
+  background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+  color: #fff;
+  padding: 36mm 22mm;
+}
+.cover.salesman { background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%); }
+.cover.supervisor { background: linear-gradient(135deg, #064e3b 0%, #10b981 100%); }
+.cover.manager { background: linear-gradient(135deg, #78350f 0%, #f59e0b 100%); }
+.cover .brand { font-size: 36pt; font-weight: 800; letter-spacing: -0.03em; }
+.cover .sub { font-size: 14pt; opacity: 0.85; margin-top: 6pt; }
+.cover .title { font-size: 30pt; font-weight: 800; line-height: 1.1; max-width: 14em; }
+.cover .role-pill { display: inline-block; padding: 8pt 16pt; border-radius: 999px; background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3); font-weight: 600; font-size: 12pt; margin-top: 12pt; }
+.cover .footer { font-size: 10pt; opacity: 0.7; }
+
+.section-opener {
+  background: linear-gradient(180deg, #eff6ff 0%, #fff 100%);
+  border-radius: 12px;
+  padding: 22pt 22pt;
+  margin: 0 0 16pt;
+  border-left: 6px solid #1d4ed8;
+}
+[dir="rtl"] .section-opener { border-left: none; border-right: 6px solid #1d4ed8; }
+.section-opener.green { border-left-color: #10b981; background: linear-gradient(180deg, #ecfdf5 0%, #fff 100%); }
+.section-opener.amber { border-left-color: #f59e0b; background: linear-gradient(180deg, #fffbeb 0%, #fff 100%); }
+[dir="rtl"] .section-opener.green { border-right-color: #10b981; }
+[dir="rtl"] .section-opener.amber { border-right-color: #f59e0b; }
+.section-opener h2 { border: none; padding: 0; margin: 0 0 6pt; font-size: 22pt; color: #1e3a8a; }
+.section-opener.green h2 { color: #064e3b; }
+.section-opener.amber h2 { color: #78350f; }
+.section-opener .intro { font-size: 11pt; color: #334155; max-width: 36em; }
+
+.step-list { counter-reset: step; padding: 0; margin: 0; list-style: none; }
+.step-list > li {
+  counter-increment: step;
+  position: relative;
+  padding: 10pt 14pt 10pt 42pt;
+  margin-bottom: 8pt;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  page-break-inside: avoid;
+}
+[dir="rtl"] .step-list > li { padding: 10pt 42pt 10pt 14pt; }
+.step-list > li::before {
+  content: counter(step);
+  position: absolute; left: 10pt; top: 9pt;
+  width: 22pt; height: 22pt; border-radius: 999px;
+  background: #1d4ed8; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 10.5pt;
+}
+[dir="rtl"] .step-list > li::before { left: auto; right: 10pt; }
+
+.step-with-image { display: grid; grid-template-columns: 280px 1fr; gap: 18pt; align-items: start; page-break-inside: avoid; margin: 12pt 0; }
+[dir="rtl"] .step-with-image { grid-template-columns: 1fr 280px; }
+
+.screenshot {
+  border: 1px solid #e2e8f0; border-radius: 14px; overflow: hidden;
+  box-shadow: 0 2px 12px rgba(15,23,42,0.08); background: #000;
+}
+.screenshot img { width: 100%; height: auto; display: block; }
+.screenshot .caption { background: #0f172a; color: #cbd5e1; padding: 6pt 10pt; font-size: 9.5pt; text-align: center; }
+
+.callout { border-left: 4px solid #1d4ed8; background: #eff6ff; padding: 10pt 14pt; border-radius: 0 8px 8px 0; margin: 10pt 0; page-break-inside: avoid; }
+[dir="rtl"] .callout { border-left: none; border-right: 4px solid #1d4ed8; border-radius: 8px 0 0 8px; }
+.callout.tip { border-left-color: #10b981; background: #ecfdf5; }
+.callout.warn { border-left-color: #f59e0b; background: #fffbeb; }
+.callout.danger { border-left-color: #dc2626; background: #fef2f2; }
+[dir="rtl"] .callout.tip { border-right-color: #10b981; }
+[dir="rtl"] .callout.warn { border-right-color: #f59e0b; }
+[dir="rtl"] .callout.danger { border-right-color: #dc2626; }
+.callout strong.label { display: block; font-size: 10pt; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4pt; color: #1d4ed8; }
+.callout.tip strong.label { color: #047857; }
+.callout.warn strong.label { color: #b45309; }
+.callout.danger strong.label { color: #b91c1c; }
+
+table { border-collapse: collapse; width: 100%; margin: 10pt 0; font-size: 10.5pt; }
+th, td { padding: 8pt 10pt; text-align: left; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+[dir="rtl"] th, [dir="rtl"] td { text-align: right; }
+thead th { background: #f1f5f9; font-weight: 600; color: #334155; font-size: 10pt; }
+
+.credentials-card { border: 2px dashed #1d4ed8; background: #eff6ff; border-radius: 10px; padding: 14pt; margin: 12pt 0; page-break-inside: avoid; text-align: center; }
+.credentials-card .label { font-size: 9pt; text-transform: uppercase; color: #64748b; letter-spacing: 0.06em; }
+.credentials-card .value { font-family: "SF Mono", Consolas, monospace; font-weight: 700; font-size: 14pt; color: #1e3a8a; direction: ltr; }
+</style>
+</head>
+<body>
+<section class="cover page supervisor">
+  <div>
+    <div class="brand">NMWC</div>
+    <div class="sub">Customer Master — Approval App</div>
+  </div>
+  <div>
+    <div class="title">Supervisor User Guide</div>
+    <span class="role-pill">FOR SUPERVISORS</span>
+  </div>
+  <div class="footer">NMWC Customer Master · v1.0 · 2026-05</div>
+</section>
+<section class="page page-break">
+  <h1>Welcome</h1>
+  <p>You are the gate between field-collected data and the master record. Every salesman submission lands in your queue. Your job is to approve good ones quickly, reject bad ones with a clear reason, and use bulk actions when a batch is uniformly good. This guide walks you through every screen.</p>
+</section>
+<section class="page page-break"><div class="section-opener green"><h2>1. Logging in</h2></div><ol class="step-list"><li>Open <strong>https://nmwc-cm.vercel.app</strong> on your phone or laptop.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/01-login.png" alt="" /></div></div></li><li>Sign in with your supervisor username and password.</li><li>After signing in you land on the Approvals page automatically.</li></ol></section><section class="page page-break"><div class="section-opener green"><h2>2. Open the approval queue</h2></div><ol class="step-list"><li>Tap <strong>Approvals</strong> in the menu.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/08-supervisor-approvals-queue.png" alt="" /></div></div></li><li>You see every pending submission from salesmen who report to you, oldest first.</li><li>Each row shows: customer name, NMWC code, number of changed fields, who submitted, and how long ago.</li><li>Age tags: <strong>green</strong> &lt; 24h, <strong>amber</strong> 1-3 days, <strong>red</strong> &gt; 3 days. Clear the reds first.</li></ol></section><section class="page page-break"><div class="section-opener green"><h2>3. Review one edit (Before / After diff)</h2></div><ol class="step-list"><li>Tap any row to open the edit detail page.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/09-supervisor-approval-diff.png" alt="" /></div></div></li><li>You see a Before / After diff for every field that changed.</li><li>Compare the values. Anything wrong, missing, or suspicious?</li><li>If a photo changed, tap it to view full size.</li><li>Tap <strong>Open profile</strong> to see the full customer record (other fields, branches, history).</li></ol></section><section class="page page-break"><div class="section-opener green"><h2>4. Approve, reject, or send back</h2></div><div class="callout tip"><strong class="label">✓ Approve</strong>The change is correct. Tap the green <strong>Approve</strong> button. A confirmation popup asks you to confirm. The change goes live on the master immediately.</div><div class="callout warn"><strong class="label">✗ Reject (send back for correction)</strong>Something needs fixing. Tap the red <strong>Reject</strong> button. Pick a category (Bad photo, Wrong GPS, Missing field, Wrong info, Other), pick a canned reason from the suggestion pills, or type your own (5+ letters). The salesman sees this exactly and can re-submit after fixing.</div><div class="callout danger"><strong class="label">Don't approve your own work</strong>The system blocks you from approving your own submissions. If you ever submitted as a salesman first, that edit must go to another supervisor or to your manager.</div></section><section class="page page-break"><div class="section-opener green"><h2>5. Bulk approve / bulk reject</h2><p class="intro">When a batch is uniformly good (or uniformly bad).</p></div><ol class="step-list"><li>On the queue page, tick the checkbox next to each edit you want to handle. Use <strong>Select all</strong> to grab everything on the page.</li><li>A sticky bar appears at the bottom with <strong>Approve N</strong> and <strong>Reject N</strong> buttons.</li><li><strong>Bulk approve</strong> runs each one in its own transaction. If a few fail (concurrent edits, missing fields), the others still go through. You see a clear list of which ones need attention.</li><li><strong>Bulk reject</strong> sends the same category and reason to every selected edit. Use only when the issue is truly the same on all of them.</li></ol><div class="callout tip"><strong class="label">Tip — when not to bulk-approve</strong>If even one edit looks suspicious, open it and review individually. Bulk-approve is for trust + speed, not for skipping the check.</div></section><section class="page page-break"><div class="section-opener green"><h2>6. Reject categories — when to use which</h2></div><table><thead><tr><th>Category</th><th>Use it when…</th></tr></thead><tbody><tr><td><strong>Bad photo</strong></td><td>Photo is blurry, taken from too far, or doesn't show what it should (e.g. CR photo where the writing is unreadable).</td></tr><tr><td><strong>Wrong GPS</strong></td><td>GPS coordinates point to the wrong place — e.g. salesman captured GPS at the office instead of the shop.</td></tr><tr><td><strong>Missing field</strong></td><td>A required field is empty or has a placeholder.</td></tr><tr><td><strong>Wrong info</strong></td><td>A field has data that doesn't match the photo or what we know about the shop.</td></tr><tr><td><strong>Other</strong></td><td>Anything else — type a clear reason.</td></tr></tbody></table></section><section class="page page-break"><div class="section-opener green"><h2>7. Common situations</h2></div><table><thead><tr><th>Message you see</th><th>What it means</th></tr></thead><tbody><tr><td>"Edit was just decided by another reviewer"</td><td>Another supervisor or manager approved/rejected before you. Refresh the queue.</td></tr><tr><td>"This value conflicts with an existing record"</td><td>Two salesmen submitted the same phone or CR number. Reject one and ask them to verify.</td></tr><tr><td>"Required fields are now missing"</td><td>Salesman deleted a required field (e.g. CR photo) between submitting and your approving. Reject — they need to re-upload at the shop.</td></tr><tr><td>"You are not authorized to act on this edit"</td><td>The customer is no longer in your team's scope (route reassigned, customer merged). Forward to your manager.</td></tr></tbody></table></section>
+<section class="page page-break"><h2>8. Quick reference card</h2><h3>Buttons</h3><table><tbody><tr><td><strong>✓ Approve</strong></td><td>Apply the change to the master.</td></tr><tr><td><strong>✗ Reject</strong></td><td>Send back to salesman with a category and reason.</td></tr><tr><td><strong>Open profile</strong></td><td>View the full customer record.</td></tr><tr><td><strong>Approve N</strong> (sticky bar)</td><td>Bulk approve every selected edit.</td></tr><tr><td><strong>Reject N</strong> (sticky bar)</td><td>Bulk reject every selected edit.</td></tr></tbody></table><h3>Triage by age</h3><table><tbody><tr><td><strong>Green tag</strong> (under 24h)</td><td>Newest. Review when you can.</td></tr><tr><td><strong>Amber tag</strong> (1-3 days)</td><td>Getting old. Aim to clear today.</td></tr><tr><td><strong>Red tag</strong> (over 3 days)</td><td>Late — clear these first every morning.</td></tr></tbody></table><div class="credentials-card"><div class="label">Production URL</div><div class="value">https://nmwc-cm.vercel.app</div></div><p style="text-align:center;margin-top:24pt;color:#64748b;font-size:10pt;">NMWC Customer Master · Supervisor Guide · v1.0 · 2026-05-10</p></section>
+</body></html>

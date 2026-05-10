@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8" />
+<title>Manager User Guide</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+
+<style>
+@page { size: A4; margin: 14mm 12mm; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  color: #1e293b;
+  line-height: 1.55;
+  font-size: 12pt;
+  background: #fff;
+}
+[dir="rtl"] body { font-family: "Tajawal", "Cairo", "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+@media screen { body { padding: 24px; background: #f8fafc; } .page { background: #fff; max-width: 820px; margin: 0 auto 24px; padding: 48px; box-shadow: 0 6px 24px rgba(15,23,42,0.06); border-radius: 8px; } }
+@media print { .page-break { page-break-before: always; } .avoid-break { page-break-inside: avoid; } }
+
+h1, h2, h3, h4 { font-weight: 700; color: #0f172a; margin: 0; }
+h1 { font-size: 26pt; letter-spacing: -0.02em; }
+h2 { font-size: 20pt; margin-top: 18pt; padding-bottom: 6pt; border-bottom: 2px solid #1d4ed8; color: #1e3a8a; }
+h3 { font-size: 14pt; margin-top: 16pt; color: #1d4ed8; }
+h4 { font-size: 11pt; margin-top: 12pt; color: #334155; text-transform: uppercase; letter-spacing: 0.05em; }
+p  { margin: 8pt 0; }
+
+.cover {
+  min-height: 250mm;
+  display: flex; flex-direction: column; justify-content: space-between;
+  background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+  color: #fff;
+  padding: 36mm 22mm;
+}
+.cover.salesman { background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%); }
+.cover.supervisor { background: linear-gradient(135deg, #064e3b 0%, #10b981 100%); }
+.cover.manager { background: linear-gradient(135deg, #78350f 0%, #f59e0b 100%); }
+.cover .brand { font-size: 36pt; font-weight: 800; letter-spacing: -0.03em; }
+.cover .sub { font-size: 14pt; opacity: 0.85; margin-top: 6pt; }
+.cover .title { font-size: 30pt; font-weight: 800; line-height: 1.1; max-width: 14em; }
+.cover .role-pill { display: inline-block; padding: 8pt 16pt; border-radius: 999px; background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3); font-weight: 600; font-size: 12pt; margin-top: 12pt; }
+.cover .footer { font-size: 10pt; opacity: 0.7; }
+
+.section-opener {
+  background: linear-gradient(180deg, #eff6ff 0%, #fff 100%);
+  border-radius: 12px;
+  padding: 22pt 22pt;
+  margin: 0 0 16pt;
+  border-left: 6px solid #1d4ed8;
+}
+[dir="rtl"] .section-opener { border-left: none; border-right: 6px solid #1d4ed8; }
+.section-opener.green { border-left-color: #10b981; background: linear-gradient(180deg, #ecfdf5 0%, #fff 100%); }
+.section-opener.amber { border-left-color: #f59e0b; background: linear-gradient(180deg, #fffbeb 0%, #fff 100%); }
+[dir="rtl"] .section-opener.green { border-right-color: #10b981; }
+[dir="rtl"] .section-opener.amber { border-right-color: #f59e0b; }
+.section-opener h2 { border: none; padding: 0; margin: 0 0 6pt; font-size: 22pt; color: #1e3a8a; }
+.section-opener.green h2 { color: #064e3b; }
+.section-opener.amber h2 { color: #78350f; }
+.section-opener .intro { font-size: 11pt; color: #334155; max-width: 36em; }
+
+.step-list { counter-reset: step; padding: 0; margin: 0; list-style: none; }
+.step-list > li {
+  counter-increment: step;
+  position: relative;
+  padding: 10pt 14pt 10pt 42pt;
+  margin-bottom: 8pt;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  page-break-inside: avoid;
+}
+[dir="rtl"] .step-list > li { padding: 10pt 42pt 10pt 14pt; }
+.step-list > li::before {
+  content: counter(step);
+  position: absolute; left: 10pt; top: 9pt;
+  width: 22pt; height: 22pt; border-radius: 999px;
+  background: #1d4ed8; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 10.5pt;
+}
+[dir="rtl"] .step-list > li::before { left: auto; right: 10pt; }
+
+.step-with-image { display: grid; grid-template-columns: 280px 1fr; gap: 18pt; align-items: start; page-break-inside: avoid; margin: 12pt 0; }
+[dir="rtl"] .step-with-image { grid-template-columns: 1fr 280px; }
+
+.screenshot {
+  border: 1px solid #e2e8f0; border-radius: 14px; overflow: hidden;
+  box-shadow: 0 2px 12px rgba(15,23,42,0.08); background: #000;
+}
+.screenshot img { width: 100%; height: auto; display: block; }
+.screenshot .caption { background: #0f172a; color: #cbd5e1; padding: 6pt 10pt; font-size: 9.5pt; text-align: center; }
+
+.callout { border-left: 4px solid #1d4ed8; background: #eff6ff; padding: 10pt 14pt; border-radius: 0 8px 8px 0; margin: 10pt 0; page-break-inside: avoid; }
+[dir="rtl"] .callout { border-left: none; border-right: 4px solid #1d4ed8; border-radius: 8px 0 0 8px; }
+.callout.tip { border-left-color: #10b981; background: #ecfdf5; }
+.callout.warn { border-left-color: #f59e0b; background: #fffbeb; }
+.callout.danger { border-left-color: #dc2626; background: #fef2f2; }
+[dir="rtl"] .callout.tip { border-right-color: #10b981; }
+[dir="rtl"] .callout.warn { border-right-color: #f59e0b; }
+[dir="rtl"] .callout.danger { border-right-color: #dc2626; }
+.callout strong.label { display: block; font-size: 10pt; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4pt; color: #1d4ed8; }
+.callout.tip strong.label { color: #047857; }
+.callout.warn strong.label { color: #b45309; }
+.callout.danger strong.label { color: #b91c1c; }
+
+table { border-collapse: collapse; width: 100%; margin: 10pt 0; font-size: 10.5pt; }
+th, td { padding: 8pt 10pt; text-align: left; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+[dir="rtl"] th, [dir="rtl"] td { text-align: right; }
+thead th { background: #f1f5f9; font-weight: 600; color: #334155; font-size: 10pt; }
+
+.credentials-card { border: 2px dashed #1d4ed8; background: #eff6ff; border-radius: 10px; padding: 14pt; margin: 12pt 0; page-break-inside: avoid; text-align: center; }
+.credentials-card .label { font-size: 9pt; text-transform: uppercase; color: #64748b; letter-spacing: 0.06em; }
+.credentials-card .value { font-family: "SF Mono", Consolas, monospace; font-weight: 700; font-size: 14pt; color: #1e3a8a; direction: ltr; }
+</style>
+</head>
+<body>
+<section class="cover page manager">
+  <div>
+    <div class="brand">NMWC</div>
+    <div class="sub">Customer Master — Region App</div>
+  </div>
+  <div>
+    <div class="title">Manager User Guide</div>
+    <span class="role-pill">FOR MANAGERS</span>
+  </div>
+  <div class="footer">NMWC Customer Master · v1.0 · 2026-05</div>
+</section>
+<section class="page page-break">
+  <h1>Welcome</h1>
+  <p>You own the customer master in your region. You approve sensitive decisions (reactivations of closed shops), manage your team's access (passwords, route assignments), and keep an eye on overall data quality. This guide covers everything specific to your role.</p>
+</section>
+<section class="page page-break"><div class="section-opener amber"><h2>1. Logging in</h2></div><ol class="step-list"><li>Open <strong>https://nmwc-cm.vercel.app</strong>.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/01-login.png" alt="" /></div></div></li><li>Sign in with your manager credentials.</li></ol></section><section class="page page-break"><div class="section-opener amber"><h2>2. Daily dashboard check</h2></div><ol class="step-list"><li>Tap <strong>Dashboard</strong> in the menu.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/10-manager-dashboard.png" alt="" /></div></div></li><li>You see totals for your region: active customers, pending approvals, reactivation requests, recent activity.</li><li>Use it as a 30-second morning check before opening anything else.</li></ol></section><section class="page page-break"><div class="section-opener amber"><h2>3. Approve or reject reactivations</h2><p class="intro">Reactivations bring closed shops back into the active master. Only managers can approve them.</p></div><ol class="step-list"><li>Tap <strong>Reactivations</strong> in the menu.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/11-manager-reactivations.png" alt="" /></div></div></li><li>You see all closed shops your salesmen have asked to reopen.</li><li>Each row shows the salesman's reason and the photo they captured today at the shop.</li><li>Tap the photo to see it full size and confirm the shop is genuinely open.</li><li>Tap <strong>✓ Reactivate</strong> if you're satisfied — the branch goes back to ACTIVE.</li><li>Tap <strong>Keep closed</strong> to reject. The salesman sees your decision.</li></ol><div class="callout warn"><strong class="label">Photo evidence freshness</strong>The photo must be captured AFTER the shop was marked closed. The system rejects pre-closure photos automatically. If you see one that slipped through, reject the reactivation and ask the salesman to re-photograph.</div></section><section class="page page-break"><div class="section-opener amber"><h2>4. Manage your team</h2></div><ol class="step-list"><li>Tap <strong>Users</strong> in the menu.<div style="margin-top:8pt"><div class="screenshot" style="max-width:280px"><img src="img/12-manager-users.png" alt="" /></div></div></li><li>You see every user in your region: salesmen, supervisors, anyone reporting up to you.</li><li><strong>Reset password</strong> — for a salesman who forgot theirs. Set a temporary password; the system forces them to change it on next login.</li><li><strong>Disable</strong> — when a salesman leaves the company. They can no longer log in. Their history stays in audit logs.</li><li><strong>Reassign route</strong> — if a salesman switches routes. The new owner can immediately see those customers.</li></ol></section><section class="page page-break"><div class="section-opener amber"><h2>5. Routes and regions</h2></div><ol class="step-list"><li>Tap <strong>Routes &amp; regions</strong> in the menu.</li><li>Add a new route, mark one inactive, see which salesman owns each route.</li><li>Routes belong to regions; you only manage routes in regions assigned to you.</li></ol></section><section class="page page-break"><div class="section-opener amber"><h2>6. Audit log — when investigating</h2><p class="intro">Use this when something looks unusual or HR asks who did what.</p></div><ol class="step-list"><li>Tap <strong>Audit log</strong> in the menu.</li><li>Every action by every user is logged: login, login fail, customer create/update, approval, reject, reactivation, photo capture, password reset, etc.</li><li>Each row shows: who, when, from what IP, what action, on what record. Old/new values too.</li><li>Filter by user, date range, action type, or customer to narrow down.</li></ol><div class="callout info"><strong class="label">Audit logs are immutable</strong>Once written, no one — not even you, not the steward — can edit or delete an audit row. This is by design. It is the trustworthy paper trail for your region.</div></section><section class="page page-break"><div class="section-opener amber"><h2>7. Common situations</h2></div><table><thead><tr><th>Situation</th><th>What to do</th></tr></thead><tbody><tr><td>"Photo was captured before the last status change"</td><td>A salesman tried to use an old photo for a reactivation. Reject — they need to take a fresh photo at the shop today.</td></tr><tr><td>"My team can't log in"</td><td>Check Audit log for "LOGIN_FAIL" entries. Usually a typed password (system locks them out for 1 minute after 5 wrong tries).</td></tr><tr><td>"Cannot approve your own request"</td><td>You submitted the request originally. Forward to a peer manager.</td></tr><tr><td>"You have no managed regions assigned"</td><td>Your account hasn't been assigned a region yet. Contact head office.</td></tr><tr><td>Salesman moved to another route</td><td>Use the Users page → Reassign route. New customers visible immediately.</td></tr><tr><td>Salesman left the company</td><td>Disable on the Users page. Their audit trail is preserved.</td></tr></tbody></table></section>
+<section class="page page-break"><h2>8. Quick reference card</h2><h3>Manager-only actions</h3><table><tbody><tr><td><strong>✓ Reactivate</strong></td><td>Bring a closed shop back to ACTIVE.</td></tr><tr><td><strong>Keep closed</strong></td><td>Reject a reactivation request.</td></tr><tr><td><strong>Reset password</strong></td><td>Generate a temporary password for a team member.</td></tr><tr><td><strong>Disable user</strong></td><td>Block a leaver from logging in.</td></tr><tr><td><strong>Reassign route</strong></td><td>Move a route to another salesman.</td></tr><tr><td><strong>Force override</strong></td><td>Edit the master directly. Use sparingly — logged.</td></tr></tbody></table><h3>Where to look</h3><table><tbody><tr><td><strong>Dashboard</strong></td><td>Daily morning check. Region totals.</td></tr><tr><td><strong>Reactivations</strong></td><td>Closed shops asking to reopen.</td></tr><tr><td><strong>Users</strong></td><td>Your team. Passwords, status, route ownership.</td></tr><tr><td><strong>Audit log</strong></td><td>Every action ever taken in your region.</td></tr><tr><td><strong>Approvals</strong></td><td>Region-wide approval queue (override view).</td></tr></tbody></table><div class="credentials-card"><div class="label">Production URL</div><div class="value">https://nmwc-cm.vercel.app</div></div><p style="text-align:center;margin-top:24pt;color:#64748b;font-size:10pt;">NMWC Customer Master · Manager Guide · v1.0 · 2026-05-10</p></section>
+</body></html>
