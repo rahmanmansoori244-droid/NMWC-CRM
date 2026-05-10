@@ -52,6 +52,16 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends postgresql-client-17
+          # Ubuntu 24.04 pre-installs postgresql-client-16 and `/usr/bin/pg_dump`
+          # resolves to v16 via update-alternatives. Force v17 to win.
+          sudo update-alternatives --install /usr/bin/pg_dump pg_dump /usr/lib/postgresql/17/bin/pg_dump 1700
+          sudo update-alternatives --set pg_dump /usr/lib/postgresql/17/bin/pg_dump || true
+          # Also expose v17 binaries first on PATH for any sub-shell that
+          # ignores the alternatives system.
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          # Verify which pg_dump the rest of the job will actually use.
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          which pg_dump
           pg_dump --version
 
       - name: Compute backup metadata
@@ -97,7 +107,11 @@ jobs:
           # --no-unlogged-table-data: skip ephemeral / cache-style tables
           # `set -o pipefail` (above) makes the gzip pipeline fail if pg_dump
           # itself returns non-zero; that propagates to step exit 1.
-          pg_dump \
+          # Absolute path to v17 binary — Ubuntu's pre-installed v16 in /usr/bin
+          # otherwise wins on the PATH and refuses to dump from a 17.x server.
+          PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump
+          "$PG_DUMP" --version
+          "$PG_DUMP" \
             --no-owner \
             --no-privileges \
             --format=plain \
@@ -216,10 +230,12 @@ jobs:
       - name: Restore dump into drill branch
         run: |
           set -euo pipefail
-          gunzip -c ./latest.sql.gz | psql "${DRILL_URL}" -v ON_ERROR_STOP=1 -q
+          # Use absolute path to v17 psql for the same reason pg_dump does.
+          PSQL=/usr/lib/postgresql/17/bin/psql
+          gunzip -c ./latest.sql.gz | "$PSQL" "${DRILL_URL}" -v ON_ERROR_STOP=1 -q
           # Smoke test: count tables in public schema. A successful restore
           # should leave at least the core CRM tables present.
-          COUNT=$(psql "${DRILL_URL}" -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")
+          COUNT=$("$PSQL" "${DRILL_URL}" -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")
           echo "Restored to branch ${BRANCH_NAME}; public tables: ${COUNT}"
           if [ "${COUNT:-0}" -lt 10 ]; then
             echo "::error::Restore drill suspicious — fewer than 10 public tables"
