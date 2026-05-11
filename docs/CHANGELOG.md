@@ -6,6 +6,72 @@ This file grows over the lifetime of the project. For a deeper narrative of what
 
 ---
 
+## v1.0.1 — 2026-05-11 — Real-world data fixes + pilot credentials
+
+User audit of the live system found that the customer master had wrong
+semantics (sub-branches instead of flat customers), the duplicate detector
+was too noisy, phone uniqueness was wrongly enforced, and the steward had
+no real filtering. Plus pre-launch hardening: pre-warm cron, perf cache,
+shared simple passwords (explicit owner trade-off), synthetic load test.
+
+### Major changes
+- **P1.1** Synthetic data wipe (`scripts/wipe-synthetic-data.ts`) — removed
+  6 fake regions, 38 routes, 115 branches, 95 customers, 38 fake users.
+  Muscat-only state.
+- **P1.2** Flatten data model (`scripts/flatten-customer-branches.ts`) —
+  each Customer now owns exactly 1 Branch (was 1:1 or 1:N). 3308=3308.
+  Reversibility map in `docs/audit/flatten-map-*.json`.
+- **P1.3** Phone-uniqueness dropped (migration `20260510160000_p1_drop_phone_unique`).
+  `DUPLICATE_PHONE` ConflictError removed from `services/edits.ts` (both
+  submit + approve paths). Phone duplicates allowed everywhere with a
+  soft logger.info note for steward review.
+- **P1.4** Duplicate detector rewrite (`services/duplicates.ts`) — only
+  CR-number exact match OR same legalName+phone+region triple. Dropped
+  fuzzy name and phone-only.
+- **P2.1** Steward filters on `/customers` (region / route / channel /
+  sub-channel / supervisor / salesman / payment terms / completeness /
+  date range), URL-bookmarkable, with visibility rules per role.
+- **P2.2** Saved views (`SavedView` model + migration `20260510170000_p2_saved_views`).
+- **P2.3** Filtered xlsx export (`services/customer-export.ts`).
+- **P3** Perf pass — `customerCountFast` helper, `cache()` on
+  `loadScope`, 6 loading skeletons, `revalidate=30` on dashboard+today.
+- **F1** Reference-data cache (`lib/reference-data.ts`) — 5-min
+  `unstable_cache` for the 6 dropdown lookups. 6 fewer Prisma queries
+  per `/customers` render.
+- **F2** GitHub Actions keep-warm cron (`.github/workflows/keep-warm.yml`) +
+  endpoint (`app/api/cron/keep-warm/route.ts`). Runs every 4 min during
+  Oman business hours. Eliminates cold-start during the workday.
+- **F3** Btree index on `Customer.legalName` (migration `20260511000000_perf_btree_legalname`)
+  for `ORDER BY` performance.
+- **F4** `/api/perf-probe` endpoint (steward/manager only) reports per-query
+  timing so we can verify cache wins.
+- **Phone-search fix** — `lib/customer-filters.ts` now queries
+  `primaryPhoneNorm` (trigram-indexed) instead of `primaryPhone`
+  (seq-scan).
+- **Bulk credential reset** (`scripts/bulk-reset-credentials.ts`) —
+  salesmen renamed `<route>-nmwc`, all share password `12345678`; staff
+  share `97246316`. `mustChangePassword=false` everywhere. 13 demo
+  accounts disabled. Explicit security trade-off the owner accepted on
+  2026-05-11 for pilot ease of use.
+- **Synthetic load test** (`scripts/synthetic-launch-test.ts` +
+  `cleanup-synthetic-test.ts`) — 4 concurrent Playwright workers verify
+  the daily workflow against production with safe revert.
+- **PDF guides regenerated** — all 8 user-facing PDFs refreshed with
+  post-flatten data.
+- **Launch checklist** at `docs/LAUNCH-CHECKLIST.md` — 7-minute pre-launch
+  ritual.
+
+### Commits
+
+| Hash | Title |
+|---|---|
+| `f719362` | Pre-launch: synthetic smoke test, phone-search fix, fresh PDFs, checklist |
+| `e156a2c` | perf: cache reference data + btree on legalName + GitHub-cron keep-warm |
+| `7d0dcb1` | P1+P2+P3: flatten data, drop phone unique, tighten dup detector, steward filters, saved views, filtered xlsx export, perf pass |
+| `462817e` | docs: 2026-05-10 session handoff + project CHANGELOG |
+
+---
+
 ## v1.0.0 — 2026-05-10 — Senior-audit remediation + user guides + production-ready pilot
 
 This session closed the senior-audit findings, hardened the daily backup workflow through 5 iterations, and produced 8 PDF user guides.

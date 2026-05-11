@@ -46,10 +46,10 @@ If red, the daily backup failed — the system still works but you don't have a 
 
 | Role | URL | What to confirm |
 |---|---|---|
-| Manager (`pilot.manager` / `Manager-NMWC-2026!`) | /dashboard | Total customers shows `~3,300`; the page loads in under 2 sec |
-| Steward (`pilot.steward` / `Steward-NMWC-2026!`) | /customers | Filter bar shows region/route/channel dropdowns; "Saved views (0) ▾" present; total reads `~3,300 customers` |
-| Supervisor (`ahmed.alndabi` / `Ahmed-NMWC-2026!`) | /approvals | "Approval queue — 0 pending" (or any leftover test edits) |
-| Salesman C1 (`c1-12345-nmwc` / `C1-12345-NMWC`) | /today | Today's visits load; tap any customer → profile opens |
+| Manager (`pilot.manager` / `97246316`) | /dashboard | Total customers shows `~3,300`; the page loads in under 2 sec |
+| Steward (`pilot.steward` / `97246316`) | /customers | Filter bar shows region/route/channel dropdowns; "Saved views (0) ▾" present; total reads `~3,300 customers` |
+| Supervisor (`ahmed.alndabi` / `97246316`) | /approvals | "Approval queue — 0 pending" (or any leftover test edits) |
+| Salesman C1 (`c1-nmwc` / `12345678`) | /today | Today's visits load; tap any customer → profile opens |
 
 If any role shows a 500 / blank page / authentication loop, stop and tell me before launching.
 

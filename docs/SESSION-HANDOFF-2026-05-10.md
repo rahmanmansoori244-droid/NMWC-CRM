@@ -218,15 +218,19 @@ These can't be automated because they're UI clicks in third-party dashboards (Cl
 
 ## 6. Knowledge to carry forward
 
-### 6.1 Credentials cheatsheet (still current)
+### 6.1 Credentials cheatsheet
+
+> ⚠️ Bulk-reset 2026-05-11 to shared simple passwords (pilot trade-off).
+> Full rationale in `docs/PILOT-MUSCAT-CREDENTIALS.md`. Rotate via
+> `npx tsx scripts/bulk-reset-credentials.ts` before any beyond-Muscat
+> expansion.
 
 | Role | Username | Password |
 |---|---|---|
-| Manager | `pilot.manager` | `Manager-NMWC-2026!` |
-| Steward | `pilot.steward` | `Steward-NMWC-2026!` |
-| Supervisor | `ahmed.alndabi` | `Ahmed-NMWC-2026!` |
-| Salesman C1 | `c1-12345-nmwc` | `C1-12345-NMWC` |
-| Salesman C4..MH02 | `<route>-12345-nmwc` | `<ROUTE>-12345-NMWC` |
+| Manager | `pilot.manager` | `97246316` |
+| Steward | `pilot.steward` | `97246316` |
+| Supervisor | `ahmed.alndabi` | `97246316` |
+| Salesmen (10) | `<route-lowercase>-nmwc` (e.g. `c1-nmwc`, `mh02-nmwc`) | `12345678` |
 
 ### 6.2 Demo data IDs (used in screenshots + tests)
 
