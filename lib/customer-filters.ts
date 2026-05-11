@@ -10,6 +10,7 @@
  * and `where` directly for customer-scoped fields.
  */
 import type { Prisma } from '@prisma/client';
+import { normalizePhone } from './phone';
 
 /** Raw URL search params accepted on /customers. */
 export type CustomerFilterParams = {
@@ -122,10 +123,15 @@ export function applyCustomerFilters(
   branchSome.deletedAt = branchSome.deletedAt ?? null;
 
   if (filters.q) {
+    // Perf (2026-05-11): phone search now uses primaryPhoneNorm so the
+    // trigram GIN index on that column accelerates ILIKE. Normalize the
+    // user's input via the same `normalizePhone` helper that ingestion
+    // uses so "+96891234567" and "96891234567" both find the same row.
+    const phoneNorm = normalizePhone(filters.q);
     where.OR = [
       { legalName: { contains: filters.q, mode: 'insensitive' } },
       { nmwcCode: { contains: filters.q, mode: 'insensitive' } },
-      { primaryPhone: { contains: filters.q } },
+      ...(phoneNorm ? [{ primaryPhoneNorm: { contains: phoneNorm } }] : []),
     ];
   }
   if (filters.status) where.status = filters.status;

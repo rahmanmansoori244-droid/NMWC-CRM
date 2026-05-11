@@ -1,0 +1,117 @@
+{
+  "startedAt": "2026-05-11T10:47:06.643Z",
+  "endedAt": "2026-05-11T10:47:27.451Z",
+  "snapshotPath": "docs\\audit\\synthetic-test-snapshot-2026-05-11T10-47-06.json",
+  "results": [
+    {
+      "name": "salesman-c1",
+      "steps": [
+        {
+          "step": "login",
+          "ok": true,
+          "ms": 5359
+        },
+        {
+          "step": "open customer profile",
+          "ok": true,
+          "ms": 3071,
+          "detail": "AQA0549-C1"
+        },
+        {
+          "step": "open enrichment form",
+          "ok": true,
+          "ms": 4043
+        },
+        {
+          "step": "branch-close: photo upload",
+          "ok": false,
+          "ms": 3534,
+          "detail": "Mark closed button not found"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "name": "salesman-c4",
+      "steps": [
+        {
+          "step": "login",
+          "ok": true,
+          "ms": 4643
+        },
+        {
+          "step": "open customer profile",
+          "ok": true,
+          "ms": 3070,
+          "detail": "AQA0549-MISFA"
+        },
+        {
+          "step": "open /today",
+          "ok": true,
+          "ms": 3707
+        },
+        {
+          "step": "open /customers list",
+          "ok": true,
+          "ms": 2006
+        }
+      ],
+      "errors": []
+    },
+    {
+      "name": "supervisor",
+      "steps": [
+        {
+          "step": "login",
+          "ok": true,
+          "ms": 5115
+        },
+        {
+          "step": "open approvals queue",
+          "ok": true,
+          "ms": 1732,
+          "detail": "2 pending links"
+        },
+        {
+          "step": "open approval diff",
+          "ok": true,
+          "ms": 2004
+        }
+      ],
+      "errors": []
+    },
+    {
+      "name": "manager",
+      "steps": [
+        {
+          "step": "login",
+          "ok": true,
+          "ms": 5267
+        },
+        {
+          "step": "open /dashboard",
+          "ok": true,
+          "ms": 4111
+        },
+        {
+          "step": "open /reactivations",
+          "ok": true,
+          "ms": 1409,
+          "detail": "0 requests"
+        },
+        {
+          "step": "open /users",
+          "ok": true,
+          "ms": 1699,
+          "detail": "27 rows incl header"
+        }
+      ],
+      "errors": []
+    }
+  ],
+  "produced": {
+    "edits": [],
+    "attachments": [],
+    "auditLogRowsCount": 4
+  }
+}

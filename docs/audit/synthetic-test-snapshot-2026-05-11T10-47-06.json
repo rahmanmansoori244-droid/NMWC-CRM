@@ -1,0 +1,113 @@
+{
+  "snapshotAt": "2026-05-11T10:47:06.643Z",
+  "customers": [
+    {
+      "id": "cmozfay5m0003tvfkupla658l",
+      "nmwcCode": "CAA0367",
+      "legalName": "MASHARA JIBAL- (JIDAN HADEESA",
+      "primaryPhone": "+96852123374",
+      "primaryPhoneNorm": "+96852123374",
+      "contactPerson": "Field Test Contact",
+      "notes": null,
+      "status": "ACTIVE",
+      "version": 0,
+      "branchStatuses": [
+        {
+          "id": "cmozfayck0005tvfk1oqws6bb",
+          "status": "ACTIVE",
+          "lastStatusChangeAt": "2026-05-10T09:35:11.914Z"
+        }
+      ]
+    },
+    {
+      "id": "cmozfayqj0008tvfkey689ccc",
+      "nmwcCode": "CAA0389",
+      "legalName": "AL NADHA SHOPPING- WADI HATAT",
+      "primaryPhone": null,
+      "primaryPhoneNorm": null,
+      "contactPerson": null,
+      "notes": null,
+      "status": "ACTIVE",
+      "version": 0,
+      "branchStatuses": [
+        {
+          "id": "cmozfayxi000atvfkc8r6h1eg",
+          "status": "ACTIVE",
+          "lastStatusChangeAt": null
+        }
+      ]
+    },
+    {
+      "id": "cmozfdiur00jotvfkreapvu8d",
+      "nmwcCode": "AQA0549-C1",
+      "legalName": "ABU RETAJ AL M-AMIRAT",
+      "primaryPhone": "+96859437765",
+      "primaryPhoneNorm": "+96859437765",
+      "contactPerson": "Field Test Contact",
+      "notes": "Field-test by c1: store visited Sunday morning, all confirmed.",
+      "status": "ACTIVE",
+      "version": 0,
+      "branchStatuses": [
+        {
+          "id": "cmozfdj1q00jqtvfkcjuh1qta",
+          "status": "ACTIVE",
+          "lastStatusChangeAt": null
+        }
+      ]
+    },
+    {
+      "id": "cmozff00b00uztvfkezhcot6c",
+      "nmwcCode": "CAA0738",
+      "legalName": "AL MARJAN AL AZAIBA -  AZAIBA",
+      "primaryPhone": null,
+      "primaryPhoneNorm": null,
+      "contactPerson": null,
+      "notes": null,
+      "status": "ACTIVE",
+      "version": 0,
+      "branchStatuses": [
+        {
+          "id": "cmozff07900v1tvfke9usucwp",
+          "status": "ACTIVE",
+          "lastStatusChangeAt": null
+        }
+      ]
+    },
+    {
+      "id": "cmozfg6d7013ytvfku8jjie4t",
+      "nmwcCode": "CAA1313",
+      "legalName": "AL ZAKWANI TRAD. -",
+      "primaryPhone": null,
+      "primaryPhoneNorm": null,
+      "contactPerson": null,
+      "notes": null,
+      "status": "ACTIVE",
+      "version": 0,
+      "branchStatuses": [
+        {
+          "id": "cmozfg6k50140tvfk4dpwo2bt",
+          "status": "ACTIVE",
+          "lastStatusChangeAt": null
+        }
+      ]
+    },
+    {
+      "id": "cmozfij9o01l9tvfkhp94fft5",
+      "nmwcCode": "AQA0549-MISFA",
+      "legalName": "ABU RETAJ AL M-AL MISFA SS-C4",
+      "primaryPhone": null,
+      "primaryPhoneNorm": null,
+      "contactPerson": null,
+      "notes": null,
+      "status": "ACTIVE",
+      "version": 0,
+      "branchStatuses": [
+        {
+          "id": "cmozfijgv01lbtvfkui1af80x",
+          "status": "ACTIVE",
+          "lastStatusChangeAt": null
+        }
+      ]
+    }
+  ]
+}
