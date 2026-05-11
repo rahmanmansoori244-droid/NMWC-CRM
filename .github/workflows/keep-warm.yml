@@ -1,0 +1,45 @@
+name: Keep production warm
+
+# F2 (2026-05-11): GitHub-Actions-driven cron ping that keeps the Vercel
+# function warm during Oman business hours, so users never hit the 2-3 s
+# cold start.
+#
+# Why not Vercel cron: the Hobby plan rejects sub-daily cron schedules.
+# GitHub Actions allows */4 minute schedules for free.
+#
+# Coverage: 07:00–19:00 Oman = 03:00–15:00 UTC. Outside that window we let
+# the function go cold to save Vercel invocations (cold-start at midnight
+# in Oman doesn't matter — nobody is using the app).
+#
+# Secret required: PROD_CRON_SECRET — the same value as the CRON_SECRET
+# env var on Vercel. Set both to the same string.
+
+on:
+  schedule:
+    # Every 4 minutes during 03:00-14:59 UTC. (GitHub cron has no hour-range
+    # syntax like Vercel; the 12 line entries below cover the same window.)
+    - cron: '*/4 3-14 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    name: Ping /api/cron/keep-warm
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Curl keep-warm
+        env:
+          PROD_CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PROD_CRON_SECRET:-}" ]; then
+            echo "::warning::PROD_CRON_SECRET not set — skipping ping. Add the secret to enable warming."
+            exit 0
+          fi
+          curl -fsSL \
+            -H "Authorization: Bearer ${PROD_CRON_SECRET}" \
+            -w "\nHTTP %{http_code} time=%{time_total}s\n" \
+            "https://nmwc-cm.vercel.app/api/cron/keep-warm"

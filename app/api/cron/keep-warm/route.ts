@@ -1,0 +1,80 @@
+/**
+ * F2 (2026-05-11) — pre-warm the production Vercel function so cold starts
+ * don't bite users during Oman business hours.
+ *
+ * Vercel functions go cold after ~5 min of idle. First hit after cold-start
+ * costs ~2-3 s on this stack (Prisma init + Auth.js + middleware bundle).
+ * For a salesman who opens the app once an hour, every page load is a cold
+ * start. Hitting this endpoint every 4 min keeps the function warm during
+ * the window people actually use it.
+ *
+ * Schedule: every 4 minutes during 03:00-15:00 UTC (= 07:00-19:00 Oman).
+ *   See vercel.json `crons` entry.
+ *
+ * What it does:
+ *   - Authenticates via CRON_SECRET (same secret photo-gc uses).
+ *   - Runs one cheap SELECT 1 so the Neon pool stays open.
+ *   - Pre-fetches the reference-data caches so they're warm too.
+ *   - Returns a tiny JSON ack.
+ *
+ * Cost: 1 function invocation × 180/day × 30 days = 5,400/month. Each call
+ * is <200 ms function time. Well within the free tier.
+ */
+import { NextRequest, NextResponse } from 'next/server';
+import { timingSafeEqual } from 'node:crypto';
+import { prisma } from '@/lib/db';
+import {
+  getAllActiveChannels,
+  getAllActiveRegions,
+  getAllActiveRoutes,
+  getAllActiveSubChannels,
+  getAllHierarchyUsers,
+} from '@/lib/reference-data';
+import { logger } from '@/lib/logger';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+function bearerMatches(headerValue: string | null, expected: string): boolean {
+  if (!headerValue) return false;
+  const supplied = Buffer.from(headerValue);
+  const required = Buffer.from(`Bearer ${expected}`);
+  if (supplied.length !== required.length) return false;
+  return timingSafeEqual(supplied, required);
+}
+
+export async function GET(req: NextRequest) {
+  const expected = process.env.CRON_SECRET;
+  if (!expected || !bearerMatches(req.headers.get('authorization'), expected)) {
+    return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+  }
+
+  const started = Date.now();
+  let dbOk = false;
+  let refsOk = false;
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    dbOk = true;
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'keep-warm.db_fail');
+  }
+  try {
+    await Promise.all([
+      getAllActiveRegions(),
+      getAllActiveRoutes(),
+      getAllActiveChannels(),
+      getAllActiveSubChannels(),
+      getAllHierarchyUsers(),
+    ]);
+    refsOk = true;
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'keep-warm.refs_fail');
+  }
+  const elapsedMs = Date.now() - started;
+  return NextResponse.json({
+    warm: dbOk && refsOk,
+    db: dbOk,
+    refs: refsOk,
+    elapsedMs,
+  });
+}

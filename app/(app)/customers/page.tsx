@@ -13,6 +13,13 @@ import {
 } from '@/lib/customer-filters';
 import { listSavedViewsForCurrentUser } from '@/services/saved-views';
 import { customerCountFast } from '@/lib/customer-count';
+import {
+  getAllActiveChannels,
+  getAllActiveRegions,
+  getAllActiveRoutes,
+  getAllActiveSubChannels,
+  getAllHierarchyUsers,
+} from '@/lib/reference-data';
 
 export const metadata = { title: 'Customers · NMWC' };
 
@@ -157,15 +164,20 @@ export default async function CustomersPage({
     }
   }
 
+  // F1 (2026-05-11): the six reference-data lookups (regions, routes,
+  // channels, sub-channels, supervisors, salesmen) are now served from
+  // `lib/reference-data.ts` with a 5-minute unstable_cache + per-request
+  // React cache. Scope filtering (e.g. a Supervisor only sees their own
+  // salesmen) is applied in memory after the cached read — the lists are
+  // tiny (<100 rows).
   const [
     total,
     customers,
-    regions,
-    routes,
-    channels,
-    subChannels,
-    supervisors,
-    salesmen,
+    allRegions,
+    allRoutes,
+    allChannels,
+    allSubChannels,
+    allHierarchyUsers,
     savedViews,
   ] = await Promise.all([
     customerCountFast(where),
@@ -176,49 +188,52 @@ export default async function CustomersPage({
       take: PAGE_SIZE,
       include: { branches: branchInclude },
     }),
-    showRegion
-      ? prisma.region.findMany({
-          where: regionWhere,
-          orderBy: { name: 'asc' },
-          select: { id: true, name: true, code: true },
-        })
-      : Promise.resolve([]),
-    showRoute
-      ? prisma.route.findMany({
-          where: routeWhere,
-          orderBy: { code: 'asc' },
-          select: { id: true, code: true, name: true, regionId: true },
-        })
-      : Promise.resolve([]),
-    prisma.channel.findMany({
-      where: { isActive: true },
-      orderBy: { displayOrder: 'asc' },
-      select: { id: true, label: true },
-    }),
-    prisma.subChannel.findMany({
-      where: { isActive: true },
-      orderBy: { label: 'asc' },
-      select: { id: true, label: true, channelId: true },
-    }),
-    showSupervisor
-      ? prisma.user.findMany({
-          where: { role: Role.SUPERVISOR, isActive: true },
-          orderBy: { fullName: 'asc' },
-          select: { id: true, fullName: true, username: true },
-        })
-      : Promise.resolve([]),
-    showSalesman
-      ? prisma.user.findMany({
-          where:
-            me.role === Role.SUPERVISOR
-              ? { role: Role.SALESMAN, isActive: true, supervisorId: me.id }
-              : { role: Role.SALESMAN, isActive: true },
-          orderBy: { fullName: 'asc' },
-          select: { id: true, fullName: true, username: true },
-        })
-      : Promise.resolve([]),
+    getAllActiveRegions(),
+    getAllActiveRoutes(),
+    getAllActiveChannels(),
+    getAllActiveSubChannels(),
+    getAllHierarchyUsers(),
     listSavedViewsForCurrentUser().catch(() => []),
   ]);
+
+  // In-memory scope filtering on the cached reference data.
+  // Compute scope route IDs once and reuse.
+  const scopeRouteIds = new Set(
+    me.role === Role.SUPERVISOR
+      ? me.reports.map((r) => r.ownedRouteId).filter((id): id is string => !!id)
+      : me.role === Role.MANAGER
+        ? allRoutes
+            .filter((r) => me.managedRegions.some((mr) => mr.id === r.regionId))
+            .map((r) => r.id)
+        : allRoutes.map((r) => r.id)
+  );
+  const scopeRegionIds = new Set(
+    me.role === Role.MANAGER
+      ? me.managedRegions.map((mr) => mr.id)
+      : me.role === Role.SUPERVISOR
+        ? allRoutes.filter((r) => scopeRouteIds.has(r.id)).map((r) => r.regionId)
+        : allRegions.map((r) => r.id)
+  );
+  const regions = showRegion ? allRegions.filter((r) => scopeRegionIds.has(r.id)) : [];
+  const routes = showRoute ? allRoutes.filter((r) => scopeRouteIds.has(r.id)) : [];
+  const channels = allChannels;
+  const subChannels = allSubChannels;
+  const supervisors = showSupervisor
+    ? allHierarchyUsers
+        .filter((u) => u.role === Role.SUPERVISOR)
+        .map((u) => ({ id: u.id, fullName: u.fullName, username: u.username }))
+    : [];
+  const salesmen = showSalesman
+    ? allHierarchyUsers
+        .filter((u) => {
+          if (u.role !== Role.SALESMAN) return false;
+          if (me.role === Role.SUPERVISOR) return u.supervisorId === me.id;
+          return true;
+        })
+        .map((u) => ({ id: u.id, fullName: u.fullName, username: u.username }))
+    : [];
+  void regionWhere;
+  void routeWhere;
 
   const lastPage = Math.max(1, Math.ceil(total.total / PAGE_SIZE));
 
