@@ -98,6 +98,7 @@ const BRANCH_FIELDS = [
 function collectMissingMandatory(
   customer: {
     legalName: string;
+    paymentTerms: 'CASH' | 'CREDIT';
     channelId: string | null;
     subChannelId: string | null;
     primaryPhone: string | null;
@@ -116,7 +117,14 @@ function collectMissingMandatory(
     }>;
   },
   customerProposed: Record<string, unknown>,
-  branchProposedById: Map<string, Record<string, unknown>>
+  branchProposedById: Map<string, Record<string, unknown>>,
+  /**
+   * 2026-05-11: when the actor is a SALESMAN, fields they cannot edit
+   * (legalName always, crNumber on CREDIT) are NOT their responsibility.
+   * Skip them from the missing-list so the salesman is never blocked by
+   * data only the Steward can fix.
+   */
+  actorIsSalesman = false
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   const merged = (k: keyof typeof customer, fallback: unknown) =>
@@ -124,7 +132,11 @@ function collectMissingMandatory(
   const isStr = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
   const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
-  if (!isStr(merged('legalName', customer.legalName))) {
+  // Lock-aware skips for salesman actor.
+  const skipLegalName = actorIsSalesman; // always locked for salesman
+  const skipCrNumber = actorIsSalesman && customer.paymentTerms === 'CREDIT';
+
+  if (!skipLegalName && !isStr(merged('legalName', customer.legalName))) {
     errors['customer.legalName'] = 'Legal name is required.';
   }
   if (!isStr(merged('channelId', customer.channelId))) {
@@ -139,7 +151,7 @@ function collectMissingMandatory(
   if (!isStr(merged('contactPerson', customer.contactPerson))) {
     errors['customer.contactPerson'] = 'Contact person is required.';
   }
-  if (!isStr(merged('crNumber', customer.crNumber))) {
+  if (!skipCrNumber && !isStr(merged('crNumber', customer.crNumber))) {
     errors['customer.crNumber'] = 'CR number is required.';
   }
   // Photos are wired via attachPhotoAction, so we read from the live customer
@@ -264,13 +276,15 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
     }
   }
 
-  // Apply field locks (Credit customers — Salesman cannot change name/CR)
+  // 2026-05-11: separated legalName + crNumber locks. legalName is now
+  // locked for SALESMAN regardless of payment terms; crNumber stays locked
+  // only when the customer is on CREDIT terms. Steward bypasses both.
   const customerProposed: Record<string, unknown> = { ...cInput };
-  if (
-    me.role === Role.SALESMAN &&
-    isFieldLocked('legalName', { id: me.id, role: me.role, username: '' }, customer)
-  ) {
+  const sessionUserShape = { id: me.id, role: me.role, username: '' };
+  if (isFieldLocked('legalName', sessionUserShape, customer)) {
     delete customerProposed.legalName;
+  }
+  if (isFieldLocked('crNumber', sessionUserShape, customer)) {
     delete customerProposed.crNumber;
   }
 
@@ -389,7 +403,12 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
   if (!isDraft && me.role === Role.SALESMAN) {
     const branchProposedById = new Map<string, Record<string, unknown>>();
     for (const bp of bInputs) branchProposedById.set(bp.branchId, bp as Record<string, unknown>);
-    const missing = collectMissingMandatory(customer, customerProposed, branchProposedById);
+    const missing = collectMissingMandatory(
+      customer,
+      customerProposed,
+      branchProposedById,
+      /* actorIsSalesman */ true
+    );
     if (Object.keys(missing).length > 0) {
       throw new ValidationError(missing);
     }
@@ -725,7 +744,8 @@ async function approveEditCore(formData: FormData) {
     const missing = collectMissingMandatory(
       liveCustomer,
       customerProposed,
-      branchProposedById
+      branchProposedById,
+      /* actorIsSalesman */ true
     );
     if (Object.keys(missing).length > 0) {
       throw new ConflictError(

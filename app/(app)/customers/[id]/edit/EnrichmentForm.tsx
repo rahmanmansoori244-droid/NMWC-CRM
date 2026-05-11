@@ -63,14 +63,18 @@ const DAYS: DayOfWeek[] = ['SAT', 'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI'];
 export function EnrichmentForm({
   customer,
   channels,
-  lockNameAndCr,
+  lockName,
+  lockCr,
   userRole,
   canSubmit,
   sessionUserId,
 }: {
   customer: CustomerWithBranches;
   channels: ChannelWithSubs[];
-  lockNameAndCr: boolean;
+  /** Salesman cannot change legalName (always true for SALESMAN). */
+  lockName: boolean;
+  /** Salesman cannot change crNumber when customer is on CREDIT terms. */
+  lockCr: boolean;
   userRole: Role;
   canSubmit: boolean;
   // UXI-002: scope localStorage drafts by user. A shared device used by two
@@ -146,12 +150,16 @@ export function EnrichmentForm({
   // attachment server-side; user refreshes to see updated state).
   const missingMandatory: string[] = [];
   if (userRole === Role.SALESMAN) {
-    if (!legalName.trim()) missingMandatory.push('Legal name');
+    // 2026-05-11: locked fields are NOT the salesman's responsibility. If the
+    // master is missing legalName or CR for this customer, that's a Steward
+    // queue item — not a salesman blocker. Don't include them in the
+    // "missing — cannot submit" pill.
+    if (!lockName && !legalName.trim()) missingMandatory.push('Legal name');
     if (!channelId) missingMandatory.push('Channel');
     if (!subChannelId) missingMandatory.push('Sub-channel');
     if (!primaryPhone.trim()) missingMandatory.push('Primary phone');
     if (!contactPerson.trim()) missingMandatory.push('Contact person');
-    if (!crNumber.trim()) missingMandatory.push('CR number');
+    if (!lockCr && !crNumber.trim()) missingMandatory.push('CR number');
     if (!customer.crPhotoId) missingMandatory.push('CR document photo');
     customer.branches.forEach((b, i) => {
       const s = branchStates[b.id];
@@ -270,8 +278,8 @@ export function EnrichmentForm({
     const submittedStatus = userRole === Role.SALESMAN ? customer.status : status;
 
     const customerPayload = {
-      legalName: lockNameAndCr ? undefined : legalName.trim() || undefined,
-      crNumber: lockNameAndCr ? undefined : crNumber.trim() || undefined,
+      legalName: lockName ? undefined : legalName.trim() || undefined,
+      crNumber: lockCr ? undefined : crNumber.trim() || undefined,
       channelId: channelId || undefined,
       subChannelId: subChannelId || undefined,
       primaryPhone: primaryPhone.trim() || undefined,
@@ -354,9 +362,15 @@ export function EnrichmentForm({
 
       <FormSection
         title="Identity"
-        description={lockNameAndCr ? 'Locked: Credit customer — only the Steward can change name or CR.' : undefined}
-        locked={lockNameAndCr}
-        defaultOpen={!lockNameAndCr}
+        description={
+          lockName && lockCr
+            ? 'Legal name and CR are locked — only the Steward can change them. Fill the rest below.'
+            : lockName
+              ? 'Legal name is locked (Steward-only). The CR is editable.'
+              : undefined
+        }
+        locked={lockName && lockCr}
+        defaultOpen={true}
       >
         <div className="grid gap-3">
           <Field
@@ -364,14 +378,14 @@ export function EnrichmentForm({
             error={errors['customer.legalName']}
             value={legalName}
             onChange={setLegalName}
-            disabled={lockNameAndCr}
+            disabled={lockName}
           />
           <Field
             label="CR number"
             error={errors['customer.crNumber']}
             value={crNumber}
             onChange={setCrNumber}
-            disabled={lockNameAndCr}
+            disabled={lockCr}
           />
           <Field label="NMWC code" value={customer.nmwcCode} onChange={() => {}} disabled mono />
           <div>

@@ -8,55 +8,45 @@ import {
   canExport,
 } from '@/lib/permissions';
 
-describe('lib/permissions — Cash/Credit field lock', () => {
+describe('lib/permissions — Salesman field locks', () => {
   const credit = { paymentTerms: 'CREDIT' as const };
   const cash = { paymentTerms: 'CASH' as const };
+  const salesman = { id: 'u1', role: Role.SALESMAN, username: 's' };
+  const steward = { id: 'u2', role: Role.STEWARD, username: 'st' };
+  const supervisor = { id: 'u3', role: Role.SUPERVISOR, username: 'sup' };
 
-  it('Salesman cannot edit name/CR on Credit customers', () => {
-    expect(
-      isFieldLocked(
-        'legalName',
-        { id: 'u1', role: Role.SALESMAN, username: 's' },
-        credit
-      )
-    ).toBe(true);
-    expect(
-      isFieldLocked(
-        'crNumber',
-        { id: 'u1', role: Role.SALESMAN, username: 's' },
-        credit
-      )
-    ).toBe(true);
+  it('Salesman cannot edit legalName on Credit customers', () => {
+    expect(isFieldLocked('legalName', salesman, credit)).toBe(true);
   });
 
-  it('Salesman CAN edit on Cash customers', () => {
-    expect(
-      isFieldLocked(
-        'legalName',
-        { id: 'u1', role: Role.SALESMAN, username: 's' },
-        cash
-      )
-    ).toBe(false);
+  it('Salesman cannot edit legalName on Cash customers either (2026-05-11)', () => {
+    expect(isFieldLocked('legalName', salesman, cash)).toBe(true);
   });
 
-  it('Steward bypasses the lock', () => {
-    expect(
-      isFieldLocked(
-        'legalName',
-        { id: 'u1', role: Role.STEWARD, username: 's' },
-        credit
-      )
-    ).toBe(false);
+  it('Salesman cannot edit nmwcCode on any customer (always locked)', () => {
+    expect(isFieldLocked('nmwcCode', salesman, cash)).toBe(true);
+    expect(isFieldLocked('nmwcCode', salesman, credit)).toBe(true);
   });
 
-  it('Other roles see no lock (they don\'t edit anyway, gated elsewhere)', () => {
-    expect(
-      isFieldLocked(
-        'legalName',
-        { id: 'u1', role: Role.SUPERVISOR, username: 's' },
-        credit
-      )
-    ).toBe(false);
+  it('Salesman cannot edit crNumber on Credit customers', () => {
+    expect(isFieldLocked('crNumber', salesman, credit)).toBe(true);
+    expect(isFieldLocked('crNumberNorm', salesman, credit)).toBe(true);
+  });
+
+  it('Salesman CAN edit crNumber on Cash customers (may field-collect)', () => {
+    expect(isFieldLocked('crNumber', salesman, cash)).toBe(false);
+    expect(isFieldLocked('crNumberNorm', salesman, cash)).toBe(false);
+  });
+
+  it('Steward bypasses every lock', () => {
+    expect(isFieldLocked('legalName', steward, credit)).toBe(false);
+    expect(isFieldLocked('nmwcCode', steward, cash)).toBe(false);
+    expect(isFieldLocked('crNumber', steward, credit)).toBe(false);
+  });
+
+  it('Other roles see no lock (they edit through different flows)', () => {
+    expect(isFieldLocked('legalName', supervisor, credit)).toBe(false);
+    expect(isFieldLocked('crNumber', supervisor, credit)).toBe(false);
   });
 });
 

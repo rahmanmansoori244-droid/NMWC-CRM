@@ -114,7 +114,11 @@ export default async function EditCustomerPage({
     include: { subChannels: { where: { isActive: true }, orderBy: { label: 'asc' } } },
   });
 
-  const lockNameAndCr = isFieldLocked('legalName', sessionUser, customer);
+  // 2026-05-11: legalName lock is now independent of CR lock.
+  //   - lockName  = always true for SALESMAN (any payment terms)
+  //   - lockCr    = SALESMAN + CREDIT only
+  const lockName = isFieldLocked('legalName', sessionUser, customer);
+  const lockCr = isFieldLocked('crNumber', sessionUser, customer);
 
   // Existing pending edit?
   const pending = await prisma.customerEdit.findFirst({
@@ -145,7 +149,8 @@ export default async function EditCustomerPage({
       <EnrichmentForm
         customer={customer}
         channels={channels}
-        lockNameAndCr={lockNameAndCr}
+        lockName={lockName}
+        lockCr={lockCr}
         userRole={session.user.role}
         canSubmit={!pending}
         sessionUserId={session.user.id}

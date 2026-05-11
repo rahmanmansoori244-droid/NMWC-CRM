@@ -54,16 +54,28 @@ export function canManageReactivation(user: SessionUser): boolean {
 }
 
 /**
- * Field-level lock: a Salesman cannot edit Customer.legalName or crNumber on
- * Credit customers. Cash customers are fully editable. Stewards bypass the lock.
+ * Field-level locks for SALESMAN. Other roles bypass.
+ *
+ * Updated 2026-05-11 per owner direction:
+ *   - `legalName`: ALWAYS locked for salesmen (any payment terms). The shop
+ *     name is set by Steward during master import; field salesman never
+ *     overrides it. Prevents accidental renames.
+ *   - `nmwcCode`: ALWAYS locked. (Already not in CUSTOMER_FIELDS server-side;
+ *     this entry keeps the lock-check coherent for UI.)
+ *   - `crNumber` / `crNumberNorm`: locked for SALESMAN only when the customer
+ *     is on CREDIT terms. CASH customers may still have a CR field-collected.
+ *
+ * Steward bypasses everything.
  */
 export function isFieldLocked(
-  _field: 'legalName' | 'crNumber' | 'crNumberNorm',
+  field: 'legalName' | 'nmwcCode' | 'crNumber' | 'crNumberNorm',
   user: SessionUser,
   customer: Pick<Customer, 'paymentTerms'>
 ): boolean {
   if (user.role === Role.STEWARD) return false;
   if (user.role !== Role.SALESMAN) return false;
+  if (field === 'legalName' || field === 'nmwcCode') return true;
+  // crNumber / crNumberNorm
   return customer.paymentTerms === 'CREDIT';
 }
 
