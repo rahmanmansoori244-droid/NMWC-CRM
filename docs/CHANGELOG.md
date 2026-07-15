@@ -49,8 +49,8 @@ shared simple passwords (explicit owner trade-off), synthetic load test.
   `primaryPhoneNorm` (trigram-indexed) instead of `primaryPhone`
   (seq-scan).
 - **Bulk credential reset** (`scripts/bulk-reset-credentials.ts`) —
-  salesmen renamed `<route>-nmwc`, all share password `12345678`; staff
-  share `97246316`. `mustChangePassword=false` everywhere. 13 demo
+  salesmen renamed `<route>-nmwc`, all share password `[REDACTED-PILOT-PW]`; staff
+  share `[REDACTED-PILOT-PW]`. `mustChangePassword=false` everywhere. 13 demo
   accounts disabled. Explicit security trade-off the owner accepted on
   2026-05-11 for pilot ease of use.
 - **Synthetic load test** (`scripts/synthetic-launch-test.ts` +

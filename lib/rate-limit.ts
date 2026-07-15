@@ -85,18 +85,25 @@ async function checkLimitPg(
     INSERT INTO "RateLimit" ("key", "tokens", "lastRefill", "updatedAt")
     VALUES (${key}, ${cfg.capacity - 1}, NOW(), NOW())
     ON CONFLICT ("key") DO UPDATE SET
-      "tokens" = LEAST(
-        ${cfg.capacity}::float,
-        "RateLimit"."tokens" +
-          EXTRACT(EPOCH FROM (NOW() - "RateLimit"."lastRefill")) * ${cfg.refillPerSec}
-      ) - CASE
-        WHEN LEAST(
+      -- SEC-C3 fix: always debit one token, flooring the result at -1 so a
+      -- DENIED request leaves a negative marker. The previous
+      -- "minus CASE ... >= 1 THEN 1 ELSE 0 END" only debited when a full token
+      -- was available, which floored the stored value at >= 0 and made the
+      -- RETURNING ("tokens" >= 0) AS granted predicate ALWAYS true -- i.e. the
+      -- durable Postgres limiter granted every request in production and never
+      -- once denied (login brute-force, form/photo throttles all silently off).
+      -- granted is now correct: it is true iff a full token was available
+      -- (refilled >= 1 => tokens = refilled - 1 >= 0). GREATEST(-1, ...) caps the
+      -- penalty at a single token so repeated denials cannot spiral into an
+      -- unbounded lockout, while still costing ~one refill interval of wait.
+      "tokens" = GREATEST(
+        -1::float,
+        LEAST(
           ${cfg.capacity}::float,
           "RateLimit"."tokens" +
             EXTRACT(EPOCH FROM (NOW() - "RateLimit"."lastRefill")) * ${cfg.refillPerSec}
-        ) >= 1 THEN 1
-        ELSE 0
-      END,
+        ) - 1
+      ),
       "lastRefill" = NOW(),
       "updatedAt" = NOW()
     RETURNING

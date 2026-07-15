@@ -19,3 +19,20 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+
+  # SEC-C2: fail the build if a high-entropy secret (API key, token, connection
+  # string, private key) is committed — the guardrail that would have caught the
+  # OLD repo's `.env`. NOTE: default gitleaks rules do NOT reliably flag
+  # low-entropy secrets such as the pilot's bare 8-digit shared passwords in a
+  # markdown table — the real control for those is rotation + history scrub (see
+  # docs/discovery/blueprint-inputs/security-remediation.md, SR-C1/SR-C2).
+  # Runs on the full history (fetch-depth: 0).
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

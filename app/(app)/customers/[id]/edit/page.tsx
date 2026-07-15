@@ -3,7 +3,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
 import { isFieldLocked } from '@/lib/permissions';
-import { loadScope, filterBranchesByScope } from '@/lib/access';
+import { loadScope, filterBranchesByScope, canEditCustomer } from '@/lib/access';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
@@ -106,6 +106,17 @@ export default async function EditCustomerPage({
     username: session.user.username,
   };
   const scope = await loadScope(session.user.id);
+  // SEC-H1: a MANAGER may only open the edit form for a customer in a region
+  // they manage (fail-closed when they manage none). Without this an
+  // out-of-region Manager could reach the form and submit a direct-write edit
+  // to a customer outside their authority. Evaluated on the FULL branch set,
+  // before filterBranchesByScope narrows it on the next line.
+  if (
+    session.user.role === Role.MANAGER &&
+    !canEditCustomer(sessionUser, customer, scope)
+  ) {
+    redirect(`/customers/${customer.id}`);
+  }
   customer.branches = filterBranchesByScope(sessionUser, customer.branches, scope);
 
   const channels = await prisma.channel.findMany({

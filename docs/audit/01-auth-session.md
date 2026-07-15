@@ -313,7 +313,7 @@ The /profile page also has no obvious affordance — good, but the *consequence*
 
 **File:** `lib/auth.ts:13-22`. `if (!s || s.length < 32) throw`. A secret of `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (32 'a' chars) passes the check despite ~0 entropy.
 
-**What a user sees:** Nothing — until an attacker realises the Vercel admin set `AUTH_SECRET=changeme1234567890changeme1234567` and forges JWTs.
+**What a user sees:** Nothing — until an attacker realises the Vercel admin set `AUTH_SECRET=changeme[REDACTED-PILOT-PW]90changeme1234567` and forges JWTs.
 
 **Why it matters:** False sense of security. Real entropy is what matters, not character count. 31-char check would be too strict if AUTH_SECRET is a base64 string of 24 random bytes (32 chars exactly), so the bound is sensible — but the "too short" message implies a strict rule when the real risk is low entropy.
 

@@ -199,10 +199,10 @@ as that user. **Rotate before any expansion beyond the Muscat pilot.**
 
 | Role | Username | Password |
 |---|---|---|
-| MANAGER    | `pilot.manager` | `97246316` |
-| STEWARD    | `pilot.steward` | `97246316` |
-| SUPERVISOR | `ahmed.alndabi` | `97246316` |
-| SALESMAN (×10) | `<route-lowercase>-nmwc` (e.g. `c1-nmwc`, `mh02-nmwc`) | `12345678` |
+| MANAGER    | `pilot.manager` | `[REDACTED-PILOT-PW]` |
+| STEWARD    | `pilot.steward` | `[REDACTED-PILOT-PW]` |
+| SUPERVISOR | `ahmed.alndabi` | `[REDACTED-PILOT-PW]` |
+| SALESMAN (×10) | `<route-lowercase>-nmwc` (e.g. `c1-nmwc`, `mh02-nmwc`) | `[REDACTED-PILOT-PW]` |
 
 `mustChangePassword = false` on every account — users will NOT be forced
 to rotate on first login. Full breakdown + rotate procedure in

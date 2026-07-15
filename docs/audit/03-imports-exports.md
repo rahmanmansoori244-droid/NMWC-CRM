@@ -144,7 +144,7 @@ Worse: the audit log gets nothing — there is no `auditLog.create({ action: IMP
 
 **Files / lines:** `services/imports.ts:413-456` (parse), `:566-592` (promote)
 **Repro:**
-Manager uploads a 200-row customer master. 30 rows have `phone=+96812345678`. 5 of them collide with an *existing* customer in the master.
+Manager uploads a 200-row customer master. 30 rows have `phone=+968[REDACTED-PILOT-PW]`. 5 of them collide with an *existing* customer in the master.
 
 **What happens today:**
 - Parse step: each row is independently put in `ImportRow` with state `CLEAN`. No cross-row dedupe in the same upload, no check against the live `Customer.primaryPhoneNorm`. Phone normalization is run, but only to rewrite the cell.

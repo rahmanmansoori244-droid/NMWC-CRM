@@ -227,10 +227,10 @@ These can't be automated because they're UI clicks in third-party dashboards (Cl
 
 | Role | Username | Password |
 |---|---|---|
-| Manager | `pilot.manager` | `97246316` |
-| Steward | `pilot.steward` | `97246316` |
-| Supervisor | `ahmed.alndabi` | `97246316` |
-| Salesmen (10) | `<route-lowercase>-nmwc` (e.g. `c1-nmwc`, `mh02-nmwc`) | `12345678` |
+| Manager | `pilot.manager` | `[REDACTED-PILOT-PW]` |
+| Steward | `pilot.steward` | `[REDACTED-PILOT-PW]` |
+| Supervisor | `ahmed.alndabi` | `[REDACTED-PILOT-PW]` |
+| Salesmen (10) | `<route-lowercase>-nmwc` (e.g. `c1-nmwc`, `mh02-nmwc`) | `[REDACTED-PILOT-PW]` |
 
 ### 6.2 Demo data IDs (used in screenshots + tests)
 

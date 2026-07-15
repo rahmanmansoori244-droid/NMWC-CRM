@@ -259,7 +259,22 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
   if (me.role === Role.SALESMAN) {
     const onMyRoute = customer.branches.some((b) => b.routeId === me.ownedRouteId);
     if (!onMyRoute) throw new ForbiddenError('This customer is not on your route.');
-  } else if (me.role !== Role.STEWARD && me.role !== Role.MANAGER) {
+  } else if (me.role === Role.STEWARD || me.role === Role.MANAGER) {
+    // SEC-H1: Manager/Steward direct-write must be region-scoped. Previously a
+    // MANAGER fell straight through this gate with NO region check, so a
+    // Muscat-only Manager could direct-write ANY customer nationwide (broken
+    // object-level authorization; the write landed on the master with
+    // reviewedById = self, looking self-approved in the audit). Manager region
+    // scope is fail-closed everywhere else (read, approve, export) — only this
+    // write path skipped it. `assertCanEditCustomer` re-uses that exact rule:
+    // it is fail-closed for a Manager whose managedRegions is empty and returns
+    // true for STEWARD (all-access data-ops role), so this closes the hole
+    // without changing Steward behaviour. Dynamic import matches the existing
+    // `@/lib/access` usage pattern in this file.
+    const { loadScope, assertCanEditCustomer } = await import('@/lib/access');
+    const scope = await loadScope(me.id);
+    assertCanEditCustomer({ id: me.id, role: me.role, username: '' }, customer, scope);
+  } else {
     throw new ForbiddenError(`Role ${me.role} cannot submit edits.`);
   }
 

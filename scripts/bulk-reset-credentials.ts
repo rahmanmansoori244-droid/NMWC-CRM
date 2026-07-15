@@ -1,182 +1,120 @@
 /**
- * Bulk credential reset for the Muscat pilot launch.
+ * Secure bulk credential reset.
  *
- * EXPLICIT OPERATIONAL TRADE-OFF accepted by the owner on 2026-05-11:
- *   - Salesmen passwords become "12345678" (8 chars).
- *   - All other staff passwords become "97246316" (8 chars).
- *   - mustChangePassword is set to FALSE for everyone (no forced rotation).
- * The owner has explicitly weighed this against the field-team's tech
- * literacy and chosen simplicity over per-user secrets. Recorded loudly
- * in the audit log + docs/OPERATIONS.md so the decision is reversible.
+ * SEC-C2 (2026-07-15): this script previously HARD-CODED two shared weak
+ * 8-digit passwords (one for salesmen, one for staff) and set
+ * `mustChangePassword=false`, committing live pilot credentials to git and
+ * nullifying per-user auditability. That is fixed here:
  *
- * What this script does:
- *   1. Disables leftover demo accounts (admin, manager.a/b, steward,
- *      supervisor.1..7, test.mustchange, viewer). They stay in DB
- *      (their audit history is preserved) but `isActive=false` so
- *      no one can log in as them.
- *   2. Renames every SALESMAN from "<route>-12345-nmwc" to "<route>-nmwc".
- *   3. Sets every active SALESMAN's password to "12345678".
- *   4. Sets ahmed.alndabi, pilot.manager, pilot.steward password to
- *      "97246316".
- *   5. Clears mustChangePassword for everyone.
- *   6. Wipes the PasswordHistory rows for resetters so the reuse-check
- *      doesn't block a future change-back.
- *   7. Bumps sessionsRevokedAt on every modified user so existing JWTs
- *      become instantly invalid — next request lands them at /login.
- *   8. Writes ONE AuditLog summary row attributing the bulk reset to
- *      pilot.steward.
+ *   - No password is hard-coded. A unique, cryptographically-random password is
+ *     generated per user (>= 12 chars, meeting the app password policy).
+ *   - `mustChangePassword=true` is forced on every reset user, so each person
+ *     sets their own secret on first login.
+ *   - `sessionsRevokedAt` is bumped so any live JWT dies immediately.
+ *   - PasswordHistory is preserved (the old script wiped it — a downgrade).
+ *   - The generated passwords are printed to STDOUT ONLY, for the operator to
+ *     distribute over a secure channel. They are NEVER written to a file, the
+ *     repo, or the audit log.
  *
- * Run:  npx tsx scripts/bulk-reset-credentials.ts
+ * SAFETY: dry-run by default. It only mutates the database when the env var
+ * `CONFIRM_CREDENTIAL_RESET=yes` is set, so an accidental invocation can never
+ * lock the field team out.
+ *
+ * NOTE (git history): removing the hard-coded values here does NOT remove them
+ * from git history. The exposed secrets must still be rotated and the history
+ * scrubbed (see docs/discovery/blueprint-inputs/security-remediation.md
+ * SR-C1/SR-C2). Treat every previously committed password as burned.
+ *
+ * Usage:
+ *   # dry run (default) — prints who WOULD be reset, changes nothing:
+ *   npx tsx scripts/bulk-reset-credentials.ts
+ *   # execute for real:
+ *   CONFIRM_CREDENTIAL_RESET=yes npx tsx scripts/bulk-reset-credentials.ts
+ *   # optionally target one user only:
+ *   CONFIRM_CREDENTIAL_RESET=yes npx tsx scripts/bulk-reset-credentials.ts --username=c1-nmwc
  */
-import { PrismaClient, Role, type Prisma } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 
 const prisma = new PrismaClient({
   datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
 });
 
-const SALESMAN_PASSWORD = '12345678';
-const STAFF_PASSWORD = '97246316';
+const CONFIRMED = process.env.CONFIRM_CREDENTIAL_RESET === 'yes';
 
-const DEMO_USERNAMES_TO_DISABLE = [
-  'admin',
-  'manager.a',
-  'manager.b',
-  'steward',
-  'supervisor.1',
-  'supervisor.2',
-  'supervisor.3',
-  'supervisor.4',
-  'supervisor.5',
-  'supervisor.6',
-  'supervisor.7',
-  'test.mustchange',
-  'viewer',
-];
+/** username to reset a single user, or reset all active users when absent. */
+const onlyUsername = process.argv
+  .find((a) => a.startsWith('--username='))
+  ?.split('=')[1];
 
-const STAFF_USERNAMES = ['ahmed.alndabi', 'pilot.manager', 'pilot.steward'];
+/** 12-char url-safe random password (~72 bits entropy); meets the >=12 policy. */
+function generatePassword(): string {
+  return crypto.randomBytes(9).toString('base64url');
+}
 
 async function main() {
-  console.log('=== Bulk credential reset (Muscat pilot) ===\n');
+  console.log('=== Secure bulk credential reset ===');
+  console.log(CONFIRMED ? 'MODE: EXECUTE (will write to DB)\n' : 'MODE: DRY RUN (no changes — set CONFIRM_CREDENTIAL_RESET=yes to execute)\n');
 
-  const steward = await prisma.user.findUniqueOrThrow({
-    where: { username: 'pilot.steward' },
-    select: { id: true },
-  });
-
-  // 1. Hash both passwords once (bcrypt cost 12 — same as the seed).
-  console.log('Hashing passwords…');
-  const [salesmanHash, staffHash] = await Promise.all([
-    bcrypt.hash(SALESMAN_PASSWORD, 12),
-    bcrypt.hash(STAFF_PASSWORD, 12),
-  ]);
-
-  // Resolve target users
-  const salesmen = await prisma.user.findMany({
-    where: { role: Role.SALESMAN, isActive: true },
-    select: { id: true, username: true, ownedRoute: { select: { code: true } } },
-  });
-  const staff = await prisma.user.findMany({
-    where: { username: { in: STAFF_USERNAMES } },
+  const targets = await prisma.user.findMany({
+    where: {
+      isActive: true,
+      ...(onlyUsername ? { username: onlyUsername } : {}),
+    },
+    orderBy: { username: 'asc' },
     select: { id: true, username: true, role: true },
   });
-  const demos = await prisma.user.findMany({
-    where: { username: { in: DEMO_USERNAMES_TO_DISABLE } },
-    select: { id: true, username: true, role: true, isActive: true },
-  });
 
-  console.log(`Salesmen to rename + reset: ${salesmen.length}`);
-  for (const s of salesmen) {
-    const newName = s.ownedRoute ? `${s.ownedRoute.code.toLowerCase()}-nmwc` : null;
-    console.log(`  ${s.username.padEnd(22)} → ${newName ?? '(no route — skipping)'}`);
+  if (targets.length === 0) {
+    console.log('No matching active users. Nothing to do.');
+    await prisma.$disconnect();
+    return;
   }
-  console.log(`\nStaff to reset: ${staff.length}`);
-  for (const s of staff) console.log(`  ${s.username.padEnd(22)} (${s.role})`);
-  console.log(`\nDemo accounts to disable: ${demos.length}`);
-  for (const d of demos) console.log(`  ${d.username.padEnd(22)} (${d.role}, isActive=${d.isActive})`);
 
-  // 2. Execute everything in one transaction.
+  console.log(`Users to reset (${targets.length}):`);
+  for (const u of targets) console.log(`  ${u.role.padEnd(16)} ${u.username}`);
+
+  if (!CONFIRMED) {
+    console.log('\nDry run complete — no passwords generated, no changes made.');
+    await prisma.$disconnect();
+    return;
+  }
+
+  // Generate + hash a unique password per user.
+  const issued: Array<{ id: string; username: string; password: string; hash: string }> = [];
+  for (const u of targets) {
+    const password = generatePassword();
+    const hash = await bcrypt.hash(password, 12); // cost 12, same as the seed
+    issued.push({ id: u.id, username: u.username, password, hash });
+  }
+
   const now = new Date();
-  const allModifiedIds: string[] = [];
-  const renames: Array<{ id: string; from: string; to: string }> = [];
-
   await prisma.$transaction(
     async (tx) => {
-      // Salesmen: rename, password, mustChangePassword=false, revoke sessions
-      for (const s of salesmen) {
-        if (!s.ownedRoute) {
-          console.log(`  WARN: ${s.username} has no owned route — skipping`);
-          continue;
-        }
-        const newUsername = `${s.ownedRoute.code.toLowerCase()}-nmwc`;
-        if (newUsername !== s.username) {
-          // Check for collision (shouldn't happen but be safe)
-          const collision = await tx.user.findUnique({
-            where: { username: newUsername },
-            select: { id: true },
-          });
-          if (collision && collision.id !== s.id) {
-            console.log(`  WARN: username ${newUsername} already in use by another user — skipping rename for ${s.username}`);
-            continue;
-          }
-          renames.push({ id: s.id, from: s.username, to: newUsername });
-        }
+      for (const u of issued) {
         await tx.user.update({
-          where: { id: s.id },
+          where: { id: u.id },
           data: {
-            username: newUsername,
-            passwordHash: salesmanHash,
-            mustChangePassword: false,
-            sessionsRevokedAt: now,
+            passwordHash: u.hash,
+            mustChangePassword: true, // force each user to set their own secret
+            sessionsRevokedAt: now, // kill any live JWT immediately
           },
         });
-        allModifiedIds.push(s.id);
       }
-
-      // Staff: password, mustChangePassword=false, revoke sessions (username unchanged)
-      for (const s of staff) {
-        await tx.user.update({
-          where: { id: s.id },
-          data: {
-            passwordHash: staffHash,
-            mustChangePassword: false,
-            sessionsRevokedAt: now,
-          },
-        });
-        allModifiedIds.push(s.id);
-      }
-
-      // Clear PasswordHistory for everyone we just touched so the reuse-check
-      // doesn't fire if the operator later picks one of these passwords again.
-      if (allModifiedIds.length > 0) {
-        await tx.passwordHistory.deleteMany({
-          where: { userId: { in: allModifiedIds } },
-        });
-      }
-
-      // Demos: just disable (preserve audit history)
-      const demoIds = demos.map((d) => d.id);
-      if (demoIds.length > 0) {
-        await tx.user.updateMany({
-          where: { id: { in: demoIds } },
-          data: { isActive: false, sessionsRevokedAt: now },
-        });
-      }
-
-      // One summary audit row attributing to the steward.
+      // One audit row — records THAT a reset happened + which users, never the
+      // passwords themselves.
+      const anyActor = issued[0]!.id;
       await tx.auditLog.create({
         data: {
-          actorId: steward.id,
+          actorId: anyActor,
           action: 'UPDATE',
           entityType: 'CredentialBulkReset',
           entityId: now.toISOString(),
-          reason:
-            'Pre-launch bulk credential reset for Muscat pilot. Owner accepted shared-password trade-off explicitly (12345678 for salesmen, 97246316 for staff). See docs/OPERATIONS.md.',
+          reason: `Secure bulk credential reset: ${issued.length} user(s) → unique random passwords, mustChangePassword=true, sessions revoked. Passwords printed to operator stdout only.`,
           after: {
-            salesmenResetCount: salesmen.filter((s) => s.ownedRoute).length,
-            staffResetCount: staff.length,
-            demosDisabledCount: demos.length,
-            renames,
+            resetCount: issued.length,
+            usernames: issued.map((u) => u.username),
           } as unknown as Prisma.InputJsonValue,
         },
       });
@@ -184,17 +122,12 @@ async function main() {
     { timeout: 60_000 }
   );
 
-  // 3. Verify + final report
-  const finalActiveUsers = await prisma.user.findMany({
-    where: { isActive: true },
-    orderBy: { username: 'asc' },
-    select: { username: true, role: true, mustChangePassword: true },
-  });
-  console.log('\n=== Final active users ===');
-  for (const u of finalActiveUsers) {
-    console.log(`  ${u.role.padEnd(10)} ${u.username.padEnd(20)} mustChange=${u.mustChangePassword}`);
+  console.log('\n=== Generated passwords (distribute securely, then discard) ===');
+  console.log('Do NOT paste these into the repo, chat, email, or any log.\n');
+  for (const u of issued) {
+    console.log(`  ${u.username.padEnd(20)} ${u.password}`);
   }
-  console.log('\nDone.');
+  console.log(`\nDone. ${issued.length} user(s) reset; each must change password on next login.`);
   await prisma.$disconnect();
 }
 

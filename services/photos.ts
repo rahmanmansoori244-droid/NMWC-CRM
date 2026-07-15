@@ -14,7 +14,7 @@ import {
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
-import { loadScope, assertCanAccessAttachment } from '@/lib/access';
+import { loadScope, assertCanAccessAttachment, assertCanEditCustomer } from '@/lib/access';
 
 const customerAttach = z.object({
   attachmentId: z.string().cuid(),
@@ -70,10 +70,12 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
   }
   const data = parsed.data;
 
-  // RBAC-05-011: SUPERVISOR / VIEWER cannot reach attach. SALESMAN +
-  // STEWARD are the legitimate callers; MANAGER previously had a silent
-  // bypass — keep it for now but log every Manager attach as FORCE_OVERRIDE
-  // so the audit trail is visible.
+  // RBAC-05-011: SUPERVISOR / VIEWER cannot reach attach. SALESMAN + STEWARD
+  // are the legitimate callers. MANAGER may attach but is now region-scoped
+  // fail-closed (SEC-H1) at the customer/branch checks below — previously it
+  // had a silent, UNSCOPED bypass that let a Manager attach to (and destroy the
+  // existing photo of) any customer nationwide. In-scope Manager attaches of a
+  // photo they did not capture are logged as FORCE_OVERRIDE on both paths.
   if (
     session.user.role !== Role.SALESMAN &&
     session.user.role !== Role.STEWARD &&
@@ -125,6 +127,18 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       if (!c.branches.some((b) => b.routeId === me.ownedRouteId)) {
         throw new ForbiddenError('Customer not on your route.');
       }
+    } else if (session.user.role === Role.MANAGER) {
+      // SEC-H1 (completeness): a Manager attaching a CR photo must be
+      // region-scoped, exactly like submitEditCore and detachPhotoCore. Without
+      // this a Manager (even one with empty managedRegions) could attach to —
+      // and destructively soft-delete the existing CR photo of — ANY customer
+      // nationwide. assertCanEditCustomer is fail-closed for empty regions.
+      const scope = await loadScope(session.user.id);
+      assertCanEditCustomer(
+        { id: session.user.id, role: session.user.role, username: session.user.username },
+        c,
+        scope
+      );
     }
     await prisma.$transaction(async (tx) => {
       // NEW-PHOTO-003: soft-delete the prior CR photo on replacement so it no
@@ -179,6 +193,15 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       if (b.routeId !== me.ownedRouteId) {
         throw new ForbiddenError('Branch not on your route.');
       }
+    } else if (session.user.role === Role.MANAGER) {
+      // SEC-H1 (completeness): region-scope the Manager branch-photo attach too,
+      // via the branch's owning customer. Fail-closed for empty managedRegions.
+      const scope = await loadScope(session.user.id);
+      assertCanEditCustomer(
+        { id: session.user.id, role: session.user.role, username: session.user.username },
+        b.customer,
+        scope
+      );
     }
 
     await prisma.$transaction(async (tx) => {
@@ -234,7 +257,11 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       await tx.auditLog.create({
         data: {
           actorId: session.user.id,
-          action: 'UPDATE',
+          // SEC-H1: mirror the CR path — an admin (Steward/Manager) attaching a
+          // branch photo they did not capture is a FORCE_OVERRIDE, so the audit
+          // trail flags it even though the write is now region-scoped.
+          action:
+            isAdmin && att.capturedById !== session.user.id ? 'FORCE_OVERRIDE' : 'UPDATE',
           entityType: 'Branch',
           entityId: b.id,
           after: { slot: data.slot, attachmentId: att.id } as unknown as Prisma.InputJsonValue,

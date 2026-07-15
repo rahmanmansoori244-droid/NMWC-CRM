@@ -464,6 +464,10 @@ model ImportRow {
 // time. Reads/writes happen in a single SQL UPDATE to avoid race conditions.
 model RateLimit {
   key        String   @id
+  // MUST stay a floating type. checkLimitPg (lib/rate-limit.ts) stores a
+  // fractional refill and a -1 "denied" marker; an integer column would
+  // truncate both and silently re-break the SEC-C3 fix (limiter would stop
+  // denying / mis-report retryAfterSec).
   tokens     Float    @default(0)
   lastRefill DateTime @default(now())
   updatedAt  DateTime @updatedAt
