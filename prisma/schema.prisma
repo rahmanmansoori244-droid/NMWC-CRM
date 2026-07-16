@@ -15,6 +15,9 @@ datasource db {
 enum Role {
   SALESMAN
   SUPERVISOR
+  ACCOUNTANT // Phase 1: final approver on both create chains (region-scoped)
+  FINANCE_MANAGER // Phase 1: credit-chain approver (org-wide)
+  GM // Phase 1: credit-chain approver (org-wide)
   MANAGER
   STEWARD
   VIEWER
@@ -58,6 +61,7 @@ enum AttachmentKind {
   SHOP
   SIGNBOARD
   CR
+  GUARANTEE // Phase 1: credit guarantee / security document (1:N per customer)
   FREE
 }
 
@@ -88,6 +92,11 @@ enum AuditAction {
   DELETE
   SOFT_DELETE
   PHOTO_VIEW
+  // Phase 1: multi-step approval, escalation, and export actions
+  STEP_APPROVE
+  FINALIZE
+  ESCALATE
+  EXPORT
 }
 
 enum ImportBatchStatus {
@@ -105,6 +114,28 @@ enum ExportJobStatus {
   FAILED
 }
 
+// ── Phase 1: unified-CRM enums ───────────────────────────
+enum EditProcess {
+  UPDATE // existing-customer enrichment/correction (1-step: Supervisor)
+  CREATE // net-new onboarding (cash: SUP→ACC; credit: SUP→FM→GM→ACC)
+}
+
+// Batch upload-to-Temix queue state on Customer.
+enum TemixSyncState {
+  SYNCED // matches Temix as of last upload/refresh (default for migrated rows)
+  PENDING_UPLOAD // approved create/correction not yet exported to Temix
+  UPLOADED // in an exported batch; awaiting Steward "loaded" confirm / inbound refresh
+  DEACTIVATE_PENDING // soft-deleted: flag for deactivation in Temix on next upload
+}
+
+enum NotificationKind {
+  EDIT_SUBMITTED // to the first approver
+  EDIT_STAGE_ADVANCED // to the next approver in the chain
+  EDIT_APPROVED_FINAL // to submitter (+ Stewards: ready for Temix upload)
+  EDIT_NEEDS_CORRECTION // to submitter (carries decisionReason)
+  SLA_BREACH // to the escalation target
+}
+
 // ── ORG HIERARCHY ────────────────────────────────────────
 model Region {
   id        String   @id @default(cuid())
@@ -114,9 +145,10 @@ model Region {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  routes   Route[]
-  branches Branch[]
-  managers User[]   @relation("ManagerRegions")
+  routes       Route[]
+  branches     Branch[]
+  managers     User[]            @relation("ManagerRegions")
+  branchDrafts EditBranchDraft[] @relation("DraftRegion")
 }
 
 model Route {
@@ -128,9 +160,10 @@ model Route {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  region   Region   @relation(fields: [regionId], references: [id])
-  owner    User?    @relation("RouteOwner")
-  branches Branch[]
+  region       Region            @relation(fields: [regionId], references: [id])
+  owner        User?             @relation("RouteOwner")
+  branches     Branch[]
+  branchDrafts EditBranchDraft[] @relation("DraftRoute")
 
   @@unique([regionId, code])
   @@index([regionId])
@@ -180,6 +213,10 @@ model User {
   passwordHistory     PasswordHistory[]
   // P2.2 (2026-05-10): per-user saved /customers filter views.
   savedViews          SavedView[]
+  // Phase 1: multi-step approval decisions, notifications, Temix batches.
+  stepDecisions       EditApproval[]    @relation("StepActor")
+  notifications       Notification[]    @relation("UserNotifications")
+  temixSyncBatches    TemixSyncBatch[]  @relation("TemixBatchCreator")
 
   @@index([role, isActive])
 }
@@ -224,6 +261,7 @@ model Channel {
 
   subChannels SubChannel[]
   customers   Customer[]
+  drafts      EditCustomerDraft[] @relation("DraftChannel")
 }
 
 model SubChannel {
@@ -234,8 +272,9 @@ model SubChannel {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  channel   Channel    @relation(fields: [channelId], references: [id])
+  channel   Channel             @relation(fields: [channelId], references: [id])
   customers Customer[]
+  drafts    EditCustomerDraft[] @relation("DraftSubChannel")
 
   @@unique([channelId, key])
 }
@@ -270,6 +309,20 @@ model Customer {
   // CR photo lives here (legal entity attribute)
   crPhotoId String? @unique
 
+  // Phase 1: credit onboarding data (paymentTerms == CREDIT). Written at finalize
+  // from the salesman's REQUESTED values — FM/GM approve/reject, never amend.
+  creditLimit     Decimal? @db.Decimal(14, 3)
+  paymentTermDays Int?
+
+  // Phase 1: Temix (ERP) crosswalk + batch-upload queue. nmwcCode == temixCode
+  // for migrated rows, so temixCode is nullable + NON-unique (H-01); a partial
+  // unique index is added later once the Steward confirms crosswalk cleanliness.
+  temixCode              String?
+  temixSyncState         TemixSyncState @default(SYNCED)
+  temixSyncPendingSince  DateTime?
+  lastTemixUploadAt      DateTime?
+  lastTemixUploadBatchId String?
+
   // Audit
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -289,6 +342,8 @@ model Customer {
   @@index([channelId])
   @@index([legalName])
   @@index([paymentTerms])
+  @@index([temixCode])
+  @@index([temixSyncState])
 }
 
 model Branch {
@@ -366,18 +421,52 @@ model CustomerEdit {
   isReactivation    Boolean    @default(false)
   isWrongRoute      Boolean    @default(false)
   newRouteId        String?
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
+
+  // Phase 1: net-new CREATE support (customerId is null for a CREATE request;
+  // the proposed payload lives in EditCustomerDraft + EditBranchDraft[]).
+  process EditProcess @default(UPDATE)
+
+  // Phase 1: multi-step approval chain, resolved from the matrix + frozen at
+  // submit. pendingRole is denormalized for queue/SLA/notification queries.
+  paymentTermsAtSubmit PaymentTerms?
+  approvalChain        Json?
+  currentStepIndex     Int           @default(0)
+  pendingRole          Role?
+  cycle                Int           @default(1)
+
+  // Phase 1: credit application (CREATE-CREDIT). FM/GM approve/reject these
+  // REQUESTED values — no amendment (owner-confirmed).
+  requestedCreditLimit     Decimal? @db.Decimal(14, 3)
+  requestedPaymentTermDays Int?
+
+  // Phase 1: SLA / escalation for the current step.
+  stageEnteredAt  DateTime?
+  slaDueAt        DateTime?
+  slaBreachedAt   DateTime?
+  escalationLevel Int       @default(0)
+  lastEscalatedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   customer    Customer? @relation(fields: [customerId], references: [id])
   branch      Branch?   @relation(fields: [branchId], references: [id])
   submittedBy User      @relation("EditSubmitter", fields: [submittedById], references: [id])
   reviewedBy  User?     @relation("EditReviewer", fields: [reviewedById], references: [id])
 
+  // Phase 1 relations
+  customerDraft EditCustomerDraft?
+  branchDrafts  EditBranchDraft[]
+  steps         EditApproval[]
+  notifications Notification[]
+  attachments   Attachment[]       @relation("EditAttachments")
+
   @@index([state, submittedAt])
   @@index([submittedById, state])
   @@index([customerId, state])
   @@index([branchId, state])
+  @@index([pendingRole, state])
+  @@index([state, slaDueAt])
 }
 
 // ── ATTACHMENTS ──────────────────────────────────────
@@ -388,6 +477,9 @@ model Attachment {
   branchId      String?
   // Used by Branch.extraPhotos relation
   branchExtraId String?
+  // Phase 1: photos captured during a net-new CREATE before the Customer/Branch
+  // exists; bound to real slots at finalize, GC-swept if the draft is abandoned.
+  editId        String?
   r2Key         String         @unique
   mimeType      String
   bytes         Int
@@ -405,8 +497,9 @@ model Attachment {
   // scope checks.
   deletedAt     DateTime?
 
-  capturedBy  User    @relation("AttachmentCapturer", fields: [capturedById], references: [id])
-  branchExtra Branch? @relation("BranchExtraPhotos", fields: [branchExtraId], references: [id])
+  capturedBy  User          @relation("AttachmentCapturer", fields: [capturedById], references: [id])
+  branchExtra Branch?       @relation("BranchExtraPhotos", fields: [branchExtraId], references: [id])
+  edit        CustomerEdit? @relation("EditAttachments", fields: [editId], references: [id])
 
   // Inverse relations to single-photo slots
   customerCrPhoto      Customer? @relation("CrPhoto")
@@ -416,6 +509,7 @@ model Attachment {
   @@index([branchId])
   @@index([customerId])
   @@index([branchExtraId])
+  @@index([editId])
   @@index([deletedAt])
   @@index([hash])
 }
@@ -508,4 +602,134 @@ model AuditLog {
   @@index([entityType, entityId, at(sort: Desc)])
   @@index([actorId, at(sort: Desc)])
   @@index([action, at(sort: Desc)])
+}
+
+// ── Phase 1: CREATE-request drafts, multi-step approval, SLA/notifications, Temix sync ──
+
+// Typed payload for a not-yet-existing customer. A CREATE CustomerEdit
+// (customerId = null) carries one of these (1:1) + >= 1 EditBranchDraft. Real
+// Customer/Branch rows are produced from these at finalize. Real FKs + replicated
+// DB CHECKs (migration) so net-new masters get the same validation as live rows.
+model EditCustomerDraft {
+  id                  String       @id @default(cuid())
+  editId              String       @unique
+  legalName           String
+  paymentTerms        PaymentTerms // routing key: CASH vs CREDIT chain
+  crNumber            String?
+  crNumberNorm        String? // create-time dedup key
+  channelId           String?
+  subChannelId        String?
+  primaryPhone        String?
+  primaryPhoneNorm    String?
+  altPhone            String?
+  contactPerson       String?
+  contactRole         String?
+  notes               String?      @db.Text
+  crPhotoAttachmentId String?      @unique
+
+  edit       CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
+  channel    Channel?     @relation("DraftChannel", fields: [channelId], references: [id])
+  subChannel SubChannel?  @relation("DraftSubChannel", fields: [subChannelId], references: [id])
+
+  @@index([crNumberNorm])
+  @@index([primaryPhoneNorm])
+}
+
+// Proposed branch row(s) under a CREATE request. Mirrors Branch minus branchCode
+// (allocated at finalize) and photo-slot FKs (unbound attachment ids instead).
+model EditBranchDraft {
+  id                         String     @id @default(cuid())
+  editId                     String
+  branchName                 String
+  regionId                   String
+  routeId                    String
+  address                    String     @db.Text
+  areaDescription            String?    @db.Text
+  gpsLat                     Float?
+  gpsLng                     Float?
+  gpsAccuracy                Float?
+  gpsCapturedAt              DateTime?
+  dayOfVisit                 DayOfWeek?
+  openingHours               String?
+  deliveryWindow             String?
+  coolersCount               Int        @default(0)
+  standsCount                Int        @default(0)
+  emptyBottlesCount          Int        @default(0)
+  shopPhotoAttachmentId      String?
+  signboardPhotoAttachmentId String?
+  extraPhotoAttachmentIds    Json? // string[] of unbound Attachment ids
+
+  edit   CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
+  region Region       @relation("DraftRegion", fields: [regionId], references: [id])
+  route  Route        @relation("DraftRoute", fields: [routeId], references: [id])
+
+  @@index([editId])
+}
+
+// Per-step approval decision — APPEND-ONLY. Under the owner-confirmed step-back
+// cascade a single step can be decided more than once per cycle (approve →
+// stepped back → re-approve), so this is a log ordered by time, NOT unique per
+// (edit, step). AuditLog stays the immutable forensic record; this powers the
+// queue / SLA / notification queries and per-step history.
+model EditApproval {
+  id        String   @id @default(cuid())
+  editId    String
+  cycle     Int
+  stepIndex Int
+  role      Role
+  decision  String // 'APPROVED' | 'REJECTED'
+  actorId   String
+  reason    String?  @db.Text
+  at        DateTime @default(now())
+
+  edit  CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
+  actor User         @relation("StepActor", fields: [actorId], references: [id])
+
+  @@index([editId, at(sort: Desc)])
+  @@index([actorId])
+}
+
+// In-app + email notification. Row exists ⇒ visible in-app; emailedAt marks the
+// email batch-drain queue. Body is PII-safe (legalName + nmwcCode + deep link).
+model Notification {
+  id         String           @id @default(cuid())
+  userId     String
+  kind       NotificationKind
+  title      String
+  body       String           @db.Text
+  editId     String?
+  customerId String?
+  readAt     DateTime?
+  emailedAt  DateTime?
+  createdAt  DateTime         @default(now())
+
+  user User          @relation("UserNotifications", fields: [userId], references: [id])
+  edit CustomerEdit? @relation(fields: [editId], references: [id])
+
+  @@index([userId, readAt])
+  @@index([emailedAt, createdAt])
+  @@index([editId])
+}
+
+// Snapshot of one Temix upload batch (modeled on ExportJob). Outbound queue rows
+// flip PENDING_UPLOAD → UPLOADED at export; markedLoadedAt once the Steward
+// confirms Temix ingested the batch.
+model TemixSyncBatch {
+  id             String          @id @default(cuid())
+  createdById    String
+  createdAt      DateTime        @default(now())
+  rowCount       Int             @default(0)
+  customerIds    Json
+  status         ExportJobStatus @default(PENDING)
+  r2Key          String?
+  markedLoadedAt DateTime?
+
+  createdBy User @relation("TemixBatchCreator", fields: [createdById], references: [id])
+}
+
+// Atomic per-scope counter for app-minted provisional codes (NMWC-YYYY-NNNNNN),
+// allocated at finalize. Finally wires lib/codes.ts formatCustomerCode.
+model CodeSequence {
+  scope String @id
+  next  Int    @default(1)
 }
