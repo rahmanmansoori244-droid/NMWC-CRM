@@ -134,6 +134,40 @@ export default async function ApprovalDetailPage({
   const draft = edit.customerDraft;
   const isCredit = isCreate && draft?.paymentTerms === 'CREDIT';
 
+  // Liveness-filter the draft photo columns (bare strings — photo-gc's
+  // stale-claim sweep soft-deletes the photos of long-idle requests without
+  // touching the drafts) and say explicitly when something is gone. Without
+  // this, a swept request shows broken 404 tiles for CR/shop/signboard/extras
+  // while its guarantee row silently vanishes — an approver reading history
+  // could not tell "never uploaded" from "released".
+  const draftPhotoIds = isCreate
+    ? [
+        ...(draft?.crPhotoAttachmentId ? [draft.crPhotoAttachmentId] : []),
+        ...edit.branchDrafts.flatMap((b) => [
+          ...(b.shopPhotoAttachmentId ? [b.shopPhotoAttachmentId] : []),
+          ...(b.signboardPhotoAttachmentId ? [b.signboardPhotoAttachmentId] : []),
+          ...(Array.isArray(b.extraPhotoAttachmentIds)
+            ? (b.extraPhotoAttachmentIds as string[])
+            : []),
+        ]),
+      ]
+    : [];
+  const liveDraftPhotos = draftPhotoIds.length
+    ? await prisma.attachment.findMany({
+        where: { id: { in: draftPhotoIds }, deletedAt: null },
+        select: { id: true },
+      })
+    : [];
+  const livePhotoIds = new Set(liveDraftPhotos.map((a) => a.id));
+  // Guarantees have no draft column — count their released claims directly.
+  const releasedGuaranteeCount = isCredit
+    ? await prisma.attachment.count({
+        where: { editId: edit.id, kind: 'GUARANTEE', deletedAt: { not: null } },
+      })
+    : 0;
+  const releasedPhotoCount =
+    draftPhotoIds.filter((id) => !livePhotoIds.has(id)).length + releasedGuaranteeCount;
+
   return (
     <main className="pb-24">
       <PageHeader
@@ -227,6 +261,13 @@ export default async function ApprovalDetailPage({
         {/* ── CREATE request: proposed customer + branches from the drafts ── */}
         {isCreate && draft && (
           <>
+            {releasedPhotoCount > 0 && (
+              <p className="rounded-md bg-slate-100 px-3 py-2 text-sm text-slate-600">
+                {releasedPhotoCount} photo{releasedPhotoCount === 1 ? '' : 's'} from this request{' '}
+                {releasedPhotoCount === 1 ? 'is' : 'are'} no longer available — removed during a
+                revision, or released by the photo retention sweep after the request sat idle.
+              </p>
+            )}
             <DetailSection title={`New ${draft.paymentTerms} customer`}>
               <DetailRow label="Legal name" value={draft.legalName} />
               <DetailRow label="CR number" value={draft.crNumber} />
@@ -249,7 +290,7 @@ export default async function ApprovalDetailPage({
                 }
               />
               <DetailRow label="Notes" value={draft.notes} />
-              {draft.crPhotoAttachmentId && (
+              {draft.crPhotoAttachmentId && livePhotoIds.has(draft.crPhotoAttachmentId) && (
                 <PhotoRow label="CR document" ids={[draft.crPhotoAttachmentId]} />
               )}
             </DetailSection>
@@ -287,7 +328,7 @@ export default async function ApprovalDetailPage({
                 ...(b.shopPhotoAttachmentId ? [b.shopPhotoAttachmentId] : []),
                 ...(b.signboardPhotoAttachmentId ? [b.signboardPhotoAttachmentId] : []),
                 ...extras,
-              ];
+              ].filter((id) => livePhotoIds.has(id));
               return (
                 <DetailSection
                   key={b.id}

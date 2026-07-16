@@ -1,18 +1,22 @@
 /**
- * GAP-03 / Q4: never-attached-orphan sweep for the photo GC cron.
+ * GAP-03 / Q4: never-attached-orphan + stale-edit-claim sweeps for the photo
+ * GC cron.
  *
  * The fake below is a miniature in-memory Prisma covering exactly the query
- * shapes the sweep issues (null-equality, lt, in, not-null, select, take), so
- * the tests exercise the sweep's real predicates against rows in every
- * lifecycle state — bound, edit-claimed, draft-referenced, young, abandoned —
- * instead of asserting on argument snapshots.
+ * shapes the sweeps issue (null-equality, lt, in, not-null, the `edit`
+ * relation filter, select, take), so the tests exercise the sweeps' real
+ * predicates against rows in every lifecycle state — bound, edit-claimed,
+ * draft-referenced, young, abandoned — instead of asserting on argument
+ * snapshots.
  */
 import { describe, it, expect } from 'vitest';
-import type { PrismaClient } from '@prisma/client';
+import { EditState, type PrismaClient } from '@prisma/client';
 import {
   ORPHAN_GRACE_DAYS,
+  STALE_CLAIM_GRACE_DAYS,
   collectDraftReferencedIds,
   sweepNeverAttachedOrphans,
+  sweepStaleEditClaims,
 } from '@/lib/photo-gc';
 
 const NOW = new Date('2026-07-16T03:00:00.000Z');
@@ -39,6 +43,7 @@ type BranchDraftRow = {
   signboardPhotoAttachmentId: string | null;
   extraPhotoAttachmentIds: unknown;
 };
+type EditRow = { id: string; state: EditState; updatedAt: Date };
 
 type Where = Record<string, unknown>;
 
@@ -73,17 +78,62 @@ function makeFakeDb(seed: {
   attachments?: AttRow[];
   customerDrafts?: CustomerDraftRow[];
   branchDrafts?: BranchDraftRow[];
+  edits?: EditRow[];
 }) {
   const attachments = seed.attachments ?? [];
+  const edits = seed.edits ?? [];
   const calls = { attachmentFindMany: 0, customerDraftFindMany: 0, branchDraftFindMany: 0 };
   /** Test hook: runs after the candidate SELECT, before the guarded UPDATE. */
   let afterFindMany: (() => void) | null = null;
 
+  // Attachment where-clauses may carry an `edit: {...}` relation filter —
+  // resolve it against the edits table the way the SQL subquery would.
+  function attMatches(row: AttRow, where: Where): boolean {
+    const { edit: editWhere, ...rest } = where as { edit?: Where } & Where;
+    if (!matches(row as unknown as Record<string, unknown>, rest)) return false;
+    if (editWhere !== undefined) {
+      if (row.editId === null) return false;
+      const e = edits.find((x) => x.id === row.editId);
+      if (!e || !matches(e as unknown as Record<string, unknown>, editWhere)) return false;
+    }
+    return true;
+  }
+
   const db = {
+    // Interactive-transaction passthrough: the fake has no isolation to model;
+    // production race semantics are covered by the FOR UPDATE re-check below.
+    async $transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
+      return fn(db);
+    },
+    // The stale-claim sweep's only raw query: SELECT id FROM "CustomerEdit"
+    // WHERE id IN (...) AND state IN (...) AND updatedAt < cutoff FOR UPDATE.
+    // Reconstruct the bound params (Prisma.join fragments carry .values) and
+    // evaluate the row-local predicates against the CURRENT edits table —
+    // exactly what Postgres re-checks on the locked rows.
+    async $queryRaw(_strings: TemplateStringsArray, ...values: unknown[]) {
+      const params = values.flatMap((v) =>
+        v && typeof v === 'object' && Array.isArray((v as { values?: unknown[] }).values)
+          ? (v as { values: unknown[] }).values
+          : [v]
+      );
+      const stateNames = new Set<string>(Object.values(EditState));
+      const states = params.filter((p): p is string => typeof p === 'string' && stateNames.has(p));
+      const ids = params.filter((p): p is string => typeof p === 'string' && !stateNames.has(p));
+      const cutoff = params.find((p): p is Date => p instanceof Date);
+      return edits
+        .filter(
+          (e) =>
+            ids.includes(e.id) &&
+            states.includes(e.state) &&
+            cutoff !== undefined &&
+            e.updatedAt.getTime() < cutoff.getTime()
+        )
+        .map((e) => ({ id: e.id }));
+    },
     attachment: {
       async findMany(args: { where: Where; select: Record<string, true>; take?: number }) {
         calls.attachmentFindMany += 1;
-        let rows = attachments.filter((r) => matches(r, args.where));
+        let rows = attachments.filter((r) => attMatches(r, args.where));
         if (args.take !== undefined) rows = rows.slice(0, args.take);
         const out = rows.map((r) => pick(r as Record<string, unknown>, args.select));
         afterFindMany?.();
@@ -93,7 +143,7 @@ function makeFakeDb(seed: {
       async updateMany(args: { where: Where; data: Partial<AttRow> }) {
         let count = 0;
         for (const r of attachments) {
-          if (!matches(r, args.where)) continue;
+          if (!attMatches(r, args.where)) continue;
           Object.assign(r, args.data);
           count += 1;
         }
@@ -120,6 +170,7 @@ function makeFakeDb(seed: {
   return {
     db: db as unknown as PrismaClient,
     attachments,
+    edits,
     calls,
     setAfterFindMany(fn: () => void) {
       afterFindMany = fn;
@@ -295,6 +346,129 @@ describe('sweepNeverAttachedOrphans', () => {
 
     const second = await sweepNeverAttachedOrphans(db, NOW, 3);
     expect(second).toEqual({ scanned: 2, swept: 2, skippedProtected: 0 });
+    expect(attachments.every((a) => a.deletedAt !== null)).toBe(true);
+  });
+});
+
+/** updatedAt safely past the stale-claim cutoff. */
+const IDLE = new Date(NOW.getTime() - (STALE_CLAIM_GRACE_DAYS + 5) * DAY);
+/** updatedAt safely inside the stale-claim window. */
+const ACTIVE = new Date(NOW.getTime() - 10 * DAY);
+
+describe('sweepStaleEditClaims', () => {
+  it.each([EditState.DRAFT, EditState.NEEDS_CORRECTION, EditState.REJECTED])(
+    'releases claims of a %s create request idle past the grace period',
+    async (state) => {
+      const { db, attachments } = makeFakeDb({
+        attachments: [
+          att('cr', { editId: 'e1' }),
+          att('guarantee', { editId: 'e1' }),
+        ],
+        edits: [{ id: 'e1', state, updatedAt: IDLE }],
+      });
+      const res = await sweepStaleEditClaims(db, NOW);
+      expect(res).toEqual({ scanned: 2, swept: 2 });
+      for (const a of attachments) {
+        expect(a.deletedAt).toEqual(NOW);
+        expect(a.hash).toBeNull();
+      }
+    }
+  );
+
+  it('does not consult draft photo columns — an abandoned draft is exactly what gets released', async () => {
+    const { db, calls } = makeFakeDb({
+      attachments: [att('cr-ref', { editId: 'e1' })],
+      customerDrafts: [{ crPhotoAttachmentId: 'cr-ref' }],
+      edits: [{ id: 'e1', state: EditState.NEEDS_CORRECTION, updatedAt: IDLE }],
+    });
+    const res = await sweepStaleEditClaims(db, NOW);
+    expect(res).toEqual({ scanned: 1, swept: 1 });
+    expect(calls.customerDraftFindMany).toBe(0);
+    expect(calls.branchDraftFindMany).toBe(0);
+  });
+
+  it.each([EditState.SUBMITTED, EditState.APPROVED])(
+    'never releases claims of a %s request, however old — in-flight/finalized requests keep photos',
+    async (state) => {
+      const { db, attachments } = makeFakeDb({
+        attachments: [att('claim', { editId: 'e1' })],
+        edits: [{ id: 'e1', state, updatedAt: IDLE }],
+      });
+      const res = await sweepStaleEditClaims(db, NOW);
+      expect(res).toEqual({ scanned: 0, swept: 0 });
+      expect(attachments[0]!.deletedAt).toBeNull();
+    }
+  );
+
+  it('leaves claims of a recently-touched NEEDS_CORRECTION request alone', async () => {
+    const { db, attachments } = makeFakeDb({
+      attachments: [att('claim', { editId: 'e1' })],
+      edits: [{ id: 'e1', state: EditState.NEEDS_CORRECTION, updatedAt: ACTIVE }],
+    });
+    const res = await sweepStaleEditClaims(db, NOW);
+    expect(res).toEqual({ scanned: 0, swept: 0 });
+    expect(attachments[0]!.deletedAt).toBeNull();
+  });
+
+  it('never touches bound rows even when their provenance edit is stale', async () => {
+    const { db, attachments } = makeFakeDb({
+      attachments: [
+        att('bound-cr', { editId: 'e1', customerId: 'c1' }),
+        att('bound-shop', { editId: 'e1', branchId: 'b1' }),
+      ],
+      edits: [{ id: 'e1', state: EditState.NEEDS_CORRECTION, updatedAt: IDLE }],
+    });
+    const res = await sweepStaleEditClaims(db, NOW);
+    expect(res).toEqual({ scanned: 0, swept: 0 });
+    expect(attachments.every((a) => a.deletedAt === null)).toBe(true);
+  });
+
+  it('ignores never-attached rows (editId null) — those belong to the other clause', async () => {
+    const { db, attachments } = makeFakeDb({ attachments: [att('unclaimed')] });
+    const res = await sweepStaleEditClaims(db, NOW);
+    expect(res).toEqual({ scanned: 0, swept: 0 });
+    expect(attachments[0]!.deletedAt).toBeNull();
+  });
+
+  it('a resume racing the sweep is caught by the FOR UPDATE re-check (claims spared)', async () => {
+    const fake = makeFakeDb({
+      attachments: [att('racer-claim', { editId: 'e1' }), att('stale-claim', { editId: 'e2' })],
+      edits: [
+        { id: 'e1', state: EditState.NEEDS_CORRECTION, updatedAt: IDLE },
+        { id: 'e2', state: EditState.NEEDS_CORRECTION, updatedAt: IDLE },
+      ],
+    });
+    // Simulate submitCreateCore resuming e1 (state flip + updatedAt bump)
+    // after the sweep chose its candidates. The FOR UPDATE lock re-asserts
+    // state + idle-age row-locally on the latest committed row, so e1 drops
+    // out and only e2's claim is swept. (In production the lock additionally
+    // BLOCKS a mid-statement resume until the sweep commits, which the resume
+    // then handles via its deletedAt-guarded re-claim → PHOTO_CONFLICT.)
+    fake.setAfterFindMany(() => {
+      const e = fake.edits.find((x) => x.id === 'e1')!;
+      e.state = EditState.SUBMITTED;
+      e.updatedAt = NOW;
+    });
+    const res = await sweepStaleEditClaims(fake.db, NOW);
+    expect(res).toEqual({ scanned: 2, swept: 1 });
+    const byId = new Map(fake.attachments.map((a) => [a.id, a]));
+    expect(byId.get('racer-claim')!.deletedAt).toBeNull();
+    expect(byId.get('racer-claim')!.hash).toBe('hash-racer-claim');
+    expect(byId.get('stale-claim')!.deletedAt).toEqual(NOW);
+  });
+
+  it('caps a run at batchSize candidates; the rest drain on later runs', async () => {
+    const rows = Array.from({ length: 5 }, (_, i) => att(`c${i}`, { editId: 'e1' }));
+    const { db, attachments } = makeFakeDb({
+      attachments: rows,
+      edits: [{ id: 'e1', state: EditState.DRAFT, updatedAt: IDLE }],
+    });
+    const res = await sweepStaleEditClaims(db, NOW, 3);
+    expect(res).toEqual({ scanned: 3, swept: 3 });
+    expect(attachments.filter((a) => a.deletedAt !== null)).toHaveLength(3);
+
+    const second = await sweepStaleEditClaims(db, NOW, 3);
+    expect(second).toEqual({ scanned: 2, swept: 2 });
     expect(attachments.every((a) => a.deletedAt !== null)).toBe(true);
   });
 });

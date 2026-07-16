@@ -4,10 +4,14 @@
  * didn't. Without it, R2 storage grows unboundedly with every photo
  * replacement and detach.
  *
- * GAP-03 / Q4 (Phase 1): also sweeps never-attached orphan uploads —
- * fully-unbound rows abandoned by a cleared/retaken unbound PhotoCaptureSlot
- * or an abandoned /customers/new form — into that same pipeline after
- * ORPHAN_GRACE_DAYS (see lib/photo-gc.ts).
+ * GAP-03 / Q4 (Phase 1): also sweeps two orphan classes into that same
+ * pipeline (see lib/photo-gc.ts):
+ *   • never-attached uploads — fully-unbound rows abandoned by a
+ *     cleared/retaken unbound PhotoCaptureSlot or an abandoned
+ *     /customers/new form — after ORPHAN_GRACE_DAYS;
+ *   • stale edit claims — photos claimed by a create request that has sat
+ *     in DRAFT / NEEDS_CORRECTION / REJECTED untouched for
+ *     STALE_CLAIM_GRACE_DAYS.
  *
  * Triggered by `vercel.json` cron at 03:00 UTC (07:00 Oman) — outside
  * working hours. Authenticates by `Authorization: Bearer ${CRON_SECRET}`
@@ -19,7 +23,7 @@ import { prisma } from '@/lib/db';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectTaggingCommand } from '@aws-sdk/client-s3';
 import { logger } from '@/lib/logger';
-import { sweepNeverAttachedOrphans } from '@/lib/photo-gc';
+import { sweepNeverAttachedOrphans, sweepStaleEditClaims } from '@/lib/photo-gc';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,11 +53,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
 
-  // Phase 1 — soft phase: abandoned unbound uploads get their deletedAt
-  // stamped here, then age through the ordinary 30-day hard phase below.
+  // Phase 1 — soft phase: abandoned unbound uploads and stale create-request
+  // claims get their deletedAt stamped here, then age through the ordinary
+  // 30-day hard phase below.
   const orphans = await sweepNeverAttachedOrphans(prisma, new Date());
   if (orphans.scanned > 0) {
     logger.info(orphans, 'gc.orphan_sweep_done');
+  }
+  const staleClaims = await sweepStaleEditClaims(prisma, new Date());
+  if (staleClaims.scanned > 0) {
+    logger.info(staleClaims, 'gc.stale_claim_sweep_done');
   }
 
   const cutoff = new Date(Date.now() - GRACE_DAYS * 24 * 60 * 60 * 1000);
@@ -94,6 +103,9 @@ export async function GET(req: NextRequest) {
       logger.warn({ id: c.id, err: (err as Error).message?.slice(0, 80) }, 'gc.row_delete_failed');
     }
   }
-  logger.info({ deleted, r2Errors, scanned: candidates.length, orphans }, 'gc.photo_done');
-  return NextResponse.json({ deleted, r2Errors, scanned: candidates.length, orphans });
+  logger.info(
+    { deleted, r2Errors, scanned: candidates.length, orphans, staleClaims },
+    'gc.photo_done'
+  );
+  return NextResponse.json({ deleted, r2Errors, scanned: candidates.length, orphans, staleClaims });
 }

@@ -55,6 +55,31 @@ export default async function NewCustomerPage({
       orderBy: { createdAt: 'asc' },
     });
     const d = edit.customerDraft;
+    // Liveness-filter every draft photo column, like the guarantee query
+    // above: the draft columns are bare strings, and photo-gc's stale-claim
+    // sweep soft-deletes the photos of long-idle requests without touching
+    // the drafts. Passing a dead id through would render a filled-looking
+    // slot over a 404 image and dead-end both submit AND draft save on a
+    // generic "photo no longer exists" — filtered out, the slot renders
+    // empty and the mandatory gate names exactly what to re-capture.
+    const draftPhotoIds = [
+      ...(d?.crPhotoAttachmentId ? [d.crPhotoAttachmentId] : []),
+      ...edit.branchDrafts.flatMap((b) => [
+        ...(b.shopPhotoAttachmentId ? [b.shopPhotoAttachmentId] : []),
+        ...(b.signboardPhotoAttachmentId ? [b.signboardPhotoAttachmentId] : []),
+        ...(Array.isArray(b.extraPhotoAttachmentIds)
+          ? (b.extraPhotoAttachmentIds as string[])
+          : []),
+      ]),
+    ];
+    const liveDraftPhotos = draftPhotoIds.length
+      ? await prisma.attachment.findMany({
+          where: { id: { in: draftPhotoIds }, deletedAt: null },
+          select: { id: true },
+        })
+      : [];
+    const livePhotoIds = new Set(liveDraftPhotos.map((a) => a.id));
+    const liveOrNull = (id: string | null) => (id && livePhotoIds.has(id) ? id : null);
     initial = {
       editId: edit.id,
       state: edit.state,
@@ -71,7 +96,7 @@ export default async function NewCustomerPage({
         contactPerson: d?.contactPerson ?? '',
         contactRole: d?.contactRole ?? '',
         notes: d?.notes ?? '',
-        crPhotoAttachmentId: d?.crPhotoAttachmentId ?? null,
+        crPhotoAttachmentId: liveOrNull(d?.crPhotoAttachmentId ?? null),
       },
       credit: {
         requestedCreditLimit:
@@ -93,11 +118,12 @@ export default async function NewCustomerPage({
         coolersCount: b.coolersCount,
         standsCount: b.standsCount,
         emptyBottlesCount: b.emptyBottlesCount,
-        shopPhotoAttachmentId: b.shopPhotoAttachmentId,
-        signboardPhotoAttachmentId: b.signboardPhotoAttachmentId,
-        extraPhotoAttachmentIds: Array.isArray(b.extraPhotoAttachmentIds)
+        shopPhotoAttachmentId: liveOrNull(b.shopPhotoAttachmentId),
+        signboardPhotoAttachmentId: liveOrNull(b.signboardPhotoAttachmentId),
+        extraPhotoAttachmentIds: (Array.isArray(b.extraPhotoAttachmentIds)
           ? (b.extraPhotoAttachmentIds as string[])
-          : [],
+          : []
+        ).filter((id) => livePhotoIds.has(id)),
       })),
     };
   }
