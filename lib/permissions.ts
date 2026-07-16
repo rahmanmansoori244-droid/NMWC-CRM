@@ -5,6 +5,7 @@
  */
 import { Role, type User, type Customer, type Branch } from '@prisma/client';
 import { ForbiddenError } from './errors';
+import type { StepScope } from './approval-chains';
 
 export type SessionUser = {
   id: string;
@@ -15,6 +16,9 @@ export type SessionUser = {
 export const ROLES = {
   SALESMAN: 'SALESMAN',
   SUPERVISOR: 'SUPERVISOR',
+  ACCOUNTANT: 'ACCOUNTANT',
+  FINANCE_MANAGER: 'FINANCE_MANAGER',
+  GM: 'GM',
   MANAGER: 'MANAGER',
   STEWARD: 'STEWARD',
   VIEWER: 'VIEWER',
@@ -142,6 +146,52 @@ export function canApproveSpecificEdit(
   }
   if (user.role === Role.SUPERVISOR) return submittedBy.supervisorId === user.id;
   return false;
+}
+
+/**
+ * Phase 1b: whether `user` may act (approve / reject) on the CURRENT step of a
+ * multi-step edit. Generalizes canApproveSpecificEdit to the chain model.
+ *
+ * - Role gate: the user must hold this step's role.
+ * - Separation of duty (generalizes EL-15): the submitter can never act on any
+ *   step; and no user may act on two DIFFERENT steps of the same edit. Re-deciding
+ *   your OWN step after a step-back cascade IS allowed — the caller must exclude
+ *   the current step's own prior actors from `priorStepActorIds`.
+ * - Scope per step:
+ *     SUPERVISOR_OF_SUBMITTER — the submitter's direct supervisor (today's rule)
+ *     REGION_OVERLAP          — managedRegions overlaps a live branch of the
+ *                               customer (fail-closed on empty); MANAGER + ACCOUNTANT
+ *     GLOBAL                  — any holder of the role (Finance Manager / GM)
+ */
+export function canActOnStep(
+  user: SessionUser,
+  step: { role: Role; scope: StepScope },
+  submittedBy: Pick<User, 'id' | 'supervisorId'>,
+  context: {
+    customerBranches?: Pick<Branch, 'regionId' | 'deletedAt'>[];
+    managedRegionIds?: string[];
+    priorStepActorIds?: string[];
+  } = {}
+): boolean {
+  // Role gate.
+  if (user.role !== step.role) return false;
+  // Separation of duty.
+  if (user.id === submittedBy.id) return false;
+  if ((context.priorStepActorIds ?? []).includes(user.id)) return false;
+  // Scope gate.
+  switch (step.scope) {
+    case 'SUPERVISOR_OF_SUBMITTER':
+      return submittedBy.supervisorId === user.id;
+    case 'REGION_OVERLAP': {
+      const managed = context.managedRegionIds ?? [];
+      if (managed.length === 0) return false; // fail-closed
+      const branches = (context.customerBranches ?? []).filter((b) => !b.deletedAt);
+      if (branches.length === 0) return false;
+      return branches.some((b) => managed.includes(b.regionId));
+    }
+    case 'GLOBAL':
+      return true;
+  }
 }
 
 /**

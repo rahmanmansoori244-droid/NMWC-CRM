@@ -58,6 +58,19 @@ const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/customers', label: 'Customers', icon: Search },
   ],
+  ACCOUNTANT: [
+    { href: '/approvals', label: 'Approvals', icon: ListChecks },
+    { href: '/customers', label: 'Customers', icon: Search },
+    { href: '/work', label: 'Work items', icon: Inbox },
+  ],
+  FINANCE_MANAGER: [
+    { href: '/approvals', label: 'Approvals', icon: ListChecks },
+    { href: '/customers', label: 'Customers', icon: Search },
+  ],
+  GM: [
+    { href: '/approvals', label: 'Approvals', icon: ListChecks },
+    { href: '/customers', label: 'Customers', icon: Search },
+  ],
 };
 
 export function Sidebar({ role }: { role: Role }) {

@@ -8,6 +8,11 @@ const HOME_BY_ROLE: Record<Role, string> = {
   MANAGER: '/dashboard',
   STEWARD: '/import',
   VIEWER: '/dashboard',
+  // Approval roles: land on Customers for now (safe for any scope); the
+  // pendingRole-routed approvals queue is wired in the engine increment.
+  ACCOUNTANT: '/customers',
+  FINANCE_MANAGER: '/customers',
+  GM: '/customers',
 };
 
 export default async function HomePage() {

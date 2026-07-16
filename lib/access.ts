@@ -72,6 +72,10 @@ export function canSeeCustomer(
   switch (user.role) {
     case Role.STEWARD:
     case Role.VIEWER:
+    // Owner-confirmed: FINANCE_MANAGER and GM are org-wide approvers — they must
+    // be able to review any customer that reaches their approval step.
+    case Role.FINANCE_MANAGER:
+    case Role.GM:
       return true;
     case Role.SALESMAN:
       if (!scope.ownedRouteId) return false;
@@ -83,6 +87,9 @@ export function canSeeCustomer(
         (b) => !b.deletedAt && scope.teamRouteIds.includes(b.routeId)
       );
     case Role.MANAGER:
+    // Owner-confirmed: ACCOUNTANT is region-scoped via the same managedRegions
+    // mechanism, with the same fail-closed rule as MANAGER.
+    case Role.ACCOUNTANT:
       // RBAC-05-012: fail-closed. A Manager whose `managedRegions` join table
       // is empty (freshly created, region just deactivated, mid-migration row)
       // previously got "see everything" — combined with imports auto-creating
@@ -111,6 +118,8 @@ export function filterBranchesByScope<
   switch (user.role) {
     case Role.STEWARD:
     case Role.VIEWER:
+    case Role.FINANCE_MANAGER:
+    case Role.GM:
       return live;
     case Role.SALESMAN:
       if (!scope.ownedRouteId) return [];
@@ -118,6 +127,7 @@ export function filterBranchesByScope<
     case Role.SUPERVISOR:
       return live.filter((b) => scope.teamRouteIds.includes(b.routeId));
     case Role.MANAGER:
+    case Role.ACCOUNTANT:
       if (scope.managedRegionIds.length === 0) return [];
       return live.filter((b) => scope.managedRegionIds.includes(b.regionId));
   }
@@ -151,6 +161,10 @@ export function canEditCustomer(
       );
     case Role.SUPERVISOR:
     case Role.VIEWER:
+    // Approval roles review/approve; they never directly edit customer data.
+    case Role.ACCOUNTANT:
+    case Role.FINANCE_MANAGER:
+    case Role.GM:
       return false;
   }
 }

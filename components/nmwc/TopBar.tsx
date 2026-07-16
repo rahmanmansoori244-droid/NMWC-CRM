@@ -8,6 +8,9 @@ const ROLE_LABEL: Record<Role, string> = {
   MANAGER: 'Manager',
   STEWARD: 'Data Steward',
   VIEWER: 'Viewer',
+  ACCOUNTANT: 'Accountant',
+  FINANCE_MANAGER: 'Finance Manager',
+  GM: 'GM',
 };
 
 export function TopBar({
