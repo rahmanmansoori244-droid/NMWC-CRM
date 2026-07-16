@@ -4,6 +4,11 @@
  * didn't. Without it, R2 storage grows unboundedly with every photo
  * replacement and detach.
  *
+ * GAP-03 / Q4 (Phase 1): also sweeps never-attached orphan uploads —
+ * fully-unbound rows abandoned by a cleared/retaken unbound PhotoCaptureSlot
+ * or an abandoned /customers/new form — into that same pipeline after
+ * ORPHAN_GRACE_DAYS (see lib/photo-gc.ts).
+ *
  * Triggered by `vercel.json` cron at 03:00 UTC (07:00 Oman) — outside
  * working hours. Authenticates by `Authorization: Bearer ${CRON_SECRET}`
  * which Vercel injects automatically on `crons` invocations.
@@ -14,6 +19,7 @@ import { prisma } from '@/lib/db';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectTaggingCommand } from '@aws-sdk/client-s3';
 import { logger } from '@/lib/logger';
+import { sweepNeverAttachedOrphans } from '@/lib/photo-gc';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -41,6 +47,13 @@ export async function GET(req: NextRequest) {
   const expected = process.env.CRON_SECRET;
   if (!expected || !bearerMatches(bearer, expected)) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+  }
+
+  // Phase 1 — soft phase: abandoned unbound uploads get their deletedAt
+  // stamped here, then age through the ordinary 30-day hard phase below.
+  const orphans = await sweepNeverAttachedOrphans(prisma, new Date());
+  if (orphans.scanned > 0) {
+    logger.info(orphans, 'gc.orphan_sweep_done');
   }
 
   const cutoff = new Date(Date.now() - GRACE_DAYS * 24 * 60 * 60 * 1000);
@@ -81,6 +94,6 @@ export async function GET(req: NextRequest) {
       logger.warn({ id: c.id, err: (err as Error).message?.slice(0, 80) }, 'gc.row_delete_failed');
     }
   }
-  logger.info({ deleted, r2Errors, scanned: candidates.length }, 'gc.photo_done');
-  return NextResponse.json({ deleted, r2Errors, scanned: candidates.length });
+  logger.info({ deleted, r2Errors, scanned: candidates.length, orphans }, 'gc.photo_done');
+  return NextResponse.json({ deleted, r2Errors, scanned: candidates.length, orphans });
 }
