@@ -66,3 +66,52 @@ export function resolveChain(process: EditProcess, paymentTerms: PaymentTerms): 
     ACCOUNTANT_STEP,
   ];
 }
+
+/** True when `stepIndex` is the last approver step in the chain. */
+export function isFinalStep(chain: ApprovalStep[], stepIndex: number): boolean {
+  return stepIndex >= chain.length - 1;
+}
+
+/**
+ * Wall-clock step deadline. NOTE: the working-hours (Asia/Muscat) SLA calendar
+ * and the escalation sweep are the SLA/notifications increment; this is a
+ * placeholder so the engine populates `slaDueAt` meaningfully in the meantime.
+ */
+export function stepDeadline(from: Date, slaHours: number): Date {
+  return new Date(from.getTime() + slaHours * 3_600_000);
+}
+
+/** Where a rejection at `stepIndex` sends the request (owner-confirmed cascade). */
+export type RejectTarget = { kind: 'STEP_BACK'; toStepIndex: number } | { kind: 'TO_SALESMAN' };
+
+/**
+ * Owner-confirmed step-back cascade (2026-07-15): a rejection at step N returns
+ * the request to the previous approver (N-1); a rejection at the first step
+ * returns it to the salesman (NEEDS_CORRECTION).
+ *
+ * Loop guard (Q-pingpong): if the same step has already rejected this request
+ * once in the current cycle, the cascade stops and the request goes to the
+ * salesman — so an approve/reject ping-pong between two adjacent steps cannot
+ * loop forever on unchanged data.
+ */
+export function resolveRejectTarget(
+  stepIndex: number,
+  priorRejectsAtThisStepThisCycle: number
+): RejectTarget {
+  if (priorRejectsAtThisStepThisCycle >= 1) return { kind: 'TO_SALESMAN' };
+  if (stepIndex <= 0) return { kind: 'TO_SALESMAN' };
+  return { kind: 'STEP_BACK', toStepIndex: stepIndex - 1 };
+}
+
+/**
+ * Safely read the frozen chain JSON off a CustomerEdit. Falls back to the
+ * single-Supervisor chain (the pre-Phase-1b default, also the migration
+ * backfill value) if the column is null/malformed — so a legacy row without a
+ * frozen chain still advances correctly.
+ */
+export function parseChain(approvalChain: unknown): ApprovalStep[] {
+  if (Array.isArray(approvalChain) && approvalChain.length > 0) {
+    return approvalChain as ApprovalStep[];
+  }
+  return [SUPERVISOR_STEP];
+}

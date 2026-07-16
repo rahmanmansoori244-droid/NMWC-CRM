@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, EditState, EditTarget, type Prisma } from '@prisma/client';
+import { Role, EditState, EditTarget, EditProcess, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
 import {
   ForbiddenError,
@@ -14,12 +14,19 @@ import {
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
-import { isFieldLocked, canApproveSpecificEdit } from '@/lib/permissions';
+import { isFieldLocked, canActOnStep } from '@/lib/permissions';
 import { submitEditSchema, type SubmitEditInput } from '@/lib/validation/edit';
 import { normalizePhone } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
+import {
+  resolveChain,
+  parseChain,
+  isFinalStep,
+  stepDeadline,
+  resolveRejectTarget,
+} from '@/lib/approval-chains';
 
 async function requireUser() {
   const session = await auth();
@@ -432,6 +439,36 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
   const editState: EditState = isDraft ? EditState.DRAFT : EditState.SUBMITTED;
   const submittedAt = isDraft ? null : new Date();
 
+  // Phase 1b: resolve + FREEZE the approval chain onto the edit. Every submit
+  // through this action is an enrichment UPDATE (the multi-step create-request
+  // flow is a separate action), so the chain is a single Supervisor step —
+  // behaviorally identical to the pre-Phase-1b flow. Frozen so an in-flight edit
+  // stays deterministic even if the chain matrix later changes.
+  const process = EditProcess.UPDATE;
+  const chain = resolveChain(process, customer.paymentTerms);
+  const firstStep = chain[0]!;
+  const chainFields = {
+    process,
+    approvalChain: chain as unknown as Prisma.InputJsonValue,
+    paymentTermsAtSubmit: customer.paymentTerms,
+    currentStepIndex: 0,
+    // INVARIANT: `cycle` starts at 1 and is never bumped today, because the only
+    // way to re-submit after NEEDS_CORRECTION is a brand-new edit row (this action
+    // always creates a new CustomerEdit). The step-back cascade + separation-of-
+    // duty queries key off `cycle`; if the creation-flow increment adds a
+    // "re-submit the SAME create-request" path, it MUST increment `cycle` there,
+    // or stale prior-cycle EditApproval rows will poison the reject loop guard.
+    cycle: 1,
+  };
+  // Only a queued (SUBMITTED) edit has a pending step + SLA clock.
+  const pendingFields = isDraft
+    ? {}
+    : {
+        pendingRole: firstStep.role,
+        stageEnteredAt: submittedAt,
+        slaDueAt: submittedAt ? stepDeadline(submittedAt, firstStep.slaHours) : null,
+      };
+
   // For Steward/Manager: apply directly + audit (no approval queue)
   const isDirectWrite = !isDraft && (me.role === Role.STEWARD || me.role === Role.MANAGER);
 
@@ -449,6 +486,7 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
           reviewedAt: new Date(),
           fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
           attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+          ...chainFields,
         },
       });
       await applyEditChanges(tx, customer.id, customerProposed, bInputs, me.id);
@@ -475,6 +513,8 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
           submittedAt,
           fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
           attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+          ...chainFields,
+          ...pendingFields,
         },
       });
     } catch (err) {
@@ -628,25 +668,113 @@ async function approveEditCore(formData: FormData) {
   if (edit.state !== EditState.SUBMITTED) {
     throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
   }
+  // Phase 1b: a CREATE request (net-new customer) has customerId = null and is
+  // materialized from its typed drafts by the creation-flow increment — not built
+  // yet, and no action can create a CREATE edit today (submitEditCore hardcodes
+  // process = UPDATE). Guarded HERE, before the null-customer check below, so a
+  // would-be CREATE approval fails with a clear message rather than a misleading
+  // "customer no longer exists". When the creation flow lands, this guard AND the
+  // null-customer check must be reworked to source approver scope from the draft
+  // branches instead of edit.customer (that is also what unblocks the multi-step
+  // advance branch below, which is dormant until then).
+  if (edit.process === EditProcess.CREATE) {
+    throw new ConflictError(
+      'NOT_IMPLEMENTED',
+      'Approving a new-customer create-request is delivered in the creation-flow increment.'
+    );
+  }
   // QA-038: customer might have been merged or soft-deleted between submit and approve.
   if (!edit.customer || edit.customer.deletedAt) {
     throw new NotFoundError('Customer no longer exists (may have been merged or deleted).');
   }
-  // RBAC-05-003 / EL-15: pull caller's region scope and pass into
-  // canApproveSpecificEdit so a Manager can only approve edits whose customer
-  // has at least one branch in their managed regions, and no one can approve
-  // their own submission.
+  // Phase 1b: step-aware authorization. Resolve the frozen chain + current step;
+  // the actor must be authorized for THIS step (canActOnStep) — region scope for
+  // scoped steps (Supervisor/Accountant), plus separation of duty (no
+  // self-approval; no acting on two DIFFERENT steps of the same edit).
   const { loadScope } = await import('@/lib/access');
   const actorScope = await loadScope(session.id);
   const sessionUser = { id: session.id, role: session.role, username: session.username };
+  const chain = parseChain(edit.approvalChain);
+  const stepIndex = edit.currentStepIndex;
+  const step = chain[stepIndex];
+  if (!step) throw new ConflictError('NOT_PENDING', 'This edit has no pending step.');
+  const priorStepDecisions = await prisma.editApproval.findMany({
+    where: { editId, cycle: edit.cycle, stepIndex: { not: stepIndex } },
+    select: { actorId: true },
+  });
   if (
-    !canApproveSpecificEdit(sessionUser, edit.submittedBy, {
+    !canActOnStep(sessionUser, step, edit.submittedBy, {
       customerBranches: edit.customer.branches,
       managedRegionIds: actorScope.managedRegionIds,
+      priorStepActorIds: priorStepDecisions.map((d) => d.actorId),
     })
   ) {
-    throw new ForbiddenError('You are not authorized to approve this edit.');
+    throw new ForbiddenError('You are not authorized to act on this step.');
   }
+
+  const isFinal = isFinalStep(chain, stepIndex);
+
+  // Non-final step (multi-step CREATE chains): advance the pointer atomically and
+  // record the step decision. NO customer data is written until the FINAL step,
+  // so the all-or-nothing apply semantics are preserved. UPDATE is a single
+  // step, so this branch is never taken for an enrichment edit.
+  if (!isFinal) {
+    const nextStep = chain[stepIndex + 1]!;
+    const advancedAt = new Date();
+    await prisma.$transaction(async (tx) => {
+      const claim = await tx.customerEdit.updateMany({
+        where: {
+          id: editId,
+          state: EditState.SUBMITTED,
+          currentStepIndex: stepIndex,
+          cycle: edit.cycle,
+        },
+        data: {
+          currentStepIndex: stepIndex + 1,
+          pendingRole: nextStep.role,
+          stageEnteredAt: advancedAt,
+          slaDueAt: stepDeadline(advancedAt, nextStep.slaHours),
+        },
+      });
+      if (claim.count === 0) {
+        throw new ConflictError(
+          'NOT_PENDING',
+          'This step was just decided by another reviewer. Refresh to see the current state.'
+        );
+      }
+      await tx.editApproval.create({
+        data: {
+          editId,
+          cycle: edit.cycle,
+          stepIndex,
+          role: step.role,
+          decision: 'APPROVED',
+          actorId: session.id,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: session.id,
+          action: 'STEP_APPROVE',
+          entityType: 'CustomerEdit',
+          entityId: editId,
+          after: {
+            stepIndex,
+            role: step.role,
+            advancedToRole: nextStep.role,
+            cycle: edit.cycle,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+    });
+    logger.info({ editId, by: session.id, stepIndex, advancedTo: stepIndex + 1 }, 'edit.step_approve');
+    revalidatePath('/approvals');
+    revalidatePath('/work');
+    return;
+  }
+
+  // FINAL step of an UPDATE chain (CREATE already returned above via the
+  // NOT_IMPLEMENTED guard). Apply the changes to the live customer.
 
   // Reconstruct payloads from fieldChanges array
   const fieldChanges = edit.fieldChanges as unknown as FieldChange[];
@@ -780,9 +908,15 @@ async function approveEditCore(formData: FormData) {
     // count=1; the loser sees count=0 and surfaces a conflict instead of writing
     // a duplicate audit row + replaying applyEditChanges twice.
     const claim = await tx.customerEdit.updateMany({
-      where: { id: editId, state: EditState.SUBMITTED },
+      where: {
+        id: editId,
+        state: EditState.SUBMITTED,
+        currentStepIndex: stepIndex,
+        cycle: edit.cycle,
+      },
       data: {
         state: EditState.APPROVED,
+        pendingRole: null,
         reviewedById: session.id,
         reviewedAt: new Date(),
       },
@@ -793,6 +927,16 @@ async function approveEditCore(formData: FormData) {
         'This edit was just decided by another reviewer. Refresh to see the current state.'
       );
     }
+    await tx.editApproval.create({
+      data: {
+        editId,
+        cycle: edit.cycle,
+        stepIndex,
+        role: step.role,
+        decision: 'APPROVED',
+        actorId: session.id,
+      },
+    });
     await applyEditChanges(tx, edit.customerId!, customerProposed, branchesPayload, session.id);
     // EL-05: persist the actual diff in the audit log, not just a count, so a
     // forensic Manager can answer "what did Supervisor X approve last week"
@@ -954,41 +1098,107 @@ async function rejectEditCore(formData: FormData) {
   if (edit.state !== EditState.SUBMITTED) {
     throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
   }
-  // RBAC-05-003 / EL-15: same scope rules as approve. Manager rejecting is
-  // also a privileged decision; require region overlap and forbid self-reject.
+  // Phase 1b: step-aware authorization — the rejecter must be the CURRENT step's
+  // authorized approver (same rule as approve): region scope for scoped steps +
+  // separation of duty (no self-reject; no acting on two different steps).
   const { loadScope: loadScopeReject } = await import('@/lib/access');
   const rejectScope = await loadScopeReject(session.id);
+  const rejectChain = parseChain(edit.approvalChain);
+  const rejectStepIndex = edit.currentStepIndex;
+  const rejectStep = rejectChain[rejectStepIndex];
+  if (!rejectStep) throw new ConflictError('NOT_PENDING', 'This edit has no pending step.');
+  const rejectPriorDecisions = await prisma.editApproval.findMany({
+    where: { editId, cycle: edit.cycle, stepIndex: { not: rejectStepIndex } },
+    select: { actorId: true },
+  });
   if (
-    !canApproveSpecificEdit(
+    !canActOnStep(
       { id: session.id, role: session.role, username: session.username },
+      rejectStep,
       edit.submittedBy,
       {
         customerBranches: edit.customer?.branches ?? [],
         managedRegionIds: rejectScope.managedRegionIds,
+        priorStepActorIds: rejectPriorDecisions.map((d) => d.actorId),
       }
     )
   ) {
-    throw new ForbiddenError('You are not authorized to act on this edit.');
+    throw new ForbiddenError('You are not authorized to act on this step.');
   }
 
-  await prisma.customerEdit.update({
-    where: { id: editId },
-    data: {
-      state: EditState.NEEDS_CORRECTION,
-      reviewedById: session.id,
-      reviewedAt: new Date(),
-      decisionReason: reason,
-      decisionCategory: category,
-    },
+  // Owner-confirmed step-back cascade: a rejection returns the request to the
+  // previous approver (step N-1); a rejection at the first step returns it to the
+  // salesman (NEEDS_CORRECTION). Loop guard: a step rejecting this request a
+  // second time in one cycle bails out to the salesman. For a single-step UPDATE
+  // (stepIndex 0) this always resolves to the salesman — identical to today.
+  const priorRejectsHere = await prisma.editApproval.count({
+    where: { editId, cycle: edit.cycle, stepIndex: rejectStepIndex, decision: 'REJECTED' },
   });
-  await prisma.auditLog.create({
-    data: {
-      actorId: session.id,
-      action: 'REJECT',
-      entityType: 'CustomerEdit',
-      entityId: editId,
-      reason,
-    },
+  const target = resolveRejectTarget(rejectStepIndex, priorRejectsHere);
+  const rejectedAt = new Date();
+
+  await prisma.$transaction(async (tx) => {
+    await tx.editApproval.create({
+      data: {
+        editId,
+        cycle: edit.cycle,
+        stepIndex: rejectStepIndex,
+        role: rejectStep.role,
+        decision: 'REJECTED',
+        actorId: session.id,
+        reason,
+      },
+    });
+    const data: Prisma.CustomerEditUncheckedUpdateManyInput =
+      target.kind === 'STEP_BACK'
+        ? {
+            currentStepIndex: target.toStepIndex,
+            pendingRole: rejectChain[target.toStepIndex]!.role,
+            stageEnteredAt: rejectedAt,
+            slaDueAt: stepDeadline(rejectedAt, rejectChain[target.toStepIndex]!.slaHours),
+            decisionReason: reason,
+            decisionCategory: category,
+            reviewedById: session.id,
+            reviewedAt: rejectedAt,
+          }
+        : {
+            state: EditState.NEEDS_CORRECTION,
+            pendingRole: null,
+            currentStepIndex: 0,
+            decisionReason: reason,
+            decisionCategory: category,
+            reviewedById: session.id,
+            reviewedAt: rejectedAt,
+          };
+    const claim = await tx.customerEdit.updateMany({
+      where: {
+        id: editId,
+        state: EditState.SUBMITTED,
+        currentStepIndex: rejectStepIndex,
+        cycle: edit.cycle,
+      },
+      data,
+    });
+    if (claim.count === 0) {
+      throw new ConflictError(
+        'NOT_PENDING',
+        'This edit was just decided by another reviewer. Refresh to see the current state.'
+      );
+    }
+    await tx.auditLog.create({
+      data: {
+        actorId: session.id,
+        action: 'REJECT',
+        entityType: 'CustomerEdit',
+        entityId: editId,
+        reason,
+        after: {
+          target: target.kind,
+          fromStep: rejectStepIndex,
+          cycle: edit.cycle,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
   });
 
   logger.info({ editId, by: session.id, category }, 'edit.reject');

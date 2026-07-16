@@ -152,16 +152,16 @@ export function canApproveSpecificEdit(
  * Phase 1b: whether `user` may act (approve / reject) on the CURRENT step of a
  * multi-step edit. Generalizes canApproveSpecificEdit to the chain model.
  *
- * - Role gate: the user must hold this step's role.
  * - Separation of duty (generalizes EL-15): the submitter can never act on any
  *   step; and no user may act on two DIFFERENT steps of the same edit. Re-deciding
  *   your OWN step after a step-back cascade IS allowed — the caller must exclude
  *   the current step's own prior actors from `priorStepActorIds`.
  * - Scope per step:
- *     SUPERVISOR_OF_SUBMITTER — the submitter's direct supervisor (today's rule)
- *     REGION_OVERLAP          — managedRegions overlaps a live branch of the
- *                               customer (fail-closed on empty); MANAGER + ACCOUNTANT
- *     GLOBAL                  — any holder of the role (Finance Manager / GM)
+ *     SUPERVISOR_OF_SUBMITTER — the submitter's supervisor OR a region-overlapping
+ *                               Manager (RBAC-05-003 fallback), via canApproveSpecificEdit
+ *     REGION_OVERLAP          — the step's role (Accountant), region-scoped,
+ *                               fail-closed on empty managedRegions
+ *     GLOBAL                  — any holder of the step's role (Finance Manager / GM)
  */
 export function canActOnStep(
   user: SessionUser,
@@ -173,24 +173,37 @@ export function canActOnStep(
     priorStepActorIds?: string[];
   } = {}
 ): boolean {
-  // Role gate.
-  if (user.role !== step.role) return false;
-  // Separation of duty.
+  // Separation of duty (every step/scope): the submitter can never act on their
+  // own request; and no user may act on two DIFFERENT steps of the same request
+  // (re-deciding your OWN step after a step-back cascade IS allowed — the caller
+  // excludes the current step's actors from priorStepActorIds).
   if (user.id === submittedBy.id) return false;
   if ((context.priorStepActorIds ?? []).includes(user.id)) return false;
-  // Scope gate.
+
   switch (step.scope) {
     case 'SUPERVISOR_OF_SUBMITTER':
-      return submittedBy.supervisorId === user.id;
+      // The submitter's direct Supervisor OR a region-overlapping Manager
+      // (RBAC-05-003: the deliberate fallback so an edit isn't stranded when the
+      // one specific supervisor is unavailable). Delegated to
+      // canApproveSpecificEdit so the "supervisor-or-region-manager" rule has a
+      // single home and the two never drift.
+      return canApproveSpecificEdit(user, submittedBy, {
+        customerBranches: context.customerBranches,
+        managedRegionIds: context.managedRegionIds,
+      });
     case 'REGION_OVERLAP': {
+      // Region-scoped finance approver (Accountant): only that role, fail-closed
+      // on empty managedRegions, requires overlap with a live customer branch.
+      if (user.role !== step.role) return false;
       const managed = context.managedRegionIds ?? [];
-      if (managed.length === 0) return false; // fail-closed
+      if (managed.length === 0) return false;
       const branches = (context.customerBranches ?? []).filter((b) => !b.deletedAt);
       if (branches.length === 0) return false;
       return branches.some((b) => managed.includes(b.regionId));
     }
     case 'GLOBAL':
-      return true;
+      // Org-wide approver (Finance Manager / GM): any holder of the step's role.
+      return user.role === step.role;
   }
 }
 
