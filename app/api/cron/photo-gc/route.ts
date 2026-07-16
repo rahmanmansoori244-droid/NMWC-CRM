@@ -9,11 +9,12 @@
  * which Vercel injects automatically on `crons` invocations.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { timingSafeEqual } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectTaggingCommand } from '@aws-sdk/client-s3';
 import { logger } from '@/lib/logger';
+// B-16 constant-time bearer comparison — shared with keep-warm + sla-escalate.
+import { cronAuthorized } from '@/lib/cron-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -21,25 +22,8 @@ export const dynamic = 'force-dynamic';
 const GRACE_DAYS = 30;
 const BATCH_SIZE = 200;
 
-/**
- * B-16 (audit 2026-05-10): constant-time bearer comparison so timing on
- * the prefix of CRON_SECRET cannot be probed. timingSafeEqual throws on
- * length mismatch, so we length-check first and only compare equal-length
- * buffers.
- */
-function bearerMatches(headerValue: string | null, expected: string): boolean {
-  if (!headerValue) return false;
-  const presented = `Bearer ${expected}`;
-  const a = Buffer.from(headerValue);
-  const b = Buffer.from(presented);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
-
 export async function GET(req: NextRequest) {
-  const bearer = req.headers.get('authorization');
-  const expected = process.env.CRON_SECRET;
-  if (!expected || !bearerMatches(bearer, expected)) {
+  if (!cronAuthorized(req.headers.get('authorization'))) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
 

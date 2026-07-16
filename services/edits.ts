@@ -788,6 +788,12 @@ async function approveEditCore(formData: FormData) {
           pendingRole: nextStep.role,
           stageEnteredAt: advancedAt,
           slaDueAt: stepDeadline(advancedAt, nextStep.slaHours),
+          // New stage, new SLA clock: a breach on the PREVIOUS stage must not
+          // make this stage skip level-1 escalation (the sweep filters on
+          // escalationLevel).
+          escalationLevel: 0,
+          slaBreachedAt: null,
+          lastEscalatedAt: null,
         },
       });
       if (claim.count === 0) {
@@ -1340,6 +1346,10 @@ async function rejectEditCore(formData: FormData) {
             pendingRole: rejectChain[target.toStepIndex]!.role,
             stageEnteredAt: rejectedAt,
             slaDueAt: stepDeadline(rejectedAt, rejectChain[target.toStepIndex]!.slaHours),
+            // New stage, new SLA clock (see the advance branch).
+            escalationLevel: 0,
+            slaBreachedAt: null,
+            lastEscalatedAt: null,
             decisionReason: reason,
             decisionCategory: category,
             reviewedById: session.id,
@@ -1349,6 +1359,12 @@ async function rejectEditCore(formData: FormData) {
             state: EditState.NEEDS_CORRECTION,
             pendingRole: null,
             currentStepIndex: 0,
+            // NEEDS_CORRECTION stops the clock; the salesman's rework is not
+            // SLA-tracked in v1.
+            slaDueAt: null,
+            escalationLevel: 0,
+            slaBreachedAt: null,
+            lastEscalatedAt: null,
             decisionReason: reason,
             decisionCategory: category,
             reviewedById: session.id,

@@ -184,8 +184,11 @@ describe('parseChain', () => {
 });
 
 describe('stepDeadline', () => {
-  it('adds slaHours to the anchor time', () => {
+  it('adds slaHours of WORKING time (Asia/Muscat calendar, Friday off)', () => {
+    // 2026-07-16T08:00Z = Thursday 12:00 Oman. 8 working hours = 5h left
+    // Thursday (12:00→17:00) + Friday OFF + 3h Saturday → Sat 11:00 Oman
+    // (07:00 UTC). Deep coverage lives in tests/unit/working-hours.test.ts.
     const from = new Date('2026-07-16T08:00:00.000Z');
-    expect(stepDeadline(from, 8).toISOString()).toBe('2026-07-16T16:00:00.000Z');
+    expect(stepDeadline(from, 8).toISOString()).toBe('2026-07-18T07:00:00.000Z');
   });
 });

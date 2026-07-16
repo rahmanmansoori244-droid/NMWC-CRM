@@ -20,9 +20,15 @@
  * has 4; `CustomerEdit.currentStepIndex` indexes into this array.
  */
 import { Role, PaymentTerms, EditProcess } from '@prisma/client';
+import { slaDeadline, STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from './working-hours';
 
 /** Bump when the shape/meaning of a chain changes; frozen per-edit at submit. */
 export const CHAIN_VERSION = 1;
+
+/** Stage budget in hours, env-overridable via lib/working-hours STAGE_SLA_MINUTES. */
+function stageHours(role: Role): number {
+  return (STAGE_SLA_MINUTES[role] ?? DEFAULT_STAGE_SLA_MIN) / 60;
+}
 
 /** How a step's authorized actor is scoped to the customer under review. */
 export type StepScope = 'SUPERVISOR_OF_SUBMITTER' | 'REGION_OVERLAP' | 'GLOBAL';
@@ -30,20 +36,24 @@ export type StepScope = 'SUPERVISOR_OF_SUBMITTER' | 'REGION_OVERLAP' | 'GLOBAL';
 export interface ApprovalStep {
   role: Role;
   scope: StepScope;
-  /** Working-hours SLA budget for this step. Placeholder values — Q-sla open. */
+  /**
+   * Working-hours SLA budget for this step (frozen per-edit at submit).
+   * SUPERVISOR/ACCOUNTANT are OLD-parity; FM/GM are placeholders (Q-sla open).
+   * Env-overridable via SLA_*_MIN — see lib/working-hours.ts.
+   */
   slaHours: number;
 }
 
 const SUPERVISOR_STEP: ApprovalStep = {
   role: Role.SUPERVISOR,
   scope: 'SUPERVISOR_OF_SUBMITTER',
-  slaHours: 8,
+  slaHours: stageHours(Role.SUPERVISOR),
 };
 // Accountant is the final approver on BOTH create chains and is region-scoped.
 const ACCOUNTANT_STEP: ApprovalStep = {
   role: Role.ACCOUNTANT,
   scope: 'REGION_OVERLAP',
-  slaHours: 9,
+  slaHours: stageHours(Role.ACCOUNTANT),
 };
 
 /**
@@ -61,8 +71,8 @@ export function resolveChain(process: EditProcess, paymentTerms: PaymentTerms): 
   // CREATE + CREDIT — GM always required (owner-confirmed, no threshold skip).
   return [
     SUPERVISOR_STEP,
-    { role: Role.FINANCE_MANAGER, scope: 'GLOBAL', slaHours: 16 },
-    { role: Role.GM, scope: 'GLOBAL', slaHours: 24 },
+    { role: Role.FINANCE_MANAGER, scope: 'GLOBAL', slaHours: stageHours(Role.FINANCE_MANAGER) },
+    { role: Role.GM, scope: 'GLOBAL', slaHours: stageHours(Role.GM) },
     ACCOUNTANT_STEP,
   ];
 }
@@ -73,12 +83,12 @@ export function isFinalStep(chain: ApprovalStep[], stepIndex: number): boolean {
 }
 
 /**
- * Wall-clock step deadline. NOTE: the working-hours (Asia/Muscat) SLA calendar
- * and the escalation sweep are the SLA/notifications increment; this is a
- * placeholder so the engine populates `slaDueAt` meaningfully in the meantime.
+ * Working-hours step deadline (Asia/Muscat calendar, lib/working-hours.ts) —
+ * replaces the Phase-1b wall-clock placeholder. `slaHours` of WORKING time
+ * after `from`: nights and Fridays never count against a reviewer.
  */
 export function stepDeadline(from: Date, slaHours: number): Date {
-  return new Date(from.getTime() + slaHours * 3_600_000);
+  return slaDeadline(from, Math.round(slaHours * 60));
 }
 
 /** Where a rejection at `stepIndex` sends the request (owner-confirmed cascade). */

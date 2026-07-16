@@ -23,6 +23,9 @@ export type ApprovalQueueItem = {
   id: string;
   ageHours: number;
   changesCount: number;
+  /** Working-hours SLA pill (server-computed); null for legacy rows without a deadline. */
+  sla: { label: string; tone: 'ok' | 'warn' | 'overdue' } | null;
+  escalationLevel: number;
   /** Phase 1: net-new customer CREATE request (no customer row yet). */
   isCreate: boolean;
   paymentTerms: 'CASH' | 'CREDIT' | null;
@@ -211,16 +214,23 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                     Submitted by {e.submittedByFullName}
                   </p>
                 </div>
-                <div className="text-right text-xs">
-                  <span
-                    className={`inline-flex rounded-full px-2 py-0.5 font-medium ${
-                      e.ageHours > 72
-                        ? 'bg-red-50 text-red-700'
-                        : e.ageHours > 24
-                          ? 'bg-amber-50 text-amber-700'
-                          : 'bg-emerald-50 text-emerald-700'
-                    }`}
-                  >
+                <div className="flex flex-col items-end gap-1 text-right text-xs">
+                  {/* Working-hours SLA pill (nights/Fridays don't count against the reviewer). */}
+                  {e.sla && (
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${
+                        e.sla.tone === 'overdue'
+                          ? 'bg-red-50 text-red-700 ring-1 ring-red-200'
+                          : e.sla.tone === 'warn'
+                            ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-200'
+                            : 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
+                      }`}
+                    >
+                      {e.escalationLevel > 0 ? '⚠ ' : ''}
+                      {e.sla.label}
+                    </span>
+                  )}
+                  <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">
                     {e.ageHours < 1
                       ? 'just now'
                       : e.ageHours < 24

@@ -5,6 +5,7 @@ import { Role, type Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { loadScope } from '@/lib/access';
+import { formatSlaStatus } from '@/lib/working-hours';
 import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
 
 export const metadata = { title: 'Approvals · NMWC' };
@@ -103,7 +104,9 @@ export default async function ApprovalsPage() {
       // CREATE requests: display fields come from the draft.
       customerDraft: { select: { legalName: true, paymentTerms: true } },
     },
-    orderBy: { submittedAt: 'asc' },
+    // Most-overdue first (index [state, slaDueAt] backs it); legacy rows
+    // without a deadline sort last.
+    orderBy: [{ slaDueAt: 'asc' }, { submittedAt: 'asc' }],
   });
 
   // B-11 (Senior-audit 2026-05-10): pre-shape items for the bulk-approval client
@@ -115,7 +118,11 @@ export default async function ApprovalsPage() {
       ? Math.round((Date.now() - new Date(e.submittedAt).getTime()) / (60 * 60 * 1000))
       : 0;
     const isCreate = e.process === 'CREATE';
+    // Working-hours SLA pill, computed server-side (client clocks drift).
+    const sla = e.slaDueAt ? formatSlaStatus(e.slaDueAt) : null;
     return {
+      sla,
+      escalationLevel: e.escalationLevel,
       id: e.id,
       ageHours,
       changesCount,

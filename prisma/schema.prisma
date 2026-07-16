@@ -134,6 +134,8 @@ enum NotificationKind {
   EDIT_APPROVED_FINAL // to submitter (+ Stewards: ready for Temix upload)
   EDIT_NEEDS_CORRECTION // to submitter (carries decisionReason)
   SLA_BREACH // to the escalation target
+  TEMIX_UPLOAD_READY // to Stewards, DEBOUNCED (max 1/day via cron) — queue non-empty
+  TEMIX_SYNC_ACKED // to the submitter: their customer landed in Temix (code assigned)
 }
 
 // ── ORG HIERARCHY ────────────────────────────────────────

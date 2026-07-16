@@ -1,0 +1,29 @@
+# SLA escalation sweep — Phase 1 SLA/notifications increment.
+#
+# GitHub Actions, not Vercel cron: Vercel Hobby rejects sub-daily schedules
+# and escalation needs sub-daily resolution (mirrors keep-warm.yml exactly).
+# GH schedules can lag 5-15 min — acceptable against 8-working-hour SLAs; we
+# do not promise minute-exact escalation.
+#
+# The route is a GET handler ON PURPOSE: the OLD system's sla-check cron was
+# POST-only while the scheduler sent GET, so it never fired once (BUG-03).
+name: SLA escalation sweep
+on:
+  schedule:
+    # Every 30 min, 07:15-18:45 Oman (UTC+4) = 03:15-14:45 UTC.
+    - cron: '15,45 3-14 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Curl sla-escalate
+        env:
+          PROD_CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -H "Authorization: Bearer ${PROD_CRON_SECRET}" \
+            "https://nmwc-cm.vercel.app/api/cron/sla-escalate"

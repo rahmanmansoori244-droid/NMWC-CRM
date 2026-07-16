@@ -21,7 +21,6 @@
  * is <200 ms function time. Well within the free tier.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { timingSafeEqual } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import {
   getAllActiveChannels,
@@ -35,17 +34,11 @@ import { logger } from '@/lib/logger';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-function bearerMatches(headerValue: string | null, expected: string): boolean {
-  if (!headerValue) return false;
-  const supplied = Buffer.from(headerValue);
-  const required = Buffer.from(`Bearer ${expected}`);
-  if (supplied.length !== required.length) return false;
-  return timingSafeEqual(supplied, required);
-}
+// B-16 constant-time bearer comparison — shared with photo-gc + sla-escalate.
+import { cronAuthorized } from '@/lib/cron-auth';
 
 export async function GET(req: NextRequest) {
-  const expected = process.env.CRON_SECRET;
-  if (!expected || !bearerMatches(req.headers.get('authorization'), expected)) {
+  if (!cronAuthorized(req.headers.get('authorization'))) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
 

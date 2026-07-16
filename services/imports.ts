@@ -18,6 +18,7 @@ import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
 import { checkLimit } from '@/lib/rate-limit';
 import bcrypt from 'bcryptjs';
 import { logger } from '@/lib/logger';
+import { notifyUsers } from '@/lib/notifications';
 
 // RBAC-05-009 / PRD §4: import is Steward-only. The previous lax gate accepted
 // MANAGER too, conflating Steward (master-data ops) and Manager (people ops)
@@ -872,7 +873,14 @@ async function promoteCustomerBatchCore(
         const pt = first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH';
         const existing = await tx.customer.findUnique({
           where: { nmwcCode: custCode },
-          select: { id: true, temixCode: true, paymentTerms: true, deletedAt: true },
+          select: {
+            id: true,
+            temixCode: true,
+            paymentTerms: true,
+            deletedAt: true,
+            createdById: true,
+            legalName: true,
+          },
         });
 
         // ── Phase 1 Temix crosswalk guards (rows carrying temix_code) ──
@@ -960,6 +968,16 @@ async function promoteCustomerBatchCore(
             where: { id: existing!.id, temixSyncState: 'UPLOADED' },
             data: { temixSyncState: 'SYNCED' },
           });
+          // TEMIX_SYNC_ACKED: the ERP code just landed for the first time —
+          // tell the originating submitter their customer is live in Temix.
+          if (!existing!.temixCode && first.temixCode && existing!.createdById) {
+            await notifyUsers(tx, [existing!.createdById], {
+              kind: 'TEMIX_SYNC_ACKED',
+              title: 'Customer landed in Temix',
+              body: `${existing!.legalName} (${custCode}) is now in Temix as ${first.temixCode}.`,
+              customerId: existing!.id,
+            });
+          }
           customerId = existing!.id;
         } else {
           const customer = await tx.customer.upsert({

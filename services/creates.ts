@@ -342,6 +342,11 @@ async function submitCreateCore(
           pendingRole: firstStep.role,
           stageEnteredAt: submittedAt,
           slaDueAt: stepDeadline(submittedAt, firstStep.slaHours),
+          // Fresh SLA clock for the new round (see the advance branch in
+          // approveEditCore).
+          escalationLevel: 0,
+          slaBreachedAt: null,
+          lastEscalatedAt: null,
           // Stale decision fields from the previous round would mislead
           // approvers reading the detail page.
           decisionReason: null,

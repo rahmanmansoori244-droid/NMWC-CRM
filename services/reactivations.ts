@@ -13,6 +13,8 @@ import {
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
+import { stepDeadline } from '@/lib/approval-chains';
+import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from '@/lib/working-hours';
 
 async function require(role?: Role[]) {
   const session = await auth();
@@ -97,6 +99,7 @@ async function requestReactivationCore(formData: FormData): Promise<{ editId: st
     });
   }
 
+  const reactSubmittedAt = new Date();
   const edit = await prisma.customerEdit.create({
     data: {
       target: EditTarget.BRANCH,
@@ -104,9 +107,18 @@ async function requestReactivationCore(formData: FormData): Promise<{ editId: st
       customerId: branch.customerId,
       state: EditState.SUBMITTED,
       submittedById: me.id,
-      submittedAt: new Date(),
+      submittedAt: reactSubmittedAt,
       isReactivation: true,
       decisionReason: reason,
+      // Phase 1 SLA: reactivations are decided by MANAGER (approveReactivation
+      // is Manager-only) — stamping pendingRole keeps them OUT of the
+      // Supervisor-step /approvals queues and puts them on the SLA clock.
+      pendingRole: Role.MANAGER,
+      stageEnteredAt: reactSubmittedAt,
+      slaDueAt: stepDeadline(
+        reactSubmittedAt,
+        (STAGE_SLA_MINUTES[Role.MANAGER] ?? DEFAULT_STAGE_SLA_MIN) / 60
+      ),
       fieldChanges: [
         { field: `branch.${branch.id}.status`, before: 'CLOSED', after: 'ACTIVE' },
       ] as unknown as Prisma.InputJsonValue,
@@ -191,6 +203,7 @@ async function markBranchClosedCore(formData: FormData): Promise<{ editId: strin
   }
 
   // Submit as a regular CustomerEdit so a Supervisor approves the closure.
+  const closeSubmittedAt = new Date();
   const edit = await prisma.customerEdit.create({
     data: {
       target: EditTarget.BRANCH,
@@ -198,8 +211,15 @@ async function markBranchClosedCore(formData: FormData): Promise<{ editId: strin
       customerId: branch.customerId,
       state: EditState.SUBMITTED,
       submittedById: me.id,
-      submittedAt: new Date(),
+      submittedAt: closeSubmittedAt,
       decisionReason: reason,
+      // Phase 1 SLA: close requests ride the normal Supervisor approval.
+      pendingRole: Role.SUPERVISOR,
+      stageEnteredAt: closeSubmittedAt,
+      slaDueAt: stepDeadline(
+        closeSubmittedAt,
+        (STAGE_SLA_MINUTES[Role.SUPERVISOR] ?? DEFAULT_STAGE_SLA_MIN) / 60
+      ),
       fieldChanges: [
         { field: `branch.${branch.id}.status`, before: branch.status, after: 'CLOSED' },
       ] as unknown as Prisma.InputJsonValue,
