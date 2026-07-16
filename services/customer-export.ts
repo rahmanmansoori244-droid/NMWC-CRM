@@ -131,6 +131,14 @@ async function exportFilteredCustomersCore(
     if (regionIds.length > 0) {
       branchSomeBase = { regionId: { in: regionIds }, deletedAt: null };
       scopedBranchWhere = { regionId: { in: regionIds }, deletedAt: null };
+    } else {
+      // SEC (SR-M2 sibling): fail-CLOSED. A Manager with no managed regions must
+      // export NOTHING, not the whole master. Without this else, branchSomeBase
+      // stayed undefined and `where` collapsed to { deletedAt: null } — a bulk-PII
+      // export leak. Mirrors exports.ts:66 (`['__none__']`) and the SALESMAN
+      // no-route branch above (`baseWhere.id = '__none__'`).
+      baseWhere.id = '__none__';
+      scopedBranchWhere = { id: '__none__' };
     }
   }
 
