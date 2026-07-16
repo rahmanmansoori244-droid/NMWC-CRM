@@ -18,6 +18,7 @@ import {
   Search,
   Home as HomeIcon,
   UserPlus,
+  RefreshCw,
 } from 'lucide-react';
 
 type NavItem = {
@@ -52,6 +53,7 @@ const NAV_BY_ROLE: Record<Role, NavItem[]> = {
   STEWARD: [
     { href: '/import', label: 'Import', icon: Upload },
     { href: '/export', label: 'Export', icon: Download },
+    { href: '/temix', label: 'Temix sync', icon: RefreshCw },
     { href: '/customers', label: 'Customers', icon: Search },
     { href: '/duplicates', label: 'Duplicates', icon: AlertTriangle },
     { href: '/work', label: 'Work items', icon: Inbox },

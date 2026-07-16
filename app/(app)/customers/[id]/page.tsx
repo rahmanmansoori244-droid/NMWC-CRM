@@ -9,6 +9,7 @@ import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
+import { ArchiveCustomerButton } from './ArchiveCustomerButton';
 import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil } from 'lucide-react';
 
 export const metadata = { title: 'Customer · NMWC' };
@@ -90,6 +91,12 @@ export default async function CustomerProfilePage({
                 <Pencil className="h-4 w-4" />
                 Enrich
               </Link>
+            )}
+            {/* C8 archive (soft-delete + Temix deactivation queue): Steward
+                org-wide; Manager region-scoped — the action re-checks scope
+                fail-closed. */}
+            {(session.user.role === Role.STEWARD || session.user.role === Role.MANAGER) && (
+              <ArchiveCustomerButton customerId={customer.id} legalName={customer.legalName} />
             )}
           </div>
         }

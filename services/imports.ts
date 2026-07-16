@@ -581,33 +581,37 @@ async function uploadCustomerMasterCore(
       crsInFile.set(crNorm, a);
     }
   }
-  // Cross-check against the live master in one query each.
+  // Cross-check against the live master in one query each. Keyed by the
+  // OWNING nmwcCode so a row that updates its own customer (a re-import or a
+  // Temix refresh of the existing master) does not self-collide — previously
+  // this used bare Sets and every refresh row of a known customer was
+  // quarantined against itself.
   const phoneList = [...phonesInFile.keys()];
   const crList = [...crsInFile.keys()];
-  const masterPhones = phoneList.length
-    ? new Set(
-        (
-          await prisma.customer.findMany({
-            where: { primaryPhoneNorm: { in: phoneList }, deletedAt: null },
-            select: { primaryPhoneNorm: true },
-          })
-        )
-          .map((c) => c.primaryPhoneNorm)
-          .filter((p): p is string => !!p)
-      )
-    : new Set<string>();
-  const masterCrs = crList.length
-    ? new Set(
-        (
-          await prisma.customer.findMany({
-            where: { crNumberNorm: { in: crList }, deletedAt: null },
-            select: { crNumberNorm: true },
-          })
-        )
-          .map((c) => c.crNumberNorm)
-          .filter((p): p is string => !!p)
-      )
-    : new Set<string>();
+  const masterPhones = new Map<string, string[]>();
+  if (phoneList.length) {
+    for (const c of await prisma.customer.findMany({
+      where: { primaryPhoneNorm: { in: phoneList }, deletedAt: null },
+      select: { primaryPhoneNorm: true, nmwcCode: true },
+    })) {
+      if (!c.primaryPhoneNorm) continue;
+      const a = masterPhones.get(c.primaryPhoneNorm) ?? [];
+      a.push(c.nmwcCode);
+      masterPhones.set(c.primaryPhoneNorm, a);
+    }
+  }
+  const masterCrs = new Map<string, string[]>();
+  if (crList.length) {
+    for (const c of await prisma.customer.findMany({
+      where: { crNumberNorm: { in: crList }, deletedAt: null },
+      select: { crNumberNorm: true, nmwcCode: true },
+    })) {
+      if (!c.crNumberNorm) continue;
+      const a = masterCrs.get(c.crNumberNorm) ?? [];
+      a.push(c.nmwcCode);
+      masterCrs.set(c.crNumberNorm, a);
+    }
+  }
 
   for (const [i, row] of sheet.rows.entries()) {
     const issues: { field: string; message: string }[] = [];
@@ -631,20 +635,27 @@ async function uploadCustomerMasterCore(
     if (phone && phonesInFile.get(phone)!.length > 1) {
       issues.push({ field: 'phone', message: `duplicate phone in this file (also rows ${phonesInFile.get(phone)!.filter((r) => r !== i + 2).join(', ')})` });
     }
-    if (phone && masterPhones.has(phone)) {
+    if (phone && (masterPhones.get(phone) ?? []).some((code) => code !== custCode)) {
       issues.push({ field: 'phone', message: 'phone already exists in master — review in /duplicates' });
     }
     if (crNorm && crsInFile.get(crNorm)!.length > 1) {
       issues.push({ field: 'cr_no', message: `duplicate CR in this file (also rows ${crsInFile.get(crNorm)!.filter((r) => r !== i + 2).join(', ')})` });
     }
-    if (crNorm && masterCrs.has(crNorm)) {
+    if (crNorm && (masterCrs.get(crNorm) ?? []).some((code) => code !== custCode)) {
       issues.push({ field: 'cr_no', message: 'CR already exists in master — review in /duplicates' });
     }
     // F-12: strict whitelist on payment terms — silently defaulting `Crdit`
     // to CASH ate the field-lock semantics for credit customers.
+    // `paymentTermsPresent` records whether the sheet EXPLICITLY stated a
+    // value: the Temix-refresh lane must distinguish "column absent — keep
+    // the customer's current terms" from "Temix says CASH" (an absent column
+    // silently flipping CREDIT customers to CASH was an adversarial-review
+    // CONFIRMED finding). Legacy create/full-upsert paths keep the CASH
+    // default unchanged.
     const ptRaw = String(row.payment_terms ?? row['PAYMENT TERMS'] ?? '').trim().toUpperCase();
     let paymentTerms = 'CASH';
-    if (ptRaw && ptRaw !== 'CASH' && ptRaw !== 'CREDIT') {
+    const paymentTermsPresent = ptRaw === 'CASH' || ptRaw === 'CREDIT';
+    if (ptRaw && !paymentTermsPresent) {
       issues.push({ field: 'payment_terms', message: `expected CASH or CREDIT, got "${ptRaw}"` });
     } else if (ptRaw === 'CREDIT') {
       paymentTerms = 'CREDIT';
@@ -653,6 +664,36 @@ async function uploadCustomerMasterCore(
     for (const field of ['cust_name', 'address', 'contact_person', 'notes']) {
       if (isFormulaPayload((row as Record<string, unknown>)[field])) {
         issues.push({ field, message: 'cell starts with a spreadsheet formula trigger; remove it' });
+      }
+    }
+
+    // Phase 1 Temix refresh columns (all optional — a plain master sheet
+    // without them behaves exactly as before):
+    //  - temix_code: the ERP's code for this customer. Presence marks the row
+    //    as a REFRESH row at promote time (crosswalk backfill + narrow update).
+    //  - credit_limit / payment_term_days: authoritatively FROM Temix
+    //    (owner-locked) for existing CREDIT customers.
+    const temixCode =
+      stripHtml(row.temix_code ?? row.temixcode ?? row['TEMIX CODE'] ?? row['Temix Code']).trim() ||
+      null;
+    let creditLimit: number | null = null;
+    const creditRaw = String(row.credit_limit ?? row['CREDIT LIMIT'] ?? '').trim();
+    if (creditRaw) {
+      const n = Number(creditRaw);
+      if (!Number.isFinite(n) || n < 0 || n > 99_999_999_999) {
+        issues.push({ field: 'credit_limit', message: `expected a non-negative number, got "${creditRaw}"` });
+      } else {
+        creditLimit = Math.round(n * 1000) / 1000;
+      }
+    }
+    let paymentTermDays: number | null = null;
+    const termRaw = String(row.payment_term_days ?? row['PAYMENT TERM DAYS'] ?? '').trim();
+    if (termRaw) {
+      const n = Number(termRaw);
+      if (!Number.isInteger(n) || n < 0 || n > 365) {
+        issues.push({ field: 'payment_term_days', message: `expected whole days 0-365, got "${termRaw}"` });
+      } else {
+        paymentTermDays = n;
       }
     }
 
@@ -668,6 +709,10 @@ async function uploadCustomerMasterCore(
       contactPerson: stripHtml(row.contact_person ?? row['CONTACT PERSON']) || null,
       crNumber: stripHtml(row.cr_no ?? row['CR NO']) || null,
       paymentTerms,
+      paymentTermsPresent,
+      temixCode,
+      creditLimit,
+      paymentTermDays,
     };
 
     importRows.push({
@@ -736,6 +781,12 @@ async function promoteCustomerBatchCore(
     contactPerson: string | null;
     crNumber: string | null;
     paymentTerms: string;
+    // Phase 1 Temix refresh columns (older batches parsed before the columns
+    // existed have them undefined — treat as absent).
+    paymentTermsPresent?: boolean;
+    temixCode?: string | null;
+    creditLimit?: number | null;
+    paymentTermDays?: number | null;
   };
   const groups = new Map<string, { rowIds: string[]; parsed: ParsedShape[] }>();
   for (const row of cleanRows) {
@@ -816,55 +867,158 @@ async function promoteCustomerBatchCore(
     }
 
     try {
+      let refreshedRow = false;
       await prisma.$transaction(async (tx) => {
-        const customer = await tx.customer.upsert({
+        const pt = first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH';
+        const existing = await tx.customer.findUnique({
           where: { nmwcCode: custCode },
-          update: {
-            legalName: first.custName,
-            paymentTerms: first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH',
-            primaryPhone: first.phone,
-            primaryPhoneNorm: first.phone,
-            contactPerson: first.contactPerson,
-            crNumber: first.crNumber,
-            crNumberNorm: normalizeCR(first.crNumber),
-            lastEditedById: me.id,
-          },
-          create: {
-            nmwcCode: custCode,
-            legalName: first.custName,
-            paymentTerms: first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH',
-            primaryPhone: first.phone,
-            primaryPhoneNorm: first.phone,
-            contactPerson: first.contactPerson,
-            crNumber: first.crNumber,
-            crNumberNorm: normalizeCR(first.crNumber),
-            createdById: me.id,
-            lastEditedById: me.id,
-            importBatchId: batchId,
-          },
+          select: { id: true, temixCode: true, paymentTerms: true, deletedAt: true },
         });
-        for (const r of resolvedBranches) {
-          await tx.branch.upsert({
-            where: { branchCode: r.branchCode },
+
+        // ── Phase 1 Temix crosswalk guards (rows carrying temix_code) ──
+        // Quarantine-style rejection, never silent overwrite: the crosswalk
+        // is a join (owner-locked nmwcCode == temixCode for migrated rows),
+        // so a code landing on a different customer, or disagreeing with an
+        // already-recorded code, is Steward-review territory.
+        if (first.temixCode) {
+          // NO deletedAt filter (adversarial-review CONFIRMED fix): an
+          // ARCHIVED customer holding this code has a DEACTIVATE for it
+          // queued/in-flight — re-attaching the code to a live customer
+          // would let that DEACTIVATE kill the live record in Temix.
+          const codeOwner = await tx.customer.findFirst({
+            where: {
+              temixCode: first.temixCode,
+              nmwcCode: { not: custCode },
+            },
+            select: { nmwcCode: true, deletedAt: true },
+          });
+          if (codeOwner) {
+            throw new Error(
+              `CROSSWALK:temix_code already recorded on ${codeOwner.nmwcCode}${codeOwner.deletedAt ? ' (archived — its Temix deactivation may be in flight)' : ''} — steward review`
+            );
+          }
+          if (existing?.temixCode && existing.temixCode !== first.temixCode) {
+            throw new Error(
+              'CROSSWALK:temix_code conflicts with the code already recorded for this customer — steward review'
+            );
+          }
+          // An archived customer must not be mutated (or its in-flight
+          // deactivation settled) by a stale Temix extract that still lists
+          // it — resolve the deactivation first.
+          if (existing?.deletedAt) {
+            throw new Error(
+              'CROSSWALK:customer is archived in the CRM — resolve its Temix deactivation before refreshing'
+            );
+          }
+        }
+
+        const isRefresh = !!existing && !existing.deletedAt && !!first.temixCode;
+        refreshedRow = isRefresh;
+        let customerId: string;
+        if (isRefresh) {
+          // ── Temix REFRESH row (existing live customer + temix_code) ──
+          // Narrow, Temix-OWNED update only: crosswalk code + payment terms +
+          // credit figures (owner-locked: authoritative from Temix). CRM-
+          // enriched identity/contact data (legalName, phone, CR, contact)
+          // and ALL branch operational data are CRM-owned — a refresh must
+          // not clobber them (field-ownership matrix, sla-notif-sync §3.5).
+          //
+          // Presence-aware (adversarial-review CONFIRMED fix): an ABSENT
+          // payment_terms column means "keep the customer's current terms" —
+          // only an explicit CASH may clear credit figures, and credit
+          // figures apply only while the customer is (or becomes) CREDIT.
+          const ptPresent = first.paymentTermsPresent === true;
+          const effectiveTerms = ptPresent ? pt : existing!.paymentTerms;
+          await tx.customer.update({
+            where: { id: existing!.id },
+            data: {
+              temixCode: first.temixCode,
+              paymentTerms: ptPresent ? pt : undefined,
+              creditLimit:
+                effectiveTerms === 'CREDIT'
+                  ? (first.creditLimit ?? undefined)
+                  : ptPresent
+                    ? null
+                    : undefined,
+              paymentTermDays:
+                effectiveTerms === 'CREDIT'
+                  ? (first.paymentTermDays ?? undefined)
+                  : ptPresent
+                    ? null
+                    : undefined,
+              lastEditedById: me.id,
+              // B-05: make the refresh visible to the optimistic lock so a
+              // concurrent edit-approve sees VERSION_CONFLICT, not a silent
+              // revert of Temix-authoritative fields.
+              version: { increment: 1 },
+            },
+          });
+          // Blueprint §8.3: the inbound refresh is what flips UPLOADED →
+          // SYNCED. Guarded so a PENDING_UPLOAD row (correction approved
+          // after the last batch) keeps its place in the queue.
+          await tx.customer.updateMany({
+            where: { id: existing!.id, temixSyncState: 'UPLOADED' },
+            data: { temixSyncState: 'SYNCED' },
+          });
+          customerId = existing!.id;
+        } else {
+          const customer = await tx.customer.upsert({
+            where: { nmwcCode: custCode },
             update: {
-              branchName: r.branchName,
-              regionId: r.regionId,
-              routeId: r.routeId,
-              address: r.address,
-              customerId: customer.id,
+              legalName: first.custName,
+              paymentTerms: pt,
+              primaryPhone: first.phone,
+              primaryPhoneNorm: first.phone,
+              contactPerson: first.contactPerson,
+              crNumber: first.crNumber,
+              crNumberNorm: normalizeCR(first.crNumber),
               lastEditedById: me.id,
             },
             create: {
-              branchCode: r.branchCode,
-              branchName: r.branchName,
-              regionId: r.regionId,
-              routeId: r.routeId,
-              address: r.address,
-              customerId: customer.id,
+              nmwcCode: custCode,
+              legalName: first.custName,
+              paymentTerms: pt,
+              primaryPhone: first.phone,
+              primaryPhoneNorm: first.phone,
+              contactPerson: first.contactPerson,
+              crNumber: first.crNumber,
+              crNumberNorm: normalizeCR(first.crNumber),
+              // Initial master load may carry the ERP code directly; credit
+              // figures land only on CREDIT rows.
+              temixCode: first.temixCode ?? null,
+              creditLimit: pt === 'CREDIT' ? (first.creditLimit ?? null) : null,
+              paymentTermDays: pt === 'CREDIT' ? (first.paymentTermDays ?? null) : null,
               createdById: me.id,
               lastEditedById: me.id,
+              importBatchId: batchId,
             },
           });
+          customerId = customer.id;
+        }
+        if (!isRefresh) {
+          for (const r of resolvedBranches) {
+            await tx.branch.upsert({
+              where: { branchCode: r.branchCode },
+              update: {
+                branchName: r.branchName,
+                regionId: r.regionId,
+                routeId: r.routeId,
+                address: r.address,
+                customerId,
+                lastEditedById: me.id,
+              },
+              create: {
+                branchCode: r.branchCode,
+                branchName: r.branchName,
+                regionId: r.regionId,
+                routeId: r.routeId,
+                address: r.address,
+                customerId,
+                createdById: me.id,
+                lastEditedById: me.id,
+              },
+            });
+          }
         }
         await tx.importRow.updateMany({
           where: { id: { in: g.rowIds } },
@@ -872,10 +1026,12 @@ async function promoteCustomerBatchCore(
         });
       });
       promoted += g.rowIds.length;
-      if (groupResolveErrors.length > 0) {
+      if (groupResolveErrors.length > 0 && !refreshedRow) {
         // F-17: surface the phantom-region warning in the row's issues so the
         // Steward can fix the reference data and re-run the import. Row stays
         // PROMOTED (the customer landed) but with a visible warning.
+        // Skipped for refresh rows — their branches were deliberately never
+        // touched, so a "assigned to UNASSIGNED" warning would be false.
         await prisma.importRow
           .updateMany({
             where: { id: { in: g.rowIds } },
@@ -895,16 +1051,23 @@ async function promoteCustomerBatchCore(
       // only.
       const code = (err as { code?: string })?.code ?? 'UNKNOWN';
       const meta = (err as { meta?: { target?: string[] } })?.meta?.target;
+      // Phase 1 Temix crosswalk conflicts carry a deliberate, PII-safe
+      // message (codes only, never phone/CR values) for the Steward.
+      const crosswalk =
+        err instanceof Error && err.message.startsWith('CROSSWALK:')
+          ? err.message.slice('CROSSWALK:'.length)
+          : null;
       logger.warn(
-        { code, target: meta, custCode, batchId },
+        { code, target: meta, custCode, batchId, crosswalk: !!crosswalk },
         'import.promote.row_failed'
       );
       // Mark the failed row(s) REJECTED in a SEPARATE transaction so the
       // failure persists even though the row-level promote rolled back.
       const reason =
-        code === 'P2002'
+        crosswalk ??
+        (code === 'P2002'
           ? `duplicate ${(meta ?? []).join(', ')}`
-          : `promote failed (${code})`;
+          : `promote failed (${code})`);
       try {
         await prisma.importRow.updateMany({
           where: { id: { in: g.rowIds } },

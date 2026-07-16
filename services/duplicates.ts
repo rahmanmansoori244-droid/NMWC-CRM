@@ -13,6 +13,7 @@ import {
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer } from '@/lib/completeness';
+import { resolveArchiveTemixState } from '@/lib/temix';
 
 // RBAC-05-009: PRD §4 reserves duplicate merge to STEWARD. Previous code
 // also accepted MANAGER which conflated master-data ops with people-ops
@@ -254,10 +255,40 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
       });
       await tx.customer.update({ where: { id: loser.id }, data: { crPhotoId: null } });
     }
-    // Soft-delete the loser
-    await tx.customer.update({
+    // Soft-delete the loser. Phase 1 Temix sync: a loser Temix has heard of
+    // (coded / ever uploaded / migrated-SYNCED) queues for ERP deactivation;
+    // a never-uploaded loser just leaves the queue — Temix has nothing to
+    // deactivate (lib/temix.ts resolveArchiveTemixState). Decided from a
+    // FRESH in-tx read and pinned on the observed state: a Temix batch
+    // committing between the pre-tx load and this write would otherwise get
+    // its UPLOADED clobbered and the deactivation lost forever
+    // (adversarial-review finding).
+    const loserFresh = await tx.customer.findUniqueOrThrow({
       where: { id: loser.id },
-      data: { deletedAt: new Date(), lastEditedById: session.id },
+      select: { temixCode: true, lastTemixUploadAt: true, temixSyncState: true },
+    });
+    const loserTemixState = resolveArchiveTemixState(loserFresh);
+    const loserClaim = await tx.customer.updateMany({
+      where: { id: loser.id, deletedAt: null, temixSyncState: loserFresh.temixSyncState },
+      data: {
+        deletedAt: new Date(),
+        lastEditedById: session.id,
+        temixSyncState: loserTemixState,
+        temixSyncPendingSince: loserTemixState === 'DEACTIVATE_PENDING' ? new Date() : null,
+        version: { increment: 1 },
+      },
+    });
+    if (loserClaim.count === 0) {
+      throw new ValidationError({
+        _form: 'The customer just changed (another action or a Temix batch ran). Refresh and retry the merge.',
+      });
+    }
+    // The winner absorbed branches (and possibly a CR photo) — its Temix
+    // master view changed, so re-queue it for the next batch (same guard as
+    // applyEditChanges: PENDING_UPLOAD/DEACTIVATE_PENDING rows stay put).
+    await tx.customer.updateMany({
+      where: { id: winner.id, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
+      data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
     });
     // Recompute winner completeness
     const fresh = await tx.customer.findUniqueOrThrow({

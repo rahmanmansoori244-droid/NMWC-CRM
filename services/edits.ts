@@ -597,6 +597,7 @@ async function applyEditChanges(
   // a Manager direct-write landing simultaneously with a Supervisor approve.
 
   // Build customer update payload
+  let appliedAnything = false;
   const updateCustomer: Record<string, unknown> = {};
   for (const f of CUSTOMER_FIELDS) {
     if (customerProposed[f] !== undefined) {
@@ -606,6 +607,7 @@ async function applyEditChanges(
     }
   }
   if (Object.keys(updateCustomer).length > 0) {
+    appliedAnything = true;
     updateCustomer.lastEditedById = actorId;
     const currentCustomer = await tx.customer.findUniqueOrThrow({
       where: { id: customerId },
@@ -632,6 +634,7 @@ async function applyEditChanges(
       branchUpdate[f] = v;
     }
     if (Object.keys(branchUpdate).length === 0) continue;
+    appliedAnything = true;
     branchUpdate.lastEditedById = actorId;
     const currentBranch = await tx.branch.findUniqueOrThrow({
       where: { id: bp.branchId },
@@ -665,6 +668,24 @@ async function applyEditChanges(
   for (const b of fresh.branches) {
     const bScore = scoreBranch(b);
     await tx.branch.update({ where: { id: b.id }, data: { completenessScore: bScore } });
+  }
+
+  // Phase 1 Temix sync: an applied master change re-queues the customer for
+  // the next Temix batch. Guarded: SYNCED → obvious; UPLOADED → the change
+  // landed AFTER the last batch was generated, so Temix does not have it and
+  // the row must re-queue (the batch snapshot keeps its own ids). A row
+  // already PENDING_UPLOAD stays put (no double-queue — Blueprint §8.3 "WHERE
+  // SYNCED-style guard"), and DEACTIVATE_PENDING is never resurrected.
+  // Whole-edit granularity for now — the TEMIX_RELEVANT_FIELDS whitelist is
+  // an open owner question (Q-temix-fields); over-queueing is harmless
+  // (Temix upserts on the code). Skipped when nothing was actually written
+  // (e.g. every branch change was QA-039-dropped) — an all-no-op approval
+  // must not churn the queue.
+  if (appliedAnything) {
+    await tx.customer.updateMany({
+      where: { id: customerId, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
+      data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
+    });
   }
 }
 
