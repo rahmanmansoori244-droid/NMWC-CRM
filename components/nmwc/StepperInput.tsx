@@ -9,6 +9,7 @@ export function StepperInput({
   onChange,
   min = 0,
   max = 100,
+  disabled,
 }: {
   name: string;
   label: string;
@@ -16,8 +17,11 @@ export function StepperInput({
   onChange: (n: number) => void;
   min?: number;
   max?: number;
+  /** Read-only rendering — all three controls inert. */
+  disabled?: boolean;
 }) {
   function set(v: number) {
+    if (disabled) return;
     if (v < min) v = min;
     if (v > max) v = max;
     onChange(v);
@@ -29,7 +33,7 @@ export function StepperInput({
         <button
           type="button"
           onClick={() => set(value - 1)}
-          disabled={value <= min}
+          disabled={disabled || value <= min}
           className="rounded-md border border-slate-300 p-1 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
           aria-label={`Decrease ${label}`}
         >
@@ -46,6 +50,7 @@ export function StepperInput({
           // strip non-digits, and parse safely to avoid the NaN→empty bug.
           inputMode="numeric"
           pattern="[0-9]*"
+          disabled={disabled}
           onChange={(e) => {
             const raw = e.currentTarget.value.replace(/[^0-9]/g, '');
             if (!raw) {
@@ -60,7 +65,7 @@ export function StepperInput({
         <button
           type="button"
           onClick={() => set(value + 1)}
-          disabled={value >= max}
+          disabled={disabled || value >= max}
           className="rounded-md border border-slate-300 p-1 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
           aria-label={`Increase ${label}`}
         >

@@ -93,8 +93,10 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
   if (!isAdmin && att.capturedById !== session.user.id) {
     throw new NotFoundError('Attachment not found.');
   }
-  // Must be a fresh upload, not already attached anywhere.
-  if (att.customerId || att.branchId || att.branchExtraId) {
+  // Must be a fresh upload, not already attached anywhere. `editId` counts as
+  // wired: a photo claimed by a pending CREATE request must not be re-routed
+  // onto an unrelated customer/branch slot (Phase 1 creation flow).
+  if (att.customerId || att.branchId || att.branchExtraId || att.editId) {
     throw new ValidationError({ attachmentId: 'Attachment already wired to a slot.' });
   }
   // NEW-PHOTO-001: slot must match the attachment.kind, except FREE which

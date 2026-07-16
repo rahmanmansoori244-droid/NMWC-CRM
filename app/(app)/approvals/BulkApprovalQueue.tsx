@@ -23,6 +23,9 @@ export type ApprovalQueueItem = {
   id: string;
   ageHours: number;
   changesCount: number;
+  /** Phase 1: net-new customer CREATE request (no customer row yet). */
+  isCreate: boolean;
+  paymentTerms: 'CASH' | 'CREDIT' | null;
   customer: {
     legalName: string;
     nmwcCode: string;
@@ -191,12 +194,18 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                   size={44}
                 />
                 <div className="min-w-0 flex-1">
-                  <h3 className="truncate text-sm font-semibold text-slate-900">
-                    {e.customer?.legalName}
+                  <h3 className="flex items-center gap-1.5 truncate text-sm font-semibold text-slate-900">
+                    {e.isCreate && (
+                      <span className="inline-flex shrink-0 rounded-full bg-brand-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-700">
+                        New
+                      </span>
+                    )}
+                    <span className="truncate">{e.customer?.legalName ?? '—'}</span>
                   </h3>
                   <p className="text-xs text-slate-500">
-                    {e.customer?.nmwcCode} · {e.changesCount} change
-                    {e.changesCount === 1 ? '' : 's'}
+                    {e.isCreate
+                      ? `New ${e.paymentTerms ?? ''} customer request`.replace('  ', ' ')
+                      : `${e.customer?.nmwcCode} · ${e.changesCount} change${e.changesCount === 1 ? '' : 's'}`}
                   </p>
                   <p className="mt-1 text-xs text-slate-600">
                     Submitted by {e.submittedByFullName}
@@ -256,7 +265,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
       <ConfirmModal
         open={showApprove}
         title={`Approve ${selected.size} edit${selected.size === 1 ? '' : 's'}?`}
-        message={`Changes go live on the customer master immediately. Failed edits (concurrent updates, missing fields, etc.) will be reported back without blocking the rest.`}
+        message={`Final-step approvals go live on the customer master immediately; mid-chain approvals advance the request to the next approver. Failed edits (concurrent updates, missing fields, etc.) will be reported back without blocking the rest.`}
         confirmLabel={`Approve ${selected.size}`}
         confirmTone="primary"
         onConfirm={handleBulkApprove}

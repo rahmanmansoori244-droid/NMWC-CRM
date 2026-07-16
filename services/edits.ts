@@ -27,6 +27,8 @@ import {
   stepDeadline,
   resolveRejectTarget,
 } from '@/lib/approval-chains';
+import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/notifications';
+import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 
 async function requireUser() {
   const session = await auth();
@@ -261,7 +263,7 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
   // Salesman scope: at least one branch must belong to his route
   const me = await prisma.user.findUniqueOrThrow({
     where: { id: session.id },
-    select: { id: true, ownedRouteId: true, role: true },
+    select: { id: true, ownedRouteId: true, role: true, supervisorId: true },
   });
   if (me.role === Role.SALESMAN) {
     const onMyRoute = customer.branches.some((b) => b.routeId === me.ownedRouteId);
@@ -534,6 +536,33 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
       }
       throw err;
     }
+    // Tell the first approver a review is waiting (in-app Notification row).
+    // Best-effort AFTER the edit exists — an UPDATE submit is a single insert,
+    // not a transaction, and losing a notification is tolerable while losing
+    // a submit is not. try/catch enforces that contract: a transient notify
+    // failure must not convert an already-committed submit into a reported
+    // error (the salesman's retry would dead-end on EDIT_LOCKED).
+    if (!isDraft) {
+      try {
+        await notifyUsers(prisma, await resolveStepAudience(
+          prisma,
+          firstStep,
+          { supervisorId: me.supervisorId },
+          [...new Set(customer.branches.map((b) => b.regionId))]
+        ), {
+          kind: 'EDIT_SUBMITTED',
+          title: 'Edit awaiting your review',
+          body: `${customer.legalName} (${customer.nmwcCode}) — changes submitted for approval.`,
+          editId: edit.id,
+          customerId: customer.id,
+        });
+      } catch (err) {
+        logger.warn(
+          { editId: edit.id, err: (err as Error).message },
+          'edit.submit.notify_failed'
+        );
+      }
+    }
   }
 
   logger.info(
@@ -662,38 +691,41 @@ async function approveEditCore(formData: FormData) {
     include: {
       customer: { include: { branches: { where: { deletedAt: null } } } },
       submittedBy: { select: { id: true, supervisorId: true, fullName: true } },
+      // Phase 1 creation flow: a CREATE request (customerId = null) carries its
+      // proposed payload in typed drafts; approver scope + finalize both read
+      // from these instead of edit.customer. The route join gives the CURRENT
+      // region — a route can be re-regioned mid-chain, and region-scoped
+      // approval must match where the customer will actually materialize.
+      customerDraft: true,
+      branchDrafts: { include: { route: { select: { regionId: true } } } },
     },
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (edit.state !== EditState.SUBMITTED) {
     throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
   }
-  // Phase 1b: a CREATE request (net-new customer) has customerId = null and is
-  // materialized from its typed drafts by the creation-flow increment — not built
-  // yet, and no action can create a CREATE edit today (submitEditCore hardcodes
-  // process = UPDATE). Guarded HERE, before the null-customer check below, so a
-  // would-be CREATE approval fails with a clear message rather than a misleading
-  // "customer no longer exists". When the creation flow lands, this guard AND the
-  // null-customer check must be reworked to source approver scope from the draft
-  // branches instead of edit.customer (that is also what unblocks the multi-step
-  // advance branch below, which is dormant until then).
-  if (edit.process === EditProcess.CREATE) {
-    throw new ConflictError(
-      'NOT_IMPLEMENTED',
-      'Approving a new-customer create-request is delivered in the creation-flow increment.'
-    );
-  }
-  // QA-038: customer might have been merged or soft-deleted between submit and approve.
-  if (!edit.customer || edit.customer.deletedAt) {
+  const isCreate = edit.process === EditProcess.CREATE;
+  if (isCreate) {
+    // Integrity: a CREATE row must have its draft payload (written atomically
+    // at submit). Fails closed with an actionable code if not.
+    assertFinalizable(edit);
+  } else if (!edit.customer || edit.customer.deletedAt) {
+    // QA-038: customer might have been merged or soft-deleted between submit and approve.
     throw new NotFoundError('Customer no longer exists (may have been merged or deleted).');
   }
   // Phase 1b: step-aware authorization. Resolve the frozen chain + current step;
   // the actor must be authorized for THIS step (canActOnStep) — region scope for
   // scoped steps (Supervisor/Accountant), plus separation of duty (no
   // self-approval; no acting on two DIFFERENT steps of the same edit).
+  // For CREATE the scope branches are the DRAFT branches (region-scoped
+  // approvers act on where the customer WILL live).
   const { loadScope } = await import('@/lib/access');
   const actorScope = await loadScope(session.id);
   const sessionUser = { id: session.id, role: session.role, username: session.username };
+  const scopeBranches = isCreate
+    ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
+    : edit.customer!.branches;
+  const scopeRegionIds = [...new Set(scopeBranches.map((b) => b.regionId))];
   const chain = parseChain(edit.approvalChain);
   const stepIndex = edit.currentStepIndex;
   const step = chain[stepIndex];
@@ -704,7 +736,7 @@ async function approveEditCore(formData: FormData) {
   });
   if (
     !canActOnStep(sessionUser, step, edit.submittedBy, {
-      customerBranches: edit.customer.branches,
+      customerBranches: scopeBranches,
       managedRegionIds: actorScope.managedRegionIds,
       priorStepActorIds: priorStepDecisions.map((d) => d.actorId),
     })
@@ -713,6 +745,7 @@ async function approveEditCore(formData: FormData) {
   }
 
   const isFinal = isFinalStep(chain, stepIndex);
+  const requestName = isCreate ? edit.customerDraft!.legalName : edit.customer!.legalName;
 
   // Non-final step (multi-step CREATE chains): advance the pointer atomically and
   // record the step decision. NO customer data is written until the FINAL step,
@@ -766,6 +799,28 @@ async function approveEditCore(formData: FormData) {
           } as unknown as Prisma.InputJsonValue,
         },
       });
+      // Notify the next step's approvers + the submitter (progress). Inside
+      // the tx so a lost claim race never notifies.
+      const nextAudience = await resolveStepAudience(
+        tx,
+        nextStep,
+        { supervisorId: edit.submittedBy.supervisorId },
+        scopeRegionIds
+      );
+      await notifyUsers(tx, nextAudience, {
+        kind: 'EDIT_STAGE_ADVANCED',
+        title: 'Approval waiting on you',
+        body: `${requestName} — request advanced to the ${nextStep.role} step.`,
+        editId,
+        customerId: edit.customerId ?? undefined,
+      });
+      await notifyUsers(tx, [edit.submittedById], {
+        kind: 'EDIT_STAGE_ADVANCED',
+        title: 'Request advanced',
+        body: `${requestName} — approved at the ${step.role} step; now with ${nextStep.role}.`,
+        editId,
+        customerId: edit.customerId ?? undefined,
+      });
     });
     logger.info({ editId, by: session.id, stepIndex, advancedTo: stepIndex + 1 }, 'edit.step_approve');
     revalidatePath('/approvals');
@@ -773,8 +828,93 @@ async function approveEditCore(formData: FormData) {
     return;
   }
 
-  // FINAL step of an UPDATE chain (CREATE already returned above via the
-  // NOT_IMPLEMENTED guard). Apply the changes to the live customer.
+  // ── FINAL step, CREATE process: materialize the drafts into a real
+  // Customer + Branch[] (all-or-nothing, same tx as the claim). ──
+  if (isCreate) {
+    const finalizedAt = new Date();
+    const result = await prisma.$transaction(async (tx) => {
+      // PROD-001 pattern: claim the edit atomically; loser sees count=0.
+      const claim = await tx.customerEdit.updateMany({
+        where: {
+          id: editId,
+          state: EditState.SUBMITTED,
+          currentStepIndex: stepIndex,
+          cycle: edit.cycle,
+        },
+        data: {
+          state: EditState.APPROVED,
+          pendingRole: null,
+          reviewedById: session.id,
+          reviewedAt: finalizedAt,
+        },
+      });
+      if (claim.count === 0) {
+        throw new ConflictError(
+          'NOT_PENDING',
+          'This request was just decided by another reviewer. Refresh to see the current state.'
+        );
+      }
+      await tx.editApproval.create({
+        data: {
+          editId,
+          cycle: edit.cycle,
+          stepIndex,
+          role: step.role,
+          decision: 'APPROVED',
+          actorId: session.id,
+        },
+      });
+      const finalized = await finalizeCreateInTx(
+        tx,
+        {
+          id: edit.id,
+          submittedById: edit.submittedById,
+          cycle: edit.cycle,
+          requestedCreditLimit: edit.requestedCreditLimit,
+          requestedPaymentTermDays: edit.requestedPaymentTermDays,
+          customerDraft: edit.customerDraft!,
+          branchDrafts: edit.branchDrafts,
+        },
+        session.id,
+        finalizedAt
+      );
+      // Submitter learns their customer is live; Stewards get the
+      // Temix-upload-ready signal (temixSyncState is now PENDING_UPLOAD).
+      await notifyUsers(tx, [edit.submittedById], {
+        kind: 'EDIT_APPROVED_FINAL',
+        title: 'New customer approved',
+        body: `${finalized.legalName} is now live as ${finalized.nmwcCode}.`,
+        editId,
+        customerId: finalized.customerId,
+      });
+      const stewards = await resolveStewardAudience(tx);
+      await notifyUsers(tx, stewards, {
+        kind: 'EDIT_APPROVED_FINAL',
+        title: 'Ready for Temix upload',
+        body: `${finalized.legalName} (${finalized.nmwcCode}) was approved and is queued for the next Temix batch.`,
+        editId,
+        customerId: finalized.customerId,
+      });
+      return finalized;
+      // Above Prisma's 5s default: finalize fans out ~7 statements per branch
+      // (up to 10 branches) plus the identity-lock wait against a concurrent
+      // same-shop submit.
+    }, { timeout: 30_000, maxWait: 10_000 });
+    logger.info(
+      { editId, by: session.id, customerId: result.customerId, nmwcCode: result.nmwcCode },
+      'create.finalize'
+    );
+    revalidatePath('/approvals');
+    revalidatePath('/work');
+    revalidatePath('/customers');
+    revalidatePath(`/customers/${result.customerId}`);
+    return;
+  }
+
+  // FINAL step of an UPDATE chain. Apply the changes to the live customer.
+  // (Non-null: the CREATE process returned above; UPDATE was null-checked at
+  // the top of this function.)
+  const liveCustomer = edit.customer!;
 
   // Reconstruct payloads from fieldChanges array
   const fieldChanges = edit.fieldChanges as unknown as FieldChange[];
@@ -805,9 +945,9 @@ async function approveEditCore(formData: FormData) {
   // time too so the close-and-reactivate workflow is the only path.
   if (
     typeof customerProposed.status === 'string' &&
-    customerProposed.status !== edit.customer.status &&
-    (edit.customer.status === 'CLOSED' ||
-      edit.customer.status === 'SUSPENDED' ||
+    customerProposed.status !== liveCustomer.status &&
+    (liveCustomer.status === 'CLOSED' ||
+      liveCustomer.status === 'SUSPENDED' ||
       customerProposed.status === 'CLOSED' ||
       customerProposed.status === 'SUSPENDED')
   ) {
@@ -827,7 +967,7 @@ async function approveEditCore(formData: FormData) {
     isFieldLocked(
       'legalName',
       { id: submitter.id, role: Role.SALESMAN, username: '' },
-      edit.customer
+      liveCustomer
     )
   ) {
     delete customerProposed.legalName;
@@ -954,6 +1094,13 @@ async function approveEditCore(formData: FormData) {
           droppedBranchIds: droppedBranchIds.length > 0 ? droppedBranchIds : undefined,
         } as unknown as Prisma.InputJsonValue,
       },
+    });
+    await notifyUsers(tx, [edit.submittedById], {
+      kind: 'EDIT_APPROVED_FINAL',
+      title: 'Edit approved',
+      body: `${requestName} — your changes were approved and are now live.`,
+      editId,
+      customerId: edit.customerId ?? undefined,
     });
   });
 
@@ -1090,19 +1237,35 @@ async function rejectEditCore(formData: FormData) {
     include: {
       submittedBy: { select: { id: true, supervisorId: true } },
       customer: {
-        select: { branches: { select: { regionId: true, deletedAt: true } } },
+        select: {
+          legalName: true,
+          branches: { select: { regionId: true, deletedAt: true } },
+        },
       },
+      // Phase 1 creation flow: CREATE requests derive scope + display name
+      // from the drafts (customerId is null until finalize). Route join =
+      // CURRENT region (matches the approve path).
+      customerDraft: { select: { legalName: true } },
+      branchDrafts: { select: { route: { select: { regionId: true } } } },
     },
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (edit.state !== EditState.SUBMITTED) {
     throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
   }
+  const rejectIsCreate = edit.process === EditProcess.CREATE;
   // Phase 1b: step-aware authorization — the rejecter must be the CURRENT step's
   // authorized approver (same rule as approve): region scope for scoped steps +
   // separation of duty (no self-reject; no acting on two different steps).
   const { loadScope: loadScopeReject } = await import('@/lib/access');
   const rejectScope = await loadScopeReject(session.id);
+  const rejectScopeBranches = rejectIsCreate
+    ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
+    : (edit.customer?.branches ?? []);
+  const rejectRegionIds = [...new Set(rejectScopeBranches.map((b) => b.regionId))];
+  const rejectRequestName = rejectIsCreate
+    ? (edit.customerDraft?.legalName ?? '—')
+    : (edit.customer?.legalName ?? '—');
   const rejectChain = parseChain(edit.approvalChain);
   const rejectStepIndex = edit.currentStepIndex;
   const rejectStep = rejectChain[rejectStepIndex];
@@ -1117,7 +1280,7 @@ async function rejectEditCore(formData: FormData) {
       rejectStep,
       edit.submittedBy,
       {
-        customerBranches: edit.customer?.branches ?? [],
+        customerBranches: rejectScopeBranches,
         managedRegionIds: rejectScope.managedRegionIds,
         priorStepActorIds: rejectPriorDecisions.map((d) => d.actorId),
       }
@@ -1199,6 +1362,41 @@ async function rejectEditCore(formData: FormData) {
         } as unknown as Prisma.InputJsonValue,
       },
     });
+    // Notifications (inside the tx — a lost claim race must not notify).
+    if (target.kind === 'STEP_BACK') {
+      // The request went back to the previous approver step; tell that step's
+      // audience it is waiting on them again, and give the submitter a
+      // progress ping (their request has NOT come back to them).
+      const backStep = rejectChain[target.toStepIndex]!;
+      const backAudience = await resolveStepAudience(
+        tx,
+        backStep,
+        { supervisorId: edit.submittedBy.supervisorId },
+        rejectRegionIds
+      );
+      await notifyUsers(tx, backAudience, {
+        kind: 'EDIT_STAGE_ADVANCED',
+        title: 'Request returned to your step',
+        body: `${rejectRequestName} — rejected at the ${rejectStep.role} step and returned to ${backStep.role} for re-review.`,
+        editId,
+        customerId: edit.customerId ?? undefined,
+      });
+      await notifyUsers(tx, [edit.submittedById], {
+        kind: 'EDIT_STAGE_ADVANCED',
+        title: 'Request stepped back',
+        body: `${rejectRequestName} — sent back one step for re-review (not returned to you).`,
+        editId,
+        customerId: edit.customerId ?? undefined,
+      });
+    } else {
+      await notifyUsers(tx, [edit.submittedById], {
+        kind: 'EDIT_NEEDS_CORRECTION',
+        title: 'Needs correction',
+        body: `${rejectRequestName} — returned to you: ${reason}`,
+        editId,
+        customerId: edit.customerId ?? undefined,
+      });
+    }
   });
 
   logger.info({ editId, by: session.id, category }, 'edit.reject');

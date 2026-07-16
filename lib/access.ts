@@ -182,11 +182,16 @@ export function assertCanEditCustomer(
  *
  * The Attachment table carries denormalized customerId/branchId/branchExtraId,
  * but those can be null when the photo was just finalized and not yet wired to
- * a slot. In that case fall back to capturedById ownership.
+ * a slot. In that case fall back to capturedById ownership — or, for photos
+ * claimed by a pending CREATE request (editId set, Phase 1 creation flow),
+ * to the request's DRAFT-branch scope so chain approvers can review them.
  */
 export async function assertCanAccessAttachment(
   user: SessionUser,
-  attachment: Pick<Attachment, 'id' | 'capturedById' | 'customerId' | 'branchId' | 'branchExtraId'>,
+  attachment: Pick<
+    Attachment,
+    'id' | 'capturedById' | 'customerId' | 'branchId' | 'branchExtraId' | 'editId'
+  >,
   scope: Scope
 ): Promise<void> {
   if (user.role === Role.STEWARD || user.role === Role.VIEWER) return;
@@ -215,6 +220,35 @@ export async function assertCanAccessAttachment(
       select: { customerId: true },
     });
     customerId = branch?.customerId ?? null;
+  }
+  if (!customerId && attachment.editId) {
+    // Phase 1 creation flow: an edit-claimed photo belongs to a CREATE request
+    // whose customer does not exist yet. Authorize against the request's
+    // DRAFT branches with the exact same role/scope matrix as a live customer
+    // (canSeeCustomer): submitter's route ⇒ salesman; team routes ⇒
+    // supervisor; region overlap (fail-closed) ⇒ manager/accountant; org-wide
+    // ⇒ FM/GM. The edit's own customerId (set at finalize) is preferred when
+    // present so post-approval access follows the live customer.
+    const edit = await prisma.customerEdit.findUnique({
+      where: { id: attachment.editId },
+      select: {
+        customerId: true,
+        branchDrafts: { select: { routeId: true, regionId: true } },
+      },
+    });
+    if (edit?.customerId) {
+      customerId = edit.customerId;
+    } else if (edit && edit.branchDrafts.length > 0) {
+      const draftBranches = edit.branchDrafts.map((d) => ({
+        routeId: d.routeId,
+        regionId: d.regionId,
+        deletedAt: null,
+      }));
+      if (!canSeeCustomer(user, { branches: draftBranches }, scope)) {
+        throw new NotFoundError('Attachment not found.');
+      }
+      return;
+    }
   }
   if (!customerId) {
     // Orphan attachment owned by another user — no access

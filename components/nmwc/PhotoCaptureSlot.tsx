@@ -5,7 +5,7 @@ import { Camera, Image as ImageIcon, Trash2, RefreshCw, Check, Loader2, RotateCw
 import { cn } from '@/lib/utils';
 import { attachPhotoAction, detachPhotoAction } from '@/services/photos';
 
-export type PhotoSlotKind = 'SHOP' | 'SIGNBOARD' | 'CR' | 'FREE';
+export type PhotoSlotKind = 'SHOP' | 'SIGNBOARD' | 'CR' | 'FREE' | 'GUARANTEE';
 export type AttachTarget =
   | { kind: 'customer'; customerId: string; slot: 'CR' }
   | { kind: 'branch'; branchId: string; slot: 'SHOP' | 'SIGNBOARD' | 'FREE' };
@@ -20,6 +20,7 @@ const LABELS: Record<PhotoSlotKind, string> = {
   SIGNBOARD: 'Signboard',
   CR: 'CR document',
   FREE: 'Other',
+  GUARANTEE: 'Guarantee doc',
 };
 
 async function compressImage(file: File, maxLong = 1920, quality = 0.85): Promise<Blob> {
@@ -169,6 +170,7 @@ export function PhotoCaptureSlot({
   capturedLat,
   capturedLng,
   attachTo,
+  disabled,
 }: {
   kind: PhotoSlotKind;
   required?: boolean;
@@ -178,6 +180,12 @@ export function PhotoCaptureSlot({
   capturedLng?: number;
   /** When provided, the photo is wired to a customer/branch slot immediately after finalize. */
   attachTo?: AttachTarget;
+  /**
+   * Read-only rendering (e.g. a SUBMITTED create request): hides the
+   * capture/retake/remove controls entirely so the slot cannot upload or
+   * clear anything — a visually frozen view must not fire server calls.
+   */
+  disabled?: boolean;
 }) {
   const inputId = useId();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -401,13 +409,13 @@ export function PhotoCaptureSlot({
         className="hidden"
         onChange={(e) => {
           const f = e.currentTarget.files?.[0];
-          if (f) onPicked(f);
+          if (f && !disabled) onPicked(f);
           // B-08: clear the input value so the same file name can be
           // re-picked, but the compressed blob stays in retainedBlob.
           e.currentTarget.value = '';
         }}
       />
-      {!busy && !confirmingDelete && (
+      {!busy && !confirmingDelete && !disabled && (
         <div className="absolute right-1 top-1 z-20 flex gap-1">
           {filled && (
             <button

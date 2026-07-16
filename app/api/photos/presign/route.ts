@@ -16,7 +16,9 @@ const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_BYTES = 3 * 1024 * 1024;
 
 const presignSchema = z.object({
-  kind: z.enum(['SHOP', 'SIGNBOARD', 'CR', 'FREE']),
+  // GUARANTEE (Phase 1): credit guarantee / security documents captured during
+  // a net-new-customer CREATE request. Image-only for now (Q-guarantee-pdf).
+  kind: z.enum(['SHOP', 'SIGNBOARD', 'CR', 'FREE', 'GUARANTEE']),
   mimeType: z.string().refine((m) => ALLOWED_MIME.includes(m), 'Invalid mime type'),
   bytes: z.number().int().min(1).max(MAX_BYTES),
 });

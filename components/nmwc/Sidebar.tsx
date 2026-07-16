@@ -17,6 +17,7 @@ import {
   CalendarCheck,
   Search,
   Home as HomeIcon,
+  UserPlus,
 } from 'lucide-react';
 
 type NavItem = {
@@ -29,6 +30,7 @@ const NAV_BY_ROLE: Record<Role, NavItem[]> = {
   SALESMAN: [
     { href: '/today', label: 'Today', icon: CalendarCheck },
     { href: '/customers', label: 'Customers', icon: Search },
+    { href: '/customers/new', label: 'New customer', icon: UserPlus },
     { href: '/work', label: 'Work items', icon: Inbox },
     { href: '/rejected', label: 'Needs correction', icon: AlertTriangle },
   ],
@@ -66,10 +68,12 @@ const NAV_BY_ROLE: Record<Role, NavItem[]> = {
   FINANCE_MANAGER: [
     { href: '/approvals', label: 'Approvals', icon: ListChecks },
     { href: '/customers', label: 'Customers', icon: Search },
+    { href: '/work', label: 'Work items', icon: Inbox },
   ],
   GM: [
     { href: '/approvals', label: 'Approvals', icon: ListChecks },
     { href: '/customers', label: 'Customers', icon: Search },
+    { href: '/work', label: 'Work items', icon: Inbox },
   ],
 };
 

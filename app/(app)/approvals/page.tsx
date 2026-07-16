@@ -9,35 +9,80 @@ import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
 
 export const metadata = { title: 'Approvals · NMWC' };
 
+const APPROVER_ROLES: Role[] = [
+  Role.SUPERVISOR,
+  Role.MANAGER,
+  Role.ACCOUNTANT,
+  Role.FINANCE_MANAGER,
+  Role.GM,
+];
+
 export default async function ApprovalsPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
-  if (session.user.role !== Role.SUPERVISOR && session.user.role !== Role.MANAGER) {
+  if (!APPROVER_ROLES.includes(session.user.role)) {
     redirect('/home');
   }
 
-  // RBAC-05-003 (Critical): Manager queue must be region-scoped. Previously
-  // any Manager saw the global queue and could approve cross-region. Now we
-  // intersect with their `managedRegionIds`; a Manager with no managed
-  // regions sees an empty queue (fail-closed).
+  // Phase 1: the queue is STEP-AWARE — each role sees only the edits whose
+  // CURRENT chain step is theirs (`pendingRole`), scoped exactly like
+  // canActOnStep so a row in the queue is always actionable:
+  //   SUPERVISOR       — pendingRole SUPERVISOR + their own team's submitters
+  //   MANAGER          — pendingRole SUPERVISOR + region overlap (RBAC-05-003
+  //                      fallback approver; fail-closed on empty regions)
+  //   ACCOUNTANT       — pendingRole ACCOUNTANT + region overlap (fail-closed)
+  //   FINANCE_MANAGER  — pendingRole FINANCE_MANAGER (org-wide)
+  //   GM               — pendingRole GM (org-wide)
+  // Region overlap matches live customer branches (UPDATE) OR draft branches
+  // (CREATE — customerId is null until finalize).
+  // Deploy-gap healing: a row submitted by pre-Phase-1 code AFTER the
+  // migration backfill ran has pendingRole NULL. Only such gap rows can be
+  // SUBMITTED with a null pendingRole (drafts are filtered out by state), and
+  // they are all single-step Supervisor edits — so the Supervisor-step queues
+  // (Supervisor + Manager-fallback) treat NULL as SUPERVISOR.
+  const supervisorStepOr: Prisma.CustomerEditWhereInput[] = [
+    { pendingRole: Role.SUPERVISOR },
+    { pendingRole: null },
+  ];
+  const role = session.user.role;
   let where: Prisma.CustomerEditWhereInput;
-  if (session.user.role === Role.SUPERVISOR) {
+  if (role === Role.SUPERVISOR) {
     where = {
       state: 'SUBMITTED',
+      OR: supervisorStepOr,
       submittedBy: { supervisorId: session.user.id },
     };
+  } else if (role === Role.FINANCE_MANAGER || role === Role.GM) {
+    where = { state: 'SUBMITTED', pendingRole: role };
   } else {
+    // MANAGER (fallback on the Supervisor step) and ACCOUNTANT — region-scoped.
     const scope = await loadScope(session.user.id);
     if (scope.managedRegionIds.length === 0) {
+      // RBAC-05-003 / RBAC-05-012: fail-closed empty queue.
       where = { state: 'SUBMITTED', id: '__none__' };
     } else {
-      where = {
-        state: 'SUBMITTED',
-        customer: {
-          branches: {
-            some: { regionId: { in: scope.managedRegionIds }, deletedAt: null },
+      const regionOr: Prisma.CustomerEditWhereInput[] = [
+        {
+          customer: {
+            branches: {
+              some: { regionId: { in: scope.managedRegionIds }, deletedAt: null },
+            },
           },
         },
+        {
+          branchDrafts: {
+            some: { regionId: { in: scope.managedRegionIds } },
+          },
+        },
+      ];
+      where = {
+        state: 'SUBMITTED',
+        AND: [
+          role === Role.MANAGER
+            ? { OR: supervisorStepOr }
+            : { pendingRole: Role.ACCOUNTANT },
+          { OR: regionOr },
+        ],
       };
     }
   }
@@ -55,6 +100,8 @@ export default async function ApprovalsPage() {
           paymentTerms: true,
         },
       },
+      // CREATE requests: display fields come from the draft.
+      customerDraft: { select: { legalName: true, paymentTerms: true } },
     },
     orderBy: { submittedAt: 'asc' },
   });
@@ -67,17 +114,26 @@ export default async function ApprovalsPage() {
     const ageHours = e.submittedAt
       ? Math.round((Date.now() - new Date(e.submittedAt).getTime()) / (60 * 60 * 1000))
       : 0;
+    const isCreate = e.process === 'CREATE';
     return {
       id: e.id,
       ageHours,
       changesCount,
+      isCreate,
+      paymentTerms: isCreate ? (e.customerDraft?.paymentTerms ?? null) : null,
       customer: e.customer
         ? {
             legalName: e.customer.legalName,
             nmwcCode: e.customer.nmwcCode,
             completenessScore: e.customer.completenessScore,
           }
-        : null,
+        : isCreate && e.customerDraft
+          ? {
+              legalName: e.customerDraft.legalName,
+              nmwcCode: 'NEW',
+              completenessScore: 0,
+            }
+          : null,
       submittedByFullName: e.submittedBy.fullName,
     };
   });
@@ -94,7 +150,7 @@ export default async function ApprovalsPage() {
           <div className="px-4 sm:px-6">
             <EmptyState
               title="Nothing pending"
-              description="When salesmen submit edits, they appear here for your review."
+              description="When a request reaches your step of the approval chain, it appears here."
             />
           </div>
         ) : (

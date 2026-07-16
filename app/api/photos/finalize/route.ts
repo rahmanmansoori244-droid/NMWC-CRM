@@ -31,7 +31,11 @@ function expectedPrefixes(userId: string): string[] {
  * finalize as CR, sliding a signboard photo into the CR slot at attach time.
  */
 function kindFromKey(key: string): AttachmentKind | null {
-  const m = /^[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/[a-z0-9]+\/(SHOP|SIGNBOARD|CR|FREE)\//.exec(key);
+  // Keep in lockstep with the presign kind enum — GUARANTEE was added for the
+  // Phase 1 creation flow (updating only one of the two produces 403s).
+  const m = /^[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/[a-z0-9]+\/(SHOP|SIGNBOARD|CR|FREE|GUARANTEE)\//.exec(
+    key
+  );
   return m ? (m[1] as AttachmentKind) : null;
 }
 

@@ -28,43 +28,82 @@ export default async function WorkPage() {
   }> = [];
 
   if (role === Role.SALESMAN) {
+    // Phase 1 creation flow: a CREATE request (customerId null) is revised on
+    // the create form, not the customer profile — route its rows there.
+    const editHref = (e: { id: string; process: string; customerId: string | null }) =>
+      e.process === 'CREATE' ? `/customers/new?edit=${e.id}` : `/customers/${e.customerId}`;
+    const editTitle = (e: {
+      customer: { legalName: string } | null;
+      customerDraft: { legalName: string } | null;
+    }) => e.customer?.legalName ?? e.customerDraft?.legalName ?? '—';
+    const include = {
+      customer: { select: { id: true, legalName: true, nmwcCode: true } },
+      customerDraft: { select: { legalName: true } },
+    } as const;
     const rejected = await prisma.customerEdit.findMany({
       where: { submittedById: userId, state: 'NEEDS_CORRECTION' },
-      include: { customer: { select: { id: true, legalName: true, nmwcCode: true } } },
+      include,
       orderBy: { reviewedAt: 'desc' },
       take: 50,
     });
     const pending = await prisma.customerEdit.findMany({
       where: { submittedById: userId, state: 'SUBMITTED' },
-      include: { customer: { select: { id: true, legalName: true, nmwcCode: true } } },
+      include,
       orderBy: { submittedAt: 'desc' },
+      take: 50,
+    });
+    const createDrafts = await prisma.customerEdit.findMany({
+      where: { submittedById: userId, state: 'DRAFT', process: 'CREATE' },
+      include,
+      orderBy: { updatedAt: 'desc' },
       take: 50,
     });
     items = [
       ...rejected.map((e) => ({
         id: e.id,
-        category: 'Rejected',
-        title: e.customer?.legalName ?? '—',
+        category: e.process === 'CREATE' ? 'New customer — needs correction' : 'Rejected',
+        title: editTitle(e),
         subtitle: e.decisionReason ?? 'Needs correction',
-        href: `/customers/${e.customerId}`,
+        href: editHref(e),
         state: e.state,
         when: e.reviewedAt,
       })),
       ...pending.map((e) => ({
         id: e.id,
-        category: 'Awaiting approval',
-        title: e.customer?.legalName ?? '—',
-        subtitle: 'Submitted to your supervisor',
-        href: `/customers/${e.customerId}`,
+        category:
+          e.process === 'CREATE' ? 'New customer — in approval' : 'Awaiting approval',
+        title: editTitle(e),
+        subtitle:
+          e.process === 'CREATE'
+            ? `In review — current step: ${e.pendingRole?.replace('_', ' ') ?? '…'}`
+            : 'Submitted to your supervisor',
+        href: editHref(e),
         state: e.state,
         when: e.submittedAt,
       })),
+      ...createDrafts.map((e) => ({
+        id: e.id,
+        category: 'New customer — draft',
+        title: editTitle(e),
+        subtitle: 'Unfinished create request — tap to continue',
+        href: editHref(e),
+        state: e.state,
+        when: e.updatedAt,
+      })),
     ];
   } else if (role === Role.SUPERVISOR) {
+    // Step-aware: only requests whose CURRENT step is the Supervisor's.
+    // pendingRole NULL = pre-Phase-1 deploy-gap row (single-step Supervisor
+    // edit by construction) — treat as SUPERVISOR, same as /approvals.
     const queue = await prisma.customerEdit.findMany({
-      where: { state: 'SUBMITTED', submittedBy: { supervisorId: userId } },
+      where: {
+        state: 'SUBMITTED',
+        OR: [{ pendingRole: Role.SUPERVISOR }, { pendingRole: null }],
+        submittedBy: { supervisorId: userId },
+      },
       include: {
         customer: { select: { id: true, legalName: true, nmwcCode: true } },
+        customerDraft: { select: { legalName: true } },
         submittedBy: { select: { fullName: true } },
       },
       orderBy: { submittedAt: 'asc' },
@@ -72,8 +111,62 @@ export default async function WorkPage() {
     });
     items = queue.map((e) => ({
       id: e.id,
-      category: 'Pending approval',
-      title: e.customer?.legalName ?? '—',
+      category: e.process === 'CREATE' ? 'New customer to review' : 'Pending approval',
+      title: e.customer?.legalName ?? e.customerDraft?.legalName ?? '—',
+      subtitle: `From ${e.submittedBy.fullName}`,
+      href: `/approvals/${e.id}`,
+      state: e.state,
+      when: e.submittedAt,
+    }));
+  } else if (
+    role === Role.ACCOUNTANT ||
+    role === Role.FINANCE_MANAGER ||
+    role === Role.GM
+  ) {
+    // Phase 1 approver queues. Accountant is region-scoped (fail-closed, same
+    // managedRegions mechanism as Manager) and matches CREATE requests via
+    // draft-branch regions; FM/GM are org-wide.
+    const { loadScope } = await import('@/lib/access');
+    let where: import('@prisma/client').Prisma.CustomerEditWhereInput;
+    if (role === Role.ACCOUNTANT) {
+      const scope = await loadScope(userId);
+      where =
+        scope.managedRegionIds.length === 0
+          ? { state: 'SUBMITTED', id: '__none__' }
+          : {
+              state: 'SUBMITTED',
+              pendingRole: Role.ACCOUNTANT,
+              OR: [
+                {
+                  customer: {
+                    branches: {
+                      some: { regionId: { in: scope.managedRegionIds }, deletedAt: null },
+                    },
+                  },
+                },
+                { branchDrafts: { some: { regionId: { in: scope.managedRegionIds } } } },
+              ],
+            };
+    } else {
+      where = { state: 'SUBMITTED', pendingRole: role };
+    }
+    const queue = await prisma.customerEdit.findMany({
+      where,
+      include: {
+        customer: { select: { id: true, legalName: true } },
+        customerDraft: { select: { legalName: true, paymentTerms: true } },
+        submittedBy: { select: { fullName: true } },
+      },
+      orderBy: { submittedAt: 'asc' },
+      take: 100,
+    });
+    items = queue.map((e) => ({
+      id: e.id,
+      category:
+        e.process === 'CREATE'
+          ? `New ${e.customerDraft?.paymentTerms ?? ''} customer to review`.replace('  ', ' ')
+          : 'Pending approval',
+      title: e.customer?.legalName ?? e.customerDraft?.legalName ?? '—',
       subtitle: `From ${e.submittedBy.fullName}`,
       href: `/approvals/${e.id}`,
       state: e.state,
@@ -91,19 +184,28 @@ export default async function WorkPage() {
             where: {
               state: 'SUBMITTED',
               submittedAt: { lt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
-              customer: {
-                branches: {
-                  some: { regionId: { in: scope.managedRegionIds }, deletedAt: null },
+              OR: [
+                {
+                  customer: {
+                    branches: {
+                      some: { regionId: { in: scope.managedRegionIds }, deletedAt: null },
+                    },
+                  },
                 },
-              },
+                // Phase 1: stale CREATE requests match via draft-branch regions.
+                { branchDrafts: { some: { regionId: { in: scope.managedRegionIds } } } },
+              ],
             },
-            include: { customer: { select: { id: true, legalName: true } } },
+            include: {
+              customer: { select: { id: true, legalName: true } },
+              customerDraft: { select: { legalName: true } },
+            },
             take: 50,
           });
     items = stale.map((e) => ({
       id: e.id,
       category: 'Stale approval (>3 days)',
-      title: e.customer?.legalName ?? '—',
+      title: e.customer?.legalName ?? e.customerDraft?.legalName ?? '—',
       href: `/approvals/${e.id}`,
       state: e.state,
       when: e.submittedAt,
