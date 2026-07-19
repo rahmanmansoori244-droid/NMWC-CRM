@@ -14,7 +14,7 @@ import {
 import { auth } from '@/lib/auth';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
-import { canMutateUser } from '@/lib/permissions';
+import { canMutateUser, MANAGER_ADMINISTRABLE_ROLES } from '@/lib/permissions';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 async function requireManager() {
@@ -76,12 +76,14 @@ async function createUserCore(formData: FormData) {
   }
   const data = parsed.data;
 
-  // AUTH-03 / RBAC-05-006: cap Manager-driven creation at SALESMAN /
-  // SUPERVISOR / VIEWER. MANAGER and STEWARD must be minted by a Steward.
-  if (data.role === Role.MANAGER || data.role === Role.STEWARD) {
+  // AUTH-03 / RBAC-05-006 / SR-USR-01: cap Manager-driven creation at the field
+  // force. MANAGER, STEWARD *and every credit approver* (FINANCE_MANAGER, GM,
+  // ACCOUNTANT) must be minted by a Steward — otherwise a Manager could mint an
+  // approver and seize the credit chain (separation-of-duty bypass).
+  if (!MANAGER_ADMINISTRABLE_ROLES.includes(data.role)) {
     throw new ValidationError({
       role:
-        'Cannot create MANAGER or STEWARD here — ask a Steward (out-of-band) to provision admin-tier accounts.',
+        'A Manager can only create Salesman/Supervisor/Viewer accounts — ask a Steward to provision approver or admin-tier accounts.',
     });
   }
 
@@ -338,9 +340,13 @@ async function updateUserRoleCore(formData: FormData) {
   );
   if (!guard.ok) throw new ForbiddenError(guard.reason);
 
-  if (newRole === Role.MANAGER || newRole === Role.STEWARD) {
+  // SR-USR-01: a Manager may only assign field-force roles. Promotion to an
+  // approver (FINANCE_MANAGER/GM/ACCOUNTANT) or admin (MANAGER/STEWARD) tier is
+  // Steward-only — this closes the "promote a puppet into the credit chain" path
+  // alongside the create/reset/disable guards.
+  if (!MANAGER_ADMINISTRABLE_ROLES.includes(newRole)) {
     throw new ValidationError({
-      newRole: 'Promotion to MANAGER or STEWARD is not allowed via this UI.',
+      newRole: 'A Manager can only assign Salesman/Supervisor/Viewer — approver and admin roles are Steward-provisioned.',
     });
   }
 

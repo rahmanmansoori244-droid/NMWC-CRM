@@ -8,6 +8,7 @@ import { Prisma, Role } from '@prisma/client';
 import { CustomerFiltersClient } from './CustomerFiltersClient';
 import {
   applyCustomerFilters,
+  customerListBranchScope,
   parseCustomerFilters,
   type CustomerFilterParams,
 } from '@/lib/customer-filters';
@@ -61,31 +62,25 @@ export default async function CustomersPage({
     orderBy: { createdAt: 'asc' },
   };
 
-  if (me.role === Role.SALESMAN) {
-    if (!me.ownedRouteId) {
-      baseWhere.id = '__none__';
-    } else {
-      branchSomeBase = { routeId: me.ownedRouteId, deletedAt: null };
-    }
-    branchInclude.where = me.ownedRouteId
-      ? { routeId: me.ownedRouteId, deletedAt: null }
-      : { id: '__none__' };
-  } else if (me.role === Role.SUPERVISOR) {
-    const routeIds = me.reports.map((r) => r.ownedRouteId).filter((id): id is string => !!id);
-    branchSomeBase = { routeId: { in: routeIds }, deletedAt: null };
-    branchInclude.where = { routeId: { in: routeIds }, deletedAt: null };
-  } else if (me.role === Role.MANAGER) {
-    const regionIds = me.managedRegions.map((r) => r.id);
-    if (regionIds.length > 0) {
-      branchSomeBase = { regionId: { in: regionIds }, deletedAt: null };
-      branchInclude.where = { regionId: { in: regionIds }, deletedAt: null };
-    } else {
-      branchInclude.where = { id: '__none__' };
-    }
+  // SR-M2 (P1): fail-closed role scope from the single shared helper (the query
+  // twin of lib/access.canSeeCustomer). Previously this was hand-rolled here and
+  // drifted: a region-less Manager fell through UNSCOPED and read the entire
+  // nationwide master (the list-page twin of the already-fixed export leak).
+  const listScope = customerListBranchScope(me.role, {
+    ownedRouteId: me.ownedRouteId,
+    teamRouteIds: me.reports.map((r) => r.ownedRouteId).filter((id): id is string => !!id),
+    managedRegionIds: me.managedRegions.map((r) => r.id),
+  });
+  if (listScope.forceEmpty) {
+    baseWhere.id = '__none__';
+    branchInclude.where = { id: '__none__' };
+  } else if (listScope.branchSome) {
+    branchSomeBase = listScope.branchSome;
+    branchInclude.where = listScope.branchSome;
   } else {
+    // org-wide (STEWARD / VIEWER / FINANCE_MANAGER / GM)
     branchInclude.where = { deletedAt: null };
   }
-  // STEWARD and VIEWER: no extra scope filter (see all)
 
   // Resolve supervisor / salesman filter to route ids if set.
   let routeIdsForSupervisor: string[] = [];

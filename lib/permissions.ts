@@ -208,9 +208,28 @@ export function canActOnStep(
 }
 
 /**
- * RBAC-05-006 / AUTH-07 / AUTH-08: peer-Manager and last-Manager protections.
- * `canMutateUser` decides whether `actor` may toggle isActive / reset password
- * / change role on `target`. Used by services/users.ts.
+ * The ONLY roles a MANAGER may administer (create / disable / reset password /
+ * assign) — the field force. Everything else is Steward-provisioned out-of-band:
+ * peer MANAGER/STEWARD, AND the org-wide/region credit approvers that make up
+ * the SUP→FM→GM→ACC chain (FINANCE_MANAGER, GM, ACCOUNTANT). This is an
+ * ALLOWLIST on purpose — a newly added Role is protected by default, so no
+ * future approver tier can be minted or taken over by a regional Manager.
+ *
+ * SECURITY (SR-USR-01, P1): the previous blocklist only shielded MANAGER/STEWARD,
+ * so a Manager could create/reset/disable Finance Manager, GM and Accountant
+ * accounts — seizing the entire credit-approval chain (separation-of-duty
+ * bypass) or disabling it (DoS). Approver provisioning is Steward-only now.
+ */
+export const MANAGER_ADMINISTRABLE_ROLES: Role[] = [
+  Role.SALESMAN,
+  Role.SUPERVISOR,
+  Role.VIEWER,
+];
+
+/**
+ * RBAC-05-006 / AUTH-07 / AUTH-08 / SR-USR-01: peer, approver and last-Manager
+ * protections. `canMutateUser` decides whether `actor` may toggle isActive /
+ * reset password / change role on `target`. Used by services/users.ts.
  */
 export function canMutateUser(
   actor: SessionUser,
@@ -223,13 +242,13 @@ export function canMutateUser(
   if (actor.id === target.id) {
     return { ok: false, reason: 'Use /profile to change your own account.' };
   }
-  // Peer-tier protection: a MANAGER cannot disable / reset / demote another
-  // MANAGER or any STEWARD. Steward administration must come from another
-  // Steward (or out-of-band DB access).
-  if (actor.role === Role.MANAGER) {
-    if (target.role === Role.MANAGER || target.role === Role.STEWARD) {
-      return { ok: false, reason: 'Cannot mutate a peer Manager or Steward — ask a Steward.' };
-    }
+  // A MANAGER may only administer the field force. Peer admins (MANAGER/STEWARD)
+  // and every credit approver (FINANCE_MANAGER/GM/ACCOUNTANT) are Steward-only.
+  if (actor.role === Role.MANAGER && !MANAGER_ADMINISTRABLE_ROLES.includes(target.role)) {
+    return {
+      ok: false,
+      reason: 'A Manager can only manage Salesman/Supervisor/Viewer accounts — approver and admin roles are Steward-provisioned.',
+    };
   }
   return { ok: true };
 }

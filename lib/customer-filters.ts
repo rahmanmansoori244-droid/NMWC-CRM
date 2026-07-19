@@ -9,7 +9,7 @@
  * top by intersecting with `where.branches.some` for branch-scoped fields
  * and `where` directly for customer-scoped fields.
  */
-import type { Prisma } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { normalizePhone } from './phone';
 
 /** Raw URL search params accepted on /customers. */
@@ -103,6 +103,57 @@ export function parseCustomerFilters(sp: CustomerFilterParams): ParsedCustomerFi
 type BranchSomeWhere = NonNullable<
   NonNullable<Prisma.CustomerWhereInput['branches']>['some']
 >;
+
+/**
+ * Fail-closed role → branch scope for the customers LIST and EXPORT — the
+ * query-level twin of `lib/access.canSeeCustomer`, so the list, the export, and
+ * per-record access can never disagree (the SR-M2 leak was the list page
+ * hand-rolling its own scope and drifting out of sync after the export was
+ * fixed). Returns either `{ forceEmpty: true }` (caller must return zero rows —
+ * region-less Manager/Accountant, route-less Salesman) or a branch predicate to
+ * pass as `branchSomeBase` (undefined = org-wide visibility).
+ *
+ * STEWARD/VIEWER/FINANCE_MANAGER/GM: org-wide. SALESMAN: own route. SUPERVISOR:
+ * team routes. MANAGER/ACCOUNTANT: managed regions (both fail-closed when empty).
+ */
+export type ListBranchScope =
+  | { forceEmpty: true; branchSome?: undefined }
+  | { forceEmpty: false; branchSome?: BranchSomeWhere };
+
+export function customerListBranchScope(
+  role: Role,
+  scope: { ownedRouteId: string | null; teamRouteIds: string[]; managedRegionIds: string[] }
+): ListBranchScope {
+  switch (role) {
+    case Role.STEWARD:
+    case Role.VIEWER:
+    case Role.FINANCE_MANAGER:
+    case Role.GM:
+      return { forceEmpty: false }; // org-wide — no branch scope
+    case Role.SALESMAN:
+      if (!scope.ownedRouteId) return { forceEmpty: true };
+      return { forceEmpty: false, branchSome: { routeId: scope.ownedRouteId, deletedAt: null } };
+    case Role.SUPERVISOR:
+      if (scope.teamRouteIds.length === 0) return { forceEmpty: true };
+      return {
+        forceEmpty: false,
+        branchSome: { routeId: { in: scope.teamRouteIds }, deletedAt: null },
+      };
+    case Role.MANAGER:
+    case Role.ACCOUNTANT:
+      // SR-M2 (P1): fail-closed. A region-less Manager/Accountant sees NOTHING,
+      // not the whole master. Aligns the list with canSeeCustomer, which already
+      // scopes ACCOUNTANT by managedRegions.
+      if (scope.managedRegionIds.length === 0) return { forceEmpty: true };
+      return {
+        forceEmpty: false,
+        branchSome: { regionId: { in: scope.managedRegionIds }, deletedAt: null },
+      };
+    default:
+      // A newly added Role is fail-closed by default — decide its scope here.
+      return { forceEmpty: true };
+  }
+}
 
 /**
  * Compose the URL filters onto an existing role-scoped `where` and

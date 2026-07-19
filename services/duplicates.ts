@@ -237,6 +237,32 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
   }
 
   await prisma.$transaction(async (tx) => {
+    // PROD-DUP-01 (P1): lock BOTH customer rows in a deterministic (id-sorted)
+    // order, then re-validate both are still live INSIDE the transaction. Without
+    // this, two concurrent merges of the SAME pair with winner/loser SWAPPED
+    // (merge(A,B) racing merge(B,A)) each atomically claim a DIFFERENT loser row,
+    // so BOTH customers get soft-deleted and their live branches are stranded
+    // under deleted parents — silent data loss. Sorted `FOR UPDATE` serializes
+    // the pair (identical lock order ⇒ no deadlock); the loser of the race
+    // re-reads here and finds a party already archived, and aborts cleanly.
+    for (const id of [winner.id, loser.id].sort()) {
+      await tx.$queryRaw`SELECT id FROM "Customer" WHERE id = ${id} FOR UPDATE`;
+    }
+    const [winnerLive, loserLive] = await Promise.all([
+      tx.customer.findUnique({ where: { id: winner.id }, select: { deletedAt: true } }),
+      tx.customer.findUnique({ where: { id: loser.id }, select: { deletedAt: true } }),
+    ]);
+    if (!winnerLive || winnerLive.deletedAt) {
+      throw new ValidationError({
+        _form: 'The winning customer was just merged or archived by another action. Refresh and retry the merge.',
+      });
+    }
+    if (!loserLive || loserLive.deletedAt) {
+      throw new ValidationError({
+        _form: 'The losing customer was just merged or archived by another action. Refresh and retry the merge.',
+      });
+    }
+
     // Move branches
     await tx.branch.updateMany({
       where: { customerId: loser.id, deletedAt: null },
@@ -316,6 +342,14 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
           : `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,
       },
     });
+  }, {
+    // The merge holds a FOR UPDATE lock on both customer rows while it moves
+    // branches/edits and recomputes completeness (~a dozen sequential writes). A
+    // second merge of the same pair serializes behind that lock, so its total
+    // time = winner's tx + its own re-read. The default 5s interactive-tx
+    // timeout can be exceeded under lock contention or a large multi-branch
+    // customer; 20s gives ample headroom for this rare, Steward-only operation.
+    timeout: 20_000,
   });
 
   logger.info({ winnerId, loserId, by: session.id }, 'customer.merge');
