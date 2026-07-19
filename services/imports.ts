@@ -826,6 +826,7 @@ async function promoteCustomerBatchCore(
     // Pre-resolve regions and routes outside the transaction (these are upserts
     // that can be repeated safely across batches).
     const resolvedBranches: Array<{
+      sheetCode: string | null;
       branchCode: string;
       branchName: string;
       regionId: string;
@@ -851,11 +852,44 @@ async function promoteCustomerBatchCore(
       if (p.routeCode && !route) {
         groupResolveErrors.push(`route "${p.routeCode}" not found`);
       }
-      const effectiveRegionId = (region ?? unassignedRoute!).id;
-      const effectiveRouteId = (route ?? unassignedRoute!).id;
+      // QA P-02 fix: the fallback previously used the UNASSIGNED ROUTE's id as a
+      // REGION id, so the B-19 region-consistency trigger (Branch.regionId must
+      // equal Route.regionId) aborted the whole group — the F-17 fallback could
+      // never actually happen. Resolve trigger-consistently instead:
+      //   - route known  → the route's own region is authoritative (a region
+      //     that disagrees is a sheet inconsistency, warned + overridden);
+      //   - route unknown → the consistent UNASSIGNED region+route pair.
+      let effectiveRegionId: string;
+      let effectiveRouteId: string;
+      if (route) {
+        effectiveRouteId = route.id;
+        effectiveRegionId = route.regionId;
+        if (region && region.id !== route.regionId) {
+          groupResolveErrors.push(
+            `region "${p.regionCode}" does not match route "${p.routeCode}" — used the route's region`
+          );
+        }
+      } else {
+        effectiveRouteId = unassignedRoute!.id;
+        effectiveRegionId = unassignedRoute!.regionId;
+      }
+      // QA P-01 fix (identity model: branch = custcode-branchcode, globally
+      // unique): a sheet carrying a BARE suffix ('01') previously produced a
+      // global branchCode '01' that collided across customers — and the upsert
+      // below silently re-parented the branch to the later customer. Compose
+      // bare codes under the owning custCode; already-composed codes (or a
+      // code equal to the custCode itself) pass through unchanged.
+      const ccUpper = custCode.toUpperCase();
+      const rawBranchCode = p.branchCode ? p.branchCode.trim().toUpperCase() : null;
       resolvedBranches.push({
-        branchCode: p.branchCode
-          ? p.branchCode.toUpperCase()
+        // sheetCode: the code EXACTLY as the sheet gave it (null if generated).
+        // The in-tx guard checks it too — a sheet code that exists under another
+        // customer is a data error to review, not a code to silently re-mint.
+        sheetCode: rawBranchCode,
+        branchCode: rawBranchCode
+          ? rawBranchCode === ccUpper || rawBranchCode.startsWith(`${ccUpper}-`)
+            ? rawBranchCode
+            : `${ccUpper}-${rawBranchCode}`
           : formatBranchCode(custCode, bi + 1),
         branchName: p.branchName ?? 'Main',
         regionId: effectiveRegionId,
@@ -1015,6 +1049,38 @@ async function promoteCustomerBatchCore(
         }
         if (!isRefresh) {
           for (const r of resolvedBranches) {
+            // QA P-01 fix (branch-steal guard): branchCode is globally unique
+            // and the upsert's update path includes customerId — without this
+            // check, a sheet row claiming a code owned by ANOTHER customer
+            // silently re-parents that customer's branch. Ownership moves are
+            // steward-review territory, never a silent import side effect.
+            // (Read-then-upsert inside this per-group tx; batch promote is
+            // serialized by the atomic READY→PROMOTING claim, so the TOCTOU
+            // window is not reachable through this action.)
+            const branchOwner = await tx.branch.findUnique({
+              where: { branchCode: r.branchCode },
+              select: { customerId: true, customer: { select: { nmwcCode: true } } },
+            });
+            if (branchOwner && branchOwner.customerId !== customerId) {
+              throw new Error(
+                `CROSSWALK:branch_code ${r.branchCode} already belongs to ${branchOwner.customer.nmwcCode} — steward review`
+              );
+            }
+            // If composition changed the sheet's code, also check the RAW code:
+            // a sheet code that exists under ANOTHER customer means the row
+            // referenced someone else's branch (a data error) — flag it for
+            // steward review instead of silently minting a re-prefixed code.
+            if (r.sheetCode && r.sheetCode !== r.branchCode) {
+              const rawOwner = await tx.branch.findUnique({
+                where: { branchCode: r.sheetCode },
+                select: { customerId: true, customer: { select: { nmwcCode: true } } },
+              });
+              if (rawOwner && rawOwner.customerId !== customerId) {
+                throw new Error(
+                  `CROSSWALK:branch_code ${r.sheetCode} already belongs to ${rawOwner.customer.nmwcCode} — steward review`
+                );
+              }
+            }
             await tx.branch.upsert({
               where: { branchCode: r.branchCode },
               update: {

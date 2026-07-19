@@ -107,5 +107,19 @@ CONFIRMED and DB-verified; C11 severity nuance recorded for honesty.
 - **Layer-boundary finding (not a defect, but a promote-time obligation):** three checks are silent at UPLOAD and MUST be enforced at PROMOTE — (a) Temix crosswalk conflict (`temix_code` owned by another customer), (b) route/region mismatch resolution, (c) credit_limit >3dp is **rounded, not rejected**. Rows ZZXW-B, ZZDIRTY-0019, ZZDIRTY-0014 pass the upload gate CLEAN by design. **Follow-up: add a promote-layer reconciliation test to prove the crosswalk-conflict + route/region enforcement actually fires.**
 - **Fixture bug found & fixed:** the dirty generator hard-coded one phone for all base rows, tripping the (correct) in-file phone-dup check on every row. Fixed to unique-per-row phones; ZZPH-A/ZZPH-B expectation corrected to STEWARD_REVIEW (an in-file dup flags both). Demonstrates the reconciliation catches fixture defects, not just product defects.
 
+### Promote-layer reconciliation (2026-07-19, second pass) — 2 NEW defects, FIXED
+
+`RUN_PROMOTE_TESTS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/promote-reconciliation.test.ts` — 10 cases; fail-before 4 failed → pass-after **10/10**.
+
+**F-P01 (P1) — silent cross-customer branch steal on promote.**
+`promoteCustomerBatchCore` upserted branches by globally-unique `branchCode` with `customerId` in the update payload. Proven: two customers with bare-suffix `branch_code` '01' → the later customer silently STOLE the earlier one's branch (first customer left with zero branches); likewise a row claiming another customer's composed code silently re-parented it. With a real master carrying bare suffixes, the last customer in file order would own every '01'. **Fix:** (a) bare sheet codes are composed under the owning custCode (`custcode-branchcode` identity model; already-composed codes pass through); (b) in-tx ownership guard — a final OR raw sheet code owned by a different customer throws a PII-safe `CROSSWALK:branch_code … already belongs to …` steward-review rejection, never a silent re-parent.
+
+**F-P02 (P1-for-launch) — F-17 UNASSIGNED fallback never worked; unknown region/route poisoned the whole group.**
+`services/imports.ts` (old line 854) used the UNASSIGNED **route** id as a **region** id, so every fallback write violated the B-19 region-consistency trigger → the customer group was REJECTED with a cryptic promote-failed error instead of landing in UNASSIGNED with a warning. Proven fail-before: unknown-region and unknown-route groups both rejected (customer never created). **Fix:** trigger-consistent resolution — known route ⇒ route + `route.regionId` (region/route disagreement warned + overridden by the route); unknown route ⇒ the consistent UNASSIGNED region+route pair. Both cases now PROMOTED with the `_resolve` warning as F-17 documented.
+
+Also **proven working** at promote (pass on first run): temix crosswalk conflict rejection (owner named, PII-free), refresh semantics (absent `payment_terms` preserved, credit figures updated, CRM `legalName` untouched, `UPLOADED→SYNCED`), quarantined-row exclusion, atomic double-promote refusal.
+
+**Data-contract note for the real master:** the region resolver matches `Region.code` against the sheet's `sales_region` column — if the real sheet carries region NAMES (e.g. "Muscat") rather than codes ("MCT"), every row will warn + fall back to the route's region. Verify the real sheet's column semantics (or the reference data) before the production import.
+
 ### DB constraint smoke — `scripts/qa/constraint-smoke.ts`
 40 FK constraints, 43 unique indexes, 12 CHECK constraints, 2 expected partial-unique indexes (`open_per_customer`, `open_per_branch`) verified present. Surfaced the **db-push-drops-invariants** operational finding (see isolation gate) — production is safe (deploys via `migrate deploy`).

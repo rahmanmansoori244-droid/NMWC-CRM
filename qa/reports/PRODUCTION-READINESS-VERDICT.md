@@ -20,9 +20,10 @@ deploy-env/promote-layer verifications, none of which block a supervised pilot.
 | DB isolation | **PASS** — isolated, empty, endpoint-guarded, auto-expiring | `qa/evidence/00-isolation-gate.json` |
 | Reactivation C11/C12/C13 fixes | **PASS** — 5/5 fail-before → 5/5 pass-after | `tests/integration/reactivation-authz.test.ts`, register Execution results |
 | Customer-master upload | **PASS** — 19/19 rows reconcile vs manifest, 0 divergences | `tests/integration/import-reconciliation.test.ts` |
+| **Customer-master PROMOTE** | **PASS after 2 new P1 fixes** — 10/10 (crosswalk, F-17 fallback, identity model, refresh, quarantine, atomic claim) | `tests/integration/promote-reconciliation.test.ts`, register F-P01/F-P02 |
 | DB invariants (FK/unique/CHECK/partial-unique/trigger) | **PASS** — enumerated & present | `scripts/qa/constraint-smoke.ts` |
 | C1 unauthenticated access | **REFUTED** — layered auth, Next 15.5.18 patched (CVE-2025-29927) | register C1 |
-| Full test suite | **PASS** — 128 passed, 4 skipped, 0 failed | full `vitest run` |
+| Full test suite | **PASS** — 138 passed, 4 skipped, 0 failed | full `vitest run` (all gates on) |
 
 ## Confirmed defects — all FIXED + regression-guarded
 
@@ -42,10 +43,12 @@ deploy-env/promote-layer verifications, none of which block a supervised pilot.
 2. **Deploy provisioning rule — use `prisma migrate deploy`, NEVER `prisma db push`.** db push
    silently drops migration-only partial-unique indexes + CHECK constraints (proven this
    session). The repo's `db:deploy` script is correct; ensure CI/Vercel uses it.
-3. **Promote-layer reconciliation test (follow-up).** The upload layer is silent by design on
-   (a) Temix crosswalk conflict, (b) route/region mismatch, (c) >3dp credit rounding. Add a
-   test that drives `promoteCustomerBatchAction` and proves the crosswalk-conflict + route/region
-   enforcement actually fire at promote. **Recommended before importing the real master.**
+3. ~~Promote-layer reconciliation test~~ **DONE (2026-07-19 second pass).** The test found and
+   fixed two P1s (F-P01 branch steal, F-P02 broken F-17 fallback) and proved the crosswalk
+   conflict, refresh semantics, quarantine exclusion, and atomic batch claim. **One data-contract
+   check remains before the real master import:** confirm whether the sheet's `sales_region`
+   column carries region CODES (matched) or NAMES (falls back with a warning), and whether its
+   `branch_code` column is bare-suffix (now composed automatically) or already composed.
 4. **C7/C8 large-promote timeout** — verify on Vercel that promoting ~3,300 customers does not
    exceed `maxDuration`; if it can, batch/stream the promote. Deploy-env verification.
 5. **R2 write-path tests** — deferred (R2_BUCKET is the prod bucket). Run against a test bucket
