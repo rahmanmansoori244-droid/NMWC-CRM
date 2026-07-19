@@ -725,6 +725,18 @@ async function approveEditCore(formData: FormData) {
   if (edit.state !== EditState.SUBMITTED) {
     throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
   }
+  // QA-C11 (Critical): a reactivation is a Manager-only decision (region-scoped +
+  // photo-evidence gated) handled exclusively by approveReactivationAction. It is
+  // created directly (no approvalChain), so the generic step engine would treat it
+  // as a single SUPERVISOR step and let the submitter's Supervisor flip the branch
+  // CLOSED->ACTIVE — bypassing the Manager gate. Refuse it here; the reactivation
+  // action is the only lane.
+  if (edit.isReactivation) {
+    throw new ConflictError(
+      'WRONG_LANE',
+      'Reactivation requests are decided from the Reactivations queue by a Manager, not here.'
+    );
+  }
   const isCreate = edit.process === EditProcess.CREATE;
   if (isCreate) {
     // Integrity: a CREATE row must have its draft payload (written atomically
@@ -1279,6 +1291,14 @@ async function rejectEditCore(formData: FormData) {
   if (!edit) throw new NotFoundError('Edit not found.');
   if (edit.state !== EditState.SUBMITTED) {
     throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
+  }
+  // QA-C11 (Critical): reactivations are Manager-only and handled exclusively by
+  // rejectReactivationAction — never the generic engine (see approveEditCore).
+  if (edit.isReactivation) {
+    throw new ConflictError(
+      'WRONG_LANE',
+      'Reactivation requests are decided from the Reactivations queue by a Manager, not here.'
+    );
   }
   const rejectIsCreate = edit.process === EditProcess.CREATE;
   // Phase 1b: step-aware authorization — the rejecter must be the CURRENT step's

@@ -7,6 +7,7 @@ import {
   ForbiddenError,
   ValidationError,
   NotFoundError,
+  ConflictError,
   runAction,
   type SafeAction,
 } from '@/lib/errors';
@@ -273,6 +274,27 @@ async function approveReactivationCore(formData: FormData) {
   }
 
   await prisma.$transaction(async (tx) => {
+    // QA-C12: claim the edit atomically FIRST (PROD-001 pattern, mirroring
+    // services/edits.ts approveEditCore). The pre-tx state read above is a fast
+    // reject; this is the authoritative guard. Two Managers (or a double-click)
+    // racing here: only one updateMany matches state=SUBMITTED, the loser sees
+    // count=0 and aborts before any branch/customer/score/audit side effects —
+    // no duplicate REACTIVATE audit rows, no reviewer misattribution.
+    const claim = await tx.customerEdit.updateMany({
+      where: { id: editId, state: EditState.SUBMITTED, isReactivation: true },
+      data: {
+        state: EditState.APPROVED,
+        pendingRole: null,
+        reviewedById: me.id,
+        reviewedAt: new Date(),
+      },
+    });
+    if (claim.count === 0) {
+      throw new ConflictError(
+        'NOT_PENDING',
+        'This reactivation was just decided by another reviewer. Refresh to see the current state.'
+      );
+    }
     await tx.branch.update({
       where: { id: edit.branchId! },
       data: {
@@ -306,10 +328,7 @@ async function approveReactivationCore(formData: FormData) {
       const bScore = scoreBranch(b);
       await tx.branch.update({ where: { id: b.id }, data: { completenessScore: bScore } });
     }
-    await tx.customerEdit.update({
-      where: { id: editId },
-      data: { state: EditState.APPROVED, reviewedById: me.id, reviewedAt: new Date() },
-    });
+    // (edit state already claimed to APPROVED at the top of this tx — QA-C12.)
     await tx.auditLog.create({
       data: {
         actorId: me.id,
@@ -345,6 +364,15 @@ async function rejectReactivationCore(formData: FormData) {
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (!edit.branch) throw new NotFoundError('Branch missing.');
+  // QA-C13 (Critical): symmetric with approveReactivationCore. Without these
+  // guards a Manager could reject an ALREADY-DECIDED reactivation (corrupting
+  // APPROVED->NEEDS_CORRECTION while the branch stays ACTIVE) or pass the id of
+  // an UNRELATED regular branch edit and strand it mid-chain. Reject only a
+  // still-pending reactivation.
+  if (!edit.isReactivation) throw new ValidationError({ editId: 'Not a reactivation.' });
+  if (edit.state !== EditState.SUBMITTED) {
+    throw new ValidationError({ editId: `Edit is in state ${edit.state}.` });
+  }
   const { loadScope } = await import('@/lib/access');
   const actorScope = await loadScope(me.id);
   if (
@@ -357,15 +385,24 @@ async function rejectReactivationCore(formData: FormData) {
     throw new ForbiddenError('Cannot reject your own request.');
   }
 
-  await prisma.customerEdit.update({
-    where: { id: editId },
+  // QA-C13: atomic claim (PROD-001) so a reject racing a concurrent approve/reject
+  // can't double-decide — the loser aborts before writing an audit row.
+  const claim = await prisma.customerEdit.updateMany({
+    where: { id: editId, state: EditState.SUBMITTED, isReactivation: true },
     data: {
       state: EditState.NEEDS_CORRECTION,
+      pendingRole: null,
       reviewedById: me.id,
       reviewedAt: new Date(),
       decisionReason: reason,
     },
   });
+  if (claim.count === 0) {
+    throw new ConflictError(
+      'NOT_PENDING',
+      'This reactivation was just decided by another reviewer. Refresh to see the current state.'
+    );
+  }
   await prisma.auditLog.create({
     data: {
       actorId: me.id,
