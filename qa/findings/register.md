@@ -2,9 +2,14 @@
 
 Method: each candidate was investigated by a grounded code-trace, then handed to **two
 independent refuter agents** (Opus 4.8) told to break the finding. Only 2/2-confirmed
-findings are recorded as defects. DB-level fail/pass execution is **pending the DB
-credential** (isolation blocker, `qa/evidence/00-isolation-gate.json`); the regression
-tests (`tests/integration/reactivation-authz.test.ts`) are authored + gated to run then.
+findings are recorded as defects.
+
+**DB-level execution is now COMPLETE** (isolation proven — `qa/evidence/00-isolation-gate.json`).
+The reactivation regression (`tests/integration/reactivation-authz.test.ts`) ran against the
+isolated QA branch with a **fail-before / pass-after** proof: with the fix reverted all 5
+tests FAIL (each catches its defect); with the fix restored all 5 PASS. See the
+**Execution results** section at the bottom for the fail-before/pass-after detail, the C11
+accuracy refinement, the import reconciliation, the C1 refutation, and the db-push finding.
 
 ---
 
@@ -65,10 +70,42 @@ tests (`tests/integration/reactivation-authz.test.ts`) are authored + gated to r
 
 ---
 
-## Candidate findings carried forward (NOT yet confirmed — need DB or deploy env)
-- **C1** middleware does not block unauthenticated traffic (next-auth beta wrapped-middleware) — needs the per-route unauthenticated probe (server + any DB). Protection currently rests on per-page `requireSession()`; a single unguarded page = exposure. **High priority when DB returns.**
-- **C7/C8** serverless timeout: `maxDuration:30` misses server actions; promote of ~3,300 = 20-35k sequential round trips → stuck `PROMOTING`. Needs DB + deploy env.
-- **C2** committed pilot credentials in ≥4 files — verify rejected in prod (rotation).
-- **C16** NEEDS_CORRECTION notification passes free-text reason (PII) — sanitizer decision.
-- **C19** `services/routes.ts` region/route mutations write no audit rows.
-- **C20** photo-gc deletes DB row even when R2 tag fails → permanent orphan.
+## Candidate findings — updated after DB execution
+- **C1 — REFUTED (no defect).** The premise ("middleware does not block unauthenticated traffic; protection rests on per-page `requireSession()`") is false. Auth is layered: (1) Auth.js v5 middleware `authorized` callback returns `false` for every non-public path (`auth.config.ts:69-70`), matcher `/((?!_next/static|_next/image|favicon.ico).*)` covers all routes; **Next.js 15.5.18 is patched against CVE-2025-29927** (the `x-middleware-subrequest` bypass). (2) `app/(app)/layout.tsx` guards the whole app group (`auth()` + `redirect('/login')`). (3) Individual pages re-check `auth()` and scope data by role/region via `loadScope`. (4) Every server action calls `auth()`/`require*()` independently. (5) The only unguarded API route is `app/api/auth/[...nextauth]` — correctly public. No unauthenticated exposure found. Static audit: 26 pages, all under the guarded group; API routes all carry auth/CRON_SECRET guards.
+- **C7/C8** serverless timeout on large promote — still needs a deploy env (Vercel) to confirm; DB present but the `maxDuration` behavior is platform-level. Carried.
+- **C2** committed pilot credentials in ≥4 files — owner will rotate before go-live (owner action, not a code defect).
+- **C16** NEEDS_CORRECTION notification passes free-text reason (PII) — sanitizer decision (owner).
+- **C19** `services/routes.ts` region/route mutations write no audit rows — carried (code-trace only).
+- **C20** photo-gc deletes DB row even when R2 tag fails → permanent orphan — carried (R2 write-path deferred; not isolated).
+
+---
+
+## Execution results (DB-proven, isolated QA branch — 2026-07-19)
+
+### Reactivation regression — fail-before / pass-after
+`RUN_REACTIVATION_TESTS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/reactivation-authz.test.ts`
+
+| Case | Fix reverted (fail-before) | Fix restored (pass-after) |
+|---|---|---|
+| C11 approve via generic engine | ✗ returns `NEEDS_REUPLOAD` (not `WRONG_LANE`) | ✓ `WRONG_LANE`, branch stays CLOSED |
+| C11 reject via generic engine | ✗ **`ok:true` — Supervisor DID reject** | ✓ `WRONG_LANE` |
+| C12 two concurrent Manager approvals | ✗ not exactly 1 audit row | ✓ exactly 1 winner, 1 REACTIVATE row |
+| C13 reject already-APPROVED | ✗ **`ok:true` — corrupts state** | ✓ refused, branch stays ACTIVE |
+| C13 reject non-reactivation edit | ✗ **`ok:true` — cross-lane** | ✓ refused, edit untouched |
+
+**C11 accuracy refinement (execution-driven):** pre-fix, the generic **approve** path returns
+`NEEDS_REUPLOAD` — it does NOT cleanly flip the branch to ACTIVE (an unrelated photo-reupload
+guard in `approveEditCore` blocks it). So the earlier "Supervisor flips branch to ACTIVE via
+approve" impact is **milder than the code-trace claimed**; the cleanly-exploitable bypasses are
+the **reject** path (C11b, `ok:true` pre-fix) and **C13** (both, `ok:true` pre-fix). The
+`WRONG_LANE` fix is still correct and warranted (reactivations must never ride the generic
+engine — audit mislabel + lane confusion). C12 remains a valid concurrency defect. Net: fixes
+CONFIRMED and DB-verified; C11 severity nuance recorded for honesty.
+
+### Import reconciliation — customer-master upload vs ground-truth manifest
+`RUN_IMPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/import-reconciliation.test.ts` → **19/19 rows reconcile, 0 divergences.** The upload/parse layer correctly quarantines: missing mandatory (cust_code/cust_name), invalid format (payment_terms, phone, credit_limit, payment_term_days), formula payloads (F-05), and in-file CR/phone duplicates (BOTH occurrences). It correctly passes HTML-sanitized and clean rows.
+- **Layer-boundary finding (not a defect, but a promote-time obligation):** three checks are silent at UPLOAD and MUST be enforced at PROMOTE — (a) Temix crosswalk conflict (`temix_code` owned by another customer), (b) route/region mismatch resolution, (c) credit_limit >3dp is **rounded, not rejected**. Rows ZZXW-B, ZZDIRTY-0019, ZZDIRTY-0014 pass the upload gate CLEAN by design. **Follow-up: add a promote-layer reconciliation test to prove the crosswalk-conflict + route/region enforcement actually fires.**
+- **Fixture bug found & fixed:** the dirty generator hard-coded one phone for all base rows, tripping the (correct) in-file phone-dup check on every row. Fixed to unique-per-row phones; ZZPH-A/ZZPH-B expectation corrected to STEWARD_REVIEW (an in-file dup flags both). Demonstrates the reconciliation catches fixture defects, not just product defects.
+
+### DB constraint smoke — `scripts/qa/constraint-smoke.ts`
+40 FK constraints, 43 unique indexes, 12 CHECK constraints, 2 expected partial-unique indexes (`open_per_customer`, `open_per_branch`) verified present. Surfaced the **db-push-drops-invariants** operational finding (see isolation gate) — production is safe (deploys via `migrate deploy`).

@@ -35,12 +35,12 @@
     "MISSING_MANDATORY": 2,
     "INVALID_FORMAT": 5,
     "REJECTED": 1,
-    "ACCEPTED": 6,
-    "STEWARD_REVIEW": 4,
+    "ACCEPTED": 5,
+    "STEWARD_REVIEW": 5,
     "CONFLICT": 1
   },
-  "dataSha256": "0ec283aa3b01c082d173c20cf9d3cb4e37a0943ec994e757b5ca3d37521c37c5",
-  "manifestSha256": "c204a5b5095a0055c6fcbd36261d7ce6931da99488d2c6b9b4b78dfa4855868f",
+  "dataSha256": "0cfc7b3238463366ca709500341bfc56e444a36908421169a1ddb1f483d9a177",
+  "manifestSha256": "99daa137acd1b4f71b8276b044ac566c1720db64d7c23914142c6d450a60b19e",
   "xlsxByteDeterminism": "NOT_GUARANTEED (zip container timestamps); use dataSha256/manifestSha256 for reproducibility",
   "reproduce": "npx tsx scripts/qa/generate-synthetic-master.ts --scale=dirty --seed=424242",
   "headerNote": "Columns are a PROXY for the CRM import contract. Real Temix headers are an OPEN owner decision (Q-temix-headers)."

@@ -1,26 +1,26 @@
 {
-  "verdict": "BLOCKED — isolation cannot be proven; DB unreachable-for-auth",
-  "stopCondition": true,
-  "blocker": {
-    "symptom": "Prisma $queryRaw fails against the QA Neon branch",
-    "exactError": "Authentication failed against database server, the provided database credentials are not valid.",
-    "tcp": "host:5432 is OPEN (server reachable); failure is AUTH, not network",
-    "wasWorkingEarlierThisSession": true,
-    "mostLikelyCause": "Neon role password was rotated (owner previously stated secrets/credentials would be rotated before go-live). Neon branches share the parent role's credentials, so rotating the parent invalidates the branch password in .env.",
-    "dbHostMasked": "ep-crimson-sea-aq9yh742-pooler.c-8.us-east-1.aws.neon.tech"
+  "verdict": "PASS — isolation proven; DB-dependent QA executed against an isolated, PII-free branch",
+  "stopCondition": false,
+  "resolvedAt": "2026-07-19",
+  "howUnblocked": "Created a fresh Neon branch 'qa-synthetic-testing' (branch id br-plain-firefly-aqp4iqje) using 'Branch schema only (Beta)' — copies the schema with ZERO data rows, so NO cloned customer PII. Auto-deletes after 1 day. Connection string was placed into the worktree .env via clipboard→PowerShell without the password ever appearing in any log, screenshot, or output.",
+  "isolationProof": {
+    "endpoint": "ep-raspy-term-aqwjf17b (QA branch) — DISTINCT from production ep-sweet-haze-aq6nra0j and from the stale ep-crimson-sea in the pre-existing .env",
+    "productionEndpointGuard": "Every QA script hard-aborts if DATABASE_URL contains 'ep-sweet-haze' (the production endpoint).",
+    "rowCountsAtProvision": "Customer/Branch/User/CustomerEdit/AuditLog/Attachment/Region/Route ALL 0 rows — schema-only branch carries no PII.",
+    "schemaPresent": "18 public tables copied from production's live schema.",
+    "migrationFingerprintAtProvision": "_prisma_migrations empty (schema-only copy omits history rows); tables physically present."
   },
-  "checksThatDidComplete": {
-    "emailIsolation": "PASS — no mailer/provider wired anywhere; zero risk of real notification delivery (in-app Notification rows only)",
-    "r2Isolation": "FAIL — R2_BUCKET=nmwc-photos is the PRODUCTION bucket; attachment/photo write-path tests are NOT isolated and must be deferred or mocked",
-    "sentryIsolation": "PASS — server Sentry DSN disabled for this environment (#DEMO-OFF in .env)",
-    "authTrustHost": "true (local prod demo setting; not a production config)",
-    "dbIsolation": "UNPROVEN — cannot connect to run the migration-fingerprint + sentinel proof"
+  "provisioning": {
+    "method": "prisma db push (sync schema.prisma) + a manual idempotent DDL patch to restore migration-only invariants db push cannot express.",
+    "dbPushFinding": "prisma db push DROPPED migration-only partial-unique indexes + CHECK constraints (CustomerEdit_open_per_branch and 7 Phase-1 CHECKs). This is a QA-provisioning artifact, NOT a production risk: the deploy path is `prisma migrate deploy` (package.json db:deploy), which runs the raw migration SQL. OPERATIONAL RULE: never provision/deploy this schema with `db push`.",
+    "invariantsRestored": "CustomerEdit_open_per_branch, EditBranchDraft gps/address CHECKs + region-consistency trigger, Customer/CustomerEdit credit CHECKs — verified present post-patch (constraint smoke: 12 CHECKs, 2 expected partial-uniques).",
+    "expectedAbsent": "Customer_primaryPhoneNorm_active_unique is INTENTIONALLY absent — migration 20260510160000_p1_drop_phone_unique drops it (phone dups allowed at master level)."
   },
-  "caveatOnBranchData": "The QA branch is a copy-on-write clone of the production pilot: writes NEVER reach production, but it carries cloned real customer PII. Evidence must log only aggregate counts + self-created synthetic rows.",
-  "requiredToUnblock": [
-    "A valid connection string for an isolated QA Postgres (the current Neon branch with its refreshed password, OR a fresh empty branch — a pristine synthetic-only DB is preferable to avoid cloned PII).",
-    "Optionally: a synthetic/test R2 bucket (or confirmation to mock R2) so attachment tests can run isolated.",
-    "Test-only AUTH_SECRET + CRON_SECRET if the old ones were rotated too."
-  ],
-  "actionTaken": "STOPPED all DB-dependent execution per the mandatory safety rule ('if isolation cannot be proven, stop and report the exact blocker; do not guess'). Did NOT attempt any workaround, alternate credentials, or production access."
+  "checks": {
+    "emailIsolation": "PASS — no mailer/provider wired; in-app Notification rows only.",
+    "r2Isolation": "DEFERRED — R2_BUCKET=nmwc-photos is the PRODUCTION bucket. The customer-master IMPORT path reads the xlsx from an in-memory buffer and stages to DB (importBatch/importRow) with NO R2 write, so import QA is fully isolated. Photo/attachment write-path tests remain deferred/mocked.",
+    "sentryIsolation": "PASS — server Sentry DSN disabled (#DEMO-OFF).",
+    "dbIsolation": "PASS — isolated empty schema-only branch, endpoint-guarded, auto-expiring."
+  },
+  "writesPerformed": "Only self-created synthetic rows (prefixes ZZ-REACT-, ZZ-IMP-, ZZDIRTY-/ZZDUP-/ZZPH-/ZZXW-/ZZGPS), each deleted in the test afterAll. No production writes. No shared/parent role password reset."
 }

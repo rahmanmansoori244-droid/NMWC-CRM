@@ -1,28 +1,35 @@
-# NMWC CRM — QA Execution Tracker (interim)
+# NMWC CRM — QA Execution Tracker
 
-Baseline commit: `06867e4` (Phase 1e). Working tree: clean except QA docs/scripts/fixtures.
+Baseline commit: `06867e4` (Phase 1e). **DB blocker RESOLVED 2026-07-19** — isolated
+schema-only Neon branch provisioned; DB-gated QA executed. Final verdict:
+`qa/reports/PRODUCTION-READINESS-VERDICT.md`.
 
 | Phase | Task | Status | Evidence | Notes |
 |---|---|---|---|---|
-| A | Baseline: typecheck / lint / unit tests | ✅ DONE | `qa/evidence/baseline-*.txt` | typecheck clean · 122 unit tests pass · lint clean |
-| A | Baseline: production build | ⏸ deferred | — | build is DB-independent; not re-run this session (was green at commit) |
-| B | Email isolation | ✅ PASS | `00-isolation-gate.json` | no mailer wired — cannot send |
+| A | Baseline: typecheck / lint / unit tests | ✅ DONE | `qa/evidence/baseline-*.txt` | typecheck clean · lint clean |
+| A | Baseline: production build | ⏸ deferred | — | DB-independent; green at commit |
+| B | Email isolation | ✅ PASS | `00-isolation-gate.json` | no mailer wired |
 | B | Sentry isolation | ✅ PASS | `00-isolation-gate.json` | server DSN disabled |
-| B | R2 isolation | ❌ FAIL | `00-isolation-gate.json` | R2_BUCKET is the PROD bucket — attachment tests deferred/mock-required |
-| B | **DB isolation proof** | 🔴 **BLOCKED** | `00-isolation-gate.json` | **auth failure — credentials in .env no longer valid (likely rotated)** |
-| C | Synthetic master generator | ✅ DONE | `scripts/qa/generate-synthetic-master.ts`, `qa/fixtures/*`, `qa/evidence/fixtures-checksums.txt` | deterministic (dataSha256/manifestSha256 stable); tiny/medium/prod/dirty + parameterized stress |
-| C | Load fixtures into DB | 🔴 BLOCKED | — | requires DB |
-| D–Q | All DB/service/API/concurrency/perf/e2e/reconciliation | 🔴 BLOCKED | — | require a reachable isolated DB |
+| B | R2 isolation | ⏸ DEFERRED | `00-isolation-gate.json` | prod bucket; import path is R2-free & isolated, photo write-path deferred |
+| B | **DB isolation proof** | ✅ **PASS** | `00-isolation-gate.json`, `scripts/qa/probe-db.ts` | isolated empty branch `ep-raspy-term-aqwjf17b`, endpoint-guarded |
+| C | Synthetic master generator | ✅ DONE | `scripts/qa/generate-synthetic-master.ts`, `qa/fixtures/*` | deterministic; fixture phone-uniqueness bug fixed |
+| C | Provision QA schema | ✅ DONE | `00-isolation-gate.json` | db push + idempotent invariant patch (`scripts/qa/restore` DDL) |
+| D | DB constraint smoke | ✅ DONE | `scripts/qa/constraint-smoke.ts` | 40 FK · 43 unique · 12 CHECK · 2 partial-unique |
+| E | Reactivation regression (C11/C12/C13) | ✅ DONE | `tests/integration/reactivation-authz.test.ts` | fail-before 5/5 → pass-after 5/5 |
+| F | Customer-master import reconciliation | ✅ DONE | `tests/integration/import-reconciliation.test.ts` | 19/19 dirty rows reconcile, 0 divergences |
+| G | C1 unauthenticated-route audit | ✅ REFUTED | register C1 | layered auth; Next 15.5.18 patched |
+| — | Full test suite | ✅ PASS | — | 128 passed / 4 skipped / 0 failed |
+| H | Promote-layer reconciliation | 🔜 FOLLOW-UP | — | prove crosswalk-conflict + route/region fire at promote |
+| I | Large-promote timeout (C7/C8) | 🔜 FOLLOW-UP | — | deploy-env (Vercel) verification |
+| J | R2 photo write-path / GC (C20) | ⏸ DEFERRED | — | needs test bucket or mock |
 
-## STOP condition active
-Isolation cannot be proven (cannot connect to the QA DB). Per the mandatory safety
-rule, all DB-dependent execution is halted pending a valid isolated-DB credential.
-No workaround, alternate credential, or production access was attempted.
+## Blocker history
+DB isolation was BLOCKED (rotated/stale credentials). Resolved by creating a fresh
+**schema-only** Neon branch (no PII), placing its credential in `.env` without exposing the
+password, and proving isolation (distinct endpoint + zero data rows + endpoint guard).
 
-## Candidate defects carried forward (from Fable 5 plan §2 — awaiting DB repro before confirm/fix)
-- C11 (P1?) reactivation approvable by Supervisor (Manager-only bypass) — `services/reactivations.ts:103-129` + `services/edits.ts:705-766`
-- C12 (P1?) reactivation approve lacks atomic claim — double-approve → 2 audit rows
-- C13 (P1?) `rejectReactivationAction` lacks isReactivation + state guards
-- C1 middleware does not block unauth traffic — needs per-route probe (server up + DB)
-- C8/C7 promote + serverless timeout at scale — needs DB + deploy env
-These require deterministic DB reproduction (plan §8) before any fix; not confirmed yet.
+## Defects: CONFIRMED + FIXED + DB-verified
+- C11 (P1, nuance-refined) · C12 (P2) · C13 (P1) — reactivation lane. See `qa/findings/register.md`.
+
+## Refuted / owner / carried
+- C1 REFUTED (no unauth exposure). C2/C16/C19 owner decisions. C7/C8/C20 carried (deploy-env / R2).

@@ -132,7 +132,10 @@ function dirtyCatalogue(startIdx: number) {
   const base = (over: Record<string, string | number>) => ({
     cust_code: `ZZDIRTY-${String(startIdx + sheetRows.length).padStart(4, '0')}`,
     cust_name: 'ZZ-SYN Dirty Co', branch_code: '', sales_region: 'Muscat', region_code: 'MCT',
-    route: 'MCT-R01', address: 'Way 1, Muscat', phone: '+96890111111', alt_phone: '',
+    // Unique per row — a constant phone would trip the importer's in-file
+    // phone-dup check on EVERY row (the check is correct; a shared fixture phone
+    // is not). Rows that test phone behavior override this explicitly below.
+    route: 'MCT-R01', address: 'Way 1, Muscat', phone: `+9689${String(2_000_000 + sheetRows.length)}`, alt_phone: '',
     contact_person: 'ZZ-SYN C', contact_role: 'Owner', cr_no: String(9_500_000 + sheetRows.length),
     payment_terms: 'CASH', credit_limit: '', payment_term_days: '', temix_code: '',
     channel: 'HORECA', sub_channel: 'Restaurants', day_of_visit: 'MON',
@@ -159,8 +162,11 @@ function dirtyCatalogue(startIdx: number) {
   add(base({ cust_code: 'ZZDUP-A', cr_no: dupCr }), { custCode: 'ZZDUP-A', branchCode: '', expectedDisposition: 'STEWARD_REVIEW', expectedErrorCode: 'cr_no:dup_in_file', requirementRefs: ['R22'] });
   add(base({ cust_code: 'ZZDUP-B', cr_no: dupCr }), { custCode: 'ZZDUP-B', branchCode: '', expectedDisposition: 'STEWARD_REVIEW', expectedErrorCode: 'cr_no:dup_in_file', requirementRefs: ['R22'] });
   // Duplicate phone in file (allowed — P1.3; not blocked).
-  add(base({ cust_code: 'ZZPH-A', phone: '+96890222222' }), { custCode: 'ZZPH-A', branchCode: '', expectedDisposition: 'ACCEPTED', requirementRefs: ['R-phone'], note: 'phone dups allowed (partial-unique dropped)' });
-  add(base({ cust_code: 'ZZPH-B', phone: '+96890222222' }), { custCode: 'ZZPH-B', branchCode: '', expectedDisposition: 'STEWARD_REVIEW', expectedErrorCode: 'phone:dup_in_file', requirementRefs: ['R-phone'], note: 'flagged in-file even though phone dups are allowed at master level' });
+  // An in-file phone duplicate flags BOTH occurrences for steward review (neither
+  // is canonical). Phone dups ARE allowed at the master level (partial-unique was
+  // dropped) — so both promote fine, but the import quarantines both for review.
+  add(base({ cust_code: 'ZZPH-A', phone: '+96890222222' }), { custCode: 'ZZPH-A', branchCode: '', expectedDisposition: 'STEWARD_REVIEW', expectedErrorCode: 'phone:dup_in_file', requirementRefs: ['R-phone'], note: 'in-file phone dup flags BOTH rows; dup allowed at master level' });
+  add(base({ cust_code: 'ZZPH-B', phone: '+96890222222' }), { custCode: 'ZZPH-B', branchCode: '', expectedDisposition: 'STEWARD_REVIEW', expectedErrorCode: 'phone:dup_in_file', requirementRefs: ['R-phone'], note: 'in-file phone dup flags BOTH rows; dup allowed at master level' });
   // GPS outside Oman — import carries no GPS columns to the parser, so this is
   // NOT a bypass at import; documented for the CREATE/edit path instead.
   add(base({ cust_code: 'ZZGPS', gps_lat: 33.3, gps_lng: 44.4 }), { custCode: 'ZZGPS', branchCode: '', expectedDisposition: 'ACCEPTED', requirementRefs: ['R25'], note: 'import parser ignores gps columns; Oman-bound enforced only on CREATE/edit Zod + no DB CHECK for envelope' });

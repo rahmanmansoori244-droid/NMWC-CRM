@@ -21,6 +21,10 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
+// The QA DB is a remote Neon branch (~230ms/round-trip); each test does many
+// sequential queries, so 5s is far too tight. Raise the ceiling generously.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
+
 const ENABLED = process.env.RUN_REACTIVATION_TESTS === '1' && !!process.env.DATABASE_URL;
 
 // Mutable session the auth() mock returns; each test sets the acting user.
@@ -28,6 +32,15 @@ type MockUser = { id: string; role: string; username: string } | null;
 let current: MockUser = null;
 vi.mock('@/lib/auth', () => ({
   auth: async () => (current ? { user: current } : null),
+}));
+
+// revalidatePath/revalidateTag only work inside a Next.js request context; when we
+// call the server actions directly from vitest there is no static-generation store,
+// so stub them. They are cache-invalidation side effects irrelevant to the authz /
+// concurrency logic under test.
+vi.mock('next/cache', () => ({
+  revalidatePath: () => {},
+  revalidateTag: () => {},
 }));
 
 const P = 'ZZ-REACT-' + randomUUID().slice(0, 8);
@@ -70,7 +83,24 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
     await prisma.$disconnect();
   });
 
+  // Clear any edit rows for this customer/branch so the legitimate partial-unique
+  // invariants (CustomerEdit_open_per_customer / _open_per_branch, both WHERE
+  // state='SUBMITTED') don't make one test's leftover SUBMITTED edit collide with
+  // the next. This is test hygiene — the product invariant itself is correct.
+  async function clearEdits() {
+    const rows = await prisma.customerEdit.findMany({
+      where: { OR: [{ customerId: ids.customer }, { branchId: ids.branch }] },
+      select: { id: true },
+    });
+    const editIds = rows.map((r) => r.id);
+    if (!editIds.length) return;
+    await prisma.notification.deleteMany({ where: { editId: { in: editIds } } }).catch(() => {});
+    await prisma.editApproval.deleteMany({ where: { editId: { in: editIds } } }).catch(() => {});
+    await prisma.customerEdit.deleteMany({ where: { id: { in: editIds } } });
+  }
+
   async function newReactivation(): Promise<string> {
+    await clearEdits();
     // reset branch to CLOSED + a fresh photo after each consuming test
     await prisma.branch.update({ where: { id: ids.branch }, data: { status: 'CLOSED', lastStatusChangeAt: new Date(Date.now() - 86_400_000) } });
     await prisma.attachment.update({ where: { id: ids.photo }, data: { capturedAt: new Date() } });
@@ -78,6 +108,7 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
     const fd = new FormData();
     fd.set('branchId', ids.branch); fd.set('reason', 'shop reopened for real'); fd.set('attachmentId', ids.photo);
     const res = await reacts.requestReactivationAction(fd);
+    if (!res.ok) console.error('DIAG requestReactivation failed:', JSON.stringify(res));
     expect(res.ok).toBe(true);
     return (res as { ok: true; data: { editId: string } }).data.editId;
   }
@@ -96,7 +127,8 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
   it('C11: Supervisor CANNOT reject a reactivation via the generic engine', async () => {
     const editId = await newReactivation();
     current = { id: ids.supervisor, role: 'SUPERVISOR', username: ids.supervisor };
-    const fd = new FormData(); fd.set('editId', editId); fd.set('reason', 'nope'); fd.set('category', 'other');
+    // reason must be >=5 chars so we reach the lane guard, not input validation
+    const fd = new FormData(); fd.set('editId', editId); fd.set('reason', 'not allowed here'); fd.set('category', 'other');
     const res = await edits.rejectEditAction(fd);
     expect(res.ok).toBe(false);
     expect((res as { ok: false; code: string }).code).toBe('WRONG_LANE');
@@ -128,6 +160,7 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
 
   it('C13: cannot reject a NON-reactivation branch edit via the reactivation action', async () => {
     // A plain SUBMITTED branch edit (isReactivation=false) in the manager's region.
+    await clearEdits();
     const plain = await prisma.customerEdit.create({ data: {
       target: 'BRANCH', branchId: ids.branch, customerId: ids.customer, state: 'SUBMITTED',
       submittedById: ids.salesman, submittedAt: new Date(), pendingRole: 'SUPERVISOR',

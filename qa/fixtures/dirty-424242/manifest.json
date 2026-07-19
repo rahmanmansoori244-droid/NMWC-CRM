@@ -84,11 +84,12 @@
   "rowNumber": 9,
   "custCode": "ZZPH-A",
   "branchCode": "",
-  "expectedDisposition": "ACCEPTED",
+  "expectedDisposition": "STEWARD_REVIEW",
+  "expectedErrorCode": "phone:dup_in_file",
   "requirementRefs": [
    "R-phone"
   ],
-  "note": "phone dups allowed (partial-unique dropped)"
+  "note": "in-file phone dup flags BOTH rows; dup allowed at master level"
  },
  {
   "rowNumber": 10,
@@ -99,7 +100,7 @@
   "requirementRefs": [
    "R-phone"
   ],
-  "note": "flagged in-file even though phone dups are allowed at master level"
+  "note": "in-file phone dup flags BOTH rows; dup allowed at master level"
  },
  {
   "rowNumber": 11,
