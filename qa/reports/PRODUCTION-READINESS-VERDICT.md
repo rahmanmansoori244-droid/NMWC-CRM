@@ -5,6 +5,16 @@
 increments (net-new CREATE, Temix batch sync, SLA/notifications) + the reactivation lane +
 customer-master import, executed against a real Postgres for the first time.
 
+> **UPDATE 2026-07-19 (post deep-review):** A 7-perspective adversarial review (95
+> agents) then found **25 more confirmed findings, incl. 3 P1s** (credit-approver
+> privilege escalation, customer-list region leak, concurrent-merge data loss) — all
+> now **fixed + regression-proven**, plus ops hardening (migrate-deploy in the
+> pipeline, Vercel↔DB co-location, env docs, xlsx cap). The single consolidated
+> **GO/NO-GO and owner action list is in [`LAUNCH-CHECKLIST.md`](LAUNCH-CHECKLIST.md)**;
+> confirmed findings in [`pre-launch-deep-review.md`](../findings/pre-launch-deep-review.md).
+> Net verdict: **NO-GO until the 5 owner items + chunked first-import are done; then GO
+> for a supervised pilot.**
+
 ## Verdict: **CONDITIONALLY READY** for the controlled pilot
 
 The confirmed authorization/concurrency defects in the reactivation lane are **fixed and
