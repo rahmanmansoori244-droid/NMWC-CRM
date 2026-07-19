@@ -1,0 +1,5 @@
+# Generated workbooks can be large + are reproducible from the generator+seed.
+# Track only the manifests + meta (the ground-truth + checksums); ignore .xlsx.
+*.xlsx
+# Stray non-canonical seed variant used only for a determinism spot-check.
+tiny-999/

@@ -1,0 +1,42 @@
+{
+  "scale": "prod",
+  "seed": 424242,
+  "headers": [
+    "cust_code",
+    "cust_name",
+    "branch_code",
+    "sales_region",
+    "region_code",
+    "route",
+    "address",
+    "phone",
+    "alt_phone",
+    "contact_person",
+    "contact_role",
+    "cr_no",
+    "payment_terms",
+    "credit_limit",
+    "payment_term_days",
+    "temix_code",
+    "channel",
+    "sub_channel",
+    "day_of_visit",
+    "coolers",
+    "stands",
+    "empty_bottles",
+    "gps_lat",
+    "gps_lng",
+    "customer_status",
+    "temix_sync_state"
+  ],
+  "rowCount": 5288,
+  "customerCount": 3300,
+  "dispositionCounts": {
+    "ACCEPTED": 5288
+  },
+  "dataSha256": "ef19a61f0813ffa08e7e92509f8b928615d5ee42fdd4d824621c09efee2329ab",
+  "manifestSha256": "0bc8adcfbe7e62fee6fdd23c0bc17ae7817a8e3d3d950a98b38936158003be3c",
+  "xlsxByteDeterminism": "NOT_GUARANTEED (zip container timestamps); use dataSha256/manifestSha256 for reproducibility",
+  "reproduce": "npx tsx scripts/qa/generate-synthetic-master.ts --scale=prod --seed=424242",
+  "headerNote": "Columns are a PROXY for the CRM import contract. Real Temix headers are an OPEN owner decision (Q-temix-headers)."
+}

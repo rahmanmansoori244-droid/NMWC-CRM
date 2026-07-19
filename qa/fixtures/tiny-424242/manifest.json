@@ -1,0 +1,410 @@
+[
+ {
+  "rowNumber": 1,
+  "custCode": "ZZSYN-000001",
+  "branchCode": "ZZSYN-000001-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 2,
+  "custCode": "ZZSYN-000002",
+  "branchCode": "ZZSYN-000002-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 3,
+  "custCode": "ZZSYN-000003",
+  "branchCode": "ZZSYN-000003-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 4,
+  "custCode": "ZZSYN-000003",
+  "branchCode": "ZZSYN-000003-02",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 5,
+  "custCode": "ZZSYN-000003",
+  "branchCode": "ZZSYN-000003-03",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 6,
+  "custCode": "ZZSYN-000004",
+  "branchCode": "ZZSYN-000004-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 7,
+  "custCode": "ZZSYN-000005",
+  "branchCode": "ZZSYN-000005-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 8,
+  "custCode": "ZZSYN-000006",
+  "branchCode": "ZZSYN-000006-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 9,
+  "custCode": "ZZSYN-000007",
+  "branchCode": "ZZSYN-000007-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 10,
+  "custCode": "ZZSYN-000007",
+  "branchCode": "ZZSYN-000007-02",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 11,
+  "custCode": "ZZSYN-000007",
+  "branchCode": "ZZSYN-000007-03",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 12,
+  "custCode": "ZZSYN-000008",
+  "branchCode": "ZZSYN-000008-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 13,
+  "custCode": "ZZSYN-000008",
+  "branchCode": "ZZSYN-000008-02",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 14,
+  "custCode": "ZZSYN-000009",
+  "branchCode": "ZZSYN-000009-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 15,
+  "custCode": "ZZSYN-000010",
+  "branchCode": "ZZSYN-000010-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 16,
+  "custCode": "ZZSYN-000010",
+  "branchCode": "ZZSYN-000010-02",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 17,
+  "custCode": "ZZSYN-000010",
+  "branchCode": "ZZSYN-000010-03",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 18,
+  "custCode": "ZZSYN-000011",
+  "branchCode": "ZZSYN-000011-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 19,
+  "custCode": "ZZSYN-000012",
+  "branchCode": "ZZSYN-000012-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 20,
+  "custCode": "ZZSYN-000012",
+  "branchCode": "ZZSYN-000012-02",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 21,
+  "custCode": "ZZSYN-000012",
+  "branchCode": "ZZSYN-000012-03",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 22,
+  "custCode": "ZZSYN-000012",
+  "branchCode": "ZZSYN-000012-04",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 23,
+  "custCode": "ZZSYN-000013",
+  "branchCode": "ZZSYN-000013-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 24,
+  "custCode": "ZZSYN-000013",
+  "branchCode": "ZZSYN-000013-02",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 25,
+  "custCode": "ZZSYN-000014",
+  "branchCode": "ZZSYN-000014-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 26,
+  "custCode": "ZZSYN-000014",
+  "branchCode": "ZZSYN-000014-02",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 27,
+  "custCode": "ZZSYN-000015",
+  "branchCode": "ZZSYN-000015-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 28,
+  "custCode": "ZZSYN-000016",
+  "branchCode": "ZZSYN-000016-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 29,
+  "custCode": "ZZSYN-000017",
+  "branchCode": "ZZSYN-000017-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 30,
+  "custCode": "ZZSYN-000017",
+  "branchCode": "ZZSYN-000017-02",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 31,
+  "custCode": "ZZSYN-000018",
+  "branchCode": "ZZSYN-000018-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 32,
+  "custCode": "ZZSYN-000018",
+  "branchCode": "ZZSYN-000018-02",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 33,
+  "custCode": "ZZSYN-000019",
+  "branchCode": "ZZSYN-000019-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ },
+ {
+  "rowNumber": 34,
+  "custCode": "ZZSYN-000020",
+  "branchCode": "ZZSYN-000020-01",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R16",
+   "R17",
+   "R18",
+   "R1"
+  ]
+ }
+]

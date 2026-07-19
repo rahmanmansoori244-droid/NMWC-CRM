@@ -1,0 +1,26 @@
+{
+  "verdict": "BLOCKED — isolation cannot be proven; DB unreachable-for-auth",
+  "stopCondition": true,
+  "blocker": {
+    "symptom": "Prisma $queryRaw fails against the QA Neon branch",
+    "exactError": "Authentication failed against database server, the provided database credentials are not valid.",
+    "tcp": "host:5432 is OPEN (server reachable); failure is AUTH, not network",
+    "wasWorkingEarlierThisSession": true,
+    "mostLikelyCause": "Neon role password was rotated (owner previously stated secrets/credentials would be rotated before go-live). Neon branches share the parent role's credentials, so rotating the parent invalidates the branch password in .env.",
+    "dbHostMasked": "ep-crimson-sea-aq9yh742-pooler.c-8.us-east-1.aws.neon.tech"
+  },
+  "checksThatDidComplete": {
+    "emailIsolation": "PASS — no mailer/provider wired anywhere; zero risk of real notification delivery (in-app Notification rows only)",
+    "r2Isolation": "FAIL — R2_BUCKET=nmwc-photos is the PRODUCTION bucket; attachment/photo write-path tests are NOT isolated and must be deferred or mocked",
+    "sentryIsolation": "PASS — server Sentry DSN disabled for this environment (#DEMO-OFF in .env)",
+    "authTrustHost": "true (local prod demo setting; not a production config)",
+    "dbIsolation": "UNPROVEN — cannot connect to run the migration-fingerprint + sentinel proof"
+  },
+  "caveatOnBranchData": "The QA branch is a copy-on-write clone of the production pilot: writes NEVER reach production, but it carries cloned real customer PII. Evidence must log only aggregate counts + self-created synthetic rows.",
+  "requiredToUnblock": [
+    "A valid connection string for an isolated QA Postgres (the current Neon branch with its refreshed password, OR a fresh empty branch — a pristine synthetic-only DB is preferable to avoid cloned PII).",
+    "Optionally: a synthetic/test R2 bucket (or confirmation to mock R2) so attachment tests can run isolated.",
+    "Test-only AUTH_SECRET + CRON_SECRET if the old ones were rotated too."
+  ],
+  "actionTaken": "STOPPED all DB-dependent execution per the mandatory safety rule ('if isolation cannot be proven, stop and report the exact blocker; do not guess'). Did NOT attempt any workaround, alternate credentials, or production access."
+}

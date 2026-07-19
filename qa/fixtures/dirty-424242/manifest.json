@@ -1,0 +1,198 @@
+[
+ {
+  "rowNumber": 1,
+  "custCode": "",
+  "branchCode": "",
+  "expectedDisposition": "MISSING_MANDATORY",
+  "expectedErrorCode": "cust_code:required",
+  "requirementRefs": [
+   "R17"
+  ]
+ },
+ {
+  "rowNumber": 2,
+  "custCode": "ZZDIRTY-0002",
+  "branchCode": "",
+  "expectedDisposition": "MISSING_MANDATORY",
+  "expectedErrorCode": "cust_name:required",
+  "requirementRefs": [
+   "R17"
+  ]
+ },
+ {
+  "rowNumber": 3,
+  "custCode": "ZZDIRTY-0003",
+  "branchCode": "",
+  "expectedDisposition": "INVALID_FORMAT",
+  "expectedErrorCode": "payment_terms",
+  "requirementRefs": [
+   "R1",
+   "R2"
+  ]
+ },
+ {
+  "rowNumber": 4,
+  "custCode": "ZZDIRTY-0004",
+  "branchCode": "",
+  "expectedDisposition": "INVALID_FORMAT",
+  "expectedErrorCode": "phone",
+  "requirementRefs": [
+   "R34"
+  ]
+ },
+ {
+  "rowNumber": 5,
+  "custCode": "ZZDIRTY-0005",
+  "branchCode": "",
+  "expectedDisposition": "REJECTED",
+  "expectedErrorCode": "formula_payload",
+  "requirementRefs": [
+   "SEC-03"
+  ]
+ },
+ {
+  "rowNumber": 6,
+  "custCode": "ZZDIRTY-0006",
+  "branchCode": "",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "SEC-03"
+  ],
+  "note": "stripHtml sanitizes to plain text"
+ },
+ {
+  "rowNumber": 7,
+  "custCode": "ZZDUP-A",
+  "branchCode": "",
+  "expectedDisposition": "STEWARD_REVIEW",
+  "expectedErrorCode": "cr_no:dup_in_file",
+  "requirementRefs": [
+   "R22"
+  ]
+ },
+ {
+  "rowNumber": 8,
+  "custCode": "ZZDUP-B",
+  "branchCode": "",
+  "expectedDisposition": "STEWARD_REVIEW",
+  "expectedErrorCode": "cr_no:dup_in_file",
+  "requirementRefs": [
+   "R22"
+  ]
+ },
+ {
+  "rowNumber": 9,
+  "custCode": "ZZPH-A",
+  "branchCode": "",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R-phone"
+  ],
+  "note": "phone dups allowed (partial-unique dropped)"
+ },
+ {
+  "rowNumber": 10,
+  "custCode": "ZZPH-B",
+  "branchCode": "",
+  "expectedDisposition": "STEWARD_REVIEW",
+  "expectedErrorCode": "phone:dup_in_file",
+  "requirementRefs": [
+   "R-phone"
+  ],
+  "note": "flagged in-file even though phone dups are allowed at master level"
+ },
+ {
+  "rowNumber": 11,
+  "custCode": "ZZGPS",
+  "branchCode": "",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R25"
+  ],
+  "note": "import parser ignores gps columns; Oman-bound enforced only on CREATE/edit Zod + no DB CHECK for envelope"
+ },
+ {
+  "rowNumber": 12,
+  "custCode": "ZZXW-A",
+  "branchCode": "",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R19"
+  ],
+  "note": "first claimant of the temix code"
+ },
+ {
+  "rowNumber": 13,
+  "custCode": "ZZXW-B",
+  "branchCode": "",
+  "expectedDisposition": "CONFLICT",
+  "expectedErrorCode": "CROSSWALK:temix_code",
+  "requirementRefs": [
+   "R19",
+   "R31"
+  ],
+  "note": "refresh must reject: code owned by another customer"
+ },
+ {
+  "rowNumber": 14,
+  "custCode": "ZZDIRTY-0014",
+  "branchCode": "",
+  "expectedDisposition": "INVALID_FORMAT",
+  "expectedErrorCode": "credit_limit",
+  "requirementRefs": [
+   "R20"
+  ],
+  "note": "refresh parser rounds to 3dp; >3dp is precision loss to verify"
+ },
+ {
+  "rowNumber": 15,
+  "custCode": "ZZDIRTY-0015",
+  "branchCode": "",
+  "expectedDisposition": "INVALID_FORMAT",
+  "expectedErrorCode": "credit_limit",
+  "requirementRefs": [
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 16,
+  "custCode": "ZZDIRTY-0016",
+  "branchCode": "",
+  "expectedDisposition": "INVALID_FORMAT",
+  "expectedErrorCode": "payment_term_days",
+  "requirementRefs": [
+   "R20"
+  ]
+ },
+ {
+  "rowNumber": 17,
+  "custCode": "ZZDIRTY-0017",
+  "branchCode": "",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R-validation"
+  ],
+  "note": "whitespace trimmed to empty optional"
+ },
+ {
+  "rowNumber": 18,
+  "custCode": "ZZDIRTY-0018",
+  "branchCode": "",
+  "expectedDisposition": "ACCEPTED",
+  "requirementRefs": [
+   "R-validation"
+  ],
+  "note": "length bound behavior to verify (import has no explicit length cap)"
+ },
+ {
+  "rowNumber": 19,
+  "custCode": "ZZDIRTY-0019",
+  "branchCode": "",
+  "expectedDisposition": "STEWARD_REVIEW",
+  "expectedErrorCode": "route_region_mismatch",
+  "requirementRefs": [
+   "R24"
+  ],
+  "note": "unknown/foreign route -> UNASSIGNED fallback + warning (F-17)"
+ }
+]
