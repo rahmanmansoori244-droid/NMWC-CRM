@@ -1,9 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "regions": ["fra1"],
+  "regions": ["iad1"],
   "functions": {
     "app/**/*.ts": {
-      "maxDuration": 30
+      "maxDuration": 60
+    },
+    "app/**/*.tsx": {
+      "maxDuration": 60
     }
   },
   "crons": [

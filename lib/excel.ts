@@ -4,6 +4,13 @@
  */
 import ExcelJS from 'exceljs';
 
+// Defence-in-depth against a decompression-bomb / oversized workbook: the 5 MB
+// upload cap bounds only the COMPRESSED bytes, but a crafted .xlsx inflates to
+// far more rows. Cap total parsed data rows so the per-row DB loops downstream
+// (import promote) cannot be driven into a multi-hundred-thousand-query DoS.
+// The real master is ~3,300 customers, so 50k is comfortable headroom.
+const MAX_TOTAL_ROWS = 50_000;
+
 export type ParsedRow = Record<string, string | number | null>;
 
 export type ParsedSheet = {
@@ -19,6 +26,7 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await wb.xlsx.load(u8 as any);
   const sheets: ParsedSheet[] = [];
+  let totalRows = 0;
   wb.eachSheet((ws) => {
     const headers: string[] = [];
     ws.getRow(1).eachCell({ includeEmpty: false }, (cell) => {
@@ -63,6 +71,12 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
       });
       rows.push(obj);
     });
+    totalRows += rows.length;
+    if (totalRows > MAX_TOTAL_ROWS) {
+      throw new Error(
+        `Workbook has too many rows (>${MAX_TOTAL_ROWS.toLocaleString()}). Split the file into smaller batches.`
+      );
+    }
     sheets.push({ name: ws.name, headers, rows });
   });
   return sheets;
