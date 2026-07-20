@@ -249,4 +249,32 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     const rows = await prisma.importRow.findMany({ where: { batchId: batch2 } });
     expect(rows[0]?.state).toBe('REJECTED');
   });
+
+  it('QA P-03: two rows in ONE customer that resolve to the same branchCode reject the group (no silent branch loss)', async () => {
+    // Row1 bare '02' -> ZZPRO-DUP-02 ; Row2 blank -> positional ZZPRO-DUP-01 ;
+    // Row3 blank at ordinal 2 -> positional ZZPRO-DUP-02  ⇒ Row1 and Row3 collide.
+    const fd = new FormData();
+    fd.set('file', new File([await sheetBuf([
+      { cust_code: `${P}-DUP`, cust_name: 'ZZ Dup Branch', branch_code: '02', sales_region: 'ZZMCT', route: 'ZZMCT-R01', address: 'Way 11', phone: '+96890555021' },
+      { cust_code: `${P}-DUP`, cust_name: 'ZZ Dup Branch', branch_code: '', sales_region: 'ZZMCT', route: 'ZZMCT-R01', address: 'Way 12', phone: '+96890555022' },
+      { cust_code: `${P}-DUP`, cust_name: 'ZZ Dup Branch', branch_code: '', sales_region: 'ZZMCT', route: 'ZZMCT-R01', address: 'Way 13', phone: '+96890555023' },
+    ])], 'promote-dup.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }));
+    const up = await imports.uploadCustomerMasterAction(fd);
+    expect(up.ok).toBe(true);
+    const b = (up as { ok: true; data: { batchId: string } }).data.batchId;
+    const pfd = new FormData(); pfd.set('batchId', b);
+    const pr = await imports.promoteCustomerBatchAction(pfd);
+    expect(pr.ok).toBe(true);
+    // the whole group is rejected — the customer is NOT created (no silent overwrite)
+    const cust = await prisma.customer.findUnique({ where: { nmwcCode: `${P}-DUP` } });
+    expect(cust).toBeNull();
+    const rows = await prisma.importRow.findMany({ where: { batchId: b } });
+    expect(rows.every((r) => r.state === 'REJECTED')).toBe(true);
+    expect((rows[0].issues as { message: string }[])[0].message).toMatch(/duplicate branch_code/i);
+    // cleanup this ad-hoc batch
+    await prisma.importRow.deleteMany({ where: { batchId: b } });
+    await prisma.importBatch.deleteMany({ where: { id: b } });
+  });
 });

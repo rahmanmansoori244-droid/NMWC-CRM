@@ -6,7 +6,11 @@
  */
 import { describe, it, expect } from 'vitest';
 import { Role } from '@prisma/client';
-import { customerListBranchScope } from '@/lib/customer-filters';
+import {
+  applyCustomerFilters,
+  customerListBranchScope,
+  parseCustomerFilters,
+} from '@/lib/customer-filters';
 
 const empty = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: [] };
 
@@ -55,5 +59,35 @@ describe('SR-M2: customerListBranchScope is fail-closed', () => {
       const orgWide = ([Role.STEWARD, Role.VIEWER, Role.FINANCE_MANAGER, Role.GM] as Role[]).includes(role as Role);
       if (!orgWide) expect(s.forceEmpty, `${role} must be fail-closed on empty scope`).toBe(true);
     }
+  });
+});
+
+describe('SR-EXP-01: a URL filter cannot widen an empty (fail-closed) branch scope', () => {
+  // The empty-team Supervisor path could pass branchSomeBase = {routeId:{in:[]}}.
+  // A route/supervisor/salesman URL filter must NOT override that to the filter's
+  // rows (the export PII leak). mergeStringIn must keep ∅ ∩ filter = ∅.
+  const emptyScopeBase = { routeId: { in: [] as string[] }, deletedAt: null };
+
+  it('empty routeId scope + a route filter stays fail-closed (__none__), not the victim route', () => {
+    const filters = parseCustomerFilters({ route: 'victim-route-id' });
+    const where = applyCustomerFilters({ deletedAt: null }, emptyScopeBase, filters, [], null);
+    const routeId = (where.branches as { some: { routeId?: { in?: string[] } } }).some.routeId;
+    expect(routeId?.in).toEqual(['__none__']);
+    expect(routeId?.in).not.toContain('victim-route-id');
+  });
+
+  it('empty routeId scope + a salesman filter stays fail-closed', () => {
+    const filters = parseCustomerFilters({ salesman: 'victim-salesman' });
+    const where = applyCustomerFilters({ deletedAt: null }, emptyScopeBase, filters, [], 'victim-route');
+    const routeId = (where.branches as { some: { routeId?: { in?: string[] } } }).some.routeId;
+    expect(routeId?.in).toEqual(['__none__']);
+  });
+
+  it('a NON-empty scope still intersects filters normally (no over-restriction)', () => {
+    const base = { routeId: { in: ['r1', 'r2', 'r3'] }, deletedAt: null };
+    const filters = parseCustomerFilters({ route: 'r2' });
+    const where = applyCustomerFilters({ deletedAt: null }, base, filters, [], null);
+    const routeId = (where.branches as { some: { routeId?: { in?: string[] } } }).some.routeId;
+    expect(routeId?.in).toEqual(['r2']); // intersection kept
   });
 });

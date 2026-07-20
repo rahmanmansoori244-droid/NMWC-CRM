@@ -13,6 +13,7 @@ import { logger } from '@/lib/logger';
 import { buildWorkbook } from '@/lib/excel';
 import {
   applyCustomerFilters,
+  customerListBranchScope,
   parseCustomerFilters,
   type CustomerFilterParams,
 } from '@/lib/customer-filters';
@@ -113,33 +114,27 @@ async function exportFilteredCustomersCore(
   let branchSomeBase: BranchSomeWhere | undefined;
   let scopedBranchWhere: Prisma.BranchWhereInput = { deletedAt: null };
 
-  if (meRow.role === Role.SALESMAN) {
-    if (!meRow.ownedRouteId) {
-      baseWhere.id = '__none__';
-    } else {
-      branchSomeBase = { routeId: meRow.ownedRouteId, deletedAt: null };
-      scopedBranchWhere = { routeId: meRow.ownedRouteId, deletedAt: null };
-    }
-  } else if (meRow.role === Role.SUPERVISOR) {
-    const routeIds = meRow.reports
-      .map((r) => r.ownedRouteId)
-      .filter((id): id is string => !!id);
-    branchSomeBase = { routeId: { in: routeIds }, deletedAt: null };
-    scopedBranchWhere = { routeId: { in: routeIds }, deletedAt: null };
-  } else if (meRow.role === Role.MANAGER) {
-    const regionIds = meRow.managedRegions.map((r) => r.id);
-    if (regionIds.length > 0) {
-      branchSomeBase = { regionId: { in: regionIds }, deletedAt: null };
-      scopedBranchWhere = { regionId: { in: regionIds }, deletedAt: null };
-    } else {
-      // SEC (SR-M2 sibling): fail-CLOSED. A Manager with no managed regions must
-      // export NOTHING, not the whole master. Without this else, branchSomeBase
-      // stayed undefined and `where` collapsed to { deletedAt: null } — a bulk-PII
-      // export leak. Mirrors exports.ts:66 (`['__none__']`) and the SALESMAN
-      // no-route branch above (`baseWhere.id = '__none__'`).
-      baseWhere.id = '__none__';
-      scopedBranchWhere = { id: '__none__' };
-    }
+  // SR-EXP-01 / SR-M2 (P1): fail-closed role scope from the SAME shared helper as
+  // the /customers list (the query twin of lib/access.canSeeCustomer). Previously
+  // this was hand-rolled and the SUPERVISOR-with-no-team-routes branch passed a
+  // raw `{ routeId: { in: [] } }` with NO `__none__` sentinel — a URL route/
+  // supervisor/salesman filter then OVERRODE that empty scope (mergeStringIn bug)
+  // and exported another team's PII. Routing every role through the helper makes
+  // an empty-scope Supervisor/Manager/Accountant force-empty like the list page.
+  const listScope = customerListBranchScope(meRow.role, {
+    ownedRouteId: meRow.ownedRouteId,
+    teamRouteIds: meRow.reports.map((r) => r.ownedRouteId).filter((id): id is string => !!id),
+    managedRegionIds: meRow.managedRegions.map((r) => r.id),
+  });
+  if (listScope.forceEmpty) {
+    baseWhere.id = '__none__';
+    scopedBranchWhere = { id: '__none__' };
+  } else if (listScope.branchSome) {
+    branchSomeBase = listScope.branchSome;
+    scopedBranchWhere = listScope.branchSome;
+  } else {
+    // org-wide (STEWARD / VIEWER / FINANCE_MANAGER / GM) — no branch scope
+    scopedBranchWhere = { deletedAt: null };
   }
 
   // Resolve supervisor / salesman filter to route-ids if set.

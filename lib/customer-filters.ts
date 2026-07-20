@@ -267,11 +267,16 @@ function mergeStringIn(
   if (typeof existing === 'string') {
     return { in: next.includes(existing) ? [existing] : ['__none__'] };
   }
-  // Existing { in: [...] } — intersect.
+  // Existing { in: [...] } — intersect. An EXISTING empty `{ in: [] }` is a
+  // fail-CLOSED scope (Prisma matches nothing); the intersection with any filter
+  // must STAY empty. Returning `{ in: next }` here was a set-theory bug
+  // (∅ ∩ next computed as next) that let a URL filter widen a zero-scope
+  // predicate back to the filter's rows — an out-of-scope PII leak on the
+  // filtered export for an empty-team Supervisor (SR-EXP-01).
   const prevList = Array.isArray((existing as { in?: string[] }).in)
     ? ((existing as { in: string[] }).in)
     : [];
-  if (prevList.length === 0) return { in: next };
+  if (prevList.length === 0) return { in: ['__none__'] };
   const intersected = prevList.filter((id) => next.includes(id));
   return { in: intersected.length > 0 ? intersected : ['__none__'] };
 }

@@ -901,6 +901,40 @@ async function promoteCustomerBatchCore(
       });
     }
 
+    // QA P-03: two rows in the SAME customer group can resolve to the SAME
+    // branchCode — a bare code like '03' composes to `X-03`, which also equals
+    // the positional `formatBranchCode(X, 3)` produced for a codeless row, or two
+    // rows may simply carry the same branch_code. The per-branch upsert is keyed
+    // on the globally-unique branchCode, so the second row would silently UPDATE
+    // (overwrite) the first branch — one physical branch lost, both rows marked
+    // PROMOTED. There is no way to know which row is authoritative, so reject the
+    // whole group to steward review rather than drop data silently.
+    const seenBranchCodes = new Set<string>();
+    let dupBranchCode: string | null = null;
+    for (const r of resolvedBranches) {
+      if (seenBranchCodes.has(r.branchCode)) { dupBranchCode = r.branchCode; break; }
+      seenBranchCodes.add(r.branchCode);
+    }
+    if (dupBranchCode) {
+      failures.push({
+        custCode,
+        rowIds: g.rowIds,
+        reason: `branch_code ${dupBranchCode} appears on more than one row for this customer — steward review`,
+      });
+      await prisma.importRow
+        .updateMany({
+          where: { id: { in: g.rowIds } },
+          data: {
+            state: ImportRowState.REJECTED,
+            issues: [{ field: '_promote', message: `duplicate branch_code ${dupBranchCode} within this customer` }] as Prisma.InputJsonValue,
+            reviewedById: me.id,
+            reviewedAt: new Date(),
+          },
+        })
+        .catch(() => undefined);
+      continue;
+    }
+
     try {
       let refreshedRow = false;
       await prisma.$transaction(async (tx) => {
