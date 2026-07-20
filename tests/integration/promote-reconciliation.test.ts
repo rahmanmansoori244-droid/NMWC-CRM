@@ -147,6 +147,8 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     const cust = await prisma.customer.findUnique({ where: { nmwcCode: `${P}-C1` }, include: { branches: true } });
     expect(cust).toBeTruthy();
     expect(cust!.branches.map((b) => b.branchCode).sort()).toEqual([`${P}-C1-01`, `${P}-C1-02`]);
+    // completenessScore is computed on promote (was left at 0, hiding imports)
+    expect(cust!.completenessScore).toBeGreaterThan(0);
     for (const b of cust!.branches) {
       expect(b.regionId).toBe(ids.region);
       expect(b.routeId).toBe(ids.route);

@@ -16,6 +16,7 @@ import { normalizePhone, isValidPhoneFormat } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
 import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
 import { checkLimit } from '@/lib/rate-limit';
+import { scoreCustomer } from '@/lib/completeness';
 import bcrypt from 'bcryptjs';
 import { logger } from '@/lib/logger';
 import { notifyUsers } from '@/lib/notifications';
@@ -181,13 +182,16 @@ async function uploadAccountMasterCore(
   // 3) Users (two passes — supervisors first, then everyone else linking by username)
   const usersSheet = sheets.find((s) => s.name.toLowerCase() === 'users');
   if (usersSheet) {
-    const sortedRows = [...usersSheet.rows].sort((a, b) => {
-      const ra = uc(a.role);
-      const rb = uc(b.role);
-      const order = ['MANAGER', 'STEWARD', 'SUPERVISOR', 'SALESMAN', 'VIEWER'];
-      return order.indexOf(ra) - order.indexOf(rb);
-    });
-    for (const [i, row] of sortedRows.entries()) {
+    // Keep each row's ORIGINAL spreadsheet position so error messages point at
+    // the real row (we process supervisors first, but 'row N' must still be the
+    // line the steward sees in Excel). sheetRow = original index + 2 (header).
+    const sortedRows = usersSheet.rows
+      .map((row, origIdx) => ({ row, sheetRow: origIdx + 2 }))
+      .sort((a, b) => {
+        const order = ['MANAGER', 'STEWARD', 'SUPERVISOR', 'SALESMAN', 'VIEWER'];
+        return order.indexOf(uc(a.row.role)) - order.indexOf(uc(b.row.role));
+      });
+    for (const { row, sheetRow } of sortedRows) {
       const username = lc(row.username);
       const fullName = String(row.full_name ?? row.fullName ?? row.name ?? '').trim();
       const roleStr = uc(row.role);
@@ -210,7 +214,7 @@ async function uploadAccountMasterCore(
       if (!username || !fullName || !roleStr) {
         issues.push({
           sheet: 'Users',
-          row: i + 2,
+          row: sheetRow,
           message: 'username, full_name, role required',
         });
         continue;
@@ -218,13 +222,13 @@ async function uploadAccountMasterCore(
       if (!VALID_ROLES.includes(roleStr as Role)) {
         issues.push({
           sheet: 'Users',
-          row: i + 2,
+          row: sheetRow,
           message: `role "${roleStr}" not one of ${VALID_ROLES.join(', ')}`,
         });
         continue;
       }
       if (passwordRaw && passwordRaw.length < 12) {
-        issues.push({ sheet: 'Users', row: i + 2, message: 'password must be 12+ chars' });
+        issues.push({ sheet: 'Users', row: sheetRow, message: 'password must be 12+ chars' });
         continue;
       }
 
@@ -254,7 +258,7 @@ async function uploadAccountMasterCore(
       const isSelf = targetExisting?.id === me.id;
 
       if (isSelf && wantsRoleChange && role !== me.role) {
-        issues.push({ sheet: 'Users', row: i + 2, message: 'cannot change your own role via import' });
+        issues.push({ sheet: 'Users', row: sheetRow, message: 'cannot change your own role via import' });
         continue;
       }
       // (b) New MANAGER / STEWARD via import — refuse outright. Forces the
@@ -262,7 +266,7 @@ async function uploadAccountMasterCore(
       if (!targetExisting && (role === Role.MANAGER || role === Role.STEWARD)) {
         issues.push({
           sheet: 'Users',
-          row: i + 2,
+          row: sheetRow,
           message: 'creating MANAGER or STEWARD via import is not permitted — use the Users UI',
         });
         continue;
@@ -279,7 +283,7 @@ async function uploadAccountMasterCore(
       ) {
         issues.push({
           sheet: 'Users',
-          row: i + 2,
+          row: sheetRow,
           message:
             'promoting/demoting MANAGER or STEWARD via import is not permitted — use the Users UI',
         });
@@ -291,7 +295,7 @@ async function uploadAccountMasterCore(
         if (!sup) {
           issues.push({
             sheet: 'Users',
-            row: i + 2,
+            row: sheetRow,
             message: `supervisor "${supUsername}" not found`,
           });
           continue;
@@ -302,14 +306,14 @@ async function uploadAccountMasterCore(
       let ownedRouteId: string | null = null;
       if (role === Role.SALESMAN) {
         if (!routeCode) {
-          issues.push({ sheet: 'Users', row: i + 2, message: 'salesman needs route_code' });
+          issues.push({ sheet: 'Users', row: sheetRow, message: 'salesman needs route_code' });
           continue;
         }
         const route = await prisma.route.findUnique({ where: { code: routeCode } });
         if (!route) {
           issues.push({
             sheet: 'Users',
-            row: i + 2,
+            row: sheetRow,
             message: `route "${routeCode}" not found`,
           });
           continue;
@@ -354,7 +358,7 @@ async function uploadAccountMasterCore(
           if (!passwordRaw) {
             issues.push({
               sheet: 'Users',
-              row: i + 2,
+              row: sheetRow,
               message: 'reset_password=yes but no password provided',
             });
             continue;
@@ -367,7 +371,7 @@ async function uploadAccountMasterCore(
         if (!passwordRaw) {
           issues.push({
             sheet: 'Users',
-            row: i + 2,
+            row: sheetRow,
             message: 'new user needs a password',
           });
           continue;
@@ -379,11 +383,23 @@ async function uploadAccountMasterCore(
         fullName,
         email,
         phone,
-        supervisor: supervisorId ? { connect: { id: supervisorId } } : { disconnect: true },
+        // ownedRoute: a SALESMAN row always carries a resolved route (rows without
+        // one continue'd above); a non-SALESMAN owns no route, so clear it (this
+        // also correctly drops the route when a salesman is promoted).
         ownedRoute: ownedRouteId ? { connect: { id: ownedRouteId } } : { disconnect: true },
       };
-      // Only rotate password / role when explicitly authorised
-      if (wantsReset) update.passwordHash = passwordHash;
+      // A BLANK supervisor_username on a re-import means "keep the existing
+      // supervisor" (mirrors the QA-010 password rule) — NOT unlink. A blank
+      // column silently detaching a salesman's supervisor was a data-loss
+      // footgun. supUsername present ⇒ supervisorId already resolved above.
+      if (supUsername) update.supervisor = { connect: { id: supervisorId! } };
+      // Only rotate password / role when explicitly authorised. A password reset
+      // MUST also revoke live sessions (sessionsRevokedAt) so the old credential
+      // cannot keep a session alive — same as services/users.ts resetPasswordCore.
+      if (wantsReset) {
+        update.passwordHash = passwordHash;
+        update.sessionsRevokedAt = new Date();
+      }
       if (!existing || wantsRoleChange) update.role = role;
 
       const data: Prisma.UserCreateInput = {
@@ -440,7 +456,7 @@ async function uploadAccountMasterCore(
         }
         cleanCount++;
       } catch (err) {
-        issues.push({ sheet: 'Users', row: i + 2, message: (err as Error).message });
+        issues.push({ sheet: 'Users', row: sheetRow, message: (err as Error).message });
       }
     }
   }
@@ -622,7 +638,10 @@ async function uploadCustomerMasterCore(
       row.cust_code ?? row.custcode ?? row.CUSTCODE ?? row.code ?? row.Code
     ).trim();
     const custName = stripHtml(row.cust_name ?? row['CUST NAME'] ?? row.name);
-    const phoneRaw = String(row.phone ?? '').trim();
+    // Read the SAME header fallbacks as normalizePhone below — otherwise a phone
+    // supplied in the 'PHONE' or 'Primary Phone' column skipped the format check
+    // entirely (an invalid number in those columns was silently accepted).
+    const phoneRaw = String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim();
     const phone = normalizePhone(
       String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim() || null
     );
@@ -870,8 +889,16 @@ async function promoteCustomerBatchCore(
           );
         }
       } else {
+        // No usable route → the consistent UNASSIGNED pair. If the row DID supply
+        // a region, warn that it was dropped (region is derived from the route to
+        // satisfy the B-19 trigger) so the steward can add the missing route.
         effectiveRouteId = unassignedRoute!.id;
         effectiveRegionId = unassignedRoute!.regionId;
+        if (p.regionCode && region) {
+          groupResolveErrors.push(
+            `region "${p.regionCode}" was provided without a route — branch parked in UNASSIGNED; add a route to keep the region`
+          );
+        }
       }
       // QA P-01 fix (identity model: branch = custcode-branchcode, globally
       // unique): a sheet carrying a BARE suffix ('01') previously produced a
@@ -1142,6 +1169,19 @@ async function promoteCustomerBatchCore(
           where: { id: { in: g.rowIds } },
           data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() },
         });
+        // Compute completenessScore for the promoted customer. Without this,
+        // every imported customer/branch stayed at 0, hiding them from
+        // completeness-filtered worklists and skewing dashboard averages.
+        const scored = await tx.customer.findUnique({
+          where: { id: customerId },
+          include: { branches: { where: { deletedAt: null } } },
+        });
+        if (scored) {
+          await tx.customer.update({
+            where: { id: customerId },
+            data: { completenessScore: scoreCustomer(scored, scored.branches) },
+          });
+        }
       });
       promoted += g.rowIds.length;
       if (groupResolveErrors.length > 0 && !refreshedRow) {
@@ -1237,6 +1277,7 @@ async function promoteCustomerBatchCore(
     });
 
   revalidatePath('/import');
+  revalidatePath(`/import/${batchId}`); // the batch detail page shows the now-stale READY view + a live Promote button otherwise
   return { promoted, failed: failures.length };
 }
 
