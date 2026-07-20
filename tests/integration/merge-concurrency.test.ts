@@ -97,6 +97,31 @@ describe.skipIf(!ENABLED)('PROD-DUP-01: concurrent reversed-pair merge', () => {
     }
   });
 
+  it('cross-region merge: refused without confirm, succeeds WITH confirmCrossRegion+reason (SR-UI-01 server side)', async () => {
+    // put B's branch in a DIFFERENT region so the merge is cross-region
+    const region2 = `${P}-region2`;
+    const route2 = `${P}-route2`;
+    await prisma.region.create({ data: { id: region2, code: `${P}2-${randomUUID().slice(0, 6)}`, name: 'ZZ Region 2' } });
+    await prisma.route.create({ data: { id: route2, code: `${P}2RT-${randomUUID().slice(0, 6)}`, name: 'ZZ Route 2', regionId: region2 } });
+    await prisma.branch.update({ where: { id: ids.brB }, data: { regionId: region2, routeId: route2 } });
+
+    const bare = new FormData(); bare.set('winnerId', ids.custA); bare.set('loserId', ids.custB);
+    const refused = await dups.mergeCustomersAction(bare);
+    expect(refused.ok).toBe(false); // needs confirmation
+
+    const ok = new FormData();
+    ok.set('winnerId', ids.custA); ok.set('loserId', ids.custB);
+    ok.set('confirmCrossRegion', 'yes'); ok.set('reason', 'same legal entity, verified');
+    const done = await dups.mergeCustomersAction(ok);
+    expect(done.ok).toBe(true);
+    const b = await prisma.customer.findUnique({ where: { id: ids.custB } });
+    expect(b?.deletedAt).not.toBeNull(); // loser archived
+    // cleanup the extra region/route (branches now under custA)
+    await prisma.branch.updateMany({ where: { routeId: route2 }, data: { routeId: ids.route, regionId: ids.region } });
+    await prisma.route.deleteMany({ where: { id: route2 } });
+    await prisma.region.deleteMany({ where: { id: region2 } });
+  });
+
   it('sequential double-merge of the same pair: the second is refused', async () => {
     const f1 = new FormData(); f1.set('winnerId', ids.custA); f1.set('loserId', ids.custB);
     const r1 = await dups.mergeCustomersAction(f1);
