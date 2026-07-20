@@ -28,9 +28,28 @@ import { normalizeCR } from '../lib/cr';
 import { scoreCustomer, scoreBranch } from '../lib/completeness';
 import { formatCustomerCode, formatBranchCode } from '../lib/codes';
 
+const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
+
+// SAFETY GUARD (E1): clearSyntheticData() below runs an UNGUARDED
+// `TRUNCATE ... CASCADE` of every core table. Refuse to run against the known
+// production endpoint so a mis-set .env can never wipe the live pilot (3,300
+// real customers + all users). Set ALLOW_PROD_SEED=1 only for a deliberate,
+// reviewed prod seed (there is none in normal operation). Mirrors the endpoint
+// guard in scripts/qa/probe-db.ts + constraint-smoke.ts.
+const PROD_ENDPOINTS = ['ep-sweet-haze'];
+if (PROD_ENDPOINTS.some((e) => SEED_URL.includes(e)) && process.env.ALLOW_PROD_SEED !== '1') {
+  console.error(
+    '\n❌ ABORT: synthetic seed/reset target looks like PRODUCTION (endpoint matched %s).\n' +
+      '   This script TRUNCATEs every table. Point DIRECT_URL/DATABASE_URL at an isolated\n' +
+      '   branch, or set ALLOW_PROD_SEED=1 only if you REALLY intend to wipe production.',
+    PROD_ENDPOINTS.find((e) => SEED_URL.includes(e))
+  );
+  process.exit(2);
+}
+
 const prisma = new PrismaClient({
   // Long-running seed: use the DIRECT (unpooled) URL to avoid pgBouncer idle timeouts.
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  datasourceUrl: SEED_URL || undefined,
 });
 
 // Stable seed so re-runs produce same data
