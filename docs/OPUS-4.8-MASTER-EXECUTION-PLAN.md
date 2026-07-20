@@ -19,6 +19,19 @@ This document is 25 deliverables followed by the **OPUS 4.8 MASTER EXECUTION HAN
 | **B** | Online UAT | **dedicated** Neon branch, no prod data | **dedicated** test bucket | UAT-only, distinct from prod | full online deployment, browser/role/mobile/cron/perf tests, UAT sign-off |
 | **C** | Production | live Neon (`ep-sweet-haze-aq6nra0j`) | `nmwc-photos` | prod (owner-rotated) | **later, gated** controlled go-live only |
 
+### 0.2 ERRATA — corrections after an independent adversarial red-team of this plan
+
+An independent 3-critic red-team reviewed this plan against the code and found real defects in the **first draft**. All are verified true and corrected here; the corrections **override** any contradicting text elsewhere in the document. Executor: read these before Stage 1.
+
+- **E1 (safety, was dangerous):** The draft called `npm run db:synthetic:reset` a "scoped synthetic-prefix wipe." **False and dangerous.** It is an unguarded `TRUNCATE … CASCADE` of every table with **no endpoint guard** (`prisma/synthetic.ts:76-90`) — a mis-set `.env` destroys production. Treat it as a **STOP CONDITION**; run only after an endpoint-abort check, Env A/B only. `scripts/wipe-synthetic-data.ts` is the only prefix-scoped wipe. (The sibling `docs/OPUS-QA-EXECUTION-PLAN.md` already flags this as its C5 stop condition — this plan now reconciles with it.)
+- **E2 (data integrity, go-live):** The **CREATE / full-upsert** import lane defaults an absent/unrecognized payment-terms column to **CASH** (`imports.ts:676`, applied at `:968`); only the **refresh** lane is presence-aware (`:1033`). The first real-master import is a CREATE. **No synthetic test can catch this** (the workbook uses the matching header by construction). Every import "✓" and RK-4's "guarded" status are **conditional on the real Temix header row**. **Go-live step (add to §21):** obtain the real header row FIRST, diff it against the `imports.ts` alias lists, and reject blank/absent terms on the initial import (require explicit CASH/CREDIT per row) before any bulk load.
+- **E3 (false gate):** `scripts/qa/constraint-smoke.ts` **only `console.log`s** missing invariants (line 60) and **exits 0** — it does not fail. Treating a 0 exit as "invariants present" (§7.2/§8.5/§24) is wrong. The gate must **add an assertion to the script** (exit non-zero when `MISSING_partialUnique` is non-empty or any expected CHECK/trigger is absent), or a human must read the printed VERDICT and confirm zero MISSING. Do not automate on exit code alone until the script asserts.
+- **E4 (under-credited coverage):** The Deliverable-2 matrix marks R30 (SLA) and several approval requirements as ✗/net-new, but `tests/unit/working-hours.test.ts` **and** `tests/unit/approval-engine.test.ts` **already exist**. Before building "net-new" tests in Stage 4, **read those two files** and only fill genuine gaps (likely R13 SoD-puppet, R14 frozen-chain, R16 loop-guard, R17 FM/GM-amend, R19 finalize-after-approval, and an *independent* SLA cross-check) — do not rebuild existing coverage.
+- **E5 (executability boundary):** ~9 of 14 stages need **human-provisioned resources** the agent cannot create unattended — there is no in-repo Neon branch-creation path (`print-required-secrets.ts` only *names* `NEON_API_KEY`/`NEON_PROJECT_ID`), and the R2 test bucket, Vercel UAT project, and Sentry UAT env are equally human-gated. The handover's "run top-to-bottom" framing is aspirational past Stage 1. **Partition:** Stages 1 + the DB-free parts of 3/4 are agent-autonomous; Stages 2, 5, 6, 7, 9, 10, 12 are **human-blocked** and each must gate on a named handoff artifact (branch endpoint, bucket name, Vercel project id) a human supplies first. See the revised handover note.
+- **E6 (unfalsifiable gate):** §24 "performance is acceptable" has **no numeric SLO** — it cannot be evaluated. Replace with owner-agreed thresholds (e.g. `/customers` list p95 < X ms at 3,300 customers; promote of the full master completes < the function `maxDuration` or is chunked). Until the owner sets numbers, mark this gate **OPEN**, not passable.
+
+**Priority correction:** the two things that actually gate the pilot are **E2 (real-header/CASH-default)** and **RK-3 (chunked/resumable import for the ~3,300 real master)** — build/verify these FIRST; defer the 25k-customer volume runs and the full ~94-row what-if matrix (especially the guessed-header TMX rows) until after a conditional-go pilot and after the real Temix headers are confirmed.
+
 **Hard rules for the whole programme (carry into every step):**
 - Never write to Environment C. Never reset the shared/parent Neon role password. Every QA/UAT script must hard-abort if `DATABASE_URL` contains `ep-sweet-haze` (pattern already used by `scripts/qa/probe-db.ts`).
 - Prove isolation before any write (endpoint check + zero-PII row counts + migration fingerprint) — reuse `scripts/qa/probe-db.ts` and `scripts/qa/constraint-smoke.ts`.
@@ -144,7 +157,9 @@ The living register is `qa/findings/register.md` + `qa/findings/pre-launch-deep-
 
 ## Deliverable 4 — Synthetic organization design
 
-**Reuse and extend `prisma/synthetic.ts`** (`faker.seed(20260509)`, idempotent, truncates demo data first) rather than building new. Extend it to hit the scale below; keep the fixed seed. Wipe with `scripts/wipe-synthetic-data.ts` (deletes by synthetic region codes, `MCT-` route prefix, `salesman.` username prefix) or `npm run db:synthetic:reset`.
+**Reuse and extend `prisma/synthetic.ts`** (`faker.seed(20260509)`, idempotent) rather than building new. Extend it to hit the scale below; keep the fixed seed.
+
+> ⚠️ **DESTRUCTIVE-COMMAND CORRECTION (see ERRATA E1).** `npm run db:synthetic:reset` / `prisma/synthetic.ts` `clearSyntheticData()` is **NOT** a scoped wipe — it runs `TRUNCATE TABLE "AuditLog","CustomerEdit","ImportRow","ImportBatch","ExportJob","Attachment","Branch","Customer","Route","Region","User" RESTART IDENTITY CASCADE` (`synthetic.ts:76-90`) with **NO endpoint/hostname guard**. Against a mis-set `.env` it destroys the entire production DB. It is a **STOP CONDITION**: never run it without an `ep-sweet-haze` endpoint-abort check passing immediately before (or add that guard to `synthetic.ts` first). The **only** prefix-scoped wipe is `scripts/wipe-synthetic-data.ts` (synthetic region codes + `MCT-` route prefix + `salesman.` username prefix).
 
 **Target org (Env A seed + Env B seed identical):**
 - **Regions:** 6 (use the seed codes `[VERIFY-1]`). Assign every region a Manager and ≥1 region-scoped Accountant.
@@ -215,7 +230,7 @@ Missing headers; renamed headers; header not on row 1; wrong sheet name; duplica
 - **Two consumers, one source:** the generator emits (a) the xlsx for Env B import tests and (b) a JSON seed (`qa/fixtures/*`) for Env A DB seeding, from the **same** ground-truth so import-reconciliation and DB-seed assertions agree.
 - **Realism:** faker for names (English/Arabic/mixed), Oman phone formats, CR variants, GPS inside/borderline/outside the Oman envelope, channel/sub-channel valid pairings, visit days, equipment quantities, credit figures, completeness spread.
 - **Manifest = ground truth:** every row carries `expectedDisposition` + `requirementRefs` (Rxx) so reconciliation is a machine check, not eyeballing.
-- **Wipe/reset:** `npm run db:synthetic:reset` (Env A) and `scripts/wipe-synthetic-data.ts` (Env B) — both scoped to synthetic prefixes; verify they never touch prod prefixes before running.
+- **Wipe/reset (READ ERRATA E1):** `npm run db:synthetic:reset` is an **unguarded full-table `TRUNCATE CASCADE`** (every row in the listed tables) with **no endpoint guard** — treat it as a STOP CONDITION; only ever run it on Env A after an endpoint-abort check confirms the target is NOT production. `scripts/wipe-synthetic-data.ts` is the **only** prefix-scoped wipe (safe for Env B). Verify the endpoint before either.
 
 ---
 
@@ -257,7 +272,7 @@ Missing headers; renamed headers; header not on row 1; wrong sheet name; duplica
 17. Prove no prod system is connected (endpoint check + a query that would only return prod rows returns zero).
 18. Test rollback (redeploy previous commit; app healthy).
 19. Test redeploy (deploy current again; healthy).
-20. Test DB reset + reseed (`db:synthetic:reset`; counts back to baseline).
+20. Test DB reset + reseed — **run `scripts/qa/probe-db.ts` first to prove the endpoint is the isolated UAT branch (E1), then** `db:synthetic:reset` (unguarded truncate — Env B only) + reseed; counts back to baseline.
 
 ### 8.1 Deployment smoke tests
 - `GET /api/health` → `{status:ok}` 200 (public); with `Authorization: Bearer $HEALTH_BEARER` → detailed `db`/`r2` `ok`.
