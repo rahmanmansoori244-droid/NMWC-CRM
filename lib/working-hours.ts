@@ -19,8 +19,9 @@ import { Role } from '@prisma/client';
 
 const TZ_OFFSET_MIN = Number(process.env.WORK_TZ_OFFSET_MIN ?? 240); // Asia/Muscat = UTC+4, no DST
 const WORK_DAYS = new Set(
-  (process.env.WORK_DAYS ?? '0,1,2,3,4,6').split(',').map((s) => Number(s.trim()))
-); // getUTCDay() values on the shifted clock: Sun=0 … Sat=6; default = Fri off
+  (process.env.WORK_DAYS ?? '0,1,2,3,4').split(',').map((s) => Number(s.trim()))
+); // getUTCDay() on the shifted clock: Sun=0 … Sat=6. Owner-confirmed workweek is
+// Sun–Thu (5-day); Fri (5) AND Sat (6) are off. Override via WORK_DAYS if it changes.
 const WORK_START_MIN = Math.round(Number(process.env.WORK_HOUR_START ?? 8) * 60);
 const WORK_END_MIN = Math.round(Number(process.env.WORK_HOUR_END ?? 17) * 60);
 const DAY_CAPACITY_MIN = WORK_END_MIN - WORK_START_MIN;

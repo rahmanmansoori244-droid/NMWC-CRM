@@ -1,8 +1,9 @@
 /**
  * Phase 1 SLA: Oman working-hours calendar + escalation plan.
  *
- * Defaults under test: UTC+4 (Asia/Muscat, no DST), working days Sun–Thu +
- * Sat (Friday off), window 08:00–17:00 Oman = 04:00–13:00 UTC.
+ * Defaults under test: UTC+4 (Asia/Muscat, no DST), working days Sun–Thu
+ * (Friday + Saturday off — owner-confirmed 5-day week), window 08:00–17:00 Oman
+ * = 04:00–13:00 UTC.
  * All fixture instants are written in UTC and annotated with Oman wall time.
  */
 import { describe, it, expect } from 'vitest';
@@ -33,19 +34,19 @@ describe('slaDeadline (working-hours calendar)', () => {
     expect(slaDeadline(WED_1630_OMAN, 60).toISOString()).toBe('2026-07-16T04:30:00.000Z');
   });
 
-  it('skips Friday entirely (Thu evening -> Sat morning)', () => {
-    // Thu 16:30 + 60min -> 30min Thu + 30min SATURDAY (Fri off) -> Sat 08:30 Oman.
-    expect(slaDeadline(THU_1630_OMAN, 60).toISOString()).toBe('2026-07-18T04:30:00.000Z');
+  it('skips Friday AND Saturday (Thu evening -> Sun morning)', () => {
+    // Thu 16:30 + 60min -> 30min Thu + (Fri+Sat off) + 30min SUNDAY -> Sun 08:30 Oman.
+    expect(slaDeadline(THU_1630_OMAN, 60).toISOString()).toBe('2026-07-19T04:30:00.000Z');
   });
 
   it('a submission on the off day starts counting from the next working morning', () => {
-    // Fri noon + 8h -> all of Sat 08:00-16:00 -> Sat 16:00 Oman (12:00 UTC).
-    expect(slaDeadline(FRI_NOON_OMAN, 8 * 60).toISOString()).toBe('2026-07-18T12:00:00.000Z');
+    // Fri noon + 8h -> (Fri+Sat off) all of Sun 08:00-16:00 -> Sun 16:00 Oman (12:00 UTC).
+    expect(slaDeadline(FRI_NOON_OMAN, 8 * 60).toISOString()).toBe('2026-07-19T12:00:00.000Z');
   });
 
   it('multi-day budgets walk whole 9h working days', () => {
-    // Wed 10:00 + 24h working: 7h Wed + 9h Thu + (Fri off) + 8h Sat -> Sat 16:00 Oman.
-    expect(slaDeadline(WED_10_OMAN, 24 * 60).toISOString()).toBe('2026-07-18T12:00:00.000Z');
+    // Wed 10:00 + 24h working: 7h Wed + 9h Thu + (Fri+Sat off) + 8h Sun -> Sun 16:00 Oman.
+    expect(slaDeadline(WED_10_OMAN, 24 * 60).toISOString()).toBe('2026-07-19T12:00:00.000Z');
   });
 
   it('supervisor OLD-parity example: 8h from Wed 10:00 lands Thu 09:00 Oman', () => {
