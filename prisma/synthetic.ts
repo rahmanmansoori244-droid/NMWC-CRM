@@ -215,6 +215,31 @@ async function seedUsers() {
     },
   });
 
+  // ── Credit-chain approvers (Phase 1). ACCOUNTANT is region-scoped via
+  // managedRegions (same mechanism + fail-closed rule as MANAGER); FINANCE_MANAGER
+  // and GM are org-wide (GLOBAL approval step, no region assignment). Cash chain
+  // is SUP→ACC; credit chain is SUP→FM→GM→ACC. ──
+  const acc1 = await prisma.user.upsert({
+    where: { username: 'accountant.a' }, update: {},
+    create: { username: 'accountant.a', passwordHash: password, fullName: 'Accountant Alpha', role: Role.ACCOUNTANT },
+  });
+  const acc2 = await prisma.user.upsert({
+    where: { username: 'accountant.b' }, update: {},
+    create: { username: 'accountant.b', passwordHash: password, fullName: 'Accountant Beta', role: Role.ACCOUNTANT },
+  });
+  await prisma.user.update({ where: { id: acc1.id }, data: { managedRegions: { set: muscatRegions.map((r) => ({ id: r.id })) } } });
+  await prisma.user.update({ where: { id: acc2.id }, data: { managedRegions: { set: otherRegions.map((r) => ({ id: r.id })) } } });
+  for (const u of ['fm.a', 'fm.b']) {
+    await prisma.user.upsert({ where: { username: u }, update: {}, create: { username: u, passwordHash: password, fullName: `Finance Manager ${u.slice(-1).toUpperCase()}`, role: Role.FINANCE_MANAGER } });
+  }
+  for (const u of ['gm.a', 'gm.b']) {
+    await prisma.user.upsert({ where: { username: u }, update: {}, create: { username: u, passwordHash: password, fullName: `GM ${u.slice(-1).toUpperCase()}`, role: Role.GM } });
+  }
+  // ── Edge accounts for scope / negative testing ──
+  await prisma.user.upsert({ where: { username: 'manager.unscoped' }, update: {}, create: { username: 'manager.unscoped', passwordHash: password, fullName: 'Manager Unscoped (no regions)', role: Role.MANAGER } });
+  await prisma.user.upsert({ where: { username: 'accountant.unscoped' }, update: {}, create: { username: 'accountant.unscoped', passwordHash: password, fullName: 'Accountant Unscoped (no regions)', role: Role.ACCOUNTANT } });
+  await prisma.user.upsert({ where: { username: 'disabled.user' }, update: {}, create: { username: 'disabled.user', passwordHash: password, fullName: 'Disabled Salesman', role: Role.SALESMAN, isActive: false } });
+
   // ~7 Supervisors
   const supervisors = [];
   for (let i = 1; i <= 7; i++) {
