@@ -78,7 +78,30 @@ From `qa/findings/pre-launch-deep-review.md` — all code-cited & 3-lens verifie
 - Cutover backfill left pre-Phase-1 SUBMITTED edits with `slaDueAt=NULL` (SLA-exempt) and
   stamped pre-existing reactivations with `pendingRole=SUPERVISOR` (un-actionable rows).
 
+## Round-2 deep scan (2026-07-20) — 16 more confirmed, 10 fixed
+
+A second adversarial scan (63 agents) confirmed 16 more findings; the regression
+critic cleared the earlier P1 fixes as correct. **Fixed + tested this round:**
+- **P1** empty-team Supervisor filtered-**export** could dump another team's PII
+  (`mergeStringIn` computed ∅∩filter=filter; export bypassed the shared scope helper).
+- **P2** in-group **branchCode collision** silently dropped a branch on promote
+  (regression of the bare-code composition fix) — now rejects the group to review.
+- **P2** **cross-region merge** was impossible via the UI (no confirm/reason field).
+- **P2/P3** account-import: password reset now revokes sessions; blank supervisor
+  column keeps (not unlinks); correct row numbers. Promote now computes
+  completenessScore; phone format check reads all header variants.
+
+Full detail: [`deep-scan-round2.md`](../findings/deep-scan-round2.md).
+
+**Carried P3s (first patch window, not launch-blocking):** photo-gc orphans the R2
+object when tagging fails; `detachPhoto` doesn't recompute completeness; a merged CR
+photo's `Attachment.customerId` still points at the archived loser; the reactivation
+review screen shows old shop photos instead of the fresh evidence; the
+open-per-customer unique index surfaces a generic "refresh and try again" when a 2nd
+branch of one customer is reactivated/closed.
+
 ## Bottom line
 Fix the 5 owner items + chunk the first master import, and this is **GO for a
-supervised pilot**. The remaining P2/P3s are real but survivable and can land in the
-first patch window with the pilot already running.
+supervised pilot**. Two adversarial deep scans (41 confirmed findings total) have been
+run and every P1/P2 is fixed with fail-before/pass-after tests; the remaining carried
+P3s are survivable and land in the first patch window with the pilot already running.
