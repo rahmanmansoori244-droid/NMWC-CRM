@@ -16,6 +16,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { readFileSync, existsSync } from 'node:fs';
+import path from 'node:path';
 import ExcelJS from 'exceljs';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -65,6 +67,7 @@ describe.skipIf(!ENABLED)('F-UAT-7: multi-branch customer must not self-quaranti
   const codeB = `ZZMB-B-${tag}`;
   const codeC = `ZZMB-C-${tag}`;
   let batchId: string;
+  const extraBatchIds: string[] = [];
 
   beforeAll(async () => {
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
@@ -76,9 +79,10 @@ describe.skipIf(!ENABLED)('F-UAT-7: multi-branch customer must not self-quaranti
 
   afterAll(async () => {
     if (!prisma) return;
-    if (batchId) {
-      await prisma.importRow.deleteMany({ where: { batchId } });
-      await prisma.importBatch.deleteMany({ where: { id: batchId } });
+    const allBatches = [batchId, ...extraBatchIds].filter(Boolean);
+    if (allBatches.length) {
+      await prisma.importRow.deleteMany({ where: { batchId: { in: allBatches } } });
+      await prisma.importBatch.deleteMany({ where: { id: { in: allBatches } } });
     }
     await prisma.user.deleteMany({ where: { id: stewardId } });
     await prisma.$disconnect();
@@ -125,5 +129,44 @@ describe.skipIf(!ENABLED)('F-UAT-7: multi-branch customer must not self-quaranti
       expect(fieldsOf(n)).toContain('phone');
       expect(fieldsOf(n)).toContain('cr_no');
     }
+  });
+
+  // Scaled confirmation: the medium synthetic master (300 customers, ~40%
+  // multi-branch, manifest = all-ACCEPTED) once lost 324/499 rows to bogus
+  // in-file phone/CR dup quarantines. After the fix, ZERO rows may carry an
+  // "in this file" phone/CR issue. (Rows may still be flagged for master-level
+  // collisions if the synthetic band pre-exists on the branch — those are
+  // legitimate and counted separately.)
+  it('scaled: the full medium master produces ZERO in-file phone/CR dup quarantines', async () => {
+    const fixture = path.join('qa', 'fixtures', 'medium-424242', 'master.xlsx');
+    if (!existsSync(fixture)) {
+      console.warn('medium fixture absent — run: npx tsx scripts/qa/generate-synthetic-master.ts --scale=medium --seed=424242');
+      return;
+    }
+    const fd = new FormData();
+    fd.set('file', new File([readFileSync(fixture)], 'medium-master.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }));
+    const res = await imports.uploadCustomerMasterAction(fd);
+    if (!res.ok) console.error('UPLOAD FAILED:', JSON.stringify(res));
+    expect(res.ok).toBe(true);
+    const bId = (res as { ok: true; data: { batchId: string } }).data.batchId;
+    extraBatchIds.push(bId);
+
+    const staged = await prisma.importRow.findMany({ where: { batchId: bId }, select: { state: true, issues: true } });
+    expect(staged.length).toBe(499);
+    let inFileDup = 0, masterDup = 0;
+    for (const r of staged) {
+      const issues = (r.issues as { field: string; message: string }[] | null) ?? [];
+      for (const iss of issues) {
+        if ((iss.field === 'phone' || iss.field === 'cr_no') && /in this file/.test(iss.message)) inFileDup++;
+        if ((iss.field === 'phone' || iss.field === 'cr_no') && /already exists in master/.test(iss.message)) masterDup++;
+      }
+    }
+    const quarantined = staged.filter((r) => r.state === 'QUARANTINED').length;
+    console.log(`\n=== MEDIUM MASTER (fixed importer) === rows=${staged.length} quarantined=${quarantined} inFileDupIssues=${inFileDup} masterDupIssues=${masterDup}`);
+    // The fix's contract: no legitimate multi-branch customer is flagged against
+    // its own branches. Pre-fix this was ~324.
+    expect(inFileDup).toBe(0);
   });
 });
