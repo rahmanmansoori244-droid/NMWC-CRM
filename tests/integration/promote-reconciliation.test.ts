@@ -94,6 +94,16 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
       nmwcCode: `${P}-CR`, legalName: 'ZZ Original Name', temixCode: 'ZZTMX-CR',
       paymentTerms: 'CREDIT', creditLimit: 500, paymentTermDays: 30, temixSyncState: 'UPLOADED',
     } });
+    // non-refresh re-import target: an existing CREDIT customer with CRM-owned
+    // phone/CR/contact and NO temix_code. A later NON-refresh re-import row that
+    // omits payment_terms/phone/CR/contact must NOT flip it to CASH or null those
+    // fields (final-hunt #4/#6/#19) — the destructive-upsert regression.
+    await prisma.customer.create({ data: {
+      nmwcCode: `${P}-REIMP`, legalName: 'ZZ Reimport Keep',
+      paymentTerms: 'CREDIT', creditLimit: 750, paymentTermDays: 45,
+      primaryPhone: '+96890999001', primaryPhoneNorm: '+96890999001',
+      crNumber: '7770001', crNumberNorm: '7770001', contactPerson: 'ZZ Keep Contact',
+    } });
     current = { id: ids.steward, role: 'STEWARD', username: ids.steward };
   });
 
@@ -180,6 +190,34 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(Number(cr?.creditLimit)).toBe(900); // Temix-owned, updated
     expect(cr?.paymentTermDays).toBe(60);
     expect(cr?.temixSyncState).toBe('SYNCED'); // UPLOADED → SYNCED on ack
+  });
+
+  it('non-refresh re-import preserves CREDIT terms + phone/CR/contact when columns are absent/blank (final-hunt #4/#6/#14)', async () => {
+    const before = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: `${P}-REIMP` } });
+    // Re-import row with NO temix_code (=> non-refresh lane), NO payment_terms,
+    // NO phone / cr_no / contact_person. Before the fix this force-overwrote:
+    // paymentTerms→CASH (absent col defaults CASH) and nulled phone/CR/contact.
+    const fd = new FormData();
+    fd.set('file', new File([await sheetBuf([
+      { cust_code: `${P}-REIMP`, cust_name: 'ZZ Reimport Keep', branch_code: `${P}-REIMP-01`, sales_region: 'ZZMCT', route: 'ZZMCT-R01', address: 'Way 11, Muscat' },
+    ])], 'reimport.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const up = await imports.uploadCustomerMasterAction(fd);
+    if (!up.ok) console.error('REIMPORT UPLOAD FAILED:', JSON.stringify(up));
+    expect(up.ok).toBe(true);
+    const pfd = new FormData();
+    pfd.set('batchId', (up as { ok: true; data: { batchId: string } }).data.batchId);
+    const pr = await imports.promoteCustomerBatchAction(pfd);
+    if (!pr.ok) console.error('REIMPORT PROMOTE FAILED:', JSON.stringify(pr));
+    expect(pr.ok).toBe(true);
+
+    const after = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: `${P}-REIMP` } });
+    expect(after.paymentTerms).toBe('CREDIT');            // NOT flipped to CASH
+    expect(Number(after.creditLimit)).toBe(750);          // credit figures untouched
+    expect(after.paymentTermDays).toBe(45);
+    expect(after.primaryPhone).toBe('+96890999001');      // NOT nulled
+    expect(after.crNumber).toBe('7770001');               // NOT nulled
+    expect(after.contactPerson).toBe('ZZ Keep Contact');  // NOT nulled
+    expect(after.version).toBeGreaterThan(before.version); // B-05 optimistic bump (#14)
   });
 
   it('F-17: unknown REGION falls back (row PROMOTED with warning), does not poison the group', async () => {

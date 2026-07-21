@@ -1111,14 +1111,24 @@ async function promoteCustomerBatchCore(
           const customer = await tx.customer.upsert({
             where: { nmwcCode: custCode },
             update: {
+              // Re-import of an EXISTING customer via a non-Temix row must not
+              // clobber CRM-owned data (adversarial-review CONFIRMED). Presence-
+              // aware, mirroring the refresh lane: an ABSENT payment_terms column
+              // must NOT flip a CREDIT customer to CASH, and a BLANK phone/CR/
+              // contact cell must NOT null the stored value. `undefined` = "leave
+              // unchanged". cust_name is mandatory (a blank row is quarantined),
+              // so legalName is always a real value here.
               legalName: first.custName,
-              paymentTerms: pt,
-              primaryPhone: first.phone,
-              primaryPhoneNorm: first.phone,
-              contactPerson: first.contactPerson,
-              crNumber: first.crNumber,
-              crNumberNorm: normalizeCR(first.crNumber),
+              paymentTerms: first.paymentTermsPresent ? pt : undefined,
+              primaryPhone: first.phone ?? undefined,
+              primaryPhoneNorm: first.phone ?? undefined,
+              contactPerson: first.contactPerson ?? undefined,
+              crNumber: first.crNumber ?? undefined,
+              crNumberNorm: first.crNumber ? normalizeCR(first.crNumber) : undefined,
               lastEditedById: me.id,
+              // B-05: bump the optimistic version so a concurrent edit-approve
+              // sees VERSION_CONFLICT rather than a silently lost update.
+              version: { increment: 1 },
             },
             create: {
               nmwcCode: custCode,
