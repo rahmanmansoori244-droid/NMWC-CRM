@@ -71,17 +71,18 @@ export default async function ApprovalsPage() {
           },
         },
         {
+          // final-hunt #7/#15: scope on the draft's CURRENT route region (not the
+          // frozen EditBranchDraft.regionId snapshot) so visibility == the approve
+          // gate's authorization even when a route is re-regioned mid-chain.
           branchDrafts: {
-            some: { regionId: { in: scope.managedRegionIds } },
+            some: { route: { regionId: { in: scope.managedRegionIds } } },
           },
         },
       ];
       where = {
         state: 'SUBMITTED',
         AND: [
-          role === Role.MANAGER
-            ? { OR: supervisorStepOr }
-            : { pendingRole: Role.ACCOUNTANT },
+          role === Role.MANAGER ? { OR: supervisorStepOr } : { pendingRole: Role.ACCOUNTANT },
           { OR: regionOr },
         ],
       };
@@ -147,10 +148,7 @@ export default async function ApprovalsPage() {
 
   return (
     <main>
-      <PageHeader
-        title="Approval queue"
-        subtitle={`${items.length} pending`}
-      />
+      <PageHeader title="Approval queue" subtitle={`${items.length} pending`} />
 
       <div className="pt-4 sm:pt-6">
         {items.length === 0 ? (

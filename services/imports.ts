@@ -83,10 +83,14 @@ const VALID_ROLES: Role[] = [
 ];
 
 function lc(v: unknown): string {
-  return String(v ?? '').trim().toLowerCase();
+  return String(v ?? '')
+    .trim()
+    .toLowerCase();
 }
 function uc(v: unknown): string {
-  return String(v ?? '').trim().toUpperCase();
+  return String(v ?? '')
+    .trim()
+    .toUpperCase();
 }
 
 // QA-012: hard cap on uploaded xlsx (zip-bomb defense)
@@ -211,13 +215,15 @@ async function uploadAccountMasterCore(
       const passwordRaw = String(row.password ?? '').trim();
       // QA-010: passwords must be EXPLICITLY requested via reset_password column,
       // OR provided ONLY for new users. Existing users keep their existing hash.
-      const wantsReset = String(row.reset_password ?? row.resetPassword ?? '')
-        .trim()
-        .toLowerCase() === 'yes';
+      const wantsReset =
+        String(row.reset_password ?? row.resetPassword ?? '')
+          .trim()
+          .toLowerCase() === 'yes';
       // QA-011: role changes must be EXPLICITLY requested via change_role column.
-      const wantsRoleChange = String(row.change_role ?? row.changeRole ?? '')
-        .trim()
-        .toLowerCase() === 'yes';
+      const wantsRoleChange =
+        String(row.change_role ?? row.changeRole ?? '')
+          .trim()
+          .toLowerCase() === 'yes';
       const supUsername = lc(row.supervisor_username ?? row.supervisorUsername ?? '');
       const routeCode = uc(row.route_code ?? row.routeCode ?? '');
       const regionCodesRaw = String(row.region_codes ?? row.regionCodes ?? '').trim();
@@ -271,7 +277,11 @@ async function uploadAccountMasterCore(
       const isSelf = targetExisting?.id === me.id;
 
       if (isSelf && wantsRoleChange && role !== me.role) {
-        issues.push({ sheet: 'Users', row: sheetRow, message: 'cannot change your own role via import' });
+        issues.push({
+          sheet: 'Users',
+          row: sheetRow,
+          message: 'cannot change your own role via import',
+        });
         continue;
       }
       // (b) New MANAGER / STEWARD via import — refuse outright. Forces the
@@ -460,7 +470,10 @@ async function uploadAccountMasterCore(
 
         // Manager region assignments
         if (role === Role.MANAGER && regionCodesRaw) {
-          const codes = regionCodesRaw.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+          const codes = regionCodesRaw
+            .split(',')
+            .map((s) => s.trim().toUpperCase())
+            .filter(Boolean);
           const regions = await prisma.region.findMany({ where: { code: { in: codes } } });
           await prisma.user.update({
             where: { id: user.id },
@@ -613,9 +626,7 @@ async function uploadCustomerMasterCore(
       a.push({ row: i + 2, code: rowCode });
       phonesInFile.set(phoneNorm, a);
     }
-    const crNorm = normalizeCR(
-      String(row.cr_no ?? row['CR NO'] ?? '').trim() || null
-    );
+    const crNorm = normalizeCR(String(row.cr_no ?? row['CR NO'] ?? '').trim() || null);
     if (crNorm) {
       const a = crsInFile.get(crNorm) ?? [];
       a.push({ row: i + 2, code: rowCode });
@@ -683,19 +694,31 @@ async function uploadCustomerMasterCore(
       ? (phonesInFile.get(phone) ?? []).filter((e) => e.code !== custCode).map((e) => e.row)
       : [];
     if (phoneOtherRows.length > 0) {
-      issues.push({ field: 'phone', message: `duplicate phone in this file (also rows ${phoneOtherRows.join(', ')})` });
+      issues.push({
+        field: 'phone',
+        message: `duplicate phone in this file (also rows ${phoneOtherRows.join(', ')})`,
+      });
     }
     if (phone && (masterPhones.get(phone) ?? []).some((code) => code !== custCode)) {
-      issues.push({ field: 'phone', message: 'phone already exists in master — review in /duplicates' });
+      issues.push({
+        field: 'phone',
+        message: 'phone already exists in master — review in /duplicates',
+      });
     }
     const crOtherRows = crNorm
       ? (crsInFile.get(crNorm) ?? []).filter((e) => e.code !== custCode).map((e) => e.row)
       : [];
     if (crOtherRows.length > 0) {
-      issues.push({ field: 'cr_no', message: `duplicate CR in this file (also rows ${crOtherRows.join(', ')})` });
+      issues.push({
+        field: 'cr_no',
+        message: `duplicate CR in this file (also rows ${crOtherRows.join(', ')})`,
+      });
     }
     if (crNorm && (masterCrs.get(crNorm) ?? []).some((code) => code !== custCode)) {
-      issues.push({ field: 'cr_no', message: 'CR already exists in master — review in /duplicates' });
+      issues.push({
+        field: 'cr_no',
+        message: 'CR already exists in master — review in /duplicates',
+      });
     }
     // F-12: strict whitelist on payment terms — silently defaulting `Crdit`
     // to CASH ate the field-lock semantics for credit customers.
@@ -705,7 +728,9 @@ async function uploadCustomerMasterCore(
     // silently flipping CREDIT customers to CASH was an adversarial-review
     // CONFIRMED finding). Legacy create/full-upsert paths keep the CASH
     // default unchanged.
-    const ptRaw = String(row.payment_terms ?? row['PAYMENT TERMS'] ?? '').trim().toUpperCase();
+    const ptRaw = String(row.payment_terms ?? row['PAYMENT TERMS'] ?? '')
+      .trim()
+      .toUpperCase();
     let paymentTerms = 'CASH';
     const paymentTermsPresent = ptRaw === 'CASH' || ptRaw === 'CREDIT';
     if (ptRaw && !paymentTermsPresent) {
@@ -716,7 +741,10 @@ async function uploadCustomerMasterCore(
     // F-05: refuse formula payloads in any text field.
     for (const field of ['cust_name', 'address', 'contact_person', 'notes']) {
       if (isFormulaPayload((row as Record<string, unknown>)[field])) {
-        issues.push({ field, message: 'cell starts with a spreadsheet formula trigger; remove it' });
+        issues.push({
+          field,
+          message: 'cell starts with a spreadsheet formula trigger; remove it',
+        });
       }
     }
 
@@ -734,7 +762,10 @@ async function uploadCustomerMasterCore(
     if (creditRaw) {
       const n = Number(creditRaw);
       if (!Number.isFinite(n) || n < 0 || n > 99_999_999_999) {
-        issues.push({ field: 'credit_limit', message: `expected a non-negative number, got "${creditRaw}"` });
+        issues.push({
+          field: 'credit_limit',
+          message: `expected a non-negative number, got "${creditRaw}"`,
+        });
       } else {
         creditLimit = Math.round(n * 1000) / 1000;
       }
@@ -744,7 +775,10 @@ async function uploadCustomerMasterCore(
     if (termRaw) {
       const n = Number(termRaw);
       if (!Number.isInteger(n) || n < 0 || n > 365) {
-        issues.push({ field: 'payment_term_days', message: `expected whole days 0-365, got "${termRaw}"` });
+        issues.push({
+          field: 'payment_term_days',
+          message: `expected whole days 0-365, got "${termRaw}"`,
+        });
       } else {
         paymentTermDays = n;
       }
@@ -809,524 +843,548 @@ async function promoteCustomerBatchCore(
     data: { status: 'PROMOTING' },
   });
   if (claim.count === 0) {
-    const cur = await prisma.importBatch.findUnique({ where: { id: batchId }, select: { status: true } });
+    const cur = await prisma.importBatch.findUnique({
+      where: { id: batchId },
+      select: { status: true },
+    });
     throw new ValidationError({
       batchId: `Batch is in state ${cur?.status ?? '<missing>'} — only READY batches can be promoted.`,
     });
   }
-  const batch = await prisma.importBatch.findUniqueOrThrow({ where: { id: batchId } });
-  if (batch.kind !== 'CUSTOMER') throw new ValidationError({ batchId: 'not a customer import' });
+  // final-hunt #23: once claimed READY→PROMOTING, any UNEXPECTED throw before the
+  // final PROMOTED update (per-group failures are already caught below) must RELEASE
+  // the batch — otherwise it is stranded in PROMOTING forever and can never be
+  // re-promoted or recovered. Move it to FAILED (a terminal, visible state) and
+  // rethrow so runAction still surfaces the error to the steward.
+  try {
+    const batch = await prisma.importBatch.findUniqueOrThrow({ where: { id: batchId } });
+    if (batch.kind !== 'CUSTOMER') throw new ValidationError({ batchId: 'not a customer import' });
 
-  const cleanRows = await prisma.importRow.findMany({
-    where: { batchId, state: ImportRowState.CLEAN },
-  });
-
-  // Group rows by parent custCode
-  type ParsedShape = {
-    custCode: string;
-    custName: string;
-    branchCode: string | null;
-    branchName: string | null;
-    regionCode: string | null;
-    routeCode: string | null;
-    address: string | null;
-    phone: string | null;
-    contactPerson: string | null;
-    crNumber: string | null;
-    paymentTerms: string;
-    // Phase 1 Temix refresh columns (older batches parsed before the columns
-    // existed have them undefined — treat as absent).
-    paymentTermsPresent?: boolean;
-    temixCode?: string | null;
-    creditLimit?: number | null;
-    paymentTermDays?: number | null;
-  };
-  const groups = new Map<string, { rowIds: string[]; parsed: ParsedShape[] }>();
-  for (const row of cleanRows) {
-    const p = row.parsed as unknown as ParsedShape | null;
-    if (!p?.custCode) continue;
-    const g = groups.get(p.custCode) ?? { rowIds: [], parsed: [] };
-    g.rowIds.push(row.id);
-    g.parsed.push(p);
-    groups.set(p.custCode, g);
-  }
-
-  // Build region+route caches and ensure UNASSIGNED route exists
-  let unassignedRoute = await prisma.route.findUnique({ where: { code: 'UNASSIGNED' } });
-  if (!unassignedRoute) {
-    let unassignedRegion = await prisma.region.findUnique({ where: { code: 'UNASSIGNED' } });
-    if (!unassignedRegion) {
-      unassignedRegion = await prisma.region.create({
-        data: { code: 'UNASSIGNED', name: 'Unassigned' },
-      });
-    }
-    unassignedRoute = await prisma.route.create({
-      data: { code: 'UNASSIGNED', name: 'Unassigned', regionId: unassignedRegion.id },
+    const cleanRows = await prisma.importRow.findMany({
+      where: { batchId, state: ImportRowState.CLEAN },
     });
-  }
 
-  // QA-019: each customer's promotion (parent + branches + row state) runs
-  // in its own transaction so a partial failure leaves no half-state.
-  // F-03: per-row failures now mark the row as REJECTED with the error
-  // message in `issues`, and the action returns a `{ promoted, failed }`
-  // tuple that the UI surfaces in the toast — no more silent swallow.
-  let promoted = 0;
-  const failures: Array<{ custCode: string; rowIds: string[]; reason: string }> = [];
-  for (const [custCode, g] of groups) {
-    const first = g.parsed[0];
-
-    // Pre-resolve regions and routes outside the transaction (these are upserts
-    // that can be repeated safely across batches).
-    const resolvedBranches: Array<{
-      sheetCode: string | null;
-      branchCode: string;
-      branchName: string;
-      regionId: string;
-      routeId: string;
-      address: string;
-    }> = [];
-    const groupResolveErrors: string[] = [];
-    for (const [bi, p] of g.parsed.entries()) {
-      // F-17: refuse to silently auto-create unknown regions/routes. Phantom
-      // regions invented by typos are the source of CHAIN-09 (an unscoped
-      // Manager later falls into them). Only Existing region/route codes
-      // resolve; everything else falls back to UNASSIGNED with a flag in
-      // the audit log so the Steward can fix.
-      const region = p.regionCode
-        ? await prisma.region.findUnique({ where: { code: p.regionCode.toUpperCase() } })
-        : null;
-      if (p.regionCode && !region) {
-        groupResolveErrors.push(`region "${p.regionCode}" not found`);
-      }
-      const route = p.routeCode
-        ? await prisma.route.findUnique({ where: { code: p.routeCode.toUpperCase() } })
-        : null;
-      if (p.routeCode && !route) {
-        groupResolveErrors.push(`route "${p.routeCode}" not found`);
-      }
-      // QA P-02 fix: the fallback previously used the UNASSIGNED ROUTE's id as a
-      // REGION id, so the B-19 region-consistency trigger (Branch.regionId must
-      // equal Route.regionId) aborted the whole group — the F-17 fallback could
-      // never actually happen. Resolve trigger-consistently instead:
-      //   - route known  → the route's own region is authoritative (a region
-      //     that disagrees is a sheet inconsistency, warned + overridden);
-      //   - route unknown → the consistent UNASSIGNED region+route pair.
-      let effectiveRegionId: string;
-      let effectiveRouteId: string;
-      if (route) {
-        effectiveRouteId = route.id;
-        effectiveRegionId = route.regionId;
-        if (region && region.id !== route.regionId) {
-          groupResolveErrors.push(
-            `region "${p.regionCode}" does not match route "${p.routeCode}" — used the route's region`
-          );
-        }
-      } else {
-        // No usable route → the consistent UNASSIGNED pair. If the row DID supply
-        // a region, warn that it was dropped (region is derived from the route to
-        // satisfy the B-19 trigger) so the steward can add the missing route.
-        effectiveRouteId = unassignedRoute!.id;
-        effectiveRegionId = unassignedRoute!.regionId;
-        if (p.regionCode && region) {
-          groupResolveErrors.push(
-            `region "${p.regionCode}" was provided without a route — branch parked in UNASSIGNED; add a route to keep the region`
-          );
-        }
-      }
-      // QA P-01 fix (identity model: branch = custcode-branchcode, globally
-      // unique): a sheet carrying a BARE suffix ('01') previously produced a
-      // global branchCode '01' that collided across customers — and the upsert
-      // below silently re-parented the branch to the later customer. Compose
-      // bare codes under the owning custCode; already-composed codes (or a
-      // code equal to the custCode itself) pass through unchanged.
-      const ccUpper = custCode.toUpperCase();
-      const rawBranchCode = p.branchCode ? p.branchCode.trim().toUpperCase() : null;
-      resolvedBranches.push({
-        // sheetCode: the code EXACTLY as the sheet gave it (null if generated).
-        // The in-tx guard checks it too — a sheet code that exists under another
-        // customer is a data error to review, not a code to silently re-mint.
-        sheetCode: rawBranchCode,
-        branchCode: rawBranchCode
-          ? rawBranchCode === ccUpper || rawBranchCode.startsWith(`${ccUpper}-`)
-            ? rawBranchCode
-            : `${ccUpper}-${rawBranchCode}`
-          : formatBranchCode(custCode, bi + 1),
-        branchName: p.branchName ?? 'Main',
-        regionId: effectiveRegionId,
-        routeId: effectiveRouteId,
-        // final-hunt #8: `[...].filter(Boolean).join(', ')` returns '' (empty
-        // string, not null) when branch_name AND sales_region are both blank, and
-        // `??` does NOT fall through '' — so the branch got an empty address and
-        // the whole customer group was REJECTED at promote (address is required).
-        // `||` falls through the empty string to the 'Address pending' placeholder.
-        address:
-          p.address ||
-          [p.branchName, p.regionCode].filter(Boolean).join(', ') ||
-          'Address pending',
-      });
+    // Group rows by parent custCode
+    type ParsedShape = {
+      custCode: string;
+      custName: string;
+      branchCode: string | null;
+      branchName: string | null;
+      regionCode: string | null;
+      routeCode: string | null;
+      address: string | null;
+      phone: string | null;
+      contactPerson: string | null;
+      crNumber: string | null;
+      paymentTerms: string;
+      // Phase 1 Temix refresh columns (older batches parsed before the columns
+      // existed have them undefined — treat as absent).
+      paymentTermsPresent?: boolean;
+      temixCode?: string | null;
+      creditLimit?: number | null;
+      paymentTermDays?: number | null;
+    };
+    const groups = new Map<string, { rowIds: string[]; parsed: ParsedShape[] }>();
+    for (const row of cleanRows) {
+      const p = row.parsed as unknown as ParsedShape | null;
+      if (!p?.custCode) continue;
+      const g = groups.get(p.custCode) ?? { rowIds: [], parsed: [] };
+      g.rowIds.push(row.id);
+      g.parsed.push(p);
+      groups.set(p.custCode, g);
     }
 
-    // QA P-03: two rows in the SAME customer group can resolve to the SAME
-    // branchCode — a bare code like '03' composes to `X-03`, which also equals
-    // the positional `formatBranchCode(X, 3)` produced for a codeless row, or two
-    // rows may simply carry the same branch_code. The per-branch upsert is keyed
-    // on the globally-unique branchCode, so the second row would silently UPDATE
-    // (overwrite) the first branch — one physical branch lost, both rows marked
-    // PROMOTED. There is no way to know which row is authoritative, so reject the
-    // whole group to steward review rather than drop data silently.
-    const seenBranchCodes = new Set<string>();
-    let dupBranchCode: string | null = null;
-    for (const r of resolvedBranches) {
-      if (seenBranchCodes.has(r.branchCode)) { dupBranchCode = r.branchCode; break; }
-      seenBranchCodes.add(r.branchCode);
-    }
-    if (dupBranchCode) {
-      failures.push({
-        custCode,
-        rowIds: g.rowIds,
-        reason: `branch_code ${dupBranchCode} appears on more than one row for this customer — steward review`,
-      });
-      await prisma.importRow
-        .updateMany({
-          where: { id: { in: g.rowIds } },
-          data: {
-            state: ImportRowState.REJECTED,
-            issues: [{ field: '_promote', message: `duplicate branch_code ${dupBranchCode} within this customer` }] as Prisma.InputJsonValue,
-            reviewedById: me.id,
-            reviewedAt: new Date(),
-          },
-        })
-        .catch(() => undefined);
-      continue;
-    }
-
-    try {
-      let refreshedRow = false;
-      await prisma.$transaction(async (tx) => {
-        const pt = first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH';
-        const existing = await tx.customer.findUnique({
-          where: { nmwcCode: custCode },
-          select: {
-            id: true,
-            temixCode: true,
-            paymentTerms: true,
-            deletedAt: true,
-            createdById: true,
-            legalName: true,
-          },
+    // Build region+route caches and ensure UNASSIGNED route exists
+    let unassignedRoute = await prisma.route.findUnique({ where: { code: 'UNASSIGNED' } });
+    if (!unassignedRoute) {
+      let unassignedRegion = await prisma.region.findUnique({ where: { code: 'UNASSIGNED' } });
+      if (!unassignedRegion) {
+        unassignedRegion = await prisma.region.create({
+          data: { code: 'UNASSIGNED', name: 'Unassigned' },
         });
+      }
+      unassignedRoute = await prisma.route.create({
+        data: { code: 'UNASSIGNED', name: 'Unassigned', regionId: unassignedRegion.id },
+      });
+    }
 
-        // ── Phase 1 Temix crosswalk guards (rows carrying temix_code) ──
-        // Quarantine-style rejection, never silent overwrite: the crosswalk
-        // is a join (owner-locked nmwcCode == temixCode for migrated rows),
-        // so a code landing on a different customer, or disagreeing with an
-        // already-recorded code, is Steward-review territory.
-        if (first.temixCode) {
-          // NO deletedAt filter (adversarial-review CONFIRMED fix): an
-          // ARCHIVED customer holding this code has a DEACTIVATE for it
-          // queued/in-flight — re-attaching the code to a live customer
-          // would let that DEACTIVATE kill the live record in Temix.
-          const codeOwner = await tx.customer.findFirst({
-            where: {
-              temixCode: first.temixCode,
-              nmwcCode: { not: custCode },
-            },
-            select: { nmwcCode: true, deletedAt: true },
-          });
-          if (codeOwner) {
-            throw new Error(
-              `CROSSWALK:temix_code already recorded on ${codeOwner.nmwcCode}${codeOwner.deletedAt ? ' (archived — its Temix deactivation may be in flight)' : ''} — steward review`
-            );
-          }
-          if (existing?.temixCode && existing.temixCode !== first.temixCode) {
-            throw new Error(
-              'CROSSWALK:temix_code conflicts with the code already recorded for this customer — steward review'
-            );
-          }
-          // An archived customer must not be mutated (or its in-flight
-          // deactivation settled) by a stale Temix extract that still lists
-          // it — resolve the deactivation first.
-          if (existing?.deletedAt) {
-            throw new Error(
-              'CROSSWALK:customer is archived in the CRM — resolve its Temix deactivation before refreshing'
-            );
-          }
+    // QA-019: each customer's promotion (parent + branches + row state) runs
+    // in its own transaction so a partial failure leaves no half-state.
+    // F-03: per-row failures now mark the row as REJECTED with the error
+    // message in `issues`, and the action returns a `{ promoted, failed }`
+    // tuple that the UI surfaces in the toast — no more silent swallow.
+    let promoted = 0;
+    const failures: Array<{ custCode: string; rowIds: string[]; reason: string }> = [];
+    for (const [custCode, g] of groups) {
+      const first = g.parsed[0];
+
+      // Pre-resolve regions and routes outside the transaction (these are upserts
+      // that can be repeated safely across batches).
+      const resolvedBranches: Array<{
+        sheetCode: string | null;
+        branchCode: string;
+        branchName: string;
+        regionId: string;
+        routeId: string;
+        address: string;
+      }> = [];
+      const groupResolveErrors: string[] = [];
+      for (const [bi, p] of g.parsed.entries()) {
+        // F-17: refuse to silently auto-create unknown regions/routes. Phantom
+        // regions invented by typos are the source of CHAIN-09 (an unscoped
+        // Manager later falls into them). Only Existing region/route codes
+        // resolve; everything else falls back to UNASSIGNED with a flag in
+        // the audit log so the Steward can fix.
+        const region = p.regionCode
+          ? await prisma.region.findUnique({ where: { code: p.regionCode.toUpperCase() } })
+          : null;
+        if (p.regionCode && !region) {
+          groupResolveErrors.push(`region "${p.regionCode}" not found`);
         }
-
-        const isRefresh = !!existing && !existing.deletedAt && !!first.temixCode;
-        refreshedRow = isRefresh;
-        let customerId: string;
-        if (isRefresh) {
-          // ── Temix REFRESH row (existing live customer + temix_code) ──
-          // Narrow, Temix-OWNED update only: crosswalk code + payment terms +
-          // credit figures (owner-locked: authoritative from Temix). CRM-
-          // enriched identity/contact data (legalName, phone, CR, contact)
-          // and ALL branch operational data are CRM-owned — a refresh must
-          // not clobber them (field-ownership matrix, sla-notif-sync §3.5).
-          //
-          // Presence-aware (adversarial-review CONFIRMED fix): an ABSENT
-          // payment_terms column means "keep the customer's current terms" —
-          // only an explicit CASH may clear credit figures, and credit
-          // figures apply only while the customer is (or becomes) CREDIT.
-          const ptPresent = first.paymentTermsPresent === true;
-          const effectiveTerms = ptPresent ? pt : existing!.paymentTerms;
-          await tx.customer.update({
-            where: { id: existing!.id },
-            data: {
-              temixCode: first.temixCode,
-              paymentTerms: ptPresent ? pt : undefined,
-              creditLimit:
-                effectiveTerms === 'CREDIT'
-                  ? (first.creditLimit ?? undefined)
-                  : ptPresent
-                    ? null
-                    : undefined,
-              paymentTermDays:
-                effectiveTerms === 'CREDIT'
-                  ? (first.paymentTermDays ?? undefined)
-                  : ptPresent
-                    ? null
-                    : undefined,
-              lastEditedById: me.id,
-              // B-05: make the refresh visible to the optimistic lock so a
-              // concurrent edit-approve sees VERSION_CONFLICT, not a silent
-              // revert of Temix-authoritative fields.
-              version: { increment: 1 },
-            },
-          });
-          // Blueprint §8.3: the inbound refresh is what flips UPLOADED →
-          // SYNCED. Guarded so a PENDING_UPLOAD row (correction approved
-          // after the last batch) keeps its place in the queue.
-          await tx.customer.updateMany({
-            where: { id: existing!.id, temixSyncState: 'UPLOADED' },
-            data: { temixSyncState: 'SYNCED' },
-          });
-          // TEMIX_SYNC_ACKED: the ERP code just landed for the first time —
-          // tell the originating submitter their customer is live in Temix.
-          if (!existing!.temixCode && first.temixCode && existing!.createdById) {
-            await notifyUsers(tx, [existing!.createdById], {
-              kind: 'TEMIX_SYNC_ACKED',
-              title: 'Customer landed in Temix',
-              body: `${existing!.legalName} (${custCode}) is now in Temix as ${first.temixCode}.`,
-              customerId: existing!.id,
-            });
+        const route = p.routeCode
+          ? await prisma.route.findUnique({ where: { code: p.routeCode.toUpperCase() } })
+          : null;
+        if (p.routeCode && !route) {
+          groupResolveErrors.push(`route "${p.routeCode}" not found`);
+        }
+        // QA P-02 fix: the fallback previously used the UNASSIGNED ROUTE's id as a
+        // REGION id, so the B-19 region-consistency trigger (Branch.regionId must
+        // equal Route.regionId) aborted the whole group — the F-17 fallback could
+        // never actually happen. Resolve trigger-consistently instead:
+        //   - route known  → the route's own region is authoritative (a region
+        //     that disagrees is a sheet inconsistency, warned + overridden);
+        //   - route unknown → the consistent UNASSIGNED region+route pair.
+        let effectiveRegionId: string;
+        let effectiveRouteId: string;
+        if (route) {
+          effectiveRouteId = route.id;
+          effectiveRegionId = route.regionId;
+          if (region && region.id !== route.regionId) {
+            groupResolveErrors.push(
+              `region "${p.regionCode}" does not match route "${p.routeCode}" — used the route's region`
+            );
           }
-          customerId = existing!.id;
         } else {
-          const customer = await tx.customer.upsert({
-            where: { nmwcCode: custCode },
-            update: {
-              // Re-import of an EXISTING customer via a non-Temix row must not
-              // clobber CRM-owned data (adversarial-review CONFIRMED). Presence-
-              // aware, mirroring the refresh lane: an ABSENT payment_terms column
-              // must NOT flip a CREDIT customer to CASH, and a BLANK phone/CR/
-              // contact cell must NOT null the stored value. `undefined` = "leave
-              // unchanged". cust_name is mandatory (a blank row is quarantined),
-              // so legalName is always a real value here.
-              legalName: first.custName,
-              paymentTerms: first.paymentTermsPresent ? pt : undefined,
-              primaryPhone: first.phone ?? undefined,
-              primaryPhoneNorm: first.phone ?? undefined,
-              contactPerson: first.contactPerson ?? undefined,
-              crNumber: first.crNumber ?? undefined,
-              crNumberNorm: first.crNumber ? normalizeCR(first.crNumber) : undefined,
-              lastEditedById: me.id,
-              // B-05: bump the optimistic version so a concurrent edit-approve
-              // sees VERSION_CONFLICT rather than a silently lost update.
-              version: { increment: 1 },
-            },
-            create: {
-              nmwcCode: custCode,
-              legalName: first.custName,
-              paymentTerms: pt,
-              primaryPhone: first.phone,
-              primaryPhoneNorm: first.phone,
-              contactPerson: first.contactPerson,
-              crNumber: first.crNumber,
-              crNumberNorm: normalizeCR(first.crNumber),
-              // Initial master load may carry the ERP code directly; credit
-              // figures land only on CREDIT rows.
-              temixCode: first.temixCode ?? null,
-              creditLimit: pt === 'CREDIT' ? (first.creditLimit ?? null) : null,
-              paymentTermDays: pt === 'CREDIT' ? (first.paymentTermDays ?? null) : null,
-              createdById: me.id,
-              lastEditedById: me.id,
-              importBatchId: batchId,
-            },
-          });
-          customerId = customer.id;
-        }
-        if (!isRefresh) {
-          for (const r of resolvedBranches) {
-            // QA P-01 fix (branch-steal guard): branchCode is globally unique
-            // and the upsert's update path includes customerId — without this
-            // check, a sheet row claiming a code owned by ANOTHER customer
-            // silently re-parents that customer's branch. Ownership moves are
-            // steward-review territory, never a silent import side effect.
-            // (Read-then-upsert inside this per-group tx; batch promote is
-            // serialized by the atomic READY→PROMOTING claim, so the TOCTOU
-            // window is not reachable through this action.)
-            const branchOwner = await tx.branch.findUnique({
-              where: { branchCode: r.branchCode },
-              select: { customerId: true, customer: { select: { nmwcCode: true } } },
-            });
-            if (branchOwner && branchOwner.customerId !== customerId) {
-              throw new Error(
-                `CROSSWALK:branch_code ${r.branchCode} already belongs to ${branchOwner.customer.nmwcCode} — steward review`
-              );
-            }
-            // If composition changed the sheet's code, also check the RAW code:
-            // a sheet code that exists under ANOTHER customer means the row
-            // referenced someone else's branch (a data error) — flag it for
-            // steward review instead of silently minting a re-prefixed code.
-            if (r.sheetCode && r.sheetCode !== r.branchCode) {
-              const rawOwner = await tx.branch.findUnique({
-                where: { branchCode: r.sheetCode },
-                select: { customerId: true, customer: { select: { nmwcCode: true } } },
-              });
-              if (rawOwner && rawOwner.customerId !== customerId) {
-                throw new Error(
-                  `CROSSWALK:branch_code ${r.sheetCode} already belongs to ${rawOwner.customer.nmwcCode} — steward review`
-                );
-              }
-            }
-            await tx.branch.upsert({
-              where: { branchCode: r.branchCode },
-              update: {
-                branchName: r.branchName,
-                regionId: r.regionId,
-                routeId: r.routeId,
-                address: r.address,
-                customerId,
-                lastEditedById: me.id,
-              },
-              create: {
-                branchCode: r.branchCode,
-                branchName: r.branchName,
-                regionId: r.regionId,
-                routeId: r.routeId,
-                address: r.address,
-                customerId,
-                createdById: me.id,
-                lastEditedById: me.id,
-              },
-            });
+          // No usable route → the consistent UNASSIGNED pair. If the row DID supply
+          // a region, warn that it was dropped (region is derived from the route to
+          // satisfy the B-19 trigger) so the steward can add the missing route.
+          effectiveRouteId = unassignedRoute!.id;
+          effectiveRegionId = unassignedRoute!.regionId;
+          if (p.regionCode && region) {
+            groupResolveErrors.push(
+              `region "${p.regionCode}" was provided without a route — branch parked in UNASSIGNED; add a route to keep the region`
+            );
           }
         }
-        await tx.importRow.updateMany({
-          where: { id: { in: g.rowIds } },
-          data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() },
+        // QA P-01 fix (identity model: branch = custcode-branchcode, globally
+        // unique): a sheet carrying a BARE suffix ('01') previously produced a
+        // global branchCode '01' that collided across customers — and the upsert
+        // below silently re-parented the branch to the later customer. Compose
+        // bare codes under the owning custCode; already-composed codes (or a
+        // code equal to the custCode itself) pass through unchanged.
+        const ccUpper = custCode.toUpperCase();
+        const rawBranchCode = p.branchCode ? p.branchCode.trim().toUpperCase() : null;
+        resolvedBranches.push({
+          // sheetCode: the code EXACTLY as the sheet gave it (null if generated).
+          // The in-tx guard checks it too — a sheet code that exists under another
+          // customer is a data error to review, not a code to silently re-mint.
+          sheetCode: rawBranchCode,
+          branchCode: rawBranchCode
+            ? rawBranchCode === ccUpper || rawBranchCode.startsWith(`${ccUpper}-`)
+              ? rawBranchCode
+              : `${ccUpper}-${rawBranchCode}`
+            : formatBranchCode(custCode, bi + 1),
+          branchName: p.branchName ?? 'Main',
+          regionId: effectiveRegionId,
+          routeId: effectiveRouteId,
+          // final-hunt #8: `[...].filter(Boolean).join(', ')` returns '' (empty
+          // string, not null) when branch_name AND sales_region are both blank, and
+          // `??` does NOT fall through '' — so the branch got an empty address and
+          // the whole customer group was REJECTED at promote (address is required).
+          // `||` falls through the empty string to the 'Address pending' placeholder.
+          address:
+            p.address ||
+            [p.branchName, p.regionCode].filter(Boolean).join(', ') ||
+            'Address pending',
         });
-        // Compute completenessScore for the promoted customer. Without this,
-        // every imported customer/branch stayed at 0, hiding them from
-        // completeness-filtered worklists and skewing dashboard averages.
-        const scored = await tx.customer.findUnique({
-          where: { id: customerId },
-          include: { branches: { where: { deletedAt: null } } },
-        });
-        if (scored) {
-          await tx.customer.update({
-            where: { id: customerId },
-            data: { completenessScore: scoreCustomer(scored, scored.branches) },
-          });
+      }
+
+      // QA P-03: two rows in the SAME customer group can resolve to the SAME
+      // branchCode — a bare code like '03' composes to `X-03`, which also equals
+      // the positional `formatBranchCode(X, 3)` produced for a codeless row, or two
+      // rows may simply carry the same branch_code. The per-branch upsert is keyed
+      // on the globally-unique branchCode, so the second row would silently UPDATE
+      // (overwrite) the first branch — one physical branch lost, both rows marked
+      // PROMOTED. There is no way to know which row is authoritative, so reject the
+      // whole group to steward review rather than drop data silently.
+      const seenBranchCodes = new Set<string>();
+      let dupBranchCode: string | null = null;
+      for (const r of resolvedBranches) {
+        if (seenBranchCodes.has(r.branchCode)) {
+          dupBranchCode = r.branchCode;
+          break;
         }
-      });
-      promoted += g.rowIds.length;
-      if (groupResolveErrors.length > 0 && !refreshedRow) {
-        // F-17: surface the phantom-region warning in the row's issues so the
-        // Steward can fix the reference data and re-run the import. Row stays
-        // PROMOTED (the customer landed) but with a visible warning.
-        // Skipped for refresh rows — their branches were deliberately never
-        // touched, so a "assigned to UNASSIGNED" warning would be false.
+        seenBranchCodes.add(r.branchCode);
+      }
+      if (dupBranchCode) {
+        failures.push({
+          custCode,
+          rowIds: g.rowIds,
+          reason: `branch_code ${dupBranchCode} appears on more than one row for this customer — steward review`,
+        });
         await prisma.importRow
           .updateMany({
             where: { id: { in: g.rowIds } },
             data: {
-              issues: groupResolveErrors.map((m) => ({
-                field: '_resolve',
-                message: `${m}; assigned to UNASSIGNED`,
-              })) as Prisma.InputJsonValue,
+              state: ImportRowState.REJECTED,
+              issues: [
+                {
+                  field: '_promote',
+                  message: `duplicate branch_code ${dupBranchCode} within this customer`,
+                },
+              ] as Prisma.InputJsonValue,
+              reviewedById: me.id,
+              reviewedAt: new Date(),
             },
           })
           .catch(() => undefined);
+        continue;
       }
-    } catch (err) {
-      // F-15: NEVER log the raw Prisma error message — it embeds the value
-      // that triggered the constraint (phone, CR number) and would leak PII
-      // into pino/Sentry. Log a structured short code + safe identifier
-      // only.
-      const code = (err as { code?: string })?.code ?? 'UNKNOWN';
-      const meta = (err as { meta?: { target?: string[] } })?.meta?.target;
-      // Phase 1 Temix crosswalk conflicts carry a deliberate, PII-safe
-      // message (codes only, never phone/CR values) for the Steward.
-      const crosswalk =
-        err instanceof Error && err.message.startsWith('CROSSWALK:')
-          ? err.message.slice('CROSSWALK:'.length)
-          : null;
-      logger.warn(
-        { code, target: meta, custCode, batchId, crosswalk: !!crosswalk },
-        'import.promote.row_failed'
-      );
-      // Mark the failed row(s) REJECTED in a SEPARATE transaction so the
-      // failure persists even though the row-level promote rolled back.
-      const reason =
-        crosswalk ??
-        (code === 'P2002'
-          ? `duplicate ${(meta ?? []).join(', ')}`
-          : `promote failed (${code})`);
+
       try {
-        await prisma.importRow.updateMany({
-          where: { id: { in: g.rowIds } },
-          data: {
-            state: ImportRowState.REJECTED,
-            issues: [{ field: '_promote', message: reason }] as Prisma.InputJsonValue,
-            reviewedById: me.id,
-            reviewedAt: new Date(),
-          },
+        let refreshedRow = false;
+        await prisma.$transaction(async (tx) => {
+          const pt = first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH';
+          const existing = await tx.customer.findUnique({
+            where: { nmwcCode: custCode },
+            select: {
+              id: true,
+              temixCode: true,
+              paymentTerms: true,
+              deletedAt: true,
+              createdById: true,
+              legalName: true,
+            },
+          });
+
+          // ── Phase 1 Temix crosswalk guards (rows carrying temix_code) ──
+          // Quarantine-style rejection, never silent overwrite: the crosswalk
+          // is a join (owner-locked nmwcCode == temixCode for migrated rows),
+          // so a code landing on a different customer, or disagreeing with an
+          // already-recorded code, is Steward-review territory.
+          if (first.temixCode) {
+            // NO deletedAt filter (adversarial-review CONFIRMED fix): an
+            // ARCHIVED customer holding this code has a DEACTIVATE for it
+            // queued/in-flight — re-attaching the code to a live customer
+            // would let that DEACTIVATE kill the live record in Temix.
+            const codeOwner = await tx.customer.findFirst({
+              where: {
+                temixCode: first.temixCode,
+                nmwcCode: { not: custCode },
+              },
+              select: { nmwcCode: true, deletedAt: true },
+            });
+            if (codeOwner) {
+              throw new Error(
+                `CROSSWALK:temix_code already recorded on ${codeOwner.nmwcCode}${codeOwner.deletedAt ? ' (archived — its Temix deactivation may be in flight)' : ''} — steward review`
+              );
+            }
+            if (existing?.temixCode && existing.temixCode !== first.temixCode) {
+              throw new Error(
+                'CROSSWALK:temix_code conflicts with the code already recorded for this customer — steward review'
+              );
+            }
+            // An archived customer must not be mutated (or its in-flight
+            // deactivation settled) by a stale Temix extract that still lists
+            // it — resolve the deactivation first.
+            if (existing?.deletedAt) {
+              throw new Error(
+                'CROSSWALK:customer is archived in the CRM — resolve its Temix deactivation before refreshing'
+              );
+            }
+          }
+
+          const isRefresh = !!existing && !existing.deletedAt && !!first.temixCode;
+          refreshedRow = isRefresh;
+          let customerId: string;
+          if (isRefresh) {
+            // ── Temix REFRESH row (existing live customer + temix_code) ──
+            // Narrow, Temix-OWNED update only: crosswalk code + payment terms +
+            // credit figures (owner-locked: authoritative from Temix). CRM-
+            // enriched identity/contact data (legalName, phone, CR, contact)
+            // and ALL branch operational data are CRM-owned — a refresh must
+            // not clobber them (field-ownership matrix, sla-notif-sync §3.5).
+            //
+            // Presence-aware (adversarial-review CONFIRMED fix): an ABSENT
+            // payment_terms column means "keep the customer's current terms" —
+            // only an explicit CASH may clear credit figures, and credit
+            // figures apply only while the customer is (or becomes) CREDIT.
+            const ptPresent = first.paymentTermsPresent === true;
+            const effectiveTerms = ptPresent ? pt : existing!.paymentTerms;
+            await tx.customer.update({
+              where: { id: existing!.id },
+              data: {
+                temixCode: first.temixCode,
+                paymentTerms: ptPresent ? pt : undefined,
+                creditLimit:
+                  effectiveTerms === 'CREDIT'
+                    ? (first.creditLimit ?? undefined)
+                    : ptPresent
+                      ? null
+                      : undefined,
+                paymentTermDays:
+                  effectiveTerms === 'CREDIT'
+                    ? (first.paymentTermDays ?? undefined)
+                    : ptPresent
+                      ? null
+                      : undefined,
+                lastEditedById: me.id,
+                // B-05: make the refresh visible to the optimistic lock so a
+                // concurrent edit-approve sees VERSION_CONFLICT, not a silent
+                // revert of Temix-authoritative fields.
+                version: { increment: 1 },
+              },
+            });
+            // Blueprint §8.3: the inbound refresh is what flips UPLOADED →
+            // SYNCED. Guarded so a PENDING_UPLOAD row (correction approved
+            // after the last batch) keeps its place in the queue.
+            await tx.customer.updateMany({
+              where: { id: existing!.id, temixSyncState: 'UPLOADED' },
+              data: { temixSyncState: 'SYNCED' },
+            });
+            // TEMIX_SYNC_ACKED: the ERP code just landed for the first time —
+            // tell the originating submitter their customer is live in Temix.
+            if (!existing!.temixCode && first.temixCode && existing!.createdById) {
+              await notifyUsers(tx, [existing!.createdById], {
+                kind: 'TEMIX_SYNC_ACKED',
+                title: 'Customer landed in Temix',
+                body: `${existing!.legalName} (${custCode}) is now in Temix as ${first.temixCode}.`,
+                customerId: existing!.id,
+              });
+            }
+            customerId = existing!.id;
+          } else {
+            const customer = await tx.customer.upsert({
+              where: { nmwcCode: custCode },
+              update: {
+                // Re-import of an EXISTING customer via a non-Temix row must not
+                // clobber CRM-owned data (adversarial-review CONFIRMED). Presence-
+                // aware, mirroring the refresh lane: an ABSENT payment_terms column
+                // must NOT flip a CREDIT customer to CASH, and a BLANK phone/CR/
+                // contact cell must NOT null the stored value. `undefined` = "leave
+                // unchanged". cust_name is mandatory (a blank row is quarantined),
+                // so legalName is always a real value here.
+                legalName: first.custName,
+                paymentTerms: first.paymentTermsPresent ? pt : undefined,
+                primaryPhone: first.phone ?? undefined,
+                primaryPhoneNorm: first.phone ?? undefined,
+                contactPerson: first.contactPerson ?? undefined,
+                crNumber: first.crNumber ?? undefined,
+                crNumberNorm: first.crNumber ? normalizeCR(first.crNumber) : undefined,
+                lastEditedById: me.id,
+                // B-05: bump the optimistic version so a concurrent edit-approve
+                // sees VERSION_CONFLICT rather than a silently lost update.
+                version: { increment: 1 },
+              },
+              create: {
+                nmwcCode: custCode,
+                legalName: first.custName,
+                paymentTerms: pt,
+                primaryPhone: first.phone,
+                primaryPhoneNorm: first.phone,
+                contactPerson: first.contactPerson,
+                crNumber: first.crNumber,
+                crNumberNorm: normalizeCR(first.crNumber),
+                // Initial master load may carry the ERP code directly; credit
+                // figures land only on CREDIT rows.
+                temixCode: first.temixCode ?? null,
+                creditLimit: pt === 'CREDIT' ? (first.creditLimit ?? null) : null,
+                paymentTermDays: pt === 'CREDIT' ? (first.paymentTermDays ?? null) : null,
+                createdById: me.id,
+                lastEditedById: me.id,
+                importBatchId: batchId,
+              },
+            });
+            customerId = customer.id;
+          }
+          if (!isRefresh) {
+            for (const r of resolvedBranches) {
+              // QA P-01 fix (branch-steal guard): branchCode is globally unique
+              // and the upsert's update path includes customerId — without this
+              // check, a sheet row claiming a code owned by ANOTHER customer
+              // silently re-parents that customer's branch. Ownership moves are
+              // steward-review territory, never a silent import side effect.
+              // (Read-then-upsert inside this per-group tx; batch promote is
+              // serialized by the atomic READY→PROMOTING claim, so the TOCTOU
+              // window is not reachable through this action.)
+              const branchOwner = await tx.branch.findUnique({
+                where: { branchCode: r.branchCode },
+                select: { customerId: true, customer: { select: { nmwcCode: true } } },
+              });
+              if (branchOwner && branchOwner.customerId !== customerId) {
+                throw new Error(
+                  `CROSSWALK:branch_code ${r.branchCode} already belongs to ${branchOwner.customer.nmwcCode} — steward review`
+                );
+              }
+              // If composition changed the sheet's code, also check the RAW code:
+              // a sheet code that exists under ANOTHER customer means the row
+              // referenced someone else's branch (a data error) — flag it for
+              // steward review instead of silently minting a re-prefixed code.
+              if (r.sheetCode && r.sheetCode !== r.branchCode) {
+                const rawOwner = await tx.branch.findUnique({
+                  where: { branchCode: r.sheetCode },
+                  select: { customerId: true, customer: { select: { nmwcCode: true } } },
+                });
+                if (rawOwner && rawOwner.customerId !== customerId) {
+                  throw new Error(
+                    `CROSSWALK:branch_code ${r.sheetCode} already belongs to ${rawOwner.customer.nmwcCode} — steward review`
+                  );
+                }
+              }
+              await tx.branch.upsert({
+                where: { branchCode: r.branchCode },
+                update: {
+                  branchName: r.branchName,
+                  regionId: r.regionId,
+                  routeId: r.routeId,
+                  address: r.address,
+                  customerId,
+                  lastEditedById: me.id,
+                },
+                create: {
+                  branchCode: r.branchCode,
+                  branchName: r.branchName,
+                  regionId: r.regionId,
+                  routeId: r.routeId,
+                  address: r.address,
+                  customerId,
+                  createdById: me.id,
+                  lastEditedById: me.id,
+                },
+              });
+            }
+          }
+          await tx.importRow.updateMany({
+            where: { id: { in: g.rowIds } },
+            data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() },
+          });
+          // Compute completenessScore for the promoted customer. Without this,
+          // every imported customer/branch stayed at 0, hiding them from
+          // completeness-filtered worklists and skewing dashboard averages.
+          const scored = await tx.customer.findUnique({
+            where: { id: customerId },
+            include: { branches: { where: { deletedAt: null } } },
+          });
+          if (scored) {
+            await tx.customer.update({
+              where: { id: customerId },
+              data: { completenessScore: scoreCustomer(scored, scored.branches) },
+            });
+          }
         });
-      } catch (e) {
-        logger.error({ err: (e as Error).message?.slice(0, 80), batchId }, 'import.mark_failed');
+        promoted += g.rowIds.length;
+        if (groupResolveErrors.length > 0 && !refreshedRow) {
+          // F-17: surface the phantom-region warning in the row's issues so the
+          // Steward can fix the reference data and re-run the import. Row stays
+          // PROMOTED (the customer landed) but with a visible warning.
+          // Skipped for refresh rows — their branches were deliberately never
+          // touched, so a "assigned to UNASSIGNED" warning would be false.
+          await prisma.importRow
+            .updateMany({
+              where: { id: { in: g.rowIds } },
+              data: {
+                issues: groupResolveErrors.map((m) => ({
+                  field: '_resolve',
+                  message: `${m}; assigned to UNASSIGNED`,
+                })) as Prisma.InputJsonValue,
+              },
+            })
+            .catch(() => undefined);
+        }
+      } catch (err) {
+        // F-15: NEVER log the raw Prisma error message — it embeds the value
+        // that triggered the constraint (phone, CR number) and would leak PII
+        // into pino/Sentry. Log a structured short code + safe identifier
+        // only.
+        const code = (err as { code?: string })?.code ?? 'UNKNOWN';
+        const meta = (err as { meta?: { target?: string[] } })?.meta?.target;
+        // Phase 1 Temix crosswalk conflicts carry a deliberate, PII-safe
+        // message (codes only, never phone/CR values) for the Steward.
+        const crosswalk =
+          err instanceof Error && err.message.startsWith('CROSSWALK:')
+            ? err.message.slice('CROSSWALK:'.length)
+            : null;
+        logger.warn(
+          { code, target: meta, custCode, batchId, crosswalk: !!crosswalk },
+          'import.promote.row_failed'
+        );
+        // Mark the failed row(s) REJECTED in a SEPARATE transaction so the
+        // failure persists even though the row-level promote rolled back.
+        const reason =
+          crosswalk ??
+          (code === 'P2002' ? `duplicate ${(meta ?? []).join(', ')}` : `promote failed (${code})`);
+        try {
+          await prisma.importRow.updateMany({
+            where: { id: { in: g.rowIds } },
+            data: {
+              state: ImportRowState.REJECTED,
+              issues: [{ field: '_promote', message: reason }] as Prisma.InputJsonValue,
+              reviewedById: me.id,
+              reviewedAt: new Date(),
+            },
+          });
+        } catch (e) {
+          logger.error({ err: (e as Error).message?.slice(0, 80), batchId }, 'import.mark_failed');
+        }
+        failures.push({ custCode, rowIds: g.rowIds, reason });
       }
-      failures.push({ custCode, rowIds: g.rowIds, reason });
     }
-  }
 
-  await prisma.importBatch.update({
-    where: { id: batchId },
-    data: {
-      status: 'PROMOTED',
-      promotedRows: promoted,
-      rejectedRows: failures.reduce((acc, f) => acc + f.rowIds.length, 0),
-    },
-  });
-
-  // F-19: per-batch summary audit log. Without this, "what happened in last
-  // week's import?" requires SQL spelunking. The row carries the actor, the
-  // counts, and the failure list (codes only — no embedded values).
-  await prisma.auditLog
-    .create({
+    await prisma.importBatch.update({
+      where: { id: batchId },
       data: {
-        actorId: me.id,
-        action: 'IMPORT',
-        entityType: 'ImportBatch',
-        entityId: batchId,
-        after: {
-          kind: 'CUSTOMER',
-          totalGroups: groups.size,
-          promoted,
-          failed: failures.length,
-          failureCustCodes: failures.map((f) => f.custCode).slice(0, 100),
-        } as unknown as Prisma.InputJsonValue,
-        reason: 'customer_master_promote',
+        status: 'PROMOTED',
+        promotedRows: promoted,
+        rejectedRows: failures.reduce((acc, f) => acc + f.rowIds.length, 0),
       },
-    })
-    .catch((e) => {
-      logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
     });
 
-  revalidatePath('/import');
-  revalidatePath(`/import/${batchId}`); // the batch detail page shows the now-stale READY view + a live Promote button otherwise
-  return { promoted, failed: failures.length };
+    // F-19: per-batch summary audit log. Without this, "what happened in last
+    // week's import?" requires SQL spelunking. The row carries the actor, the
+    // counts, and the failure list (codes only — no embedded values).
+    await prisma.auditLog
+      .create({
+        data: {
+          actorId: me.id,
+          action: 'IMPORT',
+          entityType: 'ImportBatch',
+          entityId: batchId,
+          after: {
+            kind: 'CUSTOMER',
+            totalGroups: groups.size,
+            promoted,
+            failed: failures.length,
+            failureCustCodes: failures.map((f) => f.custCode).slice(0, 100),
+          } as unknown as Prisma.InputJsonValue,
+          reason: 'customer_master_promote',
+        },
+      })
+      .catch((e) => {
+        logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
+      });
+
+    revalidatePath('/import');
+    revalidatePath(`/import/${batchId}`); // the batch detail page shows the now-stale READY view + a live Promote button otherwise
+    return { promoted, failed: failures.length };
+  } catch (err) {
+    // Release the PROMOTING claim so the batch is never stranded (final-hunt #23).
+    // Guard on status=PROMOTING so we never clobber a batch another action moved on.
+    await prisma.importBatch
+      .updateMany({ where: { id: batchId, status: 'PROMOTING' }, data: { status: 'FAILED' } })
+      .catch(() => {});
+    logger.error({ err: (err as Error).message?.slice(0, 120), batchId }, 'import.promote_aborted');
+    throw err;
+  }
 }
 
 // helper to format counter-style code if NMWC code is missing in input

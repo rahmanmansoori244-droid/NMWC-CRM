@@ -19,11 +19,7 @@ const APPROVER_ROLES: Role[] = [
   Role.GM,
 ];
 
-export default async function ApprovalDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default async function ApprovalDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
   if (!session?.user) redirect('/login');
   if (!APPROVER_ROLES.includes(session.user.role)) {
@@ -54,7 +50,7 @@ export default async function ApprovalDetailPage({
       branchDrafts: {
         include: {
           region: { select: { name: true } },
-          route: { select: { code: true } },
+          route: { select: { code: true, regionId: true } }, // final-hunt #7/#15: current region for visibility
         },
       },
       // Per-step decision history for the chain timeline.
@@ -69,10 +65,7 @@ export default async function ApprovalDetailPage({
   const isCreate = edit.process === 'CREATE';
 
   // Supervisor can only see their own team's requests.
-  if (
-    session.user.role === Role.SUPERVISOR &&
-    edit.submittedBy.supervisorId !== session.user.id
-  ) {
+  if (session.user.role === Role.SUPERVISOR && edit.submittedBy.supervisorId !== session.user.id) {
     notFound(); // hide existence — same posture as other scope misses
   }
   // RBAC-05-003 / Phase 1: MANAGER and ACCOUNTANT region scope on the detail
@@ -82,7 +75,7 @@ export default async function ApprovalDetailPage({
     const { loadScope } = await import('@/lib/access');
     const scope = await loadScope(session.user.id);
     const regionIds = isCreate
-      ? edit.branchDrafts.map((b) => b.regionId)
+      ? edit.branchDrafts.map((b) => b.route.regionId) // final-hunt #7/#15: current route region
       : (edit.customer?.branches ?? []).filter((b) => !b.deletedAt).map((b) => b.regionId);
     const inScope = regionIds.some((r) => scope.managedRegionIds.includes(r));
     if (!inScope) notFound();
@@ -204,9 +197,7 @@ export default async function ApprovalDetailPage({
                   <li key={s.id} className="flex items-start justify-between gap-3 px-4 py-2">
                     <span>
                       <strong
-                        className={
-                          s.decision === 'APPROVED' ? 'text-emerald-700' : 'text-red-700'
-                        }
+                        className={s.decision === 'APPROVED' ? 'text-emerald-700' : 'text-red-700'}
                       >
                         {s.decision}
                       </strong>{' '}
@@ -335,7 +326,10 @@ export default async function ApprovalDetailPage({
           [...branchChangesByBranch.entries()].map(([branchId, list]) => {
             const b = branchMap.get(branchId);
             return (
-              <DiffSection key={branchId} title={`Branch: ${b?.branchName ?? branchId} (${b?.route.code ?? ''})`}>
+              <DiffSection
+                key={branchId}
+                title={`Branch: ${b?.branchName ?? branchId} (${b?.route.code ?? ''})`}
+              >
                 {list.map((c) => (
                   <DiffRow key={c.field} label={c.field} before={c.before} after={c.after} />
                 ))}
@@ -413,15 +407,7 @@ function DiffSection({ title, children }: { title: string; children: React.React
   );
 }
 
-function DiffRow({
-  label,
-  before,
-  after,
-}: {
-  label: string;
-  before: unknown;
-  after: unknown;
-}) {
+function DiffRow({ label, before, after }: { label: string; before: unknown; after: unknown }) {
   return (
     <div className="grid grid-cols-[140px_1fr_1fr] gap-3 px-4 py-3 text-sm">
       <div className="font-medium text-slate-600">{label}</div>

@@ -171,8 +171,7 @@ function collectMissingMandatory(
 
   for (const b of customer.branches) {
     const bp = branchProposedById.get(b.id) ?? {};
-    const bMerged = (k: string, fallback: unknown) =>
-      bp[k] !== undefined ? bp[k] : fallback;
+    const bMerged = (k: string, fallback: unknown) => (bp[k] !== undefined ? bp[k] : fallback);
     const tag = b.branchCode || b.id;
     const addr = bMerged('address', b.address);
     if (!isStr(addr) || (addr as string).trim().length < 3) {
@@ -213,7 +212,9 @@ export async function submitEditAction(
   return runAction(() => submitEditCore(input));
 }
 
-async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string; state: EditState }> {
+async function submitEditCore(
+  input: SubmitEditInput
+): Promise<{ editId: string; state: EditState }> {
   const session = await requireUser();
   const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
@@ -231,8 +232,8 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
       const p = issue.path;
       if (p[0] === 'branches' && typeof p[1] === 'number') {
         const idx = p[1] as number;
-        const branchId = (input as { branches?: Array<{ branchId?: string }> })
-          .branches?.[idx]?.branchId;
+        const branchId = (input as { branches?: Array<{ branchId?: string }> }).branches?.[idx]
+          ?.branchId;
         if (branchId) {
           const sub = p.slice(2).join('.');
           // gpsLat/gpsLng both render under one `gps` slot in the form.
@@ -265,6 +266,12 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
     where: { id: session.id },
     select: { id: true, ownedRouteId: true, role: true, supervisorId: true },
   });
+  // final-hunt #17: a Manager's customer-level authorization (assertCanEditCustomer)
+  // is any-branch-overlap — it passes if ANY branch is in a region they manage. On a
+  // MULTI-region customer that must NOT let them write a branch in a region they do
+  // not manage, so we capture their managed regions here for a per-branch guard in
+  // the branch loop below. STEWARD stays unrestricted (data-ops role).
+  let managerRegionIds: string[] | null = null;
   if (me.role === Role.SALESMAN) {
     const onMyRoute = customer.branches.some((b) => b.routeId === me.ownedRouteId);
     if (!onMyRoute) throw new ForbiddenError('This customer is not on your route.');
@@ -283,6 +290,7 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
     const { loadScope, assertCanEditCustomer } = await import('@/lib/access');
     const scope = await loadScope(me.id);
     assertCanEditCustomer({ id: me.id, role: me.role, username: '' }, customer, scope);
+    if (me.role === Role.MANAGER) managerRegionIds = scope.managedRegionIds;
   } else {
     throw new ForbiddenError(`Role ${me.role} cannot submit edits.`);
   }
@@ -367,9 +375,11 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
   // Build customer-level diff
   const customerBefore: Record<string, unknown> = {};
   for (const f of CUSTOMER_FIELDS) customerBefore[f] = (customer as Record<string, unknown>)[f];
-  const fieldChanges: FieldChange[] = diffFields(customerBefore, customerProposed, CUSTOMER_FIELDS).map(
-    (c) => ({ ...c, field: `customer.${c.field}` })
-  );
+  const fieldChanges: FieldChange[] = diffFields(
+    customerBefore,
+    customerProposed,
+    CUSTOMER_FIELDS
+  ).map((c) => ({ ...c, field: `customer.${c.field}` }));
 
   // Credit status (CASH ↔ CREDIT) is decided at CREATE through the owner-locked
   // SUP→FM→GM→ACC credit chain and is thereafter owned by Temix (the authoritative
@@ -396,6 +406,16 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
     }
     if (me.role === Role.SALESMAN && me.ownedRouteId && branch.routeId !== me.ownedRouteId) {
       throw new ForbiddenError('You can only edit branches on your route.');
+    }
+    // final-hunt #17: a Manager may only write branches in a region they manage —
+    // the customer-level gate above is any-branch-overlap and does not bound which
+    // branch of a multi-region customer they can touch (mirrors filterBranchesByScope).
+    if (
+      me.role === Role.MANAGER &&
+      managerRegionIds &&
+      !managerRegionIds.includes(branch.regionId)
+    ) {
+      throw new ForbiddenError('You can only edit branches in a region you manage.');
     }
     const branchBefore: Record<string, unknown> = {};
     for (const f of BRANCH_FIELDS) branchBefore[f] = (branch as Record<string, unknown>)[f];
@@ -560,29 +580,33 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
     // error (the salesman's retry would dead-end on EDIT_LOCKED).
     if (!isDraft) {
       try {
-        await notifyUsers(prisma, await resolveStepAudience(
+        await notifyUsers(
           prisma,
-          firstStep,
-          { supervisorId: me.supervisorId },
-          [...new Set(customer.branches.map((b) => b.regionId))]
-        ), {
-          kind: 'EDIT_SUBMITTED',
-          title: 'Edit awaiting your review',
-          body: `${customer.legalName} (${customer.nmwcCode}) — changes submitted for approval.`,
-          editId: edit.id,
-          customerId: customer.id,
-        });
-      } catch (err) {
-        logger.warn(
-          { editId: edit.id, err: (err as Error).message },
-          'edit.submit.notify_failed'
+          await resolveStepAudience(prisma, firstStep, { supervisorId: me.supervisorId }, [
+            ...new Set(customer.branches.map((b) => b.regionId)),
+          ]),
+          {
+            kind: 'EDIT_SUBMITTED',
+            title: 'Edit awaiting your review',
+            body: `${customer.legalName} (${customer.nmwcCode}) — changes submitted for approval.`,
+            editId: edit.id,
+            customerId: customer.id,
+          }
         );
+      } catch (err) {
+        logger.warn({ editId: edit.id, err: (err as Error).message }, 'edit.submit.notify_failed');
       }
     }
   }
 
   logger.info(
-    { editId: edit.id, customerId: customer.id, by: me.id, state: editState, changes: fieldChanges.length },
+    {
+      editId: edit.id,
+      customerId: customer.id,
+      by: me.id,
+      state: editState,
+      changes: fieldChanges.length,
+    },
     'edit.submit'
   );
 
@@ -619,7 +643,8 @@ async function applyEditChanges(
     if (customerProposed[f] !== undefined) {
       updateCustomer[f] = customerProposed[f];
       if (f === 'primaryPhone') updateCustomer.primaryPhoneNorm = customerProposed[f];
-      if (f === 'crNumber') updateCustomer.crNumberNorm = normalizeCR(String(customerProposed[f] ?? ''));
+      if (f === 'crNumber')
+        updateCustomer.crNumberNorm = normalizeCR(String(customerProposed[f] ?? ''));
     }
   }
   if (Object.keys(updateCustomer).length > 0) {
@@ -631,7 +656,10 @@ async function applyEditChanges(
     });
     const customerResult = await tx.customer.updateMany({
       where: { id: customerId, version: currentCustomer.version },
-      data: { ...updateCustomer, version: { increment: 1 } } as Prisma.CustomerUpdateManyMutationInput,
+      data: {
+        ...updateCustomer,
+        version: { increment: 1 },
+      } as Prisma.CustomerUpdateManyMutationInput,
     });
     if (customerResult.count === 0) {
       throw new ConflictError(
@@ -803,84 +831,90 @@ async function approveEditCore(formData: FormData) {
   if (!isFinal) {
     const nextStep = chain[stepIndex + 1]!;
     const advancedAt = new Date();
-    await prisma.$transaction(async (tx) => {
-      const claim = await tx.customerEdit.updateMany({
-        where: {
-          id: editId,
-          state: EditState.SUBMITTED,
-          currentStepIndex: stepIndex,
-          cycle: edit.cycle,
-        },
-        data: {
-          currentStepIndex: stepIndex + 1,
-          pendingRole: nextStep.role,
-          stageEnteredAt: advancedAt,
-          slaDueAt: stepDeadline(advancedAt, nextStep.slaHours),
-          // New stage, new SLA clock: a breach on the PREVIOUS stage must not
-          // make this stage skip level-1 escalation (the sweep filters on
-          // escalationLevel).
-          escalationLevel: 0,
-          slaBreachedAt: null,
-          lastEscalatedAt: null,
-        },
-      });
-      if (claim.count === 0) {
-        throw new ConflictError(
-          'NOT_PENDING',
-          'This step was just decided by another reviewer. Refresh to see the current state.'
-        );
-      }
-      await tx.editApproval.create({
-        data: {
-          editId,
-          cycle: edit.cycle,
-          stepIndex,
-          role: step.role,
-          decision: 'APPROVED',
-          actorId: session.id,
-        },
-      });
-      await tx.auditLog.create({
-        data: {
-          actorId: session.id,
-          action: 'STEP_APPROVE',
-          entityType: 'CustomerEdit',
-          entityId: editId,
-          after: {
+    await prisma.$transaction(
+      async (tx) => {
+        const claim = await tx.customerEdit.updateMany({
+          where: {
+            id: editId,
+            state: EditState.SUBMITTED,
+            currentStepIndex: stepIndex,
+            cycle: edit.cycle,
+          },
+          data: {
+            currentStepIndex: stepIndex + 1,
+            pendingRole: nextStep.role,
+            stageEnteredAt: advancedAt,
+            slaDueAt: stepDeadline(advancedAt, nextStep.slaHours),
+            // New stage, new SLA clock: a breach on the PREVIOUS stage must not
+            // make this stage skip level-1 escalation (the sweep filters on
+            // escalationLevel).
+            escalationLevel: 0,
+            slaBreachedAt: null,
+            lastEscalatedAt: null,
+          },
+        });
+        if (claim.count === 0) {
+          throw new ConflictError(
+            'NOT_PENDING',
+            'This step was just decided by another reviewer. Refresh to see the current state.'
+          );
+        }
+        await tx.editApproval.create({
+          data: {
+            editId,
+            cycle: edit.cycle,
             stepIndex,
             role: step.role,
-            advancedToRole: nextStep.role,
-            cycle: edit.cycle,
-          } as unknown as Prisma.InputJsonValue,
-        },
-      });
-      // Notify the next step's approvers + the submitter (progress). Inside
-      // the tx so a lost claim race never notifies.
-      const nextAudience = await resolveStepAudience(
-        tx,
-        nextStep,
-        { supervisorId: edit.submittedBy.supervisorId },
-        scopeRegionIds
-      );
-      await notifyUsers(tx, nextAudience, {
-        kind: 'EDIT_STAGE_ADVANCED',
-        title: 'Approval waiting on you',
-        body: `${requestName} — request advanced to the ${nextStep.role} step.`,
-        editId,
-        customerId: edit.customerId ?? undefined,
-      });
-      await notifyUsers(tx, [edit.submittedById], {
-        kind: 'EDIT_STAGE_ADVANCED',
-        title: 'Request advanced',
-        body: `${requestName} — approved at the ${step.role} step; now with ${nextStep.role}.`,
-        editId,
-        customerId: edit.customerId ?? undefined,
-      });
-      // Same remote-DB latency headroom as the final apply (final-hunt #32): claim
-      // + step-decision + audit + two notification fan-outs must not trip the 5s
-      // default interactive-transaction limit.
-    }, { timeout: 30_000, maxWait: 10_000 });
-    logger.info({ editId, by: session.id, stepIndex, advancedTo: stepIndex + 1 }, 'edit.step_approve');
+            decision: 'APPROVED',
+            actorId: session.id,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            actorId: session.id,
+            action: 'STEP_APPROVE',
+            entityType: 'CustomerEdit',
+            entityId: editId,
+            after: {
+              stepIndex,
+              role: step.role,
+              advancedToRole: nextStep.role,
+              cycle: edit.cycle,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+        // Notify the next step's approvers + the submitter (progress). Inside
+        // the tx so a lost claim race never notifies.
+        const nextAudience = await resolveStepAudience(
+          tx,
+          nextStep,
+          { supervisorId: edit.submittedBy.supervisorId },
+          scopeRegionIds
+        );
+        await notifyUsers(tx, nextAudience, {
+          kind: 'EDIT_STAGE_ADVANCED',
+          title: 'Approval waiting on you',
+          body: `${requestName} — request advanced to the ${nextStep.role} step.`,
+          editId,
+          customerId: edit.customerId ?? undefined,
+        });
+        await notifyUsers(tx, [edit.submittedById], {
+          kind: 'EDIT_STAGE_ADVANCED',
+          title: 'Request advanced',
+          body: `${requestName} — approved at the ${step.role} step; now with ${nextStep.role}.`,
+          editId,
+          customerId: edit.customerId ?? undefined,
+        });
+        // Same remote-DB latency headroom as the final apply (final-hunt #32): claim
+        // + step-decision + audit + two notification fan-outs must not trip the 5s
+        // default interactive-transaction limit.
+      },
+      { timeout: 30_000, maxWait: 10_000 }
+    );
+    logger.info(
+      { editId, by: session.id, stepIndex, advancedTo: stepIndex + 1 },
+      'edit.step_approve'
+    );
     revalidatePath('/approvals');
     revalidatePath('/work');
     return;
@@ -890,74 +924,77 @@ async function approveEditCore(formData: FormData) {
   // Customer + Branch[] (all-or-nothing, same tx as the claim). ──
   if (isCreate) {
     const finalizedAt = new Date();
-    const result = await prisma.$transaction(async (tx) => {
-      // PROD-001 pattern: claim the edit atomically; loser sees count=0.
-      const claim = await tx.customerEdit.updateMany({
-        where: {
-          id: editId,
-          state: EditState.SUBMITTED,
-          currentStepIndex: stepIndex,
-          cycle: edit.cycle,
-        },
-        data: {
-          state: EditState.APPROVED,
-          pendingRole: null,
-          reviewedById: session.id,
-          reviewedAt: finalizedAt,
-        },
-      });
-      if (claim.count === 0) {
-        throw new ConflictError(
-          'NOT_PENDING',
-          'This request was just decided by another reviewer. Refresh to see the current state.'
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // PROD-001 pattern: claim the edit atomically; loser sees count=0.
+        const claim = await tx.customerEdit.updateMany({
+          where: {
+            id: editId,
+            state: EditState.SUBMITTED,
+            currentStepIndex: stepIndex,
+            cycle: edit.cycle,
+          },
+          data: {
+            state: EditState.APPROVED,
+            pendingRole: null,
+            reviewedById: session.id,
+            reviewedAt: finalizedAt,
+          },
+        });
+        if (claim.count === 0) {
+          throw new ConflictError(
+            'NOT_PENDING',
+            'This request was just decided by another reviewer. Refresh to see the current state.'
+          );
+        }
+        await tx.editApproval.create({
+          data: {
+            editId,
+            cycle: edit.cycle,
+            stepIndex,
+            role: step.role,
+            decision: 'APPROVED',
+            actorId: session.id,
+          },
+        });
+        const finalized = await finalizeCreateInTx(
+          tx,
+          {
+            id: edit.id,
+            submittedById: edit.submittedById,
+            cycle: edit.cycle,
+            requestedCreditLimit: edit.requestedCreditLimit,
+            requestedPaymentTermDays: edit.requestedPaymentTermDays,
+            customerDraft: edit.customerDraft!,
+            branchDrafts: edit.branchDrafts,
+          },
+          session.id,
+          finalizedAt
         );
-      }
-      await tx.editApproval.create({
-        data: {
+        // Submitter learns their customer is live; Stewards get the
+        // Temix-upload-ready signal (temixSyncState is now PENDING_UPLOAD).
+        await notifyUsers(tx, [edit.submittedById], {
+          kind: 'EDIT_APPROVED_FINAL',
+          title: 'New customer approved',
+          body: `${finalized.legalName} is now live as ${finalized.nmwcCode}.`,
           editId,
-          cycle: edit.cycle,
-          stepIndex,
-          role: step.role,
-          decision: 'APPROVED',
-          actorId: session.id,
-        },
-      });
-      const finalized = await finalizeCreateInTx(
-        tx,
-        {
-          id: edit.id,
-          submittedById: edit.submittedById,
-          cycle: edit.cycle,
-          requestedCreditLimit: edit.requestedCreditLimit,
-          requestedPaymentTermDays: edit.requestedPaymentTermDays,
-          customerDraft: edit.customerDraft!,
-          branchDrafts: edit.branchDrafts,
-        },
-        session.id,
-        finalizedAt
-      );
-      // Submitter learns their customer is live; Stewards get the
-      // Temix-upload-ready signal (temixSyncState is now PENDING_UPLOAD).
-      await notifyUsers(tx, [edit.submittedById], {
-        kind: 'EDIT_APPROVED_FINAL',
-        title: 'New customer approved',
-        body: `${finalized.legalName} is now live as ${finalized.nmwcCode}.`,
-        editId,
-        customerId: finalized.customerId,
-      });
-      const stewards = await resolveStewardAudience(tx);
-      await notifyUsers(tx, stewards, {
-        kind: 'EDIT_APPROVED_FINAL',
-        title: 'Ready for Temix upload',
-        body: `${finalized.legalName} (${finalized.nmwcCode}) was approved and is queued for the next Temix batch.`,
-        editId,
-        customerId: finalized.customerId,
-      });
-      return finalized;
-      // Above Prisma's 5s default: finalize fans out ~7 statements per branch
-      // (up to 10 branches) plus the identity-lock wait against a concurrent
-      // same-shop submit.
-    }, { timeout: 30_000, maxWait: 10_000 });
+          customerId: finalized.customerId,
+        });
+        const stewards = await resolveStewardAudience(tx);
+        await notifyUsers(tx, stewards, {
+          kind: 'EDIT_APPROVED_FINAL',
+          title: 'Ready for Temix upload',
+          body: `${finalized.legalName} (${finalized.nmwcCode}) was approved and is queued for the next Temix batch.`,
+          editId,
+          customerId: finalized.customerId,
+        });
+        return finalized;
+        // Above Prisma's 5s default: finalize fans out ~7 statements per branch
+        // (up to 10 branches) plus the identity-lock wait against a concurrent
+        // same-shop submit.
+      },
+      { timeout: 30_000, maxWait: 10_000 }
+    );
     logger.info(
       { editId, by: session.id, customerId: result.customerId, nmwcCode: result.nmwcCode },
       'create.finalize'
@@ -1029,8 +1066,15 @@ async function approveEditCore(formData: FormData) {
   // QA-013: re-evaluate field locks against the CURRENT customer state. If
   // payment terms changed CASH→CREDIT between submit and approve, the locked
   // fields should now be dropped.
-  const submitter = edit.submittedBy as { id: string; supervisorId: string | null; fullName: string };
-  const submitterUser = await prisma.user.findUnique({ where: { id: submitter.id }, select: { role: true } });
+  const submitter = edit.submittedBy as {
+    id: string;
+    supervisorId: string | null;
+    fullName: string;
+  };
+  const submitterUser = await prisma.user.findUnique({
+    where: { id: submitter.id },
+    select: { role: true },
+  });
   if (
     submitterUser?.role === Role.SALESMAN &&
     isFieldLocked(
@@ -1081,102 +1125,110 @@ async function approveEditCore(formData: FormData) {
     .filter(([id]) => liveBranchIds.has(id))
     .map(([branchId, obj]) => ({ branchId, ...obj })) as SubmitEditInput['branches'];
 
-  // EL-04 (Critical): re-run the mandatory-field gate at approve time. The
-  // submit-time gate enforces "salesman cannot submit a half-empty record",
-  // but photos and other slot data live OUTSIDE `fieldChanges` and can be
-  // detached after submit. Without this re-check, an APPROVED record could
-  // land with no CR photo / no shop photo simply because the salesman tapped
-  // the trash icon between submit and approve. Skip when the submitter was
-  // not a Salesman (Steward/Manager direct-write bypasses the gate by design),
-  // and skip for a status-only close request (it enriches nothing — see above).
-  if (submitterUser?.role === Role.SALESMAN && !isStatusOnlyEdit) {
-    const liveCustomer = await prisma.customer.findUniqueOrThrow({
-      where: { id: edit.customerId! },
-      include: { branches: { where: { deletedAt: null } } },
-    });
-    const missing = collectMissingMandatory(
-      liveCustomer,
-      customerProposed,
-      branchProposedById,
-      /* actorIsSalesman */ true
-    );
-    if (Object.keys(missing).length > 0) {
-      throw new ConflictError(
-        'NEEDS_REUPLOAD',
-        `Required fields are now missing on this customer (${
-          Object.keys(missing).length
-        } missing). Reject the edit so the salesman can refill: ${Object.values(missing)
-          .slice(0, 3)
-          .join(' · ')}${Object.keys(missing).length > 3 ? ' · …' : ''}`
-      );
-    }
-  }
+  // EL-04 runs INSIDE the apply transaction (below) — see the note there. final-hunt
+  // #22: reading the live customer's photo slots outside the tx was a TOCTOU — a
+  // concurrent detachPhoto committing between the check and the apply let an APPROVED
+  // record land with a missing CR/shop photo.
 
-  await prisma.$transaction(async (tx) => {
-    // PROD-001 fix: claim the edit atomically by transitioning SUBMITTED→APPROVED
-    // in a single statement. If two approvals race, only one updateMany returns
-    // count=1; the loser sees count=0 and surfaces a conflict instead of writing
-    // a duplicate audit row + replaying applyEditChanges twice.
-    const claim = await tx.customerEdit.updateMany({
-      where: {
-        id: editId,
-        state: EditState.SUBMITTED,
-        currentStepIndex: stepIndex,
-        cycle: edit.cycle,
-      },
-      data: {
-        state: EditState.APPROVED,
-        pendingRole: null,
-        reviewedById: session.id,
-        reviewedAt: new Date(),
-      },
-    });
-    if (claim.count === 0) {
-      throw new ConflictError(
-        'NOT_PENDING',
-        'This edit was just decided by another reviewer. Refresh to see the current state.'
-      );
-    }
-    await tx.editApproval.create({
-      data: {
+  await prisma.$transaction(
+    async (tx) => {
+      // PROD-001 fix: claim the edit atomically by transitioning SUBMITTED→APPROVED
+      // in a single statement. If two approvals race, only one updateMany returns
+      // count=1; the loser sees count=0 and surfaces a conflict instead of writing
+      // a duplicate audit row + replaying applyEditChanges twice.
+      const claim = await tx.customerEdit.updateMany({
+        where: {
+          id: editId,
+          state: EditState.SUBMITTED,
+          currentStepIndex: stepIndex,
+          cycle: edit.cycle,
+        },
+        data: {
+          state: EditState.APPROVED,
+          pendingRole: null,
+          reviewedById: session.id,
+          reviewedAt: new Date(),
+        },
+      });
+      if (claim.count === 0) {
+        throw new ConflictError(
+          'NOT_PENDING',
+          'This edit was just decided by another reviewer. Refresh to see the current state.'
+        );
+      }
+      await tx.editApproval.create({
+        data: {
+          editId,
+          cycle: edit.cycle,
+          stepIndex,
+          role: step.role,
+          decision: 'APPROVED',
+          actorId: session.id,
+        },
+      });
+      // EL-04 (Critical): re-run the mandatory-field gate at approve time. The
+      // submit-time gate enforces "salesman cannot submit a half-empty record", but
+      // photos and other slot data live OUTSIDE `fieldChanges` and can be detached
+      // after submit. Without this, an APPROVED record could land with no CR/shop
+      // photo because the salesman tapped the trash icon between submit and approve.
+      // final-hunt #22: read the live customer via `tx` (not the global client) so the
+      // check and the apply are in ONE transaction — a concurrent detach can no longer
+      // slip between them. Skip for non-salesman submitters (Steward/Manager
+      // direct-write) and for status-only close requests (they enrich nothing).
+      if (submitterUser?.role === Role.SALESMAN && !isStatusOnlyEdit) {
+        const liveCustomer = await tx.customer.findUniqueOrThrow({
+          where: { id: edit.customerId! },
+          include: { branches: { where: { deletedAt: null } } },
+        });
+        const missing = collectMissingMandatory(
+          liveCustomer,
+          customerProposed,
+          branchProposedById,
+          /* actorIsSalesman */ true
+        );
+        if (Object.keys(missing).length > 0) {
+          throw new ConflictError(
+            'NEEDS_REUPLOAD',
+            `Required fields are now missing on this customer (${
+              Object.keys(missing).length
+            } missing). Reject the edit so the salesman can refill: ${Object.values(missing)
+              .slice(0, 3)
+              .join(' · ')}${Object.keys(missing).length > 3 ? ' · …' : ''}`
+          );
+        }
+      }
+      await applyEditChanges(tx, edit.customerId!, customerProposed, branchesPayload, session.id);
+      // EL-05: persist the actual diff in the audit log, not just a count, so a
+      // forensic Manager can answer "what did Supervisor X approve last week"
+      // from `/audit` alone without joining CustomerEdit.fieldChanges manually.
+      await tx.auditLog.create({
+        data: {
+          actorId: session.id,
+          action: 'APPROVE',
+          entityType: 'CustomerEdit',
+          entityId: editId,
+          after: {
+            customerId: edit.customerId,
+            changes: fieldChanges.length,
+            fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
+            droppedBranchIds: droppedBranchIds.length > 0 ? droppedBranchIds : undefined,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await notifyUsers(tx, [edit.submittedById], {
+        kind: 'EDIT_APPROVED_FINAL',
+        title: 'Edit approved',
+        body: `${requestName} — your changes were approved and are now live.`,
         editId,
-        cycle: edit.cycle,
-        stepIndex,
-        role: step.role,
-        decision: 'APPROVED',
-        actorId: session.id,
-      },
-    });
-    await applyEditChanges(tx, edit.customerId!, customerProposed, branchesPayload, session.id);
-    // EL-05: persist the actual diff in the audit log, not just a count, so a
-    // forensic Manager can answer "what did Supervisor X approve last week"
-    // from `/audit` alone without joining CustomerEdit.fieldChanges manually.
-    await tx.auditLog.create({
-      data: {
-        actorId: session.id,
-        action: 'APPROVE',
-        entityType: 'CustomerEdit',
-        entityId: editId,
-        after: {
-          customerId: edit.customerId,
-          changes: fieldChanges.length,
-          fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
-          droppedBranchIds: droppedBranchIds.length > 0 ? droppedBranchIds : undefined,
-        } as unknown as Prisma.InputJsonValue,
-      },
-    });
-    await notifyUsers(tx, [edit.submittedById], {
-      kind: 'EDIT_APPROVED_FINAL',
-      title: 'Edit approved',
-      body: `${requestName} — your changes were approved and are now live.`,
-      editId,
-      customerId: edit.customerId ?? undefined,
-    });
-    // Match the CREATE finalize timeout (final-hunt #32): an UPDATE apply can
-    // touch up to 10 branches + notifications over a remote DB, and the default
-    // 5s interactive-transaction limit was tripping legitimately-sized approvals
-    // (e.g. a close-shop) with an opaque "Transaction already closed" error.
-  }, { timeout: 30_000, maxWait: 10_000 });
+        customerId: edit.customerId ?? undefined,
+      });
+      // Match the CREATE finalize timeout (final-hunt #32): an UPDATE apply can
+      // touch up to 10 branches + notifications over a remote DB, and the default
+      // 5s interactive-transaction limit was tripping legitimately-sized approvals
+      // (e.g. a close-shop) with an opaque "Transaction already closed" error.
+    },
+    { timeout: 30_000, maxWait: 10_000 }
+  );
 
   logger.info({ editId, by: session.id }, 'edit.approve');
   revalidatePath(`/approvals`);
@@ -1195,9 +1247,7 @@ async function approveEditCore(formData: FormData) {
  * Hard cap: 50 edits per call to bound the round-trip and keep approveEditCore
  * isolated transactions sane on Neon.
  */
-export async function bulkApproveEditsAction(
-  formData: FormData
-): SafeAction<{
+export async function bulkApproveEditsAction(formData: FormData): SafeAction<{
   successes: string[];
   failures: Array<{ editId: string; code: string; message: string }>;
 }> {
@@ -1230,10 +1280,7 @@ export async function bulkApproveEditsAction(
         failures.push({ editId, code: res.code, message: res.message });
       }
     }
-    logger.info(
-      { successes: successes.length, failures: failures.length },
-      'edit.bulk.approve'
-    );
+    logger.info({ successes: successes.length, failures: failures.length }, 'edit.bulk.approve');
     return { successes, failures };
   });
 }
@@ -1242,9 +1289,7 @@ export async function bulkApproveEditsAction(
  * B-11: Bulk reject. Same shape as bulkApprove but applies a single
  * `category` + `reason` to every selected edit.
  */
-export async function bulkRejectEditsAction(
-  formData: FormData
-): SafeAction<{
+export async function bulkRejectEditsAction(formData: FormData): SafeAction<{
   successes: string[];
   failures: Array<{ editId: string; code: string; message: string }>;
 }> {
@@ -1284,10 +1329,7 @@ export async function bulkRejectEditsAction(
         failures.push({ editId, code: res.code, message: res.message });
       }
     }
-    logger.info(
-      { successes: successes.length, failures: failures.length },
-      'edit.bulk.reject'
-    );
+    logger.info({ successes: successes.length, failures: failures.length }, 'edit.bulk.reject');
     return { successes, failures };
   });
 }

@@ -79,13 +79,9 @@ export function canSeeCustomer(
       return true;
     case Role.SALESMAN:
       if (!scope.ownedRouteId) return false;
-      return customer.branches.some(
-        (b) => !b.deletedAt && b.routeId === scope.ownedRouteId
-      );
+      return customer.branches.some((b) => !b.deletedAt && b.routeId === scope.ownedRouteId);
     case Role.SUPERVISOR:
-      return customer.branches.some(
-        (b) => !b.deletedAt && scope.teamRouteIds.includes(b.routeId)
-      );
+      return customer.branches.some((b) => !b.deletedAt && scope.teamRouteIds.includes(b.routeId));
     case Role.MANAGER:
     // Owner-confirmed: ACCOUNTANT is region-scoped via the same managedRegions
     // mechanism, with the same fail-closed rule as MANAGER.
@@ -111,9 +107,11 @@ export function canSeeCustomer(
  * branches' addresses, GPS, photos. Call this after `canSeeCustomer` and
  * before rendering or shipping branches to the client.
  */
-export function filterBranchesByScope<
-  B extends Pick<Branch, 'routeId' | 'regionId' | 'deletedAt'>,
->(user: SessionUser, branches: B[], scope: Scope): B[] {
+export function filterBranchesByScope<B extends Pick<Branch, 'routeId' | 'regionId' | 'deletedAt'>>(
+  user: SessionUser,
+  branches: B[],
+  scope: Scope
+): B[] {
   const live = branches.filter((b) => !b.deletedAt);
   switch (user.role) {
     case Role.STEWARD:
@@ -156,9 +154,7 @@ export function canEditCustomer(
       return canSeeCustomer(user, customer, scope);
     case Role.SALESMAN:
       if (!scope.ownedRouteId) return false;
-      return customer.branches.some(
-        (b) => !b.deletedAt && b.routeId === scope.ownedRouteId
-      );
+      return customer.branches.some((b) => !b.deletedAt && b.routeId === scope.ownedRouteId);
     case Role.SUPERVISOR:
     case Role.VIEWER:
     // Approval roles review/approve; they never directly edit customer data.
@@ -201,8 +197,7 @@ export async function assertCanAccessAttachment(
   // already been wired, route the access check through the customer's scope
   // so a route-reassigned salesman cannot keep pulling photos he uploaded
   // months ago against customers he no longer covers.
-  const isOrphan =
-    !attachment.customerId && !attachment.branchId && !attachment.branchExtraId;
+  const isOrphan = !attachment.customerId && !attachment.branchId && !attachment.branchExtraId;
   if (isOrphan && attachment.capturedById === user.id) return;
 
   // Resolve to a customer
@@ -233,7 +228,7 @@ export async function assertCanAccessAttachment(
       where: { id: attachment.editId },
       select: {
         customerId: true,
-        branchDrafts: { select: { routeId: true, regionId: true } },
+        branchDrafts: { select: { routeId: true, route: { select: { regionId: true } } } }, // final-hunt #7/#15
       },
     });
     if (edit?.customerId) {
@@ -241,7 +236,7 @@ export async function assertCanAccessAttachment(
     } else if (edit && edit.branchDrafts.length > 0) {
       const draftBranches = edit.branchDrafts.map((d) => ({
         routeId: d.routeId,
-        regionId: d.regionId,
+        regionId: d.route.regionId, // final-hunt #7/#15: current route region (visibility == authorization)
         deletedAt: null,
       }));
       if (!canSeeCustomer(user, { branches: draftBranches }, scope)) {
@@ -273,9 +268,14 @@ export async function assertCanAccessAttachment(
  * MANAGER retain the bypass for legitimate "rewire an orphan upload" cases
  * but the call site is expected to log a FORCE_OVERRIDE audit row.
  */
-export function userOwnsCapture(user: SessionUser, attachment: Pick<Attachment, 'capturedById'>): boolean {
+export function userOwnsCapture(
+  user: SessionUser,
+  attachment: Pick<Attachment, 'capturedById'>
+): boolean {
   if (user.role === Role.SUPERVISOR || user.role === Role.VIEWER) return false;
-  return attachment.capturedById === user.id || user.role === Role.STEWARD || user.role === Role.MANAGER;
+  return (
+    attachment.capturedById === user.id || user.role === Role.STEWARD || user.role === Role.MANAGER
+  );
 }
 
 /** Force `User`-typed signature for documentation; actual checks use SessionUser. */

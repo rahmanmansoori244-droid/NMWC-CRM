@@ -70,8 +70,7 @@ export default async function WorkPage() {
       })),
       ...pending.map((e) => ({
         id: e.id,
-        category:
-          e.process === 'CREATE' ? 'New customer — in approval' : 'Awaiting approval',
+        category: e.process === 'CREATE' ? 'New customer — in approval' : 'Awaiting approval',
         title: editTitle(e),
         subtitle:
           e.process === 'CREATE'
@@ -118,11 +117,7 @@ export default async function WorkPage() {
       state: e.state,
       when: e.submittedAt,
     }));
-  } else if (
-    role === Role.ACCOUNTANT ||
-    role === Role.FINANCE_MANAGER ||
-    role === Role.GM
-  ) {
+  } else if (role === Role.ACCOUNTANT || role === Role.FINANCE_MANAGER || role === Role.GM) {
     // Phase 1 approver queues. Accountant is region-scoped (fail-closed, same
     // managedRegions mechanism as Manager) and matches CREATE requests via
     // draft-branch regions; FM/GM are org-wide.
@@ -144,7 +139,7 @@ export default async function WorkPage() {
                     },
                   },
                 },
-                { branchDrafts: { some: { regionId: { in: scope.managedRegionIds } } } },
+                { branchDrafts: { some: { route: { regionId: { in: scope.managedRegionIds } } } } }, // final-hunt #7/#15: current route region
               ],
             };
     } else {
@@ -193,7 +188,7 @@ export default async function WorkPage() {
                   },
                 },
                 // Phase 1: stale CREATE requests match via draft-branch regions.
-                { branchDrafts: { some: { regionId: { in: scope.managedRegionIds } } } },
+                { branchDrafts: { some: { route: { regionId: { in: scope.managedRegionIds } } } } }, // final-hunt #7/#15: current route region
               ],
             },
             include: {
@@ -246,9 +241,7 @@ export default async function WorkPage() {
                         {it.category}
                       </p>
                       <h3 className="truncate text-sm font-semibold text-slate-900">{it.title}</h3>
-                      {it.subtitle && (
-                        <p className="text-xs text-slate-600">{it.subtitle}</p>
-                      )}
+                      {it.subtitle && <p className="text-xs text-slate-600">{it.subtitle}</p>}
                     </div>
                     <div className="text-right text-xs text-slate-500">
                       {it.state && <StatusBadge status={it.state} className="mb-1" />}

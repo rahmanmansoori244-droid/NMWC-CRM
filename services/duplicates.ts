@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, type Prisma } from '@prisma/client';
+import { Role, EditState, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
 import {
   ForbiddenError,
@@ -30,8 +30,24 @@ async function requireSteward() {
 export type DuplicateCandidate = {
   reason: 'CR' | 'EXACT_TRIPLE'; // CR-number match (high-confidence) OR exact name+phone+region match
   similarity: number; // 0–1
-  a: { id: string; nmwcCode: string; legalName: string; primaryPhone: string | null; crNumber: string | null; completenessScore: number; branchCount: number };
-  b: { id: string; nmwcCode: string; legalName: string; primaryPhone: string | null; crNumber: string | null; completenessScore: number; branchCount: number };
+  a: {
+    id: string;
+    nmwcCode: string;
+    legalName: string;
+    primaryPhone: string | null;
+    crNumber: string | null;
+    completenessScore: number;
+    branchCount: number;
+  };
+  b: {
+    id: string;
+    nmwcCode: string;
+    legalName: string;
+    primaryPhone: string | null;
+    crNumber: string | null;
+    completenessScore: number;
+    branchCount: number;
+  };
 };
 
 /**
@@ -159,17 +175,15 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCan
   return out.slice(0, limit);
 }
 
-function pickSummary(
-  c: {
-    id: string;
-    nmwcCode: string;
-    legalName: string;
-    primaryPhone: string | null;
-    crNumber: string | null;
-    completenessScore: number;
-    _count: { branches: number };
-  }
-): DuplicateCandidate['a'] {
+function pickSummary(c: {
+  id: string;
+  nmwcCode: string;
+  legalName: string;
+  primaryPhone: string | null;
+  crNumber: string | null;
+  completenessScore: number;
+  _count: { branches: number };
+}): DuplicateCandidate['a'] {
   return {
     id: c.id,
     nmwcCode: c.nmwcCode,
@@ -191,9 +205,7 @@ function pickSummary(
  * Caller picks the winner. The winner keeps its identity; the loser's
  * NMWC code is preserved in the audit `before` payload for traceability.
  */
-export async function mergeCustomersAction(
-  formData: FormData
-): SafeAction<{ winnerId: string }> {
+export async function mergeCustomersAction(formData: FormData): SafeAction<{ winnerId: string }> {
   return runAction(() => mergeCustomersCore(formData));
 }
 
@@ -211,11 +223,21 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
   const [winner, loser] = await Promise.all([
     prisma.customer.findFirst({
       where: { id: winnerId, deletedAt: null },
-      include: { branches: { where: { deletedAt: null }, select: { id: true, regionId: true, routeId: true } } },
+      include: {
+        branches: {
+          where: { deletedAt: null },
+          select: { id: true, regionId: true, routeId: true },
+        },
+      },
     }),
     prisma.customer.findFirst({
       where: { id: loserId, deletedAt: null },
-      include: { branches: { where: { deletedAt: null }, select: { id: true, regionId: true, routeId: true } } },
+      include: {
+        branches: {
+          where: { deletedAt: null },
+          select: { id: true, regionId: true, routeId: true },
+        },
+      },
     }),
   ]);
   if (!winner || !loser) throw new NotFoundError('Customer pair not found.');
@@ -236,121 +258,149 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
     throw new ValidationError({ reason: 'Cross-region merges require a reason (5+ chars).' });
   }
 
-  await prisma.$transaction(async (tx) => {
-    // PROD-DUP-01 (P1): lock BOTH customer rows in a deterministic (id-sorted)
-    // order, then re-validate both are still live INSIDE the transaction. Without
-    // this, two concurrent merges of the SAME pair with winner/loser SWAPPED
-    // (merge(A,B) racing merge(B,A)) each atomically claim a DIFFERENT loser row,
-    // so BOTH customers get soft-deleted and their live branches are stranded
-    // under deleted parents — silent data loss. Sorted `FOR UPDATE` serializes
-    // the pair (identical lock order ⇒ no deadlock); the loser of the race
-    // re-reads here and finds a party already archived, and aborts cleanly.
-    for (const id of [winner.id, loser.id].sort()) {
-      await tx.$queryRaw`SELECT id FROM "Customer" WHERE id = ${id} FOR UPDATE`;
-    }
-    const [winnerLive, loserLive] = await Promise.all([
-      tx.customer.findUnique({ where: { id: winner.id }, select: { deletedAt: true } }),
-      tx.customer.findUnique({ where: { id: loser.id }, select: { deletedAt: true } }),
-    ]);
-    if (!winnerLive || winnerLive.deletedAt) {
-      throw new ValidationError({
-        _form: 'The winning customer was just merged or archived by another action. Refresh and retry the merge.',
-      });
-    }
-    if (!loserLive || loserLive.deletedAt) {
-      throw new ValidationError({
-        _form: 'The losing customer was just merged or archived by another action. Refresh and retry the merge.',
-      });
-    }
+  await prisma.$transaction(
+    async (tx) => {
+      // PROD-DUP-01 (P1): lock BOTH customer rows in a deterministic (id-sorted)
+      // order, then re-validate both are still live INSIDE the transaction. Without
+      // this, two concurrent merges of the SAME pair with winner/loser SWAPPED
+      // (merge(A,B) racing merge(B,A)) each atomically claim a DIFFERENT loser row,
+      // so BOTH customers get soft-deleted and their live branches are stranded
+      // under deleted parents — silent data loss. Sorted `FOR UPDATE` serializes
+      // the pair (identical lock order ⇒ no deadlock); the loser of the race
+      // re-reads here and finds a party already archived, and aborts cleanly.
+      for (const id of [winner.id, loser.id].sort()) {
+        await tx.$queryRaw`SELECT id FROM "Customer" WHERE id = ${id} FOR UPDATE`;
+      }
+      const [winnerLive, loserLive] = await Promise.all([
+        tx.customer.findUnique({ where: { id: winner.id }, select: { deletedAt: true } }),
+        tx.customer.findUnique({ where: { id: loser.id }, select: { deletedAt: true } }),
+      ]);
+      if (!winnerLive || winnerLive.deletedAt) {
+        throw new ValidationError({
+          _form:
+            'The winning customer was just merged or archived by another action. Refresh and retry the merge.',
+        });
+      }
+      if (!loserLive || loserLive.deletedAt) {
+        throw new ValidationError({
+          _form:
+            'The losing customer was just merged or archived by another action. Refresh and retry the merge.',
+        });
+      }
 
-    // Move branches
-    await tx.branch.updateMany({
-      where: { customerId: loser.id, deletedAt: null },
-      data: { customerId: winner.id, lastEditedById: session.id },
-    });
-    // QA-028: also move the loser's CustomerEdit history into the winner.
-    await tx.customerEdit.updateMany({
-      where: { customerId: loser.id },
-      data: { customerId: winner.id },
-    });
-    // Move CR photo if winner has none
-    if (!winner.crPhotoId && loser.crPhotoId) {
+      // Move branches
+      await tx.branch.updateMany({
+        where: { customerId: loser.id, deletedAt: null },
+        data: { customerId: winner.id, lastEditedById: session.id },
+      });
+      // QA-028 / final-hunt #31: move the loser's CustomerEdit history into the
+      // winner for audit continuity. The loser is about to be soft-deleted, so FIRST
+      // terminate any OPEN (SUBMITTED) edit on it — reparenting a loser-side SUBMITTED
+      // edit onto a winner that also has one would collide under the
+      // CustomerEdit_open_per_customer partial-unique index (customerId WHERE
+      // state='SUBMITTED') and abort the whole merge with an opaque P2002. The loser's
+      // pending workflow is moot once its identity is merged away, so auto-reject it
+      // and stop its SLA clock, THEN reparent everything (no loser edit is SUBMITTED).
+      const mergedAt = new Date();
+      await tx.customerEdit.updateMany({
+        where: { customerId: loser.id, state: EditState.SUBMITTED },
+        data: {
+          state: EditState.REJECTED,
+          pendingRole: null,
+          reviewedById: session.id,
+          reviewedAt: mergedAt,
+          decisionReason: `Auto-closed: customer ${loser.nmwcCode} merged into ${winner.nmwcCode}.`,
+          slaDueAt: null,
+          slaBreachedAt: null,
+          lastEscalatedAt: null,
+          escalationLevel: 0,
+        },
+      });
+      await tx.customerEdit.updateMany({
+        where: { customerId: loser.id },
+        data: { customerId: winner.id },
+      });
+      // Move CR photo if winner has none
+      if (!winner.crPhotoId && loser.crPhotoId) {
+        await tx.customer.update({
+          where: { id: winner.id },
+          data: { crPhotoId: loser.crPhotoId },
+        });
+        await tx.customer.update({ where: { id: loser.id }, data: { crPhotoId: null } });
+      }
+      // Soft-delete the loser. Phase 1 Temix sync: a loser Temix has heard of
+      // (coded / ever uploaded / migrated-SYNCED) queues for ERP deactivation;
+      // a never-uploaded loser just leaves the queue — Temix has nothing to
+      // deactivate (lib/temix.ts resolveArchiveTemixState). Decided from a
+      // FRESH in-tx read and pinned on the observed state: a Temix batch
+      // committing between the pre-tx load and this write would otherwise get
+      // its UPLOADED clobbered and the deactivation lost forever
+      // (adversarial-review finding).
+      const loserFresh = await tx.customer.findUniqueOrThrow({
+        where: { id: loser.id },
+        select: { temixCode: true, lastTemixUploadAt: true, temixSyncState: true },
+      });
+      const loserTemixState = resolveArchiveTemixState(loserFresh);
+      const loserClaim = await tx.customer.updateMany({
+        where: { id: loser.id, deletedAt: null, temixSyncState: loserFresh.temixSyncState },
+        data: {
+          deletedAt: new Date(),
+          lastEditedById: session.id,
+          temixSyncState: loserTemixState,
+          temixSyncPendingSince: loserTemixState === 'DEACTIVATE_PENDING' ? new Date() : null,
+          version: { increment: 1 },
+        },
+      });
+      if (loserClaim.count === 0) {
+        throw new ValidationError({
+          _form:
+            'The customer just changed (another action or a Temix batch ran). Refresh and retry the merge.',
+        });
+      }
+      // The winner absorbed branches (and possibly a CR photo) — its Temix
+      // master view changed, so re-queue it for the next batch (same guard as
+      // applyEditChanges: PENDING_UPLOAD/DEACTIVATE_PENDING rows stay put).
+      await tx.customer.updateMany({
+        where: { id: winner.id, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
+        data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
+      });
+      // Recompute winner completeness
+      const fresh = await tx.customer.findUniqueOrThrow({
+        where: { id: winner.id },
+        include: { branches: { where: { deletedAt: null } } },
+      });
+      const newScore = scoreCustomer(fresh, fresh.branches);
       await tx.customer.update({
         where: { id: winner.id },
-        data: { crPhotoId: loser.crPhotoId },
+        data: { completenessScore: newScore },
       });
-      await tx.customer.update({ where: { id: loser.id }, data: { crPhotoId: null } });
-    }
-    // Soft-delete the loser. Phase 1 Temix sync: a loser Temix has heard of
-    // (coded / ever uploaded / migrated-SYNCED) queues for ERP deactivation;
-    // a never-uploaded loser just leaves the queue — Temix has nothing to
-    // deactivate (lib/temix.ts resolveArchiveTemixState). Decided from a
-    // FRESH in-tx read and pinned on the observed state: a Temix batch
-    // committing between the pre-tx load and this write would otherwise get
-    // its UPLOADED clobbered and the deactivation lost forever
-    // (adversarial-review finding).
-    const loserFresh = await tx.customer.findUniqueOrThrow({
-      where: { id: loser.id },
-      select: { temixCode: true, lastTemixUploadAt: true, temixSyncState: true },
-    });
-    const loserTemixState = resolveArchiveTemixState(loserFresh);
-    const loserClaim = await tx.customer.updateMany({
-      where: { id: loser.id, deletedAt: null, temixSyncState: loserFresh.temixSyncState },
-      data: {
-        deletedAt: new Date(),
-        lastEditedById: session.id,
-        temixSyncState: loserTemixState,
-        temixSyncPendingSince: loserTemixState === 'DEACTIVATE_PENDING' ? new Date() : null,
-        version: { increment: 1 },
-      },
-    });
-    if (loserClaim.count === 0) {
-      throw new ValidationError({
-        _form: 'The customer just changed (another action or a Temix batch ran). Refresh and retry the merge.',
+      await tx.auditLog.create({
+        data: {
+          actorId: session.id,
+          action: 'MERGE',
+          entityType: 'Customer',
+          entityId: winner.id,
+          before: {
+            loser: { id: loser.id, nmwcCode: loser.nmwcCode, legalName: loser.legalName },
+            winner: { id: winner.id, nmwcCode: winner.nmwcCode },
+            crossRegion: isCrossRegion,
+          } as unknown as Prisma.InputJsonValue,
+          reason: isCrossRegion
+            ? `Cross-region merge: ${loser.nmwcCode} -> ${winner.nmwcCode}. ${reason}`
+            : `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,
+        },
       });
+    },
+    {
+      // The merge holds a FOR UPDATE lock on both customer rows while it moves
+      // branches/edits and recomputes completeness (~a dozen sequential writes). A
+      // second merge of the same pair serializes behind that lock, so its total
+      // time = winner's tx + its own re-read. The default 5s interactive-tx
+      // timeout can be exceeded under lock contention or a large multi-branch
+      // customer; 20s gives ample headroom for this rare, Steward-only operation.
+      timeout: 20_000,
     }
-    // The winner absorbed branches (and possibly a CR photo) — its Temix
-    // master view changed, so re-queue it for the next batch (same guard as
-    // applyEditChanges: PENDING_UPLOAD/DEACTIVATE_PENDING rows stay put).
-    await tx.customer.updateMany({
-      where: { id: winner.id, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
-      data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
-    });
-    // Recompute winner completeness
-    const fresh = await tx.customer.findUniqueOrThrow({
-      where: { id: winner.id },
-      include: { branches: { where: { deletedAt: null } } },
-    });
-    const newScore = scoreCustomer(fresh, fresh.branches);
-    await tx.customer.update({
-      where: { id: winner.id },
-      data: { completenessScore: newScore },
-    });
-    await tx.auditLog.create({
-      data: {
-        actorId: session.id,
-        action: 'MERGE',
-        entityType: 'Customer',
-        entityId: winner.id,
-        before: {
-          loser: { id: loser.id, nmwcCode: loser.nmwcCode, legalName: loser.legalName },
-          winner: { id: winner.id, nmwcCode: winner.nmwcCode },
-          crossRegion: isCrossRegion,
-        } as unknown as Prisma.InputJsonValue,
-        reason: isCrossRegion
-          ? `Cross-region merge: ${loser.nmwcCode} -> ${winner.nmwcCode}. ${reason}`
-          : `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,
-      },
-    });
-  }, {
-    // The merge holds a FOR UPDATE lock on both customer rows while it moves
-    // branches/edits and recomputes completeness (~a dozen sequential writes). A
-    // second merge of the same pair serializes behind that lock, so its total
-    // time = winner's tx + its own re-read. The default 5s interactive-tx
-    // timeout can be exceeded under lock contention or a large multi-branch
-    // customer; 20s gives ample headroom for this rare, Steward-only operation.
-    timeout: 20_000,
-  });
+  );
 
   logger.info({ winnerId, loserId, by: session.id }, 'customer.merge');
   revalidatePath('/duplicates');
