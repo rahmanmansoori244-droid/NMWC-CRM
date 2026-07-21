@@ -17,11 +17,19 @@ import { logger } from '@/lib/logger';
 import { canMutateUser, MANAGER_ADMINISTRABLE_ROLES } from '@/lib/permissions';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
-async function requireManager() {
+// User administration is a MANAGER or STEWARD action. A MANAGER is capped at the
+// field force (MANAGER_ADMINISTRABLE_ROLES); a STEWARD is the org data-admin and
+// is the ONLY role that may provision the approver tier (ACCOUNTANT/FINANCE_MANAGER/
+// GM) and peer admins — which is exactly the SR-USR-01 separation-of-duty split.
+// Before this, `requireManager` blocked STEWARD too, so the approver tier the
+// create-approval chains REQUIRE had NO in-app provisioning path and every net-new
+// customer CREATE stalled forever at the Accountant step. The per-actor allowlist
+// lives in canMutateUser + the create/role-change guards below.
+async function requireUserAdmin() {
   const session = await auth();
   if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (session.user.role !== Role.MANAGER) {
-    throw new ForbiddenError('Only Managers can manage users.');
+  if (session.user.role !== Role.MANAGER && session.user.role !== Role.STEWARD) {
+    throw new ForbiddenError('Only Managers or Stewards can manage users.');
   }
   return session.user;
 }
@@ -56,7 +64,7 @@ export async function createUserAction(formData: FormData): SafeAction<void> {
 }
 
 async function createUserCore(formData: FormData) {
-  const me = await requireManager();
+  const me = await requireUserAdmin();
   const parsed = createUserSchema.safeParse({
     username: String(formData.get('username') ?? '').toLowerCase().trim(),
     fullName: formData.get('fullName'),
@@ -76,11 +84,12 @@ async function createUserCore(formData: FormData) {
   }
   const data = parsed.data;
 
-  // AUTH-03 / RBAC-05-006 / SR-USR-01: cap Manager-driven creation at the field
-  // force. MANAGER, STEWARD *and every credit approver* (FINANCE_MANAGER, GM,
-  // ACCOUNTANT) must be minted by a Steward — otherwise a Manager could mint an
-  // approver and seize the credit chain (separation-of-duty bypass).
-  if (!MANAGER_ADMINISTRABLE_ROLES.includes(data.role)) {
+  // AUTH-03 / RBAC-05-006 / SR-USR-01: cap MANAGER-driven creation at the field
+  // force so a Manager cannot mint an approver and seize the credit chain
+  // (separation-of-duty bypass). A STEWARD is the org data-admin and IS the
+  // Steward path this rule always assumed — it may create any role, including the
+  // approver tier (FINANCE_MANAGER/GM/ACCOUNTANT) the create chains require.
+  if (me.role === Role.MANAGER && !MANAGER_ADMINISTRABLE_ROLES.includes(data.role)) {
     throw new ValidationError({
       role:
         'A Manager can only create Salesman/Supervisor/Viewer accounts — ask a Steward to provision approver or admin-tier accounts.',
@@ -185,7 +194,7 @@ export async function toggleUserActiveAction(formData: FormData): SafeAction<voi
 }
 
 async function toggleUserActiveCore(formData: FormData) {
-  const me = await requireManager();
+  const me = await requireUserAdmin();
   const userId = String(formData.get('userId') ?? '');
   if (!userId) throw new ValidationError({ userId: 'required' });
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -245,7 +254,7 @@ export async function resetPasswordAction(formData: FormData): SafeAction<void> 
 }
 
 async function resetPasswordCore(formData: FormData) {
-  const me = await requireManager();
+  const me = await requireUserAdmin();
   const userId = String(formData.get('userId') ?? '');
   if (!userId) throw new ValidationError({ userId: 'required' });
   const newPassword = String(formData.get('password') ?? '');
@@ -315,7 +324,7 @@ export async function updateUserRoleAction(formData: FormData): SafeAction<void>
 }
 
 async function updateUserRoleCore(formData: FormData) {
-  const me = await requireManager();
+  const me = await requireUserAdmin();
   const parsed = updateRoleSchema.safeParse({
     userId: formData.get('userId'),
     newRole: formData.get('newRole'),
@@ -340,11 +349,11 @@ async function updateUserRoleCore(formData: FormData) {
   );
   if (!guard.ok) throw new ForbiddenError(guard.reason);
 
-  // SR-USR-01: a Manager may only assign field-force roles. Promotion to an
+  // SR-USR-01: a MANAGER may only assign field-force roles. Promotion to an
   // approver (FINANCE_MANAGER/GM/ACCOUNTANT) or admin (MANAGER/STEWARD) tier is
   // Steward-only — this closes the "promote a puppet into the credit chain" path
-  // alongside the create/reset/disable guards.
-  if (!MANAGER_ADMINISTRABLE_ROLES.includes(newRole)) {
+  // alongside the create/reset/disable guards. A STEWARD may assign any role.
+  if (me.role === Role.MANAGER && !MANAGER_ADMINISTRABLE_ROLES.includes(newRole)) {
     throw new ValidationError({
       newRole: 'A Manager can only assign Salesman/Supervisor/Viewer — approver and admin roles are Steward-provisioned.',
     });

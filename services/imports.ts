@@ -67,7 +67,20 @@ function isFormulaPayload(s: unknown): boolean {
 //                                 supervisor_username (opt), route_code (opt for SALESMAN),
 //                                 region_codes (opt comma-separated for MANAGER), email (opt), phone (opt)
 
-const VALID_ROLES: Role[] = [Role.SALESMAN, Role.SUPERVISOR, Role.MANAGER, Role.STEWARD, Role.VIEWER];
+// The account-master import is a STEWARD-only bulk provisioning path (requireSteward
+// at the call site), so — unlike the Manager-driven /users UI — it may also mint the
+// credit-approver tier (ACCOUNTANT/FINANCE_MANAGER/GM). Without them a fresh org has
+// no way to bulk-load approvers and the create chains cannot complete.
+const VALID_ROLES: Role[] = [
+  Role.SALESMAN,
+  Role.SUPERVISOR,
+  Role.MANAGER,
+  Role.STEWARD,
+  Role.VIEWER,
+  Role.ACCOUNTANT,
+  Role.FINANCE_MANAGER,
+  Role.GM,
+];
 
 function lc(v: unknown): string {
   return String(v ?? '').trim().toLowerCase();

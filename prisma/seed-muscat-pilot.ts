@@ -85,6 +85,50 @@ async function main() {
   });
   console.log(`  STEWARD  pilot.steward  (Abdulrahman)         id=${steward.id}`);
 
+  // ── 2b. Credit-approval tier — ACCOUNTANT (region-scoped) + FINANCE_MANAGER + GM ──
+  // The CASH create chain ends at ACCOUNTANT; the CREDIT chain is FM → GM →
+  // ACCOUNTANT (GM always). Without these accounts every net-new customer CREATE
+  // stalls at the Accountant step forever (canActOnStep can never be satisfied),
+  // so the pilot MUST ship the whole approver tier. The Accountant is region-
+  // scoped to Muscat via managedRegions (same fail-closed mechanism as MANAGER).
+  const accountant = await prisma.user.upsert({
+    where: { username: 'pilot.accountant' },
+    update: { fullName: 'Pilot Accountant', isActive: true },
+    create: {
+      username: 'pilot.accountant',
+      fullName: 'Pilot Accountant',
+      role: Role.ACCOUNTANT,
+      passwordHash: await bcrypt.hash('Accountant-NMWC-2026!', 12),
+      managedRegions: { connect: [{ id: muscat.id }] },
+    },
+  });
+  await prisma.user.update({ where: { id: accountant.id }, data: { managedRegions: { set: [{ id: muscat.id }] } } });
+  console.log(`  ACCT     pilot.accountant                       id=${accountant.id}`);
+
+  const financeManager = await prisma.user.upsert({
+    where: { username: 'pilot.finance' },
+    update: { fullName: 'Pilot Finance Manager', isActive: true },
+    create: {
+      username: 'pilot.finance',
+      fullName: 'Pilot Finance Manager',
+      role: Role.FINANCE_MANAGER,
+      passwordHash: await bcrypt.hash('Finance-NMWC-2026!', 12),
+    },
+  });
+  console.log(`  FINMGR   pilot.finance                          id=${financeManager.id}`);
+
+  const gm = await prisma.user.upsert({
+    where: { username: 'pilot.gm' },
+    update: { fullName: 'Pilot GM', isActive: true },
+    create: {
+      username: 'pilot.gm',
+      fullName: 'Pilot GM',
+      role: Role.GM,
+      passwordHash: await bcrypt.hash('GM-NMWC-2026!', 12),
+    },
+  });
+  console.log(`  GM       pilot.gm                               id=${gm.id}`);
+
   // ── 3. SUPERVISOR: Ahmed Al Nadabi (ahmed.alndabi) ───────────────────────
   const ahmedPasswordHash = await bcrypt.hash('Ahmed-NMWC-2026!', 12);
   const ahmed = await prisma.user.upsert({
