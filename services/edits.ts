@@ -371,6 +371,22 @@ async function submitEditCore(input: SubmitEditInput): Promise<{ editId: string;
     (c) => ({ ...c, field: `customer.${c.field}` })
   );
 
+  // Credit status (CASH ↔ CREDIT) is decided at CREATE through the owner-locked
+  // SUP→FM→GM→ACC credit chain and is thereafter owned by Temix (the authoritative
+  // credit source). It must NEVER ride the single-Supervisor UPDATE chain: the
+  // chain is resolved from the customer's CURRENT terms (resolveChain below), so a
+  // CASH→CREDIT flip on an enrichment edit would grant CREDIT status — a credit
+  // limit/terms and the outbound Temix credit push — with NO finance approval
+  // (final-hunt #3). Reject the change here; terms move via a Temix refresh or a
+  // fresh credit application, never the enrichment edit. (Mirrors the branch-status
+  // guard below: significant lifecycle changes have dedicated lanes.)
+  if (fieldChanges.some((c) => c.field === 'customer.paymentTerms')) {
+    throw new ValidationError({
+      'customer.paymentTerms':
+        'Payment terms (CASH/CREDIT) cannot be changed from the customer edit — a credit change requires finance approval and comes from Temix or a new credit application.',
+    });
+  }
+
   // Branch-level diffs
   const branchById = new Map(customer.branches.map((b) => [b.id, b] as const));
   for (const bp of bInputs) {
