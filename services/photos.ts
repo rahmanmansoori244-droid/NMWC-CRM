@@ -345,6 +345,32 @@ async function detachPhotoCore(input: { attachmentId: string }) {
       where: { id: att.id },
       data: { deletedAt: new Date(), hash: null },
     });
+    // Rollup parity with attachPhoto (final-hunt #10/#20): removing a photo lowers
+    // completeness, so recompute the affected branch + customer scores. Without
+    // this, detach left the completenessScore stale-HIGH — a customer that lost its
+    // CR/shop photo still read as "complete" on the dashboard and in prioritization.
+    if (att.branchId) {
+      const b = await tx.branch.findUnique({ where: { id: att.branchId } });
+      if (b) {
+        await tx.branch.update({ where: { id: b.id }, data: { completenessScore: scoreBranch(b) } });
+        const fresh = await tx.customer.findUnique({
+          where: { id: b.customerId },
+          include: { branches: { where: { deletedAt: null } } },
+        });
+        if (fresh) {
+          await tx.customer.update({ where: { id: fresh.id }, data: { completenessScore: scoreCustomer(fresh, fresh.branches) } });
+        }
+      }
+    }
+    if (att.customerId) {
+      const fresh = await tx.customer.findUnique({
+        where: { id: att.customerId },
+        include: { branches: { where: { deletedAt: null } } },
+      });
+      if (fresh) {
+        await tx.customer.update({ where: { id: fresh.id }, data: { completenessScore: scoreCustomer(fresh, fresh.branches) } });
+      }
+    }
     await tx.auditLog.create({
       data: {
         actorId: session.user.id,

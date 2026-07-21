@@ -63,12 +63,15 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const out = await r2().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: att.r2Key }));
     const stream = out.Body as ReadableStream<Uint8Array> | null;
     if (!stream) return NextResponse.json({ error: 'EMPTY_BODY' }, { status: 502 });
-    // NEW-PHOTO-009: CR documents are PII; never cache them. Shop/signboard
-    // photos are non-confidential and can keep the short 60s cache.
-    const cache =
-      att.kind === 'CR'
-        ? 'private, no-store, no-cache, must-revalidate'
-        : 'private, max-age=60, must-revalidate';
+    // NEW-PHOTO-009 (+ final-hunt #18): CR registration docs AND GUARANTEE credit-
+    // security documents are confidential financial PII; never cache them. The
+    // no-store guard must cover every confidential kind, not just CR — a GUARANTEE
+    // is at least as sensitive. Shop/signboard photos are non-confidential and keep
+    // the short 60s cache.
+    const CONFIDENTIAL_KINDS = new Set(['CR', 'GUARANTEE']);
+    const cache = CONFIDENTIAL_KINDS.has(att.kind)
+      ? 'private, no-store, no-cache, must-revalidate'
+      : 'private, max-age=60, must-revalidate';
     void req; // intentionally unused — kept for future Origin-check defense-in-depth
     return new NextResponse(stream, {
       headers: {

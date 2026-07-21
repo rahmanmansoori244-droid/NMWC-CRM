@@ -36,8 +36,15 @@ export async function GET(req: NextRequest) {
 
   let deleted = 0;
   let r2Errors = 0;
+  let skipped = 0;
   const markedAt = new Date().toISOString();
   for (const c of candidates) {
+    // final-hunt #11 (C20): the DB row may be dropped ONLY once the R2 object is
+    // safely tagged for lifecycle expiry, OR confirmed already gone. Deleting the
+    // row on a TRANSIENT tag failure (throttle, network, permissions) permanently
+    // ORPHANS the object — no DB reference AND no expiry tag, so it lives in R2
+    // forever. On a transient failure, leave the row for the next GC run.
+    let safeToDelete = false;
     try {
       // B-02 (audit 2026-05-10): tagged for R2 lifecycle expiry instead of hard-delete so accidents are recoverable for 7 days.
       await r2().send(
@@ -52,11 +59,22 @@ export async function GET(req: NextRequest) {
           },
         })
       );
+      safeToDelete = true;
     } catch (err) {
-      // R2 may already be missing — that's fine; record the failure for
-      // visibility but don't block DB cleanup.
-      r2Errors++;
-      logger.warn({ key: c.r2Key, err: (err as Error).message?.slice(0, 80) }, 'gc.r2_tag_failed');
+      const name = String((err as { name?: string; Code?: string }).name ?? (err as { Code?: string }).Code ?? '');
+      const msg = String((err as Error).message ?? '');
+      // Object already gone (NoSuchKey / NotFound / 404): nothing to orphan, so
+      // dropping the row is safe. Any other error is transient — keep the row.
+      if (/NoSuchKey|NotFound|404/i.test(name + ' ' + msg)) {
+        safeToDelete = true;
+      } else {
+        r2Errors++;
+        logger.warn({ key: c.r2Key, err: msg.slice(0, 80) }, 'gc.r2_tag_failed');
+      }
+    }
+    if (!safeToDelete) {
+      skipped++;
+      continue; // retry on the next GC run rather than orphan the object
     }
     try {
       await prisma.attachment.delete({ where: { id: c.id } });
@@ -65,6 +83,6 @@ export async function GET(req: NextRequest) {
       logger.warn({ id: c.id, err: (err as Error).message?.slice(0, 80) }, 'gc.row_delete_failed');
     }
   }
-  logger.info({ deleted, r2Errors, scanned: candidates.length }, 'gc.photo_done');
-  return NextResponse.json({ deleted, r2Errors, scanned: candidates.length });
+  logger.info({ deleted, r2Errors, skipped, scanned: candidates.length }, 'gc.photo_done');
+  return NextResponse.json({ deleted, r2Errors, skipped, scanned: candidates.length });
 }

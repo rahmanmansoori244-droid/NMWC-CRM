@@ -954,9 +954,14 @@ async function promoteCustomerBatchCore(
         branchName: p.branchName ?? 'Main',
         regionId: effectiveRegionId,
         routeId: effectiveRouteId,
+        // final-hunt #8: `[...].filter(Boolean).join(', ')` returns '' (empty
+        // string, not null) when branch_name AND sales_region are both blank, and
+        // `??` does NOT fall through '' — so the branch got an empty address and
+        // the whole customer group was REJECTED at promote (address is required).
+        // `||` falls through the empty string to the 'Address pending' placeholder.
         address:
-          p.address ??
-          [p.branchName, p.regionCode].filter(Boolean).join(', ') ??
+          p.address ||
+          [p.branchName, p.regionCode].filter(Boolean).join(', ') ||
           'Address pending',
       });
     }

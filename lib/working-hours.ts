@@ -12,8 +12,8 @@
  *     precision (loop iterations = working days spanned, not hours).
  *
  * Policy = constants with env override, not a table (same approach as OLD and
- * the app's other env-driven knobs). Defaults: Sun–Thu + Sat working (Friday
- * off — OLD parity), 08:00–17:00 Oman.
+ * the app's other env-driven knobs). Default workweek is the owner-confirmed
+ * Sun–Thu (WORK_DAYS=0,1,2,3,4); Fri AND Sat are off. Hours 08:00–17:00 Oman.
  */
 import { Role } from '@prisma/client';
 
@@ -87,8 +87,8 @@ function nextWorkingInstant(local: Date): Date {
 
 /**
  * Minute-precision working-hours deadline: `slaMinutes` of WORKING time after
- * `start`. A submission at 16:30 Thursday with a 60-minute budget is due
- * 08:30 Saturday (Friday off), not 17:30 Thursday.
+ * `start`. On the Sun–Thu workweek, a submission at 16:30 Thursday with a
+ * 60-minute budget is due 08:30 Sunday (Fri+Sat off), not 17:30 Thursday.
  * Degenerate configs (no working days / zero-width window) fall back to
  * wall-clock so a bad env can never wedge the queue.
  */
