@@ -1,0 +1,92 @@
+{
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-evidence\\00-isolation-gate.json": {
+    "mtime": 1784462473.9697948,
+    "ast_hash": "7816ae87c0fc4adeb1a0e94cb9e2cb67",
+    "semantic_hash": "7816ae87c0fc4adeb1a0e94cb9e2cb67"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\OPUS-4.8-MASTER-EXECUTION-PLAN.md": {
+    "mtime": 1784529350.6943374,
+    "ast_hash": "d878ab2a3b6360b0e7cb0a4b5dec489a",
+    "semantic_hash": "d878ab2a3b6360b0e7cb0a4b5dec489a"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\OPUS-QA-EXECUTION-PLAN.md": {
+    "mtime": 1784451299.686639,
+    "ast_hash": "f9c93613cac5c1eac34c0c601e8a14e7",
+    "semantic_hash": "f9c93613cac5c1eac34c0c601e8a14e7"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\PROJECT-DESCRIPTION.md": {
+    "mtime": 1784444140.5082204,
+    "ast_hash": "ea60e72b5359414ca23297f035934b57",
+    "semantic_hash": "ea60e72b5359414ca23297f035934b57"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\SESSION-MASTER-RECORD.md": {
+    "mtime": 1784617069.477326,
+    "ast_hash": "0067b119786c878553429dd5cc34b338",
+    "semantic_hash": "0067b119786c878553429dd5cc34b338"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-evidence\\baseline-lint.txt": {
+    "mtime": 1784452300.1970475,
+    "ast_hash": "cc580192f725c8cef23f34f3989fff48",
+    "semantic_hash": "cc580192f725c8cef23f34f3989fff48"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-evidence\\baseline-typecheck.txt": {
+    "mtime": 1784452286.1203253,
+    "ast_hash": "c83cfa0ad4e22fa8656a232334ca21d0",
+    "semantic_hash": "c83cfa0ad4e22fa8656a232334ca21d0"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-evidence\\baseline-unit-tests.txt": {
+    "mtime": 1784452293.7054899,
+    "ast_hash": "06d3e3a5c7eaa784721575ddd3f073bf",
+    "semantic_hash": "06d3e3a5c7eaa784721575ddd3f073bf"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-evidence\\fixtures-checksums.txt": {
+    "mtime": 1784452573.8664968,
+    "ast_hash": "a8a7ccd506d9479a213b855aad547396",
+    "semantic_hash": "a8a7ccd506d9479a213b855aad547396"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-evidence\\uat-live-run.md": {
+    "mtime": 1784615671.4909165,
+    "ast_hash": "866ab0c3cc1a14baf25673363429f997",
+    "semantic_hash": "866ab0c3cc1a14baf25673363429f997"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-findings\\deep-scan-round2.md": {
+    "mtime": 1784526566.5570405,
+    "ast_hash": "c6a8d8b5a2893ffd4e6fd07e96728b5f",
+    "semantic_hash": "c6a8d8b5a2893ffd4e6fd07e96728b5f"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-findings\\pre-launch-deep-review.md": {
+    "mtime": 1784465424.7151442,
+    "ast_hash": "a8004eb2acaba3fa19c0b9142610009e",
+    "semantic_hash": "a8004eb2acaba3fa19c0b9142610009e"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-findings\\register.md": {
+    "mtime": 1784463675.4779336,
+    "ast_hash": "e1aeb823290dd15fb0faead6b11e3fec",
+    "semantic_hash": "e1aeb823290dd15fb0faead6b11e3fec"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-reports\\EXEC-RECORD.md": {
+    "mtime": 1784530031.828716,
+    "ast_hash": "d38cd9804d645e124b97692c7a3c43bc",
+    "semantic_hash": "d38cd9804d645e124b97692c7a3c43bc"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-reports\\LAUNCH-CHECKLIST.md": {
+    "mtime": 1784526581.7275538,
+    "ast_hash": "72d5844c4aeb82d62b6cecf88bd15090",
+    "semantic_hash": "72d5844c4aeb82d62b6cecf88bd15090"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-reports\\OWNER-DECISIONS.md": {
+    "mtime": 1784548883.7947254,
+    "ast_hash": "da8cbfd9e549f74b7ec2fa73a9972fb4",
+    "semantic_hash": "da8cbfd9e549f74b7ec2fa73a9972fb4"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-reports\\PRODUCTION-READINESS-VERDICT.md": {
+    "mtime": 1784466764.3265836,
+    "ast_hash": "6788ba1e98cadc17f59e2d55a32fd290",
+    "semantic_hash": "6788ba1e98cadc17f59e2d55a32fd290"
+  },
+  "C:\\Users\\abdulr\\Desktop\\NMWC-CRM\\.claude\\worktrees\\nmwc-crm-consolidation-e10c1e\\graphify-corpus\\qa-reports\\execution-tracker.md": {
+    "mtime": 1784462579.9251435,
+    "ast_hash": "a30fb998660d47af4c72886db190cfb5",
+    "semantic_hash": "a30fb998660d47af4c72886db190cfb5"
+  }
+}

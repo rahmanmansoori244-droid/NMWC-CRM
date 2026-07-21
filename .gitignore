@@ -50,3 +50,9 @@ prisma/*.db-journal
 # Local R2 cache
 .r2-cache
 .claude/
+
+# graphify: temp corpus + machine-specific internals (keep graph.json/report/html)
+/graphify-corpus/
+/graphify-out/.graphify_python
+/graphify-out/.graphify_root
+/graphify-out/cache/
