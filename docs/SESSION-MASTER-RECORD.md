@@ -38,6 +38,11 @@ Enterprise customer-master CRM for National Mineral Water Company (NMWC SAOG, Om
 - **E1:** `prisma/synthetic.ts` refuses a production endpoint before its unguarded TRUNCATE (was mislabeled "scoped").
 - **E3:** `scripts/qa/constraint-smoke.ts` now asserts required invariants + exits non-zero (was warn-only).
 
+### Final exhaustive pass (this session — commits 382e9c5, ef24144)
+- **F-UAT-7 (P1-for-launch, importer):** the upload parser's in-file duplicate-phone/CR check keyed only on the value, ignoring `cust_code`. A legitimate multi-branch customer repeats the same phone+CR on each branch row (exactly how promote groups by `cust_code`), so every such row was quarantined "duplicate phone/CR in file" — the medium master lost **324/499 rows**; the real ~3,300 master would quarantine every multi-branch customer. Fix: flag an in-file dup only across a **different** `cust_code`, mirroring the master cross-check. Regression test `tests/integration/import-multibranch.test.ts` (fail-before/pass-after); reconciliation still 19/19.
+- **F-UAT-8 (P2 robustness, create-flow):** `allocateCustomerCode` gave up after 5 `+1` steps, so whenever the `CodeSequence` counter fell **behind** pre-existing `NMWC-YYYY` codes (a restore, a migration backfill, or a seed writing formatted codes without advancing the counter) it threw `CODE_ALLOCATION_FAILED` **forever** — permanently bricking net-new customer creation. A clean import-populated production start is unaffected (promote uses custcode-based `nmwcCode`), but any desync was unrecoverable. Fix: on collision, **fast-forward** the counter past the highest existing code for the year (self-healing) + sync the counter in the synthetic seed. Uncovered while adding the credit-chain test (the live UAT missed it — the cash chain was only walked to step 1, never reaching finalize).
+- **R17/R19/R26 coverage closed:** `tests/integration/credit-chain-e2e.test.ts` walks a real CREDIT CREATE SUP→FM→GM→ACC and proves: **R19** the customer materializes ONLY after the final (ACC) step (no Customer row at submit or after SUP/FM/GM); **R26** two concurrent final approvals → exactly one wins, the other `NOT_PENDING`, one materialization; **R17** the live customer carries the salesman's ORIGINAL creditLimit/termDays — the approve action takes only an `editId`, so FM/GM/ACC cannot amend the figures.
+
 ### Owner decisions applied (commit 4044182, e60545c)
 - **Workweek = Sun–Thu (5-day):** `WORK_DAYS` default `0,1,2,3,4`; SLA fixtures recomputed.
 - **Temix credit = OUTBOUND (CRM→Temix):** confirms current behavior; refutes the "stale outbound push" finding. **Open D2-note:** the inbound refresh still treats credit as Temix-authoritative — confirm with ERP team whether Temix ever modifies credit.
@@ -62,11 +67,13 @@ Multi-agent Workflow pattern: N finder lenses → 3 independent refuters per fin
 - Tests (all gated integration via `RUN_*=1 node scripts/qa/run-with-env.mjs vitest run <path>`): reactivation-authz, promote-reconciliation, import-reconciliation, merge-concurrency, uat-load, build-chain-data; unit: user-admin-authz, customer-list-scope, working-hours, approval-engine, +others. **160 automated tests pass.**
 
 ## 6. Open items before UNCONDITIONAL go-live
-1. **RK-3 chunked/resumable import** — the real ~3,300 master times out in one promote (175 customers = 11 min over remote DB). TOP code task.
-2. **F-UAT-7** — medium master quarantined 324/499 rows vs manifest's all-accepted; confirm it's the generator's in-file phone/CR collisions, not the importer.
-3. **Automated coverage gaps:** R14 (frozen-chain drift), R17 (FM/GM can't amend), R19 (finalize-after-final-step at service layer), R26 (version conflict).
+1. **RK-3 chunked/resumable import** — the real ~3,300 master times out in one promote (175 customers = 11 min over remote DB). TOP remaining code task.
+2. ~~F-UAT-7~~ **FIXED** (real importer bug, not a fixture artifact) — see §2 final pass.
+3. ~~R17/R19/R26 coverage~~ **CLOSED** via `credit-chain-e2e.test.ts`. R14 frozen-chain is exercised by that E2E walk + the `parseChain` unit test; the RK-2 "frozen-chain vs current-role authz drift" edge (route re-regioned mid-chain) remains a documented risk, not a confirmed defect.
 4. **Owner:** rotate `neondb_owner` password (shared across all Neon branches incl. production; exposed in UAT screenshots); confirm the D2 Temix credit-refresh direction; Vercel Pro for sub-daily cron; real Temix master + its header row (use the CRM's header contract in OWNER-DECISIONS.md).
 5. Findings from the third (final) bug hunt — triage/fix on completion.
+
+**Automated test count (this session):** 140 unit + integration suites (reactivation ×5, merge ×3, import-reconciliation, promote-reconciliation ×11, rate-limit ×4, import-multibranch, credit-chain-e2e ×5, + gated uat-load) — **all green on the isolated uat-testing branch.**
 
 ## 7. Go-live gate (from PRODUCTION-READINESS-VERDICT.md §24)
 No open P0; no open P1 in authz/approval/data-integrity/Temix-loss; migration succeeds from clean AND from a prod-schema snapshot; import+export reconcile; concurrency+code-allocation+dedup+archive+SLA proven; rollback tested; production isolation maintained; owner decisions documented; secrets rotated; **real Temix master obtained**; owner approves. Verdict today: **conditionally ready** pending items in §6.
