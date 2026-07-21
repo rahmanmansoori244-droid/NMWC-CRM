@@ -1,11 +1,12 @@
 # Graph Report - .  (2026-07-21)
 
 ## Corpus Check
-- Corpus is ~37,648 words - fits in a single context window. You may not need a graph.
+- 20 files · ~52,106 words
+- Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 257 nodes · 357 edges · 40 communities (16 shown, 24 thin omitted)
-- Extraction: 73% EXTRACTED · 27% INFERRED · 0% AMBIGUOUS · INFERRED: 97 edges (avg confidence: 0.87)
+- 282 nodes · 425 edges · 49 communities (16 shown, 33 thin omitted)
+- Extraction: 78% EXTRACTED · 22% INFERRED · 0% AMBIGUOUS · INFERRED: 92 edges (avg confidence: 0.88)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -49,18 +50,27 @@
 - [[_COMMUNITY_Baseline Typecheck|Baseline Typecheck]]
 - [[_COMMUNITY_Baseline Unit Tests|Baseline Unit Tests]]
 - [[_COMMUNITY_Viewer Role|Viewer Role]]
+- [[_COMMUNITY_Cluster 40|Cluster 40]]
+- [[_COMMUNITY_Cluster 41|Cluster 41]]
+- [[_COMMUNITY_Cluster 42|Cluster 42]]
+- [[_COMMUNITY_Cluster 43|Cluster 43]]
+- [[_COMMUNITY_Cluster 44|Cluster 44]]
+- [[_COMMUNITY_Cluster 45|Cluster 45]]
+- [[_COMMUNITY_Cluster 46|Cluster 46]]
+- [[_COMMUNITY_Cluster 47|Cluster 47]]
+- [[_COMMUNITY_Cluster 48|Cluster 48]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `Pre-launch deep review (round 1)` - 26 edges
-2. `services/imports.ts` - 18 edges
-3. `Deep scan round 2` - 17 edges
-4. `CREDIT approval chain (SUP to FM to GM to ACC)` - 8 edges
-5. `R1-#4/#8 [P2] Promote has no crash/timeout recovery — batch stranded in PROMOTING forever` - 8 edges
-6. `R1-#5 [P2] attachPhoto/detachPhoto TOCTOU — dangling photo-slot pointers the GC then destroys` - 8 edges
-7. `R1-#15 [P2] CRON_SECRET/HEALTH_BEARER/DEMO_ACCOUNTS_DISABLED read by prod code but absent from docs` - 8 edges
-8. `R1-#16 [P2] CREATE request wedges at Accountant step when route is re-regioned mid-chain (RK-2)` - 8 edges
-9. `services/imports.ts` - 7 edges
-10. `Step-aware approval engine` - 7 edges
+1. `Final go-live bug hunt (third, definitive)` - 38 edges
+2. `services/imports.ts` - 28 edges
+3. `Pre-launch deep review (round 1)` - 25 edges
+4. `Deep scan round 2` - 17 edges
+5. `Final verdict — NO open P0/P1, GO for a supervised pilot` - 16 edges
+6. `Final-hunt #0 — SR-USR-01 allowlist strands approver provisioning (net-new CREATE stalls)` - 14 edges
+7. `services/edits.ts` - 12 edges
+8. `CREDIT approval chain (SUP to FM to GM to ACC)` - 8 edges
+9. `services/reactivations.ts` - 8 edges
+10. `services/photos.ts` - 8 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `C8 Import promote cannot handle the full ~3,300 master` --semantically_similar_to--> `RK-3 Large master promote times out (stuck PROMOTING)`  [INFERRED] [semantically similar]
@@ -80,96 +90,98 @@
 ## Hyperedges (group relationships)
 - **CREDIT approval chain participants (SUP to FM to GM to ACC, GM always)** — graphify_corpus_project_description_salesman, graphify_corpus_project_description_supervisor, graphify_corpus_project_description_finance_manager, graphify_corpus_project_description_gm, graphify_corpus_project_description_accountant, graphify_corpus_project_description_credit_approval_chain [EXTRACTED 1.00]
 - **CASH approval chain participants (SUP to ACC)** — graphify_corpus_project_description_salesman, graphify_corpus_project_description_supervisor, graphify_corpus_project_description_accountant, graphify_corpus_project_description_cash_approval_chain [EXTRACTED 1.00]
-- **Pre-launch round 1 P1 fixes** — graphify_corpus_session_master_record_sr_usr_01, graphify_corpus_session_master_record_sr_m2, graphify_corpus_session_master_record_prod_dup_01, graphify_corpus_session_master_record_pre_launch_deep_review [EXTRACTED 1.00]
 - **Deep scan round 2 confirmed findings** — finding_supervisor_export_empty_scope, finding_branchcode_collision_promote, finding_crossregion_merge_deadend, finding_import_password_no_session_revoke, finding_account_import_unlink_supervisor, finding_promote_no_completeness_score, round_deep_scan_round2 [EXTRACTED 1.00]
-- **Go-live GO/NO-GO gate conditions** — gate_secret_rotation, gate_workweek_confirm, gate_cron_reliability, gate_preview_db, gate_temix_contract, gate_chunked_import, gate_migrate_deploy, verdict_conditionally_ready [INFERRED 0.85]
 - **CREDIT create approval chain (SUP→FM→GM→ACC)** — role_supervisor, role_finance_manager, role_gm, role_accountant, concept_credit_chain [EXTRACTED 1.00]
+- **Go-live GO/NO-GO gate conditions** — gate_secret_rotation, gate_workweek_confirm, gate_cron_reliability, gate_preview_db, gate_temix_contract, gate_chunked_import, gate_migrate_deploy, verdict_conditionally_ready [INFERRED 0.85]
+- **All 7 round-3 P1 go-live blockers** — finding_final_hunt_0, finding_final_hunt_1, finding_final_hunt_2, finding_final_hunt_3, finding_final_hunt_4, finding_final_hunt_5, finding_final_hunt_6 [EXTRACTED 1.00]
+- **Re-import overwrite / CREDIT->CASH finding cluster** — finding_final_hunt_4, finding_final_hunt_5, finding_final_hunt_6, finding_final_hunt_9, finding_final_hunt_19 [INFERRED 0.85]
+- **Credit-chain requirements R17/R19/R26** — req_r17, req_r19, req_r26 [EXTRACTED 1.00]
 
-## Communities (40 total, 24 thin omitted)
+## Communities (49 total, 33 thin omitted)
 
 ### Community 0 - "Approval Chain Engine"
-Cohesion: 0.07
-Nodes (34): lib/approval-chains.ts, lib/create-finalize.ts, lib/permissions.ts, R14 Chain frozen at submit, R16 Loop guard, R17 FM/GM cannot amend credit figures, R19 Final materialize only after final approval, R2 Cash chain SUP to ACC (+26 more)
+Cohesion: 0.11
+Nodes (36): app/api/cron/photo-gc/route.ts, app/(app)/users/CreateUserForm.tsx, components/nmwc/CompletenessRing.tsx, lib/working-hours.ts, services/imports.ts, services/routes.ts, Final verdict — NO open P0/P1, GO for a supervised pilot, F-UAT-7 — multi-branch import self-quarantine (in-file phone/CR dup) (+28 more)
 
 ### Community 1 - "Approval Queue & Atomic-Claim Lanes"
-Cohesion: 0.13
-Nodes (25): app/(app)/approvals/page.tsx, app/(app)/reactivations/page.tsx, app/(app)/work/page.tsx, lib/approval-chains.ts, prisma/migrations/20260715120100_phase1_tables/migration.sql, services/edits.ts, services/reactivations.ts, Approval chain engine (+17 more)
+Cohesion: 0.10
+Nodes (34): app/(app)/approvals/page.tsx, app/api/cron/photo-gc/route.ts, app/(app)/reactivations/page.tsx, app/(app)/work/page.tsx, prisma/migrations/20260715120100_phase1_tables/migration.sql, services/edits.ts, services/photos.ts, services/reactivations.ts (+26 more)
 
 ### Community 2 - "Ops, Auth & Deployment"
-Cohesion: 0.11
-Nodes (25): app/api/cron/sla-escalate/route.ts, docs/OPERATIONS.md, docs/TECH-SPEC.md, lib/auth.ts, package.json, .github/workflows/sla-escalate.yml, vercel.json, Legacy full-upsert lane (+17 more)
+Cohesion: 0.09
+Nodes (29): app/(app)/customers/page.tsx, app/(app)/duplicates/MergeForm.tsx, app/(app)/import/[batchId]/page.tsx, lib/access.ts, lib/codes.ts, lib/completeness.ts, lib/customer-filters.ts, prisma/schema.prisma (+21 more)
 
 ### Community 3 - "Import / Promote & Schema"
-Cohesion: 0.14
-Nodes (24): app/(app)/import/[batchId]/page.tsx, lib/codes.ts, lib/completeness.ts, lib/notifications.ts, prisma/schema.prisma, services/exports.ts, services/imports.ts, services/users.ts (+16 more)
+Cohesion: 0.13
+Nodes (27): lib/temix.ts, services/customers.ts, services/temix.ts, vercel.json, Legacy full-upsert lane, B-05 optimistic version lock, Temix refresh lane, Temix ERP sync (+19 more)
 
 ### Community 4 - "Temix Master Import & Risks"
-Cohesion: 0.12
-Nodes (22): E2 CREATE import defaults absent payment-terms to CASH, Import stage-then-promote, RK-10 Real Temix file anomalies not covered by synthetic, RK-11 Secret leakage (committed pilot creds), RK-3 Large master promote times out (stuck PROMOTING), RK-4 Temix inbound absent-column flips CREDIT to CASH, scripts/qa/generate-synthetic-master.ts, services/imports.ts (+14 more)
+Cohesion: 0.09
+Nodes (26): lib/approval-chains.ts, lib/create-finalize.ts, R14 Chain frozen at submit, R16 Loop guard, R17 FM/GM cannot amend credit figures, R19 Final materialize only after final approval, R2 Cash chain SUP to ACC, R3 Credit chain SUP to FM to GM to ACC; GM always (+18 more)
 
 ### Community 5 - "Region Scope & Adversarial Review"
-Cohesion: 0.11
-Nodes (22): Environment B (online UAT), lib/access.ts, lib/customer-filters.ts, R7 Manager regions; fail-closed empty, services/customer-export.ts, services/duplicates.ts, Adversarial multi-agent review + independent refutation, Duplicate merge (+14 more)
+Cohesion: 0.13
+Nodes (22): app/api/photos/[id]/route.ts, lib/notifications.ts, lib/permissions.ts, prisma/seed-muscat-pilot.ts, services/users.ts, CASH create approval chain, CREDIT create approval chain, Separation of duty (canActOnStep) (+14 more)
 
 ### Community 6 - "Access Control & Customer List"
-Cohesion: 0.14
-Nodes (18): app/(app)/customers/page.tsx, lib/access.ts, lib/customer-filters.ts, lib/permissions.ts, services/customer-export.ts, CASH create approval chain, CREDIT create approval chain, Region scope / access control (+10 more)
+Cohesion: 0.12
+Nodes (18): app/api/health/route.ts, docs/OPERATIONS.md, docs/TECH-SPEC.md, .env.example, lib/auth.ts, lib/cron-auth.ts, package.json, D3 — Move SLA-escalation + backup off GitHub Actions (+10 more)
 
 ### Community 7 - "Temix ERP Sync"
-Cohesion: 0.18
-Nodes (16): lib/temix.ts, services/customers.ts, services/temix.ts, Duplicate customer merge, Temix refresh lane, Temix ERP sync, D2 — Temix credit-field direction is outbound (CRM-owned), D4 — Real Temix header contract (+8 more)
+Cohesion: 0.19
+Nodes (14): E2 CREATE import defaults absent payment-terms to CASH, Import stage-then-promote, RK-10 Real Temix file anomalies not covered by synthetic, RK-3 Large master promote times out (stuck PROMOTING), RK-4 Temix inbound absent-column flips CREDIT to CASH, services/duplicates.ts, services/imports.ts, services/temix.ts (+6 more)
 
 ### Community 8 - "Secrets & Cron Reliability"
-Cohesion: 0.24
-Nodes (10): app/api/health/route.ts, .env.example, lib/cron-auth.ts, D3 — Move SLA-escalation + backup off GitHub Actions, C2 — committed pilot credentials in >=4 files, R1-#15 [P2] CRON_SECRET/HEALTH_BEARER/DEMO_ACCOUNTS_DISABLED read by prod code but absent from docs, Gate — cron reliability (GH Actions 60-day auto-disable), Gate — rotate & set production secrets (+2 more)
+Cohesion: 0.29
+Nodes (8): lib/create-finalize.ts, F-UAT-8 — code allocator self-heal (CodeSequence counter behind), Final-hunt #27 — NMWC code year from UTC not Oman wall-clock, Final-hunt #36 — NMWC code year derived from UTC runtime, R17 — approve action takes only editId (approvers cannot amend credit figures), R19 — CREATE materializes the Customer only at the final ACC step, R26 — concurrent final approvals yield exactly one materialization, credit-chain-e2e.test.ts
 
 ### Community 9 - "Photos & Merge"
-Cohesion: 0.28
-Nodes (9): app/(app)/duplicates/MergeForm.tsx, app/api/cron/photo-gc/route.ts, lib/create-finalize.ts, services/duplicates.ts, services/photos.ts, C20 — photo-gc hard-deletes Attachment row even when R2 tagging fails, R2 [P2] Cross-region merge is a permanent dead-end — MergeForm never sends confirmCrossRegion/reason, R2 [P3] Merge leaves moved CR photo's Attachment.customerId pointing at the archived loser (+1 more)
+Cohesion: 0.40
+Nodes (6): app/api/cron/sla-escalate/route.ts, .github/workflows/sla-escalate.yml, SLA escalation engine, D1 — Workweek Sun-Thu (5-day), R1-#21 [P3] SLA sweep worst case exceeds 30s maxDuration — truncated sweeps + red cron runs, Gate — confirm the workweek (WORK_DAYS)
 
 ### Community 10 - "SLA Working-Hours Calendar"
-Cohesion: 0.47
-Nodes (6): E4 Under-credited existing SLA/approval coverage, lib/working-hours.ts, R30 SLA Asia/Muscat working-minutes only, RK-8 SLA math wrong under UTC server + Oman calendar, SLA working-hours calendar, Owner decision: Sun-Thu workweek
+Cohesion: 0.50
+Nodes (5): E4 Under-credited existing SLA/approval coverage, lib/working-hours.ts, R30 SLA Asia/Muscat working-minutes only, RK-8 SLA math wrong under UTC server + Oman calendar, SLA working-hours calendar
 
 ### Community 11 - "Planning Documents"
 Cohesion: 0.67
-Nodes (4): OPUS 4.8 Master Production-Readiness & UAT Execution Plan, OPUS QA Production-Readiness Test & Validation Plan, NMWC Unified CRM Consolidation Project Description, NMWC Unified CRM Master Session Record
+Nodes (3): OPUS 4.8 Master Production-Readiness & UAT Execution Plan, OPUS QA Production-Readiness Test & Validation Plan, NMWC Unified CRM Consolidation Project Description
 
 ### Community 12 - "Cron Infrastructure"
-Cohesion: 0.67
-Nodes (3): app/api/cron/sla-escalate/route.ts, RK-12 GitHub Actions cron 60-day auto-disable, Owner decision: Vercel Pro for sub-daily cron
-
-### Community 13 - "Synthetic Reset Guard"
 Cohesion: 1.00
 Nodes (3): E1 db:synthetic:reset unguarded TRUNCATE stop condition, prisma/synthetic.ts, C5 synthetic.ts --reset is an unguarded TRUNCATE CASCADE
 
-### Community 14 - "Production DB Isolation"
+### Community 13 - "Synthetic Reset Guard"
 Cohesion: 0.67
 Nodes (3): Environment C (production), Production Neon endpoint ep-sweet-haze, scripts/qa/probe-db.ts
+
+### Community 14 - "Production DB Isolation"
+Cohesion: 0.67
+Nodes (3): lib/access.ts, lib/customer-filters.ts, Fail-closed region/route scope
 
 ### Community 15 - "CR Uniqueness / Duplicate Block"
 Cohesion: 1.00
 Nodes (3): lib/create-guards.ts, C17 No DB backstop for CR uniqueness, Duplicate hard-block (CR + name/phone/region)
 
 ## Knowledge Gaps
-- **76 isolated node(s):** `SALESMAN role`, `GM role`, `VIEWER role`, `lib/permissions.ts`, `lib/access.ts` (+71 more)
+- **95 isolated node(s):** `OPUS 4.8 Master Production-Readiness & UAT Execution Plan`, `lib/permissions.ts`, `lib/access.ts`, `lib/customer-filters.ts`, `lib/approval-chains.ts` (+90 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **24 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **33 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Pre-launch deep review (round 1)` connect `Ops, Auth & Deployment` to `Approval Queue & Atomic-Claim Lanes`, `Import / Promote & Schema`, `Access Control & Customer List`, `Temix ERP Sync`, `Secrets & Cron Reliability`, `Photos & Merge`?**
-  _High betweenness centrality (0.154) - this node is a cross-community bridge._
-- **Why does `Deep scan round 2` connect `Import / Promote & Schema` to `Photos & Merge`, `Ops, Auth & Deployment`, `Approval Queue & Atomic-Claim Lanes`, `Access Control & Customer List`?**
-  _High betweenness centrality (0.048) - this node is a cross-community bridge._
-- **Why does `Pre-launch deep review round 1 (25 confirmed)` connect `Region Scope & Adversarial Review` to `Approval Chain Engine`?**
-  _High betweenness centrality (0.048) - this node is a cross-community bridge._
-- **Are the 2 inferred relationships involving `Pre-launch deep review (round 1)` (e.g. with `F-C11 — Supervisor approves Manager-only reactivation via generic engine` and `Deep scan round 2`) actually correct?**
-  _`Pre-launch deep review (round 1)` has 2 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `Pre-launch deep review (round 1)` connect `Import / Promote & Schema` to `Approval Queue & Atomic-Claim Lanes`, `Ops, Auth & Deployment`, `Region Scope & Adversarial Review`, `Access Control & Customer List`, `Photos & Merge`?**
+  _High betweenness centrality (0.143) - this node is a cross-community bridge._
+- **Why does `Final go-live bug hunt (third, definitive)` connect `Approval Chain Engine` to `Secrets & Cron Reliability`, `Approval Queue & Atomic-Claim Lanes`, `Ops, Auth & Deployment`, `Region Scope & Adversarial Review`?**
+  _High betweenness centrality (0.111) - this node is a cross-community bridge._
+- **Why does `services/imports.ts` connect `Approval Chain Engine` to `Approval Queue & Atomic-Claim Lanes`, `Ops, Auth & Deployment`, `Import / Promote & Schema`, `Region Scope & Adversarial Review`, `Access Control & Customer List`?**
+  _High betweenness centrality (0.100) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `Deep scan round 2` (e.g. with `Pre-launch deep review (round 1)` and `Verdict — CONDITIONALLY READY / GO for a supervised pilot`) actually correct?**
   _`Deep scan round 2` has 2 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 5 inferred relationships involving `R1-#4/#8 [P2] Promote has no crash/timeout recovery — batch stranded in PROMOTING forever` (e.g. with `PROD-001 atomic claim invariant` and `Customer-master import promote`) actually correct?**
-  _`R1-#4/#8 [P2] Promote has no crash/timeout recovery — batch stranded in PROMOTING forever` has 5 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `SALESMAN role`, `GM role`, `VIEWER role` to the rest of the system?**
-  _82 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **What connects `OPUS 4.8 Master Production-Readiness & UAT Execution Plan`, `lib/permissions.ts`, `lib/access.ts` to the rest of the system?**
+  _102 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `Approval Chain Engine` be split into smaller, more focused modules?**
+  _Cohesion score 0.11428571428571428 - nodes in this community are weakly interconnected._
+- **Should `Approval Queue & Atomic-Claim Lanes` be split into smaller, more focused modules?**
+  _Cohesion score 0.0962566844919786 - nodes in this community are weakly interconnected._
