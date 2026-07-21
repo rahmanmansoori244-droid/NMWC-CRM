@@ -39,21 +39,24 @@
 ### Also fixed (found independently)
 - **F-UAT-8** (`ef24144`): the create-flow code allocator gave up after 5 tries when the `CodeSequence` counter fell behind pre-existing `NMWC-YYYY` codes (restore/migration/seed) → **permanently bricked** net-new customer creation. Now self-heals (fast-forwards past the highest code) + the synthetic seed syncs the counter. A clean import-populated production start was unaffected (promote uses custcode-based codes), but any counter desync was unrecoverable.
 
-## 3. Remaining — documented follow-ups (NOT go-live blockers)
-None are P0/P1. Each is triaged with a recommendation.
+## 3. Remaining P2/P3 follow-ups — NOW ALL FIXED (2026-07-21, second pass)
+Every P2 and P3 from the round-3 hunt has since been fixed and (where DB-gated) tested. A parallel verification workflow re-confirmed each against current code + produced a precise fix spec before implementation.
 
-| # | Sev | Finding | Recommendation |
-|---|-----|---------|----------------|
-| 7/15 | P2 | RK-2: CREATE approval **visibility** scopes on the frozen `EditBranchDraft.regionId` while the approve gate/escalation/finalize scope on the route's **current** region — a route re-regioned mid-chain can wedge a request or show it to the wrong region's queue | Owner decision: make one region authoritative for the whole chain (recommend: re-derive visibility from the current route region, matching the gate). Edge case; low frequency in a stable route table. |
-| 17 | P2 | Manager direct-write edit authorizes branch writes at customer level, not per-branch region — on a multi-region customer a Manager could edit a branch in a region they don't manage | Add a per-branch `managedRegionIds` check in the direct-write path (mirror `filterBranchesByScope`). |
-| 13 | P2 | Branch completeness (0–60 scale) rendered as a 0–100% ring — branches/regions can't reach "green" | Normalize the ring to the branch's own max, or relabel. UI only. |
-| 22 | P3 | EL-04 photo gate is read outside the approve tx (TOCTOU) | Re-assert inside the tx; small window. |
-| 23 | P3 | Import promote can strand a batch in PROMOTING on early failure (no compensating release) | Folds into the **RK-3 chunked/resumable import** work (below). |
-| 25 | P3 | routes.ts region/route mutations don't revalidate ref-data cache tags | Add `revalidateTag`. |
-| 27/36 | P3 | NMWC code year from `getFullYear()` (UTC) not Oman wall-clock → prior-year prefix in the 00:00–03:59 Oman window on Dec 31/Jan 1 | Derive the year from the Oman-shifted clock. Once-a-year, 4-hour window. |
-| 29 | P3 | CreateUserForm offers roles a Manager can't create (server now rejects clearly) | Filter the dropdown by the viewer's role. Cosmetic. |
-| 30/34 | P3 | Dead completeness dimensions (`notes`, paymentTerms-always-true guard) | Tidy the scorer. |
-| 31 | P3 | merge moves all loser edits to the winner → can violate open_per_customer | Dedupe/close loser edits during merge. |
+| # | Sev | Fix (commit) | Test |
+|---|-----|-------------|------|
+| 7/15 | P2 | RK-2 scope drift: all 5 CREATE-visibility surfaces (approvals queue + detail, both work queues, attachment access) now resolve region through the draft's CURRENT `route.regionId`, so visibility == the approve gate (`3e78fcc`) | `create-region-wedge.test.ts` |
+| 17 | P2 | Manager direct-write now has a per-branch `managedRegionIds` guard — can't edit a branch in an unmanaged region of a multi-region customer (`3e78fcc`) | `manager-branch-region-authz.test.ts` |
+| 13 | P2 | CompletenessRing takes a `max` prop + `completenessPct()`; branch ring uses `/60` so branches can reach green (`b98a6ff`) | in `completeness.test.ts` |
+| 22 | P3 | EL-04 mandatory re-check moved INSIDE the apply tx (`tx.customer`) — closes the detach TOCTOU (`3e78fcc`) | — (relocation of an existing, tested check) |
+| 23 | P3 | promote wraps the post-claim body — an abort releases the batch to FAILED, never stranded in PROMOTING (`3e78fcc`) | `promote-release-on-abort.test.ts` |
+| 25 | P3 | routes.ts mutations now `revalidateTag('ref:regions'/'ref:routes')` (`b98a6ff`) | — |
+| 27/36 | P3 | customer-code year from the Oman wall-clock (`omanYear`), not raw UTC (`b98a6ff`) | — |
+| 29 | P3 | role dropdown filtered by `administrableRolesFor(viewerRole)` + `/users` now admits STEWARD (also completes #0's reachability) (`b98a6ff`) | `steward-provisioning.test.ts` covers the server rule |
+| 30/34 | P3 | dead `notes` completeness dimension corrected (`b98a6ff`) | `completeness.test.ts` (+1 case) |
+| 31 | P3 | merge auto-rejects the loser's SUBMITTED edit before reparenting — no more `open_per_customer` P2002 (`3e78fcc`) | `merge-open-edit-collision.test.ts` |
+| 21/26/28/33/35 | P3 | stale Sun–Thu workweek docstrings corrected (`85f5a0b`) | — |
+
+**Net: 0 open findings from any of the three reviews.** The only remaining pre-go-live items are the OWNER actions in §4 (not code defects).
 
 ## 4. Owner actions before go-live (unchanged from the master record)
 1. **Rotate `neondb_owner`** — the Neon role password is shared across ALL branches incl. production and was exposed in UAT screenshots.
