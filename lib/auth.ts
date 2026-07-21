@@ -82,6 +82,27 @@ declare module '@auth/core/jwt' {
 // enough that we don't hit the DB on every request.
 const JWT_FRESHNESS_MS = 5 * 60 * 1000;
 
+// PERF (final perf audit #0): the token-side throttle above only works when the
+// updated `lastCheck` claim can be PERSISTED — but on the RSC/server-action path
+// Auth.js v5 discards the session response's Set-Cookie, so `lastCheck` stays
+// frozen at its login value and, 5 minutes in, EVERY auth() call re-ran the
+// freshness query. This per-lambda in-memory cache restores the throttle where
+// the cookie cannot: one freshness read per user per TTL window per warm lambda.
+// Revocation (disable / role-change / logout-all / password-reset) now lands
+// within FRESH_TTL_MS on a warm instance — far stricter than the designed 5-min
+// window — and a cold lambda always re-reads. `update` triggers bypass it.
+type FreshUserRow = {
+  id: string;
+  role: Role;
+  isActive: boolean;
+  username: string;
+  mustChangePassword: boolean;
+  sessionsRevokedAt: Date | null;
+};
+const FRESH_TTL_MS = 30_000;
+const FRESH_CACHE_MAX = 5_000; // bound memory on a long-lived instance
+const freshnessCache = new Map<string, { at: number; row: FreshUserRow }>();
+
 async function clientIpHash(): Promise<string> {
   try {
     const h = await headers();
@@ -128,7 +149,12 @@ async function writeLoginFail(entityId: string, reason: string): Promise<void> {
   }
 }
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
+const {
+  handlers,
+  auth: uncachedAuth,
+  signIn,
+  signOut,
+} = NextAuth({
   ...authConfig,
   // QA-027: explicit same-origin redirect allowlist.
   callbacks: {
@@ -165,17 +191,33 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       const lastCheck = token.lastCheck ?? 0;
       if (trigger !== 'update' && Date.now() - lastCheck < JWT_FRESHNESS_MS) return token;
       try {
-        const fresh = await prisma.user.findUnique({
-          where: { id: String(token.userId) },
-          select: {
-            id: true,
-            role: true,
-            isActive: true,
-            username: true,
-            mustChangePassword: true,
-            sessionsRevokedAt: true,
-          },
-        });
+        // PERF audit #0: consult the per-lambda cache first (see FRESH_TTL_MS
+        // note above). `update` triggers always re-read so a user's own
+        // password-change/profile write is reflected immediately.
+        const cacheKey = String(token.userId);
+        const hit = freshnessCache.get(cacheKey);
+        let fresh: FreshUserRow | null;
+        if (trigger !== 'update' && hit && Date.now() - hit.at < FRESH_TTL_MS) {
+          fresh = hit.row;
+        } else {
+          fresh = await prisma.user.findUnique({
+            where: { id: cacheKey },
+            select: {
+              id: true,
+              role: true,
+              isActive: true,
+              username: true,
+              mustChangePassword: true,
+              sessionsRevokedAt: true,
+            },
+          });
+          if (fresh) {
+            if (freshnessCache.size >= FRESH_CACHE_MAX) freshnessCache.clear();
+            freshnessCache.set(cacheKey, { at: Date.now(), row: fresh });
+          } else {
+            freshnessCache.delete(cacheKey);
+          }
+        }
         if (!fresh || !fresh.isActive) {
           logger.warn(
             { userId: token.userId, reason: !fresh ? 'missing' : 'inactive' },
@@ -333,21 +375,20 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 });
 
 /**
- * P3.4: per-request memoized variant of `auth()`.
+ * P3.4 + perf audit #1: `auth()` is memoized per request BY DEFAULT.
  *
- * Every server component on a typical NMWC page calls `auth()` (page itself,
- * the layout that renders <Sidebar/>, sometimes a child server component).
- * `auth()` is non-trivial — it parses the cookie, runs the JWT callback (which
- * may issue a freshness DB read), and decodes the session. Wrapping it in
- * `cache()` from React turns the per-request invocations into a single call.
- *
- * The cache lifetime is the in-flight RSC render — it does NOT cross requests
- * and does NOT persist any cookie/JWT state, so the security model is
- * unchanged. New callers can opt-in by importing `cachedAuth` instead of
- * `auth`; existing call sites keep working unchanged.
- *
- * Pages that benefit from `cachedAuth`: any page where the page + a child
- * component or server action both need `session` in the same render. The
- * /customers, /dashboard and /today pages currently do.
+ * Every server component on a typical NMWC page calls `auth()` (the layout,
+ * the page itself, sometimes a child server component / service) — previously
+ * each call re-parsed the cookie, re-ran the JWT callback (with its freshness
+ * DB read) and re-encoded the session, 2-3× per navigation. Wrapping the
+ * NextAuth export in React `cache()` collapses them to ONE execution per
+ * request. The cache lifetime is the in-flight RSC render — it does NOT cross
+ * requests and does NOT persist any cookie/JWT state, so the security model is
+ * unchanged. All existing `await auth()` call sites are the no-arg form, which
+ * memoizes correctly; route handlers use the separate `handlers` export and
+ * middleware uses its own NextAuth(authConfig) instance.
  */
-export const cachedAuth = cache(auth);
+export const auth = cache(uncachedAuth);
+export { handlers, signIn, signOut };
+/** @deprecated `auth` is now memoized itself — kept for any stray import. */
+export const cachedAuth = auth;

@@ -13,7 +13,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { loadScope, assertCanAccessAttachment } from '@/lib/access';
 import { AppError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
-import { checkLimit } from '@/lib/rate-limit';
+import { checkLimitLocal } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -26,7 +26,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // NEW-PHOTO-010: rate-limit per-user photo fetches. Bursts of ~30 are
   // legitimate (a customer profile loads several photos at once); sustained
   // 1/s is fine. Anything above is enumeration / DoS.
-  const lim = await checkLimit(`photo-get:${session.user.id}`, { capacity: 60, refillPerSec: 1 });
+  // perf audit #24: in-memory limiter — the durable PG bucket cost a DB WRITE
+  // per photo, serialized across a page's photo fan-out.
+  const lim = checkLimitLocal(`photo-get:${session.user.id}`, { capacity: 60, refillPerSec: 1 });
   if (!lim.ok) {
     return NextResponse.json(
       { error: 'TOO_MANY_REQUESTS' },
@@ -37,9 +39,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // UXI-008 / RBAC-05-015: filter soft-deleted attachments. Returning 404 is
   // the same response as "doesn't exist" so a soft-delete cannot be observed
   // through status-code timing.
-  const att = await prisma.attachment.findFirst({
-    where: { id, deletedAt: null },
-  });
+  // perf audit #25: the attachment read and the scope load are independent —
+  // one parallel wave instead of two sequential round trips.
+  const [att, scope] = await Promise.all([
+    prisma.attachment.findFirst({ where: { id, deletedAt: null } }),
+    loadScope(session.user.id),
+  ]);
   if (!att) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
 
   const sessionUser = {
@@ -48,7 +53,6 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     username: session.user.username,
   };
   try {
-    const scope = await loadScope(session.user.id);
     await assertCanAccessAttachment(sessionUser, att, scope);
   } catch (err) {
     if (err instanceof AppError) {
@@ -59,25 +63,39 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
 
+  // NEW-PHOTO-009 (+ final-hunt #18): CR registration docs AND GUARANTEE credit-
+  // security documents are confidential financial PII; never cache them. The
+  // no-store guard must cover every confidential kind, not just CR — a GUARANTEE
+  // is at least as sensitive.
+  const CONFIDENTIAL_KINDS = new Set(['CR', 'GUARANTEE']);
+  const confidential = CONFIDENTIAL_KINDS.has(att.kind);
+  // perf audit #22: an Attachment's bytes are IMMUTABLE — replacement mints a new
+  // row (NEW-PHOTO-003) and detach soft-deletes (→404) — so non-confidential
+  // photos are safe to cache long. The old 60s window re-paid a full lambda +
+  // R2 fetch per photo per minute.
+  const cache = confidential
+    ? 'private, no-store, no-cache, must-revalidate'
+    : 'private, max-age=3600, immutable';
+  // perf audit #23: ETag revalidation for the browser's stale-cache path — a 304
+  // skips the R2 GetObject and the whole body transfer. Keyed by the immutable
+  // attachment id; never for confidential kinds (no-store means no revalidation).
+  const etag = `"p-${att.id}"`;
+  if (!confidential && req.headers.get('if-none-match') === etag) {
+    return new NextResponse(null, {
+      status: 304,
+      headers: { ETag: etag, 'Cache-Control': cache },
+    });
+  }
   try {
     const out = await r2().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: att.r2Key }));
     const stream = out.Body as ReadableStream<Uint8Array> | null;
     if (!stream) return NextResponse.json({ error: 'EMPTY_BODY' }, { status: 502 });
-    // NEW-PHOTO-009 (+ final-hunt #18): CR registration docs AND GUARANTEE credit-
-    // security documents are confidential financial PII; never cache them. The
-    // no-store guard must cover every confidential kind, not just CR — a GUARANTEE
-    // is at least as sensitive. Shop/signboard photos are non-confidential and keep
-    // the short 60s cache.
-    const CONFIDENTIAL_KINDS = new Set(['CR', 'GUARANTEE']);
-    const cache = CONFIDENTIAL_KINDS.has(att.kind)
-      ? 'private, no-store, no-cache, must-revalidate'
-      : 'private, max-age=60, must-revalidate';
-    void req; // intentionally unused — kept for future Origin-check defense-in-depth
     return new NextResponse(stream, {
       headers: {
         'Content-Type': att.mimeType,
         'Cache-Control': cache,
         'Content-Length': String(att.bytes),
+        ...(confidential ? {} : { ETag: etag }),
       },
     });
   } catch {

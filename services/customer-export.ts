@@ -217,7 +217,7 @@ async function exportFilteredCustomersCore(
     };
   });
 
-  const wb = buildWorkbook(exportRows, 'Customers');
+  const wb = await buildWorkbook(exportRows, 'Customers');
   const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
   const stamp = new Date().toISOString().slice(0, 10);
 

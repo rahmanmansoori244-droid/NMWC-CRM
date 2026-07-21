@@ -167,7 +167,7 @@ export async function buildCustomerExport(filters: ExportFilters) {
     last_edited_at: b.updatedAt.toISOString(),
   }));
 
-  const wb = buildWorkbook(exportRows, 'Customer Master');
+  const wb = await buildWorkbook(exportRows, 'Customer Master');
   const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
   const stamp = new Date().toISOString().slice(0, 10);
 

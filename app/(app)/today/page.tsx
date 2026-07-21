@@ -22,11 +22,19 @@ export default async function TodayPage() {
   if (!session?.user) redirect('/login');
   if (session.user.role !== Role.SALESMAN) redirect('/home');
 
-  // Find owned route
-  const me = await prisma.user.findUniqueOrThrow({
-    where: { id: session.user.id },
-    select: { id: true, fullName: true, ownedRouteId: true },
-  });
+  // Find owned route. perf audit #15: the personal edit counts key off the
+  // session id directly — fetch them in the SAME wave as `me` instead of a
+  // third sequential round trip after the branch list.
+  const [me, pending, rejected] = await Promise.all([
+    prisma.user.findUniqueOrThrow({
+      where: { id: session.user.id },
+      select: { id: true, fullName: true, ownedRouteId: true },
+    }),
+    prisma.customerEdit.count({ where: { submittedById: session.user.id, state: 'SUBMITTED' } }),
+    prisma.customerEdit.count({
+      where: { submittedById: session.user.id, state: 'NEEDS_CORRECTION' },
+    }),
+  ]);
   if (!me.ownedRouteId) {
     return (
       <main className="p-6">
@@ -45,33 +53,29 @@ export default async function TodayPage() {
   // the server returned yesterday's customer list between Oman 00:00 and 04:00.
   const today = omanDayOfWeek();
 
-  const branches = await prisma.branch.findMany({
-    where: {
-      routeId: me.ownedRouteId,
-      deletedAt: null,
-      dayOfVisit: today,
-    },
-    take: 200,
-    include: {
-      customer: {
-        select: {
-          id: true,
-          nmwcCode: true,
-          legalName: true,
-          paymentTerms: true,
-          status: true,
-          completenessScore: true,
+  const [branches, total] = await Promise.all([
+    prisma.branch.findMany({
+      where: {
+        routeId: me.ownedRouteId,
+        deletedAt: null,
+        dayOfVisit: today,
+      },
+      take: 200,
+      include: {
+        customer: {
+          select: {
+            id: true,
+            nmwcCode: true,
+            legalName: true,
+            paymentTerms: true,
+            status: true,
+            completenessScore: true,
+          },
         },
       },
-    },
-    orderBy: { branchName: 'asc' },
-  });
-
-  // Stats
-  const [total, pending, rejected] = await Promise.all([
+      orderBy: { branchName: 'asc' },
+    }),
     prisma.branch.count({ where: { routeId: me.ownedRouteId, deletedAt: null } }),
-    prisma.customerEdit.count({ where: { submittedById: me.id, state: 'SUBMITTED' } }),
-    prisma.customerEdit.count({ where: { submittedById: me.id, state: 'NEEDS_CORRECTION' } }),
   ]);
 
   return (

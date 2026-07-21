@@ -40,24 +40,28 @@ export default async function WorkPage() {
       customer: { select: { id: true, legalName: true, nmwcCode: true } },
       customerDraft: { select: { legalName: true } },
     } as const;
-    const rejected = await prisma.customerEdit.findMany({
-      where: { submittedById: userId, state: 'NEEDS_CORRECTION' },
-      include,
-      orderBy: { reviewedAt: 'desc' },
-      take: 50,
-    });
-    const pending = await prisma.customerEdit.findMany({
-      where: { submittedById: userId, state: 'SUBMITTED' },
-      include,
-      orderBy: { submittedAt: 'desc' },
-      take: 50,
-    });
-    const createDrafts = await prisma.customerEdit.findMany({
-      where: { submittedById: userId, state: 'DRAFT', process: 'CREATE' },
-      include,
-      orderBy: { updatedAt: 'desc' },
-      take: 50,
-    });
+    // perf audit #11/#39: three independent reads — one parallel wave, not
+    // three sequential round trips.
+    const [rejected, pending, createDrafts] = await Promise.all([
+      prisma.customerEdit.findMany({
+        where: { submittedById: userId, state: 'NEEDS_CORRECTION' },
+        include,
+        orderBy: { reviewedAt: 'desc' },
+        take: 50,
+      }),
+      prisma.customerEdit.findMany({
+        where: { submittedById: userId, state: 'SUBMITTED' },
+        include,
+        orderBy: { submittedAt: 'desc' },
+        take: 50,
+      }),
+      prisma.customerEdit.findMany({
+        where: { submittedById: userId, state: 'DRAFT', process: 'CREATE' },
+        include,
+        orderBy: { updatedAt: 'desc' },
+        take: 50,
+      }),
+    ]);
     items = [
       ...rejected.map((e) => ({
         id: e.id,

@@ -102,7 +102,7 @@ async function buildBatchWorkbook(
   batchId: string
 ): Promise<{ base64: string; filename: string; rowCount: number }> {
   const rows = buildTemixRows(customers, batchId);
-  const wb = buildWorkbook(rows, 'Temix Upload');
+  const wb = await buildWorkbook(rows, 'Temix Upload');
   const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
   const stamp = new Date().toISOString().slice(0, 10);
   return {

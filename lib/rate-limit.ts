@@ -52,6 +52,21 @@ export async function checkLimit(
   }
 }
 
+/**
+ * PERF (audit #24): in-memory-only limiter for HIGH-FREQUENCY, non-security
+ * paths (photo serving). The durable Postgres bucket costs a DB write per call —
+ * a page with 6 photos paid 6 serialized bucket writes before a single byte
+ * streamed. Per-lambda memory is plenty for DoS shaping here (a determined
+ * abuser is still capped per warm instance, and photo access is behind auth +
+ * scope anyway). NEVER use this for login/reset — those stay durable+fail-closed.
+ */
+export function checkLimitLocal(
+  key: string,
+  cfg: RateLimitConfig
+): { ok: boolean; retryAfterSec: number } {
+  return checkLimitMemory(key, cfg);
+}
+
 function checkLimitMemory(
   key: string,
   cfg: RateLimitConfig

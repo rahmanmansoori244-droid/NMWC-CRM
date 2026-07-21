@@ -89,9 +89,19 @@ export default async function ApprovalsPage() {
     }
   }
 
+  // perf audit #14/#38: SELECT exactly what the queue renders — the old
+  // `include` dragged every CustomerEdit column (attachmentChanges +
+  // approvalChain JSON, decisionReason Text …) for every row, and the query
+  // was unbounded. fieldChanges stays (the card shows a change count).
   const items = await prisma.customerEdit.findMany({
     where,
-    include: {
+    select: {
+      id: true,
+      process: true,
+      fieldChanges: true,
+      submittedAt: true,
+      slaDueAt: true,
+      escalationLevel: true,
       submittedBy: { select: { fullName: true, username: true } },
       customer: {
         select: {
@@ -108,6 +118,7 @@ export default async function ApprovalsPage() {
     // Most-overdue first (index [state, slaDueAt] backs it); legacy rows
     // without a deadline sort last.
     orderBy: [{ slaDueAt: 'asc' }, { submittedAt: 'asc' }],
+    take: 200,
   });
 
   // B-11 (Senior-audit 2026-05-10): pre-shape items for the bulk-approval client

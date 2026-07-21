@@ -13,6 +13,7 @@ import {
   type SafeAction,
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
 import { logger } from '@/lib/logger';
 import { isFieldLocked, canActOnStep } from '@/lib/permissions';
 import { submitEditSchema, type SubmitEditInput } from '@/lib/validation/edit';
@@ -746,6 +747,22 @@ export async function approveEditAction(formData: FormData): SafeAction<void> {
   return runAction(() => approveEditCore(formData));
 }
 
+/**
+ * PERF (audit #31): approve-and-return in ONE round trip. The plain action
+ * resolved on the client, which then router.push('/approvals')-ed — a second
+ * full Oman round trip, plus the action response wastefully re-rendered the
+ * detail page it was about to leave. redirect() inside the action makes the
+ * action response CARRY the /approvals RSC payload (revalidatePath already ran
+ * in the core, so it is fresh). On failure we return the SafeAction error and
+ * the client renders it in place. NEXT_REDIRECT is thrown OUTSIDE runAction so
+ * nothing swallows it.
+ */
+export async function approveEditAndGoAction(formData: FormData): SafeAction<void> {
+  const res = await runAction(() => approveEditCore(formData));
+  if (res.ok) redirect('/approvals');
+  return res;
+}
+
 async function approveEditCore(formData: FormData) {
   const session = await requireUser();
   const editId = String(formData.get('editId') ?? '');
@@ -1336,6 +1353,13 @@ export async function bulkRejectEditsAction(formData: FormData): SafeAction<{
 
 export async function rejectEditAction(formData: FormData): SafeAction<void> {
   return runAction(() => rejectEditCore(formData));
+}
+
+/** PERF (audit #31): reject-and-return in one round trip — see approveEditAndGoAction. */
+export async function rejectEditAndGoAction(formData: FormData): SafeAction<void> {
+  const res = await runAction(() => rejectEditCore(formData));
+  if (res.ok) redirect('/approvals');
+  return res;
 }
 
 async function rejectEditCore(formData: FormData) {

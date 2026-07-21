@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { PageHeader } from '@/components/nmwc/PageHeader';
@@ -39,17 +40,33 @@ export default async function CustomersPage({
   const filters = parseCustomerFilters(sp);
   const page = Math.max(1, Number.parseInt(sp.page ?? '1', 10) || 1);
 
-  // Determine scope
-  const me = await prisma.user.findUniqueOrThrow({
-    where: { id: session.user.id },
-    select: {
-      id: true,
-      role: true,
-      ownedRouteId: true,
-      reports: { where: { ownedRouteId: { not: null } }, select: { ownedRouteId: true } },
-      managedRegions: { select: { id: true } },
-    },
-  });
+  // Determine scope. perf audit #13: the scope read and the (conditional)
+  // supervisor/salesman filter lookups are independent — issue them in ONE
+  // parallel wave instead of three sequential round trips.
+  const [me, supervisorReports, salesmanUser] = await Promise.all([
+    prisma.user.findUniqueOrThrow({
+      where: { id: session.user.id },
+      select: {
+        id: true,
+        role: true,
+        ownedRouteId: true,
+        reports: { where: { ownedRouteId: { not: null } }, select: { ownedRouteId: true } },
+        managedRegions: { select: { id: true } },
+      },
+    }),
+    filters.supervisorId
+      ? prisma.user.findMany({
+          where: { supervisorId: filters.supervisorId, ownedRouteId: { not: null } },
+          select: { ownedRouteId: true },
+        })
+      : Promise.resolve([] as { ownedRouteId: string | null }[]),
+    filters.salesmanId
+      ? prisma.user.findUnique({
+          where: { id: filters.salesmanId },
+          select: { ownedRouteId: true },
+        })
+      : Promise.resolve(null),
+  ]);
 
   const baseWhere: Prisma.CustomerWhereInput = { deletedAt: null };
   type BranchSomeWhere = NonNullable<
@@ -82,25 +99,12 @@ export default async function CustomersPage({
     branchInclude.where = { deletedAt: null };
   }
 
-  // Resolve supervisor / salesman filter to route ids if set.
-  let routeIdsForSupervisor: string[] = [];
-  let routeIdForSalesman: string | null = null;
-  if (filters.supervisorId) {
-    const reports = await prisma.user.findMany({
-      where: { supervisorId: filters.supervisorId, ownedRouteId: { not: null } },
-      select: { ownedRouteId: true },
-    });
-    routeIdsForSupervisor = reports
-      .map((r) => r.ownedRouteId)
-      .filter((id): id is string => !!id);
-  }
-  if (filters.salesmanId) {
-    const u = await prisma.user.findUnique({
-      where: { id: filters.salesmanId },
-      select: { ownedRouteId: true },
-    });
-    routeIdForSalesman = u?.ownedRouteId ?? null;
-  }
+  // Resolve supervisor / salesman filter to route ids (fetched in the parallel
+  // wave above).
+  const routeIdsForSupervisor: string[] = supervisorReports
+    .map((r) => r.ownedRouteId)
+    .filter((id): id is string => !!id);
+  const routeIdForSalesman: string | null = salesmanUser?.ownedRouteId ?? null;
 
   const where = applyCustomerFilters(
     baseWhere,
@@ -176,12 +180,23 @@ export default async function CustomersPage({
     savedViews,
   ] = await Promise.all([
     customerCountFast(where),
+    // perf audit #40: select exactly what CustomerCard renders — the old
+    // `include` dragged every Customer column (incl. the notes @db.Text) for
+    // all 50 rows across the wire per render.
     prisma.customer.findMany({
       where,
       orderBy: { legalName: 'asc' },
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
-      include: { branches: branchInclude },
+      select: {
+        id: true,
+        nmwcCode: true,
+        legalName: true,
+        paymentTerms: true,
+        status: true,
+        completenessScore: true,
+        branches: { ...branchInclude, select: { branchName: true, address: true } },
+      },
     }),
     getAllActiveRegions(),
     getAllActiveRoutes(),
@@ -316,21 +331,24 @@ export default async function CustomersPage({
 
         {lastPage > 1 && (
           <nav className="mt-6 flex items-center justify-between text-sm">
-            <a
+            {/* perf audit #7/#16: <Link>, not <a> — a raw anchor forced a full
+                document reload (HTML + CSS + JS re-parse + layout re-render)
+                per page flip; client navigation only fetches the RSC delta. */}
+            <Link
               href={pageHref(Math.max(1, page - 1))}
               className={`rounded-md px-3 py-1.5 ${page === 1 ? 'pointer-events-none text-slate-400' : 'text-brand-700 hover:bg-brand-50'}`}
             >
               ← Previous
-            </a>
+            </Link>
             <span className="text-slate-600">
               Page {page} of {lastPage}
             </span>
-            <a
+            <Link
               href={pageHref(Math.min(lastPage, page + 1))}
               className={`rounded-md px-3 py-1.5 ${page === lastPage ? 'pointer-events-none text-slate-400' : 'text-brand-700 hover:bg-brand-50'}`}
             >
               Next →
-            </a>
+            </Link>
           </nav>
         )}
       </section>

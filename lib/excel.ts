@@ -1,8 +1,19 @@
 /**
  * Thin wrappers around exceljs for parsing import workbooks.
  * Used by the Steward import pages for both Customer and Account masters.
+ *
+ * PERF (audit #27): exceljs is ~1.1MB of JS (plus jszip/saxes) that was
+ * statically imported into the shared server chunk — every cold start paid its
+ * parse+eval even for pages that never touch a workbook. The type-only import
+ * is erased at compile time; the runtime module loads on first actual use.
  */
-import ExcelJS from 'exceljs';
+import type ExcelJSNS from 'exceljs';
+
+let excelJsPromise: Promise<typeof ExcelJSNS> | null = null;
+function loadExcelJS(): Promise<typeof ExcelJSNS> {
+  excelJsPromise ??= import('exceljs').then((m) => (m as { default?: typeof ExcelJSNS }).default ?? (m as unknown as typeof ExcelJSNS));
+  return excelJsPromise;
+}
 
 // Defence-in-depth against a decompression-bomb / oversized workbook: the 5 MB
 // upload cap bounds only the COMPRESSED bytes, but a crafted .xlsx inflates to
@@ -20,6 +31,7 @@ export type ParsedSheet = {
 };
 
 export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<ParsedSheet[]> {
+  const ExcelJS = await loadExcelJS();
   const wb = new ExcelJS.Workbook();
   // exceljs accepts a Uint8Array; ts-strict typing on Buffer is over-narrow here.
   const u8 = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -98,7 +110,8 @@ function escapeFormulaCell(v: unknown): unknown {
   return v;
 }
 
-export function buildWorkbook(rows: Record<string, unknown>[], sheetName = 'Sheet1') {
+export async function buildWorkbook(rows: Record<string, unknown>[], sheetName = 'Sheet1') {
+  const ExcelJS = await loadExcelJS();
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(sheetName);
   if (rows.length === 0) return wb;

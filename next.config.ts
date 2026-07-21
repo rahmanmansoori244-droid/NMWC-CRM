@@ -44,6 +44,17 @@ const nextConfig: NextConfig = {
     remotePatterns: [],
   },
   typedRoutes: true,
+  // PERF (audit #17/#37): client router cache for dynamic pages. Default is 0 —
+  // every back/forward or repeat visit re-paid the full Oman round trip + server
+  // render. 30s staleness makes the queue→detail→back loop (THE approvals
+  // workflow) instant; mutations still bust it via revalidatePath, and 30s is
+  // well inside this CRM's freshness needs (SLA clocks tick in hours).
+  experimental: {
+    staleTimes: {
+      dynamic: 30,
+      static: 180,
+    },
+  },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },

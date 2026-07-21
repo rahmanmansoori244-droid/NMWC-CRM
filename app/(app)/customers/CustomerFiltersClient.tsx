@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   createSavedViewAction,
@@ -128,10 +128,15 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
     return sp.toString();
   }
 
+  // perf audit #19: wrap the filter navigation in a transition so the button
+  // shows a pending state instead of the UI silently freezing for the round trip.
+  const [applying, startApply] = useTransition();
   function onApply(e: React.FormEvent) {
     e.preventDefault();
     const params = buildUrlParams();
-    router.push(params ? `/customers?${params}` : '/customers');
+    startApply(() => {
+      router.push(params ? `/customers?${params}` : '/customers');
+    });
   }
 
   async function onSaveView(e: React.FormEvent) {
@@ -293,9 +298,10 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
 
         <button
           type="submit"
-          className="rounded-md bg-brand-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-brand-700"
+          disabled={applying}
+          className="rounded-md bg-brand-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
         >
-          Filter
+          {applying ? 'Filtering…' : 'Filter'}
         </button>
 
         <Link

@@ -33,6 +33,11 @@ jobs:
       - name: Curl keep-warm
         env:
           PROD_CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
+          # perf audit #26: the UAT/pilot Preview deployment the team actually
+          # tests on was never warmed — every interaction after a 5-min idle
+          # gap paid a 2-3s cold start. Optional; set to the branch preview URL
+          # (e.g. https://nmwc-cm-git-<branch-slug>-<team>.vercel.app).
+          PREVIEW_URL: ${{ vars.KEEP_WARM_PREVIEW_URL }}
         run: |
           set -euo pipefail
           if [ -z "${PROD_CRON_SECRET:-}" ]; then
@@ -43,3 +48,11 @@ jobs:
             -H "Authorization: Bearer ${PROD_CRON_SECRET}" \
             -w "\nHTTP %{http_code} time=%{time_total}s\n" \
             "https://nmwc-cm.vercel.app/api/cron/keep-warm"
+          if [ -n "${PREVIEW_URL:-}" ]; then
+            # Preview shares the same CRON_SECRET env (Vercel scopes secrets per
+            # environment; set Preview's CRON_SECRET to the same value or skip).
+            curl -fsSL \
+              -H "Authorization: Bearer ${PROD_CRON_SECRET}" \
+              -w "\nPREVIEW HTTP %{http_code} time=%{time_total}s\n" \
+              "${PREVIEW_URL%/}/api/cron/keep-warm" || echo "::warning::preview warm ping failed (non-fatal)"
+          fi

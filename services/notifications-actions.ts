@@ -25,7 +25,12 @@ export async function markNotificationReadAction(formData: FormData): SafeAction
       where: { id, userId: me.id, readAt: null },
       data: { readAt: new Date() },
     });
-    revalidatePath('/notifications');
+    // perf audit #35: NO revalidatePath here. This action fires as the user
+    // clicks THROUGH to the deep link — revalidating made the action response
+    // re-render the 100-row inbox that is being navigated away from, racing the
+    // navigation for zero visible benefit. The inbox re-fetches fresh on its
+    // next real visit; mark-all (below) still revalidates because the user
+    // stays on the page and needs the immediate repaint.
   });
 }
 

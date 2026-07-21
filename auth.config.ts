@@ -12,6 +12,13 @@ import type { NextAuthConfig } from 'next-auth';
 export const authConfig = {
   pages: { signIn: '/login' },
   session: { strategy: 'jwt', maxAge: 8 * 60 * 60 },
+  // F-UAT-3 / perf follow-up: derive the base URL from the REQUEST host when no
+  // AUTH_URL env is set, so a Preview deployment's post-login redirect stays on
+  // the preview domain instead of bouncing to production (where the session
+  // cookie doesn't even apply). NOTE for the owner: also scope the
+  // AUTH_URL / NEXTAUTH_URL Vercel env var to Production ONLY — an env var
+  // pointing at nmwc-cm.vercel.app overrides this on previews.
+  trustHost: true,
   providers: [], // Real providers are added in lib/auth.ts
   // AUTH-13: explicit cookie hardening — `__Secure-` prefix in production
   // forces secure+HTTPS; httpOnly + sameSite=lax block XSS reads and

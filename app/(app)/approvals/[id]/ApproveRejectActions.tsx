@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
-import { approveEditAction, rejectEditAction } from '@/services/edits';
+import { approveEditAndGoAction, rejectEditAndGoAction } from '@/services/edits';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 
 const REJECT_CATEGORIES = [
@@ -49,7 +48,6 @@ const REJECT_TEMPLATES: Record<string, string[]> = {
 };
 
 export function ApproveRejectActions({ editId }: { editId: string }) {
-  const router = useRouter();
   const [pending, start] = useTransition();
   const [showReject, setShowReject] = useState(false);
   const [reason, setReason] = useState('');
@@ -69,13 +67,13 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
       // lib/errors.ts (runAction). Throws here are now reserved for genuine
       // 500s, which we still surface as a generic message.
       try {
-        const res = await approveEditAction(fd);
-        if (res.ok) {
-          router.push('/approvals');
-        } else if (res.fields) {
-          setErrors(res.fields);
-        } else {
-          setErrors({ _form: res.message });
+        // perf audit #31: on success the action redirect()s server-side, so the
+        // response already carries the fresh /approvals payload — ONE round trip.
+        // The promise then resolves with no value; only error results return.
+        const res = await approveEditAndGoAction(fd);
+        if (res && !res.ok) {
+          if (res.fields) setErrors(res.fields);
+          else setErrors({ _form: res.message });
         }
       } catch (err) {
         setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
@@ -90,13 +88,10 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
     fd.set('editId', editId);
     start(async () => {
       try {
-        const res = await rejectEditAction(fd);
-        if (res.ok) {
-          router.push('/approvals');
-        } else if (res.fields) {
-          setErrors(res.fields);
-        } else {
-          setErrors({ _form: res.message });
+        const res = await rejectEditAndGoAction(fd);
+        if (res && !res.ok) {
+          if (res.fields) setErrors(res.fields);
+          else setErrors({ _form: res.message });
         }
       } catch (err) {
         setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });

@@ -3,6 +3,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Prisma, Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
+import { completenessPct, BRANCH_MAX_SCORE } from '@/lib/completeness';
 
 export const metadata = { title: 'Dashboard · NMWC' };
 
@@ -65,6 +66,10 @@ export default async function DashboardPage() {
     ? { customer: { branches: { some: { regionId: { in: regionIds }, deletedAt: null } } } }
     : {};
 
+  // perf audit #9/#10: ONE parallel wave for everything, and the region/route
+  // completeness comes from SQL groupBy aggregates instead of shipping every
+  // branch row's score to JS (that fetch grew linearly with the master and
+  // added two extra sequential waves after this batch).
   const [
     customerCount,
     branchCount,
@@ -74,6 +79,10 @@ export default async function DashboardPage() {
     rejectedEdits,
     avgScore,
     last30Days,
+    regionMeta,
+    regionAggs,
+    routeMeta,
+    routeAggs,
   ] = await Promise.all([
     prisma.customer.count({ where: customerWhere }),
     prisma.branch.count({ where: branchWhere }),
@@ -91,44 +100,50 @@ export default async function DashboardPage() {
       select: { reviewedAt: true },
       orderBy: { reviewedAt: 'asc' },
     }),
+    prisma.region.findMany({
+      where: isScoped ? { id: { in: regionIds } } : undefined,
+      select: { id: true, name: true, code: true },
+      orderBy: { name: 'asc' },
+    }),
+    prisma.branch.groupBy({
+      by: ['regionId'],
+      where: { deletedAt: null },
+      _avg: { completenessScore: true },
+      _count: { _all: true },
+    }),
+    prisma.route.findMany({
+      where: isScoped ? { isActive: true, regionId: { in: regionIds } } : { isActive: true },
+      select: { id: true, code: true, name: true, owner: { select: { fullName: true } } },
+    }),
+    prisma.branch.groupBy({
+      by: ['routeId'],
+      where: { deletedAt: null },
+      _avg: { completenessScore: true },
+      _count: { _all: true },
+    }),
   ]);
 
-  const regionStats = await prisma.region.findMany({
-    where: isScoped ? { id: { in: regionIds } } : undefined,
-    select: {
-      id: true,
-      name: true,
-      code: true,
-      branches: {
-        select: { completenessScore: true },
-        where: { deletedAt: null },
-      },
-    },
-    orderBy: { name: 'asc' },
+  const regionAgg = new Map(regionAggs.map((a) => [a.regionId, a]));
+  const regionStats = regionMeta.map((r) => {
+    const a = regionAgg.get(r.id);
+    return { ...r, avgScore: a?._avg.completenessScore ?? 0, branchCount: a?._count._all ?? 0 };
   });
 
-  // Per-route leaderboard (top 10) — scoped to managed regions
-  const routes = await prisma.route.findMany({
-    where: isScoped
-      ? { isActive: true, regionId: { in: regionIds } }
-      : { isActive: true },
-    select: {
-      id: true,
-      code: true,
-      name: true,
-      branches: { select: { completenessScore: true }, where: { deletedAt: null } },
-      owner: { select: { fullName: true } },
-    },
-  });
   // UXI-018: drop empty routes from the leaderboards. Empty routes (count=0)
   // previously appeared at the top with avg=100% (or bottom with 0%) just
   // because they had no data, distorting the manager's read of "which
   // routes need attention".
-  const routeStats = routes
+  const routeAgg = new Map(routeAggs.map((a) => [a.routeId, a]));
+  const routeStats = routeMeta
     .map((r) => {
-      const scores = r.branches.map((b) => b.completenessScore);
-      const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
-      return { ...r, avg, count: scores.length };
+      const a = routeAgg.get(r.id);
+      return {
+        ...r,
+        // #13 scale fix: branch scores are 0-60 — normalize to a % so routes can
+        // actually reach the green band.
+        avg: completenessPct(a?._avg.completenessScore ?? 0, BRANCH_MAX_SCORE),
+        count: a?._count._all ?? 0,
+      };
     })
     .filter((r) => r.count > 0)
     .sort((a, b) => b.avg - a.avg);
@@ -206,10 +221,8 @@ export default async function DashboardPage() {
           </h2>
           <ul className="space-y-3">
             {regionStats.map((r) => {
-              const scores = r.branches.map((b) => b.completenessScore);
-              const avg = scores.length
-                ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
-                : 0;
+              // #13 scale fix: branch scores max at 60 — normalize to a real %.
+              const avg = r.branchCount > 0 ? completenessPct(r.avgScore, BRANCH_MAX_SCORE) : 0;
               return (
                 <li key={r.id} className="grid grid-cols-[120px_1fr_50px] items-center gap-3">
                   <span className="text-sm font-medium text-slate-700">{r.name}</span>
