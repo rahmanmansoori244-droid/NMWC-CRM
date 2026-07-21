@@ -468,8 +468,11 @@ async function uploadAccountMasterCore(
           });
         }
 
-        // Manager region assignments
-        if (role === Role.MANAGER && regionCodesRaw) {
+        // Region assignments for the region-scoped roles. MANAGER and ACCOUNTANT
+        // both scope via the SAME managedRegions relation (fail-closed on empty),
+        // so an accountant loaded from the master must get its region_codes too —
+        // otherwise it sees nothing and can never clear the credit-chain step.
+        if ((role === Role.MANAGER || role === Role.ACCOUNTANT) && regionCodesRaw) {
           const codes = regionCodesRaw
             .split(',')
             .map((s) => s.trim().toUpperCase())
