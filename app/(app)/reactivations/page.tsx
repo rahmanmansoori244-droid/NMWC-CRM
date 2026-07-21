@@ -79,24 +79,63 @@ export default async function ReactivationsPage() {
                     <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-200">
                       <strong>Reason:</strong> {e.decisionReason ?? '—'}
                     </p>
-                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                      {e.branch?.shopPhotoId && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={`/api/photos/${e.branch.shopPhotoId}`}
-                          alt="Shop evidence"
-                          className="h-24 w-full rounded-md object-cover"
-                        />
-                      )}
-                      {e.branch?.signboardPhotoId && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={`/api/photos/${e.branch.signboardPhotoId}`}
-                          alt="Signboard"
-                          className="h-24 w-full rounded-md object-cover"
-                        />
-                      )}
-                    </div>
+                    {/* final-hunt #12: the reviewer must see the FRESH evidence the
+                        salesman captured for THIS reactivation (edit.attachmentChanges),
+                        not the branch's stale on-file slot photos — those predate the
+                        closure and prove nothing about the reopening. */}
+                    {(() => {
+                      const evidence =
+                        (e.attachmentChanges as { attachmentId?: string; action?: string }[] | null)?.filter(
+                          (a) => a.action === 'EVIDENCE' && a.attachmentId
+                        ) ?? [];
+                      return (
+                        <div className="mt-2 space-y-2">
+                          <div>
+                            <p className="text-xs font-medium text-emerald-700">
+                              Fresh evidence (captured for this request)
+                            </p>
+                            {evidence.length === 0 ? (
+                              <p className="text-xs text-slate-400">No evidence photo attached.</p>
+                            ) : (
+                              <div className="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                {evidence.map((a) => (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img
+                                    key={a.attachmentId}
+                                    src={`/api/photos/${a.attachmentId}`}
+                                    alt="Reactivation evidence"
+                                    className="h-24 w-full rounded-md object-cover ring-2 ring-emerald-300"
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          {(e.branch?.shopPhotoId || e.branch?.signboardPhotoId) && (
+                            <details className="text-xs text-slate-500">
+                              <summary className="cursor-pointer">Photos on file (for comparison)</summary>
+                              <div className="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                {e.branch?.shopPhotoId && (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img
+                                    src={`/api/photos/${e.branch.shopPhotoId}`}
+                                    alt="On-file shop"
+                                    className="h-24 w-full rounded-md object-cover"
+                                  />
+                                )}
+                                {e.branch?.signboardPhotoId && (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img
+                                    src={`/api/photos/${e.branch.signboardPhotoId}`}
+                                    alt="On-file signboard"
+                                    className="h-24 w-full rounded-md object-cover"
+                                  />
+                                )}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <ReactivationDecisionForm editId={e.id} />
                 </div>
