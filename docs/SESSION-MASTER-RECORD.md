@@ -48,8 +48,16 @@ Enterprise customer-master CRM for National Mineral Water Company (NMWC SAOG, Om
 - **Temix credit = OUTBOUND (CRM→Temix):** confirms current behavior; refutes the "stale outbound push" finding. **Open D2-note:** the inbound refresh still treats credit as Temix-authoritative — confirm with ERP team whether Temix ever modifies credit.
 - Cron off GitHub Actions needs **Vercel Pro** (Hobby = daily only).
 
-## 3. Two adversarial deep reviews (41 confirmed findings total)
-Multi-agent Workflow pattern: N finder lenses → 3 independent refuters per finding (2/3 to confirm) → completeness critic. Records: `qa/findings/pre-launch-deep-review.md` (round 1, 25 confirmed), `qa/findings/deep-scan-round2.md` (round 2, 16 confirmed). A **third, definitive** hunt (`final-golive-bug-hunt`, 2 rounds × 9 lenses) was running at the time of writing.
+## 3. Three adversarial deep reviews (78 confirmed findings total)
+Multi-agent Workflow pattern: N finder lenses → 3 independent refuters per finding (2/3 to confirm) → completeness critic. Records: `qa/findings/pre-launch-deep-review.md` (round 1, 25 confirmed), `qa/findings/deep-scan-round2.md` (round 2, 16 confirmed), **`qa/findings/final-golive-hunt.md` (round 3, definitive — 137 agents, 37 confirmed: 7 P1, 14 P2, 16 P3).**
+
+### Round 3 (final, definitive) — 2026-07-21
+The exhaustive pre-go-live hunt found **7 P1s** including one caused by this session's own SR-USR-01 fix. **All 7 P1s fixed with fail-before/pass-after tests**, plus 9 P2s and the P3 batch. See `qa/reports/FINAL-GOLIVE-VERDICT.md` for the full table. Highlights:
+- **#0 (P1, self-inflicted):** the SR-USR-01 allowlist removed the ONLY in-app path to provision ACCOUNTANT/FM/GM, so every net-new CREATE stalled forever → restored the Steward provisioning path (`requireUserAdmin`) + pilot-seed approvers.
+- **#1 (P1):** EL-04 blocked ALL branch-close approvals for imported customers → status-only edits skip the mandatory re-check.
+- **#3 (P1):** paymentTerms CASH↔CREDIT flip via ordinary UPDATE bypassed the credit chain → blocked.
+- **#4/5/6 (P1):** non-refresh re-import force-overwrote CRM data (CREDIT→CASH, nulled phone/CR/contact) → made presence-aware.
+- **F-UAT-8 (found independently):** the create-flow code allocator permanently bricked when the `CodeSequence` counter fell behind → self-healing.
 
 ## 4. Online UAT — ACHIEVED
 - **Isolated Neon branch `uat-testing`** (endpoint `ep-lucky-bar-aqbfutvr`, schema-only, **auto-delete Never**). NOTE **F-UAT-6:** the first UAT branch (`ep-raspy-term`) auto-deleted after 1 day mid-UAT — always set auto-delete Never for a multi-day UAT.
@@ -75,5 +83,7 @@ Multi-agent Workflow pattern: N finder lenses → 3 independent refuters per fin
 
 **Automated test count (this session):** 140 unit + integration suites (reactivation ×5, merge ×3, import-reconciliation, promote-reconciliation ×11, rate-limit ×4, import-multibranch, credit-chain-e2e ×5, + gated uat-load) — **all green on the isolated uat-testing branch.**
 
-## 7. Go-live gate (from PRODUCTION-READINESS-VERDICT.md §24)
-No open P0; no open P1 in authz/approval/data-integrity/Temix-loss; migration succeeds from clean AND from a prod-schema snapshot; import+export reconcile; concurrency+code-allocation+dedup+archive+SLA proven; rollback tested; production isolation maintained; owner decisions documented; secrets rotated; **real Temix master obtained**; owner approves. Verdict today: **conditionally ready** pending items in §6.
+## 7. Go-live gate + final verdict
+Gate (from PRODUCTION-READINESS-VERDICT.md §24): no open P0; no open P1 in authz/approval/data-integrity/Temix-loss; migration succeeds from clean AND from a prod-schema snapshot; import+export reconcile; concurrency+code-allocation+dedup+archive+SLA proven; rollback tested; production isolation maintained; owner decisions documented; secrets rotated; **real Temix master obtained**; owner approves.
+
+**Final verdict (2026-07-21, after the round-3 hunt — `qa/reports/FINAL-GOLIVE-VERDICT.md`): NO open P0, NO open P1.** All 7 round-3 P1s fixed with tests, plus F-UAT-7/F-UAT-8, plus 9 P2s and the P3 batch. Full automated suite green on `uat-testing`; production build passes. Remaining items are P2/P3 (edge-case/UX/hardening) with a written remediation plan. **GO for a supervised pilot** once the owner completes: rotate `neondb_owner`, obtain the real Temix master, land RK-3 chunked import before the full 3,300-row load, Vercel Pro for sub-daily cron, confirm the D2 Temix credit direction.
