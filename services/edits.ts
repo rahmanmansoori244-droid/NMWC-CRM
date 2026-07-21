@@ -876,7 +876,10 @@ async function approveEditCore(formData: FormData) {
         editId,
         customerId: edit.customerId ?? undefined,
       });
-    });
+      // Same remote-DB latency headroom as the final apply (final-hunt #32): claim
+      // + step-decision + audit + two notification fan-outs must not trip the 5s
+      // default interactive-transaction limit.
+    }, { timeout: 30_000, maxWait: 10_000 });
     logger.info({ editId, by: session.id, stepIndex, advancedTo: stepIndex + 1 }, 'edit.step_approve');
     revalidatePath('/approvals');
     revalidatePath('/work');
@@ -990,6 +993,17 @@ async function approveEditCore(formData: FormData) {
     }
   }
 
+  // A close-shop / branch-status request (markBranchClosedAction) is a salesman-
+  // submitted UPDATE whose ONLY change is a branch status flip, gated by its OWN
+  // fresh-photo evidence — NOT an enrichment edit. The EL-04 mandatory-field
+  // re-check below must therefore skip it: otherwise an imported/legacy customer
+  // (no field-captured CR/shop/signboard photos) could never have a branch closed,
+  // because collectMissingMandatory scans the WHOLE customer and always fails
+  // (final-hunt #1). Any non-status field change keeps the full EL-04 gate.
+  const isStatusOnlyEdit =
+    fieldChanges.length > 0 &&
+    fieldChanges.every((c) => c.field.startsWith('branch.') && c.field.endsWith('.status'));
+
   // EL-01 (defense-in-depth): the submit-time guard rejects salesman /
   // supervisor / steward / manager attempts to flip customer.status to
   // CLOSED or SUSPENDED through the regular edit form — those must go
@@ -1073,8 +1087,9 @@ async function approveEditCore(formData: FormData) {
   // detached after submit. Without this re-check, an APPROVED record could
   // land with no CR photo / no shop photo simply because the salesman tapped
   // the trash icon between submit and approve. Skip when the submitter was
-  // not a Salesman (Steward/Manager direct-write bypasses the gate by design).
-  if (submitterUser?.role === Role.SALESMAN) {
+  // not a Salesman (Steward/Manager direct-write bypasses the gate by design),
+  // and skip for a status-only close request (it enriches nothing — see above).
+  if (submitterUser?.role === Role.SALESMAN && !isStatusOnlyEdit) {
     const liveCustomer = await prisma.customer.findUniqueOrThrow({
       where: { id: edit.customerId! },
       include: { branches: { where: { deletedAt: null } } },
@@ -1157,7 +1172,11 @@ async function approveEditCore(formData: FormData) {
       editId,
       customerId: edit.customerId ?? undefined,
     });
-  });
+    // Match the CREATE finalize timeout (final-hunt #32): an UPDATE apply can
+    // touch up to 10 branches + notifications over a remote DB, and the default
+    // 5s interactive-transaction limit was tripping legitimately-sized approvals
+    // (e.g. a close-shop) with an opaque "Transaction already closed" error.
+  }, { timeout: 30_000, maxWait: 10_000 });
 
   logger.info({ editId, by: session.id }, 'edit.approve');
   revalidatePath(`/approvals`);
