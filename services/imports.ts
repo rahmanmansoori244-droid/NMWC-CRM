@@ -578,15 +578,26 @@ async function uploadCustomerMasterCore(
   // F-04: build collision maps inside the file + against the live master so
   // the parse step queues duplicates for review instead of silently
   // P2002-failing on promote.
-  const phonesInFile = new Map<string, number[]>();
-  const crsInFile = new Map<string, number[]>();
+  // Each occurrence carries its owning cust_code so a legitimate MULTI-BRANCH
+  // customer — whose branch rows repeat the SAME phone/CR (exactly how promote
+  // groups branch rows by cust_code into one customer) — is not flagged against
+  // ITSELF. Only a value shared across DIFFERENT cust_codes is an in-file
+  // duplicate, mirroring the master cross-check's `code !== custCode` exclusion.
+  // Before this, importing a real master quarantined every multi-branch customer
+  // (F-UAT-7: the medium synthetic master lost 324/499 rows this way).
+  type FileDup = { row: number; code: string };
+  const phonesInFile = new Map<string, FileDup[]>();
+  const crsInFile = new Map<string, FileDup[]>();
   for (const [i, row] of sheet.rows.entries()) {
+    const rowCode = stripHtml(
+      row.cust_code ?? row.custcode ?? row.CUSTCODE ?? row.code ?? row.Code
+    ).trim();
     const phoneNorm = normalizePhone(
       String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim() || null
     );
     if (phoneNorm) {
       const a = phonesInFile.get(phoneNorm) ?? [];
-      a.push(i + 2);
+      a.push({ row: i + 2, code: rowCode });
       phonesInFile.set(phoneNorm, a);
     }
     const crNorm = normalizeCR(
@@ -594,7 +605,7 @@ async function uploadCustomerMasterCore(
     );
     if (crNorm) {
       const a = crsInFile.get(crNorm) ?? [];
-      a.push(i + 2);
+      a.push({ row: i + 2, code: rowCode });
       crsInFile.set(crNorm, a);
     }
   }
@@ -652,14 +663,23 @@ async function uploadCustomerMasterCore(
     if (phoneRaw && !isValidPhoneFormat(phoneRaw)) {
       issues.push({ field: 'phone', message: 'invalid format' });
     }
-    if (phone && phonesInFile.get(phone)!.length > 1) {
-      issues.push({ field: 'phone', message: `duplicate phone in this file (also rows ${phonesInFile.get(phone)!.filter((r) => r !== i + 2).join(', ')})` });
+    // In-file dup only when the SAME phone/CR appears under a DIFFERENT
+    // cust_code — a multi-branch customer sharing one phone/CR across its own
+    // branch rows is legitimate and must NOT self-quarantine (F-UAT-7).
+    const phoneOtherRows = phone
+      ? (phonesInFile.get(phone) ?? []).filter((e) => e.code !== custCode).map((e) => e.row)
+      : [];
+    if (phoneOtherRows.length > 0) {
+      issues.push({ field: 'phone', message: `duplicate phone in this file (also rows ${phoneOtherRows.join(', ')})` });
     }
     if (phone && (masterPhones.get(phone) ?? []).some((code) => code !== custCode)) {
       issues.push({ field: 'phone', message: 'phone already exists in master — review in /duplicates' });
     }
-    if (crNorm && crsInFile.get(crNorm)!.length > 1) {
-      issues.push({ field: 'cr_no', message: `duplicate CR in this file (also rows ${crsInFile.get(crNorm)!.filter((r) => r !== i + 2).join(', ')})` });
+    const crOtherRows = crNorm
+      ? (crsInFile.get(crNorm) ?? []).filter((e) => e.code !== custCode).map((e) => e.row)
+      : [];
+    if (crOtherRows.length > 0) {
+      issues.push({ field: 'cr_no', message: `duplicate CR in this file (also rows ${crOtherRows.join(', ')})` });
     }
     if (crNorm && (masterCrs.get(crNorm) ?? []).some((code) => code !== custCode)) {
       issues.push({ field: 'cr_no', message: 'CR already exists in master — review in /duplicates' });
