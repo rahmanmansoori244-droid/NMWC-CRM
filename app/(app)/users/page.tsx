@@ -11,7 +11,12 @@ export const metadata = { title: 'Users · NMWC' };
 export default async function UsersPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
-  if (session.user.role !== Role.MANAGER) redirect('/home');
+  // final-hunt #29 / completes #0: user admin is MANAGER or STEWARD. Before this,
+  // only MANAGER could reach /users, so the Steward provisioning path restored in
+  // #0 (the ONLY way to create approver-tier accounts) had no UI to reach.
+  if (session.user.role !== Role.MANAGER && session.user.role !== Role.STEWARD) {
+    redirect('/home');
+  }
 
   // RBAC-05-023: drop email/phone from the listing for everyone (the admin
   // tier doesn't need each other's PII; salesman PII is in the underlying
@@ -104,7 +109,7 @@ export default async function UsersPage() {
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
             Create user
           </h2>
-          <CreateUserForm supervisors={supervisors} routes={routes} />
+          <CreateUserForm supervisors={supervisors} routes={routes} viewerRole={session.user.role} />
         </aside>
       </div>
     </main>

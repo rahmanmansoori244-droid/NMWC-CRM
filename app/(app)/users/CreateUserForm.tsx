@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { Role } from '@prisma/client';
 import { createUserAction } from '@/services/users';
+import { administrableRolesFor } from '@/lib/permissions';
 
 const ROLE_LABELS: Record<Role, string> = {
   SALESMAN: 'Salesman',
@@ -18,14 +19,19 @@ const ROLE_LABELS: Record<Role, string> = {
 export function CreateUserForm({
   supervisors,
   routes,
+  viewerRole,
 }: {
   supervisors: { id: string; fullName: string; username: string }[];
   routes: { id: string; code: string; name: string }[];
+  viewerRole: Role;
 }) {
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [success, setSuccess] = useState<string | null>(null);
-  const [role, setRole] = useState<Role>(Role.SALESMAN);
+  // final-hunt #29: only offer roles this viewer may actually create, using the
+  // same allowlist the server enforces — the UI can never drift from the rule.
+  const allowedRoles = administrableRolesFor(viewerRole);
+  const [role, setRole] = useState<Role>(allowedRoles[0] ?? Role.SALESMAN);
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -44,7 +50,7 @@ export function CreateUserForm({
         }
         setSuccess('User created.');
         (e.target as HTMLFormElement).reset();
-        setRole(Role.SALESMAN);
+        setRole(allowedRoles[0] ?? Role.SALESMAN);
       } catch (err) {
         if (err instanceof Error) {
           setErrors({ _form: err.message });
@@ -66,11 +72,13 @@ export function CreateUserForm({
           onChange={(e) => setRole(e.currentTarget.value as Role)}
           className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
         >
-          {Object.entries(ROLE_LABELS).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
+          {(Object.entries(ROLE_LABELS) as [Role, string][])
+            .filter(([k]) => allowedRoles.includes(k))
+            .map(([k, v]) => (
+              <option key={k} value={k}>
+                {v}
+              </option>
+            ))}
         </select>
       </div>
       {(role === Role.SALESMAN || role === Role.SUPERVISOR) && (

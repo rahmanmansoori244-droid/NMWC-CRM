@@ -33,3 +33,13 @@ export function omanDateISO(at: Date = new Date()): string {
   const d = String(oman.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
+
+/**
+ * Returns the Oman-local calendar year for the given instant (defaults to now).
+ * Use this for the NMWC-YYYY customer-code prefix (and its CodeSequence scope) so
+ * a customer minted in the Oman 00:00-03:59 window on Jan 1 is coded with the
+ * current Oman year, not the prior UTC year. Same PROD-004 class as omanDateISO.
+ */
+export function omanYear(at: Date = new Date()): number {
+  return new Date(at.getTime() + OMAN_OFFSET_MS).getUTCFullYear();
+}

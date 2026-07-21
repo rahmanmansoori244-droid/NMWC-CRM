@@ -32,6 +32,7 @@ import {
 } from '@prisma/client';
 import { ConflictError } from './errors';
 import { formatCustomerCode, formatBranchCode } from './codes';
+import { omanYear } from './tz';
 import { scoreBranch, scoreCustomer } from './completeness';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from './create-guards';
 
@@ -189,7 +190,10 @@ export async function finalizeCreateInTx(
   }
 
   // 4. Code + Customer.
-  const nmwcCode = await allocateCustomerCode(tx, finalizedAt.getFullYear());
+  // final-hunt #27/#36: derive the NMWC-YYYY year (and its CodeSequence scope)
+  // from the Oman wall-clock, not raw UTC — otherwise a customer minted in the
+  // 00:00-03:59 Oman window on Jan 1 gets the prior year's code prefix.
+  const nmwcCode = await allocateCustomerCode(tx, omanYear(finalizedAt));
   const customer = await tx.customer.create({
     data: {
       nmwcCode,

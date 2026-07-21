@@ -14,7 +14,17 @@ describe('lib/completeness — customer scoring', () => {
         paymentTerms: 'CASH',
         notes: null,
       } as never)
-    ).toBeGreaterThan(0); // paymentTerms always set ⇒ +5
+    ).toBe(0); // final-hunt #30/#34: an empty record scores 0 (notes is the only
+    // optional dimension here and it's absent; paymentTerms no longer earns a free point)
+  });
+
+  it('notes is a live dimension — +5 only when notes present', () => {
+    const base = {
+      channelId: null, subChannelId: null, primaryPhone: null, contactPerson: null,
+      crNumber: null, crPhotoId: null, paymentTerms: 'CASH' as const,
+    };
+    expect(scoreCustomerOnly({ ...base, notes: null } as never)).toBe(0);
+    expect(scoreCustomerOnly({ ...base, notes: 'has notes' } as never)).toBe(5);
   });
 
   it('full = 40', () => {
@@ -99,8 +109,8 @@ describe('lib/completeness — customer score with branches', () => {
         status: 'ACTIVE',
       } as never,
     ]);
-    // customer: 10+5+5+5+10+5 = 40, branch portion (avg of branches): 5 → total 45
-    expect(score).toBe(45);
+    // customer: 10+5+5+5+10 = 35 (notes:null ⇒ no notes point), branch portion 5 → total 40
+    expect(score).toBe(40);
   });
 });
 

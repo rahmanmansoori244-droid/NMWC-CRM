@@ -6,6 +6,7 @@ import { Role } from '@prisma/client';
 import { loadScope, canSeeCustomer, filterBranchesByScope } from '@/lib/access';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
+import { BRANCH_MAX_SCORE } from '@/lib/completeness';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
@@ -146,7 +147,7 @@ export default async function CustomerProfilePage({
                       {b.branchCode} · {b.region.name} · {b.route.name}
                     </p>
                   </div>
-                  <CompletenessRing value={b.completenessScore} size={36} />
+                  <CompletenessRing value={b.completenessScore} max={BRANCH_MAX_SCORE} size={36} />
                 </header>
                 <Row
                   label="Address"

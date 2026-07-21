@@ -44,7 +44,10 @@ export function scoreCustomerOnly(c: CustomerForScore): number {
   if (c.contactPerson) s += 5;
   if (c.crNumber) s += 5;
   if (c.crPhotoId) s += 10;
-  if (c.notes || c.paymentTerms) s += 5;
+  // final-hunt #30/#34: paymentTerms is a required non-null enum (default CASH),
+  // so `|| c.paymentTerms` made this guard unconditionally true — the +5 was free
+  // and `notes` never affected the score. Measure the actually-optional field.
+  if (c.notes) s += 5;
   return s; // out of 40
 }
 
@@ -86,10 +89,23 @@ function average(nums: number[]): number {
 }
 
 /**
- * Returns 'high' | 'medium' | 'low' for badging.
+ * Returns 'high' | 'medium' | 'low' for badging. Takes a 0-100 PERCENTAGE, so
+ * callers scoring a branch (0-60) must normalize via completenessPct first.
  */
 export function completenessBand(score: number): 'high' | 'medium' | 'low' {
   if (score >= 80) return 'high';
   if (score >= 50) return 'medium';
   return 'low';
+}
+
+// Scale ceilings: a customer score is 0-100, a branch score is 0-60. final-hunt
+// #13: rendering a 0-60 branch score as a 0-100% ring meant branches/regions could
+// never reach 'high'/green. Normalize to a percentage against the correct max.
+export const CUSTOMER_MAX_SCORE = 100;
+export const BRANCH_MAX_SCORE = 60;
+
+/** Normalize a raw completeness score to a 0-100 percentage against its scale max. */
+export function completenessPct(score: number, max: number = CUSTOMER_MAX_SCORE): number {
+  if (max <= 0) return 0;
+  return Math.round((Math.max(0, Math.min(max, score)) / max) * 100);
 }

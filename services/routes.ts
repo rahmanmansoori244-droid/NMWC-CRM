@@ -11,7 +11,7 @@ import {
   type SafeAction,
 } from '@/lib/errors';
 import { auth } from '@/lib/auth';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 async function requireManager() {
@@ -70,6 +70,7 @@ async function createRegionCore(formData: FormData) {
     after: { code: region.code, name: region.name },
   });
   revalidatePath('/routes');
+  revalidateTag('ref:regions'); // final-hunt #25: bust the 5-min unstable_cache dropdowns
 }
 
 export async function createRouteAction(formData: FormData): SafeAction<void> {
@@ -96,6 +97,7 @@ async function createRouteCore(formData: FormData) {
     after: { code: route.code, name: route.name, regionId: route.regionId },
   });
   revalidatePath('/routes');
+  revalidateTag('ref:routes'); // final-hunt #25
 }
 
 export async function toggleRegionActiveAction(formData: FormData): SafeAction<void> {
@@ -121,6 +123,7 @@ async function toggleRegionActiveCore(formData: FormData) {
     reason: updated.isActive ? 'enabled' : 'disabled',
   });
   revalidatePath('/routes');
+  revalidateTag('ref:regions'); // final-hunt #25: getAllActiveRegions filters on isActive
 }
 
 export async function toggleRouteActiveAction(formData: FormData): SafeAction<void> {
@@ -146,4 +149,5 @@ async function toggleRouteActiveCore(formData: FormData) {
     reason: updated.isActive ? 'enabled' : 'disabled',
   });
   revalidatePath('/routes');
+  revalidateTag('ref:routes'); // final-hunt #25
 }

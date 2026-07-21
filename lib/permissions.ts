@@ -227,6 +227,18 @@ export const MANAGER_ADMINISTRABLE_ROLES: Role[] = [
 ];
 
 /**
+ * The roles a given viewer may CREATE/assign — the single source of truth shared
+ * by the server guard (services/users.ts) and the /users role dropdown, so the UI
+ * can never offer a role the server would reject (final-hunt #29). A MANAGER is
+ * capped at the field force; a STEWARD (org data-admin) may provision any role.
+ */
+export function administrableRolesFor(viewerRole: Role): Role[] {
+  if (viewerRole === Role.MANAGER) return MANAGER_ADMINISTRABLE_ROLES;
+  if (viewerRole === Role.STEWARD) return Object.values(Role);
+  return [];
+}
+
+/**
  * RBAC-05-006 / AUTH-07 / AUTH-08 / SR-USR-01: peer, approver and last-Manager
  * protections. `canMutateUser` decides whether `actor` may toggle isActive /
  * reset password / change role on `target`. Used by services/users.ts.

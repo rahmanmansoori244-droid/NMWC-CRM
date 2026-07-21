@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { completenessBand } from '@/lib/completeness';
+import { completenessBand, completenessPct } from '@/lib/completeness';
 
 const BAND_COLOR: Record<'high' | 'medium' | 'low', string> = {
   high: 'text-emerald-600',
@@ -9,18 +9,23 @@ const BAND_COLOR: Record<'high' | 'medium' | 'low', string> = {
 
 export function CompletenessRing({
   value,
+  max = 100,
   size = 40,
   strokeWidth = 4,
   className,
   label,
 }: {
   value: number;
+  /** Scale ceiling for `value`: 100 for a customer score, 60 for a branch score. */
+  max?: number;
   size?: number;
   strokeWidth?: number;
   className?: string;
   label?: string;
 }) {
-  const pct = Math.max(0, Math.min(100, value));
+  // final-hunt #13: normalize to a 0-100 percentage against the correct scale max
+  // so a branch (0-60) can reach 'high'/green, not just customers (0-100).
+  const pct = completenessPct(value, max);
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (pct / 100) * circumference;
