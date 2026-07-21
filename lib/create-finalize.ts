@@ -67,7 +67,7 @@ function extraIds(draft: EditBranchDraft): string[] {
  */
 async function allocateCustomerCode(tx: Tx, year: number): Promise<string> {
   const scope = `CUSTOMER-${year}`;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
     const rows = await tx.$queryRaw<Array<{ next: number }>>`
       INSERT INTO "CodeSequence" ("scope", "next") VALUES (${scope}, 2)
       ON CONFLICT ("scope") DO UPDATE SET "next" = "CodeSequence"."next" + 1
@@ -76,6 +76,23 @@ async function allocateCustomerCode(tx: Tx, year: number): Promise<string> {
     const code = formatCustomerCode(year, seq);
     const taken = await tx.customer.findUnique({ where: { nmwcCode: code }, select: { id: true } });
     if (!taken) return code;
+    // Collision => the counter is BEHIND pre-existing NMWC-YYYY-formatted codes.
+    // That happens whenever formatted codes entered the table WITHOUT going
+    // through this counter: a DB restore, a migration backfill, a manual insert,
+    // or a seed that wrote NMWC-YYYY codes directly. A fixed number of +1 steps
+    // would never catch up and net-new customer creation would be permanently
+    // bricked (CODE_ALLOCATION_FAILED forever). Self-heal instead: fast-forward
+    // the counter PAST the highest existing code for this year, then retry.
+    // GREATEST() keeps the counter monotonic under a concurrent bump so two
+    // finalizes racing the recovery still get distinct sequence numbers.
+    const maxRows = await tx.$queryRaw<Array<{ maxseq: number | null }>>`
+      SELECT MAX(CAST(SPLIT_PART("nmwcCode", '-', 3) AS INTEGER)) AS maxseq
+      FROM "Customer"
+      WHERE "nmwcCode" LIKE ${`NMWC-${year}-%`}`;
+    const maxSeq = Number(maxRows[0]?.maxseq ?? 0);
+    await tx.$executeRaw`
+      INSERT INTO "CodeSequence" ("scope", "next") VALUES (${scope}, ${maxSeq + 1})
+      ON CONFLICT ("scope") DO UPDATE SET "next" = GREATEST("CodeSequence"."next", ${maxSeq + 1})`;
   }
   throw new ConflictError(
     'CODE_ALLOCATION_FAILED',

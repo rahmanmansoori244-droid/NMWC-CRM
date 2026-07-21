@@ -523,6 +523,15 @@ async function seedCustomers() {
       }
     }
   }
+
+  // Keep the customer-code counter in step with the seeded NMWC-YYYY codes so the
+  // create-flow finalize allocates the next FREE code instead of colliding with a
+  // seeded one (otherwise the first ~N net-new creates fail CODE_ALLOCATION_FAILED
+  // on a seeded env). `seq` is the next unused sequence. The finalize allocator
+  // also self-heals, but a synced counter avoids that recovery path entirely.
+  await prisma.$executeRaw`
+    INSERT INTO "CodeSequence" ("scope", "next") VALUES (${`CUSTOMER-${year}`}, ${seq})
+    ON CONFLICT ("scope") DO UPDATE SET "next" = GREATEST("CodeSequence"."next", ${seq})`;
 }
 
 function pickShopName(channelKey: string): string {
