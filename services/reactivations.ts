@@ -27,6 +27,22 @@ async function require(role?: Role[]) {
 }
 
 /**
+ * A customer may have only ONE open edit at a time (CustomerEdit_open_per_customer
+ * partial-unique index). A reactivation or close-shop submitted while an unrelated
+ * change is still pending trips a raw P2002 — an opaque UNIQUE_CONSTRAINT dead-end
+ * for the salesman (final-hunt #16/#24). Translate it into an actionable message.
+ */
+function asOpenEditConflict(err: unknown): never {
+  if ((err as { code?: string }).code === 'P2002') {
+    throw new ConflictError(
+      'OPEN_EDIT_EXISTS',
+      'This customer already has a pending change awaiting review. That must be approved or rejected before you can submit another.'
+    );
+  }
+  throw err;
+}
+
+/**
  * Salesman submits a reactivation request for a CLOSED branch.
  *
  * QA-008 fix: requires a fresh photo (≤24h old) attached to this branch as
@@ -127,7 +143,7 @@ async function requestReactivationCore(formData: FormData): Promise<{ editId: st
         { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
       ] as unknown as Prisma.InputJsonValue,
     },
-  });
+  }).catch(asOpenEditConflict);
 
   logger.info({ editId: edit.id, by: me.id }, 'reactivation.request');
   revalidatePath('/work');
@@ -228,7 +244,7 @@ async function markBranchClosedCore(formData: FormData): Promise<{ editId: strin
         { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
       ] as unknown as Prisma.InputJsonValue,
     },
-  });
+  }).catch(asOpenEditConflict);
   logger.info({ editId: edit.id, by: me.id }, 'branch.close.request');
   revalidatePath('/work');
   revalidatePath(`/customers/${branch.customerId}`);
