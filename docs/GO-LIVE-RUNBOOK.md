@@ -72,6 +72,7 @@ importer enforces most of the order, but not all of it.
 | Symptom | What it means | Do |
 |---|---|---|
 | Account master lists issues for salesman rows: *route "X" not found* | A route code in the Users sheet is not in the Routes sheet. | Rebuild the files; the builder guarantees consistency. |
+| Account master upload fails with a timeout / gateway error | The Users sheet creates ~95 accounts in one request, each with a deliberately slow password hash; on a slow day that can brush the 60-second request limit. | Nothing is lost — whatever was applied stays applied. Split the **Users** sheet in two (keep Regions/Routes in both, they are idempotent) and upload each half. Re-importing an already-created user is safe: it keeps their password. |
 | Many customer rows QUARANTINED for *duplicate phone* | A phone shared across customers that the builder did not catch. | Review; if genuine duplicates, merge later — they will not block the rest. |
 | Promote stops with *"Stopped — N rows made no progress"* | Repeated technical failures on the same customers. | Do not keep clicking. Screenshot and call IT. |
 | Promote refused: *"Another customer import is being promoted"* | Someone else (or an earlier tab) holds the batch. | Wait a minute and resume; only one load runs at a time by design. |
