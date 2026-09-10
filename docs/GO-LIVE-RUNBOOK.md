@@ -147,11 +147,11 @@ master is 20,129); every exported phone number came out as `'+968…` (formula g
 and nothing hydrated on a local `next dev` server (CSP without `'unsafe-eval'` in
 development), which is why no browser walk had ever been run before.
 
-**Mandatory fields — a decision for the owner.** By default a salesman can only submit
-when channel, sub-channel, phone, contact person, CR number (CASH customers), CR photo,
-address, GPS, day of visit, shop photo **and** signboard photo are all present. The
-imported data has none of the photos, GPS or sub-channels, and most customers are
-individuals / home-delivery addresses with no CR and no signboard — so under this rule
-they can never be submitted. `SALESMAN_SUBMIT_GATE=CORE` (a Vercel environment
-variable, no deploy) reduces the blocking set to phone, contact person, address, GPS
-and shop photo; the rest stay on the form and in the completeness score.
+**Mandatory fields — decided 2026-09-10 (owner): CORE.** A salesman can submit once
+**phone, contact person, address, GPS and the shop-front photo** are present; channel
+comes from the import. Sub-channel, CR number, CR document photo, day of visit and the
+signboard photo stay on the form and count toward completeness but do not block
+submit — the imported data has none of them, and most customers are individuals /
+home-delivery addresses with no CR and no signboard. The stricter enrichment-campaign
+rule (all of the above) is one Vercel environment variable away:
+`SALESMAN_SUBMIT_GATE=FULL` (no deploy needed).

@@ -268,7 +268,7 @@ test('salesman: route-code login, forced password change, Today, search, enrich 
   await expect(page.getByText(/cannot submit yet/i)).toBeVisible();
 
   // 5. fields
-  const subSelect = page.locator('label:text-is("Sub-channel *") + select');
+  const subSelect = page.locator('label:has-text("Sub-channel") + select');
   await subSelect.selectOption({ index: 1 });
   await field(page, 'Primary phone *').fill('+968 9555 1234');
   await field(page, 'Contact person *').fill('Salim Al Balushi');

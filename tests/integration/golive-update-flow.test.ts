@@ -363,7 +363,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
   });
 
   // ── 2. the mandatory-field gate (documents current behaviour) ─────────────
-  it('documents the submit gate: an imported customer cannot be submitted until every mandatory field + photo is filled', async () => {
+  it('documents the submit gate (CORE, owner decision 2026-09-10): phone, contact, address, GPS and shop photo block a submit; CR / sub-channel / signboard / day do not', async () => {
     asSalesman();
     const customerId = ids.customerIds[1]!; // the individual: no phone, no contact, no CR
     const branchId = ids.branchIds[`${sfx}002`]!;
@@ -378,16 +378,20 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const missing = Object.keys(res.fields ?? {});
     expect(missing).toEqual(
       expect.arrayContaining([
-        'customer.subChannelId',
         'customer.contactPerson',
-        'customer.crNumber',
-        'customer.crPhoto',
         `branch.${branchId}.gps`,
-        `branch.${branchId}.dayOfVisit`,
         `branch.${branchId}.shopPhoto`,
-        `branch.${branchId}.signboardPhoto`,
       ])
     );
+    for (const notBlocking of [
+      'customer.subChannelId',
+      'customer.crNumber',
+      'customer.crPhoto',
+      `branch.${branchId}.dayOfVisit`,
+      `branch.${branchId}.signboardPhoto`,
+    ]) {
+      expect(missing, `${notBlocking} must not block under CORE`).not.toContain(notBlocking);
+    }
     // A draft is always allowed — the salesman can save partial work.
     const draft = await edits.submitEditAction({
       customerId,

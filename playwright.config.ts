@@ -9,7 +9,9 @@ export default defineConfig({
   // The go-live browser walk drives a `next dev` server (first-hit compiles
   // take tens of seconds per route) against a remote DB.
   timeout: 300_000,
-  expect: { timeout: 45_000 },
+  // A cold `next dev` route (first hit after start, machine under load) can take
+  // well over a minute to compile before the router can even redirect.
+  expect: { timeout: 120_000 },
   use: {
     baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:3000',
     trace: 'on-first-retry',

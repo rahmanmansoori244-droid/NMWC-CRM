@@ -358,16 +358,17 @@ const SALESMAN_EN: Guide = {
     },
     {
       number: 4,
-      title: 'Take the three required photos',
-      intro: 'Always take fresh photos at the shop today. Old gallery photos are rejected.',
+      title: 'Take the photos',
+      intro:
+        'Always take fresh photos at the shop today. Old gallery photos are rejected. The shop-front photo is required to submit; the others raise the completeness score.',
       steps: [
         {
           html: 'Tap an empty photo slot. Your camera opens.',
           img: '06-salesman-enrichment-photos.png',
         },
-        { html: '<strong>Shop front</strong> — clearly shows the entrance.' },
-        { html: "<strong>Signboard</strong> — the shop's sign with its name." },
-        { html: '<strong>CR document</strong> — the legal commercial registration paper.' },
+        { html: '<strong>Shop front</strong> (required) — clearly shows the entrance. For a home-delivery customer, the building entrance.' },
+        { html: "<strong>Signboard</strong> — the shop's sign with its name, when the shop has one." },
+        { html: '<strong>CR document</strong> — the legal commercial registration paper, when the customer is a registered business.' },
         {
           html: 'The app uploads automatically. If your network is weak, it retries on its own. If still failing, tap <strong>Retry upload</strong> — your photo is saved, no need to retake.',
         },
@@ -1438,16 +1439,17 @@ const SALESMAN_AR: Guide = {
     },
     {
       number: 4,
-      title: 'التقاط الصور الثلاث المطلوبة',
-      intro: 'دائمًا التقط صورًا جديدة في المحل اليوم. الصور القديمة من المعرض مرفوضة.',
+      title: 'التقاط الصور',
+      intro:
+        'دائمًا التقط صورًا جديدة في المحل اليوم. الصور القديمة من المعرض مرفوضة. صورة واجهة المحل مطلوبة للإرسال؛ الصور الأخرى ترفع نسبة الاكتمال.',
       steps: [
         {
           html: 'اضغط على خانة صورة فارغة. الكاميرا ستفتح.',
           img: '06-salesman-enrichment-photos.png',
         },
-        { html: '<strong>واجهة المحل</strong> — تظهر مدخل المحل بوضوح.' },
-        { html: '<strong>اللافتة</strong> — لافتة المحل التي يظهر عليها الاسم.' },
-        { html: '<strong>السجل التجاري</strong> — وثيقة السجل التجاري الرسمية.' },
+        { html: '<strong>واجهة المحل</strong> (مطلوبة) — تظهر مدخل المحل بوضوح. لعميل التوصيل المنزلي: مدخل المبنى.' },
+        { html: '<strong>اللافتة</strong> — لافتة المحل التي يظهر عليها الاسم، إن وُجدت.' },
+        { html: '<strong>السجل التجاري</strong> — وثيقة السجل التجاري الرسمية، إذا كان العميل منشأة مسجّلة.' },
         {
           html: 'التطبيق يرفع الصورة تلقائيًا. إذا كانت شبكتك ضعيفة، يحاول مرة أخرى لوحده. إذا فشل، اضغط <strong>إعادة الرفع</strong> — صورتك محفوظة، لا تحتاج لإعادة التقاطها.',
         },

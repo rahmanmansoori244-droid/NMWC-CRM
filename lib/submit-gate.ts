@@ -4,21 +4,21 @@
  * submit AND the EL-04 approve-time re-check) and the client mirror
  * (EnrichmentForm), so the two can never disagree.
  *
- *   FULL (default, PRD §6): channel, sub-channel, phone, contact person,
- *        CR number (CASH), CR photo, address, GPS, day of visit, shop photo,
- *        signboard photo.
- *   CORE (go-live option): channel, phone, contact person, address, GPS,
- *        shop photo. Sub-channel, CR number/photo, day of visit and signboard
- *        stay on the form and in the completeness score but do not block
- *        submit — most imported customers are individuals / home-delivery
- *        addresses that have no CR and no signboard at all.
+ *   CORE (default — owner decision 2026-09-10 for the go-live): channel,
+ *        phone, contact person, address, GPS, shop photo. Sub-channel, CR
+ *        number/photo, day of visit and signboard stay on the form and in the
+ *        completeness score but do not block submit — most imported customers
+ *        are individuals / home-delivery addresses that have no CR and no
+ *        signboard at all, so the FULL rule could never be satisfied for them.
+ *   FULL (PRD §6, the enrichment-campaign rule): also sub-channel, CR number
+ *        (CASH), CR photo, day of visit, signboard photo.
  *
- * Set SALESMAN_SUBMIT_GATE=CORE in the environment to switch; no code change.
+ * Set SALESMAN_SUBMIT_GATE=FULL in the environment to switch; no code change.
  */
 export type SubmitGate = 'FULL' | 'CORE';
 
 export function salesmanSubmitGate(): SubmitGate {
-  return process.env.SALESMAN_SUBMIT_GATE === 'CORE' ? 'CORE' : 'FULL';
+  return process.env.SALESMAN_SUBMIT_GATE === 'FULL' ? 'FULL' : 'CORE';
 }
 
 /** Checks skipped under the CORE gate (keys match collectMissingMandatory / the form). */
