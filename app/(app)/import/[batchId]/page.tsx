@@ -1,7 +1,7 @@
 import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { Role } from '@prisma/client';
+import { ImportRowState, Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { PromoteButton } from './PromoteButton';
 
@@ -33,22 +33,57 @@ export default async function ImportBatchPage({
     grouped[r.state]!.push(r);
   }
 
+  // RK-3: promote runs in slices, so "how much is left" is the live CLEAN count,
+  // not the batch's original cleanRows (which never changes once parsed).
+  const remainingClean =
+    batch.kind === 'CUSTOMER'
+      ? await prisma.importRow.count({ where: { batchId, state: ImportRowState.CLEAN } })
+      : 0;
+  const promotable = batch.status === 'READY' || batch.status === 'PROMOTING';
+  const leaseHeld = !!batch.promoteLeaseUntil && batch.promoteLeaseUntil > new Date();
+  // PROMOTING with no live lease = a slice was interrupted (tab closed, timeout,
+  // network drop). Committed rows are safe; the batch just needs resuming.
+  const interrupted = batch.status === 'PROMOTING' && !leaseHeld;
+
   return (
     <main>
       <PageHeader
         title={batch.filename}
         subtitle={`${batch.kind} import · ${batch.totalRows} rows · ${batch.status}`}
         actions={
-          batch.kind === 'CUSTOMER' && batch.status === 'READY' ? (
-            <PromoteButton batchId={batch.id} cleanCount={batch.cleanRows} />
+          batch.kind === 'CUSTOMER' && promotable ? (
+            <PromoteButton
+              batchId={batch.id}
+              remainingCount={remainingClean}
+              resume={batch.status === 'PROMOTING'}
+              leaseHeld={leaseHeld}
+            />
           ) : null
         }
       />
-      <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4 sm:p-6">
+      {interrupted && (
+        <div className="mx-4 mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-inset ring-amber-200 sm:mx-6">
+          <strong className="font-semibold">Promote interrupted.</strong>{' '}
+          {remainingClean > 0 ? (
+            <>
+              The {batch.promotedRows.toLocaleString()} rows already promoted are saved —{' '}
+              {remainingClean.toLocaleString()} still to go. Click{' '}
+              <span className="font-semibold">Resume promote</span> to continue where it stopped.
+            </>
+          ) : (
+            <>
+              Every row has been dealt with, but the batch was never closed off. Click{' '}
+              <span className="font-semibold">Finish promote</span> to complete it.
+            </>
+          )}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-5 sm:p-6">
         <Stat label="Total" value={batch.totalRows} />
         <Stat label="Clean" value={batch.cleanRows} tone="green" />
         <Stat label="Quarantined" value={batch.quarantinedRows} tone="amber" />
         <Stat label="Promoted" value={batch.promotedRows} tone="blue" />
+        <Stat label="Left to promote" value={remainingClean} />
       </div>
 
       <section className="px-4 pb-6 sm:px-6">
@@ -76,7 +111,7 @@ export default async function ImportBatchPage({
                   <td className="px-3 py-2 text-amber-700">
                     {r.issues ? JSON.stringify(r.issues) : '—'}
                   </td>
-                  <td className="px-3 py-2 max-w-[600px] break-words font-mono text-[11px] text-slate-600">
+                  <td className="max-w-[600px] break-words px-3 py-2 font-mono text-[11px] text-slate-600">
                     {r.parsed ? JSON.stringify(r.parsed) : JSON.stringify(r.raw)}
                   </td>
                 </tr>

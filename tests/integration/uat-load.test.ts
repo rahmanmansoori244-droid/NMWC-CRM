@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { promoteFully } from '../support/promote';
 
 vi.setConfig({ testTimeout: 900_000, hookTimeout: 120_000 });
 
@@ -51,11 +52,8 @@ describe.skipIf(!ENABLED)('UAT load: import 300+ synthetic master into the live 
     const upData = (up as { ok: true; data: { batchId: string; clean: number; quarantined: number } }).data;
     console.log('UPLOAD:', JSON.stringify(upData));
 
-    const pfd = new FormData(); pfd.set('batchId', upData.batchId);
-    const pr = await imports.promoteCustomerBatchAction(pfd);
-    if (!pr.ok) console.error('PROMOTE FAILED:', JSON.stringify(pr));
-    expect(pr.ok).toBe(true);
-    const prData = (pr as { ok: true; data: { promoted: number; failed: number } }).data;
+    // RK-3: a master this size no longer fits in one request — drive the slices.
+    const prData = await promoteFully(imports, upData.batchId);
     console.log('PROMOTE:', JSON.stringify(prData));
 
     const after = await prisma.customer.count();

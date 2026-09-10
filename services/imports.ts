@@ -20,6 +20,7 @@ import { scoreCustomer } from '@/lib/completeness';
 import bcrypt from 'bcryptjs';
 import { logger } from '@/lib/logger';
 import { notifyUsers } from '@/lib/notifications';
+import { randomUUID } from 'node:crypto';
 
 // RBAC-05-009 / PRD §4: import is Steward-only. The previous lax gate accepted
 // MANAGER too, conflating Steward (master-data ops) and Manager (people ops)
@@ -826,45 +827,142 @@ async function uploadCustomerMasterCore(
   return { batchId: batch.id, clean, quarantined };
 }
 
+/**
+ * RK-3: one call promotes as much of a batch as fits in a time slice.
+ * `done` is false while CLEAN rows remain — the caller re-invokes until it is true.
+ */
+export type PromoteSliceResult = {
+  promoted: number;
+  /** customers (groups) that failed, not rows — `promoted` counts rows. */
+  failed: number;
+  remaining: number;
+  done: boolean;
+  /**
+   * Opaque continuation token. The caller MUST pass it back on the next slice: it
+   * both proves this run still owns the batch (so it can carry on without waiting
+   * out its own lease) and stops a run that has already lost the batch from
+   * carrying on regardless. Absent once `done`.
+   */
+  leaseToken?: string;
+};
+
+/**
+ * How long a single promote invocation may work before yielding. The budget is
+ * checked between customers, so the true worst case is this PLUS one full
+ * transaction (20s) plus its connection wait — sized to stay inside vercel.json's
+ * `maxDuration: 60` so a slice always commits its progress instead of being killed.
+ */
+function promoteSliceBudgetMs(): number {
+  const raw = Number(process.env.PROMOTE_SLICE_BUDGET_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return 15_000;
+  // Clamped: a misconfigured env var must not be able to push a slice past the
+  // function limit (budget + one 20s transaction + its connection wait).
+  return Math.min(raw, 25_000);
+}
+/**
+ * Lease lifetime while a slice is executing. MUST exceed `maxDuration` — otherwise
+ * a slice still running could have its lease expire and a second worker would start
+ * on the same batch.
+ */
+const PROMOTE_LEASE_MS = 90_000;
+/**
+ * Lease lifetime BETWEEN slices of the same run. The run comes straight back (well
+ * inside this), so the batch keeps reading as "in progress" rather than flickering
+ * to "interrupted" between every pass — while an abandoned run still frees the
+ * batch quickly instead of holding it for the full lease.
+ */
+const PROMOTE_HANDOFF_GRACE_MS = 20_000;
+
 export async function promoteCustomerBatchAction(
   formData: FormData
-): SafeAction<{ promoted: number; failed: number }> {
+): SafeAction<PromoteSliceResult> {
   return runAction(() => promoteCustomerBatchCore(formData));
 }
 
-async function promoteCustomerBatchCore(
-  formData: FormData
-): Promise<{ promoted: number; failed: number }> {
+async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSliceResult> {
   const me = await requireSteward();
   const batchId = String(formData.get('batchId') ?? '');
   if (!batchId) throw new ValidationError({ batchId: 'required' });
-  // F-07: claim the batch atomically. updateMany returns count=1 only for the
-  // first promote of a READY batch — subsequent re-clicks (or two Stewards)
-  // see count=0 and surface a clear conflict instead of interleaving upserts.
+
+  // Kind is checked BEFORE the claim: an ACCOUNT batch must never be moved into
+  // PROMOTING (a state the customer resume path owns) just to be rejected.
+  const preflight = await prisma.importBatch.findUnique({
+    where: { id: batchId },
+    select: { kind: true },
+  });
+  if (!preflight) throw new ValidationError({ batchId: 'not found' });
+  if (preflight.kind !== 'CUSTOMER')
+    throw new ValidationError({ batchId: 'not a customer import' });
+
+  const now = new Date();
+  // The token identifies THIS slice, not merely this user — the same steward in two
+  // tabs must not be able to pass for one another. Every lease write is guarded by
+  // it, so a slow worker that wakes up after its lease was taken over cannot clear
+  // the new owner's lease and silently break mutual exclusion.
+  const priorToken = String(formData.get('leaseToken') ?? '');
+  const leaseToken = `${me.id}:${randomUUID()}`;
+  // F-07 + RK-3: claim the batch atomically. This single compare-and-set covers the
+  // first slice (READY → PROMOTING), a resume of an abandoned batch (PROMOTING with
+  // no live lease), and this run continuing to its own next slice (matching token,
+  // which is why a run need not wait out the lease it just set). Two Stewards, a
+  // double-click, or a stray retry cannot interleave: exactly one caller gets count=1.
   const claim = await prisma.importBatch.updateMany({
-    where: { id: batchId, status: 'READY' },
-    data: { status: 'PROMOTING' },
+    where: {
+      id: batchId,
+      OR: [
+        { status: 'READY' },
+        // Nothing writes FAILED any more; accepting it lets a batch left behind by
+        // the old single-pass promote be recovered rather than stranded forever.
+        { status: 'FAILED' },
+        { status: 'PROMOTING', promoteLeaseUntil: null },
+        { status: 'PROMOTING', promoteLeaseUntil: { lt: now } },
+        ...(priorToken ? [{ status: 'PROMOTING' as const, promoteLeaseBy: priorToken }] : []),
+      ],
+    },
+    data: {
+      status: 'PROMOTING',
+      promoteLeaseBy: leaseToken,
+      promoteLeaseUntil: new Date(now.getTime() + PROMOTE_LEASE_MS),
+    },
   });
   if (claim.count === 0) {
     const cur = await prisma.importBatch.findUnique({
       where: { id: batchId },
-      select: { status: true },
+      select: { status: true, promoteLeaseUntil: true },
     });
+    // A live lease is "someone is promoting right now", not "wrong state" — say so,
+    // otherwise a steward watching a slow load thinks the batch is broken.
+    if (cur?.status === 'PROMOTING' && cur.promoteLeaseUntil && cur.promoteLeaseUntil > now) {
+      throw new ValidationError({
+        batchId: 'This batch is being promoted right now — wait for it to finish, then resume.',
+      });
+    }
     throw new ValidationError({
-      batchId: `Batch is in state ${cur?.status ?? '<missing>'} — only READY batches can be promoted.`,
+      batchId: `Batch is in state ${cur?.status ?? '<missing>'} — only READY or interrupted batches can be promoted.`,
     });
   }
-  // final-hunt #23: once claimed READY→PROMOTING, any UNEXPECTED throw before the
-  // final PROMOTED update (per-group failures are already caught below) must RELEASE
-  // the batch — otherwise it is stranded in PROMOTING forever and can never be
-  // re-promoted or recovered. Move it to FAILED (a terminal, visible state) and
-  // rethrow so runAction still surfaces the error to the steward.
+  // final-hunt #23 (revised for RK-3): once claimed, any UNEXPECTED throw must not
+  // leave the batch holding a lease nobody owns — it would be unresumable until the
+  // lease expired. Release the lease in the catch; the batch stays PROMOTING, which
+  // now means "interrupted, resumable" rather than a dead end.
   try {
-    const batch = await prisma.importBatch.findUniqueOrThrow({ where: { id: batchId } });
-    if (batch.kind !== 'CUSTOMER') throw new ValidationError({ batchId: 'not a customer import' });
+    // RK-3: reference data is read ONCE per slice. It used to be a findUnique for
+    // the region AND a findUnique for the route on EVERY row — 2 sequential network
+    // round trips per row, which on a 3,300-row master was the single largest cost
+    // in the whole promote (~6,600 queries before any work happened).
+    const [allRegions, allRoutes] = await Promise.all([
+      prisma.region.findMany({ select: { id: true, code: true } }),
+      prisma.route.findMany({ select: { id: true, code: true, regionId: true } }),
+    ]);
+    const regionByCode = new Map(allRegions.map((r) => [r.code.toUpperCase(), r]));
+    const routeByCode = new Map(allRoutes.map((r) => [r.code.toUpperCase(), r]));
 
+    // Only `parsed` is needed to promote; `raw` is the (much larger) original sheet
+    // row and is never read here. Selecting it would move megabytes per slice.
     const cleanRows = await prisma.importRow.findMany({
       where: { batchId, state: ImportRowState.CLEAN },
+      select: { id: true, parsed: true },
+      orderBy: { rowNumber: 'asc' },
     });
 
     // Group rows by parent custCode
@@ -897,18 +995,25 @@ async function promoteCustomerBatchCore(
       groups.set(p.custCode, g);
     }
 
-    // Build region+route caches and ensure UNASSIGNED route exists
-    let unassignedRoute = await prisma.route.findUnique({ where: { code: 'UNASSIGNED' } });
+    // Ensure the UNASSIGNED region+route pair exists — the fail-safe landing place
+    // for rows whose route is unknown. Served from the maps loaded above; only the
+    // very first import of a fresh database actually creates them.
+    let unassignedRoute = routeByCode.get('UNASSIGNED') ?? null;
     if (!unassignedRoute) {
-      let unassignedRegion = await prisma.region.findUnique({ where: { code: 'UNASSIGNED' } });
-      if (!unassignedRegion) {
-        unassignedRegion = await prisma.region.create({
+      let unassignedRegionId = regionByCode.get('UNASSIGNED')?.id ?? null;
+      if (!unassignedRegionId) {
+        const createdRegion = await prisma.region.create({
           data: { code: 'UNASSIGNED', name: 'Unassigned' },
+          select: { id: true, code: true },
         });
+        regionByCode.set('UNASSIGNED', createdRegion);
+        unassignedRegionId = createdRegion.id;
       }
       unassignedRoute = await prisma.route.create({
-        data: { code: 'UNASSIGNED', name: 'Unassigned', regionId: unassignedRegion.id },
+        data: { code: 'UNASSIGNED', name: 'Unassigned', regionId: unassignedRegionId },
+        select: { id: true, code: true, regionId: true },
       });
+      routeByCode.set('UNASSIGNED', unassignedRoute);
     }
 
     // QA-019: each customer's promotion (parent + branches + row state) runs
@@ -918,7 +1023,14 @@ async function promoteCustomerBatchCore(
     // tuple that the UI surfaces in the toast — no more silent swallow.
     let promoted = 0;
     const failures: Array<{ custCode: string; rowIds: string[]; reason: string }> = [];
+    // RK-3: yield the slice once the budget is spent. The check is at the TOP of the
+    // loop, so a slice always makes progress on at least one customer — a batch can
+    // never livelock by repeatedly yielding before doing any work.
+    const deadline = Date.now() + promoteSliceBudgetMs();
+    let processedGroups = 0;
     for (const [custCode, g] of groups) {
+      if (processedGroups > 0 && Date.now() >= deadline) break;
+      processedGroups++;
       const first = g.parsed[0];
 
       // Pre-resolve regions and routes outside the transaction (these are upserts
@@ -938,15 +1050,14 @@ async function promoteCustomerBatchCore(
         // Manager later falls into them). Only Existing region/route codes
         // resolve; everything else falls back to UNASSIGNED with a flag in
         // the audit log so the Steward can fix.
-        const region = p.regionCode
-          ? await prisma.region.findUnique({ where: { code: p.regionCode.toUpperCase() } })
-          : null;
+        // RK-3: resolved from the per-slice maps, not a query per row. Reference data
+        // (regions/routes) is administered by the Steward and is not mutated by this
+        // loop, so a snapshot taken at the top of the slice is authoritative for it.
+        const region = p.regionCode ? (regionByCode.get(p.regionCode.toUpperCase()) ?? null) : null;
         if (p.regionCode && !region) {
           groupResolveErrors.push(`region "${p.regionCode}" not found`);
         }
-        const route = p.routeCode
-          ? await prisma.route.findUnique({ where: { code: p.routeCode.toUpperCase() } })
-          : null;
+        const route = p.routeCode ? (routeByCode.get(p.routeCode.toUpperCase()) ?? null) : null;
         if (p.routeCode && !route) {
           groupResolveErrors.push(`route "${p.routeCode}" not found`);
         }
@@ -1056,235 +1167,246 @@ async function promoteCustomerBatchCore(
 
       try {
         let refreshedRow = false;
-        await prisma.$transaction(async (tx) => {
-          const pt = first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH';
-          const existing = await tx.customer.findUnique({
-            where: { nmwcCode: custCode },
-            select: {
-              id: true,
-              temixCode: true,
-              paymentTerms: true,
-              deletedAt: true,
-              createdById: true,
-              legalName: true,
-            },
-          });
-
-          // ── Phase 1 Temix crosswalk guards (rows carrying temix_code) ──
-          // Quarantine-style rejection, never silent overwrite: the crosswalk
-          // is a join (owner-locked nmwcCode == temixCode for migrated rows),
-          // so a code landing on a different customer, or disagreeing with an
-          // already-recorded code, is Steward-review territory.
-          if (first.temixCode) {
-            // NO deletedAt filter (adversarial-review CONFIRMED fix): an
-            // ARCHIVED customer holding this code has a DEACTIVATE for it
-            // queued/in-flight — re-attaching the code to a live customer
-            // would let that DEACTIVATE kill the live record in Temix.
-            const codeOwner = await tx.customer.findFirst({
-              where: {
-                temixCode: first.temixCode,
-                nmwcCode: { not: custCode },
-              },
-              select: { nmwcCode: true, deletedAt: true },
-            });
-            if (codeOwner) {
-              throw new Error(
-                `CROSSWALK:temix_code already recorded on ${codeOwner.nmwcCode}${codeOwner.deletedAt ? ' (archived — its Temix deactivation may be in flight)' : ''} — steward review`
-              );
-            }
-            if (existing?.temixCode && existing.temixCode !== first.temixCode) {
-              throw new Error(
-                'CROSSWALK:temix_code conflicts with the code already recorded for this customer — steward review'
-              );
-            }
-            // An archived customer must not be mutated (or its in-flight
-            // deactivation settled) by a stale Temix extract that still lists
-            // it — resolve the deactivation first.
-            if (existing?.deletedAt) {
-              throw new Error(
-                'CROSSWALK:customer is archived in the CRM — resolve its Temix deactivation before refreshing'
-              );
-            }
-          }
-
-          const isRefresh = !!existing && !existing.deletedAt && !!first.temixCode;
-          refreshedRow = isRefresh;
-          let customerId: string;
-          if (isRefresh) {
-            // ── Temix REFRESH row (existing live customer + temix_code) ──
-            // Narrow, Temix-OWNED update only: crosswalk code + payment terms +
-            // credit figures (owner-locked: authoritative from Temix). CRM-
-            // enriched identity/contact data (legalName, phone, CR, contact)
-            // and ALL branch operational data are CRM-owned — a refresh must
-            // not clobber them (field-ownership matrix, sla-notif-sync §3.5).
-            //
-            // Presence-aware (adversarial-review CONFIRMED fix): an ABSENT
-            // payment_terms column means "keep the customer's current terms" —
-            // only an explicit CASH may clear credit figures, and credit
-            // figures apply only while the customer is (or becomes) CREDIT.
-            const ptPresent = first.paymentTermsPresent === true;
-            const effectiveTerms = ptPresent ? pt : existing!.paymentTerms;
-            await tx.customer.update({
-              where: { id: existing!.id },
-              data: {
-                temixCode: first.temixCode,
-                paymentTerms: ptPresent ? pt : undefined,
-                creditLimit:
-                  effectiveTerms === 'CREDIT'
-                    ? (first.creditLimit ?? undefined)
-                    : ptPresent
-                      ? null
-                      : undefined,
-                paymentTermDays:
-                  effectiveTerms === 'CREDIT'
-                    ? (first.paymentTermDays ?? undefined)
-                    : ptPresent
-                      ? null
-                      : undefined,
-                lastEditedById: me.id,
-                // B-05: make the refresh visible to the optimistic lock so a
-                // concurrent edit-approve sees VERSION_CONFLICT, not a silent
-                // revert of Temix-authoritative fields.
-                version: { increment: 1 },
-              },
-            });
-            // Blueprint §8.3: the inbound refresh is what flips UPLOADED →
-            // SYNCED. Guarded so a PENDING_UPLOAD row (correction approved
-            // after the last batch) keeps its place in the queue.
-            await tx.customer.updateMany({
-              where: { id: existing!.id, temixSyncState: 'UPLOADED' },
-              data: { temixSyncState: 'SYNCED' },
-            });
-            // TEMIX_SYNC_ACKED: the ERP code just landed for the first time —
-            // tell the originating submitter their customer is live in Temix.
-            if (!existing!.temixCode && first.temixCode && existing!.createdById) {
-              await notifyUsers(tx, [existing!.createdById], {
-                kind: 'TEMIX_SYNC_ACKED',
-                title: 'Customer landed in Temix',
-                body: `${existing!.legalName} (${custCode}) is now in Temix as ${first.temixCode}.`,
-                customerId: existing!.id,
-              });
-            }
-            customerId = existing!.id;
-          } else {
-            const customer = await tx.customer.upsert({
+        // final-hunt #32, extended to promote: this interactive transaction makes
+        // ~9 sequential round trips (customer read + upsert, per-branch ownership
+        // check + upsert, row state, completeness). Prisma's DEFAULT 5s ceiling is
+        // simply too tight for that over a networked Postgres — customers were
+        // being rejected with P2028 ("transaction closed") purely because the link
+        // was slow, which on the real master would silently drop good rows.
+        await prisma.$transaction(
+          async (tx) => {
+            const pt = first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH';
+            const existing = await tx.customer.findUnique({
               where: { nmwcCode: custCode },
-              update: {
-                // Re-import of an EXISTING customer via a non-Temix row must not
-                // clobber CRM-owned data (adversarial-review CONFIRMED). Presence-
-                // aware, mirroring the refresh lane: an ABSENT payment_terms column
-                // must NOT flip a CREDIT customer to CASH, and a BLANK phone/CR/
-                // contact cell must NOT null the stored value. `undefined` = "leave
-                // unchanged". cust_name is mandatory (a blank row is quarantined),
-                // so legalName is always a real value here.
-                legalName: first.custName,
-                paymentTerms: first.paymentTermsPresent ? pt : undefined,
-                primaryPhone: first.phone ?? undefined,
-                primaryPhoneNorm: first.phone ?? undefined,
-                contactPerson: first.contactPerson ?? undefined,
-                crNumber: first.crNumber ?? undefined,
-                crNumberNorm: first.crNumber ? normalizeCR(first.crNumber) : undefined,
-                lastEditedById: me.id,
-                // B-05: bump the optimistic version so a concurrent edit-approve
-                // sees VERSION_CONFLICT rather than a silently lost update.
-                version: { increment: 1 },
-              },
-              create: {
-                nmwcCode: custCode,
-                legalName: first.custName,
-                paymentTerms: pt,
-                primaryPhone: first.phone,
-                primaryPhoneNorm: first.phone,
-                contactPerson: first.contactPerson,
-                crNumber: first.crNumber,
-                crNumberNorm: normalizeCR(first.crNumber),
-                // Initial master load may carry the ERP code directly; credit
-                // figures land only on CREDIT rows.
-                temixCode: first.temixCode ?? null,
-                creditLimit: pt === 'CREDIT' ? (first.creditLimit ?? null) : null,
-                paymentTermDays: pt === 'CREDIT' ? (first.paymentTermDays ?? null) : null,
-                createdById: me.id,
-                lastEditedById: me.id,
-                importBatchId: batchId,
+              select: {
+                id: true,
+                temixCode: true,
+                paymentTerms: true,
+                deletedAt: true,
+                createdById: true,
+                legalName: true,
               },
             });
-            customerId = customer.id;
-          }
-          if (!isRefresh) {
-            for (const r of resolvedBranches) {
-              // QA P-01 fix (branch-steal guard): branchCode is globally unique
-              // and the upsert's update path includes customerId — without this
-              // check, a sheet row claiming a code owned by ANOTHER customer
-              // silently re-parents that customer's branch. Ownership moves are
-              // steward-review territory, never a silent import side effect.
-              // (Read-then-upsert inside this per-group tx; batch promote is
-              // serialized by the atomic READY→PROMOTING claim, so the TOCTOU
-              // window is not reachable through this action.)
-              const branchOwner = await tx.branch.findUnique({
-                where: { branchCode: r.branchCode },
-                select: { customerId: true, customer: { select: { nmwcCode: true } } },
+
+            // ── Phase 1 Temix crosswalk guards (rows carrying temix_code) ──
+            // Quarantine-style rejection, never silent overwrite: the crosswalk
+            // is a join (owner-locked nmwcCode == temixCode for migrated rows),
+            // so a code landing on a different customer, or disagreeing with an
+            // already-recorded code, is Steward-review territory.
+            if (first.temixCode) {
+              // NO deletedAt filter (adversarial-review CONFIRMED fix): an
+              // ARCHIVED customer holding this code has a DEACTIVATE for it
+              // queued/in-flight — re-attaching the code to a live customer
+              // would let that DEACTIVATE kill the live record in Temix.
+              const codeOwner = await tx.customer.findFirst({
+                where: {
+                  temixCode: first.temixCode,
+                  nmwcCode: { not: custCode },
+                },
+                select: { nmwcCode: true, deletedAt: true },
               });
-              if (branchOwner && branchOwner.customerId !== customerId) {
+              if (codeOwner) {
                 throw new Error(
-                  `CROSSWALK:branch_code ${r.branchCode} already belongs to ${branchOwner.customer.nmwcCode} — steward review`
+                  `CROSSWALK:temix_code already recorded on ${codeOwner.nmwcCode}${codeOwner.deletedAt ? ' (archived — its Temix deactivation may be in flight)' : ''} — steward review`
                 );
               }
-              // If composition changed the sheet's code, also check the RAW code:
-              // a sheet code that exists under ANOTHER customer means the row
-              // referenced someone else's branch (a data error) — flag it for
-              // steward review instead of silently minting a re-prefixed code.
-              if (r.sheetCode && r.sheetCode !== r.branchCode) {
-                const rawOwner = await tx.branch.findUnique({
-                  where: { branchCode: r.sheetCode },
-                  select: { customerId: true, customer: { select: { nmwcCode: true } } },
-                });
-                if (rawOwner && rawOwner.customerId !== customerId) {
-                  throw new Error(
-                    `CROSSWALK:branch_code ${r.sheetCode} already belongs to ${rawOwner.customer.nmwcCode} — steward review`
-                  );
-                }
+              if (existing?.temixCode && existing.temixCode !== first.temixCode) {
+                throw new Error(
+                  'CROSSWALK:temix_code conflicts with the code already recorded for this customer — steward review'
+                );
               }
-              await tx.branch.upsert({
-                where: { branchCode: r.branchCode },
-                update: {
-                  branchName: r.branchName,
-                  regionId: r.regionId,
-                  routeId: r.routeId,
-                  address: r.address,
-                  customerId,
+              // An archived customer must not be mutated (or its in-flight
+              // deactivation settled) by a stale Temix extract that still lists
+              // it — resolve the deactivation first.
+              if (existing?.deletedAt) {
+                throw new Error(
+                  'CROSSWALK:customer is archived in the CRM — resolve its Temix deactivation before refreshing'
+                );
+              }
+            }
+
+            const isRefresh = !!existing && !existing.deletedAt && !!first.temixCode;
+            refreshedRow = isRefresh;
+            let customerId: string;
+            if (isRefresh) {
+              // ── Temix REFRESH row (existing live customer + temix_code) ──
+              // Narrow, Temix-OWNED update only: crosswalk code + payment terms +
+              // credit figures (owner-locked: authoritative from Temix). CRM-
+              // enriched identity/contact data (legalName, phone, CR, contact)
+              // and ALL branch operational data are CRM-owned — a refresh must
+              // not clobber them (field-ownership matrix, sla-notif-sync §3.5).
+              //
+              // Presence-aware (adversarial-review CONFIRMED fix): an ABSENT
+              // payment_terms column means "keep the customer's current terms" —
+              // only an explicit CASH may clear credit figures, and credit
+              // figures apply only while the customer is (or becomes) CREDIT.
+              const ptPresent = first.paymentTermsPresent === true;
+              const effectiveTerms = ptPresent ? pt : existing!.paymentTerms;
+              await tx.customer.update({
+                where: { id: existing!.id },
+                data: {
+                  temixCode: first.temixCode,
+                  paymentTerms: ptPresent ? pt : undefined,
+                  creditLimit:
+                    effectiveTerms === 'CREDIT'
+                      ? (first.creditLimit ?? undefined)
+                      : ptPresent
+                        ? null
+                        : undefined,
+                  paymentTermDays:
+                    effectiveTerms === 'CREDIT'
+                      ? (first.paymentTermDays ?? undefined)
+                      : ptPresent
+                        ? null
+                        : undefined,
                   lastEditedById: me.id,
-                },
-                create: {
-                  branchCode: r.branchCode,
-                  branchName: r.branchName,
-                  regionId: r.regionId,
-                  routeId: r.routeId,
-                  address: r.address,
-                  customerId,
-                  createdById: me.id,
-                  lastEditedById: me.id,
+                  // B-05: make the refresh visible to the optimistic lock so a
+                  // concurrent edit-approve sees VERSION_CONFLICT, not a silent
+                  // revert of Temix-authoritative fields.
+                  version: { increment: 1 },
                 },
               });
+              // Blueprint §8.3: the inbound refresh is what flips UPLOADED →
+              // SYNCED. Guarded so a PENDING_UPLOAD row (correction approved
+              // after the last batch) keeps its place in the queue.
+              await tx.customer.updateMany({
+                where: { id: existing!.id, temixSyncState: 'UPLOADED' },
+                data: { temixSyncState: 'SYNCED' },
+              });
+              // TEMIX_SYNC_ACKED: the ERP code just landed for the first time —
+              // tell the originating submitter their customer is live in Temix.
+              if (!existing!.temixCode && first.temixCode && existing!.createdById) {
+                await notifyUsers(tx, [existing!.createdById], {
+                  kind: 'TEMIX_SYNC_ACKED',
+                  title: 'Customer landed in Temix',
+                  body: `${existing!.legalName} (${custCode}) is now in Temix as ${first.temixCode}.`,
+                  customerId: existing!.id,
+                });
+              }
+              customerId = existing!.id;
+            } else {
+              const customer = await tx.customer.upsert({
+                where: { nmwcCode: custCode },
+                update: {
+                  // Re-import of an EXISTING customer via a non-Temix row must not
+                  // clobber CRM-owned data (adversarial-review CONFIRMED). Presence-
+                  // aware, mirroring the refresh lane: an ABSENT payment_terms column
+                  // must NOT flip a CREDIT customer to CASH, and a BLANK phone/CR/
+                  // contact cell must NOT null the stored value. `undefined` = "leave
+                  // unchanged". cust_name is mandatory (a blank row is quarantined),
+                  // so legalName is always a real value here.
+                  legalName: first.custName,
+                  paymentTerms: first.paymentTermsPresent ? pt : undefined,
+                  primaryPhone: first.phone ?? undefined,
+                  primaryPhoneNorm: first.phone ?? undefined,
+                  contactPerson: first.contactPerson ?? undefined,
+                  crNumber: first.crNumber ?? undefined,
+                  crNumberNorm: first.crNumber ? normalizeCR(first.crNumber) : undefined,
+                  lastEditedById: me.id,
+                  // B-05: bump the optimistic version so a concurrent edit-approve
+                  // sees VERSION_CONFLICT rather than a silently lost update.
+                  version: { increment: 1 },
+                },
+                create: {
+                  nmwcCode: custCode,
+                  legalName: first.custName,
+                  paymentTerms: pt,
+                  primaryPhone: first.phone,
+                  primaryPhoneNorm: first.phone,
+                  contactPerson: first.contactPerson,
+                  crNumber: first.crNumber,
+                  crNumberNorm: normalizeCR(first.crNumber),
+                  // Initial master load may carry the ERP code directly; credit
+                  // figures land only on CREDIT rows.
+                  temixCode: first.temixCode ?? null,
+                  creditLimit: pt === 'CREDIT' ? (first.creditLimit ?? null) : null,
+                  paymentTermDays: pt === 'CREDIT' ? (first.paymentTermDays ?? null) : null,
+                  createdById: me.id,
+                  lastEditedById: me.id,
+                  importBatchId: batchId,
+                },
+              });
+              customerId = customer.id;
             }
-          }
-          await tx.importRow.updateMany({
-            where: { id: { in: g.rowIds } },
-            data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() },
-          });
-          // Compute completenessScore for the promoted customer. Without this,
-          // every imported customer/branch stayed at 0, hiding them from
-          // completeness-filtered worklists and skewing dashboard averages.
-          const scored = await tx.customer.findUnique({
-            where: { id: customerId },
-            include: { branches: { where: { deletedAt: null } } },
-          });
-          if (scored) {
-            await tx.customer.update({
-              where: { id: customerId },
-              data: { completenessScore: scoreCustomer(scored, scored.branches) },
+            if (!isRefresh) {
+              for (const r of resolvedBranches) {
+                // QA P-01 fix (branch-steal guard): branchCode is globally unique
+                // and the upsert's update path includes customerId — without this
+                // check, a sheet row claiming a code owned by ANOTHER customer
+                // silently re-parents that customer's branch. Ownership moves are
+                // steward-review territory, never a silent import side effect.
+                // (Read-then-upsert inside this per-group tx; batch promote is
+                // serialized by the atomic READY→PROMOTING claim, so the TOCTOU
+                // window is not reachable through this action.)
+                const branchOwner = await tx.branch.findUnique({
+                  where: { branchCode: r.branchCode },
+                  select: { customerId: true, customer: { select: { nmwcCode: true } } },
+                });
+                if (branchOwner && branchOwner.customerId !== customerId) {
+                  throw new Error(
+                    `CROSSWALK:branch_code ${r.branchCode} already belongs to ${branchOwner.customer.nmwcCode} — steward review`
+                  );
+                }
+                // If composition changed the sheet's code, also check the RAW code:
+                // a sheet code that exists under ANOTHER customer means the row
+                // referenced someone else's branch (a data error) — flag it for
+                // steward review instead of silently minting a re-prefixed code.
+                if (r.sheetCode && r.sheetCode !== r.branchCode) {
+                  const rawOwner = await tx.branch.findUnique({
+                    where: { branchCode: r.sheetCode },
+                    select: { customerId: true, customer: { select: { nmwcCode: true } } },
+                  });
+                  if (rawOwner && rawOwner.customerId !== customerId) {
+                    throw new Error(
+                      `CROSSWALK:branch_code ${r.sheetCode} already belongs to ${rawOwner.customer.nmwcCode} — steward review`
+                    );
+                  }
+                }
+                await tx.branch.upsert({
+                  where: { branchCode: r.branchCode },
+                  update: {
+                    branchName: r.branchName,
+                    regionId: r.regionId,
+                    routeId: r.routeId,
+                    address: r.address,
+                    customerId,
+                    lastEditedById: me.id,
+                  },
+                  create: {
+                    branchCode: r.branchCode,
+                    branchName: r.branchName,
+                    regionId: r.regionId,
+                    routeId: r.routeId,
+                    address: r.address,
+                    customerId,
+                    createdById: me.id,
+                    lastEditedById: me.id,
+                  },
+                });
+              }
+            }
+            await tx.importRow.updateMany({
+              where: { id: { in: g.rowIds } },
+              data: { state: ImportRowState.PROMOTED, reviewedById: me.id, reviewedAt: new Date() },
             });
-          }
-        });
+            // Compute completenessScore for the promoted customer. Without this,
+            // every imported customer/branch stayed at 0, hiding them from
+            // completeness-filtered worklists and skewing dashboard averages.
+            const scored = await tx.customer.findUnique({
+              where: { id: customerId },
+              include: { branches: { where: { deletedAt: null } } },
+            });
+            if (scored) {
+              await tx.customer.update({
+                where: { id: customerId },
+                data: { completenessScore: scoreCustomer(scored, scored.branches) },
+              });
+            }
+          },
+          // Bounded deliberately: the worst case a slice can produce is its budget
+          // plus ONE long transaction, which still lands well inside maxDuration=60.
+          { timeout: 20_000, maxWait: 10_000 }
+        );
         promoted += g.rowIds.length;
         if (groupResolveErrors.length > 0 && !refreshedRow) {
           // F-17: surface the phantom-region warning in the row's issues so the
@@ -1343,14 +1465,46 @@ async function promoteCustomerBatchCore(
       }
     }
 
-    await prisma.importBatch.update({
-      where: { id: batchId },
+    // RK-3: rows leave CLEAN as they are promoted or rejected, so ONE grouped count
+    // yields both the work remaining and the authoritative totals.
+    //
+    // The counters are DERIVED from the row states rather than incremented per
+    // slice, which makes them self-healing. Incrementing loses count whenever a
+    // slice commits its rows but dies before updating the batch — an interrupted
+    // UAT load did exactly that and reported 294 promoted against 299 rows actually
+    // promoted, understating a load the operator has to trust.
+    const stateCounts = await prisma.importRow.groupBy({
+      by: ['state'],
+      where: { batchId },
+      _count: { _all: true },
+    });
+    const countOf = (s: ImportRowState) => stateCounts.find((c) => c.state === s)?._count._all ?? 0;
+    const remaining = countOf(ImportRowState.CLEAN);
+    const done = remaining === 0;
+
+    // GUARDED by our own token: if this slice ran long and the batch was taken over,
+    // the new owner is authoritative and we must not write status, counters, or the
+    // lease. Our committed rows are already durable and their counters are derived,
+    // so the new owner's next slice reports them correctly.
+    const finalize = await prisma.importBatch.updateMany({
+      where: { id: batchId, promoteLeaseBy: leaseToken },
       data: {
-        status: 'PROMOTED',
-        promotedRows: promoted,
-        rejectedRows: failures.reduce((acc, f) => acc + f.rowIds.length, 0),
+        // Stay PROMOTING while work remains — that state now means "in progress or
+        // interrupted, resumable". Only the slice that clears the last CLEAN row
+        // finalises the batch.
+        status: done ? 'PROMOTED' : 'PROMOTING',
+        promotedRows: countOf(ImportRowState.PROMOTED),
+        rejectedRows: countOf(ImportRowState.REJECTED),
+        // Done → release outright. Otherwise hold a SHORT grace so the batch still
+        // reads as "in progress" until this run comes back (it returns immediately,
+        // carrying the token), while an abandoned run frees it in seconds.
+        promoteLeaseBy: done ? null : leaseToken,
+        promoteLeaseUntil: done ? null : new Date(Date.now() + PROMOTE_HANDOFF_GRACE_MS),
       },
     });
+    if (finalize.count === 0) {
+      logger.warn({ batchId }, 'import.promote.lease_lost');
+    }
 
     // F-19: per-batch summary audit log. Without this, "what happened in last
     // week's import?" requires SQL spelunking. The row carries the actor, the
@@ -1365,25 +1519,53 @@ async function promoteCustomerBatchCore(
           after: {
             kind: 'CUSTOMER',
             totalGroups: groups.size,
+            groupsInSlice: processedGroups,
             promoted,
             failed: failures.length,
+            remaining,
+            final: done,
             failureCustCodes: failures.map((f) => f.custCode).slice(0, 100),
           } as unknown as Prisma.InputJsonValue,
-          reason: 'customer_master_promote',
+          // One audit row per slice: a resumed load leaves a complete, ordered trail
+          // instead of a single summary that hides how the batch actually landed.
+          reason: done ? 'customer_master_promote' : 'customer_master_promote_slice',
         },
       })
       .catch((e) => {
         logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
       });
 
-    revalidatePath('/import');
-    revalidatePath(`/import/${batchId}`); // the batch detail page shows the now-stale READY view + a live Promote button otherwise
-    return { promoted, failed: failures.length };
+    // Only the FINAL slice revalidates. An intermediate slice revalidating would
+    // re-render the batch page (and re-run its queries) after every pass — dozens of
+    // wasted round trips during a big load, slowing the very loop it interrupts. The
+    // button reports its own progress meanwhile, and refreshes when the loop ends.
+    if (done) {
+      revalidatePath('/import');
+      revalidatePath(`/import/${batchId}`); // otherwise the detail page keeps the stale READY view + a live Promote button
+    }
+    return {
+      promoted,
+      failed: failures.length,
+      remaining,
+      done,
+      // Only hand the token back while the run should continue, and only if we still
+      // hold the batch — a lost lease must stop the run, not let it fight the new owner.
+      ...(done || finalize.count === 0 ? {} : { leaseToken }),
+    };
   } catch (err) {
-    // Release the PROMOTING claim so the batch is never stranded (final-hunt #23).
+    // Release the lease so the batch is never stranded (final-hunt #23). The status
+    // stays PROMOTING, which under RK-3 means "interrupted, resumable" rather than a
+    // dead end — the work already committed by earlier slices is kept, and the
+    // Steward (or the expiring lease) can pick it up again. Marking it FAILED here
+    // would throw away a half-finished master load.
     // Guard on status=PROMOTING so we never clobber a batch another action moved on.
+    // Guarded by our token for the same reason as the success path: if the batch was
+    // already taken over, releasing here would clear the NEW owner's lease.
     await prisma.importBatch
-      .updateMany({ where: { id: batchId, status: 'PROMOTING' }, data: { status: 'FAILED' } })
+      .updateMany({
+        where: { id: batchId, status: 'PROMOTING', promoteLeaseBy: leaseToken },
+        data: { promoteLeaseBy: null, promoteLeaseUntil: null },
+      })
       .catch(() => {});
     logger.error({ err: (err as Error).message?.slice(0, 120), batchId }, 'import.promote_aborted');
     throw err;

@@ -531,8 +531,19 @@ model ImportBatch {
   promotedRows    Int               @default(0)
   rejectedRows    Int               @default(0)
 
+  // RK-3: a full customer master (~3,300 rows) cannot be promoted inside the 60s
+  // function limit, so promote runs in time-boxed slices and the batch is resumed
+  // until no CLEAN rows remain. The lease is a compare-and-set token: only one
+  // worker may hold a batch at a time, and it EXPIRES (deliberately longer than
+  // the function limit) so a killed worker can never strand the batch.
+  promoteLeaseBy    String?
+  promoteLeaseUntil DateTime?
+
   uploadedBy User        @relation("ImportUploader", fields: [uploadedById], references: [id])
   rows       ImportRow[]
+
+  // Resume picks a batch up by (status, lease) — index the pair the claim filters on.
+  @@index([status, promoteLeaseUntil])
 }
 
 model ImportRow {

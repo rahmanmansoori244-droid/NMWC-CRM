@@ -14,6 +14,11 @@ Two Excel files to fill and hand back. They are generated to match **exactly** t
 
 Re-importing is safe (idempotent): existing users keep their password/role/supervisor unless you explicitly say otherwise.
 
+### What Promote looks like on a full-size master
+A real master (thousands of rows) is **far too big to load in one request**, so Promote works through it in passes and shows live progress — *"Promoting… 1,200 done, 2,100 left"*. Leave the tab open; it drives the passes for you.
+
+It is safe to interrupt. Everything already promoted is committed, and the batch page will show **Promote interrupted** with a **Resume promote** button that picks up exactly where it stopped — nothing is loaded twice and nothing is skipped. Only one person can promote a batch at a time; a second attempt is told to wait.
+
 ---
 
 ## 1. Account master (`account-master-template.xlsx`)

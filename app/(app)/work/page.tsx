@@ -210,16 +210,30 @@ export default async function WorkPage() {
       when: e.submittedAt,
     }));
   } else if (role === Role.STEWARD) {
+    // RK-3: promote is sliced, so a load can now be left half-finished (tab closed,
+    // timeout, network drop) — it sits in PROMOTING with no live lease. That needs
+    // the Steward's attention just as much as a FAILED batch, and without this it
+    // would be invisible here: promote no longer writes FAILED at all.
     const failed = await prisma.importBatch.findMany({
-      where: { OR: [{ status: 'FAILED' }, { quarantinedRows: { gt: 0 } }] },
+      where: {
+        OR: [
+          { status: 'FAILED' },
+          { status: 'PROMOTING', promoteLeaseUntil: null },
+          { status: 'PROMOTING', promoteLeaseUntil: { lt: new Date() } },
+          { quarantinedRows: { gt: 0 } },
+        ],
+      },
       orderBy: { uploadedAt: 'desc' },
       take: 30,
     });
     items = failed.map((b) => ({
       id: b.id,
-      category: 'Import to review',
+      category: b.status === 'PROMOTING' ? 'Import to resume' : 'Import to review',
       title: b.filename,
-      subtitle: `${b.quarantinedRows} quarantined / ${b.totalRows} total`,
+      subtitle:
+        b.status === 'PROMOTING'
+          ? `Promote interrupted — ${b.promotedRows} of ${b.totalRows} rows loaded`
+          : `${b.quarantinedRows} quarantined / ${b.totalRows} total`,
       href: `/import/${b.id}`,
       when: b.uploadedAt,
     }));

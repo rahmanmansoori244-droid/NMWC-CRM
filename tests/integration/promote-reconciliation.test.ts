@@ -22,6 +22,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import ExcelJS from 'exceljs';
+// RK-3: promote is sliced, so "load this batch" means driving it to completion.
+import { promoteFully } from '../support/promote';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -144,12 +146,7 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(upData.quarantined).toBe(1); // only the missing-name row
     expect(upData.clean).toBe(rows.length - 1);
 
-    const pfd = new FormData();
-    pfd.set('batchId', batch1);
-    const pr = await imports.promoteCustomerBatchAction(pfd);
-    if (!pr.ok) console.error('PROMOTE1 FAILED:', JSON.stringify(pr));
-    expect(pr.ok).toBe(true);
-    promoteRes1 = (pr as { ok: true; data: { promoted: number; failed: number } }).data;
+    promoteRes1 = await promoteFully(imports, batch1);
     console.log('PROMOTE1 result:', JSON.stringify(promoteRes1));
   });
 
@@ -204,11 +201,7 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     const up = await imports.uploadCustomerMasterAction(fd);
     if (!up.ok) console.error('REIMPORT UPLOAD FAILED:', JSON.stringify(up));
     expect(up.ok).toBe(true);
-    const pfd = new FormData();
-    pfd.set('batchId', (up as { ok: true; data: { batchId: string } }).data.batchId);
-    const pr = await imports.promoteCustomerBatchAction(pfd);
-    if (!pr.ok) console.error('REIMPORT PROMOTE FAILED:', JSON.stringify(pr));
-    expect(pr.ok).toBe(true);
+    await promoteFully(imports, (up as { ok: true; data: { batchId: string } }).data.batchId);
 
     const after = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: `${P}-REIMP` } });
     expect(after.paymentTerms).toBe('CREDIT');            // NOT flipped to CASH
@@ -279,10 +272,7 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     const up = await imports.uploadCustomerMasterAction(fd);
     expect(up.ok).toBe(true);
     batch2 = (up as { ok: true; data: { batchId: string } }).data.batchId;
-    const pfd = new FormData();
-    pfd.set('batchId', batch2);
-    const pr = await imports.promoteCustomerBatchAction(pfd);
-    expect(pr.ok).toBe(true); // action completes; the GROUP fails
+    await promoteFully(imports, batch2); // action completes; the GROUP fails
     // the branch must still belong to C1
     const branch = await prisma.branch.findUnique({ where: { branchCode: `${P}-C1-01` }, include: { customer: true } });
     expect(branch?.customer.nmwcCode).toBe(`${P}-C1`);
@@ -304,9 +294,7 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     const up = await imports.uploadCustomerMasterAction(fd);
     expect(up.ok).toBe(true);
     const b = (up as { ok: true; data: { batchId: string } }).data.batchId;
-    const pfd = new FormData(); pfd.set('batchId', b);
-    const pr = await imports.promoteCustomerBatchAction(pfd);
-    expect(pr.ok).toBe(true);
+    await promoteFully(imports, b);
     // the whole group is rejected — the customer is NOT created (no silent overwrite)
     const cust = await prisma.customer.findUnique({ where: { nmwcCode: `${P}-DUP` } });
     expect(cust).toBeNull();
