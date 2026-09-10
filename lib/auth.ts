@@ -39,6 +39,17 @@ assertAuthSecret();
 const DUMMY_BCRYPT_HASH =
   '$2b$12$Y8HEku/bk858NwrptFSON.JoO5GZCKFOj2vays4.6KnHQ8.M8thOO';
 
+// F-UAT-3: a Preview deployment must never inherit the PRODUCTION AUTH_URL. With it
+// set, Auth.js reports its sign-in/callback URLs as nmwc-cm.vercel.app, so every
+// sign-in on a preview completes against the UAT database and then bounces the
+// browser to production — where those accounts do not exist. Vercel sets VERCEL_ENV
+// on every deployment; on anything but production we drop the variable and let
+// Auth.js derive the URL from the request host (trustHost: true below).
+if (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== 'production') {
+  delete process.env.AUTH_URL;
+  delete process.env.NEXTAUTH_URL;
+}
+
 const credentialsSchema = z.object({
   // Salesmen sign in with their route code, which can be as short as "C4" or "W".
   username: z.string().min(1).max(50),

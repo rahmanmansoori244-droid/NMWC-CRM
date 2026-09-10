@@ -9,6 +9,16 @@
  */
 import type { NextAuthConfig } from 'next-auth';
 
+// F-UAT-3: the Edge middleware builds its own Auth.js instance from this config, so
+// the production AUTH_URL has to be dropped here too — otherwise a Preview
+// deployment reports nmwc-cm.vercel.app as its sign-in/callback URL and every
+// sign-in bounces to production. VERCEL_ENV is set by Vercel on every deployment;
+// on anything but production the request host (trustHost) is the URL.
+if (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== 'production') {
+  delete process.env.AUTH_URL;
+  delete process.env.NEXTAUTH_URL;
+}
+
 export const authConfig = {
   pages: { signIn: '/login' },
   session: { strategy: 'jwt', maxAge: 8 * 60 * 60 },
