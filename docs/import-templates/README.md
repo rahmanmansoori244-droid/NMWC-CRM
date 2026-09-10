@@ -8,7 +8,7 @@ Two Excel files to fill and hand back. They are generated to match **exactly** t
 | `customer-master-template.xlsx` | Customers + their branches | Steward → **Import → Customer master** |
 
 ## Do it in this order
-1. **Create the MANAGER and STEWARD accounts in the app first** (`/users`) — the import cannot create those two roles (a safety rule so nobody mints an admin from a spreadsheet).
+1. **Create the MANAGER and STEWARD accounts in the app first** (`/users`) — the import cannot create those two roles (a safety rule so nobody mints an admin from a spreadsheet). On a brand-new database there is no account that can create a Steward yet: run `scripts/golive/bootstrap-steward.ts` once (see `docs/GO-LIVE-RUNBOOK.md`).
 2. **Import the Account master** (regions → routes → people; the app auto-orders supervisors before salesmen).
 3. **Import the Customer master** → review the staged rows → **Promote**.
 
