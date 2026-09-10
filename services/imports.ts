@@ -1,7 +1,13 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, ImportRowState, type Prisma } from '@prisma/client';
+import {
+  Role,
+  ImportRowState,
+  type Prisma,
+  type DayOfWeek,
+  type CustomerStatus,
+} from '@prisma/client';
 import { auth } from '@/lib/auth';
 import {
   ForbiddenError,
@@ -96,6 +102,10 @@ function uc(v: unknown): string {
 
 // QA-012: hard cap on uploaded xlsx (zip-bomb defense)
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5 MB
+
+// Accepted codes for the go-live enrichment columns (see uploadCustomerMasterCore).
+const DAY_CODES = new Set(['SAT', 'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI']);
+const STATUS_CODES = new Set(['ACTIVE', 'CLOSED', 'SUSPENDED']);
 
 export async function uploadAccountMasterAction(
   formData: FormData
@@ -618,6 +628,10 @@ async function uploadCustomerMasterCore(
   type FileDup = { row: number; code: string };
   const phonesInFile = new Map<string, FileDup[]>();
   const crsInFile = new Map<string, FileDup[]>();
+  // Accepted `channel` codes — the Channel table's keys, read once per upload.
+  const channelKeys = new Set(
+    (await prisma.channel.findMany({ select: { key: true } })).map((c) => c.key.toUpperCase())
+  );
   for (const [i, row] of sheet.rows.entries()) {
     const rowCode = stripHtml(
       row.cust_code ?? row.custcode ?? row.CUSTCODE ?? row.code ?? row.Code
@@ -788,9 +802,43 @@ async function uploadCustomerMasterCore(
       }
     }
 
+    // Go-live enrichment columns. All optional; a value that is present but not
+    // one of the accepted codes holds the row for review rather than being
+    // silently dropped, since each of them changes how the field team works
+    // the customer (which day it is visited, whether it is closed).
+    const channelRaw = uc(row.channel ?? row.CHANNEL ?? '');
+    let channelKey: string | null = null;
+    if (channelRaw) {
+      if (channelKeys.has(channelRaw)) channelKey = channelRaw;
+      else issues.push({ field: 'channel', message: `unknown channel "${channelRaw}"` });
+    }
+    const dayRaw = uc(row.day_of_visit ?? row['DAY OF VISIT'] ?? '');
+    let dayOfVisit: string | null = null;
+    if (dayRaw) {
+      if (DAY_CODES.has(dayRaw)) dayOfVisit = dayRaw;
+      else
+        issues.push({
+          field: 'day_of_visit',
+          message: `expected SAT/SUN/MON/TUE/WED/THU/FRI, got "${dayRaw}"`,
+        });
+    }
+    const statusRaw = uc(row.customer_status ?? row['CUSTOMER STATUS'] ?? '');
+    let customerStatus: string | null = null;
+    if (statusRaw) {
+      if (STATUS_CODES.has(statusRaw)) customerStatus = statusRaw;
+      else
+        issues.push({
+          field: 'customer_status',
+          message: `expected ACTIVE/CLOSED/SUSPENDED, got "${statusRaw}"`,
+        });
+    }
+
     const parsed = {
       custCode,
       custName,
+      channelKey,
+      dayOfVisit,
+      customerStatus,
       branchCode: stripHtml(row.branch_code ?? row['CUST BRANCH']) || null,
       branchName: stripHtml(row.branch_name ?? row['CUST BRANCH'] ?? row.branch) || null,
       regionCode: stripHtml(row.sales_region ?? row['SALES REGION'] ?? row.region) || null,
@@ -1003,6 +1051,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     ]);
     const regionByCode = new Map(allRegions.map((r) => [r.code.toUpperCase(), r]));
     const routeByCode = new Map(allRoutes.map((r) => [r.code.toUpperCase(), r]));
+    const channelIdByKey = new Map(
+      (await prisma.channel.findMany({ select: { id: true, key: true } })).map((c) => [
+        c.key.toUpperCase(),
+        c.id,
+      ])
+    );
 
     // Only `parsed` is needed to promote; `raw` is the (much larger) original sheet
     // row and is never read here. Selecting it would move megabytes per slice.
@@ -1031,6 +1085,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       temixCode?: string | null;
       creditLimit?: number | null;
       paymentTermDays?: number | null;
+      // Go-live enrichment (absent on older batches).
+      channelKey?: string | null;
+      dayOfVisit?: string | null;
+      customerStatus?: string | null;
     };
     const groups = new Map<string, { rowIds: string[]; parsed: ParsedShape[] }>();
     for (const row of cleanRows) {
@@ -1091,6 +1149,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         regionId: string;
         routeId: string;
         address: string;
+        dayOfVisit: string | null;
+        status: string | null;
       }> = [];
       const groupResolveErrors: string[] = [];
       for (const [bi, p] of g.parsed.entries()) {
@@ -1169,6 +1229,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             p.address ||
             [p.branchName, p.regionCode].filter(Boolean).join(', ') ||
             'Address pending',
+          dayOfVisit: p.dayOfVisit ?? null,
+          status: p.customerStatus ?? null,
         });
       }
 
@@ -1222,6 +1284,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // simply too tight for that over a networked Postgres — customers were
         // being rejected with P2028 ("transaction closed") purely because the link
         // was slow, which on the real master would silently drop good rows.
+        // The customer's channel/status are group-level: a customer with ANY open
+        // branch is ACTIVE even if its head-office row is closed.
+        const groupChannelId = first.channelKey
+          ? (channelIdByKey.get(first.channelKey.toUpperCase()) ?? null)
+          : null;
+        const groupStatus: CustomerStatus | null = g.parsed.some(
+          (p) => p.customerStatus === 'ACTIVE'
+        )
+          ? 'ACTIVE'
+          : ((first.customerStatus as CustomerStatus | null | undefined) ?? null);
         await prisma.$transaction(
           async (tx) => {
             const pt = first.paymentTerms === 'CREDIT' ? 'CREDIT' : 'CASH';
@@ -1351,6 +1423,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   contactPerson: first.contactPerson ?? undefined,
                   crNumber: first.crNumber ?? undefined,
                   crNumberNorm: first.crNumber ? normalizeCR(first.crNumber) : undefined,
+                  channelId: groupChannelId ?? undefined,
+                  status: groupStatus ?? undefined,
                   lastEditedById: me.id,
                   // B-05: bump the optimistic version so a concurrent edit-approve
                   // sees VERSION_CONFLICT rather than a silently lost update.
@@ -1365,6 +1439,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   contactPerson: first.contactPerson,
                   crNumber: first.crNumber,
                   crNumberNorm: normalizeCR(first.crNumber),
+                  channelId: groupChannelId ?? null,
+                  status: groupStatus ?? 'ACTIVE',
                   // Initial master load may carry the ERP code directly; credit
                   // figures land only on CREDIT rows.
                   temixCode: first.temixCode ?? null,
@@ -1419,6 +1495,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     routeId: r.routeId,
                     address: r.address,
                     customerId,
+                    dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
+                    status: (r.status as CustomerStatus | null) ?? undefined,
+                    // EL-11: a status set by the load is a real status change.
+                    lastStatusChangeAt: r.status ? new Date() : undefined,
                     lastEditedById: me.id,
                   },
                   create: {
@@ -1428,6 +1508,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     routeId: r.routeId,
                     address: r.address,
                     customerId,
+                    dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? null,
+                    status: (r.status as CustomerStatus | null) ?? 'ACTIVE',
+                    lastStatusChangeAt: r.status === 'CLOSED' ? new Date() : null,
                     createdById: me.id,
                     lastEditedById: me.id,
                   },

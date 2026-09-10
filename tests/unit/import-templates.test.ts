@@ -23,8 +23,17 @@ describe('go-live import templates match the importer contract', () => {
     expect(byName['Regions'].headers).toEqual(['code', 'name']);
     expect(byName['Routes'].headers).toEqual(['code', 'name', 'region_code']);
     expect(byName['Users'].headers).toEqual([
-      'username', 'full_name', 'role', 'password', 'supervisor_username',
-      'route_code', 'region_codes', 'email', 'phone', 'reset_password', 'change_role',
+      'username',
+      'full_name',
+      'role',
+      'password',
+      'supervisor_username',
+      'route_code',
+      'region_codes',
+      'email',
+      'phone',
+      'reset_password',
+      'change_role',
     ]);
     // example Users row is well-formed (a supervisor + a salesman + an accountant).
     const roles = byName['Users'].rows.map((r) => String(r.role));
@@ -42,9 +51,23 @@ describe('go-live import templates match the importer contract', () => {
     // CRITICAL: the customer importer reads sheets[0]. Instructions must come after.
     expect(sheets[0].name).toBe('Customers');
     expect(sheets[0].headers).toEqual([
-      'cust_code', 'cust_name', 'branch_code', 'branch_name', 'sales_region', 'route',
-      'address', 'phone', 'contact_person', 'cr_no', 'payment_terms', 'credit_limit',
-      'payment_term_days', 'temix_code',
+      'cust_code',
+      'cust_name',
+      'branch_code',
+      'branch_name',
+      'sales_region',
+      'route',
+      'address',
+      'phone',
+      'contact_person',
+      'cr_no',
+      'payment_terms',
+      'credit_limit',
+      'payment_term_days',
+      'temix_code',
+      'channel',
+      'day_of_visit',
+      'customer_status',
     ]);
     // The multi-branch example shares one cust_code across two rows (the shape the
     // in-file dedup fix, F-UAT-7, must accept).

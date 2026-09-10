@@ -56,3 +56,7 @@ prisma/*.db-journal
 /graphify-out/.graphify_python
 /graphify-out/.graphify_root
 /graphify-out/cache/
+
+# Go-live master data built from the real Temix/RoutePro/dashboard sources.
+# Contains customer PII and generated credentials — NEVER commit.
+/golive-data/

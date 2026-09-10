@@ -67,7 +67,10 @@ function addInstructions(
     { header: 'Notes', key: 'n', width: 70 },
   ];
   let rowIdx = 1;
-  const put = (vals: (string | undefined)[], opts: { bold?: boolean; fill?: string; span?: boolean } = {}) => {
+  const put = (
+    vals: (string | undefined)[],
+    opts: { bold?: boolean; fill?: string; span?: boolean } = {}
+  ) => {
     const r = ws.getRow(rowIdx++);
     r.getCell(1).value = vals[0] ?? '';
     r.getCell(2).value = vals[1] ?? '';
@@ -97,26 +100,92 @@ function addInstructions(
 // ACCOUNT MASTER  (import FIRST — regions, routes, then people)
 // ─────────────────────────────────────────────────────────────────────────────
 const regionsCols: Col[] = [
-  { key: 'code', required: 'Required', format: '2–20 chars, UPPERCASE, A–Z 0–9 - _', notes: 'Unique region code. The CUSTOMER master "sales_region" column matches THIS code.' },
+  {
+    key: 'code',
+    required: 'Required',
+    format: '2–20 chars, UPPERCASE, A–Z 0–9 - _',
+    notes: 'Unique region code. The CUSTOMER master "sales_region" column matches THIS code.',
+  },
   { key: 'name', required: 'Required', format: 'text', notes: 'Display name, e.g. Muscat.' },
 ];
 const routesCols: Col[] = [
-  { key: 'code', required: 'Required', format: '2–20 chars, UPPERCASE, A–Z 0–9 - _', notes: 'Unique route code. The CUSTOMER master "route" column matches THIS code.' },
-  { key: 'name', required: 'Required', format: 'text', notes: 'Display name, e.g. Muscat Central 1.' },
-  { key: 'region_code', required: 'Required', format: 'a code from the Regions sheet', notes: 'Which region this route belongs to. Must exist in Regions.' },
+  {
+    key: 'code',
+    required: 'Required',
+    format: '2–20 chars, UPPERCASE, A–Z 0–9 - _',
+    notes: 'Unique route code. The CUSTOMER master "route" column matches THIS code.',
+  },
+  {
+    key: 'name',
+    required: 'Required',
+    format: 'text',
+    notes: 'Display name, e.g. Muscat Central 1.',
+  },
+  {
+    key: 'region_code',
+    required: 'Required',
+    format: 'a code from the Regions sheet',
+    notes: 'Which region this route belongs to. Must exist in Regions.',
+  },
 ];
 const usersCols: Col[] = [
-  { key: 'username', required: 'Required', format: 'lowercase, 3–50, a–z 0–9 . _ -', notes: 'Login name. Must be lowercase and unique.' },
+  {
+    key: 'username',
+    required: 'Required',
+    format: 'lowercase, 3–50, a–z 0–9 . _ -',
+    notes: 'Login name. Must be lowercase and unique.',
+  },
   { key: 'full_name', required: 'Required', format: 'text', notes: "Person's full name." },
-  { key: 'role', required: 'Required', format: 'SALESMAN | SUPERVISOR | ACCOUNTANT | FINANCE_MANAGER | GM | VIEWER', notes: 'MANAGER and STEWARD CANNOT be created here — create them in the app (/users) first, then load everyone else here.' },
-  { key: 'password', required: 'Required for NEW users', format: '12+ characters', notes: 'Only for brand-new users. Leave BLANK for people who already exist (keeps their current password). To change an existing password, set reset_password=yes AND fill this.' },
-  { key: 'supervisor_username', required: 'Required for SALESMAN', format: 'a username from this sheet', notes: "The salesman's supervisor. Blank on a re-import = keep the existing supervisor (does not unlink)." },
-  { key: 'route_code', required: 'Required for SALESMAN', format: 'a code from the Routes sheet', notes: 'The route this salesman owns (one salesman per route). Leave blank for non-salesmen.' },
-  { key: 'region_codes', required: 'Required for ACCOUNTANT', format: 'comma-separated Region codes, e.g. MCT,BAT', notes: 'Regions this accountant covers — REQUIRED, else the accountant sees no approvals and the credit chain stalls. Ignored for other roles.' },
+  {
+    key: 'role',
+    required: 'Required',
+    format: 'SALESMAN | SUPERVISOR | ACCOUNTANT | FINANCE_MANAGER | GM | VIEWER',
+    notes:
+      'MANAGER and STEWARD CANNOT be created here — create them in the app (/users) first, then load everyone else here.',
+  },
+  {
+    key: 'password',
+    required: 'Required for NEW users',
+    format: '12+ characters',
+    notes:
+      'Only for brand-new users. Leave BLANK for people who already exist (keeps their current password). To change an existing password, set reset_password=yes AND fill this.',
+  },
+  {
+    key: 'supervisor_username',
+    required: 'Required for SALESMAN',
+    format: 'a username from this sheet',
+    notes:
+      "The salesman's supervisor. Blank on a re-import = keep the existing supervisor (does not unlink).",
+  },
+  {
+    key: 'route_code',
+    required: 'Required for SALESMAN',
+    format: 'a code from the Routes sheet',
+    notes: 'The route this salesman owns (one salesman per route). Leave blank for non-salesmen.',
+  },
+  {
+    key: 'region_codes',
+    required: 'Required for ACCOUNTANT',
+    format: 'comma-separated Region codes, e.g. MCT,BAT',
+    notes:
+      'Regions this accountant covers — REQUIRED, else the accountant sees no approvals and the credit chain stalls. Ignored for other roles.',
+  },
   { key: 'email', required: 'Optional', format: 'email', notes: '' },
   { key: 'phone', required: 'Optional', format: 'text', notes: '' },
-  { key: 'reset_password', required: 'Optional', format: 'yes / blank', notes: 'Set to "yes" to rotate an EXISTING user\'s password (also logs them out). Must also fill "password".' },
-  { key: 'change_role', required: 'Optional', format: 'yes / blank', notes: 'Set to "yes" to change an EXISTING user\'s role. (Cannot promote to/from MANAGER or STEWARD — use /users.)' },
+  {
+    key: 'reset_password',
+    required: 'Optional',
+    format: 'yes / blank',
+    notes:
+      'Set to "yes" to rotate an EXISTING user\'s password (also logs them out). Must also fill "password".',
+  },
+  {
+    key: 'change_role',
+    required: 'Optional',
+    format: 'yes / blank',
+    notes:
+      'Set to "yes" to change an EXISTING user\'s role. (Cannot promote to/from MANAGER or STEWARD — use /users.)',
+  },
 ];
 
 function buildAccountMaster(): Buffer {
@@ -138,7 +207,7 @@ function buildAccountMaster(): Buffer {
       { sheet: 'Users', cols: usersCols },
     ],
     [
-      'TIP: create MANAGER and STEWARD accounts in the app first (Users page), then this import can reference a manager as a salesman\'s supervisor if you use the management ladder.',
+      "TIP: create MANAGER and STEWARD accounts in the app first (Users page), then this import can reference a manager as a salesman's supervisor if you use the management ladder.",
       'RE-IMPORT is idempotent: existing users keep their password/role/supervisor unless you explicitly set reset_password=yes / change_role=yes.',
     ]
   );
@@ -152,11 +221,71 @@ function buildAccountMaster(): Buffer {
     { code: 'BAT-01', name: 'Batinah North 1', region_code: 'BAT' },
   ]);
   addDataSheet(wb, 'Users', usersCols, [
-    { username: 'khalid.supervisor', full_name: 'Khalid Al Amri', role: 'SUPERVISOR', password: 'ChangeMe-2026!', supervisor_username: '', route_code: '', region_codes: '', email: '', phone: '', reset_password: '', change_role: '' },
-    { username: 'ahmed.salesman', full_name: 'Ahmed Salim', role: 'SALESMAN', password: 'ChangeMe-2026!', supervisor_username: 'khalid.supervisor', route_code: 'MCT-01', region_codes: '', email: '', phone: '', reset_password: '', change_role: '' },
-    { username: 'salwa.accountant', full_name: 'Salwa Nasser', role: 'ACCOUNTANT', password: 'ChangeMe-2026!', supervisor_username: '', route_code: '', region_codes: 'MCT,BAT', email: '', phone: '', reset_password: '', change_role: '' },
-    { username: 'faisal.finance', full_name: 'Faisal Harthy', role: 'FINANCE_MANAGER', password: 'ChangeMe-2026!', supervisor_username: '', route_code: '', region_codes: '', email: '', phone: '', reset_password: '', change_role: '' },
-    { username: 'general.manager', full_name: 'GM Name', role: 'GM', password: 'ChangeMe-2026!', supervisor_username: '', route_code: '', region_codes: '', email: '', phone: '', reset_password: '', change_role: '' },
+    {
+      username: 'khalid.supervisor',
+      full_name: 'Khalid Al Amri',
+      role: 'SUPERVISOR',
+      password: 'ChangeMe-2026!',
+      supervisor_username: '',
+      route_code: '',
+      region_codes: '',
+      email: '',
+      phone: '',
+      reset_password: '',
+      change_role: '',
+    },
+    {
+      username: 'ahmed.salesman',
+      full_name: 'Ahmed Salim',
+      role: 'SALESMAN',
+      password: 'ChangeMe-2026!',
+      supervisor_username: 'khalid.supervisor',
+      route_code: 'MCT-01',
+      region_codes: '',
+      email: '',
+      phone: '',
+      reset_password: '',
+      change_role: '',
+    },
+    {
+      username: 'salwa.accountant',
+      full_name: 'Salwa Nasser',
+      role: 'ACCOUNTANT',
+      password: 'ChangeMe-2026!',
+      supervisor_username: '',
+      route_code: '',
+      region_codes: 'MCT,BAT',
+      email: '',
+      phone: '',
+      reset_password: '',
+      change_role: '',
+    },
+    {
+      username: 'faisal.finance',
+      full_name: 'Faisal Harthy',
+      role: 'FINANCE_MANAGER',
+      password: 'ChangeMe-2026!',
+      supervisor_username: '',
+      route_code: '',
+      region_codes: '',
+      email: '',
+      phone: '',
+      reset_password: '',
+      change_role: '',
+    },
+    {
+      username: 'general.manager',
+      full_name: 'GM Name',
+      role: 'GM',
+      password: 'ChangeMe-2026!',
+      supervisor_username: '',
+      route_code: '',
+      region_codes: '',
+      email: '',
+      phone: '',
+      reset_password: '',
+      change_role: '',
+    },
   ]);
   // parser looks up sheets by name (Regions/Routes/Users); Instructions is ignored.
   return wb.xlsx.writeBuffer() as unknown as Buffer;
@@ -166,20 +295,102 @@ function buildAccountMaster(): Buffer {
 // CUSTOMER MASTER  (import SECOND — after regions/routes/salesmen exist)
 // ─────────────────────────────────────────────────────────────────────────────
 const customerCols: Col[] = [
-  { key: 'cust_code', required: 'Required', format: 'text (the ERP/Temix customer code)', notes: 'Customer identity. Repeat the SAME cust_code on several rows to give one customer several branches.' },
+  {
+    key: 'cust_code',
+    required: 'Required',
+    format: 'text (the ERP/Temix customer code)',
+    notes:
+      'Customer identity. Repeat the SAME cust_code on several rows to give one customer several branches.',
+  },
   { key: 'cust_name', required: 'Required', format: 'text', notes: 'Legal / trading name.' },
-  { key: 'branch_code', required: 'Optional', format: 'text', notes: 'Branch identity. A bare code like "01" is auto-composed to <cust_code>-01. Must be unique within the customer. Leave blank for single-branch customers and the app numbers them.' },
-  { key: 'branch_name', required: 'Optional', format: 'text', notes: 'e.g. Main Branch, Warehouse.' },
-  { key: 'sales_region', required: 'Recommended', format: 'a REGION CODE from the Account master (e.g. MCT)', notes: '⚠ This is the region CODE, not the name. Must match a Regions.code you imported. Blank/unknown → branch parked in UNASSIGNED with a warning (fix later in-app).' },
-  { key: 'route', required: 'Recommended', format: 'a ROUTE CODE from the Account master (e.g. MCT-01)', notes: '⚠ CODE, not name. Decides which salesman owns this branch. Blank/unknown → UNASSIGNED.' },
+  {
+    key: 'branch_code',
+    required: 'Optional',
+    format: 'text',
+    notes:
+      'Branch identity. A bare code like "01" is auto-composed to <cust_code>-01. Must be unique within the customer. Leave blank for single-branch customers and the app numbers them.',
+  },
+  {
+    key: 'branch_name',
+    required: 'Optional',
+    format: 'text',
+    notes: 'e.g. Main Branch, Warehouse.',
+  },
+  {
+    key: 'sales_region',
+    required: 'Recommended',
+    format: 'a REGION CODE from the Account master (e.g. MCT)',
+    notes:
+      '⚠ This is the region CODE, not the name. Must match a Regions.code you imported. Blank/unknown → branch parked in UNASSIGNED with a warning (fix later in-app).',
+  },
+  {
+    key: 'route',
+    required: 'Recommended',
+    format: 'a ROUTE CODE from the Account master (e.g. MCT-01)',
+    notes: '⚠ CODE, not name. Decides which salesman owns this branch. Blank/unknown → UNASSIGNED.',
+  },
   { key: 'address', required: 'Optional', format: 'text', notes: 'Street / area / landmark.' },
-  { key: 'phone', required: 'Optional', format: '7–20 chars: digits, + - ( ) spaces', notes: 'Bad format → row held for review. Same phone across branches of the SAME customer is fine; the same phone on DIFFERENT customers is flagged for steward review.' },
+  {
+    key: 'phone',
+    required: 'Optional',
+    format: '7–20 chars: digits, + - ( ) spaces',
+    notes:
+      'Bad format → row held for review. Same phone across branches of the SAME customer is fine; the same phone on DIFFERENT customers is flagged for steward review.',
+  },
   { key: 'contact_person', required: 'Optional', format: 'text', notes: '' },
-  { key: 'cr_no', required: 'Optional', format: 'text (commercial registration no.)', notes: 'Same CR on DIFFERENT customers is flagged for steward review (possible duplicate).' },
-  { key: 'payment_terms', required: 'Optional', format: 'CASH or CREDIT (default CASH)', notes: 'Anything other than CASH/CREDIT → row held for review.' },
-  { key: 'credit_limit', required: 'For CREDIT', format: 'number, OMR, up to 3 decimals', notes: 'Only for CREDIT customers. Leave blank for CASH.' },
-  { key: 'payment_term_days', required: 'For CREDIT', format: 'whole number 0–365', notes: 'Only for CREDIT customers. Leave blank for CASH.' },
-  { key: 'temix_code', required: 'Optional', format: 'text (the Temix ERP code)', notes: 'Fill for customers already in Temix (links CRM ↔ Temix). Leave blank if not yet in Temix.' },
+  {
+    key: 'cr_no',
+    required: 'Optional',
+    format: 'text (commercial registration no.)',
+    notes: 'Same CR on DIFFERENT customers is flagged for steward review (possible duplicate).',
+  },
+  {
+    key: 'payment_terms',
+    required: 'Optional',
+    format: 'CASH or CREDIT (default CASH)',
+    notes: 'Anything other than CASH/CREDIT → row held for review.',
+  },
+  {
+    key: 'credit_limit',
+    required: 'For CREDIT',
+    format: 'number, OMR, up to 3 decimals',
+    notes: 'Only for CREDIT customers. Leave blank for CASH.',
+  },
+  {
+    key: 'payment_term_days',
+    required: 'For CREDIT',
+    format: 'whole number 0–365',
+    notes: 'Only for CREDIT customers. Leave blank for CASH.',
+  },
+  {
+    key: 'temix_code',
+    required: 'Optional',
+    format: 'text (the Temix ERP code)',
+    notes:
+      'Fill for customers already in Temix (links CRM ↔ Temix). Leave blank if not yet in Temix.',
+  },
+  {
+    key: 'channel',
+    required: 'Optional',
+    format:
+      'HORECA, MODERN_TRADE, GENERAL_TRADE, CONVENIENCE_AND_GAS, ECOMMERCE, HOME_OFFICE_DELIVERY, INSTITUTIONS',
+    notes:
+      'The CRM channel CODE. Anything else → row held for review. Blank = not set (the salesman fills it in later).',
+  },
+  {
+    key: 'day_of_visit',
+    required: 'Optional',
+    format: 'SAT, SUN, MON, TUE, WED, THU or FRI',
+    notes:
+      "The journey-plan visit day for this branch. Drives the salesman's Today list. Anything else → row held for review.",
+  },
+  {
+    key: 'customer_status',
+    required: 'Optional',
+    format: 'ACTIVE or CLOSED (default ACTIVE)',
+    notes:
+      'CLOSED marks the branch (and, if every branch is closed, the customer) as closed on load. A customer with any ACTIVE branch stays ACTIVE.',
+  },
 ];
 
 function buildCustomerMaster(): Buffer {
@@ -188,9 +399,63 @@ function buildCustomerMaster(): Buffer {
   // IMPORTANT: the importer reads the FIRST sheet as the customer data, so the
   // Customers sheet MUST come first; Instructions goes after it.
   addDataSheet(wb, 'Customers', customerCols, [
-    { cust_code: 'C-10001', cust_name: 'Al Noor Trading LLC', branch_code: '01', branch_name: 'Main Branch', sales_region: 'MCT', route: 'MCT-01', address: 'Way 2233, Al Khuwair, Muscat', phone: '+96824000001', contact_person: 'Mr. Salim', cr_no: '1234567', payment_terms: 'CASH', credit_limit: '', payment_term_days: '', temix_code: '' },
-    { cust_code: 'C-10001', cust_name: 'Al Noor Trading LLC', branch_code: '02', branch_name: 'Seeb Branch', sales_region: 'MCT', route: 'MCT-02', address: 'Seeb Souq, Muscat', phone: '+96824000001', contact_person: 'Mr. Salim', cr_no: '1234567', payment_terms: 'CASH', credit_limit: '', payment_term_days: '', temix_code: '' },
-    { cust_code: 'C-10002', cust_name: 'Gulf Foodstuff Co', branch_code: '01', branch_name: 'Main', sales_region: 'BAT', route: 'BAT-01', address: 'Sohar Industrial', phone: '+96826000002', contact_person: 'Ms. Aisha', cr_no: '7654321', payment_terms: 'CREDIT', credit_limit: '5000.000', payment_term_days: '30', temix_code: 'TMX-10002' },
+    {
+      cust_code: 'C-10001',
+      cust_name: 'Al Noor Trading LLC',
+      branch_code: '01',
+      branch_name: 'Main Branch',
+      sales_region: 'MCT',
+      route: 'MCT-01',
+      address: 'Way 2233, Al Khuwair, Muscat',
+      phone: '+96824000001',
+      contact_person: 'Mr. Salim',
+      cr_no: '1234567',
+      payment_terms: 'CASH',
+      credit_limit: '',
+      payment_term_days: '',
+      temix_code: '',
+      channel: 'GENERAL_TRADE',
+      day_of_visit: 'MON',
+      customer_status: 'ACTIVE',
+    },
+    {
+      cust_code: 'C-10001',
+      cust_name: 'Al Noor Trading LLC',
+      branch_code: '02',
+      branch_name: 'Seeb Branch',
+      sales_region: 'MCT',
+      route: 'MCT-02',
+      address: 'Seeb Souq, Muscat',
+      phone: '+96824000001',
+      contact_person: 'Mr. Salim',
+      cr_no: '1234567',
+      payment_terms: 'CASH',
+      credit_limit: '',
+      payment_term_days: '',
+      temix_code: '',
+      channel: 'GENERAL_TRADE',
+      day_of_visit: 'WED',
+      customer_status: 'ACTIVE',
+    },
+    {
+      cust_code: 'C-10002',
+      cust_name: 'Gulf Foodstuff Co',
+      branch_code: '01',
+      branch_name: 'Main',
+      sales_region: 'BAT',
+      route: 'BAT-01',
+      address: 'Sohar Industrial',
+      phone: '+96826000002',
+      contact_person: 'Ms. Aisha',
+      cr_no: '7654321',
+      payment_terms: 'CREDIT',
+      credit_limit: '5000.000',
+      payment_term_days: '30',
+      temix_code: 'TMX-10002',
+      channel: 'HORECA',
+      day_of_visit: 'SUN',
+      customer_status: 'ACTIVE',
+    },
   ]);
   addInstructions(
     wb,

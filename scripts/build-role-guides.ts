@@ -187,7 +187,14 @@ function renderCallout(c: Callout): string {
 }
 
 function renderSection(s: Section, opener: 'blue' | 'green' | 'amber' | 'indigo'): string {
-  const openerCls = opener === 'green' ? 'green' : opener === 'amber' ? 'amber' : opener === 'indigo' ? 'indigo' : '';
+  const openerCls =
+    opener === 'green'
+      ? 'green'
+      : opener === 'amber'
+        ? 'amber'
+        : opener === 'indigo'
+          ? 'indigo'
+          : '';
   const intro = s.intro ? `<p class="intro">${s.intro}</p>` : '';
   const ul = s.ul?.length ? `<ul>${s.ul.map((x) => `<li>${x}</li>`).join('')}</ul>` : '';
   const callouts = s.callouts?.map(renderCallout).join('') ?? '';
@@ -202,7 +209,9 @@ function renderSection(s: Section, opener: 'blue' | 'green' | 'amber' | 'indigo'
     : '';
   const tableHtml = s.table
     ? `<table>${
-        s.table.headers ? `<thead><tr>${s.table.headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>` : ''
+        s.table.headers
+          ? `<thead><tr>${s.table.headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>`
+          : ''
       }<tbody>${s.table.rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`
     : '';
   return `<section class="page page-break"><div class="section-opener ${openerCls}"><h2>${s.number}. ${s.title}</h2>${intro}</div>${ul}${stepsHtml}${tableHtml}${callouts}</section>`;
@@ -222,7 +231,10 @@ function renderHtml(g: Guide): string {
   const refHtml = `<section class="page page-break"><h2>${g.ref.title}</h2>${
     g.ref.intro ? `<p>${g.ref.intro}</p>` : ''
   }${g.ref.tables
-    .map((t) => `<h3>${t.title}</h3><table><tbody>${t.rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`)
+    .map(
+      (t) =>
+        `<h3>${t.title}</h3><table><tbody>${t.rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`
+    )
     .join('')}<div class="credentials-card"><div class="label">${
     g.lang === 'ar' ? 'رابط النظام' : 'Production URL'
   }</div><div class="value">https://nmwc-cm.vercel.app</div></div><p style="text-align:center;margin-top:24pt;color:#64748b;font-size:10pt;">${g.footer}</p></section>`;
@@ -282,16 +294,23 @@ const SALESMAN_EN: Guide = {
       title: 'Logging in',
       intro: 'You only do this the first time, then once a day or week.',
       steps: [
-        { html: 'On your phone, open <strong>https://nmwc-cm.vercel.app</strong>. Save it as a bookmark on your home screen.', img: '01-login.png' },
+        {
+          html: 'On your phone, open <strong>https://nmwc-cm.vercel.app</strong>. Save it as a bookmark on your home screen.',
+          img: '01-login.png',
+        },
         { html: 'Type your <strong>Username</strong>. Your manager gives you this on day one.' },
-        { html: 'Type your <strong>Password</strong>. Tap the blue <strong>Sign in</strong> button.' },
-        { html: 'First time? The app may ask you to set a new password. This is for your safety — pick something only you know.' },
+        {
+          html: 'Type your <strong>Password</strong>. Tap the blue <strong>Sign in</strong> button.',
+        },
+        {
+          html: 'First time? The app may ask you to set a new password. This is for your safety — pick something only you know.',
+        },
       ],
       callouts: [
         {
           kind: 'tip',
           title: 'Forgot your password?',
-          body: 'Don\'t guess more than 5 times — the system will lock you out for one minute. Just message your manager — they reset it in 30 seconds.',
+          body: "Don't guess more than 5 times — the system will lock you out for one minute. Just message your manager — they reset it in 30 seconds.",
         },
       ],
     },
@@ -300,9 +319,15 @@ const SALESMAN_EN: Guide = {
       title: 'Find the shop you are visiting',
       intro: 'Open the customer in two taps.',
       steps: [
-        { html: 'Tap <strong>Today</strong> in the menu. You see the shops on your route scheduled today.', img: '02-salesman-today.png' },
-        { html: 'If the shop is not on today\'s list, tap <strong>Customers</strong> and search by name or NMWC code.', img: '03-salesman-customers-list.png' },
-        { html: 'Tap any row to open that shop\'s profile.' },
+        {
+          html: 'Tap <strong>Today</strong> in the menu. You see the shops on your route scheduled today.',
+          img: '02-salesman-today.png',
+        },
+        {
+          html: "If the shop is not on today's list, tap <strong>Customers</strong> and search by name or NMWC code.",
+          img: '03-salesman-customers-list.png',
+        },
+        { html: "Tap any row to open that shop's profile." },
       ],
       callouts: [
         {
@@ -317,10 +342,18 @@ const SALESMAN_EN: Guide = {
       title: 'Update the shop info',
       intro: 'Fill in what is missing. Required fields are marked with *.',
       steps: [
-        { html: 'On the customer profile, tap the blue <strong>Enrich</strong> button at the top right.', img: '04-salesman-customer-profile.png' },
-        { html: '<strong>Identity</strong> section: legal name, NMWC code, CR number, channel, sub-channel, contact person, primary phone.', img: '05-salesman-enrichment-top.png' },
+        {
+          html: 'On the customer profile, tap the blue <strong>Enrich</strong> button at the top right.',
+          img: '04-salesman-customer-profile.png',
+        },
+        {
+          html: '<strong>Identity</strong> section: legal name, NMWC code, CR number, channel, sub-channel, contact person, primary phone.',
+          img: '05-salesman-enrichment-top.png',
+        },
         { html: 'Phone must be a valid Oman number, e.g. <strong>+96891234567</strong>.' },
-        { html: 'Channel says what type of shop it is — pick the closest match (General Trade, HORECA, Modern Trade, etc.).' },
+        {
+          html: 'Channel says what type of shop it is — pick the closest match (General Trade, HORECA, Modern Trade, etc.).',
+        },
       ],
     },
     {
@@ -328,11 +361,16 @@ const SALESMAN_EN: Guide = {
       title: 'Take the three required photos',
       intro: 'Always take fresh photos at the shop today. Old gallery photos are rejected.',
       steps: [
-        { html: 'Tap an empty photo slot. Your camera opens.', img: '06-salesman-enrichment-photos.png' },
+        {
+          html: 'Tap an empty photo slot. Your camera opens.',
+          img: '06-salesman-enrichment-photos.png',
+        },
         { html: '<strong>Shop front</strong> — clearly shows the entrance.' },
-        { html: '<strong>Signboard</strong> — the shop\'s sign with its name.' },
+        { html: "<strong>Signboard</strong> — the shop's sign with its name." },
         { html: '<strong>CR document</strong> — the legal commercial registration paper.' },
-        { html: 'The app uploads automatically. If your network is weak, it retries on its own. If still failing, tap <strong>Retry upload</strong> — your photo is saved, no need to retake.' },
+        {
+          html: 'The app uploads automatically. If your network is weak, it retries on its own. If still failing, tap <strong>Retry upload</strong> — your photo is saved, no need to retake.',
+        },
       ],
       callouts: [
         {
@@ -346,19 +384,30 @@ const SALESMAN_EN: Guide = {
       number: 5,
       title: 'Capture the GPS location',
       steps: [
-        { html: 'Tap the <strong>Capture GPS</strong> button when you\'re standing at the shop entrance.' },
+        {
+          html: "Tap the <strong>Capture GPS</strong> button when you're standing at the shop entrance.",
+        },
         { html: 'Your phone asks permission — tap <strong>Allow</strong>.' },
-        { html: 'If GPS doesn\'t work (indoors, weak signal), tap <strong>Enter coordinates manually</strong>. Tap the map at the shop\'s location, or type the lat/lng. Add a short reason so the supervisor sees it\'s manual.' },
+        {
+          html: "If GPS doesn't work (indoors, weak signal), tap <strong>Enter coordinates manually</strong>. Tap the map at the shop's location, or type the lat/lng. Add a short reason so the supervisor sees it's manual.",
+        },
       ],
     },
     {
       number: 6,
       title: 'Submit for approval',
       steps: [
-        { html: 'Scroll to the bottom — you see a sticky bar with two buttons.', img: '07-salesman-enrichment-bottom.png' },
+        {
+          html: 'Scroll to the bottom — you see a sticky bar with two buttons.',
+          img: '07-salesman-enrichment-bottom.png',
+        },
         { html: 'Tap the blue <strong>Submit for approval</strong> button (left).' },
-        { html: 'You\'ll see a confirmation. The shop\'s status becomes <strong>Pending review</strong> until your supervisor decides.' },
-        { html: 'If you\'re interrupted, tap <strong>Save draft</strong> instead — it stays on your phone for 7 days.' },
+        {
+          html: "You'll see a confirmation. The shop's status becomes <strong>Pending review</strong> until your supervisor decides.",
+        },
+        {
+          html: "If you're interrupted, tap <strong>Save draft</strong> instead — it stays on your phone for 7 days.",
+        },
       ],
     },
     {
@@ -366,9 +415,15 @@ const SALESMAN_EN: Guide = {
       title: 'Mark a shop as permanently closed',
       intro: 'Use this only if the shop has truly shut down (gone out of business, moved, etc.).',
       steps: [
-        { html: 'On the customer profile, tap the red <strong>Mark closed</strong> button on the branch tile.' },
-        { html: 'Take a fresh photo showing it\'s clearly closed (shutters down, sign removed, empty).' },
-        { html: 'Type a short reason — at least 5 letters. e.g. "Shop has shut down, signage removed."' },
+        {
+          html: 'On the customer profile, tap the red <strong>Mark closed</strong> button on the branch tile.',
+        },
+        {
+          html: "Take a fresh photo showing it's clearly closed (shutters down, sign removed, empty).",
+        },
+        {
+          html: 'Type a short reason — at least 5 letters. e.g. "Shop has shut down, signage removed."',
+        },
         { html: 'Tap <strong>Submit closure</strong>. Your supervisor reviews it.' },
       ],
       callouts: [
@@ -384,10 +439,12 @@ const SALESMAN_EN: Guide = {
       title: 'Request reactivation of a closed shop',
       intro: 'Use this when a previously closed shop has reopened.',
       steps: [
-        { html: 'Open the closed shop\'s profile. The branch shows a <strong>Closed</strong> tag.' },
+        { html: "Open the closed shop's profile. The branch shows a <strong>Closed</strong> tag." },
         { html: 'Tap the green <strong>Request reactivation</strong> button.' },
         { html: 'Take a fresh photo showing the shop is open and operating today.' },
-        { html: 'Type a reason and submit. The <strong>manager</strong> (not your supervisor) approves reactivations.' },
+        {
+          html: 'Type a reason and submit. The <strong>manager</strong> (not your supervisor) approves reactivations.',
+        },
       ],
       callouts: [
         {
@@ -403,11 +460,26 @@ const SALESMAN_EN: Guide = {
       table: {
         headers: ['Situation', 'What to do'],
         rows: [
-          ['Photo upload keeps failing', 'Move outside or near a window. Wait a few seconds. The app retries automatically. If still stuck, tap "Retry upload" — your photo is saved.'],
-          ['GPS won\'t capture', 'Tap "Enter coordinates manually" inside the GPS box. Tap the map or type the numbers. Add a short reason.'],
-          ['"This customer is not on your route"', 'You can only enrich shops on your assigned route. Ask your manager to reassign it if needed.'],
-          ['My submission was rejected', 'Read the supervisor\'s reason. The shop appears in your "Needs correction" list. Open it, fix what they asked, and re-submit.'],
-          ['I\'m mid-form and need to leave', 'Tap "Save draft". You can come back within 7 days and finish.'],
+          [
+            'Photo upload keeps failing',
+            'Move outside or near a window. Wait a few seconds. The app retries automatically. If still stuck, tap "Retry upload" — your photo is saved.',
+          ],
+          [
+            "GPS won't capture",
+            'Tap "Enter coordinates manually" inside the GPS box. Tap the map or type the numbers. Add a short reason.',
+          ],
+          [
+            '"This customer is not on your route"',
+            'You can only enrich shops on your assigned route. Ask your manager to reassign it if needed.',
+          ],
+          [
+            'My submission was rejected',
+            'Read the supervisor\'s reason. The shop appears in your "Needs correction" list. Open it, fix what they asked, and re-submit.',
+          ],
+          [
+            "I'm mid-form and need to leave",
+            'Tap "Save draft". You can come back within 7 days and finish.',
+          ],
         ],
       },
     },
@@ -417,23 +489,29 @@ const SALESMAN_EN: Guide = {
     intro: 'Keep this page handy in your first weeks.',
     tables: [
       {
-        title: 'Buttons you\'ll use',
+        title: "Buttons you'll use",
         rows: [
           ['<strong>Enrich</strong> (blue, top-right)', 'Open the form to update the shop.'],
           ['<strong>Save draft</strong>', 'Save your work without sending. Stays 7 days.'],
           ['<strong>Submit for approval</strong>', 'Send your changes to your supervisor.'],
-          ['<strong>Mark closed</strong> (red)', 'Tell the system this shop has permanently closed.'],
-          ['<strong>Request reactivation</strong> (green)', 'A closed shop has reopened — send to manager.'],
+          [
+            '<strong>Mark closed</strong> (red)',
+            'Tell the system this shop has permanently closed.',
+          ],
+          [
+            '<strong>Request reactivation</strong> (green)',
+            'A closed shop has reopened — send to manager.',
+          ],
           ['<strong>Retry upload</strong>', 'Re-send a failed photo without retaking it.'],
           ['<strong>Sign out</strong>', 'End your session. Always sign out on shared devices.'],
         ],
       },
       {
-        title: 'Status tags you\'ll see',
+        title: "Status tags you'll see",
         rows: [
           ['<strong>Active</strong> (green)', 'Shop is operating normally.'],
           ['<strong>Closed</strong> (red)', 'Shop has shut down. No active orders.'],
-          ['<strong>Pending review</strong>', 'You submitted, supervisor hasn\'t decided yet.'],
+          ['<strong>Pending review</strong>', "You submitted, supervisor hasn't decided yet."],
           ['<strong>Approved</strong>', 'Your last submission was approved — change is live.'],
           ['<strong>Needs correction</strong>', 'Supervisor sent it back. Open and fix.'],
         ],
@@ -468,7 +546,10 @@ const SUPERVISOR_EN: Guide = {
       number: 1,
       title: 'Logging in',
       steps: [
-        { html: 'Open <strong>https://nmwc-cm.vercel.app</strong> on your phone or laptop.', img: '01-login.png' },
+        {
+          html: 'Open <strong>https://nmwc-cm.vercel.app</strong> on your phone or laptop.',
+          img: '01-login.png',
+        },
         { html: 'Sign in with your supervisor username and password.' },
         { html: 'After signing in you land on the Approvals page automatically.' },
       ],
@@ -477,21 +558,33 @@ const SUPERVISOR_EN: Guide = {
       number: 2,
       title: 'Open the approval queue',
       steps: [
-        { html: 'Tap <strong>Approvals</strong> in the menu.', img: '08-supervisor-approvals-queue.png' },
+        {
+          html: 'Tap <strong>Approvals</strong> in the menu.',
+          img: '08-supervisor-approvals-queue.png',
+        },
         { html: 'You see every pending submission from salesmen who report to you, oldest first.' },
-        { html: 'Each row shows: customer name, NMWC code, number of changed fields, who submitted, and how long ago.' },
-        { html: 'Age tags: <strong>green</strong> &lt; 24h, <strong>amber</strong> 1-3 days, <strong>red</strong> &gt; 3 days. Clear the reds first.' },
+        {
+          html: 'Each row shows: customer name, NMWC code, number of changed fields, who submitted, and how long ago.',
+        },
+        {
+          html: 'Age tags: <strong>green</strong> &lt; 24h, <strong>amber</strong> 1-3 days, <strong>red</strong> &gt; 3 days. Clear the reds first.',
+        },
       ],
     },
     {
       number: 3,
       title: 'Review one edit (Before / After diff)',
       steps: [
-        { html: 'Tap any row to open the edit detail page.', img: '09-supervisor-approval-diff.png' },
+        {
+          html: 'Tap any row to open the edit detail page.',
+          img: '09-supervisor-approval-diff.png',
+        },
         { html: 'You see a Before / After diff for every field that changed.' },
         { html: 'Compare the values. Anything wrong, missing, or suspicious?' },
         { html: 'If a photo changed, tap it to view full size.' },
-        { html: 'Tap <strong>Open profile</strong> to see the full customer record (other fields, branches, history).' },
+        {
+          html: 'Tap <strong>Open profile</strong> to see the full customer record (other fields, branches, history).',
+        },
       ],
     },
     {
@@ -510,7 +603,7 @@ const SUPERVISOR_EN: Guide = {
         },
         {
           kind: 'danger',
-          title: 'Don\'t approve your own work',
+          title: "Don't approve your own work",
           body: 'The system blocks you from approving your own submissions. If you ever submitted as a salesman first, that edit must go to another supervisor or to your manager.',
         },
       ],
@@ -520,10 +613,18 @@ const SUPERVISOR_EN: Guide = {
       title: 'Bulk approve / bulk reject',
       intro: 'When a batch is uniformly good (or uniformly bad).',
       steps: [
-        { html: 'On the queue page, tick the checkbox next to each edit you want to handle. Use <strong>Select all</strong> to grab everything on the page.' },
-        { html: 'A sticky bar appears at the bottom with <strong>Approve N</strong> and <strong>Reject N</strong> buttons.' },
-        { html: '<strong>Bulk approve</strong> runs each one in its own transaction. If a few fail (concurrent edits, missing fields), the others still go through. You see a clear list of which ones need attention.' },
-        { html: '<strong>Bulk reject</strong> sends the same category and reason to every selected edit. Use only when the issue is truly the same on all of them.' },
+        {
+          html: 'On the queue page, tick the checkbox next to each edit you want to handle. Use <strong>Select all</strong> to grab everything on the page.',
+        },
+        {
+          html: 'A sticky bar appears at the bottom with <strong>Approve N</strong> and <strong>Reject N</strong> buttons.',
+        },
+        {
+          html: '<strong>Bulk approve</strong> runs each one in its own transaction. If a few fail (concurrent edits, missing fields), the others still go through. You see a clear list of which ones need attention.',
+        },
+        {
+          html: '<strong>Bulk reject</strong> sends the same category and reason to every selected edit. Use only when the issue is truly the same on all of them.',
+        },
       ],
       callouts: [
         {
@@ -539,10 +640,19 @@ const SUPERVISOR_EN: Guide = {
       table: {
         headers: ['Category', 'Use it when…'],
         rows: [
-          ['<strong>Bad photo</strong>', 'Photo is blurry, taken from too far, or doesn\'t show what it should (e.g. CR photo where the writing is unreadable).'],
-          ['<strong>Wrong GPS</strong>', 'GPS coordinates point to the wrong place — e.g. salesman captured GPS at the office instead of the shop.'],
+          [
+            '<strong>Bad photo</strong>',
+            "Photo is blurry, taken from too far, or doesn't show what it should (e.g. CR photo where the writing is unreadable).",
+          ],
+          [
+            '<strong>Wrong GPS</strong>',
+            'GPS coordinates point to the wrong place — e.g. salesman captured GPS at the office instead of the shop.',
+          ],
           ['<strong>Missing field</strong>', 'A required field is empty or has a placeholder.'],
-          ['<strong>Wrong info</strong>', 'A field has data that doesn\'t match the photo or what we know about the shop.'],
+          [
+            '<strong>Wrong info</strong>',
+            "A field has data that doesn't match the photo or what we know about the shop.",
+          ],
           ['<strong>Other</strong>', 'Anything else — type a clear reason.'],
         ],
       },
@@ -553,10 +663,22 @@ const SUPERVISOR_EN: Guide = {
       table: {
         headers: ['Message you see', 'What it means'],
         rows: [
-          ['"Edit was just decided by another reviewer"', 'Another supervisor or manager approved/rejected before you. Refresh the queue.'],
-          ['"This value conflicts with an existing record"', 'Two salesmen submitted the same phone or CR number. Reject one and ask them to verify.'],
-          ['"Required fields are now missing"', 'Salesman deleted a required field (e.g. CR photo) between submitting and your approving. Reject — they need to re-upload at the shop.'],
-          ['"You are not authorized to act on this edit"', 'The customer is no longer in your team\'s scope (route reassigned, customer merged). Forward to your manager.'],
+          [
+            '"Edit was just decided by another reviewer"',
+            'Another supervisor or manager approved/rejected before you. Refresh the queue.',
+          ],
+          [
+            '"This value conflicts with an existing record"',
+            'Two salesmen submitted the same phone or CR number. Reject one and ask them to verify.',
+          ],
+          [
+            '"Required fields are now missing"',
+            'Salesman deleted a required field (e.g. CR photo) between submitting and your approving. Reject — they need to re-upload at the shop.',
+          ],
+          [
+            '"You are not authorized to act on this edit"',
+            "The customer is no longer in your team's scope (route reassigned, customer merged). Forward to your manager.",
+          ],
         ],
       },
     },
@@ -597,7 +719,7 @@ const MANAGER_EN: Guide = {
   filename: 'NMWC-Manager-Guide-EN',
   welcome: {
     heading: 'Welcome',
-    body: 'You own the customer master in your region. You approve sensitive decisions (reactivations of closed shops), manage your team\'s access (passwords, route assignments), and keep an eye on overall data quality. This guide covers everything specific to your role.',
+    body: "You own the customer master in your region. You approve sensitive decisions (reactivations of closed shops), manage your team's access (passwords, route assignments), and keep an eye on overall data quality. This guide covers everything specific to your role.",
   },
   sections: [
     {
@@ -613,20 +735,30 @@ const MANAGER_EN: Guide = {
       title: 'Daily dashboard check',
       steps: [
         { html: 'Tap <strong>Dashboard</strong> in the menu.', img: '10-manager-dashboard.png' },
-        { html: 'You see totals for your region: active customers, pending approvals, reactivation requests, recent activity.' },
+        {
+          html: 'You see totals for your region: active customers, pending approvals, reactivation requests, recent activity.',
+        },
         { html: 'Use it as a 30-second morning check before opening anything else.' },
       ],
     },
     {
       number: 3,
       title: 'Approve or reject reactivations',
-      intro: 'Reactivations bring closed shops back into the active master. Only managers can approve them.',
+      intro:
+        'Reactivations bring closed shops back into the active master. Only managers can approve them.',
       steps: [
-        { html: 'Tap <strong>Reactivations</strong> in the menu.', img: '11-manager-reactivations.png' },
+        {
+          html: 'Tap <strong>Reactivations</strong> in the menu.',
+          img: '11-manager-reactivations.png',
+        },
         { html: 'You see all closed shops your salesmen have asked to reopen.' },
-        { html: 'Each row shows the salesman\'s reason and the photo they captured today at the shop.' },
+        {
+          html: "Each row shows the salesman's reason and the photo they captured today at the shop.",
+        },
         { html: 'Tap the photo to see it full size and confirm the shop is genuinely open.' },
-        { html: 'Tap <strong>✓ Reactivate</strong> if you\'re satisfied — the branch goes back to ACTIVE.' },
+        {
+          html: "Tap <strong>✓ Reactivate</strong> if you're satisfied — the branch goes back to ACTIVE.",
+        },
         { html: 'Tap <strong>Keep closed</strong> to reject. The salesman sees your decision.' },
       ],
       callouts: [
@@ -642,10 +774,18 @@ const MANAGER_EN: Guide = {
       title: 'Manage your team',
       steps: [
         { html: 'Tap <strong>Users</strong> in the menu.', img: '12-manager-users.png' },
-        { html: 'You see every user in your region: salesmen, supervisors, anyone reporting up to you.' },
-        { html: '<strong>Reset password</strong> — for a salesman who forgot theirs. Set a temporary password; the system forces them to change it on next login.' },
-        { html: '<strong>Disable</strong> — when a salesman leaves the company. They can no longer log in. Their history stays in audit logs.' },
-        { html: '<strong>Reassign route</strong> — if a salesman switches routes. The new owner can immediately see those customers.' },
+        {
+          html: 'You see every user in your region: salesmen, supervisors, anyone reporting up to you.',
+        },
+        {
+          html: '<strong>Reset password</strong> — for a salesman who forgot theirs. Set a temporary password; the system forces them to change it on next login.',
+        },
+        {
+          html: '<strong>Disable</strong> — when a salesman leaves the company. They can no longer log in. Their history stays in audit logs.',
+        },
+        {
+          html: '<strong>Reassign route</strong> — if a salesman switches routes. The new owner can immediately see those customers.',
+        },
       ],
     },
     {
@@ -663,8 +803,12 @@ const MANAGER_EN: Guide = {
       intro: 'Use this when something looks unusual or HR asks who did what.',
       steps: [
         { html: 'Tap <strong>Audit log</strong> in the menu.' },
-        { html: 'Every action by every user is logged: login, login fail, customer create/update, approval, reject, reactivation, photo capture, password reset, etc.' },
-        { html: 'Each row shows: who, when, from what IP, what action, on what record. Old/new values too.' },
+        {
+          html: 'Every action by every user is logged: login, login fail, customer create/update, approval, reject, reactivation, photo capture, password reset, etc.',
+        },
+        {
+          html: 'Each row shows: who, when, from what IP, what action, on what record. Old/new values too.',
+        },
         { html: 'Filter by user, date range, action type, or customer to narrow down.' },
       ],
       callouts: [
@@ -681,12 +825,30 @@ const MANAGER_EN: Guide = {
       table: {
         headers: ['Situation', 'What to do'],
         rows: [
-          ['"Photo was captured before the last status change"', 'A salesman tried to use an old photo for a reactivation. Reject — they need to take a fresh photo at the shop today.'],
-          ['"My team can\'t log in"', 'Check Audit log for "LOGIN_FAIL" entries. Usually a typed password (system locks them out for 1 minute after 5 wrong tries).'],
-          ['"Cannot approve your own request"', 'You submitted the request originally. Forward to a peer manager.'],
-          ['"You have no managed regions assigned"', 'Your account hasn\'t been assigned a region yet. Contact head office.'],
-          ['Salesman moved to another route', 'Use the Users page → Reassign route. New customers visible immediately.'],
-          ['Salesman left the company', 'Disable on the Users page. Their audit trail is preserved.'],
+          [
+            '"Photo was captured before the last status change"',
+            'A salesman tried to use an old photo for a reactivation. Reject — they need to take a fresh photo at the shop today.',
+          ],
+          [
+            '"My team can\'t log in"',
+            'Check Audit log for "LOGIN_FAIL" entries. Usually a typed password (system locks them out for 1 minute after 5 wrong tries).',
+          ],
+          [
+            '"Cannot approve your own request"',
+            'You submitted the request originally. Forward to a peer manager.',
+          ],
+          [
+            '"You have no managed regions assigned"',
+            "Your account hasn't been assigned a region yet. Contact head office.",
+          ],
+          [
+            'Salesman moved to another route',
+            'Use the Users page → Reassign route. New customers visible immediately.',
+          ],
+          [
+            'Salesman left the company',
+            'Disable on the Users page. Their audit trail is preserved.',
+          ],
         ],
       },
     },
@@ -734,17 +896,23 @@ const STEWARD_EN: Guide = {
   filename: 'NMWC-Steward-Guide-EN',
   welcome: {
     heading: 'Welcome',
-    body: 'You own the integrity of the customer master from head office. Your work is heavier than the field roles — you bulk-import lists from the ERP, merge duplicates that the field can\'t see across regions, monitor the entire audit trail, and export the cleaned master back to downstream systems. This guide covers every screen you will use, with a focus on the safety rules: every steward action is high-trust, immediately visible across the company, and logged forever.',
+    body: "You own the integrity of the customer master from head office. Your work is heavier than the field roles — you bulk-import lists from the ERP, merge duplicates that the field can't see across regions, monitor the entire audit trail, and export the cleaned master back to downstream systems. This guide covers every screen you will use, with a focus on the safety rules: every steward action is high-trust, immediately visible across the company, and logged forever.",
   },
   sections: [
     {
       number: 1,
       title: 'Logging in and your scope',
-      intro: 'Your account sees everything: every region, every route, every customer. Other roles cannot.',
+      intro:
+        'Your account sees everything: every region, every route, every customer. Other roles cannot.',
       steps: [
-        { html: 'Open <strong>https://nmwc-cm.vercel.app</strong> on your laptop. The steward workflow is desktop-first because of the bulk-import / export / duplicate-review screens.', img: '01-login.png' },
+        {
+          html: 'Open <strong>https://nmwc-cm.vercel.app</strong> on your laptop. The steward workflow is desktop-first because of the bulk-import / export / duplicate-review screens.',
+          img: '01-login.png',
+        },
         { html: 'Sign in with your steward credentials.' },
-        { html: 'After login you land on the <strong>Import</strong> page by default. The left sidebar shows your full menu: Import, Export, Customers, Duplicates, Work items.' },
+        {
+          html: 'After login you land on the <strong>Import</strong> page by default. The left sidebar shows your full menu: Import, Export, Customers, Duplicates, Work items.',
+        },
       ],
       callouts: [
         {
@@ -760,21 +928,39 @@ const STEWARD_EN: Guide = {
       intro: 'See the full master across all regions and routes.',
       steps: [
         { html: 'Tap <strong>Customers</strong> in the sidebar.', img: 'steward-02-customers.png' },
-        { html: 'You see every customer in every region. Filter by region, channel, payment terms, or completeness score.' },
-        { html: 'The search box runs on legal name, NMWC code, or primary phone — partial matches work (e.g. "lulu" finds every Lulu branch).' },
-        { html: 'Click any row to open the customer profile and see the full record + branches + edit history + audit trail.' },
+        {
+          html: 'You see every customer in every region. Filter by region, channel, payment terms, or completeness score.',
+        },
+        {
+          html: 'The search box runs on legal name, NMWC code, or primary phone — partial matches work (e.g. "lulu" finds every Lulu branch).',
+        },
+        {
+          html: 'Click any row to open the customer profile and see the full record + branches + edit history + audit trail.',
+        },
       ],
     },
     {
       number: 3,
       title: 'Import — bulk upload from xlsx',
-      intro: 'Two distinct importers, one entry point. Pick the right one.',
+      intro:
+        'Two distinct importers, one entry point, and a fixed order. The templates for both files are in docs/import-templates (account-master-template.xlsx, customer-master-template.xlsx) with an Instructions tab each.',
       steps: [
+        {
+          html: '<strong>Before any import:</strong> make sure the <strong>Manager</strong> and <strong>Steward</strong> accounts already exist in <strong>Users</strong>. The import deliberately cannot create or promote those two roles — no administrator can ever be minted from a spreadsheet. Managers must exist first because the account master then assigns them their regions.',
+        },
         { html: 'Tap <strong>Import</strong> in the sidebar.', img: 'steward-03-import.png' },
-        { html: '<strong>Account Master</strong> (left card): a workbook with three sheets — <strong>Regions</strong>, <strong>Routes</strong>, <strong>Users</strong>. Existing rows with matching keys are <em>updated</em> in place. New rows are <em>added</em>. Use this to bring the field-team org-chart from HR into the app.' },
-        { html: '<strong>Customer Master</strong> (right card): a single-sheet workbook of customer rows. Goes to a <em>staged batch</em> first — nothing changes in the live master until you review and promote.' },
-        { html: 'Both cards have an <strong>Expected columns</strong> expandable — read it once before your first import to confirm header names match.' },
-        { html: 'Click <strong>Choose File</strong>, pick the .xlsx, then click <strong>Upload</strong>. Wait for the upload to finish.' },
+        {
+          html: '<strong>Account Master</strong> (left card) goes <strong>first</strong>: a workbook with three sheets — <strong>Regions</strong>, <strong>Routes</strong>, <strong>Users</strong>. Existing rows with matching keys are <em>updated</em> in place; new rows are <em>added</em>; an existing user keeps their password, role and supervisor unless a column says otherwise. Routes must exist before the customers that reference them.',
+        },
+        {
+          html: '<strong>Customer Master</strong> (right card) goes <strong>second</strong>: a single-sheet workbook, one row per branch. Region and route are matched on their <strong>codes</strong>, never their names. It goes to a <em>staged batch</em> first — nothing changes in the live master until you review and promote.',
+        },
+        {
+          html: 'Both cards have an <strong>Expected columns</strong> expandable — read it once before your first import to confirm header names match.',
+        },
+        {
+          html: 'Click <strong>Choose File</strong>, pick the .xlsx, then click <strong>Upload</strong>. Wait for the upload to finish.',
+        },
       ],
       callouts: [
         {
@@ -791,31 +977,71 @@ const STEWARD_EN: Guide = {
     },
     {
       number: 4,
-      title: 'Review and promote a staged customer batch',
-      intro: 'Customer master imports go through a 3-state pipeline before they hit the live master.',
+      title: 'Review, promote and reconcile a staged customer batch',
+      intro:
+        'A customer-master import is staged, promoted in passes, and then reconciled. It is not finished when the screen stops moving — it is finished when the six figures add up.',
       steps: [
-        { html: 'After the customer-master upload finishes, you land on the batch detail page. The <strong>Recent batches</strong> table on the Import page also lists every batch.' },
-        { html: 'Each row in the batch has one of three states: <strong>CLEAN</strong> (passed every validation), <strong>QUARANTINED</strong> (failed at least one rule — review and fix), <strong>REJECTED</strong> (you decided not to promote).' },
-        { html: 'Filter to <strong>QUARANTINED</strong> first. Each row shows the issues — bad phone format, missing required field, stale CR, duplicate phone, etc. Fix the source row in your local copy of the xlsx, or mark the row Rejected.' },
-        { html: 'When the QUARANTINED set is empty (or you have rejected the rest), click <strong>Promote</strong>. The CLEAN rows become real Customer + Branch records in the master. The promotion is one big atomic transaction.' },
+        {
+          html: 'After the customer-master upload finishes, you land on the batch page. The <strong>Recent batches</strong> table on the Import page also lists every batch.',
+        },
+        {
+          html: 'The page shows six figures: <strong>Total · Clean · Quarantined · Promoted · Rejected · Left to promote</strong>. Rows that need a decision (<strong>REJECTED</strong> and <strong>QUARANTINED</strong>) are always listed <em>first</em> in the table below, each with its reason, so none can hide further down a long file.',
+        },
+        {
+          html: 'Review the <strong>QUARANTINED</strong> rows first — bad phone format, an unknown channel or visit-day code, a duplicate phone or CR on a different customer. Fix the source row in your copy of the xlsx and re-import it, or accept that it stays out. Quarantined rows are never promoted.',
+        },
+        {
+          html: 'Click <strong>Promote N clean rows</strong>. On a full master this <strong>runs in passes</strong> — the button reads “Promoting… 1,200 done, 2,100 left” and keeps going by itself. Leave the tab open until it reports <strong>Done</strong>.',
+        },
+        {
+          html: 'If it is interrupted — tab closed, connection dropped — nothing is lost. Everything already promoted is saved. The page shows <strong>Promote interrupted</strong> with a <strong>Resume promote</strong> button that continues exactly where it stopped, and the batch appears in your <strong>Work</strong> list as “Import to resume” so it cannot be forgotten.',
+        },
+        {
+          html: 'Only <strong>one</strong> customer import can be promoted at a time. A second attempt is refused and names the file already running — finish (or abandon) that one first.',
+        },
+        {
+          html: 'When it finishes, <strong>reconcile</strong>: <em>Left to promote</em> must be 0, and <em>Promoted + Rejected + Quarantined</em> must equal <em>Total</em>. Then open every <strong>REJECTED</strong> row: a rejected row is <strong>not</strong> in the master. Typical reasons are a branch code that already belongs to another customer, or a Temix code recorded on a different customer. Correct the source and re-import those customers.',
+        },
+        {
+          html: 'Record the six figures (a screenshot of the batch page is enough) as the evidence that the load was checked. The load is complete only when every rejected and quarantined row is resolved or formally accepted as excluded.',
+        },
       ],
       callouts: [
         {
           kind: 'info',
-          title: 'Why staging?',
-          body: 'A bad bulk-import that lands directly into the master is hard to undo. The staged-batch model lets you see exactly what would change, fix the bad rows, and only commit when the batch is clean. Promotion creates a single audit-log row referencing the batch — full traceability.',
+          title: 'Why staging, and why passes?',
+          body: 'A bad bulk-import that lands directly into the master is hard to undo, so the batch is staged and you see exactly what would change before committing. A real master is thousands of rows — far too many for one request — so promotion works through it in passes, each pass committing its customers and recording an audit row. No customer is ever loaded twice and none is skipped, however many times the load is resumed.',
+        },
+        {
+          kind: 'warn',
+          title: 'A technical fault is not a rejection',
+          body: 'If the database falters mid-pass, the affected customers are not rejected — they are retried on the next pass. If a pass makes no progress at all the load stops and tells you; escalate that to IT rather than clicking Resume repeatedly.',
+        },
+        {
+          kind: 'danger',
+          title: 'Imported customers skip the approval chain',
+          body: 'Customers loaded this way are created directly — they do not go through Supervisor → Finance → GM → Accountant. That is deliberate (they are existing customers being migrated) and it is why importing is yours alone and fully audited. Every customer created in the field after go-live follows the chain in full.',
         },
       ],
     },
     {
       number: 5,
       title: 'Find and merge duplicates',
-      intro: 'Duplicates are the master\'s biggest enemy. The steward\'s queue surfaces three kinds.',
+      intro: "Duplicates are the master's biggest enemy. The steward's queue surfaces three kinds.",
       steps: [
-        { html: 'Tap <strong>Duplicates</strong> in the sidebar.', img: 'steward-06-duplicates.png' },
-        { html: 'Each pair card shows the match reason at the top — <strong>PHONE</strong> (exact phone number match across two customers), <strong>CR</strong> (same Commercial Registration number), or <strong>NAME</strong> (fuzzy similarity ≥ 0.7).' },
-        { html: 'Compare the two cards side-by-side: NMWC code, phone, CR, branch count. The customer with more branches and a higher completeness score is usually the better keeper.' },
-        { html: 'Three actions:<ul><li><strong>Mark distinct</strong> — these are NOT duplicates. The pair is recorded in the audit log and will not surface again.</li><li><strong>Keep ←</strong> — the LEFT customer is the survivor. The right one is soft-deleted. Its branches and edit history move to the survivor.</li><li><strong>Keep →</strong> — same, but the RIGHT customer survives.</li></ul>' },
+        {
+          html: 'Tap <strong>Duplicates</strong> in the sidebar.',
+          img: 'steward-06-duplicates.png',
+        },
+        {
+          html: 'Each pair card shows the match reason at the top — <strong>PHONE</strong> (exact phone number match across two customers), <strong>CR</strong> (same Commercial Registration number), or <strong>NAME</strong> (fuzzy similarity ≥ 0.7).',
+        },
+        {
+          html: 'Compare the two cards side-by-side: NMWC code, phone, CR, branch count. The customer with more branches and a higher completeness score is usually the better keeper.',
+        },
+        {
+          html: 'Three actions:<ul><li><strong>Mark distinct</strong> — these are NOT duplicates. The pair is recorded in the audit log and will not surface again.</li><li><strong>Keep ←</strong> — the LEFT customer is the survivor. The right one is soft-deleted. Its branches and edit history move to the survivor.</li><li><strong>Keep →</strong> — same, but the RIGHT customer survives.</li></ul>',
+        },
       ],
       callouts: [
         {
@@ -833,13 +1059,22 @@ const STEWARD_EN: Guide = {
     {
       number: 6,
       title: 'Export — send the cleaned master to the ERP',
-      intro: 'When the field team has enriched enough records, you push the cleaned master back downstream.',
+      intro:
+        'When the field team has enriched enough records, you push the cleaned master back downstream.',
       steps: [
         { html: 'Tap <strong>Export</strong> in the sidebar.', img: 'steward-05-export.png' },
-        { html: 'Pick filters: region(s), payment terms (cash / credit), channel, completeness threshold (e.g. only export records ≥ 80% complete).' },
-        { html: 'Click <strong>Generate export</strong>. The job runs in the background and lands in the <strong>Recent exports</strong> table at the bottom.' },
-        { html: 'When status is DONE, click the row to download the .xlsx. Hand off to the ERP team.' },
-        { html: 'Failed jobs (status FAILED) show an error message — typically a transient network issue. Re-run with the same filters.' },
+        {
+          html: 'Pick filters: region(s), payment terms (cash / credit), channel, completeness threshold (e.g. only export records ≥ 80% complete).',
+        },
+        {
+          html: 'Click <strong>Generate export</strong>. The job runs in the background and lands in the <strong>Recent exports</strong> table at the bottom.',
+        },
+        {
+          html: 'When status is DONE, click the row to download the .xlsx. Hand off to the ERP team.',
+        },
+        {
+          html: 'Failed jobs (status FAILED) show an error message — typically a transient network issue. Re-run with the same filters.',
+        },
       ],
       callouts: [
         {
@@ -855,10 +1090,18 @@ const STEWARD_EN: Guide = {
       intro: 'Every action by every user, immutable, queryable.',
       steps: [
         { html: 'Tap <strong>Audit log</strong> in the sidebar.', img: 'steward-07-audit.png' },
-        { html: 'Each row: who, when, from what IP and user-agent, what action (CREATE / UPDATE / APPROVE / REJECT / MERGE / IMPORT / REACTIVATE / LOGIN / LOGIN_FAIL / FORCE_OVERRIDE / DELETE / SOFT_DELETE / PHOTO_VIEW), on what entity, with old and new values stored as JSON.' },
-        { html: 'Filter by user (e.g. investigate one salesman), date range (e.g. last week), entity type (Customer / Branch / CustomerEdit / User), or action type.' },
-        { html: 'For an HR investigation: filter by user + date range + entity type Customer to see exactly what they changed.' },
-        { html: 'For a "what happened" investigation on one customer: open the customer, click <strong>History</strong> — same data filtered to that record.' },
+        {
+          html: 'Each row: who, when, from what IP and user-agent, what action (CREATE / UPDATE / APPROVE / REJECT / MERGE / IMPORT / REACTIVATE / LOGIN / LOGIN_FAIL / FORCE_OVERRIDE / DELETE / SOFT_DELETE / PHOTO_VIEW), on what entity, with old and new values stored as JSON.',
+        },
+        {
+          html: 'Filter by user (e.g. investigate one salesman), date range (e.g. last week), entity type (Customer / Branch / CustomerEdit / User), or action type.',
+        },
+        {
+          html: 'For an HR investigation: filter by user + date range + entity type Customer to see exactly what they changed.',
+        },
+        {
+          html: 'For a "what happened" investigation on one customer: open the customer, click <strong>History</strong> — same data filtered to that record.',
+        },
       ],
       callouts: [
         {
@@ -873,10 +1116,19 @@ const STEWARD_EN: Guide = {
       title: 'Routes, regions, and channel taxonomy',
       intro: 'The fixed reference tables that everything else depends on.',
       steps: [
-        { html: 'Tap <strong>Routes &amp; regions</strong> in the sidebar.', img: 'steward-08-routes.png' },
-        { html: 'You see every region (e.g. Muscat) and every route under it (C1, C4, MH01, etc.).' },
-        { html: 'Add a new route when a new salesman starts. Mark a route inactive when it\'s consolidated. Don\'t delete — it would break audit trails for past customers.' },
-        { html: 'The <strong>Channel taxonomy</strong> (General Trade, HORECA, Modern Trade, sub-channels) is locked — see PRD Appendix A. If a sub-channel is missing, file an ops ticket; do not edit the taxonomy live.' },
+        {
+          html: 'Tap <strong>Routes &amp; regions</strong> in the sidebar.',
+          img: 'steward-08-routes.png',
+        },
+        {
+          html: 'You see every region (e.g. Muscat) and every route under it (C1, C4, MH01, etc.).',
+        },
+        {
+          html: "Add a new route when a new salesman starts. Mark a route inactive when it's consolidated. Don't delete — it would break audit trails for past customers.",
+        },
+        {
+          html: 'The <strong>Channel taxonomy</strong> (General Trade, HORECA, Modern Trade, sub-channels) is locked — see PRD Appendix A. If a sub-channel is missing, file an ops ticket; do not edit the taxonomy live.',
+        },
       ],
     },
     {
@@ -885,23 +1137,45 @@ const STEWARD_EN: Guide = {
       intro: 'Stewards see all users for visibility but most user-edit actions belong to managers.',
       steps: [
         { html: 'Tap <strong>Users</strong> in the sidebar.', img: 'steward-09-users.png' },
-        { html: 'You see every user in every region. Useful for understanding "who reports to whom" and confirming the org chart matches what HR has.' },
-        { html: 'Reset password, disable, and reassign-route actions live with the user\'s manager. Forward HR requests to the right manager.' },
-        { html: 'You CAN onboard a new manager (since managers don\'t have a higher-rank approver) — head office hands you the request, you create the user record with the MANAGER role and the regions they cover.' },
+        {
+          html: 'You see every user in every region. Useful for understanding "who reports to whom" and confirming the org chart matches what HR has.',
+        },
+        {
+          html: "Reset password, disable, and reassign-route actions live with the user's manager. Forward HR requests to the right manager.",
+        },
+        {
+          html: "You CAN onboard a new manager (since managers don't have a higher-rank approver) — head office hands you the request, you create the user record with the MANAGER role and the regions they cover.",
+        },
       ],
     },
     {
       number: 10,
       title: 'Backup, recovery, and your responsibilities',
-      intro: 'You are not the database admin, but you are the first to know when something goes wrong.',
+      intro:
+        'You are not the database admin, but you are the first to know when something goes wrong.',
       table: {
         headers: ['Concern', 'What you do'],
         rows: [
-          ['<strong>Daily DB backup</strong> — check the GitHub Actions tab once a week to confirm the nightly run is green.', 'If a run is red two days in a row, alert ops. The dump goes to the <code>nmwc-backups</code> R2 bucket as <code>db/&lt;DATE&gt;.sql.gz</code>.'],
-          ['<strong>Photo storage</strong> — R2 lifecycle deletes "gc-marked" photos after 7 days.', 'You don\'t touch this. It runs on its own. If you suspect lost photos, check the audit log first.'],
-          ['<strong>"I deleted the wrong customer"</strong>', 'Open the audit log, find the SOFT_DELETE row for that customer, get the JSON of the prior state, and restore it via a steward-only Prisma script (head-office ops can write this).'],
-          ['<strong>"I promoted a bad batch"</strong>', 'Audit log filters action=IMPORT — find the batch row, then write a one-off undo script with ops. Don\'t try to revert via the UI.'],
-          ['<strong>Quarterly drill</strong>', 'Run the manual <em>restore-drill</em> GitHub Action. Confirms the latest dump can actually be restored into a Neon branch.'],
+          [
+            '<strong>Daily DB backup</strong> — check the GitHub Actions tab once a week to confirm the nightly run is green.',
+            'If a run is red two days in a row, alert ops. The dump goes to the <code>nmwc-backups</code> R2 bucket as <code>db/&lt;DATE&gt;.sql.gz</code>.',
+          ],
+          [
+            '<strong>Photo storage</strong> — R2 lifecycle deletes "gc-marked" photos after 7 days.',
+            "You don't touch this. It runs on its own. If you suspect lost photos, check the audit log first.",
+          ],
+          [
+            '<strong>"I deleted the wrong customer"</strong>',
+            'Open the audit log, find the SOFT_DELETE row for that customer, get the JSON of the prior state, and restore it via a steward-only Prisma script (head-office ops can write this).',
+          ],
+          [
+            '<strong>"I promoted a bad batch"</strong>',
+            "Audit log filters action=IMPORT — find the batch row, then write a one-off undo script with ops. Don't try to revert via the UI.",
+          ],
+          [
+            '<strong>Quarterly drill</strong>',
+            'Run the manual <em>restore-drill</em> GitHub Action. Confirms the latest dump can actually be restored into a Neon branch.',
+          ],
         ],
       },
       callouts: [
@@ -918,12 +1192,30 @@ const STEWARD_EN: Guide = {
       table: {
         headers: ['Situation', 'What to do'],
         rows: [
-          ['"Cannot promote — quarantined rows"', 'Open the batch, fix or reject the QUARANTINED rows, then re-promote.'],
-          ['"Phone now belongs to X (Y) — reject and ask the salesman"', 'A salesman submitted a phone that conflicts with another customer in the master. Reject the edit; the salesman fixes at the shop.'],
-          ['"Manager creates regions silently"', 'A new region was added without the usual ticket. Check audit log for action=CREATE entityType=Region. If unauthorized, escalate.'],
-          ['"Customer master has many duplicates"', 'Run a duplicate review session. Sort by similarity. Tackle PHONE matches first (1.0 similarity = same phone), then CR, then NAME.'],
-          ['"Export failed"', 'Check the row\'s error message. Most are network blips — re-run. If it persists, check the date range — exports over 50k rows can time out.'],
-          ['"User left the company"', 'Forward to their manager. The manager uses the Users page → Disable. Their audit trail stays.'],
+          [
+            '"Cannot promote — quarantined rows"',
+            'Open the batch, fix or reject the QUARANTINED rows, then re-promote.',
+          ],
+          [
+            '"Phone now belongs to X (Y) — reject and ask the salesman"',
+            'A salesman submitted a phone that conflicts with another customer in the master. Reject the edit; the salesman fixes at the shop.',
+          ],
+          [
+            '"Manager creates regions silently"',
+            'A new region was added without the usual ticket. Check audit log for action=CREATE entityType=Region. If unauthorized, escalate.',
+          ],
+          [
+            '"Customer master has many duplicates"',
+            'Run a duplicate review session. Sort by similarity. Tackle PHONE matches first (1.0 similarity = same phone), then CR, then NAME.',
+          ],
+          [
+            '"Export failed"',
+            "Check the row's error message. Most are network blips — re-run. If it persists, check the date range — exports over 50k rows can time out.",
+          ],
+          [
+            '"User left the company"',
+            'Forward to their manager. The manager uses the Users page → Disable. Their audit trail stays.',
+          ],
         ],
       },
     },
@@ -935,10 +1227,19 @@ const STEWARD_EN: Guide = {
       {
         title: 'Steward-only actions',
         rows: [
-          ['<strong>Upload account master</strong>', 'Bulk upload Regions/Routes/Users xlsx. Applied immediately after validation.'],
-          ['<strong>Upload customer master</strong>', 'Bulk upload customer xlsx. Goes to staged batch first.'],
+          [
+            '<strong>Upload account master</strong>',
+            'Bulk upload Regions/Routes/Users xlsx. Applied immediately after validation.',
+          ],
+          [
+            '<strong>Upload customer master</strong>',
+            'Bulk upload customer xlsx. Goes to staged batch first.',
+          ],
           ['<strong>Promote batch</strong>', 'Apply CLEAN rows to the live master.'],
-          ['<strong>Mark distinct</strong>', 'A pair the detector flagged is actually two different customers.'],
+          [
+            '<strong>Mark distinct</strong>',
+            'A pair the detector flagged is actually two different customers.',
+          ],
           ['<strong>Keep ← / Keep →</strong>', 'Merge a duplicate. The chosen side survives.'],
           ['<strong>Generate export</strong>', 'Produce a filtered xlsx for the ERP team.'],
           ['<strong>Audit log</strong>', 'Every action ever taken — searchable.'],
@@ -948,19 +1249,40 @@ const STEWARD_EN: Guide = {
         title: 'When to use which action',
         rows: [
           ['HR sends new org-chart', 'Edit account-master xlsx → Upload account master.'],
-          ['ERP team sends month-end customer list', 'Upload customer master → review staged batch → fix QUARANTINED → Promote.'],
-          ['Salesman flags a duplicate at the shop', 'Open Duplicates, find the pair, decide Keep ← or Keep → after reviewing both records.'],
-          ['ERP team asks for the cleaned master', 'Export with completeness ≥ 60% (mid-pilot) or ≥ 90% (year-end).'],
+          [
+            'ERP team sends month-end customer list',
+            'Upload customer master → review staged batch → fix QUARANTINED → Promote.',
+          ],
+          [
+            'Salesman flags a duplicate at the shop',
+            'Open Duplicates, find the pair, decide Keep ← or Keep → after reviewing both records.',
+          ],
+          [
+            'ERP team asks for the cleaned master',
+            'Export with completeness ≥ 60% (mid-pilot) or ≥ 90% (year-end).',
+          ],
           ['HR investigates a salesman', 'Audit log → filter by user + date range.'],
-          ['Customer profile shows wrong info, no one knows why', 'Audit log → filter by entity Customer + entityId from URL.'],
+          [
+            'Customer profile shows wrong info, no one knows why',
+            'Audit log → filter by entity Customer + entityId from URL.',
+          ],
         ],
       },
       {
         title: 'Severity guide',
         rows: [
-          ['<strong>🟢 Routine</strong>', 'Customer-master uploads, weekly duplicate review, monthly exports.'],
-          ['<strong>🟡 Care needed</strong>', 'Cross-region merges, batch promotions, account-master uploads.'],
-          ['<strong>🔴 High-stakes</strong>', 'Restoring soft-deleted customers, undoing a bad import, anything that touches data outside the staging pipeline.'],
+          [
+            '<strong>🟢 Routine</strong>',
+            'Customer-master uploads, weekly duplicate review, monthly exports.',
+          ],
+          [
+            '<strong>🟡 Care needed</strong>',
+            'Cross-region merges, batch promotions, account-master uploads.',
+          ],
+          [
+            '<strong>🔴 High-stakes</strong>',
+            'Restoring soft-deleted customers, undoing a bad import, anything that touches data outside the staging pipeline.',
+          ],
         ],
       },
     ],
@@ -990,10 +1312,17 @@ const SALESMAN_AR: Guide = {
       title: 'تسجيل الدخول',
       intro: 'تقوم بهذا في أول مرة فقط، ثم مرة في اليوم أو الأسبوع.',
       steps: [
-        { html: 'افتح من هاتفك: <strong>https://nmwc-cm.vercel.app</strong>. احفظه كاختصار في شاشة هاتفك الرئيسية.', img: '01-login.png' },
+        {
+          html: 'افتح من هاتفك: <strong>https://nmwc-cm.vercel.app</strong>. احفظه كاختصار في شاشة هاتفك الرئيسية.',
+          img: '01-login.png',
+        },
         { html: 'اكتب <strong>اسم المستخدم</strong> الخاص بك. مديرك يعطيك إياه في أول يوم.' },
-        { html: 'اكتب <strong>كلمة المرور</strong>. اضغط زر <strong>تسجيل الدخول</strong> الأزرق.' },
-        { html: 'هل هذه أول مرة؟ قد يطلب منك التطبيق تعيين كلمة مرور جديدة. هذا لحماية حسابك — اختر شيئًا تعرفه أنت فقط.' },
+        {
+          html: 'اكتب <strong>كلمة المرور</strong>. اضغط زر <strong>تسجيل الدخول</strong> الأزرق.',
+        },
+        {
+          html: 'هل هذه أول مرة؟ قد يطلب منك التطبيق تعيين كلمة مرور جديدة. هذا لحماية حسابك — اختر شيئًا تعرفه أنت فقط.',
+        },
       ],
       callouts: [
         {
@@ -1008,8 +1337,14 @@ const SALESMAN_AR: Guide = {
       title: 'البحث عن المحل الذي ستزوره',
       intro: 'افتح بيانات العميل بضغطتين فقط.',
       steps: [
-        { html: 'اضغط على <strong>اليوم</strong> في القائمة. ترى المحلات المجدولة في خط سيرك اليوم.', img: '02-salesman-today.png' },
-        { html: 'إذا لم يكن المحل في قائمة اليوم، اضغط على <strong>العملاء</strong> وابحث بالاسم أو برقم NMWC.', img: '03-salesman-customers-list.png' },
+        {
+          html: 'اضغط على <strong>اليوم</strong> في القائمة. ترى المحلات المجدولة في خط سيرك اليوم.',
+          img: '02-salesman-today.png',
+        },
+        {
+          html: 'إذا لم يكن المحل في قائمة اليوم، اضغط على <strong>العملاء</strong> وابحث بالاسم أو برقم NMWC.',
+          img: '03-salesman-customers-list.png',
+        },
         { html: 'اضغط على أي صف لفتح ملف ذلك المحل.' },
       ],
       callouts: [
@@ -1025,10 +1360,20 @@ const SALESMAN_AR: Guide = {
       title: 'تحديث بيانات المحل',
       intro: 'املأ ما هو ناقص. الحقول الإلزامية معلّمة بـ *.',
       steps: [
-        { html: 'في ملف العميل، اضغط زر <strong>تحديث البيانات</strong> الأزرق في أعلى يسار الشاشة.', img: '04-salesman-customer-profile.png' },
-        { html: 'قسم <strong>الهوية</strong>: الاسم القانوني، رمز NMWC، رقم السجل التجاري، القناة، القناة الفرعية، الشخص المسؤول، الهاتف الرئيسي.', img: '05-salesman-enrichment-top.png' },
-        { html: 'يجب أن يكون رقم الهاتف رقمًا عمانيًا صحيحًا، مثل: <strong>+96891234567</strong>.' },
-        { html: 'القناة تحدد نوع المحل — اختر الأقرب (تجارة عامة، فنادق ومطاعم، تجارة حديثة، إلخ).' },
+        {
+          html: 'في ملف العميل، اضغط زر <strong>تحديث البيانات</strong> الأزرق في أعلى يسار الشاشة.',
+          img: '04-salesman-customer-profile.png',
+        },
+        {
+          html: 'قسم <strong>الهوية</strong>: الاسم القانوني، رمز NMWC، رقم السجل التجاري، القناة، القناة الفرعية، الشخص المسؤول، الهاتف الرئيسي.',
+          img: '05-salesman-enrichment-top.png',
+        },
+        {
+          html: 'يجب أن يكون رقم الهاتف رقمًا عمانيًا صحيحًا، مثل: <strong>+96891234567</strong>.',
+        },
+        {
+          html: 'القناة تحدد نوع المحل — اختر الأقرب (تجارة عامة، فنادق ومطاعم، تجارة حديثة، إلخ).',
+        },
       ],
     },
     {
@@ -1036,11 +1381,16 @@ const SALESMAN_AR: Guide = {
       title: 'التقاط الصور الثلاث المطلوبة',
       intro: 'دائمًا التقط صورًا جديدة في المحل اليوم. الصور القديمة من المعرض مرفوضة.',
       steps: [
-        { html: 'اضغط على خانة صورة فارغة. الكاميرا ستفتح.', img: '06-salesman-enrichment-photos.png' },
+        {
+          html: 'اضغط على خانة صورة فارغة. الكاميرا ستفتح.',
+          img: '06-salesman-enrichment-photos.png',
+        },
         { html: '<strong>واجهة المحل</strong> — تظهر مدخل المحل بوضوح.' },
         { html: '<strong>اللافتة</strong> — لافتة المحل التي يظهر عليها الاسم.' },
         { html: '<strong>السجل التجاري</strong> — وثيقة السجل التجاري الرسمية.' },
-        { html: 'التطبيق يرفع الصورة تلقائيًا. إذا كانت شبكتك ضعيفة، يحاول مرة أخرى لوحده. إذا فشل، اضغط <strong>إعادة الرفع</strong> — صورتك محفوظة، لا تحتاج لإعادة التقاطها.' },
+        {
+          html: 'التطبيق يرفع الصورة تلقائيًا. إذا كانت شبكتك ضعيفة، يحاول مرة أخرى لوحده. إذا فشل، اضغط <strong>إعادة الرفع</strong> — صورتك محفوظة، لا تحتاج لإعادة التقاطها.',
+        },
       ],
       callouts: [
         {
@@ -1056,17 +1406,24 @@ const SALESMAN_AR: Guide = {
       steps: [
         { html: 'اضغط زر <strong>تحديد الموقع</strong> وأنت واقف عند مدخل المحل.' },
         { html: 'هاتفك سيطلب الإذن — اضغط <strong>السماح</strong>.' },
-        { html: 'إذا لم يعمل GPS (داخل مبنى، إشارة ضعيفة)، اضغط <strong>إدخال الإحداثيات يدويًا</strong>. اضغط على الخريطة في موقع المحل، أو اكتب خطي العرض والطول. أضف سببًا قصيرًا حتى يفهم المشرف أن الإدخال يدوي.' },
+        {
+          html: 'إذا لم يعمل GPS (داخل مبنى، إشارة ضعيفة)، اضغط <strong>إدخال الإحداثيات يدويًا</strong>. اضغط على الخريطة في موقع المحل، أو اكتب خطي العرض والطول. أضف سببًا قصيرًا حتى يفهم المشرف أن الإدخال يدوي.',
+        },
       ],
     },
     {
       number: 6,
       title: 'إرسال للموافقة',
       steps: [
-        { html: 'انزل إلى أسفل الصفحة — سترى شريطًا ثابتًا فيه زرّان.', img: '07-salesman-enrichment-bottom.png' },
+        {
+          html: 'انزل إلى أسفل الصفحة — سترى شريطًا ثابتًا فيه زرّان.',
+          img: '07-salesman-enrichment-bottom.png',
+        },
         { html: 'اضغط زر <strong>إرسال للموافقة</strong> الأزرق (على اليسار).' },
         { html: 'سترى رسالة تأكيد. حالة المحل تصبح <strong>قيد المراجعة</strong> حتى يقرر مشرفك.' },
-        { html: 'إذا قطعك أحد، اضغط <strong>حفظ مسودة</strong> بدلًا من ذلك — تبقى في هاتفك 7 أيام.' },
+        {
+          html: 'إذا قطعك أحد، اضغط <strong>حفظ مسودة</strong> بدلًا من ذلك — تبقى في هاتفك 7 أيام.',
+        },
       ],
     },
     {
@@ -1075,7 +1432,9 @@ const SALESMAN_AR: Guide = {
       intro: 'استخدم هذا فقط إذا أُغلق المحل فعلًا (ترك العمل، انتقل، إلخ).',
       steps: [
         { html: 'في ملف العميل، اضغط زر <strong>تأشير كمغلق</strong> الأحمر على بطاقة الفرع.' },
-        { html: 'التقط صورة جديدة تظهر فيها أن المحل مغلق بوضوح (الأبواب منزّلة، اللافتة مرفوعة، فارغ).' },
+        {
+          html: 'التقط صورة جديدة تظهر فيها أن المحل مغلق بوضوح (الأبواب منزّلة، اللافتة مرفوعة، فارغ).',
+        },
         { html: 'اكتب سببًا قصيرًا — على الأقل 5 أحرف. مثلاً: "أغلق المحل، اللافتة مرفوعة."' },
         { html: 'اضغط <strong>إرسال الإغلاق</strong>. مشرفك يراجعه.' },
       ],
@@ -1111,11 +1470,26 @@ const SALESMAN_AR: Guide = {
       table: {
         headers: ['الموقف', 'ما العمل'],
         rows: [
-          ['رفع الصورة يفشل باستمرار', 'انتقل إلى الخارج أو قرب نافذة. انتظر بضع ثوانٍ. التطبيق يحاول تلقائيًا. إذا استمر التعذر، اضغط "إعادة الرفع" — صورتك محفوظة.'],
-          ['GPS لا يلتقط', 'اضغط "إدخال الإحداثيات يدويًا" داخل قسم GPS. اضغط على الخريطة أو اكتب الأرقام. أضف سببًا قصيرًا.'],
-          ['"هذا العميل ليس في خط سيرك"', 'يمكنك تحديث المحلات في خط سيرك المحدد فقط. اطلب من المدير إعادة تعيينه إن لزم.'],
-          ['طلبي مرفوض', 'اقرأ سبب المشرف. المحل يظهر في قائمة "يحتاج تصحيح". افتحه، صحّح ما طلبه، وأعد الإرسال.'],
-          ['أنا في وسط النموذج وأحتاج للمغادرة', 'اضغط "حفظ مسودة". يمكنك العودة خلال 7 أيام والإكمال.'],
+          [
+            'رفع الصورة يفشل باستمرار',
+            'انتقل إلى الخارج أو قرب نافذة. انتظر بضع ثوانٍ. التطبيق يحاول تلقائيًا. إذا استمر التعذر، اضغط "إعادة الرفع" — صورتك محفوظة.',
+          ],
+          [
+            'GPS لا يلتقط',
+            'اضغط "إدخال الإحداثيات يدويًا" داخل قسم GPS. اضغط على الخريطة أو اكتب الأرقام. أضف سببًا قصيرًا.',
+          ],
+          [
+            '"هذا العميل ليس في خط سيرك"',
+            'يمكنك تحديث المحلات في خط سيرك المحدد فقط. اطلب من المدير إعادة تعيينه إن لزم.',
+          ],
+          [
+            'طلبي مرفوض',
+            'اقرأ سبب المشرف. المحل يظهر في قائمة "يحتاج تصحيح". افتحه، صحّح ما طلبه، وأعد الإرسال.',
+          ],
+          [
+            'أنا في وسط النموذج وأحتاج للمغادرة',
+            'اضغط "حفظ مسودة". يمكنك العودة خلال 7 أيام والإكمال.',
+          ],
         ],
       },
     },
@@ -1176,7 +1550,10 @@ const SUPERVISOR_AR: Guide = {
       number: 1,
       title: 'تسجيل الدخول',
       steps: [
-        { html: 'افتح <strong>https://nmwc-cm.vercel.app</strong> على الهاتف أو الحاسوب.', img: '01-login.png' },
+        {
+          html: 'افتح <strong>https://nmwc-cm.vercel.app</strong> على الهاتف أو الحاسوب.',
+          img: '01-login.png',
+        },
         { html: 'سجّل الدخول باسم المستخدم وكلمة المرور الخاصين بالمشرف.' },
         { html: 'بعد تسجيل الدخول، تنتقل تلقائيًا إلى صفحة الموافقات.' },
       ],
@@ -1185,21 +1562,31 @@ const SUPERVISOR_AR: Guide = {
       number: 2,
       title: 'فتح قائمة الموافقات',
       steps: [
-        { html: 'اضغط على <strong>الموافقات</strong> في القائمة.', img: '08-supervisor-approvals-queue.png' },
+        {
+          html: 'اضغط على <strong>الموافقات</strong> في القائمة.',
+          img: '08-supervisor-approvals-queue.png',
+        },
         { html: 'ترى كل الإرسالات المعلّقة من المندوبين الذين يتبعون لك، الأقدم أولًا.' },
         { html: 'كل صف يظهر: اسم العميل، رمز NMWC، عدد الحقول المتغيرة، من أرسل، ومتى.' },
-        { html: 'وسوم العمر: <strong>أخضر</strong> أقل من 24 ساعة، <strong>كهرماني</strong> 1-3 أيام، <strong>أحمر</strong> أكثر من 3 أيام. ابدأ بالحمراء.' },
+        {
+          html: 'وسوم العمر: <strong>أخضر</strong> أقل من 24 ساعة، <strong>كهرماني</strong> 1-3 أيام، <strong>أحمر</strong> أكثر من 3 أيام. ابدأ بالحمراء.',
+        },
       ],
     },
     {
       number: 3,
       title: 'مراجعة عملية تحرير واحدة (مقارنة قبل / بعد)',
       steps: [
-        { html: 'اضغط على أي صف لفتح صفحة تفاصيل التحرير.', img: '09-supervisor-approval-diff.png' },
+        {
+          html: 'اضغط على أي صف لفتح صفحة تفاصيل التحرير.',
+          img: '09-supervisor-approval-diff.png',
+        },
         { html: 'سترى مقارنة قبل / بعد لكل حقل تم تغييره.' },
         { html: 'قارن القيم. هل هناك شيء خاطئ، ناقص، أو مشكوك فيه؟' },
         { html: 'إذا تغيّرت صورة، اضغط عليها لرؤيتها بحجمها الكامل.' },
-        { html: 'اضغط <strong>فتح الملف</strong> لرؤية بيانات العميل الكاملة (الحقول الأخرى، الفروع، السجل التاريخي).' },
+        {
+          html: 'اضغط <strong>فتح الملف</strong> لرؤية بيانات العميل الكاملة (الحقول الأخرى، الفروع، السجل التاريخي).',
+        },
       ],
     },
     {
@@ -1228,10 +1615,18 @@ const SUPERVISOR_AR: Guide = {
       title: 'الموافقة الجماعية / الرفض الجماعي',
       intro: 'عندما تكون المجموعة موحدة (كلها جيدة أو كلها سيئة).',
       steps: [
-        { html: 'في صفحة القائمة، ضع علامة بجانب كل تحرير تريد التعامل معه. استخدم <strong>تحديد الكل</strong> لاختيار كل ما في الصفحة.' },
-        { html: 'يظهر شريط ثابت في الأسفل فيه أزرار <strong>اعتماد N</strong> و <strong>رفض N</strong>.' },
-        { html: '<strong>الموافقة الجماعية</strong> تشغّل كل واحدة في معاملة منفصلة. إذا فشل بعضها (تحريرات متزامنة، حقول ناقصة)، تستمر الباقية. ترى قائمة بما يحتاج انتباهًا.' },
-        { html: '<strong>الرفض الجماعي</strong> يرسل نفس الفئة والسبب لكل تحرير محدد. استخدمها فقط إذا كانت المشكلة واحدة في كلها.' },
+        {
+          html: 'في صفحة القائمة، ضع علامة بجانب كل تحرير تريد التعامل معه. استخدم <strong>تحديد الكل</strong> لاختيار كل ما في الصفحة.',
+        },
+        {
+          html: 'يظهر شريط ثابت في الأسفل فيه أزرار <strong>اعتماد N</strong> و <strong>رفض N</strong>.',
+        },
+        {
+          html: '<strong>الموافقة الجماعية</strong> تشغّل كل واحدة في معاملة منفصلة. إذا فشل بعضها (تحريرات متزامنة، حقول ناقصة)، تستمر الباقية. ترى قائمة بما يحتاج انتباهًا.',
+        },
+        {
+          html: '<strong>الرفض الجماعي</strong> يرسل نفس الفئة والسبب لكل تحرير محدد. استخدمها فقط إذا كانت المشكلة واحدة في كلها.',
+        },
       ],
       callouts: [
         {
@@ -1247,10 +1642,19 @@ const SUPERVISOR_AR: Guide = {
       table: {
         headers: ['الفئة', 'استخدمها عندما...'],
         rows: [
-          ['<strong>صورة سيئة</strong>', 'الصورة مشوّشة، التقطت من بعيد، أو لا تظهر ما يجب أن تظهره (مثلًا: صورة سجل تجاري والكتابة غير مقروءة).'],
-          ['<strong>GPS خطأ</strong>', 'إحداثيات GPS تشير إلى مكان خاطئ — مثلاً المندوب التقط GPS في المكتب بدل المحل.'],
+          [
+            '<strong>صورة سيئة</strong>',
+            'الصورة مشوّشة، التقطت من بعيد، أو لا تظهر ما يجب أن تظهره (مثلًا: صورة سجل تجاري والكتابة غير مقروءة).',
+          ],
+          [
+            '<strong>GPS خطأ</strong>',
+            'إحداثيات GPS تشير إلى مكان خاطئ — مثلاً المندوب التقط GPS في المكتب بدل المحل.',
+          ],
           ['<strong>حقل ناقص</strong>', 'حقل إلزامي فارغ أو يحتوي على نص توضيحي.'],
-          ['<strong>معلومة خاطئة</strong>', 'الحقل فيه بيانات لا تطابق الصورة أو ما نعرفه عن المحل.'],
+          [
+            '<strong>معلومة خاطئة</strong>',
+            'الحقل فيه بيانات لا تطابق الصورة أو ما نعرفه عن المحل.',
+          ],
           ['<strong>أخرى</strong>', 'أي شيء آخر — اكتب سببًا واضحًا.'],
         ],
       },
@@ -1261,10 +1665,22 @@ const SUPERVISOR_AR: Guide = {
       table: {
         headers: ['الرسالة التي تراها', 'معناها'],
         rows: [
-          ['"تم اتخاذ قرار في هذا التحرير من قبل مراجع آخر"', 'مشرف آخر أو مدير اعتمد/رفض قبلك. أعد تحميل القائمة.'],
-          ['"هذه القيمة تتعارض مع سجل موجود"', 'مندوبان أرسلا نفس رقم الهاتف أو السجل التجاري. ارفض أحدهما واطلب التحقق.'],
-          ['"الحقول الإلزامية ناقصة الآن"', 'المندوب حذف حقلاً إلزاميًا (مثل صورة السجل التجاري) بين الإرسال واعتمادك. ارفض — يحتاج إعادة الرفع في المحل.'],
-          ['"غير مخوّل بالتصرف في هذا التحرير"', 'العميل لم يعد ضمن صلاحية فريقك (تغيير خط، دمج عميل). أعد توجيهه إلى مديرك.'],
+          [
+            '"تم اتخاذ قرار في هذا التحرير من قبل مراجع آخر"',
+            'مشرف آخر أو مدير اعتمد/رفض قبلك. أعد تحميل القائمة.',
+          ],
+          [
+            '"هذه القيمة تتعارض مع سجل موجود"',
+            'مندوبان أرسلا نفس رقم الهاتف أو السجل التجاري. ارفض أحدهما واطلب التحقق.',
+          ],
+          [
+            '"الحقول الإلزامية ناقصة الآن"',
+            'المندوب حذف حقلاً إلزاميًا (مثل صورة السجل التجاري) بين الإرسال واعتمادك. ارفض — يحتاج إعادة الرفع في المحل.',
+          ],
+          [
+            '"غير مخوّل بالتصرف في هذا التحرير"',
+            'العميل لم يعد ضمن صلاحية فريقك (تغيير خط، دمج عميل). أعد توجيهه إلى مديرك.',
+          ],
         ],
       },
     },
@@ -1320,8 +1736,13 @@ const MANAGER_AR: Guide = {
       number: 2,
       title: 'الفحص اليومي للوحة المعلومات',
       steps: [
-        { html: 'اضغط على <strong>لوحة المعلومات</strong> في القائمة.', img: '10-manager-dashboard.png' },
-        { html: 'ترى مجاميع منطقتك: العملاء النشطون، الموافقات المعلّقة، طلبات إعادة التفعيل، النشاط الأخير.' },
+        {
+          html: 'اضغط على <strong>لوحة المعلومات</strong> في القائمة.',
+          img: '10-manager-dashboard.png',
+        },
+        {
+          html: 'ترى مجاميع منطقتك: العملاء النشطون، الموافقات المعلّقة، طلبات إعادة التفعيل، النشاط الأخير.',
+        },
         { html: 'استخدمها كفحص صباحي مدته 30 ثانية قبل أن تفتح أي شيء آخر.' },
       ],
     },
@@ -1330,7 +1751,10 @@ const MANAGER_AR: Guide = {
       title: 'الموافقة على إعادة التفعيل أو رفضها',
       intro: 'إعادة التفعيل تعيد المحلات المغلقة إلى السجل النشط. المديرون فقط يستطيعون اعتمادها.',
       steps: [
-        { html: 'اضغط على <strong>إعادة التفعيل</strong> في القائمة.', img: '11-manager-reactivations.png' },
+        {
+          html: 'اضغط على <strong>إعادة التفعيل</strong> في القائمة.',
+          img: '11-manager-reactivations.png',
+        },
         { html: 'ترى كل المحلات المغلقة التي طلب مندوبوك إعادة فتحها.' },
         { html: 'كل صف يظهر سبب المندوب والصورة التي التقطها اليوم في المحل.' },
         { html: 'اضغط على الصورة لرؤيتها بالحجم الكامل وتأكيد أن المحل مفتوح فعلًا.' },
@@ -1351,9 +1775,15 @@ const MANAGER_AR: Guide = {
       steps: [
         { html: 'اضغط على <strong>المستخدمون</strong> في القائمة.', img: '12-manager-users.png' },
         { html: 'ترى كل المستخدمين في منطقتك: المندوبون، المشرفون، أي شخص يتبع لك.' },
-        { html: '<strong>إعادة ضبط كلمة المرور</strong> — لمندوب نسي كلمته. عيّن كلمة مؤقتة؛ النظام يجبره على تغييرها عند الدخول التالي.' },
-        { html: '<strong>تعطيل</strong> — عندما يترك مندوب الشركة. لا يستطيع تسجيل الدخول. سجل أعماله يبقى في سجل التدقيق.' },
-        { html: '<strong>إعادة تعيين الخط</strong> — إذا غيّر مندوب خطه. المالك الجديد يرى عملاءه فورًا.' },
+        {
+          html: '<strong>إعادة ضبط كلمة المرور</strong> — لمندوب نسي كلمته. عيّن كلمة مؤقتة؛ النظام يجبره على تغييرها عند الدخول التالي.',
+        },
+        {
+          html: '<strong>تعطيل</strong> — عندما يترك مندوب الشركة. لا يستطيع تسجيل الدخول. سجل أعماله يبقى في سجل التدقيق.',
+        },
+        {
+          html: '<strong>إعادة تعيين الخط</strong> — إذا غيّر مندوب خطه. المالك الجديد يرى عملاءه فورًا.',
+        },
       ],
     },
     {
@@ -1371,8 +1801,12 @@ const MANAGER_AR: Guide = {
       intro: 'استخدم هذا عندما يبدو شيء غير معتاد أو يسأل قسم الموارد البشرية عن من فعل ماذا.',
       steps: [
         { html: 'اضغط على <strong>سجل التدقيق</strong> في القائمة.' },
-        { html: 'كل عمل من كل مستخدم مسجل: تسجيل دخول، فشل دخول، إنشاء/تعديل عميل، موافقة، رفض، إعادة تفعيل، التقاط صورة، إعادة ضبط كلمة مرور، إلخ.' },
-        { html: 'كل صف يظهر: من، متى، من أي IP، أي عمل، على أي سجل. القيم القديمة والجديدة أيضًا.' },
+        {
+          html: 'كل عمل من كل مستخدم مسجل: تسجيل دخول، فشل دخول، إنشاء/تعديل عميل، موافقة، رفض، إعادة تفعيل، التقاط صورة، إعادة ضبط كلمة مرور، إلخ.',
+        },
+        {
+          html: 'كل صف يظهر: من، متى، من أي IP، أي عمل، على أي سجل. القيم القديمة والجديدة أيضًا.',
+        },
         { html: 'استخدم الفلترة بالمستخدم، نطاق التاريخ، نوع العمل، أو العميل لتضييق البحث.' },
       ],
       callouts: [
@@ -1389,11 +1823,20 @@ const MANAGER_AR: Guide = {
       table: {
         headers: ['الموقف', 'ما العمل'],
         rows: [
-          ['"الصورة التُقطت قبل آخر تغيير حالة"', 'مندوب حاول استخدام صورة قديمة لإعادة التفعيل. ارفض — يحتاج صورة جديدة في المحل اليوم.'],
-          ['"فريقي لا يستطيع تسجيل الدخول"', 'تحقق من سجل التدقيق لإدخالات "فشل دخول". عادةً كلمة مرور خاطئة (النظام يقفل دقيقة بعد 5 محاولات خاطئة).'],
+          [
+            '"الصورة التُقطت قبل آخر تغيير حالة"',
+            'مندوب حاول استخدام صورة قديمة لإعادة التفعيل. ارفض — يحتاج صورة جديدة في المحل اليوم.',
+          ],
+          [
+            '"فريقي لا يستطيع تسجيل الدخول"',
+            'تحقق من سجل التدقيق لإدخالات "فشل دخول". عادةً كلمة مرور خاطئة (النظام يقفل دقيقة بعد 5 محاولات خاطئة).',
+          ],
           ['"لا يمكنك اعتماد طلبك"', 'أنت أرسلت الطلب أصلًا. أعد توجيهه إلى مدير زميل.'],
           ['"لا توجد مناطق معينة لك"', 'حسابك لم يُعيَّن منطقة بعد. اتصل بالمكتب الرئيسي.'],
-          ['مندوب انتقل إلى خط آخر', 'استخدم صفحة المستخدمون → إعادة تعيين خط. العملاء الجدد ظاهرون فورًا.'],
+          [
+            'مندوب انتقل إلى خط آخر',
+            'استخدم صفحة المستخدمون → إعادة تعيين خط. العملاء الجدد ظاهرون فورًا.',
+          ],
           ['مندوب ترك الشركة', 'علّمه كمعطّل في صفحة المستخدمون. سجل تدقيقه محفوظ.'],
         ],
       },
@@ -1455,7 +1898,11 @@ async function main() {
   }
 
   console.log('\nRendering PDFs…');
-  const browser = await chromium.launch();
+  // GUIDE_CHROMIUM lets a machine with a different Playwright browser build render
+  // the PDFs without re-downloading browsers.
+  const browser = await chromium.launch(
+    process.env.GUIDE_CHROMIUM ? { executablePath: process.env.GUIDE_CHROMIUM } : {}
+  );
   const ctx = await browser.newContext();
   for (const g of ALL_GUIDES) {
     const page = await ctx.newPage();

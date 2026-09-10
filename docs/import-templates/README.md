@@ -46,7 +46,7 @@ Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instruct
 | `password` | ✅ for **new** users | 12+ chars. Blank for existing users = keep current. |
 | `supervisor_username` | ✅ for SALESMAN | another `username` on this sheet. Blank on re-import = keep existing. |
 | `route_code` | ✅ for SALESMAN | a Routes `code`. One salesman per route. |
-| `region_codes` | ✅ for ACCOUNTANT | comma-separated Region codes, e.g. `MCT,BAT`. Without it the accountant sees no approvals and the credit chain stalls. |
+| `region_codes` | ✅ for ACCOUNTANT (and MANAGER) | comma-separated Region codes, e.g. `MCT,BAT`. Without it the accountant sees no approvals and the credit chain stalls. For a MANAGER the row must refer to an account that **already exists** (created in `/users`); the import then assigns their regions — it never creates a manager. |
 | `email`, `phone` | optional | |
 | `reset_password` | optional | `yes` to rotate an existing user's password (also fill `password`). |
 | `change_role` | optional | `yes` to change an existing user's role. |
@@ -74,8 +74,11 @@ One sheet named **Customers** (must stay the first sheet) + an Instructions tab.
 | `credit_limit` | for CREDIT | number, OMR, up to 3 decimals. |
 | `payment_term_days` | for CREDIT | whole number 0–365. |
 | `temix_code` | optional | the Temix ERP code (links CRM ↔ Temix). Blank if not yet in Temix. |
+| `channel` | optional | the CRM channel **code**: `HORECA`, `MODERN_TRADE`, `GENERAL_TRADE`, `CONVENIENCE_AND_GAS`, `ECOMMERCE`, `HOME_OFFICE_DELIVERY`, `INSTITUTIONS`. Anything else → held for review. |
+| `day_of_visit` | optional | the journey-plan visit day for this branch: `SAT` `SUN` `MON` `TUE` `WED` `THU` `FRI`. Drives the salesman's **Today** list. |
+| `customer_status` | optional | `ACTIVE` (default) or `CLOSED`. A customer with any ACTIVE branch stays ACTIVE. |
 
 ### Not in this file (captured later, in the app, by the salesman)
-GPS, channel / sub-channel, day of visit, cooler / stand / bottle counts, photos, alternate phone, contact role, customer status. Don't add columns for these — they're ignored on import.
+GPS, sub-channel, cooler / stand / bottle counts, photos, alternate phone, contact role. Don't add columns for these — they're ignored on import.
 
 > ⚠ The single most common mistake: putting region/route **names** in `sales_region`/`route`. They must be the **codes** from your Account master.

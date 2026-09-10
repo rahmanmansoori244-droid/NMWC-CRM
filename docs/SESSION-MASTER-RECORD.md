@@ -108,6 +108,19 @@ Also: `vitest.config.ts` now disables **file parallelism whenever any `RUN_*` ga
 
 Tests: `promote-chunked-resume.test.ts` (multi-slice completion with nothing lost or repeated; multi-branch customers never split across a slice; accumulated counters; live lease blocks a concurrent promote, expired lease does not) and a rewritten `promote-release-on-abort.test.ts` (abort releases the lease → next call resumes; account batch never claimed). `tests/support/promote.ts` drives slices for every other promote test.
 
+### Go-live data build (2026-09-10) — the real masters, filled
+Owner asked for the masters to be filled from the real sources for a Sunday 13-Sep launch. Sources found and used (all read-only): the **RoutePro customer master LIVE 2026-09-03** (20,064 codes — the Timix-fed assignment of record for route, pay mode, status), the RoutePro route master, the **journey-plan master** (`JP_MASTER_CURRENT.csv`, 6,624 rows / 24 routes), the raw **Temix extract** (37k rows: phone, address, contact, channel, team leader), the July **Code-Branch master** (credit limit/days), the sales dashboard's SQLite (route master by region, latest salesman per route) and **today's sales upload**. `scripts/golive/build-masters.ts` turns them into `golive-data/` (gitignored — PII + generated passwords): `account-master.xlsx`, `customer-master.xlsx`, `credentials.xlsx`, `managers.json`, `RECONCILIATION.md` + `dq/*.csv` evidence.
+
+Result: **7 regions, 127 routes, 95 users** (5 supervisors = Temix team leaders, 11 manager rows = dashboard regional heads, 76 salesmen, 3 approver placeholders) and **20,104 customer rows / 18,159 customers** (ACTIVE 18,050 · CLOSED 2,054; CREDIT 6,377 · CASH 13,727; JP day on 6,528 branches; channel on 16,484; phone on 10,167 with 1,022 withheld as cross-customer duplicates).
+
+To carry the JP, channel and closures the importer gained three optional columns — `channel`, `day_of_visit`, `customer_status` — validated at parse (unknown code → quarantined) and written at promote (customer channel/status, branch dayOfVisit/status + lastStatusChangeAt); templates, README and the template test updated.
+
+Mapping defects the first build exposed and the second fixed: pre-sellers were being assigned to their delivery **van** routes (the sales file's `route_code`) instead of their selling routes (`code`, e.g. `SL03EA` → SL03) — every pre-seller's Today list would have been empty; the route literally named "DIRECT" (1,102 customers) was erased by the DIRECT-suffix stripper; C1 landed in Al Wafi by first-row-wins on a multi-class route (now a per-route region **vote** by the customers on it); retired personal-name routes were being created. After the fix the "route differs from September sales" count fell from 1,054 to 110 (real moves).
+
+**Go-live blocker found while writing the runbook:** the seeded production `admin` is a MANAGER; a Manager may only create field roles and the import refuses to create a STEWARD — so a fresh production database had **no path to its first Steward**, hence no imports. `scripts/golive/bootstrap-steward.ts` creates exactly one, refuses if any exists, and is step 1 of `docs/GO-LIVE-RUNBOOK.md`.
+
+Steward guide chapters 3–4 rewritten for the order rule, passes/resume, one-load-at-a-time, the six-figure reconciliation and the "imports skip the chain" warning (`docs/guide/NMWC-Steward-Guide-EN.pdf` regenerated; `GUIDE_CHROMIUM` env added so the renderer can use the installed browser build).
+
 ## 6. Open items before UNCONDITIONAL go-live
 1. ~~**RK-3 chunked/resumable import**~~ **DONE** (2026-09-10) — see the section above.
 2. ~~F-UAT-7~~ **FIXED** (real importer bug, not a fixture artifact) — see §2 final pass.
