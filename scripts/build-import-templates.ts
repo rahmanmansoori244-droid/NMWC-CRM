@@ -132,7 +132,7 @@ const usersCols: Col[] = [
   {
     key: 'username',
     required: 'Required',
-    format: 'lowercase, 3–50, a–z 0–9 . _ -',
+    format: 'lowercase, 1–50, a–z 0–9 . _ -',
     notes: 'Login name. Must be lowercase and unique.',
   },
   { key: 'full_name', required: 'Required', format: 'text', notes: "Person's full name." },

@@ -40,7 +40,7 @@ Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instruct
 ### Users
 | Column | Required | Notes |
 |---|---|---|
-| `username` | ✅ | lowercase, 3–50, `a–z 0–9 . _ -`. Unique login. |
+| `username` | ✅ | lowercase, 1–50, `a–z 0–9 . _ -`. Unique login (salesmen: the route code). |
 | `full_name` | ✅ | |
 | `role` | ✅ | one of `SALESMAN`, `SUPERVISOR`, `ACCOUNTANT`, `FINANCE_MANAGER`, `GM`, `VIEWER`. (MANAGER/STEWARD → create in `/users`.) |
 | `password` | ✅ for **new** users | 12+ chars. Blank for existing users = keep current. |
