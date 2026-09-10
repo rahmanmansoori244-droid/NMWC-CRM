@@ -125,6 +125,8 @@ Mapping defects the first build exposed and the second fixed: pre-sellers were b
 
 **First rehearsal on the cleared UAT branch (with the pre-walk-through files):** account master 229 rows, **0 issues**, every manager got their regions, 0 salesmen without a supervisor; the 1.59 MB / 20,104-row customer file **staged in 17 s** with **2 quarantined** (addresses beginning with "-", the spreadsheet-formula guard — the builder now strips that prefix); promotion: 62 passes, 299 rows, **0 failed / 0 deferred**, reconciliation identity held; sample rows carried the right region/route/JP day/channel/status. Throughput 0.2 rows/s is the WAN cost (~9 round trips × ~500 ms per customer); production is co-located.
 
+**Second rehearsal with the FINAL, decision-driven files (cleared UAT branch):** account master 106 rows, **0 issues** — 7 regions, 43 routes, 42 salesmen, every manager with their regions, **0 salesmen without a supervisor**; the 20,123-row customer file staged in 18 s with **0 quarantined**; promote 20 passes, 96 rows, 0 failed / 0 deferred, reconciliation identity held; sample rows show dead-route customers correctly parked on UNASSIGNED and live ones on their route with JP day and channel. The only open input is a fresh RoutePro customer-master export (customers created in Timix since 3-Sep that have not bought yet).
+
 Steward guide chapters 3–4 rewritten for the order rule, passes/resume, one-load-at-a-time, the six-figure reconciliation and the "imports skip the chain" warning (`docs/guide/NMWC-Steward-Guide-EN.pdf` regenerated; `GUIDE_CHROMIUM` env added so the renderer can use the installed browser build).
 
 ## 6. Open items before UNCONDITIONAL go-live
