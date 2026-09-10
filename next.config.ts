@@ -54,6 +54,14 @@ const nextConfig: NextConfig = {
       dynamic: 30,
       static: 180,
     },
+    // The import uploads travel through server actions, whose body limit
+    // defaults to 1 MB. The real customer master is ~1.7 MB and the importer's
+    // own ceiling (MAX_IMPORT_BYTES) is 5 MB — without this the go-live file is
+    // refused before the importer ever sees it. 8 MB leaves room for multipart
+    // overhead while staying far below anything a zip-bomb needs.
+    serverActions: {
+      bodySizeLimit: '8mb',
+    },
   },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];

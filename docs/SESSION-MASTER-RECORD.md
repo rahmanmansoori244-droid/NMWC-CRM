@@ -119,6 +119,8 @@ Mapping defects the first build exposed and the second fixed: pre-sellers were b
 
 **Go-live blocker found while writing the runbook:** the seeded production `admin` is a MANAGER; a Manager may only create field roles and the import refuses to create a STEWARD — so a fresh production database had **no path to its first Steward**, hence no imports. `scripts/golive/bootstrap-steward.ts` creates exactly one, refuses if any exists, and is step 1 of `docs/GO-LIVE-RUNBOOK.md`.
 
+**Second go-live blocker, invisible to every test:** the import forms submit through **server actions**, whose request body is capped at Next.js's default **1 MB** — the real customer master is 1.67 MB, so the go-live file would have been refused before the importer (whose own ceiling is 5 MB) ever saw it. No test could catch this: the integration suites call the action in-process, never over HTTP. `next.config.ts` now sets `serverActions.bodySizeLimit: '8mb'`. The Promote button's pass-count safety stop was also raised (400 → 2,000) so an 18,000-customer load never pauses on a healthy run.
+
 Steward guide chapters 3–4 rewritten for the order rule, passes/resume, one-load-at-a-time, the six-figure reconciliation and the "imports skip the chain" warning (`docs/guide/NMWC-Steward-Guide-EN.pdf` regenerated; `GUIDE_CHROMIUM` env added so the renderer can use the installed browser build).
 
 ## 6. Open items before UNCONDITIONAL go-live

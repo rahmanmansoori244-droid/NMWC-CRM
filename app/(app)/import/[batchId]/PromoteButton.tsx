@@ -11,7 +11,10 @@ import { promoteCustomerBatchAction } from '@/services/imports';
  * shows live progress; closing the tab is safe — the batch stays resumable.
  */
 // Safety stop so a batch that somehow never completes cannot spin a tab forever.
-const MAX_SLICES = 400;
+// Sized for the real master: ~18,000 customers at a conservative 30 per pass is
+// 600 passes — well inside this, so a healthy go-live load never pauses. Genuine
+// livelock is caught much earlier by the no-progress check in the loop.
+const MAX_SLICES = 2000;
 
 export function PromoteButton({
   batchId,
