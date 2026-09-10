@@ -7,30 +7,47 @@
  * Reads (all read-only, paths overridable via env):
  *   RoutePro customer master LIVE (Sep-2026)   the Timix-fed assignment of record: every
  *                                              customer/branch code, its route, pay mode, status
- *   RoutePro route master LIVE                 109 routes + salesman on each
+ *   RoutePro route master LIVE                 salesman name per route (20-char truncated)
  *   Journey-plan master (JP_MASTER_CURRENT)    route × customer × visit days (24 routes)
- *   Temix customer extract (CUST-MASTER)       phone, address, contact, channel, team leader
+ *   Temix customer extract (CUST-MASTER)       phone, address, contact, channel
  *   CRM-shaped master (Code-Branch, Jul-2026)  account credit limit / days, activity status
- *   Sales dashboard SQLite + today's upload    route master by region, latest salesman per route
+ *   Sales dashboard SQLite + today's upload    ACTIVE routes, class per route, latest salesman
+ *
+ * Owner decisions applied (2026-09-10, walked through one by one):
+ *   - region codes MCT/KHB/NZW/SLL/AWF/DQM/BRK
+ *   - NO supervisors from Timix "Team Leaders" (that field is stale — names that do not
+ *     exist). Managers supervise their salesmen directly: Muscat by class, others by region.
+ *   - ONLY routes active in the dashboard's latest data (the JP team's rule: ≥ 500 OMR
+ *     invoiced in the last 8 weeks). Customers on any other route are loaded but parked
+ *     under UNASSIGNED in their region, and listed for reassignment.
  *
  * Writes to golive-data/ (GITIGNORED — customer PII and generated passwords):
- *   account-master.xlsx    Regions / Routes / Users  → Steward → Import → Account master
- *   customer-master.xlsx   Customers                 → Steward → Import → Customer master
- *   managers.json          MANAGER/STEWARD accounts to create IN THE APP before importing
- *   credentials.xlsx       every generated login + password (hand to people, then delete)
- *   RECONCILIATION.md      what was loaded, what was withheld, and every decision assumed
- *   dq/*.csv               the row-level evidence behind each reconciliation figure
+ *   account-master.xlsx, customer-master.xlsx, managers.json, credentials.xlsx,
+ *   RECONCILIATION.md, dq/*.csv
  */
 import ExcelJS from 'exceljs';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 const DESKTOP = 'C:/Users/abdulr/Desktop';
+// The RoutePro customer master is re-exported before every real load; whichever
+// RoutePro_Customer_Master_LIVE_<date>.csv is newest (by the date in its name) wins.
+function newestRouteProExport(): string {
+  const dirs = [`${DESKTOP}/claude/NMWC-JOURNEY-PLANS/harvests`, 'C:/Users/abdulr/Downloads'];
+  let best: { date: string; file: string } | null = null;
+  for (const d of dirs) {
+    if (!existsSync(d)) continue;
+    for (const f of readdirSync(d)) {
+      const m = /^RoutePro_Customer_Master_LIVE_(\d{4}-\d{2}-\d{2})\.csv$/i.exec(f);
+      if (m && (!best || m[1] > best.date)) best = { date: m[1], file: `${d}/${f}` };
+    }
+  }
+  if (!best) throw new Error('no RoutePro_Customer_Master_LIVE_<date>.csv found');
+  return best.file;
+}
 const SRC = {
-  rpCustomers:
-    process.env.RP_CUSTOMERS ??
-    `${DESKTOP}/claude/NMWC-JOURNEY-PLANS/harvests/RoutePro_Customer_Master_LIVE_2026-09-03.csv`,
+  rpCustomers: process.env.RP_CUSTOMERS ?? newestRouteProExport(),
   rpRoutes:
     process.env.RP_ROUTES ??
     `${DESKTOP}/claude/NMWC-JOURNEY-PLANS/harvests/RoutePro_Route_Master_LIVE_2026-09-01.csv`,
@@ -46,8 +63,12 @@ const SRC = {
 };
 const OUT = path.resolve(process.env.GOLIVE_DIR ?? 'golive-data');
 const DQ = path.join(OUT, 'dq');
+// The dashboard/JP activity lens: a route is ACTIVE if it invoiced at least this much
+// in the 8 weeks before the snapshot's last day (or in this month's upload file).
+const ACTIVE_MIN_OMR = Number(process.env.ACTIVE_MIN_OMR ?? 500);
+const ACTIVE_WINDOW_DAYS = 56;
 
-// ── Region model ────────────────────────────────────────────────────────────
+// ── Region model (owner-confirmed) ───────────────────────────────────────────
 const REGIONS: Array<{ code: string; name: string }> = [
   { code: 'MCT', name: 'Muscat' },
   { code: 'KHB', name: 'Khaburah' },
@@ -102,28 +123,22 @@ function regionByPrefix(code: string): string | null {
 }
 
 // ── Route code canonicalisation ─────────────────────────────────────────────
-// RoutePro names ("MH02 DIRECT", "SAHAM - S20", "SDM1 -NMWC"), Temix codes and
-// the dashboard's clustered codes all describe the same route family. The CRM
-// gets ONE code per route: the dashboard's analytical/clustered form, which is
-// also what the journey plan and the sales data use.
+// RoutePro names ("MH02 DIRECT", "SAHAM - S20", "SDM1 -NMWC"), Timix codes and the
+// dashboard's clustered codes all describe the same route family. The CRM gets ONE
+// code per route: the dashboard's clustered form, which the journey plan and the
+// sales data also use.
 const ROUTE_ALIASES: Record<string, string> = {
   DQ1: 'DQ01',
   DQ1SV: 'DQ01',
   NIZDIR: 'NIZD',
+  // JP BRAIN law 8: RoutePro "NZ05 -DIRECT" is the dashboard's NIZD (Nizwa direct).
+  NZ05: 'NIZD',
   'WHS-': 'WHS-SO',
   'OTH-': 'OTH-HD',
   MH01SA: 'MH01',
   'PDO-NIZWA-DELIVERY': 'PDO-N',
   'NMWC-SMART-APP': 'SMART-APP',
-  'HORECA-MUSANNA': 'HORECA-MUSANNA',
 };
-// Sales files carry the pre-seller's PERSONAL code ("SL03EA" = SL03 + Ehsan Ali);
-// the route is the base. Applied only to that column — never to route masters.
-function presellerRoute(code: unknown): string {
-  const c = canonRoute(code);
-  const m = /^([A-Z]+\d+)[A-Z]{1,2}$/.exec(c);
-  return canonRoute(m ? m[1] : c);
-}
 function canonRoute(raw: unknown): string {
   let s = String(raw ?? '')
     .trim()
@@ -143,6 +158,13 @@ function canonRoute(raw: unknown): string {
   s = s.replace(/^-|-$/g, '');
   if (ROUTE_ALIASES[s]) s = ROUTE_ALIASES[s];
   return s;
+}
+// Sales files carry the pre-seller's PERSONAL code ("SL03EA" = SL03 + Ehsan Ali); the
+// route is the base. Applied only to that column — never to route masters.
+function presellerRoute(code: unknown): string {
+  const c = canonRoute(code);
+  const m = /^([A-Z]+\d+)[A-Z]{1,2}$/.exec(c);
+  return canonRoute(m ? m[1] : c);
 }
 
 // ── Channel mapping (Temix "Channel" → CRM channel key) ─────────────────────
@@ -169,132 +191,113 @@ const CHANNEL_MAP: Record<string, string | null> = {
   OFFICE: 'INSTITUTIONS',
   'PETROL & CON.STORES': 'CONVENIENCE_AND_GAS',
   'C & G': 'CONVENIENCE_AND_GAS',
+  'CONVENIENT STORE': 'CONVENIENCE_AND_GAS',
+  // Long-tail Temix labels (≈80 customers in total).
+  HOSPITAL: 'INSTITUTIONS',
+  MINISTRIES: 'INSTITUTIONS',
+  CLUB: 'INSTITUTIONS',
+  'STAFF  ACCOMODATION': 'INSTITUTIONS',
+  'STAFF ACCOMODATION': 'INSTITUTIONS',
+  PHARMACY: 'GENERAL_TRADE',
+  'SEMI WHOLESALE': 'GENERAL_TRADE',
+  'SMALL GROCERY(CLOSED)': 'GENERAL_TRADE',
+  'KEY ACCOUNT': 'MODERN_TRADE',
+  'CASH/CPN': null,
   NIL: null,
   OTHERS: null,
   '': null,
 };
 
-// ── Org chart ───────────────────────────────────────────────────────────────
-// Supervisors = the real Temix "Team Leaders". Managers = the regional/class heads
-// who run the sales dashboard today. Both lists are ASSUMPTIONS to be confirmed by
-// the owner — they are written out in RECONCILIATION.md for exactly that reason.
-const SUPERVISORS: Array<{
-  username: string;
-  fullName: string;
-  teamLeader: string;
-  regions: string[];
-}> = [
-  {
-    username: 'sajjad.yousuf',
-    fullName: 'SAJJAD YOUSUF',
-    teamLeader: 'SAJJAD YOUSUF',
-    regions: ['MCT'],
-  },
-  {
-    username: 'balbir.singh',
-    fullName: 'BALBIR SINGH',
-    teamLeader: 'BALBIR SINGH',
-    regions: ['KHB'],
-  },
-  {
-    username: 'mohd.arif',
-    fullName: 'MOHD ARIF SAIFULLAH',
-    teamLeader: 'MOHD ARIF SAIFULLAH',
-    regions: ['SLL'],
-  },
-  { username: 'usman', fullName: 'USMAN', teamLeader: 'USMAN', regions: ['BRK'] },
-  {
-    username: 'shafeeq.ahamad',
-    fullName: 'SHAFEEQ AHAMAD',
-    teamLeader: 'SHAFEEQ AHAMAD',
-    regions: ['AWF', 'DQM'],
-  },
-];
-const MANAGERS: Array<{
-  username: string;
-  fullName: string;
-  regions: string[];
-  teamLeader?: string;
-  note: string;
-}> = [
+// ── Org chart (owner-confirmed 2026-09-10) ──────────────────────────────────
+// Managers = the people who run the sales dashboard today. They supervise their
+// salesmen DIRECTLY (a Manager may be a salesman's supervisor in the CRM, and the
+// supervisor approval step accepts them). No separate supervisor accounts.
+const MANAGERS: Array<{ username: string; fullName: string; regions: string[]; note: string }> = [
   {
     username: 'ahmed.alnadabi',
     fullName: 'AHMED ALNADABI',
     regions: ['MCT'],
-    note: 'dashboard manager for MCT GT',
+    note: 'Muscat GT — supervises the GT salesmen',
   },
   {
     username: 'haitham',
     fullName: 'HAITHAM',
     regions: ['MCT'],
-    note: 'dashboard manager for MCT HD (home delivery)',
+    note: 'Muscat home delivery — supervises the HD salesmen',
   },
   {
     username: 'sarath',
     fullName: 'SARATH',
     regions: ['MCT'],
-    note: 'dashboard manager for MCT MT (modern trade)',
+    note: 'Muscat modern trade — supervises the MT salesmen',
   },
   {
     username: 'sara.khayat',
     fullName: 'SARA KHAYAT',
     regions: ['MCT'],
-    teamLeader: 'SARA HORECA',
-    note: 'dashboard manager for HORECA; Temix team leader "Sara Horeca"; also the C3 preseller — no salesman account is created for C3',
+    note: 'HORECA — supervises the HORECA salesmen; also the C3 pre-seller, so C3 gets no salesman account',
   },
   {
     username: 'ashok',
     fullName: 'ASHOK',
     regions: ['KHB'],
-    note: 'dashboard manager for KHABOURAH',
+    note: 'Khaburah — supervises the Khaburah salesmen',
   },
   {
     username: 'rashid',
     fullName: 'RASHID',
     regions: ['BRK', 'DQM', 'AWF', 'KHB'],
-    note: 'dashboard manager BARKA,DUQUM,ALWAFI,KHABOURAH',
+    note: 'covers Barka/Duqm/Al Wafi/Khaburah — fallback approver',
   },
   {
     username: 'rasool',
     fullName: 'RASOOL',
     regions: ['AWF', 'DQM'],
-    note: 'dashboard manager ALWAFI,DUQUM',
+    note: 'Al Wafi + Duqm — supervises their salesmen',
   },
-  { username: 'saqib', fullName: 'SAQIB', regions: ['BRK'], note: 'dashboard manager BARKA' },
+  {
+    username: 'saqib',
+    fullName: 'SAQIB',
+    regions: ['BRK'],
+    note: 'Barka — supervises the Barka salesmen',
+  },
   {
     username: 'saud',
     fullName: 'SAUD',
     regions: ['DQM', 'AWF', 'NZW'],
-    note: 'dashboard manager DUQUM,ALWAFI,NIZWA',
+    note: 'covers Duqm/Al Wafi/Nizwa — fallback approver',
   },
   {
     username: 'sunil.kp',
     fullName: 'SUNIL KP',
     regions: ['NZW'],
-    teamLeader: 'SUNIL KP',
-    note: 'dashboard manager NIZWA and Temix team leader for Nizwa — supervises the Nizwa salesmen directly',
+    note: 'Nizwa — supervises the Nizwa salesmen',
   },
   {
     username: 'tharwat',
     fullName: 'THARWAT MOHAMED',
     regions: ['SLL'],
-    note: 'dashboard manager SALALAH (also appears as SL01 preseller)',
+    note: 'Salalah — supervises the Salalah salesmen',
   },
 ];
-const DEFAULT_SUPERVISOR_BY_REGION: Record<string, string> = {
-  MCT: 'sajjad.yousuf',
-  KHB: 'balbir.singh',
-  SLL: 'mohd.arif',
-  BRK: 'usman',
-  AWF: 'shafeeq.ahamad',
-  DQM: 'shafeeq.ahamad',
-  NZW: 'sunil.kp',
-  UNASSIGNED: 'sajjad.yousuf',
+const MUSCAT_SUPERVISOR_BY_CLASS: Record<string, string> = {
+  'MCT GT': 'ahmed.alnadabi',
+  'MCT MT': 'sarath',
+  'MCT HD': 'haitham',
+  HORECA: 'sara.khayat',
 };
-const TEAM_LEADER_TO_USERNAME: Record<string, string> = {};
-for (const s of SUPERVISORS) TEAM_LEADER_TO_USERNAME[s.teamLeader.toUpperCase()] = s.username;
-for (const m of MANAGERS)
-  if (m.teamLeader) TEAM_LEADER_TO_USERNAME[m.teamLeader.toUpperCase()] = m.username;
+// Owner decision: Sara Khayat also sells C3 herself — a second, SALESMAN login.
+const MANAGER_ALSO_SELLS: Record<string, { username: string; fullName: string }> = {
+  C3: { username: 'sara.khayat.c3', fullName: 'SARA KHAYAT' },
+};
+const SUPERVISOR_BY_REGION: Record<string, string> = {
+  NZW: 'sunil.kp',
+  KHB: 'ashok',
+  SLL: 'tharwat',
+  BRK: 'saqib',
+  AWF: 'rasool',
+  DQM: 'rasool',
+};
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 function parseCsv(file: string): { headers: string[]; rows: string[][] } {
@@ -355,6 +358,9 @@ async function xlsxObjects(file: string, sheetName?: string): Promise<Record<str
   return out;
 }
 const S = (v: unknown) => (v === null || v === undefined ? '' : String(v).trim());
+// The importer refuses any cell starting with a spreadsheet-formula trigger (= + - @);
+// Timix addresses like "-BLD 900" are data, not formulas, so drop the prefix.
+const T = (v: unknown) => S(v).replace(/^[=+\-@\t\r\s]+/, '');
 function cleanPhone(raw: unknown): { phone: string | null; reason?: string } {
   const s = S(raw);
   if (!s) return { phone: null };
@@ -417,6 +423,13 @@ function writeDq(name: string, headers: string[], rows: unknown[][]) {
     'utf8'
   );
 }
+function top<K>(m: Map<K, number> | undefined): K | null {
+  if (!m || m.size === 0) return null;
+  return [...m].sort((a, b) => b[1] - a[1])[0][0];
+}
+function bump<K>(m: Map<K, number>, k: K, w = 1) {
+  m.set(k, (m.get(k) ?? 0) + w);
+}
 
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
@@ -430,43 +443,80 @@ async function main() {
     notes.push(s);
   };
 
-  // 1. Dashboard route master (region + name per clustered code) and latest salesman.
+  // 1. Dashboard: ACTIVE routes (activity lens), class per route, region votes,
+  //    latest salesman per route.
   const { DatabaseSync } = require('node:sqlite');
   const db = new DatabaseSync(SRC.dashDb, { readOnly: true });
-  const dimRoutes: any[] = db.prepare('select route_code, route_name, region from dim_route').all();
-  // Region per route is a VOTE: a route like C1 has rows under several classes and
-  // regions in the dashboard; the customers on it decide where it lives.
+  const snapshotEnd: string = db
+    .prepare('select max(invoice_date_clean) d from fact_sales_lines')
+    .get().d;
+  const activeOmr = new Map<string, number>();
+  for (const r of db
+    .prepare(
+      `select clustered_route r, sum(act_net) v from fact_sales_lines
+       where invoice_date_clean >= date(?, '-${ACTIVE_WINDOW_DAYS} days') and transaction_type = 'Invoice'
+       group by 1`
+    )
+    .all(snapshotEnd) as any[]) {
+    const code = canonRoute(r.r);
+    if (code) bump(activeOmr, code, Number(r.v));
+  }
   const regionVotes = new Map<string, Map<string, number>>();
+  const classVotes = new Map<string, Map<string, number>>();
   const voteRegion = (route: string, rc: string | null, w = 1) => {
     if (!route || !rc) return;
     const m = regionVotes.get(route) ?? new Map<string, number>();
-    m.set(rc, (m.get(rc) ?? 0) + w);
+    bump(m, rc, w);
     regionVotes.set(route, m);
   };
+  const voteClass = (route: string, cls: string, w = 1) => {
+    if (!route || !cls) return;
+    const m = classVotes.get(route) ?? new Map<string, number>();
+    bump(m, cls, w);
+    classVotes.set(route, m);
+  };
+  for (const r of db
+    .prepare(
+      `select clustered_route r, region_clean g, analytical_class c, count(distinct customer_no) n
+       from fact_sales_lines where invoice_date_clean >= '2026-01-01' group by 1,2,3`
+    )
+    .all() as any[]) {
+    const code = canonRoute(r.r);
+    voteRegion(code, regionCodeFromName(r.g), Number(r.n));
+    voteClass(code, S(r.c), Number(r.n));
+  }
   const routeName = new Map<string, string>();
-  const dimRouteCodes = new Set<string>();
-  for (const r of dimRoutes) {
+  for (const r of db
+    .prepare('select route_code, route_name, region, analytical_class from dim_route')
+    .all() as any[]) {
     const code = canonRoute(r.route_code);
     if (!code) continue;
-    dimRouteCodes.add(code);
     voteRegion(code, regionCodeFromName(r.region), 1);
+    voteClass(code, S(r.analytical_class), 1);
     if (!routeName.has(code)) routeName.set(code, S(r.route_name) || code);
   }
-  // salesman per route: this month's upload first (most invoices), then August aggregates.
+  // salesman per route: this month's upload first (most invoices), then the last two
+  // aggregated months. Pre-sales rows: `code` is the seller's own route, `route_code`
+  // the delivery van.
   const routeSalesmanVotes = new Map<string, Map<string, number>>();
   const vote = (route: string, name: string, w = 1) => {
     if (!route || isPlaceholderName(name, route)) return;
     const m = routeSalesmanVotes.get(route) ?? new Map<string, number>();
-    m.set(name.trim().toUpperCase(), (m.get(name.trim().toUpperCase()) ?? 0) + w);
+    bump(m, name.trim().toUpperCase(), w);
     routeSalesmanVotes.set(route, m);
   };
   const todayRows = await xlsxObjects(SRC.todayUpload, 'UPLOAD_READY');
   const latestSalesRoute = new Map<string, { route: string; date: Date }>();
+  const uploadOmr = new Map<string, number>();
+  const septSeen = new Map<
+    string,
+    { cust: string; branch: string; name: string; route: string; region: string | null }
+  >();
   for (const r of todayRows) {
-    // Pre-sales rows: `code` is the seller's own route, `route_code` is the delivery van.
     const route = S(r.code) ? presellerRoute(r.code) : canonRoute(r.route_code);
-    const name = S(r.preseller_name) || S(r.salesman_name);
-    vote(route, name, 3);
+    if (S(r.transaction_type).toLowerCase() === 'invoice')
+      bump(uploadOmr, route, Number(r.act_net) || 0);
+    vote(route, S(r.preseller_name) || S(r.salesman_name), 3);
     voteRegion(route, regionCodeFromName(S(r.region)), 1);
     const cust = S(r.customer_no);
     if (cust) {
@@ -474,90 +524,63 @@ async function main() {
       const key = `${cust}|${S(r.branch_code) === '0' ? '' : S(r.branch_code)}`;
       const prev = latestSalesRoute.get(key);
       if (!prev || d > prev.date) latestSalesRoute.set(key, { route, date: d });
+      if (!septSeen.has(key))
+        septSeen.set(key, {
+          cust: cust.toUpperCase(),
+          branch: S(r.branch_code) === '0' ? '' : S(r.branch_code).toUpperCase(),
+          name: S(r.customer_name),
+          route,
+          region: regionCodeFromName(S(r.region)),
+        });
     }
   }
-  const aggRows: any[] = db
+  for (const r of db
     .prepare(
       `select route, salesman, preseller, sum(value) v from agg_route
-       where (year*100+month) >= (select max(year*100+month) from agg_route) - 1
-       group by 1,2,3`
+       where (year*100+month) >= (select max(year*100+month) from agg_route) - 1 group by 1,2,3`
     )
-    .all();
-  for (const r of aggRows)
+    .all() as any[]) {
     vote(
       canonRoute(r.route),
       S(r.preseller) || S(r.salesman),
       Math.max(1, Math.round(Number(r.v) / 5000))
     );
+  }
+  const ACTIVE = new Set<string>();
+  for (const [code, v] of activeOmr) if (v >= ACTIVE_MIN_OMR) ACTIVE.add(code);
+  for (const [code, v] of uploadOmr) if (v >= ACTIVE_MIN_OMR) ACTIVE.add(code);
+  ACTIVE.delete('');
+  ACTIVE.delete('UNASSIGNED');
 
-  // 2. RoutePro route master: canonical codes, region hints, salesman fallback.
-  const rpRoutes = csvObjects(SRC.rpRoutes);
+  // 2. RoutePro route master: salesman name fallback (truncated to 20 chars).
   const rpRouteSalesman = new Map<string, string>();
-  const rpActiveRoutes = new Set<string>();
-  const rpSubareaHint = new Map<string, string>();
-  for (const r of rpRoutes) {
+  for (const r of csvObjects(SRC.rpRoutes)) {
     const code = canonRoute(r.ROUTE_NAME);
     if (!code) continue;
-    if (/^active$/i.test(S(r.STATUS))) rpActiveRoutes.add(code);
-    // "MUSCAT" is RoutePro's default sub-area and is wrong for half the estate — only
-    // a non-default sub-area says anything, and even then only as a tie-breaker.
-    const sub = S(r.SUBAREA).toUpperCase();
-    if (sub && sub !== 'MUSCAT') {
-      const rc = regionCodeFromName(sub);
-      if (rc) rpSubareaHint.set(code, rc);
-    }
     if (!routeName.has(code)) routeName.set(code, code);
     if (r.SALESMAN && !isPlaceholderName(r.SALESMAN, code))
       rpRouteSalesman.set(code, r.SALESMAN.trim().toUpperCase());
   }
 
-  // 3. Temix extract: contact data, channel, team leader per route.
-  const temixRaw = await xlsxObjects(SRC.temixRaw);
+  // 3. Temix extract: contact data + channel only (its "Team Leaders" field is stale).
   const temixByCode = new Map<string, Record<string, unknown>>();
-  const routeTeamLeaderVotes = new Map<string, Map<string, number>>();
   const unknownChannels = new Map<string, number>();
-  for (const r of temixRaw) {
+  for (const r of await xlsxObjects(SRC.temixRaw)) {
     const code = S(r['Customer No']).toUpperCase();
-    if (!code) continue;
-    if (!temixByCode.has(code)) temixByCode.set(code, r);
-    const route = canonRoute(r.RouteCode);
-    const tl = S(r['Team Leaders']).toUpperCase();
-    if (route && tl && TEAM_LEADER_TO_USERNAME[tl]) {
-      const m = routeTeamLeaderVotes.get(route) ?? new Map<string, number>();
-      m.set(tl, (m.get(tl) ?? 0) + 1);
-      routeTeamLeaderVotes.set(route, m);
-    }
+    if (code && !temixByCode.has(code)) temixByCode.set(code, r);
   }
-  const supervisorForRoute = (route: string, region: string): string => {
-    const votes = routeTeamLeaderVotes.get(route);
-    if (votes) {
-      const best = [...votes].sort((a, b) => b[1] - a[1])[0];
-      if (best) return TEAM_LEADER_TO_USERNAME[best[0]];
-    }
-    return DEFAULT_SUPERVISOR_BY_REGION[region] ?? 'sajjad.yousuf';
-  };
 
-  // 4. Code-Branch master: credit limit/days per account and activity status.
-  const cbRows = await xlsxObjects(SRC.codeBranch);
+  // 4. Code-Branch master: credit limit/days per account, activity status, region votes.
   const cbByBase = new Map<
     string,
     { limit: number | null; days: number | null; status: string; route: string; name: string }
   >();
-  const cbByAlt = new Map<string, Record<string, unknown>>();
-  for (const r of cbRows) {
+  for (const r of await xlsxObjects(SRC.codeBranch)) {
     voteRegion(canonRoute(r['Current Route']), regionCodeFromName(S(r.Region)), 2);
     const base = S(r['Base Code']).toUpperCase();
-    const alt = S(r['Customer Code']).toUpperCase();
-    if (alt) cbByAlt.set(alt, r);
     if (!base) continue;
-    const limit =
-      r['Credit Limit (acct)'] != null && S(r['Credit Limit (acct)']) !== ''
-        ? Number(r['Credit Limit (acct)'])
-        : null;
-    const days =
-      r['Credit Days (acct)'] != null && S(r['Credit Days (acct)']) !== ''
-        ? Number(r['Credit Days (acct)'])
-        : null;
+    const limit = S(r['Credit Limit (acct)']) !== '' ? Number(r['Credit Limit (acct)']) : null;
+    const days = S(r['Credit Days (acct)']) !== '' ? Number(r['Credit Days (acct)']) : null;
     const prev = cbByBase.get(base);
     if (!prev)
       cbByBase.set(base, {
@@ -573,21 +596,20 @@ async function main() {
       if (prev.status !== 'Active' && S(r.Status) === 'Active') prev.status = 'Active';
     }
   }
-  const arRows: any[] = db
-    .prepare('select customer_no, credit_limit, credit_days from ar_aging where credit_limit > 0')
-    .all();
   const arByCode = new Map<string, { limit: number; days: number | null }>();
-  for (const r of arRows)
+  for (const r of db
+    .prepare('select customer_no, credit_limit, credit_days from ar_aging where credit_limit > 0')
+    .all() as any[]) {
     arByCode.set(S(r.customer_no).toUpperCase(), {
       limit: Number(r.credit_limit),
       days: r.credit_days != null ? Number(r.credit_days) : null,
     });
+  }
 
   // 5. Journey plan: first planned day per alt code (+ full pattern for the report).
-  const jpRows = csvObjects(SRC.jp);
   const jpDay = new Map<string, string>();
   const jpMulti: unknown[][] = [];
-  for (const r of jpRows) {
+  for (const r of csvObjects(SRC.jp)) {
     voteRegion(canonRoute(r.route_code), regionCodeFromName(r.region), 3);
     const days = DAY_ORDER.filter((d) => r[d] === '1');
     const alt = S(r.customer_code).toUpperCase();
@@ -604,7 +626,6 @@ async function main() {
   }
 
   // 6. RoutePro customer master — the universe.
-  const rpCustomers = csvObjects(SRC.rpCustomers);
   type Cust = {
     alt: string;
     base: string;
@@ -617,7 +638,7 @@ async function main() {
   const universe: Cust[] = [];
   const unparseable: unknown[][] = [];
   const routeMerges = new Map<string, { to: string; n: number }>();
-  for (const r of rpCustomers) {
+  for (const r of csvObjects(SRC.rpCustomers)) {
     const rawRoute = S(r.ROUTE_NAME).toUpperCase();
     const canon = canonRoute(rawRoute);
     if (rawRoute && canon !== rawRoute) {
@@ -636,14 +657,12 @@ async function main() {
       base: m[1],
       branch: m[2] ? m[2].replace(/[^A-Z0-9_-]/gi, '').toUpperCase() || null : null,
       name: S(r.NAME),
-      route: canonRoute(r.ROUTE_NAME),
+      route: canon,
       pay: /CHARGE/i.test(S(r.PAY_MODE)) ? 'CREDIT' : 'CASH',
       status: /^active$/i.test(S(r.STATUS)) ? 'ACTIVE' : 'CLOSED',
     });
   }
   const inRoutePro = new Set(universe.map((c) => c.base));
-  // Customers that bought in 2026 (Code-Branch Active / At risk) but are not in RoutePro:
-  // still real, still served — include them on their last known route.
   const cbOnly: unknown[][] = [];
   const cbDormantSkipped: unknown[][] = [];
   for (const [base, cb] of cbByBase) {
@@ -661,53 +680,83 @@ async function main() {
       cbOnly.push([base, cb.name, cb.route, cb.status]);
     } else cbDormantSkipped.push([base, cb.name, cb.route, cb.status]);
   }
+  // Customers (and branches) invoiced THIS month that the RoutePro snapshot does not
+  // know yet — created in Timix after the export. Cash/coupon pseudo-accounts are not
+  // customers and are skipped.
+  const septNew: unknown[][] = [];
+  const knownAlt = new Set(universe.map((c) => c.alt));
+  for (const s of septSeen.values()) {
+    if (/^(CASH|COUP|STAFF)/i.test(s.cust)) continue;
+    const alt = s.branch ? `${s.cust}-${s.branch}` : s.cust;
+    if (knownAlt.has(alt)) continue;
+    const baseKnown = inRoutePro.has(s.cust) || cbByBase.has(s.cust);
+    knownAlt.add(alt);
+    universe.push({
+      alt,
+      base: s.cust,
+      branch: s.branch || null,
+      name: s.name,
+      route: s.route,
+      pay: 'CASH',
+      status: 'ACTIVE',
+    });
+    septNew.push([
+      alt,
+      s.name,
+      s.route,
+      s.region ?? '',
+      baseKnown ? 'new branch of a known customer' : 'new customer (not in the RoutePro snapshot)',
+    ]);
+  }
 
-  // 7. Routes referenced anywhere → the Routes sheet; resolve regions.
-  // A route exists in the CRM if customers sit on it, the dashboard analyses it, or
-  // RoutePro still has it active. Inactive RoutePro routes with nobody on them
-  // (retired vans, routes named after a person) are not carried over.
-  const customerRouteCount = new Map<string, number>();
-  for (const c of universe)
-    if (c.route) customerRouteCount.set(c.route, (customerRouteCount.get(c.route) ?? 0) + 1);
-  const routeCodes = new Set<string>([
-    ...customerRouteCount.keys(),
-    ...dimRouteCodes,
-    ...rpActiveRoutes,
-  ]);
+  // 7. Routes sheet = ACTIVE routes only. Region by vote; class by vote.
+  const regionOf = (code: string): string | null =>
+    top(regionVotes.get(code)) ?? regionByPrefix(code);
+  const classOf = (code: string): string | null => top(classVotes.get(code));
+  const routes: Array<{
+    code: string;
+    name: string;
+    region: string;
+    cls: string | null;
+    omr: number;
+  }> = [];
   const routesUnmappedRegion: unknown[][] = [];
-  const routes: Array<{ code: string; name: string; region: string }> = [];
-  for (const code of [...routeCodes].sort()) {
-    if (!code || code === 'UNASSIGNED') continue;
-    const votes = regionVotes.get(code);
-    let rc: string | null = votes ? ([...votes].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null) : null;
-    rc = rc ?? rpSubareaHint.get(code) ?? regionByPrefix(code) ?? null;
+  for (const code of [...ACTIVE].sort()) {
+    let rc = regionOf(code);
     if (!rc) {
       rc = 'UNASSIGNED';
       routesUnmappedRegion.push([code]);
     }
-    routes.push({ code, name: routeName.get(code) ?? code, region: rc });
+    routes.push({
+      code,
+      name: routeName.get(code) ?? code,
+      region: rc,
+      cls: classOf(code),
+      omr: Math.round((activeOmr.get(code) ?? 0) + (uploadOmr.get(code) ?? 0)),
+    });
   }
-  routes.push({ code: 'UNASSIGNED', name: 'Unassigned', region: 'UNASSIGNED' });
   const regionOfRoute = new Map(routes.map((r) => [r.code, r.region]));
+  regionOfRoute.set('UNASSIGNED', 'UNASSIGNED');
 
-  // 8. Customers sheet.
+  // 8. Customers sheet. A customer on a route that is NOT active is loaded, kept in
+  //    its region, but parked on UNASSIGNED and listed for reassignment.
   const legalNameByBase = new Map<string, string>();
   for (const c of universe) if (!c.branch && c.name) legalNameByBase.set(c.base, c.name);
   for (const c of universe)
     if (!legalNameByBase.has(c.base))
       legalNameByBase.set(c.base, S(temixByCode.get(c.base)?.Name) || c.name);
 
-  // phone: clean, then withhold duplicates across DIFFERENT customers (the importer
-  // quarantines cross-customer duplicates; thousands of them would stall go-live).
   const phoneByBase = new Map<string, string>();
   const phoneReasons: unknown[][] = [];
   const phoneOwners = new Map<string, string[]>();
   const rank = (base: string) => {
     const c =
       universe.find((u) => u.base === base && !u.branch) ?? universe.find((u) => u.base === base);
-    const active = c?.status === 'ACTIVE' ? 1 : 0;
     const cb = cbByBase.get(base);
-    return active * 10 + (cb?.status === 'Active' ? 2 : cb?.status === 'At risk' ? 1 : 0);
+    return (
+      (c?.status === 'ACTIVE' ? 10 : 0) +
+      (cb?.status === 'Active' ? 2 : cb?.status === 'At risk' ? 1 : 0)
+    );
   };
   for (const base of new Set(universe.map((c) => c.base))) {
     const t = temixByCode.get(base);
@@ -737,6 +786,8 @@ async function main() {
   const custRows: Record<string, unknown>[] = [];
   const creditNoLimit: unknown[][] = [];
   const routeDiff: unknown[][] = [];
+  const onInactiveRoute: unknown[][] = [];
+  const inactiveRouteCounts = new Map<string, number>();
   let jpCovered = 0;
   const seenBranch = new Set<string>();
   const channelUsed = new Map<string, number>();
@@ -744,17 +795,24 @@ async function main() {
     (a, b) => a.base.localeCompare(b.base) || (a.branch ?? '').localeCompare(b.branch ?? '')
   );
   for (const c of universe) {
-    const t = temixByCode.get(c.base);
-    const route = c.route && regionOfRoute.has(c.route) ? c.route : 'UNASSIGNED';
-    const region = regionOfRoute.get(route) ?? 'UNASSIGNED';
     const branchKey = `${c.base}|${c.branch ?? ''}`;
     if (seenBranch.has(branchKey)) continue;
     seenBranch.add(branchKey);
+    const t = temixByCode.get(c.base);
+    let route = c.route;
+    let region = regionOfRoute.get(route) ?? null;
+    if (!route || !ACTIVE.has(route)) {
+      const original = route || '(none)';
+      region = (route ? regionOf(route) : null) ?? 'UNASSIGNED';
+      route = 'UNASSIGNED';
+      bump(inactiveRouteCounts, original);
+      onInactiveRoute.push([c.alt, c.name, original, region, c.status]);
+    }
     const chRaw = S(t?.Channel).toUpperCase();
     let channel: string | null = null;
     if (chRaw in CHANNEL_MAP) channel = CHANNEL_MAP[chRaw];
-    else if (chRaw) unknownChannels.set(chRaw, (unknownChannels.get(chRaw) ?? 0) + 1);
-    if (channel) channelUsed.set(channel, (channelUsed.get(channel) ?? 0) + 1);
+    else if (chRaw) bump(unknownChannels, chRaw);
+    if (channel) bump(channelUsed, channel);
     const cb = cbByBase.get(c.base);
     const ar = arByCode.get(c.base);
     const limit = c.pay === 'CREDIT' ? (cb?.limit ?? ar?.limit ?? null) : null;
@@ -764,18 +822,18 @@ async function main() {
     const day = jpDay.get(c.alt) ?? (c.branch ? undefined : jpDay.get(c.base)) ?? null;
     if (day) jpCovered++;
     const sales = latestSalesRoute.get(`${c.base}|${c.branch ?? ''}`);
-    if (sales && sales.route && sales.route !== route)
+    if (sales && sales.route && route !== 'UNASSIGNED' && sales.route !== route)
       routeDiff.push([c.alt, c.name, route, sales.route, sales.date.toISOString().slice(0, 10)]);
     custRows.push({
       cust_code: c.base,
-      cust_name: legalNameByBase.get(c.base) ?? c.name,
+      cust_name: T(legalNameByBase.get(c.base) ?? c.name) || c.base,
       branch_code: c.branch ?? '',
-      branch_name: c.branch ? c.name || c.branch : 'Main',
-      sales_region: region,
+      branch_name: c.branch ? T(c.name) || c.branch : 'Main',
+      sales_region: region ?? 'UNASSIGNED',
       route,
-      address: [S(t?.Address), S(t?.City)].filter(Boolean).join(', '),
+      address: [T(t?.Address), T(t?.City)].filter(Boolean).join(', '),
       phone: c.branch ? '' : (phoneByBase.get(c.base) ?? ''),
-      contact_person: c.branch ? '' : S(t?.['Contact Person']),
+      contact_person: c.branch ? '' : T(t?.['Contact Person']),
       cr_no: '',
       payment_terms: c.pay,
       credit_limit: limit != null && limit > 0 ? limit : '',
@@ -787,10 +845,11 @@ async function main() {
     });
   }
 
-  // 9. Users sheet.
+  // 9. Users sheet: manager rows (regions only — created in the app first), salesmen
+  //    on ACTIVE routes supervised by their manager, approver placeholders.
   const users: Record<string, unknown>[] = [];
   const credentials: unknown[][] = [];
-  const usedUsernames = new Set<string>();
+  const usedUsernames = new Set<string>(MANAGERS.map((m) => m.username));
   const uniqueUsername = (base: string) => {
     let u = base;
     let n = 2;
@@ -798,27 +857,10 @@ async function main() {
     usedUsernames.add(u);
     return u;
   };
-  for (const m of MANAGERS) usedUsernames.add(m.username);
-  for (const s of SUPERVISORS) {
-    usedUsernames.add(s.username);
-    const pw = genPassword();
-    users.push({
-      username: s.username,
-      full_name: titleCase(s.fullName),
-      role: 'SUPERVISOR',
-      password: pw,
-      supervisor_username: '',
-      route_code: '',
-      region_codes: '',
-      email: '',
-      phone: '',
-      reset_password: '',
-      change_role: '',
-    });
-    credentials.push([s.username, titleCase(s.fullName), 'SUPERVISOR', s.regions.join(','), pw]);
-  }
-  // Manager rows: they must already exist (created in the app); the import then
-  // assigns their regions. A blank password means "keep".
+  const supervisorFor = (route: { code: string; region: string; cls: string | null }): string => {
+    if (route.region === 'MCT') return MUSCAT_SUPERVISOR_BY_CLASS[route.cls ?? ''] ?? '';
+    return SUPERVISOR_BY_REGION[route.region] ?? '';
+  };
   for (const m of MANAGERS) {
     users.push({
       username: m.username,
@@ -834,19 +876,27 @@ async function main() {
       change_role: '',
     });
   }
-  const managerNames = new Set(MANAGERS.map((m) => m.fullName.toUpperCase()));
-  const salesmanByRoute = new Map<string, string>();
+  const managerNames = MANAGERS.map((m) => m.fullName.toUpperCase());
+  const looksLikeManager = (name: string) =>
+    managerNames.some(
+      (mn) =>
+        name === mn ||
+        (mn.includes(' ') && name.startsWith(mn.split(' ')[0]) && name.includes(mn.split(' ')[1]))
+    );
   const salesmanRoutes = new Map<string, string[]>();
   const routesNoSalesman: unknown[][] = [];
   const namesFromRoutePro: unknown[][] = [];
+  const noSupervisor: unknown[][] = [];
+  const managerSalesRoutes: Array<{
+    route: (typeof routes)[number];
+    username: string;
+    fullName: string;
+  }> = [];
   for (const r of routes) {
-    if (r.code === 'UNASSIGNED') continue;
-    const votes = routeSalesmanVotes.get(r.code);
-    let name = votes ? [...votes].sort((a, b) => b[1] - a[1])[0]?.[0] : undefined;
+    let name = top(routeSalesmanVotes.get(r.code)) ?? undefined;
     if (!name) {
       const rp = rpRouteSalesman.get(r.code);
       if (rp) {
-        // RoutePro truncates names to 20 chars — recover the full name when we have it.
         const all = new Set<string>();
         for (const m of routeSalesmanVotes.values()) for (const k of m.keys()) all.add(k);
         const full = [...all].find((n) => n.startsWith(rp));
@@ -865,48 +915,44 @@ async function main() {
       routesNoSalesman.push([
         r.code,
         r.region,
-        "no named person sells on this route (van/direct route, inactive, or not in this year's sales)",
+        r.cls ?? '',
+        'no named person sells on this route (van/direct route) — assign in the app if someone should',
       ]);
       continue;
     }
-    if (
-      managerNames.has(name) ||
-      [...managerNames].some(
-        (mn) =>
-          name!.startsWith(mn.split(' ')[0]) &&
-          mn.split(' ').length > 1 &&
-          name!.includes(mn.split(' ')[1])
-      )
-    ) {
+    const also = MANAGER_ALSO_SELLS[r.code];
+    if (also && looksLikeManager(name)) {
+      managerSalesRoutes.push({ route: r, username: also.username, fullName: also.fullName });
+      continue;
+    }
+    if (looksLikeManager(name)) {
       routesNoSalesman.push([
         r.code,
         r.region,
-        `top seller is ${titleCase(name)}, who is set up as a MANAGER — assign a salesman in the app`,
+        r.cls ?? '',
+        `top seller is ${titleCase(name)}, who is a MANAGER — assign a salesman in the app`,
       ]);
       continue;
     }
-    salesmanByRoute.set(r.code, name);
     salesmanRoutes.set(name, [...(salesmanRoutes.get(name) ?? []), r.code]);
   }
   const salesmanMultiRoute: unknown[][] = [];
-  const salesmanUsername = new Map<string, string>();
   for (const [name, rts] of salesmanRoutes) {
-    // A salesman owns exactly one route in the CRM. Give them the route where they sell
-    // most; the others are reported for the owner to assign.
     const best = rts
       .map((rc) => [rc, routeSalesmanVotes.get(rc)?.get(name) ?? 0] as const)
       .sort((a, b) => b[1] - a[1])[0][0];
     if (rts.length > 1) salesmanMultiRoute.push([titleCase(name), rts.join(' '), best]);
+    const route = routes.find((r) => r.code === best)!;
+    const sup = supervisorFor(route);
+    if (!sup) noSupervisor.push([best, route.region, route.cls ?? '', titleCase(name)]);
     const username = uniqueUsername(slugUsername(name));
-    salesmanUsername.set(name, username);
-    const region = regionOfRoute.get(best) ?? 'UNASSIGNED';
     const pw = genPassword();
     users.push({
       username,
       full_name: titleCase(name),
       role: 'SALESMAN',
       password: pw,
-      supervisor_username: supervisorForRoute(best, region),
+      supervisor_username: sup,
       route_code: best,
       region_codes: '',
       email: '',
@@ -914,23 +960,55 @@ async function main() {
       reset_password: '',
       change_role: '',
     });
-    credentials.push([username, titleCase(name), 'SALESMAN', best, pw]);
+    credentials.push([
+      username,
+      titleCase(name),
+      'SALESMAN',
+      `${best} → ${sup || '(no supervisor)'}`,
+      pw,
+    ]);
     for (const rc of rts)
       if (rc !== best)
         routesNoSalesman.push([
           rc,
           regionOfRoute.get(rc),
+          routes.find((r) => r.code === rc)?.cls ?? '',
           `${titleCase(name)} also sells here but owns ${best} — assign in the app`,
         ]);
   }
-  // Approver tier placeholders so every chain can complete on day one.
+  for (const m of managerSalesRoutes) {
+    const sup = supervisorFor(m.route);
+    usedUsernames.add(m.username);
+    const pw = genPassword();
+    users.push({
+      username: m.username,
+      full_name: titleCase(m.fullName),
+      role: 'SALESMAN',
+      password: pw,
+      supervisor_username: sup,
+      route_code: m.route.code,
+      region_codes: '',
+      email: '',
+      phone: '',
+      reset_password: '',
+      change_role: '',
+    });
+    credentials.push([
+      m.username,
+      titleCase(m.fullName),
+      'SALESMAN',
+      `${m.route.code} → ${sup || '(no supervisor)'} (second login of a manager)`,
+      pw,
+    ]);
+  }
   const allRegions = REGIONS.filter((r) => r.code !== 'UNASSIGNED')
     .map((r) => r.code)
     .join(',');
   for (const [username, fullName, role, regions] of [
-    ['accountant', 'ACCOUNTANT — assign a real person', 'ACCOUNTANT', allRegions],
-    ['finance.manager', 'FINANCE MANAGER — assign a real person', 'FINANCE_MANAGER', ''],
-    ['gm.nmwc', 'GENERAL MANAGER — assign a real person', 'GM', ''],
+    // Owner decision: generic approver accounts, no personal names.
+    ['accountant', 'Accountant', 'ACCOUNTANT', allRegions],
+    ['finance.manager', 'Finance Manager', 'FINANCE_MANAGER', ''],
+    ['gm.nmwc', 'General Manager', 'GM', ''],
   ] as const) {
     const pw = genPassword();
     users.push({
@@ -949,9 +1027,7 @@ async function main() {
     credentials.push([username, fullName, role, regions, pw]);
   }
 
-  // 10. Write workbooks.
-  const acct = new ExcelJS.Workbook();
-  acct.creator = 'NMWC CRM go-live builder';
+  // 10. Workbooks.
   const addSheet = (
     wb: ExcelJS.Workbook,
     name: string,
@@ -964,6 +1040,7 @@ async function main() {
     for (const r of rows) ws.addRow(headers.map((h) => r[h] ?? ''));
     ws.columns.forEach((c) => (c.width = 18));
   };
+  const acct = new ExcelJS.Workbook();
   addSheet(
     acct,
     'Regions',
@@ -974,9 +1051,7 @@ async function main() {
     acct,
     'Routes',
     ['code', 'name', 'region_code'],
-    routes
-      .filter((r) => r.code !== 'UNASSIGNED')
-      .map((r) => ({ code: r.code, name: r.name, region_code: r.region }))
+    routes.map((r) => ({ code: r.code, name: r.name, region_code: r.region }))
   );
   addSheet(
     acct,
@@ -999,7 +1074,6 @@ async function main() {
   await acct.xlsx.writeFile(path.join(OUT, 'account-master.xlsx'));
 
   const cust = new ExcelJS.Workbook();
-  cust.creator = 'NMWC CRM go-live builder';
   addSheet(
     cust,
     'Customers',
@@ -1026,9 +1100,9 @@ async function main() {
   );
   await cust.xlsx.writeFile(path.join(OUT, 'customer-master.xlsx'));
 
-  const cred = new ExcelJS.Workbook();
   const stewardPw = genPassword();
   const managerCreds = MANAGERS.map((m) => ({ ...m, password: genPassword() }));
+  const cred = new ExcelJS.Workbook();
   addSheet(
     cred,
     'Create in app FIRST',
@@ -1040,7 +1114,7 @@ async function main() {
         role: 'STEWARD',
         regions: '',
         password: stewardPw,
-        note: 'create first; runs the imports',
+        note: 'create first (bootstrap script); runs the imports',
       },
       ...managerCreds.map((m) => ({
         username: m.username,
@@ -1082,11 +1156,37 @@ async function main() {
     )
   );
 
-  // 11. Data-quality evidence + reconciliation report.
+  // 11. Data-quality evidence + reconciliation.
+  writeDq(
+    'routes-active.csv',
+    ['route', 'region', 'class', 'omr_recent', 'salesman_login', 'supervisor'],
+    routes.map((r) => {
+      const u = users.find((x) => x.route_code === r.code);
+      return [
+        r.code,
+        r.region,
+        r.cls ?? '',
+        r.omr,
+        u?.username ?? '',
+        u?.supervisor_username ?? '',
+      ];
+    })
+  );
+  writeDq(
+    'customers-on-inactive-routes.csv',
+    ['alt_code', 'name', 'original_route', 'region', 'status'],
+    onInactiveRoute
+  );
+  writeDq(
+    'inactive-routes-summary.csv',
+    ['original_route', 'customers'],
+    [...inactiveRouteCounts].sort((a, b) => b[1] - a[1])
+  );
   writeDq('unparseable-codes.csv', ['alt_code', 'name', 'route', 'status'], unparseable);
   writeDq('phones-withheld-duplicates.csv', ['cust_code', 'name', 'phone', 'why'], phoneWithheld);
   writeDq('phones-unusable.csv', ['cust_code', 'name', 'raw_phone', 'why'], phoneReasons);
-  writeDq('routes-no-salesman.csv', ['route', 'region', 'why'], routesNoSalesman);
+  writeDq('routes-no-salesman.csv', ['route', 'region', 'class', 'why'], routesNoSalesman);
+  writeDq('salesmen-no-supervisor.csv', ['route', 'region', 'class', 'salesman'], noSupervisor);
   writeDq('salesmen-multiple-routes.csv', ['salesman', 'routes', 'assigned'], salesmanMultiRoute);
   writeDq('routes-region-unmapped.csv', ['route'], routesUnmappedRegion);
   writeDq('credit-customers-without-limit.csv', ['cust_code', 'name', 'route'], creditNoLimit);
@@ -1100,6 +1200,7 @@ async function main() {
     ['alt_code', 'name', 'routepro_route', 'sept_sales_route', 'last_invoice'],
     routeDiff
   );
+  writeDq('new-from-september-sales.csv', ['alt_code', 'name', 'route', 'region', 'why'], septNew);
   writeDq('codebranch-only-included.csv', ['cust_code', 'name', 'route', 'status'], cbOnly);
   writeDq(
     'codebranch-dormant-not-loaded.csv',
@@ -1117,24 +1218,68 @@ async function main() {
   const byStatus = new Map<string, number>();
   const byTerms = new Map<string, number>();
   for (const r of custRows) {
-    byRegion.set(S(r.sales_region), (byRegion.get(S(r.sales_region)) ?? 0) + 1);
-    byStatus.set(S(r.customer_status), (byStatus.get(S(r.customer_status)) ?? 0) + 1);
-    byTerms.set(S(r.payment_terms), (byTerms.get(S(r.payment_terms)) ?? 0) + 1);
+    bump(byRegion, S(r.sales_region));
+    bump(byStatus, S(r.customer_status));
+    bump(byTerms, S(r.payment_terms));
   }
   const distinctCustomers = new Set(custRows.map((r) => r.cust_code)).size;
+  const parked = onInactiveRoute.length;
+  const salesmenCount = users.filter((u) => u.role === 'SALESMAN').length;
   const md: string[] = [];
   md.push('# NMWC go-live master data — build reconciliation');
-  md.push(`Built ${new Date().toISOString()} from:`);
-  for (const [k, f] of Object.entries(SRC)) md.push(`- ${k}: \`${f}\``);
-  md.push('');
-  md.push('## What is in the files');
   md.push(
-    `- **Regions:** ${REGIONS.length - 1} (${REGIONS.filter((r) => r.code !== 'UNASSIGNED')
-      .map((r) => r.code)
-      .join(', ')})`
+    `Built ${new Date().toISOString()} · RoutePro export: ${path.basename(SRC.rpCustomers)} · dashboard snapshot to ${snapshotEnd} · active route = ≥ ${ACTIVE_MIN_OMR} OMR invoiced in the last ${ACTIVE_WINDOW_DAYS} days (or in this month's upload)`
+  );
+  md.push('');
+  md.push('## Decisions confirmed by the owner (2026-09-10)');
+  md.push(
+    '1. **Region codes**: MCT Muscat · KHB Khaburah (Saham/Sohar/Musannah) · NZW Nizwa · SLL Salalah · AWF Al Wafi · DQM Duqm · BRK Barka. ✅'
   );
   md.push(
-    `- **Routes:** ${routes.length - 1}${routesUnmappedRegion.length ? ` — ${routesUnmappedRegion.length} could not be placed in a region and are parked under UNASSIGNED (dq/routes-region-unmapped.csv)` : ''}`
+    '2. **No supervisors from Timix "Team Leaders"** — that field holds names that do not exist. Dropped entirely. ✅'
+  );
+  md.push(
+    '3. **Managers supervise their salesmen directly.** Muscat by class: GT → Ahmed Alnadabi · Modern trade → Sarath · Home delivery → Haitham · HORECA → Sara Khayat. Other regions: Nizwa → Sunil KP · Khaburah → Ashok · Salalah → Tharwat · Barka → Saqib · Al Wafi + Duqm → Rasool. Rashid and Saud remain managers over their regions (fallback approvers). ✅'
+  );
+  md.push(
+    '4. **Only ACTIVE routes** (dashboard activity lens) exist in the CRM. Customers on any other route are loaded in their region but parked on **UNASSIGNED** — see below. ✅'
+  );
+  md.push('');
+  md.push(
+    '5. **Approver accounts are generic, without personal names**: `accountant` (all regions), `finance.manager`, `gm.nmwc`. ✅'
+  );
+  md.push('');
+  md.push('6. **Bulk-loaded customers do not pass through the approval chain** (SOP §8.5). ✅');
+  md.push(
+    '7. **Journey plan**: a branch planned on several days carries only its first day (the CRM holds one visit day per branch). ✅'
+  );
+  md.push(
+    '8. **Payment terms** from RoutePro PAY_MODE (CHARGE → CREDIT, CASH → CASH); limits/days from the July account master, else the June AR snapshot; CREDIT with no limit on file loads as CREDIT with a blank limit. ✅'
+  );
+  md.push(
+    '9. **Customers on routes with no recent sales stay loaded but parked on UNASSIGNED** in their region, for the Steward and managers to reassign or close after go-live. ✅'
+  );
+  md.push(
+    '10. **Duplicate phones**: a number shared by several customers is kept on the most active one and left blank on the others (listed). ✅'
+  );
+  md.push(
+    '11. **Customers missing from RoutePro**: 2026 buyers are included on their last route; long-dormant codes are not loaded. **The RoutePro snapshot must be the latest before the final build** — owner to export a fresh customer master (many new customers since 3-Sep). ⚠ pending'
+  );
+  md.push(
+    '12. **Route conflicts**: Timix/RoutePro is the assignment of record; September sales on another route are listed, not applied. ✅'
+  );
+  md.push('13. **Codes with stray characters** are skipped and listed for correction in Timix. ✅');
+  md.push(
+    '14. **C3**: Sara Khayat also sells it herself — she gets a second, salesman login (`sara.khayat.c3`). **W** (wholesale) has no named seller and stays without a salesman. ✅'
+  );
+  md.push(
+    `15. **Newcomers from this month's sales**: ${septNew.length} customers/branches invoiced in September that the RoutePro snapshot (${path.basename(SRC.rpCustomers)}) does not contain were added on their September route as CASH/ACTIVE (dq/new-from-september-sales.csv). Re-export RoutePro before the final build to capture customers created in Timix that have not bought yet.`
+  );
+  md.push('');
+  md.push('## What is in the files');
+  md.push(`- **Regions:** 7`);
+  md.push(
+    `- **Routes (active):** ${routes.length}${routesUnmappedRegion.length ? ` — ${routesUnmappedRegion.length} could not be placed in a region (dq/routes-region-unmapped.csv)` : ''} — full list with class, recent OMR, salesman and supervisor in dq/routes-active.csv`
   );
   md.push(
     `- **Customer rows (branches):** ${custRows.length} across **${distinctCustomers} customers**`
@@ -1145,16 +1290,25 @@ async function main() {
   );
   md.push(`  - by terms: ${[...byTerms].map(([k, v]) => `${k} ${v}`).join(' · ')}`);
   md.push(
-    `  - journey-plan day set on **${jpCovered}** branches (the plan covers 24 routes; ${jpMulti.length} customers are planned on more than one day and were loaded with their FIRST day — dq/jp-multi-day-customers.csv)`
+    `  - **${parked} branches sit on routes that are not active and are parked on UNASSIGNED** (kept in their region; dq/customers-on-inactive-routes.csv). By original route: ${[
+      ...inactiveRouteCounts,
+    ]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(' · ')}${inactiveRouteCounts.size > 12 ? ' …' : ''} (dq/inactive-routes-summary.csv)`
+  );
+  md.push(
+    `  - journey-plan day set on **${jpCovered}** branches (24 routes in the plan; ${jpMulti.length} customers planned on more than one day carry their FIRST day — dq/jp-multi-day-customers.csv)`
   );
   md.push(
     `  - channel set on ${[...channelUsed.values()].reduce((a, b) => a + b, 0)} rows: ${[...channelUsed].map(([k, v]) => `${k} ${v}`).join(' · ')}${unknownChannels.size ? ` — unmapped Temix channels: ${[...unknownChannels].map(([k, v]) => `${k} (${v})`).join(', ')}` : ''}`
   );
   md.push(
-    `  - phone set on ${[...phoneByBase.values()].length} customers; **${phoneWithheld.length} withheld** because the same number sits on another customer (dq/phones-withheld-duplicates.csv); ${phoneReasons.length} unusable in the source (dq/phones-unusable.csv)`
+    `  - phone set on ${phoneByBase.size} customers; **${phoneWithheld.length} withheld** because the same number sits on another customer (dq/phones-withheld-duplicates.csv); ${phoneReasons.length} unusable in the source (dq/phones-unusable.csv)`
   );
   md.push(
-    `  - **${creditNoLimit.length} CREDIT customers have no credit limit on file** (dq/credit-customers-without-limit.csv) — finance to confirm`
+    `  - **${creditNoLimit.length} CREDIT customers have no credit limit on file** (dq/credit-customers-without-limit.csv)`
   );
   md.push(
     `  - ${cbOnly.length} customers bought in 2026 but are missing from RoutePro — included on their last route (dq/codebranch-only-included.csv); ${cbDormantSkipped.length} dormant-and-missing customers NOT loaded (dq/codebranch-dormant-not-loaded.csv)`
@@ -1166,67 +1320,37 @@ async function main() {
     `  - ${unparseable.length} RoutePro codes could not be parsed and were skipped (dq/unparseable-codes.csv)`
   );
   md.push(
-    `- **Users in the account master:** ${users.length} — ${SUPERVISORS.length} supervisors, ${MANAGERS.length} manager rows (regions only; the accounts are created in the app first), ${salesmanRoutes.size} salesmen, 3 approver placeholders`
+    `- **Users in the account master:** ${users.length} — ${MANAGERS.length} manager rows (regions only; the accounts are created in the app first), ${salesmenCount} salesmen, 3 approver placeholders`
   );
   md.push(
-    `  - **${routesNoSalesman.length} routes have no salesman account** (dq/routes-no-salesman.csv) — van/direct routes, routes whose seller is a manager, or a second route of a salesman who already owns one`
+    `  - **${routesNoSalesman.length} active routes have no salesman account** (dq/routes-no-salesman.csv)`
   );
   md.push(
-    `  - ${salesmanMultiRoute.length} salesmen sell on more than one route; each owns the route where they sell most (dq/salesmen-multiple-routes.csv)`
+    `  - ${noSupervisor.length} salesmen have no supervisor because their route's class has no manager mapped (dq/salesmen-no-supervisor.csv)`
   );
   md.push(
-    `  - ${namesFromRoutePro.length} salesman names come only from the RoutePro route master, which cuts names at 20 characters — check them in Users (dq/users-name-from-routepro.csv)`
+    `  - ${salesmanMultiRoute.length} salesmen sell on more than one active route; each owns the route where they sell most (dq/salesmen-multiple-routes.csv)`
   );
   md.push(
-    `  - RoutePro route-name variants were folded into their base route (a van and its pre-seller are one territory): ${[
-      ...routeMerges,
-    ]
+    `  - ${namesFromRoutePro.length} salesman names come only from the RoutePro route master (cut at 20 characters) — check in Users (dq/users-name-from-routepro.csv)`
+  );
+  md.push(
+    `  - RoutePro route-name variants folded into their base route: ${[...routeMerges]
       .sort((a, b) => b[1].n - a[1].n)
-      .slice(0, 8)
+      .slice(0, 6)
       .map(([k, v]) => `${k} → ${v.to} (${v.n})`)
-      .join(', ')} … full list in dq/routepro-route-variants-merged.csv`
-  );
-  md.push('');
-  md.push('## Decisions assumed — CONFIRM before production');
-  md.push(
-    '1. **Region codes**: MCT Muscat · KHB Khaburah (Saham/Sohar/Musannah) · NZW Nizwa · SLL Salalah · AWF Al Wafi · DQM Duqm · BRK Barka.'
-  );
-  md.push(
-    '2. **Supervisors** are the Temix "Team Leaders": ' +
-      SUPERVISORS.map((s) => `${titleCase(s.fullName)} (${s.regions.join('/')})`).join(', ') +
-      '.'
-  );
-  md.push(
-    '3. **Managers** are the sales-dashboard regional/class heads, scoped to the CRM region their class sits in:'
-  );
-  for (const m of MANAGERS)
-    md.push(`   - ${titleCase(m.fullName)} → ${m.regions.join(', ')} — ${m.note}`);
-  md.push(
-    '   Muscat therefore has four managers (GT, HD, MT, HORECA) who each see the whole Muscat region — the CRM scopes by region, not by class.'
-  );
-  md.push(
-    '4. **Salesman per route** = the named person with the most invoices on that route in September (then August, then the RoutePro route master). Van/"DIRECT" routes with no named person get no account.'
-  );
-  md.push(
-    '5. **Approver placeholders** `accountant` (all regions), `finance.manager`, `gm.nmwc` exist so every approval chain can complete on day one. Rename/replace them with the real people in Users.'
-  );
-  md.push('6. **Bulk-loaded customers do not pass through the approval chain** (SOP §8.5).');
-  md.push(
-    '7. **Journey plan**: a branch planned on several days carries only its first day (the CRM holds one visit day per branch).'
-  );
-  md.push(
-    '8. **Payment terms** come from RoutePro PAY_MODE (CHARGE → CREDIT, CASH → CASH); limits/days from the July account master, else the June AR snapshot.'
+      .join(', ')} … (dq/routepro-route-variants-merged.csv)`
   );
   md.push('');
   md.push('## Load order');
   md.push(
-    '1. Create the STEWARD and the 11 MANAGER accounts in the app (`credentials.xlsx`, sheet "Create in app FIRST").'
+    '1. Create the STEWARD (bootstrap script) and the 11 MANAGER accounts in the app (`credentials.xlsx`, sheet "Create in app FIRST").'
   );
   md.push(
-    '2. As the steward: Import → Account master → `account-master.xlsx` (regions, routes, supervisors, salesmen, approver placeholders; assigns manager regions).'
+    '2. As the steward: Import → Account master → `account-master.xlsx` (regions, active routes, salesmen, approver placeholders; assigns manager regions).'
   );
   md.push(
-    '3. Import → Customer master → `customer-master.xlsx` → review quarantined rows → Promote (runs in passes; resume if interrupted) → reconcile per SOP §8.4.'
+    '3. Import → Customer master → `customer-master.xlsx` → review quarantined rows → Promote (passes; resume if interrupted) → reconcile per SOP §8.4.'
   );
   md.push('4. Hand each person their login from `credentials.xlsx`, then DELETE that file.');
   md.push('');
@@ -1235,13 +1359,12 @@ async function main() {
   writeFileSync(path.join(OUT, 'RECONCILIATION.md'), md.join('\n') + '\n', 'utf8');
 
   log(
-    `account-master.xlsx: ${REGIONS.length - 1} regions, ${routes.length - 1} routes, ${users.length} users`
+    `account-master.xlsx: 7 regions, ${routes.length} active routes, ${users.length} users (${salesmenCount} salesmen)`
   );
   log(
-    `customer-master.xlsx: ${custRows.length} rows / ${distinctCustomers} customers (JP day on ${jpCovered})`
+    `customer-master.xlsx: ${custRows.length} rows / ${distinctCustomers} customers (JP day on ${jpCovered}; ${parked} parked on UNASSIGNED)`
   );
   log(`credentials.xlsx + managers.json written — SENSITIVE, gitignored`);
-  log(`reconciliation: ${path.join(OUT, 'RECONCILIATION.md')}`);
   db.close();
 }
 

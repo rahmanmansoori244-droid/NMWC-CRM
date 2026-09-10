@@ -19,10 +19,10 @@ files, what was withheld, and **every assumption that needs your confirmation**.
 | # | Item | Why |
 |---|---|---|
 | 1 | **Rotate the `neondb_owner` password** in Neon, then update `DATABASE_URL`/`DIRECT_URL` in Vercel (Production + Preview). | The current password was pasted in chat and appears in UAT screenshots. Neon branches share it, so it is the **production** password. |
-| 2 | Confirm the **11 managers** and **5 supervisors** in `RECONCILIATION.md` §"Decisions assumed". | The org chart was inferred from the sales dashboard and the Temix "Team Leaders". Two people (Sara Khayat, Tharwat) are both managers and pre-sellers; they were set up as managers. |
-| 3 | Name the real **Accountant(s), Finance Manager and GM**. | The file creates placeholders (`accountant`, `finance.manager`, `gm.nmwc`) so approvals cannot stall on day one. Rename them in Users, or tell me the names and I rebuild. |
-| 4 | Decide the **51 routes without a salesman** (`dq/routes-no-salesman.csv`). | Van/direct routes have no named person; 6 salesmen sell on two routes and own only one. Customers on those routes exist but nobody can capture/edit them in the field until a salesman is assigned in Users. |
-| 5 | Finance to review **3,252 CREDIT customers with no credit limit** (`dq/credit-customers-without-limit.csv`). | RoutePro says "CHARGE" but no limit is on file. They load as CREDIT with a blank limit. |
+| 2 | **Re-export the RoutePro customer master** and save it as `Desktop/claude/NMWC-JOURNEY-PLANS/harvests/RoutePro_Customer_Master_LIVE_<yyyy-mm-dd>.csv` (same columns as the 3-Sep file), then rebuild (`npx tsx scripts/golive/build-masters.ts`) — the builder picks the newest file automatically. | Customers created in Timix since 3-Sep exist only there. The build already adds the 19 newcomers that appear in September's sales. |
+| 3 | The org chart is **decided** (walk-through of 2026-09-10): no supervisor accounts; each manager supervises their own salesmen — Muscat by class (GT Ahmed Alnadabi · MT Sarath · HD Haitham · HORECA Sara Khayat), other regions by region (Nizwa Sunil KP · Khaburah Ashok · Salalah Tharwat · Barka Saqib · Al Wafi/Duqm Rasool). Approver accounts are generic: `accountant`, `finance.manager`, `gm.nmwc`. | Nothing to do unless a name changes. |
+| 4 | **2,472 customers sit on routes with no recent sales** and are parked on UNASSIGNED in their region (`dq/inactive-routes-summary.csv`: DIRECT 1,102 · SL01 304 · S23 216 · S15 171 …). Only **W** (wholesale, 6 customers) has no salesman among the active routes. | Decided: keep them visible and reassign/close after go-live. |
+| 5 | Finance to review **3,252 CREDIT customers with no credit limit** (`dq/credit-customers-without-limit.csv`). | Decided: load as CREDIT with a blank limit; finance fills them later. |
 | 6 | Merge the branch to `main` so production deploys. The build runs `prisma migrate deploy`; the only new migration is additive (two nullable columns + an index on `ImportBatch`). | Production code must include RK-3 (chunked promote) or the load cannot complete. |
 | 7 | In Neon, **create a branch from production immediately before the load** (e.g. `pre-golive-2026-09-13`). | Instant rollback: if the load is wrong, restore from that branch instead of trying to undo 20,000 rows. |
 
@@ -46,10 +46,11 @@ importer enforces most of the order, but not all of it.
    role MANAGER, password as listed. Do **not** assign regions by hand — the next step
    does it.
 3. **Import → Account master** → `golive-data/account-master.xlsx`.
-   Expect: 7 regions, 127 routes, ~95 user rows applied. Open the issues list — it
+   Expect: 7 regions, 43 routes, 56 user rows applied. Open the issues list — it
    must be empty except for anything you already know about. Check **Users**: every
-   manager now shows their regions; salesmen show their route and supervisor.
-4. **Import → Customer master** → `golive-data/customer-master.xlsx` (20,104 rows).
+   manager now shows their regions; salesmen show their route and their manager as
+   supervisor.
+4. **Import → Customer master** → `golive-data/customer-master.xlsx` (~20,100 rows).
    Wait for staging. Expect roughly **all rows CLEAN**; a handful QUARANTINED at most.
    Open every quarantined row — the reason is shown. (The rehearsal quarantine picture
    is in `golive-data/REHEARSAL-RESULT.md`.)
