@@ -1,4 +1,6 @@
 import { redirect } from 'next/navigation';
+import Link from 'next/link';
+import { Search } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { PageHeader } from '@/components/nmwc/PageHeader';
@@ -97,13 +99,34 @@ export default async function TodayPage() {
       </div>
 
       <section className="px-4 py-4 sm:px-6">
-        <h2 className="mb-3 text-base font-semibold text-slate-700">
-          Today&apos;s visits ({branches.length})
-        </h2>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h2 className="text-base font-semibold text-slate-700">
+            Today&apos;s visits ({branches.length})
+          </h2>
+          {/* Go-live: only ~1 in 3 branches carries a journey-plan day, so the
+              scheduled list is NOT the salesman's whole route. Keep the full,
+              searchable list one tap away from the landing page. */}
+          <Link
+            href="/customers"
+            className="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline"
+          >
+            <Search className="h-3.5 w-3.5" />
+            All my customers ({total})
+          </Link>
+        </div>
         {branches.length === 0 ? (
           <EmptyState
             title="No customers scheduled today"
-            description={`No branches on your route are flagged for ${today}. View the full customer list to plan visits.`}
+            description={`No branches on your route are flagged for ${today}. Open your full customer list to find any customer on your route.`}
+            action={
+              <Link
+                href="/customers"
+                className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-brand-700"
+              >
+                <Search className="h-4 w-4" />
+                All my customers ({total})
+              </Link>
+            }
           />
         ) : (
           <div className="grid gap-3">

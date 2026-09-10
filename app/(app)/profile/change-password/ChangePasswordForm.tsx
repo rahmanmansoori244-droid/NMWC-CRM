@@ -1,14 +1,28 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { changeOwnPasswordAction } from '@/services/users';
+
+const OWN_PATH = '/profile/change-password';
 
 export function ChangePasswordForm() {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [done, setDone] = useState(false);
+
+  // AUTH-09 hardening (go-live walk, 2026-09-10): when the middleware forces
+  // this page onto a must-change user during a CLIENT navigation (they tapped
+  // Today / Customers in the nav), the router renders this page but keeps the
+  // original URL. A server action then POSTs to that URL, the middleware
+  // redirects the POST, and the form fails with "unexpected response". Put the
+  // address bar right before the user can submit.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.pathname !== OWN_PATH) {
+      router.replace(OWN_PATH);
+    }
+  }, [router]);
 
   return (
     <form

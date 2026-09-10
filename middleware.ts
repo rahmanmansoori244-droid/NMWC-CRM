@@ -27,11 +27,18 @@ const { auth } = NextAuth(authConfig);
 
 const r2AccountId = process.env.R2_ACCOUNT_ID ?? '*';
 
+// `next dev` serves a webpack runtime that evaluates source-mapped modules via
+// eval(); without 'unsafe-eval' the browser throws EvalError in main-app.js and
+// NOTHING hydrates — every client component (login, enrichment form, photo
+// slots) is dead in local development, which is how the go-live browser walk
+// found it. Production bundles need no eval, so the directive is dev-only.
+const DEV_SCRIPT_SRC = process.env.NODE_ENV === 'production' ? '' : " 'unsafe-eval'";
+
 function buildCsp(nonce: string): string {
   return (
     `default-src 'self'; ` +
     `img-src 'self' blob: data:; ` +
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'; ` +
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${DEV_SCRIPT_SRC}; ` +
     `style-src 'self' 'unsafe-inline'; ` +
     `font-src 'self' data:; ` +
     `connect-src 'self' https://${r2AccountId}.r2.cloudflarestorage.com https://*.ingest.sentry.io https://*.ingest.de.sentry.io; ` +

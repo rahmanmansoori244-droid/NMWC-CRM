@@ -155,7 +155,25 @@ export default async function CustomerProfilePage({
                   icon={<MapPin className="h-4 w-4 text-slate-400" />}
                 />
                 {b.gpsLat != null && b.gpsLng != null && (
-                  <Row label="GPS" value={`${b.gpsLat.toFixed(5)}, ${b.gpsLng.toFixed(5)}`} mono />
+                  <Row
+                    label="GPS"
+                    value={
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span>
+                          {b.gpsLat.toFixed(5)}, {b.gpsLng.toFixed(5)}
+                        </span>
+                        <a
+                          href={`https://www.google.com/maps?q=${b.gpsLat.toFixed(6)},${b.gpsLng.toFixed(6)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-md border border-slate-300 bg-white px-2 py-0.5 font-sans text-xs font-medium text-brand-700 hover:bg-brand-50"
+                        >
+                          📍 Open in Maps
+                        </a>
+                      </span>
+                    }
+                    mono
+                  />
                 )}
                 <Row
                   label="Day of visit"
@@ -250,15 +268,31 @@ function Row({
   );
 }
 
+/**
+ * Photos open through the scope-checked /api/photos route. Go-live: the tiles
+ * used to say only "Captured" — a supervisor/manager reviewing a salesman's
+ * enrichment could not actually LOOK at the photo from the profile.
+ */
 function PhotoRow({ label, photo }: { label: string; photo: { id: string } | null }) {
   return (
     <div className="grid grid-cols-[120px_1fr] items-start gap-2 text-base">
       <dt className="text-slate-500">{label}</dt>
       <dd>
         {photo ? (
-          <span className="inline-flex items-center gap-2 rounded-md bg-emerald-50 px-2 py-1 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200">
-            <Camera className="h-3 w-3" /> Captured
-          </span>
+          <a
+            href={`/api/photos/${photo.id}`}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-md bg-emerald-50 px-2 py-1 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`/api/photos/${photo.id}`}
+              alt={label}
+              className="h-10 w-10 rounded object-cover ring-1 ring-emerald-200"
+            />
+            <Camera className="h-3 w-3" /> View
+          </a>
         ) : (
           <span className="inline-flex items-center gap-2 rounded-md bg-slate-100 px-2 py-1 text-sm text-slate-500">
             <ImageIcon className="h-3 w-3" /> Missing
@@ -270,15 +304,30 @@ function PhotoRow({ label, photo }: { label: string; photo: { id: string } | nul
 }
 
 function PhotoTile({ label, photo }: { label: string; photo: { id: string } | null }) {
+  if (photo) {
+    return (
+      <a
+        href={`/api/photos/${photo.id}`}
+        target="_blank"
+        rel="noreferrer"
+        className="relative flex h-24 flex-1 items-end overflow-hidden rounded-md border border-emerald-200 bg-emerald-50 text-sm font-medium text-white"
+        aria-label={`${label} photo`}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={`/api/photos/${photo.id}`}
+          alt={label}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+        <span className="relative z-10 inline-flex items-center gap-1 bg-black/45 px-2 py-1 text-xs">
+          <Camera className="h-3 w-3" /> {label}
+        </span>
+      </a>
+    );
+  }
   return (
-    <div
-      className={`flex h-16 flex-1 items-center justify-center rounded-md border text-sm font-medium ${
-        photo
-          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-          : 'border-dashed border-slate-300 bg-slate-50 text-slate-400'
-      }`}
-    >
-      {photo ? <Camera className="mr-1 h-3.5 w-3.5" /> : <ImageIcon className="mr-1 h-3.5 w-3.5" />}
+    <div className="flex h-24 flex-1 items-center justify-center rounded-md border border-dashed border-slate-300 bg-slate-50 text-sm font-medium text-slate-400">
+      <ImageIcon className="mr-1 h-3.5 w-3.5" />
       {label}
     </div>
   );

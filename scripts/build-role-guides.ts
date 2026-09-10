@@ -715,11 +715,11 @@ const MANAGER_EN: Guide = {
   rolePill: 'FOR MANAGERS',
   brandLine: 'Customer Master — Region App',
   coverTitle: 'Manager User Guide',
-  coverSubtitle: 'NMWC Customer Master · v1.0 · 2026-05',
+  coverSubtitle: 'NMWC Customer Master · v1.1 · 2026-09',
   filename: 'NMWC-Manager-Guide-EN',
   welcome: {
     heading: 'Welcome',
-    body: "You own the customer master in your region. You approve sensitive decisions (reactivations of closed shops), manage your team's access (passwords, route assignments), and keep an eye on overall data quality. This guide covers everything specific to your role.",
+    body: "You own the customer master in your region. Your salesmen report to you directly, so every update they submit comes to you for approval; you also approve reactivations of closed shops, manage your team's access (passwords, route assignments), keep an eye on data quality, and can download a report of exactly what the field force changed. This guide covers everything specific to your role.",
   },
   sections: [
     {
@@ -743,6 +743,56 @@ const MANAGER_EN: Guide = {
     },
     {
       number: 3,
+      title: "Approve your salesmen's updates",
+      intro:
+        'Since go-live (September 2026) there are no Supervisor accounts: every update a salesman submits for a customer in your region comes to you.',
+      steps: [
+        {
+          html: 'Tap <strong>Approvals</strong> in the menu. You see every pending submission from your region&rsquo;s salesmen, oldest first, with the number of changed fields, who submitted and how long ago.',
+          img: '08-supervisor-approvals-queue.png',
+        },
+        {
+          html: 'Tap a row. You see a <strong>Before / After</strong> diff for every field that changed (channel names, not codes).',
+          img: '09-supervisor-approval-diff.png',
+        },
+        {
+          html: 'Below the diff, <strong>Photos &amp; location on file</strong> shows the CR document, shop front, signboard and any extra photos — tap one to open it full size — and <strong>Open in Google Maps</strong> for the location on file and for the proposed location when it changed.',
+        },
+        {
+          html: 'Tap <strong>✓ Approve</strong> (a confirmation pops up) and the change goes live on the master immediately, or <strong>✗ Reject</strong> with a category and a reason — the salesman sees it under <em>Needs correction</em> and re-submits after fixing.',
+        },
+      ],
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'Check the pin and the photos together',
+          body: 'Compare the map pin with the shop address and the shop-front photo. A manually entered location shows a <strong>Manual</strong> tag with the salesman&rsquo;s reason — make sure it is plausible before approving.',
+        },
+        {
+          kind: 'danger',
+          title: "Don't approve your own work",
+          body: 'The system blocks you from approving anything you submitted yourself. Ask a peer manager.',
+        },
+      ],
+    },
+    {
+      number: 4,
+      title: 'Field-update report (Excel) — what was edited, what was not',
+      steps: [
+        {
+          html: 'Tap <strong>Export</strong> in the menu. In the <strong>Field-update report</strong> box pick the window (from / until) and tap <strong>Download field-update report</strong>. Region and route ticks above apply to it too.',
+        },
+        {
+          html: 'Sheet <strong>Customers</strong>: every customer in your region, one row per branch. Each cell a salesman changed and you approved inside the window is <strong>yellow</strong> — hover it for the old value, who changed it and when. <strong>Orange</strong> cells carry a proposal not yet approved (the cell shows the current value). Cells with no colour were not touched.',
+        },
+        {
+          html: 'Sheet <strong>Changes</strong>: one row per change (before → after, submitted by, approved by, when). Sheet <strong>By salesman</strong>: per-salesman totals — customers updated, fields changed, photos added, GPS captured, still pending.',
+        },
+        { html: 'Tick <strong>Only customers with changes</strong> to drop the untouched rows.' },
+      ],
+    },
+    {
+      number: 5,
       title: 'Approve or reject reactivations',
       intro:
         'Reactivations bring closed shops back into the active master. Only managers can approve them.',
@@ -770,7 +820,7 @@ const MANAGER_EN: Guide = {
       ],
     },
     {
-      number: 4,
+      number: 6,
       title: 'Manage your team',
       steps: [
         { html: 'Tap <strong>Users</strong> in the menu.', img: '12-manager-users.png' },
@@ -789,7 +839,7 @@ const MANAGER_EN: Guide = {
       ],
     },
     {
-      number: 5,
+      number: 7,
       title: 'Routes and regions',
       steps: [
         { html: 'Tap <strong>Routes &amp; regions</strong> in the menu.' },
@@ -798,7 +848,7 @@ const MANAGER_EN: Guide = {
       ],
     },
     {
-      number: 6,
+      number: 8,
       title: 'Audit log — when investigating',
       intro: 'Use this when something looks unusual or HR asks who did what.',
       steps: [
@@ -820,11 +870,19 @@ const MANAGER_EN: Guide = {
       ],
     },
     {
-      number: 7,
+      number: 9,
       title: 'Common situations',
       table: {
         headers: ['Situation', 'What to do'],
         rows: [
+          [
+            'A salesman says "Submit is greyed out"',
+            'The form lists what is still missing (photos, GPS, phone …). They can save a draft and finish at the shop. Nothing reaches you until it is submitted.',
+          ],
+          [
+            '"Required fields are now missing on this customer"',
+            'A required photo was removed after the submit. Reject with "Missing field" so the salesman re-captures it and re-submits.',
+          ],
           [
             '"Photo was captured before the last status change"',
             'A salesman tried to use an old photo for a reactivation. Reject — they need to take a fresh photo at the shop today.',
@@ -854,11 +912,12 @@ const MANAGER_EN: Guide = {
     },
   ],
   ref: {
-    title: '8. Quick reference card',
+    title: '10. Quick reference card',
     tables: [
       {
         title: 'Manager-only actions',
         rows: [
+          ['<strong>✓ Approve / ✗ Reject</strong>', "Decide a salesman's update (Approvals)."],
           ['<strong>✓ Reactivate</strong>', 'Bring a closed shop back to ACTIVE.'],
           ['<strong>Keep closed</strong>', 'Reject a reactivation request.'],
           ['<strong>Reset password</strong>', 'Generate a temporary password for a team member.'],
@@ -874,12 +933,13 @@ const MANAGER_EN: Guide = {
           ['<strong>Reactivations</strong>', 'Closed shops asking to reopen.'],
           ['<strong>Users</strong>', 'Your team. Passwords, status, route ownership.'],
           ['<strong>Audit log</strong>', 'Every action ever taken in your region.'],
-          ['<strong>Approvals</strong>', 'Region-wide approval queue (override view).'],
+          ['<strong>Approvals</strong>', "Your salesmen's pending updates — review with photos and map, approve or reject."],
+          ['<strong>Export</strong>', 'Customer master .xlsx and the field-update report (changes highlighted).'],
         ],
       },
     ],
   },
-  footer: 'NMWC Customer Master · Manager Guide · v1.0 · 2026-05-10',
+  footer: 'NMWC Customer Master · Manager Guide · v1.1 · 2026-09-10',
 };
 
 // ────────────────────────────────────────────────────────────────────
@@ -1058,22 +1118,22 @@ const STEWARD_EN: Guide = {
     },
     {
       number: 6,
-      title: 'Export — send the cleaned master to the ERP',
+      title: 'Export — the master for the ERP, and the field-update report',
       intro:
-        'When the field team has enriched enough records, you push the cleaned master back downstream.',
+        'When the field team has enriched enough records, you push the cleaned master back downstream — and you can see exactly what they changed.',
       steps: [
         { html: 'Tap <strong>Export</strong> in the sidebar.', img: 'steward-05-export.png' },
         {
-          html: 'Pick filters: region(s), payment terms (cash / credit), channel, completeness threshold (e.g. only export records ≥ 80% complete).',
+          html: 'Pick filters: region(s), route(s), status, payment terms (cash / credit), completeness threshold (e.g. only records ≥ 80% complete), updated since.',
         },
         {
-          html: 'Click <strong>Generate export</strong>. The job runs in the background and lands in the <strong>Recent exports</strong> table at the bottom.',
+          html: 'Click <strong>Download .xlsx</strong> — one row per branch in the import shape, so it can be re-uploaded after editing. <strong>Download all (no filters)</strong> gives the whole master (up to 25,000 rows).',
         },
         {
-          html: 'When status is DONE, click the row to download the .xlsx. Hand off to the ERP team.',
+          html: '<strong>Field-update report:</strong> in the amber box pick the window (from / until) and click <strong>Download field-update report</strong>. Sheet <em>Customers</em> is the same master with every cell changed by an approved salesman edit in the window in <strong>yellow</strong> (hover for was → now, by, when), pending proposals in <strong>orange</strong>, photos added in yellow; sheet <em>Changes</em> lists every change, <em>By salesman</em> the totals, <em>Legend</em> the colours. Unhighlighted cells were not touched.',
         },
         {
-          html: 'Failed jobs (status FAILED) show an error message — typically a transient network issue. Re-run with the same filters.',
+          html: 'If a download fails with "too large", narrow by region or route and try again.',
         },
       ],
       callouts: [
@@ -1717,11 +1777,11 @@ const MANAGER_AR: Guide = {
   rolePill: 'للمديرين',
   brandLine: 'نظام بيانات العملاء — تطبيق المنطقة',
   coverTitle: 'دليل المدير',
-  coverSubtitle: 'NMWC نظام إدارة بيانات العملاء · الإصدار 1.0 · 2026-05',
+  coverSubtitle: 'NMWC نظام إدارة بيانات العملاء · الإصدار 1.1 · 2026-09',
   filename: 'NMWC-Manager-Guide-AR',
   welcome: {
     heading: 'مرحبًا',
-    body: 'أنت تملك السجل الرئيسي للعملاء في منطقتك. تعتمد القرارات الحساسة (إعادة تفعيل المحلات المغلقة)، تدير صلاحيات فريقك (كلمات المرور، تعيين الخطوط)، وتراقب جودة البيانات الإجمالية. هذا الدليل يغطي كل ما يخص دورك.',
+    body: 'أنت تملك السجل الرئيسي للعملاء في منطقتك. مندوبوك يتبعون لك مباشرةً، فكل تحديث يرسلونه يصل إليك للاعتماد؛ كما تعتمد إعادة تفعيل المحلات المغلقة، وتدير صلاحيات فريقك (كلمات المرور، تعيين الخطوط)، وتراقب جودة البيانات، وتستطيع تنزيل تقرير يبيّن بالضبط ما غيّره الفريق الميداني. هذا الدليل يغطي كل ما يخص دورك.',
   },
   sections: [
     {
@@ -1748,6 +1808,56 @@ const MANAGER_AR: Guide = {
     },
     {
       number: 3,
+      title: 'اعتماد تحديثات مندوبيك',
+      intro:
+        'منذ الإطلاق (سبتمبر 2026) لا يوجد حسابات مشرفين: كل تحديث يرسله مندوب لعميل في منطقتك يصل إليك أنت.',
+      steps: [
+        {
+          html: 'اضغط على <strong>الموافقات</strong> في القائمة. ترى كل الطلبات المعلّقة من مندوبي منطقتك، الأقدم أولًا، مع عدد الحقول المتغيرة ومن أرسلها ومنذ متى.',
+          img: '08-supervisor-approvals-queue.png',
+        },
+        {
+          html: 'اضغط على أي صف. ترى مقارنة <strong>قبل / بعد</strong> لكل حقل تغيّر (أسماء القنوات وليس رموزًا).',
+          img: '09-supervisor-approval-diff.png',
+        },
+        {
+          html: 'أسفل المقارنة قسم <strong>الصور والموقع المسجّلان حاليًا</strong>: صورة السجل التجاري، واجهة المحل، اللوحة، وأي صور إضافية — اضغط على أي صورة لفتحها بالحجم الكامل — ورابط <strong>فتح في خرائط جوجل</strong> للموقع المسجّل وللموقع المقترح إذا تغيّر.',
+        },
+        {
+          html: 'اضغط <strong>✓ اعتماد</strong> (يطلب تأكيدًا) فيصبح التغيير فعّالًا في السجل فورًا، أو <strong>✗ رفض</strong> مع الفئة والسبب — يراه المندوب تحت <em>يحتاج تصحيحًا</em> ويعيد الإرسال بعد الإصلاح.',
+        },
+      ],
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'تحقق من الموقع والصور معًا',
+          body: 'قارن الدبوس على الخريطة بعنوان المحل وصورة الواجهة. الموقع المُدخل يدويًا يظهر بعلامة <strong>يدوي</strong> مع سبب المندوب — تأكد أنه معقول قبل الاعتماد.',
+        },
+        {
+          kind: 'danger',
+          title: 'لا تعتمد عملك أنت',
+          body: 'النظام يمنعك من اعتماد أي طلب أرسلته بنفسك. اطلب من مدير زميل.',
+        },
+      ],
+    },
+    {
+      number: 4,
+      title: 'تقرير التحديثات الميدانية (إكسل) — ما عُدّل وما لم يُعدّل',
+      steps: [
+        {
+          html: 'اضغط على <strong>تصدير</strong> في القائمة. في مربع <strong>تقرير التحديثات الميدانية</strong> اختر الفترة (من / إلى) واضغط <strong>تنزيل تقرير التحديثات الميدانية</strong>. اختيارات المنطقة والخط في الأعلى تنطبق عليه أيضًا.',
+        },
+        {
+          html: 'الورقة <strong>Customers</strong>: كل عملاء منطقتك، صف لكل فرع. كل خلية غيّرها مندوب واعتمدتها خلال الفترة ملوّنة <strong>بالأصفر</strong> — مرّر الفأرة فوقها لترى القيمة السابقة ومن غيّرها ومتى. الخلايا <strong>البرتقالية</strong> تحمل اقتراحًا لم يُعتمد بعد (الخلية تعرض القيمة الحالية). الخلايا غير الملوّنة لم تُلمس.',
+        },
+        {
+          html: 'الورقة <strong>Changes</strong>: صف لكل تغيير (قبل ← بعد، من أرسل، من اعتمد، متى). الورقة <strong>By salesman</strong>: مجاميع كل مندوب — عملاء محدّثون، حقول متغيرة، صور مضافة، مواقع ملتقطة، ما زال معلّقًا.',
+        },
+        { html: 'اختر <strong>العملاء الذين لديهم تغييرات فقط</strong> لحذف الصفوف غير المتغيرة.' },
+      ],
+    },
+    {
+      number: 5,
       title: 'الموافقة على إعادة التفعيل أو رفضها',
       intro: 'إعادة التفعيل تعيد المحلات المغلقة إلى السجل النشط. المديرون فقط يستطيعون اعتمادها.',
       steps: [
@@ -1770,7 +1880,7 @@ const MANAGER_AR: Guide = {
       ],
     },
     {
-      number: 4,
+      number: 6,
       title: 'إدارة فريقك',
       steps: [
         { html: 'اضغط على <strong>المستخدمون</strong> في القائمة.', img: '12-manager-users.png' },
@@ -1787,7 +1897,7 @@ const MANAGER_AR: Guide = {
       ],
     },
     {
-      number: 5,
+      number: 7,
       title: 'الخطوط والمناطق',
       steps: [
         { html: 'اضغط على <strong>الخطوط والمناطق</strong> في القائمة.' },
@@ -1796,7 +1906,7 @@ const MANAGER_AR: Guide = {
       ],
     },
     {
-      number: 6,
+      number: 8,
       title: 'سجل التدقيق — عند التحقيق',
       intro: 'استخدم هذا عندما يبدو شيء غير معتاد أو يسأل قسم الموارد البشرية عن من فعل ماذا.',
       steps: [
@@ -1818,11 +1928,19 @@ const MANAGER_AR: Guide = {
       ],
     },
     {
-      number: 7,
+      number: 9,
       title: 'مواقف شائعة',
       table: {
         headers: ['الموقف', 'ما العمل'],
         rows: [
+          [
+            'مندوب يقول "زر الإرسال رمادي"',
+            'النموذج يعرض ما ينقص (صور، موقع، هاتف…). يستطيع حفظ مسودة وإكمالها في المحل. لا يصلك شيء قبل الإرسال.',
+          ],
+          [
+            '"حقول مطلوبة ناقصة الآن في هذا العميل"',
+            'صورة مطلوبة حُذفت بعد الإرسال. ارفض بفئة "حقل ناقص" ليعيد المندوب التقاطها ويرسل من جديد.',
+          ],
           [
             '"الصورة التُقطت قبل آخر تغيير حالة"',
             'مندوب حاول استخدام صورة قديمة لإعادة التفعيل. ارفض — يحتاج صورة جديدة في المحل اليوم.',
@@ -1843,11 +1961,12 @@ const MANAGER_AR: Guide = {
     },
   ],
   ref: {
-    title: '8. بطاقة مرجعية سريعة',
+    title: '10. بطاقة مرجعية سريعة',
     tables: [
       {
         title: 'إجراءات للمدير فقط',
         rows: [
+          ['<strong>✓ اعتماد / ✗ رفض</strong>', 'البتّ في تحديث أرسله مندوب (الموافقات).'],
           ['<strong>✓ تفعيل</strong>', 'إعادة محل مغلق إلى نشط.'],
           ['<strong>إبقاء مغلق</strong>', 'رفض طلب إعادة تفعيل.'],
           ['<strong>إعادة ضبط كلمة المرور</strong>', 'توليد كلمة مرور مؤقتة لعضو في الفريق.'],
@@ -1863,12 +1982,13 @@ const MANAGER_AR: Guide = {
           ['<strong>إعادة التفعيل</strong>', 'محلات مغلقة تطلب الفتح.'],
           ['<strong>المستخدمون</strong>', 'فريقك. كلمات المرور، الحالة، ملكية الخط.'],
           ['<strong>سجل التدقيق</strong>', 'كل عمل في منطقتك على الإطلاق.'],
-          ['<strong>الموافقات</strong>', 'قائمة موافقات المنطقة الكاملة (عرض التجاوز).'],
+          ['<strong>الموافقات</strong>', 'تحديثات مندوبيك المعلّقة — راجعها مع الصور والخريطة، ثم اعتمد أو ارفض.'],
+          ['<strong>تصدير</strong>', 'ملف إكسل للسجل الرئيسي وتقرير التحديثات الميدانية (التغييرات ملوّنة).'],
         ],
       },
     ],
   },
-  footer: 'NMWC نظام بيانات العملاء · دليل المدير · الإصدار 1.0 · 2026-05-10',
+  footer: 'NMWC نظام بيانات العملاء · دليل المدير · الإصدار 1.1 · 2026-09-10',
 };
 
 // ────────────────────────────────────────────────────────────────────

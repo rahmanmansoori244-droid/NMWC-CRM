@@ -19,6 +19,14 @@ export function ExportFiltersForm({
   const [minCompleteness, setMinCompleteness] = useState<string>('');
   const [maxCompleteness, setMaxCompleteness] = useState<string>('');
   const [updatedSince, setUpdatedSince] = useState<string>('');
+  // Field-update report (go-live): window + row options. Default window = the
+  // last 7 days so a Monday download shows the week's enrichment.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const weekAgoIso = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
+  const [changesSince, setChangesSince] = useState<string>(weekAgoIso);
+  const [changesUntil, setChangesUntil] = useState<string>(todayIso);
+  const [onlyChanged, setOnlyChanged] = useState(false);
+  const [includePending, setIncludePending] = useState(true);
 
   // Filter routes by selected regions for usability
   const filteredRoutes = useMemo(
@@ -36,6 +44,17 @@ export function ExportFiltersForm({
     if (maxCompleteness) sp.set('maxCompleteness', maxCompleteness);
     if (updatedSince) sp.set('updatedSince', updatedSince);
     return `/api/exports/customers?${sp.toString()}`;
+  }
+
+  function buildChangesHref() {
+    const sp = new URLSearchParams();
+    regionIds.forEach((id) => sp.append('regionId', id));
+    routeIds.forEach((id) => sp.append('routeId', id));
+    if (changesSince) sp.set('since', changesSince);
+    if (changesUntil) sp.set('until', changesUntil);
+    sp.set('onlyChanged', onlyChanged ? '1' : '0');
+    sp.set('includePending', includePending ? '1' : '0');
+    return `/api/exports/changes?${sp.toString()}`;
   }
 
   function toggle(list: string[], setList: (l: string[]) => void, value: string) {
@@ -185,6 +204,70 @@ export function ExportFiltersForm({
           Download .xlsx
         </button>
       </div>
+
+      {/* Field-update report: what the salesmen changed (highlighted) vs. not.
+          Region/route selections above apply to this report too. */}
+      <fieldset className="rounded-md border border-amber-200 bg-amber-50/60 p-4">
+        <legend className="px-1 text-xs font-semibold uppercase tracking-wide text-amber-800">
+          Field-update report (changes highlighted)
+        </legend>
+        <p className="mb-3 text-xs text-amber-900">
+          Every customer in the selected regions/routes, one row per branch. Cells changed by an
+          approved salesman edit in the window are <span className="rounded bg-yellow-300 px-1">yellow</span>;
+          proposals still awaiting approval are <span className="rounded bg-orange-300 px-1">orange</span>.
+          A second sheet lists every change (before → after, who, when).
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-700" htmlFor="changes-since">
+              Changes from
+            </label>
+            <input
+              id="changes-since"
+              type="date"
+              value={changesSince}
+              onChange={(e) => setChangesSince(e.currentTarget.value)}
+              className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-700" htmlFor="changes-until">
+              Changes until
+            </label>
+            <input
+              id="changes-until"
+              type="date"
+              value={changesUntil}
+              onChange={(e) => setChangesUntil(e.currentTarget.value)}
+              className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={onlyChanged}
+              onChange={(e) => setOnlyChanged(e.currentTarget.checked)}
+            />
+            Only customers with changes
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={includePending}
+              onChange={(e) => setIncludePending(e.currentTarget.checked)}
+            />
+            Mark pending (not yet approved) proposals
+          </label>
+          <a
+            href={buildChangesHref()}
+            className="ml-auto rounded-md bg-amber-600 px-5 py-2 text-sm font-semibold text-white hover:bg-amber-700"
+          >
+            Download field-update report
+          </a>
+        </div>
+      </fieldset>
     </form>
   );
 }

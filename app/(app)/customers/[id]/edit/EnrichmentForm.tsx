@@ -8,6 +8,7 @@ import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import { submitEditAction } from '@/services/edits';
+import { isRequired, type SubmitGate } from '@/lib/submit-gate';
 
 type CustomerWithBranches = {
   id: string;
@@ -68,6 +69,7 @@ export function EnrichmentForm({
   userRole,
   canSubmit,
   sessionUserId,
+  gate: gateProp,
 }: {
   customer: CustomerWithBranches;
   channels: ChannelWithSubs[];
@@ -81,7 +83,12 @@ export function EnrichmentForm({
   // salesmen on the same customer would otherwise inject one user's typing
   // into the other's session.
   sessionUserId: string;
+  /** Which fields block a salesman's submit (FULL / CORE) — see lib/submit-gate.ts. */
+  gate?: SubmitGate;
 }) {
+  const gate: SubmitGate = gateProp ?? 'FULL';
+  const req = (field: string) => isRequired(field, gate);
+  const star = (field: string) => (req(field) ? ' *' : '');
   const router = useRouter();
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -143,11 +150,26 @@ export function EnrichmentForm({
   // Available sub-channels for chosen channel
   const subChannels = channels.find((c) => c.id === channelId)?.subChannels ?? [];
 
+  // Photo slots are wired server-side the moment a capture finishes
+  // (PhotoCaptureSlot → attachPhotoAction), but the mandatory gate below used to
+  // read the INITIAL server snapshot only — so after taking the three required
+  // photos the Submit button stayed disabled ("Missing: shop photo …") until the
+  // salesman reloaded the page. Track the live slot state instead (go-live fix).
+  const [crPhotoId, setCrPhotoId] = useState<string | null>(customer.crPhotoId);
+  const [branchPhotos, setBranchPhotos] = useState<
+    Record<string, { shop: string | null; signboard: string | null }>
+  >(() =>
+    Object.fromEntries(
+      customer.branches.map((b) => [b.id, { shop: b.shopPhotoId, signboard: b.signboardPhotoId }])
+    )
+  );
+  function setBranchPhoto(branchId: string, slot: 'shop' | 'signboard', id: string | null) {
+    setBranchPhotos((s) => ({ ...s, [branchId]: { ...s[branchId], [slot]: id } }));
+  }
+
   // Client-side mandatory-field gate. Mirrors the server check in
   // services/edits.ts so the salesman gets immediate feedback and can't
-  // even press "Submit for approval" until everything is filled. Photos
-  // come from the initial server snapshot (PhotoCaptureSlot wires the
-  // attachment server-side; user refreshes to see updated state).
+  // even press "Submit for approval" until everything is filled.
   const missingMandatory: string[] = [];
   if (userRole === Role.SALESMAN) {
     // 2026-05-11: locked fields are NOT the salesman's responsibility. If the
@@ -156,11 +178,11 @@ export function EnrichmentForm({
     // "missing — cannot submit" pill.
     if (!lockName && !legalName.trim()) missingMandatory.push('Legal name');
     if (!channelId) missingMandatory.push('Channel');
-    if (!subChannelId) missingMandatory.push('Sub-channel');
+    if (req('subChannelId') && !subChannelId) missingMandatory.push('Sub-channel');
     if (!primaryPhone.trim()) missingMandatory.push('Primary phone');
     if (!contactPerson.trim()) missingMandatory.push('Contact person');
-    if (!lockCr && !crNumber.trim()) missingMandatory.push('CR number');
-    if (!customer.crPhotoId) missingMandatory.push('CR document photo');
+    if (req('crNumber') && !lockCr && !crNumber.trim()) missingMandatory.push('CR number');
+    if (req('crPhoto') && !crPhotoId) missingMandatory.push('CR document photo');
     customer.branches.forEach((b, i) => {
       const s = branchStates[b.id];
       const tag = `Branch ${i + 1}`;
@@ -169,9 +191,10 @@ export function EnrichmentForm({
         missingMandatory.push(`${tag} address`);
       if (!s.gps || s.gps.lat == null || s.gps.lng == null)
         missingMandatory.push(`${tag} GPS`);
-      if (!s.dayOfVisit) missingMandatory.push(`${tag} day of visit`);
-      if (!b.shopPhotoId) missingMandatory.push(`${tag} shop photo`);
-      if (!b.signboardPhotoId) missingMandatory.push(`${tag} signboard photo`);
+      if (req('dayOfVisit') && !s.dayOfVisit) missingMandatory.push(`${tag} day of visit`);
+      if (!branchPhotos[b.id]?.shop) missingMandatory.push(`${tag} shop photo`);
+      if (req('signboardPhoto') && !branchPhotos[b.id]?.signboard)
+        missingMandatory.push(`${tag} signboard photo`);
     });
   }
   const submitBlocked = !canSubmit || (userRole === Role.SALESMAN && missingMandatory.length > 0);
@@ -389,17 +412,20 @@ export function EnrichmentForm({
           />
           <Field label="NMWC code" value={customer.nmwcCode} onChange={() => {}} disabled mono />
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">CR document photo *</label>
+            <label className="mb-1 block text-sm font-medium text-slate-700">
+              CR document photo{star('crPhoto')}
+            </label>
             <div className="w-48">
               <PhotoCaptureSlot
                 kind="CR"
-                required
+                required={req('crPhoto')}
                 initial={
                   customer.crPhotoId
                     ? { attachmentId: customer.crPhotoId, remoteUrl: `/api/photos/${customer.crPhotoId}` }
                     : null
                 }
                 attachTo={{ kind: 'customer', customerId: customer.id, slot: 'CR' }}
+                onChange={(p) => setCrPhotoId(p?.attachmentId ?? null)}
               />
             </div>
           </div>
@@ -437,7 +463,9 @@ export function EnrichmentForm({
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Sub-channel *</label>
+            <label className="mb-1 block text-sm font-medium text-slate-700">
+              Sub-channel{star('subChannelId')}
+            </label>
             <select
               value={subChannelId}
               onChange={(e) => setSubChannelId(e.currentTarget.value)}
@@ -536,7 +564,9 @@ export function EnrichmentForm({
 
               <div className="grid gap-3 md:grid-cols-3">
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-slate-700">Day of visit</label>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">
+                    Day of visit{star('dayOfVisit')}
+                  </label>
                   <select
                     value={s.dayOfVisit}
                     onChange={(e) =>
@@ -598,8 +628,10 @@ export function EnrichmentForm({
                   Photos
                 </label>
                 <p className="mb-2 text-xs text-slate-500">
-                  Tap each slot to capture from your camera. Required: shop front, signboard. CR
-                  document (in Identity section above) and 2 free photos optional.
+                  Tap each slot to capture from your camera.{' '}
+                  {req('signboardPhoto')
+                    ? 'Required: shop front, signboard. CR document (in Identity section above) and 2 free photos optional.'
+                    : 'Required: shop front. Signboard, CR document (in Identity section above) and 2 free photos are optional but count towards completeness.'}
                 </p>
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
                   <PhotoCaptureSlot
@@ -616,10 +648,11 @@ export function EnrichmentForm({
                         : null
                     }
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'SHOP' }}
+                    onChange={(p) => setBranchPhoto(b.id, 'shop', p?.attachmentId ?? null)}
                   />
                   <PhotoCaptureSlot
                     kind="SIGNBOARD"
-                    required
+                    required={req('signboardPhoto')}
                     capturedLat={s.gps?.lat}
                     capturedLng={s.gps?.lng}
                     initial={
@@ -631,6 +664,7 @@ export function EnrichmentForm({
                         : null
                     }
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'SIGNBOARD' }}
+                    onChange={(p) => setBranchPhoto(b.id, 'signboard', p?.attachmentId ?? null)}
                   />
                   <PhotoCaptureSlot
                     kind="FREE"

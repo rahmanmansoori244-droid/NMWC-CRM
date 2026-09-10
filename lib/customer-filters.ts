@@ -183,6 +183,23 @@ export function applyCustomerFilters(
       { legalName: { contains: filters.q, mode: 'insensitive' } },
       { nmwcCode: { contains: filters.q, mode: 'insensitive' } },
       ...(phoneNorm ? [{ primaryPhoneNorm: { contains: phoneNorm } }] : []),
+      // Go-live: the master carries the Timix branch code (`CAK0240-AK2`) and a
+      // shop/branch name that often differs from the legal name — salesmen know
+      // shops by those. The branch predicate is intersected with the caller's
+      // role scope so a match on an out-of-scope branch can never surface a
+      // customer (the SAME branch must satisfy both).
+      {
+        branches: {
+          some: {
+            ...(branchSomeBase ?? {}),
+            deletedAt: null,
+            OR: [
+              { branchName: { contains: filters.q, mode: 'insensitive' } },
+              { branchCode: { contains: filters.q, mode: 'insensitive' } },
+            ],
+          },
+        },
+      },
     ];
   }
   if (filters.status) where.status = filters.status;

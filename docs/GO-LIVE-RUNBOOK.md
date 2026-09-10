@@ -92,3 +92,66 @@ importer enforces most of the order, but not all of it.
 - A branch planned on several days carries only its **first** visit day.
 - Customers dormant in the July master **and** absent from RoutePro were not loaded
   (`dq/codebranch-dormant-not-loaded.csv`, 154 customers).
+
+## 4. After the load — the update flow (verified 2026-09-10)
+
+This is what the field force does from Sunday on, and what was walked end to end in a
+real browser against the UAT data (`tests/e2e/golive-update-flow.spec.ts`) and in the
+service layer (`tests/integration/golive-update-flow.test.ts`):
+
+1. **Salesman** signs in with the route code → forced password change → **Today** shows
+   the journey-plan customers for the weekday and a link to **All my customers** (only
+   ~1 in 3 branches has a JP day, so the full list matters). **Customers** searches by
+   shop name, customer code, branch code (`CAK0240-AK2`), branch name or phone, and only
+   ever shows that route.
+2. Open a customer → **Enrich** → capture **GPS** (device location; manual entry with a
+   reason if the phone cannot), take the **photos** (camera → compressed to JPEG →
+   uploaded straight to R2 → attached to the slot), fill the fields → **Submit for
+   approval**. The submit button unlocks the moment the required photos are attached —
+   no page reload.
+3. **Manager** (the salesman's direct supervisor — there are no Supervisor accounts)
+   sees it under **Approvals** (now in the Manager menu) and on the dashboard KPI; the
+   review page shows the before/after diff (channel names, not ids), the **current
+   photos** and an **Open in Google Maps** link for the location on file and for the
+   proposed one; **Approve** applies it, **Reject** sends it back with a reason and the
+   salesman sees it under **Needs correction**. Every step writes an audit row and an
+   in-app notification.
+4. **Owner / Steward / Manager** — **Export → Field-update report**: every customer in
+   the chosen regions/routes (one row per branch, the import shape) with each cell a
+   salesman changed **in the chosen window** highlighted **yellow** (hover the cell for
+   *was → now, by whom, when*), cells with a proposal still awaiting approval
+   **orange**, photos added in the window yellow; sheet 2 lists every change, sheet 3
+   the totals per salesman, sheet 4 the legend. Unhighlighted = not touched. Managers
+   get their regions, Supervisors their team routes, the Steward everything.
+
+**Coverage check (dashboard window of 56 days to 2026-08-08):** 3,068 customers had
+invoices; **3,065 are in the master**, 3,054 on a live salesman's route. The 11 on
+UNASSIGNED are the two generic `CASHCUST`/`COUPCUST` codes plus 9 small customers on
+parked routes (S20 ×4, SL04 ×2, NZ04, S04, WHS-); 3 tiny S07 customers (OMR 118
+together) are not in RoutePro at all. Nothing with sales was loaded as CLOSED.
+
+**Bugs this verification found and fixed (all in the branch):** the **first-login
+password change could not be completed** — the login landed on `/home`, the forced
+redirect left the address bar there, and the change-password form then posted to a URL
+the middleware redirected ("An unexpected response was received from the server"); the
+login form itself still refused **two-character usernames** (C1–C9, W) although the
+account policy had been relaxed everywhere else; a tap on *Sign in* before the page
+had finished loading put the username **and password into the URL**; photo attach
+could die with *Transaction already closed* on a slow link (Prisma's 5 s default — now
+20 s app-wide); a salesman's **CR number on a CASH customer was dropped at approval**,
+and the approval then failed with *CR number is required* (the two field locks were
+still evaluated together); the Submit button stayed disabled after taking the photos
+until the page was reloaded; the Manager menu had no **Approvals** entry; the review
+page showed no photos and no map; **Download all** was refused above 10,000 rows (the
+master is 20,129); every exported phone number came out as `'+968…` (formula guard);
+and nothing hydrated on a local `next dev` server (CSP without `'unsafe-eval'` in
+development), which is why no browser walk had ever been run before.
+
+**Mandatory fields — a decision for the owner.** By default a salesman can only submit
+when channel, sub-channel, phone, contact person, CR number (CASH customers), CR photo,
+address, GPS, day of visit, shop photo **and** signboard photo are all present. The
+imported data has none of the photos, GPS or sub-channels, and most customers are
+individuals / home-delivery addresses with no CR and no signboard — so under this rule
+they can never be submitted. `SALESMAN_SUBMIT_GATE=CORE` (a Vercel environment
+variable, no deploy) reduces the blocking set to phone, contact person, address, GPS
+and shop photo; the rest stay on the form and in the completeness score.

@@ -30,6 +30,7 @@ import {
 } from '@/lib/approval-chains';
 import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/notifications';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
+import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
 
 async function requireUser() {
   const session = await auth();
@@ -134,13 +135,16 @@ function collectMissingMandatory(
    * Skip them from the missing-list so the salesman is never blocked by
    * data only the Steward can fix.
    */
-  actorIsSalesman = false
+  actorIsSalesman = false,
+  /** Go-live: FULL (PRD §6) or CORE — see lib/submit-gate.ts. */
+  gate: SubmitGate = salesmanSubmitGate()
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   const merged = (k: keyof typeof customer, fallback: unknown) =>
     customerProposed[k as string] !== undefined ? customerProposed[k as string] : fallback;
   const isStr = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
   const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  const req = (field: string) => isRequired(field, gate);
 
   // Lock-aware skips for salesman actor.
   const skipLegalName = actorIsSalesman; // always locked for salesman
@@ -152,7 +156,7 @@ function collectMissingMandatory(
   if (!isStr(merged('channelId', customer.channelId))) {
     errors['customer.channelId'] = 'Channel is required.';
   }
-  if (!isStr(merged('subChannelId', customer.subChannelId))) {
+  if (req('subChannelId') && !isStr(merged('subChannelId', customer.subChannelId))) {
     errors['customer.subChannelId'] = 'Sub-channel is required.';
   }
   if (!isStr(merged('primaryPhone', customer.primaryPhone))) {
@@ -161,12 +165,12 @@ function collectMissingMandatory(
   if (!isStr(merged('contactPerson', customer.contactPerson))) {
     errors['customer.contactPerson'] = 'Contact person is required.';
   }
-  if (!skipCrNumber && !isStr(merged('crNumber', customer.crNumber))) {
+  if (req('crNumber') && !skipCrNumber && !isStr(merged('crNumber', customer.crNumber))) {
     errors['customer.crNumber'] = 'CR number is required.';
   }
   // Photos are wired via attachPhotoAction, so we read from the live customer
   // (the edit payload does not carry photoId fields).
-  if (!customer.crPhotoId) {
+  if (req('crPhoto') && !customer.crPhotoId) {
     errors['customer.crPhoto'] = 'CR document photo is required.';
   }
 
@@ -181,13 +185,13 @@ function collectMissingMandatory(
     if (!isNum(bMerged('gpsLat', b.gpsLat)) || !isNum(bMerged('gpsLng', b.gpsLng))) {
       errors[`branch.${b.id}.gps`] = `Branch ${tag}: GPS coordinates are required.`;
     }
-    if (!isStr(bMerged('dayOfVisit', b.dayOfVisit))) {
+    if (req('dayOfVisit') && !isStr(bMerged('dayOfVisit', b.dayOfVisit))) {
       errors[`branch.${b.id}.dayOfVisit`] = `Branch ${tag}: day of visit is required.`;
     }
     if (!b.shopPhotoId) {
       errors[`branch.${b.id}.shopPhoto`] = `Branch ${tag}: shop photo is required.`;
     }
-    if (!b.signboardPhotoId) {
+    if (req('signboardPhoto') && !b.signboardPhotoId) {
       errors[`branch.${b.id}.signboardPhoto`] = `Branch ${tag}: signboard photo is required.`;
     }
   }
@@ -1092,16 +1096,20 @@ async function approveEditCore(formData: FormData) {
     where: { id: submitter.id },
     select: { role: true },
   });
-  if (
-    submitterUser?.role === Role.SALESMAN &&
-    isFieldLocked(
-      'legalName',
-      { id: submitter.id, role: Role.SALESMAN, username: '' },
-      liveCustomer
-    )
-  ) {
-    delete customerProposed.legalName;
-    delete customerProposed.crNumber;
+  // Go-live flow test (2026-09-10): the two locks are INDEPENDENT (2026-05-11 —
+  // legalName always locked for a salesman, crNumber only on CREDIT). This block
+  // still dropped BOTH whenever legalName was locked, i.e. for EVERY salesman
+  // edit — so the CR number a salesman collected on a CASH customer was
+  // discarded at approval, and the EL-04 re-check below then failed the
+  // approval with "CR number is required". Evaluate each lock on its own.
+  if (submitterUser?.role === Role.SALESMAN) {
+    const submitterShape = { id: submitter.id, role: Role.SALESMAN, username: '' };
+    if (isFieldLocked('legalName', submitterShape, liveCustomer)) {
+      delete customerProposed.legalName;
+    }
+    if (isFieldLocked('crNumber', submitterShape, liveCustomer)) {
+      delete customerProposed.crNumber;
+    }
   }
 
   // P1.3 (2026-05-10): phone duplicates are now ALLOWED. Log a soft note

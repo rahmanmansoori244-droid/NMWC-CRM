@@ -43,6 +43,11 @@ const NAV_BY_ROLE: Record<Role, NavItem[]> = {
   ],
   MANAGER: [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    // Go-live org model: regional managers supervise salesmen DIRECTLY (no
+    // SUPERVISOR-role users), so the Manager is the day-to-day approver of every
+    // enrichment edit. /approvals already served Managers (region-scoped
+    // Supervisor-step fallback) but was reachable only via the dashboard KPI.
+    { href: '/approvals', label: 'Approvals', icon: ListChecks },
     { href: '/users', label: 'Users', icon: Users },
     { href: '/routes', label: 'Routes & regions', icon: Map },
     { href: '/customers', label: 'Customers', icon: Search },

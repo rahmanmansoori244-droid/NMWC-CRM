@@ -44,9 +44,19 @@ export default async function ExportPage() {
           <p className="mb-2 text-amber-800">
             Columns mirror the import shape so you can re-upload after editing.
           </p>
-          <p className="text-xs text-amber-700">
+          <p className="mb-3 text-xs text-amber-700">
             Photo columns show <code>yes</code> when a photo is present. The actual files stay in
             Cloudflare R2 — view them in the customer profile.
+          </p>
+          <h2 className="mb-2 font-semibold">Field-update report</h2>
+          <p className="mb-2 text-amber-800">
+            Same rows, but every cell a salesman changed (and a supervisor/manager approved) in the
+            chosen window is highlighted, with a note showing the old value, who changed it and
+            when. Unhighlighted cells were not touched.
+          </p>
+          <p className="text-xs text-amber-700">
+            Sheets: <strong>Customers</strong> (highlighted master), <strong>Changes</strong> (one
+            row per change), <strong>By salesman</strong> (totals), <strong>Legend</strong>.
           </p>
         </aside>
       </div>

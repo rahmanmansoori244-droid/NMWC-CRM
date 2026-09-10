@@ -102,10 +102,11 @@ export async function buildCustomerExport(filters: ExportFilters) {
   }
   if (filters.updatedSince) customerWhere.updatedAt = { gte: filters.updatedSince };
 
-  // F-16: hard cap rows. At ~3k customers × ~1.7 branches/customer the export
-  // is ~5k rows, well under the cap. Anything bigger needs the streaming path
-  // which is v1.1.
-  const EXPORT_ROW_CAP = 10000;
+  // F-16: hard cap rows. The go-live master is ~20k branches (one per Timix
+  // customer-branch), so the old 10k cap refused the Steward's "Download all".
+  // 25k × ~35 columns builds in a few seconds and well inside the 60s function
+  // budget; anything bigger needs the streaming path (v1.1).
+  const EXPORT_ROW_CAP = 25000;
   const totalCount = await prisma.branch.count({
     where: { ...branchWhere, customer: customerWhere },
   });

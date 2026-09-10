@@ -10,7 +10,7 @@
 import type ExcelJSNS from 'exceljs';
 
 let excelJsPromise: Promise<typeof ExcelJSNS> | null = null;
-function loadExcelJS(): Promise<typeof ExcelJSNS> {
+export function loadExcelJS(): Promise<typeof ExcelJSNS> {
   excelJsPromise ??= import('exceljs').then((m) => (m as { default?: typeof ExcelJSNS }).default ?? (m as unknown as typeof ExcelJSNS));
   return excelJsPromise;
 }
@@ -104,10 +104,17 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
  * The leading single quote is the documented Excel formula-disable marker. It
  * remains visible in the cell but is dropped on copy-paste.
  */
-function escapeFormulaCell(v: unknown): unknown {
+export function escapeFormulaCell(v: unknown): unknown {
   if (typeof v !== 'string') return v;
-  if (/^[=+\-@\t\r]/.test(v)) return `'${v}`;
-  return v;
+  if (!/^[=+\-@\t\r]/.test(v)) return v;
+  // Go-live (2026-09-10): a phone number is `+968…` and a negative figure is
+  // `-12` — neither can carry a formula (nothing but digits, spaces, dashes,
+  // dots and brackets follows the sign), yet the guard turned every exported
+  // phone into `'+968…`, which Excel shows literally and the importer would
+  // read back with the quote. Leave sign-prefixed numerics alone; everything
+  // else with a risky prefix is still escaped.
+  if (/^[+-][\d\s()\-.]*$/.test(v)) return v;
+  return `'${v}`;
 }
 
 export async function buildWorkbook(rows: Record<string, unknown>[], sheetName = 'Sheet1') {

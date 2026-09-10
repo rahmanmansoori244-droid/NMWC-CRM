@@ -35,7 +35,28 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           id: true,
           legalName: true,
           nmwcCode: true,
-          branches: { select: { regionId: true, deletedAt: true } },
+          // Go-live review: photos are attached LIVE (outside fieldChanges), so a
+          // reviewer of an enrichment edit must see the customer's CURRENT photo
+          // slots + GPS to judge it — the diff alone shows only text fields.
+          crPhotoId: true,
+          branches: {
+            select: {
+              id: true,
+              branchName: true,
+              branchCode: true,
+              address: true,
+              gpsLat: true,
+              gpsLng: true,
+              gpsAccuracy: true,
+              gpsCapturedAt: true,
+              shopPhotoId: true,
+              signboardPhotoId: true,
+              routeId: true,
+              regionId: true,
+              deletedAt: true,
+              route: { select: { code: true } },
+            },
+          },
         },
       },
       submittedBy: { select: { id: true, fullName: true, supervisorId: true } },
@@ -68,12 +89,12 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   if (session.user.role === Role.SUPERVISOR && edit.submittedBy.supervisorId !== session.user.id) {
     notFound(); // hide existence — same posture as other scope misses
   }
+  const { loadScope, filterBranchesByScope } = await import('@/lib/access');
+  const scope = await loadScope(session.user.id);
   // RBAC-05-003 / Phase 1: MANAGER and ACCOUNTANT region scope on the detail
   // page too — a deep link must not show another region's request. For CREATE
   // the scope regions come from the DRAFT branches (customerId is null).
   if (session.user.role === Role.MANAGER || session.user.role === Role.ACCOUNTANT) {
-    const { loadScope } = await import('@/lib/access');
-    const scope = await loadScope(session.user.id);
     const regionIds = isCreate
       ? edit.branchDrafts.map((b) => b.route.regionId) // final-hunt #7/#15: current route region
       : (edit.customer?.branches ?? []).filter((b) => !b.deletedAt).map((b) => b.regionId);
@@ -81,6 +102,26 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     if (!inScope) notFound();
   }
   // FINANCE_MANAGER / GM are org-wide approvers (owner-confirmed) — no region gate.
+
+  // Live photo slots + GPS of the customer under review (UPDATE only). Branches
+  // are narrowed to the reviewer's scope (RBAC-05-001 posture: a multi-region
+  // customer must not leak another region's photos to a regional Manager).
+  const sessionUser = {
+    id: session.user.id,
+    role: session.user.role,
+    username: session.user.username,
+  };
+  const liveBranches = isCreate
+    ? []
+    : filterBranchesByScope(sessionUser, edit.customer?.branches ?? [], scope);
+  const extraPhotos =
+    liveBranches.length > 0
+      ? await prisma.attachment.findMany({
+          where: { branchExtraId: { in: liveBranches.map((b) => b.id) }, deletedAt: null },
+          select: { id: true, branchExtraId: true },
+          orderBy: { createdAt: 'asc' },
+        })
+      : [];
 
   const chain = parseChain(edit.approvalChain);
   const isPending = edit.state === 'SUBMITTED';
@@ -114,6 +155,37 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
       })
     : [];
   const branchMap = new Map(branches.map((b) => [b.id, b]));
+
+  // Channel / sub-channel diffs carry cuids; reviewers need the labels.
+  const refIds = changes
+    .filter((c) => c.field.endsWith('channelId') || c.field.endsWith('subChannelId'))
+    .flatMap((c) => [c.before, c.after])
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+  const [channelRefs, subChannelRefs] = refIds.length
+    ? await Promise.all([
+        prisma.channel.findMany({ where: { id: { in: refIds } }, select: { id: true, label: true } }),
+        prisma.subChannel.findMany({
+          where: { id: { in: refIds } },
+          select: { id: true, label: true },
+        }),
+      ])
+    : [[], []];
+  const refLabel = new Map<string, string>([
+    ...channelRefs.map((c) => [c.id, c.label] as const),
+    ...subChannelRefs.map((s) => [s.id, s.label] as const),
+  ]);
+  const display = (field: string, v: unknown): unknown =>
+    (field.endsWith('channelId') || field.endsWith('subChannelId')) &&
+    typeof v === 'string' &&
+    refLabel.has(v)
+      ? refLabel.get(v)
+      : v;
+  /** Proposed GPS per branch (after-values), for a "view on map" link. */
+  const proposedGps = (list: FieldChange[]): { lat: number; lng: number } | null => {
+    const lat = list.find((c) => c.field === 'gpsLat')?.after;
+    const lng = list.find((c) => c.field === 'gpsLng')?.after;
+    return typeof lat === 'number' && typeof lng === 'number' ? { lat, lng } : null;
+  };
 
   // Guarantee documents (CREATE-CREDIT): edit-claimed GUARANTEE attachments.
   const guaranteeDocs = isCreate
@@ -315,8 +387,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               <DiffRow
                 key={c.field}
                 label={c.field.replace('customer.', '')}
-                before={c.before}
-                after={c.after}
+                before={display(c.field, c.before)}
+                after={display(c.field, c.after)}
               />
             ))}
           </DiffSection>
@@ -325,17 +397,83 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
         {!isCreate &&
           [...branchChangesByBranch.entries()].map(([branchId, list]) => {
             const b = branchMap.get(branchId);
+            const gps = proposedGps(list);
             return (
               <DiffSection
                 key={branchId}
                 title={`Branch: ${b?.branchName ?? branchId} (${b?.route.code ?? ''})`}
               >
                 {list.map((c) => (
-                  <DiffRow key={c.field} label={c.field} before={c.before} after={c.after} />
+                  <DiffRow
+                    key={c.field}
+                    label={c.field}
+                    before={display(c.field, c.before)}
+                    after={display(c.field, c.after)}
+                  />
                 ))}
+                {gps && (
+                  <div className="px-4 py-2.5 text-sm">
+                    <MapLink lat={gps.lat} lng={gps.lng} label="View proposed location on map" />
+                  </div>
+                )}
               </DiffSection>
             );
           })}
+
+        {/* Live evidence: what the customer looks like RIGHT NOW. Photos are
+            wired at capture time (not inside the edit), so this is what an
+            approval will lock in — the EL-04 gate re-checks these same slots. */}
+        {!isCreate && edit.customer && (
+          <DetailSection title="Photos & location on file (current)">
+            <PhotoRow
+              label="CR document"
+              ids={edit.customer.crPhotoId ? [edit.customer.crPhotoId] : []}
+              emptyText="No CR document photo yet"
+            />
+            {liveBranches.map((b) => {
+              const extras = extraPhotos.filter((p) => p.branchExtraId === b.id).map((p) => p.id);
+              return (
+                <div key={b.id} className="divide-y divide-slate-100">
+                  <div className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    {b.branchName} · {b.branchCode} · {b.route.code}
+                  </div>
+                  <PhotoRow
+                    label="Shop front"
+                    ids={b.shopPhotoId ? [b.shopPhotoId] : []}
+                    emptyText="No shop photo yet"
+                  />
+                  <PhotoRow
+                    label="Signboard"
+                    ids={b.signboardPhotoId ? [b.signboardPhotoId] : []}
+                    emptyText="No signboard photo yet"
+                  />
+                  {extras.length > 0 && <PhotoRow label="Other photos" ids={extras} />}
+                  <div className="grid grid-cols-[140px_1fr] gap-3 px-4 py-2.5 text-sm">
+                    <div className="font-medium text-slate-600">Location on file</div>
+                    <div className="text-slate-900">
+                      {b.gpsLat != null && b.gpsLng != null ? (
+                        <>
+                          <span className="font-mono">
+                            {b.gpsLat.toFixed(5)}, {b.gpsLng.toFixed(5)}
+                          </span>
+                          {b.gpsAccuracy != null ? ` (±${Math.round(b.gpsAccuracy)}m)` : ''}
+                          {b.gpsCapturedAt
+                            ? ` · captured ${new Date(b.gpsCapturedAt).toLocaleString('en-GB')}`
+                            : ''}
+                          <span className="ml-2">
+                            <MapLink lat={b.gpsLat} lng={b.gpsLng} label="Open in Google Maps" />
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-slate-500">No GPS on file</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </DetailSection>
+        )}
 
         {!isCreate && changes.length === 0 && (
           <p className="rounded-md bg-slate-100 px-3 py-2 text-sm text-slate-600">
@@ -374,9 +512,40 @@ function DetailRow({ label, value }: { label: string; value: unknown }) {
   );
 }
 
+/** Google Maps deep link — works on any phone/desktop without an API key. */
+function MapLink({ lat, lng, label }: { lat: number; lng: number; label: string }) {
+  return (
+    <a
+      href={`https://www.google.com/maps?q=${lat.toFixed(6)},${lng.toFixed(6)}`}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-brand-700 hover:bg-brand-50"
+    >
+      📍 {label}
+    </a>
+  );
+}
+
 /** Photo thumbnails streamed through the scope-checked /api/photos route. */
-function PhotoRow({ label, ids }: { label: string; ids: string[] }) {
-  if (ids.length === 0) return null;
+function PhotoRow({
+  label,
+  ids,
+  emptyText,
+}: {
+  label: string;
+  ids: string[];
+  /** When given, render a "missing" row instead of nothing for an empty slot. */
+  emptyText?: string;
+}) {
+  if (ids.length === 0) {
+    if (!emptyText) return null;
+    return (
+      <div className="grid grid-cols-[140px_1fr] gap-3 px-4 py-2.5 text-sm">
+        <div className="font-medium text-slate-600">{label}</div>
+        <div className="text-slate-500">{emptyText}</div>
+      </div>
+    );
+  }
   return (
     <div className="grid grid-cols-[140px_1fr] gap-3 px-4 py-2.5 text-sm">
       <div className="font-medium text-slate-600">{label}</div>

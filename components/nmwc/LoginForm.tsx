@@ -1,11 +1,17 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { loginAction } from '@/app/actions/auth';
 
 export function LoginForm() {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  // Go-live browser walk (2026-09-10): a tap on "Sign in" BEFORE React has
+  // hydrated submits the form natively as a GET — the username AND password
+  // land in the URL (and in every access log). Keep the button inert until the
+  // handler is attached; on a slow phone link that is a sub-second delay.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -21,6 +27,7 @@ export function LoginForm() {
   return (
     <form
       onSubmit={onSubmit}
+      data-hydrated={hydrated ? '1' : undefined}
       className="space-y-4 rounded-lg bg-white p-6 shadow-sm ring-1 ring-slate-200"
     >
       <div>
@@ -56,7 +63,7 @@ export function LoginForm() {
       )}
       <button
         type="submit"
-        disabled={pending}
+        disabled={pending || !hydrated}
         className="block w-full rounded-md bg-brand-600 px-4 py-3 text-base font-semibold text-white shadow-sm transition hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-300"
       >
         {pending ? 'Signing in…' : 'Sign in'}

@@ -6,9 +6,18 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? 'github' : 'html',
+  // The go-live browser walk drives a `next dev` server (first-hit compiles
+  // take tens of seconds per route) against a remote DB.
+  timeout: 300_000,
+  expect: { timeout: 45_000 },
   use: {
     baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:3000',
     trace: 'on-first-retry',
+    // E2E_CHROMIUM: reuse an already-installed Chromium build (this machine has
+    // a newer ms-playwright revision than the pinned @playwright/test expects).
+    launchOptions: process.env.E2E_CHROMIUM
+      ? { executablePath: process.env.E2E_CHROMIUM }
+      : undefined,
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },

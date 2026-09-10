@@ -37,7 +37,10 @@ export function CustomerCard({ customer, primaryBranch, href }: CardProps) {
   );
   if (!href) return inner;
   return (
-    <Link href={href} className="block">
+    // A link wrapping an <article> gets NO accessible name from its content
+    // (name-from-content stops at article), so screen readers announced a bare
+    // "link" and the browser walk could not address the card by customer name.
+    <Link href={href} className="block" aria-label={`${customer.legalName} · ${customer.nmwcCode}`}>
       {inner}
     </Link>
   );

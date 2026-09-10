@@ -8,6 +8,7 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { EnrichmentForm } from './EnrichmentForm';
+import { salesmanSubmitGate } from '@/lib/submit-gate';
 
 export const metadata = { title: 'Enrich · NMWC' };
 // UXI-005: never serve a stale cached form. Without this, hitting Back after
@@ -165,6 +166,7 @@ export default async function EditCustomerPage({
         userRole={session.user.role}
         canSubmit={!pending}
         sessionUserId={session.user.id}
+        gate={salesmanSubmitGate()}
       />
     </main>
   );

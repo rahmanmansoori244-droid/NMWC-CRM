@@ -4,13 +4,20 @@ import { auth, signIn, signOut } from '@/lib/auth';
 import { AuthError } from 'next-auth';
 import { z } from 'zod';
 import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { checkLimit, LOGIN_LIMIT } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/db';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
+// Go-live (2026-09-10): usernames are ROUTE CODES, and several are two
+// characters (C1–C9, W). lib/auth.ts and services/users.ts were relaxed to
+// min(1) for that policy but this schema — the first gate on the login form —
+// still demanded 3, so every two-character route would have been told
+// "Please enter your username and password" on launch day. Caught by the
+// browser walk; keep the three schemas in step.
 const loginSchema = z.object({
-  username: z.string().min(3).max(50),
+  username: z.string().min(1).max(50),
   password: z.string().min(1).max(200),
 });
 
@@ -58,15 +65,28 @@ export async function loginAction(formData: FormData): Promise<LoginResult | voi
     await signIn('credentials', {
       username,
       password: parsed.data.password,
-      redirectTo: '/home',
+      redirect: false,
     });
   } catch (error) {
     if (error instanceof AuthError) {
       return { ok: false, error: 'Invalid username or password.' };
     }
-    // NEXT_REDIRECT must bubble up so Next.js performs the redirect.
     throw error;
   }
+
+  // Go-live browser walk (2026-09-10): land a forced-change user DIRECTLY on
+  // /profile/change-password instead of on /home and letting the middleware
+  // bounce the RSC fetch. The client router keeps the action's target URL
+  // (/home) when the middleware redirects that fetch, so the change-password
+  // form then POSTed its server action to /home, the middleware redirected the
+  // POST too, and the form died with "An unexpected response was received from
+  // the server" — i.e. nobody could ever complete the first-login password
+  // change. The initial password policy (12345 for everyone) made that fatal.
+  const me = await prisma.user.findUnique({
+    where: { username },
+    select: { mustChangePassword: true },
+  });
+  redirect(me?.mustChangePassword ? '/profile/change-password' : '/home');
 }
 
 export async function logoutAction() {
