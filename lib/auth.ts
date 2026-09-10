@@ -40,7 +40,8 @@ const DUMMY_BCRYPT_HASH =
   '$2b$12$Y8HEku/bk858NwrptFSON.JoO5GZCKFOj2vays4.6KnHQ8.M8thOO';
 
 const credentialsSchema = z.object({
-  username: z.string().min(3).max(50),
+  // Salesmen sign in with their route code, which can be as short as "C4" or "W".
+  username: z.string().min(1).max(50),
   password: z.string().min(1).max(200),
 });
 
