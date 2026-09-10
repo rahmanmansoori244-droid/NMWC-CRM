@@ -96,7 +96,7 @@ children.push(
 );
 children.push(table(cols(CONTENT_W, [3, 5]), [
   ['Document reference', 'NMWC-CRM-SOP-001'],
-  ['Version', '1.0 (for approval)'],
+  ['Version', '1.1 (for approval)'],
   ['Classification', 'Internal'],
   ['Document owner', 'CRM / IT (Master Data)'],
   ['Applies to', 'All CRM users: sales, supervision, finance, management, data stewardship'],
@@ -111,7 +111,10 @@ children.push(H2('Version history'));
   const w = cols(CONTENT_W, [1.4, 2, 2.4, 3.2]);
   children.push(table(w, [
     headerRow(['Version', 'Date', 'Author', 'Summary'], w),
-    ...[['1.0', '__________', 'CRM / IT', 'Initial policy — customer lifecycle, approval chains, access-control matrix.']].map(
+    ...[
+      ['1.0', '__________', 'CRM / IT', 'Initial policy — customer lifecycle, approval chains, access-control matrix.'],
+      ['1.1', '__________', 'CRM / IT', 'Added §8 Bulk Data Load (Import) Procedure: staged load, promotion in passes with resume, the mandatory post-load reconciliation, and the rule that bulk-loaded customers do not pass through the approval chain. Sections 8–10 renumbered to 9–11.'],
+    ].map(
       (r) => new TableRow({ children: r.map((c, i) => cell(c, { w: w[i] })) })
     ),
   ]));
@@ -193,6 +196,7 @@ children.push(P([new PageBreak()]));
 // ═══════════════════ 4. PROCESS FLOW ═══════════════════
 children.push(H1('4.  The Customer Lifecycle — End-to-End Process Flow'));
 children.push(body('A new customer moves through five stages. The record does NOT exist in the master until the final approval; every step is recorded in the audit log.'));
+children.push(body([txt('Two ways into the master. ', { bold: true }), txt('This section describes customer creation in the FIELD, which is how every customer acquired after go-live enters the system. The other path is the bulk load used to migrate and reconcile customers that already exist in Temix; it is performed by the Data Steward, does not travel the approval chain, and is governed separately by §8.')]));
 
 children.push(H2('4.1  High-level flow'));
 children.push(flowRow([
@@ -326,10 +330,12 @@ children.push(body('Common situations and exactly who does what.'));
     ['E', 'A shop closes', 'Salesman photographs the shut shop and submits a closure → Supervisor approves → the branch is marked CLOSED.'],
     ['F', 'A closed shop reopens', 'Salesman photographs the reopened shop and submits a reactivation → a MANAGER reviews the fresh photo and approves → the branch is ACTIVE again.'],
     ['G', 'Duplicate found', 'The Steward opens Duplicates, picks the record to keep, confirms (with a reason if the two are in different regions) → the duplicate is merged and archived.'],
-    ['H', 'Go-live bulk load', 'The Steward imports the Account master (regions, routes, people) then the Customer master, reviews the staged rows, and promotes them.'],
+    ['H', 'Go-live bulk load', 'The Steward imports the Account master (regions, routes, people), then the Customer master; reviews the staged rows; promotes them — the promotion runs in passes and reports progress; then reconciles the counts. Full procedure in §8.'],
     ['I', 'Supervisor on leave', 'A Manager whose region overlaps the customer approves the pending Supervisor step so work is not blocked (fallback).'],
     ['J', 'Push to Temix', 'The Steward runs the outbound batch; new/updated customers and their credit data are exported to Temix, and the returned Temix codes are backfilled to the CRM.'],
     ['K', 'Change a customer to CREDIT', 'This is NOT an edit. The payment basis cannot be switched in the edit screen; it is handled as a fresh credit onboarding / via Temix, so finance and GM review it.'],
+    ['L', 'A bulk load is interrupted', 'Everything already promoted is saved. The batch shows “Promote interrupted” and appears in the Steward’s work list as “Import to resume”; the Steward clicks Resume promote and it continues from exactly where it stopped. Nothing is loaded twice or skipped (§8.3).'],
+    ['M', 'Rows rejected during a load', 'A rejected row is NOT in the master. The Steward reviews each one (rejected rows are listed first, with the reason), corrects the source file, and re-imports the affected customers. The load is not complete until every rejected and quarantined row is resolved or formally accepted (§8.4).'],
   ];
   const rows = [headerRow(['#', 'Scenario', 'Who does what'], w)];
   sc.forEach((r, idx) => rows.push(new TableRow({
@@ -342,9 +348,62 @@ children.push(body('Common situations and exactly who does what.'));
   children.push(table(w, rows));
 }
 
-// ═══════════════════ 8. DATA OWNERSHIP / TEMIX ═══════════════════
+// ═══════════════════ 8. BULK DATA LOAD (IMPORT) ═══════════════════
+children.push(H1('8.  Bulk Data Load (Import) Procedure'));
+children.push(body('The customer master is first populated — and thereafter reconciled against Temix — by a bulk load performed by the Data Steward. Because a full master runs to several thousand rows, the load is a controlled, staged and resumable procedure rather than a single action. This section is the authoritative procedure for it.'));
+
+children.push(H2('8.1  Order of loading (mandatory)'));
+children.push(bullet([txt('1. Create the MANAGER and STEWARD accounts in the application first. ', { bold: true }), txt('The import deliberately CANNOT create these two roles, so that no administrative account can ever be introduced from a spreadsheet.')]));
+children.push(bullet([txt('2. Import the Account master ', { bold: true }), txt('— regions, then routes, then people (salesmen, supervisors, accountants, Finance Manager, GM, viewers). Routes must exist before the customers that reference them.')]));
+children.push(bullet([txt('3. Import the Customer master ', { bold: true }), txt('— customers and their branches, one row per branch.')]));
+children.push(body([txt('Regions and routes are matched on their CODE, never their name. ', { bold: true }), txt('A customer whose region or route code is unknown is parked in an UNASSIGNED area with a warning for the Steward to resolve — it is never silently discarded.')]));
+
+children.push(H2('8.2  Two stages: stage, then promote'));
+children.push(body('An import is never applied directly to the live master. It has two distinct stages, and the record does not exist until the second.'));
+children.push(bullet([txt('Stage (upload). ', { bold: true }), txt('The file is validated row by row. Valid rows are held as “clean”; rows that fail validation, or that collide with an existing customer on phone or commercial registration, are “quarantined” for the Steward to inspect. Nothing has entered the master at this point.')]));
+children.push(bullet([txt('Promote. ', { bold: true }), txt('The Steward reviews the staged result and promotes it. Only now are the live customer and branch records created.')]));
+
+children.push(H2('8.3  Promotion runs in passes and may be resumed'));
+children.push(body('A full master is far too large to load in a single operation, so promotion works through it in successive passes, reporting progress as it goes (for example “1,200 done, 2,100 left”). The Steward keeps the screen open until it reports completion.'));
+children.push(bullet([txt('Interruption is safe. ', { bold: true }), txt('If the load is interrupted — the screen is closed, the connection drops, the session times out — every record already promoted is permanently saved. The batch is shown as “Promote interrupted”, and a “Resume promote” action continues from exactly where it stopped. No record is loaded twice and none is skipped.')]));
+children.push(bullet([txt('An interrupted load is a work item. ', { bold: true }), txt('It appears in the Steward’s work list as “Import to resume”, so a half-finished load cannot be forgotten.')]));
+children.push(bullet([txt('One load at a time. ', { bold: true }), txt('Only one customer import may be promoted at any moment; a second is refused with a message naming the file already running. If a corrected file must be loaded, the first load is finished (or abandoned) first.')]));
+children.push(bullet([txt('A stalled load stops itself. ', { bold: true }), txt('If a pass makes no progress, the system halts and reports it rather than retrying indefinitely. This is escalated to IT — it must never be answered by repeatedly re-clicking.')]));
+
+children.push(H2('8.4  Mandatory reconciliation after every load'));
+children.push(body([txt('A load is not complete when the screen stops moving; it is complete when it has been reconciled. ', { bold: true }), txt('The batch page reports six figures, and the Steward must check them before declaring the load done:')]));
+{
+  const w = cols(CONTENT_W, [2.2, 5.8]);
+  children.push(table(w, [
+    headerRow(['Figure', 'What the Steward must confirm'], w),
+    ...[
+      ['Total', 'Matches the number of data rows in the source file.'],
+      ['Clean / Quarantined', 'Every quarantined row has been inspected; each is either corrected and re-imported, or formally accepted as excluded.'],
+      ['Promoted', 'The rows that are now live in the master.'],
+      ['Rejected', 'MUST be reviewed one by one. A rejected row is NOT in the master. The reason is shown against each row, and rejected rows are listed first so none is missed.'],
+      ['Left to promote', 'Must be zero. Any other value means the load is unfinished — resume it.'],
+      ['Reconciliation', 'Promoted + Rejected + Quarantined must equal Total. Record the figures as evidence that the load was checked.'],
+    ].map((r, i) => new TableRow({
+      children: [cell(r[0], { w: w[0], shade: LIGHT, bold: true }), cell(r[1], { w: w[1], shade: i % 2 ? WHITE : undefined })],
+    })),
+  ]));
+}
+children.push(body([txt('Unresolved rejected or quarantined rows are missing customers. ', { bold: true, color: AMBER }), txt('They must be corrected and re-imported, or explicitly signed off as excluded, before the load is treated as complete.')]));
+
+children.push(H2('8.5  Bulk-loaded customers do not pass through the approval chain'));
+children.push(body([txt('This is a deliberate policy decision requiring management endorsement. ', { bold: true }), txt('Customers introduced by a bulk import are existing NMWC customers being migrated or reconciled from Temix — not new applications — so they are created directly and do NOT travel the Supervisor / Finance Manager / GM / Accountant chain described in §5. Any customer created in the field after go-live does follow that chain in full.')]));
+children.push(body('The compensating controls are that importing is restricted to the Data Steward alone, that the Steward sits outside the approval chain and so cannot approve their own work, that every import and every promotion pass is written to the immutable audit log with its counts, and that the reconciliation in §8.4 is mandatory.'));
+
+children.push(H2('8.6  What an import may and may not create'));
+children.push(bullet([txt('May create or update: ', { bold: true }), txt('regions, routes, user accounts for salesmen, supervisors, accountants, Finance Manager, GM and viewers; customers and their branches.')]));
+children.push(bullet([txt('May never create: ', { bold: true }), txt('MANAGER or STEWARD accounts — these exist only through the application, created by an existing administrator. An import may also never promote an existing user INTO, or demote one OUT OF, those two roles. Administrative privilege therefore cannot be granted from a spreadsheet under any circumstances.')]));
+children.push(bullet([txt('Never overwritten by a re-import: ', { bold: true }), txt('an existing user keeps their password, role and supervisor unless the file explicitly says otherwise; and field-captured customer data (photographs, GPS, equipment counts, contacts) is never cleared by a blank cell in a later file.')]));
+
 children.push(P([new PageBreak()]));
-children.push(H1('8.  Data Ownership & the Temix Boundary'));
+
+// ═══════════════════ 9. DATA OWNERSHIP / TEMIX ═══════════════════
+children.push(P([new PageBreak()]));
+children.push(H1('9.  Data Ownership & the Temix Boundary'));
 children.push(body('Temix is the financial system of record. The CRM owns field and identity master data and pushes it to Temix; credit onboarding originates in the CRM and flows outbound to Temix.'));
 {
   const w = cols(CONTENT_W, [3.2, 4.8]);
@@ -358,18 +417,20 @@ children.push(body('Temix is the financial system of record. The CRM owns field 
 }
 children.push(body([txt('Direction of credit: ', { bold: true }), txt('credit limits and terms are decided in the CRM approval chain and pushed OUTBOUND to Temix. (If Temix is ever to become the authoritative source for credit changes on existing customers, that is a separate decision to confirm with the ERP team.)')], { spacing: { before: 120 } }));
 
-// ═══════════════════ 9. CONTROLS ═══════════════════
-children.push(H1('9.  Controls, Safeguards & Audit'));
+// ═══════════════════ 10. CONTROLS ═══════════════════
+children.push(H1('10.  Controls, Safeguards & Audit'));
 children.push(bullet([txt('Evidence-gated creation: ', { bold: true }), txt('a customer cannot be submitted without the CR photo and the branch shop/signboard photos; credit requires a guarantee document.')]));
 children.push(bullet([txt('Three-tier credit control: ', { bold: true }), txt('every credit customer is reviewed by Finance Manager, GM and Accountant; the requested figures cannot be silently amended by an approver.')]));
 children.push(bullet([txt('Segregation of the approver tier: ', { bold: true }), txt('only the Steward can create Accountant / Finance Manager / GM accounts — a regional Manager cannot mint or take over the credit-approval chain.')]));
 children.push(bullet([txt('Region containment: ', { bold: true }), txt('users only see and act on their own scope; an unscoped user sees nothing by default.')]));
 children.push(bullet([txt('Duplicate protection: ', { bold: true }), txt('the system flags customers that share a CR number or phone across different entities for steward review; merges are steward-only and confirmed.')]));
 children.push(bullet([txt('Confidential documents: ', { bold: true }), txt('CR and credit-guarantee documents are never cached by the browser and are access-checked on every view.')]));
+children.push(bullet([txt('Bulk-load reconciliation: ', { bold: true }), txt('importing is restricted to the Data Steward, who sits outside the approval chain; every load — and every pass of a resumed load — is written to the audit log with its counts; and the load is not complete until Promoted + Rejected + Quarantined equals Total (§8.4).')]));
+children.push(bullet([txt('No silent data loss on import: ', { bold: true }), txt('a customer whose region or route is unknown is parked in UNASSIGNED with a warning rather than discarded; a customer that could not be loaded because of a technical fault is retried automatically rather than written off; and a load that stops making progress halts and reports instead of retrying indefinitely.')]));
 children.push(bullet([txt('Full audit trail: ', { bold: true }), txt('every create, approve, reject, edit, merge, import and administrative action is recorded immutably.')]));
 
-// ═══════════════════ 10. EXCEPTIONS ═══════════════════
-children.push(H1('10.  Exceptions & Escalation'));
+// ═══════════════════ 11. EXCEPTIONS ═══════════════════
+children.push(H1('11.  Exceptions & Escalation'));
 children.push(bullet('A step that breaches its SLA is flagged and escalated to the next approver/level so requests are not silently stuck.'));
 children.push(bullet('If a Supervisor is unavailable, a region Manager may act on the Supervisor step (fallback) — see Scenario I.'));
 children.push(bullet('A customer that cannot be placed in a known region/route on import is parked in an UNASSIGNED area with a warning for the Steward to resolve — it is never silently dropped.'));
