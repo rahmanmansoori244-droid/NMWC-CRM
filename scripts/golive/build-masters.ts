@@ -28,7 +28,6 @@
 import ExcelJS from 'exceljs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
 
 const DESKTOP = 'C:/Users/abdulr/Desktop';
 // The RoutePro customer master is re-exported before every real load; whichever
@@ -67,6 +66,11 @@ const DQ = path.join(OUT, 'dq');
 // in the 8 weeks before the snapshot's last day (or in this month's upload file).
 const ACTIVE_MIN_OMR = Number(process.env.ACTIVE_MIN_OMR ?? 500);
 const ACTIVE_WINDOW_DAYS = 56;
+// Owner decision (2026-09-10): every account starts with this password and MUST change
+// it at first login (the import sets mustChangePassword). Usernames are guessable
+// (route codes / names), so until each person signs in once, anyone who knows this
+// value can sign in as them — hand the logins out and have them used the same day.
+const INITIAL_PASSWORD = process.env.INITIAL_PASSWORD ?? '12345';
 
 // ── Region model (owner-confirmed) ───────────────────────────────────────────
 const REGIONS: Array<{ code: string; name: string }> = [
@@ -288,7 +292,7 @@ const MUSCAT_SUPERVISOR_BY_CLASS: Record<string, string> = {
 };
 // Owner decision: Sara Khayat also sells C3 herself — a second, SALESMAN login.
 const MANAGER_ALSO_SELLS: Record<string, { username: string; fullName: string }> = {
-  C3: { username: 'sara.khayat.c3', fullName: 'SARA KHAYAT' },
+  C3: { username: 'c3', fullName: 'SARA KHAYAT' },
 };
 const SUPERVISOR_BY_REGION: Record<string, string> = {
   NZW: 'sunil.kp',
@@ -374,23 +378,6 @@ function cleanPhone(raw: unknown): { phone: string | null; reason?: string } {
   const all = s.replace(/\D/g, '');
   if (all.length === 8) return { phone: `+968${all}` };
   return { phone: null, reason: `no valid 8-digit Oman number in "${s.slice(0, 30)}"` };
-}
-function slugUsername(fullName: string): string {
-  const parts = fullName
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length === 0) return 'user';
-  const base = parts.length === 1 ? parts[0] : `${parts[0]}.${parts[parts.length - 1]}`;
-  return base.slice(0, 40).padEnd(3, 'x');
-}
-function genPassword(): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-  const bytes = randomBytes(12);
-  let s = '';
-  for (let i = 0; i < 12; i++) s += alphabet[bytes[i] % alphabet.length];
-  return `Nmwc-${s}`;
 }
 function isPlaceholderName(name: string, routeCode: string): boolean {
   const u = name.trim().toUpperCase();
@@ -874,6 +861,7 @@ async function main() {
       phone: '',
       reset_password: '',
       change_role: '',
+      must_change_password: 'yes',
     });
   }
   const managerNames = MANAGERS.map((m) => m.fullName.toUpperCase());
@@ -945,8 +933,8 @@ async function main() {
     const route = routes.find((r) => r.code === best)!;
     const sup = supervisorFor(route);
     if (!sup) noSupervisor.push([best, route.region, route.cls ?? '', titleCase(name)]);
-    const username = uniqueUsername(slugUsername(name));
-    const pw = genPassword();
+    const username = uniqueUsername(best.toLowerCase());
+    const pw = INITIAL_PASSWORD;
     users.push({
       username,
       full_name: titleCase(name),
@@ -959,6 +947,7 @@ async function main() {
       phone: '',
       reset_password: '',
       change_role: '',
+      must_change_password: 'yes',
     });
     credentials.push([
       username,
@@ -979,7 +968,7 @@ async function main() {
   for (const m of managerSalesRoutes) {
     const sup = supervisorFor(m.route);
     usedUsernames.add(m.username);
-    const pw = genPassword();
+    const pw = INITIAL_PASSWORD;
     users.push({
       username: m.username,
       full_name: titleCase(m.fullName),
@@ -992,6 +981,7 @@ async function main() {
       phone: '',
       reset_password: '',
       change_role: '',
+      must_change_password: 'yes',
     });
     credentials.push([
       m.username,
@@ -1010,7 +1000,7 @@ async function main() {
     ['finance.manager', 'Finance Manager', 'FINANCE_MANAGER', ''],
     ['gm.nmwc', 'General Manager', 'GM', ''],
   ] as const) {
-    const pw = genPassword();
+    const pw = INITIAL_PASSWORD;
     users.push({
       username,
       full_name: fullName,
@@ -1023,6 +1013,7 @@ async function main() {
       phone: '',
       reset_password: '',
       change_role: '',
+      must_change_password: 'yes',
     });
     credentials.push([username, fullName, role, regions, pw]);
   }
@@ -1068,6 +1059,7 @@ async function main() {
       'phone',
       'reset_password',
       'change_role',
+      'must_change_password',
     ],
     users
   );
@@ -1100,8 +1092,8 @@ async function main() {
   );
   await cust.xlsx.writeFile(path.join(OUT, 'customer-master.xlsx'));
 
-  const stewardPw = genPassword();
-  const managerCreds = MANAGERS.map((m) => ({ ...m, password: genPassword() }));
+  const stewardPw = INITIAL_PASSWORD;
+  const managerCreds = MANAGERS.map((m) => ({ ...m, password: INITIAL_PASSWORD }));
   const cred = new ExcelJS.Workbook();
   addSheet(
     cred,
@@ -1276,6 +1268,9 @@ async function main() {
     `15. **Newcomers from this month's sales**: ${septNew.length} customers/branches invoiced in September that the RoutePro snapshot (${path.basename(SRC.rpCustomers)}) does not contain were added on their September route as CASH/ACTIVE (dq/new-from-september-sales.csv). Re-export RoutePro before the final build to capture customers created in Timix that have not bought yet.`
   );
   md.push('');
+  md.push(
+    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their name (e.g. `ashok`, `sara.khayat`), the steward as `steward`; the initial password is the same for everyone and MUST be changed at first login. Until each person signs in once, anyone who knows it can sign in as them — distribute and use the logins the same day. ✅'
+  );
   md.push('## What is in the files');
   md.push(`- **Regions:** 7`);
   md.push(

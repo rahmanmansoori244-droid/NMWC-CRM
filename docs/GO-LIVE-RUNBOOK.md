@@ -31,20 +31,21 @@ files, what was withheld, and **every assumption that needs your confirmation**.
 Everything happens in the production app, in this order. Do not skip a step; the
 importer enforces most of the order, but not all of it.
 
-1. **Create the first Steward.** This cannot be done in the app: the seeded `admin`
-   is a Manager, Managers may only create field roles, and the import refuses to
-   create a Steward. Run once, from a machine with the **production** database URL
-   (the password is the one in `credentials.xlsx` → *Create in app FIRST*, first row):
+1. **Create the Steward and the 11 Managers.** Neither can come from the app or a
+   spreadsheet (the seeded `admin` is a Manager, Managers may only create field
+   roles, and the import refuses admin-tier roles). Run once, from a machine with the
+   **production** database URL:
 
    ```bash
-   STEWARD_PASSWORD='<that password>' DATABASE_URL='<production URL>' npx tsx scripts/golive/bootstrap-steward.ts
+   DATABASE_URL='<production URL>' npx tsx scripts/golive/bootstrap-accounts.ts golive-data/managers.json
    ```
 
-   It refuses to run if a Steward already exists and touches nothing else. Sign in as
-   `steward`; you will be asked to change the password.
-2. **Create the 11 Manager accounts** in **Users** (same sheet). Username, full name,
-   role MANAGER, password as listed. Do **not** assign regions by hand — the next step
-   does it.
+   It creates `steward` plus the managers by name (`ahmed.alnadabi`, `haitham`,
+   `sarath`, `sara.khayat`, `ashok`, `rashid`, `rasool`, `saqib`, `saud`, `sunil.kp`,
+   `tharwat`), all with the initial password `12345` and a **forced password change at
+   first login**. It skips any username that already exists and touches nothing else.
+   Regions are assigned by the next step, not here.
+2. Sign in as `steward` — you are sent straight to *change password* (12+ characters).
 3. **Import → Account master** → `golive-data/account-master.xlsx`.
    Expect: 7 regions, 43 routes, 56 user rows applied. Open the issues list — it
    must be empty except for anything you already know about. Check **Users**: every
@@ -64,9 +65,14 @@ importer enforces most of the order, but not all of it.
 7. **Spot-check** as a salesman (any login from `credentials.xlsx`, sheet *Created by
    import*): **Today** shows that route's journey-plan customers for today's weekday;
    a customer page shows region, route, channel, payment terms, Temix code.
-8. **Hand out logins.** Each person gets their row from `credentials.xlsx`. Then
-   **delete `credentials.xlsx`** (and empty the recycle bin). Everyone must change
-   their password on first login.
+8. **Hand out logins — the same day.** Every salesman's username is their **route
+   code** (`c4`, `sh01`, `nizd` …), every manager's is their name, and the initial
+   password is `12345` for everyone. The app forces each person to choose a new
+   12+-character password the first time they sign in. Because the usernames are
+   guessable, the initial password is only safe for as long as accounts sit unused:
+   **have everyone sign in and change it on launch day**, and ask the Steward to check
+   **Users** the next morning for anyone who has not (their account still shows the
+   forced-change flag). `credentials.xlsx` lists the logins — delete it afterwards.
 
 ## 2. If something goes wrong
 

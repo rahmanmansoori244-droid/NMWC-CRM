@@ -186,6 +186,13 @@ const usersCols: Col[] = [
     notes:
       'Set to "yes" to change an EXISTING user\'s role. (Cannot promote to/from MANAGER or STEWARD — use /users.)',
   },
+  {
+    key: 'must_change_password',
+    required: 'Optional',
+    format: 'yes / blank',
+    notes:
+      'Set to "yes" to force the person to choose a new password at first login. Only then is a short initial password (4+) accepted; the one they choose must be 12+.',
+  },
 ];
 
 function buildAccountMaster(): Buffer {

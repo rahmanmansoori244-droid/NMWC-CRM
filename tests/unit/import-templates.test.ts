@@ -34,6 +34,7 @@ describe('go-live import templates match the importer contract', () => {
       'phone',
       'reset_password',
       'change_role',
+      'must_change_password',
     ]);
     // example Users row is well-formed (a supervisor + a salesman + an accountant).
     const roles = byName['Users'].rows.map((r) => String(r.role));

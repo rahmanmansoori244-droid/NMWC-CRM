@@ -240,6 +240,13 @@ async function uploadAccountMasterCore(
       const regionCodesRaw = String(row.region_codes ?? row.regionCodes ?? '').trim();
       const email = String(row.email ?? '').trim() || null;
       const phone = String(row.phone ?? '').trim() || null;
+      // Go-live credential policy: a row may force the person to choose a new
+      // password at first login (AUTH-09). Only then is a SHORT initial password
+      // accepted — the change-password screen enforces the 12-character rule on
+      // the one they pick, so the weak value never outlives the first sign-in.
+      const mustChange = /^(yes|true|1)$/i.test(
+        String(row.must_change_password ?? row.mustChangePassword ?? '').trim()
+      );
 
       if (!username || !fullName || !roleStr) {
         issues.push({
@@ -257,8 +264,14 @@ async function uploadAccountMasterCore(
         });
         continue;
       }
-      if (passwordRaw && passwordRaw.length < 12) {
-        issues.push({ sheet: 'Users', row: sheetRow, message: 'password must be 12+ chars' });
+      if (passwordRaw && passwordRaw.length < (mustChange ? 4 : 12)) {
+        issues.push({
+          sheet: 'Users',
+          row: sheetRow,
+          message: mustChange
+            ? 'password must be 4+ chars (it is replaced at first login)'
+            : 'password must be 12+ chars (or set must_change_password=yes)',
+        });
         continue;
       }
 
@@ -434,6 +447,7 @@ async function uploadAccountMasterCore(
         update.passwordHash = passwordHash;
         update.sessionsRevokedAt = new Date();
       }
+      if (mustChange) update.mustChangePassword = true;
       if (!existing || wantsRoleChange) update.role = role;
 
       const data: Prisma.UserCreateInput = {
@@ -443,6 +457,7 @@ async function uploadAccountMasterCore(
         role,
         email,
         phone,
+        mustChangePassword: mustChange,
       };
       if (supervisorId) data.supervisor = { connect: { id: supervisorId } };
       if (ownedRouteId) data.ownedRoute = { connect: { id: ownedRouteId } };

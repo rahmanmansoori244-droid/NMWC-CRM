@@ -34,9 +34,11 @@ async function requireUserAdmin() {
   return session.user;
 }
 
+// Go-live: salesmen sign in with their ROUTE CODE, and codes like "C4" or "W" are
+// shorter than three characters.
 const usernameRule = z
   .string()
-  .min(3)
+  .min(1)
   .max(50)
   .regex(/^[a-z0-9._-]+$/, 'lowercase letters, digits, dot, underscore, hyphen only');
 
@@ -46,11 +48,28 @@ const createUserSchema = z.object({
   username: usernameRule,
   fullName: z.string().min(2).max(200),
   role: z.nativeEnum(Role),
-  email: z.string().email().max(200).optional().or(z.literal('').transform(() => undefined)),
-  phone: z.string().max(50).optional().or(z.literal('').transform(() => undefined)),
+  email: z
+    .string()
+    .email()
+    .max(200)
+    .optional()
+    .or(z.literal('').transform(() => undefined)),
+  phone: z
+    .string()
+    .max(50)
+    .optional()
+    .or(z.literal('').transform(() => undefined)),
   password: passwordRule,
-  supervisorId: z.string().cuid().optional().or(z.literal('').transform(() => undefined)),
-  ownedRouteId: z.string().cuid().optional().or(z.literal('').transform(() => undefined)),
+  supervisorId: z
+    .string()
+    .cuid()
+    .optional()
+    .or(z.literal('').transform(() => undefined)),
+  ownedRouteId: z
+    .string()
+    .cuid()
+    .optional()
+    .or(z.literal('').transform(() => undefined)),
 });
 
 /**
@@ -66,7 +85,9 @@ export async function createUserAction(formData: FormData): SafeAction<void> {
 async function createUserCore(formData: FormData) {
   const me = await requireUserAdmin();
   const parsed = createUserSchema.safeParse({
-    username: String(formData.get('username') ?? '').toLowerCase().trim(),
+    username: String(formData.get('username') ?? '')
+      .toLowerCase()
+      .trim(),
     fullName: formData.get('fullName'),
     role: formData.get('role'),
     email: formData.get('email') ?? undefined,
@@ -91,8 +112,7 @@ async function createUserCore(formData: FormData) {
   // approver tier (FINANCE_MANAGER/GM/ACCOUNTANT) the create chains require.
   if (me.role === Role.MANAGER && !MANAGER_ADMINISTRABLE_ROLES.includes(data.role)) {
     throw new ValidationError({
-      role:
-        'A Manager can only create Salesman/Supervisor/Viewer accounts — ask a Steward to provision approver or admin-tier accounts.',
+      role: 'A Manager can only create Salesman/Supervisor/Viewer accounts — ask a Steward to provision approver or admin-tier accounts.',
     });
   }
 
@@ -216,8 +236,7 @@ async function toggleUserActiveCore(formData: FormData) {
     });
     if (otherActiveManagers === 0) {
       throw new ValidationError({
-        _form:
-          'Cannot disable the only active Manager. Promote another user to Manager first.',
+        _form: 'Cannot disable the only active Manager. Promote another user to Manager first.',
       });
     }
   }
@@ -316,7 +335,11 @@ async function resetPasswordCore(formData: FormData) {
 const updateRoleSchema = z.object({
   userId: z.string().cuid(),
   newRole: z.nativeEnum(Role),
-  ownedRouteId: z.string().cuid().optional().or(z.literal('').transform(() => undefined)),
+  ownedRouteId: z
+    .string()
+    .cuid()
+    .optional()
+    .or(z.literal('').transform(() => undefined)),
 });
 
 export async function updateUserRoleAction(formData: FormData): SafeAction<void> {
@@ -355,7 +378,8 @@ async function updateUserRoleCore(formData: FormData) {
   // alongside the create/reset/disable guards. A STEWARD may assign any role.
   if (me.role === Role.MANAGER && !MANAGER_ADMINISTRABLE_ROLES.includes(newRole)) {
     throw new ValidationError({
-      newRole: 'A Manager can only assign Salesman/Supervisor/Viewer — approver and admin roles are Steward-provisioned.',
+      newRole:
+        'A Manager can only assign Salesman/Supervisor/Viewer — approver and admin roles are Steward-provisioned.',
     });
   }
 

@@ -8,7 +8,7 @@ Two Excel files to fill and hand back. They are generated to match **exactly** t
 | `customer-master-template.xlsx` | Customers + their branches | Steward → **Import → Customer master** |
 
 ## Do it in this order
-1. **Create the MANAGER and STEWARD accounts in the app first** (`/users`) — the import cannot create those two roles (a safety rule so nobody mints an admin from a spreadsheet). On a brand-new database there is no account that can create a Steward yet: run `scripts/golive/bootstrap-steward.ts` once (see `docs/GO-LIVE-RUNBOOK.md`).
+1. **Create the MANAGER and STEWARD accounts in the app first** (`/users`) — the import cannot create those two roles (a safety rule so nobody mints an admin from a spreadsheet). On a brand-new database there is no account that can create a Steward yet: run `scripts/golive/bootstrap-accounts.ts` once (see `docs/GO-LIVE-RUNBOOK.md`) — it creates the Steward and the Managers with a forced password change at first login.
 2. **Import the Account master** (regions → routes → people; the app auto-orders supervisors before salesmen).
 3. **Import the Customer master** → review the staged rows → **Promote**.
 
@@ -50,6 +50,7 @@ Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instruct
 | `email`, `phone` | optional | |
 | `reset_password` | optional | `yes` to rotate an existing user's password (also fill `password`). |
 | `change_role` | optional | `yes` to change an existing user's role. |
+| `must_change_password` | optional | `yes` forces the person to choose a new password at first login. Only then is a short initial password (4+) accepted — the one they choose must be 12+. |
 
 ---
 
