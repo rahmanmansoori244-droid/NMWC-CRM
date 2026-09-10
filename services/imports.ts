@@ -835,6 +835,8 @@ export type PromoteSliceResult = {
   promoted: number;
   /** customers (groups) that failed, not rows — `promoted` counts rows. */
   failed: number;
+  /** rows left CLEAN because the DB faltered; the next slice retries them. */
+  deferred: number;
   remaining: number;
   done: boolean;
   /**
@@ -872,6 +874,23 @@ const PROMOTE_LEASE_MS = 90_000;
  * batch quickly instead of holding it for the full lease.
  */
 const PROMOTE_HANDOFF_GRACE_MS = 20_000;
+
+/**
+ * Prisma codes that mean "the database was unavailable/slow", not "this data is
+ * bad": unreachable, timed out, connection closed, no pool connection, and the
+ * interactive-transaction timeout. A group that fails on one of these must be
+ * RETRIED, never rejected — see the call site.
+ */
+const TRANSIENT_DB_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1011', 'P1017', 'P2024', 'P2028']);
+function isTransientDbError(err: unknown, code: string): boolean {
+  if (TRANSIENT_DB_CODES.has(code)) return true;
+  // Engine-level faults arrive as plain Errors with no Prisma code at all — the
+  // empty-response one is what a killed/restarted query engine actually produces.
+  const msg = err instanceof Error ? err.message : '';
+  return /Response from the Engine was empty|Server has closed the connection|Timed out fetching a new connection|Can't reach database server/i.test(
+    msg
+  );
+}
 
 export async function promoteCustomerBatchAction(
   formData: FormData
@@ -939,6 +958,34 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     }
     throw new ValidationError({
       batchId: `Batch is in state ${cur?.status ?? '<missing>'} — only READY or interrupted batches can be promoted.`,
+    });
+  }
+  // RK-3: the lease serializes ONE batch, but the QA P-01 branch-steal guard is a
+  // read-then-upsert whose safety argument rests on promote being serialized across
+  // the whole master ("batch promote is serialized by the atomic claim"). Two
+  // DIFFERENT batches promoting at once would reopen that window — and RK-3 stretched
+  // it from a single request to minutes, while actively inviting the sequence that
+  // triggers it (upload a corrected sheet while the first batch is still resumable).
+  // So refuse to run a second concurrent promote; fail closed.
+  const otherLive = await prisma.importBatch.findFirst({
+    where: {
+      id: { not: batchId },
+      kind: 'CUSTOMER',
+      status: 'PROMOTING',
+      promoteLeaseUntil: { gt: new Date() },
+    },
+    select: { id: true, filename: true },
+  });
+  if (otherLive) {
+    // Release the claim we just took so this batch is not left holding a lease.
+    await prisma.importBatch
+      .updateMany({
+        where: { id: batchId, promoteLeaseBy: leaseToken },
+        data: { promoteLeaseBy: null, promoteLeaseUntil: null },
+      })
+      .catch(() => {});
+    throw new ValidationError({
+      batchId: `Another customer import ("${otherLive.filename}") is being promoted right now. Only one may run at a time — wait for it to finish, then resume this one.`,
     });
   }
   // final-hunt #23 (revised for RK-3): once claimed, any UNEXPECTED throw must not
@@ -1022,6 +1069,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // message in `issues`, and the action returns a `{ promoted, failed }`
     // tuple that the UI surfaces in the toast — no more silent swallow.
     let promoted = 0;
+    // Rows left CLEAN because the DATABASE failed, not the data — retried next slice.
+    let deferred = 0;
     const failures: Array<{ custCode: string; rowIds: string[]; reason: string }> = [];
     // RK-3: yield the slice once the budget is spent. The check is at the TOP of the
     // loop, so a slice always makes progress on at least one customer — a batch can
@@ -1439,6 +1488,27 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           err instanceof Error && err.message.startsWith('CROSSWALK:')
             ? err.message.slice('CROSSWALK:'.length)
             : null;
+
+        // RK-3: a group that failed because the DATABASE hiccuped is NOT a rejected
+        // customer. Rejecting it would be permanent — a REJECTED row leaves CLEAN,
+        // so no later slice ever retries it and no screen offers to requeue it — and
+        // the batch would still finish green, quietly short of customers.
+        //
+        // This matters far more now than before: promote used to be one short
+        // request, and is now minutes of work across dozens of them, which is
+        // exactly the window in which a pool timeout, a Neon compute resume or a
+        // dropped connection shows up on go-live day.
+        //
+        // So: leave those rows CLEAN and let the next slice retry them. If the
+        // failure is actually permanent the run stops on its own — the caller's
+        // stall guard sees a slice that reduced nothing — which is a loud, visible,
+        // retryable outcome instead of a silent loss.
+        if (!crosswalk && isTransientDbError(err, code)) {
+          deferred += g.rowIds.length;
+          logger.warn({ code, custCode, batchId }, 'import.promote.row_deferred');
+          continue;
+        }
+
         logger.warn(
           { code, target: meta, custCode, batchId, crosswalk: !!crosswalk },
           'import.promote.row_failed'
@@ -1522,6 +1592,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             groupsInSlice: processedGroups,
             promoted,
             failed: failures.length,
+            deferred,
             remaining,
             final: done,
             failureCustCodes: failures.map((f) => f.custCode).slice(0, 100),
@@ -1546,6 +1617,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     return {
       promoted,
       failed: failures.length,
+      deferred,
       remaining,
       done,
       // Only hand the token back while the run should continue, and only if we still
