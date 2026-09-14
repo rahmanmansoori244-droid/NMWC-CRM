@@ -204,7 +204,7 @@ jobs:
              SELECT 'ci-pad-' || g, '${ACTOR}', 'UPDATE', 'System', 'restore-chain-pad',
                     repeat('padding to push the dump past the pipe buffer ', 4)
              FROM generate_series(1, 4000) g"
-          echo "AuditLog rows: $(psql "$DATABASE_URL" -At -c 'SELECT count(*) FROM \"AuditLog\"')"
+          psql "$DATABASE_URL" -At -c 'SELECT '"'"'AuditLog rows: '"'"' || count(*) FROM "AuditLog"'
 
       - name: Manifest (the same query the nightly backup runs)
         run: |
