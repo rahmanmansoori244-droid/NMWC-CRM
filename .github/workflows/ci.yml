@@ -1,24 +1,120 @@
 name: CI
 
+# B1 (enterprise assessment, 2026-09-14): CI used to run on `main` only, so the
+# 74-commit go-live branch had never been built or tested by CI before it was
+# due to be merged. Every branch is checked on push now (a PR from a branch of
+# this repo is covered by the push run — no separate pull_request trigger, so a
+# PR push does not run the DB job twice), and a merge to `main` is expected to
+# be a fast-forward of a green branch.
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Superseded pushes on a working branch are cancelled; a run on main is never
+  # cancelled (the deploy decision is taken from its result).
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  lint-test:
+  lint-test-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      # Throw-away secrets for boot-time validation only; generated at run time
+      # so no secret-shaped literal lives in the repository (gitleaks scans it).
+      - name: Throw-away env for the build
+        run: |
+          echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      # The production build (what Vercel runs) — WITHOUT `prisma migrate deploy`,
+      # which package.json's `build` script couples to it; migrations are applied
+      # by the deploy, never by CI.
+      - name: next build
+        run: npx next build
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+          DIRECT_URL: postgresql://ci:ci@localhost:5432/ci
+          NEXT_TELEMETRY_DISABLED: '1'
+      # ADVISORY ONLY (for now): the production-dependency audit is printed on
+      # every run but cannot fail the job — four critical advisories are open
+      # against pinned framework versions (assessment SEC-05, roadmap 1.6) and
+      # the bump is scheduled separately. Remove `continue-on-error` once the
+      # baseline is clean so a NEW critical advisory blocks.
+      - name: npm audit (production deps, advisory)
+        run: npm audit --omit=dev --audit-level=critical
+        continue-on-error: true
+
+  # The concurrency / authorization / import suites are DB-backed and were only
+  # ever run by hand against a Neon branch. They run here against a throw-away
+  # Postgres so a regression in a claim, a scope rule or the promote lease
+  # cannot reach `main` unnoticed.
+  db-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: nmwc_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci -d nmwc_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/nmwc_ci
+      DIRECT_URL: postgresql://ci:ci@localhost:5432/nmwc_ci
+      SEED_ADMIN_PASSWORD: Ci-Seed-Admin-Password-2026!
+      RATE_LIMIT_BACKEND: pg
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Throw-away env for the tests
+        run: |
+          echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      - run: npx prisma migrate deploy
+      - run: npm run db:seed
+      # The import suites read deterministic xlsx fixtures that are generated,
+      # not committed (qa/fixtures/<scale>-<seed>/master.xlsx).
+      - name: Generate import fixtures
+        run: |
+          npx tsx scripts/qa/generate-synthetic-master.ts --scale=dirty --seed=424242
+          npx tsx scripts/qa/generate-synthetic-master.ts --scale=tiny --seed=424242
+          npx tsx scripts/qa/generate-synthetic-master.ts --scale=medium --seed=424242
+      - name: DB-backed integration suites
+        run: npx vitest run tests/integration
+        env:
+          RUN_PG_RATE_LIMIT_TEST: '1'
+          RUN_USER_ADMIN_SCOPE: '1'
+          RUN_USER_PROVISION: '1'
+          RUN_MGR_AUTHZ: '1'
+          RUN_EDIT_GUARD: '1'
+          RUN_CREDIT_CHAIN: '1'
+          RUN_REACTIVATION_TESTS: '1'
+          RUN_CLOSE_SHOP: '1'
+          RUN_REGION_WEDGE: '1'
+          RUN_MERGE_TESTS: '1'
+          RUN_MERGE_OPEN: '1'
+          RUN_IMPORT_TESTS: '1'
+          RUN_PROMOTE_TESTS: '1'
+          RUN_PROMOTE_RELEASE: '1'
+          RUN_GOLIVE_FLOW: '1'
 
   # SEC-C2: fail the build if a high-entropy secret (API key, token, connection
   # string, private key) is committed — the guardrail that would have caught the

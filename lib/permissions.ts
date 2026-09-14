@@ -219,12 +219,110 @@ export function canActOnStep(
  * so a Manager could create/reset/disable Finance Manager, GM and Accountant
  * accounts — seizing the entire credit-approval chain (separation-of-duty
  * bypass) or disabling it (DoS). Approver provisioning is Steward-only now.
+ *
+ * SECURITY (enterprise assessment B2 / SEC-02, 2026-09-14): VIEWER is an
+ * ORG-WIDE read + export role (lib/access.ts, lib/export-scope.ts). Letting a
+ * region-scoped Manager mint one was a two-click escalation out of their own
+ * region — export the whole master, read every CR/GUARANTEE document. VIEWER is
+ * Steward-provisioned now; a Manager administers only the roles whose data
+ * scope is itself regional (route / team).
  */
-export const MANAGER_ADMINISTRABLE_ROLES: Role[] = [
-  Role.SALESMAN,
-  Role.SUPERVISOR,
-  Role.VIEWER,
-];
+export const MANAGER_ADMINISTRABLE_ROLES: Role[] = [Role.SALESMAN, Role.SUPERVISOR];
+
+/**
+ * B2 / SEC-02: the regions a user's data access is anchored to, for delegated
+ * administration. A SALESMAN is anchored to their route's region, a SUPERVISOR
+ * to the regions of the routes their reports own, a MANAGER/ACCOUNTANT to the
+ * regions they manage. Org-wide roles (STEWARD/VIEWER/FM/GM) have no regional
+ * anchor and are never Manager-administrable anyway.
+ */
+export type UserRegionFootprint = {
+  id: string;
+  role: Role;
+  ownedRouteRegionId: string | null;
+  teamRegionIds: string[];
+  managedRegionIds: string[];
+  /** Who the user reports to — the only anchor an account has before it owns a route or a team. */
+  supervisorId?: string | null;
+};
+
+export function userRegionIds(f: UserRegionFootprint): string[] {
+  return [
+    ...new Set([
+      ...(f.ownedRouteRegionId ? [f.ownedRouteRegionId] : []),
+      ...f.teamRegionIds,
+      ...f.managedRegionIds,
+    ]),
+  ];
+}
+
+/**
+ * May MANAGER `managerId` with `managedRegionIds` administer (disable / reset /
+ * re-role) `target`? Fail-closed: a Manager with no regions administers nobody;
+ * every region the target is anchored to must be one the Manager manages (a
+ * supervisor covering two regions is not "yours" if you manage one of them).
+ * A field-force user with no regional anchor yet (a supervisor without reports,
+ * a salesman between routes) is administrable ONLY by the Manager they report
+ * to — otherwise any Manager could reset such an account's password and log
+ * in as them (review finding on the first cut of this rule).
+ */
+export function managerCanAdministerUser(
+  managedRegionIds: string[],
+  target: UserRegionFootprint,
+  managerId?: string
+): { ok: true } | { ok: false; reason: string } {
+  if (!MANAGER_ADMINISTRABLE_ROLES.includes(target.role)) {
+    return {
+      ok: false,
+      reason:
+        'A Manager can only manage Salesman/Supervisor accounts — Viewer, approver and admin roles are Steward-provisioned.',
+    };
+  }
+  if (managedRegionIds.length === 0) {
+    return { ok: false, reason: 'You have no managed regions assigned — ask a Steward.' };
+  }
+  const regions = userRegionIds(target);
+  if (regions.length === 0) {
+    if (managerId && target.supervisorId === managerId) return { ok: true };
+    return {
+      ok: false,
+      reason:
+        'That account is not anchored to any region yet and does not report to you — a Steward can administer it.',
+    };
+  }
+  const outside = regions.filter((r) => !managedRegionIds.includes(r));
+  if (outside.length > 0) {
+    return { ok: false, reason: 'That account belongs to a region you do not manage.' };
+  }
+  return { ok: true };
+}
+
+/** May a MANAGER assign a salesman to the route in `routeRegionId`? */
+export function managerCanAssignRoute(managedRegionIds: string[], routeRegionId: string): boolean {
+  return managedRegionIds.length > 0 && managedRegionIds.includes(routeRegionId);
+}
+
+/**
+ * May a MANAGER (`meId`, `managedRegionIds`) set `supervisor` as someone's
+ * supervisor? Themself always; a peer MANAGER only with a shared region (a
+ * salesman must not be routed to an approver outside the region); a SUPERVISOR
+ * only when every region they already cover is one the Manager manages.
+ */
+export function managerCanAssignSupervisor(
+  meId: string,
+  managedRegionIds: string[],
+  supervisor: UserRegionFootprint
+): boolean {
+  if (supervisor.id === meId) return true;
+  if (managedRegionIds.length === 0) return false;
+  if (supervisor.role === Role.MANAGER) {
+    return supervisor.managedRegionIds.some((r) => managedRegionIds.includes(r));
+  }
+  if (supervisor.role === Role.SUPERVISOR) {
+    return userRegionIds(supervisor).every((r) => managedRegionIds.includes(r));
+  }
+  return false;
+}
 
 /**
  * The roles a given viewer may CREATE/assign — the single source of truth shared
@@ -259,7 +357,8 @@ export function canMutateUser(
   if (actor.role === Role.MANAGER && !MANAGER_ADMINISTRABLE_ROLES.includes(target.role)) {
     return {
       ok: false,
-      reason: 'A Manager can only manage Salesman/Supervisor/Viewer accounts — approver and admin roles are Steward-provisioned.',
+      reason:
+        'A Manager can only manage Salesman/Supervisor accounts — Viewer, approver and admin roles are Steward-provisioned.',
     };
   }
   return { ok: true };

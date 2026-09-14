@@ -61,6 +61,9 @@ const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/temix', label: 'Temix sync', icon: RefreshCw },
     { href: '/customers', label: 'Customers', icon: Search },
     { href: '/duplicates', label: 'Duplicates', icon: AlertTriangle },
+    // SEC-10: regions are Steward-created (a Manager only works inside theirs).
+    { href: '/routes', label: 'Routes & regions', icon: Map },
+    { href: '/users', label: 'Users', icon: Users },
     { href: '/work', label: 'Work items', icon: Inbox },
   ],
   VIEWER: [

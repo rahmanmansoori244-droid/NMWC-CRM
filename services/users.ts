@@ -14,7 +14,15 @@ import {
 import { auth } from '@/lib/auth';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
-import { canMutateUser, MANAGER_ADMINISTRABLE_ROLES } from '@/lib/permissions';
+import {
+  canMutateUser,
+  MANAGER_ADMINISTRABLE_ROLES,
+  managerCanAdministerUser,
+  managerCanAssignRoute,
+  managerCanAssignSupervisor,
+  type UserRegionFootprint,
+} from '@/lib/permissions';
+import { loadScope } from '@/lib/access';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 // User administration is a MANAGER or STEWARD action. A MANAGER is capped at the
@@ -82,6 +90,52 @@ export async function createUserAction(formData: FormData): SafeAction<void> {
   return runAction(() => createUserCore(formData));
 }
 
+/**
+ * B2 / SEC-02: the regional anchor of a user, for Manager-scoped administration
+ * (see lib/permissions.ts managerCanAdministerUser).
+ */
+async function footprintOf(userId: string): Promise<UserRegionFootprint | null> {
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      role: true,
+      supervisorId: true,
+      ownedRoute: { select: { regionId: true } },
+      reports: { select: { ownedRoute: { select: { regionId: true } } } },
+      managedRegions: { select: { id: true } },
+    },
+  });
+  if (!u) return null;
+  return {
+    id: u.id,
+    role: u.role,
+    supervisorId: u.supervisorId,
+    ownedRouteRegionId: u.ownedRoute?.regionId ?? null,
+    teamRegionIds: [
+      ...new Set(
+        u.reports.map((r) => r.ownedRoute?.regionId).filter((r): r is string => !!r)
+      ),
+    ],
+    managedRegionIds: u.managedRegions.map((r) => r.id),
+  };
+}
+
+/**
+ * B2 / SEC-02: a MANAGER may only administer accounts anchored inside the
+ * regions they manage (fail-closed on no regions). STEWARD is org-wide.
+ */
+async function assertManagerScopeOverTarget(
+  me: { id: string; role: Role },
+  targetId: string
+): Promise<void> {
+  if (me.role !== Role.MANAGER) return;
+  const [scope, target] = await Promise.all([loadScope(me.id), footprintOf(targetId)]);
+  if (!target) throw new NotFoundError('User not found.');
+  const verdict = managerCanAdministerUser(scope.managedRegionIds, target, me.id);
+  if (!verdict.ok) throw new ForbiddenError(verdict.reason);
+}
+
 async function createUserCore(formData: FormData) {
   const me = await requireUserAdmin();
   const parsed = createUserSchema.safeParse({
@@ -112,7 +166,7 @@ async function createUserCore(formData: FormData) {
   // approver tier (FINANCE_MANAGER/GM/ACCOUNTANT) the create chains require.
   if (me.role === Role.MANAGER && !MANAGER_ADMINISTRABLE_ROLES.includes(data.role)) {
     throw new ValidationError({
-      role: 'A Manager can only create Salesman/Supervisor/Viewer accounts — ask a Steward to provision approver or admin-tier accounts.',
+      role: 'A Manager can only create Salesman/Supervisor accounts — ask a Steward to provision Viewer, approver or admin-tier accounts.',
     });
   }
 
@@ -123,6 +177,28 @@ async function createUserCore(formData: FormData) {
     throw new ValidationError({
       ownedRouteId: 'Only salesmen own a route. Clear this field for other roles.',
     });
+  }
+
+  // B2 / SEC-02: a Manager creates accounts INSIDE their regions only — the
+  // route must be in a managed region and the supervisor must be themself, a
+  // peer Manager sharing a region, or a Supervisor whose team sits in their
+  // regions. Fail-closed when the Manager has no regions. (A Steward is
+  // org-wide.) The UI narrows the dropdowns to the same sets; this is the
+  // server-side truth a hand-crafted form post cannot bypass.
+  const managerScope = me.role === Role.MANAGER ? await loadScope(me.id) : null;
+  if (managerScope && managerScope.managedRegionIds.length === 0) {
+    throw new ForbiddenError('You have no managed regions assigned — ask a Steward.');
+  }
+  if (managerScope && data.ownedRouteId) {
+    const route = await prisma.route.findUnique({
+      where: { id: data.ownedRouteId },
+      select: { regionId: true },
+    });
+    if (!route || !managerCanAssignRoute(managerScope.managedRegionIds, route.regionId)) {
+      throw new ValidationError({
+        ownedRouteId: 'That route is not in a region you manage.',
+      });
+    }
   }
 
   // AUTH-06: supervisorId must resolve to an active SUPERVISOR (or MANAGER
@@ -140,6 +216,17 @@ async function createUserCore(formData: FormData) {
       throw new ValidationError({
         supervisorId: 'supervisorId must point at a SUPERVISOR or MANAGER.',
       });
+    }
+    if (managerScope) {
+      const supFootprint = await footprintOf(data.supervisorId);
+      if (
+        !supFootprint ||
+        !managerCanAssignSupervisor(me.id, managerScope.managedRegionIds, supFootprint)
+      ) {
+        throw new ValidationError({
+          supervisorId: 'That supervisor is outside the regions you manage.',
+        });
+      }
     }
   }
 
@@ -225,6 +312,7 @@ async function toggleUserActiveCore(formData: FormData) {
     { id: user.id, role: user.role }
   );
   if (!guard.ok) throw new ForbiddenError(guard.reason);
+  await assertManagerScopeOverTarget(me, user.id); // B2 / SEC-02
 
   const newActive = !user.isActive;
 
@@ -289,6 +377,7 @@ async function resetPasswordCore(formData: FormData) {
     { id: target.id, role: target.role }
   );
   if (!guard.ok) throw new ForbiddenError(guard.reason);
+  await assertManagerScopeOverTarget(me, target.id); // B2 / SEC-02
 
   // B-15: refuse reuse against the target's last 5 historical hashes AND
   // their current hash (the current hash is not yet in history).
@@ -371,6 +460,7 @@ async function updateUserRoleCore(formData: FormData) {
     { id: target.id, role: target.role }
   );
   if (!guard.ok) throw new ForbiddenError(guard.reason);
+  await assertManagerScopeOverTarget(me, target.id); // B2 / SEC-02
 
   // SR-USR-01: a MANAGER may only assign field-force roles. Promotion to an
   // approver (FINANCE_MANAGER/GM/ACCOUNTANT) or admin (MANAGER/STEWARD) tier is
@@ -379,8 +469,18 @@ async function updateUserRoleCore(formData: FormData) {
   if (me.role === Role.MANAGER && !MANAGER_ADMINISTRABLE_ROLES.includes(newRole)) {
     throw new ValidationError({
       newRole:
-        'A Manager can only assign Salesman/Supervisor/Viewer — approver and admin roles are Steward-provisioned.',
+        'A Manager can only assign Salesman/Supervisor — Viewer, approver and admin roles are Steward-provisioned.',
     });
+  }
+  // B2 / SEC-02: a Manager may only place a salesman on a route in their regions.
+  if (me.role === Role.MANAGER && newRole === Role.SALESMAN && ownedRouteId) {
+    const [scope, route] = await Promise.all([
+      loadScope(me.id),
+      prisma.route.findUnique({ where: { id: ownedRouteId }, select: { regionId: true } }),
+    ]);
+    if (!route || !managerCanAssignRoute(scope.managedRegionIds, route.regionId)) {
+      throw new ValidationError({ ownedRouteId: 'That route is not in a region you manage.' });
+    }
   }
 
   // AUTH-07 last-Manager guard for demotion of an active Manager. (Note:

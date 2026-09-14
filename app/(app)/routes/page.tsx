@@ -3,6 +3,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
+import { loadScope } from '@/lib/access';
 import { CreateRegionForm, CreateRouteForm, ToggleButton } from './forms';
 
 export const metadata = { title: 'Routes & Regions · NMWC' };
@@ -10,9 +11,16 @@ export const metadata = { title: 'Routes & Regions · NMWC' };
 export default async function RoutesPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
-  if (session.user.role !== Role.MANAGER) redirect('/home');
+  // SEC-10: MANAGER works inside the regions they manage; STEWARD is org-wide
+  // and the only role that creates regions (services/routes.ts enforces both).
+  if (session.user.role !== Role.MANAGER && session.user.role !== Role.STEWARD) {
+    redirect('/home');
+  }
+  const isManager = session.user.role === Role.MANAGER;
+  const managed = isManager ? (await loadScope(session.user.id)).managedRegionIds : null;
 
   const regions = await prisma.region.findMany({
+    where: managed ? { id: { in: managed.length ? managed : ['__none__'] } } : undefined,
     orderBy: { code: 'asc' },
     include: {
       routes: {
@@ -24,7 +32,16 @@ export default async function RoutesPage() {
 
   return (
     <main>
-      <PageHeader title="Routes & Regions" subtitle={`${regions.length} regions`} />
+      <PageHeader
+        title="Routes & Regions"
+        subtitle={
+          isManager
+            ? regions.length === 0
+              ? 'No regions assigned to you yet — ask a Steward'
+              : `${regions.length} region${regions.length === 1 ? '' : 's'} you manage`
+            : `${regions.length} regions`
+        }
+      />
 
       <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-[1fr_320px]">
         <section className="space-y-4">
@@ -93,12 +110,14 @@ export default async function RoutesPage() {
         </section>
 
         <aside className="space-y-4">
-          <div className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
-              New region
-            </h2>
-            <CreateRegionForm />
-          </div>
+          {!isManager && (
+            <div className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+                New region
+              </h2>
+              <CreateRegionForm />
+            </div>
+          )}
           <div className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
               New route

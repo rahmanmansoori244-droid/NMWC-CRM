@@ -13,14 +13,41 @@ import {
 import { auth } from '@/lib/auth';
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { loadScope } from '@/lib/access';
 
-async function requireManager() {
+/**
+ * Route/region administration: MANAGER (region-scoped) or STEWARD (org-wide).
+ *
+ * SEC-10 (enterprise assessment, 2026-09-14): every action here admitted any
+ * MANAGER and ignored `managedRegions`, so a regional Manager could create
+ * routes in — or deactivate the routes and even the region of — another
+ * Manager's territory. A Manager now acts only inside the regions they manage
+ * (fail-closed on none); creating a REGION is Steward-only because a new
+ * region is, by definition, outside every Manager's scope.
+ */
+async function requireRouteAdmin() {
   const session = await auth();
   if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (session.user.role !== Role.MANAGER) {
-    throw new ForbiddenError('Only Managers can manage routes.');
+  if (session.user.role !== Role.MANAGER && session.user.role !== Role.STEWARD) {
+    throw new ForbiddenError('Only Managers and the Steward can manage routes.');
   }
   return session.user;
+}
+
+/** Managed-region ids for a MANAGER (fail-closed), `null` for the org-wide STEWARD. */
+async function regionScopeOf(me: { id: string; role: Role }): Promise<string[] | null> {
+  if (me.role !== Role.MANAGER) return null;
+  const scope = await loadScope(me.id);
+  if (scope.managedRegionIds.length === 0) {
+    throw new ForbiddenError('You have no managed regions assigned — ask a Steward.');
+  }
+  return scope.managedRegionIds;
+}
+
+function assertRegionInScope(scope: string[] | null, regionId: string) {
+  if (scope && !scope.includes(regionId)) {
+    throw new ForbiddenError('That region is not one you manage.');
+  }
 }
 
 const codeRule = z.string().min(2).max(20).regex(/^[A-Z0-9_-]+$/, 'uppercase + digits + - or _');
@@ -52,7 +79,10 @@ export async function createRegionAction(formData: FormData): SafeAction<void> {
 }
 
 async function createRegionCore(formData: FormData) {
-  const me = await requireManager();
+  const me = await requireRouteAdmin();
+  if (me.role !== Role.STEWARD) {
+    throw new ForbiddenError('Only the Steward can create a region.');
+  }
   const parsed = regionSchema.safeParse({
     code: String(formData.get('code') ?? '').toUpperCase().trim(),
     name: String(formData.get('name') ?? '').trim(),
@@ -78,7 +108,7 @@ export async function createRouteAction(formData: FormData): SafeAction<void> {
 }
 
 async function createRouteCore(formData: FormData) {
-  const me = await requireManager();
+  const me = await requireRouteAdmin();
   const parsed = routeSchema.safeParse({
     code: String(formData.get('code') ?? '').toUpperCase().trim(),
     name: String(formData.get('name') ?? '').trim(),
@@ -89,6 +119,7 @@ async function createRouteCore(formData: FormData) {
       Object.fromEntries(parsed.error.issues.map((i) => [i.path.join('.'), i.message]))
     );
   }
+  assertRegionInScope(await regionScopeOf(me), parsed.data.regionId);
   const route = await prisma.route.create({ data: parsed.data });
   await writeAudit(null, await getAuditEnvelope(me.id), {
     action: 'CREATE',
@@ -105,11 +136,12 @@ export async function toggleRegionActiveAction(formData: FormData): SafeAction<v
 }
 
 async function toggleRegionActiveCore(formData: FormData) {
-  const me = await requireManager();
+  const me = await requireRouteAdmin();
   const id = String(formData.get('id') ?? '');
   if (!id) throw new ValidationError({ id: 'required' });
   const r = await prisma.region.findUnique({ where: { id } });
   if (!r) throw new NotFoundError('Region not found.');
+  assertRegionInScope(await regionScopeOf(me), r.id);
   const updated = await prisma.region.update({
     where: { id },
     data: { isActive: !r.isActive },
@@ -131,11 +163,12 @@ export async function toggleRouteActiveAction(formData: FormData): SafeAction<vo
 }
 
 async function toggleRouteActiveCore(formData: FormData) {
-  const me = await requireManager();
+  const me = await requireRouteAdmin();
   const id = String(formData.get('id') ?? '');
   if (!id) throw new ValidationError({ id: 'required' });
   const r = await prisma.route.findUnique({ where: { id } });
   if (!r) throw new NotFoundError('Route not found.');
+  assertRegionInScope(await regionScopeOf(me), r.regionId);
   const updated = await prisma.route.update({
     where: { id },
     data: { isActive: !r.isActive },

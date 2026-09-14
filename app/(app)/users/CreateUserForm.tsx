@@ -21,7 +21,7 @@ export function CreateUserForm({
   routes,
   viewerRole,
 }: {
-  supervisors: { id: string; fullName: string; username: string }[];
+  supervisors: { id: string; fullName: string; username: string; role?: Role }[];
   routes: { id: string; code: string; name: string }[];
   viewerRole: Role;
 }) {
@@ -91,7 +91,7 @@ export function CreateUserForm({
             <option value="">—</option>
             {supervisors.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.fullName} ({s.username})
+                {s.fullName} ({s.username}){s.role === Role.MANAGER ? ' · Manager' : ''}
               </option>
             ))}
           </select>

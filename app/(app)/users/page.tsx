@@ -3,6 +3,12 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
+import { loadScope } from '@/lib/access';
+import {
+  managerCanAdministerUser,
+  managerCanAssignSupervisor,
+  type UserRegionFootprint,
+} from '@/lib/permissions';
 import { CreateUserForm } from './CreateUserForm';
 import { UserRowActions } from './UserRowActions';
 
@@ -22,7 +28,15 @@ export default async function UsersPage() {
   // tier doesn't need each other's PII; salesman PII is in the underlying
   // User row but kept off the table). The Manager can still reach a user's
   // detail (future) for legitimate cases.
-  const [users, supervisors, routes] = await Promise.all([
+  // B2 / SEC-02: a MANAGER administers their regions only. The list, the
+  // supervisor dropdown and the route dropdown are narrowed with the SAME pure
+  // rules the server actions enforce (lib/permissions.ts), so the UI never
+  // offers what the server would refuse. A STEWARD sees everything.
+  const isManager = session.user.role === Role.MANAGER;
+  const scope = isManager ? await loadScope(session.user.id) : null;
+  const managed = scope?.managedRegionIds ?? [];
+
+  const [allUsers, routes] = await Promise.all([
     prisma.user.findMany({
       orderBy: [{ role: 'asc' }, { fullName: 'asc' }],
       select: {
@@ -33,25 +47,62 @@ export default async function UsersPage() {
         isActive: true,
         lastLoginAt: true,
         ownedRouteId: true,
+        supervisorId: true,
         supervisor: { select: { fullName: true, username: true } },
-        ownedRoute: { select: { code: true, name: true } },
+        ownedRoute: { select: { code: true, name: true, regionId: true } },
+        reports: { select: { ownedRoute: { select: { regionId: true } } } },
+        managedRegions: { select: { id: true } },
       },
     }),
-    prisma.user.findMany({
-      where: { role: Role.SUPERVISOR, isActive: true },
-      select: { id: true, fullName: true, username: true },
-      orderBy: { fullName: 'asc' },
-    }),
     prisma.route.findMany({
-      where: { isActive: true, owner: null },
+      where: {
+        isActive: true,
+        owner: null,
+        ...(isManager ? { regionId: { in: managed.length ? managed : ['__none__'] } } : {}),
+      },
       select: { id: true, code: true, name: true },
       orderBy: { code: 'asc' },
     }),
   ]);
+  const footprint = (u: (typeof allUsers)[number]): UserRegionFootprint => ({
+    id: u.id,
+    role: u.role,
+    supervisorId: u.supervisorId,
+    ownedRouteRegionId: u.ownedRoute?.regionId ?? null,
+    teamRegionIds: [
+      ...new Set(u.reports.map((r) => r.ownedRoute?.regionId).filter((r): r is string => !!r)),
+    ],
+    managedRegionIds: u.managedRegions.map((r) => r.id),
+  });
+  // Manager: own account + accounts they may administer. Steward: everyone.
+  const users = isManager
+    ? allUsers.filter(
+        (u) =>
+          u.id === session.user.id ||
+          managerCanAdministerUser(managed, footprint(u), session.user.id).ok
+      )
+    : allUsers;
+  // "Reports to": Supervisors in scope plus Managers (the go-live org has no
+  // Supervisor accounts — salesmen report to their regional Manager directly).
+  const supervisors = allUsers
+    .filter((u) => u.isActive && (u.role === Role.SUPERVISOR || u.role === Role.MANAGER))
+    .filter((u) =>
+      isManager ? managerCanAssignSupervisor(session.user.id, managed, footprint(u)) : true
+    )
+    .map((u) => ({ id: u.id, fullName: u.fullName, username: u.username, role: u.role }));
 
   return (
     <main>
-      <PageHeader title="Users" subtitle={`${users.length} accounts`} />
+      <PageHeader
+        title="Users"
+        subtitle={
+          isManager
+            ? managed.length === 0
+              ? 'No regions assigned to you yet — ask a Steward'
+              : `${users.length} accounts in your regions`
+            : `${users.length} accounts`
+        }
+      />
 
       <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-[1fr_360px]">
         <section className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
