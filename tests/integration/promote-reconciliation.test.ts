@@ -21,6 +21,7 @@
  *     tests/integration/promote-reconciliation.test.ts
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { purgeAuditLog } from '../support/audit';
 import ExcelJS from 'exceljs';
 // RK-3: promote is sliced, so "load this batch" means driving it to completion.
 import { promoteFully } from '../support/promote';
@@ -66,7 +67,7 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     });
     const custIds = customers.map((c) => c.id);
     await prisma.notification.deleteMany({ where: { userId: ids.steward } });
-    await prisma.auditLog.deleteMany({ where: { actorId: ids.steward } });
+    await purgeAuditLog(prisma, { where: { actorId: ids.steward } });
     await prisma.branch.deleteMany({
       where: { OR: [{ customerId: { in: custIds } }, { branchCode: { in: ['01', `${P}-C1-01`, `${P}-C1-02`] } }] },
     });

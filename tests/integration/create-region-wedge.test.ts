@@ -10,6 +10,7 @@
  *     tests/integration/create-region-wedge.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeCustomerEdits } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -60,7 +61,7 @@ describe.skipIf(!ENABLED)('CREATE approval visibility follows the current route 
     if (!prisma) return;
     try {
       await prisma.editBranchDraft.deleteMany({ where: { editId: ids.edit } });
-      await prisma.customerEdit.deleteMany({ where: { id: ids.edit } });
+      await purgeCustomerEdits(prisma, { where: { id: ids.edit } });
       await prisma.user.deleteMany({ where: { id: ids.sales } });
       await prisma.route.deleteMany({ where: { id: ids.route } });
       await prisma.region.deleteMany({ where: { id: { in: [ids.regionA, ids.regionB] } } });

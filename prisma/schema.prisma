@@ -565,6 +565,23 @@ model ImportRow {
   @@index([batchId, state])
 }
 
+// ── CRON HEARTBEATS ─────────────────────────────────
+// B5: one row per scheduled job, upserted when the job finishes (success or
+// failure). The bearer /api/health probe turns these into stale / never-ran
+// alarms (lib/heartbeat.ts). Keys: sla-escalate, keep-warm, photo-gc.
+model CronHeartbeat {
+  key            String   @id
+  lastRunAt      DateTime
+  lastOk         Boolean  @default(true)
+  lastDurationMs Int?
+  lastError      String?
+  lastDetail     Json?
+  runs           Int      @default(0)
+  failures       Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
 // ── RATE LIMIT ──────────────────────────────────────
 // QA-015: durable rate limiter that survives across Vercel function instances.
 // Token-bucket: each row holds the bucket's current tokens and the last refill

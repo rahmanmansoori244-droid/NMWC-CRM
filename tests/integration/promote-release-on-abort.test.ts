@@ -20,6 +20,7 @@
  *     tests/integration/promote-release-on-abort.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -112,7 +113,7 @@ describe.skipIf(!ENABLED)('promote releases its lease on an unexpected abort (#2
       await prisma.importRow.deleteMany({ where: { batchId: { in: ids } } });
       await prisma.importBatch.deleteMany({ where: { id: { in: ids } } });
     }
-    await prisma.auditLog.deleteMany({ where: { actorId: stewardId } });
+    await purgeAuditLog(prisma, { where: { actorId: stewardId } });
     await prisma.user.deleteMany({ where: { id: stewardId } });
     await prisma.$disconnect();
   });

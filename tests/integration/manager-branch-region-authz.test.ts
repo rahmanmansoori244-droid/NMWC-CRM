@@ -9,6 +9,7 @@
  *     tests/integration/manager-branch-region-authz.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -51,10 +52,10 @@ describe.skipIf(!ENABLED)('Manager can only edit branches in a region they manag
     try {
       const eds = await prisma.customerEdit.findMany({ where: { customerId: ids.cust }, select: { id: true } });
       if (eds.length) {
-        await prisma.editApproval.deleteMany({ where: { editId: { in: eds.map((e) => e.id) } } });
-        await prisma.customerEdit.deleteMany({ where: { id: { in: eds.map((e) => e.id) } } });
+        await purgeEditApprovals(prisma, { where: { editId: { in: eds.map((e) => e.id) } } });
+        await purgeCustomerEdits(prisma, { where: { id: { in: eds.map((e) => e.id) } } });
       }
-      await prisma.auditLog.deleteMany({ where: { actorId: ids.mgr } });
+      await purgeAuditLog(prisma, { where: { actorId: ids.mgr } });
       await prisma.branch.deleteMany({ where: { customerId: ids.cust } });
       await prisma.customer.deleteMany({ where: { id: ids.cust } });
       await prisma.user.deleteMany({ where: { id: ids.mgr } });

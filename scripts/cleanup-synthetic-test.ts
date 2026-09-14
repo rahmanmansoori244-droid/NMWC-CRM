@@ -70,6 +70,7 @@ async function main() {
 
   await prisma.$transaction(
     async (tx) => {
+            await tx.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`); // B4: audit tables are append-only; this is a Steward maintenance script
       // 1. Revert customers
       for (const c of snap.customers) {
         await tx.customer.update({

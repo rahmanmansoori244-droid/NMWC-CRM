@@ -10,6 +10,7 @@
  *     tests/integration/edit-paymentterms-guard.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -42,10 +43,10 @@ describe.skipIf(!ENABLED)('customer edit cannot flip CASH↔CREDIT (final-hunt #
     if (!prisma) return;
     const eds = await prisma.customerEdit.findMany({ where: { customerId: { in: [cashId, creditId] } }, select: { id: true } });
     if (eds.length) {
-      await prisma.editApproval.deleteMany({ where: { editId: { in: eds.map((e) => e.id) } } });
-      await prisma.customerEdit.deleteMany({ where: { id: { in: eds.map((e) => e.id) } } });
+      await purgeEditApprovals(prisma, { where: { editId: { in: eds.map((e) => e.id) } } });
+      await purgeCustomerEdits(prisma, { where: { id: { in: eds.map((e) => e.id) } } });
     }
-    await prisma.auditLog.deleteMany({ where: { actorId: stewardId } });
+    await purgeAuditLog(prisma, { where: { actorId: stewardId } });
     await prisma.customer.deleteMany({ where: { id: { in: [cashId, creditId] } } });
     await prisma.user.deleteMany({ where: { id: stewardId } });
     await prisma.$disconnect();

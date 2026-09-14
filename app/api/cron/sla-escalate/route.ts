@@ -22,6 +22,7 @@ import { Role, type Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { cronAuthorized } from '@/lib/cron-auth';
+import { withHeartbeat } from '@/lib/heartbeat';
 import { escalationPlan } from '@/lib/escalation';
 import { parseChain } from '@/lib/approval-chains';
 import {
@@ -186,7 +187,7 @@ async function escalate(e: DueEdit, level: 1 | 2, now: Date): Promise<boolean> {
   });
 }
 
-export async function GET(req: NextRequest) {
+async function handle(req: NextRequest) {
   if (!cronAuthorized(req.headers.get('authorization'))) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
@@ -292,3 +293,7 @@ export async function GET(req: NextRequest) {
   logger.info({ escalated, level2, temixPinged, gcDeleted, sweepErrors }, 'cron.sla_escalate');
   return NextResponse.json({ escalated, level2, temixPinged, gcDeleted, sweepErrors });
 }
+
+// B5: every finished run is recorded as a heartbeat (lib/heartbeat.ts); the
+// bearer /api/health probe alarms when this job goes stale or never runs.
+export const GET = withHeartbeat('sla-escalate', handle, (body) => Number(body?.sweepErrors ?? 0) === 0);

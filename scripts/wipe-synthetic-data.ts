@@ -142,6 +142,7 @@ async function main() {
   console.log('\nExecuting (one transaction, increased timeout)...');
   const summary = await prisma.$transaction(
     async (tx) => {
+            await tx.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`); // B4: audit tables are append-only; this is a Steward maintenance script
       let auditLogsDeleted = 0;
       let editsDeleted = 0;
       let attachmentsDeleted = 0;

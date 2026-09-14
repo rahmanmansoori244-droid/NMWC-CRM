@@ -92,7 +92,11 @@ const DAYS: DayOfWeek[] = ['SAT', 'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI'];
 async function clearSyntheticData() {
   // CASCADE truncate: simpler than juggling FK orders. Keeps schema, drops all rows
   // in the listed tables, then we restore the admin user.
-  await prisma.$executeRawUnsafe(`
+  // B4: "AuditLog" is append-only at the database; TRUNCATE needs the
+  // maintenance GUC inside the same transaction (owner credential, isolated branch only).
+  await prisma.$transaction([
+    prisma.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`),
+    prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
       "AuditLog",
       "CustomerEdit",
@@ -106,7 +110,8 @@ async function clearSyntheticData() {
       "Region",
       "User"
     RESTART IDENTITY CASCADE;
-  `);
+  `),
+  ]);
 
   // Re-create the admin user (it was wiped above)
   const passwordHash = await bcrypt.hash(

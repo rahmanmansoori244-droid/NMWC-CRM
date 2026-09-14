@@ -16,6 +16,7 @@
  *   RUN_GOLIVE_FLOW=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/golive-update-flow.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { randomUUID, createHash } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 
@@ -220,9 +221,9 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     });
     const editIds = editRows.map((e) => e.id);
     await prisma.notification.deleteMany({ where: { OR: [{ editId: { in: editIds } }, { userId: { in: ids.userIds } }] } });
-    await prisma.editApproval.deleteMany({ where: { editId: { in: editIds } } });
-    await prisma.customerEdit.deleteMany({ where: { id: { in: editIds } } });
-    await prisma.auditLog.deleteMany({ where: { actorId: { in: ids.userIds } } });
+    await purgeEditApprovals(prisma, { where: { editId: { in: editIds } } });
+    await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
+    await purgeAuditLog(prisma, { where: { actorId: { in: ids.userIds } } });
     await prisma.rateLimit.deleteMany({ where: { key: { in: ids.userIds.flatMap((u) => [`edit:${u}`, `photo:${u}`]) } } });
     // Photo slots reference attachments (and vice versa): clear the slots first.
     await prisma.customer.updateMany({ where: { id: { in: allCustomerIds } }, data: { crPhotoId: null } });

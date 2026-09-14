@@ -36,8 +36,9 @@ export const dynamic = 'force-dynamic';
 
 // B-16 constant-time bearer comparison — shared with photo-gc + sla-escalate.
 import { cronAuthorized } from '@/lib/cron-auth';
+import { withHeartbeat } from '@/lib/heartbeat';
 
-export async function GET(req: NextRequest) {
+async function handle(req: NextRequest) {
   if (!cronAuthorized(req.headers.get('authorization'))) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
@@ -64,10 +65,17 @@ export async function GET(req: NextRequest) {
     logger.warn({ err: (err as Error).message }, 'keep-warm.refs_fail');
   }
   const elapsedMs = Date.now() - started;
-  return NextResponse.json({
-    warm: dbOk && refsOk,
-    db: dbOk,
-    refs: refsOk,
-    elapsedMs,
-  });
+  // B5: a failed database probe is reported as 503 so the scheduler's log (and
+  // the heartbeat) show the failure instead of a green 200 with `db:false`.
+  return NextResponse.json(
+    {
+      warm: dbOk && refsOk,
+      db: dbOk,
+      refs: refsOk,
+      elapsedMs,
+    },
+    { status: dbOk ? 200 : 503 }
+  );
 }
+
+export const GET = withHeartbeat('keep-warm', handle, (body) => body?.warm === true);

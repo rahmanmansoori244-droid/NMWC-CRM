@@ -14,6 +14,7 @@
  *   RUN_USER_ADMIN_SCOPE=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/user-admin-region-scope.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog } from '../support/audit';
 import bcrypt from 'bcryptjs';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -87,7 +88,7 @@ describe.skipIf(!ENABLED)('B2 / SEC-02: Manager user administration is region-sc
       select: { id: true },
     });
     const all = [...new Set([...created.map((u) => u.id), ids.mgrA, ids.mgrB, ids.stw, ids.salesmanB])].filter(Boolean);
-    await prisma.auditLog.deleteMany({ where: { OR: [{ actorId: { in: all } }, { entityId: { in: all } }] } });
+    await purgeAuditLog(prisma, { where: { OR: [{ actorId: { in: all } }, { entityId: { in: all } }] } });
     await prisma.passwordHistory.deleteMany({ where: { userId: { in: all } } });
     await prisma.user.updateMany({ where: { id: { in: all } }, data: { ownedRouteId: null, supervisorId: null } });
     for (const id of [ids.mgrA, ids.mgrB]) {

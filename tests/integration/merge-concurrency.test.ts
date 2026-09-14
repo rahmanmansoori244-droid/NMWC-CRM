@@ -12,6 +12,7 @@
  *     tests/integration/merge-concurrency.test.ts
  */
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { purgeAuditLog } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -34,7 +35,7 @@ describe.skipIf(!ENABLED)('PROD-DUP-01: concurrent reversed-pair merge', () => {
   let dups: typeof import('@/services/duplicates');
 
   async function cleanup() {
-    await prisma.auditLog.deleteMany({ where: { actorId: ids.steward } });
+    await purgeAuditLog(prisma, { where: { actorId: ids.steward } });
     await prisma.branch.deleteMany({ where: { id: { in: [ids.brA, ids.brB] } } });
     await prisma.customer.deleteMany({ where: { id: { in: [ids.custA, ids.custB] } } });
     await prisma.route.deleteMany({ where: { id: ids.route } });

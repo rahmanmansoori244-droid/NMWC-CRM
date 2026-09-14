@@ -15,6 +15,7 @@ import { PutObjectTaggingCommand } from '@aws-sdk/client-s3';
 import { logger } from '@/lib/logger';
 // B-16 constant-time bearer comparison — shared with keep-warm + sla-escalate.
 import { cronAuthorized } from '@/lib/cron-auth';
+import { withHeartbeat } from '@/lib/heartbeat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,7 +23,7 @@ export const dynamic = 'force-dynamic';
 const GRACE_DAYS = 30;
 const BATCH_SIZE = 200;
 
-export async function GET(req: NextRequest) {
+async function handle(req: NextRequest) {
   if (!cronAuthorized(req.headers.get('authorization'))) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
@@ -86,3 +87,7 @@ export async function GET(req: NextRequest) {
   logger.info({ deleted, r2Errors, skipped, scanned: candidates.length }, 'gc.photo_done');
   return NextResponse.json({ deleted, r2Errors, skipped, scanned: candidates.length });
 }
+
+// B5: every finished run is recorded as a heartbeat (lib/heartbeat.ts); the
+// bearer /api/health probe alarms when this job goes stale or never runs.
+export const GET = withHeartbeat('photo-gc', handle, (body) => Number(body?.r2Errors ?? 0) === 0);

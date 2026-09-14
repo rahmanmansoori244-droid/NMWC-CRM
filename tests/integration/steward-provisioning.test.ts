@@ -11,6 +11,7 @@
  *     tests/integration/steward-provisioning.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -51,7 +52,7 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     const allIds = [stewardId, managerId, ...targets.map((t) => t.id)];
     // createUserCore/updateUserRoleCore write AuditLog rows (actorId FK to User);
     // clear them before deleting the actors.
-    await prisma.auditLog.deleteMany({ where: { OR: [{ actorId: { in: allIds } }, { entityId: { in: allIds } }] } });
+    await purgeAuditLog(prisma, { where: { OR: [{ actorId: { in: allIds } }, { entityId: { in: allIds } }] } });
     await prisma.user.deleteMany({ where: { username: { in: names } } });
     await prisma.user.deleteMany({ where: { id: { in: [stewardId, managerId] } } });
     await prisma.$disconnect();

@@ -12,6 +12,7 @@
  *     tests/integration/close-shop-imported.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 60_000 });
@@ -53,11 +54,11 @@ describe.skipIf(!ENABLED)('imported customer branch can be closed (final-hunt #1
     try {
       const eds = await prisma.customerEdit.findMany({ where: { customerId: ids.cust }, select: { id: true } });
       if (eds.length) {
-        await prisma.editApproval.deleteMany({ where: { editId: { in: eds.map((e) => e.id) } } });
-        await prisma.customerEdit.deleteMany({ where: { id: { in: eds.map((e) => e.id) } } });
+        await purgeEditApprovals(prisma, { where: { editId: { in: eds.map((e) => e.id) } } });
+        await purgeCustomerEdits(prisma, { where: { id: { in: eds.map((e) => e.id) } } });
       }
       await prisma.attachment.deleteMany({ where: { capturedById: ids.sales } });
-      await prisma.auditLog.deleteMany({ where: { actorId: { in: [ids.sales, ids.sup] } } });
+      await purgeAuditLog(prisma, { where: { actorId: { in: [ids.sales, ids.sup] } } });
       await prisma.notification.deleteMany({ where: { userId: { in: [ids.sales, ids.sup] } } });
       await prisma.branch.deleteMany({ where: { customerId: ids.cust } });
       await prisma.customer.deleteMany({ where: { id: ids.cust } });

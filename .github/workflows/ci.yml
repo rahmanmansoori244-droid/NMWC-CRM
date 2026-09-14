@@ -90,6 +90,17 @@ jobs:
           echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
       - run: npx prisma migrate deploy
       - run: npm run db:seed
+      # B4: prove the least-privilege runtime role on every run — create it,
+      # apply the grants, then connect AS the role and check that reads/writes
+      # work while audit rows, DDL and the migrations table are refused.
+      - name: Least-privilege app role (create → grant → verify)
+        env:
+          NMWC_APP_PASSWORD: ci-app-role-password-2026
+          NMWC_APP_URL: postgresql://nmwc_app:ci-app-role-password-2026@localhost:5432/nmwc_ci
+        run: |
+          npx tsx scripts/ops/app-role.ts create
+          npx tsx scripts/ops/app-role.ts grant
+          npx tsx scripts/ops/app-role.ts verify
       # The import suites read deterministic xlsx fixtures that are generated,
       # not committed (qa/fixtures/<scale>-<seed>/master.xlsx).
       - name: Generate import fixtures
@@ -101,6 +112,7 @@ jobs:
         run: npx vitest run tests/integration
         env:
           RUN_PG_RATE_LIMIT_TEST: '1'
+          RUN_AUDIT_IMMUTABLE: '1'
           RUN_USER_ADMIN_SCOPE: '1'
           RUN_USER_PROVISION: '1'
           RUN_MGR_AUTHZ: '1'

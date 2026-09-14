@@ -18,6 +18,7 @@
  *     tests/integration/promote-transient-defer.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
 
@@ -114,7 +115,7 @@ describe.skipIf(!ENABLED)('RK-3: a database hiccup defers a customer, it never r
     }
     if (routeId) await prisma.route.deleteMany({ where: { id: routeId } });
     if (regionId) await prisma.region.deleteMany({ where: { id: regionId } });
-    await prisma.auditLog.deleteMany({ where: { actorId: stewardId } });
+    await purgeAuditLog(prisma, { where: { actorId: stewardId } });
     await prisma.user.deleteMany({ where: { id: stewardId } });
     await prisma.$disconnect();
   });

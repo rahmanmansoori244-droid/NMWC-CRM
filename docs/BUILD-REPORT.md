@@ -384,7 +384,7 @@ About **5,000 lines of TypeScript**, **600 lines of Prisma schema**, and **~2,50
 - [x] Sentry PII scrubbing
 - [x] pino redacts passwords + phone numbers in logs
 - [x] DB writes wrapped in transactions
-- [x] Audit log immutable
+- [x] Audit log immutable (DB trigger + least-privilege role since 2026-09-14 — see TECH-SPEC)
 - [x] Photo content-type re-verified server-side
 - [x] R2 token scoped to single bucket
 - [x] Soft delete + 30-day GC plan

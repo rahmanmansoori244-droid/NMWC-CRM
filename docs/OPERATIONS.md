@@ -107,6 +107,45 @@ Even if you finish steps A–C, the daily R2 setup script (`npm run ops:r2-setup
 
 ---
 
+## 5c. Database roles — least privilege (B4, 2026-09-14)
+
+The application no longer runs as the database owner. Two credentials exist:
+
+| Variable | Role | Used by | May |
+|---|---|---|---|
+| `DIRECT_URL` | `neondb_owner` (direct endpoint) | `prisma migrate deploy` in the Vercel build, the nightly backup, Steward maintenance scripts (`scripts/wipe-synthetic-data.ts`, `prisma/synthetic.ts --reset`, `scripts/ops/app-role.ts`) | everything |
+| `DATABASE_URL` | `nmwc_app` (pooled endpoint) | the running app | read/write application tables; **insert-only** on `AuditLog` and `EditApproval`; no DDL; no access to `_prisma_migrations` |
+
+`AuditLog` and `EditApproval` are also protected by a database trigger (migration `20260914150000_audit_immutability`): UPDATE / DELETE / TRUNCATE raise `B4: … append-only` for every connection, including the owner, unless the statement runs inside a transaction that first executed `SET LOCAL nmwc.audit_maintenance = 'on'`. The maintenance scripts and the test clean-ups do exactly that; the app role has no DELETE privilege, so the override is not available to the application at all.
+
+**Rolling the role out to an environment (Preview/UAT first, then Production):**
+
+```bash
+# 1. create the role (owner credential in DIRECT_URL; pick a 24+ char password)
+NMWC_APP_PASSWORD='<strong password>' node scripts/qa/run-with-env.mjs tsx scripts/ops/app-role.ts create
+# 2. apply the grants (idempotent — safe to re-run after any migration)
+node scripts/qa/run-with-env.mjs tsx scripts/ops/app-role.ts grant
+# 3. prove it, connected AS the role (pooled host, user nmwc_app)
+NMWC_APP_URL='postgresql://nmwc_app:<password>@<host>-pooler.../neondb?sslmode=require' \
+  node scripts/qa/run-with-env.mjs tsx scripts/ops/app-role.ts verify
+# 4. Vercel → env → DATABASE_URL = the nmwc_app URL from step 3 (keep DIRECT_URL = owner) → redeploy
+# 5. curl -H "Authorization: Bearer $HEALTH_BEARER" https://<host>/api/health   → checks.db ok
+```
+
+Against production the scripts refuse to run unless `ALLOW_PRODUCTION=1` is set — the owner runs steps 1–3 deliberately. CI performs the same create → grant → verify on every run against its throw-away Postgres, so a migration that breaks the privilege set is caught before it ships. Verified on the Neon UAT branch on 2026-09-14 (Neon allows `CREATE ROLE` via SQL for the owner; the role is not shown in the Neon console but works).
+
+## 5d. Cron heartbeats and the health probe (B5, 2026-09-14)
+
+Every scheduled job (`sla-escalate`, `keep-warm`, `photo-gc`) records a heartbeat row (`CronHeartbeat`) when it finishes, success or failure. The bearer health probe reports them:
+
+```bash
+curl -s -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health | jq .cron
+```
+
+States: `ok`, `outside-window` (not expected right now), `failed` (last run reported an error), `stale` (no run for 3 × the schedule interval inside its window), `never` (no run recorded). `failed`, `stale` and `never` set `status: degraded` and **HTTP 503** — point an external uptime monitor at this URL with the bearer header and alert on non-200. The anonymous probe (no header) now also answers 503 when the database is unreachable, so a plain uptime check sees a real outage.
+
+**Scheduler decision (D3, owner):** GitHub Actions cron on this repo delivers a fraction of the configured cadence (2–4 keep-warm runs a day of ~180). Options: (a) Vercel Pro — move the `*/4 3-14 * * *` keep-warm and `15,45 3-14 * * *` sla-escalate schedules into `vercel.json` `crons`; (b) an external scheduler (e.g. cron-job.org, Better Uptime heartbeat + request) calling `GET /api/cron/keep-warm` every 4 minutes 07:00–19:00 Oman and `GET /api/cron/sla-escalate` twice an hour with `Authorization: Bearer <CRON_SECRET>`. Either way the heartbeats above tell you whether it is actually running.
+
 ## 6. Backups
 
 - **Neon PITR:** point-in-time recovery, 7 days on the Launch plan.
@@ -168,6 +207,14 @@ The rotation is audit-logged.
 2. Manager: `/reactivations` → review with photo evidence → Approve or Keep closed.
 
 ## 8. Incident playbook
+
+### Symptom: `/api/health` (bearer) shows a cron job `stale` / `never` / `failed`
+
+`never` after a deploy: the job has not run yet — check the scheduler (GitHub Actions → the workflow's recent runs, or the external scheduler's log). `stale`: the scheduler stopped calling — GitHub disables schedules on inactive public repos and throttles them generally; re-trigger the workflow by hand and consider option (a)/(b) in §5d. `failed`: open `cron.jobs[].lastError` in the payload; the SLA sweep also logs `cron.sla.row_failed` per row in Vercel logs.
+
+### Symptom: a script fails with `B4: DELETE on "AuditLog" is forbidden`
+
+Expected: the audit tables are append-only. If the deletion is legitimate maintenance (isolated branch clean-up), run it inside a transaction that starts with `SET LOCAL nmwc.audit_maintenance = 'on'` using the owner credential (`DIRECT_URL`). The application role cannot do this at all — do not try to work around it from the app.
 
 ### Symptom: `/api/health` returns degraded
 Public `/api/health` always returns 200 + `{ "status": "ok" }` (B-12). To see real status, hit it with `Authorization: Bearer $HEALTH_BEARER`:

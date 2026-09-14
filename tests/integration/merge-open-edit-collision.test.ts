@@ -10,6 +10,7 @@
  *     tests/integration/merge-open-edit-collision.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog, purgeCustomerEdits } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -63,8 +64,8 @@ describe.skipIf(!ENABLED)('merge completes when BOTH customers have an open edit
     if (!prisma) return;
     try {
       const custIds = [ids.winner, ids.loser];
-      await prisma.customerEdit.deleteMany({ where: { customerId: { in: custIds } } });
-      await prisma.auditLog.deleteMany({ where: { actorId: ids.steward } });
+      await purgeCustomerEdits(prisma, { where: { customerId: { in: custIds } } });
+      await purgeAuditLog(prisma, { where: { actorId: ids.steward } });
       await prisma.branch.deleteMany({ where: { customerId: { in: custIds } } });
       await prisma.customer.deleteMany({ where: { id: { in: custIds } } });
       await prisma.user.deleteMany({ where: { id: { in: [ids.steward, ids.sales] } } });

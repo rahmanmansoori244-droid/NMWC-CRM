@@ -19,6 +19,7 @@
  *     npx vitest run tests/integration/reactivation-authz.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 // The QA DB is a remote Neon branch (~230ms/round-trip); each test does many
@@ -72,8 +73,8 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
 
   afterAll(async () => {
     if (!prisma) return;
-    await prisma.auditLog.deleteMany({ where: { actorId: { in: [ids.salesman, ids.supervisor, ids.manager] } } });
-    await prisma.customerEdit.deleteMany({ where: { submittedById: ids.salesman } });
+    await purgeAuditLog(prisma, { where: { actorId: { in: [ids.salesman, ids.supervisor, ids.manager] } } });
+    await purgeCustomerEdits(prisma, { where: { submittedById: ids.salesman } });
     await prisma.attachment.deleteMany({ where: { id: ids.photo } });
     await prisma.branch.deleteMany({ where: { id: ids.branch } });
     await prisma.customer.deleteMany({ where: { id: ids.customer } });
@@ -95,8 +96,8 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
     const editIds = rows.map((r) => r.id);
     if (!editIds.length) return;
     await prisma.notification.deleteMany({ where: { editId: { in: editIds } } }).catch(() => {});
-    await prisma.editApproval.deleteMany({ where: { editId: { in: editIds } } }).catch(() => {});
-    await prisma.customerEdit.deleteMany({ where: { id: { in: editIds } } });
+    await purgeEditApprovals(prisma, { where: { editId: { in: editIds } } }).catch(() => {});
+    await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
   }
 
   async function newReactivation(): Promise<string> {

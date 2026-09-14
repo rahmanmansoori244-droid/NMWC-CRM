@@ -18,6 +18,7 @@
  *     tests/integration/credit-chain-e2e.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 90_000 });
@@ -90,10 +91,10 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       const edIds = eds.map((e) => e.id);
       const custIds = eds.map((e) => e.customerId).filter((x): x is string => !!x);
       if (edIds.length) {
-        await prisma.editApproval.deleteMany({ where: { editId: { in: edIds } } });
+        await purgeEditApprovals(prisma, { where: { editId: { in: edIds } } });
         await prisma.editBranchDraft.deleteMany({ where: { editId: { in: edIds } } });
         await prisma.editCustomerDraft.deleteMany({ where: { editId: { in: edIds } } });
-        await prisma.customerEdit.deleteMany({ where: { id: { in: edIds } } });
+        await purgeCustomerEdits(prisma, { where: { id: { in: edIds } } });
       }
       const allCust = [...custIds, ...(await prisma.customer.findMany({ where: { legalName }, select: { id: true } })).map((c) => c.id)];
       if (allCust.length) {
@@ -101,7 +102,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         await prisma.customer.deleteMany({ where: { id: { in: allCust } } });
       }
       await prisma.attachment.deleteMany({ where: { capturedById: ids.salesman } });
-      await prisma.auditLog.deleteMany({ where: { actorId: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc] } } });
+      await purgeAuditLog(prisma, { where: { actorId: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc] } } });
       await prisma.notification.deleteMany({ where: { userId: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc] } } });
       await prisma.user.deleteMany({ where: { id: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc] } } });
       await prisma.route.deleteMany({ where: { id: ids.route } });

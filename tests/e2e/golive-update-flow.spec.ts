@@ -17,6 +17,7 @@
  *     node scripts/qa/run-with-env.mjs playwright test tests/e2e/golive-update-flow.spec.ts --project=chromium
  */
 import { test, expect, type Page } from '@playwright/test';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { PrismaClient } from '@prisma/client';
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import bcrypt from 'bcryptjs';
@@ -179,9 +180,9 @@ test.afterAll(async () => {
     await prisma.customerEdit.findMany({ where: { customerId: F.customerId }, select: { id: true } })
   ).map((e) => e.id);
   await prisma.notification.deleteMany({ where: { OR: [{ editId: { in: editIds } }, { userId: { in: users } }] } });
-  await prisma.editApproval.deleteMany({ where: { editId: { in: editIds } } });
-  await prisma.customerEdit.deleteMany({ where: { id: { in: editIds } } });
-  await prisma.auditLog.deleteMany({ where: { actorId: { in: users } } });
+  await purgeEditApprovals(prisma, { where: { editId: { in: editIds } } });
+  await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
+  await purgeAuditLog(prisma, { where: { actorId: { in: users } } });
   await prisma.passwordHistory.deleteMany({ where: { userId: { in: users } } }).catch(() => undefined);
   await prisma.rateLimit.deleteMany({
     where: { key: { in: users.flatMap((u) => [`edit:${u}`, `photo:${u}`, `login:${F.routeCode.toLowerCase()}`, `login:${F.managerUsername}`]) } },

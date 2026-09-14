@@ -3,37 +3,49 @@ import { prisma } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { HeadBucketCommand } from '@aws-sdk/client-s3';
+import { bearerMatches } from '@/lib/cron-auth';
+import { loadHeartbeatReport } from '@/lib/heartbeat';
 
 /**
  * GAP-01 + B-12 (audit 2026-05-10): minimal-information health endpoint.
  *
- * The previous implementation returned `{ service, version, timestamp,
- * checks: { app, db, r2 } }` to any unauthenticated caller, confirming
- * the stack and giving an attacker a probe for when the DB or R2 is
- * stressed (the 503 status code itself was the leak). Now the public
- * response is ALWAYS `{ "status": "ok" }` with HTTP 200 — Vercel's
- * platform-level uptime monitor still sees 200, but external observers
- * cannot tell whether the DB is degraded.
+ * The public response stays minimal — `{ "status": "ok" }` — but it is no
+ * longer unconditionally 200: B5 (enterprise assessment, 2026-09-14) found the
+ * anonymous probe returned 200 with the database down, so an uptime monitor
+ * pointed at it could never see an outage. It now runs one `SELECT 1` and
+ * answers 503 `{ "status": "degraded" }` when that fails. Nothing else is
+ * disclosed to anonymous callers.
  *
- * Set `HEALTH_BEARER` in Vercel env to expose the detailed payload,
- * including the actual `degraded` status and 503 status code, to
- * monitoring systems via `Authorization: Bearer <token>`.
+ * With `Authorization: Bearer <HEALTH_BEARER>` (an external monitor) the
+ * detailed payload is returned: DB and R2 checks plus the per-job cron
+ * heartbeats (lib/heartbeat.ts) — "stale" / "never ran" / "failed" are the
+ * dead-man alarms for the SLA sweep, keep-warm and photo GC. The status code
+ * is 503 whenever anything alarms, so the monitor needs no body parsing.
  */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 type CheckStatus = 'ok' | 'fail' | 'pending';
 
+async function dbOk(): Promise<boolean> {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    return true;
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'health.db.fail');
+    return false;
+  }
+}
+
 export async function GET(req: Request) {
-  // Cheap path for unauthenticated callers: skip the live DB/R2 probes
-  // entirely so we don't leak degraded state via response timing either.
   const bearer = req.headers.get('authorization');
   const monitorToken = process.env.HEALTH_BEARER;
-  const isMonitor =
-    !!monitorToken && bearer === `Bearer ${monitorToken}` && monitorToken.length >= 20;
+  // B-16 posture: constant-time compare, and a short token never unlocks details.
+  const isMonitor = !!monitorToken && monitorToken.length >= 20 && bearerMatches(bearer, monitorToken);
 
   if (!isMonitor) {
-    return NextResponse.json({ status: 'ok' }, { status: 200 });
+    const ok = await dbOk();
+    return NextResponse.json({ status: ok ? 'ok' : 'degraded' }, { status: ok ? 200 : 503 });
   }
 
   const checks: Record<string, CheckStatus> = {
@@ -42,13 +54,7 @@ export async function GET(req: Request) {
     r2: 'pending',
   };
 
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    checks.db = 'ok';
-  } catch (err) {
-    checks.db = 'fail';
-    logger.warn({ err }, 'health.db.fail');
-  }
+  checks.db = (await dbOk()) ? 'ok' : 'fail';
 
   try {
     if (process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID) {
@@ -60,7 +66,20 @@ export async function GET(req: Request) {
     logger.warn({ err: (err as Error).message }, 'health.r2.fail');
   }
 
-  const allOk = Object.values(checks).every((v) => v === 'ok' || v === 'pending');
+  // Heartbeats need the database; when it is down they are reported as unknown
+  // rather than masking the DB failure behind a second error.
+  let heartbeats: Awaited<ReturnType<typeof loadHeartbeatReport>> | null = null;
+  if (checks.db === 'ok') {
+    try {
+      heartbeats = await loadHeartbeatReport();
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, 'health.heartbeats.fail');
+    }
+  }
+  const cronAlarms = (heartbeats ?? []).filter((h) => h.alarm).map((h) => h.key);
+
+  const allOk =
+    Object.values(checks).every((v) => v === 'ok' || v === 'pending') && cronAlarms.length === 0;
 
   return NextResponse.json(
     {
@@ -69,6 +88,10 @@ export async function GET(req: Request) {
       version: process.env.npm_package_version ?? 'unknown',
       timestamp: new Date().toISOString(),
       checks,
+      cron: {
+        alarms: cronAlarms,
+        jobs: heartbeats,
+      },
     },
     { status: allOk ? 200 : 503 }
   );
