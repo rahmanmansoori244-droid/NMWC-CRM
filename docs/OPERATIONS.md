@@ -152,7 +152,29 @@ curl -s -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api
 
 States: `ok`, `outside-window` (not expected right now), `failed` (last run reported an error), `stale` (no run for 3 × the schedule interval inside its window), `never` (no run recorded). `failed`, `stale` and `never` set `status: degraded` and **HTTP 503** — point an external uptime monitor at this URL with the bearer header and alert on non-200. The anonymous probe (no header) now also answers 503 when the database is unreachable, so a plain uptime check sees a real outage.
 
-**Scheduler decision (D3, owner):** GitHub Actions cron on this repo delivers a fraction of the configured cadence (2–4 keep-warm runs a day of ~180). Options: (a) Vercel Pro — move the `*/4 3-14 * * *` keep-warm and `15,45 3-14 * * *` sla-escalate schedules into `vercel.json` `crons`; (b) an external scheduler (e.g. cron-job.org, Better Uptime heartbeat + request) calling `GET /api/cron/keep-warm` every 4 minutes 07:00–19:00 Oman and `GET /api/cron/sla-escalate` twice an hour with `Authorization: Bearer <CRON_SECRET>`. Either way the heartbeats above tell you whether it is actually running.
+**Scheduler decision (D3) — owner chose an EXTERNAL scheduler (2026-09-14).** GitHub Actions delivered 2–4 of the ~180 configured keep-warm runs a day, so the SLA sweep effectively did not run. The jobs stay where they are (plain authenticated GET endpoints); only the caller changes.
+
+Set up at any free cron service (cron-job.org, EasyCron, Better Uptime's "heartbeat + request" — the steps below use cron-job.org):
+
+| # | Job | URL | Schedule (UTC) | Oman local |
+|---|---|---|---|---|
+| 1 | Keep-warm | `https://nmwc-cm.vercel.app/api/cron/keep-warm` | `*/4 3-14 * * *` (every 4 min) | 07:00–18:59 |
+| 2 | SLA escalation | `https://nmwc-cm.vercel.app/api/cron/sla-escalate` | `15,45 3-14 * * *` (twice an hour) | 07:15–18:45 |
+
+For each job: method **GET**, one custom header `Authorization: Bearer <CRON_SECRET>` — the same value as the `CRON_SECRET` variable in Vercel → Settings → Environment Variables → Production (copy it from there; never paste it into a support ticket or a screenshot). Enable the service's "notify on failure" so a run that answers 401/500/503 mails you. Photo GC stays on Vercel's own daily cron (`vercel.json`), which the Hobby plan does allow.
+
+Afterwards, confirm within ten minutes:
+
+```bash
+curl -s -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health | jq '.status, .cron'
+```
+
+`keep-warm` and `sla-escalate` should read `"state": "ok"` and the overall status `ok` (HTTP 200). Until the first run of each job the probe correctly answers 503 with `"state": "never"`.
+
+The two GitHub Actions workflows (`.github/workflows/keep-warm.yml`, `sla-escalate.yml`) can be left enabled as a free backup — the sweep is idempotent and a duplicate keep-warm ping costs nothing. Note they use `curl -fsSL`, so with the B5 change they now go red when the endpoint answers 503, which is the intended signal.
+
+**If you ever move to Vercel Pro instead**, delete the external jobs and add to `vercel.json` `crons`: `{"path": "/api/cron/keep-warm", "schedule": "*/4 3-14 * * *"}` and `{"path": "/api/cron/sla-escalate", "schedule": "15,45 3-14 * * *"}`. Vercel signs its own cron calls, so no header is needed.
+
 
 ## 6. Backups
 
