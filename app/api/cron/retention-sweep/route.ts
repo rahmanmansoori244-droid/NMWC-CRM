@@ -68,24 +68,27 @@ async function handle(req: NextRequest) {
     logger.error({ err: (err as Error).message }, 'retention.rate_limit_failed');
   }
 
-  // 2. Import payloads: keep the row and its outcome, drop the verbatim copy of
-  //    the customer data. `raw` is required, so it becomes an empty object
-  //    rather than null — the row still proves what happened to that line.
+  // 2. Import payloads: keep the row and its outcome, drop the verbatim copies
+  //    of the customer data.
+  //
+  //    This is raw SQL on purpose. The first version used
+  //    `data: { raw: {}, parsed: undefined, issues: undefined }`, and Prisma
+  //    reads `undefined` as "leave this column alone" — so only `raw` was
+  //    emptied while `parsed` (name, address, phone, contact person, CR number)
+  //    survived, and the `raw = {}` progress marker then excluded the row from
+  //    every future sweep. One statement sets all three and cannot drift.
   try {
-    const stale = await prisma.importRow.findMany({
-      where: { createdAt: { lt: cutoff(IMPORT_PAYLOAD_DAYS) }, NOT: { raw: { equals: {} } } },
-      select: { id: true },
-      take: BATCH,
-    });
-    if (stale.length) {
-      const { count } = await prisma.importRow.updateMany({
-        where: { id: { in: stale.map((r) => r.id) } },
-        data: { raw: {}, parsed: undefined, issues: undefined },
-      });
-      swept.importRowPayloads = count;
-    } else {
-      swept.importRowPayloads = 0;
-    }
+    const cleared = await prisma.$executeRaw`
+      UPDATE "ImportRow"
+         SET "raw" = '{}'::jsonb, "parsed" = NULL, "issues" = NULL
+       WHERE "id" IN (
+         SELECT "id" FROM "ImportRow"
+          WHERE "createdAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
+            AND ("raw" <> '{}'::jsonb OR "parsed" IS NOT NULL OR "issues" IS NOT NULL)
+          ORDER BY "createdAt"
+          LIMIT ${BATCH}
+       )`;
+    swept.importRowPayloads = cleared;
   } catch (err) {
     errors += 1;
     logger.error({ err: (err as Error).message }, 'retention.import_rows_failed');

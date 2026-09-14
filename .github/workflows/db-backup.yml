@@ -133,9 +133,9 @@ jobs:
         run: |
           set -euo pipefail
           psql "$PGURL" -At -f scripts/ops/backup-manifest.sql > "${STAMP}.manifest.json"
-          python3 -c "import json,sys; d=json.load(open('${STAMP}.manifest.json')); print('tables', d['tableCount'], 'triggers', d['triggerCount'], 'customers', d['rowCounts'].get('Customer'), 'users', d['rowCounts'].get('User'))"
+          jq -r '"source: \(.tableCount) tables, \(.triggerCount) triggers, newest audit \(.newestAuditAt // "none")"' "${STAMP}.manifest.json"
           # An UNLOGGED table would have its DATA silently omitted by the dump.
-          UNLOGGED=$(python3 -c "import json; print(len(json.load(open('${STAMP}.manifest.json'))['unloggedTables']))")
+          UNLOGGED=$(jq '.unloggedTables | length' "${STAMP}.manifest.json")
           if [ "$UNLOGGED" != "0" ]; then
             echo "::error::the database has UNLOGGED tables — --no-unlogged-table-data would back them up with NO ROWS"; exit 1
           fi
@@ -152,27 +152,55 @@ jobs:
             "$PGURL" | gzip --best > "${STAMP}.sql.gz"
           ls -lh "${STAMP}.sql.gz"
 
-      - name: Verify the dump before uploading it
+      - name: Verify the dump, and count what it contains
         run: |
           set -euo pipefail
-          # 1. the gzip stream is complete and undamaged
+          # ONE decompression pass, and nothing in it exits early.
+          #
+          # The previous version ran `gunzip -c f | grep -q PATTERN` per table.
+          # Under pipefail that fails on a GOOD dump: grep -q exits on the first
+          # match, gunzip dies of SIGPIPE (141), and the job aborted before the
+          # upload — every night, on a perfectly valid backup. awk consumes the
+          # whole stream, so the writer always finishes; it also emits the row
+          # counts, which is what the restore must reproduce (scripts/ops/dump-rowcounts.awk).
           gzip -t "${STAMP}.sql.gz"
-          # 2. pg_dump wrote its own terminal marker — proof it was not truncated
-          if ! gunzip -c "${STAMP}.sql.gz" | tail -5 | grep -q 'PostgreSQL database dump complete'; then
-            echo "::error::dump has no completion marker — it was truncated"; exit 1
-          fi
-          # 3. it is not an empty database
+          gunzip -c "${STAMP}.sql.gz" | awk -f scripts/ops/dump-rowcounts.awk > dump-rowcounts.tsv
+          echo "tables in dump: $(wc -l < dump-rowcounts.tsv)"
+          # The tables that matter must be present AND their COPY block parsed.
+          # Exact, locale-independent membership test. `grep -P` is not portable
+          # (it refuses to run in some locales) and piping into `grep -q` would
+          # reintroduce the SIGPIPE problem; `tr` consumes all of its input and
+          # `case` is a shell builtin.
+          FOUND=" $(cut -f1 dump-rowcounts.tsv | tr '\n' ' ')"
+          for T in Customer Branch User AuditLog; do
+            case "$FOUND" in
+              *" $T "*) ;;
+              *) echo "::error::dump contains no data section for table $T"; exit 1;;
+            esac
+          done
+          # Not an empty database.
           BYTES=$(stat -c%s "${STAMP}.sql.gz")
           echo "compressed size: ${BYTES} bytes (floor ${MIN_DUMP_BYTES})"
           if [ "$BYTES" -lt "$MIN_DUMP_BYTES" ]; then
             echo "::error::dump is only ${BYTES} bytes — an empty or wrong database would look like this"; exit 1
           fi
-          # 4. the tables that matter are actually in it
-          for T in Customer Branch User AuditLog; do
-            gunzip -c "${STAMP}.sql.gz" | grep -q "CREATE TABLE public.\"\?${T}\"\?" \
-              || { echo "::error::dump does not contain table ${T}"; exit 1; }
-          done
           echo "BYTES=${BYTES}" >> "$GITHUB_ENV"
+
+      - name: Merge the dump's row counts into the manifest
+        run: |
+          set -euo pipefail
+          # The manifest's schema counts and RPO watermark come from psql before
+          # the dump; its ROW COUNTS now come from the dump itself, so a write
+          # during the dump window cannot make a perfect restore look wrong.
+          jq --rawfile counts dump-rowcounts.tsv '
+            .rowCounts = (
+              $counts | split("\n") | map(select(length > 0) | split("\t"))
+              | map({key: .[0], value: (.[1] | tonumber)}) | from_entries
+            )
+            | .rowCountsSource = "dump"
+          ' "${STAMP}.manifest.json" > manifest.merged.json
+          mv manifest.merged.json "${STAMP}.manifest.json"
+          jq -r '"manifest: \(.rowCounts | length) tables, \(.rowCounts | to_entries | map(.value) | add) rows"' "${STAMP}.manifest.json"
 
       - name: Encrypt (age)
         run: |

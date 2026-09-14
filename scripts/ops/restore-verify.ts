@@ -71,6 +71,8 @@ function arg(name: string): string | undefined {
 type Manifest = {
   takenAt?: string;
   rowCounts?: Record<string, number>;
+  /** 'dump' when the counts were parsed out of the dump itself (race-free). */
+  rowCountsSource?: string;
   newestAuditAt?: string | null;
   serverVersion?: string;
 };
@@ -384,7 +386,7 @@ async function main() {
       }
       record(
         'M-01',
-        'row counts match the dump-time manifest exactly',
+        `row counts match the dump exactly${manifest.rowCountsSource === 'dump' ? '' : ' (manifest taken by a separate session — a write during the dump can show as drift)'}`,
         diffs.length ? 'fail' : 'pass',
         diffs.length ? diffs.slice(0, 8).join('; ') + (diffs.length > 8 ? ` (+${diffs.length - 8} more)` : '') : `${Object.keys(manifest.rowCounts).length} tables match`,
         'rows were lost between the dump and the restore — without the manifest this is undetectable'
@@ -392,14 +394,21 @@ async function main() {
 
       if (manifest.newestAuditAt) {
         const [{ newest }] = await q<{ newest: Date | null }>(`SELECT max("at") AS newest FROM "AuditLog"`);
-        const same =
-          newest && new Date(manifest.newestAuditAt).getTime() === new Date(newest).getTime();
+        // The watermark is read by a separate psql session just BEFORE pg_dump
+        // opens its snapshot, so the dump can legitimately contain rows newer
+        // than it — the dump window overlaps the start of the Oman working day.
+        // What must never happen is the restore being OLDER than the watermark:
+        // that means this is not the dump the manifest describes.
+        const restored = newest ? new Date(newest).getTime() : 0;
+        const watermark = new Date(manifest.newestAuditAt).getTime();
+        const ok = restored >= watermark;
+        const driftMin = Math.round(((restored - watermark) / 60_000) * 10) / 10;
         record(
           'M-02',
-          'the newest audit row matches the dump watermark',
-          same ? 'pass' : 'fail',
-          `restored ${newest ? new Date(newest).toISOString() : 'none'} vs manifest ${manifest.newestAuditAt}`,
-          'the restored database is not the snapshot the manifest describes'
+          'the restored audit trail reaches the dump watermark',
+          ok ? 'pass' : 'fail',
+          `restored ${newest ? new Date(newest).toISOString() : 'none'} vs watermark ${manifest.newestAuditAt}${ok && driftMin > 0 ? ` (+${driftMin} min written during the dump)` : ''}`,
+          'the restored database predates the manifest — an older dump was restored than the one described'
         );
       }
     } else {

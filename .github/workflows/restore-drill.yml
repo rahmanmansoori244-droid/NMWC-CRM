@@ -115,19 +115,32 @@ jobs:
       - run: npx prisma generate
 
       - name: Find the dump to restore
+        env:
+          # NEVER interpolate ${{ inputs.* }} into a run: script. A single quote
+          # in the input would break out of the shell string and execute in a job
+          # whose environment holds the backup decryption key, the R2 credentials
+          # and the Neon API key. Through the environment it is inert data.
+          OBJECT_KEY_INPUT: ${{ inputs.object_key }}
         run: |
           set -euo pipefail
           ENDPOINT="https://${BACKUP_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          KEY='${{ inputs.object_key }}'
+          KEY="${OBJECT_KEY_INPUT:-}"
           if [ -z "$KEY" ]; then
+            # List plainly and choose in the shell. A JMESPath expression over
+            # Contents raises a type error when the prefix is empty (the key is
+            # omitted entirely), so the friendly message below was unreachable.
+            # Keys are timestamped, so lexicographic order is chronological.
             KEY=$(aws s3api list-objects-v2 --bucket "$BACKUP_R2_BUCKET" --prefix 'db/' \
-              --endpoint-url "$ENDPOINT" \
-              --query "reverse(sort_by(Contents[?ends_with(Key, '.age') || ends_with(Key, '.sql.gz')], &LastModified))[0].Key" \
-              --output text)
+                    --endpoint-url "$ENDPOINT" --query 'Contents[].Key' --output text 2>/dev/null \
+                  | tr '\t' '\n' | grep -E '\.sql\.gz(\.age)?$' | sort | tail -1 || true)
           fi
           if [ -z "$KEY" ] || [ "$KEY" = "None" ]; then
-            echo "::error::no dumps found under db/ — the backup workflow has never uploaded one"; exit 1
+            echo "::error::no dumps found under db/ in ${BACKUP_R2_BUCKET} — the backup workflow has never uploaded one"; exit 1
           fi
+          case "$KEY" in
+            db/*.sql.gz|db/*.sql.gz.age) ;;
+            *) echo "::error::refusing to restore an unexpected object key"; exit 1;;
+          esac
           echo "DUMP_KEY=${KEY}" >> "$GITHUB_ENV"
           # The manifest sits next to the dump under the same timestamp prefix.
           echo "MANIFEST_KEY=$(echo "$KEY" | sed -E 's/\.sql\.gz(\.age)?$/.manifest.json/')" >> "$GITHUB_ENV"
@@ -176,21 +189,28 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH_NAME="restore-drill-${DRILL_DATE}"
-          RESP=$(curl -fsSL -X POST \
+          echo "BRANCH_NAME=${BRANCH_NAME}" >> "$GITHUB_ENV"
+          curl -fsSL -X POST \
             "https://console.neon.tech/api/v2/projects/${NEON_PROJECT_ID}/branches" \
             -H "Authorization: Bearer ${NEON_API_KEY}" \
             -H 'Accept: application/json' -H 'Content-Type: application/json' \
-            -d "{\"branch\":{\"name\":\"${BRANCH_NAME}\"},\"endpoints\":[{\"type\":\"read_write\"}]}")
-          BRANCH_ID=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["branch"]["id"])')
-          DRILL_HOST=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["endpoints"][0]["host"])')
-          DRILL_ROLE=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["roles"][0]["name"])')
-          DRILL_PASS=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["roles"][0]["password"])')
-          DB_NAME=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["databases"][0]["name"])')
-          echo "::add-mask::${DRILL_PASS}"
+            -d "{\"branch\":{\"name\":\"${BRANCH_NAME}\"},\"endpoints\":[{\"type\":\"read_write\"}]}" \
+            -o branch.json
+          # Record the id FIRST and on its own. Everything after this can throw —
+          # Neon provisions endpoints asynchronously, so roles/endpoints can be
+          # missing from the response — and if the id were not already in the
+          # environment the cleanup step would believe there was nothing to
+          # delete, leaving a branch holding a full copy of production data.
+          BRANCH_ID=$(jq -er '.branch.id' branch.json)
           echo "BRANCH_ID=${BRANCH_ID}" >> "$GITHUB_ENV"
-          echo "BRANCH_NAME=${BRANCH_NAME}" >> "$GITHUB_ENV"
-          echo "DRILL_URL=postgresql://${DRILL_ROLE}:${DRILL_PASS}@${DRILL_HOST}/${DB_NAME}?sslmode=require" >> "$GITHUB_ENV"
           echo "::notice::branch ${BRANCH_NAME} (${BRANCH_ID}) created"
+          DRILL_HOST=$(jq -er '.endpoints[0].host' branch.json)
+          DRILL_ROLE=$(jq -er '.roles[0].name' branch.json)
+          DRILL_PASS=$(jq -er '.roles[0].password' branch.json)
+          DB_NAME=$(jq -er '.databases[0].name' branch.json)
+          echo "::add-mask::${DRILL_PASS}"
+          rm -f branch.json
+          echo "DRILL_URL=postgresql://${DRILL_ROLE}:${DRILL_PASS}@${DRILL_HOST}/${DB_NAME}?sslmode=require" >> "$GITHUB_ENV"
 
       - name: Empty the branch, and prove it is empty
         run: |
@@ -279,6 +299,7 @@ jobs:
             restore.log
             restore-verify.json
             manifest.json
+            dump-rowcounts.tsv
           retention-days: 90
           if-no-files-found: warn
 

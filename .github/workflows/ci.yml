@@ -117,6 +117,7 @@ jobs:
         env:
           RUN_PG_RATE_LIMIT_TEST: '1'
           RUN_AUDIT_IMMUTABLE: '1'
+          RUN_RETENTION_SWEEP: '1'
           NMWC_APP_URL: postgresql://nmwc_app:ci-app-role-password-2026@localhost:5432/nmwc_ci
           RUN_USER_ADMIN_SCOPE: '1'
           RUN_USER_PROVISION: '1'
@@ -194,6 +195,16 @@ jobs:
           ACTOR=$(psql "$DATABASE_URL" -At -c 'SELECT id FROM "User" ORDER BY "createdAt" LIMIT 1')
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
             "INSERT INTO \"AuditLog\" (\"id\",\"actorId\",\"action\",\"entityType\",\"entityId\",\"reason\") VALUES ('ci-restore-chain','${ACTOR}','UPDATE','System','restore-chain','CI restore chain fixture')"
+          # Volume matters: with a ~60 KB dump the whole decompressed stream fits
+          # in one 64 KB pipe buffer, which is precisely why CI stayed green
+          # through a SIGPIPE bug that broke every production backup. Pad the
+          # fixture past that so the streaming path is exercised for real.
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "INSERT INTO \"AuditLog\" (\"id\",\"actorId\",\"action\",\"entityType\",\"entityId\",\"reason\")
+             SELECT 'ci-pad-' || g, '${ACTOR}', 'UPDATE', 'System', 'restore-chain-pad',
+                    repeat('padding to push the dump past the pipe buffer ', 4)
+             FROM generate_series(1, 4000) g"
+          echo "AuditLog rows: $(psql "$DATABASE_URL" -At -c 'SELECT count(*) FROM \"AuditLog\"')"
 
       - name: Manifest (the same query the nightly backup runs)
         run: |
@@ -207,10 +218,27 @@ jobs:
           pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data \
             "$DATABASE_URL" | gzip --best > dump.sql.gz
           gzip -t dump.sql.gz
-          gunzip -c dump.sql.gz | tail -5 | grep -q 'PostgreSQL database dump complete'
+          # Single pass, nothing exits early — see scripts/ops/dump-rowcounts.awk
+          # for why `gunzip | grep -q` is wrong here (SIGPIPE under pipefail).
+          gunzip -c dump.sql.gz | awk -f scripts/ops/dump-rowcounts.awk > dump-rowcounts.tsv
+          # Exact, locale-independent membership test. `grep -P` is not portable
+          # (it refuses to run in some locales) and piping into `grep -q` would
+          # reintroduce the SIGPIPE problem; `tr` consumes all of its input and
+          # `case` is a shell builtin.
+          FOUND=" $(cut -f1 dump-rowcounts.tsv | tr '\n' ' ')"
           for T in Customer Branch User AuditLog; do
-            gunzip -c dump.sql.gz | grep -q "CREATE TABLE public.\"\?${T}\"\?" || { echo "dump missing ${T}"; exit 1; }
+            case "$FOUND" in
+              *" $T "*) ;;
+              *) echo "::error::dump contains no data section for table $T"; exit 1;;
+            esac
           done
+          jq --rawfile counts dump-rowcounts.tsv '
+            .rowCounts = (
+              $counts | split("\n") | map(select(length > 0) | split("\t"))
+              | map({key: .[0], value: (.[1] | tonumber)}) | from_entries
+            ) | .rowCountsSource = "dump"
+          ' manifest.json > manifest.merged.json && mv manifest.merged.json manifest.json
+          jq -r '"dump: \(.rowCounts | length) tables, \(.rowCounts | to_entries | map(.value) | add) rows"' manifest.json
           ls -lh dump.sql.gz
 
       - name: Encrypt and decrypt with a throw-away age key
