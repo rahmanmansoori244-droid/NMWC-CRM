@@ -20,7 +20,7 @@
  *   RUN_PROMOTE_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/promote-reconciliation.test.ts
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import ExcelJS from 'exceljs';
 // RK-3: promote is sliced, so "load this batch" means driving it to completion.
 import { promoteFully } from '../support/promote';
@@ -107,6 +107,16 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
       crNumber: '7770001', crNumberNorm: '7770001', contactPerson: 'ZZ Keep Contact',
     } });
     current = { id: ids.steward, role: 'STEWARD', username: ids.steward };
+  });
+
+  // The upload action is rate-limited per Steward (3 uploads, then one token
+  // every 20 s — services/imports.ts). This suite uploads four times; over a
+  // WAN each upload takes seconds so the bucket refilled, but on a local
+  // Postgres in CI the four land inside a second and the fourth is refused.
+  // Reset the bucket before every test so the suite exercises the promote
+  // layer, not the limiter (which has its own suite: rate-limit-pg.test.ts).
+  beforeEach(async () => {
+    await prisma.rateLimit.deleteMany({ where: { key: `import:${ids.steward}` } });
   });
 
   afterAll(async () => {
