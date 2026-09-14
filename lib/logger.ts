@@ -24,12 +24,9 @@ const redactPaths = [
  * value before it hits the wire. Patterns target the most common Omani PII
  * shapes; absolute coverage is not the goal — defense in depth is.
  */
-const PHONE_PATTERN = /\+?968\d{8}\b|\b\d{8,12}\b/g;
-const EMAIL_PATTERN = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
-
-function scrubString(s: string): string {
-  return s.replace(PHONE_PATTERN, '[phone]').replace(EMAIL_PATTERN, '[email]');
-}
+// B6: one implementation, shared with the Sentry configs and the cron
+// heartbeat — see lib/scrub.ts.
+import { scrubString } from './scrub';
 
 function scrubObject<T>(value: T, depth = 0): T {
   if (depth > 4) return value;

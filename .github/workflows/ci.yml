@@ -108,6 +108,10 @@ jobs:
           npx tsx scripts/qa/generate-synthetic-master.ts --scale=dirty --seed=424242
           npx tsx scripts/qa/generate-synthetic-master.ts --scale=tiny --seed=424242
           npx tsx scripts/qa/generate-synthetic-master.ts --scale=medium --seed=424242
+      # B6: the personal-data annex must match the schema it claims to describe.
+      - name: Personal-data inventory is current
+        run: npx tsx scripts/compliance/build-pii-inventory.ts --check
+
       - name: DB-backed integration suites
         run: npx vitest run tests/integration
         env:
@@ -128,6 +132,139 @@ jobs:
           RUN_PROMOTE_TESTS: '1'
           RUN_PROMOTE_RELEASE: '1'
           RUN_GOLIVE_FLOW: '1'
+
+  # B3 (2026-09-14): prove the BACKUP AND RESTORE CHAIN itself, on every push.
+  #
+  # The monthly drill (.github/workflows/restore-drill.yml) exercises the real
+  # production dump, but it needs owner-held Neon and age secrets and it runs
+  # twelve times a year. This job needs nothing: it builds a database, dumps it
+  # with the same flags the nightly backup uses, encrypts and decrypts it with a
+  # throw-away age key, restores it into a SECOND, EMPTY database and runs the
+  # same verification harness. A change that breaks the dump flags, the manifest
+  # query, the encryption step or the verifier fails here in about a minute
+  # rather than at 2 a.m. on the day someone needs the backup.
+  #
+  # It also closes the gap the review named: every other DB-backed job builds its
+  # database with `prisma migrate deploy`, so the dump-and-restore path was never
+  # executed anywhere.
+  restore-chain:
+    name: Backup → encrypt → restore → verify
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: nmwc_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci -d nmwc_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/nmwc_ci
+      DIRECT_URL: postgresql://ci:ci@localhost:5432/nmwc_ci
+      RESTORED_URL: postgresql://ci:ci@localhost:5432/nmwc_restored
+      SEED_ADMIN_PASSWORD: Ci-Seed-Admin-Password-2026!
+      PGPASSWORD: ci
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Throw-away env for the seed
+        run: |
+          echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      - name: Install age
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends age
+
+      - name: Build the source database
+        run: |
+          set -euo pipefail
+          npx prisma migrate deploy
+          npm run db:seed
+          # Give the append-only trigger something to protect: without an audit
+          # row the functional probe (F-01) has nothing to try to tamper with.
+          ACTOR=$(psql "$DATABASE_URL" -At -c 'SELECT id FROM "User" ORDER BY "createdAt" LIMIT 1')
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "INSERT INTO \"AuditLog\" (\"id\",\"actorId\",\"action\",\"entityType\",\"entityId\",\"reason\") VALUES ('ci-restore-chain','${ACTOR}','UPDATE','System','restore-chain','CI restore chain fixture')"
+
+      - name: Manifest (the same query the nightly backup runs)
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -At -f scripts/ops/backup-manifest.sql > manifest.json
+          python3 -c "import json;d=json.load(open('manifest.json'));print('tables',d['tableCount'],'triggers',d['triggerCount'],'rows',sum(d['rowCounts'].values()))"
+
+      - name: Dump with the production flags, then check it like production does
+        run: |
+          set -euo pipefail
+          pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data \
+            "$DATABASE_URL" | gzip --best > dump.sql.gz
+          gzip -t dump.sql.gz
+          gunzip -c dump.sql.gz | tail -5 | grep -q 'PostgreSQL database dump complete'
+          for T in Customer Branch User AuditLog; do
+            gunzip -c dump.sql.gz | grep -q "CREATE TABLE public.\"\?${T}\"\?" || { echo "dump missing ${T}"; exit 1; }
+          done
+          ls -lh dump.sql.gz
+
+      - name: Encrypt and decrypt with a throw-away age key
+        run: |
+          set -euo pipefail
+          age-keygen -o ci-age.key 2>ci-age.pub
+          RECIPIENT=$(grep -o 'age1[0-9a-z]*' ci-age.pub | head -1)
+          age -r "$RECIPIENT" -o dump.sql.gz.age dump.sql.gz
+          rm dump.sql.gz
+          age -d -i ci-age.key -o dump.sql.gz dump.sql.gz.age
+          gzip -t dump.sql.gz
+          rm -f ci-age.key ci-age.pub
+          echo "age round trip ok"
+
+      - name: Restore into a second, EMPTY database
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nmwc_restored'
+          N=$(psql "$RESTORED_URL" -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          [ "$N" = "0" ] || { echo "target not empty ($N tables) — this would not be testing a restore"; exit 1; }
+          gunzip -c dump.sql.gz | psql "$RESTORED_URL" -v ON_ERROR_STOP=1 --echo-errors > restore.log 2>&1 || {
+            tail -40 restore.log; exit 1; }
+          ERRORS=$(grep -c '^psql:.*ERROR' restore.log || true)
+          [ "$ERRORS" = "0" ] || { grep '^psql:.*ERROR' restore.log | head -20; exit 1; }
+          echo "restored with 0 errors"
+
+      - name: Verify the restore
+        run: npx tsx scripts/ops/restore-verify.ts --url "$RESTORED_URL" --manifest manifest.json --json restore-verify.json
+
+      - name: The restore has no runtime role until app-role rebuilds it
+        env:
+          NMWC_APP_PASSWORD: ci-restored-app-role-2026
+          NMWC_APP_URL: postgresql://nmwc_app:ci-restored-app-role-2026@localhost:5432/nmwc_restored
+        run: |
+          set -euo pipefail
+          # pg_dump carries no roles and --no-privileges strips every grant, so a
+          # restored database cannot run the application until this is done. The
+          # recovery runbook says so; this proves it.
+          DIRECT_URL="$RESTORED_URL" npx tsx scripts/ops/app-role.ts create
+          DIRECT_URL="$RESTORED_URL" npx tsx scripts/ops/app-role.ts grant
+          DIRECT_URL="$RESTORED_URL" npx tsx scripts/ops/app-role.ts verify
+          npx tsx scripts/ops/restore-verify.ts --url "$RESTORED_URL" --expect-app-role
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-chain-${{ github.run_id }}
+          path: |
+            manifest.json
+            restore.log
+            restore-verify.json
+          retention-days: 14
+          if-no-files-found: warn
 
   # SEC-C2: fail the build if a high-entropy secret (API key, token, connection
   # string, private key) is committed — the guardrail that would have caught the

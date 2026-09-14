@@ -1,11 +1,12 @@
 import * as Sentry from '@sentry/nextjs';
+import { scrubEvent } from '@/lib/sentry-scrub';
 
-const PHONE_PATTERN = /\+?968\d{8}\b|\b\d{8,12}\b/g;
-const EMAIL_PATTERN = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
-function scrub(s: string): string {
-  return s.replace(PHONE_PATTERN, '[phone]').replace(EMAIL_PATTERN, '[email]');
-}
-
+/**
+ * Browser runtime. Session replay stays off (it would record the customer
+ * master on screen). The shared scrubber (B6, 2026-09-14) also drops
+ * `user.ip_address` and redacts breadcrumbs, which this config did not do
+ * before.
+ */
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
   enabled: !!process.env.NEXT_PUBLIC_SENTRY_DSN,
@@ -13,26 +14,5 @@ Sentry.init({
   replaysOnErrorSampleRate: 0,
   replaysSessionSampleRate: 0,
   environment: process.env.NODE_ENV,
-  beforeSend(event) {
-    if (event.request?.cookies) delete event.request.cookies;
-    if (typeof event.request?.url === 'string') {
-      try {
-        const u = new URL(event.request.url);
-        u.searchParams.forEach((_v, k) => {
-          if (/phone|crNumber|email|password|token/i.test(k)) {
-            u.searchParams.set(k, '[redacted]');
-          }
-        });
-        event.request.url = scrub(u.toString());
-      } catch {
-        event.request.url = scrub(event.request.url);
-      }
-    }
-    if (event.exception?.values) {
-      for (const v of event.exception.values) {
-        if (typeof v.value === 'string') v.value = scrub(v.value);
-      }
-    }
-    return event;
-  },
+  beforeSend: scrubEvent,
 });

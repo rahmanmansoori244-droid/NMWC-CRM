@@ -1,0 +1,308 @@
+name: Restore drill
+
+# B3 (enterprise assessment, 2026-09-14): prove the backups are restorable.
+#
+# The previous drill lived inside db-backup.yml and had never once run. It
+# failed on its first and only attempt (run 25630332801, 2026-05-10) because the
+# Neon secrets were missing; two minutes later a commit added
+# `&& vars.NEON_DRILL_ENABLED == 'true'` to its condition, and since that
+# variable was never created, 127 consecutive runs reported the drill as
+# "skipped" while the overall workflow reported success. Nobody has ever
+# restored this database.
+#
+# Worse, had it run it would have proved nothing: it created a Neon branch with
+# no parent, which Neon services by cloning the DEFAULT (production) branch — so
+# the target already contained every table before the dump was applied, and the
+# sole assertion ("at least 10 tables in public") would have passed whether or
+# not a single row loaded.
+#
+# This drill therefore:
+#   1. creates a Neon branch, then EMPTIES it (drop and recreate `public`) and
+#      asserts it really is empty before loading anything;
+#   2. restores the most recent encrypted dump with ON_ERROR_STOP and keeps the
+#      restore log as an artifact;
+#   3. runs scripts/ops/restore-verify.ts, which checks schema completeness, the
+#      migration ledger, the extensions, every trigger — including the
+#      append-only audit triggers, which pg_dump writes AFTER the data and a
+#      truncated restore silently loses — referential integrity, the domain
+#      invariants, and the dump-time row-count manifest;
+#   4. re-creates the least-privilege `nmwc_app` role, because pg_dump carries no
+#      roles and `--no-privileges` strips every grant, so a restored database
+#      cannot run the application until this is done;
+#   5. times every phase and publishes the measured RTO;
+#   6. DELETES the branch, always — an abandoned drill branch is a full live
+#      copy of customer personal data.
+#
+# It runs monthly and on demand. If the required secrets are absent it FAILS
+# rather than skipping: "we cannot restore" is a finding, not a no-op.
+
+on:
+  schedule:
+    # 04:00 UTC on the 1st = 08:00 Oman, a working morning when someone can act.
+    - cron: '0 4 1 * *'
+  workflow_dispatch:
+    inputs:
+      object_key:
+        description: 'Specific dump key to restore (default: the most recent under db/)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  drill:
+    name: Restore the latest dump and verify it
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: 'true'
+      BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
+      BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      # The age private key that decrypts the dumps. If this is wrong or lost,
+      # EVERY backup is unrecoverable — which is precisely what this drill exists
+      # to discover while it is still fixable.
+      BACKUP_AGE_IDENTITY: ${{ secrets.BACKUP_AGE_IDENTITY }}
+      PROD_DB_HOST_MARKER: ${{ vars.PROD_DB_HOST_MARKER }}
+    steps:
+      - name: Check the drill can run at all
+        run: |
+          set -euo pipefail
+          MISSING=''
+          for V in NEON_API_KEY NEON_PROJECT_ID BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET; do
+            [ -z "${!V:-}" ] && MISSING="${MISSING} ${V}"
+          done
+          if [ -n "$MISSING" ]; then
+            {
+              echo "### Restore drill could not run"
+              echo ""
+              echo "Missing repository secrets:${MISSING}"
+              echo ""
+              echo "Until these exist, **no backup of this system has ever been restored** and the recovery time is unknown."
+              echo "Add them at Settings → Secrets and variables → Actions:"
+              echo "- \`NEON_API_KEY\` — Neon console → Account settings → API keys"
+              echo "- \`NEON_PROJECT_ID\` — Neon console → Project settings → General"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::restore drill cannot run — missing secrets:${MISSING}"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Postgres 17 client and age
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 age
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - run: npm ci
+      - run: npx prisma generate
+
+      - name: Find the dump to restore
+        run: |
+          set -euo pipefail
+          ENDPOINT="https://${BACKUP_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          KEY='${{ inputs.object_key }}'
+          if [ -z "$KEY" ]; then
+            KEY=$(aws s3api list-objects-v2 --bucket "$BACKUP_R2_BUCKET" --prefix 'db/' \
+              --endpoint-url "$ENDPOINT" \
+              --query "reverse(sort_by(Contents[?ends_with(Key, '.age') || ends_with(Key, '.sql.gz')], &LastModified))[0].Key" \
+              --output text)
+          fi
+          if [ -z "$KEY" ] || [ "$KEY" = "None" ]; then
+            echo "::error::no dumps found under db/ — the backup workflow has never uploaded one"; exit 1
+          fi
+          echo "DUMP_KEY=${KEY}" >> "$GITHUB_ENV"
+          # The manifest sits next to the dump under the same timestamp prefix.
+          echo "MANIFEST_KEY=$(echo "$KEY" | sed -E 's/\.sql\.gz(\.age)?$/.manifest.json/')" >> "$GITHUB_ENV"
+          echo "ENDPOINT=${ENDPOINT}" >> "$GITHUB_ENV"
+          echo "DRILL_DATE=$(date -u +%Y-%m-%dT%H-%M-%SZ)" >> "$GITHUB_ENV"
+          echo "::notice::restoring ${KEY}"
+
+      - name: Download the dump and its manifest
+        run: |
+          set -euo pipefail
+          T0=$(date -u +%s)
+          aws s3 cp "s3://${BACKUP_R2_BUCKET}/${DUMP_KEY}" ./dump.bin --endpoint-url "$ENDPOINT"
+          if aws s3 cp "s3://${BACKUP_R2_BUCKET}/${MANIFEST_KEY}" ./manifest.json --endpoint-url "$ENDPOINT" 2>/dev/null; then
+            echo "HAVE_MANIFEST=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no manifest next to this dump (pre-2026-09-14 backup) — row counts cannot be checked exactly"
+            echo "HAVE_MANIFEST=false" >> "$GITHUB_ENV"
+          fi
+          echo "T_DOWNLOAD=$(( $(date -u +%s) - T0 ))" >> "$GITHUB_ENV"
+          ls -lh ./dump.bin
+
+      - name: Decrypt
+        run: |
+          set -euo pipefail
+          T0=$(date -u +%s)
+          case "$DUMP_KEY" in
+            *.age)
+              if [ -z "${BACKUP_AGE_IDENTITY:-}" ]; then
+                echo "::error::the dump is encrypted but BACKUP_AGE_IDENTITY is not set. If the private key is lost, EVERY backup is unrecoverable — see docs/OPERATIONS.md §6 Key escrow."; exit 1
+              fi
+              printf '%s' "$BACKUP_AGE_IDENTITY" > /tmp/age.key
+              chmod 600 /tmp/age.key
+              age -d -i /tmp/age.key -o ./dump.sql.gz ./dump.bin
+              shred -u /tmp/age.key
+              echo "decrypted"
+              ;;
+            *)
+              echo "::warning::this dump is NOT encrypted (taken before BACKUP_AGE_RECIPIENTS was configured)"
+              mv ./dump.bin ./dump.sql.gz
+              ;;
+          esac
+          gzip -t ./dump.sql.gz
+          echo "T_DECRYPT=$(( $(date -u +%s) - T0 ))" >> "$GITHUB_ENV"
+
+      - name: Create a Neon branch for the drill
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="restore-drill-${DRILL_DATE}"
+          RESP=$(curl -fsSL -X POST \
+            "https://console.neon.tech/api/v2/projects/${NEON_PROJECT_ID}/branches" \
+            -H "Authorization: Bearer ${NEON_API_KEY}" \
+            -H 'Accept: application/json' -H 'Content-Type: application/json' \
+            -d "{\"branch\":{\"name\":\"${BRANCH_NAME}\"},\"endpoints\":[{\"type\":\"read_write\"}]}")
+          BRANCH_ID=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["branch"]["id"])')
+          DRILL_HOST=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["endpoints"][0]["host"])')
+          DRILL_ROLE=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["roles"][0]["name"])')
+          DRILL_PASS=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["roles"][0]["password"])')
+          DB_NAME=$(echo "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin)["databases"][0]["name"])')
+          echo "::add-mask::${DRILL_PASS}"
+          echo "BRANCH_ID=${BRANCH_ID}" >> "$GITHUB_ENV"
+          echo "BRANCH_NAME=${BRANCH_NAME}" >> "$GITHUB_ENV"
+          echo "DRILL_URL=postgresql://${DRILL_ROLE}:${DRILL_PASS}@${DRILL_HOST}/${DB_NAME}?sslmode=require" >> "$GITHUB_ENV"
+          echo "::notice::branch ${BRANCH_NAME} (${BRANCH_ID}) created"
+
+      - name: Empty the branch, and prove it is empty
+        run: |
+          set -euo pipefail
+          # A Neon branch is a copy-on-write clone of the default (production)
+          # branch, so it arrives FULL. Restoring into it would prove nothing.
+          # Guard first: never issue a destructive statement against a host that
+          # looks like production, whatever the API returned.
+          if [ -n "${PROD_DB_HOST_MARKER:-}" ]; then
+            case "$DRILL_URL" in
+              *"${PROD_DB_HOST_MARKER}"*)
+                echo "::error::the drill URL points at the production host — refusing to drop anything"; exit 1;;
+            esac
+          fi
+          psql "$DRILL_URL" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+          N=$(psql "$DRILL_URL" -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          if [ "$N" != "0" ]; then
+            echo "::error::target still has ${N} tables — this drill would not be testing the restore"; exit 1
+          fi
+          echo "target is empty (0 tables) — the restore starts from nothing"
+
+      - name: Restore
+        run: |
+          set -euo pipefail
+          T0=$(date -u +%s)
+          # No -q: warnings and errors are evidence. ON_ERROR_STOP makes the
+          # first failure fatal instead of leaving a half-loaded database.
+          gunzip -c ./dump.sql.gz | psql "$DRILL_URL" -v ON_ERROR_STOP=1 --echo-errors > restore.log 2>&1 || {
+            echo "::error::restore failed — see the restore.log artifact"; tail -40 restore.log; exit 1; }
+          ERRORS=$(grep -c '^psql:.*ERROR' restore.log || true)
+          echo "restore finished with ${ERRORS} error line(s)"
+          if [ "${ERRORS}" != "0" ]; then
+            grep '^psql:.*ERROR' restore.log | head -20
+            echo "::error::the restore reported errors — DDL or data was skipped"; exit 1
+          fi
+          echo "T_RESTORE=$(( $(date -u +%s) - T0 ))" >> "$GITHUB_ENV"
+
+      - name: Verify the restored database
+        run: |
+          set -euo pipefail
+          T0=$(date -u +%s)
+          ARGS=(--url "$DRILL_URL" --json restore-verify.json)
+          if [ "${HAVE_MANIFEST}" = "true" ]; then ARGS+=(--manifest ./manifest.json); fi
+          npx tsx scripts/ops/restore-verify.ts "${ARGS[@]}"
+          echo "T_VERIFY=$(( $(date -u +%s) - T0 ))" >> "$GITHUB_ENV"
+
+      - name: Re-create the runtime role on the restore
+        env:
+          NMWC_APP_PASSWORD: drill-app-role-${{ github.run_id }}-xyz
+        run: |
+          set -euo pipefail
+          # pg_dump carries no roles, and --no-privileges strips every GRANT, so
+          # a restored database cannot run the application until this is done.
+          # Proving it here means the recovery runbook's step is rehearsed too.
+          T0=$(date -u +%s)
+          export DIRECT_URL="$DRILL_URL"
+          npx tsx scripts/ops/app-role.ts create
+          npx tsx scripts/ops/app-role.ts grant
+          export NMWC_APP_URL="$(printf '%s' "$DRILL_URL" | sed -E "s#://[^@]+@#://nmwc_app:${NMWC_APP_PASSWORD}@#")"
+          npx tsx scripts/ops/app-role.ts verify
+          npx tsx scripts/ops/restore-verify.ts --url "$DRILL_URL" --expect-app-role
+          echo "T_ROLE=$(( $(date -u +%s) - T0 ))" >> "$GITHUB_ENV"
+
+      - name: Delete the drill branch
+        if: always()
+        run: |
+          set -uo pipefail
+          # An abandoned drill branch is a full live copy of customer personal
+          # data. Deleting it is not optional and not a human instruction.
+          if [ -z "${BRANCH_ID:-}" ]; then echo "no branch to delete"; exit 0; fi
+          CODE=$(curl -s -o /tmp/del.out -w '%{http_code}' -X DELETE \
+            "https://console.neon.tech/api/v2/projects/${NEON_PROJECT_ID}/branches/${BRANCH_ID}" \
+            -H "Authorization: Bearer ${NEON_API_KEY}" -H 'Accept: application/json')
+          echo "delete branch ${BRANCH_ID} → HTTP ${CODE}"
+          if [ "$CODE" != "200" ] && [ "$CODE" != "201" ]; then
+            echo "::error::could not delete drill branch ${BRANCH_NAME} (${BRANCH_ID}) — DELETE IT BY HAND in the Neon console: it holds a full copy of production personal data"
+            exit 1
+          fi
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-drill-${{ github.run_id }}
+          path: |
+            restore.log
+            restore-verify.json
+            manifest.json
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        run: |
+          TOTAL=$(( ${T_DOWNLOAD:-0} + ${T_DECRYPT:-0} + ${T_RESTORE:-0} + ${T_VERIFY:-0} + ${T_ROLE:-0} ))
+          {
+            echo "### Restore drill — ${{ job.status }}"
+            echo ""
+            echo "| Phase | Seconds |"
+            echo "|---|---|"
+            echo "| Download | ${T_DOWNLOAD:-–} |"
+            echo "| Decrypt | ${T_DECRYPT:-–} |"
+            echo "| Restore | ${T_RESTORE:-–} |"
+            echo "| Verify | ${T_VERIFY:-–} |"
+            echo "| Re-create runtime role | ${T_ROLE:-–} |"
+            echo "| **Measured recovery time** | **${TOTAL}** |"
+            echo ""
+            echo "- dump: \`${DUMP_KEY:-?}\`"
+            echo "- manifest compared: ${HAVE_MANIFEST:-false}"
+            echo "- branch: \`${BRANCH_NAME:-none}\` (deleted)"
+            echo ""
+            echo "This is the database-restore portion of RTO only. The full recovery"
+            echo "adds the Vercel environment swap and the session revocation — see"
+            echo "docs/OPERATIONS.md §6."
+          } >> "$GITHUB_STEP_SUMMARY"

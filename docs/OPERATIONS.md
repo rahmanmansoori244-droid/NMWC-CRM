@@ -67,7 +67,7 @@ npm run db:migrate -- --name describe_change
 npx prisma migrate deploy
 ```
 
-Vercel's build pipeline runs `prisma generate` automatically (configured in `package.json`). Migrations are NOT auto-deployed on Vercel — you run `prisma migrate deploy` manually before the deploy that needs the new schema.
+- **Migrations ARE applied by the Vercel build.** `package.json` `build` runs `prisma generate && prisma migrate deploy && next build`, so any migration on the deployed commit is applied to the database in `DIRECT_URL` as part of the deploy. (This line previously said the opposite; it was wrong, and it matters — a rollback of the application does not roll back the schema, and a restore followed by a deploy will re-apply migrations.)
 
 ## 5b. First-time post-deploy operator checklist
 
@@ -176,35 +176,140 @@ The two GitHub Actions workflows (`.github/workflows/keep-warm.yml`, `sla-escala
 **If you ever move to Vercel Pro instead**, delete the external jobs and add to `vercel.json` `crons`: `{"path": "/api/cron/keep-warm", "schedule": "*/4 3-14 * * *"}` and `{"path": "/api/cron/sla-escalate", "schedule": "15,45 3-14 * * *"}`. Vercel signs its own cron calls, so no header is needed.
 
 
-## 6. Backups
+## 6. Backups, recovery, and what they are actually worth
 
-- **Neon PITR:** point-in-time recovery, 7 days on the Launch plan.
-- **Off-Neon daily dump (B-01):** GitHub Actions workflow `.github/workflows/db-backup.yml` runs at 02:00 UTC daily and on manual dispatch. It `pg_dump`s `DIRECT_URL` (`--no-owner --no-privileges --format=plain --no-unlogged-table-data`), gzips, and uploads to R2 bucket `nmwc-backups` at key `db/<YYYY-MM-DD>.sql.gz`. Failures (any non-zero exit from pg_dump or aws s3 cp) surface as a red workflow run.
-  - **Required GitHub secrets:** `DIRECT_URL`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET=nmwc-backups`. For the restore-drill job: also `NEON_API_KEY`, `NEON_PROJECT_ID=snowy-haze-29025382`.
-  - **Restore drill:** `Actions → DB Backup → Run workflow` runs the `restore-drill` job, which downloads the most recent dump and restores it into a Neon branch named `restore-drill-<DATE>`. After verifying, delete the branch in the Neon console (it costs storage, not free).
-- **Manual logical dump:** `npx prisma db pull` exports schema; for data, run `pg_dump` against `DIRECT_URL`.
-- **R2 photos:** R2 has 11 nines durability; we keep originals indefinitely. To take a copy, use `rclone copy r2:nmwc-photos /backup/path` (configure rclone with the same R2 keys).
+### 6.1 What exists
+
+| Layer | Covers | Window | Where |
+|---|---|---|---|
+| Neon point-in-time recovery | The database, to any instant | 7 days | Same provider, same region as production |
+| Nightly off-Neon dump | The database, as of the dump | 30 days of dumps | Cloudflare R2 `nmwc-backups`, encrypted |
+| **Nothing** | The photographs in `nmwc-photos` | — | Single copy |
+
+The nightly dump is `.github/workflows/db-backup.yml`: `pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data`, gzipped, age-encrypted, uploaded to `db/<timestamp>.sql.gz.age` with a row-count manifest beside it at `db/<timestamp>.manifest.json`.
+
+### 6.2 Recovery objectives
+
+These are measured, not aspirational. Two different RPOs apply and conflating them is the usual mistake.
+
+| Scenario | Path | RPO — data you lose | RTO — time to serving again |
+|---|---|---|---|
+| Bad import, bad migration, or a destructive mistake, **within 7 days** | **A — Neon PITR** | Effectively **zero**: restore to the second before the damage | **15–30 min**, most of it deciding the timestamp |
+| Damage older than 7 days, or a Neon-side logical problem | **B — restore the latest dump into a new Neon branch** | Up to the age of the last dump. The schedule says 24 h; GitHub's scheduler actually delivers late and unevenly — across 127 runs only 12 started in the 02:00 UTC hour and the worst observed gap between dumps was **33 h**. Plan for **up to 36 h** | **45–90 min** (the monthly drill publishes the measured number) |
+| Total loss of Neon | **C — rebuild on another Postgres** | As B | **Half a day**, dominated by provisioning and re-pointing, not by the restore |
+
+**Photographs have no recovery path at all.** A database restore brings back `Attachment` rows pointing at objects in `nmwc-photos`. If those objects are gone, the rows are dangling and the CR documents behind credit decisions are gone with them. This is an accepted risk today, not a solved problem.
+
+### 6.3 What a restore does not bring back
+
+`pg_dump` carries tables, data, indexes, constraints, triggers, functions and the `_prisma_migrations` ledger. It does **not** carry:
+
+1. **Roles or grants.** `--no-privileges` strips every GRANT and pg_dump never dumps roles, so a restored database has no `nmwc_app` and no REVOKEs — the least-privilege half of B4 is absent from every restore by construction. Re-create it (step 4 of each runbook below).
+2. **Photographs** — see above.
+3. **Configuration.** Before a restored database can serve the application, all of this must also exist: `DATABASE_URL` (the `nmwc_app` pooled URL), `DIRECT_URL` (owner), `AUTH_SECRET` + `NEXTAUTH_SECRET` (rotating these logs everyone out), `CRON_SECRET`, `HEALTH_BEARER`, the four `R2_*` variables, the Sentry DSN, and the working-hours and SLA variables. `.env.example` is the checklist.
+
+### 6.4 Runbook A — Neon point-in-time recovery
+
+Use when the damage is recent and the database itself is healthy.
+
+1. **Stop the bleeding.** If an import is running, abort it. There is no maintenance mode and no way to tell 106 field users to stop — see §6.8.
+2. In the Neon console, create a branch from production **at a timestamp before the damage**. Neon branches are copy-on-write, so this is instant and costs storage only.
+3. Point a psql session at the new branch and sanity-check the data you expected to recover.
+4. Re-create the runtime role on it: `ALLOW_PRODUCTION=1 DIRECT_URL='<branch owner URL>' NMWC_APP_PASSWORD='<new>' npx tsx scripts/ops/app-role.ts create` then `grant`, then `verify` with `NMWC_APP_URL`.
+5. Verify the restore properly: `npx tsx scripts/ops/restore-verify.ts --url '<branch owner URL>' --expect-app-role`.
+6. Promote the branch to the primary in the Neon console, or repoint Vercel Production `DATABASE_URL` / `DIRECT_URL` at it and redeploy.
+7. **Revoke sessions.** Set `sessionsRevokedAt = now()` on every user, or rotate `AUTH_SECRET`; otherwise a JWT issued before the restore still authenticates against the restored user table.
+8. Confirm: `curl -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health` — `checks.db: ok` and no cron alarms.
+
+### 6.5 Runbook B — restore the nightly dump into a new Neon branch
+
+Use when the damage predates the PITR window, or PITR cannot reach a good state.
+
+1. Steps 1 from Runbook A.
+2. Create a Neon branch. **It arrives as a copy of production** — Neon has no empty-branch primitive — so empty it first: `psql "$URL" -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'` and confirm `0` tables before loading anything. (Check twice that the URL is the branch, not production.)
+3. Fetch the newest dump and its manifest from `nmwc-backups`, decrypt with the age identity, and load with `psql -v ON_ERROR_STOP=1 --echo-errors`, keeping the log.
+4. Re-create the runtime role (Runbook A step 4).
+5. `npx tsx scripts/ops/restore-verify.ts --url '<branch owner URL>' --manifest manifest.json --expect-app-role`. This is the step that catches the dangerous failure: pg_dump writes triggers **after** the data, so a truncated restore comes back with every customer row present and the append-only audit triggers missing.
+6. Steps 6–8 from Runbook A.
+
+The monthly drill (`.github/workflows/restore-drill.yml`) performs exactly steps 2–5 against a throw-away branch and publishes the timings. Run it on demand before you ever need it for real: **Actions → Restore drill → Run workflow**.
+
+### 6.6 Runbook C — total provider loss
+
+1. Provision PostgreSQL 17 anywhere, with the `pg_trgm` extension available.
+2. Runbook B steps 3–5 against it.
+3. Repoint Vercel Production at the new host and redeploy. The build runs `prisma migrate deploy`, which will be a no-op on a correctly restored database.
+4. Runbook A steps 7–8.
+5. Photographs: if R2 is also gone, they are gone. Record what was lost.
+
+### 6.7 Backup encryption and key escrow
+
+Dumps are encrypted with [age](https://age-encryption.org) to the public keys in the repository variable `BACKUP_AGE_RECIPIENTS` (comma-separated; public keys are not secrets). The private key decrypts every backup.
+
+**If the private key is lost, every backup is unrecoverable.** Encryption introduces this failure mode; the escrow below is what makes it acceptable.
+
+Setup, once:
+
+```bash
+age-keygen -o nmwc-backup.key          # prints the public key (age1…) to stderr
+```
+
+Then:
+1. Put the **public** key in repository variable `BACKUP_AGE_RECIPIENTS`. Add a **second** recipient held by a different person, so one lost laptop is not the end of the backups.
+2. Store the **private** key in at least two places that do not fail together: the company password manager, and printed on paper in a safe. Never in the repository, never in an e-mail.
+3. Put a copy in the repository secret `BACKUP_AGE_IDENTITY` so the monthly drill can decrypt.
+4. Delete the local file.
+
+**The monthly drill is also the key test.** If it fails to decrypt, the backups are already unrecoverable and the clock started at the last successful drill. Treat a decryption failure as a P1 incident, not a workflow annoyance.
+
+Until `BACKUP_AGE_RECIPIENTS` is set the workflow still runs and emits a loud warning, and the uploaded dump is plaintext — a complete customer master and every password hash, unencrypted.
+
+### 6.8 What can still go wrong, and is not fixed
+
+- **Bus factor of one.** Every recovery step needs credentials one person holds. There is no named alternate and no stated authority to declare a disaster.
+- **No maintenance mode.** Nothing can stop 106 field users writing during a recovery, and there is no channel to tell them.
+- **The dead man lives inside the thing it watches.** The `db-backup` heartbeat is a row in the production database. If that database is unreachable the bearer health probe reports `checks.db: fail` and answers 503 — so an outage still alarms — but the backup-specific alarm is silent in exactly that case.
+- **`PROD_CRON_SECRET` may be stale.** The backup reports its outcome using that repository secret; the route validates against `CRON_SECRET` in Vercel. If they have drifted the POST returns 401, the workflow warns, and the heartbeat goes stale. Check both after any secret rotation.
+- **Rotating `neondb_owner` breaks the backup** unless the GitHub `DIRECT_URL` secret is updated in the same change. Since 2026-09-14 that failure alarms within 40 hours instead of silently; it is still a manual pairing.
+
+### 6.9 Retention of the backups themselves
+
+30 days, enforced by an R2 lifecycle rule on `nmwc-backups` under prefix `db/`. That rule is now set and verified from code rather than being a dashboard task nobody confirmed:
+
+```bash
+npx tsx scripts/ops/r2-backups-lifecycle.ts           # apply
+npx tsx scripts/ops/r2-backups-lifecycle.ts --check   # verify, exit 1 if wrong
+```
+
+Needs an R2 token with **Admin Read & Write** (`BACKUP_R2_ADMIN_*` or the account-wide `R2_ADMIN_*` pair); the object-scoped token the backup uses cannot configure a bucket.
+
+Each run writes to its own timestamped key, so a second run on the same day adds an object instead of overwriting the good nightly dump.
+
+### 6.10 Proving all of this
+
+| Claim | Proven by | When |
+|---|---|---|
+| The dump/encrypt/restore/verify chain works | `restore-chain` job in CI | every push |
+| The real production dump restores and is complete | `.github/workflows/restore-drill.yml` | monthly + on demand |
+| A restored database refuses audit tampering | `restore-verify.ts` assertion F-01 | both of the above |
+| A backup actually happened last night | `db-backup` heartbeat on bearer `/api/health` | continuously |
+| Dumps are expired after 30 days | `r2-backups-lifecycle.ts --check` | on demand |
+
+### 6.11 Other backup notes
+
+- **Manual logical dump:** `npx prisma db pull` exports the schema; for data, `pg_dump` against `DIRECT_URL`.
+- **Required GitHub secrets:** `DIRECT_URL`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `PROD_CRON_SECRET`. For the drill also `NEON_API_KEY`, `NEON_PROJECT_ID`, `BACKUP_AGE_IDENTITY`. Repository variables: `BACKUP_AGE_RECIPIENTS`, optionally `PROD_DB_HOST_MARKER` and `MIN_DUMP_BYTES`.
 
 ### R2 backup & versioning
 
 Two independent buckets, each with its own lifecycle policy.
 
-**`nmwc-photos` (production photo storage)** — operator must configure once in the Cloudflare R2 dashboard:
+**`nmwc-photos` (production photo storage)** — configure once:
 
-1. **Object Versioning:** enable on the bucket. This way, if the photo-gc cron tags an object incorrectly or someone overwrites a key, the previous version is recoverable.
-2. **Lifecycle rule — `gc-marked` expiry:** `nmwc-photos` → Settings → Lifecycle rules → "Add rule":
-   - Condition: object tag `gc-marked=true`.
-   - Action: expire objects 7 days after the tag is applied.
-   - Why: `app/api/cron/photo-gc/route.ts` no longer hard-deletes from R2 (B-02). Instead it tags soft-deleted attachments with `gc-marked=true` and `gc-marked-at=<isoDate>`. The bucket lifecycle is what permanently removes them, leaving a 7-day window to recover from a faulty cron run or operator mistake.
-3. **Optional non-current version expiry:** with versioning on, set non-current versions to expire after 30 days so old overwrites don't accumulate forever.
+1. **Lifecycle rule — `gc-marked` expiry:** condition object tag `gc-marked=true`, action expire 7 days after the tag is applied. `app/api/cron/photo-gc/route.ts` tags rather than deletes (B-02), so without this rule tagged objects accumulate forever, and with it there is a 7-day window to recover from a faulty GC run. `npx tsx scripts/r2-setup-lifecycle.ts` sets it if your token has bucket-admin scope.
+2. **Object versioning** if the bucket class supports it — the script attempts it and reports cleanly when R2 does not expose the API.
 
-**`nmwc-backups` (off-Neon SQL dumps from B-01)** — operator must configure once:
-
-1. **Lifecycle rule — 30-day retention:** `nmwc-backups` → Settings → Lifecycle rules → "Add rule":
-   - Condition: object age greater than 30 days under prefix `db/`.
-   - Action: delete.
-2. **No versioning needed** — dumps are immutable per-day artifacts; `db/<DATE>.sql.gz` is overwritten only if a same-day re-run happens.
-3. **Separate credentials from `nmwc-photos`.** The GitHub Actions workflow uses `BACKUP_R2_*` secrets, never the production photo R2 keys. Compromise of one bucket does not expose the other.
+**`nmwc-backups`** — see §6.9. Separate credentials from the photos bucket, so a leak of one does not expose the other.
 
 ## 7. Common operations
 
@@ -241,6 +346,28 @@ The rotation is audit-logged.
 ### Symptom: `/api/health` (bearer) shows a cron job `stale` / `never` / `failed`
 
 `never` after a deploy: the job has not run yet — check the scheduler (GitHub Actions → the workflow's recent runs, or the external scheduler's log). `stale`: the scheduler stopped calling — GitHub disables schedules on inactive public repos and throttles them generally; re-trigger the workflow by hand and consider option (a)/(b) in §5d. `failed`: open `cron.jobs[].lastError` in the payload; the SLA sweep also logs `cron.sla.row_failed` per row in Vercel logs.
+
+## 5e. Opening an audit-maintenance window (owner only)
+
+The append-only trigger has exactly one override: a transaction that runs
+`SET LOCAL nmwc.audit_maintenance = 'on'` **from a session logged in as the table
+owner**. The application role cannot use it at all. Because the record of such an
+edit would have to live in the table being edited, the accountability for it is
+procedural, and this is the procedure:
+
+1. **Write down why, before you open it.** Add a dated entry to
+   `docs/compliance/maintenance-log.md` (create it on first use): who authorised
+   it, what is being changed, which rows, and under what request.
+2. Take a fresh dump first — `Actions → DB Backup → Run workflow` — so the
+   pre-edit state is preserved off-Neon.
+3. Do the narrowest possible change inside one transaction, as the owner
+   (`DIRECT_URL`), and never as part of a script that also does other work.
+4. Record the row counts before and after in the same log entry.
+
+Legitimate uses so far: test-fixture clean-up on isolated branches
+(`tests/support/audit.ts`) and the synthetic-data wipe scripts. An erasure
+request is **not** yet a legitimate use — see `docs/compliance/PDPL-ASSESSMENT.md`
+Q4, which is open with counsel.
 
 ### Symptom: a script fails with `B4: DELETE on "AuditLog" is forbidden`
 

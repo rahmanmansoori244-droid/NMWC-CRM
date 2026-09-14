@@ -1,23 +1,44 @@
 name: DB Backup
 
-# B-01 (audit 2026-05-10): off-Neon logical backup. Neon PITR covers 7 days
-# but is in the same provider/region as production. This workflow takes a
-# `pg_dump --format=plain --no-owner --no-privileges` from the direct URL,
-# gzips it, and pushes it to Cloudflare R2 bucket `nmwc-backups` (separate
-# credentials and bucket from the photos bucket so a leak of one doesn't
-# expose the other).
+# B-01 (audit 2026-05-10), hardened by B3 (enterprise assessment, 2026-09-14).
 #
-# Retention: 30 days, enforced bucket-side via R2 lifecycle rule on
-# `nmwc-backups` (object age > 30 days → expire). See docs/OPERATIONS.md
-# §"R2 backup & versioning". TODO operator: confirm lifecycle rule is set
-# in the Cloudflare R2 dashboard for `nmwc-backups`.
+# Off-Neon logical backup. Neon PITR covers 7 days but lives in the same
+# provider and region as production, so this pushes an independent copy to
+# Cloudflare R2 (`nmwc-backups`, separate credentials and bucket from the photos
+# bucket so a leak of one does not expose the other).
 #
-# Failure mode: any non-zero exit from pg_dump or aws s3 cp fails the run
-# loud and red so the operator notices a missed backup the same day.
+# What the 2026-09-14 review changed, and why each one mattered:
+#   * ENCRYPTION. The object was a plain gzip of plain SQL containing ~20,000
+#     customer records with phones, addresses, GPS and CR numbers plus ~106
+#     employee password hashes. It is now age-encrypted to the recipients in the
+#     `BACKUP_AGE_RECIPIENTS` repository variable before it leaves the runner.
+#     KEY LOSS MEANS TOTAL BACKUP LOSS — see docs/OPERATIONS.md §6 "Key escrow".
+#   * A MANIFEST. Per-table row counts, the schema object counts and the newest
+#     audit timestamp are captured at dump time and uploaded next to the dump,
+#     so a restore that silently lost a COPY block is detectable
+#     (scripts/ops/backup-manifest.sql, scripts/ops/restore-verify.ts).
+#   * INTEGRITY GATES. A dump of an empty or wrong database used to upload green.
+#     The job now checks pg_dump's own terminal marker, tests the gzip stream,
+#     enforces a byte floor and requires the expected tables to appear.
+#   * A DEAD MAN. Every run — success or failure — POSTs to /api/ops/backup-report,
+#     so the bearer /api/health probe alarms when a nightly dump is missing or
+#     failed (lib/heartbeat.ts, key `db-backup`). Before this, a rotated database
+#     password or an expired R2 token broke the backup silently.
+#   * NO SAME-DAY OVERWRITE. The key carries the full timestamp, not just the
+#     date, so a second run cannot replace the good nightly dump.
+#
+# Retention: 30 days, enforced bucket-side. That rule is now set and verified
+# from code — `npx tsx scripts/ops/r2-backups-lifecycle.ts [--check]` — instead
+# of being a dashboard TODO nobody confirmed.
+#
+# The restore half lives in `.github/workflows/restore-drill.yml`.
 
 on:
   schedule:
-    # 02:00 UTC daily = 06:00 Oman, before working hours.
+    # 02:00 UTC daily = 06:00 Oman, before working hours. GitHub's scheduler is
+    # best-effort: observed start hours across 127 runs ranged from 02 to 13,
+    # with a worst observed gap of 33 h. The declared RPO accounts for that
+    # (docs/OPERATIONS.md §6).
     - cron: '0 2 * * *'
   workflow_dispatch:
 
@@ -26,7 +47,7 @@ permissions:
 
 jobs:
   backup:
-    name: pg_dump → R2
+    name: pg_dump → encrypt → R2
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -37,215 +58,210 @@ jobs:
       BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
       BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      # Public age recipients (age1…), comma-separated. NOT a secret — public
+      # keys are meant to be public. Two recipients = a break-glass second
+      # holder; see docs/OPERATIONS.md §6.
+      BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
+      # Optional guard: a fragment of the production endpoint host. When set, the
+      # job refuses to dump any other database — a DIRECT_URL quietly repointed
+      # at UAT used to back up the wrong data, green, forever.
+      PROD_DB_HOST_MARKER: ${{ vars.PROD_DB_HOST_MARKER }}
+      # Minimum acceptable size of the compressed dump. A real dump of this
+      # database is ~megabytes; anything under this is an empty or broken one.
+      MIN_DUMP_BYTES: ${{ vars.MIN_DUMP_BYTES || '200000' }}
     steps:
-      - name: Install Postgres 17 client
+      - name: Checkout (for the manifest query)
+        uses: actions/checkout@v4
+
+      - name: Install Postgres 17 client and age
         run: |
           set -euo pipefail
-          # Match Neon's server major (17 as of 2026-05). Ubuntu's default
-          # ships an older pg, which refuses to pg_dump a newer server with
-          # `aborting because of server version mismatch`. Bump this number
-          # if Neon upgrades the cluster again.
+          # Match Neon's server major (17 as of 2026-05). Ubuntu's default ships
+          # an older pg, which refuses to pg_dump a newer server with
+          # `aborting because of server version mismatch`. Bump if Neon upgrades.
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
             https://www.postgresql.org/media/keys/ACCC4CF8.asc
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17
-          # Ubuntu 24.04 pre-installs postgresql-client-16 and `/usr/bin/pg_dump`
-          # resolves to v16 via update-alternatives. Force v17 to win.
-          sudo update-alternatives --install /usr/bin/pg_dump pg_dump /usr/lib/postgresql/17/bin/pg_dump 1700
-          sudo update-alternatives --set pg_dump /usr/lib/postgresql/17/bin/pg_dump || true
-          # Also expose v17 binaries first on PATH for any sub-shell that
-          # ignores the alternatives system.
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 age
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
-          # Verify which pg_dump the rest of the job will actually use.
           /usr/lib/postgresql/17/bin/pg_dump --version
-          which pg_dump
-          pg_dump --version
+          age --version
 
       - name: Compute backup metadata
-        id: meta
         run: |
           set -euo pipefail
-          DATE="$(date -u +%Y-%m-%d)"
           STAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
-          echo "DATE=${DATE}" >> "$GITHUB_ENV"
+          echo "DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
           echo "STAMP=${STAMP}" >> "$GITHUB_ENV"
-          echo "OBJECT_KEY=db/${DATE}.sql.gz" >> "$GITHUB_ENV"
-          echo "date=${DATE}"  >> "$GITHUB_OUTPUT"
+          # Full timestamp in the key: a same-day re-run adds an object instead
+          # of replacing the good nightly dump.
+          echo "BASE_KEY=db/${STAMP}" >> "$GITHUB_ENV"
+          echo "STARTED_AT=$(date -u +%s)" >> "$GITHUB_ENV"
+
+      - name: Validate the connection string
+        run: |
+          set -euo pipefail
+          if [ -z "${DIRECT_URL:-}" ]; then
+            echo "::error::DIRECT_URL secret is not set"; exit 1
+          fi
+          # Secrets pasted through the GitHub UI often carry a trailing CR/LF,
+          # which makes pg_dump fall back to a local Unix socket and fail with a
+          # confusing socket error. Strip whitespace first.
+          CLEAN="$(printf '%s' "$DIRECT_URL" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
+          case "$CLEAN" in
+            postgresql://*|postgres://*) ;;
+            "") echo "::error::DIRECT_URL is empty after trim"; exit 1;;
+            *)  echo "::error::DIRECT_URL must start with postgresql:// — re-paste the value without the 'DIRECT_URL=' prefix and without quotes"; exit 1;;
+          esac
+          # Diagnose without leaking anything: length only. The previous version
+          # echoed the first 13 and last 25 characters into the public run log.
+          echo "::notice::DIRECT_URL parsed, length=${#CLEAN}"
+          if [ -n "${PROD_DB_HOST_MARKER:-}" ]; then
+            case "$CLEAN" in
+              *"${PROD_DB_HOST_MARKER}"*) echo "::notice::host matches PROD_DB_HOST_MARKER";;
+              *) echo "::error::DIRECT_URL does not point at the expected production host (PROD_DB_HOST_MARKER). Refusing to back up the wrong database."; exit 1;;
+            esac
+          else
+            echo "::warning::PROD_DB_HOST_MARKER repository variable is not set — this job cannot tell which database it is dumping."
+          fi
+          echo "PGURL=${CLEAN}" >> "$GITHUB_ENV"
+
+      - name: Row-count manifest (before the dump)
+        run: |
+          set -euo pipefail
+          psql "$PGURL" -At -f scripts/ops/backup-manifest.sql > "${STAMP}.manifest.json"
+          python3 -c "import json,sys; d=json.load(open('${STAMP}.manifest.json')); print('tables', d['tableCount'], 'triggers', d['triggerCount'], 'customers', d['rowCounts'].get('Customer'), 'users', d['rowCounts'].get('User'))"
+          # An UNLOGGED table would have its DATA silently omitted by the dump.
+          UNLOGGED=$(python3 -c "import json; print(len(json.load(open('${STAMP}.manifest.json'))['unloggedTables']))")
+          if [ "$UNLOGGED" != "0" ]; then
+            echo "::error::the database has UNLOGGED tables — --no-unlogged-table-data would back them up with NO ROWS"; exit 1
+          fi
 
       - name: pg_dump → gzip
         run: |
           set -euo pipefail
-          if [ -z "${DIRECT_URL:-}" ]; then
-            echo "::error::DIRECT_URL secret is not set"
-            exit 1
-          fi
-          # Defensive trim: secrets pasted via the GitHub UI sometimes pick up
-          # a trailing CR/LF/whitespace from the clipboard (especially when
-          # copied out of Windows Notepad). pg_dump receives the URL with the
-          # whitespace appended and silently falls back to the local Unix
-          # socket — which manifests as the cryptic
-          #   "connection to server on socket /var/run/postgresql/... failed"
-          # error. Stripping CR/LF/space here makes the workflow recover.
-          DIRECT_URL="$(printf '%s' "$DIRECT_URL" | tr -d '\r\n' | sed -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//')"
-          # Diagnose without leaking the password: print length + sanitized
-          # head/tail so the operator can immediately see if the secret was
-          # pasted with the `DIRECT_URL=` prefix, with quotes, or truncated.
-          URL_LEN="${#DIRECT_URL}"
-          URL_HEAD="$(printf '%s' "${DIRECT_URL:0:13}")"   # `postgresql://`
-          URL_TAIL="$(printf '%s' "${DIRECT_URL: -25}")"   # `…channel_binding=require`
-          echo "::notice::DIRECT_URL length=${URL_LEN} head='${URL_HEAD}' tail='${URL_TAIL}'"
-          case "$DIRECT_URL" in
-            postgresql://*|postgres://*) ;;
-            "") echo "::error::DIRECT_URL is empty after trim"; exit 1;;
-            *)  echo "::error::DIRECT_URL does not start with 'postgresql://' — re-paste the value from .env without the 'DIRECT_URL=' prefix and without quotes"; exit 1;;
-          esac
-          # --no-owner / --no-privileges: portable across roles
-          # --format=plain: SQL text, easy to inspect and partial-restore
-          # --no-unlogged-table-data: skip ephemeral / cache-style tables
-          # `set -o pipefail` (above) makes the gzip pipeline fail if pg_dump
-          # itself returns non-zero; that propagates to step exit 1.
-          # Absolute path to v17 binary — Ubuntu's pre-installed v16 in /usr/bin
-          # otherwise wins on the PATH and refuses to dump from a 17.x server.
-          PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump
-          "$PG_DUMP" --version
-          "$PG_DUMP" \
-            --no-owner \
-            --no-privileges \
-            --format=plain \
-            --no-unlogged-table-data \
-            "$DIRECT_URL" \
-            | gzip --best > "${STAMP}.sql.gz"
+          # --no-owner / --no-privileges: portable across roles. NOTE: this also
+          # means the restore has NO roles and NO grants — the nmwc_app runtime
+          # role must be re-created after every restore (scripts/ops/app-role.ts).
+          # --format=plain: SQL text, inspectable and partially restorable.
+          # --no-unlogged-table-data: guarded above.
+          pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data \
+            "$PGURL" | gzip --best > "${STAMP}.sql.gz"
           ls -lh "${STAMP}.sql.gz"
+
+      - name: Verify the dump before uploading it
+        run: |
+          set -euo pipefail
+          # 1. the gzip stream is complete and undamaged
+          gzip -t "${STAMP}.sql.gz"
+          # 2. pg_dump wrote its own terminal marker — proof it was not truncated
+          if ! gunzip -c "${STAMP}.sql.gz" | tail -5 | grep -q 'PostgreSQL database dump complete'; then
+            echo "::error::dump has no completion marker — it was truncated"; exit 1
+          fi
+          # 3. it is not an empty database
+          BYTES=$(stat -c%s "${STAMP}.sql.gz")
+          echo "compressed size: ${BYTES} bytes (floor ${MIN_DUMP_BYTES})"
+          if [ "$BYTES" -lt "$MIN_DUMP_BYTES" ]; then
+            echo "::error::dump is only ${BYTES} bytes — an empty or wrong database would look like this"; exit 1
+          fi
+          # 4. the tables that matter are actually in it
+          for T in Customer Branch User AuditLog; do
+            gunzip -c "${STAMP}.sql.gz" | grep -q "CREATE TABLE public.\"\?${T}\"\?" \
+              || { echo "::error::dump does not contain table ${T}"; exit 1; }
+          done
+          echo "BYTES=${BYTES}" >> "$GITHUB_ENV"
+
+      - name: Encrypt (age)
+        run: |
+          set -euo pipefail
+          if [ -z "${BACKUP_AGE_RECIPIENTS:-}" ]; then
+            echo "::warning::BACKUP_AGE_RECIPIENTS is not set — uploading an UNENCRYPTED dump containing ~20k customer records and every password hash. Set the variable to an age public key (see docs/OPERATIONS.md §6)."
+            echo "DUMP_FILE=${STAMP}.sql.gz" >> "$GITHUB_ENV"
+            echo "DUMP_KEY=${BASE_KEY}.sql.gz" >> "$GITHUB_ENV"
+            echo "ENCRYPTED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          ARGS=()
+          IFS=',' read -ra RECIPIENTS <<< "$BACKUP_AGE_RECIPIENTS"
+          for R in "${RECIPIENTS[@]}"; do
+            R="$(echo "$R" | xargs)"
+            [ -n "$R" ] && ARGS+=(-r "$R")
+          done
+          echo "encrypting to ${#ARGS[@]} recipient key(s) / 2"
+          age "${ARGS[@]}" -o "${STAMP}.sql.gz.age" "${STAMP}.sql.gz"
+          rm -f "${STAMP}.sql.gz"
+          ls -lh "${STAMP}.sql.gz.age"
+          echo "DUMP_FILE=${STAMP}.sql.gz.age" >> "$GITHUB_ENV"
+          echo "DUMP_KEY=${BASE_KEY}.sql.gz.age" >> "$GITHUB_ENV"
+          echo "ENCRYPTED=true" >> "$GITHUB_ENV"
 
       - name: Upload to R2 (nmwc-backups)
         run: |
           set -euo pipefail
           if [ -z "${BACKUP_R2_ACCOUNT_ID:-}" ] || [ -z "${BACKUP_R2_BUCKET:-}" ]; then
-            echo "::error::BACKUP_R2_ACCOUNT_ID / BACKUP_R2_BUCKET secrets missing"
-            exit 1
+            echo "::error::BACKUP_R2_ACCOUNT_ID / BACKUP_R2_BUCKET secrets missing"; exit 1
           fi
-          aws s3 cp \
-            "${STAMP}.sql.gz" \
-            "s3://${BACKUP_R2_BUCKET}/${OBJECT_KEY}" \
-            --endpoint-url "https://${BACKUP_R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-            --checksum-algorithm CRC32
+          ENDPOINT="https://${BACKUP_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp "${DUMP_FILE}" "s3://${BACKUP_R2_BUCKET}/${DUMP_KEY}" \
+            --endpoint-url "$ENDPOINT" --checksum-algorithm CRC32
+          # The manifest is not encrypted: it holds counts and timestamps, no
+          # personal data, and a recovery needs it to be readable.
+          aws s3 cp "${STAMP}.manifest.json" "s3://${BACKUP_R2_BUCKET}/${BASE_KEY}.manifest.json" \
+            --endpoint-url "$ENDPOINT" --checksum-algorithm CRC32
+          # Prove the object is really in the bucket we think it is.
+          aws s3api head-object --bucket "$BACKUP_R2_BUCKET" --key "${DUMP_KEY}" \
+            --endpoint-url "$ENDPOINT" > /dev/null
+          echo "::notice::uploaded ${DUMP_KEY} (${BYTES} bytes, encrypted=${ENCRYPTED})"
+
+      - name: Report the outcome to the app (dead man)
+        if: always()
+        env:
+          CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL || 'https://nmwc-cm.vercel.app' }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::warning::PROD_CRON_SECRET is not set — the backup dead-man alarm cannot be fed, so /api/health will report the backup as 'never'."
+            exit 0
+          fi
+          OK='true'; ERR=''
+          if [ "${{ job.status }}" != "success" ]; then
+            OK='false'; ERR='backup job status: ${{ job.status }} — open the workflow run'
+          fi
+          DURATION=$(( ( $(date -u +%s) - ${STARTED_AT:-$(date -u +%s)} ) * 1000 ))
+          # jq, not a heredoc: an indented heredoc inside a YAML block scalar
+          # either breaks the YAML or breaks Python's indentation rules.
+          BODY=$(jq -n \
+            --argjson ok "$OK" \
+            --arg err "$ERR" \
+            --argjson duration "$DURATION" \
+            --argjson bytes "${BYTES:-0}" \
+            --arg key "${DUMP_KEY:-}" \
+            --argjson encrypted "${ENCRYPTED:-false}" \
+            --arg runUrl "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{ok: $ok, durationMs: $duration, bytes: $bytes, objectKey: $key, encrypted: $encrypted, runUrl: $runUrl, error: $err}')
+          CODE=$(curl -s -o /tmp/report.out -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -H 'Content-Type: application/json' \
+            --data "$BODY" \
+            --max-time 30 \
+            "${APP_BASE_URL}/api/ops/backup-report" || echo 000)
+          echo "backup-report → HTTP ${CODE}"
+          if [ "$CODE" != "200" ]; then
+            echo "::warning::the backup dead-man was not recorded (HTTP ${CODE}); /api/health will show the backup as stale"
+          fi
 
       - name: Summary
         if: always()
         run: |
-          echo "### DB backup ${DATE}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- key: \`${OBJECT_KEY}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- bucket: \`${BACKUP_R2_BUCKET}\`" >> "$GITHUB_STEP_SUMMARY"
-
-  # B-01 follow-up: monthly restore drill. workflow_dispatch only — operator
-  # runs this on demand to prove backups are restorable. It pulls the most
-  # recent dump from R2 and pipes it into a Neon branch named
-  # `restore-drill-<DATE>` via the Neon REST API. The branch must be deleted
-  # by hand after verification (cheap, but not free).
-  #
-  # The job is gated on the presence of NEON_API_KEY so an operator who
-  # hasn't set up the optional secrets yet doesn't see a permanent red ❌
-  # on every workflow_dispatch backup. Without the secret it skips cleanly.
-  restore-drill:
-    name: Restore drill (manual)
-    if: github.event_name == 'workflow_dispatch' && vars.NEON_DRILL_ENABLED == 'true'
-    needs: backup
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION: auto
-      AWS_EC2_METADATA_DISABLED: 'true'
-      BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
-      BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
-      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
-      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
-    steps:
-      - name: Install Postgres 17 client
-        run: |
-          set -euo pipefail
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
-            https://www.postgresql.org/media/keys/ACCC4CF8.asc
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
-            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17
-
-      - name: Find latest dump in R2
-        run: |
-          set -euo pipefail
-          LATEST_KEY=$(
-            aws s3api list-objects-v2 \
-              --bucket "${BACKUP_R2_BUCKET}" \
-              --prefix "db/" \
-              --endpoint-url "https://${BACKUP_R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-              --query 'reverse(sort_by(Contents,&LastModified))[0].Key' \
-              --output text
-          )
-          if [ -z "$LATEST_KEY" ] || [ "$LATEST_KEY" = "None" ]; then
-            echo "::error::No dumps found under db/ prefix"
-            exit 1
-          fi
-          echo "LATEST_KEY=${LATEST_KEY}" >> "$GITHUB_ENV"
-          echo "DRILL_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
-
-      - name: Download latest dump
-        run: |
-          set -euo pipefail
-          aws s3 cp \
-            "s3://${BACKUP_R2_BUCKET}/${LATEST_KEY}" \
-            ./latest.sql.gz \
-            --endpoint-url "https://${BACKUP_R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          ls -lh ./latest.sql.gz
-
-      - name: Create Neon branch restore-drill-${{ env.DRILL_DATE }}
-        run: |
-          set -euo pipefail
-          if [ -z "${NEON_API_KEY:-}" ] || [ -z "${NEON_PROJECT_ID:-}" ]; then
-            echo "::error::NEON_API_KEY / NEON_PROJECT_ID secrets missing"
-            exit 1
-          fi
-          BRANCH_NAME="restore-drill-${DRILL_DATE}"
-          RESP=$(curl -fsSL -X POST \
-            "https://console.neon.tech/api/v2/projects/${NEON_PROJECT_ID}/branches" \
-            -H "Authorization: Bearer ${NEON_API_KEY}" \
-            -H 'Accept: application/json' \
-            -H 'Content-Type: application/json' \
-            -d "{\"branch\":{\"name\":\"${BRANCH_NAME}\"},\"endpoints\":[{\"type\":\"read_write\"}]}")
-          # Endpoint host + role/password are returned in the create response.
-          DRILL_HOST=$(echo "$RESP" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["endpoints"][0]["host"])')
-          DRILL_ROLE=$(echo "$RESP" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["roles"][0]["name"])')
-          DRILL_PASS=$(echo "$RESP" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["roles"][0]["password"])')
-          DB_NAME=$(echo "$RESP" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["databases"][0]["name"])')
-          echo "::add-mask::${DRILL_PASS}"
-          DRILL_URL="postgresql://${DRILL_ROLE}:${DRILL_PASS}@${DRILL_HOST}/${DB_NAME}?sslmode=require"
-          echo "DRILL_URL=${DRILL_URL}" >> "$GITHUB_ENV"
-          echo "BRANCH_NAME=${BRANCH_NAME}" >> "$GITHUB_ENV"
-
-      - name: Restore dump into drill branch
-        run: |
-          set -euo pipefail
-          # Use absolute path to v17 psql for the same reason pg_dump does.
-          PSQL=/usr/lib/postgresql/17/bin/psql
-          gunzip -c ./latest.sql.gz | "$PSQL" "${DRILL_URL}" -v ON_ERROR_STOP=1 -q
-          # Smoke test: count tables in public schema. A successful restore
-          # should leave at least the core CRM tables present.
-          COUNT=$("$PSQL" "${DRILL_URL}" -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")
-          echo "Restored to branch ${BRANCH_NAME}; public tables: ${COUNT}"
-          if [ "${COUNT:-0}" -lt 10 ]; then
-            echo "::error::Restore drill suspicious — fewer than 10 public tables"
-            exit 1
-          fi
-
-      - name: Drill summary
-        if: always()
-        run: |
-          echo "### Restore drill" >> "$GITHUB_STEP_SUMMARY"
-          echo "- source dump: \`${LATEST_KEY:-?}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- target branch: \`${BRANCH_NAME:-?}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- DELETE the branch in Neon console after verifying." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### DB backup ${DATE:-?}"
+            echo "- object: \`${DUMP_KEY:-not uploaded}\`"
+            echo "- manifest: \`${BASE_KEY:-?}.manifest.json\`"
+            echo "- size: ${BYTES:-?} bytes"
+            echo "- encrypted: ${ENCRYPTED:-unknown}"
+            echo "- job status: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

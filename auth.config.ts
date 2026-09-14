@@ -81,6 +81,10 @@ export const authConfig = {
         pathname === '/login' ||
         pathname.startsWith('/api/auth') ||
         pathname.startsWith('/api/health') ||
+        // Bearer-authenticated machine endpoints: they carry CRON_SECRET and
+        // check it themselves, and no session exists on a scheduler's request.
+        pathname.startsWith('/api/cron') ||
+        pathname.startsWith('/api/ops') ||
         pathname.startsWith('/_next') ||
         pathname === '/favicon.ico';
       if (isPublic) return true;

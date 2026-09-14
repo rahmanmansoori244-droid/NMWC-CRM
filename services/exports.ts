@@ -177,7 +177,11 @@ export async function buildCustomerExport(filters: ExportFilters) {
     .create({
       data: {
         actorId: me.id,
-        action: 'IMPORT', // there is no EXPORT in our enum yet — IMPORT covers data movement
+        // B6: this said IMPORT ("there is no EXPORT in our enum yet") long after
+        // EXPORT was added to the enum, so "who exported the customer master" —
+        // the first question of any personal-data incident — could not be
+        // answered from the ledger.
+        action: 'EXPORT',
         entityType: 'Export',
         entityId: stamp,
         reason: `customers ${exportRows.length}`,

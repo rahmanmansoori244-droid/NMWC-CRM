@@ -106,6 +106,28 @@ describe('heartbeatReport', () => {
     expect(state([row('sla-escalate', 12 * 60 + 30, early)], early, 'sla-escalate').state).toBe('ok');
   });
 
+  it('db-backup tolerates GitHub cron drift but not a missed night', () => {
+    // GitHub delivers this schedule late: across 127 real runs the worst gap
+    // between two dumps was 33.2 h and half of all gaps exceeded 24 h. The
+    // allowance is 40 h so ordinary drift is not an alarm and a missed night is.
+    const now = at(10);
+    expect(state([row('db-backup', 8 * 60, now)], now, 'db-backup').state).toBe('ok');
+    expect(state([row('db-backup', 34 * 60, now)], now, 'db-backup').state).toBe('ok');
+    const missed = state([row('db-backup', 41 * 60, now)], now, 'db-backup');
+    expect(missed.state).toBe('stale');
+    expect(missed.alarm).toBe(true);
+    // photo-gc has the same daily cadence but no override, so it still
+    // tolerates three days — the override is what makes the backup stricter.
+    expect(state([row('photo-gc', 41 * 60, now)], now, 'photo-gc').state).toBe('ok');
+  });
+
+  it('a backup that ran but reported failure alarms immediately', () => {
+    const now = at(10);
+    const r = state([row('db-backup', 30, now, false)], now, 'db-backup');
+    expect(r.state).toBe('failed');
+    expect(r.alarm).toBe(true);
+  });
+
   it('photo-gc is daily: fine after 20 h, stale after three days', () => {
     const now = at(12);
     expect(state([row('photo-gc', 20 * 60, now)], now, 'photo-gc').state).toBe('ok');

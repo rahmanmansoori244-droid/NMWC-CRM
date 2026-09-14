@@ -15,8 +15,14 @@ import { NextResponse, type NextRequest } from 'next/server';
 import type { Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { logger } from './logger';
+import { scrubAndTruncate } from './scrub';
 
-export type HeartbeatKey = 'sla-escalate' | 'keep-warm' | 'photo-gc';
+export type HeartbeatKey =
+  | 'sla-escalate'
+  | 'keep-warm'
+  | 'photo-gc'
+  | 'db-backup'
+  | 'retention-sweep';
 
 export type HeartbeatExpectation = {
   label: string;
@@ -24,6 +30,12 @@ export type HeartbeatExpectation = {
   everyMinutes: number;
   /** UTC hour window [start, end) during which the job is expected to run. */
   activeHoursUtc?: [number, number];
+  /**
+   * Override the staleness allowance (default: everyMinutes × STALE_AFTER_INTERVALS).
+   * A daily job whose absence matters the same day — the backup — cannot wait
+   * three days to alarm.
+   */
+  staleAfterMinutes?: number;
 };
 
 export const HEARTBEAT_EXPECTATIONS: Record<HeartbeatKey, HeartbeatExpectation> = {
@@ -33,6 +45,20 @@ export const HEARTBEAT_EXPECTATIONS: Record<HeartbeatKey, HeartbeatExpectation> 
   'keep-warm': { label: 'Keep-warm ping', everyMinutes: 4, activeHoursUtc: [3, 15] },
   // vercel.json crons: daily
   'photo-gc': { label: 'Photo garbage collection', everyMinutes: 24 * 60 },
+  // vercel.json crons: daily. B6 — enforces docs/compliance/DATA-RETENTION-SCHEDULE.md.
+  'retention-sweep': { label: 'Personal-data retention sweep', everyMinutes: 24 * 60 },
+  // .github/workflows/db-backup.yml: '0 2 * * *' — reported by the workflow
+  // itself (POST /api/ops/backup-report), not by a route in this app. B3: a
+  // rotated database password or an expired R2 token used to break the nightly
+  // dump silently.
+  //
+  // The allowance is 40 h rather than the 24 h the schedule implies, because
+  // GitHub delivers this cron late and unevenly. Measured over 127 scheduled
+  // runs: only 12 started in hour 02 UTC, 44 started in hour 06, 64 of the 126
+  // gaps between consecutive dumps exceeded 24 h, and the worst was 33.2 h. A
+  // tighter threshold would page someone most weeks and be ignored inside a
+  // month; 40 h still catches a genuinely missed night.
+  'db-backup': { label: 'Nightly off-Neon database dump', everyMinutes: 24 * 60, staleAfterMinutes: 40 * 60 },
 };
 
 /** A job is "stale" once this many scheduled intervals have passed without a run. */
@@ -70,7 +96,11 @@ export async function recordHeartbeat(
   result: { ok: boolean; durationMs: number; error?: string; detail?: Record<string, unknown> }
 ): Promise<void> {
   const now = new Date();
-  const lastError = result.error ? result.error.slice(0, 500) : null;
+  // B6: a cron error can embed a phone number or an e-mail (a Prisma constraint
+  // message quotes the colliding value), and this row is served verbatim to any
+  // HEALTH_BEARER holder. Scrub BEFORE truncating — the other order can cut a
+  // number in half and defeat the pattern.
+  const lastError = result.error ? scrubAndTruncate(result.error, 500) : null;
   try {
     await prisma.cronHeartbeat.upsert({
       where: { key },
@@ -123,7 +153,7 @@ function inWindow(now: Date, window?: [number, number]): boolean {
  * reset the alarm at every close and only re-armed after 24 h).
  */
 function allowedAgeMinutes(now: Date, exp: HeartbeatExpectation): number {
-  const staleAfter = exp.everyMinutes * STALE_AFTER_INTERVALS;
+  const staleAfter = exp.staleAfterMinutes ?? exp.everyMinutes * STALE_AFTER_INTERVALS;
   const window = exp.activeHoursUtc;
   if (!window) return staleAfter;
   const [openHour, closeHour] = window;

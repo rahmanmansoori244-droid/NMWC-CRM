@@ -115,7 +115,14 @@ const FRESH_TTL_MS = 30_000;
 const FRESH_CACHE_MAX = 5_000; // bound memory on a long-lived instance
 const freshnessCache = new Map<string, { at: number; row: FreshUserRow }>();
 
-async function clientIpHash(): Promise<string> {
+/**
+ * The callers IP address as reported by the proxy. NOT hashed — the name was
+ * clientIpHash until 2026-09-14, which made the rate-limit keys and the
+ * LOGIN_FAIL audit rows look pseudonymised in review when they are not (B6).
+ * The raw address is used deliberately: a per-IP limiter has to key on it.
+ * Retention of the resulting RateLimit rows is the retention sweeps job.
+ */
+async function clientIp(): Promise<string> {
   try {
     const h = await headers();
     const ip =
@@ -299,7 +306,7 @@ const {
 
         // QA-006: rate limit BOTH the Server Action path (already wrapped) and
         // the Auth.js direct callback path, by gating the authorize() callback.
-        const ip = await clientIpHash();
+        const ip = await clientIp();
         for (const key of [`login:user:${username}`, `login:ip:${ip}`]) {
           const lim = await checkLimit(key, LOGIN_LIMIT);
           if (!lim.ok) {

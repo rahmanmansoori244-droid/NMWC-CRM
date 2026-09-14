@@ -226,7 +226,7 @@ async function exportFilteredCustomersCore(
     .create({
       data: {
         actorId: me.id,
-        action: 'IMPORT',
+        action: 'EXPORT', // B6: was IMPORT — see services/exports.ts
         entityType: 'Export',
         entityId: `customers-${stamp}`,
         reason: `filtered ${exportRows.length}`,
