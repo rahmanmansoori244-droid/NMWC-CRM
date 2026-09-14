@@ -9,7 +9,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'fs';
-import { parsePrismaSchema, storedFields, fieldKey } from '@/lib/compliance/prisma-schema';
+import {
+  parsePrismaSchema,
+  storedFields,
+  fieldKey,
+  implicitJoinTables,
+} from '@/lib/compliance/prisma-schema';
 import { PII_CLASSIFICATION, SUBJECT_LABEL } from '@/lib/compliance/pii-classification';
 
 const schema = parsePrismaSchema(readFileSync('prisma/schema.prisma', 'utf8'));
@@ -22,6 +27,13 @@ describe('prisma schema parser', () => {
     expect(schema.enums).toContain('AuditAction');
     expect(schema.models).toContain('Customer');
     expect(schema.models).toContain('AuditLog');
+  });
+
+  it('finds the implicit many-to-many join tables', () => {
+    // _ManagerRegions holds which regions each manager administers — the data
+    // every region-scoped permission check reads. A restore that lost it would
+    // strip every manager's scope silently, so restore-verify expects it by name.
+    expect(implicitJoinTables(schema)).toContain('_ManagerRegions');
   });
 
   it('separates stored columns from relation fields', () => {

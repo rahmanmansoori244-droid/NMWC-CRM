@@ -31,7 +31,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { readFileSync, readdirSync, writeFileSync } from 'fs';
-import { parsePrismaSchema } from '../../lib/compliance/prisma-schema';
+import { parsePrismaSchema, implicitJoinTables } from '../../lib/compliance/prisma-schema';
 
 const PROD_MARKER = 'ep-sweet-haze';
 
@@ -89,7 +89,9 @@ async function main() {
   }
 
   const schema = parsePrismaSchema(readFileSync('prisma/schema.prisma', 'utf8'));
-  const expectedTables = [...schema.models, '_prisma_migrations'].sort();
+  // Implicit m2m join tables carry the manager→region assignments the whole
+  // authorization model reads, so they are expected by name, not 'unexpected'.
+  const expectedTables = [...schema.models, ...implicitJoinTables(schema), '_prisma_migrations'].sort();
   const expectedEnums = [...schema.enums].sort();
   const expectedMigrations = readdirSync('prisma/migrations', { withFileTypes: true })
     .filter((d) => d.isDirectory())

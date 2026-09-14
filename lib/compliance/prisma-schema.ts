@@ -123,6 +123,31 @@ export function parsePrismaSchema(source: string): ParsedSchema {
   return { models, enums, fields };
 }
 
+/**
+ * Tables Prisma creates for implicit many-to-many relations, e.g. `_ManagerRegions`.
+ *
+ * They hold no columns of their own but they are not incidental: `_ManagerRegions`
+ * is which regions each manager administers — the data every region-scoped
+ * permission check reads. A restore that silently lost it would strip every
+ * manager's scope, so the restore verifier has to expect it by name.
+ *
+ * A relation is implicit-m2m when the same `@relation("Name")` appears on a list
+ * field on both sides and no join model is declared.
+ */
+export function implicitJoinTables(schema: ParsedSchema): string[] {
+  const counts = new Map<string, number>();
+  for (const f of schema.fields) {
+    if (!f.list) continue;
+    const m = /@relation\("([^"]+)"/.exec(f.attributes);
+    if (!m) continue;
+    counts.set(m[1]!, (counts.get(m[1]!) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, n]) => n >= 2)
+    .map(([name]) => `_${name}`)
+    .sort();
+}
+
 /** The fields that actually store a value in a column — what the inventory must classify. */
 export function storedFields(schema: ParsedSchema): SchemaField[] {
   return schema.fields.filter((f) => !f.relation);
