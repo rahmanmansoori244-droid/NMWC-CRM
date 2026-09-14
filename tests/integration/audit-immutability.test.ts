@@ -48,7 +48,14 @@ describe.skipIf(!ENABLED)('B4: AuditLog and EditApproval are append-only at the 
     ).rejects.toThrow(/append-only/);
     await expect(prisma.auditLog.delete({ where: { id: row.id } })).rejects.toThrow(/append-only/);
     await expect(prisma.auditLog.deleteMany({ where: { actorId: userId } })).rejects.toThrow(/append-only/);
-    await expect(prisma.$executeRawUnsafe(`TRUNCATE "AuditLog"`)).rejects.toThrow(/append-only/);
+    // TRUNCATE takes ACCESS EXCLUSIVE before the trigger can refuse it; bound the wait so this
+    // probe can never sit in a live database's lock queue.
+    await expect(
+      prisma.$transaction([
+        prisma.$executeRawUnsafe(`SET LOCAL lock_timeout = '2000ms'`),
+        prisma.$executeRawUnsafe(`TRUNCATE "AuditLog"`),
+      ])
+    ).rejects.toThrow(/append-only|lock timeout/);
     const still = await prisma.auditLog.findUniqueOrThrow({ where: { id: row.id } });
     expect(still.reason).toBe('original');
   });
@@ -89,4 +96,53 @@ describe.skipIf(!ENABLED)('B4: AuditLog and EditApproval are append-only at the 
     });
     await expect(prisma.auditLog.delete({ where: { id: again.id } })).rejects.toThrow(/append-only/);
   });
+
+  const APP_URL = process.env.NMWC_APP_URL ?? '';
+  it.skipIf(!APP_URL)(
+    'the runtime role cannot use the maintenance override — not directly, not through the CustomerEdit cascade',
+    async () => {
+      if (APP_URL.includes('ep-sweet-haze')) throw new Error('ABORT: production');
+      const { PrismaClient } = await import('@prisma/client');
+      const app = new PrismaClient({ datasourceUrl: APP_URL });
+      try {
+        const [{ me }] = await app.$queryRawUnsafe<{ me: string }[]>('SELECT current_user AS me');
+        expect(me).toBe('nmwc_app');
+        // a decided edit with one ledger row, created by the owner
+        const edit = await prisma.customerEdit.create({
+          data: {
+            target: 'CUSTOMER',
+            customerId,
+            state: 'APPROVED',
+            submittedById: userId,
+            submittedAt: new Date(),
+            fieldChanges: [],
+            attachmentChanges: [],
+            steps: { create: { cycle: 1, stepIndex: 0, role: 'SUPERVISOR', decision: 'APPROVED', actorId: userId } },
+          },
+        });
+        const row = await prisma.auditLog.create({
+          data: { actorId: userId, action: 'UPDATE', entityType: 'System', entityId: `${sfx}-app` },
+        });
+        // direct, with the GUC: refused (ACL and/or owner-only trigger)
+        await expect(
+          app.$transaction([
+            app.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`),
+            app.$executeRaw`DELETE FROM "AuditLog" WHERE "id" = ${row.id}`,
+          ])
+        ).rejects.toThrow(/append-only|permission denied/);
+        // through the cascade, with the GUC: refused
+        await expect(
+          app.$transaction([
+            app.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`),
+            app.$executeRaw`DELETE FROM "CustomerEdit" WHERE "id" = ${edit.id}`,
+          ])
+        ).rejects.toThrow(/append-only|permission denied/);
+        expect(await prisma.editApproval.count({ where: { editId: edit.id } })).toBe(1);
+        expect(await prisma.auditLog.findUnique({ where: { id: row.id } })).not.toBeNull();
+      } finally {
+        await app.$disconnect();
+      }
+    },
+    60_000
+  );
 });

@@ -113,6 +113,7 @@ jobs:
         env:
           RUN_PG_RATE_LIMIT_TEST: '1'
           RUN_AUDIT_IMMUTABLE: '1'
+          NMWC_APP_URL: postgresql://nmwc_app:ci-app-role-password-2026@localhost:5432/nmwc_ci
           RUN_USER_ADMIN_SCOPE: '1'
           RUN_USER_PROVISION: '1'
           RUN_MGR_AUTHZ: '1'

@@ -773,7 +773,7 @@ E2E flows:
 - [x] HTML stripping + Zod parsing on all text inputs
 - [x] CSP headers (strict; no inline scripts in production)
 - [x] Sentry PII scrubbing
-- [x] Audit log immutable — enforced since 2026-09-14 by the `nmwc_forbid_audit_mutation` trigger on AuditLog + EditApproval (migration 20260914150000) and by the runtime role `nmwc_app` having no UPDATE/DELETE/TRUNCATE privilege on them (scripts/ops/app-role.ts); before that date this box was ticked without a control behind it.
+- [x] Audit log immutable — enforced since 2026-09-14 by the `nmwc_forbid_audit_mutation` trigger on AuditLog + EditApproval (migrations 20260914150000 + 20260914160000 — the maintenance override is honoured only for the table owner's session, so FK cascades from the runtime role cannot reach the ledgers) and by the runtime role `nmwc_app` having no UPDATE/DELETE/TRUNCATE privilege on them, nor DELETE on CustomerEdit (scripts/ops/app-role.ts); before that date this box was ticked without a control behind it.
 - [x] Photo content-type re-verified server-side
 - [x] No `dangerouslySetInnerHTML` anywhere
 - [x] Dependencies pinned + Renovate (or Dependabot) on weekly cadence

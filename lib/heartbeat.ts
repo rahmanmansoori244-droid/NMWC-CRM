@@ -105,12 +105,42 @@ function inWindow(now: Date, window?: [number, number]): boolean {
   return h >= window[0] && h < window[1];
 }
 
-/** Minutes elapsed since the start of today's active window (0 when there is no window). */
-function minutesIntoWindow(now: Date, window?: [number, number]): number {
-  if (!window) return Number.POSITIVE_INFINITY;
-  const start = new Date(now);
-  start.setUTCHours(window[0], 0, 0, 0);
-  return Math.max(0, (now.getTime() - start.getTime()) / 60_000);
+/**
+ * How old the last run may be right now before the job counts as silent.
+ *
+ * A windowed job is not expected to run between its window's close and the
+ * next open, so at 03:15 UTC the freshest possible run is still yesterday's
+ * last one. The allowance therefore always starts from the moment the job
+ * last had an opportunity to run:
+ *
+ *   inside the window, past the opening grace  → staleAfter
+ *   inside the window, during the opening grace → idle gap + minutes since open + staleAfter
+ *   outside the window                          → minutes since the last close + staleAfter
+ *
+ * Both branches are anchored on the previous close, so a job that died days
+ * ago is stale at 03:15 (the old "grace" ignored the age entirely) and a job
+ * that died mid-morning stays stale after 15:00 (the old outside-window rule
+ * reset the alarm at every close and only re-armed after 24 h).
+ */
+function allowedAgeMinutes(now: Date, exp: HeartbeatExpectation): number {
+  const staleAfter = exp.everyMinutes * STALE_AFTER_INTERVALS;
+  const window = exp.activeHoursUtc;
+  if (!window) return staleAfter;
+  const [openHour, closeHour] = window;
+  const open = new Date(now);
+  open.setUTCHours(openHour, 0, 0, 0);
+  const close = new Date(now);
+  close.setUTCHours(closeHour, 0, 0, 0);
+  const windowMinutes = (closeHour - openHour) * 60;
+  const idleGap = 24 * 60 - windowMinutes;
+  if (inWindow(now, window)) {
+    const sinceOpen = (now.getTime() - open.getTime()) / 60_000;
+    return sinceOpen < staleAfter ? idleGap + sinceOpen + staleAfter : staleAfter;
+  }
+  // Outside the window: the most recent close is today's if it has passed, else yesterday's.
+  const lastClose = now.getTime() >= close.getTime() ? close : new Date(close.getTime() - 24 * 60 * 60_000);
+  const sinceClose = (now.getTime() - lastClose.getTime()) / 60_000;
+  return sinceClose + staleAfter;
 }
 
 /**
@@ -118,9 +148,9 @@ function minutesIntoWindow(now: Date, window?: [number, number]): number {
  *
  *   never          — no run recorded at all (alarm)
  *   failed         — last run reported failure (alarm)
- *   stale          — inside the active window and no run for > STALE_AFTER_INTERVALS × interval,
- *                    with a grace period of the same length at the start of the window (alarm)
- *   outside-window — the job is not expected right now and last ran within a day (no alarm)
+ *   stale          — the last run is older than allowedAgeMinutes() (alarm)
+ *   outside-window — the job is not expected right now and its last run is
+ *                    as recent as the schedule allows (no alarm)
  *   ok             — otherwise
  */
 export function heartbeatReport(rows: HeartbeatRow[], now: Date = new Date()): HeartbeatReport[] {
@@ -140,17 +170,9 @@ export function heartbeatReport(rows: HeartbeatRow[], now: Date = new Date()): H
     };
     if (!row) return { ...base, state: 'never', alarm: true, ageMinutes: null };
     const ageMinutes = (now.getTime() - row.lastRunAt.getTime()) / 60_000;
-    const staleAfter = exp.everyMinutes * STALE_AFTER_INTERVALS;
     if (!row.lastOk) return { ...base, state: 'failed', alarm: true, ageMinutes };
-    if (!inWindow(now, exp.activeHoursUtc)) {
-      // Not expected right now; alarm only if it has not run for a full day.
-      const state: HeartbeatState = ageMinutes > 24 * 60 + staleAfter ? 'stale' : 'outside-window';
-      return { ...base, state, alarm: state === 'stale', ageMinutes };
-    }
-    const graceLeft = minutesIntoWindow(now, exp.activeHoursUtc) < staleAfter;
-    if (ageMinutes > staleAfter && !graceLeft) {
-      return { ...base, state: 'stale', alarm: true, ageMinutes };
-    }
+    if (ageMinutes > allowedAgeMinutes(now, exp)) return { ...base, state: 'stale', alarm: true, ageMinutes };
+    if (!inWindow(now, exp.activeHoursUtc)) return { ...base, state: 'outside-window', alarm: false, ageMinutes };
     return { ...base, state: 'ok', alarm: false, ageMinutes };
   });
 }

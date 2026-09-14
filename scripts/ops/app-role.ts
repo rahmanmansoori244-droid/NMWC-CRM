@@ -15,7 +15,10 @@
  *             but re-running is always safe.
  *   verify  — connect AS the app role (NMWC_APP_URL) and prove: reads/writes work,
  *             the rate-limit upsert works, audit rows can be inserted but not
- *             changed, DDL is refused.
+ *             changed (not even with the maintenance GUC, not even through the
+ *             CustomerEdit cascade), DDL is refused. Every probe runs inside ONE
+ *             transaction that is rolled back at the end, so a verification
+ *             leaves no trace — safe to run against production.
  *
  * All commands use DIRECT_URL (owner) except `verify`, which uses NMWC_APP_URL.
  * Production is refused unless ALLOW_PRODUCTION=1 is set explicitly by the owner.
@@ -77,6 +80,9 @@ async function grant() {
       // append-only ledgers: insert only
       `REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "AuditLog" FROM "${ROLE}"`,
       `REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "EditApproval" FROM "${ROLE}"`,
+      // the app never deletes edits; without DELETE here the ON DELETE CASCADE into
+      // "EditApproval" cannot be reached from the runtime credential at all
+      `REVOKE DELETE, TRUNCATE ON "CustomerEdit" FROM "${ROLE}"`,
       // migrations are the owner's business
       `REVOKE ALL ON "_prisma_migrations" FROM "${ROLE}"`,
       // tables and sequences created by FUTURE migrations (run by the owner) inherit the grants
@@ -90,18 +96,31 @@ async function grant() {
   }
 }
 
-async function expectRefused(label: string, fn: () => Promise<unknown>) {
+const REFUSAL = /permission denied|append-only|must be owner|insufficient_privilege/i;
+
+class Rollback extends Error {}
+
+type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+
+/**
+ * Run one probe under a savepoint so a refused statement does not poison the
+ * surrounding transaction, and the probe's own side effects (locks, SET LOCAL)
+ * are undone either way.
+ */
+async function expectRefused(tx: Tx, label: string, fn: () => Promise<unknown>) {
+  await tx.$executeRawUnsafe('SAVEPOINT probe');
+  let refused: string | null = null;
   try {
     await fn();
   } catch (err) {
-    const msg = (err as Error).message;
-    if (/permission denied|append-only|must be owner|insufficient_privilege/i.test(msg)) {
-      console.log(`  ✓ refused: ${label}`);
-      return;
-    }
-    throw new Error(`${label}: failed for an unexpected reason: ${msg.slice(0, 200)}`);
+    refused = (err as Error).message;
   }
-  throw new Error(`${label}: was ALLOWED — the role is over-privileged`);
+  await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT probe');
+  if (refused === null) throw new Error(`${label}: was ALLOWED — the role is over-privileged`);
+  if (!REFUSAL.test(refused)) {
+    throw new Error(`${label}: failed for an unexpected reason: ${refused.slice(0, 200)}`);
+  }
+  console.log(`  ✓ refused: ${label}`);
 }
 
 async function verify() {
@@ -111,6 +130,7 @@ async function verify() {
     throw new Error('Refusing to run against production without ALLOW_PRODUCTION=1');
   }
   const app = new PrismaClient({ datasourceUrl: url });
+  let auditRowId = '';
   try {
     const [{ me }] = await app.$queryRawUnsafe<{ me: string }[]>(`SELECT current_user AS me`);
     if (me !== ROLE) throw new Error(`connected as ${me}, expected ${ROLE}`);
@@ -121,34 +141,57 @@ async function verify() {
     await app.$queryRawUnsafe(`SELECT reltuples FROM pg_class WHERE relname = 'Customer'`);
     console.log(`  ✓ reads (users=${users}, pg_class visible)`);
 
-    // the durable rate limiter's single-statement upsert
-    const key = `verify:${ROLE}:${Date.now()}`;
-    await app.$executeRawUnsafe(
-      `INSERT INTO "RateLimit" ("key", "tokens", "lastRefill", "updatedAt") VALUES ('${key}', 4, NOW(), NOW())
-       ON CONFLICT ("key") DO UPDATE SET "tokens" = "RateLimit"."tokens" - 1, "updatedAt" = NOW()`
-    );
-    await app.rateLimit.delete({ where: { key } });
-    console.log('  ✓ rate-limit upsert + delete');
-
-    // advisory locks (create-flow guards)
-    const lock = await app.$queryRawUnsafe<{ ok: boolean }[]>(`SELECT pg_try_advisory_lock(424242) AS ok`);
-    if (!lock[0]?.ok) throw new Error('advisory lock not granted');
-    await app.$queryRawUnsafe(`SELECT pg_advisory_unlock(424242) AS ok`);
-    console.log('  ✓ advisory lock');
-
-    // audit: insert yes, change no
     const actor = await app.user.findFirst({ select: { id: true }, orderBy: { createdAt: 'asc' } });
     if (!actor) throw new Error('no user rows to attribute a verification audit row to');
-    const row = await app.auditLog.create({
-      data: { actorId: actor.id, action: 'UPDATE', entityType: 'System', entityId: 'app-role-verify', reason: `${ROLE} verification` },
-    });
-    console.log('  ✓ audit insert');
-    await expectRefused('audit UPDATE', () => app.auditLog.update({ where: { id: row.id }, data: { reason: 'tampered' } }));
-    await expectRefused('audit DELETE', () => app.auditLog.delete({ where: { id: row.id } }));
-    await expectRefused('audit TRUNCATE', () => app.$executeRawUnsafe(`TRUNCATE "AuditLog"`));
-    await expectRefused('EditApproval DELETE', () => app.$executeRawUnsafe(`DELETE FROM "EditApproval" WHERE false`));
-    await expectRefused('DDL (ALTER TABLE)', () => app.$executeRawUnsafe(`ALTER TABLE "RateLimit" ADD COLUMN "x" INTEGER`));
-    await expectRefused('read _prisma_migrations', () => app.$queryRawUnsafe(`SELECT count(*) FROM "_prisma_migrations"`));
+
+    // Everything below happens in one transaction that is rolled back: the
+    // verification writes nothing permanent, and a refused TRUNCATE cannot sit
+    // on the ACCESS EXCLUSIVE lock queue for longer than lock_timeout.
+    try {
+      await app.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '2000ms'`);
+
+          // the durable rate limiter's single-statement upsert
+          const key = `verify:${ROLE}:${Date.now()}`;
+          await tx.$executeRaw`INSERT INTO "RateLimit" ("key", "tokens", "lastRefill", "updatedAt") VALUES (${key}, 4, NOW(), NOW())
+            ON CONFLICT ("key") DO UPDATE SET "tokens" = "RateLimit"."tokens" - 1, "updatedAt" = NOW()`;
+          console.log('  ✓ rate-limit upsert');
+
+          // advisory locks — the app uses transaction-scoped ones (lib/create-guards.ts)
+          const lock = await tx.$queryRawUnsafe<{ ok: boolean }[]>(`SELECT pg_try_advisory_xact_lock(424242) AS ok`);
+          if (!lock[0]?.ok) throw new Error('advisory lock not granted');
+          console.log('  ✓ advisory xact lock');
+
+          // audit: insert yes, change no
+          const row = await tx.auditLog.create({
+            data: { actorId: actor.id, action: 'UPDATE', entityType: 'System', entityId: 'app-role-verify', reason: `${ROLE} verification (rolled back)` },
+          });
+          auditRowId = row.id;
+          console.log('  ✓ audit insert');
+          await expectRefused(tx, 'audit UPDATE', () => tx.$executeRaw`UPDATE "AuditLog" SET "reason" = 'tampered' WHERE "id" = ${row.id}`);
+          await expectRefused(tx, 'audit DELETE', () => tx.$executeRaw`DELETE FROM "AuditLog" WHERE "id" = ${row.id}`);
+          await expectRefused(tx, 'audit DELETE with the maintenance GUC set', async () => {
+            await tx.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`);
+            await tx.$executeRaw`DELETE FROM "AuditLog" WHERE "id" = ${row.id}`;
+          });
+          await expectRefused(tx, 'audit TRUNCATE', () => tx.$executeRawUnsafe(`TRUNCATE "AuditLog"`));
+          await expectRefused(tx, 'EditApproval DELETE', () => tx.$executeRawUnsafe(`DELETE FROM "EditApproval" WHERE false`));
+          await expectRefused(tx, 'CustomerEdit DELETE (cascade path into the ledger)', () =>
+            tx.$executeRawUnsafe(`DELETE FROM "CustomerEdit" WHERE false`)
+          );
+          await expectRefused(tx, 'DDL (ALTER TABLE)', () => tx.$executeRawUnsafe(`ALTER TABLE "RateLimit" ADD COLUMN "x" INTEGER`));
+          await expectRefused(tx, 'read _prisma_migrations', () => tx.$queryRawUnsafe(`SELECT count(*) FROM "_prisma_migrations"`));
+          throw new Rollback();
+        },
+        { maxWait: 10_000, timeout: 60_000 }
+      );
+    } catch (err) {
+      if (!(err instanceof Rollback)) throw err;
+    }
+    const leftover = auditRowId ? await app.auditLog.findUnique({ where: { id: auditRowId } }) : null;
+    if (leftover) throw new Error('verification audit row survived the rollback');
+    console.log('  ✓ rolled back — no rows left behind');
     console.log(`role ${ROLE}: verified`);
   } finally {
     await app.$disconnect();
