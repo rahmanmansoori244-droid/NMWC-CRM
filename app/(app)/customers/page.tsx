@@ -1,3 +1,4 @@
+import { canExport as canExportFor } from '@/lib/permissions';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
@@ -126,7 +127,10 @@ export default async function CustomersPage({
   const showSupervisor =
     me.role === Role.MANAGER || me.role === Role.STEWARD || me.role === Role.VIEWER;
   const showSalesman = me.role !== Role.SALESMAN;
-  const canExport = me.role !== Role.SALESMAN;
+  // UAT-06: this said "anyone but a salesman", but exporting is a four-role
+  // permission (lib/permissions.ts). A VIEWER or SUPERVISOR saw the button and
+  // the export page bounced them to /home.
+  const canExport = canExportFor(session.user);
 
   // Constrain the route list to the caller's scope so a supervisor doesn't
   // see Dhofar routes in their dropdown.

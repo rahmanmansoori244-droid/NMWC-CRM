@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import type { Role } from '@prisma/client';
@@ -19,6 +20,8 @@ import {
   Home as HomeIcon,
   UserPlus,
   RefreshCw,
+  Menu,
+  X,
 } from 'lucide-react';
 
 type NavItem = {
@@ -148,5 +151,106 @@ export function MobileTabBar({ role }: { role: Role }) {
         );
       })}
     </nav>
+  );
+}
+
+/**
+ * UAT-02: navigation on a phone for everyone who is not a salesman.
+ *
+ * The sidebar is `hidden … md:block` and MobileTabBar returns null for every
+ * role except SALESMAN, whose comment admitted it: "other roles use the desktop
+ * sidebar (and hamburger TBD)". So a manager opening the app on a phone — and
+ * managers are the approvers in the go-live org chart — had no way to reach
+ * Approvals, Customers or anything else. They could only follow a link from a
+ * notification and then had nowhere to go.
+ *
+ * A drawer rather than a second tab bar: these roles have five to nine
+ * destinations, which does not fit a tab bar, and the set differs per role.
+ */
+export function MobileNavDrawer({ role }: { role: Role }) {
+  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+  const items = NAV_BY_ROLE[role] ?? [];
+
+  // Close on navigation: without this the drawer stays open over the new page.
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
+
+  // Escape closes it, as every dialog should.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  // The salesman already has the bottom tab bar; two navigations is worse than one.
+  if (role === 'SALESMAN' || items.length === 0) return null;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label="Open menu"
+        aria-expanded={open}
+        aria-controls="mobile-nav-drawer"
+        className="-ml-1 rounded-md p-2 hover:bg-blue-800 md:hidden"
+      >
+        <Menu className="h-5 w-5" />
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <button
+            type="button"
+            aria-label="Close menu"
+            onClick={() => setOpen(false)}
+            className="absolute inset-0 bg-slate-900/50"
+          />
+          <nav
+            id="mobile-nav-drawer"
+            className="absolute inset-y-0 left-0 flex w-64 max-w-[80%] flex-col bg-white shadow-xl"
+          >
+            <div className="flex h-14 items-center justify-between border-b border-slate-200 px-4">
+              <span className="text-sm font-semibold text-slate-900">Menu</span>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-label="Close menu"
+                className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <ul className="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
+              {items.map((item) => {
+                const active = pathname === item.href || pathname.startsWith(item.href + '/');
+                const Icon = item.icon;
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href as string}
+                      className={cn(
+                        'flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition',
+                        active
+                          ? 'bg-brand-50 text-brand-700'
+                          : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
+                      )}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {item.label}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
+        </div>
+      )}
+    </>
   );
 }

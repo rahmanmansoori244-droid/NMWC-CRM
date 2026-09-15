@@ -1,7 +1,7 @@
+import { canExport } from '@/lib/permissions';
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { ExportFiltersForm } from './ExportFiltersForm';
 
@@ -10,7 +10,8 @@ export const metadata = { title: 'Export · NMWC' };
 export default async function ExportPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
-  if (session.user.role === Role.SALESMAN) redirect('/home');
+  // UAT-06: match the permission, not a single excluded role.
+  if (!canExport(session.user)) redirect('/home');
 
   const [regions, routes] = await Promise.all([
     prisma.region.findMany({

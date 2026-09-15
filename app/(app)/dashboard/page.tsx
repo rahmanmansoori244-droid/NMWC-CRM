@@ -107,7 +107,10 @@ export default async function DashboardPage() {
     }),
     prisma.branch.groupBy({
       by: ['regionId'],
-      where: { deletedAt: null },
+      // SCALE: use the scope this page already computed. These two groupBy
+      // calls counted EVERY region and route, so a region-scoped manager saw
+      // completeness aggregates for the whole country.
+      where: branchWhere,
       _avg: { completenessScore: true },
       _count: { _all: true },
     }),
@@ -117,7 +120,10 @@ export default async function DashboardPage() {
     }),
     prisma.branch.groupBy({
       by: ['routeId'],
-      where: { deletedAt: null },
+      // SCALE: use the scope this page already computed. These two groupBy
+      // calls counted EVERY region and route, so a region-scoped manager saw
+      // completeness aggregates for the whole country.
+      where: branchWhere,
       _avg: { completenessScore: true },
       _count: { _all: true },
     }),

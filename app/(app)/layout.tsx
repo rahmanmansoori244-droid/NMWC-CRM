@@ -26,7 +26,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       />
       <div className="mx-auto flex w-full max-w-screen-2xl flex-1">
         <Sidebar role={session.user.role} />
-        <div className="flex-1 pb-16 md:pb-0">{children}</div>
+        <div
+          className={`flex-1 ${session.user.role === 'SALESMAN' ? 'pb-16 md:pb-0' : ''}`}
+        >
+          {children}
+        </div>
       </div>
       <MobileTabBar role={session.user.role} />
     </div>
