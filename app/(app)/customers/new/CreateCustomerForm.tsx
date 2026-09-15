@@ -11,7 +11,7 @@
  *  - paymentTerms is chosen up front and routes the approval chain
  *    (CASH → SUP→ACC, CREDIT → SUP→FM→GM→ACC) + reveals the credit block.
  */
-import { useEffect, useRef, useState, useTransition } from 'react';
+import { useId, useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { DayOfWeek, EditState, PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
@@ -19,6 +19,7 @@ import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import { submitCreateAction } from '@/services/creates';
+import { LabeledField as Field } from '@/components/nmwc/LabeledField';
 
 type ChannelWithSubs = {
   id: string;
@@ -120,6 +121,9 @@ export function CreateCustomerForm({
   sessionUserId: string;
 }) {
   const router = useRouter();
+  // UAT-07: one id prefix per form instance, so the labels on the inline
+  // selects can point at their controls. Branch rows append their own key.
+  const uid = useId();
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [info, setInfo] = useState<string | null>(null);
@@ -488,8 +492,9 @@ export function CreateCustomerForm({
             </div>
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Notes</label>
+            <label htmlFor={`${uid}-notes`} className="mb-1 block text-sm font-medium text-slate-700">Notes</label>
             <textarea
+              id={`${uid}-notes`}
               value={notes}
               onChange={(e) => setNotes(e.currentTarget.value)}
               maxLength={5000}
@@ -504,8 +509,9 @@ export function CreateCustomerForm({
       <FormSection title="Channel & classification">
         <div className="grid gap-3 md:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Channel *</label>
+            <label htmlFor={`${uid}-channel`} className="mb-1 block text-sm font-medium text-slate-700">Channel *</label>
             <select
+              id={`${uid}-channel`}
               value={channelId}
               onChange={(e) => {
                 setChannelId(e.currentTarget.value);
@@ -528,8 +534,9 @@ export function CreateCustomerForm({
             )}
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">Sub-channel *</label>
+            <label htmlFor={`${uid}-subchannel`} className="mb-1 block text-sm font-medium text-slate-700">Sub-channel *</label>
             <select
+              id={`${uid}-subchannel`}
               value={subChannelId}
               onChange={(e) => setSubChannelId(e.currentTarget.value)}
               disabled={!channelId || readOnly}
@@ -711,10 +718,11 @@ export function CreateCustomerForm({
 
             <div className="grid gap-3 md:grid-cols-3">
               <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
+                <label htmlFor={`${uid}-day-${s.key}`} className="mb-1 block text-sm font-medium text-slate-700">
                   Day of visit *
                 </label>
                 <select
+                  id={`${uid}-day-${s.key}`}
                   value={s.dayOfVisit}
                   onChange={(e) =>
                     setBranch(s.key, { dayOfVisit: e.currentTarget.value as DayOfWeek | '' })
@@ -919,57 +927,6 @@ export function CreateCustomerForm({
           )}
         </>
       )}
-    </div>
-  );
-}
-
-function Field({
-  label,
-  value,
-  onChange,
-  placeholder,
-  error,
-  disabled,
-  textarea,
-  inputMode,
-  maxLength,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  error?: string;
-  disabled?: boolean;
-  textarea?: boolean;
-  inputMode?: 'decimal' | 'numeric';
-  maxLength?: number;
-}) {
-  const cls = `block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500 ${disabled ? 'cursor-not-allowed bg-slate-100' : ''}`;
-  return (
-    <div>
-      <label className="mb-1 block text-sm font-medium text-slate-700">{label}</label>
-      {textarea ? (
-        <textarea
-          value={value}
-          disabled={disabled}
-          placeholder={placeholder}
-          maxLength={maxLength}
-          onChange={(e) => onChange(e.currentTarget.value)}
-          rows={2}
-          className={cls}
-        />
-      ) : (
-        <input
-          value={value}
-          disabled={disabled}
-          placeholder={placeholder}
-          inputMode={inputMode}
-          maxLength={maxLength}
-          onChange={(e) => onChange(e.currentTarget.value)}
-          className={cls}
-        />
-      )}
-      {error && <p className="mt-0.5 text-xs font-medium text-red-600">{error}</p>}
     </div>
   );
 }

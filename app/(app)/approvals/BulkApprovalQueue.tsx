@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
@@ -326,6 +326,58 @@ function RejectModal({
   onCancel: () => void;
   disabled: boolean;
 }) {
+  // UAT-07: ConfirmModal has a focus trap, focus restore and Escape; this dialog
+  // had none of the three, so a keyboard approver could open it and then neither
+  // leave it nor stay inside it. It gets its own rather than reusing ConfirmModal:
+  // that component binds Enter to confirm globally, which here would fire a bulk
+  // REJECTION from inside the required free-text reason box.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const reasonRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    // Mount-only: this component is conditionally rendered, so mounting is the
+    // moment the dialog opens.
+    const previous = document.activeElement as HTMLElement | null;
+    reasonRef.current?.focus();
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = overflow;
+      previous?.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCancel();
+        return;
+      }
+      if (e.key !== 'Tab' || !dialogRef.current) return;
+      // Re-queried on every keypress, not cached: the Confirm button toggles
+      // disabled as the reason is typed, so a cached list would send focus to a
+      // control that is no longer focusable.
+      const focusable = [
+        ...dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), select:not([disabled]), textarea:not([disabled]), input:not([disabled]), a[href]'
+        ),
+      ].filter((el) => el.tabIndex !== -1);
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/50 p-4"
@@ -333,8 +385,16 @@ function RejectModal({
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl ring-1 ring-slate-200">
-        <h3 className="text-base font-semibold text-slate-900">
+      {/* The backdrop above stays a plain div — it owns click-to-cancel. The card
+          is the dialog. */}
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reject-modal-title"
+        className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl ring-1 ring-slate-200"
+      >
+        <h3 id="reject-modal-title" className="text-base font-semibold text-slate-900">
           Reject {count} edit{count === 1 ? '' : 's'}?
         </h3>
         <p className="mt-1 text-xs text-slate-600">
@@ -358,6 +418,7 @@ function RejectModal({
         <label className="mt-3 block text-xs font-medium text-slate-700">
           Reason for the salesmen *
           <textarea
+            ref={reasonRef}
             value={reason}
             onChange={(e) => onReason(e.currentTarget.value)}
             rows={3}
