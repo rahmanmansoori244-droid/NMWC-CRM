@@ -540,6 +540,15 @@ async function submitEditCore(
           action: 'UPDATE',
           entityType: 'Customer',
           entityId: customer.id,
+          // SEC-03/09 (3): name the path. (UPDATE, Customer) is written by no other
+          // code path in the app -- an approved change writes (APPROVE, CustomerEdit)
+          // at finalize -- so these rows were already isolable by query. What was
+          // missing is human-readable: a Manager reading /audit saw an empty reason
+          // cell and no hint that no approver had ever seen this change, while every
+          // other deliberate override in this codebase carries one. me.role is the
+          // role held AT THE TIME of the write, which a later join to User cannot
+          // recover. The prefix is a stable `reason LIKE 'direct-write:%'` anchor.
+          reason: `direct-write: applied by ${me.role} with no approval chain`,
           before: customerBefore as unknown as Prisma.InputJsonValue,
           after: customerProposed as unknown as Prisma.InputJsonValue,
         },

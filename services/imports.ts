@@ -1405,6 +1405,59 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               }
               customerId = existing!.id;
             } else {
+              // SEC-03/09 (2): credit standing is approval-gated or ERP-authoritative,
+              // never an ordinary-import side effect.
+              //
+              // A net-new CREDIT customer created in the app runs Salesman -> Supervisor
+              // -> Finance Manager -> GM -> Accountant (lib/approval-chains.ts), and only
+              // lib/create-finalize.ts may then write creditLimit/paymentTermDays. The
+              // refresh lane above is the other legitimate writer: it is gated on
+              // temix_code, i.e. the ERP said so. The ordinary customer edit cannot touch
+              // terms at all -- services/edits.ts rejects any customer.paymentTerms change
+              // outright (final-hunt #3), on the direct-write path too.
+              //
+              // THIS lane was the one hole. `isRefresh` above already claimed every
+              // live-customer-with-temix_code case, and an archived customer carrying a
+              // temix_code already threw, so a row reaching here carries no ERP authority
+              // and no approver saw it -- yet it wrote `paymentTerms` on update and
+              // paymentTerms + creditLimit + paymentTermDays on create. An ordinary sheet
+              // could therefore mint a live CREDIT customer with any credit limit (the
+              // parser does not even require credit_limit on a CREDIT row, so "CREDIT with
+              // no limit" was reachable too), or flip an existing customer's terms, with
+              // nothing anywhere in the trail.
+              //
+              // Two guards, in THIS order, so a sheet that merely RESTATES the terms
+              // already on record stays idempotent. That ordering is not cosmetic: a
+              // customer created through the credit chain is CREDIT with NO temix_code
+              // until Temix acks it, so a blanket "CREDIT needs temix_code" would reject
+              // its own correct row -- and the README promises re-import is safe.
+              //   1. disagreement with what is stored -> hold, in either direction;
+              //   2. a NEW customer asking for CREDIT with no temix_code -> hold.
+              // Held, never silently written and never silently downgraded to CASH, using
+              // the CROSSWALK convention already used in this function: the whole group is
+              // REJECTED with a PII-free message on the row.
+              //
+              // This does NOT gate the go-live master load. Every row
+              // scripts/golive/build-masters.ts emits carries temix_code (= the Temix base
+              // code, which is also cust_code), so a CREDIT row from it passes guard 2 and
+              // lands on the create branch below with its ERP figures intact; a re-run
+              // finds it live with a matching code and takes the refresh lane above, which
+              // never reaches these guards at all.
+              if (existing && first.paymentTermsPresent && pt !== existing.paymentTerms) {
+                // Either direction. CASH->CREDIT grants credit standing no approver saw.
+                // CREDIT->CASH is worse than it looks: this lane, unlike the refresh lane,
+                // never nulls creditLimit/paymentTermDays, so the flip would leave a CASH
+                // customer carrying a live credit limit that lib/temix.ts then suppresses
+                // on export -- the CRM and the ERP would disagree, silently.
+                throw new Error(
+                  'CROSSWALK:payment_terms disagrees with the terms already recorded for this customer and the row carries no temix_code — refresh from Temix, or move the terms through the credit chain; steward review'
+                );
+              }
+              if (!existing && pt === 'CREDIT' && !first.temixCode) {
+                throw new Error(
+                  'CROSSWALK:payment_terms is CREDIT but the row carries no temix_code — credit terms and limits come from Temix or from the credit approval chain, not from an ordinary import; steward review'
+                );
+              }
               const customer = await tx.customer.upsert({
                 where: { nmwcCode: custCode },
                 update: {
@@ -1416,7 +1469,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   // unchanged". cust_name is mandatory (a blank row is quarantined),
                   // so legalName is always a real value here.
                   legalName: first.custName,
-                  paymentTerms: first.paymentTermsPresent ? pt : undefined,
+                  // SEC-03/09 (2): paymentTerms is deliberately NOT written here. On an
+                  // EXISTING customer, terms are Temix-owned (the refresh lane above) or
+                  // approval-owned (the credit create chain). The disagreement guard at
+                  // the top of this branch already rejects any row that differs, so the
+                  // only value that could reach this line is one that already matches what
+                  // is stored -- writing it buys nothing and re-opens the hole if that
+                  // guard is ever loosened. It also covers the one case the guard cannot
+                  // see: if a concurrent insert made this upsert take the update path when
+                  // `existing` read null, not writing terms fails in the safe direction.
+                  // `undefined` = leave unchanged, same rule as phone/CR/contact below.
                   primaryPhone: first.phone ?? undefined,
                   primaryPhoneNorm: first.phone ?? undefined,
                   contactPerson: first.contactPerson ?? undefined,

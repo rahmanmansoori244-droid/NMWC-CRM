@@ -224,6 +224,136 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(after.version).toBeGreaterThan(before.version); // B-05 optimistic bump (#14)
   });
 
+  // ---- SEC-03/09 (2): credit standing is approval-gated or ERP-authoritative ----
+  //
+  // Before these guards an ordinary spreadsheet could mint a live CREDIT
+  // customer with any credit limit, or flip an existing customer's terms, with
+  // no approver and nothing in the trail. The three cases below are the hole,
+  // the other direction of the hole, and the proof that the go-live master load
+  // still works — which is the one that decides whether this change is safe to
+  // ship before launch.
+
+  it('SEC-03/09: a non-refresh sheet cannot flip an existing customer to CASH', async () => {
+    const before = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: `${P}-REIMP` } });
+    expect(before.paymentTerms).toBe('CREDIT');
+    const fd = new FormData();
+    fd.set(
+      'file',
+      new File(
+        [
+          await sheetBuf([
+            {
+              cust_code: `${P}-REIMP`,
+              cust_name: 'ZZ Reimport Keep',
+              branch_code: `${P}-REIMP-01`,
+              sales_region: 'ZZMCT',
+              route: 'ZZMCT-R01',
+              address: 'Way 11, Muscat',
+              payment_terms: 'CASH', // the flip, with no temix_code to authorise it
+            },
+          ]),
+        ],
+        'flip.xlsx',
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      )
+    );
+    const up = await imports.uploadCustomerMasterAction(fd);
+    expect(up.ok).toBe(true);
+    await promoteFully(imports, (up as { ok: true; data: { batchId: string } }).data.batchId);
+
+    // The customer is untouched, and the row says why rather than failing silently.
+    const after = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: `${P}-REIMP` } });
+    expect(after.paymentTerms).toBe('CREDIT');
+    expect(Number(after.creditLimit)).toBe(750);
+    const rows = await prisma.importRow.findMany({
+      where: { batchId: (up as { ok: true; data: { batchId: string } }).data.batchId },
+    });
+    const row = rows.find((r) => (r.parsed as { custCode?: string })?.custCode === `${P}-REIMP`);
+    expect(row?.state).toBe('REJECTED');
+    const issues = (row?.issues as { field: string; message: string }[]) ?? [];
+    expect(issues.some((i) => /payment_terms disagrees/i.test(i.message))).toBe(true);
+    // The message must not carry the customer's data into the row.
+    expect(JSON.stringify(issues)).not.toContain('96890999001');
+  });
+
+  it('SEC-03/09: a NEW customer cannot be created as CREDIT without ERP authority', async () => {
+    const fd = new FormData();
+    fd.set(
+      'file',
+      new File(
+        [
+          await sheetBuf([
+            {
+              cust_code: `${P}-NOAUTH`,
+              cust_name: 'ZZ Credit No Authority',
+              branch_code: `${P}-NOAUTH-01`,
+              sales_region: 'ZZMCT',
+              route: 'ZZMCT-R01',
+              address: 'Way 12, Muscat',
+              payment_terms: 'CREDIT',
+              credit_limit: '99000',
+              // no temix_code: nothing says the ERP agreed, and no approver saw it
+            },
+          ]),
+        ],
+        'noauth.xlsx',
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      )
+    );
+    const up = await imports.uploadCustomerMasterAction(fd);
+    expect(up.ok).toBe(true);
+    await promoteFully(imports, (up as { ok: true; data: { batchId: string } }).data.batchId);
+
+    // No customer at all — held, not downgraded to CASH behind the operator's back.
+    expect(await prisma.customer.findUnique({ where: { nmwcCode: `${P}-NOAUTH` } })).toBeNull();
+    const rows = await prisma.importRow.findMany({
+      where: { batchId: (up as { ok: true; data: { batchId: string } }).data.batchId },
+    });
+    const row = rows.find((r) => (r.parsed as { custCode?: string })?.custCode === `${P}-NOAUTH`);
+    expect(row?.state).toBe('REJECTED');
+    const issues = (row?.issues as { field: string; message: string }[]) ?? [];
+    expect(issues.some((i) => /CREDIT but the row carries no temix_code/i.test(i.message))).toBe(true);
+  });
+
+  it('SEC-03/09: the go-live master still loads — CREDIT with a temix_code promotes intact', async () => {
+    // Every row scripts/golive/build-masters.ts emits carries temix_code, so this
+    // is the shape the launch load actually has. If this test fails, the guards
+    // above would block go-live.
+    const fd = new FormData();
+    fd.set(
+      'file',
+      new File(
+        [
+          await sheetBuf([
+            {
+              cust_code: `${P}-ERPOK`,
+              cust_name: 'ZZ Credit From ERP',
+              branch_code: `${P}-ERPOK-01`,
+              sales_region: 'ZZMCT',
+              route: 'ZZMCT-R01',
+              address: 'Way 13, Muscat',
+              payment_terms: 'CREDIT',
+              credit_limit: '1250',
+              payment_term_days: '30',
+              temix_code: `${P}-ERPOK`,
+            },
+          ]),
+        ],
+        'erpok.xlsx',
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      )
+    );
+    const up = await imports.uploadCustomerMasterAction(fd);
+    expect(up.ok).toBe(true);
+    await promoteFully(imports, (up as { ok: true; data: { batchId: string } }).data.batchId);
+
+    const made = await prisma.customer.findUnique({ where: { nmwcCode: `${P}-ERPOK` } });
+    expect(made).toBeTruthy();
+    expect(made!.paymentTerms).toBe('CREDIT');
+    expect(Number(made!.creditLimit)).toBe(1250);
+    expect(made!.paymentTermDays).toBe(30);
+  });
+
   it('F-17: unknown REGION falls back (row PROMOTED with warning), does not poison the group', async () => {
     const cust = await prisma.customer.findUnique({ where: { nmwcCode: `${P}-UR` }, include: { branches: true } });
     expect(cust).toBeTruthy(); // group must promote, not reject

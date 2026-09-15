@@ -71,10 +71,27 @@ One sheet named **Customers** (must stay the first sheet) + an Instructions tab.
 | `phone` | optional | 7–20 chars: digits `+ - ( )` spaces. Same phone on **different** customers → flagged for review. |
 | `contact_person` | optional | |
 | `cr_no` | optional | Commercial registration. Same CR on **different** customers → flagged for review. |
-| `payment_terms` | optional | `CASH` or `CREDIT` (default `CASH`). |
+| `payment_terms` | optional | `CASH` or `CREDIT` (default `CASH`). Can **state** a customer's existing terms, but cannot **change** them — see the note below. |
 | `credit_limit` | for CREDIT | number, OMR, up to 3 decimals. |
 | `payment_term_days` | for CREDIT | whole number 0–365. |
-| `temix_code` | optional | the Temix ERP code (links CRM ↔ Temix). Blank if not yet in Temix. |
+| `temix_code` | optional (**required to put a NEW customer on `CREDIT`**) | the Temix ERP code (links CRM ↔ Temix). Blank if not yet in Temix. |
+
+> **Credit terms need an authority behind them.** Credit standing is set one of two
+> ways: Temix says so (a row carrying `temix_code`), or the credit approval chain
+> says so (a customer created in the app: Salesman → Supervisor → Finance Manager →
+> GM → Accountant). An import row has neither on its own, so:
+>
+> - A **new** customer with `payment_terms: CREDIT` and **no** `temix_code` is held
+>   for steward review, not promoted.
+> - An **existing** customer whose row states terms that **differ** from what is on
+>   record, with **no** `temix_code`, is held — in both directions. A row that
+>   simply restates the terms already on record is fine, so re-importing an
+>   unchanged sheet stays safe.
+>
+> To move an existing customer's terms or credit limit, refresh it from Temix
+> (include `temix_code`). To take a brand-new customer onto credit, create it in
+> the app so the chain runs. A held row shows the reason on the row; the rest of
+> the batch still loads, and you can fix the sheet and re-upload.
 | `channel` | optional | the CRM channel **code**: `HORECA`, `MODERN_TRADE`, `GENERAL_TRADE`, `CONVENIENCE_AND_GAS`, `ECOMMERCE`, `HOME_OFFICE_DELIVERY`, `INSTITUTIONS`. Anything else → held for review. |
 | `day_of_visit` | optional | the journey-plan visit day for this branch: `SAT` `SUN` `MON` `TUE` `WED` `THU` `FRI`. Drives the salesman's **Today** list. |
 | `customer_status` | optional | `ACTIVE` (default) or `CLOSED`. A customer with any ACTIVE branch stays ACTIVE. |
