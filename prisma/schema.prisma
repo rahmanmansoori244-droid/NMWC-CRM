@@ -480,7 +480,11 @@ model Attachment {
   // Used by Branch.extraPhotos relation
   branchExtraId String?
   // Phase 1: photos captured during a net-new CREATE before the Customer/Branch
-  // exists; bound to real slots at finalize, GC-swept if the draft is abandoned.
+  // exists; bound to real slots at finalize. NOT swept when the draft is
+  // abandoned — services/creates.ts releases editId-claimed photos only on a
+  // re-submit of the same edit row, so a request left in DRAFT or
+  // NEEDS_CORRECTION forever keeps its photos forever. No cron covers this
+  // (DG-03/04): an abandoned-draft sweep needs an owner-chosen period first.
   editId        String?
   r2Key         String         @unique
   mimeType      String

@@ -320,13 +320,63 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
         where: { customerId: loser.id },
         data: { customerId: winner.id },
       });
-      // Move CR photo if winner has none
-      if (!winner.crPhotoId && loser.crPhotoId) {
+      // DG-03/04: a merge asserts these two rows are the SAME legal entity, so the
+      // loser's documents ARE the winner's documents. Re-parent them; never release
+      // them. Two separate defects are closed here, both on the happy path:
+      //
+      //  1. WRITE ORDER / P2002. `Customer.crPhotoId` is backed by a plain,
+      //     NON-deferrable unique index (Customer_crPhotoId_key, migration
+      //     20260509102405), so Postgres checks it at statement end, not at commit.
+      //     The old code set the WINNER's slot while the LOSER row still held the
+      //     same attachment id — 23505 → P2002 → the whole merge aborted with an
+      //     opaque "Unique constraint failed on the fields: (`crPhotoId`)" for
+      //     EVERY pair where only the loser had a CR document. The loser must
+      //     release the pointer before the winner can claim it.
+      //  2. ORPHANED EVIDENCE. Moving the slot pointer never moved
+      //     `Attachment.customerId`, and the loser is soft-deleted a few statements
+      //     below. assertCanAccessAttachment resolves an attachment through
+      //     `customer.findFirst({ deletedAt: null })`, so every customer-bound
+      //     document left behind on the loser 404s for every role except
+      //     STEWARD/VIEWER. GUARANTEE documents (bound by Attachment.customerId in
+      //     lib/create-finalize.ts) were never moved at all: 404 to the FM/GM who
+      //     granted the limit, and invisible to the live-GUARANTEE groupBy in
+      //     services/temix.ts, so the winner's Temix export understated the credit
+      //     evidence behind its own limit.
+      //
+      // Every LIVE customer-bound attachment moves. Rows already soft-deleted stay
+      // on the loser — they belong to the GC, not to the winner.
+      await tx.attachment.updateMany({
+        where: { customerId: loser.id, deletedAt: null },
+        data: { customerId: winner.id },
+      });
+      // Read the loser's CR slot FRESH. Both customer rows are FOR UPDATE-locked
+      // above, so this value cannot move again inside the transaction, whereas the
+      // pre-tx `loser.crPhotoId` can be stale: attachCrPhoto soft-deletes the photo
+      // it replaces, so a stale pointer can name an already-deleted attachment and
+      // would hand the winner a slot the GC hard-deletes 30 days later.
+      const loserCr = await tx.customer.findUniqueOrThrow({
+        where: { id: loser.id },
+        select: { crPhotoId: true },
+      });
+      if (loserCr.crPhotoId) {
+        // Release first — see (1). Clearing it unconditionally also keeps
+        // detachPhotoCore's `{ id: att.customerId, crPhotoId: att.id }` slot-clear
+        // from missing: a live pointer left on a tombstoned customer would otherwise
+        // survive the detach of the photo it names.
         await tx.customer.update({
-          where: { id: winner.id },
-          data: { crPhotoId: loser.crPhotoId },
+          where: { id: loser.id },
+          data: { crPhotoId: null },
         });
-        await tx.customer.update({ where: { id: loser.id }, data: { crPhotoId: null } });
+        // Guarded on `crPhotoId: null` at WRITE time rather than on the pre-tx read,
+        // so a CR photo attached to the winner between the load and here is not
+        // clobbered: the winner keeps its own, and the loser's CR survives as a
+        // second, unslotted CR row now parented to the winner. Nothing renders
+        // customerId-bound CR rows, so this adds no UI — only reachability through
+        // /api/photos/[id] and an intact evidence trail.
+        await tx.customer.updateMany({
+          where: { id: winner.id, crPhotoId: null },
+          data: { crPhotoId: loserCr.crPhotoId },
+        });
       }
       // Soft-delete the loser. Phase 1 Temix sync: a loser Temix has heard of
       // (coded / ever uploaded / migrated-SYNCED) queues for ERP deactivation;
