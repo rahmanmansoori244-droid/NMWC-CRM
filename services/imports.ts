@@ -1381,8 +1381,43 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // that was never noticed. Requiring `existing.temixCode` makes the two
             // distinguishable: a customer the CRM has never crosswalked takes the
             // upsert lane, which is what a master load is.
+            // The equality clause closes the other half: the "ERP authority" that
+            // unlocks the credit fields below was, until now, nothing but a string
+            // the spreadsheet supplied. A Steward — the one role deliberately NOT
+            // on the credit chain — could put any value in temix_code and have the
+            // narrow lane write paymentTerms and an arbitrary creditLimit with no
+            // approver, while services/edits.ts refuses that same change on the
+            // edit path. Worse, the invented code became the customer's ERP
+            // identity and went out verbatim in the next Temix batch, telling the
+            // ERP to upsert under a code nobody there issued.
+            //
+            // Requiring the code to MATCH what the CRM already recorded means the
+            // authority has to have come from somewhere other than this sheet.
+            // A row proposing a different code falls through to the upsert lane,
+            // which writes neither temixCode nor paymentTerms, and is rejected
+            // just below so a genuine crosswalk change is a deliberate act rather
+            // than a cell nobody read.
+            //
+            // No seeded customer carries a temixCode, so neither clause changes
+            // anything about the go-live load itself.
             const isRefresh =
-              !!existing && !existing.deletedAt && !!first.temixCode && !!existing.temixCode;
+              !!existing &&
+              !existing.deletedAt &&
+              !!first.temixCode &&
+              !!existing.temixCode &&
+              existing.temixCode === first.temixCode;
+
+            if (
+              existing &&
+              !existing.deletedAt &&
+              first.temixCode &&
+              existing.temixCode &&
+              existing.temixCode !== first.temixCode
+            ) {
+              throw new Error(
+                'CROSSWALK:this customer is already crosswalked to a different Temix code — changing it is a deliberate re-crosswalk, not an import; steward review'
+              );
+            }
             refreshedRow = isRefresh;
             let customerId: string;
             if (isRefresh) {

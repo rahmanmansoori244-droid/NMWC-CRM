@@ -43,6 +43,27 @@ export async function GET(req: Request) {
   // B-16 posture: constant-time compare, and a short token never unlocks details.
   const isMonitor = !!monitorToken && monitorToken.length >= 20 && bearerMatches(bearer, monitorToken);
 
+  // A caller that PRESENTED a credential and was not recognised must be told so,
+  // not quietly downgraded to the anonymous answer.
+  //
+  // The monitor OPERATIONS.md §5d configures is told to alert on a non-200. The
+  // anonymous body is `200 {"status":"ok"}` whenever the database answers — so a
+  // mistyped or rotated HEALTH_BEARER, or an unset one, made the monitor green
+  // forever while every heartbeat could read `never`, `stale` or `failed`. The
+  // nightly dump broken by a rotated password, the retention sweep dead, the SLA
+  // sweep never firing: all invisible, with no field in the response saying "you
+  // were treated as anonymous". That is precisely the silent-failure class B5 and
+  // B3 exist to end, reintroduced one level above them.
+  if (bearer !== null) {
+    if (!monitorToken || monitorToken.length < 20) {
+      logger.warn({}, 'health.monitor_token_unusable');
+      return NextResponse.json({ error: 'MONITOR_NOT_CONFIGURED' }, { status: 401 });
+    }
+    if (!isMonitor) {
+      return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+    }
+  }
+
   if (!isMonitor) {
     const ok = await dbOk();
     return NextResponse.json({ status: ok ? 'ok' : 'degraded' }, { status: ok ? 200 : 503 });
@@ -52,6 +73,10 @@ export async function GET(req: Request) {
     app: 'ok',
     db: 'pending',
     r2: 'pending',
+    // Whether the heartbeats were READ at all. Without this, a failed heartbeat
+    // query produced an empty alarm list, which is indistinguishable from "no
+    // alarms" — so the probe answered 200 ok while nothing was being evaluated.
+    heartbeats: 'pending',
   };
 
   checks.db = (await dbOk()) ? 'ok' : 'fail';
@@ -75,7 +100,12 @@ export async function GET(req: Request) {
   if (checks.db === 'ok') {
     try {
       heartbeats = await loadHeartbeatReport();
+      checks.heartbeats = 'ok';
     } catch (err) {
+      // Not swallowed into an empty alarm list: a dead man nobody can read is a
+      // failure in its own right, and it does not self-announce the way a
+      // database outage does.
+      checks.heartbeats = 'fail';
       logger.warn({ err: (err as Error).message }, 'health.heartbeats.fail');
     }
   }

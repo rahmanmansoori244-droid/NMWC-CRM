@@ -26,7 +26,7 @@
  *   RECONCILIATION.md, dq/*.csv
  */
 import ExcelJS from 'exceljs';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { makeInitialPasswordIssuer } from './initial-password';
 
@@ -1153,6 +1153,35 @@ async function main() {
       password: c[4],
     }))
   );
+  // Never overwrite credentials that may already have been issued.
+  //
+  // The runbook tells the operator to rebuild whenever the sources change, and a
+  // rebuild redraws every initial password. Accounts already in the database keep
+  // their old hashes — the account import only resets a password when the sheet
+  // says `reset_password: yes` — so the freshly written files would list values
+  // that were never applied to anything, while the values that DO work are
+  // overwritten and exist nowhere else. They are never printed, never stored and
+  // never audited. The operator would hand out a sheet on which every slip is
+  // dead, and recovery is a Steward resetting roughly 95 accounts by hand — except
+  // for any Manager who had not yet signed in, whom no Manager may reset.
+  //
+  // So: move the old files aside rather than replacing them, and say so loudly.
+  // Cheap, reversible, and it cannot lose a credential.
+  for (const name of ['credentials.xlsx', 'managers.json']) {
+    const existing = path.join(OUT, name);
+    if (!existsSync(existing)) continue;
+    const stamp = statSync(existing).mtime.toISOString().replace(/[:.]/g, '-');
+    const kept = path.join(OUT, `${name}.superseded-${stamp}`);
+    renameSync(existing, kept);
+    console.warn(
+      `\n!! ${name} already existed and has been kept as ${path.basename(kept)}.\n` +
+        `   The passwords in the NEW file have been freshly drawn and are NOT the ones\n` +
+        `   already in the database. If any account has been created and its password\n` +
+        `   handed out, the superseded file is the one that works — do not distribute\n` +
+        `   the new one until those accounts are re-created or reset.\n`
+    );
+  }
+
   await cred.xlsx.writeFile(path.join(OUT, 'credentials.xlsx'));
   writeFileSync(
     path.join(OUT, 'managers.json'),
@@ -1293,7 +1322,7 @@ async function main() {
   );
   md.push('');
   md.push(
-    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their name (e.g. `ashok`, `sara.khayat`), the steward as `steward`. **Every account has its OWN 8-digit initial password** (SEC-11) — there is no longer one password for everyone, so a leaked login opens exactly one account and every approval stays attributable to the person whose name is on it. The value is digits only, so it can be read off paper and typed on any phone keyboard without switching language, and it stops working the moment its owner completes the forced change at first sign-in. Hand each person **only their own row** of `credentials.xlsx`; a manager who also sells a route has a second login with a DIFFERENT password. ✅ ⚠ HOW those rows reach people is an owner decision and is not settled — see step 8 of docs/GO-LIVE-RUNBOOK.md.'
+    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their name (e.g. `ashok`, `sara.khayat`), the steward as `data.steward` (NOT `steward` — that exact username is refused while DEMO_ACCOUNTS_DISABLED is set). **Every account has its OWN 8-digit initial password** (SEC-11) — there is no longer one password for everyone, so a leaked login opens exactly one account and every approval stays attributable to the person whose name is on it. The value is digits only, so it can be read off paper and typed on any phone keyboard without switching language, and it stops working the moment its owner completes the forced change at first sign-in. Hand each person **only their own row** of `credentials.xlsx`; a manager who also sells a route has a second login with a DIFFERENT password. ✅ ⚠ HOW those rows reach people is an owner decision and is not settled — see step 8 of docs/GO-LIVE-RUNBOOK.md.'
   );
   md.push('## What is in the files');
   md.push(`- **Regions:** 7`);
