@@ -90,6 +90,17 @@ export function buildCsp(nonce?: string): string {
     `script-src ${scriptSrc}; ` +
     `style-src 'self' 'unsafe-inline'; ` +
     `font-src 'self' data:; ` +
-    `connect-src 'self' https://${r2AccountId}.r2.cloudflarestorage.com https://*.ingest.sentry.io https://*.ingest.de.sentry.io;`
+    // Sentry ingest: the legacy non-regional host AND both regional ones. A CSP
+    // host source beginning `*.` matches only hosts ENDING with the rest of the
+    // string, so `*.ingest.sentry.io` does NOT cover `oNNN.ingest.us.sentry.io`.
+    // The EU host was listed and the US one was not, while the residency register
+    // claimed both were permitted — and US is the region Sentry assigns by default
+    // to organisations created since 2024. There is no tunnel to fall back on:
+    // `withSentryConfig` is deliberately not applied here, so every envelope goes
+    // straight to the ingest host and is governed by this directive. With the
+    // wrong region listed, every browser error and every sampled transaction is
+    // refused by the browser, the user is shown a reference number for a report
+    // that does not exist, and the whole client-side scrubber is dead weight.
+    `connect-src 'self' https://${r2AccountId}.r2.cloudflarestorage.com https://*.ingest.sentry.io https://*.ingest.us.sentry.io https://*.ingest.de.sentry.io;`
   );
 }

@@ -55,6 +55,31 @@ describe('the directives SEC-14b added', () => {
   });
 });
 
+describe('connect-src reaches everywhere the browser actually talks to', () => {
+  it('allows all three Sentry ingest hosts, not just one region', () => {
+    // A `*.`-prefixed CSP host source matches only hosts ENDING with the rest of
+    // the string, so `*.ingest.sentry.io` does NOT cover the US regional host.
+    // Only the EU one was listed, and US is the region Sentry assigns by default
+    // to organisations created since 2024 — so a US DSN meant every browser error
+    // and every sampled transaction was refused, silently, while the user was
+    // shown a reference number for a report that never existed.
+    const c = parse(buildCsp('n')).get('connect-src') ?? '';
+    for (const host of [
+      'https://*.ingest.sentry.io',
+      'https://*.ingest.us.sentry.io',
+      'https://*.ingest.de.sentry.io',
+    ]) {
+      expect(c).toContain(host);
+    }
+  });
+
+  it('allows the R2 bucket the photo upload PUTs to, and itself', () => {
+    const c = parse(buildCsp('n')).get('connect-src') ?? '';
+    expect(c).toContain("'self'");
+    expect(c).toContain('.r2.cloudflarestorage.com');
+  });
+});
+
 describe('the two policies stay in step', () => {
   it('declare exactly the same directive names', () => {
     // The drift guard. They are built by one function now, but the point is that

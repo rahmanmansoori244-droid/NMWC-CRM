@@ -366,10 +366,20 @@ function RejectModal({
       if (focusable.length === 0) return;
       const first = focusable[0]!;
       const last = focusable[focusable.length - 1]!;
-      if (e.shiftKey && document.activeElement === first) {
+      const active = document.activeElement;
+      // Clicking the heading, the explanatory paragraph or the card's padding
+      // leaves activeElement on <body>, which is inside neither branch below — so
+      // without this the very next Tab walked straight out of the dialog and into
+      // the approvals list behind it. Anything outside the card is pulled back in.
+      if (!active || !dialogRef.current.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
+      if (e.shiftKey && active === first) {
         e.preventDefault();
         last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
+      } else if (!e.shiftKey && active === last) {
         e.preventDefault();
         first.focus();
       }

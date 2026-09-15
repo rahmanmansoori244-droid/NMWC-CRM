@@ -74,7 +74,10 @@ jobs:
         run: |
           set -euo pipefail
           MISSING=''
-          for V in NEON_API_KEY NEON_PROJECT_ID BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET; do
+          # PROD_DB_HOST_MARKER belongs here, not only at the drop step: without it the
+          # drill would otherwise create a Neon branch — a copy-on-write copy of the
+          # production customer data — and only then discover it cannot proceed.
+          for V in NEON_API_KEY NEON_PROJECT_ID BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET PROD_DB_HOST_MARKER; do
             [ -z "${!V:-}" ] && MISSING="${MISSING} ${V}"
           done
           if [ -n "$MISSING" ]; then
@@ -230,15 +233,16 @@ jobs:
             *"${PROD_DB_HOST_MARKER}"*)
               echo "::error::the drill URL points at the production host — refusing to drop anything"; exit 1;;
           esac
-          # Belt and braces: the drill branch must not be the same host the
-          # backup dumps from either.
-          if [ -n "${DIRECT_URL:-}" ]; then
-            DRILL_HOST_ONLY=$(printf '%s' "$DRILL_URL" | sed -E 's#.*@([^/?]+).*#\1#')
-            case "$DIRECT_URL" in
-              *"${DRILL_HOST_ONLY}"*)
-                echo "::error::the drill branch resolves to the same host as DIRECT_URL — refusing to drop anything"; exit 1;;
-            esac
-          fi
+          # There WAS a second interlock here comparing the drill host against
+          # DIRECT_URL. It was dead code: this job has never had DIRECT_URL in its
+          # env, so `[ -n "${DIRECT_URL:-}" ]` was always false and the comparison
+          # never ran, while the comment and two records described it as a control.
+          #
+          # It is removed rather than wired up, deliberately. Handing this job the
+          # production owner credential so that it can check it is not about to use
+          # it would be the wrong direction for a job whose entire purpose is to
+          # touch anything BUT production. The marker check above is the interlock,
+          # and it now fails closed and is checked in the preflight as well.
           psql "$DRILL_URL" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
           N=$(psql "$DRILL_URL" -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
           if [ "$N" != "0" ]; then

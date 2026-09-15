@@ -718,11 +718,17 @@ export function CreateCustomerForm({
 
             <div className="grid gap-3 md:grid-cols-3">
               <div>
-                <label htmlFor={`${uid}-day-${s.key}`} className="mb-1 block text-sm font-medium text-slate-700">
+                {/* Keyed on the map index, NOT on s.key: that comes from a
+                    module-level counter, which on the server keeps incrementing
+                    across requests while the client's starts again at 1 — so the
+                    same branch would render one id on the server and another after
+                    hydration. The index is stable on both sides and unique within
+                    the form. */}
+                <label htmlFor={`${uid}-day-${idx}`} className="mb-1 block text-sm font-medium text-slate-700">
                   Day of visit *
                 </label>
                 <select
-                  id={`${uid}-day-${s.key}`}
+                  id={`${uid}-day-${idx}`}
                   value={s.dayOfVisit}
                   onChange={(e) =>
                     setBranch(s.key, { dayOfVisit: e.currentTarget.value as DayOfWeek | '' })

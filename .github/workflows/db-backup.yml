@@ -128,6 +128,24 @@ jobs:
           echo "BASE_KEY=db/${STAMP}" >> "$GITHUB_ENV"
           echo "STARTED_AT=$(date -u +%s)" >> "$GITHUB_ENV"
 
+      # Fail in seconds, not after pg_dump. The encrypt step refuses without the
+      # recipients, and discovering that AFTER spending several minutes dumping the
+      # whole database wastes the run and reads like a dump failure rather than a
+      # missing key. Checked here so the message names the actual cause first.
+      - name: Refuse early if the dump could not be encrypted
+        run: |
+          set -euo pipefail
+          if [ -n "${BACKUP_AGE_RECIPIENTS:-}" ]; then
+            echo "age recipients are configured; the dump will be encrypted."
+            exit 0
+          fi
+          if [ "${ALLOW_PLAINTEXT_BACKUP:-}" = "true" ]; then
+            echo "::warning::BACKUP_AGE_RECIPIENTS is not set and ALLOW_PLAINTEXT_BACKUP=true — this run will produce an UNENCRYPTED dump, and the job will be marked FAILED at the end so this cannot be left switched on unnoticed."
+            exit 0
+          fi
+          echo "::error::BACKUP_AGE_RECIPIENTS is not set, so this dump could not be encrypted and will not be taken. NOTE: THERE IS NO BACKUP TONIGHT. Set the repository VARIABLE to an age public key — run 'npm run ops:print-secrets', or see docs/OPERATIONS.md 6.7 and step 10 of the go-live runbook. Until 2026-09-15 this job uploaded a PLAINTEXT copy of the whole customer master and every password hash instead, which is why it now refuses."
+          exit 1
+
       - name: Validate the connection string
         run: |
           set -euo pipefail
@@ -351,3 +369,18 @@ jobs:
             echo "- encrypted: ${ENCRYPTED:-unknown}"
             echo "- job status: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The escape hatch must not be survivable. OPERATIONS.md tells the operator
+      # to set ALLOW_PLAINTEXT_BACKUP, take the run and unset it — and the whole
+      # DO-16 finding was that a plaintext dump inside a GREEN run is exactly what
+      # nobody notices. So a plaintext run uploads (the emergency works, and the
+      # dead-man report above has already been sent, recording encrypted:false)
+      # and then goes RED, every night, until the variable is removed.
+      - name: An unencrypted dump must not leave a green run behind
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ "${ENCRYPTED:-true}" = "false" ]; then
+            echo "::error::This run uploaded an UNENCRYPTED dump of the whole customer master and every password hash, because ALLOW_PLAINTEXT_BACKUP is set. The object is in the bucket and the dead-man has been fed, so the backup itself succeeded — this failure exists so the switch cannot be left on quietly. Remove the ALLOW_PLAINTEXT_BACKUP repository variable, set BACKUP_AGE_RECIPIENTS, and delete the plaintext object: ${DUMP_KEY:-see the Upload step}."
+            exit 1
+          fi

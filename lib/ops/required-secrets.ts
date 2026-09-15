@@ -188,13 +188,13 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
   {
     name: 'PROD_DB_HOST_MARKER',
     kind: 'variable',
-    required: false,
+    required: true,
     workflows: ['db-backup.yml', 'restore-drill.yml'],
     description:
       'Endpoint fragment identifying production, so a job refuses to act on the wrong database.',
     source: 'The production Neon endpoint id.',
     consequenceIfMissing:
-      'The wrong-database guard is disarmed. The jobs still run; they simply stop checking they are pointed where they think.',
+      'The monthly restore drill REFUSES TO RUN. It issues DROP SCHEMA CASCADE against the branch it restores into, and will not do that without knowing which host is production — so without this the drill cannot complete and no backup is ever proven restorable. It was listed as optional until 2026-09-15, which would have sent an owner through the whole checklist and left the drill failing.',
   },
   {
     name: 'ALLOW_PLAINTEXT_BACKUP',

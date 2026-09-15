@@ -42,6 +42,12 @@ export function StepperInput({
         <input
           type="number"
           name={name}
+          // The caption beside this control is a <span>, not a <label>, so the
+          // field itself had no accessible name: three of these per branch were
+          // announced as an unnamed spin button with a number in it. Naming the
+          // input directly rather than converting the span, because the two
+          // buttons flanking it already take their names the same way.
+          aria-label={label}
           value={value}
           min={min}
           max={max}

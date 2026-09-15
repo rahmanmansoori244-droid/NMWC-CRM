@@ -31,7 +31,7 @@
  * to the report.
  */
 import { useEffect } from 'react';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { logger } from '@/lib/logger';
 import * as Sentry from '@sentry/nextjs';
 
@@ -42,6 +42,8 @@ export default function AppError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const router = useRouter();
+
   useEffect(() => {
     // Both, deliberately: the Sentry client is only live when the DSN was set at
     // build time, and the log line is the fallback when it was not.
@@ -67,20 +69,36 @@ export default function AppError({
         <div className="mt-4 flex justify-center gap-2">
           <button
             type="button"
-            onClick={reset}
+            onClick={() => {
+              // refresh() BEFORE reset(): almost every error that reaches this
+              // boundary was thrown rendering a Server Component, and reset()
+              // only clears the boundary's own error state. Re-rendering the same
+              // cached payload throws again, so the card would come back forever
+              // even after the database recovered. refresh() discards that cache
+              // and refetches, which is what makes "Try again" mean anything.
+              router.refresh();
+              reset();
+            }}
             className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
           >
             Try again
           </button>
           {/* No "sign in again" here. The layout validated the session before this
               rendered, so the session is intact and offering to re-authenticate
-              would send a working user to the login screen for nothing. */}
-          <Link
+              would send a working user to the login screen for nothing.
+
+              A plain <a>, not <Link>, on purpose. /home is a redirect that sends
+              each role to its own landing page, and for a SUPERVISOR that IS
+              /approvals — so after an approvals failure a soft navigation lands
+              back on the route that just threw, with the failed payload still
+              cached. A full document load re-runs the render from scratch, which
+              is the only escape that works for every role. */}
+          <a
             href="/home"
             className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
-            Go to Home
-          </Link>
+            Reload the app
+          </a>
         </div>
       </section>
     </main>

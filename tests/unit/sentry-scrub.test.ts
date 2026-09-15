@@ -138,6 +138,26 @@ describe('the written forms a salesman actually types', () => {
   });
 
   it.each([
+    'R2 key 2026/09/15/usr_abc/SHOP/12345678-a8ae-47e3-9652-fad123456789.jpg',
+    'key 2026/09/15/u1/CR/0f0e0d0c-1b2a-4c3d-8e9f-001122334455.png',
+    'attachment cmf3x9k2a0000abcdefghijkl updated',
+  ])('leaves an identifier this system minted itself intact: %s', (line) => {
+    // About one UUID in 43 has an all-decimal first group, so roughly 3.4% of
+    // photograph object keys carried an 8-digit run the phone pattern ate. That
+    // key is the ONLY evidence in the photo.finalize.key_mismatch warning, which
+    // records a signed-in user finalizing against somebody else's presign prefix.
+    // Redacting a server-minted id protects nobody and destroys the log line.
+    expect(scrub(line)).toBe(line);
+  });
+
+  it('still redacts a real number sitting beside an identifier', () => {
+    // The guard must not become a hole: parking the UUID does not park the rest.
+    expect(scrub('uuid 12345678-1234-1234-1234-123456789012 and phone 91234567')).toBe(
+      'uuid 12345678-1234-1234-1234-123456789012 and phone [phone]'
+    );
+  });
+
+  it.each([
     'Transaction already closed: 20000ms',
     'promoted 3308 of 3312 rows in 1842 ms',
     'P2028: transaction timed out after 5000',
