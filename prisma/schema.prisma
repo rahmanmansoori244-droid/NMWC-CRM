@@ -632,6 +632,11 @@ model AuditLog {
   @@index([entityType, entityId, at(sort: Desc)])
   @@index([actorId, at(sort: Desc)])
   @@index([action, at(sort: Desc)])
+  // SCALE: the three composites all lead with a column, so "the most recent
+  // audit rows, whoever wrote them" — the audit page's default view and every
+  // forensic query that starts from a time window — had no index to use and
+  // scanned a table that grows forever.
+  @@index([at(sort: Desc)])
 }
 
 // ── Phase 1: CREATE-request drafts, multi-step approval, SLA/notifications, Temix sync ──

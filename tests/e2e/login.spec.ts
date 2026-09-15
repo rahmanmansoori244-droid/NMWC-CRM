@@ -14,7 +14,11 @@ test('health endpoint returns ok', async ({ request }) => {
   expect(res.status()).toBe(200);
   const body = await res.json();
   expect(body.status).toBe('ok');
-  expect(body.service).toBe('nmwc-cm');
+  // DO-02/UAT-03: this asserted body.service === 'nmwc-cm', a field the anonymous
+  // probe has never returned. The test passed only because Playwright was never
+  // run in CI. The anonymous response is deliberately minimal — status and
+  // nothing else — so that is what it checks (B-12; app/api/health/route.ts).
+  expect(Object.keys(body)).toEqual(['status']);
 });
 
 test('root redirects to login', async ({ page }) => {

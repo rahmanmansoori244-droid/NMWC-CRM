@@ -11,7 +11,9 @@ export const metadata = { title: 'Dashboard · NMWC' };
 // queries (counts, region rollups, route leaderboards) and a manager rarely
 // needs sub-30s freshness on these — they're trend dashboards, not live
 // queues. Approvals + audit pages are NOT cached so they stay live.
-export const revalidate = 30;
+// SCALE: no page-level revalidate. These pages are region-scoped per viewer,
+// so a shared 30-second cache entry would either be scoped to nobody or serve
+// one manager the counts of another. They are dynamic and stay dynamic.
 
 export default async function DashboardPage() {
   const session = await auth();

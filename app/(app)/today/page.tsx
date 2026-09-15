@@ -17,7 +17,9 @@ export const metadata = { title: 'Today · NMWC' };
 // (and the salesman would refresh anyway when they open the app at the
 // next stop). We don't cache /approvals, /audit, /reactivations because
 // those need live data.
-export const revalidate = 30;
+// SCALE: no page-level revalidate. These pages are region-scoped per viewer,
+// so a shared 30-second cache entry would either be scoped to nobody or serve
+// one manager the counts of another. They are dynamic and stay dynamic.
 
 export default async function TodayPage() {
   const session = await auth();
