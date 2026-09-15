@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { isTransientDbError } from '@/lib/db-errors';
 import {
   Role,
   ImportRowState,
@@ -937,23 +938,6 @@ const PROMOTE_LEASE_MS = 90_000;
  * batch quickly instead of holding it for the full lease.
  */
 const PROMOTE_HANDOFF_GRACE_MS = 20_000;
-
-/**
- * Prisma codes that mean "the database was unavailable/slow", not "this data is
- * bad": unreachable, timed out, connection closed, no pool connection, and the
- * interactive-transaction timeout. A group that fails on one of these must be
- * RETRIED, never rejected — see the call site.
- */
-const TRANSIENT_DB_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1011', 'P1017', 'P2024', 'P2028']);
-function isTransientDbError(err: unknown, code: string): boolean {
-  if (TRANSIENT_DB_CODES.has(code)) return true;
-  // Engine-level faults arrive as plain Errors with no Prisma code at all — the
-  // empty-response one is what a killed/restarted query engine actually produces.
-  const msg = err instanceof Error ? err.message : '';
-  return /Response from the Engine was empty|Server has closed the connection|Timed out fetching a new connection|Can't reach database server/i.test(
-    msg
-  );
-}
 
 export async function promoteCustomerBatchAction(
   formData: FormData

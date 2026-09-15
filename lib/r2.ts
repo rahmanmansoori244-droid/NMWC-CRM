@@ -1,4 +1,5 @@
 import { S3Client } from '@aws-sdk/client-s3';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 
 let _client: S3Client | null = null;
 
@@ -47,6 +48,20 @@ export function r2(): S3Client {
     // "Failed to fetch" with no R2 server-side log entry (CSP block, request
     // never made it out of the browser).
     forcePathStyle: true,
+    // REL-05: the SDK's default handler has connectionTimeout and
+    // requestTimeout both set to 0 — meaning no timeout at all — and retries
+    // three times. An unreachable or slow R2 therefore hangs every caller until
+    // the 60-second function limit kills it, and that includes /api/health,
+    // which is supposed to be the thing that TELLS you R2 is unreachable.
+    //
+    // 3s to open a socket and 10s for a response is generous for an object
+    // store, and two attempts rather than three keeps the worst case
+    // (2 × 13s) well inside the function budget.
+    requestHandler: new NodeHttpHandler({
+      connectionTimeout: 3_000,
+      requestTimeout: 10_000,
+    }),
+    maxAttempts: 2,
   });
   return _client;
 }

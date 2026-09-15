@@ -1,3 +1,5 @@
+import { isTransientDbError } from './db-errors';
+
 export class AppError extends Error {
   readonly code: string;
   readonly httpStatus: number;
@@ -143,6 +145,20 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
         code: 'UNIQUE_CONSTRAINT',
         message:
           'This value conflicts with an existing record. Refresh and try again.',
+      };
+    }
+    // REL-06: a transient database fault is not a programmer error and it is
+    // not the user's fault either. Re-throwing it produces a 500 and a generic
+    // failure screen, which tells a salesman standing in a shop nothing about
+    // whether to try again. The import path learned this already — transient
+    // engine faults were once recorded as permanent row rejections — so the
+    // same classifier is used here.
+    if (isTransientDbError(err, code ?? '')) {
+      return {
+        ok: false,
+        code: code === 'P1017' ? 'DB_INTERRUPTED' : 'DB_UNAVAILABLE',
+        message:
+          'The database did not respond in time. Nothing was saved — please try again in a moment.',
       };
     }
     // Genuine programmer error: re-throw so Next.js / Sentry can capture.

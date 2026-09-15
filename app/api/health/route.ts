@@ -58,7 +58,10 @@ export async function GET(req: Request) {
 
   try {
     if (process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID) {
-      await r2().send(new HeadBucketCommand({ Bucket: R2_BUCKET }));
+      await r2().send(new HeadBucketCommand({ Bucket: R2_BUCKET }), {
+        // REL-05: a health probe must never be the slowest thing in the system.
+        abortSignal: AbortSignal.timeout(5_000),
+      });
       checks.r2 = 'ok';
     }
   } catch (err) {
