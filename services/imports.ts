@@ -455,7 +455,18 @@ async function uploadAccountMasterCore(
         update.passwordHash = passwordHash;
         update.sessionsRevokedAt = new Date();
       }
-      if (mustChange) update.mustChangePassword = true;
+      // Gated the same way the password is, and for the same reason. Every row the
+      // go-live builder writes carries must_change_password: yes, so a re-import —
+      // which the runbook invites, to add a route or fix a name — used to re-arm
+      // the forced change on everyone in the sheet, INCLUDING people who had long
+      // since chosen their own password. Their next request bounces them to the
+      // change-password screen and holds them there, and assertPasswordNotReused
+      // refuses the last five hashes, so they cannot re-enter the password they
+      // are already using: a field salesman is locked out mid-round by an
+      // administrative re-import that changed nothing about them.
+      //
+      // Re-arm it only when this import is actually issuing a new password.
+      if (mustChange && (!existing || wantsReset)) update.mustChangePassword = true;
       if (!existing || wantsRoleChange) update.role = role;
 
       const data: Prisma.UserCreateInput = {
@@ -1588,6 +1599,17 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   // Initial master load may carry the ERP code directly; credit
                   // figures land only on CREDIT rows.
                   temixCode: first.temixCode ?? null,
+                  // Customer.temixSyncState defaults to SYNCED, which is right for a
+                  // row that arrived carrying an ERP code and wrong for one that did
+                  // not. A customer imported without a temix_code was born claiming
+                  // the ERP already knew it: never queued for an upload batch, absent
+                  // from /temix (which counts only PENDING_UPLOAD and
+                  // DEACTIVATE_PENDING), and showing a blank code beside the word
+                  // "synced". It exists in the CRM, appears on a salesman's route,
+                  // can be enriched — and Temix never learns it exists, so it cannot
+                  // be invoiced. Queue it instead.
+                  temixSyncState: first.temixCode ? 'SYNCED' : 'PENDING_UPLOAD',
+                  temixSyncPendingSince: first.temixCode ? null : new Date(),
                   creditLimit: pt === 'CREDIT' ? (first.creditLimit ?? null) : null,
                   paymentTermDays: pt === 'CREDIT' ? (first.paymentTermDays ?? null) : null,
                   createdById: me.id,

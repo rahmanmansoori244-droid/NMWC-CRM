@@ -105,10 +105,33 @@ async function grant() {
     const [{ db, me }] = await owner.$queryRawUnsafe<{ db: string; me: string }[]>(
       `SELECT current_database() AS db, current_user AS me`
     );
+    // DELETE is granted per table, not across the schema.
+    //
+    // It used to be `GRANT ... DELETE ON ALL TABLES`, with TRUNCATE revoked on the
+    // ledgers — which reads like "bulk destruction is prevented" and is not. The
+    // whole customer master, ~20,000 rows after the load, could be emptied row by
+    // row by the runtime credential, with no audit row and no DDL. Deleting a
+    // Branch additionally succeeded silently, because CustomerEdit.branchId is
+    // nullable and the FK is ON DELETE SET NULL, quietly severing edit history
+    // from the branch it was about.
+    //
+    // This list is every model the request path actually deletes from — verified
+    // by grepping `.delete(`/`.deleteMany(` and `DELETE FROM` across app, lib and
+    // services. Add to it only with the same evidence. RateLimit is here because
+    // the pg rate-limit backend prunes its own rows.
+    const DELETABLE = [
+      'Attachment',
+      'Notification',
+      'SavedView',
+      'EditBranchDraft',
+      'PasswordHistory',
+      'RateLimit',
+    ];
     const stmts = [
       `GRANT CONNECT ON DATABASE "${db}" TO "${ROLE}"`,
       `GRANT USAGE ON SCHEMA public TO "${ROLE}"`,
-      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${ROLE}"`,
+      `GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO "${ROLE}"`,
+      ...DELETABLE.map((t) => `GRANT DELETE ON "${t}" TO "${ROLE}"`),
       `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "${ROLE}"`,
       // append-only ledgers: insert only
       `REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "AuditLog" FROM "${ROLE}"`,
@@ -119,11 +142,23 @@ async function grant() {
       // migrations are the owner's business
       `REVOKE ALL ON "_prisma_migrations" FROM "${ROLE}"`,
       // tables and sequences created by FUTURE migrations (run by the owner) inherit the grants
-      `ALTER DEFAULT PRIVILEGES FOR ROLE "${me}" IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "${ROLE}"`,
+      // No DELETE here on purpose: a table added by a future migration must not
+      // become deletable by the runtime credential without somebody deciding so.
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "${me}" IN SCHEMA public GRANT SELECT, INSERT, UPDATE ON TABLES TO "${ROLE}"`,
       `ALTER DEFAULT PRIVILEGES FOR ROLE "${me}" IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO "${ROLE}"`,
     ];
-    for (const s of stmts) await q(s, owner);
-    console.log(`role ${ROLE}: grants applied by ${me} on ${db} (${stmts.length} statements)`);
+    // ONE transaction. These were ten separate autocommitted statements, and the
+    // GRANT that opens the set is schema-wide while the REVOKEs that narrow it
+    // come after — so a dropped connection, a Neon cold start, the job timeout or
+    // a cancelled workflow anywhere between them left nmwc_app holding UPDATE,
+    // DELETE and TRUNCATE on both ledgers. The application works perfectly in that
+    // state, so nothing surfaces it; the docstring's promise that re-running is
+    // always safe made it likelier, not less. GRANT and REVOKE are transactional
+    // DDL in PostgreSQL, so this costs nothing.
+    await owner.$transaction(async (tx) => {
+      for (const s of stmts) await tx.$executeRawUnsafe(s);
+    });
+    console.log(`role ${ROLE}: grants applied by ${me} on ${db} (${stmts.length} statements, one transaction)`);
   } finally {
     await owner.$disconnect();
   }
@@ -209,6 +244,29 @@ async function verify() {
             await tx.$executeRaw`DELETE FROM "AuditLog" WHERE "id" = ${row.id}`;
           });
           await expectRefused(tx, 'audit TRUNCATE', () => tx.$executeRawUnsafe(`TRUNCATE "AuditLog"`));
+          // The three probes above all match a real row, so the append-only
+          // TRIGGER refuses them — and would refuse them just as loudly with the
+          // ledger REVOKEs missing entirely. They prove layer 1 and say nothing
+          // about layer 2, which is the half B4 is actually about and the half a
+          // half-applied grant leaves off.
+          //
+          // A zero-row statement never reaches a row trigger, so only the ACL can
+          // refuse these.
+          await expectRefused(tx, 'audit UPDATE by ACL (zero rows, trigger cannot fire)', () =>
+            tx.$executeRawUnsafe(`UPDATE "AuditLog" SET "reason" = "reason" WHERE false`)
+          );
+          await expectRefused(tx, 'audit DELETE by ACL (zero rows, trigger cannot fire)', () =>
+            tx.$executeRawUnsafe(`DELETE FROM "AuditLog" WHERE false`)
+          );
+          await expectRefused(tx, 'EditApproval UPDATE by ACL (zero rows)', () =>
+            tx.$executeRawUnsafe(`UPDATE "EditApproval" SET "reason" = "reason" WHERE false`)
+          );
+          // Not a ledger, but the same class of promise: the role must not be able
+          // to empty the customer master row by row. TRUNCATE being refused reads
+          // like bulk destruction is prevented; DELETE is what would do it.
+          await expectRefused(tx, 'Customer DELETE by ACL (the 20,000-row path)', () =>
+            tx.$executeRawUnsafe(`DELETE FROM "Customer" WHERE false`)
+          );
           await expectRefused(tx, 'EditApproval DELETE', () => tx.$executeRawUnsafe(`DELETE FROM "EditApproval" WHERE false`));
           await expectRefused(tx, 'CustomerEdit DELETE (cascade path into the ledger)', () =>
             tx.$executeRawUnsafe(`DELETE FROM "CustomerEdit" WHERE false`)

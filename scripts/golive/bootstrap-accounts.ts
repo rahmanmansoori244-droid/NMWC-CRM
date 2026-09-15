@@ -8,7 +8,7 @@
  * database has no in-app path to its first Steward, and the Managers must exist
  * before the account import can assign their regions.
  *
- *   DATABASE_URL='<target>' npx tsx scripts/golive/bootstrap-accounts.ts [golive-data/managers.json]
+ *   DIRECT_URL='<the OWNER connection string>' npx tsx scripts/golive/bootstrap-accounts.ts [golive-data/managers.json]
  *
  * Reads the steward + managers (username, full name, initial password) from
  * managers.json (written by build-masters.ts). Every account is created with
@@ -28,20 +28,26 @@ type Cfg = {
 };
 
 async function main() {
-  const url = process.env.DATABASE_URL ?? '';
-  if (!url) throw new Error('DATABASE_URL is not set');
+  // ONE resolution, used for both the connection and the banner.
+  //
+  // Prefer DIRECT_URL, like every other operator script here: this mints the first
+  // Data Steward — the role that imports, merges and bypasses every field lock —
+  // so it belongs on the owner connection rather than on whatever DATABASE_URL
+  // happens to hold. After the B4 rollout that variable points at the
+  // least-privilege runtime role, and "the production URL" stops being an
+  // unambiguous instruction.
+  //
+  // They must be resolved together. Reading one for the client and the other for
+  // the banner meant the single line of evidence the operator gets about WHICH
+  // database just received the Steward and the eleven Managers could name a
+  // different host from the one that was written to — and the guard would also
+  // refuse the invocation the runbook documents.
+  const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
+  if (!url) throw new Error('set DIRECT_URL (preferred) or DATABASE_URL');
   const file = process.argv[2] ?? 'golive-data/managers.json';
   const cfg = JSON.parse(readFileSync(file, 'utf8')) as Cfg;
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
-  // Prefer DIRECT_URL, like every other operator script here. This one mints the
-  // first Data Steward — the role that imports, merges and bypasses every field
-  // lock — so it should run on the owner connection rather than on whatever
-  // DATABASE_URL happens to hold. After the B4 rollout that variable points at the
-  // least-privilege runtime role in Vercel, and "the production URL" stops being
-  // an unambiguous instruction.
-  const prisma = new PrismaClient({
-    datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
-  });
+  const prisma = new PrismaClient({ datasourceUrl: url });
   const created: string[] = [];
   const skipped: string[] = [];
 
@@ -82,6 +88,10 @@ async function main() {
   };
 
   try {
+    // Before anything is written, not after. This is the operator's only evidence
+    // of which database is about to receive the first Data Steward, and evidence
+    // that arrives after the fact is a receipt.
+    console.log(`Target: ${host}`);
     const stewards = await prisma.user.findMany({
       where: { role: Role.STEWARD, isActive: true },
       select: { username: true },
@@ -102,7 +112,6 @@ async function main() {
         'go-live bootstrap: Manager (the import cannot create admin-tier roles)'
       );
     }
-    console.log(`Target: ${host}`);
     console.log(`Created (${created.length}): ${created.join(', ') || '—'}`);
     console.log(`Skipped (${skipped.length}): ${skipped.join('; ') || '—'}`);
     console.log('Every created account must change its password at first login.');
