@@ -356,7 +356,7 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 - HTML stripped from every text input (defense in depth against XSS).
 - All inputs Zod-parsed at API boundary; reject early with structured errors.
 - Rate-limit: 60 form submissions per salesman per hour, 5 logins per minute per IP.
-- File uploads via presigned R2 URL; server validates content-type and re-checks size after upload.
+- File uploads via presigned R2 URL; the server re-checks size after upload, and pins the content-type at the point a photograph is SERVED (`lib/photo-mime.ts`). It cannot be validated at upload: a presigned PUT does not bind Content-Type, so the client chooses what is stored — see TECH-SPEC.
 - All writes wrapped in DB transactions; on failure, attachments orphaned in R2 are GC'd by a daily job.
 
 ---

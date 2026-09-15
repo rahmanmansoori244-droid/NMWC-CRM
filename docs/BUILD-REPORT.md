@@ -385,7 +385,7 @@ About **5,000 lines of TypeScript**, **600 lines of Prisma schema**, and **~2,50
 - [x] pino redacts passwords + phone numbers in logs
 - [x] DB writes wrapped in transactions
 - [x] Audit log immutable (DB trigger + least-privilege role since 2026-09-14 — see TECH-SPEC)
-- [x] Photo content-type re-verified server-side
+- [x] Photo content-type re-verified server-side — true since 2026-09-15 only; see TECH-SPEC for why this box was ticked for four months without a control behind it
 - [x] R2 token scoped to single bucket
 - [x] Soft delete + 30-day GC plan
 - [ ] Per-region database read replicas (deferred — N/A at our scale)

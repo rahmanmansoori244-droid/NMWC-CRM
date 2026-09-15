@@ -774,7 +774,7 @@ E2E flows:
 - [x] CSP headers (strict; no inline scripts in production)
 - [x] Sentry PII scrubbing
 - [x] Audit log immutable — enforced since 2026-09-14 by the `nmwc_forbid_audit_mutation` trigger on AuditLog + EditApproval (migrations 20260914150000 + 20260914160000 — the maintenance override is honoured only for the table owner's session, so FK cascades from the runtime role cannot reach the ledgers) and by the runtime role `nmwc_app` having no UPDATE/DELETE/TRUNCATE privilege on them, nor DELETE on CustomerEdit (scripts/ops/app-role.ts); before that date this box was ticked without a control behind it.
-- [x] Photo content-type re-verified server-side
+- [x] Photo content-type re-verified server-side — true since 2026-09-15, and NOT before, whatever this box said. The presigned PUT never bound Content-Type (the S3 request presigner marks that header unsignable by design), so the allowlist on the presign route constrained only the key extension, `finalize` copied whatever the client sent into `Attachment.mimeType`, and the serving route echoed it back from this origin. The verification now happens where it binds: `lib/photo-mime.ts` decides the served type at `/api/photos/[id]`, taking the stored value only if it is one of three image types, else the server-minted key extension, else octet-stream as an attachment. This box being ticked is part of why a full photo audit in May concluded the upload controls were adequate.
 - [x] No `dangerouslySetInnerHTML` anywhere
 - [x] Dependencies pinned + Renovate (or Dependabot) on weekly cadence
 - [x] No production credentials in dev `.env`

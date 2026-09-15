@@ -26,7 +26,7 @@ Read with [`RECORDS-OF-PROCESSING.md`](RECORDS-OF-PROCESSING.md) (what we do), [
 
 ## Q3 — What must employees and customers have been told?
 
-**Facts.** The system records, per employee: every action with timestamp, source IP and browser string; the device GPS at each photograph; and whether each approval deadline was met, with an escalation counter. That is workforce monitoring, whatever it is called internally. Per customer: identity, location to six decimals, contact person and commercial terms, plus photographs of the premises. Bystanders appear in shopfront photographs, were not informed, and cannot be located or removed on request because the images are not indexed by the people in them.
+**Facts.** The system records, per employee: every action with a timestamp, and — for anything done through the application — the source IP and browser string with it (the exception is a handful of maintenance scripts an operator runs directly against the database, where there is no request to read either from; see §A6 of `RECORDS-OF-PROCESSING.md`); the device GPS at each photograph; and whether each approval deadline was met, with an escalation counter. That is workforce monitoring, whatever it is called internally. Per customer: identity, location to six decimals, contact person and commercial terms, plus photographs of the premises. Bystanders appear in shopfront photographs, were not informed, and cannot be located or removed on request because the images are not indexed by the people in them.
 
 **Needed from counsel.** Notice and, if applicable, consent requirements for each population, including the bystanders.
 
