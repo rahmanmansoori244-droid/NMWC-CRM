@@ -62,6 +62,11 @@ jobs:
       # keys are meant to be public. Two recipients = a break-glass second
       # holder; see docs/OPERATIONS.md §6.
       BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
+      # DO-16 escape hatch. Must be the exact string "true". It exists so that a
+      # deliberate plaintext run is POSSIBLE in an emergency, not so that it is
+      # easy: every path that honours it also writes a line into the run summary
+      # saying the dump is not encrypted. Unset it again afterwards.
+      ALLOW_PLAINTEXT_BACKUP: ${{ vars.ALLOW_PLAINTEXT_BACKUP }}
       # Optional guard: a fragment of the production endpoint host. When set, the
       # job refuses to dump any other database — a DIRECT_URL quietly repointed
       # at UAT used to back up the wrong data, green, forever.
@@ -90,10 +95,24 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends postgresql-client-17
-          # Only the postgres client is essential. If the universe mirror is
-          # having a bad day, still take the backup and say it is unencrypted.
-          sudo apt-get install -y --no-install-recommends age \
-            || echo "::warning::could not install age — this run will upload UNENCRYPTED"
+          # age used to be optional: if the universe mirror was having a bad day we
+          # still took the backup and called it unencrypted. That was the right call
+          # when encryption did not exist and the alternative was NO backup. It is the
+          # wrong call now that plaintext IS the hazard — this dump is the whole
+          # customer master and every password hash. So: retry once for a mirror
+          # flake, then fail HERE rather than at Encrypt, so an infrastructure fault
+          # is never mistaken for the operator's missing key.
+          if ! sudo apt-get install -y --no-install-recommends age; then
+            sleep 15
+            if ! sudo apt-get install -y --no-install-recommends age; then
+              if [ "${ALLOW_PLAINTEXT_BACKUP:-}" = "true" ]; then
+                echo "::warning::age could not be installed and ALLOW_PLAINTEXT_BACKUP=true — this run will upload UNENCRYPTED"
+              else
+                echo "::error::age could not be installed from the Ubuntu universe mirror, after a retry. This is an infrastructure fault, NOT a missing key. Re-run the job."
+                exit 1
+              fi
+            fi
+          fi
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
           /usr/lib/postgresql/17/bin/pg_dump --version
           age --version || true
@@ -222,18 +241,32 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v age >/dev/null 2>&1; then
-            echo "::warning::age is not installed — uploading an UNENCRYPTED dump"
-            echo "DUMP_FILE=${STAMP}.sql.gz" >> "$GITHUB_ENV"
-            echo "DUMP_KEY=${BASE_KEY}.sql.gz" >> "$GITHUB_ENV"
-            echo "ENCRYPTED=false" >> "$GITHUB_ENV"
-            exit 0
+            if [ "${ALLOW_PLAINTEXT_BACKUP:-}" = "true" ]; then
+              echo "::warning::age is not installed and ALLOW_PLAINTEXT_BACKUP=true — uploading an UNENCRYPTED dump"
+              echo "ALLOW_PLAINTEXT_BACKUP=true was honoured: this dump is NOT encrypted." >> "$GITHUB_STEP_SUMMARY"
+              echo "DUMP_FILE=${STAMP}.sql.gz" >> "$GITHUB_ENV"
+              echo "DUMP_KEY=${BASE_KEY}.sql.gz" >> "$GITHUB_ENV"
+              echo "ENCRYPTED=false" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "::error::age is not installed and no override is set — refusing to upload a plaintext dump."
+            exit 1
           fi
           if [ -z "${BACKUP_AGE_RECIPIENTS:-}" ]; then
-            echo "::warning::BACKUP_AGE_RECIPIENTS is not set — uploading an UNENCRYPTED dump containing ~20k customer records and every password hash. Set the variable to an age public key (see docs/OPERATIONS.md §6)."
-            echo "DUMP_FILE=${STAMP}.sql.gz" >> "$GITHUB_ENV"
-            echo "DUMP_KEY=${BASE_KEY}.sql.gz" >> "$GITHUB_ENV"
-            echo "ENCRYPTED=false" >> "$GITHUB_ENV"
-            exit 0
+            if [ "${ALLOW_PLAINTEXT_BACKUP:-}" = "true" ]; then
+              echo "::warning::BACKUP_AGE_RECIPIENTS is not set and ALLOW_PLAINTEXT_BACKUP=true — uploading an UNENCRYPTED dump of the whole customer master and every password hash"
+              echo "ALLOW_PLAINTEXT_BACKUP=true was honoured: this dump is NOT encrypted." >> "$GITHUB_STEP_SUMMARY"
+              echo "DUMP_FILE=${STAMP}.sql.gz" >> "$GITHUB_ENV"
+              echo "DUMP_KEY=${BASE_KEY}.sql.gz" >> "$GITHUB_ENV"
+              echo "ENCRYPTED=false" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            # DO-16: this used to warn and upload anyway, inside a run that stayed
+            # green — and the checklist the owner is told to follow did not name this
+            # variable, so the likely outcome was a nightly plaintext copy of every
+            # customer and every password hash that nobody noticed.
+            echo "::error::BACKUP_AGE_RECIPIENTS is not set — refusing to upload a plaintext dump of the whole customer master and every password hash. Run 'npm run ops:print-secrets', or see docs/OPERATIONS.md 6.7."
+            exit 1
           fi
           ARGS=()
           IFS=',' read -ra RECIPIENTS <<< "$BACKUP_AGE_RECIPIENTS"

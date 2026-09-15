@@ -9,10 +9,11 @@
  *      compared with `===` (the finding recorded as SEC-14a, fixed in a6addee by
  *      extracting this helper). Nothing stopped that from coming back.
  *   2. It fails CLOSED when CRON_SECRET is unset. This matters more than it
- *      looks: the .env.example note claims the opposite — that a missing secret
- *      "silently leaves those endpoints unauthenticated" — so a reader with that
- *      mental model could "fix" the code to match the comment and open every
- *      cron route to the internet.
+ *      looks: the .env.example note used to claim the opposite — that a missing
+ *      secret "silently leaves those endpoints unauthenticated" — so a reader
+ *      with that mental model could have "fixed" the code to match the comment
+ *      and opened every cron route to the internet. That note is now corrected
+ *      (DO-16), and this test is what keeps the behaviour it describes true.
  *
  * These are behavioural tests, not a timing measurement: measuring nanosecond
  * deltas in a JS test is a flake generator. What is asserted instead is that the

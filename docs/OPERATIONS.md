@@ -81,12 +81,13 @@ The CLI cannot toggle this on its own. Do it via UI:
 4. From now on, every `git push origin main` triggers a Vercel build automatically. Until then, the deploy must be done manually with `npx vercel --prod`.
 
 ### B. Configure GitHub Actions secrets for the daily DB backup (op note 2)
-The workflow `.github/workflows/db-backup.yml` will fail at the upload step until these secrets exist.
+The workflow `.github/workflows/db-backup.yml` fails at its **Validate** step without `DIRECT_URL`, at **Encrypt** without the age recipients, and at **Upload** without the R2 pair — so a missing value never produces a quiet, incomplete backup. Note that GitHub keeps *variables* and *secrets* on two different settings pages, and a value set on the wrong page simply reads as empty.
 1. Run `npm run ops:print-secrets` locally — it lists exactly which secret names are needed and shows which values are already present in your `.env`.
 2. Create a separate R2 bucket `nmwc-backups` (Cloudflare → R2 → "Create bucket"). Keep it separate from `nmwc-photos` so a leaked photo token cannot also touch the backups.
 3. Create an R2 API token scoped only to that bucket: Cloudflare → R2 → API tokens → "Create token" → permission "Object Read & Write" → restrict to bucket `nmwc-backups`. Save the access key + secret immediately (R2 only shows the secret once).
-4. At https://github.com/rahmanmansoori244-droid/NMWC-CRM/settings/secrets/actions, add: `DIRECT_URL`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET=nmwc-backups`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`. For the restore-drill job: also `NEON_API_KEY` (Neon console → Settings → API keys) and `NEON_PROJECT_ID=snowy-haze-29025382`.
-5. Trigger a manual run: Actions tab → "DB Backup" → "Run workflow". Confirm green, then check the bucket has `db/<TODAY>.sql.gz`.
+4. Generate the age key pair — `age-keygen -o nmwc-backup.key` — and put the **public** half in the `BACKUP_AGE_RECIPIENTS` repository *variable*. Escrow the private half somewhere that is neither this machine nor this repository (§6.7). Without this the nightly job refuses to run, on purpose: it used to upload the whole customer master and every password hash in plaintext instead.
+5. Set every name step 1 printed, on the two pages it names. Do not re-type a list here — the printed one is generated from `lib/ops/required-secrets.ts`, which a unit test compares against the workflow files in both directions. A hand-copied list in this document is exactly what drifted for four months (DO-16).
+6. Trigger a manual run: Actions tab → "DB Backup" → "Run workflow". Confirm green, then check the bucket holds `db/<timestamp>.sql.gz.age`. The `.age` suffix is the proof it was encrypted.
 
 ### C. R2 lifecycle rules for the photos bucket (op note 3)
 Two options — **A is preferred for full automation; B is the fallback if you don't want to mint a new token.**
@@ -206,7 +207,7 @@ The two GitHub Actions workflows (`.github/workflows/keep-warm.yml`, `sla-escala
 | Layer | Covers | Window | Where |
 |---|---|---|---|
 | Neon point-in-time recovery | The database, to any instant | 7 days | Same provider, same region as production |
-| Nightly off-Neon dump | The database, as of the dump | 30 days of dumps | Cloudflare R2 `nmwc-backups` — **plaintext until the age key is set up** (§6.7); the workflow warns loudly on every run until then |
+| Nightly off-Neon dump | The database, as of the dump | 30 days of dumps | Cloudflare R2 `nmwc-backups` — encrypted to the age recipients; until the key is set up (§6.7) the workflow **fails and uploads nothing** |
 | **Nothing** | The photographs in `nmwc-photos` | — | Single copy |
 
 The nightly dump is `.github/workflows/db-backup.yml`: `pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data`, gzipped, age-encrypted, uploaded to `db/<timestamp>.sql.gz.age` with a row-count manifest beside it at `db/<timestamp>.manifest.json`.
@@ -285,7 +286,7 @@ Then:
 
 **The monthly drill is also the key test.** If it fails to decrypt, the backups are already unrecoverable and the clock started at the last successful drill. Treat a decryption failure as a P1 incident, not a workflow annoyance.
 
-Until `BACKUP_AGE_RECIPIENTS` is set the workflow still runs and emits a loud warning, and the uploaded dump is plaintext — a complete customer master and every password hash, unencrypted.
+Until `BACKUP_AGE_RECIPIENTS` is set the nightly workflow **fails** at its encrypt step and uploads nothing. It used to warn and upload anyway, inside a run that stayed green; since the checklist the owner is told to follow did not name this variable (DO-16), the likely outcome was a nightly plaintext copy of the complete customer master and every password hash that nobody noticed. Failing is the louder signal, and the fix takes a minute. If you genuinely need one plaintext run, set the repository variable `ALLOW_PLAINTEXT_BACKUP` to exactly `true`, take the run, and unset it — every path that honours it also writes a line into the run summary saying the dump is not encrypted.
 
 ### 6.8 What can still go wrong, and is not fixed
 
