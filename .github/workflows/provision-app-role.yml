@@ -91,19 +91,8 @@ jobs:
           echo "::add-mask::${APP_URL}"
           echo "NMWC_APP_URL=${APP_URL}" >> "$GITHUB_ENV"
 
-      - name: Report the current state
-        run: |
-          set -euo pipefail
-          # Read-only: does the role already exist, and what is the app connected as?
-          npx tsx -e "
-            import { PrismaClient } from '@prisma/client';
-            const db = new PrismaClient({ datasourceUrl: process.env.DIRECT_URL });
-            const rows = await db.\$queryRawUnsafe('SELECT current_user AS me, current_database() AS db');
-            const role = await db.\$queryRawUnsafe(\"SELECT count(*)::int AS n FROM pg_roles WHERE rolname = 'nmwc_app'\");
-            console.log('connected as', rows[0].me, 'on', rows[0].db);
-            console.log('nmwc_app exists:', role[0].n > 0 ? 'yes' : 'no');
-            await db.\$disconnect();
-          "
+      - name: Report the current state (read-only)
+        run: npx tsx scripts/ops/app-role.ts status
 
       - name: Create the role
         if: ${{ !inputs.dry_run }}

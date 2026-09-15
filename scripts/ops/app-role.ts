@@ -13,6 +13,7 @@
  *   grant   — (re)apply the privilege set. Idempotent; run after every migration
  *             that adds a table is NOT needed thanks to ALTER DEFAULT PRIVILEGES,
  *             but re-running is always safe.
+ *   status  — read-only: what database is this, who am I, does the role exist.
  *   verify  — connect AS the app role (NMWC_APP_URL) and prove: reads/writes work,
  *             the rate-limit upsert works, audit rows can be inserted but not
  *             changed (not even with the maintenance GUC, not even through the
@@ -60,6 +61,38 @@ async function create() {
     } else {
       await q(`CREATE ROLE "${ROLE}" WITH LOGIN PASSWORD '${password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT`, owner);
       console.log(`role ${ROLE}: created`);
+    }
+  } finally {
+    await owner.$disconnect();
+  }
+}
+
+/**
+ * Read-only. What is this database, who am I connected as, and does the role
+ * exist yet? Safe to run against production at any time; changes nothing.
+ */
+async function status() {
+  const owner = new PrismaClient({ datasourceUrl: ownerUrl() });
+  try {
+    const [{ me, db }] = await owner.$queryRawUnsafe<{ me: string; db: string }[]>(
+      `SELECT current_user AS me, current_database() AS db`
+    );
+    const [{ n }] = await owner.$queryRawUnsafe<{ n: number }[]>(
+      `SELECT count(*)::int AS n FROM pg_roles WHERE rolname = '${ROLE}'`
+    );
+    console.log(`connected as ${me} on ${db}`);
+    console.log(`role ${ROLE}: ${n > 0 ? 'exists' : 'does not exist yet'}`);
+    if (n > 0) {
+      const acl = await owner.$queryRawUnsafe<{ relname: string; can_delete: boolean }[]>(
+        `SELECT relname, has_table_privilege('${ROLE}', oid, 'DELETE') AS can_delete
+           FROM pg_class
+          WHERE relnamespace = 'public'::regnamespace
+            AND relname IN ('AuditLog', 'EditApproval', 'CustomerEdit', 'Customer')
+          ORDER BY relname`
+      );
+      for (const r of acl) {
+        console.log(`  ${r.relname}: DELETE ${r.can_delete ? 'GRANTED' : 'refused'}`);
+      }
     }
   } finally {
     await owner.$disconnect();
@@ -199,9 +232,9 @@ async function verify() {
 }
 
 const cmd = process.argv[2];
-const run = { create, grant, verify }[cmd as 'create' | 'grant' | 'verify'];
+const run = { create, grant, verify, status }[cmd as 'create' | 'grant' | 'verify' | 'status'];
 if (!run) {
-  console.error('usage: app-role.ts create|grant|verify');
+  console.error('usage: app-role.ts create|grant|verify|status');
   process.exit(2);
 }
 run().catch((err) => {
