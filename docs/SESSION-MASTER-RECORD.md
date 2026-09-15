@@ -323,6 +323,69 @@ with no request to read an address from, and §A6 of RECORDS-OF-PROCESSING.md no
 names that class so a blank there reads as "acted outside any session" rather than
 as a gap in the record.
 
+### The P3 list (2026-09-15)
+
+Eleven claims, one reader each, every resulting plan challenged by a second reader
+before a line was written. All seven plans came back needing revision and three of
+those objections were defects the plan would otherwise have shipped — including
+one that would have turned every photograph whose upload header was lost into a
+download on the approver's screen.
+
+**A salesman could choose what the app served his photograph as.** The presigned
+upload does not bind Content-Type: the S3 request presigner adds that header to
+its unsignable set by design, so the three-entry allowlist on the presign route
+constrains nothing about what lands in R2. `finalize` copied the stored type into
+the database and the serving route echoed it back. Request an ordinary presign,
+PUT an HTML document, attach it to a slot on your own route, submit the edit — and
+the supervisor or GM reviewing it, who the role guide tells to tap the tile to
+open it full size, gets an attacker-written page on the domain they just signed
+into. Not stored cross-site scripting, because the nonce policy carries
+`strict-dynamic`; but neither policy declared `form-action`, so a convincing
+"your session expired" form could post an approver's credentials anywhere. This
+survived a full photo audit in May because the allowlist looks like the boundary.
+
+**One request in ten sent a customer's name to a processor outside Oman.** The
+Sentry scrubber was wired to `beforeSend` only, and performance transactions go to
+a different hook that nothing set — so with sampling at 10% the full URL, search
+term included, left unredacted in all three runtimes. The error channel leaked the
+same field on every event, through navigation and fetch breadcrumbs that no URL
+parser could reach. And the pattern claimed to match Omani mobiles "in any written
+form" while matching almost none of them: the spaced form in this repo's own
+go-live fixture survived, as did the dashed form, Arabic-Indic numerals, and
+seven-digit CR numbers — the length the go-live fixtures use, while the unit test
+used ten, so the suite passed while the control was weaker than the test implied.
+
+**The checklist the owner is told to follow did not name the backup encryption
+key.** `print-required-secrets.ts` was written in May and named seven secrets; the
+workflows had grown to sixteen names. An owner working that list and skipping the
+age key — an open owner task right now — would have had a nightly plaintext copy
+of the entire customer master and every employee password hash in object storage,
+warned about inside a run that stayed green. The list is now generated and
+drift-tested against the workflow files in both directions, and the backup refuses
+to upload plaintext rather than warning about it.
+
+The one to read for the judgement rather than the defect is **SEC-14c**. The
+session cookie carried `__Secure-` rather than `__Host-`, and the exposure that
+closes is exactly zero today, because vercel.app is on the Public Suffix List. It
+was done anyway, because the hole opens automatically at the custom-domain
+cutover and after launch the same one-string edit costs every user their session.
+A free fix with a closing window is worth taking; the same change in three months
+is a migration.
+
+Also closed: `base-uri`, `object-src` and `form-action` on both policies, now
+built by one function with a test that re-implements Next's nonce extractor so the
+blank-production failure mode is pinned; an (app)-level error boundary, so a
+failed page no longer takes the navigation with it; 44 orphaned form labels
+associated through one shared component; and a focus trap on the reject dialog.
+
+Two claims were already fixed, one had never been true, and two are real but
+correctly post-launch. Saying so is the point of the exercise: a list where every
+row is "fixed" is a list nobody checked.
+
+**Still owed on this work:** the real-browser pass on a Preview. No unit test can
+see a CSP that blanks a page or a form label that moved, and this codebase has
+reverted a strict policy under production pressure once already.
+
 ## 6. Open items before UNCONDITIONAL go-live
 1. ~~**RK-3 chunked/resumable import**~~ **DONE** (2026-09-10) — see the section above.
 2. ~~F-UAT-7~~ **FIXED** (real importer bug, not a fixture artifact) — see §2 final pass.
