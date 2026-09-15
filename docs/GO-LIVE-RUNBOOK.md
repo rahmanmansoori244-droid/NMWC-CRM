@@ -1,4 +1,9 @@
-# NMWC CRM — Go-live runbook (target: Sunday 13 September 2026)
+# NMWC CRM — Go-live runbook
+
+> **The 13 September target passed.** The load has not run: production still holds the
+> May seed data. Nothing in this document expires with the date — it is written for
+> "load day", whichever day that turns out to be. Where it says "Sunday", read "load
+> day"; where it says "before Sunday", read "before you start".
 
 This is the step-by-step for putting the real customer master into production. The
 files it loads are built by `scripts/golive/build-masters.ts` into `golive-data/`
@@ -14,7 +19,7 @@ files, what was withheld, and **every assumption that needs your confirmation**.
 
 ---
 
-## 0. Before Sunday — decisions and safety (owner)
+## 0. Before load day — decisions and safety (owner)
 
 | # | Item | Why |
 |---|---|---|
@@ -23,7 +28,7 @@ files, what was withheld, and **every assumption that needs your confirmation**.
 | 3 | The org chart is **decided** (walk-through of 2026-09-10): no supervisor accounts; each manager supervises their own salesmen — Muscat by class (GT Ahmed Alnadabi · MT Sarath · HD Haitham · HORECA Sara Khayat), other regions by region (Nizwa Sunil KP · Khaburah Ashok · Salalah Tharwat · Barka Saqib · Al Wafi/Duqm Rasool). Approver accounts are generic: `accountant`, `finance.manager`, `gm.nmwc`. | Nothing to do unless a name changes. |
 | 4 | **2,472 customers sit on routes with no recent sales** and are parked on UNASSIGNED in their region (`dq/inactive-routes-summary.csv`: DIRECT 1,102 · SL01 304 · S23 216 · S15 171 …). Only **W** (wholesale, 6 customers) has no salesman among the active routes. | Decided: keep them visible and reassign/close after go-live. |
 | 5 | Finance to review **3,252 CREDIT customers with no credit limit** (`dq/credit-customers-without-limit.csv`). | Decided: load as CREDIT with a blank limit; finance fills them later. |
-| 6 | ~~**Merge the branch to `main` so production deploys**~~ **DONE 2026-09-14 11:39 UTC** (owner's go; PR #1 fast-forwarded `main` to `6852063`, tag `v1.1.0-golive`; production verified: `sla-escalate` → 401, region `iad1`, providers on `nmwc-cm.vercel.app`, health ok). Kept for the record — the sequence was: (a) CI is green on the branch (it now runs on every branch, including the Postgres-backed integration job); (b) in Vercel → Production env confirm `AUTH_SECRET` (≥32 chars), `AUTH_URL=https://nmwc-cm.vercel.app`, `CRON_SECRET`, `HEALTH_BEARER`, `RATE_LIMIT_BACKEND=pg`, `DEMO_ACCOUNTS_DISABLED=true`, the `R2_*` set, `DATABASE_URL`/`DIRECT_URL`; (c) fast-forward `main` to the branch (`git push origin <branch>:main`) — the production build applies four additive migrations (`phase1_enums`, `phase1_tables`, `notification_temix_kinds`, `promote_chunked_lease`); (d) verify `curl -s -o /dev/null -w '%{http_code}' https://nmwc-cm.vercel.app/api/cron/sla-escalate` → **401** and `x-vercel-id` region **iad1**; (e) tag `v1.1.0-golive`. | Production code must include RK-3 (chunked promote) or the load cannot complete; the login limiter on the May build never denies. |
+| 6 | ~~**Merge the branch to `main` so production deploys**~~ **DONE 2026-09-14 11:39 UTC** (owner's go; PR #1 fast-forwarded `main` to `6852063`, tag `v1.1.0-golive`; `main` has moved on since — production is whatever `git log -1 origin/main` says, and as of 2026-09-15 that is `e94f017`; production verified: `sla-escalate` → 401, region `iad1`, providers on `nmwc-cm.vercel.app`, health ok). Kept for the record — the sequence was: (a) CI is green on the branch (it now runs on every branch, including the Postgres-backed integration job); (b) in Vercel → Production env confirm `AUTH_SECRET` (≥32 chars), `AUTH_URL=https://nmwc-cm.vercel.app`, `CRON_SECRET`, `HEALTH_BEARER`, `RATE_LIMIT_BACKEND=pg`, `DEMO_ACCOUNTS_DISABLED=true`, the `R2_*` set, `DATABASE_URL`/`DIRECT_URL`; (c) fast-forward `main` to the branch (`git push origin <branch>:main`) — the production build applies four additive migrations (`phase1_enums`, `phase1_tables`, `notification_temix_kinds`, `promote_chunked_lease`); (d) verify `curl -s -o /dev/null -w '%{http_code}' https://nmwc-cm.vercel.app/api/cron/sla-escalate` → **401** and `x-vercel-id` region **iad1**; (e) tag `v1.1.0-golive`. | Production code must include RK-3 (chunked promote) or the load cannot complete; the login limiter on the May build never denies. |
 | 7 | In Neon, **create a branch from production immediately before the load** (e.g. `pre-golive-2026-09-13`). | Instant rollback: if the load is wrong, restore from that branch instead of trying to undo 20,000 rows. |
 > **Step-by-step for steps 8–11**, with the exact dashboard paths, commands and verification for each: https://claude.ai/code/artifact/f018d0f5-de0c-4afc-bcd9-80b2500655b3 — the procedures themselves are also written out in `docs/OPERATIONS.md` §5c (role), §5d (schedulers) and §6.7 (backup key), so this repository stays self-sufficient if that link is ever lost.
 
@@ -32,7 +37,7 @@ files, what was withheld, and **every assumption that needs your confirmation**.
 | 10 | **B3 — make the backups recoverable.** Generate an age key pair, set repository variable `BACKUP_AGE_RECIPIENTS` to the public key (add a second recipient held by someone else), store the private key in the password manager AND on paper, and put a copy in the secret `BACKUP_AGE_IDENTITY`. Add `NEON_API_KEY` and `NEON_PROJECT_ID`. Then run **Actions → Restore drill → Run workflow** and read the measured recovery time. Set the backup retention rule with `npx tsx scripts/ops/r2-backups-lifecycle.ts`. Full detail in `docs/OPERATIONS.md` §6.7. **This is now a prerequisite, not a hardening step:** without `BACKUP_AGE_RECIPIENTS` the nightly job REFUSES to upload and you have no backup at all. It used to upload a plaintext copy of the whole customer master and every password hash instead, warning about it inside a run that stayed green (DO-16), which is the worse of the two failures. | Nobody has ever restored this database. Until the drill passes, the recovery time is unknown and the encryption key is unproven — and a lost key means every backup is unrecoverable. |
 | 11 | **B6 — answer the residency question before the data load, not after.** Fill the `[OWNER]` blanks in `docs/compliance/DATA-RESIDENCY-REGISTER.md` (both R2 bucket locations, the Sentry region, the account holder of record per vendor, where Temix runs) and send `docs/compliance/PDPL-ASSESSMENT.md` to counsel. | Once ~20,100 Omani customer records are loaded into a US database, a residency requirement becomes a cutover rather than a configuration change. This is the last cheap moment. |
 
-## 1. Sunday — the load (Data Steward, ~1 hour)
+## 1. Load day — the load (Data Steward, ~1 hour)
 
 Everything happens in the production app, in this order. Do not skip a step; the
 importer enforces most of the order, but not all of it.
@@ -43,8 +48,12 @@ importer enforces most of the order, but not all of it.
    **production** database URL:
 
    ```bash
-   DATABASE_URL='<production URL>' npx tsx scripts/golive/bootstrap-accounts.ts golive-data/managers.json
+   DIRECT_URL='<the OWNER connection string>' npx tsx scripts/golive/bootstrap-accounts.ts golive-data/managers.json
    ```
+
+   Use the **owner** connection — the same value Vercel holds in `DIRECT_URL`, not the
+   `nmwc_app` one. After step 8 of the previous section, "the production URL" means two
+   different things, and this script mints the first Data Steward.
 
    It creates `steward` plus the managers by name (`ahmed.alnadabi`, `haitham`,
    `sarath`, `sara.khayat`, `ashok`, `rashid`, `rasool`, `saqib`, `saud`, `sunil.kp`,
@@ -63,7 +72,7 @@ importer enforces most of the order, but not all of it.
    Then check what **else** can sign in:
 
    ```bash
-   DATABASE_URL='<production URL>' npx tsx scripts/golive/audit-accounts.ts
+   DIRECT_URL='<the OWNER connection string>' npx tsx scripts/golive/audit-accounts.ts
    ```
 
    Nothing in this load removes an account. Step 1 skips a username that already
@@ -129,6 +138,8 @@ importer enforces most of the order, but not all of it.
 | Many customer rows QUARANTINED for *duplicate phone* | A phone shared across customers that the builder did not catch. | Review; if genuine duplicates, merge later — they will not block the rest. |
 | Promote stops with *"Stopped — N rows made no progress"* | Repeated technical failures on the same customers. | Do not keep clicking. Screenshot and call IT. |
 | Promote refused: *"Another customer import is being promoted"* | Someone else (or an earlier tab) holds the batch. | Wait a minute and resume; only one load runs at a time by design. |
+| `audit-accounts` exits non-zero and lists accounts under *CAN SIGN IN* | **Expect this the first time.** It is not a failure of the load. This database was seeded in May, and nothing in the load removes an account — so `pilot.steward`, `pilot.manager`, `ahmed.alndabi` and the ten `<route>-12345-nmwc` salesmen are still there, with passwords that are literals in `prisma/seed-muscat-pilot.ts`. | Deactivate or reset each one from **Users** before handing out a single login, then re-run the script until it prints *OK*. A reset also kills that account's live sessions. Do not skip it because the load itself succeeded. |
+| `audit-accounts` says a managers.json or account-master file is missing | You have not rebuilt the go-live files on this machine, or you are in the wrong directory. | Run `npx tsx scripts/golive/build-masters.ts` first (see the preamble), then re-run. |
 | The load is wrong and must be undone | — | Restore production from the Neon branch taken in step 0.7. |
 
 ## 3. What the load does NOT do (by design)

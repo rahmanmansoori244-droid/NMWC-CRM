@@ -33,7 +33,15 @@ async function main() {
   const file = process.argv[2] ?? 'golive-data/managers.json';
   const cfg = JSON.parse(readFileSync(file, 'utf8')) as Cfg;
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
-  const prisma = new PrismaClient();
+  // Prefer DIRECT_URL, like every other operator script here. This one mints the
+  // first Data Steward — the role that imports, merges and bypasses every field
+  // lock — so it should run on the owner connection rather than on whatever
+  // DATABASE_URL happens to hold. After the B4 rollout that variable points at the
+  // least-privilege runtime role in Vercel, and "the production URL" stops being
+  // an unambiguous instruction.
+  const prisma = new PrismaClient({
+    datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  });
   const created: string[] = [];
   const skipped: string[] = [];
 
