@@ -59,6 +59,23 @@ importer enforces most of the order, but not all of it.
    must be empty except for anything you already know about. Check **Users**: every
    manager now shows their regions; salesmen show their route and their manager as
    supervisor.
+
+   Then check what **else** can sign in:
+
+   ```bash
+   DATABASE_URL='<production URL>' npx tsx scripts/golive/audit-accounts.ts
+   ```
+
+   Nothing in this load removes an account. Step 1 skips a username that already
+   exists, and the account-master import never deactivates anyone the sheet does not
+   name — both deliberately, so a re-run is safe. The consequence is that every
+   account created before today survives the load, and this database was seeded in
+   May with pilot accounts, one of them a **Steward**. The passwords those were
+   issued with can be recovered from the repository's history. The script only reads:
+   it lists every account the master does not name, most privileged first, and exits
+   non-zero if any of them can still sign in. **Deactivate or reset each one from
+   Users before you hand out a single login** — a reset also kills that account's
+   live sessions.
 4. **Import → Customer master** → `golive-data/customer-master.xlsx` (~20,100 rows).
    Wait for staging. Expect roughly **all rows CLEAN**; a handful QUARANTINED at most.
    Open every quarantined row — the reason is shown. (The rehearsal quarantine picture

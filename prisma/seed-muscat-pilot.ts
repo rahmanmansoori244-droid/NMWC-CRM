@@ -29,9 +29,36 @@
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
-const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
-});
+const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
+
+// SAFETY GUARD: every password below is a literal in this file, so anyone who can
+// read the repository can sign in as any account this script creates — including
+// `pilot.steward`, the role that imports, merges and bypasses every field lock. And
+// none of them sets `mustChangePassword`, which defaults to false, so the password
+// keeps working. That is the right trade for a disposable UAT branch and completely
+// wrong for production.
+//
+// The upsert makes it worse if it ever runs there: `update` sets `isActive: true`,
+// so re-running this would REVIVE an account the owner had deactivated, with its
+// published password intact and no sign of it except an audit row. The go-live load
+// deliberately removes nothing (see scripts/golive/audit-accounts.ts), so a revived
+// pilot account would simply survive.
+//
+// Same endpoint list and same escape hatch as prisma/synthetic.ts.
+const PROD_ENDPOINTS = ['ep-sweet-haze'];
+if (PROD_ENDPOINTS.some((e) => SEED_URL.includes(e)) && process.env.ALLOW_PROD_SEED !== '1') {
+  console.error(
+    '\n❌ ABORT: the pilot seed target looks like PRODUCTION (endpoint matched %s).\n' +
+      '   This script creates a STEWARD and six other accounts whose passwords are\n' +
+      '   literals in prisma/seed-muscat-pilot.ts, and it reactivates them on re-run.\n' +
+      '   Point DIRECT_URL/DATABASE_URL at an isolated branch. Production accounts come\n' +
+      '   from scripts/golive/bootstrap-accounts.ts and the account-master import.',
+    PROD_ENDPOINTS.find((e) => SEED_URL.includes(e))
+  );
+  process.exit(2);
+}
+
+const prisma = new PrismaClient({ datasourceUrl: SEED_URL });
 
 const ROUTE_CODES = ['C1', 'C4', 'C6', 'C7', 'C12', 'C13', 'C14', 'C15', 'MH01', 'MH02'];
 
