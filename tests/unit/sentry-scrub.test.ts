@@ -136,6 +136,25 @@ describe('the written forms a salesman actually types', () => {
     expect(scrub('2026-09-15T08:00:00Z')).toContain('2026');
     expect(scrub('lat 23.5880 lng 58.3829')).toContain('23.5880');
   });
+
+  it.each([
+    'Transaction already closed: 20000ms',
+    'promoted 3308 of 3312 rows in 1842 ms',
+    'P2028: transaction timed out after 5000',
+    'connect ETIMEDOUT 10.0.0.1:5432',
+    'batch cmf3x9k2a0000abcd finished, 20129 rows',
+    'dump 505432 bytes, 6825 rows, 25 tables',
+    'migration 20260914150000_audit_immutability applied',
+    'sla escalate: 12 edits, 3 breached, took 4210ms',
+    'HTTP 503 from https://nmwc-cm.vercel.app/api/health',
+  ])('leaves the operator diagnostic %s intact', (line) => {
+    // These matter more than a log line. lib/heartbeat.ts scrubs a failed cron
+    // job's error with scrubAndTruncate BEFORE writing it to
+    // CronHeartbeat.lastDetail, and the bearer health payload reads it back — so
+    // that string is the ONLY diagnostic an operator gets for a job that failed
+    // overnight. A pattern that reduces it to "[phone]" costs a recovery.
+    expect(scrub(line)).toBe(line);
+  });
 });
 
 describe('the search term in every carrier that leaks it', () => {
