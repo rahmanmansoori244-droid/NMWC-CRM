@@ -30,7 +30,7 @@ Everything below marked **[OWNER]** is a blank the repository cannot fill. Leavi
 Three populations, not one. The third is routinely forgotten.
 
 1. **Customer-side contacts** — the named contact person at each shop and the phone numbers that in practice are that person's mobile. ~20,100 branch records.
-2. **Employees** — ~106 salesmen, managers and administrators. The system records not only their identity and credentials but their *activity*: every action with a timestamp, source IP and device string (`AuditLog`), where they were standing when they photographed a shop (`Attachment.capturedLat/Lng`), and whether they met each approval deadline (`CustomerEdit.slaBreachedAt`, `escalationLevel`). That is employee monitoring, and it should be named as such rather than described as an audit trail.
+2. **Employees** — ~106 salesmen, managers and administrators. The system records not only their identity and credentials but their *activity*: every action with a timestamp, and — for anything done through the application — the source IP and device string with it (`AuditLog`), where they were standing when they photographed a shop (`Attachment.capturedLat/Lng`), and whether they met each approval deadline (`CustomerEdit.slaBreachedAt`, `escalationLevel`). That is employee monitoring, and it should be named as such rather than described as an audit trail.
 3. **Bystanders** — shopfront and signboard photographs are taken in public by salesmen on phones. They routinely include passers-by and vehicle number plates. These people have no relationship with NMWC, were not informed, and are not searchable — so in practice their images can be neither found nor removed on request.
 
 **[OWNER]** Were employees told what this system records about them? Were customers told their data is held in this CRM and transferred to a US-hosted database?
@@ -79,7 +79,7 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | | |
 |---|---|
 | **Purpose** | Authenticate staff, enforce role and region scoping, and evidence who did what. |
-| **Personal data** | Username (the route code for salesmen), full name, e-mail, phone, bcrypt password hash and the last five previous hashes, last-login time, every audited action with source IP and user-agent, SLA timings and escalation counts, and device GPS attached to each photo. |
+| **Personal data** | Username (the route code for salesmen), full name, e-mail, phone, bcrypt password hash and the last five previous hashes, last-login time, every audited action — with source IP and user-agent for anything done through the application — SLA timings and escalation counts, and device GPS attached to each photo. |
 | **Subjects** | Employees. |
 | **Recipients** | Stewards and managers within scope. |
 | **Retention** | Accounts are disabled, never deleted — seven `ON DELETE RESTRICT` foreign keys make deletion impossible without first removing the append-only ledger. |
@@ -104,6 +104,18 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Recipients** | Vercel, Neon, Cloudflare, GitHub, Sentry — see `DATA-RESIDENCY-REGISTER.md`. |
 | **Retention** | Rate-limit rows 1 day; dumps 30 days; Sentry per its own org setting **[OWNER]**; Vercel logs ~1 day. |
 | **Lawful basis** | **[COUNSEL]** |
+
+**The rows the ledger cannot attribute to a device.** Five maintenance scripts write
+`AuditLog` directly: the bulk credential reset, the synthetic-data wipe and its
+cleanup, the branch flatten, and the go-live account bootstrap. An operator runs
+these by hand against the database rather than through the application, so there is
+no request to read an address or a device string from. On those rows `ip` and
+`userAgent` are null **by construction, not by omission**, and a reader of the ledger
+should not read a blank there as a gap in the record. Each such row still names a
+real accountable person in `actorId` and carries a `reason` describing what was run.
+Every other row is written by a single function, `writeAudit()` in `lib/audit.ts`,
+which always populates both columns; a lint rule in `eslint.config.mjs` and
+`tests/unit/audit-guard.test.ts` are what keep that true as the code changes.
 
 ## Cross-border transfer
 
