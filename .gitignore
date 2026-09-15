@@ -61,7 +61,14 @@ prisma/*.db-journal
 # Contains customer PII and generated credentials — NEVER commit.
 /golive-data/
 
-# Local dump artefacts from testing the backup pipeline
-*.sql
-*.sql.gz
-*.sql.gz.age
+# Local dump artefacts from testing the backup pipeline.
+#
+# Scoped to the repository ROOT on purpose. A bare `*.sql` matches at every
+# depth, which silently ignored prisma/migrations/**/migration.sql — existing
+# migrations stayed tracked (gitignore does not untrack), so nothing broke
+# visibly, but every NEW migration would have been dropped on the floor and the
+# schema would have drifted from the database with no error anywhere.
+/*.sql
+/*.sql.gz
+/*.sql.gz.age
+/sigpipetest/

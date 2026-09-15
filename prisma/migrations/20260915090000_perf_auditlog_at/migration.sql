@@ -1,0 +1,12 @@
+-- SCALE: index the audit trail by time alone.
+--
+-- AuditLog carries three composite indexes — (entityType, entityId, at),
+-- (actorId, at) and (action, at) — and every one of them leads with a column.
+-- So the query the audit page actually runs by default, "the most recent rows
+-- whoever wrote them", had nothing to use and scanned the whole table. That
+-- table is append-only by design (migration 20260914150000) and therefore grows
+-- forever, so this gets worse every day rather than better.
+--
+-- Additive and concurrent-safe to create on a live database; the DESC matches
+-- the order the page reads in.
+CREATE INDEX IF NOT EXISTS "AuditLog_at_idx" ON "AuditLog"("at" DESC);
