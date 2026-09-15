@@ -20,4 +20,8 @@ Sentry.init({
   environment: sentryEnvironment(),
   release: sentryRelease(),
   beforeSend: scrubEvent,
+  // SEC-14d: performance transactions go to a DIFFERENT hook. Without this,
+  // ~1 request in 10 shipped its full URL — the customer search term included —
+  // to Sentry with no redaction at all.
+  beforeSendTransaction: scrubEvent,
 });

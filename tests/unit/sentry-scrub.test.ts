@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { scrub, scrubEvent } from '@/lib/sentry-scrub';
-import type { ErrorEvent } from '@sentry/nextjs';
+import type { ErrorEvent, Event as SentryEvent } from '@sentry/nextjs';
 
 describe('scrub', () => {
   it('redacts Omani phone numbers in every written form', () => {
@@ -63,9 +63,14 @@ describe('scrubEvent', () => {
     expect(url).toContain('token=%5Bredacted%5D');
     expect(url).not.toContain('91234567');
     expect(url).not.toContain('abc123');
-    // the path and a harmless search term stay, or the report is useless
+    // The path stays, or the report is useless.
     expect(url).toContain('/customers');
-    expect(url).toContain('Al+Nahda');
+    // `q` USED to be asserted here as "a harmless search term". It is not: it is
+    // the customer search box, where a salesman types a shop's legal name or its
+    // phone number, and it is the single most personal string this application
+    // puts in a URL. SEC-14d redacts it.
+    expect(url).not.toContain('Al+Nahda');
+    expect(url).toContain('q=%5Bredacted%5D');
   });
 
   it('scrubs the request body, the exception message and breadcrumbs', () => {
@@ -91,4 +96,123 @@ describe('scrubEvent', () => {
     expect(scrubEvent(bad).request?.url).toBe('not a url [phone]');
     expect(() => scrubEvent({} as ErrorEvent)).not.toThrow();
   });
+});
+
+/**
+ * SEC-14d — the two halves the earlier control missed.
+ *
+ * (1) The pattern claimed Omani mobiles "in any written form" and matched almost
+ *     none of them: the spaced form this repo's own go-live fixture uses, the
+ *     dashed form, and Arabic-Indic numerals all survived, and lib/phone.ts
+ *     proves the system deliberately accepts all three. Seven-digit CR numbers
+ *     survived too, while the test above used ten.
+ * (2) The scrubber ran on `beforeSend` only. Sentry routes performance
+ *     transactions to `beforeSendTransaction`, which nothing set, so ~1 request
+ *     in 10 shipped its full URL to a processor outside Oman unredacted.
+ */
+describe('the written forms a salesman actually types', () => {
+  it.each([
+    ['+968 2444 5555', 'spaced, the form used by this repo own go-live fixture'],
+    ['+968\u00a02444\u00a05555', 'non-breaking spaces, what a paste from Word gives'],
+    ['968-9123-4567', 'dashed'],
+    ['+968 (9123) 4567', 'parenthesised'],
+    ['\u0669\u0661\u0662\u0663\u0664\u0665\u0666\u0667', 'Arabic-Indic, contiguous'],
+    ['\u0669\u0661\u0662\u0663 \u0664\u0665\u0666\u0667', 'Arabic-Indic, four plus four'],
+  ])('redacts %s (%s)', (input) => {
+    expect(scrub(input)).not.toMatch(/[0-9\u0660-\u0669]{4}/);
+    expect(scrub(input)).toContain('[phone]');
+  });
+
+  it('redacts a seven-digit CR number, the length the go-live fixtures use', () => {
+    // The old pattern started at eight, and the old test happened to use ten.
+    expect(scrub('CR 1234567 on file')).toBe('CR [phone] on file');
+  });
+
+  it('still leaves ordinary text alone', () => {
+    // The over-redaction guard. A pattern that eats these is worse than useless,
+    // because it makes every report unreadable and someone turns it off.
+    expect(scrub('route C4 visit 3 of 7')).toBe('route C4 visit 3 of 7');
+    expect(scrub('total 9000 - 1000')).toBe('total 9000 - 1000');
+    expect(scrub('2026-09-15T08:00:00Z')).toContain('2026');
+    expect(scrub('lat 23.5880 lng 58.3829')).toContain('23.5880');
+  });
+});
+
+describe('the search term in every carrier that leaks it', () => {
+  it('redacts q in a navigation breadcrumb, which is a bare path', () => {
+    // `scrubUrl` cannot help here: `data.to` is not a parseable absolute URL, and
+    // a legal name is not a digit run, so the pattern scrub never touched it.
+    const e = {
+      breadcrumbs: [
+        { category: 'navigation', data: { to: '/customers?q=Ali+Said+Al+Balushi&status=ACTIVE' } },
+      ],
+    } as unknown as ErrorEvent;
+    const to = scrubEvent(e).breadcrumbs?.[0]?.data?.to as string;
+    expect(to).not.toContain('Ali');
+    // A non-sensitive parameter survives, or the breadcrumb stops being useful.
+    expect(to).toContain('status=ACTIVE');
+  });
+
+  it('redacts q in a fetch breadcrumb URL', () => {
+    const e = {
+      breadcrumbs: [
+        { category: 'fetch', data: { url: 'https://nmwc-cm.vercel.app/customers?q=Ali+Said&_rsc=x' } },
+      ],
+    } as unknown as ErrorEvent;
+    const url = scrubEvent(e).breadcrumbs?.[0]?.data?.url as string;
+    expect(url).not.toContain('Ali');
+    expect(url).toContain('_rsc=x');
+  });
+});
+
+describe('transaction events go through the same scrubber', () => {
+  // ErrorEvent pins type to an error kind, so intersecting it with a transaction
+  // type collapses to never. The base Event is the one that carries both.
+  type TxEvent = SentryEvent & { type: 'transaction' };
+
+  const tx = (): TxEvent =>
+    ({
+      type: 'transaction',
+      transaction: 'GET /customers?q=Ali+Said&phone=91234567',
+      request: { url: 'https://nmwc-cm.vercel.app/customers?q=Ali+Said', query_string: 'q=Ali+Said&status=ACTIVE' },
+      contexts: { trace: { data: { 'http.query': 'q=Ali+Said', 'http.method': 'GET' } } },
+      spans: [
+        { description: 'GET /customers?q=Ali+Said', data: { 'db.statement': 'phone=91234567' } },
+      ],
+    }) as unknown as TxEvent;
+
+  it('redacts the transaction name', () => {
+    const t = scrubEvent(tx());
+    expect(t.transaction).not.toContain('Ali');
+    expect(t.transaction).not.toContain('91234567');
+    // The route itself must survive — that is the whole value of the event.
+    expect(t.transaction).toContain('/customers');
+  });
+
+  it('redacts the query string, the trace data and every span', () => {
+    const t = scrubEvent(tx());
+    expect(JSON.stringify(t)).not.toContain('Ali');
+    expect(JSON.stringify(t)).not.toContain('91234567');
+    expect(t.request?.query_string).toContain('status=ACTIVE');
+    expect((t.contexts?.trace?.data as Record<string, unknown>)['http.method']).toBe('GET');
+  });
+
+  it('keeps the event type, so the generic signature really is generic', () => {
+    const pin: 'transaction' = scrubEvent(tx()).type;
+    expect(pin).toBe('transaction');
+  });
+});
+
+describe('every runtime wires both hooks', () => {
+  it.each(['sentry.server.config.ts', 'sentry.edge.config.ts', 'instrumentation-client.ts'])(
+    '%s sets beforeSend AND beforeSendTransaction',
+    async (file) => {
+      // The defect was one hook missing in all three runtimes at once, which no
+      // behavioural test can see. Only wiring can.
+      const { readFileSync } = await import('node:fs');
+      const src = readFileSync(file, 'utf8');
+      expect(src).toMatch(/beforeSend:\s*scrubEvent/);
+      expect(src).toMatch(/beforeSendTransaction:\s*scrubEvent/);
+    }
+  );
 });
