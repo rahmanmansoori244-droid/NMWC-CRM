@@ -45,9 +45,6 @@ jobs:
           NEXT_TELEMETRY_DISABLED: '1'
       # ADVISORY ONLY (for now): the production-dependency audit is printed on
       # every run but cannot fail the job — four critical advisories are open
-      # against pinned framework versions (assessment SEC-05, roadmap 1.6) and
-      # the bump is scheduled separately. Remove `continue-on-error` once the
-      # baseline is clean so a NEW critical advisory blocks.
       # SEC-05: a REAL gate, set at the level the project actually holds today.
       #
       # After `npm audit fix --package-lock-only` the production tree went from
@@ -65,6 +62,33 @@ jobs:
           npm audit --omit=dev || true
           echo "--- gate: fail on any CRITICAL advisory in production dependencies ---"
           npm audit --omit=dev --audit-level=critical
+
+  # The concurrency / authorization / import suites are DB-backed and were only
+  # ever run by hand against a Neon branch. They run here against a throw-away
+  # Postgres so a regression in a claim, a scope rule or the promote lease
+  # cannot reach `main` unnoticed.
+  db-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: nmwc_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci -d nmwc_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/nmwc_ci
+      DIRECT_URL: postgresql://ci:ci@localhost:5432/nmwc_ci
+      SEED_ADMIN_PASSWORD: Ci-Seed-Admin-Password-2026!
+      RATE_LIMIT_BACKEND: pg
+      NODE_ENV: test
+    steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
