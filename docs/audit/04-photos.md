@@ -263,3 +263,54 @@ Looking at lines 81-83: the customer is updated with `crPhotoId: att.id` (Q). **
 **Recommendation:** fix all three Highs before pilot. NEW-PHOTO-007 (back-dating reactivation evidence) is a Medium I'd treat as borderline-High — it directly bypasses one of the two Manager-only invariants in the PRD.
 
 — Adversarial QA, 2026-05-09
+
+---
+
+## SEC-14e — the served Content-Type was the uploader's to choose (2026-09-15)
+
+Found while verifying the P3 list, four months after the audit above recorded the
+upload controls as adequate. That earlier reading was reasonable and wrong, and it
+is worth saying why: the presign route carries a three-entry MIME allowlist that
+looks like the boundary, and it is not one.
+
+`@aws-sdk/s3-request-presigner` adds `content-type` to its unsignable-headers set
+by design, so the header never reaches `SignedHeaders`. A client may PUT the signed
+URL with any Content-Type at all. `finalize` then copied the stored value straight
+into `Attachment.mimeType`, and the serving route echoed that column back as the
+response Content-Type — from the app's own origin.
+
+So a salesman could request an ordinary presign, PUT an HTML document, finalize it,
+attach it to a slot on his own route and submit the edit. Every photo tile on the
+approvals and customer screens is an `<a target="_blank">` to `/api/photos/<id>`,
+and the supervisor guide tells the approver to tap one to open it full size. The
+reviewer would get an attacker-written page on the domain they had just signed into.
+Not stored cross-site scripting — the nonce CSP carries `strict-dynamic` and neither
+policy allows `unsafe-inline` — but neither policy declares `form-action` either, so
+a convincing "your session expired" form could post a GM's credentials anywhere.
+
+**The fix pins the served type and touches no write path.** `lib/photo-mime.ts`
+takes the stored type only if it is one of the three servable image types, then
+falls back to the R2 key's extension — which is server-minted, because the presign
+builds it from a zod-validated body and the presigned PUT binds the Key — and
+otherwise serves `application/octet-stream` as an attachment. `Attachment.mimeType`
+had exactly one reader, so pinning at that single consumer closes the hole for rows
+already stored as well as for future ones, with no migration and no object rewrite.
+
+**Two residuals, stated rather than papered over.**
+
+1. *Browser caches are not retroactive.* Non-confidential photos carry
+   `private, max-age=3600, immutable` and an ETag keyed on the immutable attachment
+   id, so a client that already fetched a photo keeps the old Content-Type until
+   eviction. The ETag prefix was deliberately NOT bumped: that would force every
+   photo to be re-fetched over the Oman WAN link and discard the perf work at
+   #22/#23, for a one-hour window on a system with no real users yet.
+2. *The stored column is still attacker-influenceable.* Only this one consumer pins
+   it. `R2_PUBLIC_BASE` already sits unused in `.env.example`; whoever wires a public
+   R2 domain, hands a signed GET URL to a browser, or writes an export that zips the
+   originals must pin the type there too.
+
+**What a reviewer should be suspicious of:** the word "inoperative". The presign
+allowlist is not dead — it still decides the key extension, which is now what the
+served type falls back to. Relaxing it to admit `application/pdf` for GUARANTEE
+without also deciding the disposition in `lib/photo-mime.ts` would re-open exactly
+the navigation surface this closed. A PDF must be served as an attachment.

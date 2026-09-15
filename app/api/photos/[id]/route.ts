@@ -14,6 +14,7 @@ import { loadScope, assertCanAccessAttachment } from '@/lib/access';
 import { AppError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { checkLimitLocal } from '@/lib/rate-limit';
+import { serveHeadersFor } from '@/lib/photo-mime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -90,9 +91,23 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const out = await r2().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: att.r2Key }));
     const stream = out.Body as ReadableStream<Uint8Array> | null;
     if (!stream) return NextResponse.json({ error: 'EMPTY_BODY' }, { status: 502 });
+    // SEC-14e: the served type is decided by lib/photo-mime, NOT by the stored
+    // column. A presigned PUT does not bind Content-Type, so `att.mimeType` is
+    // attacker-influenceable and echoing it here served attacker HTML from this
+    // origin to the approver who opened the tile.
+    const serve = serveHeadersFor(att.mimeType, att.r2Key, att.id);
+    if (serve.contentType !== att.mimeType) {
+      // Either a hand-crafted PUT or an upload whose Content-Type header was lost.
+      // Both are worth seeing; the stored value distinguishes them.
+      logger.warn(
+        { attachmentId: att.id, stored: att.mimeType, served: serve.contentType },
+        'photo.mime.repinned'
+      );
+    }
     return new NextResponse(stream, {
       headers: {
-        'Content-Type': att.mimeType,
+        'Content-Type': serve.contentType,
+        'Content-Disposition': serve.contentDisposition,
         'Cache-Control': cache,
         'Content-Length': String(att.bytes),
         ...(confidential ? {} : { ETag: etag }),

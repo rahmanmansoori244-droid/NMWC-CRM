@@ -105,6 +105,10 @@ export async function POST(req: NextRequest) {
   }
 
   const bytes = head.ContentLength ?? 0;
+  // SEC-14e: attacker-influenced. The presigned PUT does not bind Content-Type, so
+  // this is whatever the client sent. It is stored for the record; NEVER echo it
+  // back as a response Content-Type — lib/photo-mime.ts decides what a photograph
+  // is served as.
   const mimeType = head.ContentType ?? 'application/octet-stream';
   // NEW-PHOTO-005: enforce server-side size cap at finalize time. Presign
   // signs ContentLength but a malicious client can re-PUT with a different

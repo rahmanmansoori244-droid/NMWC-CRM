@@ -10,6 +10,15 @@ import { checkLimit, PHOTO_LIMIT } from '@/lib/rate-limit';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+// SEC-14e: this list is NOT a security boundary for the upload. The S3 request
+// presigner marks `content-type` unsignable, so it never reaches SignedHeaders and
+// the client may PUT the signed URL with any Content-Type at all. What this list
+// DOES decide is the key extension below — which, because the presigned PUT binds
+// the Key, is server-minted and is what lib/photo-mime.ts falls back to when it
+// pins the type a photograph is SERVED as. So it is load-bearing for the key and
+// worthless for the upload, and both halves matter: relaxing the zod refine to
+// admit application/pdf for GUARANTEE without also deciding the disposition in
+// lib/photo-mime.ts re-opens the navigation surface SEC-14e closed.
 const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 // NEW-PHOTO-005: cap raw upload at 3 MB. Client compresses to ~500 KB; nothing
 // legitimate exceeds this. Aligns with the finalize-time HeadObject check.
