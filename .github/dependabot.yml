@@ -1,0 +1,37 @@
+# SEC-05: the dependency posture was "whatever npm resolved the day it was
+# installed". Weekly PRs make an upgrade a routine review instead of an
+# emergency after an advisory lands.
+#
+# Grouped so one PR carries a coherent set rather than fifteen PRs nobody reads.
+# Major versions are deliberately NOT opened automatically: next 16 and prisma 7
+# are migrations with their own testing, not dependency bumps.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Muscat"
+    open-pull-requests-limit: 5
+    versioning-strategy: "increase-if-necessary"
+    groups:
+      production-patches:
+        applies-to: version-updates
+        dependency-type: "production"
+        update-types: ["patch", "minor"]
+      development:
+        applies-to: version-updates
+        dependency-type: "development"
+        update-types: ["patch", "minor"]
+    ignore:
+      # Majors are migrations. Open them deliberately, not on a Monday morning.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
