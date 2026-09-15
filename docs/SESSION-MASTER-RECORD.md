@@ -382,9 +382,27 @@ Two claims were already fixed, one had never been true, and two are real but
 correctly post-launch. Saying so is the point of the exercise: a list where every
 row is "fixed" is a list nobody checked.
 
-**Still owed on this work:** the real-browser pass on a Preview. No unit test can
-see a CSP that blanks a page or a form label that moved, and this codebase has
-reverted a strict policy under production pressure once already.
+**Merged to production 2026-09-15 (main = `a84a646`), and the risky half of the
+browser pass is done.** The fear with a Content-Security-Policy change here is
+specific and has happened before: if Next cannot find the nonce it stops stamping
+its inline bootstrap and the page renders blank. Measured on production rather
+than reasoned about:
+
+- `GET /login` returns exactly ONE policy header, carrying `base-uri 'none'`,
+  `object-src 'none'` and `form-action 'self'`, with `script-src 'self'
+  'nonce-…' 'strict-dynamic'` and no `unsafe-inline` or `unsafe-eval`.
+- Next stamped 17 nonce'd script tags into that page, so the extractor found the
+  nonce.
+- In a real browser the page hydrates: the sign-in button is deliberately inert
+  until hydration and it comes back enabled, with no console errors.
+- A 307 redirect and a 404 each carry one policy header too, the nonce'd one.
+- Health 200, region `iad1`, all four cron routes 401 without a bearer.
+
+**Still owed:** the half of the walk that needs a session — sign in, the forced
+password change, Sign out clicked before hydration, a filter on `/audit` (the only
+native GET form navigation), approve and reject, a photo upload. And the two
+responses that return before the CSP wrapper, the forced-change redirect and the
+maintenance 503, whose headers nobody has read.
 
 ## 6. Open items before UNCONDITIONAL go-live
 1. ~~**RK-3 chunked/resumable import**~~ **DONE** (2026-09-10) — see the section above.

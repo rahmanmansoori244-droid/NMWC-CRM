@@ -42,13 +42,22 @@
  *    string with one inline <style>, no script, no form and no user input, and it
  *    is the page that has to render when everything else is down.
  *
- * TWO RESPONSES DO NOT GET THE NONCE'D POLICY, by construction: the AUTH-09
- * forced-password-change redirect returns a Response from the `authorized`
- * callback, which next-auth takes before the middleware body runs, and the
- * maintenance 503 returns before the CSP wrapper. Both are bodyless or
- * script-free, so nothing is exposed. Whether they carry the static fallback from
- * `headers()` has NOT been measured against a real deployment — do not write a
- * claim here until someone has read those response headers on a Preview.
+ * WHAT REAL RESPONSES CARRY, measured against production at commit a84a646 on
+ * 2026-09-15 rather than reasoned about:
+ *   - a document (`GET /login`): exactly ONE Content-Security-Policy header, the
+ *     nonce'd one, and Next stamped 17 nonce'd script tags into the page — which
+ *     is the check that matters, because a nonce the framework cannot find is how
+ *     production renders blank;
+ *   - a redirect (`GET /customers` while signed out, 307): one header, also the
+ *     nonce'd policy. Middleware runs on it;
+ *   - a 404: one header.
+ *
+ * TWO RESPONSES STILL RETURN BEFORE THE WRAPPER and could not be measured without
+ * a session or a maintenance window: the AUTH-09 forced-password-change redirect,
+ * which `auth.config.ts` returns as a Response that next-auth takes before the
+ * middleware body runs, and the maintenance 503. Both are bodyless or script-free,
+ * so nothing is exposed either way. Do not upgrade this to a claim about which
+ * policy they carry until someone has actually read those two responses' headers.
  */
 
 /**

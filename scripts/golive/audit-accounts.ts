@@ -34,8 +34,7 @@
  * agree.
  */
 import { PrismaClient, type Role } from '@prisma/client';
-import ExcelJS from 'exceljs';
-import { existsSync, readFileSync } from 'node:fs';
+import { expectedUsernames } from '../../lib/ops/golive-accounts';
 
 const prisma = new PrismaClient({
   datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
@@ -61,57 +60,12 @@ const SEVERITY: Record<Role, number> = {
   SALESMAN: 7,
 };
 
-/** Usernames the go-live master intends to exist, lower-cased. */
-async function expectedUsernames(): Promise<Set<string>> {
-  const expected = new Set<string>();
-
-  if (!existsSync(MANAGERS_JSON)) {
-    throw new Error(
-      `${MANAGERS_JSON} not found. Run scripts/golive/build-masters.ts first — without the master this script cannot tell a leftover account from an intended one.`
-    );
-  }
-  // Only usernames are read. managers.json also carries each account's initial
-  // password; nothing here touches that field, and no password is ever printed.
-  const managers = JSON.parse(readFileSync(MANAGERS_JSON, 'utf8')) as {
-    steward?: { username?: string };
-    managers?: Array<{ username?: string }>;
-  };
-  if (managers.steward?.username) expected.add(managers.steward.username.toLowerCase());
-  for (const m of managers.managers ?? []) {
-    if (m.username) expected.add(m.username.toLowerCase());
-  }
-
-  if (!existsSync(ACCOUNT_MASTER)) {
-    throw new Error(`${ACCOUNT_MASTER} not found. Run scripts/golive/build-masters.ts first.`);
-  }
-  const wb = new ExcelJS.Workbook();
-  await wb.xlsx.readFile(ACCOUNT_MASTER);
-  const ws = wb.getWorksheet('Users');
-  if (!ws) throw new Error(`${ACCOUNT_MASTER} has no "Users" sheet.`);
-  // Header on row 1 (scripts/golive/build-masters.ts addSheet). Find the username
-  // column by name rather than by position, so a reordered sheet cannot make this
-  // silently read the password column instead.
-  const header = ws.getRow(1).values as unknown[];
-  const usernameCol = header.findIndex(
-    (h) => typeof h === 'string' && h.trim().toLowerCase() === 'username'
-  );
-  if (usernameCol < 1) throw new Error(`${ACCOUNT_MASTER} "Users" sheet has no username column.`);
-  ws.eachRow((row, n) => {
-    if (n === 1) return;
-    const v = row.getCell(usernameCol).value;
-    const name = typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim();
-    if (name) expected.add(name.toLowerCase());
-  });
-
-  return expected;
-}
-
 function fmtDate(d: Date | null): string {
   return d ? d.toISOString().slice(0, 10) : 'never';
 }
 
 async function main() {
-  const expected = await expectedUsernames();
+  const expected = await expectedUsernames(ACCOUNT_MASTER, MANAGERS_JSON);
 
   // Seven non-secret columns, named explicitly: `passwordHash` is not selected, so
   // it never leaves the database.
