@@ -446,4 +446,114 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     await prisma.importRow.deleteMany({ where: { batchId: b } });
     await prisma.importBatch.deleteMany({ where: { id: b } });
   });
+
+  // ---- The lane the go-live load takes for a customer that already exists ----
+  //
+  // build-masters.ts puts a temix_code on EVERY row (it is the same string as
+  // cust_code), and production already holds ~3,300 seeded customers keyed on the
+  // same RoutePro alternate code. The lane used to be chosen from the presence of
+  // that cell alone, so on the FIRST load those rows took the narrow ERP refresh
+  // lane: credit fields only, and the whole branch loop skipped. Region, route,
+  // address and day of visit never landed, the rows were still counted as
+  // PROMOTED, and the reconciliation came out clean.
+  //
+  // The first of these two would have failed before that fix; the second proves
+  // the fix did not break a genuine Temix refresh, which is the whole reason the
+  // narrow lane exists.
+
+  it('GOLIVE: a seeded customer with no Temix code takes the FULL lane, branches included', async () => {
+    const code = `${P}-SEEDED`;
+    await prisma.customer.create({
+      data: {
+        nmwcCode: code,
+        legalName: 'ZZ Seeded Old Name',
+        paymentTerms: 'CASH',
+        primaryPhone: '+96890999777',
+        primaryPhoneNorm: '+96890999777',
+        // No temixCode: exactly the shape the May seed left behind.
+      },
+    });
+
+    const fd = new FormData();
+    fd.set(
+      'file',
+      new File(
+        [
+          await sheetBuf([
+            {
+              cust_code: code,
+              cust_name: 'ZZ Seeded New Name',
+              branch_code: `${code}-01`,
+              sales_region: 'ZZMCT',
+              route: 'ZZMCT-R01',
+              address: 'Way 21, Muscat',
+              temix_code: code, // every builder row carries one
+            },
+          ]),
+        ],
+        'golive.xlsx',
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      )
+    );
+    const up = await imports.uploadCustomerMasterAction(fd);
+    expect(up.ok).toBe(true);
+    await promoteFully(imports, (up as { ok: true; data: { batchId: string } }).data.batchId);
+
+    const after = await prisma.customer.findUniqueOrThrow({
+      where: { nmwcCode: code },
+      include: { branches: true },
+    });
+    // Identity applied — the refresh lane would have left the May name.
+    expect(after.legalName).toBe('ZZ Seeded New Name');
+    // And the branch exists, which is the half that silently did not happen: a
+    // salesman with no branch has nothing on Today.
+    expect(after.branches.length).toBeGreaterThan(0);
+    expect(after.branches[0]!.branchCode).toBe(`${code}-01`);
+  });
+
+  it('GOLIVE: a customer that already carries a Temix code still takes the narrow refresh lane', async () => {
+    const code = `${P}-XWALK`;
+    await prisma.customer.create({
+      data: {
+        nmwcCode: code,
+        legalName: 'ZZ CRM Owned Name',
+        temixCode: code,
+        paymentTerms: 'CASH',
+        primaryPhone: '+96890999778',
+        primaryPhoneNorm: '+96890999778',
+      },
+    });
+
+    const fd = new FormData();
+    fd.set(
+      'file',
+      new File(
+        [
+          await sheetBuf([
+            {
+              cust_code: code,
+              cust_name: 'ZZ ERP Wants To Rename',
+              branch_code: `${code}-01`,
+              sales_region: 'ZZMCT',
+              route: 'ZZMCT-R01',
+              address: 'Way 22, Muscat',
+              temix_code: code,
+            },
+          ]),
+        ],
+        'refresh.xlsx',
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      )
+    );
+    const up = await imports.uploadCustomerMasterAction(fd);
+    expect(up.ok).toBe(true);
+    await promoteFully(imports, (up as { ok: true; data: { batchId: string } }).data.batchId);
+
+    const after = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: code } });
+    // CRM-owned identity is NOT clobbered by an inbound ERP refresh. That is the
+    // field-ownership rule the narrow lane exists to enforce, and narrowing the
+    // lane test must not have weakened it.
+    expect(after.legalName).toBe('ZZ CRM Owned Name');
+  });
+
 });

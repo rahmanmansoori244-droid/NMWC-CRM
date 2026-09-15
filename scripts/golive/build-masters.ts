@@ -1118,7 +1118,13 @@ async function main() {
     ['username', 'full_name', 'role', 'regions', 'password', 'note'],
     [
       {
-        username: 'steward',
+        // NOT 'steward': lib/auth.ts blocks that exact username whenever
+        // DEMO_ACCOUNTS_DISABLED is set, which production has set, because
+        // prisma/synthetic.ts seeds a demo STEWARD under that name. The go-live
+        // Steward signing in is step 2 of the load and the account-master import
+        // is Steward-only, so the collision would stop the entire load with
+        // "Invalid username or password" and no in-app way back.
+        username: 'data.steward',
         full_name: 'DATA STEWARD',
         role: 'STEWARD',
         regions: '',
@@ -1152,7 +1158,8 @@ async function main() {
     path.join(OUT, 'managers.json'),
     JSON.stringify(
       {
-        steward: { username: 'steward', fullName: 'DATA STEWARD', password: stewardPw },
+        // Same name as credentials.xlsx above, and deliberately not 'steward'.
+        steward: { username: 'data.steward', fullName: 'DATA STEWARD', password: stewardPw },
         managers: managerCreds.map((m) => ({
           username: m.username,
           fullName: titleCase(m.fullName),

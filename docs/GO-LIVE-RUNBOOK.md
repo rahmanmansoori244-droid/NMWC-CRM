@@ -55,14 +55,16 @@ importer enforces most of the order, but not all of it.
    `nmwc_app` one. After step 8 of the previous section, "the production URL" means two
    different things, and this script mints the first Data Steward.
 
-   It creates `steward` plus the managers by name (`ahmed.alnadabi`, `haitham`,
+   It creates `data.steward` plus the managers by name (`ahmed.alnadabi`, `haitham`,
    `sarath`, `sara.khayat`, `ashok`, `rashid`, `rasool`, `saqib`, `saud`, `sunil.kp`,
    `tharwat`), each with **their own initial password** read from `managers.json` (the
    same 12 values appear in `credentials.xlsx`, sheet *Create in app FIRST*) and a
    **forced password change at first login** — there is no single password for everyone
    any more (SEC-11). It skips any username that already exists and touches nothing
    else. Regions are assigned by the next step, not here.
-2. Sign in as `steward` — you are sent straight to *change password* (12+ characters).
+2. Sign in as `data.steward` — you are sent straight to *change password* (12+ characters).
+   Not `steward`: that exact username is blocked while `DEMO_ACCOUNTS_DISABLED=true`,
+   which production sets, because the synthetic seed uses it for a demo account.
 3. **Import → Account master** → `golive-data/account-master.xlsx`.
    Expect: 7 regions, 43 routes, 56 user rows applied. Open the issues list — it
    must be empty except for anything you already know about. Check **Users**: every

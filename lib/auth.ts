@@ -10,6 +10,7 @@ import { Role } from '@prisma/client';
 import { authConfig } from '../auth.config';
 import { checkLimit, LOGIN_LIMIT } from '@/lib/rate-limit';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { isDemoAccount } from '@/lib/demo-accounts';
 
 // QA-023 / AUTH-17: assert AUTH_SECRET is present, of sufficient length, AND
 // not trivially low-entropy. Length alone (≥32) is a poor proxy — `aaaa…`
@@ -331,9 +332,9 @@ const {
         // QA-022: in production, refuse "demo" usernames once
         // DEMO_ACCOUNTS_DISABLED is set. Lets the team toggle off the seed
         // accounts without deleting their rows from the DB.
-        const isDemo =
-          /^(salesman\.|supervisor\.|manager\.[ab]$|steward$|viewer$)/.test(username) ||
-          username === 'admin';
+        // The patterns live in lib/demo-accounts.ts so the go-live account
+        // builder can be tested against the same definition rather than a copy.
+        const isDemo = isDemoAccount(username);
         if (isDemo && process.env.DEMO_ACCOUNTS_DISABLED === 'true') {
           await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
           logger.warn({ username }, 'login.demo_disabled');

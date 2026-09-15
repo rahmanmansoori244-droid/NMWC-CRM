@@ -1358,7 +1358,31 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               }
             }
 
-            const isRefresh = !!existing && !existing.deletedAt && !!first.temixCode;
+            // A refresh is an inbound update from the ERP for a customer the CRM
+            // ALREADY KNOWS BY A TEMIX CODE. Deciding it from the mere presence of
+            // a temix_code cell was wrong in the one case that matters most.
+            //
+            // Every row scripts/golive/build-masters.ts emits carries temix_code —
+            // it is the same string as cust_code — and production already holds
+            // roughly 3,300 seeded customers keyed on the same RoutePro alternate
+            // code. So on the FIRST master load every one of those rows would have
+            // taken the narrow ERP lane below, which writes only the crosswalk code
+            // and the credit figures and, at `if (!isRefresh)`, skips the entire
+            // branch loop. The new region, route, address and day of visit would
+            // never land; the salesman's Today screen would be empty or point at
+            // the May route. And nothing would report it: the rows are still marked
+            // PROMOTED and counted, so the step-6 reconciliation comes out clean
+            // and the steward signs off on a load that did nothing for thousands of
+            // customers.
+            //
+            // The comment further down reasoned that "a re-run finds it live with a
+            // matching code and takes the refresh lane". True — but the first run
+            // against a seeded database is indistinguishable from a re-run, and
+            // that was never noticed. Requiring `existing.temixCode` makes the two
+            // distinguishable: a customer the CRM has never crosswalked takes the
+            // upsert lane, which is what a master load is.
+            const isRefresh =
+              !!existing && !existing.deletedAt && !!first.temixCode && !!existing.temixCode;
             refreshedRow = isRefresh;
             let customerId: string;
             if (isRefresh) {
@@ -1453,9 +1477,20 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // This does NOT gate the go-live master load. Every row
               // scripts/golive/build-masters.ts emits carries temix_code (= the Temix base
               // code, which is also cust_code), so a CREDIT row from it passes guard 2 and
-              // lands on the create branch below with its ERP figures intact; a re-run
-              // finds it live with a matching code and takes the refresh lane above, which
-              // never reaches these guards at all.
+              // lands on the create branch below with its ERP figures intact.
+              //
+              // NOTE, corrected 2026-09-15: this used to add "a re-run finds it live with
+              // a matching code and takes the refresh lane above". That was true and
+              // beside the point — the FIRST run against the seeded production database is
+              // indistinguishable from a re-run, so those rows took the refresh lane too
+              // and silently skipped every identity and branch field. The lane test above
+              // now also requires the customer to already carry a Temix code. One
+              // consequence lands HERE: a seeded customer whose stored payment terms
+              // disagree with the master now reaches guard 1 and is REJECTED for steward
+              // review rather than being quietly narrowed to a credit-only update. That is
+              // the intended behaviour — it is the same guard that stops a spreadsheet
+              // granting credit standing — but it means the load can report rejections it
+              // did not report before, and each one is a real disagreement worth reading.
               if (existing && first.paymentTermsPresent && pt !== existing.paymentTerms) {
                 // Either direction. CASH->CREDIT grants credit standing no approver saw.
                 // CREDIT->CASH is worse than it looks: this lane, unlike the refresh lane,
