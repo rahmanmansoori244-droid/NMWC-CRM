@@ -28,6 +28,7 @@
 import ExcelJS from 'exceljs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { makeInitialPasswordIssuer } from './initial-password';
 
 const DESKTOP = 'C:/Users/abdulr/Desktop';
 // The RoutePro customer master is re-exported before every real load; whichever
@@ -66,11 +67,27 @@ const DQ = path.join(OUT, 'dq');
 // in the 8 weeks before the snapshot's last day (or in this month's upload file).
 const ACTIVE_MIN_OMR = Number(process.env.ACTIVE_MIN_OMR ?? 500);
 const ACTIVE_WINDOW_DAYS = 56;
-// Owner decision (2026-09-10): every account starts with this password and MUST change
-// it at first login (the import sets mustChangePassword). Usernames are guessable
-// (route codes / names), so until each person signs in once, anyone who knows this
-// value can sign in as them — hand the logins out and have them used the same day.
-const INITIAL_PASSWORD = process.env.INITIAL_PASSWORD ?? '12345';
+// SEC-11, superseding the 2026-09-10 shared-password decision. Every account now gets
+// its OWN 8-digit initial secret, drawn fresh on each build — see ./initial-password.ts
+// for why 8 digits, and why there is deliberately no env override.
+//
+// This does not remove the window before a person's first sign-in; it makes that window
+// per-person. Usernames are route codes and are public (they are printed on the journey
+// plan), so the secret is the only thing separating one account from another. Shared, it
+// means anyone in the room can sign in as a colleague who has not signed in yet, set a
+// password, and have every later edit, approval and audit row carry that colleague's
+// name. Per-person, a leaked secret opens exactly the one account it was issued for.
+//
+// Every user row below still sets must_change_password=yes, and that flag is load-
+// bearing: services/imports.ts only accepts an initial value shorter than 12 when it is
+// set, and auth.config.ts pins the account to /profile/change-password until the person
+// chooses a 12+ character password of their own (passwordRule, services/users.ts).
+//
+// DISTRIBUTION IS NOT SOLVED HERE. Every row of credentials.xlsx — BOTH sheets — now has
+// to reach one named person and nobody else, and a manager who also sells a route has
+// two logins with two different secrets. Read item 16 of RECONCILIATION.md and step 8 of
+// docs/GO-LIVE-RUNBOOK.md before printing anything.
+const issueInitialPassword = makeInitialPasswordIssuer();
 
 // ── Region model (owner-confirmed) ───────────────────────────────────────────
 const REGIONS: Array<{ code: string; name: string }> = [
@@ -934,7 +951,7 @@ async function main() {
     const sup = supervisorFor(route);
     if (!sup) noSupervisor.push([best, route.region, route.cls ?? '', titleCase(name)]);
     const username = uniqueUsername(best.toLowerCase());
-    const pw = INITIAL_PASSWORD;
+    const pw = issueInitialPassword();
     users.push({
       username,
       full_name: titleCase(name),
@@ -968,7 +985,7 @@ async function main() {
   for (const m of managerSalesRoutes) {
     const sup = supervisorFor(m.route);
     usedUsernames.add(m.username);
-    const pw = INITIAL_PASSWORD;
+    const pw = issueInitialPassword();
     users.push({
       username: m.username,
       full_name: titleCase(m.fullName),
@@ -1000,7 +1017,7 @@ async function main() {
     ['finance.manager', 'Finance Manager', 'FINANCE_MANAGER', ''],
     ['gm.nmwc', 'General Manager', 'GM', ''],
   ] as const) {
-    const pw = INITIAL_PASSWORD;
+    const pw = issueInitialPassword();
     users.push({
       username,
       full_name: fullName,
@@ -1092,8 +1109,8 @@ async function main() {
   );
   await cust.xlsx.writeFile(path.join(OUT, 'customer-master.xlsx'));
 
-  const stewardPw = INITIAL_PASSWORD;
-  const managerCreds = MANAGERS.map((m) => ({ ...m, password: INITIAL_PASSWORD }));
+  const stewardPw = issueInitialPassword();
+  const managerCreds = MANAGERS.map((m) => ({ ...m, password: issueInitialPassword() }));
   const cred = new ExcelJS.Workbook();
   addSheet(
     cred,
@@ -1269,7 +1286,7 @@ async function main() {
   );
   md.push('');
   md.push(
-    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their name (e.g. `ashok`, `sara.khayat`), the steward as `steward`; the initial password is the same for everyone and MUST be changed at first login. Until each person signs in once, anyone who knows it can sign in as them — distribute and use the logins the same day. ✅'
+    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their name (e.g. `ashok`, `sara.khayat`), the steward as `steward`. **Every account has its OWN 8-digit initial password** (SEC-11) — there is no longer one password for everyone, so a leaked login opens exactly one account and every approval stays attributable to the person whose name is on it. The value is digits only, so it can be read off paper and typed on any phone keyboard without switching language, and it stops working the moment its owner completes the forced change at first sign-in. Hand each person **only their own row** of `credentials.xlsx`; a manager who also sells a route has a second login with a DIFFERENT password. ✅ ⚠ HOW those rows reach people is an owner decision and is not settled — see step 8 of docs/GO-LIVE-RUNBOOK.md.'
   );
   md.push('## What is in the files');
   md.push(`- **Regions:** 7`);
@@ -1347,7 +1364,9 @@ async function main() {
   md.push(
     '3. Import → Customer master → `customer-master.xlsx` → review quarantined rows → Promote (passes; resume if interrupted) → reconcile per SOP §8.4.'
   );
-  md.push('4. Hand each person their login from `credentials.xlsx`, then DELETE that file.');
+  md.push(
+    '4. Hand each person **their own row** from `credentials.xlsx` — passwords are now per-person, so one sheet held up in front of a room hands every account to everyone in it. Have each person sign in and complete the forced password change while you are still with them; their 8-digit value is dead from that moment. Then DELETE `credentials.xlsx` and `managers.json`.'
+  );
   md.push('');
   md.push('## Build log');
   md.push(...notes.map((n) => `- ${n}`));

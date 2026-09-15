@@ -48,9 +48,11 @@ importer enforces most of the order, but not all of it.
 
    It creates `steward` plus the managers by name (`ahmed.alnadabi`, `haitham`,
    `sarath`, `sara.khayat`, `ashok`, `rashid`, `rasool`, `saqib`, `saud`, `sunil.kp`,
-   `tharwat`), all with the initial password `12345` and a **forced password change at
-   first login**. It skips any username that already exists and touches nothing else.
-   Regions are assigned by the next step, not here.
+   `tharwat`), each with **their own initial password** read from `managers.json` (the
+   same 12 values appear in `credentials.xlsx`, sheet *Create in app FIRST*) and a
+   **forced password change at first login** — there is no single password for everyone
+   any more (SEC-11). It skips any username that already exists and touches nothing
+   else. Regions are assigned by the next step, not here.
 2. Sign in as `steward` — you are sent straight to *change password* (12+ characters).
 3. **Import → Account master** → `golive-data/account-master.xlsx`.
    Expect: 7 regions, 43 routes, 56 user rows applied. Open the issues list — it
@@ -72,13 +74,34 @@ importer enforces most of the order, but not all of it.
    import*): **Today** shows that route's journey-plan customers for today's weekday;
    a customer page shows region, route, channel, payment terms, Temix code.
 8. **Hand out logins — the same day.** Every salesman's username is their **route
-   code** (`c4`, `sh01`, `nizd` …), every manager's is their name, and the initial
-   password is `12345` for everyone. The app forces each person to choose a new
-   12+-character password the first time they sign in. Because the usernames are
-   guessable, the initial password is only safe for as long as accounts sit unused:
-   **have everyone sign in and change it on launch day**, and ask the Steward to check
-   **Users** the next morning for anyone who has not (their account still shows the
-   forced-change flag). `credentials.xlsx` lists the logins — delete it afterwards.
+   code** (`c4`, `sh01`, `nizd` …), every manager's is their name. **Each account now
+   has its own 8-digit initial password** (SEC-11) — there is no single password for
+   everyone. The values are in `credentials.xlsx`: sheet *Create in app FIRST* (the
+   Steward and the 11 managers) and sheet *Created by import* (the salesmen and the
+   approver accounts). **Hand over one row per person, and never show the sheet to a
+   room** — it is the whole company's credentials on one screen. If a manager also
+   sells a route they have **two logins with two different passwords**; both rows are
+   in the file, so give them both and say so, or they will try the wrong one.
+
+   The app still forces each person to choose a new 12+-character password the first
+   time they sign in, and their 8-digit value stops working at that moment — so **sit
+   with each person while they sign in and change it**. That screen (English only, 12
+   characters minimum, no show-password toggle) is the step most likely to stall;
+   budget time for it. Ask the Steward to check **Users** the next morning for anyone
+   who has not signed in (their account still shows the forced-change flag). If a slip
+   is lost, reset that one account from **Users → Reset password** — note the value
+   you type there must itself be 12+ characters, it is not another 8-digit code, and
+   the reset re-arms the forced change and kills the account's open sessions. Delete
+   `credentials.xlsx` and `managers.json` when you are done.
+
+   > ⚠ **OWNER DECISION, still open — how the slips reach people.** Printed slips
+   > handed over in person by each regional manager is the only channel that needs no
+   > new system and that works for a salesman who does not read English well: the
+   > password is digits only, and the one English string on the slip is his own route
+   > code, which he uses every day. SMS would need an Oman A2P sender registered with
+   > the TRA, staff mobile numbers this pipeline does not have (the Users sheet writes
+   > `phone` blank for every row), and it delivers the secret into a shared phone's
+   > message list. Decide before printing anything.
 
 ## 2. If something goes wrong
 
