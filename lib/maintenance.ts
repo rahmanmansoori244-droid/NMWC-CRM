@@ -60,6 +60,29 @@ function page(): string {
 }
 
 /**
+ * Constant-time string compare for the bypass token.
+ *
+ * Deliberately NOT `bearerMatches` from lib/cron-auth.ts: that imports
+ * `timingSafeEqual` from node:crypto, and this module is pulled into the EDGE
+ * bundle by middleware.ts. A node:crypto import there fails at build time, and
+ * in this repo a build failure lands after `prisma migrate deploy` has already
+ * run against production.
+ *
+ * The loop ORs every byte difference and tests once at the end, so it does not
+ * return early on the first mismatch. Length is checked first and therefore still
+ * leaks — exactly as bearerMatches does, and for the same reason: comparing
+ * different-length buffers is worse.
+ */
+function tokenMatches(presented: string, expected: string): boolean {
+  if (presented.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/**
  * Returns a 503 when maintenance mode is on and this request should be held.
  * Returns null the rest of the time, which is every request on a normal day.
  */
@@ -72,7 +95,9 @@ export function maintenanceResponse(req: NextRequest): NextResponse | null {
   if (pathname.startsWith('/_next')) return null;
 
   const token = process.env.MAINTENANCE_BYPASS_TOKEN;
-  if (token && req.cookies.get(MAINTENANCE_BYPASS_COOKIE)?.value === token) return null;
+  const presented = req.cookies.get(MAINTENANCE_BYPASS_COOKIE)?.value ?? '';
+  // `token &&` stays: an unset token must never let everyone through.
+  if (token && tokenMatches(presented, token)) return null;
 
   return new NextResponse(page(), {
     status: 503,

@@ -30,14 +30,46 @@ export const authConfig = {
   // pointing at nmwc-cm.vercel.app overrides this on previews.
   trustHost: true,
   providers: [], // Real providers are added in lib/auth.ts
-  // AUTH-13: explicit cookie hardening — `__Secure-` prefix in production
-  // forces secure+HTTPS; httpOnly + sameSite=lax block XSS reads and
-  // most CSRF (combined with Next.js's Origin check on Server Actions).
+  // AUTH-13 / SEC-14c: cookie hardening, with the mechanism stated correctly.
+  //
+  // The previous comment here said the `__Secure-` prefix "forces secure+HTTPS".
+  // It does not force anything on the server: `secure: true` below sets the
+  // attribute, and the PREFIX is a browser-enforced assertion — the browser
+  // refuses to store a `__Secure-` cookie that arrives without Secure. Likewise
+  // httpOnly blocks script READS of the cookie; it does not block XSS.
+  //
+  // The prefix is now `__Host-`, which additionally refuses any cookie carrying a
+  // Domain attribute. That closes nothing today: vercel.app is on the Public
+  // Suffix List, so no sibling deployment can set `Domain=vercel.app`, and this
+  // config sets no domain, so the cookie is already host-only. It is done now
+  // because it is free now. The moment this CRM moves to a custom domain — which
+  // docs/OPERATIONS.md defers to post-pilot — the parent becomes a registrable
+  // domain, and any other host under it (a marketing site, a supplier portal, a
+  // stale staging box with an XSS or a subdomain takeover) could set this exact
+  // cookie name with a Domain attribute and have it delivered alongside the real
+  // one, with no way for the server to tell them apart. That is session fixation,
+  // and the hole opens automatically at the DNS cutover rather than being
+  // introduced by anybody.
+  //
+  // Worth knowing: Auth.js already gives the CSRF token the strict `__Host-`
+  // prefix. Overriding only the session token left the actual bearer credential
+  // weaker than a less sensitive sibling.
+  //
+  // DO NOT add a `domain` option below. It voids the `__Host-` prefix, the
+  // browser drops every Set-Cookie, and NOBODY can sign in.
+  //
+  // One standing footgun, neither created nor fixed here: this picks the prefix
+  // from NODE_ENV, while @auth/core derives useSecureCookies from
+  // `config.useSecureCookies ?? url.protocol === 'https:'`. Run a production-mode
+  // server over plain http://localhost — which qa/evidence/uat-live-run.md records
+  // the team doing — and the app emits a prefixed, Secure cookie the browser then
+  // drops, so login silently fails to persist. `__Host-` has the identical Secure
+  // requirement, so this is no worse than before.
   cookies: {
     sessionToken: {
       name:
         process.env.NODE_ENV === 'production'
-          ? '__Secure-authjs.session-token'
+          ? '__Host-authjs.session-token'
           : 'authjs.session-token',
       options: {
         httpOnly: true,
