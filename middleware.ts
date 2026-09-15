@@ -1,5 +1,11 @@
 import NextAuth from 'next-auth';
-import { NextResponse } from 'next/server';
+import {
+  NextResponse,
+  type NextRequest,
+  type NextFetchEvent,
+  type NextMiddleware,
+} from 'next/server';
+import { maintenanceResponse } from './lib/maintenance';
 import { authConfig } from './auth.config';
 
 /**
@@ -54,7 +60,7 @@ function generateNonce(): string {
   return btoa(bin);
 }
 
-export default auth((req) => {
+const withAuth = auth((req) => {
   const nonce = generateNonce();
   const csp = buildCsp(nonce);
 
@@ -73,6 +79,23 @@ export default auth((req) => {
   response.headers.set('Content-Security-Policy', csp);
   return response;
 });
+
+/**
+ * REL-02: the maintenance gate runs BEFORE auth.
+ *
+ * It has to. The case it exists for is "the database is being restored", and
+ * the auth handler reads a session — so gating after it would mean the closed
+ * sign is the one thing that needs the thing that is down. This check is an
+ * environment-variable read and nothing else.
+ */
+export default function middleware(req: NextRequest, event: NextFetchEvent) {
+  const closed = maintenanceResponse(req);
+  if (closed) return closed;
+  // The auth() wrapper is overloaded for route handlers as well as middleware,
+  // and TypeScript picks the route-handler overload for a (request, event)
+  // call. The runtime shape is the middleware one.
+  return (withAuth as unknown as NextMiddleware)(req, event);
+}
 
 export const config = {
   // Skip framework assets so the nonce overhead doesn't run for every JS/CSS
