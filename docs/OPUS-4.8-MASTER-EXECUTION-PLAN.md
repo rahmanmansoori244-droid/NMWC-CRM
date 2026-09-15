@@ -48,7 +48,7 @@ Stack (verified `package.json`): Next.js **15.5.18** (App Router, RSC + Server A
 
 | Area | Entry point(s) | Notes |
 |---|---|---|
-| Auth gating | `middleware.ts` + `auth.config.ts` (`authorized` callback) | Matcher `/((?!_next/static|_next/image|favicon.ico).*)`; `if (!auth) return false`. Next 15.5.18 patched vs CVE-2025-29927. |
+| Auth gating | `middleware.ts` + `auth.config.ts` (`authorized` callback) | Matcher `/((?!_next/static|_next/image|favicon.ico).*)`; `if (!auth) return false` — **inert**, see register.md C1: a boolean return is discarded by next-auth beta.31 when middleware wraps a function. What actually gates: `app/(app)/layout.tsx` `auth()` + redirect, per-page and per-route `auth()`, and `requireSession()` in server actions. Next patched vs CVE-2025-29927. |
 | App group guard | `app/(app)/layout.tsx` | `auth()` + `redirect('/login')` for the whole group. |
 | Pages (26) | `app/(app)/**/page.tsx`, `app/(auth)/login/page.tsx` | work, approvals, approvals/[id], customers(+[id]/edit/new), reactivations, rejected, duplicates, import(+[batchId]), export, temix, notifications, audit, routes, team, users, dashboard, home, today, profile(+change-password). |
 | API routes | `app/api/{auth/[...nextauth], health, perf-probe, exports/customers, photos/{presign,finalize,[id]}, cron/{keep-warm,photo-gc,sla-escalate}}/route.ts` | health: public `{status:ok}`, detailed behind `HEALTH_BEARER`. crons behind `CRON_SECRET`. |

@@ -88,6 +88,28 @@ export const authConfig = {
         pathname.startsWith('/_next') ||
         pathname === '/favicon.ico';
       if (isPublic) return true;
+      // DO NOT "fix" this into a redirect without reading the whole comment.
+      //
+      // This boolean is DISCARDED. In next-auth 5.0.0-beta.31, handleAuth
+      // checks `authorized instanceof Response`, then `userMiddlewareOrRoute`,
+      // then `!authorized` — and middleware.ts wraps a function (the CSP-nonce
+      // middleware), so the second branch always wins and the third is
+      // unreachable. The Response.redirect below, for mustChangePassword, DOES
+      // fire, which is why one half of this callback works and this half does
+      // not.
+      //
+      // Nothing is exposed by that: app/(app)/layout.tsx calls auth() and
+      // redirects, every page and route handler re-checks, and server actions
+      // call requireSession(). This line is defence in depth that is not
+      // currently in depth.
+      //
+      // The obvious repair — return Response.redirect('/login') — would also
+      // redirect RSC fetches and Server Action POSTs. That is precisely the
+      // failure recorded in docs/SESSION-MASTER-RECORD.md §143(d): a middleware
+      // redirect on a Server Action POST gave users "An unexpected response was
+      // received from the server" and they could not sign in. If you make this
+      // return a Response, exclude RSC and action requests and prove it with a
+      // real browser pass, not a unit test.
       if (!auth) return false;
       // AUTH-09: a user with mustChangePassword=true can only reach
       // /profile/change-password and the auth APIs. Force-redirect to that

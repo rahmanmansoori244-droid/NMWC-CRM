@@ -82,7 +82,7 @@ What I built:
 - Wrote seed script (channels + regions + admin user)
 - Built `/login` page with NMWC branding + Server Action backed by Auth.js
 - Built `/home` post-login landing page
-- Wrote `middleware.ts` redirecting unauthenticated users to `/login`
+- Wrote `middleware.ts` redirecting unauthenticated users to `/login` — *true when written; neutralised later when the B-13 CSP-nonce middleware function was wrapped around the auth handler, which makes a boolean deny silently ineffective. See register.md C1 (2026-09-15).*
 - Wrote `/api/health` endpoint pinging the DB
 - Configured Sentry (client + server + edge configs, disabled until DSN present)
 - Wrote Vitest config + first smoke test
