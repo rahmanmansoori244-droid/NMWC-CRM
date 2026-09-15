@@ -182,6 +182,66 @@ Five more, all introduced by the same commit: the retention sweep left the data 
 
 ### B3/B6 to production, and the least-privilege role (2026-09-15)
 
+### The P2 list (2026-09-15)
+
+Eleven rows re-analysed against the code as it stands, every plan challenged by
+a second reviewer before a line was written. Seven closed, four left open and
+named. Three of the seven turned out to be worse than the assessment recorded.
+
+**The browser has never reported an error.** `sentry.client.config.ts` was dead
+code: nothing imported it, and the only mechanism that would have injected it —
+`withSentryConfig` — was never applied. Meanwhile `app/error.tsx` told users
+"Our team has been notified" and three documents recorded that client reporting
+existed. Replaced with `instrumentation-client.ts`, which Next 15 loads without
+a bundler plugin, and confirmed present in a real production build. Added
+`global-error.tsx` for errors in the root layout itself, which previously fell
+through to Next's default page and reported nowhere. All three runtimes also
+read `NODE_ENV` for `environment`, which Next sets to "production" on every
+built deployment — so Preview errors filed alongside real ones — and no report
+carried a release, on a project that has already shipped a build 74 commits
+behind what everyone believed was live.
+
+**Non-salesman roles had no navigation on a phone.** The sidebar is
+`hidden … md:block` and the tab bar returns null for every role but SALESMAN,
+with a comment admitting "hamburger TBD". Managers are the approvers in the
+go-live org chart; one opening the app on a phone could follow a notification
+link and then had nowhere to go at all.
+
+**A bulk approval could lose its own result.** Each item commits independently
+and the loop only handled items that RETURNED a failure. A throw escaped it, the
+client awaited a rejected promise inside a transition with no catch, and the
+banner never rendered — so an approver who hit a throw on the seventh of twenty
+had approved six customers, seen nothing, and would reasonably run it again.
+
+The one to read twice is **SEC-01**, because the right answer was to change
+nothing. The middleware gate is genuinely inert — next-auth discards a boolean
+from `authorized` when middleware wraps a function, which it does for the CSP
+nonce. But nothing is exposed, and the obvious repair would redirect Server
+Action POSTs: the exact failure recorded at §143(d), where users could not sign
+back in. The realised harm was a QA register that recorded the gate as a working
+layer of defence. So six documents were corrected and a comment left in the code
+explaining why the repair is a trap.
+
+Also closed: the dependency posture (38 production advisories to 7, the CI audit
+step promoted from a report nobody reads to a gate at critical), maintenance
+mode at the Edge before auth, R2 timeouts (there were none, so an unreachable
+bucket hung every caller including the health probe), transient database faults
+no longer presented as permanent failures, export controls that matched a role
+exclusion rather than the export permission, a dashboard that showed
+region-scoped managers the whole country's aggregates, the missing time index on
+an append-only table that grows forever, and an e2e assertion that checked a
+field the endpoint has never returned and therefore could not fail.
+
+Left open deliberately, with reasons: converting 26 direct audit writers onto
+the shared envelope (real, but not a P2-sized change on a live system);
+per-user initial passwords (the code is small, distributing them to 42 field
+salesmen is the actual problem, and the shared password works precisely because
+it needs no channel); whether archiving a customer should release the CR
+documents behind its credit decision (a business call); the duplicate-detector
+rewrite and the Branch trigram index (both wait for the production customer
+master to land); and the Steward-powers row, which is four separate claims
+needing their own pass.
+
 Before merging, a five-lens **pre-flight** asked a different question from the code review — not "is this correct" but "what happens to production the night after this lands" — and found two P0s the review had not. First, the retention sweep cleared `ImportRow` payloads filtered only on age, while `services/imports.ts` promotes a row by reading `row.parsed`: a batch staged and left for ninety days would have become permanently unpromotable, and nothing could bring the payload back. The predicate now requires a terminal row state and a terminal batch status, and a regression test pins it. Second, the restore drill's only interlock before `DROP SCHEMA public CASCADE` was `if [ -n "$PROD_DB_HOST_MARKER" ]` — a repository variable that did not exist — so the guard evaluated to nothing; it now fails closed and additionally refuses a drill host that matches `DIRECT_URL`. Alongside those: the manifest query could kill the dump under `set -e` (now non-fatal), the v17 absolute paths the old workflow deliberately pinned had been dropped for `PATH` (restored), the byte floor sat 1.6× under a real dump on a check whose failure mode is *no backup at all* (lowered), an `apt` failure installing `age` could fail the whole backup (now only the postgres client is essential), and a stray `d.sql.gz` from the SIGPIPE investigation was committed at the repository root (removed and gitignored).
 
 Because GitHub runs scheduled workflows from the default branch, merging would have swapped the live nightly backup for code that had never touched real data. That risk was removed by dispatching the new workflow **from the branch against production first**: 25 tables, 327 KB compressed, 6,825 rows, every step green. The merge then fast-forwarded `main` by explicit SHA, and production verified clean — health 200, login 200, every cron route 401 without a bearer, `/api/ops/backup-report` 405 on GET and 401 on unauthenticated POST, region `iad1` — with a subsequent backup run from `main` reporting `backup-report → HTTP 200`, which seeds the dead-man heartbeat.

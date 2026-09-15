@@ -286,6 +286,26 @@ Also: Branch `ILIKE` with no trigram index (`lib/customer-filters.ts:190-201`); 
 
 ### P2 (each Low–Medium)
 
+**Status, 2026-09-15.** Eleven rows were re-analysed against the code as it
+stands, each plan challenged by a second reviewer before anything was written.
+Seven are closed, four are not, and the four are named honestly below rather
+than marked done.
+
+| Row | Outcome |
+|---|---|
+| SEC-01 | **Closed as a documentation defect.** The gate genuinely is inert — a boolean returned from `authorized` is discarded by next-auth beta.31 when middleware wraps a function. Nothing is exposed; the layout, every page and every action check independently. The code is deliberately unchanged: returning a Response would redirect Server Action POSTs, the exact failure recorded at SESSION-MASTER-RECORD §143(d). Six documents corrected. |
+| SEC-05 | **Closed.** Production advisories 38 → 7; the seven left need Next 16 or Prisma 7. The CI audit step stopped being `continue-on-error` and is now a gate at critical, which is 0. Four unused dependencies removed, next-auth pinned, Dependabot added. |
+| DO-04/05/07 | **Closed in code.** The browser SDK had never loaded — `sentry.client.config.ts` was dead code — so no client error has ever reached Sentry. Replaced with `instrumentation-client.ts`, verified present in a real build. Added `global-error.tsx`, made `error.tsx` actually report, and gave every runtime a real environment and release. Source-map upload still needs an owner-created Sentry token. |
+| DO-02/UAT-03 | **Partly closed.** The e2e health assertion checked a field the endpoint never returns and could not fail; fixed. A coverage threshold was judged cargo cult at this stage and deliberately not added. Branch protection remains an owner action. |
+| REL-02/04/05/06 | **Closed.** Maintenance mode added at the Edge, before auth. Bulk approve can no longer lose its own result or outlive the function limit. R2 had no timeouts at all. Transient database faults are no longer presented as permanent failures. |
+| SCALE-01/03/05/08 | **Partly closed.** Added the missing time index on AuditLog, removed two misleading page caches, and fixed a dashboard that showed region-scoped managers the whole country's aggregates. The duplicate-detector rewrite and the Branch trigram index are deliberately deferred until after the production customer-master load. |
+| UAT-01/02/06 | **Mostly closed.** Non-salesman roles had no navigation at all on a phone — managers are the approvers — so a drawer was added. Export controls now match the export permission instead of "not a salesman". The role editor's service function exists with every guard and still has no UI; the region half needs a permission design first. |
+| DG-03/04 | **Open — owner decision.** The retention half is done (a daily sweep now enforces the schedule). The other half is whether archiving a customer should release its photographs, including the commercial-registration documents behind a credit decision. That is a business call, not a cleanup bug. |
+| DG-06/07 | **Open.** The mislabelled export audit rows were fixed with B6. The remaining work is converting 26 direct `auditLog.create` writers onto the shared envelope and deciding whether a failed audit write should fail the user's action. Both are real; neither is a P2-sized change on a live system. |
+| SEC-11 | **Open — owner decision.** Per-user random initial passwords are a small code change. Distributing them to 42 field salesmen is not, and the current shared password works precisely because it needs no channel. The decision comes before the code. |
+| SEC-03/09, DG-09 | **Open.** Four separate claims about Steward powers, importer-set credit terms and a missing system actor. Needs its own pass. |
+
+
 | ID | Issue | Evidence | Solution |
 |---|---|---|---|
 | SEC-01 | Inert middleware gate + false QA record | `auth.config.ts:87`; `register.md:74` | `authorized` returns `Response`; negative tests; correct 6 docs |
