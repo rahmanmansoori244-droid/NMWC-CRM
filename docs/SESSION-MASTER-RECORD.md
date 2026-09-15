@@ -250,12 +250,86 @@ The B4 rollout then ran on production. Rather than copy the owner credential ont
 
 Two things are deliberately still open and now say so in the documents rather than claiming otherwise: the nightly dump is **plaintext** until an age key pair exists, and the monthly restore drill will fail red until the Neon secrets are added — which is the intended signal that no backup of this system has ever been restored.
 
+### The last four P2 rows (2026-09-15)
+
+The four rows the first pass left open were worked in a second. Two of them were
+hiding defects considerably worse than the row that named them.
+
+**Merging two duplicate customers failed outright** whenever only the loser held a
+commercial-registration document. `Customer.crPhotoId` is backed by a plain,
+non-deferrable unique index, so Postgres checks it at statement end rather than at
+commit: the code set the winner's slot while the loser row still held the same
+attachment id, and the whole merge transaction aborted with an opaque "Unique
+constraint failed on the fields: (crPhotoId)". Underneath that, moving the slot
+pointer never moved `Attachment.customerId`, and the loser is soft-deleted a few
+statements later — attachment access resolves through a non-deleted customer, so
+every document left behind returned 404 for every role but Steward and Viewer.
+GUARANTEE documents were never moved at all: invisible to the Finance Manager and
+GM who granted the limit, and missing from the live-guarantee count the Temix
+export sends, so the winner's export understated the credit evidence behind its own
+limit. A merge asserts the two rows are the same legal entity, so the documents are
+re-parented and never released.
+
+**Every go-live account was going to launch with the same password.** The builder
+created the Steward, 11 managers, 42 salesmen and the three approver accounts from
+one shared constant. The exposure is attribution rather than brute force: usernames
+are route codes printed on the journey plan, so anyone who heard the password could
+sign in as a colleague who had not signed in yet, choose a password of their own,
+and from that moment every edit, approval and audit row carried that colleague's
+name. In a system whose value is an append-only trail, that is the failure that
+cannot be repaired afterwards. Each account now draws its own 8-digit value from one
+issuer per run — digits only because it is read off paper and typed on a phone by
+people who do not all read English, no leading zero because spreadsheets and
+handwriting lose it, obvious runs redrawn, and no environment override, because an
+override is exactly how "one value for everyone" comes back.
+
+**An ordinary spreadsheet could grant credit standing nobody approved.** A net-new
+CREDIT customer created in the app runs Salesman → Supervisor → Finance Manager →
+GM → Accountant, and an ordinary edit cannot touch payment terms at all. The import
+path had neither gate, so a sheet with no ERP authority behind it could create a
+live CREDIT customer at any limit, or flip an existing customer's terms, with
+nothing in the trail. Two guards now hold those rows, on the non-refresh lane only,
+in both directions — a silent CREDIT→CASH flip matters as much, because that lane
+never nulls `creditLimit` and the Temix export then suppresses a limit the CRM still
+holds, leaving the two systems disagreeing quietly. The order of the checks is
+load-bearing: a customer created through the credit chain is CREDIT with no
+`temix_code` until Temix acknowledges it, so a blanket rule would have rejected its
+own correct row, and a test pins the go-live shape because these guards would
+otherwise have blocked launch.
+
+**And the audit ledger could not say which device or which network.** Roughly sixty
+writes across thirteen files called `prisma.auditLog.create` directly, so `ip` and
+`userAgent` landed null for every edit, photo, merge, import, Temix batch and export
+of the customer master — on the one artefact RECORDS-OF-PROCESSING.md names as the
+record of who did what. All sixty are converted, and the sweep that has no request
+behind it uses an explicit system envelope rather than stamping the scheduler's
+address onto a row bearing a human's name.
+
+Two pieces of wiring sat under that last one. `services/` was linted by nothing at
+all — `next lint` and the build's lint pass both default to
+app/pages/components/lib/src — and that is where 23 of the writes lived, so a rule
+banning direct writes would have run over none of them. And such a rule fails OPEN:
+if its selector ever stops parsing, Next catches the throw, logs a single line and
+finishes the build unlinted. `tests/unit/audit-guard.test.ts` is what turns red
+instead.
+
+Three carve-outs are deliberate and say so in their rows rather than being marked
+done: whether a failed audit write should fail the user's action; whether archiving
+a customer releases the commercial-registration and guarantee documents behind its
+credit decision, which is a business call; and the Steward's org-wide administrative
+reach, which is a role-design question rather than a defect. The audit rule also
+stops at the request-serving tree — five operator scripts write the ledger by hand,
+with no request to read an address from, and §A6 of RECORDS-OF-PROCESSING.md now
+names that class so a blank there reads as "acted outside any session" rather than
+as a gap in the record.
+
 ## 6. Open items before UNCONDITIONAL go-live
 1. ~~**RK-3 chunked/resumable import**~~ **DONE** (2026-09-10) — see the section above.
 2. ~~F-UAT-7~~ **FIXED** (real importer bug, not a fixture artifact) — see §2 final pass.
 3. ~~R17/R19/R26 coverage~~ **CLOSED** via `credit-chain-e2e.test.ts`. R14 frozen-chain is exercised by that E2E walk + the `parseChain` unit test; the RK-2 "frozen-chain vs current-role authz drift" edge (route re-regioned mid-chain) remains a documented risk, not a confirmed defect.
 4. **Owner:** rotate `neondb_owner` password (shared across all Neon branches incl. production; exposed in UAT screenshots); confirm the D2 Temix credit-refresh direction; Vercel Pro for sub-daily cron; real Temix master + its header row (use the CRM's header contract in OWNER-DECISIONS.md).
 5. Findings from the third (final) bug hunt — triage/fix on completion.
+6. **Owner decisions left by the P2 pass**, none of them blocking: whether archiving a customer releases the CR and guarantee documents behind its credit decision; whether a failed audit write should fail the user's action; the Steward's org-wide administrative reach and whether provisioning an approver-tier account needs two people. Also outstanding, and not a decision: purging the old shared go-live password from git history.
 
 **Automated test count (this session):** 140 unit + integration suites (reactivation ×5, merge ×3, import-reconciliation, promote-reconciliation ×11, rate-limit ×4, import-multibranch, credit-chain-e2e ×5, + gated uat-load) — **all green on the isolated uat-testing branch.**
 
