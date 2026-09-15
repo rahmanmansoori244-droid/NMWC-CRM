@@ -1,0 +1,137 @@
+name: Provision app role
+
+# B4 rollout, step 1 of 2.
+#
+# Creates the least-privilege runtime role `nmwc_app` on a real database, applies
+# its privilege set, and proves it — all inside GitHub Actions, using the
+# `DIRECT_URL` secret that already exists for the nightly backup. Nobody has to
+# handle the owner credential to run it, and it is never printed.
+#
+# WHY A WORKFLOW AND NOT A LOCAL SCRIPT: the owner database credential lives in
+# exactly two places, the Vercel environment and this repository's secrets.
+# Copying it onto a laptop to run three commands is the kind of convenience that
+# leaks credentials. This does the same three commands where the secret already
+# is.
+#
+# WHAT IT DOES NOT DO: it does not point the application at the new role. That
+# is the second step and it is a Vercel dashboard change — set the Production
+# `DATABASE_URL` to the `nmwc_app` pooled URL, keep `DIRECT_URL` as the owner,
+# redeploy. Until then the application keeps connecting as the owner exactly as
+# it does today, so running this is additive and reversible: the role simply
+# exists, unused.
+#
+# SAFETY: it is manual-dispatch only, it requires the operator to type the
+# database host they intend to touch, and `scripts/ops/app-role.ts` itself
+# refuses a production host unless ALLOW_PRODUCTION=1, which this workflow sets
+# deliberately and visibly.
+#
+# Prerequisite: repository secret `NMWC_APP_PASSWORD` (24+ characters, no single
+# quote). Keep the same value for the Vercel `DATABASE_URL` in step 2.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_host:
+        description: 'Type the endpoint id of the database you intend to provision (e.g. ep-sweet-haze). This is checked against DIRECT_URL.'
+        required: true
+        type: string
+      dry_run:
+        description: 'Only report what the database looks like now; create nothing.'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    name: create → grant → verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      NMWC_APP_PASSWORD: ${{ secrets.NMWC_APP_PASSWORD }}
+      ALLOW_PRODUCTION: '1'
+      CONFIRM_HOST: ${{ inputs.confirm_host }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx prisma generate
+
+      - name: Check the target is the database the operator meant
+        run: |
+          set -euo pipefail
+          if [ -z "${DIRECT_URL:-}" ]; then
+            echo "::error::the DIRECT_URL secret is not set"; exit 1
+          fi
+          if [ -z "${NMWC_APP_PASSWORD:-}" ]; then
+            echo "::error::set the NMWC_APP_PASSWORD repository secret first (24+ chars, no single quote). Use the SAME value for the Vercel DATABASE_URL in step 2."; exit 1
+          fi
+          case "$NMWC_APP_PASSWORD" in
+            *"'"*) echo "::error::NMWC_APP_PASSWORD must not contain a single quote"; exit 1;;
+          esac
+          if [ "${#NMWC_APP_PASSWORD}" -lt 24 ]; then
+            echo "::error::NMWC_APP_PASSWORD is shorter than 24 characters"; exit 1
+          fi
+          # Typed confirmation: the operator must name the endpoint they mean.
+          case "$DIRECT_URL" in
+            *"${CONFIRM_HOST}"*) echo "target matches the confirmation you typed";;
+            *) echo "::error::DIRECT_URL does not contain '${CONFIRM_HOST}' — refusing to provision a database you did not name"; exit 1;;
+          esac
+          # Derive the POOLED url for the same endpoint. Neon's pooled host is the
+          # direct host with '-pooler' appended to the endpoint id.
+          APP_URL=$(printf '%s' "$DIRECT_URL" \
+            | sed -E "s#://[^@]+@#://nmwc_app:${NMWC_APP_PASSWORD}@#" \
+            | sed -E 's#@(ep-[a-z0-9-]+)\.#@\1-pooler.#')
+          echo "::add-mask::${APP_URL}"
+          echo "NMWC_APP_URL=${APP_URL}" >> "$GITHUB_ENV"
+
+      - name: Report the current state
+        run: |
+          set -euo pipefail
+          # Read-only: does the role already exist, and what is the app connected as?
+          npx tsx -e "
+            import { PrismaClient } from '@prisma/client';
+            const db = new PrismaClient({ datasourceUrl: process.env.DIRECT_URL });
+            const rows = await db.\$queryRawUnsafe('SELECT current_user AS me, current_database() AS db');
+            const role = await db.\$queryRawUnsafe(\"SELECT count(*)::int AS n FROM pg_roles WHERE rolname = 'nmwc_app'\");
+            console.log('connected as', rows[0].me, 'on', rows[0].db);
+            console.log('nmwc_app exists:', role[0].n > 0 ? 'yes' : 'no');
+            await db.\$disconnect();
+          "
+
+      - name: Create the role
+        if: ${{ !inputs.dry_run }}
+        run: npx tsx scripts/ops/app-role.ts create
+
+      - name: Apply the privilege set
+        if: ${{ !inputs.dry_run }}
+        run: npx tsx scripts/ops/app-role.ts grant
+
+      - name: Prove it, connected AS the role
+        if: ${{ !inputs.dry_run }}
+        run: npx tsx scripts/ops/app-role.ts verify
+
+      - name: Next step
+        if: ${{ !inputs.dry_run && success() }}
+        run: |
+          {
+            echo "### Role provisioned"
+            echo ""
+            echo "\`nmwc_app\` now exists on the database behind \`DIRECT_URL\`, with its privilege set applied and every refusal proven. **The application is still connecting as the owner** — nothing has changed for users."
+            echo ""
+            echo "**Step 2, in the Vercel dashboard (this is the part that takes effect):**"
+            echo ""
+            echo "1. Project → Settings → Environment Variables → **Production**."
+            echo "2. Set \`DATABASE_URL\` to the pooled URL for \`nmwc_app\`: take the existing production \`DATABASE_URL\`, replace the user and password with \`nmwc_app\` and the \`NMWC_APP_PASSWORD\` value, and make sure the host contains \`-pooler\`."
+            echo "3. Leave \`DIRECT_URL\` exactly as it is — migrations, the nightly backup and maintenance need the owner."
+            echo "4. Redeploy Production."
+            echo "5. Confirm: \`curl -H \"Authorization: Bearer \$HEALTH_BEARER\" https://nmwc-cm.vercel.app/api/health\` → \`checks.db: ok\`."
+            echo ""
+            echo "To roll back, set \`DATABASE_URL\` back to the owner URL and redeploy. The role can stay; it is unused until something connects as it."
+          } >> "$GITHUB_STEP_SUMMARY"
