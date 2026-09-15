@@ -57,6 +57,7 @@ import {
 } from '@/lib/validation/create';
 import { resolveStepAudience, notifyUsers } from '@/lib/notifications';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from '@/lib/create-guards';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 async function requireUser() {
   const session = await auth();
@@ -307,6 +308,12 @@ async function submitCreateCore(
     extraPhotoAttachmentIds: b.extraPhotoAttachmentIds as unknown as Prisma.InputJsonValue,
   }));
 
+  // DG-06: envelope built before the transaction opens (services/users.ts
+  // pattern). getAuditEnvelope degrades to null ip/userAgent rather than
+  // throwing, so any loss of request context inside the callback would be
+  // silent; keeping the call out here makes that impossible.
+  const env = await getAuditEnvelope(session.id);
+
   const edit = await prisma.$transaction(async (tx) => {
     // Hard-block exact duplicates — serialized on the FULL identity surface
     // (CR leg + name/phone/region triple leg) so two racing submits cannot
@@ -443,20 +450,17 @@ async function submitCreateCore(
       data: { deletedAt: submittedAt, hash: null },
     });
 
-    await tx.auditLog.create({
-      data: {
-        actorId: session.id,
-        action: existing ? 'UPDATE' : 'CREATE',
-        entityType: 'CustomerEdit',
-        entityId: editRow.id,
-        after: {
-          process: 'CREATE',
-          state: isDraft ? 'DRAFT' : 'SUBMITTED',
-          paymentTerms: c.paymentTerms,
-          branches: branchDraftRows.length,
-          cycle: editRow.cycle,
-        } as unknown as Prisma.InputJsonValue,
-      },
+    await writeAudit(tx, env, {
+      action: existing ? 'UPDATE' : 'CREATE',
+      entityType: 'CustomerEdit',
+      entityId: editRow.id,
+      after: {
+        process: 'CREATE',
+        state: isDraft ? 'DRAFT' : 'SUBMITTED',
+        paymentTerms: c.paymentTerms,
+        branches: branchDraftRows.length,
+        cycle: editRow.cycle,
+      } as unknown as Prisma.InputJsonValue,
     });
 
     if (!isDraft) {

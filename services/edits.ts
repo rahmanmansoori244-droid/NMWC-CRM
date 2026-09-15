@@ -16,6 +16,7 @@ import {
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { logger } from '@/lib/logger';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isFieldLocked, canActOnStep } from '@/lib/permissions';
 import { submitEditSchema, type SubmitEditInput } from '@/lib/validation/edit';
 import { normalizePhone } from '@/lib/phone';
@@ -518,6 +519,10 @@ async function submitEditCore(
 
   let edit;
   if (isDirectWrite) {
+    // DG-06: audit rows now carry ip/userAgent. Take the request envelope once,
+    // outside the transaction, so nothing extra runs while it is open
+    // (services/users.ts does the same).
+    const env = await getAuditEnvelope(me.id);
     edit = await prisma.$transaction(async (tx) => {
       const e = await tx.customerEdit.create({
         data: {
@@ -534,24 +539,21 @@ async function submitEditCore(
         },
       });
       await applyEditChanges(tx, customer.id, customerProposed, bInputs, me.id);
-      await tx.auditLog.create({
-        data: {
-          actorId: me.id,
-          action: 'UPDATE',
-          entityType: 'Customer',
-          entityId: customer.id,
-          // SEC-03/09 (3): name the path. (UPDATE, Customer) is written by no other
-          // code path in the app -- an approved change writes (APPROVE, CustomerEdit)
-          // at finalize -- so these rows were already isolable by query. What was
-          // missing is human-readable: a Manager reading /audit saw an empty reason
-          // cell and no hint that no approver had ever seen this change, while every
-          // other deliberate override in this codebase carries one. me.role is the
-          // role held AT THE TIME of the write, which a later join to User cannot
-          // recover. The prefix is a stable `reason LIKE 'direct-write:%'` anchor.
-          reason: `direct-write: applied by ${me.role} with no approval chain`,
-          before: customerBefore as unknown as Prisma.InputJsonValue,
-          after: customerProposed as unknown as Prisma.InputJsonValue,
-        },
+      await writeAudit(tx, env, {
+        action: 'UPDATE',
+        entityType: 'Customer',
+        entityId: customer.id,
+        // SEC-03/09 (3): name the path. (UPDATE, Customer) is written by no other
+        // code path in the app -- an approved change writes (APPROVE, CustomerEdit)
+        // at finalize -- so these rows were already isolable by query. What was
+        // missing is human-readable: a Manager reading /audit saw an empty reason
+        // cell and no hint that no approver had ever seen this change, while every
+        // other deliberate override in this codebase carries one. me.role is the
+        // role held AT THE TIME of the write, which a later join to User cannot
+        // recover. The prefix is a stable `reason LIKE 'direct-write:%'` anchor.
+        reason: `direct-write: applied by ${me.role} with no approval chain`,
+        before: customerBefore as unknown as Prisma.InputJsonValue,
+        after: customerProposed as unknown as Prisma.InputJsonValue,
       });
       return e;
     });
@@ -852,6 +854,13 @@ async function approveEditCore(formData: FormData) {
     throw new ForbiddenError('You are not authorized to act on this step.');
   }
 
+  // DG-06: one audit envelope for the whole action, captured here — after the
+  // authorization gate and outside every transaction below. `session.id` (from
+  // requireUser()) is the actor for every audit row this function writes. The
+  // CREATE-final branch writes none of its own: lib/create-finalize.ts still
+  // writes its two rows directly and has not been converted yet.
+  const env = await getAuditEnvelope(session.id);
+
   const isFinal = isFinalStep(chain, stepIndex);
   const requestName = isCreate ? edit.customerDraft!.legalName : edit.customer!.legalName;
 
@@ -900,19 +909,16 @@ async function approveEditCore(formData: FormData) {
             actorId: session.id,
           },
         });
-        await tx.auditLog.create({
-          data: {
-            actorId: session.id,
-            action: 'STEP_APPROVE',
-            entityType: 'CustomerEdit',
-            entityId: editId,
-            after: {
-              stepIndex,
-              role: step.role,
-              advancedToRole: nextStep.role,
-              cycle: edit.cycle,
-            } as unknown as Prisma.InputJsonValue,
-          },
+        await writeAudit(tx, env, {
+          action: 'STEP_APPROVE',
+          entityType: 'CustomerEdit',
+          entityId: editId,
+          after: {
+            stepIndex,
+            role: step.role,
+            advancedToRole: nextStep.role,
+            cycle: edit.cycle,
+          } as unknown as Prisma.InputJsonValue,
         });
         // Notify the next step's approvers + the submitter (progress). Inside
         // the tx so a lost claim race never notifies.
@@ -955,6 +961,10 @@ async function approveEditCore(formData: FormData) {
   // Customer + Branch[] (all-or-nothing, same tx as the claim). ──
   if (isCreate) {
     const finalizedAt = new Date();
+    // DG-06: finalizeCreateInTx writes the FINALIZE + CREATE audit rows from
+    // inside the transaction below, so it cannot read the request context
+    // itself; the envelope is built out here and handed down.
+    const finalizeEnv = await getAuditEnvelope(session.id);
     const result = await prisma.$transaction(
       async (tx) => {
         // PROD-001 pattern: claim the edit atomically; loser sees count=0.
@@ -999,7 +1009,7 @@ async function approveEditCore(formData: FormData) {
             customerDraft: edit.customerDraft!,
             branchDrafts: edit.branchDrafts,
           },
-          session.id,
+          finalizeEnv,
           finalizedAt
         );
         // Submitter learns their customer is live; Stewards get the
@@ -1236,19 +1246,16 @@ async function approveEditCore(formData: FormData) {
       // EL-05: persist the actual diff in the audit log, not just a count, so a
       // forensic Manager can answer "what did Supervisor X approve last week"
       // from `/audit` alone without joining CustomerEdit.fieldChanges manually.
-      await tx.auditLog.create({
-        data: {
-          actorId: session.id,
-          action: 'APPROVE',
-          entityType: 'CustomerEdit',
-          entityId: editId,
-          after: {
-            customerId: edit.customerId,
-            changes: fieldChanges.length,
-            fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
-            droppedBranchIds: droppedBranchIds.length > 0 ? droppedBranchIds : undefined,
-          } as unknown as Prisma.InputJsonValue,
-        },
+      await writeAudit(tx, env, {
+        action: 'APPROVE',
+        entityType: 'CustomerEdit',
+        entityId: editId,
+        after: {
+          customerId: edit.customerId,
+          changes: fieldChanges.length,
+          fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
+          droppedBranchIds: droppedBranchIds.length > 0 ? droppedBranchIds : undefined,
+        } as unknown as Prisma.InputJsonValue,
       });
       await notifyUsers(tx, [edit.submittedById], {
         kind: 'EDIT_APPROVED_FINAL',
@@ -1479,6 +1486,8 @@ async function rejectEditCore(formData: FormData) {
   const target = resolveRejectTarget(rejectStepIndex, priorRejectsHere);
   const rejectedAt = new Date();
 
+  // DG-06: envelope outside the transaction; `session.id` is the rejecting actor.
+  const env = await getAuditEnvelope(session.id);
   await prisma.$transaction(async (tx) => {
     await tx.editApproval.create({
       data: {
@@ -1537,19 +1546,16 @@ async function rejectEditCore(formData: FormData) {
         'This edit was just decided by another reviewer. Refresh to see the current state.'
       );
     }
-    await tx.auditLog.create({
-      data: {
-        actorId: session.id,
-        action: 'REJECT',
-        entityType: 'CustomerEdit',
-        entityId: editId,
-        reason,
-        after: {
-          target: target.kind,
-          fromStep: rejectStepIndex,
-          cycle: edit.cycle,
-        } as unknown as Prisma.InputJsonValue,
-      },
+    await writeAudit(tx, env, {
+      action: 'REJECT',
+      entityType: 'CustomerEdit',
+      entityId: editId,
+      reason,
+      after: {
+        target: target.kind,
+        fromStep: rejectStepIndex,
+        cycle: edit.cycle,
+      } as unknown as Prisma.InputJsonValue,
     });
     // Notifications (inside the tx — a lost claim race must not notify).
     if (target.kind === 'STEP_BACK') {

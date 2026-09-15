@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { prisma } from '@/lib/db';
 import { requireExportUser } from '@/lib/export-scope';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { buildChangeReport } from '@/lib/change-report';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
@@ -74,18 +74,17 @@ export async function GET(req: NextRequest) {
         includePending: f.includePending == null ? true : truthy(f.includePending),
       }
     );
-    // Best-effort audit (same convention as the master export).
-    await prisma.auditLog
-      .create({
-        data: {
-          actorId: me.id,
-          action: 'EXPORT',
-          entityType: 'Export',
-          entityId: `field-updates-${new Date().toISOString().slice(0, 10)}`,
-          reason: `field-updates ${out.rowCount} rows / ${out.changedRows} changed / ${out.changeCount} changes`,
-        },
-      })
-      .catch(() => undefined);
+    // DG-06/07: no longer best-effort (same convention as the master export).
+    // This sits before the NextResponse carrying the bytes, and the enclosing
+    // catch turns a failure into a logged 500 — so the change report, which
+    // carries addresses, phones and contact names, cannot be delivered without
+    // a ledger row naming who took it.
+    await writeAudit(null, await getAuditEnvelope(me.id), {
+      action: 'EXPORT',
+      entityType: 'Export',
+      entityId: `field-updates-${new Date().toISOString().slice(0, 10)}`,
+      reason: `field-updates ${out.rowCount} rows / ${out.changedRows} changed / ${out.changeCount} changes`,
+    });
     return new NextResponse(out.bytes, {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

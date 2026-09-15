@@ -33,6 +33,7 @@ import {
 } from '@/lib/working-hours';
 import { TEMIX_QUEUE_WHERE } from '@/lib/temix';
 import { notifyUsers } from '@/lib/notifications';
+import { systemAuditEnvelope, writeAudit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -129,6 +130,12 @@ async function resolveEscalationAudience(
 }
 
 async function escalate(e: DueEdit, level: 1 | 2, now: Date): Promise<boolean> {
+  // SYSTEM envelope, built before the transaction opens (same rule as every
+  // other call site). Explicitly NOT getAuditEnvelope: this is a route handler,
+  // so headers() WOULD succeed and return the SCHEDULER's ip/user-agent, which
+  // would then be stamped on a row attributed to the human submitter. Null by
+  // construction beats a plausible-looking lie.
+  const env = systemAuditEnvelope(e.submittedById);
   // One transaction per row: the claim, the audit and the notifications
   // commit together — a transient failure rolls the claim back so the next
   // sweep retries, and a breach can never be marked escalated with zero
@@ -158,23 +165,21 @@ async function escalate(e: DueEdit, level: 1 | 2, now: Date): Promise<boolean> {
     if (claimed.count === 0) return false;
     const audience = await resolveEscalationAudience(tx, e, level);
     const stepLabel = (e.pendingRole ?? Role.SUPERVISOR).replace('_', ' ');
-    await tx.auditLog.create({
-      data: {
-        // System sweep — no human actor exists; attributed to the submitter
-        // with an explicit system reason so the audit record cannot read as
-        // an action the salesman took. [Open — a dedicated system-actor user
-        // is the cleaner long-term fix.]
-        actorId: e.submittedById,
-        action: 'ESCALATE',
-        entityType: 'CustomerEdit',
-        entityId: e.id,
-        reason: 'system: sla-escalate sweep',
-        after: {
-          level,
-          pendingRole: e.pendingRole,
-          slaDueAt: e.slaDueAt?.toISOString(),
-        } as unknown as Prisma.InputJsonValue,
-      },
+    // System sweep — no human actor exists. AuditLog.actorId is an FK to User,
+    // so the row is attributed to the submitter, but `env` carries null ip and
+    // null userAgent and the reason says 'system:' outright, so the record
+    // cannot read as an action the salesman took. [Open — a dedicated
+    // system-actor user is the cleaner long-term fix.]
+    await writeAudit(tx, env, {
+      action: 'ESCALATE',
+      entityType: 'CustomerEdit',
+      entityId: e.id,
+      reason: 'system: sla-escalate sweep',
+      after: {
+        level,
+        pendingRole: e.pendingRole,
+        slaDueAt: e.slaDueAt?.toISOString(),
+      } as unknown as Prisma.InputJsonValue,
     });
     await notifyUsers(tx, audience, {
       kind: 'SLA_BREACH',

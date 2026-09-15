@@ -22,6 +22,7 @@ import {
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { loadScope, assertCanEditCustomer } from '@/lib/access';
 import { resolveArchiveTemixState } from '@/lib/temix';
 
@@ -68,6 +69,8 @@ async function archiveCustomerCore(formData: FormData) {
   }
 
   const archivedAt = new Date();
+  // DG-06: capture the request envelope before the transaction opens.
+  const env = await getAuditEnvelope(session.user.id);
   await prisma.$transaction(async (tx) => {
     // Re-checked INSIDE the tx (pre-tx check would be TOCTOU): a request
     // mid-approval must be decided first — archiving under it would orphan
@@ -118,20 +121,17 @@ async function archiveCustomerCore(formData: FormData) {
       where: { customerId, deletedAt: null },
       data: { deletedAt: archivedAt, lastEditedById: session.user.id },
     });
-    await tx.auditLog.create({
-      data: {
-        actorId: session.user.id,
-        action: 'SOFT_DELETE',
-        entityType: 'Customer',
-        entityId: customerId,
-        reason,
-        before: {
-          nmwcCode: customer.nmwcCode,
-          legalName: customer.legalName,
-          temixSyncState: customer.temixSyncState,
-        } as unknown as Prisma.InputJsonValue,
-        after: { temixSyncState: nextState } as unknown as Prisma.InputJsonValue,
-      },
+    await writeAudit(tx, env, {
+      action: 'SOFT_DELETE',
+      entityType: 'Customer',
+      entityId: customerId,
+      reason,
+      before: {
+        nmwcCode: customer.nmwcCode,
+        legalName: customer.legalName,
+        temixSyncState: customer.temixSyncState,
+      } as unknown as Prisma.InputJsonValue,
+      after: { temixSyncState: nextState } as unknown as Prisma.InputJsonValue,
     });
     return nextState;
   });

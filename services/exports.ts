@@ -6,6 +6,7 @@ import { auth } from '@/lib/auth';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { buildWorkbook } from '@/lib/excel';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 async function requireExport() {
   const session = await auth();
@@ -172,22 +173,22 @@ export async function buildCustomerExport(filters: ExportFilters) {
   const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
   const stamp = new Date().toISOString().slice(0, 10);
 
-  // Best-effort audit
-  await prisma.auditLog
-    .create({
-      data: {
-        actorId: me.id,
-        // B6: this said IMPORT ("there is no EXPORT in our enum yet") long after
-        // EXPORT was added to the enum, so "who exported the customer master" —
-        // the first question of any personal-data incident — could not be
-        // answered from the ledger.
-        action: 'EXPORT',
-        entityType: 'Export',
-        entityId: stamp,
-        reason: `customers ${exportRows.length}`,
-      },
-    })
-    .catch(() => undefined);
+  // DG-06/07: no longer best-effort. For a read-only export the AuditLog row is
+  // the ONLY record that the master left the building — there is no ImportBatch
+  // or changed row to fall back on — so a swallowed insert means a full PII
+  // export with nothing in the ledger. Letting it throw makes this fail-closed:
+  // the caller (app/api/exports/customers/route.ts) logs and returns 500, and
+  // the bytes are never sent. No ledger row therefore implies no export.
+  await writeAudit(null, await getAuditEnvelope(me.id), {
+    // B6: this said IMPORT ("there is no EXPORT in our enum yet") long after
+    // EXPORT was added to the enum, so "who exported the customer master" —
+    // the first question of any personal-data incident — could not be
+    // answered from the ledger.
+    action: 'EXPORT',
+    entityType: 'Export',
+    entityId: stamp,
+    reason: `customers ${exportRows.length}`,
+  });
   logger.info({ count: exportRows.length, by: me.id }, 'export.customers');
 
   return {

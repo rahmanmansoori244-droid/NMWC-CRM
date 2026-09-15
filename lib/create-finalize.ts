@@ -35,6 +35,7 @@ import { formatCustomerCode, formatBranchCode } from './codes';
 import { omanYear } from './tz';
 import { scoreBranch, scoreCustomer } from './completeness';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from './create-guards';
+import { writeAudit, type AuditEnvelope } from './audit';
 
 type Tx = Prisma.TransactionClient;
 
@@ -101,10 +102,20 @@ async function allocateCustomerCode(tx: Tx, year: number): Promise<string> {
   );
 }
 
+/**
+ * DG-06 — the actor arrives as a full `AuditEnvelope`, not a bare id. This
+ * function runs INSIDE approveEditCore's interactive transaction, so it must
+ * not build its own envelope: the envelope reader degrades to null ip/userAgent
+ * rather than throwing, which would leave the FINALIZE and CREATE rows — the
+ * two rows that prove a customer went live — quietly unattributed, with nothing
+ * at runtime to complain. approveEditCore builds it before opening the
+ * transaction and hands it down. `env.actorId` is the approving Accountant and
+ * replaces the old `actorId` parameter.
+ */
 export async function finalizeCreateInTx(
   tx: Tx,
   edit: FinalizableEdit,
-  actorId: string,
+  env: AuditEnvelope,
   finalizedAt: Date
 ): Promise<{ customerId: string; nmwcCode: string; legalName: string }> {
   const draft = edit.customerDraft;
@@ -218,7 +229,7 @@ export async function finalizeCreateInTx(
       temixSyncState: TemixSyncState.PENDING_UPLOAD,
       temixSyncPendingSince: finalizedAt,
       createdById: edit.submittedById,
-      lastEditedById: actorId,
+      lastEditedById: env.actorId,
     },
   });
 
@@ -247,7 +258,7 @@ export async function finalizeCreateInTx(
         emptyBottlesCount: b.emptyBottlesCount,
         status: CustomerStatus.ACTIVE,
         createdById: edit.submittedById,
-        lastEditedById: actorId,
+        lastEditedById: env.actorId,
       },
     });
     branches.push({ id: branch.id, draft: b });
@@ -360,35 +371,29 @@ export async function finalizeCreateInTx(
     where: { id: edit.id },
     data: { customerId: customer.id },
   });
-  await tx.auditLog.create({
-    data: {
-      actorId,
-      action: 'FINALIZE',
-      entityType: 'CustomerEdit',
-      entityId: edit.id,
-      after: {
-        customerId: customer.id,
-        nmwcCode,
-        branches: branches.length,
-        paymentTerms: draft.paymentTerms,
-        cycle: edit.cycle,
-      } as unknown as Prisma.InputJsonValue,
-    },
+  await writeAudit(tx, env, {
+    action: 'FINALIZE',
+    entityType: 'CustomerEdit',
+    entityId: edit.id,
+    after: {
+      customerId: customer.id,
+      nmwcCode,
+      branches: branches.length,
+      paymentTerms: draft.paymentTerms,
+      cycle: edit.cycle,
+    } as unknown as Prisma.InputJsonValue,
   });
-  await tx.auditLog.create({
-    data: {
-      actorId,
-      action: 'CREATE',
-      entityType: 'Customer',
-      entityId: customer.id,
-      after: {
-        nmwcCode,
-        legalName: draft.legalName,
-        paymentTerms: draft.paymentTerms,
-        branches: branches.length,
-        viaEditId: edit.id,
-      } as unknown as Prisma.InputJsonValue,
-    },
+  await writeAudit(tx, env, {
+    action: 'CREATE',
+    entityType: 'Customer',
+    entityId: customer.id,
+    after: {
+      nmwcCode,
+      legalName: draft.legalName,
+      paymentTerms: draft.paymentTerms,
+      branches: branches.length,
+      viaEditId: edit.id,
+    } as unknown as Prisma.InputJsonValue,
   });
 
   return { customerId: customer.id, nmwcCode, legalName: draft.legalName };

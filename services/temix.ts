@@ -35,6 +35,7 @@ import { logger } from '@/lib/logger';
 import { checkLimit } from '@/lib/rate-limit';
 import { buildWorkbook } from '@/lib/excel';
 import { buildTemixRows, TEMIX_QUEUE_WHERE, type TemixExportCustomer } from '@/lib/temix';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 const BATCH_ROW_CAP = 5000;
 
@@ -129,6 +130,12 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
   const lim = await checkLimit(`temix:${me.id}`, { capacity: 3, refillPerSec: 0.05 });
   if (!lim.ok) throw new RateLimitError(`Wait ${lim.retryAfterSec}s before another batch.`);
 
+  // Build the audit envelope BEFORE opening the transaction. Two practical
+  // reasons: one header read per action instead of one per write, and no
+  // avoidable work inside an open interactive transaction on a WAN-bound link —
+  // the delay class that produced this codebase's P2028 failures.
+  const env = await getAuditEnvelope(me.id);
+
   const { batch, customers } = await prisma.$transaction(async (tx) => {
     // Soft cap pre-check (updateMany cannot `take`; a handful of rows racing
     // in over the cap between count and flip is harmless).
@@ -190,17 +197,14 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
         status: 'DONE',
       },
     });
-    await tx.auditLog.create({
-      data: {
-        actorId: me.id,
-        action: 'EXPORT',
-        entityType: 'TemixSyncBatch',
-        entityId: b.id,
-        after: {
-          customers: ids.length,
-          deactivations: queued.filter((c) => c.deletedAt).length,
-        } as unknown as Prisma.InputJsonValue,
-      },
+    await writeAudit(tx, env, {
+      action: 'EXPORT',
+      entityType: 'TemixSyncBatch',
+      entityId: b.id,
+      after: {
+        customers: ids.length,
+        deactivations: queued.filter((c) => c.deletedAt).length,
+      } as unknown as Prisma.InputJsonValue,
     });
     return { batch: b, customers: queued };
   }, { timeout: 20_000, maxWait: 5_000 });
@@ -249,6 +253,8 @@ export async function markTemixBatchLoadedAction(formData: FormData): SafeAction
     const batchId = String(formData.get('batchId') ?? '');
     if (!batchId) throw new ValidationError({ batchId: 'required' });
     const now = new Date();
+    // Envelope before the transaction — see generateTemixBatchCore.
+    const env = await getAuditEnvelope(me.id);
     // One transaction for claim + settle + audit: a crash between the claim
     // and the settle would otherwise strand deactivate-lane rows in UPLOADED
     // forever (the idempotency guard rejects a second confirm).
@@ -287,17 +293,14 @@ export async function markTemixBatchLoadedAction(formData: FormData): SafeAction
         },
         data: { temixSyncState: TemixSyncState.SYNCED },
       });
-      await tx.auditLog.create({
-        data: {
-          actorId: me.id,
-          action: 'UPDATE',
-          entityType: 'TemixSyncBatch',
-          entityId: batchId,
-          after: {
-            markedLoadedAt: now.toISOString(),
-            deactivationsSettled: settled.count,
-          } as unknown as Prisma.InputJsonValue,
-        },
+      await writeAudit(tx, env, {
+        action: 'UPDATE',
+        entityType: 'TemixSyncBatch',
+        entityId: batchId,
+        after: {
+          markedLoadedAt: now.toISOString(),
+          deactivationsSettled: settled.count,
+        } as unknown as Prisma.InputJsonValue,
       });
       return settled.count;
     });

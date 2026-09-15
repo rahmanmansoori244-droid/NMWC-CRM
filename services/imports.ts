@@ -28,6 +28,7 @@ import bcrypt from 'bcryptjs';
 import { logger } from '@/lib/logger';
 import { notifyUsers } from '@/lib/notifications';
 import { randomUUID } from 'node:crypto';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 // RBAC-05-009 / PRD §4: import is Steward-only. The previous lax gate accepted
 // MANAGER too, conflating Steward (master-data ops) and Manager (people ops)
@@ -118,6 +119,9 @@ async function uploadAccountMasterCore(
   formData: FormData
 ): Promise<{ batchId: string; clean: number; issues: number }> {
   const me = await requireSteward();
+  // One envelope for the whole upload: read the request headers once, up front,
+  // before the row loop and before anything opens a transaction.
+  const env = await getAuditEnvelope(me.id);
   // F-07: same rate-limit as customer master.
   const lim = await checkLimit(`import:${me.id}`, { capacity: 3, refillPerSec: 0.05 });
   if (!lim.ok) {
@@ -379,17 +383,20 @@ async function uploadAccountMasterCore(
             where: { ownedRouteId: route.id, NOT: { username } },
             data: { ownedRouteId: null },
           });
-          await prisma.auditLog.createMany({
-            data: displacedOwners.map((u) => ({
-              actorId: me.id,
-              action: 'REASSIGN' as const,
+          // A loop, not createMany: writeAudit is the only writer of ip and
+          // userAgent and it writes one row at a time. That costs nothing here —
+          // User.ownedRouteId is @unique, so at most ONE user can own a route
+          // and this list is 0 or 1 rows by construction.
+          for (const u of displacedOwners) {
+            await writeAudit(null, env, {
+              action: 'REASSIGN',
               entityType: 'User',
               entityId: u.id,
               before: { ownedRouteCode: routeCode } as unknown as Prisma.InputJsonValue,
               after: { ownedRouteCode: null } as unknown as Prisma.InputJsonValue,
               reason: `route ${routeCode} reassigned to ${username} via import`,
-            })),
-          });
+            });
+          }
         }
         ownedRouteId = route.id;
       }
@@ -469,29 +476,26 @@ async function uploadAccountMasterCore(
           update,
           create: data,
         });
-        // Audit any sensitive change
+        // Audit any sensitive change. Not swallowed, and deliberately so: these
+        // sit inside the per-row try/catch, so a failed insert becomes a
+        // quarantined row the Steward sees rather than a silent gap in the
+        // credential-change trail.
         if (existing && wantsReset) {
-          await prisma.auditLog.create({
-            data: {
-              actorId: me.id,
-              action: 'UPDATE',
-              entityType: 'User',
-              entityId: user.id,
-              reason: 'password_reset_via_import',
-            },
+          await writeAudit(null, env, {
+            action: 'UPDATE',
+            entityType: 'User',
+            entityId: user.id,
+            reason: 'password_reset_via_import',
           });
         }
         if (existing && wantsRoleChange && existing.role !== role) {
-          await prisma.auditLog.create({
-            data: {
-              actorId: me.id,
-              action: 'UPDATE',
-              entityType: 'User',
-              entityId: user.id,
-              before: { role: existing.role } as unknown as Prisma.InputJsonValue,
-              after: { role } as unknown as Prisma.InputJsonValue,
-              reason: 'role_change_via_import',
-            },
+          await writeAudit(null, env, {
+            action: 'UPDATE',
+            entityType: 'User',
+            entityId: user.id,
+            before: { role: existing.role } as unknown as Prisma.InputJsonValue,
+            after: { role } as unknown as Prisma.InputJsonValue,
+            reason: 'role_change_via_import',
           });
         }
 
@@ -541,22 +545,27 @@ async function uploadAccountMasterCore(
   }
 
   // F-19: per-batch audit summary for the Account master too.
-  await prisma.auditLog
-    .create({
-      data: {
-        actorId: me.id,
-        action: 'IMPORT',
-        entityType: 'ImportBatch',
-        entityId: batch.id,
-        after: {
-          kind: 'ACCOUNT',
-          clean: cleanCount,
-          issues: issues.length,
-        } as unknown as Prisma.InputJsonValue,
-        reason: 'account_master_upload',
-      },
-    })
-    .catch(() => undefined);
+  //
+  // DG-06/07: the swallow STAYS here, unlike the exports. This is a summary, not
+  // the only record — ImportBatch above already carries status PROMOTED and the
+  // three counters, and the quarantined rows are persisted as ImportRow. It also
+  // runs after everything has committed, so throwing would tell the Steward a
+  // fully-successful import failed; the natural re-run would re-hash passwords,
+  // re-stamp sessionsRevokedAt and re-displace route owners. But it no longer
+  // swallows SILENTLY — a lost summary is now visible in the logs.
+  await writeAudit(null, env, {
+    action: 'IMPORT',
+    entityType: 'ImportBatch',
+    entityId: batch.id,
+    after: {
+      kind: 'ACCOUNT',
+      clean: cleanCount,
+      issues: issues.length,
+    } as unknown as Prisma.InputJsonValue,
+    reason: 'account_master_upload',
+  }).catch((e) => {
+    logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
+  });
 
   logger.info(
     { batchId: batch.id, clean: cleanCount, issues: issues.length },
@@ -947,6 +956,10 @@ export async function promoteCustomerBatchAction(
 
 async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSliceResult> {
   const me = await requireSteward();
+  // One envelope per slice, read once up front — before the lease claim and
+  // before the per-group interactive transaction, so no header work happens
+  // while a transaction is held open (see generateTemixBatchCore).
+  const env = await getAuditEnvelope(me.id);
   const batchId = String(formData.get('batchId') ?? '');
   if (!batchId) throw new ValidationError({ batchId: 'required' });
 
@@ -1723,32 +1736,33 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // F-19: per-batch summary audit log. Without this, "what happened in last
     // week's import?" requires SQL spelunking. The row carries the actor, the
     // counts, and the failure list (codes only — no embedded values).
-    await prisma.auditLog
-      .create({
-        data: {
-          actorId: me.id,
-          action: 'IMPORT',
-          entityType: 'ImportBatch',
-          entityId: batchId,
-          after: {
-            kind: 'CUSTOMER',
-            totalGroups: groups.size,
-            groupsInSlice: processedGroups,
-            promoted,
-            failed: failures.length,
-            deferred,
-            remaining,
-            final: done,
-            failureCustCodes: failures.map((f) => f.custCode).slice(0, 100),
-          } as unknown as Prisma.InputJsonValue,
-          // One audit row per slice: a resumed load leaves a complete, ordered trail
-          // instead of a single summary that hides how the batch actually landed.
-          reason: done ? 'customer_master_promote' : 'customer_master_promote_slice',
-        },
-      })
-      .catch((e) => {
-        logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
-      });
+    // DG-06/07: the swallow stays — the durable record of this slice is the
+    // ImportBatch counters written just above plus every ImportRow's own
+    // PROMOTED/REJECTED state, and throwing here would abort a slice whose
+    // customer rows are already committed, sending the batch down the catch
+    // path that releases the lease. The loss is already logged, which is what
+    // makes keeping it defensible.
+    await writeAudit(null, env, {
+      action: 'IMPORT',
+      entityType: 'ImportBatch',
+      entityId: batchId,
+      after: {
+        kind: 'CUSTOMER',
+        totalGroups: groups.size,
+        groupsInSlice: processedGroups,
+        promoted,
+        failed: failures.length,
+        deferred,
+        remaining,
+        final: done,
+        failureCustCodes: failures.map((f) => f.custCode).slice(0, 100),
+      } as unknown as Prisma.InputJsonValue,
+      // One audit row per slice: a resumed load leaves a complete, ordered trail
+      // instead of a single summary that hides how the batch actually landed.
+      reason: done ? 'customer_master_promote' : 'customer_master_promote_slice',
+    }).catch((e) => {
+      logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
+    });
 
     // Only the FINAL slice revalidates. An intermediate slice revalidating would
     // re-render the batch page (and re-run its queries) after every pass — dozens of

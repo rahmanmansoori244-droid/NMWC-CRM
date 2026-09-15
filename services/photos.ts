@@ -13,6 +13,7 @@ import {
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { loadScope, assertCanAccessAttachment, assertCanEditCustomer } from '@/lib/access';
 
@@ -142,6 +143,8 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         scope
       );
     }
+    // DG-06: capture the request envelope before opening the transaction.
+    const env = await getAuditEnvelope(session.user.id);
     await prisma.$transaction(async (tx) => {
       // NEW-PHOTO-003: soft-delete the prior CR photo on replacement so it no
       // longer dedupes against future uploads, no longer counts in storage,
@@ -167,18 +170,14 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       });
       const cScore = scoreCustomer(fresh, fresh.branches);
       await tx.customer.update({ where: { id: c.id }, data: { completenessScore: cScore } });
-      await tx.auditLog.create({
-        data: {
-          actorId: session.user.id,
-          // FORCE_OVERRIDE when an admin attaches a photo they didn't capture.
-          action:
-            isAdmin && att.capturedById !== session.user.id ? 'FORCE_OVERRIDE' : 'UPDATE',
-          entityType: 'Customer',
-          entityId: c.id,
-          before: { crPhotoId: prev } as unknown as Prisma.InputJsonValue,
-          after: { crPhotoId: att.id } as unknown as Prisma.InputJsonValue,
-          reason: 'CR photo attached',
-        },
+      await writeAudit(tx, env, {
+        // FORCE_OVERRIDE when an admin attaches a photo they didn't capture.
+        action: isAdmin && att.capturedById !== session.user.id ? 'FORCE_OVERRIDE' : 'UPDATE',
+        entityType: 'Customer',
+        entityId: c.id,
+        before: { crPhotoId: prev } as unknown as Prisma.InputJsonValue,
+        after: { crPhotoId: att.id } as unknown as Prisma.InputJsonValue,
+        reason: 'CR photo attached',
       });
     });
   } else {
@@ -206,6 +205,8 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       );
     }
 
+    // DG-06: same as the CR branch — envelope before the transaction.
+    const env = await getAuditEnvelope(session.user.id);
     await prisma.$transaction(async (tx) => {
       const updateBranch: Prisma.BranchUpdateInput = { lastEditedById: session.user.id };
       // NEW-PHOTO-003: soft-delete the prior shop/signboard photo on
@@ -256,19 +257,15 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         where: { id: b.customerId },
         data: { completenessScore: cScore },
       });
-      await tx.auditLog.create({
-        data: {
-          actorId: session.user.id,
-          // SEC-H1: mirror the CR path — an admin (Steward/Manager) attaching a
-          // branch photo they did not capture is a FORCE_OVERRIDE, so the audit
-          // trail flags it even though the write is now region-scoped.
-          action:
-            isAdmin && att.capturedById !== session.user.id ? 'FORCE_OVERRIDE' : 'UPDATE',
-          entityType: 'Branch',
-          entityId: b.id,
-          after: { slot: data.slot, attachmentId: att.id } as unknown as Prisma.InputJsonValue,
-          reason: 'photo attached',
-        },
+      await writeAudit(tx, env, {
+        // SEC-H1: mirror the CR path — an admin (Steward/Manager) attaching a
+        // branch photo they did not capture is a FORCE_OVERRIDE, so the audit
+        // trail flags it even though the write is now region-scoped.
+        action: isAdmin && att.capturedById !== session.user.id ? 'FORCE_OVERRIDE' : 'UPDATE',
+        entityType: 'Branch',
+        entityId: b.id,
+        after: { slot: data.slot, attachmentId: att.id } as unknown as Prisma.InputJsonValue,
+        reason: 'photo attached',
       });
     });
   }
@@ -322,6 +319,8 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   // attachment is *currently* attached to (not "every customer that ever
   // pointed at this hash"). Combined with NEW-PHOTO-003 (replacement
   // soft-deletes the prior), each Attachment row points to at most one slot.
+  // DG-06: envelope before the transaction (see attachPhotoCore).
+  const env = await getAuditEnvelope(session.user.id);
   await prisma.$transaction(async (tx) => {
     if (att.customerId) {
       await tx.customer.updateMany({
@@ -371,14 +370,11 @@ async function detachPhotoCore(input: { attachmentId: string }) {
         await tx.customer.update({ where: { id: fresh.id }, data: { completenessScore: scoreCustomer(fresh, fresh.branches) } });
       }
     }
-    await tx.auditLog.create({
-      data: {
-        actorId: session.user.id,
-        action: 'UPDATE',
-        entityType: 'Attachment',
-        entityId: att.id,
-        reason: 'photo removed (soft-delete)',
-      },
+    await writeAudit(tx, env, {
+      action: 'UPDATE',
+      entityType: 'Attachment',
+      entityId: att.id,
+      reason: 'photo removed (soft-delete)',
     });
   });
   logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.detach');

@@ -11,6 +11,7 @@ import {
 } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { buildWorkbook } from '@/lib/excel';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import {
   applyCustomerFilters,
   customerListBranchScope,
@@ -221,18 +222,18 @@ async function exportFilteredCustomersCore(
   const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
   const stamp = new Date().toISOString().slice(0, 10);
 
-  // Best-effort audit (same pattern as buildCustomerExport).
-  await prisma.auditLog
-    .create({
-      data: {
-        actorId: me.id,
-        action: 'EXPORT', // B6: was IMPORT — see services/exports.ts
-        entityType: 'Export',
-        entityId: `customers-${stamp}`,
-        reason: `filtered ${exportRows.length}`,
-      },
-    })
-    .catch(() => undefined);
+  // DG-06/07: no longer best-effort — same reasoning as buildCustomerExport.
+  // The throw lands BEFORE the base64 buffer is built, so the filtered PII never
+  // crosses the RSC boundary without a ledger row. runAction maps a transient
+  // fault to DB_UNAVAILABLE with a retryable message; anything else (in practice
+  // only an actorId FK violation) re-throws and the action surfaces as an error
+  // rather than a silent unaudited export.
+  await writeAudit(null, await getAuditEnvelope(me.id), {
+    action: 'EXPORT', // B6: was IMPORT — see services/exports.ts
+    entityType: 'Export',
+    entityId: `customers-${stamp}`,
+    reason: `filtered ${exportRows.length}`,
+  });
   logger.info({ count: exportRows.length, by: me.id }, 'export.customers_filtered');
 
   // Convert ArrayBuffer to base64 for transport across the RSC boundary.

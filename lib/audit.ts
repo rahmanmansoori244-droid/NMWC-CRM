@@ -61,6 +61,27 @@ export async function getAuditEnvelope(actorId: string): Promise<AuditEnvelope> 
   }
 }
 
+/**
+ * Envelope for writes a background job makes on nobody's behalf (the SLA
+ * escalation sweep). ip and userAgent are null BY CONSTRUCTION, not because a
+ * header read failed.
+ *
+ * Do NOT use getAuditEnvelope here. A cron route handler IS a request scope, so
+ * headers() succeeds and returns the scheduler's IP and user-agent — which
+ * would be stamped onto a row whose actorId is the human submitter. A
+ * fabricated forensic field is worse than an absent one.
+ *
+ * AuditLog.actorId is an FK to User, so a system write still has to name a real
+ * accountable user; pair it with an explicit `reason: 'system: ...'` so the row
+ * cannot be misread as an action that person took.
+ *
+ * Synchronous deliberately: with no headers() call this is the one envelope
+ * that is safe to construct anywhere, including inside a transaction callback.
+ */
+export function systemAuditEnvelope(actorId: string): AuditEnvelope {
+  return { actorId, ip: null, userAgent: null };
+}
+
 type AuditWriter = Prisma.TransactionClient | typeof defaultPrisma;
 
 export type AuditParams = {

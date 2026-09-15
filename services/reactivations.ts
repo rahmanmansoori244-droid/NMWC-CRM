@@ -16,6 +16,7 @@ import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from '@/lib/working-hours';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 async function require(role?: Role[]) {
   const session = await auth();
@@ -289,6 +290,12 @@ async function approveReactivationCore(formData: FormData) {
     throw new ForbiddenError('Cannot approve your own reactivation.');
   }
 
+  // DG-06: envelope built before the transaction opens (services/users.ts
+  // pattern). getAuditEnvelope degrades to null ip/userAgent rather than
+  // throwing, so any loss of request context inside the callback would be
+  // silent; keeping the call out here makes that impossible.
+  const env = await getAuditEnvelope(me.id);
+
   await prisma.$transaction(async (tx) => {
     // QA-C12: claim the edit atomically FIRST (PROD-001 pattern, mirroring
     // services/edits.ts approveEditCore). The pre-tx state read above is a fast
@@ -345,14 +352,11 @@ async function approveReactivationCore(formData: FormData) {
       await tx.branch.update({ where: { id: b.id }, data: { completenessScore: bScore } });
     }
     // (edit state already claimed to APPROVED at the top of this tx — QA-C12.)
-    await tx.auditLog.create({
-      data: {
-        actorId: me.id,
-        action: 'REACTIVATE',
-        entityType: 'Branch',
-        entityId: edit.branchId!,
-        reason: edit.decisionReason ?? undefined,
-      },
+    await writeAudit(tx, env, {
+      action: 'REACTIVATE',
+      entityType: 'Branch',
+      entityId: edit.branchId!,
+      reason: edit.decisionReason ?? undefined,
     });
   });
 
@@ -419,14 +423,11 @@ async function rejectReactivationCore(formData: FormData) {
       'This reactivation was just decided by another reviewer. Refresh to see the current state.'
     );
   }
-  await prisma.auditLog.create({
-    data: {
-      actorId: me.id,
-      action: 'REJECT',
-      entityType: 'CustomerEdit',
-      entityId: editId,
-      reason,
-    },
+  await writeAudit(null, await getAuditEnvelope(me.id), {
+    action: 'REJECT',
+    entityType: 'CustomerEdit',
+    entityId: editId,
+    reason,
   });
   revalidatePath('/reactivations');
 }

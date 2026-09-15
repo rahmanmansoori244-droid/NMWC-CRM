@@ -14,6 +14,7 @@ import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer } from '@/lib/completeness';
 import { resolveArchiveTemixState } from '@/lib/temix';
+import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 // RBAC-05-009: PRD §4 reserves duplicate merge to STEWARD. Previous code
 // also accepted MANAGER which conflated master-data ops with people-ops
@@ -258,6 +259,15 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
     throw new ValidationError({ reason: 'Cross-region merges require a reason (5+ chars).' });
   }
 
+  // DG-06: build the forensic envelope BEFORE the transaction opens, matching
+  // the services/users.ts pattern. Two reasons. The merge holds FOR UPDATE on
+  // both customer rows for the whole callback (timeout 20s below), so no
+  // request-scoped work belongs in there; and getAuditEnvelope degrades to null
+  // ip/userAgent instead of throwing, so if the request context were ever lost
+  // inside the callback the loss would be silent — exactly the gap this change
+  // exists to close.
+  const env = await getAuditEnvelope(session.id);
+
   await prisma.$transaction(
     async (tx) => {
       // PROD-DUP-01 (P1): lock BOTH customer rows in a deterministic (id-sorted)
@@ -424,21 +434,18 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
         where: { id: winner.id },
         data: { completenessScore: newScore },
       });
-      await tx.auditLog.create({
-        data: {
-          actorId: session.id,
-          action: 'MERGE',
-          entityType: 'Customer',
-          entityId: winner.id,
-          before: {
-            loser: { id: loser.id, nmwcCode: loser.nmwcCode, legalName: loser.legalName },
-            winner: { id: winner.id, nmwcCode: winner.nmwcCode },
-            crossRegion: isCrossRegion,
-          } as unknown as Prisma.InputJsonValue,
-          reason: isCrossRegion
-            ? `Cross-region merge: ${loser.nmwcCode} -> ${winner.nmwcCode}. ${reason}`
-            : `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,
-        },
+      await writeAudit(tx, env, {
+        action: 'MERGE',
+        entityType: 'Customer',
+        entityId: winner.id,
+        before: {
+          loser: { id: loser.id, nmwcCode: loser.nmwcCode, legalName: loser.legalName },
+          winner: { id: winner.id, nmwcCode: winner.nmwcCode },
+          crossRegion: isCrossRegion,
+        } as unknown as Prisma.InputJsonValue,
+        reason: isCrossRegion
+          ? `Cross-region merge: ${loser.nmwcCode} -> ${winner.nmwcCode}. ${reason}`
+          : `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,
       });
     },
     {
@@ -469,14 +476,11 @@ async function dismissDuplicateCore(formData: FormData) {
   if (!aId || !bId) throw new ValidationError({ _form: 'Pair required.' });
   // We just record an audit note; future detector runs will still surface them, but the steward
   // can use this as a paper trail for "deemed distinct".
-  await prisma.auditLog.create({
-    data: {
-      actorId: session.id,
-      action: 'UPDATE',
-      entityType: 'CustomerPair',
-      entityId: `${aId}|${bId}`,
-      reason: 'Deemed distinct by steward',
-    },
+  await writeAudit(null, await getAuditEnvelope(session.id), {
+    action: 'UPDATE',
+    entityType: 'CustomerPair',
+    entityId: `${aId}|${bId}`,
+    reason: 'Deemed distinct by steward',
   });
   revalidatePath('/duplicates');
 }
