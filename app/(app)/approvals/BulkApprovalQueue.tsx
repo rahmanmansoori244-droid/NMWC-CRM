@@ -56,6 +56,9 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
   const [outcome, setOutcome] = useState<{
     successes: number;
     failures: Array<{ editId: string; code: string; message: string }>;
+    // REL-04: selected but never started, because the batch ran out of time.
+    // Distinct from a failure: nothing was attempted, so running it again is safe.
+    notAttempted: number;
   } | null>(null);
 
   const allOnPage = items.map((i) => i.id);
@@ -90,11 +93,12 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
         setOutcome({
           successes: res.data.successes.length,
           failures: res.data.failures,
+          notAttempted: res.data.notAttempted.length,
         });
         setSelected(new Set());
         router.refresh();
       } else {
-        setOutcome({ successes: 0, failures: [{ editId: '_form', code: res.code, message: res.message }] });
+        setOutcome({ successes: 0, failures: [{ editId: '_form', code: res.code, message: res.message }], notAttempted: 0 });
       }
     });
   }
@@ -114,12 +118,13 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
         setOutcome({
           successes: res.data.successes.length,
           failures: res.data.failures,
+          notAttempted: res.data.notAttempted.length,
         });
         setSelected(new Set());
         setRejectReason('');
         router.refresh();
       } else {
-        setOutcome({ successes: 0, failures: [{ editId: '_form', code: res.code, message: res.message }] });
+        setOutcome({ successes: 0, failures: [{ editId: '_form', code: res.code, message: res.message }], notAttempted: 0 });
       }
     });
   }
@@ -129,14 +134,18 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
       {outcome && (
         <div
           className={`mx-4 mb-4 rounded-md p-3 text-sm sm:mx-6 ${
-            outcome.failures.length === 0
+            outcome.failures.length === 0 && outcome.notAttempted === 0
               ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'
               : 'bg-amber-50 text-amber-800 ring-1 ring-amber-200'
           }`}
         >
           <p className="font-semibold">
             {outcome.successes} processed
-            {outcome.failures.length > 0 ? `, ${outcome.failures.length} failed` : ''}.
+            {outcome.failures.length > 0 ? `, ${outcome.failures.length} failed` : ''}
+            {outcome.notAttempted > 0
+              ? `, ${outcome.notAttempted} not attempted — run it again to finish`
+              : ''}
+            .
           </p>
           {outcome.failures.length > 0 && (
             <ul className="mt-2 list-disc pl-5 text-xs">

@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { runBulk, type BulkOutcome } from '@/lib/bulk-run';
 import { Role, EditState, EditTarget, EditProcess, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
 import {
@@ -1272,10 +1273,7 @@ async function approveEditCore(formData: FormData) {
  * Hard cap: 50 edits per call to bound the round-trip and keep approveEditCore
  * isolated transactions sane on Neon.
  */
-export async function bulkApproveEditsAction(formData: FormData): SafeAction<{
-  successes: string[];
-  failures: Array<{ editId: string; code: string; message: string }>;
-}> {
+export async function bulkApproveEditsAction(formData: FormData): SafeAction<BulkOutcome> {
   return runAction(async () => {
     await requireUser();
     const raw = String(formData.get('editIds') ?? '[]');
@@ -1293,20 +1291,32 @@ export async function bulkApproveEditsAction(formData: FormData): SafeAction<{
     if (editIds.length > 50) {
       throw new ValidationError({ editIds: 'Bulk limit is 50 edits per call.' });
     }
-    const successes: string[] = [];
-    const failures: Array<{ editId: string; code: string; message: string }> = [];
-    for (const editId of editIds) {
-      const fd = new FormData();
-      fd.set('editId', editId);
-      const res = await approveEditAction(fd);
-      if (res.ok) {
-        successes.push(editId);
-      } else {
-        failures.push({ editId, code: res.code, message: res.message });
+    // REL-04: each item commits on its own, so a throw escaping this loop
+    // would leave approvals committed and the approver told nothing at all.
+    const out = await runBulk(
+      editIds,
+      (editId) => {
+        const fd = new FormData();
+        fd.set('editId', editId);
+        return approveEditAction(fd);
+      },
+      {
+        onItemError: (editId, err) =>
+          logger.warn(
+            { editId, err: (err as Error)?.message },
+            'edit.bulk.approve.item_threw'
+          ),
       }
-    }
-    logger.info({ successes: successes.length, failures: failures.length }, 'edit.bulk.approve');
-    return { successes, failures };
+    );
+    logger.info(
+      {
+        successes: out.successes.length,
+        failures: out.failures.length,
+        notAttempted: out.notAttempted.length,
+      },
+      'edit.bulk.approve'
+    );
+    return out;
   });
 }
 
@@ -1314,10 +1324,7 @@ export async function bulkApproveEditsAction(formData: FormData): SafeAction<{
  * B-11: Bulk reject. Same shape as bulkApprove but applies a single
  * `category` + `reason` to every selected edit.
  */
-export async function bulkRejectEditsAction(formData: FormData): SafeAction<{
-  successes: string[];
-  failures: Array<{ editId: string; code: string; message: string }>;
-}> {
+export async function bulkRejectEditsAction(formData: FormData): SafeAction<BulkOutcome> {
   return runAction(async () => {
     await requireUser();
     const raw = String(formData.get('editIds') ?? '[]');
@@ -1340,22 +1347,29 @@ export async function bulkRejectEditsAction(formData: FormData): SafeAction<{
     if (editIds.length > 50) {
       throw new ValidationError({ editIds: 'Bulk limit is 50 edits per call.' });
     }
-    const successes: string[] = [];
-    const failures: Array<{ editId: string; code: string; message: string }> = [];
-    for (const editId of editIds) {
-      const fd = new FormData();
-      fd.set('editId', editId);
-      fd.set('reason', reason);
-      fd.set('category', category);
-      const res = await rejectEditAction(fd);
-      if (res.ok) {
-        successes.push(editId);
-      } else {
-        failures.push({ editId, code: res.code, message: res.message });
+    const out = await runBulk(
+      editIds,
+      (editId) => {
+        const fd = new FormData();
+        fd.set('editId', editId);
+        fd.set('reason', reason);
+        fd.set('category', category);
+        return rejectEditAction(fd);
+      },
+      {
+        onItemError: (editId, err) =>
+          logger.warn({ editId, err: (err as Error)?.message }, 'edit.bulk.reject.item_threw'),
       }
-    }
-    logger.info({ successes: successes.length, failures: failures.length }, 'edit.bulk.reject');
-    return { successes, failures };
+    );
+    logger.info(
+      {
+        successes: out.successes.length,
+        failures: out.failures.length,
+        notAttempted: out.notAttempted.length,
+      },
+      'edit.bulk.reject'
+    );
+    return out;
   });
 }
 
