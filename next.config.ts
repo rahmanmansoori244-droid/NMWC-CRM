@@ -38,6 +38,14 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // DO-07: VERCEL_ENV and VERCEL_GIT_COMMIT_SHA exist only on the server.
+  // Map them into the client bundle at build time so browser reports carry the
+  // same environment and release as server reports — otherwise a Preview
+  // deployment files its errors as "production" and no report names a commit.
+  env: {
+    NEXT_PUBLIC_SENTRY_ENV: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "development",
+    NEXT_PUBLIC_SENTRY_RELEASE: process.env.VERCEL_GIT_COMMIT_SHA ?? "",
+  },
   reactStrictMode: true,
   poweredByHeader: false,
   images: {

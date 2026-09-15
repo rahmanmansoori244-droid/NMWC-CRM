@@ -8,6 +8,7 @@
  */
 import { useEffect } from 'react';
 import { logger } from '@/lib/logger';
+import * as Sentry from '@sentry/nextjs';
 
 export default function GlobalError({
   error,
@@ -18,7 +19,10 @@ export default function GlobalError({
 }) {
   useEffect(() => {
     logger.error({ digest: error.digest }, 'app.unhandled');
-  }, [error.digest]);
+    // DO-04: this boundary logged but never reported. The page told the user
+    // 'Our team has been notified' while nothing notified anyone.
+    Sentry.captureException(error);
+  }, [error]);
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
       <section className="max-w-md rounded-lg bg-white p-6 text-center shadow-sm ring-1 ring-slate-200">

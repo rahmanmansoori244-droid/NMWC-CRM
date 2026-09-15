@@ -1,5 +1,6 @@
 import * as Sentry from '@sentry/nextjs';
 import { scrubEvent } from '@/lib/sentry-scrub';
+import { sentryEnvironment, sentryRelease } from '@/lib/sentry-env';
 
 /**
  * B6 (2026-09-14): the Edge runtime had NO `beforeSend` at all, so an error in
@@ -11,6 +12,9 @@ Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
   enabled: !!process.env.NEXT_PUBLIC_SENTRY_DSN,
   tracesSampleRate: 0.1,
-  environment: process.env.NODE_ENV,
+  // DO-07: NODE_ENV is "production" on every built deployment, so a Preview
+  // deployment used to file its errors alongside real ones.
+  environment: sentryEnvironment(),
+  release: sentryRelease(),
   beforeSend: scrubEvent,
 });

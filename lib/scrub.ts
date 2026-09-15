@@ -2,7 +2,7 @@
  * One personal-data scrubber for every outbound text channel.
  *
  * The same two regexes were copied into `lib/logger.ts`, `sentry.server.config.ts`
- * and `sentry.client.config.ts`, while `sentry.edge.config.ts` had none and
+ * and `instrumentation-client.ts`, while `sentry.edge.config.ts` had none and
  * `lib/heartbeat.ts` wrote cron error strings to the database and to the bearer
  * health payload with no scrubbing at all (B6, 2026-09-14). Copies drift; a
  * single tested function does not.
