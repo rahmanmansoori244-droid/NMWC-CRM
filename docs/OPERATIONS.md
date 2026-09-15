@@ -206,7 +206,7 @@ The two GitHub Actions workflows (`.github/workflows/keep-warm.yml`, `sla-escala
 | Layer | Covers | Window | Where |
 |---|---|---|---|
 | Neon point-in-time recovery | The database, to any instant | 7 days | Same provider, same region as production |
-| Nightly off-Neon dump | The database, as of the dump | 30 days of dumps | Cloudflare R2 `nmwc-backups`, encrypted |
+| Nightly off-Neon dump | The database, as of the dump | 30 days of dumps | Cloudflare R2 `nmwc-backups` — **plaintext until the age key is set up** (§6.7); the workflow warns loudly on every run until then |
 | **Nothing** | The photographs in `nmwc-photos` | — | Single copy |
 
 The nightly dump is `.github/workflows/db-backup.yml`: `pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data`, gzipped, age-encrypted, uploaded to `db/<timestamp>.sql.gz.age` with a row-count manifest beside it at `db/<timestamp>.manifest.json`.

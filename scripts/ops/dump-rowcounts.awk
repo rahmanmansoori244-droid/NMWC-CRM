@@ -21,12 +21,19 @@
 #
 #   gunzip -c dump.sql.gz | awk -f scripts/ops/dump-rowcounts.awk
 
-/^COPY public\./ {
+# Anchored on the full header form, so a data row that merely begins with the
+# text "COPY public." cannot be mistaken for one, and a quoted identifier
+# containing a space is read whole rather than truncated at the space.
+/^COPY public\.("[^"]+"|[A-Za-z_][A-Za-z0-9_$]*) .*FROM stdin;$/ {
   line = $0
-  sub(/^COPY public\./, "", line)   # "Customer" (id, ...) FROM stdin;
-  sub(/ .*/, "", line)              # "Customer"
-  gsub(/"/, "", line)               # Customer
-  table = line
+  sub(/^COPY public\./, "", line)        # "Customer" (id, ...) FROM stdin;
+  if (substr(line, 1, 1) == "\"") {
+    end = index(substr(line, 2), "\"")    # up to the closing quote
+    table = substr(line, 2, end - 1)
+  } else {
+    sub(/ .*/, "", line)
+    table = line
+  }
   rows = 0
   in_copy = 1
   next

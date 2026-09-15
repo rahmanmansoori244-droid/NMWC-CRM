@@ -25,6 +25,8 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
   let batchId = '';
   const oldRowId = `${sfx}-old`;
   const freshRowId = `${sfx}-fresh`;
+  const stagedRowId = `${sfx}-staged`;
+  let stagedBatchId = '';
 
   const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
   const PERSONAL = {
@@ -50,6 +52,28 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
       data: { filename: `${sfx}.xlsx`, kind: 'CUSTOMER', status: 'PROMOTED', uploadedById: userId },
     });
     batchId = batch.id;
+    // A batch that was uploaded long ago and never promoted. Its rows are old
+    // enough for the retention cutoff but the work is not finished.
+    const staged = await prisma.importBatch.create({
+      data: { filename: `${sfx}-staged.xlsx`, kind: 'CUSTOMER', status: 'READY', uploadedById: userId },
+    });
+    stagedBatchId = staged.id;
+    await prisma.importRow.create({
+      data: {
+        id: stagedRowId,
+        batchId: stagedBatchId,
+        rowNumber: 1,
+        raw: PERSONAL,
+        parsed: PERSONAL,
+        issues: [{ field: 'phone', message: 'needs review' }],
+        state: 'CLEAN',
+      },
+    });
+    await prisma.$executeRawUnsafe(
+      `UPDATE "ImportRow" SET "createdAt" = $1 WHERE "id" = $2`,
+      daysAgo(200),
+      stagedRowId
+    );
 
     // One row past the retention horizon, one inside it.
     for (const [id, age] of [
@@ -105,8 +129,8 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
 
   afterAll(async () => {
     if (!prisma) return;
-    await prisma.importRow.deleteMany({ where: { batchId } });
-    await prisma.importBatch.deleteMany({ where: { id: batchId } });
+    await prisma.importRow.deleteMany({ where: { batchId: { in: [batchId, stagedBatchId] } } });
+    await prisma.importBatch.deleteMany({ where: { id: { in: [batchId, stagedBatchId] } } });
     await prisma.notification.deleteMany({ where: { userId } });
     await prisma.rateLimit.deleteMany({ where: { key: { startsWith: `login:user:${sfx}` } } });
     await purgeAuditLog(prisma, { where: { actorId: userId } });
@@ -150,6 +174,17 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
     const fresh = await prisma.importRow.findUniqueOrThrow({ where: { id: freshRowId } });
     expect(fresh.parsed).not.toBeNull();
     expect(JSON.stringify(fresh.raw)).toContain(PERSONAL.phone);
+  });
+
+  it('does NOT disarm a batch that is still staged, however old its rows are', async () => {
+    // The P0 this guard exists for: services/imports.ts promotes a row by
+    // reading row.parsed. Clearing it on a row whose batch has not been
+    // promoted or failed would leave the batch permanently unpromotable, and
+    // no rollback can bring the payload back.
+    const staged = await prisma.importRow.findUniqueOrThrow({ where: { id: stagedRowId } });
+    expect(staged.parsed).not.toBeNull();
+    expect(JSON.stringify(staged.raw)).toContain(PERSONAL.phone);
+    expect(staged.issues).not.toBeNull();
   });
 
   it('is idempotent and makes progress — a second run re-clears nothing', async () => {

@@ -60,3 +60,8 @@ prisma/*.db-journal
 # Go-live master data built from the real Temix/RoutePro/dashboard sources.
 # Contains customer PII and generated credentials — NEVER commit.
 /golive-data/
+
+# Local dump artefacts from testing the backup pipeline
+*.sql
+*.sql.gz
+*.sql.gz.age

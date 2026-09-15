@@ -47,7 +47,7 @@ This is the hardest question in the system and it was created deliberately.
 
 ## Q5 — Do backups defeat erasure, and is the usual exception available here?
 
-**Facts.** A dump taken before an erasure still contains the data. Dumps are kept 30 days; Neon point-in-time recovery covers 7. Since 2026-09-14 each dump is written to its own timestamped key, so dumps are effectively write-once and are not selectively editable. They are encrypted at rest.
+**Facts.** A dump taken before an erasure still contains the data. Dumps are kept 30 days; Neon point-in-time recovery covers 7. Since 2026-09-14 each dump is written to its own timestamped key, so dumps are effectively write-once and are not selectively editable. **They are NOT yet encrypted at rest**: the workflow encrypts to the recipients in the `BACKUP_AGE_RECIPIENTS` repository variable, and that variable has not been created, so every dump currently in the bucket is plaintext (runbook §0 step 10).
 
 **Needed from counsel.** Whether the standard formulation — erasure applied to live systems immediately, backups not selectively edited, the erasure re-applied if a backup is ever restored — is acceptable under Omani law, or whether something else is required.
 

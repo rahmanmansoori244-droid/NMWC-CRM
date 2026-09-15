@@ -68,7 +68,11 @@ jobs:
       PROD_DB_HOST_MARKER: ${{ vars.PROD_DB_HOST_MARKER }}
       # Minimum acceptable size of the compressed dump. A real dump of this
       # database is ~megabytes; anything under this is an empty or broken one.
-      MIN_DUMP_BYTES: ${{ vars.MIN_DUMP_BYTES || '200000' }}
+      # Measured: the real production dump is ~327 KB compressed (2026-09-15).
+      # The floor exists to catch an EMPTY or wrong database, so it sits well
+      # below that rather than just under it — crossing this floor produces no
+      # backup at all, which is worse than a small one.
+      MIN_DUMP_BYTES: ${{ vars.MIN_DUMP_BYTES || '80000' }}
     steps:
       - name: Checkout (for the manifest query)
         uses: actions/checkout@v4
@@ -85,10 +89,14 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-17 age
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+          # Only the postgres client is essential. If the universe mirror is
+          # having a bad day, still take the backup and say it is unencrypted.
+          sudo apt-get install -y --no-install-recommends age \
+            || echo "::warning::could not install age — this run will upload UNENCRYPTED"
           echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
           /usr/lib/postgresql/17/bin/pg_dump --version
-          age --version
+          age --version || true
 
       - name: Compute backup metadata
         run: |
@@ -132,12 +140,17 @@ jobs:
       - name: Row-count manifest (before the dump)
         run: |
           set -euo pipefail
-          psql "$PGURL" -At -f scripts/ops/backup-manifest.sql > "${STAMP}.manifest.json"
-          jq -r '"source: \(.tableCount) tables, \(.triggerCount) triggers, newest audit \(.newestAuditAt // "none")"' "${STAMP}.manifest.json"
-          # An UNLOGGED table would have its DATA silently omitted by the dump.
-          UNLOGGED=$(jq '.unloggedTables | length' "${STAMP}.manifest.json")
-          if [ "$UNLOGGED" != "0" ]; then
-            echo "::error::the database has UNLOGGED tables — --no-unlogged-table-data would back them up with NO ROWS"; exit 1
+          # Absolute path, as the old workflow did: Ubuntu pre-installs a v16
+          # client and it wins on PATH, and v16 refuses to talk to a v17 server.
+          /usr/lib/postgresql/17/bin/psql "$PGURL" -At -f scripts/ops/backup-manifest.sql > "${STAMP}.manifest.json" \
+            || { echo "::warning::manifest query failed — continuing without row counts; the restore verifier will fall back to its schema checks"; rm -f "${STAMP}.manifest.json"; }
+          if [ -s "${STAMP}.manifest.json" ]; then
+            jq -r '"source: \(.tableCount) tables, \(.triggerCount) triggers, newest audit \(.newestAuditAt // "none")"' "${STAMP}.manifest.json"
+            # An UNLOGGED table would have its DATA silently omitted by the dump.
+            UNLOGGED=$(jq '.unloggedTables | length' "${STAMP}.manifest.json")
+            if [ "$UNLOGGED" != "0" ]; then
+              echo "::error::the database has UNLOGGED tables — --no-unlogged-table-data would back them up with NO ROWS"; exit 1
+            fi
           fi
 
       - name: pg_dump → gzip
@@ -148,7 +161,7 @@ jobs:
           # role must be re-created after every restore (scripts/ops/app-role.ts).
           # --format=plain: SQL text, inspectable and partially restorable.
           # --no-unlogged-table-data: guarded above.
-          pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data \
+          /usr/lib/postgresql/17/bin/pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data \
             "$PGURL" | gzip --best > "${STAMP}.sql.gz"
           ls -lh "${STAMP}.sql.gz"
 
@@ -189,6 +202,9 @@ jobs:
       - name: Merge the dump's row counts into the manifest
         run: |
           set -euo pipefail
+          if [ ! -s "${STAMP}.manifest.json" ]; then
+            echo "::warning::no manifest to merge into — skipping"; exit 0
+          fi
           # The manifest's schema counts and RPO watermark come from psql before
           # the dump; its ROW COUNTS now come from the dump itself, so a write
           # during the dump window cannot make a perfect restore look wrong.
@@ -205,6 +221,13 @@ jobs:
       - name: Encrypt (age)
         run: |
           set -euo pipefail
+          if ! command -v age >/dev/null 2>&1; then
+            echo "::warning::age is not installed — uploading an UNENCRYPTED dump"
+            echo "DUMP_FILE=${STAMP}.sql.gz" >> "$GITHUB_ENV"
+            echo "DUMP_KEY=${BASE_KEY}.sql.gz" >> "$GITHUB_ENV"
+            echo "ENCRYPTED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
           if [ -z "${BACKUP_AGE_RECIPIENTS:-}" ]; then
             echo "::warning::BACKUP_AGE_RECIPIENTS is not set — uploading an UNENCRYPTED dump containing ~20k customer records and every password hash. Set the variable to an age public key (see docs/OPERATIONS.md §6)."
             echo "DUMP_FILE=${STAMP}.sql.gz" >> "$GITHUB_ENV"
@@ -237,8 +260,10 @@ jobs:
             --endpoint-url "$ENDPOINT" --checksum-algorithm CRC32
           # The manifest is not encrypted: it holds counts and timestamps, no
           # personal data, and a recovery needs it to be readable.
-          aws s3 cp "${STAMP}.manifest.json" "s3://${BACKUP_R2_BUCKET}/${BASE_KEY}.manifest.json" \
-            --endpoint-url "$ENDPOINT" --checksum-algorithm CRC32
+          if [ -s "${STAMP}.manifest.json" ]; then
+            aws s3 cp "${STAMP}.manifest.json" "s3://${BACKUP_R2_BUCKET}/${BASE_KEY}.manifest.json" \
+              --endpoint-url "$ENDPOINT" --checksum-algorithm CRC32
+          fi
           # Prove the object is really in the bucket we think it is.
           aws s3api head-object --bucket "$BACKUP_R2_BUCKET" --key "${DUMP_KEY}" \
             --endpoint-url "$ENDPOINT" > /dev/null

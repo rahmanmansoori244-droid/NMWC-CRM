@@ -59,9 +59,16 @@ async function handle(req: NextRequest) {
 
   // 1. Spent rate-limit buckets (usernames and IP addresses).
   try {
-    const { count } = await prisma.rateLimit.deleteMany({
-      where: { updatedAt: { lt: cutoff(RATE_LIMIT_DAYS) } },
-    });
+    // Bounded: an unbounded delete over an unindexed predicate is how a daily
+    // job discovers the 60 s function limit on the one night it matters.
+    const count = await prisma.$executeRaw`
+      DELETE FROM "RateLimit"
+       WHERE "key" IN (
+         SELECT "key" FROM "RateLimit"
+          WHERE "updatedAt" < ${cutoff(RATE_LIMIT_DAYS)}
+          ORDER BY "updatedAt"
+          LIMIT ${BATCH}
+       )`;
     swept.rateLimit = count;
   } catch (err) {
     errors += 1;
@@ -69,23 +76,32 @@ async function handle(req: NextRequest) {
   }
 
   // 2. Import payloads: keep the row and its outcome, drop the verbatim copies
-  //    of the customer data.
+  //    of the customer data — but ONLY for rows whose work is finished.
   //
-  //    This is raw SQL on purpose. The first version used
-  //    `data: { raw: {}, parsed: undefined, issues: undefined }`, and Prisma
-  //    reads `undefined` as "leave this column alone" — so only `raw` was
-  //    emptied while `parsed` (name, address, phone, contact person, CR number)
-  //    survived, and the `raw = {}` progress marker then excluded the row from
-  //    every future sweep. One statement sets all three and cannot drift.
+  //    `services/imports.ts` reads `row.parsed` to promote a row. Clearing it on
+  //    a row that has not been promoted or rejected yet would leave a staged
+  //    batch permanently unpromotable, which a rollback cannot undo because the
+  //    payload is gone. So the predicate requires a terminal ROW state AND a
+  //    terminal BATCH status; anything still in flight keeps its payload however
+  //    old it is, and an operator who abandons a batch can still see what was in
+  //    it.
+  //
+  //    Raw SQL on purpose: Prisma reads `undefined` as "leave this column
+  //    alone", so the obvious `{ raw: {}, parsed: undefined }` silently kept the
+  //    customer's name, address, phone and CR number in `parsed`.
   try {
     const cleared = await prisma.$executeRaw`
       UPDATE "ImportRow"
          SET "raw" = '{}'::jsonb, "parsed" = NULL, "issues" = NULL
        WHERE "id" IN (
-         SELECT "id" FROM "ImportRow"
-          WHERE "createdAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
-            AND ("raw" <> '{}'::jsonb OR "parsed" IS NOT NULL OR "issues" IS NOT NULL)
-          ORDER BY "createdAt"
+         SELECT r."id"
+           FROM "ImportRow" r
+           JOIN "ImportBatch" b ON b."id" = r."batchId"
+          WHERE r."createdAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
+            AND r."state" IN ('PROMOTED', 'REJECTED')
+            AND b."status" IN ('PROMOTED', 'FAILED')
+            AND (r."raw" <> '{}'::jsonb OR r."parsed" IS NOT NULL OR r."issues" IS NOT NULL)
+          ORDER BY r."createdAt"
           LIMIT ${BATCH}
        )`;
     swept.importRowPayloads = cleared;
@@ -97,9 +113,15 @@ async function handle(req: NextRequest) {
   // 3. Notifications nobody ever opened. The SLA sweep handles read ones at 90
   //    days; these would otherwise keep customer names indefinitely.
   try {
-    const { count } = await prisma.notification.deleteMany({
-      where: { readAt: null, createdAt: { lt: cutoff(UNREAD_NOTIFICATION_DAYS) } },
-    });
+    const count = await prisma.$executeRaw`
+      DELETE FROM "Notification"
+       WHERE "id" IN (
+         SELECT "id" FROM "Notification"
+          WHERE "readAt" IS NULL
+            AND "createdAt" < ${cutoff(UNREAD_NOTIFICATION_DAYS)}
+          ORDER BY "createdAt"
+          LIMIT ${BATCH}
+       )`;
     swept.unreadNotifications = count;
   } catch (err) {
     errors += 1;

@@ -7,7 +7,7 @@
  * token, a Neon host change — each breaks the dump while the application stays
  * perfectly healthy. `.github/workflows/db-backup.yml` now POSTs the outcome of
  * every run here (`if: always()`), success or failure, and the bearer
- * `/api/health` probe alarms when the last report is older than 27 hours or
+ * `/api/health` probe alarms when the last report is older than 40 hours (lib/heartbeat.ts, sized from the real GitHub cron drift) or
  * reported a failure (lib/heartbeat.ts, key `db-backup`).
  *
  * Auth: the same `CRON_SECRET` bearer as the cron routes. The body is
