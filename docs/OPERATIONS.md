@@ -118,7 +118,30 @@ The application no longer runs as the database owner. Two credentials exist:
 
 `AuditLog` and `EditApproval` are also protected by a database trigger (migrations `20260914150000_audit_immutability` + `20260914160000_audit_maintenance_owner_only`): UPDATE / DELETE / TRUNCATE raise `B4: … append-only` for every connection, including the owner, unless the statement runs inside a transaction that first executed `SET LOCAL nmwc.audit_maintenance = 'on'` **and the session logged in as the table owner** (`session_user`, which FK cascades cannot change). The maintenance scripts and the test clean-ups do exactly that on `DIRECT_URL`; the app role has no DELETE privilege on the ledgers or on `CustomerEdit` (the cascade path), and the trigger ignores its override anyway.
 
-**Rolling the role out to an environment (Preview/UAT first, then Production):**
+**Rolling the role out — the short way (recommended).** The owner database
+credential lives in the Vercel environment and in this repository's secrets.
+Copying it onto a laptop to run three commands is how credentials leak, so run
+them where the secret already is:
+
+1. Set the repository secret `NMWC_APP_PASSWORD` (24+ characters, no single
+   quote). Keep the value — step 2 needs the same one.
+2. **Actions → Provision app role → Run workflow.** Type the endpoint id you
+   intend to touch (e.g. `ep-sweet-haze`); the job refuses to run if that
+   string is not in `DIRECT_URL`. Tick *dry run* first if you want to see the
+   current state without changing anything.
+3. The run creates the role, applies the privilege set and proves every refusal
+   connected as the role. **The application is still connecting as the owner at
+   this point** — nothing has changed for users, and the role is unused.
+4. **Vercel → Settings → Environment Variables → Production:** set
+   `DATABASE_URL` to the pooled `nmwc_app` URL (same host as today with
+   `-pooler` in it, user and password replaced), leave `DIRECT_URL` alone,
+   redeploy.
+5. Confirm `checks.db: ok` on the bearer health probe.
+
+To roll back, set `DATABASE_URL` back to the owner URL and redeploy. The role
+can stay; nothing connects as it.
+
+**Rolling the role out by hand (the same three commands, if you prefer):**
 
 ```bash
 # 1. create the role (owner credential in DIRECT_URL; pick a 24+ char password)
