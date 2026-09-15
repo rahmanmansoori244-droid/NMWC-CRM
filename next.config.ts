@@ -1,19 +1,13 @@
 import type { NextConfig } from 'next';
+import { buildCsp } from './lib/csp';
 
-const r2AccountId = process.env.R2_ACCOUNT_ID ?? '*';
 
-// QA-016 / QA-053 / QA-054: tightened security headers.
-//   - dropped 'unsafe-eval' from script-src (Next.js production code does not need it)
-//   - B-13: dropped 'unsafe-inline' from script-src as well. Real responses
-//     receive a per-request CSP from middleware.ts that uses a nonce; this
-//     static block is only the fallback that Next.js applies before
-//     middleware runs (e.g. on framework-level redirect responses with no
-//     HTML body). Anything that actually serves <script> tags goes through
-//     the middleware path and gets the nonce'd CSP.
-//   - 'unsafe-inline' remains on style-src — Tailwind's runtime/JIT injects
-//     inline <style> blocks; lifting that is a separate piece of work.
-//   - narrowed connect-src to our R2 account, not the whole tenant
-//   - added Cross-Origin-* hardening
+// QA-016 / QA-053 / QA-054: tightened security headers, plus Cross-Origin-*
+// hardening. The Content-Security-Policy below is the static fallback Next
+// applies before middleware runs (e.g. on a framework-level redirect with no HTML
+// body); anything that actually serves <script> tags goes through middleware and
+// gets the nonce'd policy instead. Both come from lib/csp.ts, which carries the
+// per-directive reasoning and the three things not to do to it.
 const securityHeaders = [
   { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
@@ -24,16 +18,10 @@ const securityHeaders = [
   { key: 'Cross-Origin-Resource-Policy', value: 'same-origin' },
   {
     key: 'Content-Security-Policy',
-    value:
-      // B-13: static fallback is the strictest. Real responses go through
-      // middleware.ts which adds a per-request nonce + 'strict-dynamic'.
-      `default-src 'self'; ` +
-      `img-src 'self' blob: data:; ` +
-      `script-src 'self'; ` +
-      `style-src 'self' 'unsafe-inline'; ` +
-      `font-src 'self' data:; ` +
-      `connect-src 'self' https://${r2AccountId}.r2.cloudflarestorage.com https://*.ingest.sentry.io https://*.ingest.de.sentry.io; ` +
-      `frame-ancestors 'none';`,
+    // SEC-14b: one builder, lib/csp.ts — this string and the per-request one in
+    // middleware.ts were hand-duplicated and had drifted. Called with no nonce,
+    // so script-src is exactly 'self'.
+    value: buildCsp(),
   },
 ];
 

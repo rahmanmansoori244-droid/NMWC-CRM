@@ -25,3 +25,27 @@ test('root redirects to login', async ({ page }) => {
   await page.goto('/');
   await expect(page).toHaveURL(/\/login$/);
 });
+
+test('the document response carries one CSP, with the SEC-14b directives', async ({ request }) => {
+  // The unit test pins what buildCsp() produces. This pins what actually reaches
+  // a browser, which is the part no unit test can see: exactly ONE
+  // Content-Security-Policy header (middleware sets one and next.config's
+  // headers() supplies a fallback, and two would be intersected), and the nonce
+  // still present in script-src.
+  //
+  // Not run in CI — Playwright needs a server. Run it during the browser walk.
+  const res = await request.get('/login');
+  expect(res.status()).toBe(200);
+
+  const all = res
+    .headersArray()
+    .filter((h) => h.name.toLowerCase() === 'content-security-policy');
+  expect(all).toHaveLength(1);
+
+  const csp = all[0]!.value;
+  expect(csp).toContain("form-action 'self'");
+  expect(csp).toContain("base-uri 'none'");
+  expect(csp).toContain("object-src 'none'");
+  // Not anchored: `next dev` appends 'unsafe-eval' to this directive.
+  expect(csp).toMatch(/script-src 'self' 'nonce-[^']+' 'strict-dynamic'/);
+});
