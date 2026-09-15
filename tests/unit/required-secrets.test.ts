@@ -97,11 +97,38 @@ describe('the entry that motivated this', () => {
     expect(wf).not.toMatch(/::warning::BACKUP_AGE_RECIPIENTS is not set —/);
   });
 
-  it('the override is an exact-string opt-in, not any truthy value', () => {
+  it('EVERY override comparison is an exact-string opt-in, not any truthy value', () => {
     const wf = readFileSync(`${DIR}/db-backup.yml`, 'utf8');
     // `= "true"` and nothing looser: "1", "yes" or "TRUE" must not disable
-    // encryption by accident.
-    expect(wf).toMatch(/\[ "\$\{ALLOW_PLAINTEXT_BACKUP:-\}" = "true" \]/);
+    // encryption by accident. There are several places that consult it — the
+    // early refusal, the missing-age branch and the missing-recipients branch —
+    // and an earlier version of this test pinned only one of them, so loosening
+    // either of the others kept the suite green. Count them, and require that
+    // every mention of the variable outside the env block is the strict form.
+    const strict = wf.match(/\[ "\$\{ALLOW_PLAINTEXT_BACKUP:-\}" = "true" \]/g) ?? [];
+    expect(strict.length).toBeGreaterThanOrEqual(3);
+    // No mention anywhere in a shell test that is not the strict comparison.
+    const loose = wf.match(/-[nz] "\$\{ALLOW_PLAINTEXT_BACKUP[^}]*\}"/g) ?? [];
+    expect(loose).toEqual([]);
+  });
+
+  it('an unencrypted run cannot leave a green workflow behind', () => {
+    // The whole DO-16 finding was that a plaintext dump inside a GREEN run is what
+    // nobody notices. The override must therefore fail the job after uploading,
+    // not merely warn.
+    const wf = readFileSync(`${DIR}/db-backup.yml`, 'utf8');
+    expect(wf).toMatch(/ENCRYPTED:-true.*=\s*"false"|\[ "\$\{ENCRYPTED:-true\}" = "false" \]/);
+    expect(wf).toMatch(/An unencrypted dump must not leave a green run behind/);
+  });
+
+  it('refuses before pg_dump, not after it', () => {
+    // Discovering a missing key after several minutes of dumping wastes the run
+    // and reads like a dump failure rather than a missing variable.
+    const wf = readFileSync(`${DIR}/db-backup.yml`, 'utf8');
+    const early = wf.indexOf('Refuse early if the dump could not be encrypted');
+    const dump = wf.indexOf('pg_dump → gzip');
+    expect(early).toBeGreaterThan(-1);
+    expect(early).toBeLessThan(dump);
   });
 });
 

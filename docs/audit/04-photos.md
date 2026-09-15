@@ -300,10 +300,18 @@ already stored as well as for future ones, with no migration and no object rewri
 
 1. *Browser caches are not retroactive.* Non-confidential photos carry
    `private, max-age=3600, immutable` and an ETag keyed on the immutable attachment
-   id, so a client that already fetched a photo keeps the old Content-Type until
-   eviction. The ETag prefix was deliberately NOT bumped: that would force every
-   photo to be re-fetched over the Oman WAN link and discard the perf work at
-   #22/#23, for a one-hour window on a system with no real users yet.
+   id, so a client that already fetched a photo keeps the old Content-Type. This
+   was first written here as "a one-hour window", and that was wrong: the 304
+   branch returns only the ETag and `Cache-Control`, so each hourly revalidation
+   renews the stored entry's freshness **without correcting its type**. For an
+   already-cached photo the pin never arrives at all, at any point, until that
+   browser evicts the entry.
+   The ETag prefix was still deliberately NOT bumped: bumping it forces every photo
+   to be re-fetched over the Oman WAN link and discards the perf work at #22/#23,
+   and the affected population is a handful of UAT testers' browsers — the go-live
+   photograph set does not exist yet. Bumping the prefix to `"p2-"` is the lever if
+   the audit query below ever returns a row, and it should be pulled BEFORE the
+   go-live load rather than after.
 2. *The stored column is still attacker-influenceable.* Only this one consumer pins
    it. `R2_PUBLIC_BASE` already sits unused in `.env.example`; whoever wires a public
    R2 domain, hands a signed GET URL to a browser, or writes an export that zips the
