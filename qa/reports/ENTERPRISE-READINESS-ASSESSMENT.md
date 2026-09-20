@@ -588,3 +588,27 @@ re-tested this close to launch.
 | P3 | audit-immutability | The ledgers are immutable but the actor identity they display is a live join to a fully mutable User row | `page.tsx:94` | Every historical row on /audit, including the credit-approval decisions the ledger exists to preserve, silently renders a different person's name. The AuditLog rows themselves are untouched and untouchable exactly as designed, which is what makes this bad: the tamper-evident store records only a foreign key, so the imm |
 | P3 | audit-immutability | Both ledger triggers are ORIGIN-enabled, so one `SET session_replication_role = 'replica'` turns the whole control off — and restore-verify T-03 still reports them enabled | `migration.sql:42` | The absolute claim made in three places — OPERATIONS.md:120, PDPL-ASSESSMENT.md:38 and the migration's own header, that UPDATE/DELETE/TRUNCATE raise "for every connection, including the owner's" unless the maintenance GUC is set by the owner — is false on any deployment where that parameter is settable, and the bypass  |
 | P3 | app-role-grants | NMWC_APP_PASSWORD is validated for SQL quoting but is then embedded raw in a connection URL and in a sed replacement, with no URL-safety or sed-safety check | `app-role.ts:51` | Provisioning wedges or, worse, half-succeeds: the role is created with the right password, but the derived NMWC_APP_URL is malformed so `verify` fails with an authentication error the operator cannot explain; on the manual path (docs/OPERATIONS.md §5c, which lets the operator skip verify) the same raw password goes int |
+
+### Six backlog fixes planned, challenged, and deliberately not applied (2026-09-20)
+
+Seven backlog findings were planned and each plan adversarially challenged. **All
+seven came back NEEDS_REVISION**, which is the reason only one was applied.
+
+Applied: `restore-verify --expect-app-role` now asserts the privilege matrix it
+had always claimed to check. It runs in the drill and in recovery, never in the
+request path, so it cannot affect the load.
+
+Deferred to after the launch, with the reason:
+
+| Finding | Why it is deferred |
+|---|---|
+| `backup-report-auth` — a bare `{"ok":true}` marks the nightly dump healthy | The challenger showed the finding's own remedy does not achieve what it claims: every field is self-asserted, and `DUMP_KEY`/`BYTES` are both set BEFORE the upload step, so "key present and bytes large" is also true of a run whose upload then failed. Worth doing; not worth doing quickly. |
+| `heartbeat-sticky` — a failed alarm is sticky and window-blind | Changes what the uptime monitor sees. Changing alarm semantics in the week an owner is learning to trust the alarm is the wrong order. |
+| `credit-limit-writable` — a limit is movable without payment_terms changing | Touches `services/imports.ts`, which is the code that runs the load. Highest blast radius of the seven. |
+| `mustchange-enforcement` — the forced change is enforced only in middleware | Touches the auth path. The codebase already has one documented trap here, where a boolean returned from the `authorized` callback is discarded. |
+| `detach-photo-race` — a merge racing a detach reads a stale owner | The merge was only just fixed and is covered by three integration tests; re-entering it this week trades a narrow race for a broad one. |
+| `audit-page-scope` — a regional Manager's audit view silently drops rows | The challenger found the plan's own banner would state a closed number it cannot know — the same defect class it set out to fix. |
+
+The full plans and challenges are in this session's workflow journal
+(`wf_fdb26bdc-de6`). Each one is ready to apply after the load, and each names the
+test that proves it.
