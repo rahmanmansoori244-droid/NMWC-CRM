@@ -141,23 +141,21 @@ moment.
 
 **None of these block the load.** They are open because they are yours, not mine.
 
-### a. One shared initial password, or one per account?
+### a. ~~One shared initial password, or one per account?~~ **SETTLED 2026-09-20**
 
-Your instruction was one shared password plus a forced change at first login.
-SEC-11 replaced it with a per-account 8-digit issuer, and that was **my mistake of
-process** — the assessment had recorded the choice as yours and I made it in code
-without asking. You said not to revert it yet, so it stands.
+Reverted to your design: **`12345` for everyone, forced change at first sign-in.**
+You had said so on 2026-09-10 and twice since, and it was recorded as your decision
+in the data-sources note; SEC-11 overrode it in code without asking, which was my
+mistake of process rather than of engineering. The per-account issuer and its
+seven tests are removed and recoverable from `db51732`.
 
-- **Revert** costs one constant in the builder plus the distribution wording in
-  runbook step 8. The issuer and its seven tests are recoverable from `db51732`.
-- **Keep** means every person gets their own row from `credentials.xlsx` and a
-  manager who also sells a route has two logins with two different values.
-
-What the shared design accepts: usernames are route codes and are printed on the
-journey plan, so until a person first signs in, anyone who knows the shared value
-can sign in as them and own their audit trail from then on. The forced change
-closes that window one account at a time, which is why the runbook hands the
-logins out and walks people through the change the same day.
+What that design accepts, so nobody rediscovers it as a surprise: usernames are
+route codes and are printed on the journey plan, so until a person first signs in,
+anyone who knows the shared value can sign in as them and own their audit trail
+from then on. **The forced change is the whole control**, which is why the runbook
+now says to hand the logins out and sit with each person while they change it on
+the same day, then check Users the next morning for anyone still flagged. That
+flag is the list of accounts still standing open.
 
 ### b. Does archiving a customer release its documents?
 

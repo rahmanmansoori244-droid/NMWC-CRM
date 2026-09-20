@@ -137,25 +137,28 @@ importer enforces most of the order, but not all of it.
    import*): **Today** shows that route's journey-plan customers for today's weekday;
    a customer page shows region, route, channel, payment terms, Temix code.
 8. **Hand out logins — the same day.** Every salesman's username is their **route
-   code** (`c4`, `sh01`, `nizd` …), every manager's is their name. **Each account now
-   has its own 8-digit initial password** (SEC-11) — there is no single password for
-   everyone. The values are in `credentials.xlsx`: sheet *Create in app FIRST* (the
-   Steward and the 11 managers) and sheet *Created by import* (the salesmen and the
-   approver accounts). **Hand over one row per person, and never show the sheet to a
-   room** — it is the whole company's credentials on one screen. If a manager also
-   sells a route they have **two logins with two different passwords**; both rows are
-   in the file, so give them both and say so, or they will try the wrong one.
+   code** (`c4`, `sh01`, `nizd` …) and every manager's is their name. **The initial
+   password is `12345` for everyone**, and the app forces each person to choose a
+   12+ character password of their own the first time they sign in.
 
-   The app still forces each person to choose a new 12+-character password the first
-   time they sign in, and their 8-digit value stops working at that moment — so **sit
-   with each person while they sign in and change it**. That screen (English only, 12
-   characters minimum, no show-password toggle) is the step most likely to stall;
-   budget time for it. Ask the Steward to check **Users** the next morning for anyone
-   who has not signed in (their account still shows the forced-change flag). If a slip
-   is lost, reset that one account from **Users → Reset password** — note the value
-   you type there must itself be 12+ characters, it is not another 8-digit code, and
-   the reset re-arms the forced change and kills the account's open sessions. Delete
-   `credentials.xlsx` and `managers.json` when you are done.
+   That forced change is the whole control, so it is not optional and it is not
+   "later". Until a person signs in, their account is open to anyone who knows the
+   shared value — and usernames are route codes, which are printed on the journey
+   plan. **Sit with each person while they sign in and change it.** The
+   change-password screen is English only, 12 characters minimum, with no
+   show-password toggle; it is the step most likely to stall, so budget time for it.
+
+   Ask the Steward to check **Users** the next morning for anyone who has not signed
+   in — their row still shows the forced-change flag, and that flag IS the list of
+   accounts still standing open. Chase them the same day.
+
+   A manager who also sells a route has **two logins**, both with `12345`; give them
+   both and say so, or they will change one and keep trying the other.
+
+   If someone loses their slip, reset that one account from **Users → Reset
+   password**. The value you type there must itself be 12+ characters — the reset
+   screen is not another `12345` — and it re-arms the forced change and kills that
+   account's open sessions. Delete `credentials.xlsx` and `managers.json` when you are done.
 
    > ⚠ **OWNER DECISION, still open — how the slips reach people.** Printed slips
    > handed over in person by each regional manager is the only channel that needs no

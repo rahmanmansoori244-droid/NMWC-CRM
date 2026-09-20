@@ -28,7 +28,6 @@
 import ExcelJS from 'exceljs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { makeInitialPasswordIssuer } from './initial-password';
 
 const DESKTOP = 'C:/Users/abdulr/Desktop';
 // The RoutePro customer master is re-exported before every real load; whichever
@@ -67,27 +66,38 @@ const DQ = path.join(OUT, 'dq');
 // in the 8 weeks before the snapshot's last day (or in this month's upload file).
 const ACTIVE_MIN_OMR = Number(process.env.ACTIVE_MIN_OMR ?? 500);
 const ACTIVE_WINDOW_DAYS = 56;
-// SEC-11, superseding the 2026-09-10 shared-password decision. Every account now gets
-// its OWN 8-digit initial secret, drawn fresh on each build — see ./initial-password.ts
-// for why 8 digits, and why there is deliberately no env override.
+// ONE shared initial password, and a forced change at first sign-in.
 //
-// This does not remove the window before a person's first sign-in; it makes that window
-// per-person. Usernames are route codes and are public (they are printed on the journey
-// plan), so the secret is the only thing separating one account from another. Shared, it
-// means anyone in the room can sign in as a colleague who has not signed in yet, set a
-// password, and have every later edit, approval and audit row carry that colleague's
-// name. Per-person, a leaked secret opens exactly the one account it was issued for.
+// This is the owner's decision, given on 2026-09-10 and restated twice since:
 //
-// Every user row below still sets must_change_password=yes, and that flag is load-
-// bearing: services/imports.ts only accepts an initial value shorter than 12 when it is
-// set, and auth.config.ts pins the account to /profile/change-password until the person
-// chooses a 12+ character password of their own (passwordRule, services/users.ts).
+//   "create the account for everyone with username as their route code password 12345
+//    then once they log in it forces them to change password and for managers with
+//    their name."
 //
-// DISTRIBUTION IS NOT SOLVED HERE. Every row of credentials.xlsx — BOTH sheets — now has
-// to reach one named person and nobody else, and a manager who also sells a route has
-// two logins with two different secrets. Read item 16 of RECONCILIATION.md and step 8 of
-// docs/GO-LIVE-RUNBOOK.md before printing anything.
-const issueInitialPassword = makeInitialPasswordIssuer();
+// SEC-11 briefly replaced it with a per-account 8-digit issuer (commit db51732). That
+// was a mistake of process rather than of engineering: the enterprise assessment had
+// recorded the choice as the OWNER'S to make, and it was made in code without asking.
+// Reverted. If it is ever revisited, the issuer and its seven tests are recoverable
+// from db51732.
+//
+// What this design accepts, written once so nobody rediscovers it as a surprise:
+// usernames are route codes and are public — they are printed on the journey plan — so
+// until a person first signs in, anyone who knows the shared value can sign in as them,
+// set a password, and have every later edit, approval and audit row carry that
+// colleague's name.
+//
+// The forced change is what closes that window, one account at a time, as each person
+// signs in. It is why the runbook hands the logins out and walks people through the
+// change on the SAME DAY, and asks the Steward to check the next morning for anyone who
+// has not yet signed in.
+//
+// must_change_password=yes on every row below is what makes that work, and it is
+// load-bearing in the code too: services/imports.ts accepts an initial value shorter
+// than 12 characters ONLY when the flag is set, and auth.config.ts pins the account to
+// /profile/change-password until the person chooses a 12+ character password of their
+// own (passwordRule, services/users.ts).
+const INITIAL_PASSWORD = '12345';
+const issueInitialPassword = (): string => INITIAL_PASSWORD;
 
 // ── Region model (owner-confirmed) ───────────────────────────────────────────
 const REGIONS: Array<{ code: string; name: string }> = [
@@ -1322,7 +1332,7 @@ async function main() {
   );
   md.push('');
   md.push(
-    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their name (e.g. `ashok`, `sara.khayat`), the steward as `data.steward` (NOT `steward` — that exact username is refused while DEMO_ACCOUNTS_DISABLED is set). **Every account has its OWN 8-digit initial password** (SEC-11) — there is no longer one password for everyone, so a leaked login opens exactly one account and every approval stays attributable to the person whose name is on it. The value is digits only, so it can be read off paper and typed on any phone keyboard without switching language, and it stops working the moment its owner completes the forced change at first sign-in. Hand each person **only their own row** of `credentials.xlsx`; a manager who also sells a route has a second login with a DIFFERENT password. ✅ ⚠ HOW those rows reach people is an owner decision and is not settled — see step 8 of docs/GO-LIVE-RUNBOOK.md.'
+    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their name, the steward as `data.steward` (NOT `steward` — that exact username is refused while DEMO_ACCOUNTS_DISABLED is set). **The initial password is `12345` for everyone** — owner decision of 2026-09-10, restated 2026-09-20 — and every row carries must_change_password, so the value works exactly once and stops working the moment its owner completes the forced change at first sign-in. **That forced change is the entire control.** Until a person signs in, their account is open to anyone who knows the shared value, and usernames are route codes printed on the journey plan. So hand the logins out and walk people through the change on the SAME DAY, then check Users the next morning for anyone still carrying the flag. A manager who also sells a route has TWO logins, both `12345`. ✅'
   );
   md.push('## What is in the files');
   md.push(`- **Regions:** 7`);
@@ -1401,7 +1411,7 @@ async function main() {
     '3. Import → Customer master → `customer-master.xlsx` → review quarantined rows → Promote (passes; resume if interrupted) → reconcile per SOP §8.4.'
   );
   md.push(
-    '4. Hand each person **their own row** from `credentials.xlsx` — passwords are now per-person, so one sheet held up in front of a room hands every account to everyone in it. Have each person sign in and complete the forced password change while you are still with them; their 8-digit value is dead from that moment. Then DELETE `credentials.xlsx` and `managers.json`.'
+    '4. Hand out the logins the same day, and sit with each person while they sign in and change the password. The initial value is `12345` for everyone; the forced change at first sign-in is what closes the window, one account at a time. Check **Users** the next morning for anyone still carrying the forced-change flag — that flag IS the list of accounts still standing open.'
   );
   md.push('');
   md.push('## Build log');
