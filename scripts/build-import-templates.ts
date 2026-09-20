@@ -166,9 +166,14 @@ const usersCols: Col[] = [
   {
     key: 'region_codes',
     required: 'Required for ACCOUNTANT',
-    format: 'comma-separated Region codes, e.g. MCT,BAT',
+    // 'BAT' was the example here and is not a region in this system. A copied
+    // example that does not resolve is worse than no example: the import used to
+    // drop an unknown code silently, leaving a fail-closed accountant who sees an
+    // empty queue for good. It now quarantines the row, so a copied 'BAT' fails
+    // loudly — but the example should still be a real code.
+    format: 'comma-separated Region codes, e.g. MCT or MCT,BRK',
     notes:
-      'Regions this accountant covers — REQUIRED, else the accountant sees no approvals and the credit chain stalls. Ignored for other roles.',
+      'Regions this accountant covers — REQUIRED, else the accountant sees no approvals and the credit chain stalls. Go-live issues one accountant per region, so this is normally a SINGLE code. An unknown code now quarantines the row rather than silently clearing the account regions. Ignored for other roles.',
   },
   { key: 'email', required: 'Optional', format: 'email', notes: '' },
   { key: 'phone', required: 'Optional', format: 'text', notes: '' },
@@ -261,7 +266,7 @@ function buildAccountMaster(): Buffer {
       password: 'ChangeMe-2026!',
       supervisor_username: '',
       route_code: '',
-      region_codes: 'MCT,BAT',
+      region_codes: 'MCT',
       email: '',
       phone: '',
       reset_password: '',

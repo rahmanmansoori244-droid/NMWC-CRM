@@ -193,6 +193,41 @@ const checks: Check[] = [
     },
   },
   {
+    name: 'every region has an active accountant',
+    why: 'the CASH and CREDIT chains both end at the accountant who manages the request region; a region without one strands every new customer submitted there, and the symptom is an empty queue, which looks like a quiet day',
+    run: async () => {
+      const regions = await prisma.region.findMany({
+        where: { code: { not: 'UNASSIGNED' } },
+        select: { code: true, managers: { where: { isActive: true, role: 'ACCOUNTANT' }, select: { username: true } } },
+      });
+      const uncovered = regions.filter((r) => r.managers.length === 0).map((r) => r.code);
+      return {
+        ok: uncovered.length === 0,
+        detail:
+          uncovered.length === 0
+            ? `${regions.length} regions, each with at least one active accountant`
+            : `NO ACTIVE ACCOUNTANT for: ${uncovered.join(', ')}`,
+      };
+    },
+  },
+  {
+    name: 'no accountant is blind',
+    why: 'an ACCOUNTANT with no managed region is fail-closed everywhere — it signs in normally and sees an empty approval queue for good, which is exactly what a silently dropped region_code produces',
+    run: async () => {
+      const blind = await prisma.user.findMany({
+        where: { role: 'ACCOUNTANT', isActive: true, managedRegions: { none: {} } },
+        select: { username: true },
+      });
+      return {
+        ok: blind.length === 0,
+        detail:
+          blind.length === 0
+            ? 'every active accountant manages at least one region'
+            : `manages NO region: ${blind.map((u) => u.username).join(', ')}`,
+      };
+    },
+  },
+  {
     name: 'the append-only ledger is not empty',
     why: 'a load that wrote no audit rows means the trail everything else depends on was not recorded',
     run: async () => {

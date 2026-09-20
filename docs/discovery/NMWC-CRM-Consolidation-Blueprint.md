@@ -268,7 +268,7 @@ Full ticket list with fixes/tests: [`blueprint-inputs/security-remediation.md`](
 | # | Question | Recommendation |
 |---|---|---|
 | **Q-pingpong** | Step-back loop guard: if the same step rejects the same *unchanged* request twice in one cycle, force it down to the salesman instead of cascading again? | Yes — prevents an approve/reject ping-pong from looping indefinitely |
-| **Q-acct-regions** | Which regions does each Accountant cover, and who administers those assignments? | Manager administers, like `managedRegions`; need the actual region list per accountant at user provisioning |
+| **Q-acct-regions** | ~~Which regions does each Accountant cover, and who administers those assignments?~~ **ANSWERED 2026-09-20 (owner):** one ACCOUNTANT per region, `accountant.<region code>`, each scoped to exactly that one region. | Assignment is made by the account-master import (`region_codes`), which is the ONLY writer of `managedRegions` — there is no in-app region picker, so a mis-scoped accountant is repaired by re-importing, not by a Manager. The recorded guess that "Manager administers" is **not** what shipped: `MANAGER_ADMINISTRABLE_ROLES` covers SALESMAN and SUPERVISOR only. |
 
 ### B. Blocking the migration (need before/at the ETL)
 | # | Question | Why |

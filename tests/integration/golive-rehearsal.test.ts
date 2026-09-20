@@ -134,6 +134,47 @@ describe.skipIf(!ENABLED)('GO-LIVE REHEARSAL on the UAT branch with the real mas
     say(
       `  manager regions: ${mgrs.map((m) => `${m.username}→${m.managedRegions.map((r) => r.code).join('/') || 'NONE'}`).join(' ; ')}`
     );
+    // A say() above is not a check — assert it. An empty managedRegions is
+    // fail-closed for both region-scoped roles (lib/access.ts, lib/permissions.ts,
+    // lib/customer-filters.ts), so a blind account signs in normally and sees an
+    // empty queue for good. That is the failure this rehearsal exists to catch,
+    // and it printed the evidence without ever looking at it.
+    const blindManagers = mgrs.filter((m) => m.managedRegions.length === 0);
+    expect(
+      blindManagers.map((m) => m.username),
+      'no region-scoped account may land blind'
+    ).toEqual([]);
+
+    // One ACCOUNTANT per region (owner decision 2026-09-20). The CASH and CREDIT
+    // chains both end at the accountant managing the request region, so a region
+    // without one strands every new customer submitted there.
+    const accountants = await prisma.user.findMany({
+      where: { role: 'ACCOUNTANT' },
+      select: { username: true, managedRegions: { select: { code: true } } },
+    });
+    say(
+      `  accountant regions: ${accountants.map((a) => `${a.username}→${a.managedRegions.map((r) => r.code).join('/') || 'NONE'}`).join(' ; ')}`
+    );
+    expect(
+      accountants.filter((a) => a.managedRegions.length === 0).map((a) => a.username),
+      'an accountant with no region can clear no approval step'
+    ).toEqual([]);
+
+    const realRegions = await prisma.region.findMany({
+      where: { code: { not: 'UNASSIGNED' } },
+      select: { code: true },
+    });
+    const covered = new Set(accountants.flatMap((a) => a.managedRegions.map((r) => r.code)));
+    expect(
+      realRegions.map((r) => r.code).filter((c) => !covered.has(c)),
+      'every region needs an accountant'
+    ).toEqual([]);
+    expect(accountants).toHaveLength(realRegions.length);
+    for (const a of accountants) {
+      expect(a.managedRegions, `${a.username} should cover exactly one region`).toHaveLength(1);
+      expect(a.username).toBe(`accountant.${a.managedRegions[0]!.code.toLowerCase()}`);
+    }
+
     const orphanSalesmen = await prisma.user.count({
       where: { role: 'SALESMAN', supervisorId: null },
     });

@@ -22,6 +22,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { isDemoAccount } from '@/lib/demo-accounts';
+import { APPROVER_USERNAMES, GOLIVE_REGION_CODES } from '@/lib/ops/golive-accounts';
 
 const BUILDER = 'scripts/golive/build-masters.ts';
 const src = readFileSync(BUILDER, 'utf8');
@@ -41,10 +42,36 @@ describe('the go-live accounts can actually sign in', () => {
     expect(isDemoAccount(username)).toBe(false);
   });
 
-  it('the approver accounts the runbook names are clear too', () => {
-    // These come from the account master rather than a literal in the builder.
-    for (const u of ['accountant', 'finance.manager', 'gm.nmwc']) {
-      expect(isDemoAccount(u)).toBe(false);
+  it.each(APPROVER_USERNAMES)('approver %s is not on the demo denylist', (username) => {
+    // Was a hard-coded ['accountant', 'finance.manager', 'gm.nmwc'], which went
+    // stale the moment the single accountant became seven regional ones — and
+    // would have stayed GREEN while checking three names that no longer exist.
+    // The seven are built by template inside an array literal, so the
+    // `username: '...'` scan above cannot see them either; they are only covered
+    // because this list is the one the builder itself uses.
+    expect(isDemoAccount(username)).toBe(false);
+  });
+
+  it.each(APPROVER_USERNAMES)('approver %s matches the application charset', (username) => {
+    expect(username).toMatch(/^[a-z0-9._-]{1,50}$/);
+  });
+
+  it('there is one accountant per region, and they are the ones the builder emits', () => {
+    const accountants = APPROVER_USERNAMES.filter((u) => u.startsWith('accountant.'));
+    expect(accountants).toHaveLength(GOLIVE_REGION_CODES.length);
+    expect(new Set(accountants).size).toBe(accountants.length);
+    // The builder must actually derive them from the shared helper rather than
+    // re-spelling them, or this test checks a list nothing uses.
+    expect(src).toMatch(/accountantUsername\(r\.code\)/);
+    expect(src).toMatch(/GOLIVE_REGION_CODES/);
+  });
+
+  it('the synthetic accountants stay blocked and the real ones do not', () => {
+    // prisma/synthetic.ts seeds accountant.a and accountant.b. They are NOT on
+    // the denylist today. If someone adds an 'accountant.' prefix rule to catch
+    // them, all seven real accounts break at sign-in — so pin both directions.
+    for (const real of APPROVER_USERNAMES) {
+      expect(isDemoAccount(real), `${real} must stay usable`).toBe(false);
     }
   });
 

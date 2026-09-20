@@ -28,6 +28,7 @@
 import ExcelJS from 'exceljs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { GOLIVE_REGION_CODES, accountantUsername } from '../../lib/ops/golive-accounts';
 
 const DESKTOP = 'C:/Users/abdulr/Desktop';
 // The RoutePro customer master is re-exported before every real load; whichever
@@ -128,6 +129,19 @@ const REGIONS: Array<{ code: string; name: string }> = [
   { code: 'BRK', name: 'Barka' },
   { code: 'UNASSIGNED', name: 'Unassigned' },
 ];
+// The approver usernames are derived from the region codes in
+// lib/ops/golive-accounts.ts so the tests can check the real names. If this list
+// and that one drift, the seven accountant accounts stop matching the seven
+// regions and nothing downstream would notice — so fail here instead.
+(function assertRegionsMatchSharedList() {
+  const mine = REGIONS.filter((r) => r.code !== 'UNASSIGNED').map((r) => r.code);
+  const shared = [...GOLIVE_REGION_CODES];
+  if (mine.join(',') !== shared.join(',')) {
+    throw new Error(
+      `REGIONS here (${mine.join(',')}) no longer matches GOLIVE_REGION_CODES (${shared.join(',')}) — update lib/ops/golive-accounts.ts too`
+    );
+  }
+})();
 const REGION_BY_NAME: Record<string, string> = {
   MUSCAT: 'MCT',
   'CAPITAL (MUSCAT)': 'MCT',
@@ -1121,15 +1135,48 @@ async function main() {
     }
   }
 
-  const allRegions = REGIONS.filter((r) => r.code !== 'UNASSIGNED')
-    .map((r) => r.code)
-    .join(',');
-  for (const [username, fullName, role, regions] of [
-    // Owner decision: generic approver accounts, no personal names.
-    ['accountant', 'Accountant', 'ACCOUNTANT', allRegions],
+  // Owner decision: generic approver accounts, no personal names.
+  //
+  // ACCOUNTANT is one account PER REGION (owner decision 2026-09-20), named by
+  // region code. The approval chain targets a role plus a region overlap — there
+  // is no accountantId on an edit and no "primary accountant" — so a region's
+  // CASH and CREDIT chains are cleared by whichever ACCOUNTANT manages that
+  // region, and by nobody else. Every CREATE is single-region by construction
+  // (services/creates.ts stamps the submitting salesman's own route region onto
+  // every branch draft), so each request reaches exactly one of these seven.
+  //
+  // Lowercase deliberately: services/imports.ts and lib/auth.ts both lowercase a
+  // username, so an uppercase value here would print a credential slip that does
+  // not match the account that exists.
+  //
+  // Do NOT add an 'accountant.' prefix to lib/demo-accounts.ts to tidy this up.
+  // prisma/synthetic.ts seeds 'accountant.a' and 'accountant.b', and a prefix
+  // rule would block these seven real accounts at sign-in — which is exactly how
+  // the 'steward' username nearly stopped the load.
+  //
+  // FINANCE_MANAGER and GM stay single and region-less: their approval steps are
+  // GLOBAL, not region-scoped.
+  const approvers: Array<[string, string, string, string]> = [
+    ...REGIONS.filter((r) => r.code !== 'UNASSIGNED').map(
+      (r) =>
+        [accountantUsername(r.code), `Accountant ${r.name}`, 'ACCOUNTANT', r.code] as [
+          string,
+          string,
+          string,
+          string,
+        ]
+    ),
     ['finance.manager', 'Finance Manager', 'FINANCE_MANAGER', ''],
     ['gm.nmwc', 'General Manager', 'GM', ''],
-  ] as const) {
+  ];
+  for (const [username, fullName, role, regions] of approvers) {
+    // The approver block used to bypass uniqueUsername(), which was safe while
+    // the three names were literals that no route code could equal. Seven
+    // generated names deserve the check rather than the assumption.
+    if (usedUsernames.has(username)) {
+      throw new Error(`approver username collides with an account already issued: ${username}`);
+    }
+    usedUsernames.add(username);
     const pw = issueInitialPassword();
     users.push({
       username,
@@ -1404,7 +1451,10 @@ async function main() {
   );
   md.push('');
   md.push(
-    '5. **Approver accounts are generic, without personal names**: `accountant` (all regions), `finance.manager`, `gm.nmwc`. ✅'
+    `5. **Approver accounts are generic, without personal names.** ONE ACCOUNTANT PER REGION — ${approvers
+      .filter((a) => a[2] === 'ACCOUNTANT')
+      .map((a) => `\`${a[0]}\``)
+      .join(' · ')} — because the credit chain is cleared by the accountant who manages the request's region and by nobody else. Plus \`finance.manager\` and \`gm.nmwc\`, whose approval steps are org-wide, so they hold no region. ✅`
   );
   md.push('');
   md.push('6. **Bulk-loaded customers do not pass through the approval chain** (SOP §8.5). ✅');
@@ -1435,7 +1485,7 @@ async function main() {
   );
   md.push('');
   md.push(
-    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their CLASS (`mct-gt`, `mct-hd`, `mct-mt`, `horeca`, `khaburah`, `nizwa`, `salalah`, `barka`, `alwafi-duqm`) — except Rashid and Saud, the two fallback approvers, who own no class and keep their names. The steward signs in as `data.steward` (NOT `steward` — that exact username is refused while DEMO_ACCOUNTS_DISABLED is set). **The initial password is `12345` for everyone** — owner decision of 2026-09-10, restated 2026-09-20 — and every row carries must_change_password, so the value works exactly once and stops working the moment its owner completes the forced change at first sign-in. **That forced change is the entire control.** Until a person signs in, their account is open to anyone who knows the shared value, and usernames are route codes printed on the journey plan. So hand the logins out and walk people through the change on the SAME DAY, then check Users the next morning for anyone still carrying the flag. A manager who also sells a route has TWO logins, both `12345`. ✅'
+    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their CLASS (`mct-gt`, `mct-hd`, `mct-mt`, `horeca`, `khaburah`, `nizwa`, `salalah`, `barka`, `alwafi-duqm`) — except Rashid and Saud, the two fallback approvers, who own no class and keep their names. The steward signs in as `data.steward` (NOT `steward` — that exact username is refused while DEMO_ACCOUNTS_DISABLED is set). **The initial password is `12345` for everyone** — owner decision of 2026-09-10, restated 2026-09-20 — and every row carries must_change_password, so the value works exactly once and stops working the moment its owner completes the forced change at first sign-in. **That forced change is the entire control.** Until a person signs in, their account is open to anyone who knows the shared value, and usernames are route codes printed on the journey plan. So hand the logins out and walk people through the change on the SAME DAY, then check Users the next morning for anyone still carrying the flag. A manager who also sells a route has TWO logins, both `12345`. The approver accounts sign in as `accountant.<region code>` (one per region), `finance.manager` and `gm.nmwc`. ✅'
   );
   md.push('## What is in the files');
   md.push(`- **Regions:** 7`);
@@ -1481,7 +1531,7 @@ async function main() {
     `  - ${unparseable.length} RoutePro codes could not be parsed and were skipped (dq/unparseable-codes.csv)`
   );
   md.push(
-    `- **Users in the account master:** ${users.length} — ${MANAGERS.length} manager rows (regions only; the accounts are created in the app first), ${salesmenCount} salesmen, 3 approver placeholders`
+    `- **Users in the account master:** ${users.length} — ${MANAGERS.length} manager rows (regions only; the accounts are created in the app first), ${salesmenCount} salesmen, ${approvers.length} approver placeholders (${approvers.filter((a) => a[2] === 'ACCOUNTANT').length} accountants, one per region)`
   );
   md.push(
     `  - **${routesNoSalesman.length} active routes have no salesman account** (dq/routes-no-salesman.csv)`

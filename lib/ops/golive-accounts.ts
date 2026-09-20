@@ -64,3 +64,38 @@ export async function expectedUsernames(
 
   return expected;
 }
+
+/**
+ * The go-live region codes, in the order the builder writes them.
+ *
+ * Duplicated nowhere: scripts/golive/build-masters.ts asserts its own REGIONS
+ * constant against this list, so the two cannot drift apart silently.
+ */
+export const GOLIVE_REGION_CODES = ['MCT', 'KHB', 'NZW', 'SLL', 'AWF', 'DQM', 'BRK'] as const;
+
+/**
+ * The ACCOUNTANT account that covers one region.
+ *
+ * Lower-cased because services/imports.ts and lib/auth.ts both lower-case a
+ * username on the way in; an upper-case value would put a name on a credential
+ * slip that does not match the account in the database.
+ */
+export const accountantUsername = (regionCode: string): string =>
+  `accountant.${regionCode.toLowerCase()}`;
+
+/**
+ * Every generic approver account the go-live builder creates: one ACCOUNTANT per
+ * region, plus the two org-wide approvers, whose steps are GLOBAL and who
+ * therefore hold no region.
+ *
+ * None of these may be caught by lib/demo-accounts.ts. Note particularly that an
+ * 'accountant.' PREFIX must never be added to that denylist to catch the
+ * synthetic 'accountant.a' / 'accountant.b' — it would block all seven of these
+ * real accounts at sign-in, which is precisely how the 'steward' username nearly
+ * stopped the load.
+ */
+export const APPROVER_USERNAMES: string[] = [
+  ...GOLIVE_REGION_CODES.map(accountantUsername),
+  'finance.manager',
+  'gm.nmwc',
+];
