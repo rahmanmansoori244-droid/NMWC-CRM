@@ -223,9 +223,14 @@ describe.skipIf(!ENABLED)('account master: region_codes that do not resolve', ()
     expect(await regionsOf(acct)).toEqual([realCode]);
   });
 
-  it('refuses to create a NEW region-scoped account with no regions at all', async () => {
+  it('refuses to CREATE a region-scoped account with no regions — and writes nothing', async () => {
     // Fail-closed means empty is blind, not unrestricted. The import template
     // documented region_codes as required for ACCOUNTANT and nothing enforced it.
+    //
+    // The first version of this fix quarantined the row AFTER the upsert, so the
+    // account existed anyway — a live, signable, blind account on a row the
+    // report called an issue. The name of this test is the assertion: nothing
+    // was written.
     const fresh = ('zz.blind.' + randomUUID().slice(0, 8)).toLowerCase();
     const res = await upload([
       {
@@ -239,7 +244,56 @@ describe.skipIf(!ENABLED)('account master: region_codes that do not resolve', ()
     ]);
     expect(res.clean).toBe(0);
     expect(res.messages.join(' ')).toMatch(/region_codes/);
-    await retire({ username: fresh });
+    const created = await prisma.user.findUnique({ where: { username: fresh } });
+    expect(created, 'a quarantined row must not leave an account behind').toBeNull();
+  });
+
+  it('refuses a cell that is only separators, rather than clearing the regions', async () => {
+    // The blocker the first fix let through. ',' is truthy, so it entered the
+    // guarded branch, filtered to zero codes, found zero UNKNOWN codes — and so
+    // passed the "did everything resolve" check straight into `set: []`, wiping
+    // the account while the row reported clean. The guard asked the wrong
+    // question: "did every code resolve", never "were there any codes".
+    const res = await upload([
+      {
+        username: acct,
+        full_name: 'ZZ Accountant',
+        role: 'ACCOUNTANT',
+        password: '',
+        region_codes: ', ,',
+        must_change_password: 'yes',
+      },
+    ]);
+    expect(res.clean).toBe(0);
+    expect(await regionsOf(acct), 'the existing region must survive').toEqual([realCode]);
+  });
+
+  it('refuses a blank cell on an account that is ALREADY blind', async () => {
+    // "Blank means keep what you had" may only apply when there is something to
+    // keep. An existing account with zero regions must not be waved through as
+    // clean on every re-import — that is how a blind account stays invisible.
+    const blind = ('zz.was.' + randomUUID().slice(0, 8)).toLowerCase();
+    await prisma.user.create({
+      data: {
+        username: blind,
+        passwordHash: 'x',
+        fullName: 'ZZ Already Blind',
+        role: 'ACCOUNTANT',
+      },
+    });
+    const res = await upload([
+      {
+        username: blind,
+        full_name: 'ZZ Already Blind',
+        role: 'ACCOUNTANT',
+        password: '',
+        region_codes: '',
+        must_change_password: 'yes',
+      },
+    ]);
+    expect(res.clean).toBe(0);
+    expect(res.messages.join(' ')).toMatch(/region_codes/);
+    await retire({ username: blind });
   });
 
   it('leaves an EXISTING account alone when the cell is blank', async () => {

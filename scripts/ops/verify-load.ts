@@ -20,6 +20,7 @@
  * Exit 0 when everything passes, 1 when anything fails, 2 on an error.
  */
 import { PrismaClient } from '@prisma/client';
+import { GOLIVE_REGION_CODES } from '../../lib/ops/golive-accounts';
 
 const prisma = new PrismaClient({
   datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
@@ -201,12 +202,19 @@ const checks: Check[] = [
         select: { code: true, managers: { where: { isActive: true, role: 'ACCOUNTANT' }, select: { username: true } } },
       });
       const uncovered = regions.filter((r) => r.managers.length === 0).map((r) => r.code);
+      // Assert the COUNT too. With no regions loaded there are no uncovered
+      // regions, so the check would pass on an empty database — satisfied by the
+      // absence of the thing it is checking.
+      const expected = GOLIVE_REGION_CODES.length;
+      const ok = uncovered.length === 0 && regions.length === expected;
       return {
-        ok: uncovered.length === 0,
+        ok,
         detail:
-          uncovered.length === 0
-            ? `${regions.length} regions, each with at least one active accountant`
-            : `NO ACTIVE ACCOUNTANT for: ${uncovered.join(', ')}`,
+          uncovered.length > 0
+            ? `NO ACTIVE ACCOUNTANT for: ${uncovered.join(', ')}`
+            : regions.length === expected
+              ? `${regions.length} regions, each with at least one active accountant`
+              : `${regions.length} regions found, expected ${expected} — was the Regions sheet imported?`,
       };
     },
   },
@@ -218,12 +226,17 @@ const checks: Check[] = [
         where: { role: 'ACCOUNTANT', isActive: true, managedRegions: { none: {} } },
         select: { username: true },
       });
+      // Same trap: zero accountants means none is blind. Count them.
+      const total = await prisma.user.count({ where: { role: 'ACCOUNTANT', isActive: true } });
+      const expected = GOLIVE_REGION_CODES.length;
       return {
-        ok: blind.length === 0,
+        ok: blind.length === 0 && total === expected,
         detail:
-          blind.length === 0
-            ? 'every active accountant manages at least one region'
-            : `manages NO region: ${blind.map((u) => u.username).join(', ')}`,
+          blind.length > 0
+            ? `manages NO region: ${blind.map((u) => u.username).join(', ')}`
+            : total === expected
+              ? `${total} active accountants, each managing at least one region`
+              : `${total} active accountants, expected ${expected} (one per region)`,
       };
     },
   },

@@ -32,12 +32,28 @@ describe('smoke refuses an --expect-commit it cannot honour', () => {
     expect(code).toMatch(/EXPECT_COMMIT/);
   });
 
+  it('keeps the flag separate from its value', () => {
+    // The defect this replaced: EXPECT_COMMIT collapsed "flag not passed" and
+    // "flag passed with no sha" into the same empty string, so
+    // `npm run smoke -- --expect-commit $SHA` with SHA unset skipped the
+    // assertion and printed a pass. The flag's PRESENCE has to survive.
+    expect(code).toMatch(/EXPECT_GIVEN\s*=\s*expectIdx\s*>=\s*0/);
+  });
+
+  it('refuses a flag that carries no usable sha', () => {
+    expect(code).toMatch(/EXPECT_GIVEN\s*&&\s*!\/\^\[0-9a-f\]/);
+  });
+
   it('guards the flag against a missing bearer', () => {
-    expect(code).toMatch(/EXPECT_COMMIT\s*&&\s*!MONITOR/);
+    // On EXPECT_GIVEN, not EXPECT_COMMIT — asserting the latter is what let the
+    // empty-value case through, and the old version of this test asserted
+    // exactly the expression that had the hole.
+    expect(code).toMatch(/EXPECT_GIVEN\s*&&\s*!MONITOR/);
+    expect(code).not.toMatch(/if\s*\(EXPECT_COMMIT\s*&&\s*!MONITOR\)/);
   });
 
   it('exits non-zero rather than carrying on', () => {
-    const guard = code.slice(code.indexOf('EXPECT_COMMIT && !MONITOR'));
+    const guard = code.slice(code.indexOf('EXPECT_GIVEN && !MONITOR'));
     expect(guard.slice(0, 800)).toMatch(/process\.exit\([1-9]/);
   });
 
@@ -45,7 +61,7 @@ describe('smoke refuses an --expect-commit it cannot honour', () => {
     // Inside `if (MONITOR)` the guard is unreachable in precisely the case it
     // exists for. That inversion is how the original defect worked, so pin the
     // order rather than merely the presence.
-    const iGuard = code.indexOf('EXPECT_COMMIT && !MONITOR');
+    const iGuard = code.indexOf('EXPECT_GIVEN && !MONITOR');
     const iMonitorBlock = code.indexOf('if (MONITOR) {');
     expect(iGuard, 'the guard must exist').toBeGreaterThan(-1);
     expect(iMonitorBlock, 'the monitor block must exist').toBeGreaterThan(-1);

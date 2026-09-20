@@ -78,7 +78,7 @@ And after the load, the data-level companion:
 DIRECT_URL='<the OWNER connection string>' npm run verify:load
 ```
 
-Twelve read-only checks against the database. The in-app reconcile proves the
+Read-only checks against the database — the count is printed at the end. The in-app reconcile proves the
 batch balanced; this asks whether the rows actually landed. A customer can be
 counted as promoted and still have no branch, no route and no visit day — that is
 exactly what the narrow ERP refresh lane used to produce, and the reconcile

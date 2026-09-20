@@ -33,6 +33,7 @@ import ExcelJS from 'exceljs';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { isDemoAccount } from '../../lib/demo-accounts';
+import { APPROVER_USERNAMES } from '../../lib/ops/golive-accounts';
 
 const DIR = process.argv[2] ?? 'golive-data';
 const CRED = path.join(DIR, 'credentials.xlsx');
@@ -78,11 +79,15 @@ async function readSheet(file: string, sheet: string): Promise<Row[]> {
 
 /** The shared initial password, read from the builder so the literal lives in exactly one file. */
 function expectedPassword(): string {
-  const src = readFileSync('scripts/golive/build-masters.ts', 'utf8');
+  // Relative to THIS file, not the cwd. The script takes the data directory as
+  // an argument, which invites running it from elsewhere; a cwd-relative path
+  // turned that into a crash rather than a check.
+  const builder = path.join(__dirname, 'build-masters.ts');
+  const src = readFileSync(builder, 'utf8');
   const m = src.match(/const INITIAL_PASSWORD = '([^']*)'/);
   if (!m) {
     throw new Error(
-      'could not find INITIAL_PASSWORD in scripts/golive/build-masters.ts — if it was renamed, update this script rather than dropping the check'
+      `could not find INITIAL_PASSWORD in ${builder} — if it was renamed or reformatted, update this script rather than dropping the check`
     );
   }
   return m[1]!;
@@ -124,6 +129,52 @@ async function main() {
     distinct.size === 1 && distinct.has(want)
       ? `matches INITIAL_PASSWORD (${want.length} characters; value not printed)`
       : 'does NOT match build-masters.ts INITIAL_PASSWORD'
+  );
+
+  // The MASTER's password column, not just the slips.
+  //
+  // account-master.xlsx is the file that is actually imported; credentials.xlsx
+  // is only what gets read aloud. Checking the slips alone would pass while the
+  // master carried a different value and nobody could sign in.
+  //
+  // A BLANK password in the master is correct for the accounts created in the app
+  // first: the import sets a password on INSERT or on an explicit reset and never
+  // otherwise (QA-010), so a blank cell is the sheet saying "leave this account's
+  // password alone". That is exactly right for the eleven managers, who already
+  // exist by the time the import runs. It would be wrong for anybody else.
+  const createdInApp = new Set(first.map((r) => r.username));
+  const masterWithPw = users.filter((r) => r.password);
+  const masterWrong = new Set(masterWithPw.map((r) => r.password).filter((p) => p !== want));
+  check(
+    'every password in the imported master is the shared one',
+    masterWrong.size === 0,
+    masterWrong.size === 0
+      ? `${masterWithPw.length} of ${users.length} rows carry a password, all matching the builder`
+      : `${masterWrong.size} row(s) carry a DIFFERENT password than the builder issues`
+  );
+
+  const unexpectedBlank = users
+    .filter((r) => !r.password && !createdInApp.has(r.username))
+    .map((r) => r.username);
+  check(
+    'only the create-in-app-first accounts have a blank password',
+    unexpectedBlank.length === 0,
+    unexpectedBlank.length === 0
+      ? `${users.length - masterWithPw.length} blank, all of them created in the app first`
+      : `blank and NOT created in the app first: ${unexpectedBlank.join(', ')}`
+  );
+
+  const slipByName = new Map(slips.map((r) => [r.username, r.password ?? '']));
+  const disagree = users
+    .filter((r) => r.password && slipByName.has(r.username))
+    .filter((r) => slipByName.get(r.username) !== r.password)
+    .map((r) => r.username);
+  check(
+    'the slip and the master agree wherever both carry a password',
+    disagree.length === 0,
+    disagree.length === 0
+      ? `${masterWithPw.length} rows cross-checked`
+      : `slip differs from master for: ${disagree.join(', ')}`
   );
 
   // ── the forced change, which is the actual control ────────────────────────
@@ -171,15 +222,39 @@ async function main() {
 
   // ── "by code": a salesman's username IS their route code ──────────────────
   const salesmen = users.filter((r) => r.role === 'SALESMAN');
-  const mismatched = salesmen
-    .filter((r) => r.route_code && r.username !== r.route_code.toLowerCase())
+  // Report the number actually COMPARED, not the number of salesmen. The first
+  // version skipped rows with a blank route_code and then printed the full count,
+  // so a salesman with no route would have been silently uncompared inside a
+  // check that said it had looked at everyone.
+  const noRoute = salesmen.filter((r) => !r.route_code).map((r) => r.username);
+  check(
+    'every salesman row carries a route code to compare against',
+    noRoute.length === 0,
+    noRoute.length === 0 ? `${salesmen.length} salesmen` : `no route_code for: ${noRoute.join(', ')}`
+  );
+
+  const compared = salesmen.filter((r) => r.route_code);
+  const mismatched = compared
+    .filter((r) => r.username !== r.route_code.toLowerCase())
     .map((r) => `${r.username} (route ${r.route_code})`);
   check(
     'every salesman signs in with their route code',
-    mismatched.length === 0,
-    mismatched.length === 0
-      ? `${salesmen.length} salesmen, username === route_code`
-      : `differs: ${mismatched.join(', ')}`
+    mismatched.length === 0 && compared.length === salesmen.length,
+    mismatched.length > 0
+      ? `differs: ${mismatched.join(', ')}`
+      : `${compared.length} of ${salesmen.length} compared, username === route_code`
+  );
+
+  // Every approver the builder defines must have been issued. Read from the
+  // shared list rather than re-spelled here, so adding a region adds a check.
+  const issued = new Set(slips.map((r) => r.username));
+  const missingApprovers = APPROVER_USERNAMES.filter((u) => !issued.has(u));
+  check(
+    'every approver account the builder defines was issued',
+    missingApprovers.length === 0,
+    missingApprovers.length === 0
+      ? `${APPROVER_USERNAMES.length} approvers (one accountant per region, plus the two org-wide)`
+      : `no slip for: ${missingApprovers.join(', ')}`
   );
 
   // ── the two files agree ───────────────────────────────────────────────────
@@ -196,8 +271,7 @@ async function main() {
   // are created in the app before the import runs, so they are deliberately
   // absent from the Users sheet.
   const slipOnly = [...slipNames].filter((u) => !masterNames.has(u));
-  const firstNames = new Set(first.map((r) => r.username));
-  const unexplained = slipOnly.filter((u) => !firstNames.has(u));
+  const unexplained = slipOnly.filter((u) => !createdInApp.has(u));
   check(
     'every slip is either imported or created in the app first',
     unexplained.length === 0,

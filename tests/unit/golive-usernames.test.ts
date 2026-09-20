@@ -66,12 +66,53 @@ describe('the go-live accounts can actually sign in', () => {
     expect(src).toMatch(/GOLIVE_REGION_CODES/);
   });
 
-  it('the synthetic accountants stay blocked and the real ones do not', () => {
-    // prisma/synthetic.ts seeds accountant.a and accountant.b. They are NOT on
-    // the denylist today. If someone adds an 'accountant.' prefix rule to catch
-    // them, all seven real accounts break at sign-in — so pin both directions.
+  it('no approver-prefix rule is ever added to the denylist', () => {
+    // NAMED FOR WHAT IT CHECKS. An earlier version of this test was called "the
+    // synthetic accountants stay blocked and the real ones do not" and only
+    // checked the second half — while the first half was false. A test whose
+    // name claims a guarantee it does not make is worse than no test, because
+    // the next person reads the name and stops looking.
+    //
+    // What it checks: all nine approver accounts remain usable. The trap it
+    // guards is specific — prisma/synthetic.ts seeds 'accountant.a' and
+    // 'accountant.b', and the obvious way to block those is an 'accountant.'
+    // prefix, which would take all seven real regional accountants down at
+    // sign-in. That is the shape of the 'steward' incident, and production sets
+    // DEMO_ACCOUNTS_DISABLED, so it would be discovered on load day.
     for (const real of APPROVER_USERNAMES) {
       expect(isDemoAccount(real), `${real} must stay usable`).toBe(false);
+    }
+  });
+
+  it('records which seeded accounts the denylist does NOT cover', () => {
+    // Stated rather than implied, because the gap is real and the decision to
+    // leave it open is deliberate.
+    //
+    // prisma/synthetic.ts also seeds accountant.a, accountant.b,
+    // accountant.unscoped, manager.unscoped, fm.a, fm.b, gm.a and gm.b, and none
+    // of them is on this list. The compensating controls are that synthetic.ts
+    // refuses to run against production at all, and that
+    // scripts/golive/audit-accounts.ts reports every account that can sign in
+    // and is not named by the go-live master.
+    //
+    // If these are ever added, they must go in DEMO_EXACT as EXACT strings. A
+    // prefix rule breaks the test above. This assertion exists so that a change
+    // either way is a deliberate edit here rather than a silent drift.
+    const uncovered = [
+      'accountant.a',
+      'accountant.b',
+      'accountant.unscoped',
+      'manager.unscoped',
+      'fm.a',
+      'fm.b',
+      'gm.a',
+      'gm.b',
+    ];
+    for (const u of uncovered) {
+      expect(
+        isDemoAccount(u),
+        `${u} is seeded by synthetic.ts and is NOT denylisted — if you just added it, update this list`
+      ).toBe(false);
     }
   });
 

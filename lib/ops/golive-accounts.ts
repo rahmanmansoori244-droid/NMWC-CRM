@@ -94,8 +94,20 @@ export const accountantUsername = (regionCode: string): string =>
  * real accounts at sign-in, which is precisely how the 'steward' username nearly
  * stopped the load.
  */
+/**
+ * The two org-wide approvers. Their steps are GLOBAL, so they hold no region and
+ * there is one of each, not one per region.
+ *
+ * Named here rather than spelled again in the builder: the point of this module
+ * is that there is ONE spelling of every approver username. That held for the
+ * seven accountants and not for these two, which is the drift it was meant to
+ * prevent.
+ */
+export const FINANCE_MANAGER_USERNAME = 'finance.manager';
+export const GM_USERNAME = 'gm.nmwc';
+
 export const APPROVER_USERNAMES: string[] = [
   ...GOLIVE_REGION_CODES.map(accountantUsername),
-  'finance.manager',
-  'gm.nmwc',
+  FINANCE_MANAGER_USERNAME,
+  GM_USERNAME,
 ];

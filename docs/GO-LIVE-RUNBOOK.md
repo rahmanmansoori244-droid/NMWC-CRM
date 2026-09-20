@@ -12,6 +12,7 @@ Rebuild them any time the sources change:
 
 ```bash
 npx tsx scripts/golive/build-masters.ts
+npm run verify:credentials
 ```
 
 Read `golive-data/RECONCILIATION.md` after every build. It states what is in the
@@ -76,18 +77,28 @@ importer enforces most of the order, but not all of it.
    `nmwc_app` one. After step 8 of the previous section, "the production URL" means two
    different things, and this script mints the first Data Steward.
 
-   It creates `data.steward` plus the managers by name (`ahmed.alnadabi`, `haitham`,
-   `sarath`, `sara.khayat`, `ashok`, `rashid`, `rasool`, `saqib`, `saud`, `sunil.kp`,
-   `tharwat`), each with **their own initial password** read from `managers.json` (the
-   same 12 values appear in `credentials.xlsx`, sheet *Create in app FIRST*) and a
-   **forced password change at first login** — there is no single password for everyone
-   any more (SEC-11). It skips any username that already exists and touches nothing
-   else. Regions are assigned by the next step, not here.
+   It creates `data.steward` plus the eleven managers, whose usernames are their
+   **class codes** (`mct-gt`, `mct-hd`, `mct-mt`, `horeca`, `khaburah`, `nizwa`,
+   `salalah`, `barka`, `alwafi-duqm`) — except `rashid` and `saud`, the two fallback
+   approvers, who own no class and keep their names. The usernames are read from
+   `managers.json` and also appear in `credentials.xlsx`, sheet *Create in app FIRST*.
+
+   **Every account starts on the same initial password, `12345`, and is forced to
+   choose its own at first sign-in** (owner decision of 2026-09-10, restated
+   2026-09-20). An earlier draft of this runbook described a per-account password
+   (SEC-11); that was reversed. If you find twelve distinct values in
+   `managers.json`, the build is out of date — rebuild.
+
+   It skips any username that already exists and touches nothing else. Regions are
+   assigned by the next step, not here.
 2. Sign in as `data.steward` — you are sent straight to *change password* (12+ characters).
    Not `steward`: that exact username is blocked while `DEMO_ACCOUNTS_DISABLED=true`,
    which production sets, because the synthetic seed uses it for a demo account.
 3. **Import → Account master** → `golive-data/account-master.xlsx`.
-   Expect: 7 regions, 43 routes, 56 user rows applied. Open the issues list — it
+   Expect: 7 regions, 43 routes, **62 user rows** applied — 11 managers + 42 salesmen
+   + 9 approvers (one ACCOUNTANT per region, plus `finance.manager` and `gm.nmwc`).
+   The breakdown is spelled out so the next roster change shows up as arithmetic
+   rather than as a total that quietly goes stale. Open the issues list — it
    must be empty except for anything you already know about. Check **Users**: every
    manager now shows their regions; salesmen show their route and their manager as
    supervisor.
@@ -122,7 +133,10 @@ importer enforces most of the order, but not all of it.
    DIRECT_URL='<the OWNER connection string>' npm run verify:load
    ```
 
-   Twelve read-only checks. The reconcile below proves the BATCH balanced; this
+   Read-only checks — the count is printed at the end, so it cannot go stale here.
+   (Fourteen at the time of writing; two of them ask whether every region has an
+   active accountant and whether any accountant manages none.) The reconcile below
+   proves the BATCH balanced; this
    asks the database whether the rows actually landed. A customer can be counted
    as promoted and still have no branch, no route and no visit day — that is
    exactly what the narrow ERP refresh lane used to produce, and the reconcile
@@ -137,7 +151,11 @@ importer enforces most of the order, but not all of it.
    import*): **Today** shows that route's journey-plan customers for today's weekday;
    a customer page shows region, route, channel, payment terms, Temix code.
 8. **Hand out logins — the same day.** Every salesman's username is their **route
-   code** (`c4`, `sh01`, `nizd` …) and every manager's is their name. **The initial
+   code** (`c4`, `sh01`, `nizd` …) and every manager's is their **class code**
+   (`mct-gt`, `mct-hd`, `mct-mt`, `horeca`, `khaburah`, `nizwa`, `salalah`, `barka`,
+   `alwafi-duqm`); Rashid and Saud own no class and keep their names. The approvers
+   sign in as `accountant.<region code>` (`accountant.mct` …), `finance.manager` and
+   `gm.nmwc`. **The initial
    password is `12345` for everyone**, and the app forces each person to choose a
    12+ character password of their own the first time they sign in.
 
@@ -174,7 +192,7 @@ importer enforces most of the order, but not all of it.
 | Symptom | What it means | Do |
 |---|---|---|
 | Account master lists issues for salesman rows: *route "X" not found* | A route code in the Users sheet is not in the Routes sheet. | Rebuild the files; the builder guarantees consistency. |
-| Account master upload fails with a timeout / gateway error | The Users sheet creates ~95 accounts in one request, each with a deliberately slow password hash; on a slow day that can brush the 60-second request limit. | Nothing is lost — whatever was applied stays applied. Split the **Users** sheet in two (keep Regions/Routes in both, they are idempotent) and upload each half. Re-importing an already-created user is safe: it keeps their password. |
+| Account master upload fails with a timeout / gateway error | The Users sheet is 62 rows, of which ~51 are creations (the 11 managers already exist from step 1), each with a deliberately slow password hash; on a slow day that can brush the 60-second request limit. | Nothing is lost — whatever was applied stays applied. Split the **Users** sheet in two (keep Regions/Routes in both, they are idempotent) and upload each half. Re-importing an already-created user is safe: it keeps their password. |
 | Many customer rows QUARANTINED for *duplicate phone* | A phone shared across customers that the builder did not catch. | Review; if genuine duplicates, merge later — they will not block the rest. |
 | Promote stops with *"Stopped — N rows made no progress"* | Repeated technical failures on the same customers. | Do not keep clicking. Screenshot and call IT. |
 | Promote refused: *"Another customer import is being promoted"* | Someone else (or an earlier tab) holds the batch. | Wait a minute and resume; only one load runs at a time by design. |

@@ -28,7 +28,12 @@
 import ExcelJS from 'exceljs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { GOLIVE_REGION_CODES, accountantUsername } from '../../lib/ops/golive-accounts';
+import {
+  GOLIVE_REGION_CODES,
+  accountantUsername,
+  FINANCE_MANAGER_USERNAME,
+  GM_USERNAME,
+} from '../../lib/ops/golive-accounts';
 
 const DESKTOP = 'C:/Users/abdulr/Desktop';
 // The RoutePro customer master is re-exported before every real load; whichever
@@ -1166,8 +1171,8 @@ async function main() {
           string,
         ]
     ),
-    ['finance.manager', 'Finance Manager', 'FINANCE_MANAGER', ''],
-    ['gm.nmwc', 'General Manager', 'GM', ''],
+    [FINANCE_MANAGER_USERNAME, 'Finance Manager', 'FINANCE_MANAGER', ''],
+    [GM_USERNAME, 'General Manager', 'GM', ''],
   ];
   for (const [username, fullName, role, regions] of approvers) {
     // The approver block used to bypass uniqueUsername(), which was safe while

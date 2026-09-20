@@ -32,8 +32,16 @@ type Check = {
 
 const args = process.argv.slice(2);
 const expectIdx = args.indexOf('--expect-commit');
-/** Short sha production must be running. Defaults to whatever HEAD is here. */
-const EXPECT_COMMIT = expectIdx >= 0 ? (args[expectIdx + 1] ?? '') : '';
+/**
+ * Whether the flag was GIVEN, kept separately from whether it carried a value.
+ *
+ * Collapsing the two is what made `--expect-commit` with an unset shell variable
+ * indistinguishable from not passing it at all — the assertion silently did not
+ * run and the suite reported a pass.
+ */
+const EXPECT_GIVEN = expectIdx >= 0;
+/** Short sha production must be running. */
+const EXPECT_COMMIT = EXPECT_GIVEN ? (args[expectIdx + 1] ?? '') : '';
 const BASE = (args.find((a) => a.startsWith('http')) ?? 'https://nmwc-cm.vercel.app').replace(
   /\/$/,
   ''
@@ -222,7 +230,21 @@ const checks: Check[] = [
 // health payload. Refusing here rather than skipping, because the caller asked a
 // question and a skipped check answers it with "all checks passed" — which is how
 // production served a four-month-old build while every smoke run was green.
-if (EXPECT_COMMIT && !MONITOR) {
+// A flag with no value is a slip, not a request to skip the check. `$SHA` unset
+// leaves `--expect-commit` as the last argument; the BASE parser also reads argv,
+// so a URL can land here too. Both are caught by requiring a sha shape.
+if (EXPECT_GIVEN && !/^[0-9a-f]{7,40}$/i.test(EXPECT_COMMIT)) {
+  console.error(
+    '\n  --expect-commit needs a commit sha, and got ' +
+      (EXPECT_COMMIT ? `"${EXPECT_COMMIT}"` : 'nothing') +
+      '.\n' +
+      '  Refusing to run: an assertion that silently does not run reports as a pass,\n' +
+      '  which is the whole reason this check exists.\n'
+  );
+  process.exit(2);
+}
+
+if (EXPECT_GIVEN && !MONITOR) {
   console.error(
     '\n  asked to assert a commit with --expect-commit, but HEALTH_BEARER is not set.\n' +
       '  The commit is only readable from /api/health with the monitor bearer, so the\n' +

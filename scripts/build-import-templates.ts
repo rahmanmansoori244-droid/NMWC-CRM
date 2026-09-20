@@ -171,9 +171,9 @@ const usersCols: Col[] = [
     // drop an unknown code silently, leaving a fail-closed accountant who sees an
     // empty queue for good. It now quarantines the row, so a copied 'BAT' fails
     // loudly — but the example should still be a real code.
-    format: 'comma-separated Region codes, e.g. MCT or MCT,BRK',
+    format: 'comma-separated Region codes, e.g. MCT',
     notes:
-      'Regions this accountant covers — REQUIRED, else the accountant sees no approvals and the credit chain stalls. Go-live issues one accountant per region, so this is normally a SINGLE code. An unknown code now quarantines the row rather than silently clearing the account regions. Ignored for other roles.',
+      'Regions this accountant covers — REQUIRED, else the accountant sees no approvals and the credit chain stalls. Go-live issues one accountant per region, so this is normally a SINGLE code. Also sets a MANAGER\u2019s regions; ignored for every other role. An unknown code, or a value containing no region code, quarantines the row rather than silently clearing the account\u2019s regions.',
   },
   { key: 'email', required: 'Optional', format: 'email', notes: '' },
   { key: 'phone', required: 'Optional', format: 'text', notes: '' },

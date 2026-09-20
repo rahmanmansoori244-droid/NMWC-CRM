@@ -469,6 +469,77 @@ async function uploadAccountMasterCore(
       if (mustChange && (!existing || wantsReset)) update.mustChangePassword = true;
       if (!existing || wantsRoleChange) update.role = role;
 
+      // Regions are resolved BEFORE anything is written.
+      //
+      // They used to be applied after the upsert, so a row with a bad code was
+      // quarantined AFTER the account had been created — leaving a live, signable
+      // account managing nothing while the report called the row an issue. An
+      // empty managedRegions is fail-closed in every reader (lib/access.ts,
+      // lib/permissions.ts, lib/customer-filters.ts, the approvals page), so that
+      // account signs in and sees an empty queue for good.
+      //
+      // `regionIds === null` means "leave the regions this user already has",
+      // which is what a blank cell means for an existing user — the same rule the
+      // password and supervisor columns follow.
+      const regionScoped = role === Role.MANAGER || role === Role.ACCOUNTANT;
+      let regionIds: string[] | null = null;
+      if (regionScoped) {
+        const codes = regionCodesRaw
+          .split(',')
+          .map((c) => c.trim().toUpperCase())
+          .filter(Boolean);
+        if (codes.length > 0) {
+          const regions = await prisma.region.findMany({ where: { code: { in: codes } } });
+          const found = new Set(regions.map((r) => r.code));
+          const unknown = codes.filter((c) => !found.has(c));
+          if (unknown.length > 0) {
+            // Quarantine rather than write what did resolve: `set:` REPLACES the
+            // relation, so applying the good half would silently shrink the
+            // account's coverage. The Routes sheet quarantines the same mistake.
+            issues.push({
+              sheet: 'Users',
+              row: sheetRow,
+              message: `region code(s) not found: ${unknown.join(', ')} — nothing was written for "${username}". Import the Regions sheet first, or correct the code.`,
+            });
+            continue;
+          }
+          regionIds = regions.map((r) => r.id);
+        } else if (regionCodesRaw) {
+          // The cell is not empty and yet yields no region code — "," or ", ,".
+          // It used to be truthy enough to reach `set: []` and wipe the account.
+          //
+          // Do not fold this into "blank means keep what you had": the operator
+          // wrote something and meant it to take effect. Accepting it silently
+          // because the account happens to already have regions would report a
+          // clean row for an instruction that did nothing.
+          issues.push({
+            sheet: 'Users',
+            row: sheetRow,
+            message: `region_codes for "${username}" was "${regionCodesRaw}", which contains no region code. Nothing was written — correct the cell, or leave it empty to keep the regions this account already has.`,
+          });
+          continue;
+        } else {
+          // Genuinely blank. That means "keep what you had", the same rule the
+          // password and supervisor columns follow — but it may only mean that
+          // when there IS something to keep. Decided on the account's real state
+          // rather than on whether this import created it, so a re-import cannot
+          // keep waving through an account that is already blind.
+          const alreadyScoped = existing
+            ? await prisma.user.count({
+                where: { id: existing.id, managedRegions: { some: {} } },
+              })
+            : 0;
+          if (alreadyScoped === 0) {
+            issues.push({
+              sheet: 'Users',
+              row: sheetRow,
+              message: `${role} "${username}" manages no region, so it can see nothing and clear no approval step. Set region_codes and re-import. Nothing was written.`,
+            });
+            continue;
+          }
+        }
+      }
+
       const data: Prisma.UserCreateInput = {
         username,
         passwordHash,
@@ -510,50 +581,11 @@ async function uploadAccountMasterCore(
           });
         }
 
-        // Region assignments for the region-scoped roles. MANAGER and ACCOUNTANT
-        // both scope via the SAME managedRegions relation (fail-closed on empty),
-        // so an accountant loaded from the master must get its region_codes too —
-        // otherwise it sees nothing and can never clear the credit-chain step.
-        const regionScoped = role === Role.MANAGER || role === Role.ACCOUNTANT;
-        if (regionScoped && regionCodesRaw) {
-          const codes = regionCodesRaw
-            .split(',')
-            .map((s) => s.trim().toUpperCase())
-            .filter(Boolean);
-          const regions = await prisma.region.findMany({ where: { code: { in: codes } } });
-          const found = new Set(regions.map((r) => r.code));
-          const unknown = codes.filter((c) => !found.has(c));
-          if (unknown.length > 0) {
-            // Quarantine rather than write a partial set. `set:` REPLACES the
-            // relation, so writing what did resolve would silently drop the rest —
-            // and for a single-region accountant it writes `set: []`, which is
-            // fail-closed: the account signs in and sees nothing, for good. The
-            // Routes sheet quarantines the same mistake at line ~197.
-            issues.push({
-              sheet: 'Users',
-              row: sheetRow,
-              message: `region code(s) not found: ${unknown.join(', ')} — regions left unchanged for "${username}". Import the Regions sheet first, or correct the code.`,
-            });
-            continue;
-          }
+        if (regionIds) {
           await prisma.user.update({
             where: { id: user.id },
-            data: { managedRegions: { set: regions.map((r) => ({ id: r.id })) } },
+            data: { managedRegions: { set: regionIds.map((id) => ({ id })) } },
           });
-        } else if (regionScoped && !existing) {
-          // A NEW region-scoped user with no region_codes has an EMPTY
-          // managedRegions, which is fail-closed — not "sees everything". The
-          // import template already calls the column "Required for ACCOUNTANT ...
-          // else the accountant sees no approvals and the credit chain stalls";
-          // that was documented and never enforced. On an EXISTING user a blank
-          // cell still means "keep what you had", mirroring the password and
-          // supervisor rules, so it stays a no-op there.
-          issues.push({
-            sheet: 'Users',
-            row: sheetRow,
-            message: `${role} "${username}" was created with no region_codes, so it can see nothing and can clear no approval step. Set region_codes and re-import.`,
-          });
-          continue;
         }
         cleanCount++;
       } catch (err) {
