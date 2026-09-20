@@ -1,11 +1,12 @@
 # What needs you — 2026-09-20
 
 Launch is this week. Everything that could be done without a decision from you is
-done. Most of it is deployed; the manager class usernames are on `main` and live,
-while the **regional accountant accounts and the import fix behind them are built,
-tested and waiting on your go to merge** — merging deploys to production, so I do
-not do it without you saying so. This page is the rest, in the order it should be
-done, with what happens if it is skipped.
+done and deployed — manager class usernames, the seven regional accountant accounts,
+and the import fix behind them all went to production on 2026-09-20 (`ffaa831`;
+Vercel reports the production deployment succeeded, and the fourteen smoke checks
+pass on either side of it). This page is the rest: the things that need a decision
+or a credential only you hold, in the order they should be done, with what happens
+if each is skipped.
 
 The detail for each lives in `GO-LIVE-RUNBOOK.md` §0 and `OPERATIONS.md`. This page
 exists so you do not have to find them.
