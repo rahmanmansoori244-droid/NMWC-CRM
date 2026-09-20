@@ -404,13 +404,131 @@ native GET form navigation), approve and reject, a photo upload. And the two
 responses that return before the CSP wrapper, the forced-change redirect and the
 maintenance 503, whose headers nobody has read.
 
+### The blocker and P2 code, read by someone hostile (2026-09-15)
+
+Everything above had been reviewed for correctness by the person who wrote it.
+None of it had been read by someone trying to break it. Seven readers over B1–B6
+and the P2 batch found **thirty-five defects**; thirteen were fixed and deployed
+the same day and the other twenty-two are a backlog table at the end of
+`qa/reports/ENTERPRISE-READINESS-ASSESSMENT.md`. Two of the thirteen would each
+have stopped or silently spoiled the go-live load.
+
+**The Data Steward could not have signed in.** The builder issued that account as
+`steward`, and `lib/auth.ts` refuses that exact username whenever
+`DEMO_ACCOUNTS_DISABLED` is set — which production sets, because the synthetic
+seed uses the name for a demo account. Load day would have been: run the
+bootstrap, watch it report success, and be told "invalid username or password" at
+step 2. There is no way forward from there inside the application. The
+account-master import is Steward-only; a Manager may reset only a SALESMAN or
+SUPERVISOR; the import refuses to mint a Steward; the bootstrap refuses a second
+one while the broken one is active; and the fallback `admin` is on the same
+denylist. The only escapes were a direct database write, or switching the flag
+off — which re-enables the pilot accounts whose passwords are literals in the
+seed. Renamed to `data.steward`; the patterns moved to `lib/demo-accounts.ts` so
+the builder is tested against the same definition rather than a copy.
+
+**And the load would have skipped thousands of customers while reporting
+success.** The importer chose between a full master load and a narrow ERP refresh
+purely on whether a row carried a `temix_code`. Every row the builder emits
+carries one — it is the same string as `cust_code` — and production already holds
+the seeded customers keyed on the same RoutePro alternate code. So on the FIRST
+load those rows would have taken the refresh lane: crosswalk code and credit
+figures only, with the entire branch loop skipped. No region, route, address or
+visit day. A salesman's Today screen empty on day one. Nothing would have
+surfaced it, because those rows still count as PROMOTED and the step-6
+reconciliation still balances. The lane now also requires the customer to already
+carry a Temix code, and to carry the same one.
+
+The comment in that function had reasoned correctly about what happens on "a
+re-run". The first run against a seeded database is indistinguishable from a
+re-run, and nobody noticed for four months. **That is the pattern worth carrying
+forward: the assumption was written down, was true, and was about the wrong
+scenario.**
+
+Also fixed: the ledger trigger's owner check read an unqualified `pg_class`, so
+the runtime role could shadow it with a TEMP TABLE and rewrite the audit trail —
+the whole of B4, defeated by the credential B4 exists to contain (migration
+`20260915120000_trigger_search_path` pins `SET search_path` on both trigger
+functions). `/api/health` downgraded an unrecognised bearer to the anonymous
+green 200, so a mistyped `HEALTH_BEARER` switched the dead man off silently. A
+failed heartbeat read became an empty alarm list, indistinguishable from "no
+alarms". `app-role.ts grant` ran ten autocommitted statements that opened
+schema-wide and narrowed afterwards, so an interruption left the runtime role
+holding DELETE on both ledgers — and `verify` could not have told you, because
+all three of its AuditLog probes hit a real row and were refused by the trigger
+rather than the ACL. DELETE was granted on every table, so the customer master
+could be emptied row by row. `build-masters.ts` silently overwrote the only copy
+of issued passwords on a rebuild the runbook invites. A re-import re-armed
+`mustChangePassword` on people who had already changed it, locking them out
+against the password-reuse guard. And a customer imported without a `temix_code`
+was born SYNCED and never queued for Temix, so the ERP never learned it existed.
+
+### What is actually in each database (2026-09-20)
+
+Established by read-only query while diagnosing a failed login, and worth keeping
+because the three environments use **different username schemes**:
+
+- **UAT** (`ep-lucky-bar`, the branch this worktree's `.env` points at) holds
+  **58 accounts, 42 of them salesmen**, loaded from the go-live account master.
+  Usernames are therefore bare route codes — `c1`, `c4` — plus managers by name
+  and `steward`. `c1` and `c4` are active, have **never logged in**, and still
+  carry the forced-change flag, so they hold their original initial password.
+  One leftover: `admin`, active, with no forced change.
+- **Production** still holds the **May seed**, whose salesmen are
+  `<route>-12345-nmwc` with passwords derived from the route code
+  (`prisma/seed-muscat-pilot.ts`). `steward`, `admin` and `viewer` are all
+  **refused** there by the demo denylist. This worktree cannot query production
+  and should not be given the credential to.
+- **After the go-live load**, production moves to the UAT scheme: route codes.
+
+So `c4-12345-nmwc` exists on neither, which is why it failed. A wrong password and
+a lockout are distinguishable from the message: the limiter says "Too many
+attempts from your network", so "Invalid username or password" means the
+credential, not the rate limit.
+
+That query was also the first time `scripts/golive/audit-accounts.ts` had been run
+against a real database. It works, and it immediately found the `admin` leftover.
+
+### An open decision: one shared initial password, or one per account
+
+The owner's instruction, given 2026-09-10 and reaffirmed 2026-09-15:
+
+> create the account for everyone with username as their route code password 12345
+> then once they log in it forces them to change password and for managers with
+> their name.
+
+SEC-11 (commit `db51732`) replaced that with a per-account 8-digit issuer. **That
+was a mistake of process:** the assessment had recorded the choice as the owner's
+to make, and it was made in code without asking. The owner has since said not to
+revert it yet, so the per-account issuer is still what `build-masters.ts` uses and
+this is **an open decision, not a settled one**.
+
+If it is reverted, the change is small: replace the issuer in `build-masters.ts`
+with a single constant and restore the simpler distribution wording in step 8 of
+the runbook. The per-account issuer and its seven tests are recoverable from
+`db51732`.
+
+What the shared-password design accepts, recorded once so it is not rediscovered:
+usernames are route codes and are public — they are printed on the journey plan —
+so until a person first signs in, anyone who knows the shared value can sign in as
+them, set a password, and have every later edit, approval and audit row carry that
+colleague's name. The forced change closes that window one account at a time, which
+is why the runbook hands the logins out and walks people through the change on the
+same day.
+
 ## 6. Open items before UNCONDITIONAL go-live
 1. ~~**RK-3 chunked/resumable import**~~ **DONE** (2026-09-10) — see the section above.
 2. ~~F-UAT-7~~ **FIXED** (real importer bug, not a fixture artifact) — see §2 final pass.
 3. ~~R17/R19/R26 coverage~~ **CLOSED** via `credit-chain-e2e.test.ts`. R14 frozen-chain is exercised by that E2E walk + the `parseChain` unit test; the RK-2 "frozen-chain vs current-role authz drift" edge (route re-regioned mid-chain) remains a documented risk, not a confirmed defect.
 4. **Owner:** rotate `neondb_owner` password (shared across all Neon branches incl. production; exposed in UAT screenshots); confirm the D2 Temix credit-refresh direction; Vercel Pro for sub-daily cron; real Temix master + its header row (use the CRM's header contract in OWNER-DECISIONS.md).
 5. Findings from the third (final) bug hunt — triage/fix on completion.
-6. **Owner decisions left by the P2 pass**, none of them blocking: whether archiving a customer releases the CR and guarantee documents behind its credit decision; whether a failed audit write should fail the user's action; the Steward's org-wide administrative reach and whether provisioning an approver-tier account needs two people. Also outstanding, and not a decision: purging the old shared go-live password from git history.
+6. **Owner: rebuild `golive-data` before the load.** The existing files still name
+   the Steward `steward`, which production refuses. `npx tsx scripts/golive/build-masters.ts`.
+   The builder now moves an existing credentials file aside rather than overwriting it.
+7. **Open decision: shared initial password vs per-account.** See the section above.
+   The owner's stated design is one password plus a forced change; the code currently
+   issues one per account. Not settled.
+8. **Owner decisions left by the P2 pass**, none of them blocking: whether archiving a customer releases the CR and guarantee documents behind its credit decision; whether a failed audit write should fail the user's action; the Steward's org-wide administrative reach and whether provisioning an approver-tier account needs two people. Also outstanding, and not a decision: purging the old shared go-live password from git history.
 
 **Automated test count (this session):** 140 unit + integration suites (reactivation ×5, merge ×3, import-reconciliation, promote-reconciliation ×11, rate-limit ×4, import-multibranch, credit-chain-e2e ×5, + gated uat-load) — **all green on the isolated uat-testing branch.**
 
