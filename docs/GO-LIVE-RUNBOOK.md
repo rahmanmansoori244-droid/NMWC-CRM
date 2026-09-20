@@ -37,6 +37,27 @@ files, what was withheld, and **every assumption that needs your confirmation**.
 | 10 | **B3 — make the backups recoverable.** Generate an age key pair, set repository variable `BACKUP_AGE_RECIPIENTS` to the public key (add a second recipient held by someone else), store the private key in the password manager AND on paper, and put a copy in the secret `BACKUP_AGE_IDENTITY`. Add `NEON_API_KEY` and `NEON_PROJECT_ID`. Then run **Actions → Restore drill → Run workflow** and read the measured recovery time. Set the backup retention rule with `npx tsx scripts/ops/r2-backups-lifecycle.ts`. Full detail in `docs/OPERATIONS.md` §6.7. **This is now a prerequisite, not a hardening step:** without `BACKUP_AGE_RECIPIENTS` the nightly job REFUSES to upload and you have no backup at all. It used to upload a plaintext copy of the whole customer master and every password hash instead, warning about it inside a run that stayed green (DO-16), which is the worse of the two failures. | Nobody has ever restored this database. Until the drill passes, the recovery time is unknown and the encryption key is unproven — and a lost key means every backup is unrecoverable. |
 | 11 | **B6 — answer the residency question before the data load, not after.** Fill the `[OWNER]` blanks in `docs/compliance/DATA-RESIDENCY-REGISTER.md` (both R2 bucket locations, the Sentry region, the account holder of record per vendor, where Temix runs) and send `docs/compliance/PDPL-ASSESSMENT.md` to counsel. | Once ~20,100 Omani customer records are loaded into a US database, a residency requirement becomes a cutover rather than a configuration change. This is the last cheap moment. |
 
+## 0b. Five minutes before you start — smoke the deployment
+
+```bash
+npm run smoke
+```
+
+Fourteen checks against production, no credentials, about fifteen seconds. Every
+one of them is something that has already been wrong on this system: a four-month
+-old build serving as production, a content-security-policy that renders the page
+blank, a monitor bearer that could be switched off by a typo, cron routes whose
+auth regressed invisibly, a region that made every query cross the Atlantic, and
+an auth URL that signed previews in against the production database.
+
+It must print `all 14 checks passed`. If anything fails, STOP — none of it is
+caused by the load, so loading on top of it only makes the diagnosis harder.
+
+Run the same command against the preview first if you want to rehearse:
+`npm run smoke -- <preview url>`. And run it again after the load, plus after the
+`DATABASE_URL` swap in step 8, because that is a configuration change to the live
+application.
+
 ## 1. Load day — the load (Data Steward, ~1 hour)
 
 Everything happens in the production app, in this order. Do not skip a step; the
