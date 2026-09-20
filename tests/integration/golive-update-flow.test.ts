@@ -19,6 +19,9 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { randomUUID, createHash } from 'node:crypto';
 import bcrypt from 'bcryptjs';
+// Static, not the dynamic import used further down: fullPayload() is synchronous
+// and needs to know what day it is, because the fixture stores the real weekday.
+import { omanDayOfWeek } from '@/lib/tz';
 
 vi.setConfig({ testTimeout: 300_000, hookTimeout: 300_000 });
 
@@ -312,7 +315,18 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
         gpsAccuracy: 8,
         // fixed: a re-submit must not diff on the capture timestamp alone
         gpsCapturedAt: new Date('2026-09-10T08:00:00.000Z'),
-        dayOfVisit: 'SUN' as const,
+        // NOT a literal 'SUN'. The fixture stores each branch with
+        // `dayOfVisit: omanDayOfWeek()` — the REAL weekday — because the Today
+        // screen assertions further down need the branch to be due today. A
+        // literal proposed day therefore equals the stored one on one day in
+        // seven, the edit contains no change to day_of_visit, the field-update
+        // report does not highlight it, and the suite fails.
+        //
+        // That day is Sunday, which is the day the go-live runbook targets: this
+        // test was red on exactly the day it would most need to be trusted, and
+        // green every other day, so it read as a flake. Propose something that is
+        // guaranteed to differ from whatever today happens to be.
+        dayOfVisit: (omanDayOfWeek() === 'SUN' ? 'MON' : 'SUN') as 'SUN' | 'MON',
         coolersCount: 2,
         standsCount: 1,
         emptyBottlesCount: 12,
