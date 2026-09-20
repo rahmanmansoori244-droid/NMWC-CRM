@@ -45,16 +45,34 @@ function newestRouteProExport(): string {
   if (!best) throw new Error('no RoutePro_Customer_Master_LIVE_<date>.csv found');
   return best.file;
 }
+/**
+ * The Timix extracts moved from Desktop/SALES-REPORTS to Desktop/SALES-NMWC at
+ * some point between the last build and 2026-09-20, and the build died with
+ * "missing source temixRaw" naming a path that no longer existed. Try each known
+ * home and return the first that is actually there, so a rename costs a log line
+ * rather than a failed build on load day.
+ */
+function salesFile(name: string): string {
+  const homes = [`${DESKTOP}/SALES-NMWC`, `${DESKTOP}/SALES-REPORTS`];
+  for (const h of homes) {
+    const p = `${h}/${name}`;
+    if (existsSync(p)) return p;
+  }
+  // Return the preferred path anyway: the caller's own missing-source check
+  // produces a better message than a throw from here would.
+  return `${homes[0]}/${name}`;
+}
+
 const SRC = {
   rpCustomers: process.env.RP_CUSTOMERS ?? newestRouteProExport(),
   rpRoutes:
     process.env.RP_ROUTES ??
     `${DESKTOP}/claude/NMWC-JOURNEY-PLANS/harvests/RoutePro_Route_Master_LIVE_2026-09-01.csv`,
   jp: process.env.JP_MASTER ?? `${DESKTOP}/claude/NMWC-JOURNEY-PLANS/master/JP_MASTER_CURRENT.csv`,
-  temixRaw: process.env.TEMIX_RAW ?? `${DESKTOP}/SALES-REPORTS/CUST-MASTER-with-class.xlsx`,
+  temixRaw: process.env.TEMIX_RAW ?? salesFile('CUST-MASTER-with-class.xlsx'),
   codeBranch:
     process.env.CODE_BRANCH ??
-    `${DESKTOP}/SALES-REPORTS/NMWC-Customer-Master-CRM (Code-Branch).xlsx`,
+    salesFile('NMWC-Customer-Master-CRM (Code-Branch).xlsx'),
   dashDb: process.env.DASH_DB ?? `${DESKTOP}/NMWC-SALES-DASHBOARD/server/db/nmwc.db`,
   todayUpload:
     process.env.TODAY_UPLOAD ??
@@ -1185,10 +1203,10 @@ async function main() {
     renameSync(existing, kept);
     console.warn(
       `\n!! ${name} already existed and has been kept as ${path.basename(kept)}.\n` +
-        `   The passwords in the NEW file have been freshly drawn and are NOT the ones\n` +
-        `   already in the database. If any account has been created and its password\n` +
-        `   handed out, the superseded file is the one that works — do not distribute\n` +
-        `   the new one until those accounts are re-created or reset.\n`
+        `   Nothing was overwritten. The initial password is the shared value for every\n` +
+        `   account, so a rebuild does not change anybody's credentials — but the ROSTER\n` +
+        `   can change between builds (a route going active or inactive adds or removes\n` +
+        `   an account), so compare the two before you hand anything out.\n`
     );
   }
 
