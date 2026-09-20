@@ -261,92 +261,152 @@ const CHANNEL_MAP: Record<string, string | null> = {
 // Managers = the people who run the sales dashboard today. They supervise their
 // salesmen DIRECTLY (a Manager may be a salesman's supervisor in the CRM, and the
 // supervisor approval step accepts them). No separate supervisor accounts.
-const MANAGERS: Array<{ username: string; fullName: string; regions: string[]; note: string }> = [
+// Manager usernames are CLASS codes, not names — owner decision, 2026-09-20:
+// "by class like mct-gt". A manager is the approver for a class, and the class
+// outlives the person in it: when Ashok moves on, his replacement inherits
+// `khaburah` rather than everyone learning a new login.
+//
+// Nine own exactly one class and take its code. `alwafi-duqm` owns two and says
+// so. The last two, `rashid` and `saud`, own NO class — they are fallback
+// approvers who cover several regions when a class manager is away — so they keep
+// their names. Giving them a class username would make the scheme claim they own
+// something they do not.
+//
+// Hyphens are legal: services/users.ts allows [a-z0-9._-], bootstrap-accounts.ts
+// allows the same, and the account import only lowercases. None of these names is
+// on the demo denylist in lib/demo-accounts.ts — checked, and pinned by
+// tests/unit/golive-usernames.test.ts.
+const MANAGERS: Array<{
+  username: string;
+  fullName: string;
+  /** Access scope: the regions this manager can see. */
+  regions: string[];
+  /**
+   * What this manager is the PRIMARY approver for — a Muscat class ('MCT GT') or
+   * a region code ('NZW'). Empty for the two fallback approvers, who cover other
+   * people's regions but own none. Every value must be unique across the roster;
+   * SUPERVISOR_BY_OWNED throws if two managers claim the same one.
+   */
+  owns: string[];
+  note: string;
+}> = [
   {
-    username: 'ahmed.alnadabi',
+    username: 'mct-gt',
     fullName: 'AHMED ALNADABI',
     regions: ['MCT'],
+    owns: ['MCT GT'],
     note: 'Muscat GT — supervises the GT salesmen',
   },
   {
-    username: 'haitham',
+    username: 'mct-hd',
     fullName: 'HAITHAM',
     regions: ['MCT'],
+    owns: ['MCT HD'],
     note: 'Muscat home delivery — supervises the HD salesmen',
   },
   {
-    username: 'sarath',
+    username: 'mct-mt',
     fullName: 'SARATH',
     regions: ['MCT'],
+    owns: ['MCT MT'],
     note: 'Muscat modern trade — supervises the MT salesmen',
   },
   {
-    username: 'sara.khayat',
+    username: 'horeca',
     fullName: 'SARA KHAYAT',
     regions: ['MCT'],
+    owns: ['HORECA'],
     note: 'HORECA — supervises the HORECA salesmen; also the C3 pre-seller, so C3 gets no salesman account',
   },
   {
-    username: 'ashok',
+    username: 'khaburah',
     fullName: 'ASHOK',
     regions: ['KHB'],
+    owns: ['KHB'],
     note: 'Khaburah — supervises the Khaburah salesmen',
   },
   {
     username: 'rashid',
     fullName: 'RASHID',
     regions: ['BRK', 'DQM', 'AWF', 'KHB'],
+    owns: [],
     note: 'covers Barka/Duqm/Al Wafi/Khaburah — fallback approver',
   },
   {
-    username: 'rasool',
+    username: 'alwafi-duqm',
     fullName: 'RASOOL',
     regions: ['AWF', 'DQM'],
+    owns: ['AWF', 'DQM'],
     note: 'Al Wafi + Duqm — supervises their salesmen',
   },
   {
-    username: 'saqib',
+    username: 'barka',
     fullName: 'SAQIB',
     regions: ['BRK'],
+    owns: ['BRK'],
     note: 'Barka — supervises the Barka salesmen',
   },
   {
     username: 'saud',
     fullName: 'SAUD',
     regions: ['DQM', 'AWF', 'NZW'],
+    owns: [],
     note: 'covers Duqm/Al Wafi/Nizwa — fallback approver',
   },
   {
-    username: 'sunil.kp',
+    username: 'nizwa',
     fullName: 'SUNIL KP',
     regions: ['NZW'],
+    owns: ['NZW'],
     note: 'Nizwa — supervises the Nizwa salesmen',
   },
   {
-    username: 'tharwat',
+    username: 'salalah',
     fullName: 'THARWAT MOHAMED',
     regions: ['SLL'],
+    owns: ['SLL'],
     note: 'Salalah — supervises the Salalah salesmen',
   },
 ];
-const MUSCAT_SUPERVISOR_BY_CLASS: Record<string, string> = {
-  'MCT GT': 'ahmed.alnadabi',
-  'MCT MT': 'sarath',
-  'MCT HD': 'haitham',
-  HORECA: 'sara.khayat',
-};
 // Owner decision: Sara Khayat also sells C3 herself — a second, SALESMAN login.
 const MANAGER_ALSO_SELLS: Record<string, { username: string; fullName: string }> = {
   C3: { username: 'c3', fullName: 'SARA KHAYAT' },
 };
-const SUPERVISOR_BY_REGION: Record<string, string> = {
-  NZW: 'sunil.kp',
-  KHB: 'ashok',
-  SLL: 'tharwat',
-  BRK: 'saqib',
-  AWF: 'rasool',
-  DQM: 'rasool',
-};
+// The roster is data typed by hand, so check it before anything reads it. A
+// duplicate username would otherwise be swallowed by the usedUsernames Set below
+// and one manager would silently end up with no account at all; a username the
+// app's charset rejects would import cleanly here and fail at sign-in, which is
+// the failure mode that cost this project the `steward` incident.
+(function assertRoster() {
+  const seen = new Set<string>();
+  for (const m of MANAGERS) {
+    if (!/^[a-z0-9._-]{1,50}$/.test(m.username)) {
+      throw new Error(
+        `manager username "${m.username}" is not one services/users.ts will accept`
+      );
+    }
+    if (seen.has(m.username)) throw new Error(`duplicate manager username: ${m.username}`);
+    seen.add(m.username);
+  }
+})();
+
+// Derived from the roster above — deliberately NOT a second list of usernames.
+// A Muscat route is supervised by the manager who owns its CLASS; everywhere else
+// by the one who owns its REGION. 'MCT WHS' (route W) is owned by nobody, so it
+// resolves to '' and is reported in the no-supervisor exception sheet rather than
+// being silently attached to whichever manager happened to be listed first.
+const SUPERVISOR_BY_OWNED: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const m of MANAGERS) {
+    for (const key of m.owns) {
+      if (map[key]) {
+        throw new Error(`two managers own ${key}: ${map[key]} and ${m.username}`);
+      }
+      map[key] = m.username;
+    }
+  }
+  return map;
+})();
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 function parseCsv(file: string): { headers: string[]; rows: string[][] } {
@@ -890,8 +950,8 @@ async function main() {
     return u;
   };
   const supervisorFor = (route: { code: string; region: string; cls: string | null }): string => {
-    if (route.region === 'MCT') return MUSCAT_SUPERVISOR_BY_CLASS[route.cls ?? ''] ?? '';
-    return SUPERVISOR_BY_REGION[route.region] ?? '';
+    if (route.region === 'MCT') return SUPERVISOR_BY_OWNED[route.cls ?? ''] ?? '';
+    return SUPERVISOR_BY_OWNED[route.region] ?? '';
   };
   for (const m of MANAGERS) {
     users.push({
@@ -1036,6 +1096,31 @@ async function main() {
       pw,
     ]);
   }
+  // Referential closure: a supervisor_username that names nobody is worse than a
+  // blank one. Blank is reported in the no-supervisor sheet and someone fixes it;
+  // a dangling name reads as assigned and is not reported at all. This caught
+  // nothing when written — it exists because the rename to class usernames on
+  // 2026-09-20 had the usernames written down in three places, and the two copies
+  // that were not the roster would have failed exactly this way.
+  {
+    const managerUsernames = new Set(MANAGERS.map((m) => m.username));
+    const dangling = users
+      .filter((u) => u.supervisor_username && !managerUsernames.has(String(u.supervisor_username)))
+      .map((u) => `${u.username} → ${u.supervisor_username}`);
+    if (dangling.length > 0) {
+      throw new Error(
+        `supervisor_username names nobody on the roster: ${dangling.join(', ')}`
+      );
+    }
+    const supervised = users.filter((u) => u.role === 'SALESMAN' && u.supervisor_username).length;
+    const salesmen = users.filter((u) => u.role === 'SALESMAN').length;
+    if (salesmen > 0 && supervised === 0) {
+      throw new Error(
+        `${salesmen} salesmen and not one has a supervisor — the roster lookup is not resolving`
+      );
+    }
+  }
+
   const allRegions = REGIONS.filter((r) => r.code !== 'UNASSIGNED')
     .map((r) => r.code)
     .join(',');
@@ -1343,14 +1428,14 @@ async function main() {
   );
   md.push('13. **Codes with stray characters** are skipped and listed for correction in Timix. ✅');
   md.push(
-    '14. **C3**: Sara Khayat also sells it herself — she gets a second, salesman login (`sara.khayat.c3`). **W** (wholesale) has no named seller and stays without a salesman. ✅'
+    '14. **C3**: Sara Khayat also sells it herself — she gets a second, salesman login — `c3`, the route code, like every other salesman. **W** (wholesale) has no named seller and stays without a salesman. ✅'
   );
   md.push(
     `15. **Newcomers from this month's sales**: ${septNew.length} customers/branches invoiced in September that the RoutePro snapshot (${path.basename(SRC.rpCustomers)}) does not contain were added on their September route as CASH/ACTIVE (dq/new-from-september-sales.csv). Re-export RoutePro before the final build to capture customers created in Timix that have not bought yet.`
   );
   md.push('');
   md.push(
-    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their name, the steward as `data.steward` (NOT `steward` — that exact username is refused while DEMO_ACCOUNTS_DISABLED is set). **The initial password is `12345` for everyone** — owner decision of 2026-09-10, restated 2026-09-20 — and every row carries must_change_password, so the value works exactly once and stops working the moment its owner completes the forced change at first sign-in. **That forced change is the entire control.** Until a person signs in, their account is open to anyone who knows the shared value, and usernames are route codes printed on the journey plan. So hand the logins out and walk people through the change on the SAME DAY, then check Users the next morning for anyone still carrying the flag. A manager who also sells a route has TWO logins, both `12345`. ✅'
+    '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their CLASS (`mct-gt`, `mct-hd`, `mct-mt`, `horeca`, `khaburah`, `nizwa`, `salalah`, `barka`, `alwafi-duqm`) — except Rashid and Saud, the two fallback approvers, who own no class and keep their names. The steward signs in as `data.steward` (NOT `steward` — that exact username is refused while DEMO_ACCOUNTS_DISABLED is set). **The initial password is `12345` for everyone** — owner decision of 2026-09-10, restated 2026-09-20 — and every row carries must_change_password, so the value works exactly once and stops working the moment its owner completes the forced change at first sign-in. **That forced change is the entire control.** Until a person signs in, their account is open to anyone who knows the shared value, and usernames are route codes printed on the journey plan. So hand the logins out and walk people through the change on the SAME DAY, then check Users the next morning for anyone still carrying the flag. A manager who also sells a route has TWO logins, both `12345`. ✅'
   );
   md.push('## What is in the files');
   md.push(`- **Regions:** 7`);

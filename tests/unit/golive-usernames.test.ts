@@ -77,3 +77,48 @@ describe('the denylist still blocks what it is for', () => {
     expect(auth).not.toMatch(/salesman\\\.\|supervisor/);
   });
 });
+
+describe('the builder emits usernames the application will accept', () => {
+  // Manager usernames became class codes ('mct-gt') on 2026-09-20, which put a
+  // HYPHEN in a username for the first time. services/users.ts allows it and
+  // bootstrap-accounts.ts allows it — this pins that they keep agreeing, and
+  // catches a future name with a space, a capital or an '@' before load day
+  // rather than at someone's sign-in.
+  it.each(emitted)('%s matches the charset the application will accept', (username) => {
+    expect(username).toMatch(/^[a-z0-9._-]{1,50}$/);
+  });
+
+  it('the app-side rule really is the one being mirrored', () => {
+    // If services/users.ts tightens its rule, the assertion above goes stale
+    // silently. Fail here instead, so the next person updates both.
+    const users = readFileSync('services/users.ts', 'utf8');
+    expect(users).toMatch(/\^\[a-z0-9\._-\]\+\$/);
+  });
+});
+
+describe('supervisor assignment is derived, not a second list of usernames', () => {
+  // The rename to class usernames touched MANAGERS, and the usernames were ALSO
+  // written down in MUSCAT_SUPERVISOR_BY_CLASS and SUPERVISOR_BY_REGION. Renaming
+  // one and not the others would have given every salesman a supervisor_username
+  // pointing at an account that does not exist — and the builder would have
+  // printed success. The three are now one derived map; this stops a second copy
+  // coming back.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  it('has no hand-maintained username lookup beside the roster', () => {
+    expect(code).not.toMatch(/MUSCAT_SUPERVISOR_BY_CLASS/);
+    expect(code).not.toMatch(/SUPERVISOR_BY_REGION/);
+  });
+
+  it('builds the lookup from the roster', () => {
+    expect(code).toMatch(/SUPERVISOR_BY_OWNED[\s\S]{0,400}for \(const m of MANAGERS\)/);
+  });
+
+  it('refuses two managers owning the same class or region', () => {
+    expect(code).toMatch(/two managers own/);
+  });
+
+  it('checks the roster for duplicates and bad charsets before using it', () => {
+    expect(code).toMatch(/duplicate manager username/);
+  });
+});
