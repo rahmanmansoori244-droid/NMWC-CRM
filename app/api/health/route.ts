@@ -119,6 +119,14 @@ export async function GET(req: Request) {
       status: allOk ? 'ok' : 'degraded',
       service: 'nmwc-cm',
       version: process.env.npm_package_version ?? 'unknown',
+      // B1: production served a four-month-old build for weeks and nothing said
+      // so — the only reason anyone noticed was a 404 on a route that should have
+      // existed. This is the answer to "is production running the code I think it
+      // is", and `npm run smoke -- --expect-commit <sha>` asserts it. Behind the
+      // monitor bearer rather than on the anonymous probe, because the commit a
+      // private deployment runs is nobody else's business.
+      commit: (process.env.VERCEL_GIT_COMMIT_SHA ?? '').slice(0, 7) || 'unknown',
+      deployedEnv: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
       timestamp: new Date().toISOString(),
       checks,
       cron: {

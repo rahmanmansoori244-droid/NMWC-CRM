@@ -30,7 +30,14 @@ type Check = {
   run: () => Promise<{ ok: boolean; detail: string }>;
 };
 
-const BASE = (process.argv[2] ?? 'https://nmwc-cm.vercel.app').replace(/\/$/, '');
+const args = process.argv.slice(2);
+const expectIdx = args.indexOf('--expect-commit');
+/** Short sha production must be running. Defaults to whatever HEAD is here. */
+const EXPECT_COMMIT = expectIdx >= 0 ? (args[expectIdx + 1] ?? '') : '';
+const BASE = (args.find((a) => a.startsWith('http')) ?? 'https://nmwc-cm.vercel.app').replace(
+  /\/$/,
+  ''
+);
 const MONITOR = process.env.HEALTH_BEARER ?? '';
 
 async function get(path: string, init?: RequestInit) {
@@ -212,6 +219,23 @@ const checks: Check[] = [
 ];
 
 if (MONITOR) {
+  checks.push({
+    name: 'production is running the commit you think it is',
+    why: 'production served a four-month-old build for weeks; the only reason anyone noticed was a 404 on a route that should have existed',
+    run: async () => {
+      const res = await get('/api/health', { headers: { authorization: `Bearer ${MONITOR}` } });
+      const body = (await res.json()) as { commit?: string; deployedEnv?: string };
+      const commit = body.commit ?? 'unknown';
+      if (!EXPECT_COMMIT) {
+        return {
+          ok: commit !== 'unknown',
+          detail: `${commit} (${body.deployedEnv}) — pass --expect-commit <sha> to assert it`,
+        };
+      }
+      const want = EXPECT_COMMIT.slice(0, 7);
+      return { ok: commit === want, detail: `running ${commit}, expected ${want}` };
+    },
+  });
   checks.push({
     name: 'monitor bearer unlocks the detail, and no cron job is alarming',
     why: 'this is the endpoint an uptime monitor watches; 503 here means a scheduled job is dead',
