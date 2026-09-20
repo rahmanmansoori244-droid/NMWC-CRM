@@ -29,7 +29,8 @@
     "guide:build": "tsx scripts/capture-guide-screenshots.ts && tsx scripts/guide-html-to-pdf.ts",
     "guide:roles": "tsx scripts/build-role-guides.ts",
     "smoke": "tsx scripts/ops/smoke.ts",
-    "verify:load": "tsx scripts/ops/verify-load.ts"
+    "verify:load": "tsx scripts/ops/verify-load.ts",
+    "verify:credentials": "tsx scripts/golive/verify-credentials.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",

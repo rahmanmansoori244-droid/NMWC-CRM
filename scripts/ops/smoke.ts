@@ -218,6 +218,21 @@ const checks: Check[] = [
   },
 ];
 
+// --expect-commit needs the monitor bearer: the commit is only in the detailed
+// health payload. Refusing here rather than skipping, because the caller asked a
+// question and a skipped check answers it with "all checks passed" — which is how
+// production served a four-month-old build while every smoke run was green.
+if (EXPECT_COMMIT && !MONITOR) {
+  console.error(
+    '\n  asked to assert a commit with --expect-commit, but HEALTH_BEARER is not set.\n' +
+      '  The commit is only readable from /api/health with the monitor bearer, so the\n' +
+      '  assertion CANNOT run. Refusing to report a pass it did not earn.\n\n' +
+      '  Set HEALTH_BEARER, or drop --expect-commit and accept that this run does not\n' +
+      '  tell you which build production is serving.\n'
+  );
+  process.exit(2);
+}
+
 if (MONITOR) {
   checks.push({
     name: 'production is running the commit you think it is',
