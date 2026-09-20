@@ -19,9 +19,27 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { randomUUID, createHash } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-// Static, not the dynamic import used further down: fullPayload() is synchronous
-// and needs to know what day it is, because the fixture stores the real weekday.
+// Static, not the dynamic import used further down: the constant below is
+// evaluated at module load and fullPayload() is synchronous.
 import { omanDayOfWeek } from '@/lib/tz';
+
+/**
+ * The day of visit the salesman's edit PROPOSES. Derived, never a literal.
+ *
+ * Each branch is created with `dayOfVisit: omanDayOfWeek()` — the REAL weekday —
+ * because the Today-screen assertions need it to be due today. A literal proposed
+ * day therefore matches the stored one on one day in seven: the edit then contains
+ * no change to day_of_visit, the field-update report correctly does not highlight
+ * it, and two assertions fail.
+ *
+ * That day is Sunday — the day the go-live runbook targets. So this suite, which
+ * exists to prove the salesman-to-manager flow, was red on exactly the day anyone
+ * would want to trust it and green every other day, which reads as a flake and
+ * gets re-run rather than read.
+ *
+ * Every assertion about the approved day must use THIS, not a literal.
+ */
+const PROPOSED_DAY: 'SUN' | 'MON' = omanDayOfWeek() === 'SUN' ? 'MON' : 'SUN';
 
 vi.setConfig({ testTimeout: 300_000, hookTimeout: 300_000 });
 
@@ -315,18 +333,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
         gpsAccuracy: 8,
         // fixed: a re-submit must not diff on the capture timestamp alone
         gpsCapturedAt: new Date('2026-09-10T08:00:00.000Z'),
-        // NOT a literal 'SUN'. The fixture stores each branch with
-        // `dayOfVisit: omanDayOfWeek()` — the REAL weekday — because the Today
-        // screen assertions further down need the branch to be due today. A
-        // literal proposed day therefore equals the stored one on one day in
-        // seven, the edit contains no change to day_of_visit, the field-update
-        // report does not highlight it, and the suite fails.
-        //
-        // That day is Sunday, which is the day the go-live runbook targets: this
-        // test was red on exactly the day it would most need to be trusted, and
-        // green every other day, so it read as a flake. Propose something that is
-        // guaranteed to differ from whatever today happens to be.
-        dayOfVisit: (omanDayOfWeek() === 'SUN' ? 'MON' : 'SUN') as 'SUN' | 'MON',
+        dayOfVisit: PROPOSED_DAY,
         coolersCount: 2,
         standsCount: 1,
         emptyBottlesCount: 12,
@@ -570,7 +577,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const b = c.branches[0]!;
     expect(b.gpsLat).toBeCloseTo(23.588, 3);
     expect(b.gpsLng).toBeCloseTo(58.3829, 3);
-    expect(b.dayOfVisit).toBe('SUN');
+    expect(b.dayOfVisit).toBe(PROPOSED_DAY);
     expect(b.address).toContain('Al Khuwair');
     expect(b.coolersCount).toBe(2);
     expect(c.completenessScore).toBeGreaterThanOrEqual(90);
