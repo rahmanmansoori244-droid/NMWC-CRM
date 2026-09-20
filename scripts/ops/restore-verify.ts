@@ -21,7 +21,11 @@
  *   --url <conn>        database to verify (else RESTORE_VERIFY_URL, else DATABASE_URL)
  *   --manifest <path>   manifest written at dump time; enables exact row-count and
  *                       RPO-watermark checks (scripts/ops/backup-manifest.sql)
- *   --expect-app-role   also require the nmwc_app role and its REVOKEs to exist
+ *   --expect-app-role   also require the nmwc_app role to exist (R-01) AND to hold
+ *                       exactly the documented privileges (R-02) — insert-only on
+ *                       both ledgers, no DELETE on CustomerEdit, nothing at all on
+ *                       _prisma_migrations. Until 2026-09-20 this flag promised the
+ *                       second half and only did the first.
  *                       (only true after app-role.ts has been re-run on the restore)
  *   --json <path>       write the full result as JSON
  *
@@ -500,6 +504,71 @@ async function main() {
         Number(roleCount) > 0
           ? 'present'
           : 'ABSENT — expected: pg_dump carries no roles and --no-privileges strips every GRANT. Run scripts/ops/app-role.ts create + grant + verify against this database before pointing the app at it.',
+        ''
+      );
+    }
+
+    // ---- R-02: the role's PRIVILEGES, not merely its existence -------------
+    //
+    // This file's own `--expect-app-role` documentation promised it checked the
+    // REVOKEs. It checked that a role of that name existed, and nothing else. It
+    // is the closing gate of both recovery runbooks (OPERATIONS.md §6.4, §6.5)
+    // and of the monthly drill, so an operator read its green as proof that the
+    // restored database was back to the documented privilege posture. A restore
+    // followed by `create` but not `grant` — or by a `grant` that died halfway,
+    // which was possible until today because it ran as ten autocommitted
+    // statements — reported R-01 pass either way.
+    //
+    // Gated on the FLAG and on the role existing, both deliberately. A Neon branch
+    // is a copy-on-write clone and carries its parent's roles, while DROP SCHEMA
+    // CASCADE plus a --no-privileges restore destroys every grant: the drill
+    // verifies exactly that state one step before it re-runs `grant`, and that is
+    // correct rather than a failure. And has_table_privilege raises 42704 for a
+    // role that does not exist, which would abort the run before anything is
+    // recorded.
+    //
+    // The matrix below IS scripts/ops/app-role.ts `grant`. If that changes, this
+    // changes with it.
+    const ACL_PRIVILEGES = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'] as const;
+    const ACL_EXPECTED: Record<string, readonly string[]> = {
+      AuditLog: ['SELECT', 'INSERT'],
+      EditApproval: ['SELECT', 'INSERT'],
+      CustomerEdit: ['SELECT', 'INSERT', 'UPDATE'],
+      _prisma_migrations: [],
+    };
+
+    if (expectAppRole && Number(roleCount) > 0) {
+      const wrong: string[] = [];
+      for (const [table, allowed] of Object.entries(ACL_EXPECTED)) {
+        for (const priv of ACL_PRIVILEGES) {
+          const [{ held }] = await q<{ held: boolean }>(
+            `SELECT has_table_privilege('nmwc_app', '"${table}"', '${priv}') AS held`
+          );
+          const shouldHold = allowed.includes(priv);
+          if (held !== shouldHold) {
+            wrong.push(
+              `${table}.${priv}=${held ? 'GRANTED' : 'missing'} (want ${shouldHold ? 'granted' : 'absent'})`
+            );
+          }
+        }
+      }
+      record(
+        'R-02',
+        'nmwc_app holds exactly the documented privileges',
+        wrong.length === 0 ? 'pass' : 'fail',
+        wrong.length === 0
+          ? `${Object.keys(ACL_EXPECTED).length} tables x ${ACL_PRIVILEGES.length} privileges as documented`
+          : wrong.join('; '),
+        'the append-only ledgers are append-only by convention again — the runtime credential can change or remove audit rows, and the B4 control the assessment signed off on is not in force'
+      );
+    } else {
+      record(
+        'R-02',
+        'nmwc_app holds exactly the documented privileges',
+        'skip',
+        expectAppRole
+          ? 'role absent — nothing to check (R-01 has already failed)'
+          : 'not checked without --expect-app-role: a restored database legitimately has the role with none of its grants until app-role.ts grant is re-run',
         ''
       );
     }
