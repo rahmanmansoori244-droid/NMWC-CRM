@@ -72,6 +72,22 @@ Fourteen checks, no credentials, fifteen seconds. It must say `all 14 checks
 passed`. It passes right now. Run it again after step 4, because that changes the
 live application's configuration.
 
+And after the load, the data-level companion:
+
+```bash
+DIRECT_URL='<the OWNER connection string>' npm run verify:load
+```
+
+Twelve read-only checks against the database. The in-app reconcile proves the
+batch balanced; this asks whether the rows actually landed. A customer can be
+counted as promoted and still have no branch, no route and no visit day — that is
+exactly what the narrow ERP refresh lane used to produce, and the reconcile
+balanced anyway.
+
+It will also tell you **how many branches on a worked route have no visit day**.
+That number decides whether the field force sees anything on **Today** the next
+morning, and it is worth reading before you hand out a single login.
+
 ---
 
 ## 4. Point the app at the least-privilege database role

@@ -116,6 +116,20 @@ importer enforces most of the order, but not all of it.
    is co-located with the database, so expect the whole master in roughly 10–20
    minutes. **Leave the tab open.** If it is interrupted, the page shows *Promote
    interrupted* — click **Resume promote**; nothing is lost or repeated.
+6a. **Verify the data, not just the batch.**
+
+   ```bash
+   DIRECT_URL='<the OWNER connection string>' npm run verify:load
+   ```
+
+   Twelve read-only checks. The reconcile below proves the BATCH balanced; this
+   asks the database whether the rows actually landed. A customer can be counted
+   as promoted and still have no branch, no route and no visit day — that is
+   exactly what the narrow ERP refresh lane used to produce, and the reconcile
+   balanced anyway. It also reports how many branches on a worked route have no
+   visit day, which is the number that decides whether a salesman's **Today**
+   screen has anything on it the next morning.
+
 6. **Reconcile** (SOP §8.4): *Left to promote* = 0, and *Promoted + Rejected +
    Quarantined = Total*. Open every REJECTED row (they are listed first). Screenshot
    the six figures — that is the evidence the load was checked.
