@@ -12,7 +12,6 @@
  * password; nothing in this module touches that field, and no caller prints a
  * value from either file.
  */
-import ExcelJS from 'exceljs';
 import { existsSync, readFileSync } from 'node:fs';
 
 /**
@@ -43,6 +42,11 @@ export async function expectedUsernames(
   if (!existsSync(accountMaster)) {
     throw new Error(`${accountMaster} not found. Run scripts/golive/build-masters.ts first.`);
   }
+  // Imported here, not at module top. This module also exports plain constants
+  // that a unit test reads, and a top-level exceljs import made that test pay an
+  // exceljs load at collection time — the cost CLAUDE.md records as a first-run
+  // Windows flake against a 5-second timeout.
+  const { default: ExcelJS } = await import('exceljs');
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(accountMaster);
   const ws = wb.getWorksheet('Users');

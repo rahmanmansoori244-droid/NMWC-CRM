@@ -1,8 +1,11 @@
 # What needs you — 2026-09-20
 
 Launch is this week. Everything that could be done without a decision from you is
-done and deployed. This is the rest, in the order it should be done, with what
-happens if it is skipped.
+done. Most of it is deployed; the manager class usernames are on `main` and live,
+while the **regional accountant accounts and the import fix behind them are built,
+tested and waiting on your go to merge** — merging deploys to production, so I do
+not do it without you saying so. This page is the rest, in the order it should be
+done, with what happens if it is skipped.
 
 The detail for each lives in `GO-LIVE-RUNBOOK.md` §0 and `OPERATIONS.md`. This page
 exists so you do not have to find them.
@@ -42,23 +45,49 @@ age-keygen -o nmwc-backup.key
 
 ---
 
-## 2. Rebuild the go-live files — the current ones name an account that cannot sign in
+## 2. Rebuild the go-live files — DONE 2026-09-20, but rebuild again before the load
 
 ```bash
 npx tsx scripts/golive/build-masters.ts
+npm run verify:credentials
 ```
 
-The builder issued the Data Steward as `steward`. Production refuses that exact
-username, because demo accounts are disabled there and the synthetic seed owns
-that name. You would have created the account, been told "invalid username or
-password" at step 2 of the load, and had no way forward inside the application —
-the account import is Steward-only, a Manager cannot reset a Steward, and the
-fallback `admin` is refused too.
+The original reason was the Data Steward: the builder issued it as `steward`,
+which production refuses outright, and you would have hit "invalid username or
+password" at step 2 of the load with no way forward inside the application. It is
+`data.steward` now, and a test checks every username the builder emits against
+that denylist.
 
-It is now `data.steward`, and a test checks every username the builder emits
-against that list. **Your existing `golive-data/` files still say `steward`**, so
-they must be rebuilt. The builder now moves the old credentials file aside as
-`.superseded-<timestamp>` rather than overwriting it, so nothing is lost.
+Two more decisions have landed since, and the files already reflect all three:
+
+- **Managers sign in by CLASS**: `mct-gt`, `mct-hd`, `mct-mt`, `horeca`,
+  `khaburah`, `nizwa`, `salalah`, `barka`, `alwafi-duqm`. Rashid and Saud own
+  no class — they are the fallback approvers who cover other people's regions —
+  so they keep their names.
+- **One ACCOUNTANT per region**: `accountant.mct` `.khb` `.nzw` `.sll` `.awf`
+  `.dqm` `.brk`, each scoped to exactly that region, replacing the single
+  all-regions `accountant`. `finance.manager` and `gm.nmwc` stay single; their
+  approval steps are org-wide, so they hold no region.
+
+**62 accounts** in the master — 11 managers + 42 salesmen + 9 approvers — plus
+`data.steward` from the bootstrap. Step 3 of the runbook tells you to expect
+exactly that.
+
+`npm run verify:credentials` is new and takes a second: sixteen read-only checks
+on the built files, no database. It confirms one shared password across every row,
+the forced change on every account, every salesman's username equal to their route
+code, and that the credential slips agree with the master that actually gets
+imported. It never prints a password. Run it after every rebuild — it is in the
+runbook preamble beside the build command.
+
+**Rebuild once more immediately before the load.** The builder takes the newest
+`RoutePro_Customer_Master_LIVE_<date>.csv` it can find, and a fresh
+`2026-09-20` export appeared today, which moved the customer count from 18,187 to
+18,198. Anything exported after your last build is not in the files you are
+holding. The builder moves the old credentials file aside as
+`.superseded-<timestamp>` rather than overwriting it, so nothing is lost — but
+compare the rosters before handing anything out, because a route going active or
+inactive adds or removes an account.
 
 ---
 
@@ -156,6 +185,27 @@ from then on. **The forced change is the whole control**, which is why the runbo
 now says to hand the logins out and sit with each person while they change it on
 the same day, then check Users the next morning for anyone still flagged. That
 flag is the list of accounts still standing open.
+
+### a2. Should the synthetic approver accounts be blocked at sign-in?
+
+`prisma/synthetic.ts` seeds `accountant.a`, `accountant.b`,
+`accountant.unscoped`, `manager.unscoped`, `fm.a`, `fm.b`, `gm.a` and `gm.b`
+with a known password. **None of them is on the demo denylist**, so if any ever
+existed in production they could sign in.
+
+I have not added them, and want your decision rather than my assumption. Three
+things argue for leaving it alone: `synthetic.ts` refuses to run against
+production at all, `pilot.*` is deliberately off that list already for the same
+reason, and the project's chosen control here is
+`scripts/golive/audit-accounts.ts`, which reports every account that can sign in
+and is not named by the go-live master — run it after the load. The argument for
+adding them is simply that the module's own docstring says it exists to refuse
+"the seeded demo and synthetic accounts", and these are exactly that.
+
+If you want them added they must go in `DEMO_EXACT` as **exact strings**. An
+`accountant.` prefix rule would block all seven real regional accountants at
+sign-in — the same shape as the `steward` incident. A test records the gap by
+name so the answer is a deliberate edit either way.
 
 ### b. Does archiving a customer release its documents?
 
