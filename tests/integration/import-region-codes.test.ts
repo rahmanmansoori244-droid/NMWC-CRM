@@ -78,6 +78,14 @@ describe.skipIf(!ENABLED)('account master: region_codes that do not resolve', ()
   const stewardId = 'ZZ-RGN-' + randomUUID().slice(0, 8);
   const acct = ('zz.acct.' + randomUUID().slice(0, 8)).toLowerCase();
   const batchIds: string[] = [];
+  /**
+   * Every account this suite may create, registered as soon as its name exists.
+   *
+   * Cleaning up at the end of a case only runs when the case passes, and a failed
+   * case is exactly when a stray account is most likely to exist. afterAll runs
+   * either way.
+   */
+  const made: string[] = [];
   let realCode = '';
 
   /**
@@ -167,6 +175,7 @@ describe.skipIf(!ENABLED)('account master: region_codes that do not resolve', ()
     }
     await prisma.rateLimit.deleteMany({ where: { key: { contains: stewardId } } });
     await retire({ username: acct });
+    for (const u of made) await retire({ username: u });
     await retire({ id: stewardId });
     await prisma.$disconnect();
   });
@@ -232,6 +241,7 @@ describe.skipIf(!ENABLED)('account master: region_codes that do not resolve', ()
     // report called an issue. The name of this test is the assertion: nothing
     // was written.
     const fresh = ('zz.blind.' + randomUUID().slice(0, 8)).toLowerCase();
+    made.push(fresh);
     const res = await upload([
       {
         username: fresh,
@@ -273,6 +283,7 @@ describe.skipIf(!ENABLED)('account master: region_codes that do not resolve', ()
     // keep. An existing account with zero regions must not be waved through as
     // clean on every re-import — that is how a blind account stays invisible.
     const blind = ('zz.was.' + randomUUID().slice(0, 8)).toLowerCase();
+    made.push(blind);
     await prisma.user.create({
       data: {
         username: blind,
@@ -293,7 +304,6 @@ describe.skipIf(!ENABLED)('account master: region_codes that do not resolve', ()
     ]);
     expect(res.clean).toBe(0);
     expect(res.messages.join(' ')).toMatch(/region_codes/);
-    await retire({ username: blind });
   });
 
   it('leaves an EXISTING account alone when the cell is blank', async () => {

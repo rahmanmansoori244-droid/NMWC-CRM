@@ -21,6 +21,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { GOLIVE_REGION_CODES } from '../../lib/ops/golive-accounts';
+import { isDemoAccount } from '../../lib/demo-accounts';
 
 const prisma = new PrismaClient({
   datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
@@ -194,6 +195,80 @@ const checks: Check[] = [
     },
   },
   {
+    name: 'no manager is blind',
+    why: 'a MANAGER approves the supervisor step by REGION OVERLAP alone — lib/permissions.ts ignores supervisorId for managers and is fail-closed on empty managedRegions — so a manager with no regions cannot clear step 1 for anyone, and step 1 is the first step of every chain',
+    run: async () => {
+      // Exclude accounts the demo denylist refuses at sign-in. `admin` is seeded
+      // with role MANAGER and no regions, and production sets
+      // DEMO_ACCOUNTS_DISABLED, so it cannot sign in and cannot be expected to
+      // approve anything. Reporting it here would put noise in the one report the
+      // operator reads on load day; leftover accounts are audit-accounts.ts's job.
+      const blind = (
+        await prisma.user.findMany({
+          where: { role: 'MANAGER', isActive: true, managedRegions: { none: {} } },
+          select: { username: true },
+        })
+      ).filter((u) => !isDemoAccount(u.username));
+      const usable = (
+        await prisma.user.findMany({
+          where: { role: 'MANAGER', isActive: true },
+          select: { username: true },
+        })
+      ).filter((u) => !isDemoAccount(u.username));
+      const total = usable.length;
+      return {
+        ok: blind.length === 0 && total > 0,
+        detail:
+          blind.length > 0
+            ? `manages NO region: ${blind.map((u) => u.username).join(', ')}`
+            : total > 0
+              ? `${total} active managers that can sign in, each managing at least one region`
+              : 'no active managers that can sign in — was the bootstrap run?',
+      };
+    },
+  },
+  {
+    name: 'every salesman has an approver who can actually act',
+    why: 'the supervisor step is the first step of every chain; a manager clears it only if they manage the region the salesman route sits in, so a correct-looking supervisor assignment with the wrong regions stalls that team silently',
+    run: async () => {
+      const salesmen = await prisma.user.findMany({
+        where: { role: 'SALESMAN', isActive: true },
+        select: {
+          username: true,
+          ownedRoute: { select: { code: true, regionId: true } },
+          supervisor: {
+            select: { username: true, role: true, managedRegions: { select: { id: true } } },
+          },
+        },
+      });
+      const stranded = salesmen
+        .filter((s) => {
+          if (!s.supervisor) return true;
+          // A real SUPERVISOR clears the step by the direct relationship, which
+          // this salesman already has by virtue of supervisorId pointing at them.
+          if (s.supervisor.role === 'SUPERVISOR') return false;
+          if (!s.ownedRoute) return true;
+          return !s.supervisor.managedRegions.some((r) => r.id === s.ownedRoute!.regionId);
+        })
+        .map((s) =>
+          !s.supervisor
+            ? `${s.username} (no supervisor)`
+            : !s.ownedRoute
+              ? `${s.username} (no route)`
+              : `${s.username} → ${s.supervisor.username} (does not manage the ${s.ownedRoute.code} region)`
+        );
+      return {
+        ok: stranded.length === 0 && salesmen.length > 0,
+        detail:
+          stranded.length > 0
+            ? `cannot be approved: ${stranded.join('; ')}`
+            : salesmen.length > 0
+              ? `${salesmen.length} salesmen, each with an approver whose regions cover their route`
+              : 'no active salesmen at all',
+      };
+    },
+  },
+  {
     name: 'every region has an active accountant',
     why: 'the CASH and CREDIT chains both end at the accountant who manages the request region; a region without one strands every new customer submitted there, and the symptom is an empty queue, which looks like a quiet day',
     run: async () => {
@@ -226,17 +301,20 @@ const checks: Check[] = [
         where: { role: 'ACCOUNTANT', isActive: true, managedRegions: { none: {} } },
         select: { username: true },
       });
-      // Same trap: zero accountants means none is blind. Count them.
+      // Zero accountants would mean none is blind, so require at least one. NOT
+      // an exact count: the go-live issues one per region, but a second added
+      // later for cover is legitimate and must not turn this red. Whether every
+      // region is actually covered is the check above.
       const total = await prisma.user.count({ where: { role: 'ACCOUNTANT', isActive: true } });
       const expected = GOLIVE_REGION_CODES.length;
       return {
-        ok: blind.length === 0 && total === expected,
+        ok: blind.length === 0 && total > 0,
         detail:
           blind.length > 0
             ? `manages NO region: ${blind.map((u) => u.username).join(', ')}`
-            : total === expected
-              ? `${total} active accountants, each managing at least one region`
-              : `${total} active accountants, expected ${expected} (one per region)`,
+            : total === 0
+              ? `no active accountants at all — expected ${expected}, one per region`
+              : `${total} active accountant(s), each managing at least one region${total === expected ? '' : ` (the go-live issues ${expected}, one per region)`}`,
       };
     },
   },
