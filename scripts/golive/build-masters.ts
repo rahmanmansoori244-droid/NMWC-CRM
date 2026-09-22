@@ -1576,6 +1576,38 @@ async function main() {
   md.push(...notes.map((n) => `- ${n}`));
   writeFileSync(path.join(OUT, 'RECONCILIATION.md'), md.join('\n') + '\n', 'utf8');
 
+  // What this build contains, machine-readably.
+  //
+  // scripts/ops/verify-load.ts reads it to answer "did the load keep the journey
+  // days the master gave it" — a question it previously could not ask, so it
+  // asserted "every branch on a worked route has a day" instead. The journey plan
+  // covers 32% of branch rows, so that assertion can never pass, and a check that
+  // is always red is one the operator learns to skip past.
+  //
+  // COUNTS ONLY. No names, codes, passwords or customer data — so unlike
+  // credentials.xlsx, managers.json and account-master.xlsx, this file is not
+  // sensitive and does not need deleting after the hand-out.
+  writeFileSync(
+    path.join(OUT, 'load-manifest.json'),
+    JSON.stringify(
+      {
+        builtAt: new Date().toISOString(),
+        routeProExport: path.basename(SRC.rpCustomers),
+        regions: REGIONS.filter((r) => r.code !== 'UNASSIGNED').length,
+        activeRoutes: routes.length,
+        users: users.length,
+        salesmen: salesmenCount,
+        branchRows: custRows.length,
+        customers: distinctCustomers,
+        branchesWithVisitDay: jpCovered,
+        parkedOnUnassigned: parked,
+      },
+      null,
+      2
+    ) + '\n',
+    'utf8'
+  );
+
   log(
     `account-master.xlsx: 7 regions, ${routes.length} active routes, ${users.length} users (${salesmenCount} salesmen)`
   );

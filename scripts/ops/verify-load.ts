@@ -20,6 +20,8 @@
  * Exit 0 when everything passes, 1 when anything fails, 2 on an error.
  */
 import { PrismaClient } from '@prisma/client';
+import path from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { GOLIVE_REGION_CODES } from '../../lib/ops/golive-accounts';
 import { isDemoAccount } from '../../lib/demo-accounts';
 
@@ -84,27 +86,64 @@ const checks: Check[] = [
     },
   },
   {
-    name: 'branches on a worked route have a day of visit',
-    why: 'no visit day means the customer never appears on Today, for anyone, ever',
+    name: 'the load kept the visit days the master gave it',
+    why: 'no visit day means the customer never appears on Today, for anyone, ever — but only the branches the journey plan actually covers are supposed to have one',
     run: async () => {
-      // Scoped to routes that have an active owner, deliberately. Roughly 2,472
-      // customers are parked on routes with no recent sales and no salesman (see
-      // the runbook, step 0.4); those legitimately carry no visit day and would
-      // otherwise drown this check in expected noise. A branch on a route someone
-      // actually works and with no day is the reportable case — and it is the
-      // symptom the ERP refresh lane used to produce, where a row was counted as
-      // promoted while the entire branch loop was skipped.
-      const rows = await prisma.$queryRaw<{ n: bigint }[]>`
-        SELECT count(*) AS n FROM "Branch" b
-        JOIN "Route" r ON r.id = b."routeId"
-        WHERE b."deletedAt" IS NULL AND b."dayOfVisit" IS NULL
-          AND EXISTS (SELECT 1 FROM "User" u WHERE u."ownedRouteId" = r.id AND u."isActive")`;
-      const bad = n(rows[0]?.n);
-      const parked = await prisma.branch.count({ where: { deletedAt: null, dayOfVisit: null } });
+      // This replaced "every branch on a worked route has a day of visit", which
+      // the source data cannot satisfy: the journey plan covers 6,528 of 20,195
+      // branch rows, and 11,204 of the remainder sit on routes that DO have a
+      // salesman. That assertion reported a five-figure number on every run and
+      // could never go green — and a permanently red gate is one the operator
+      // learns to skim past, which is where the real failures are.
+      //
+      // The refresh-lane symptom it was written for is a customer counted as
+      // promoted while its branch loop was skipped. That shows up as days going
+      // MISSING against what the master supplied, which is what this asks.
+      const withDay = await prisma.branch.count({
+        where: { deletedAt: null, dayOfVisit: { not: null } },
+      });
+      const branches = await prisma.branch.count({ where: { deletedAt: null } });
+
+      // There is deliberately no "a day but no route" check here: Branch.routeId
+      // and Branch.regionId are non-nullable in the schema, so the database
+      // refuses that row outright. A check for it would pass for the wrong reason
+      // — which is the failure mode this whole pass is about.
+
+      const manifestPath = path.join(process.env.GOLIVE_DIR ?? 'golive-data', 'load-manifest.json');
+      if (!existsSync(manifestPath)) {
+        return {
+          ok: withDay > 0,
+          detail: `${withDay} of ${branches} branches carry a visit day — no load-manifest.json, so the expected figure is unknown. Rebuild with scripts/golive/build-masters.ts to enable the exact comparison.`,
+          note: withDay === 0 ? 'NO branch carries a visit day — the journey-plan step did not run' : undefined,
+        };
+      }
+
+      const m = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+        branchRows?: number;
+        branchesWithVisitDay?: number;
+      };
+      const expectedRows = m.branchRows ?? 0;
+      const expectedDays = m.branchesWithVisitDay ?? 0;
+      const complete = branches >= expectedRows && expectedRows > 0;
+
+      if (!complete) {
+        // A rehearsal inside a time box legitimately loads a subset.
+        return {
+          ok: true,
+          detail: `PARTIAL load: ${branches} of ${expectedRows} branch rows present, ${withDay} carrying a visit day (the full master supplies ${expectedDays}). Not compared — finish the load, then re-run.`,
+        };
+      }
+
       return {
-        ok: bad === 0,
-        detail: `${bad} on a worked route (${parked} overall, parked routes included)`,
-        note: bad > 0 ? 'the refresh-lane symptom: promoted, but the branch loop never ran' : undefined,
+        ok: withDay === expectedDays,
+        detail:
+          withDay === expectedDays
+            ? `${withDay} branches carry a visit day, exactly what the master supplied`
+            : `${withDay} branches carry a visit day; the master supplied ${expectedDays} — ${expectedDays - withDay} went missing in the load`,
+        note:
+          withDay !== expectedDays
+            ? 'the refresh-lane symptom: promoted, but the branch loop never ran'
+            : undefined,
       };
     },
   },

@@ -18,6 +18,7 @@
  *   RUN_GOLIVE_REHEARSAL=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/golive-rehearsal.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { isDemoAccount } from '@/lib/demo-accounts';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import bcrypt from 'bcryptjs';
@@ -139,10 +140,20 @@ describe.skipIf(!ENABLED)('GO-LIVE REHEARSAL on the UAT branch with the real mas
     // lib/customer-filters.ts), so a blind account signs in normally and sees an
     // empty queue for good. That is the failure this rehearsal exists to catch,
     // and it printed the evidence without ever looking at it.
-    const blindManagers = mgrs.filter((m) => m.managedRegions.length === 0);
+    // Exclude accounts the demo denylist refuses at sign-in. `admin` is seeded
+    // with role MANAGER and no regions; production sets DEMO_ACCOUNTS_DISABLED,
+    // so it cannot sign in and cannot be expected to approve anything. Reporting
+    // it here fails the rehearsal for a condition that is correct.
+    //
+    // verify-load.ts carries the same rule and the same exclusion. Both exist
+    // because they answer the question at different moments — this one before the
+    // load is handed over, that one after it has run.
+    const blindManagers = mgrs.filter(
+      (m) => m.managedRegions.length === 0 && !isDemoAccount(m.username)
+    );
     expect(
       blindManagers.map((m) => m.username),
-      'no region-scoped account may land blind'
+      'no region-scoped account that can sign in may land blind'
     ).toEqual([]);
 
     // One ACCOUNTANT per region (owner decision 2026-09-20). The CASH and CREDIT
@@ -156,7 +167,9 @@ describe.skipIf(!ENABLED)('GO-LIVE REHEARSAL on the UAT branch with the real mas
       `  accountant regions: ${accountants.map((a) => `${a.username}→${a.managedRegions.map((r) => r.code).join('/') || 'NONE'}`).join(' ; ')}`
     );
     expect(
-      accountants.filter((a) => a.managedRegions.length === 0).map((a) => a.username),
+      accountants
+        .filter((a) => a.managedRegions.length === 0 && !isDemoAccount(a.username))
+        .map((a) => a.username),
       'an accountant with no region can clear no approval step'
     ).toEqual([]);
 
@@ -169,8 +182,9 @@ describe.skipIf(!ENABLED)('GO-LIVE REHEARSAL on the UAT branch with the real mas
       realRegions.map((r) => r.code).filter((c) => !covered.has(c)),
       'every region needs an accountant'
     ).toEqual([]);
-    expect(accountants).toHaveLength(realRegions.length);
-    for (const a of accountants) {
+    const realAccountants = accountants.filter((a) => !isDemoAccount(a.username));
+    expect(realAccountants).toHaveLength(realRegions.length);
+    for (const a of realAccountants) {
       expect(a.managedRegions, `${a.username} should cover exactly one region`).toHaveLength(1);
       expect(a.username).toBe(`accountant.${a.managedRegions[0]!.code.toLowerCase()}`);
     }
