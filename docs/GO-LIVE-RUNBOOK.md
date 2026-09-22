@@ -176,7 +176,14 @@ importer enforces most of the order, but not all of it.
    If someone loses their slip, reset that one account from **Users → Reset
    password**. The value you type there must itself be 12+ characters — the reset
    screen is not another `12345` — and it re-arms the forced change and kills that
-   account's open sessions. Delete `credentials.xlsx` and `managers.json` when you are done.
+   account's open sessions. When you are done, delete **all three** files that carry credentials:
+   `credentials.xlsx`, `managers.json` **and `account-master.xlsx`**. That last
+   one is easy to miss — it is the file you have had open all day and think of as
+   the import, not as a secret — but its Users sheet has a `password` column with
+   a live value on every row that the import creates. Leaving it behind leaves the
+   whole roster's credentials on the laptop. The initial password stops working for
+   each person the moment they complete their forced change, so what is dangerous
+   is precisely the accounts of anyone who has not signed in yet.
 
    > ⚠ **OWNER DECISION, still open — how the slips reach people.** Printed slips
    > handed over in person by each regional manager is the only channel that needs no

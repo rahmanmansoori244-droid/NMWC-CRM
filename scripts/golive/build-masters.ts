@@ -1582,7 +1582,18 @@ async function main() {
   log(
     `customer-master.xlsx: ${custRows.length} rows / ${distinctCustomers} customers (JP day on ${jpCovered}; ${parked} parked on UNASSIGNED)`
   );
-  log(`credentials.xlsx + managers.json written — SENSITIVE, gitignored`);
+  // Name all three. account-master.xlsx is the one that gets forgotten: it reads
+  // as "the import file" rather than as a secret, and its Users sheet carries a
+  // live password on every row the import creates. The runbook clean-up step
+  // omitted it for exactly that reason until 2026-09-22.
+  log(
+    `credentials.xlsx + managers.json written — SENSITIVE, gitignored.\n` +
+      `   account-master.xlsx ALSO carries a password column (${
+        users.filter((u) => u.password).length
+      } of ${users.length} rows).\n` +
+      `   All three hold live credentials until each person completes their forced\n` +
+      `   change. Delete all three when the hand-out is done.`
+  );
   db.close();
 }
 
