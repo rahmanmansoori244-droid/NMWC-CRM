@@ -13,18 +13,24 @@ exists so you do not have to find them.
 
 ---
 
-## 1. The age key — you have had no backup since 16 September
+## 1. The age key — no backup since 16 September, and the safety net closes TOMORROW
 
 **This is the only thing currently failing, and it is the cause of the "Run
-failed: DB Backup" emails.** Four nightly runs have refused to upload. That is a
-change I made deliberately: the job used to upload a plaintext copy of the entire
+failed: DB Backup" emails.** **Six** nightly runs have now refused to upload — the
+17th through the 22nd, the most recent at 07:02 this morning. That is a change I
+made deliberately: the job used to upload a plaintext copy of the entire
 customer master and every employee password hash to object storage, warn about it
 inside a run that stayed green, and repeat every night. It now refuses instead.
 
-**You are not currently unprotected.** Neon point-in-time recovery covers the last
-7 days to any instant (`OPERATIONS.md` §6.4), so the four missing dumps are still
-recoverable today. That window closes on 23 September, and it does not survive the
-customer-master load — after the load you want a dump.
+**You are not currently unprotected, but the margin is gone.** Neon point-in-time
+recovery covers the last 7 days to any instant (`OPERATIONS.md` §6.4), which is
+what has been standing in for the missing dumps. Seven days from the 16th is **23
+September — tomorrow**. From then on the earliest missing nights stop being
+recoverable at all, and PITR does not survive the customer-master load either:
+after the load you want a real dump.
+
+This is five minutes of work and it is the one item on this page with a deadline
+attached.
 
 ~5 minutes:
 
