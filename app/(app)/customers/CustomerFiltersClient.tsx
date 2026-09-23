@@ -47,6 +47,29 @@ type FilterValues = {
   editedBefore: string;
 };
 
+/**
+ * What "no filters" means, spelled once. Clear resets the form to this; the type
+ * makes tsc name any field added to FilterValues and forgotten here, which is
+ * the way a Clear button quietly stops clearing one of them.
+ */
+export const EMPTY_FILTERS: FilterValues = {
+  q: '',
+  status: '',
+  region: [],
+  route: [],
+  channel: [],
+  subChannel: [],
+  supervisor: '',
+  salesman: '',
+  paymentTerms: '',
+  minScore: '',
+  maxScore: '',
+  createdAfter: '',
+  createdBefore: '',
+  editedAfter: '',
+  editedBefore: '',
+};
+
 export type CustomerFiltersClientProps = {
   initial: FilterValues;
   flags: RoleFlags;
@@ -220,33 +243,40 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
    * the first invocation and read as null by the second, so the guard would hold
    * in production and not in front of whoever was testing it.
    */
+  /**
+   * Put a whole set of values into the form. Safe to call during render (the
+   * resync below) and from an event handler (Clear) — every call is a plain
+   * batch of setState.
+   */
+  const applyToForm = (v: FilterValues) => {
+    setQ(v.q);
+    setStatus(v.status);
+    setRegion(v.region);
+    setRoute(v.route);
+    setChannel(v.channel);
+    setSubChannel(v.subChannel);
+    setSupervisor(v.supervisor);
+    setSalesman(v.salesman);
+    setPaymentTerms(v.paymentTerms);
+    setMinScore(v.minScore);
+    setMaxScore(v.maxScore);
+    setCreatedAfter(v.createdAfter);
+    setCreatedBefore(v.createdBefore);
+    setEditedAfter(v.editedAfter);
+    setEditedBefore(v.editedBefore);
+    // Expand only. A saved view carrying a payment term must not land its
+    // control behind a collapsed disclosure; a disclosure the owner opened
+    // themselves must not slam shut under them.
+    if (hasAdvancedFilters(v)) setShowMore(true);
+  };
+
   const [selfPushed, setSelfPushed] = useState<string | null>(null);
   const [syncedParams, setSyncedParams] = useState(appliedParams);
   if (syncedParams !== appliedParams) {
     const ours = selfPushed === appliedParams;
     setSelfPushed(null);
     setSyncedParams(appliedParams);
-    if (!ours) {
-      setQ(props.initial.q);
-      setStatus(props.initial.status);
-      setRegion(props.initial.region);
-      setRoute(props.initial.route);
-      setChannel(props.initial.channel);
-      setSubChannel(props.initial.subChannel);
-      setSupervisor(props.initial.supervisor);
-      setSalesman(props.initial.salesman);
-      setPaymentTerms(props.initial.paymentTerms);
-      setMinScore(props.initial.minScore);
-      setMaxScore(props.initial.maxScore);
-      setCreatedAfter(props.initial.createdAfter);
-      setCreatedBefore(props.initial.createdBefore);
-      setEditedAfter(props.initial.editedAfter);
-      setEditedBefore(props.initial.editedBefore);
-      // Expand only. A saved view carrying a payment term must not land its
-      // control behind a collapsed disclosure; a disclosure the owner opened
-      // themselves must not slam shut under them.
-      if (hasAdvancedFilters(props.initial)) setShowMore(true);
-    }
+    if (!ours) applyToForm(props.initial);
   }
 
   // Saved-view modal + state
@@ -596,8 +626,23 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
             {applying ? 'Filtering…' : 'Filter'}
           </button>
 
+          {/* Clear empties the FORM as well as navigating, and does not rely on
+              the navigation to do it.
+
+              It used to be a bare <Link href="/customers">, which left the
+              resync above as the only thing that reset the bar — and that fires
+              on appliedParams CHANGING. Clear from an already-unfiltered
+              /customers changes no URL, so nothing fired: the owner ticked a
+              channel, pressed Clear, and the chip, the trigger and the "Not
+              applied yet — press Filter" hint all stayed exactly where they
+              were. Verified on the preview build before fixing. Resetting here
+              makes the button mean the same thing from every starting state.
+
+              Still a Link, so the URL and the list below it are cleared too, and
+              middle-click / open-in-new-tab keep working. */}
           <Link
             href="/customers"
+            onClick={() => applyToForm(EMPTY_FILTERS)}
             className="inline-flex h-10 items-center rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             Clear

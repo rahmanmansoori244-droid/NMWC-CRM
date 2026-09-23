@@ -27,20 +27,27 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push, refresh }),
 }));
 
-// next/link outside a Next runtime has no router to prefetch against; the bar
-// only uses it for Clear, and what Clear does to this component is a rerender
-// with an emptied `initial`, which the tests drive directly.
+// next/link outside a Next runtime has no router to prefetch against. The bar
+// uses it only for Clear.
+//
+// This mock MUST forward onClick. It did not, and the omission hid the very
+// defect the test below exists for: Clear from an already-unfiltered URL
+// performs no navigation, so resetting the form is the onClick's job and
+// nothing else's. A mock that drops the handler makes that test fail against a
+// correct fix and pass against no fix at all.
 vi.mock('next/link', () => ({
   default: ({
     href,
     children,
     className,
+    onClick,
   }: {
     href: string;
     children: ReactNode;
     className?: string;
+    onClick?: () => void;
   }) => (
-    <a href={href} className={className}>
+    <a href={href} className={className} onClick={onClick}>
       {children}
     </a>
   ),
@@ -154,6 +161,31 @@ describe('the bar follows the filters that are actually applied', () => {
 
     expect(screen.queryByRole('button', { name: /^Remove filter/ })).toBeNull();
     expect(screen.queryByText(/Not applied yet/)).toBeNull();
+  });
+
+  it('clears the bar even when Clear changes no URL at all', () => {
+    // Found by clicking the preview build, not by reading the code. The resync
+    // above fires on appliedParams CHANGING, and Clear is a <Link
+    // href="/customers">. From an ALREADY-unfiltered /customers the href is the
+    // URL we are on, so Next performs no navigation, `initial` never changes and
+    // nothing reset the form: tick a channel, press Clear, and the chip, the
+    // trigger summary and the "Not applied yet — press Filter" hint all stayed.
+    // Clear now empties the form itself in onClick rather than relying on a
+    // navigation that may not happen.
+    render(<CustomerFiltersClient {...baseProps(EMPTY)} />);
+
+    openFacet('Channels');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Wholesale' }));
+    expect(chipNames()).toEqual(['Channel: Wholesale']);
+    expect(screen.getByText(/Not applied yet/)).toBeTruthy();
+
+    // No rerender: this is the whole point. The URL does not change, so the
+    // component is never re-rendered with a different `initial`.
+    fireEvent.click(screen.getByRole('link', { name: 'Clear' }));
+
+    expect(chipNames()).toEqual([]);
+    expect(screen.queryByText(/Not applied yet/)).toBeNull();
+    expect(screen.getByRole('button', { name: /^Channels/ }).textContent).toMatch(/All channels/);
   });
 
   it('adopts a saved view rather than offering to discard it', () => {
