@@ -38,6 +38,27 @@ import {
 const DESKTOP = 'C:/Users/abdulr/Desktop';
 // The RoutePro customer master is re-exported before every real load; whichever
 // RoutePro_Customer_Master_LIVE_<date>.csv is newest (by the date in its name) wins.
+/**
+ * The newest RoutePro credit export, if one has been harvested.
+ *
+ * RoutePro holds credit limit and credit days per customer (txtcr_limit /
+ * txtcr_days on the customer form). The customer GRID does not, which is why
+ * they were being read from a July spreadsheet and a 2-September dashboard
+ * snapshot instead. Optional: absent, the old sources still apply.
+ */
+function newestRouteProCredit(): string | null {
+  const dirs = [`${DESKTOP}/claude/NMWC-JOURNEY-PLANS/harvests`, 'C:/Users/abdulr/Downloads'];
+  let best: { date: string; file: string } | null = null;
+  for (const d of dirs) {
+    if (!existsSync(d)) continue;
+    for (const f of readdirSync(d)) {
+      const m = /^RoutePro_Credit_LIVE_(\d{4}-\d{2}-\d{2})\.csv$/i.exec(f);
+      if (m && (!best || m[1] > best.date)) best = { date: m[1], file: `${d}/${f}` };
+    }
+  }
+  return best ? best.file : null;
+}
+
 function newestRouteProExport(): string {
   const dirs = [`${DESKTOP}/claude/NMWC-JOURNEY-PLANS/harvests`, 'C:/Users/abdulr/Downloads'];
   let best: { date: string; file: string } | null = null;
@@ -71,6 +92,7 @@ function salesFile(name: string): string {
 
 const SRC = {
   rpCustomers: process.env.RP_CUSTOMERS ?? newestRouteProExport(),
+  rpCredit: process.env.RP_CREDIT ?? newestRouteProCredit(),
   rpRoutes:
     process.env.RP_ROUTES ??
     `${DESKTOP}/claude/NMWC-JOURNEY-PLANS/harvests/RoutePro_Route_Master_LIVE_2026-09-01.csv`,
@@ -545,6 +567,9 @@ function bump<K>(m: Map<K, number>, k: K, w = 1) {
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
   for (const [k, f] of Object.entries(SRC)) {
+    // rpCredit is optional: without it the builder falls back to the older
+    // credit sources, which is worse data but still a working build.
+    if (f === null) continue;
     if (!existsSync(f)) throw new Error(`missing source ${k}: ${f}`);
   }
   mkdirSync(DQ, { recursive: true });
@@ -707,6 +732,27 @@ async function main() {
       if (prev.status !== 'Active' && S(r.Status) === 'Active') prev.status = 'Active';
     }
   }
+  // RoutePro credit, keyed by ALT_CODE — which is what the master calls
+  // cust_code. Live, and therefore preferred over both spreadsheets below.
+  const rpCreditByCode = new Map<string, { limit: number | null; days: number | null }>();
+  if (SRC.rpCredit && existsSync(SRC.rpCredit)) {
+    for (const r of csvObjects(SRC.rpCredit)) {
+      const code = S(r.ALT_CODE ?? r.alt_code).toUpperCase();
+      if (!code) continue;
+      const rawL = S(r.CR_LIMIT ?? r.cr_limit).replace(/,/g, '');
+      const rawD = S(r.CR_DAYS ?? r.cr_days).replace(/,/g, '');
+      const limit = rawL === '' ? null : Number(rawL);
+      const days = rawD === '' ? null : Number(rawD);
+      rpCreditByCode.set(code, {
+        limit: Number.isFinite(limit as number) ? (limit as number) : null,
+        days: Number.isFinite(days as number) ? (days as number) : null,
+      });
+    }
+    log(`credit from RoutePro: ${rpCreditByCode.size} customers (${path.basename(SRC.rpCredit!)})`);
+  } else {
+    log('no RoutePro credit export found — credit falls back to the July Code-Branch file and the dashboard ar_aging table, BOTH of which are stale');
+  }
+
   const arByCode = new Map<string, { limit: number; days: number | null }>();
   for (const r of db
     .prepare('select customer_no, credit_limit, credit_days from ar_aging where credit_limit > 0')
@@ -926,8 +972,12 @@ async function main() {
     if (channel) bump(channelUsed, channel);
     const cb = cbByBase.get(c.base);
     const ar = arByCode.get(c.base);
-    const limit = c.pay === 'CREDIT' ? (cb?.limit ?? ar?.limit ?? null) : null;
-    const days = c.pay === 'CREDIT' ? (cb?.days ?? ar?.days ?? null) : null;
+    // RoutePro first: it is the live operational system and the one the
+    // salesman device enforces. `cb` is a July spreadsheet and `ar` a
+    // 2-September dashboard snapshot; both are kept only as fallbacks.
+    const rp = rpCreditByCode.get(c.base);
+    const limit = c.pay === 'CREDIT' ? (rp?.limit ?? cb?.limit ?? ar?.limit ?? null) : null;
+    const days = c.pay === 'CREDIT' ? (rp?.days ?? cb?.days ?? ar?.days ?? null) : null;
     if (c.pay === 'CREDIT' && !c.branch && (limit == null || limit <= 0))
       creditNoLimit.push([c.base, legalNameByBase.get(c.base), route]);
     const day = jpDay.get(c.alt) ?? (c.branch ? undefined : jpDay.get(c.base)) ?? null;
