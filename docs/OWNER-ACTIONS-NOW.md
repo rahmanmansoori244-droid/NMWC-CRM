@@ -1,4 +1,4 @@
-# What needs you — 2026-09-20
+# What needs you — updated 2026-09-23, after the load
 
 Launch is this week. Everything that could be done without a decision from you is
 done and deployed — manager class usernames, the seven regional accountant accounts,
@@ -10,6 +10,49 @@ if each is skipped.
 
 The detail for each lives in `GO-LIVE-RUNBOOK.md` §0 and `OPERATIONS.md`. This page
 exists so you do not have to find them.
+
+---
+
+## 0. The load ran on 2026-09-23 — and left three things open
+
+Both masters are on production. The account master promoted 112 rows: 62 accounts
+plus the Data Steward, all verified by `npm run verify:credentials` (16 checks).
+The customer master promoted twice — once at 09:01, and again at 11:20 after you
+spotted that the credit limits were wrong and we harvested the live figures from
+RoutePro. Each promote took about eleven minutes. **18,677 live customers, 20,596
+branches.** Smoke passed fourteen of fourteen on either side of both runs.
+
+`npx tsx scripts/ops/verify-load.ts` now passes **14 of its 16 checks**. The two
+that fail, and one thing that passes but is not what it looks like, all trace to
+the same root and none of them is caused by the import:
+
+**a. 3,308 customers carry no Temix code but are marked `SYNCED`.** These are the
+pilot rows seeded in May. `SYNCED` with no code means the customer is never put in
+a Temix upload batch and never appears on `/temix` — so the ERP never learns it
+exists and it cannot be invoiced. The importer already handles this correctly for
+anything it creates (no code ⇒ `PENDING_UPLOAD`); it is only the pre-existing seed
+that is wrong. The fix is a one-off operator script flipping those 3,308 rows to
+`PENDING_UPLOAD`. **I have not run it** — it queues 3,308 customers for an upload
+to your ERP, and that is your call, not mine.
+
+**b. 749 CREDIT customers still carry no credit limit, although RoutePro has one
+for them.** Same root cause. Credit figures reach an existing customer only
+through the Temix refresh lane, which needs the customer to carry a Temix code;
+without one the row takes the ordinary update lane, which deliberately never
+writes credit — a spreadsheet must not grant credit standing (SEC-03/09). So the
+re-import landed RoutePro's limit on 3,881 of the 4,632 CREDIT customers and could
+not reach the rest. Fixing (a) does not fix this by itself; these 749 need either
+a Temix code or a pass through the credit approval chain. It is the same 1,833
+rows the promote rejected, for the same reason, and the rejection message says so.
+
+**c. 816 branches have no visit day** out of the 6,528 the journey plan supplies.
+A branch with no visit day never appears on anyone's Today, ever. Also the refresh
+lane: on a refresh the branch loop does not run, so those branches kept whatever
+they had.
+
+None of this stops you handing out logins. All of it stops those specific
+customers being invoiced or visited, which is worth knowing before someone
+discovers it on the route.
 
 ---
 
