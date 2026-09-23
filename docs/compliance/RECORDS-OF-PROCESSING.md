@@ -105,9 +105,10 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Retention** | Rate-limit rows 1 day; dumps 30 days; Sentry per its own org setting **[OWNER]**; Vercel logs ~1 day. |
 | **Lawful basis** | **[COUNSEL]** |
 
-**The rows the ledger cannot attribute to a device.** Five maintenance scripts write
+**The rows the ledger cannot attribute to a device.** Six maintenance scripts write
 `AuditLog` directly: the bulk credential reset, the synthetic-data wipe and its
-cleanup, the branch flatten, and the go-live account bootstrap. An operator runs
+cleanup, the branch flatten, the go-live account bootstrap, and the Temix requeue
+(`scripts/ops/requeue-untracked.ts`, one summary row per applied run). An operator runs
 these by hand against the database rather than through the application, so there is
 no request to read an address or a device string from. On those rows `ip` and
 `userAgent` are null **by construction, not by omission**, and a reader of the ledger

@@ -203,14 +203,29 @@ importer enforces most of the order, but not all of it.
    If someone loses their slip, reset that one account from **Users → Reset
    password**. The value you type there must itself be 12+ characters — the reset
    screen is not another `12345` — and it re-arms the forced change and kills that
-   account's open sessions. When you are done, delete **all three** files that carry credentials:
-   `credentials.xlsx`, `managers.json` **and `account-master.xlsx`**. That last
-   one is easy to miss — it is the file you have had open all day and think of as
-   the import, not as a secret — but its Users sheet has a `password` column with
-   a live value on every row that the import creates. Leaving it behind leaves the
-   whole roster's credentials on the laptop. The initial password stops working for
-   each person the moment they complete their forced change, so what is dangerous
-   is precisely the accounts of anyone who has not signed in yet.
+   account's open sessions.
+
+   When you are done, delete the files that carry credentials. Three names carry
+   them — `credentials.xlsx`, `managers.json` and **`account-master.xlsx`** — but
+   deleting three files is not enough, because **every rebuild leaves a
+   `.superseded-<stamp>` copy of each of them beside the original**. There are
+   already fifteen superseded `credentials.xlsx` in that folder. Delete the whole
+   set:
+
+   ```bash
+   rm golive-data/credentials.xlsx* golive-data/managers.json* golive-data/account-master.xlsx*
+   ```
+
+   `account-master.xlsx` is the one people miss — it is the file you have had open
+   all day and think of as the import, not as a secret — but its Users sheet has a
+   `password` column with a live value on every row the import creates. The initial
+   password stops working for each person the moment they complete their forced
+   change, so what is dangerous is precisely the accounts of anyone who has not
+   signed in yet. Then confirm nothing is left:
+
+   ```bash
+   ls golive-data | grep -E 'credentials|managers|account-master'
+   ```
 
    > ⚠ **OWNER DECISION, still open — how the slips reach people.** Printed slips
    > handed over in person by each regional manager is the only channel that needs no

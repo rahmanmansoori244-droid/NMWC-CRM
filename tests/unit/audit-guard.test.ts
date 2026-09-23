@@ -123,9 +123,9 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
       // while every script here deliberately builds its own PrismaClient on
       // DIRECT_URL, because maintenance runs as the owner and not as nmwc_app.
       //
-      // These five really do write the ledger. The blank device and network on their
+      // These six really do write the ledger. The blank device and network on their
       // rows is a documented class, not missing data — RECORDS-OF-PROCESSING.md §A6.
-      // Listing them here means a sixth cannot appear without someone reading this.
+      // Listing them here means a seventh cannot appear without someone reading this.
       const code = 'export async function f(tx: any) { await tx.auditLog.create({ data: {} }); }';
       const OPERATOR_WRITERS = [
         'scripts/bulk-reset-credentials.ts',
@@ -133,6 +133,9 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         'scripts/flatten-customer-branches.ts',
         'scripts/wipe-synthetic-data.ts',
         'scripts/golive/bootstrap-accounts.ts',
+        // The Temix requeue: one summary row per applied run, recording that a few
+        // thousand customers changed sync state and which run did it.
+        'scripts/ops/requeue-untracked.ts',
         // The least-privilege role probe: its insert proves the app role may INSERT
         // but not UPDATE/DELETE the ledger, and the transaction is rolled back. Not
         // an audit record at all.

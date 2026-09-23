@@ -318,10 +318,14 @@ done: whether a failed audit write should fail the user's action; whether archiv
 a customer releases the commercial-registration and guarantee documents behind its
 credit decision, which is a business call; and the Steward's org-wide administrative
 reach, which is a role-design question rather than a defect. The audit rule also
-stops at the request-serving tree — five operator scripts write the ledger by hand,
+stops at the request-serving tree — six operator scripts write the ledger by hand,
 with no request to read an address from, and §A6 of RECORDS-OF-PROCESSING.md now
 names that class so a blank there reads as "acted outside any session" rather than
-as a gap in the record.
+as a gap in the record. (Six since 2026-09-23, when `scripts/ops/requeue-untracked.ts`
+joined them; `tests/unit/audit-guard.test.ts` lists all six by name and is what goes
+red if a seventh appears. This sentence is the only one of the four enumerations that
+points at §A6, so it was worth keeping in step rather than leaving a reader to find
+six there against five here.)
 
 ### The P3 list (2026-09-15)
 

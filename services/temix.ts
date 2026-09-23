@@ -136,6 +136,27 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
   // the delay class that produced this codebase's P2028 failures.
   const env = await getAuditEnvelope(me.id);
 
+  // THE BUDGET BELOW IS SIZED FOR THE POST-REQUEUE QUEUE, NOT THE PILOT'S HANDFUL,
+  // AND IS CAPPED BY THE PLATFORM RATHER THAN BY THE WORK.
+  // On 2026-09-23 scripts/ops/requeue-untracked.ts put ~3,300 customers and ~4,200
+  // branches into this snapshot, and the owner's next action after that script is
+  // Generate batch. The flip row-locks the whole queue and holds those locks
+  // through the findMany, which CUSTOMER_SELECT expands into several statements
+  // over the WAN-bound link — no relationJoins, so branches, region, route,
+  // channel and subChannel are separate round trips, one of them ~4,200 rows.
+  // 20s was never measured against that shape, so this carries 30s.
+  //
+  // It does NOT carry more, and that ceiling is the whole point: vercel.json gives
+  // app/**/*.ts(x) maxDuration 60, and this action still has to run
+  // withGuaranteeCounts and build a ~4,200-row workbook AFTER the commit. A budget
+  // at or above 60s cannot fire — the platform kills the invocation first, and
+  // what the Steward sees is a dead request rather than a Prisma error naming the
+  // timeout. Keep transaction + maxWait comfortably below maxDuration minus the
+  // workbook build. If 30s ever proves too short, the answer is a SMALLER QUEUE,
+  // not a larger window: the transaction rolls back untouched on timeout, so
+  // `requeue-untracked.ts --limit` can drain the backlog in tranches and each
+  // batch generates well inside the budget. Pinned by
+  // tests/unit/temix-requeue-guard.test.ts, which asserts both bounds.
   const { batch, customers } = await prisma.$transaction(async (tx) => {
     // Soft cap pre-check (updateMany cannot `take`; a handful of rows racing
     // in over the cap between count and flip is harmless).
@@ -207,7 +228,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
       } as unknown as Prisma.InputJsonValue,
     });
     return { batch: b, customers: queued };
-  }, { timeout: 20_000, maxWait: 5_000 });
+  }, { timeout: 30_000, maxWait: 5_000 });
 
   const enriched = await withGuaranteeCounts(customers);
   const wb = await buildBatchWorkbook(enriched, batch.id);

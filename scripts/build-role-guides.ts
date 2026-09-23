@@ -826,7 +826,7 @@ const MANAGER_EN: Guide = {
       steps: [
         { html: 'Tap <strong>Users</strong> in the menu.', img: '12-manager-users.png' },
         {
-          html: 'You see every user in your region: salesmen, supervisors, anyone reporting up to you.',
+          html: 'You see the users in your region: salesmen, supervisors, anyone reporting up to you. The list opens on the <strong>Active</strong> tab — the accounts that can be used. <strong>Disabled</strong> and <strong>All</strong> sit next to it, with the count of what the current tab is hiding shown under the title.',
         },
         {
           html: '<strong>Reset password</strong> — for a salesman who forgot theirs. Set a temporary password; the system forces them to change it on next login.',
@@ -1199,7 +1199,10 @@ const STEWARD_EN: Guide = {
       steps: [
         { html: 'Tap <strong>Users</strong> in the sidebar.', img: 'steward-09-users.png' },
         {
-          html: 'You see every user in every region. Useful for understanding "who reports to whom" and confirming the org chart matches what HR has.',
+          html: 'You see users in every region. Useful for understanding "who reports to whom" and confirming the org chart matches what HR has.',
+        },
+        {
+          html: 'The list opens on the <strong>Active</strong> tab, which is NOT every account: the pilot and QA accounts kept for their audit history are deactivated, and they sit on <strong>Disabled</strong>. When you reconcile the roster against HR, read it from the <strong>All</strong> tab — otherwise the counts will not match and accounts will look missing.',
         },
         {
           html: "Reset password, disable, and reassign-route actions live with the user's manager. Forward HR requests to the right manager.",
@@ -1886,7 +1889,9 @@ const MANAGER_AR: Guide = {
       title: 'إدارة فريقك',
       steps: [
         { html: 'اضغط على <strong>المستخدمون</strong> في القائمة.', img: '12-manager-users.png' },
-        { html: 'ترى كل المستخدمين في منطقتك: المندوبون، المشرفون، أي شخص يتبع لك.' },
+        {
+          html: 'ترى المستخدمين في منطقتك: المندوبون، المشرفون، أي شخص يتبع لك. تفتح القائمة على تبويب <strong>النشِطون</strong> — أي الحسابات القابلة للاستخدام. وبجانبه <strong>المعطَّلون</strong> و<strong>الكل</strong>، مع عدد ما يخفيه التبويب الحالي أسفل العنوان.',
+        },
         {
           html: '<strong>إعادة ضبط كلمة المرور</strong> — لمندوب نسي كلمته. عيّن كلمة مؤقتة؛ النظام يجبره على تغييرها عند الدخول التالي.',
         },

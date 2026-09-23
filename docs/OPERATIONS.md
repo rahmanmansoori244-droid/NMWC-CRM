@@ -357,6 +357,29 @@ The rotation is audit-logged.
 2. `/export` → choose filters → **Download .xlsx**.
 3. Workbook columns mirror the import shape so it round-trips.
 
+### Requeue customers the ERP was never told about (one-off, 2026-09-23)
+
+A customer whose `temixSyncState` is `SYNCED` while `temixCode` is null is claiming Temix already knows it, and nothing re-examines that claim: the upload queue selects only `PENDING_UPLOAD` and `DEACTIVATE_PENDING`, so the row never enters a batch, never shows on `/temix`, and the ERP never learns it exists — it cannot be invoiced, however complete it looks in the CRM. The May pilot seed left several thousand rows in that state; the importer has handled it correctly for rows it creates since. `npm run verify:load` fails on exactly this ("customers with no Temix code are queued for upload"). To fix it, **dry run first** — the script writes nothing without `--apply`, and `--expect-host` is required either way, because a dry run against the wrong database reports "nothing to do" and reads as "already fixed":
+
+```bash
+npm run smoke                       # before any production change — fourteen checks, ~15s
+DIRECT_URL='<owner connection>' npm run ops:requeue-untracked -- --expect-host ep-sweet-haze
+# read the counts, then:
+DIRECT_URL='<owner connection>' npm run ops:requeue-untracked -- --expect-host ep-sweet-haze --apply
+npm run smoke                       # and after
+npm run verify:load
+```
+
+`npm run smoke` on both sides is not optional — it is the standing rule for any production change, it needs no credentials, and each of its fourteen checks is something that has already been wrong here (including production serving a four-month-old build for weeks). Run it before, so a regression that was already there is not blamed on this; run it after, so one caused by this is caught while the operator is still at the keyboard.
+
+The dry run resolves everything `--apply` needs, including the audit actor, so anything the apply would refuse is refused in the rehearsal instead. If it reports more than one active Steward, pass `--actor <username>`; the script refuses a username that is not an active Steward, or one on the demo denylist (`lib/demo-accounts.ts`) — rename the account rather than relaxing the list.
+
+It flips only live, code-less, `SYNCED` rows to `PENDING_UPLOAD`, a few hundred per statement so it cannot hold a long lock over the WAN link, and it is re-runnable — a second run finds nothing and says so. It refuses outright if the resulting queue would exceed the 5,000-customer batch cap in `services/temix.ts`, because a queue over the cap means the Steward can generate **no** batch at all, including the one that would drain it; drain the existing queue first and re-run.
+
+**If `/temix` cannot generate the batch afterwards, requeue in tranches with `--limit`.** The cap the script refuses on is not the only ceiling. `generateTemixBatchCore()` snapshots the entire queue inside one interactive transaction budgeted at 30 seconds, and that budget cannot be raised past the 60 seconds Vercel allows the function — so a queue can be legal under the 5,000-customer cap and still be too large to snapshot in time. A timeout there rolls back untouched and leaves the queue exactly as it was, so it costs nothing to find out; but `/temix` has no un-queue action and the script's predicate stops matching a row the moment it is requeued, so without `--limit` there is no way to make the queue smaller again. Run `--limit 1000 --apply`, have the Steward generate and load that batch, then run it again for the next tranche. The counts and the workbook estimate the script prints describe the tranche it is actually going to touch, not the whole backlog, and it tells you how many it is leaving behind.
+
+Two `AuditLog` rows per applied run (`entityType = TemixRequeue`), sharing one `entityId` — the run's `temixSyncPendingSince`: a STARTING row written before the first chunk and a COMPLETED row after the last. The chunks each commit on their own, so **a STARTING row with no COMPLETED row beside it means the run was interrupted**: the rows it did change all carry that `temixSyncPendingSince`, which is how you count them and how you put them back. The run also prints a block to paste into the go-live log. Afterwards, have the Steward generate the batch from `/temix`.
+
 ### Spot a duplicate in the live master
 1. Sign in as Steward.
 2. `/duplicates` → review pairs (PHONE matches first, then CR, then fuzzy NAME).

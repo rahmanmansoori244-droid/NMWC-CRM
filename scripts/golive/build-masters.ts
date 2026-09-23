@@ -23,7 +23,11 @@
  *
  * Writes to golive-data/ (GITIGNORED — customer PII and generated passwords):
  *   account-master.xlsx, customer-master.xlsx, managers.json, credentials.xlsx,
- *   RECONCILIATION.md, dq/*.csv
+ *   RECONCILIATION.md, load-manifest.json, dq/*.csv
+ *
+ * A rebuild REPLACES NOTHING: every one of those is moved aside first — see
+ * SUPERSEDE_ON_REBUILD below — because a rebuild after a load destroys the record
+ * of what was loaded, which is what happened on 2026-09-23.
  */
 import ExcelJS from 'exceljs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
@@ -34,6 +38,7 @@ import {
   FINANCE_MANAGER_USERNAME,
   GM_USERNAME,
 } from '../../lib/ops/golive-accounts';
+import { routeMasterName } from '../../lib/ops/golive-routes';
 
 const DESKTOP = 'C:/Users/abdulr/Desktop';
 // The RoutePro customer master is re-exported before every real load; whichever
@@ -549,12 +554,98 @@ function csvLine(vals: unknown[]): string {
     })
     .join(',');
 }
-function writeDq(name: string, headers: string[], rows: unknown[][]) {
-  writeFileSync(
-    path.join(DQ, name),
-    [csvLine(headers), ...rows.map(csvLine)].join('\n') + '\n',
-    'utf8'
+/**
+ * Every file this builder writes directly into golive-data/. A rebuild moves each
+ * one aside as `<name>.superseded-<stamp>` instead of replacing it.
+ *
+ * Two separate reasons, and the list must satisfy both:
+ *
+ * Credentials. A rebuild redraws every initial password. Accounts already in the
+ * database keep their old hashes — the account import only resets a password when
+ * the sheet says `reset_password: yes` — so a freshly written credentials.xlsx
+ * lists values that were never applied to anything, while the values that DO work
+ * are overwritten and exist nowhere else. They are never printed, never stored and
+ * never audited. Recovery is a Steward resetting ~95 accounts by hand, except for
+ * any Manager who had not yet signed in, whom no Manager may reset.
+ *
+ * Evidence. The list held only credentials.xlsx and managers.json until
+ * 2026-09-23, because that is the incident that created it. So when the builder
+ * was re-run at 16:39 and 16:42 that day — 53 minutes after account-master.xlsx
+ * and customer-master.xlsx had been imported into production — the two workbooks
+ * that were actually promoted were overwritten in place, and no copy of either
+ * exists. Nothing in that rebuild turned out to be unrecoverable, but "prove what
+ * you loaded" is a question asked the day after, and the answer was gone.
+ *
+ * tests/unit/golive-route-names-guard.test.ts fails if a `path.join(OUT, '…')`
+ * appears in this file and not here. The defect class is not "there was no
+ * guard" — there was one — it is "the list did not keep up".
+ *
+ * dq/ is deliberately NOT in this list; writeDq() below says why.
+ */
+const SUPERSEDE_ON_REBUILD = [
+  'account-master.xlsx',
+  'customer-master.xlsx',
+  'credentials.xlsx',
+  'managers.json',
+  'RECONCILIATION.md',
+  'load-manifest.json',
+] as const;
+
+/**
+ * ONE stamp for the whole rebuild, taken from the mtime of the first artefact it
+ * moves aside, so every copy of a single build carries the same suffix and sorts
+ * together. Per-file mtimes scatter one build across several stamps, and then
+ * nobody can tell which credentials.xlsx belongs to which account-master.xlsx.
+ */
+let supersedeStamp: string | null = null;
+function stampOf(existing: string): string {
+  if (!supersedeStamp)
+    supersedeStamp = statSync(existing).mtime.toISOString().replace(/[:.]/g, '-');
+  return supersedeStamp;
+}
+
+function supersedePreviousBuild() {
+  for (const name of SUPERSEDE_ON_REBUILD) {
+    const existing = path.join(OUT, name);
+    if (!existsSync(existing)) continue;
+    renameSync(existing, `${existing}.superseded-${stampOf(existing)}`);
+  }
+  if (!supersedeStamp) return;
+  console.warn(
+    // NOT `golive-data/*.superseded-…`: that puts an unterminated `/*` in this
+    // file's source, and tests/unit/golive-route-names-guard.test.ts strips block
+    // comments with /\/\*[\s\S]*?\*\//g before asserting against it — so the
+    // stripper would eat from here to the next `*/` and the guard would pass or
+    // fail for a reason that has nothing to do with what it guards. The same trap
+    // CLAUDE.md names for comments that quote the thing being asserted.
+    `\n!! The previous build was KEPT, not overwritten. Look in golive-data for\n` +
+      `   the *.superseded-${supersedeStamp} copies\n` +
+      `   (its dq CSVs move into dq/superseded-${supersedeStamp}/ as each is rewritten).\n` +
+      `   Those copies are the record of what was imported into production. The\n` +
+      `   initial password is the shared value for everyone, so a rebuild does not\n` +
+      `   change anybody's credentials — but the ROSTER can change between builds (a\n` +
+      `   route going active or inactive adds or removes an account), so compare the\n` +
+      `   two before you hand anything out.\n` +
+      `   The superseded credentials.xlsx and account-master.xlsx carry live\n` +
+      `   passwords exactly as the current ones do. Delete the whole set, not just\n` +
+      `   the newest copy, when the hand-out is done.\n`
   );
+}
+
+function writeDq(name: string, headers: string[], rows: unknown[][]) {
+  const target = path.join(DQ, name);
+  if (existsSync(target)) {
+    // dq/ is ~20 CSVs and other scripts drop their own evidence beside them
+    // (rehearsal-*.csv, credit-change-*.csv). A stamped sibling per file per
+    // rebuild would have left several hundred of them by now — there are already
+    // 15 superseded credentials.xlsx — so one build's CSVs move together into one
+    // directory. Only the files THIS builder is about to overwrite move, so
+    // another script's evidence stays exactly where it left it.
+    const kept = path.join(DQ, `superseded-${stampOf(target)}`);
+    mkdirSync(kept, { recursive: true });
+    renameSync(target, path.join(kept, name));
+  }
+  writeFileSync(target, [csvLine(headers), ...rows.map(csvLine)].join('\n') + '\n', 'utf8');
 }
 function top<K>(m: Map<K, number> | undefined): K | null {
   if (!m || m.size === 0) return null;
@@ -621,7 +712,17 @@ async function main() {
     voteRegion(code, regionCodeFromName(r.g), Number(r.n));
     voteClass(code, S(r.c), Number(r.n));
   }
-  const routeName = new Map<string, string>();
+  // Every raw spelling a source system uses for a route, against the canonical code
+  // the CRM ends up with. This is evidence only — it does NOT name the route; see
+  // lib/ops/golive-routes.ts for why a source label must never reach the name
+  // column. Written to dq/route-code-aliases.csv so the owner can see which systems
+  // disagree about an identifier without having to spot it on a screen.
+  const routeAliasEvidence: Array<{
+    source: string;
+    raw: string;
+    label: string;
+    canon: string;
+  }> = [];
   for (const r of db
     .prepare('select route_code, route_name, region, analytical_class from dim_route')
     .all() as any[]) {
@@ -629,7 +730,12 @@ async function main() {
     if (!code) continue;
     voteRegion(code, regionCodeFromName(r.region), 1);
     voteClass(code, S(r.analytical_class), 1);
-    if (!routeName.has(code)) routeName.set(code, S(r.route_name) || code);
+    routeAliasEvidence.push({
+      source: 'dashboard dim_route',
+      raw: S(r.route_code).toUpperCase(),
+      label: S(r.route_name),
+      canon: code,
+    });
   }
   // salesman per route: this month's upload first (most invoices), then the last two
   // aggregated months. Pre-sales rows: `code` is the seller's own route, `route_code`
@@ -693,7 +799,12 @@ async function main() {
   for (const r of csvObjects(SRC.rpRoutes)) {
     const code = canonRoute(r.ROUTE_NAME);
     if (!code) continue;
-    if (!routeName.has(code)) routeName.set(code, code);
+    routeAliasEvidence.push({
+      source: 'RoutePro route master',
+      raw: S(r.ROUTE_NAME).toUpperCase(),
+      label: '',
+      canon: code,
+    });
     if (r.SALESMAN && !isPlaceholderName(r.SALESMAN, code))
       rpRouteSalesman.set(code, r.SALESMAN.trim().toUpperCase());
   }
@@ -886,7 +997,9 @@ async function main() {
     }
     routes.push({
       code,
-      name: routeName.get(code) ?? code,
+      // NOT the dashboard's dim_route.route_name: that is the spelling from before
+      // the code was canonicalised, so NIZD came out named "NZ05" and DQ01 "DQ1".
+      name: routeMasterName(code),
       region: rc,
       cls: classOf(code),
       omr: Math.round((activeOmr.get(code) ?? 0) + (uploadOmr.get(code) ?? 0)),
@@ -1251,6 +1364,16 @@ async function main() {
   }
 
   // 10. Workbooks.
+  //
+  // Nothing has been written to golive-data/ yet, and this is the last moment that
+  // is true — so move the previous build aside HERE. The supersede step used to
+  // sit beside the credentials write 90 lines further down, by which point
+  // account-master.xlsx and customer-master.xlsx had already been replaced. That
+  // is how the rebuild at 16:39 on 2026-09-23 destroyed the two workbooks
+  // promoted to production at 15:46 the same day while dutifully preserving the
+  // credentials.
+  supersedePreviousBuild();
+
   const addSheet = (
     wb: ExcelJS.Workbook,
     name: string,
@@ -1368,35 +1491,8 @@ async function main() {
       password: c[4],
     }))
   );
-  // Never overwrite credentials that may already have been issued.
-  //
-  // The runbook tells the operator to rebuild whenever the sources change, and a
-  // rebuild redraws every initial password. Accounts already in the database keep
-  // their old hashes — the account import only resets a password when the sheet
-  // says `reset_password: yes` — so the freshly written files would list values
-  // that were never applied to anything, while the values that DO work are
-  // overwritten and exist nowhere else. They are never printed, never stored and
-  // never audited. The operator would hand out a sheet on which every slip is
-  // dead, and recovery is a Steward resetting roughly 95 accounts by hand — except
-  // for any Manager who had not yet signed in, whom no Manager may reset.
-  //
-  // So: move the old files aside rather than replacing them, and say so loudly.
-  // Cheap, reversible, and it cannot lose a credential.
-  for (const name of ['credentials.xlsx', 'managers.json']) {
-    const existing = path.join(OUT, name);
-    if (!existsSync(existing)) continue;
-    const stamp = statSync(existing).mtime.toISOString().replace(/[:.]/g, '-');
-    const kept = path.join(OUT, `${name}.superseded-${stamp}`);
-    renameSync(existing, kept);
-    console.warn(
-      `\n!! ${name} already existed and has been kept as ${path.basename(kept)}.\n` +
-        `   Nothing was overwritten. The initial password is the shared value for every\n` +
-        `   account, so a rebuild does not change anybody's credentials — but the ROSTER\n` +
-        `   can change between builds (a route going active or inactive adds or removes\n` +
-        `   an account), so compare the two before you hand anything out.\n`
-    );
-  }
-
+  // The previous credentials.xlsx and managers.json were moved aside by
+  // supersedePreviousBuild() in step 10, before the first workbook was written.
   await cred.xlsx.writeFile(path.join(OUT, 'credentials.xlsx'));
   writeFileSync(
     path.join(OUT, 'managers.json'),
@@ -1449,6 +1545,29 @@ async function main() {
   writeDq('salesmen-no-supervisor.csv', ['route', 'region', 'class', 'salesman'], noSupervisor);
   writeDq('salesmen-multiple-routes.csv', ['salesman', 'routes', 'assigned'], salesmanMultiRoute);
   writeDq('routes-region-unmapped.csv', ['route'], routesUnmappedRegion);
+  // The route names the CRM does NOT use, and where they came from. Only rows that
+  // actually disagree with the canonical code are listed, deduplicated: a route with
+  // two source spellings (NIZD is "NZ05" in one dashboard row and "NIZDIR" in four)
+  // gets one line per spelling, which is the answer to "do two systems disagree
+  // about this route's identifier".
+  const aliasRows = new Map<string, unknown[]>();
+  for (const e of routeAliasEvidence) {
+    if (e.raw === e.canon && (!e.label || e.label.toUpperCase() === e.canon)) continue;
+    aliasRows.set(`${e.canon}|${e.source}|${e.raw}|${e.label}`, [
+      e.canon,
+      ACTIVE.has(e.canon) ? 'yes' : 'no',
+      e.source,
+      e.raw,
+      e.label,
+    ]);
+  }
+  writeDq(
+    'route-code-aliases.csv',
+    ['canonical_route', 'in_crm', 'source', 'source_spelling', 'source_label'],
+    [...aliasRows.values()].sort(
+      (a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[3]).localeCompare(String(b[3]))
+    )
+  );
   writeDq('credit-customers-without-limit.csv', ['cust_code', 'name', 'route'], creditNoLimit);
   writeDq(
     'jp-multi-day-customers.csv',
@@ -1483,6 +1602,30 @@ async function main() {
     bump(byTerms, S(r.payment_terms));
   }
   const distinctCustomers = new Set(custRows.map((r) => r.cust_code)).size;
+
+  // Replay the OLD naming rule — first dim_route row wins, `S(route_name) || code`
+  // — over every canonical code the dashboard knows, not just the ones this build
+  // emits. That is the honest answer to "which routes would carry another system's
+  // identifier as their name": the ones in this build are fixed by the Routes
+  // sheet, the ones outside it are NOT, because services/imports.ts upserts by
+  // code and never touches a route the sheet omits. Codes only — no customer data.
+  const firstDashLabel = new Map<string, string>();
+  for (const e of routeAliasEvidence) {
+    if (e.source !== 'dashboard dim_route' || !S(e.label)) continue;
+    if (!firstDashLabel.has(e.canon)) firstDashLabel.set(e.canon, S(e.label));
+  }
+  const oldRuleWouldMisname = [...firstDashLabel]
+    .filter(([canon, label]) => label.toUpperCase() !== canon)
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  const misnamedInBuild = oldRuleWouldMisname.filter(([c]) => ACTIVE.has(c));
+  const misnamedOutsideBuild = oldRuleWouldMisname.filter(([c]) => !ACTIVE.has(c));
+  // The worst shape of it: a route the builder does NOT emit whose old name is the
+  // CODE of a route it does. /routes then shows two adjacent rows that read as one
+  // route duplicated, which is exactly what was reported for NIZD/NZ05 — and this
+  // one no re-import can fix, because the sheet does not contain that route.
+  const collidesWithLiveRoute = misnamedOutsideBuild.filter(([, l]) => ACTIVE.has(l.toUpperCase()));
+  const quoteNames = (rows: [string, string][]) =>
+    rows.map(([c, l]) => `${c} → "${l}"`).join(' · ') || 'none';
   const parked = onInactiveRoute.length;
   const salesmenCount = users.filter((u) => u.role === 'SALESMAN').length;
   const md: string[] = [];
@@ -1542,6 +1685,57 @@ async function main() {
   md.push(
     '16. **Credentials**: salesmen sign in with their ROUTE CODE (e.g. `c4`, `sh01`), managers with their CLASS (`mct-gt`, `mct-hd`, `mct-mt`, `horeca`, `khaburah`, `nizwa`, `salalah`, `barka`, `alwafi-duqm`) — except Rashid and Saud, the two fallback approvers, who own no class and keep their names. The steward signs in as `data.steward` (NOT `steward` — that exact username is refused while DEMO_ACCOUNTS_DISABLED is set). **The initial password is `12345` for everyone** — owner decision of 2026-09-10, restated 2026-09-20 — and every row carries must_change_password, so the value works exactly once and stops working the moment its owner completes the forced change at first sign-in. **That forced change is the entire control.** Until a person signs in, their account is open to anyone who knows the shared value, and usernames are route codes printed on the journey plan. So hand the logins out and walk people through the change on the SAME DAY, then check Users the next morning for anyone still carrying the flag. A manager who also sells a route has TWO logins, both `12345`. The approver accounts sign in as `accountant.<region code>` (one per region), `finance.manager` and `gm.nmwc`. ✅'
   );
+  md.push('');
+  md.push('## Changed in the BUILD, NOT applied to production');
+  md.push('');
+  md.push(
+    'Everything above this line describes what the load actually did. Everything below it changes only what this builder writes. **Nothing here has reached the loaded database**, and the item says what applying it would cost, so that it can be weighed rather than assumed.'
+  );
+  md.push('');
+  md.push(
+    '17. **A route is named by its canonical code — in this build only. ⚠ NOT APPLIED TO PRODUCTION · AWAITING OWNER DECISION.** This is NOT one of the owner decisions above. It was taken on 2026-09-23 by whoever made the change, and it sits outside that section so it cannot be mistaken for something settled on 2026-09-10. Nobody has chosen to discard "Al Wafi Route 3". If you want friendly route names, this is the rule to overturn — say so and it goes back.'
+  );
+  md.push('');
+  md.push(
+    '    *What was wrong:* the name column was copied from the dashboard\'s `dim_route.route_name`, the spelling from BEFORE the code is canonicalised, so a route could carry another system\'s identifier as its name — AW03 read "Al Wafi Route 3", DQ01 read "DQ1", NIZD read "NZ05", which looks like two routes merged by accident and is not. NIZD\'s name also depended on the order SQLite returned `dim_route` rows in, so two builds from the same sources could disagree. Source spellings: dq/route-code-aliases.csv.'
+  );
+  md.push('');
+  md.push(
+    `    *What production still shows:* the old names. Routes are rewritten only when account-master.xlsx is re-imported through **Import → Account master**. Walk /routes and you will still read them.`
+  );
+  md.push('');
+  md.push(
+    `    *What that re-import would ACTUALLY do* — it is **not** "three name cells". account-master.xlsx carries Regions, Routes AND Users, the import runs all three sheets, and there is no way to import one of them:`
+  );
+  md.push(
+    `    - **Routes (${routes.length} rows):** upsert by code with \`update: { name, regionId }\` — the REGION is rewritten from this sheet too, not just the name. A route in the CRM that is not in this sheet is not touched at all (the import never deletes).`
+  );
+  md.push(`    - **Regions (7 rows):** each region's name is rewritten from this sheet.`);
+  md.push(
+    `    - **Users (${users.length} rows):** full name, email and phone are rewritten from this sheet, and so is a salesman's supervisor wherever this sheet names one. Every SALESMAN row reclaims its route: whoever currently owns that route and is not the sheet's salesman is detached, with a REASSIGN audit row — so a route moved to a relief salesman in /users since the load is silently moved back, and that person's /today empties mid-round. Every non-SALESMAN row is disconnected from any route it owns. Every MANAGER/ACCOUNTANT row with region codes in this sheet has its managed regions REPLACED (\`set:\`), so a region added in the app since the load is removed — and the region readers are fail-closed, so that account's approval queue empties with no error on screen.`
+  );
+  md.push(
+    `    - **Not touched:** passwords, roles and the forced-change flag. Every row here carries \`reset_password\` and \`change_role\` blank, and the import only rotates those on insert or on explicit request.`
+  );
+  md.push(
+    `    - **Created:** any username in this sheet that is not in the database yet, with the password in the sheet.`
+  );
+  md.push(
+    `    - **And it is a different build.** This is not the workbook that was loaded — that one no longer exists, because a rebuild at 16:39 on 2026-09-23 overwrote it (since fixed: every artefact is now moved aside, not replaced). This one was built from ${path.basename(SRC.rpCustomers)} and today's dashboard, and carries ${routes.length} routes and ${users.length} users. Re-importing applies THIS build's roster, not a patch to three names.`
+  );
+  md.push('');
+  md.push(
+    `    *The 44th route.* This build emits **${routes.length}** routes; the owner counts **44** on /routes. The rule above therefore does not govern at least one live route, and cannot: the import leaves a route absent from the sheet exactly as it is. Two ways that gap arises, and they need different answers — a route that has fallen below the ${ACTIVE_MIN_OMR} OMR activity threshold since the build that fed the load (it would then simply be dropped from this sheet, name untouched), or a route the sources never had. **Find out before re-importing:** open /routes, and compare the codes on the page against the ${routes.length} in dq/routes-active.csv, column 1. Anything on the page and not in that file is outside this rule.`
+  );
+  md.push('');
+  md.push(
+    `    *Where to look first.* Replaying the OLD naming rule over the dashboard's \`dim_route\` names ${oldRuleWouldMisname.length} routes after something other than their code. ${misnamedInBuild.length} are in this sheet and a re-import fixes them: ${quoteNames(misnamedInBuild)}. ${misnamedOutsideBuild.length} are NOT in this sheet, so if production holds them they keep those names whatever you import: ${quoteNames(misnamedOutsideBuild)}. The dashboard is not production, so treat this as a shortlist to check on the page, not an answer.`
+  );
+  if (collidesWithLiveRoute.length)
+    md.push(
+      `    ⚠ **${quoteNames(collidesWithLiveRoute)}** — that name is itself a live route code in this build. If production holds that route, /routes shows a row whose NAME is another route's CODE, one line from the route it names: the exact symptom reported for NIZD/NZ05, and the one case a re-import cannot fix.`
+    );
+  md.push('');
   md.push('## What is in the files');
   md.push(`- **Regions:** 7`);
   md.push(
@@ -1622,6 +1816,10 @@ async function main() {
     '4. Hand out the logins the same day, and sit with each person while they sign in and change the password. The initial value is `12345` for everyone; the forced change at first sign-in is what closes the window, one account at a time. Check **Users** the next morning for anyone still carrying the forced-change flag — that flag IS the list of accounts still standing open.'
   );
   md.push('');
+  md.push(
+    'That is the INITIAL load and it is done. There is no step 5: item 17 is the only outstanding change to the loaded data, it is applied by repeating step 2 alone, and the cost of repeating step 2 is spelled out there.'
+  );
+  md.push('');
   md.push('## Build log');
   md.push(...notes.map((n) => `- ${n}`));
   writeFileSync(path.join(OUT, 'RECONCILIATION.md'), md.join('\n') + '\n', 'utf8');
@@ -1667,19 +1865,37 @@ async function main() {
   // Name all three. account-master.xlsx is the one that gets forgotten: it reads
   // as "the import file" rather than as a secret, and its Users sheet carries a
   // live password on every row the import creates. The runbook clean-up step
-  // omitted it for exactly that reason until 2026-09-22.
+  // omitted it for exactly that reason until 2026-09-22. And since 2026-09-23 the
+  // *.superseded-* copies of all three are kept rather than overwritten, so the
+  // clean-up is a glob, not three filenames.
   log(
     `credentials.xlsx + managers.json written — SENSITIVE, gitignored.\n` +
       `   account-master.xlsx ALSO carries a password column (${
         users.filter((u) => u.password).length
       } of ${users.length} rows).\n` +
       `   All three hold live credentials until each person completes their forced\n` +
-      `   change. Delete all three when the hand-out is done.`
+      `   change. When the hand-out is done delete all three AND every\n` +
+      `   *.superseded-* copy of them — those are past builds, not dead files.`
   );
   db.close();
 }
 
 main().catch((e) => {
   console.error('BUILD FAILED:', e);
+  // Superseding happens at the TOP of step 10, several hundred lines before the
+  // last artefact is written, so a failure anywhere in that window leaves
+  // golive-data with no current masters at all — only the .superseded-<stamp>
+  // copies. That is recoverable in one command, but only if you know it, and the
+  // moment you need to know it is the moment you are reading a stack trace.
+  if (supersedeStamp) {
+    console.error(
+      `\n!! This build had already moved the previous one aside before it failed.\n` +
+        `   golive-data has NO current account-master.xlsx / customer-master.xlsx /\n` +
+        `   credentials.xlsx right now. The previous build is intact under the\n` +
+        `   suffix .superseded-${supersedeStamp} — restore it with:\n\n` +
+        `     cd golive-data && for f in *.superseded-${supersedeStamp}; do mv "$f" "\${f%.superseded-${supersedeStamp}}"; done\n\n` +
+        `   Do that before re-running, or the next attempt supersedes a half-built set.\n`
+    );
+  }
   process.exit(1);
 });

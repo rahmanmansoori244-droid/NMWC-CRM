@@ -5,6 +5,18 @@ import { Role } from '@prisma/client';
 import { createUserAction } from '@/services/users';
 import { administrableRolesFor } from '@/lib/permissions';
 
+// Go-live: the owner's screenshot of this panel showed Username pre-filled with
+// "data.steward" — their OWN sign-in — and Password pre-filled from the browser's
+// password manager, while Role said Salesman. One submit away from creating a
+// duplicate account carrying the Steward's own password. Chrome ignores
+// autoComplete="off" on anything its heuristics read as a username/password pair
+// and keys those heuristics off the `name`/`type` attributes, so the two fields
+// carry names the password manager does not recognise and are remapped to the
+// names createUserAction reads (`username`, `password`) at submit. Renaming these
+// back to `username`/`password` re-opens the bug.
+const USERNAME_FIELD = 'nmwc-new-account-handle';
+const PASSWORD_FIELD = 'nmwc-new-account-secret';
+
 const ROLE_LABELS: Record<Role, string> = {
   SALESMAN: 'Salesman',
   SUPERVISOR: 'Supervisor',
@@ -38,6 +50,10 @@ export function CreateUserForm({
     setErrors({});
     setSuccess(null);
     const fd = new FormData(e.currentTarget);
+    fd.set('username', String(fd.get(USERNAME_FIELD) ?? ''));
+    fd.set('password', String(fd.get(PASSWORD_FIELD) ?? ''));
+    fd.delete(USERNAME_FIELD);
+    fd.delete(PASSWORD_FIELD);
     start(async () => {
       try {
         // PROD-006: server actions return `{ ok, code, message, fields? }`
@@ -60,9 +76,15 @@ export function CreateUserForm({
   }
 
   return (
-    <form onSubmit={onSubmit} className="grid gap-3">
+    <form onSubmit={onSubmit} autoComplete="off" className="grid gap-3">
       <Field label="Full name" name="fullName" error={errors.fullName} required />
-      <Field label="Username" name="username" error={errors.username} required />
+      <Field
+        label="Username"
+        name={USERNAME_FIELD}
+        autoComplete="off"
+        error={errors.username}
+        required
+      />
       <div>
         <label className="mb-1 block text-xs font-medium text-slate-700">Role</label>
         <select
@@ -122,8 +144,9 @@ export function CreateUserForm({
       <Field label="Phone (optional)" name="phone" error={errors.phone} />
       <Field
         label="Password"
-        name="password"
+        name={PASSWORD_FIELD}
         type="password"
+        autoComplete="new-password"
         error={errors.password}
         required
         hint="Minimum 12 characters"
@@ -148,6 +171,7 @@ function Field({
   required,
   error,
   hint,
+  autoComplete,
 }: {
   label: string;
   name: string;
@@ -155,6 +179,7 @@ function Field({
   required?: boolean;
   error?: string;
   hint?: string;
+  autoComplete?: string;
 }) {
   return (
     <div>
@@ -166,6 +191,7 @@ function Field({
         name={name}
         type={type}
         required={required}
+        autoComplete={autoComplete}
         className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
       />
       {hint && !error && <p className="mt-0.5 text-[11px] text-slate-500">{hint}</p>}

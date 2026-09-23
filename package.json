@@ -30,6 +30,7 @@
     "guide:roles": "tsx scripts/build-role-guides.ts",
     "smoke": "tsx scripts/ops/smoke.ts",
     "verify:load": "tsx scripts/ops/verify-load.ts",
+    "ops:requeue-untracked": "tsx scripts/ops/requeue-untracked.ts",
     "verify:credentials": "tsx scripts/golive/verify-credentials.ts"
   },
   "dependencies": {

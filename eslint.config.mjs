@@ -50,9 +50,10 @@ export default [
     // conversion would change no stored row and would couple operator tooling to
     // the request runtime.
     //
-    // Five scripts write the ledger directly — bulk-reset-credentials,
-    // cleanup-synthetic-test, flatten-customer-branches, wipe-synthetic-data and
-    // golive/bootstrap-accounts. Their rows are blank in `ip` and `userAgent` BY
+    // Six scripts write the ledger directly — bulk-reset-credentials,
+    // cleanup-synthetic-test, flatten-customer-branches, wipe-synthetic-data,
+    // golive/bootstrap-accounts and ops/requeue-untracked. Their rows are blank in
+    // `ip` and `userAgent` BY
     // CONSTRUCTION, and that class is named in §A6 of
     // docs/compliance/RECORDS-OF-PROCESSING.md so a reader of the ledger can tell
     // "acted outside any session" apart from "device not recorded".
