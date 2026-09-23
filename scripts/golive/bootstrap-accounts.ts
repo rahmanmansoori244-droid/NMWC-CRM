@@ -8,7 +8,12 @@
  * database has no in-app path to its first Steward, and the Managers must exist
  * before the account import can assign their regions.
  *
- *   DIRECT_URL='<the OWNER connection string>' npx tsx scripts/golive/bootstrap-accounts.ts [golive-data/managers.json]
+ *   DIRECT_URL='<the OWNER connection string>' npx tsx scripts/golive/bootstrap-accounts.ts \
+ *     [golive-data/managers.json] --expect-host ep-sweet-haze
+ *
+ * --expect-host is REQUIRED. Without it this refuses, because a DIRECT_URL that
+ * silently did not take falls through to the repository .env and mints the first
+ * Data Steward into the development database while reporting success.
  *
  * Reads the steward + managers (username, full name, initial password) from
  * managers.json (written by build-masters.ts). Every account is created with
@@ -44,9 +49,58 @@ async function main() {
   // refuse the invocation the runbook documents.
   const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
   if (!url) throw new Error('set DIRECT_URL (preferred) or DATABASE_URL');
-  const file = process.argv[2] ?? 'golive-data/managers.json';
+  const args = process.argv.slice(2);
+  const file = args.find((a) => !a.startsWith('--')) ?? 'golive-data/managers.json';
   const cfg = JSON.parse(readFileSync(file, 'utf8')) as Cfg;
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
+
+  // The operator must NAME the database they mean; this refuses if the URL
+  // disagrees.
+  //
+  // Printing the target was not enough. On 2026-09-23, with DIRECT_URL and
+  // DATABASE_URL both explicitly removed from the environment, this script
+  // still connected — to the development database — because Prisma had already
+  // merged the repository .env into process.env. A variable that does not take
+  // therefore does not fail: it mints the first Data Steward somewhere else and
+  // prints "Created (12)".
+  const expectIdx = args.indexOf('--expect-host');
+  const expectHost = expectIdx >= 0 ? (args[expectIdx + 1] ?? '') : '';
+  if (!expectHost || expectHost.startsWith('--')) {
+    throw new Error(
+      'refusing to run without --expect-host.\n' +
+        `  This connects to ${host}.\n` +
+        '  Name the database you intend, so a variable that did not take cannot\n' +
+        '  silently send the first Data Steward somewhere else. For the go-live:\n' +
+        '    --expect-host ep-sweet-haze\n' +
+        '  (that string is also the PROD_DB_HOST_MARKER repository variable).'
+    );
+  }
+  if (!host.includes(expectHost)) {
+    // Name this trap specifically when it is what happened.
+    let viaDotenv = false;
+    try {
+      const envText = readFileSync('.env', 'utf8');
+      // BOTH keys, not the first match: DATABASE_URL is listed first in this
+      // repository while the script resolves DIRECT_URL, so matching only the
+      // first one compares the wrong value and never fires.
+      const fromEnv = ['DIRECT_URL', 'DATABASE_URL']
+        .map((k) => new RegExp(`^${k}=(.*)`, 'm').exec(envText)?.[1])
+        .filter((v): v is string => typeof v === 'string')
+        .map((v) => v.trim().replace(/^['"]|['"]$/g, ''));
+      viaDotenv = fromEnv.includes(url);
+    } catch {
+      /* no .env here; nothing to attribute */
+    }
+    throw new Error(
+      `refusing: you asked for "${expectHost}" but this connection points at ${host}.\n` +
+        (viaDotenv
+          ? '  That URL is the one in this repository .env — so your variable never\n' +
+            '  reached this process and it fell back to the development database.\n' +
+            '  Set the variable in the SAME shell that runs this command.\n'
+          : '  Check the connection string you exported.\n') +
+        '  Nothing has been written.'
+    );
+  }
   const prisma = new PrismaClient({ datasourceUrl: url });
   const created: string[] = [];
   const skipped: string[] = [];

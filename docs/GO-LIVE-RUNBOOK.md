@@ -70,8 +70,35 @@ importer enforces most of the order, but not all of it.
    **production** database URL:
 
    ```bash
-   DIRECT_URL='<the OWNER connection string>' npx tsx scripts/golive/bootstrap-accounts.ts golive-data/managers.json
+   DIRECT_URL='<the OWNER connection string>' npx tsx scripts/golive/bootstrap-accounts.ts \
+     golive-data/managers.json --expect-host ep-sweet-haze
    ```
+
+   **On Windows PowerShell, that line does not work** — and it fails in a way
+   that is worse than an error. `VAR='x' cmd` is not PowerShell syntax, so the
+   variable is never set; and `npx` is blocked outright by the default
+   ExecutionPolicy (`npx.ps1 cannot be loaded because running scripts is
+   disabled on this system`). Use:
+
+   ```powershell
+   cd <the repo>
+   $env:DIRECT_URL = '<the OWNER connection string>'
+   node node_modules\tsx\dist\cli.mjs scripts/golive/bootstrap-accounts.ts `
+     golive-data/managers.json --expect-host ep-sweet-haze
+   Remove-Item Env:\DIRECT_URL
+   ```
+
+   Calling `node` on the tsx entry point avoids the `.ps1` wrapper entirely, so
+   no system policy has to be changed.
+
+   **`--expect-host` is required, and it is the whole safety of this step.** On
+   2026-09-23 this script was run with DIRECT_URL and DATABASE_URL both
+   explicitly removed from the environment and it still connected — to the
+   development database — because Prisma had already merged the repository
+   `.env` into the process. A variable that does not take therefore doesn't
+   fail: it mints the first Data Steward into the wrong database and prints
+   `Created (12)`. Naming the host you intend turns that from a silent success
+   into a refusal that tells you exactly what happened.
 
    Use the **owner** connection — the same value Vercel holds in `DIRECT_URL`, not the
    `nmwc_app` one. After step 8 of the previous section, "the production URL" means two
