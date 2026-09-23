@@ -98,6 +98,11 @@ function salesFile(name: string): string {
 const SRC = {
   rpCustomers: process.env.RP_CUSTOMERS ?? newestRouteProExport(),
   rpCredit: process.env.RP_CREDIT ?? newestRouteProCredit(),
+  // Optional, written by scripts/ops/export-crm-terms.ts. Absent, the builder
+  // derives payment terms from the sources exactly as it always did.
+  crmTerms:
+    process.env.CRM_TERMS ??
+    path.join(process.env.GOLIVE_DIR ?? 'golive-data', 'crm-payment-terms.csv'),
   rpRoutes:
     process.env.RP_ROUTES ??
     `${DESKTOP}/claude/NMWC-JOURNEY-PLANS/harvests/RoutePro_Route_Master_LIVE_2026-09-01.csv`,
@@ -657,10 +662,12 @@ function bump<K>(m: Map<K, number>, k: K, w = 1) {
 
 // ── main ────────────────────────────────────────────────────────────────────
 async function main() {
+  // rpCredit and crmTerms are OPTIONAL. Without either the builder falls back to
+  // what it did before them — worse data, but a working build — so a missing one
+  // must not stop everyone else from building.
+  const OPTIONAL_SOURCES = new Set(['rpCredit', 'crmTerms']);
   for (const [k, f] of Object.entries(SRC)) {
-    // rpCredit is optional: without it the builder falls back to the older
-    // credit sources, which is worse data but still a working build.
-    if (f === null) continue;
+    if (f === null || OPTIONAL_SOURCES.has(k)) continue;
     if (!existsSync(f)) throw new Error(`missing source ${k}: ${f}`);
   }
   mkdirSync(DQ, { recursive: true });
@@ -882,6 +889,48 @@ async function main() {
   // it does not classify. The classification is PAY_MODE, further up — and
   // RoutePro says "CASH Only" for these, because a zero-limit account cannot
   // charge and the device serves it cash. Serving mode is not payment terms.
+  /**
+   * Payment terms the CRM already holds, which WIN over anything derived here.
+   *
+   * Terms are approval-owned. services/imports.ts says it twice: the update lane
+   * does not write `paymentTerms` for an existing customer, and the guard above
+   * it REJECTS a row whose terms disagree with what is stored. So for a customer
+   * the CRM knows, this builder's opinion was never going to be applied — it
+   * could only get the row thrown away, and a rejected row writes nothing, losing
+   * the branch and journey-plan data with it. That is where 1,833 rejections and
+   * 95% of the load's 816 missing visit days came from on 2026-09-23.
+   *
+   * The disagreement is real and not resolvable from the sources. Those customers
+   * are credit accounts whose limit Finance set to zero; RoutePro reports
+   * PAY_MODE "CASH Only" because a zero-limit account cannot charge, which is
+   * serving mode rather than terms. Nothing here can tell the two apart: ar_aging
+   * holds 138 of the 1,770, the Temix master has no terms column, and the
+   * Code-Branch sheet's `Max Credit Amount Lc` is blank on all 10,410 rows.
+   *
+   * So the builder defers instead of guessing — for customers the CRM knows, and
+   * only those. A NEW customer still gets its terms derived, because the CRM has
+   * no opinion to defer to. Every override is written to dq/ rather than applied
+   * silently: if a source ever genuinely moves someone between CASH and CREDIT,
+   * that file is where it shows up, and it is a credit-chain decision to make in
+   * the app, not an import to force through.
+   */
+  const crmTermsByCode = new Map<string, string>();
+  if (SRC.crmTerms && existsSync(SRC.crmTerms)) {
+    for (const r of csvObjects(SRC.crmTerms)) {
+      const code = S(r.cust_code).toUpperCase();
+      const terms = S(r.payment_terms).toUpperCase();
+      if (code && (terms === 'CASH' || terms === 'CREDIT')) crmTermsByCode.set(code, terms);
+    }
+    log(`payment terms from the CRM: ${crmTermsByCode.size} customer(s) (${path.basename(SRC.crmTerms)})`);
+  } else {
+    log(
+      'no CRM payment-terms export found — terms are derived from RoutePro PAY_MODE alone, ' +
+        'which reports a zero-limit credit account as "CASH Only" and will be REJECTED by the ' +
+        'import guard for every such customer. Run scripts/ops/export-crm-terms.ts first.'
+    );
+  }
+  const termsOverridden: unknown[][] = [];
+
   const arByCode = new Map<string, { limit: number; days: number | null }>();
   for (const r of db
     .prepare('select customer_no, credit_limit, credit_days from ar_aging where credit_limit >= 0')
@@ -1107,9 +1156,15 @@ async function main() {
     // salesman device enforces. `cb` is a July spreadsheet and `ar` a
     // 2-September dashboard snapshot; both are kept only as fallbacks.
     const rp = rpCreditByCode.get(c.base);
-    const limit = c.pay === 'CREDIT' ? (rp?.limit ?? cb?.limit ?? ar?.limit ?? null) : null;
-    const days = c.pay === 'CREDIT' ? (rp?.days ?? cb?.days ?? ar?.days ?? null) : null;
-    if (c.pay === 'CREDIT' && !c.branch && (limit == null || limit <= 0))
+    // The CRM's answer if it has one, this builder's derivation otherwise.
+    const crmPay = crmTermsByCode.get(c.base);
+    const pay = crmPay ?? c.pay;
+    if (crmPay && crmPay !== c.pay && !c.branch) {
+      termsOverridden.push([c.base, legalNameByBase.get(c.base) ?? c.name, route, c.pay, crmPay]);
+    }
+    const limit = pay === 'CREDIT' ? (rp?.limit ?? cb?.limit ?? ar?.limit ?? null) : null;
+    const days = pay === 'CREDIT' ? (rp?.days ?? cb?.days ?? ar?.days ?? null) : null;
+    if (pay === 'CREDIT' && !c.branch && (limit == null || limit <= 0))
       creditNoLimit.push([c.base, legalNameByBase.get(c.base), route]);
     const day = jpDay.get(c.alt) ?? (c.branch ? undefined : jpDay.get(c.base)) ?? null;
     if (day) jpCovered++;
@@ -1127,8 +1182,11 @@ async function main() {
       phone: c.branch ? '' : (phoneByBase.get(c.base) ?? ''),
       contact_person: c.branch ? '' : T(t?.['Contact Person']),
       cr_no: '',
-      payment_terms: c.pay,
-      credit_limit: limit != null && limit > 0 ? limit : '',
+      payment_terms: pay,
+      // `>= 0`, not `> 0`. A zero limit is Finance's decision that this credit
+      // account may not draw, and emitting it as a blank loses that — the same
+      // confusion of "zero" with "absent" that the ar_aging read above had.
+      credit_limit: limit != null && limit >= 0 ? limit : '',
       payment_term_days: days != null && days >= 0 && days <= 365 ? days : '',
       temix_code: c.base,
       channel: channel ?? '',
@@ -1587,6 +1645,25 @@ async function main() {
     )
   );
   writeDq('credit-customers-without-limit.csv', ['cust_code', 'name', 'route'], creditNoLimit);
+  // Every customer where the CRM's terms won over what the sources derived. The
+  // override is deliberate and argued where crmTermsByCode is built — but it is
+  // also the one place a genuine CASH/CREDIT move in the source systems would be
+  // swallowed, so it is written down rather than applied silently. If a customer
+  // here really has changed terms, that is a credit-chain decision to make in the
+  // app; the import is not allowed to make it and never was.
+  writeDq(
+    'payment-terms-crm-overrode-sources.csv',
+    ['cust_code', 'name', 'route', 'sources_derived', 'crm_holds'],
+    termsOverridden
+  );
+  if (termsOverridden.length > 0) {
+    log(
+      `payment terms: the CRM's value won for ${termsOverridden.length} customer(s) whose ` +
+        'sources disagreed — dq/payment-terms-crm-overrode-sources.csv. Without this every ' +
+        'one of those rows would be REJECTED by the import guard, losing its branch and ' +
+        'visit-day data with it.'
+    );
+  }
   writeDq(
     'jp-multi-day-customers.csv',
     ['alt_code', 'name', 'route', 'planned_days', 'loaded_as'],
