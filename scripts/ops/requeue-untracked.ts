@@ -140,8 +140,39 @@ const BATCH_ROW_CAP = 5000;
  */
 const CHUNK = 250;
 
+/**
+ * Open the connection, waiting for the compute to wake rather than failing at it.
+ *
+ * Neon scales this project's endpoint to zero when idle, and Prisma's first query
+ * against a suspended compute does not wait — it returns "Can't reach database
+ * server at ...", which reads exactly like an outage or a wrong connection
+ * string. Every scratch check written during the go-live hit it at least once,
+ * and so did this script's own first dry run. An operator who meets that message
+ * while holding a production credential is one keystroke from concluding they
+ * pointed at the wrong database.
+ *
+ * So: a handful of cheap retries, saying out loud what it is waiting for. It is
+ * deliberately not silent — a long pause with no explanation is its own problem.
+ */
+export async function connectWaking(prisma: PrismaClient): Promise<void> {
+  const ATTEMPTS = 10;
+  const GAP_MS = 3_000;
+  for (let i = 1; i <= ATTEMPTS; i += 1) {
+    try {
+      await prisma.$queryRawUnsafe('select 1');
+      return;
+    } catch (e) {
+      if (i === ATTEMPTS) throw e;
+      if (i === 1) {
+        console.log('  (database is asleep — waking it, this takes a few seconds)');
+      }
+      await new Promise((r) => setTimeout(r, GAP_MS));
+    }
+  }
+}
+
 /** The operator must NAME the database they mean; this refuses if the URL disagrees. */
-function requireExpectedHost(args: string[], url: string, host: string): void {
+export function requireExpectedHost(args: string[], url: string, host: string): void {
   const expectIdx = args.indexOf('--expect-host');
   const expectHost = expectIdx >= 0 ? (args[expectIdx + 1] ?? '') : '';
   if (!expectHost || expectHost.startsWith('--')) {
@@ -198,7 +229,7 @@ function requireExpectedHost(args: string[], url: string, host: string): void {
  * This does NOT relax the denylist to make an account work — it refuses, and the
  * fix is to rename the account, which is the standing rule.
  */
-function assertUsableActor(u: { username: string; role: Role; isActive: boolean }): void {
+export function assertUsableActor(u: { username: string; role: Role; isActive: boolean }): void {
   if (!u.isActive) {
     throw new Error(
       `--actor "${u.username}" is deactivated. The ledger row for this change has to\n` +
@@ -230,7 +261,7 @@ function assertUsableActor(u: { username: string; role: Role; isActive: boolean 
  * Ambiguity is refused rather than guessed at — a ledger row pointing at the wrong
  * person is worse than a run that asks one more question.
  */
-async function resolveActor(
+export async function resolveActor(
   prisma: PrismaClient,
   username: string
 ): Promise<{ id: string; username: string }> {
@@ -324,6 +355,8 @@ async function main(): Promise<number> {
         : 'Mode:   DRY RUN — nothing will be written (pass --apply to write)'
     );
     console.log('='.repeat(76));
+
+    await connectWaking(prisma);
 
     const matching = await prisma.customer.count({ where: REQUEUE_WHERE });
     // Everything downstream — the cap arithmetic, the banner, both ledger rows and

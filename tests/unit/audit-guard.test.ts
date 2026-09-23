@@ -123,9 +123,8 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
       // while every script here deliberately builds its own PrismaClient on
       // DIRECT_URL, because maintenance runs as the owner and not as nmwc_app.
       //
-      // These six really do write the ledger. The blank device and network on their
+      // These really do write the ledger. The blank device and network on their
       // rows is a documented class, not missing data — RECORDS-OF-PROCESSING.md §A6.
-      // Listing them here means a seventh cannot appear without someone reading this.
       const code = 'export async function f(tx: any) { await tx.auditLog.create({ data: {} }); }';
       const OPERATOR_WRITERS = [
         'scripts/bulk-reset-credentials.ts',
@@ -133,9 +132,14 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         'scripts/flatten-customer-branches.ts',
         'scripts/wipe-synthetic-data.ts',
         'scripts/golive/bootstrap-accounts.ts',
-        // The Temix requeue: one summary row per applied run, recording that a few
-        // thousand customers changed sync state and which run did it.
+        // The Temix requeue: a STARTING row before the first chunk and a COMPLETED
+        // row after the last, recording that a few thousand customers changed sync
+        // state, which run did it, and — if the COMPLETED row is missing — that the
+        // run was interrupted and the set is partial.
         'scripts/ops/requeue-untracked.ts',
+        // The credit-limit zeroing: same two-row shape, recording Finance's zero
+        // being written as a zero rather than left as a blank.
+        'scripts/ops/zero-credit-limits.ts',
         // The least-privilege role probe: its insert proves the app role may INSERT
         // but not UPDATE/DELETE the ledger, and the transaction is rolled back. Not
         // an audit record at all.
@@ -144,6 +148,63 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
       for (const f of OPERATOR_WRITERS) {
         expect(await guardHits(f, code), `${f} must stay outside the rule`).toHaveLength(0);
       }
+    },
+    TIMEOUT
+  );
+
+  it(
+    'knows about every operator script that writes the ledger',
+    async () => {
+      // The list above used to end with "listing them here means a seventh cannot
+      // appear without someone reading this". It did not: the loop only asserts
+      // that each NAMED file is outside the rule, so a new script writing AuditLog
+      // was simply absent and nothing went red. scripts/ops/zero-credit-limits.ts
+      // was added on 2026-09-23 and the suite stayed green — the guard failed OPEN,
+      // which is the exact defect class the file header is about.
+      //
+      // So derive the truth instead of asserting a memory of it: walk scripts/ for
+      // anything that writes the ledger directly and compare. A new operator writer
+      // now fails HERE, where the reasoning and the compliance reference live,
+      // rather than being discovered in RECORDS-OF-PROCESSING.md months later.
+      const { readdirSync, readFileSync, statSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const walk = (dir: string): string[] =>
+        readdirSync(dir).flatMap((e) => {
+          const p = join(dir, e);
+          if (statSync(p).isDirectory()) return walk(p);
+          return /\.(ts|mts|cts)$/.test(e) ? [p.replace(/\\/g, '/')] : [];
+        });
+
+      const WRITE = /\.auditLog\s*\.\s*(create|createMany|createManyAndReturn|upsert)\b/;
+      const found = walk('scripts')
+        .filter((f) => {
+          // Strip comments first: several of these files DISCUSS auditLog.create in
+          // prose explaining why they are exempt, and a naive match would list a
+          // script that never writes a row. The trap CLAUDE.md names.
+          const src = readFileSync(f, 'utf8')
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .replace(/^\s*\/\/.*$/gm, '');
+          return WRITE.test(src);
+        })
+        .sort();
+
+      const listed = [
+        'scripts/bulk-reset-credentials.ts',
+        'scripts/cleanup-synthetic-test.ts',
+        'scripts/flatten-customer-branches.ts',
+        'scripts/wipe-synthetic-data.ts',
+        'scripts/golive/bootstrap-accounts.ts',
+        'scripts/ops/requeue-untracked.ts',
+        'scripts/ops/zero-credit-limits.ts',
+        'scripts/ops/app-role.ts',
+      ].sort();
+
+      expect(
+        found,
+        'a script under scripts/ writes AuditLog directly and is not accounted for above.\n' +
+          'Add it to OPERATOR_WRITERS and to this list, and update\n' +
+          'docs/compliance/RECORDS-OF-PROCESSING.md §A6 with the new count.'
+      ).toEqual(listed);
     },
     TIMEOUT
   );

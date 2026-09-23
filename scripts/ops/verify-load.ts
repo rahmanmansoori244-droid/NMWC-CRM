@@ -158,16 +158,27 @@ const checks: Check[] = [
       // note names both and says which one to rule out first rather than
       // asserting a single diagnosis. Whoever rewrites this: check it against
       // the rejected rows before you narrow it again.
-      const rejected = await prisma.importRow.count({
-        where: { state: 'REJECTED', batch: { kind: 'CUSTOMER' } },
+      // The LATEST customer batch only. Counting every customer batch double-counts
+      // a re-import: the 23 September load ran twice and rejected the same 1,833
+      // rows each time, which this reported as 3,666 — a number that reads as 3,666
+      // customers and is not one. What matters is the state the last promote left.
+      const lastCustomerBatch = await prisma.importBatch.findFirst({
+        where: { kind: 'CUSTOMER' },
+        orderBy: { uploadedAt: 'desc' },
+        select: { id: true },
       });
+      const rejected = lastCustomerBatch
+        ? await prisma.importRow.count({
+            where: { state: 'REJECTED', batchId: lastCustomerBatch.id },
+          })
+        : 0;
       return {
         ok: false,
         detail: `${withDay} branches carry a visit day; the master supplied ${expectedDays} — ${expectedDays - withDay} went missing in the load`,
         note:
           rejected > 0
-            ? `${rejected} customer row(s) were REJECTED and wrote nothing, which is where most of these go — read the rejections first, not the refresh lane`
-            : 'no rejected rows, so this is the refresh-lane symptom: promoted, but the branch loop never ran',
+            ? `the last customer batch REJECTED ${rejected} row(s), which wrote nothing at all — that is where most of these go, so read the rejections first, not the refresh lane`
+            : 'no rejected rows in the last customer batch, so this is the refresh-lane symptom: promoted, but the branch loop never ran',
       };
     },
   },
