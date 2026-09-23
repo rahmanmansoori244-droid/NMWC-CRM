@@ -864,9 +864,27 @@ async function main() {
     log('no RoutePro credit export found — credit falls back to the July Code-Branch file and the dashboard ar_aging table, BOTH of which are stale');
   }
 
+  // `credit_limit >= 0`, NOT `> 0` (corrected 2026-09-23 by the owner).
+  //
+  // A ZERO LIMIT IS A DECISION, NOT AN ABSENCE. The Finance Manager sets a credit
+  // customer's limit to zero when they stop buying: the account stays a credit
+  // account, it simply cannot draw. 1,576 of ar_aging's 3,052 rows are in that
+  // state — over half the table — and `> 0` discarded every one of them, so this
+  // map could never tell "no credit relationship" apart from "credit relationship
+  // deliberately zeroed".
+  //
+  // What that cost: the builder labelled those customers CASH and the loaded CRM
+  // has them CREDIT, so the import's payment-terms guard rejected 1,833 rows,
+  // which is also where 95% of the missing visit days went. The guard was right
+  // and the master was wrong, all day, in three different reports.
+  //
+  // Note this map only supplies FIGURES for a customer already classified CREDIT;
+  // it does not classify. The classification is PAY_MODE, further up — and
+  // RoutePro says "CASH Only" for these, because a zero-limit account cannot
+  // charge and the device serves it cash. Serving mode is not payment terms.
   const arByCode = new Map<string, { limit: number; days: number | null }>();
   for (const r of db
-    .prepare('select customer_no, credit_limit, credit_days from ar_aging where credit_limit > 0')
+    .prepare('select customer_no, credit_limit, credit_days from ar_aging where credit_limit >= 0')
     .all() as any[]) {
     arByCode.set(S(r.customer_no).toUpperCase(), {
       limit: Number(r.credit_limit),
