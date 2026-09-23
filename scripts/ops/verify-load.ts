@@ -134,16 +134,40 @@ const checks: Check[] = [
         };
       }
 
+      if (withDay === expectedDays) {
+        return {
+          ok: true,
+          detail: `${withDay} branches carry a visit day, exactly what the master supplied`,
+        };
+      }
+
+      // WHY THIS NOTE CHANGED, 2026-09-23. It used to read "the refresh-lane
+      // symptom: promoted, but the branch loop never ran", and that was simply
+      // wrong — it named the cause the check had been WRITTEN for rather than
+      // the one actually producing the number, and it sent the first person to
+      // read it after the real load looking in the wrong file.
+      //
+      // Measured on production the day of the load, 813 missing days across 778
+      // customers: 7 of those customers carried a Temix code, so at most 7 could
+      // have taken the refresh lane. 736 of the 778 — 95% — had a row REJECTED
+      // by the payment-terms guard below, and a rejected row writes nothing at
+      // all: no customer update, no branches, no visit day. The branch loop did
+      // not skip; it never got there.
+      //
+      // Both causes are real and the count alone cannot tell them apart, so the
+      // note names both and says which one to rule out first rather than
+      // asserting a single diagnosis. Whoever rewrites this: check it against
+      // the rejected rows before you narrow it again.
+      const rejected = await prisma.importRow.count({
+        where: { state: 'REJECTED', batch: { kind: 'CUSTOMER' } },
+      });
       return {
-        ok: withDay === expectedDays,
-        detail:
-          withDay === expectedDays
-            ? `${withDay} branches carry a visit day, exactly what the master supplied`
-            : `${withDay} branches carry a visit day; the master supplied ${expectedDays} — ${expectedDays - withDay} went missing in the load`,
+        ok: false,
+        detail: `${withDay} branches carry a visit day; the master supplied ${expectedDays} — ${expectedDays - withDay} went missing in the load`,
         note:
-          withDay !== expectedDays
-            ? 'the refresh-lane symptom: promoted, but the branch loop never ran'
-            : undefined,
+          rejected > 0
+            ? `${rejected} customer row(s) were REJECTED and wrote nothing, which is where most of these go — read the rejections first, not the refresh lane`
+            : 'no rejected rows, so this is the refresh-lane symptom: promoted, but the branch loop never ran',
       };
     },
   },
