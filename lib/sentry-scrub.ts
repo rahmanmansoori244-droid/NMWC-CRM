@@ -64,6 +64,8 @@ function scrubQueryPairs(s: string): string {
  * module state shared by all runtimes and the variable exists only on the server;
  * on the client and the Edge it is absent and this is a no-op.
  */
+const MIN_FRAGMENT = 12;
+
 function webhookFragments(): string[] {
   const raw = (typeof process !== 'undefined' ? process.env?.ALERT_WEBHOOK_URL : undefined)?.trim();
   if (!raw) return [];
@@ -71,8 +73,13 @@ function webhookFragments(): string[] {
   try {
     const u = new URL(raw);
     out.add(`${u.origin}${u.pathname}`);
-    if (u.pathname.length > 1) out.add(u.pathname);
-    if (u.search.length > 1) out.add(u.search.slice(1));
+    // The bare path and query only when they are long enough to BE a secret. A
+    // one-character query or a path like `/api` would otherwise be replaced in every
+    // string of every event — `GET /api/health` became `GET [alert-webhook]/health`
+    // (review, 2026-09-24). Real webhook paths are 40–200 characters; the full URL
+    // and its query-less form above are redacted whatever their length.
+    if (u.pathname.length >= MIN_FRAGMENT) out.add(u.pathname);
+    if (u.search.length > MIN_FRAGMENT) out.add(u.search.slice(1));
   } catch {
     // Unparseable: the raw string is all there is to look for.
   }

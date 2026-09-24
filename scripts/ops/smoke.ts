@@ -285,10 +285,9 @@ if (MONITOR) {
       const alarms = body.cron?.alarms ?? [];
       const bad = Object.entries(body.checks ?? {}).filter(([, v]) => v === 'fail');
       // Each alarm carries its STATE — `never`, `stale` or `failed` (lib/heartbeat.ts)
-      // — because the post-deploy job in ci.yml excuses a job that has not run, and
-      // must not excuse one whose last run FAILED: a deploy that breaks keep-warm,
-      // which runs every four minutes inside that job's wait, reads `failed`. A key
-      // with no readable state is printed as `unknown`, which nothing excuses.
+      // — so the post-deploy job in ci.yml can say which: it raises a job whose last
+      // run FAILED as a warning rather than a notice, and it refuses to excuse a
+      // key printed as `unknown`, which means the health payload lost its shape.
       const stateOf = new Map((body.cron?.jobs ?? []).map((j) => [j.key, j.state] as const));
       const named = alarms.map((k) => `${k}:${stateOf.get(k) ?? 'unknown'}`);
       return {

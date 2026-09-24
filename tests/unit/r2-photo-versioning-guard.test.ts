@@ -19,7 +19,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { runScriptOf, runStep } from '../support/workflow-step';
+import { ACTIONS_ENV, runScriptOf, runStep } from '../support/workflow-step';
 import {
   argvIssue,
   ruleScope,
@@ -363,7 +363,18 @@ describe('the check is wired to something that actually runs', () => {
    */
   const VERIFY_STEP = 'Verify both buckets';
   const verifyScript = runScriptOf(readFileSync(R2_WORKFLOW, 'utf8'), VERIFY_STEP);
-  const runVerify = (backupsRc: number, photosRc: number) => {
+  /**
+   * Every event this workflow is triggered by, read from its own `on:` block. Each
+   * scenario runs once per trigger with the variables Actions sets for it: without
+   * them `[ "$GITHUB_EVENT_NAME" = schedule ] && exit` passed all four scenarios —
+   * the real 05:00 run then exited 0 without calling either check (review,
+   * 2026-09-24).
+   */
+  const TRIGGERS = (() => {
+    const on = /^on:\n((?: {2,}.*\n|\s*\n)*)/m.exec(r2Yaml)?.[1] ?? '';
+    return [...on.matchAll(/^ {2}([a-z_]+):/gm)].map((m) => m[1]!);
+  })();
+  const runVerify = (backupsRc: number, photosRc: number, trigger: string) => {
     const stubs = [
       'npx() {',
       '  echo "npx $*" >> "$STUB_DIR/calls"',
@@ -382,40 +393,55 @@ describe('the check is wired to something that actually runs', () => {
         'R2_ADMIN_SECRET_ACCESS_KEY',
       ].map((k) => [k, ''])
     );
-    return runStep(verifyScript, stubs, unset);
+    return runStep(verifyScript, stubs, {
+      ...ACTIONS_ENV,
+      GITHUB_EVENT_NAME: trigger,
+      GITHUB_REF: 'refs/heads/main',
+      ...unset,
+    });
   };
+  /** One outcome per trigger, labelled, for the assertions below. */
+  const runEach = (backupsRc: number, photosRc: number) =>
+    TRIGGERS.map((t) => ({ t, o: runVerify(backupsRc, photosRc, t) }));
   const ranBoth = (o: { calls: string[] }) =>
     o.calls.some((c) => c.includes('r2-backups-lifecycle.ts --check')) &&
     o.calls.some((c) => c.includes('r2-photos-versioning.ts --check'));
 
-  it('found the step and its script', () => {
-    // Without this every scenario below would run an empty script and pass.
+  it('found the step, its script and its triggers', () => {
+    // Without these every scenario below would run an empty script, or run zero
+    // times, and pass.
     expect(verifyScript.length, `${VERIFY_STEP} has a run: block`).toBeGreaterThan(100);
+    expect(TRIGGERS).toContain('schedule');
+    expect(TRIGGERS).toContain('workflow_dispatch');
   });
 
   it('is green only when BOTH checks pass', () => {
-    const o = runVerify(0, 0);
-    expect(o.status, o.output).toBe(0);
-    expect(ranBoth(o), 'both checks ran').toBe(true);
+    for (const { t, o } of runEach(0, 0)) {
+      expect(o.status, `${t}: ${o.output}`).toBe(0);
+      expect(ranBoth(o), `${t}: both checks ran`).toBe(true);
+    }
   });
 
   it('is red when only the backups check fails, and still runs the photos check', () => {
-    const o = runVerify(1, 0);
-    expect(o.status, o.output).not.toBe(0);
-    expect(ranBoth(o), 'the second check still ran').toBe(true);
+    for (const { t, o } of runEach(1, 0)) {
+      expect(o.status, `${t}: ${o.output}`).not.toBe(0);
+      expect(ranBoth(o), `${t}: the second check still ran`).toBe(true);
+    }
   });
 
   it('is red when only the photos check fails', () => {
-    const o = runVerify(0, 1);
-    expect(o.status, o.output).not.toBe(0);
-    expect(ranBoth(o)).toBe(true);
+    for (const { t, o } of runEach(0, 1)) {
+      expect(o.status, `${t}: ${o.output}`).not.toBe(0);
+      expect(ranBoth(o), t).toBe(true);
+    }
   });
 
   it('is red when both fail, and says where the owner steps are', () => {
-    const o = runVerify(1, 1);
-    expect(o.status, o.output).not.toBe(0);
-    expect(ranBoth(o)).toBe(true);
-    expect(o.output).toMatch(/::error::[^\n]*OPERATIONS\.md/);
+    for (const { t, o } of runEach(1, 1)) {
+      expect(o.status, `${t}: ${o.output}`).not.toBe(0);
+      expect(ranBoth(o), t).toBe(true);
+      expect(o.output, t).toMatch(/::error::[^\n]*OPERATIONS\.md/);
+    }
   });
 
   it('keeps one admin token per bucket, and does not let them cross', () => {

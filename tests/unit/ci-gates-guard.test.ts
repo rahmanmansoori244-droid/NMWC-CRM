@@ -33,7 +33,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
-import { runScriptOf as runScriptOfIn, runStep, type Outcome } from '../support/workflow-step';
+import {
+  ACTIONS_ENV,
+  runScriptOf as runScriptOfIn,
+  runStep,
+  type Outcome,
+} from '../support/workflow-step';
 
 const CI_PATH = '.github/workflows/ci.yml';
 const SMOKE_PATH = 'scripts/ops/smoke.ts';
@@ -119,12 +124,13 @@ function smokeOutput(opts: {
     | 'probe-errored'
     | 'job-failed'
     | 'mixed'
-    | 'stateless';
+    | 'stateless'
+    | 'unknown';
   alsoBroken?: boolean;
 }): string {
   /** The dead-man line for each case. Alarms are `job:state`, as smoke.ts prints them. */
   const CRON_DETAIL: Record<Exclude<typeof opts.cron, 'quiet'>, string> = {
-    // Jobs that have simply not run: the only thing the step excuses.
+    // Jobs that have simply not run: excused with a notice and no warning.
     alarming: '503 alarms=[db-backup:never,retention-sweep:stale] failed=[]',
     // R2 unreachable AND a job that has not run: the excuse must not swallow the
     // first because of the second.
@@ -132,14 +138,16 @@ function smokeOutput(opts: {
     // The probe itself answered 500, or refused the bearer: nothing alarms and
     // nothing is named, and this is NOT a job that has not run yet.
     'probe-errored': '500 alarms=[] failed=[]',
-    // A job whose last run FAILED — what a deploy that breaks keep-warm produces
-    // inside the wait. Excused by the first version of the step (review, 2026-09-24).
+    // A job whose last run FAILED. Excused, but as a ::warning:: — the step
+    // cannot tell whether it predates this deploy (see the comment in ci.yml).
     'job-failed': '503 alarms=[keep-warm:failed] failed=[]',
-    // One job idle, one failed: the idle one must not carry the failed one through.
+    // One job idle, one failed: excused, and the failed one is still named.
     mixed: '503 alarms=[db-backup:never,keep-warm:failed] failed=[]',
-    // An alarm with no readable state — an older smoke, or a health payload
-    // without `jobs`. Unknown is not "has not run".
+    // An alarm with no readable state, in the two forms it can take: a bare key
+    // (an older smoke) and `:unknown`, which is what smoke.ts prints when the
+    // health payload has no state for that job. Neither is "has not run".
     stateless: '503 alarms=[db-backup] failed=[]',
+    unknown: '503 alarms=[db-backup:unknown] failed=[]',
   };
   const rows = [
     checkLine(true, 'health (anonymous)', '200 {"status":"ok"} keys=1'),
@@ -196,6 +204,12 @@ function runSmokeStep(attempts: Attempt[], env: Record<string, string> = {}): Ou
     smokeScript,
     stubs,
     {
+      // What Actions sets for this job, which only ever runs on a push to main. A
+      // step that branched on any of these would otherwise be tested in an
+      // environment it never runs in (review, 2026-09-24, on the R2 guard).
+      ...ACTIONS_ENV,
+      GITHUB_EVENT_NAME: 'push',
+      GITHUB_REF: 'refs/heads/main',
       GITHUB_SHA: SHA,
       HEALTH_BEARER: 'a-monitor-bearer-long-enough-to-be-usable',
       ...env,
@@ -526,26 +540,40 @@ describe('the smoke step is red for the DEPLOY, not for a job that has not run y
     expect(o.output).toContain('about the DEPLOY');
   });
 
-  it('a job whose last run FAILED is not excused — that is what a deploy that breaks it looks like', () => {
+  it('a job whose last run FAILED does not gate the deploy, and is raised as a WARNING', () => {
+    // Gated for a few hours on 2026-09-24, then reverted: the state smoke reads
+    // was written by runs against the PREVIOUS deployment, and `failed` stands
+    // until the next success — one failed nightly dump turned every merge red
+    // for a day. Not gating is only acceptable if it is LOUD, so the job name
+    // must reach a ::warning::, which the Actions summary shows, not a notice.
     const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron: 'job-failed' }) }]);
-    expect(o.status, o.output).toBe(1);
-    expect(o.output).toContain('LAST RUN FAILED');
-    expect(o.output).toContain('keep-warm:failed');
-    expect(o.output).not.toMatch(/::notice::/);
+    expect(o.status, o.output).toBe(0);
+    expect(o.output).toMatch(/::warning::[^\n]*LAST RUN FAILED[^\n]*keep-warm:failed/);
     expect(smokeRuns(o), 'the deploy has landed, so waiting cannot change it').toBe(1);
   });
 
-  it('an idle job does not carry a failed one through', () => {
+  it('names the failed job when an idle one is alarming beside it', () => {
     const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron: 'mixed' }) }]);
-    expect(o.status, o.output).toBe(1);
-    expect(o.output).toContain('LAST RUN FAILED');
+    expect(o.status, o.output).toBe(0);
+    expect(o.output).toMatch(/::warning::[^\n]*keep-warm:failed/);
+    // Only the FAILED job is a warning; the idle one is not.
+    expect(o.output).not.toMatch(/::warning::[^\n]*db-backup/);
   });
 
-  it('an alarm with no readable state is not excused', () => {
-    // `unknown` is not "has not run", and neither is a bare key.
-    const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron: 'stateless' }) }]);
-    expect(o.status, o.output).toBe(1);
-    expect(o.output).not.toMatch(/::notice::/);
+  it('raises no warning when every alarm is a job that simply has not run', () => {
+    const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron: 'alarming' }) }]);
+    expect(o.status, o.output).toBe(0);
+    expect(o.output).not.toMatch(/::warning::/);
+  });
+
+  it('an alarm with no readable state is not excused, in either form', () => {
+    // The `:unknown` form is the one smoke.ts actually prints; testing only the bare
+    // key let `unknown` be added to the excused states with this file green.
+    for (const cron of ['stateless', 'unknown'] as const) {
+      const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron }) }]);
+      expect(o.status, `${cron}: ${o.output}`).toBe(1);
+      expect(o.output, cron).not.toMatch(/::notice::/);
+    }
   });
 
   it('a second failing check is not excused either', () => {

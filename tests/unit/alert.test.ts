@@ -744,9 +744,16 @@ describe('every alert has a caller and every caller has an alert', () => {
     // behavioural setup would dwarf what it proves, so their TRIGGER is pinned
     // instead of only their presence.
     //
-    // The sweep alerts on escalations, never on a quiet run.
+    // Each call is pinned BETWEEN the statements either side of it, not merely
+    // present: `if (!done) { … }` wrapped round the import's call matched the older
+    // pattern while making the alert unreachable (review, 2026-09-24). A wrapper, an
+    // early `return` placed just ahead, or a move into another block all break the
+    // adjacency.
+    //
+    // The sweep alerts on escalations, never on a quiet run — after its summary log
+    // line and immediately before it answers.
     expect(sources.get('app/api/cron/sla-escalate/route.ts')).toMatch(
-      /if \(escalated > 0 \|\| level2 > 0\) \{\s*await sendAlert\(\{/
+      /'cron\.sla_escalate'\);\s*if \(escalated > 0 \|\| level2 > 0\) \{\s*await sendAlert\(\{[\s\S]*?\}\);\s*\}\s*return NextResponse\.json\(\{ escalated, level2,/
     );
     // The import's decision is proved by behaviour below (lib/import-rejection-
     // alert.ts). This pins the one thing behaviour cannot see: that the service
@@ -757,8 +764,10 @@ describe('every alert has a caller and every caller has an alert', () => {
     expect(imports).toMatch(
       /const stateCounts = await prisma\.importRow\.groupBy\(\{\s*by: \['state'\],\s*where: \{ batchId \},/
     );
+    // And it sits at the slice's top level: straight after the audit write's
+    // `.catch(…)` closes, straight before the final-slice revalidation.
     expect(imports).toMatch(
-      /const rejectionAlert = importRejectionAlert\(\{\s*batchId,\s*stateCounts,\s*finalisedByThisSlice: finalize\.count > 0,\s*groups: groups\.size,\s*\}\);\s*if \(rejectionAlert\) await sendAlert\(rejectionAlert\);/
+      /'import\.audit_failed'\);\s*\}\);\s*const rejectionAlert = importRejectionAlert\(\{\s*batchId,\s*stateCounts,\s*finalisedByThisSlice: finalize\.count > 0,\s*groups: groups\.size,\s*\}\);\s*if \(rejectionAlert\) await sendAlert\(rejectionAlert\);\s*if \(done\) \{\s*revalidatePath\('\/import'\);/
     );
   });
 });

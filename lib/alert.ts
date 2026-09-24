@@ -87,11 +87,12 @@ export const ALERT_TIMEOUT_MS = 5_000;
  * each counted on the one run that performed it, so a suppressed one is never
  * counted again and nobody was ever told (adversarial review, 2026-09-24).
  *
- * "Re-raised as each window turns" holds only for a LEVEL — something every run
- * re-observes, like `cron.failed` on a job that keeps failing. `sla.escalated` and
- * `import.rejections` are edges: an occurrence dropped by the window, or by a
- * failed POST, is not re-announced later. The app is the record for those; the
- * alert is the prompt to go and look at it.
+ * "Re-raised as each window turns" holds only for a LEVEL that is re-observed
+ * inside every window — `cron.failed` from keep-warm or the SLA sweep, which run
+ * many times a day. A daily job's `cron.failed` comes once a day, from its one
+ * failing run. `sla.escalated` and `import.rejections` are edges: an occurrence
+ * dropped by the window, or by a failed POST, is not re-announced later. The app
+ * is the record for those; the alert is the prompt to go and look at it.
  */
 export const ALERT_RENOTIFY_SEC = 4 * 60 * 60;
 
@@ -377,11 +378,11 @@ export async function sendAlert(a: AlertInput): Promise<boolean> {
     }
   } catch (err) {
     // Includes the abort. A failed send has already spent this window's token, so
-    // the next occurrence inside the window stays quiet. When the window turns, a
-    // LEVEL that is still true (`cron.failed`) raises itself again; an EDGE does
-    // not — an `import.rejections` lost here is lost for that batch, and an
-    // `sla.escalated` for those escalations. Deliberately no retry: see the file
-    // header, and ALERT_RENOTIFY_SEC for the level/edge distinction.
+    // the next occurrence inside the window stays quiet. A `cron.failed` comes back
+    // on the job's next failing run; an EDGE does not — an `import.rejections` lost
+    // here is lost for that batch, and an `sla.escalated` for those escalations.
+    // Deliberately no retry: see the file header, and ALERT_RENOTIFY_SEC for the
+    // level/edge distinction.
     //
     // The error's CLASS only, never its text: see failureLabel above. The text can
     // be `Failed to parse URL from <webhook url>`, and that URL is a credential.

@@ -461,12 +461,11 @@ jobs:
   # its job has run once — the nightly dump above all. Gating on it would paint
   # this job red on every push for a reason that has nothing to do with the
   # deploy, and a gate that is red for an unrelated reason gets switched off:
-  # that is how this project collected 127 vacuous drill runs. So a cron job
-  # that has NOT RUN (`never`, `stale`) is REPORTED here and does not gate. A job
-  # whose last run FAILED does gate: a deploy that breaks a job produces exactly
-  # that state inside this job's wait. Their own controls are the monitor on
-  # /api/health (OPERATIONS.md §5d, which is 503 while anything alarms) and the
-  # alert lib/heartbeat.ts pushes on the failing run itself.
+  # that is how this project collected 127 vacuous drill runs. So an alarming
+  # cron job is REPORTED here and does not gate — a job whose last run FAILED as a
+  # ::warning::, for the reasons written beside the check below. Their own
+  # controls are the monitor on /api/health (OPERATIONS.md §5d, which is 503 while
+  # anything alarms) and the alert lib/heartbeat.ts pushes on the failing run.
   #
   # Nothing else is excused. A second failing check, or `failed=[…]` inside the
   # dead-man check itself — the database, R2 and heartbeat-readability probes —
@@ -545,26 +544,36 @@ jobs:
           # that check also fails on a non-200 with `alarms=[] failed=[]`, which is
           # the probe itself erroring or refusing the bearer — a deploy problem.
           #
-          # And only a job that has NOT RUN is excused. smoke prints each alarm as
-          # `job:state`; `never` and `stale` say a job has not run (lately), which a
-          # deploy does not cause inside this wait. `failed` says its last run
-          # FAILED — and a deploy that breaks keep-warm, which runs every four
-          # minutes, produces exactly that while this step is waiting. The first
-          # version excused any named alarm, so that deploy ended green with a
-          # notice (adversarial review, 2026-09-24).
+          # smoke prints each alarm as `job:state` — `never`, `stale` or `failed`
+          # (lib/heartbeat.ts). Every KNOWN state is excused; a state smoke could not
+          # read (`unknown`) is not, because that is the health payload's shape
+          # breaking, which a deploy does cause.
+          #
+          # `failed` is excused too, and says so as a ::warning::. That was tried
+          # the other way on 2026-09-24 and reverted within the day, because gating
+          # on it was wrong twice over. It cannot see the break it was meant to
+          # catch: the loop above stops at the first run that sees this commit, so
+          # the heartbeat states it reads were written by runs against the PREVIOUS
+          # deployment — a deploy that breaks keep-warm shows up only if keep-warm
+          # happens to fire in the seconds between cutover and that one run. And it
+          # is red for reasons that are not the deploy: `failed` stands until the
+          # job's next success, so one failed nightly dump turned every merge red
+          # for a day — the gate-red-for-an-unrelated-reason that gets switched off.
+          # A failing job is reported by its own alert (lib/heartbeat.ts) and by the
+          # /api/health monitor; this job reports it too, and gates the deploy.
           FAILS=$(grep -c '^FAIL' smoke.log || true)
           CRON=$(grep -cE '^FAIL +monitor bearer unlocks the detail' smoke.log || true)
           PROBES=$(grep -cE 'failed=\[[^]]+\]' smoke.log || true)
           NAMED=$(grep -E '^FAIL +monitor bearer unlocks the detail' smoke.log | sed -nE 's/.*alarms=\[([^]]*)\].*/\1/p' | tr ',' '\n' | grep -v '^$' || true)
-          NOT_IDLE=$(printf '%s\n' "$NAMED" | grep -cvE '^[a-z0-9-]+:(never|stale)$' || true)
-          if [ "$FAILS" = "1" ] && [ "$CRON" = "1" ] && [ "$PROBES" = "0" ] && [ -n "$NAMED" ] && [ "$NOT_IDLE" = "0" ]; then
-            echo "::notice::production is serving ${SHORT} and every deploy-level check passed. The cron dead-man is the only failing check, and every job it names has simply not run (never/stale) — that does not gate this job, because it says nothing about this deploy. It is the monitor's alarm, not the deploy's: OPERATIONS.md §5d."
+          UNREAD=$(printf '%s\n' "$NAMED" | grep -cvE '^[a-z0-9-]+:(never|stale|failed)$' || true)
+          FAILED_JOBS=$(printf '%s\n' "$NAMED" | grep -E ':failed$' || true)
+          if [ "$FAILS" = "1" ] && [ "$CRON" = "1" ] && [ "$PROBES" = "0" ] && [ -n "$NAMED" ] && [ "$UNREAD" = "0" ]; then
+            if [ -n "$FAILED_JOBS" ]; then
+              echo "::warning::a scheduled job's LAST RUN FAILED: $(printf '%s ' $FAILED_JOBS)— it does not gate this deploy, because nothing here can tell whether the failure predates it. Read .cron on /api/health with the monitor bearer (OPERATIONS.md §5d)."
+            fi
+            echo "::notice::production is serving ${SHORT} and every deploy-level check passed. The cron dead-man is the only failing check and it does not gate this job — it is the monitor's alarm, not the deploy's: OPERATIONS.md §5d."
             grep '^FAIL' smoke.log || true
             exit 0
-          fi
-          if [ "$FAILS" = "1" ] && [ "$CRON" = "1" ] && [ "$PROBES" = "0" ] && [ -n "$NAMED" ]; then
-            echo "::error::production is serving ${SHORT} and every other check passed, but a scheduled job's LAST RUN FAILED: $(printf '%s ' $NAMED). That may predate this deploy — read .cron on /api/health with the monitor bearer (OPERATIONS.md §5d). It is not excused, because a deploy that breaks a job looks exactly like this."
-            exit 1
           fi
           echo "::error::production IS serving ${SHORT}, so the deploy landed, but a check that is about the DEPLOY failed. The run above names it. A cron heartbeat alarm on its own would have passed here, so this is not that."
           exit 1

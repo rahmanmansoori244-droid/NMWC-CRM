@@ -300,6 +300,34 @@ describe('the alert webhook URL never reaches Sentry', () => {
     for (const part of SECRET_PARTS) expect(out, `must not carry ${part}`).not.toContain(part);
   });
 
+  it('redacts a secret carried in the QUERY under a key the parameter list does not know', () => {
+    // `token`, `key` and `secret` are caught by name; a bridge signing its URL with
+    // `?sig=` is not, and the undici span records the query on its own as `url.query`.
+    const signed = 'https://bridge.example.com/hook?sig=f00dfacecafebeef1234';
+    const event = {
+      type: 'transaction',
+      spans: [{ description: 'POST', data: { 'url.query': '?sig=f00dfacecafebeef1234' } }],
+    } as unknown as SentryEvent;
+    const out = withHook(signed, () => JSON.stringify(scrubEvent(event)));
+    expect(out).not.toContain('f00dfacecafebeef1234');
+  });
+
+  it('does not treat a SHORT path or query as the secret, or it would redact everything', () => {
+    // `https://bridge.example.com/api?x` added `/api` and `x` as fragments, and every
+    // event lost every `/api` and every letter x (review, 2026-09-24). The URL itself
+    // is still redacted — here in the query-stripped form Sentry records, which for
+    // a path this short only the origin+path fragment can catch.
+    const short = 'https://bridge.example.com/api?x';
+    const event = {
+      transaction: 'GET /api/health',
+      breadcrumbs: [{ message: 'fixed the xyz index', data: { url: 'https://bridge.example.com/api' } }],
+    } as unknown as SentryEvent;
+    const out = withHook(short, () => scrubEvent(event));
+    expect(out.transaction).toBe('GET /api/health');
+    expect(out.breadcrumbs![0]!.message).toBe('fixed the xyz index');
+    expect(JSON.stringify(out)).not.toContain('bridge.example.com/api');
+  });
+
   it('is a no-op when no webhook is configured — the client and the Edge', () => {
     const out = withHook(undefined, () =>
       JSON.stringify(scrubEvent(eventCarrying('https://nmwc-cm.vercel.app/api/health', '/api/health')))
