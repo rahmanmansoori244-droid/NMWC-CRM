@@ -1,3 +1,4 @@
+import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { Role } from '@prisma/client';
@@ -25,11 +26,14 @@ const APPROVER_ROLES: Role[] = [
  *    customer profile has a DIFFERENT scope gate and may 404 on a reviewer
  *    who legitimately received the ping — adversarial-review fix);
  *  - everything else lands on the customer profile / the recipient's queue.
+ *
+ * The return type is checked against the app's routes: any static page, or one
+ * of the two dynamic pages named here.
  */
 function hrefFor(
   n: { editId: string | null; customerId: string | null; kind: string },
   role: Role
-): string {
+): Route<`/approvals/${string}` | `/customers/${string}`> {
   if (n.kind === 'TEMIX_UPLOAD_READY') return '/temix';
   const reviewKinds = ['EDIT_SUBMITTED', 'EDIT_STAGE_ADVANCED', 'SLA_BREACH'];
   if (n.editId && reviewKinds.includes(n.kind) && APPROVER_ROLES.includes(role)) {

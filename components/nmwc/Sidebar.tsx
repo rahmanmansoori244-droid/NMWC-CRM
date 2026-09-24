@@ -1,5 +1,6 @@
 'use client';
 
+import type { Route } from 'next';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
@@ -25,7 +26,9 @@ import {
 } from 'lucide-react';
 
 type NavItem = {
-  href: string;
+  // `Route`, not `string`: every entry below is checked against the app's pages,
+  // so a renamed or mistyped page fails the typecheck instead of 404ing a menu.
+  href: Route;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
 };
@@ -102,7 +105,7 @@ export function Sidebar({ role }: { role: Role }) {
           return (
             <li key={item.href}>
               <Link
-                href={item.href as string}
+                href={item.href}
                 className={cn(
                   'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition',
                   active
@@ -125,7 +128,7 @@ export function MobileTabBar({ role }: { role: Role }) {
   const pathname = usePathname();
   // Salesman gets the bottom tab bar; other roles use the desktop sidebar (and hamburger TBD)
   if (role !== 'SALESMAN') return null;
-  const items = [
+  const items: NavItem[] = [
     { href: '/today', label: 'Today', icon: CalendarCheck },
     { href: '/customers', label: 'Customers', icon: Search },
     { href: '/work', label: 'Work', icon: Inbox },
@@ -139,7 +142,7 @@ export function MobileTabBar({ role }: { role: Role }) {
         return (
           <Link
             key={item.href}
-            href={item.href as string}
+            href={item.href}
             className={cn(
               'flex flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium',
               active ? 'text-brand-700' : 'text-slate-600'
@@ -233,7 +236,7 @@ export function MobileNavDrawer({ role }: { role: Role }) {
                 return (
                   <li key={item.href}>
                     <Link
-                      href={item.href as string}
+                      href={item.href}
                       className={cn(
                         'flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition',
                         active

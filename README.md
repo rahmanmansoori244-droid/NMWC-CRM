@@ -29,7 +29,7 @@ npm run dev                   # http://localhost:3000
 |---|---|
 | `npm run dev` | Local dev server |
 | `npm run build` | Production build |
-| `npm run typecheck` | `tsc --noEmit` |
+| `npm run typecheck` | `next typegen && tsc --noEmit` — route types first, or no href is checked |
 | `npm run lint` | ESLint |
 | `npm test` | Vitest unit/integration |
 | `npm run test:e2e` | Playwright E2E |

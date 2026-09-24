@@ -1,3 +1,4 @@
+import type { Route } from 'next';
 import Link from 'next/link';
 import { CompletenessRing } from './CompletenessRing';
 import { StatusBadge } from './StatusBadge';
@@ -5,13 +6,16 @@ import { PaymentTermsPill } from './PaymentTermsPill';
 import { MapPin } from 'lucide-react';
 import type { Customer, Branch, CustomerStatus, PaymentTerms } from '@prisma/client';
 
-type CardProps = {
+// Generic over the href, as next/link itself is: `Route<T>` checks the caller's
+// literal (`/customers/${id}`) against the app's routes. A plain `string` prop
+// would accept anything and then fail at the <Link> inside.
+type CardProps<T extends string> = {
   customer: Pick<Customer, 'id' | 'nmwcCode' | 'legalName' | 'paymentTerms' | 'status' | 'completenessScore'>;
   primaryBranch?: Pick<Branch, 'branchName' | 'address'> | null;
-  href?: string;
+  href?: Route<T>;
 };
 
-export function CustomerCard({ customer, primaryBranch, href }: CardProps) {
+export function CustomerCard<T extends string>({ customer, primaryBranch, href }: CardProps<T>) {
   const inner = (
     <article className="flex items-start gap-3 rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200 hover:shadow-md focus-within:ring-brand-500">
       <CompletenessRing value={customer.completenessScore} size={44} />

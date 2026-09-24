@@ -5,11 +5,11 @@
   "description": "NMWC Customer Master — field-driven master data cleanup app",
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && tsc --noEmit && next lint && prisma migrate deploy && next build --no-lint",
+    "build": "prisma generate && next typegen && tsc --noEmit && next lint && prisma migrate deploy && next build --no-lint",
     "postinstall": "prisma generate",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,md,json}\"",
     "test": "vitest run",

@@ -1,4 +1,5 @@
 import { canExport as canExportFor } from '@/lib/permissions';
+import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
@@ -270,7 +271,7 @@ export default async function CustomersPage({
   if (sp.editedAfter) baseSp.set('editedAfter', sp.editedAfter);
   if (sp.editedBefore) baseSp.set('editedBefore', sp.editedBefore);
 
-  function pageHref(p: number): string {
+  function pageHref(p: number): Route {
     const sp = new URLSearchParams(baseSp);
     sp.set('page', String(p));
     return `?${sp.toString()}`;

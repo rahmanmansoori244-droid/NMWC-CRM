@@ -26,6 +26,9 @@ coverage
 playwright-report
 test-results
 playwright/.cache
+# Bad-href probes written and deleted by tests/unit/typed-routes-guard.test.ts;
+# one outlives only a killed run.
+/tests/typed-routes-probe-*/
 
 # Editor
 .vscode/*
