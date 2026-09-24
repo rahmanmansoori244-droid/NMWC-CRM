@@ -19,7 +19,7 @@
  *
  * Exit 0 when everything passes, 1 when anything fails, 2 on an error.
  */
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { GOLIVE_REGION_CODES } from '../../lib/ops/golive-accounts';
@@ -141,44 +141,96 @@ const checks: Check[] = [
         };
       }
 
-      // WHY THIS NOTE CHANGED, 2026-09-23. It used to read "the refresh-lane
-      // symptom: promoted, but the branch loop never ran", and that was simply
-      // wrong — it named the cause the check had been WRITTEN for rather than
-      // the one actually producing the number, and it sent the first person to
-      // read it after the real load looking in the wrong file.
+      // THIS NOTE STOPS DIAGNOSING, BECAUSE IT CANNOT.
       //
-      // Measured on production the day of the load, 813 missing days across 778
-      // customers: 7 of those customers carried a Temix code, so at most 7 could
-      // have taken the refresh lane. 736 of the 778 — 95% — had a row REJECTED
-      // by the payment-terms guard below, and a rejected row writes nothing at
-      // all: no customer update, no branches, no visit day. The branch loop did
-      // not skip; it never got there.
+      // It has been wrong twice in one day, both times because it asserted a
+      // single cause from a number that cannot identify one:
+      //   - it read "the refresh-lane symptom" on 2026-09-23 for a gap of 813
+      //     days across 778 customers, of which SEVEN could possibly have taken
+      //     the refresh lane; 736 were rows REJECTED by the payment-terms guard,
+      //     and a rejected row writes nothing at all.
+      //   - rewritten to blame the rejections, it then read "no rejected rows, so
+      //     this is the refresh lane" once they were cleared — while the true
+      //     cause of the remaining 47 was a QUARANTINE nobody had thought of: 69
+      //     rows held for a duplicate phone, 51 of them carrying a visit day.
       //
-      // Both causes are real and the count alone cannot tell them apart, so the
-      // note names both and says which one to rule out first rather than
-      // asserting a single diagnosis. Whoever rewrites this: check it against
-      // the rejected rows before you narrow it again.
-      // The LATEST customer batch only. Counting every customer batch double-counts
-      // a re-import: the 23 September load ran twice and rejected the same 1,833
-      // rows each time, which this reported as 3,666 — a number that reads as 3,666
-      // customers and is not one. What matters is the state the last promote left.
+      // The reason it keeps being wrong is structural, not a wording problem.
+      // This check compares two TOTALS — how many branches carry a day, against
+      // how many the manifest says the master supplied. It never learns WHICH
+      // branches are short, because it does not read the master. A number that
+      // cannot name a row cannot attribute a cause, and every attempt to make it
+      // do so has sent the next reader to the wrong file.
+      //
+      // So it reports the gap and lists the mechanisms that withhold a day, with
+      // their live counts, as LEADS. These do not add up to the gap and are not
+      // meant to: a held row whose branch got its day from a sibling row costs
+      // nothing, and one held row can account for several days. To attribute
+      // properly, line the master up against production per customer — the
+      // scratch script that did it on 2026-09-24 is described in
+      // docs/OPERATIONS.md §7.
       const lastCustomerBatch = await prisma.importBatch.findFirst({
         where: { kind: 'CUSTOMER' },
         orderBy: { uploadedAt: 'desc' },
-        select: { id: true },
+        select: { id: true, filename: true, uploadedAt: true },
       });
-      const rejected = lastCustomerBatch
-        ? await prisma.importRow.count({
+
+      // The LATEST batch only. Counting every customer batch double-counts a
+      // re-import: the 23 September load ran three times and rejected the same
+      // 1,833 rows each time, which this once reported as 3,666 — a number that
+      // reads as 3,666 customers and is not one.
+      // ONLY COUNTS THAT ARE EXACT AND BOUNDED GO IN. A lead has to narrow the
+      // search; a population count widens it. The first draft of this reported
+      // "15,395 customers carry a Temix code" against a gap of 14 days, which is
+      // not a lead, it is noise wearing a number. The refresh lane is named as a
+      // mechanism with NO count for exactly that reason: whether a promoted row
+      // took it cannot be derived from these totals, and inventing a figure for it
+      // is how this note went wrong the first two times.
+      const leads: string[] = [];
+      if (lastCustomerBatch) {
+        const [rejected, quarantinedWithDay] = await Promise.all([
+          prisma.importRow.count({
             where: { state: 'REJECTED', batchId: lastCustomerBatch.id },
-          })
-        : 0;
+          }),
+          // A quarantined row is held for review and never promoted, so a day on
+          // it never reaches its branch. Count only those CARRYING a day — the
+          // rest cannot be responsible for a missing one.
+          //
+          // Prisma.JsonNull, NOT Prisma.DbNull: DbNull means the `parsed` COLUMN
+          // is null, JsonNull means the key inside the JSON is null. The first
+          // draft used DbNull and matched all 69 quarantined rows instead of the
+          // 51 that carry a day — a filter that looked right and counted the
+          // wrong thing, in a note whose whole purpose is not to mislead.
+          prisma.importRow.count({
+            where: {
+              state: 'QUARANTINED',
+              batchId: lastCustomerBatch.id,
+              NOT: { parsed: { path: ['dayOfVisit'], equals: Prisma.JsonNull } },
+            },
+          }),
+        ]);
+        if (rejected > 0) {
+          leads.push(`${rejected} row(s) REJECTED — a rejected row writes nothing, branches included`);
+        }
+        if (quarantinedWithDay > 0) {
+          leads.push(
+            `${quarantinedWithDay} row(s) QUARANTINED while carrying a visit day — held for review, never promoted`
+          );
+        }
+      }
+      leads.push(
+        'and a refresh row for a customer that already carries a Temix code skips the branch loop entirely — no count for this one, it cannot be derived from these totals'
+      );
+
       return {
         ok: false,
         detail: `${withDay} branches carry a visit day; the master supplied ${expectedDays} — ${expectedDays - withDay} went missing in the load`,
+        // No empty-leads branch: the refresh-lane line is always pushed, so one
+        // would be unreachable. An unreachable arm of a ternary reads as a handled
+        // case and is not one.
         note:
-          rejected > 0
-            ? `the last customer batch REJECTED ${rejected} row(s), which wrote nothing at all — that is where most of these go, so read the rejections first, not the refresh lane`
-            : 'no rejected rows in the last customer batch, so this is the refresh-lane symptom: promoted, but the branch loop never ran',
+          'this count cannot say WHICH branches or why — it compares two totals and never reads the master. ' +
+          `Places a day gets withheld, as leads rather than an accounting: ${leads.join('; ')}. ` +
+          'To attribute it properly, line the master up against production per customer (docs/OPERATIONS.md §7).',
       };
     },
   },

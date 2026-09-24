@@ -380,6 +380,31 @@ It flips only live, code-less, `SYNCED` rows to `PENDING_UPLOAD`, a few hundred 
 
 Two `AuditLog` rows per applied run (`entityType = TemixRequeue`), sharing one `entityId` — the run's `temixSyncPendingSince`: a STARTING row written before the first chunk and a COMPLETED row after the last. The chunks each commit on their own, so **a STARTING row with no COMPLETED row beside it means the run was interrupted**: the rows it did change all carry that `temixSyncPendingSince`, which is how you count them and how you put them back. The run also prints a block to paste into the go-live log. Afterwards, have the Steward generate the batch from `/temix`.
 
+### Work out WHICH branches are missing a visit day
+
+`verify:load`'s visit-day check compares two totals — how many branches carry a day against how many `load-manifest.json` says the master supplied. It never reads the master, so **it cannot name a single row**, and it deliberately no longer tries to: it lists the mechanisms that withhold a day as leads and stops there. Twice in one day it asserted a cause from that number and was wrong both times — first blaming the Temix refresh lane for a gap that was 95% rejected rows, then blaming the rejections for a gap that turned out to be a quarantine.
+
+To attribute it, join the master to production per customer:
+
+1. Read `golive-data/customer-master.xlsx`, and for each `cust_code` count the rows whose `day_of_visit` is non-blank. Do **not** join on `branch_code` — 18,184 of the 20,199 rows have a blank one, because the importer derives it.
+2. Query production for the same customers and count their live branches carrying a `dayOfVisit`.
+3. The customers where production is short are the answer. For each, look at the import rows: a REJECTED row wrote nothing at all, a QUARANTINED row was held for review and never promoted, and a customer that already carries a `temixCode` may have taken the refresh lane, which skips the branch loop.
+
+On 2026-09-24 that produced: 47 customers short, **all 47** with a quarantined row, every quarantine being `phone already exists in master`. The fix was `npm run ops:visit-days` (below), not a code change.
+
+### Land a visit day that a quarantine held back
+
+```bash
+DIRECT_URL='<owner connection>' npm run ops:visit-days -- --expect-host ep-sweet-haze
+# read the counts, then:
+DIRECT_URL='<owner connection>' npm run ops:visit-days -- --expect-host ep-sweet-haze --apply
+npm run smoke && npm run verify:load
+```
+
+A quarantined row is never promoted, so its branch never receives the journey plan's `dayOfVisit`. This writes that day onto the branch that already exists — exactly what the promote would have written. It does **not** merge customers, clear the quarantine or resolve the duplicate; those stay in `/duplicates` for a Steward, because merging two customer records needs a human to say which one survives.
+
+It applies a row only when the customer has exactly one live branch of that name and that branch has no day recorded. Anything ambiguous is skipped and reported — writing the wrong branch's visit day sends a salesman to the wrong shop on the wrong morning.
+
 ### Spot a duplicate in the live master
 1. Sign in as Steward.
 2. `/duplicates` → review pairs (PHONE matches first, then CR, then fuzzy NAME).
