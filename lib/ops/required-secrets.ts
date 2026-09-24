@@ -159,12 +159,24 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'PROD_CRON_SECRET',
     kind: 'secret',
     required: true,
-    workflows: ['db-backup.yml', 'keep-warm.yml', 'sla-escalate.yml'],
+    workflows: ['cron-scheduler.yml', 'db-backup.yml', 'keep-warm.yml', 'sla-escalate.yml'],
     description: 'Bearer token the scheduled jobs present to the production endpoints.',
     source: 'Generate one value (32+ random characters) and use it in BOTH places below.',
     alsoSetOn: 'Vercel → Production → Environment Variables → CRON_SECRET (the SAME value)',
     consequenceIfMissing:
       'Every scheduled call is refused with 401. The SLA sweep stops escalating and the backup report never reaches the dead-man probe — which then alarms, correctly.',
+  },
+  {
+    name: 'CRONJOB_API_KEY',
+    kind: 'secret',
+    required: false,
+    workflows: ['cron-scheduler.yml'],
+    description:
+      'API key for cron-job.org, the external scheduler of decision D3. The External cron scheduler workflow uses it to create, fix and check the keep-warm and SLA-sweep jobs, with PROD_CRON_SECRET as their bearer.',
+    source:
+      'cron-job.org → Settings → API → create an API key. Leave its IP restriction OFF: GitHub runners use changing addresses, and a restricted key answers 403.',
+    consequenceIfMissing:
+      'The External cron scheduler workflow fails red and nothing is created. The GitHub-scheduled keep-warm and SLA sweep carry on as the backup, at the 2–3 runs a day GitHub actually delivers, so /api/health keeps reporting both jobs stale.',
   },
   {
     name: 'HEALTH_BEARER',
@@ -236,7 +248,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'APP_BASE_URL',
     kind: 'variable',
     required: true,
-    workflows: ['db-backup.yml'],
+    workflows: ['cron-scheduler.yml', 'db-backup.yml'],
     description: 'Production origin the backup job posts its completion report to.',
     source: 'The production URL, with no trailing slash.',
     consequenceIfMissing:

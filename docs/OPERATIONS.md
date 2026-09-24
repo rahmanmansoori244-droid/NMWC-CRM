@@ -194,9 +194,18 @@ Set up at any free cron service (cron-job.org, EasyCron, Better Uptime's "heartb
 | 1 | Keep-warm | `https://nmwc-cm.vercel.app/api/cron/keep-warm` | `*/4 3-14 * * *` (every 4 min) | 07:00–18:59 |
 | 2 | SLA escalation | `https://nmwc-cm.vercel.app/api/cron/sla-escalate` | `15,45 3-14 * * *` (twice an hour) | 07:15–18:45 |
 
-For each job: method **GET**, one custom header `Authorization: Bearer <CRON_SECRET>` — the same value as the `CRON_SECRET` variable in Vercel → Settings → Environment Variables → Production (copy it from there; never paste it into a support ticket or a screenshot). Enable the service's "notify on failure" so a run that answers 401/500/503 mails you. Photo GC stays on Vercel's own daily cron (`vercel.json`), which the Hobby plan does allow.
+**Set them up with the workflow, not by hand (2026-09-24).** Setting cron-job.org up through its web page did not work, and doing it by hand means copying `CRON_SECRET` out of Vercel, where it may not be revealable. `.github/workflows/cron-scheduler.yml` does it through cron-job.org's API instead, from inside GitHub Actions, using the `PROD_CRON_SECRET` repository secret the GitHub-scheduled workflows already use successfully. Nobody handles the secret.
 
-Afterwards, confirm within ten minutes:
+1. **cron-job.org → Settings → API → create an API key.** Leave its IP restriction **off**: GitHub's runners change address, and a restricted key answers 403.
+2. **GitHub → Settings → Secrets and variables → Actions → New repository secret:** name `CRONJOB_API_KEY`, value the key. (Or `gh secret set CRONJOB_API_KEY` and paste it at the prompt.)
+3. **Actions → External cron scheduler → Run workflow → mode `check`.** Read-only: it lists what exists, how each job differs from the spec, and its last executions. It is red until both jobs are right.
+4. **Run it again with mode `apply`.** It first proves the bearer with a real GET to keep-warm, and writes nothing if production refuses it. Then it creates both jobs, or corrects a hand-made one in place (time zone, `Bearer ` prefix, schedule, method, failure e-mails). A second job on the same URL is disabled, not deleted, and other jobs on the account are not touched. It ends by re-reading and must finish green.
+
+What `apply` writes, for the record: method **GET**, time zone **UTC**, the schedules above, header `Authorization: Bearer <PROD_CRON_SECRET>`, a 30-second timeout, and an e-mail after two consecutive failures and when cron-job.org disables a job. `scripts/ops/cron-scheduler.ts` is the whole specification, and `tests/unit/cron-scheduler.test.ts` proves it against a simulated cron-job.org, including that neither the cron secret nor the API key is ever printed. A free account allows 100 API requests a day; `check` uses about five, `apply` about ten.
+
+Doing it by hand remains possible, and the same rules apply: GET, UTC, one header `Authorization: Bearer <CRON_SECRET>` with the Production value (never paste it into a ticket or a screenshot), failure notifications on. Photo GC stays on Vercel's own daily cron (`vercel.json`), which the Hobby plan does allow.
+
+Afterwards, confirm — **inside the window, 03:00–14:59 UTC** (outside it both jobs read `outside-window`, which proves nothing). `npm run smoke -- --expect-commit <main's short sha>` must pass all 16 checks, and pass again **20+ minutes later with no manual trigger in between** — a single green right after a manual run only proves that run. The `check` mode's execution history should show keep-warm every 4 minutes and the sweep at :15 and :45, all HTTP 200. Or directly:
 
 ```bash
 curl -s -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health | jq '.status, .cron'

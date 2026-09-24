@@ -1,0 +1,64 @@
+name: External cron scheduler
+
+# Decision D3 (2026-09-14, docs/OPERATIONS.md §5d): keep-warm and the SLA sweep
+# are called by an EXTERNAL scheduler, because GitHub's own delivers 2–3 runs of
+# each a day where the schedule asks for 180 and 24. This workflow creates, fixes
+# or checks those two cron-job.org jobs through its API.
+#
+# Why it runs HERE rather than on anyone's machine: the jobs must present
+# CRON_SECRET, and the repository already holds the working production value as
+# PROD_CRON_SECRET (keep-warm.yml and sla-escalate.yml succeed with it). Run in
+# Actions, nobody copies it out of Vercel — where it may be unrevealable — and it
+# never passes through a terminal, a web form or a transcript.
+#
+#   Actions → External cron scheduler → Run workflow → mode:
+#     check  read-only report: what exists, how it differs, last executions
+#     apply  prove the bearer against production, then create or fix both jobs
+#
+# Dispatch only. It fails, rather than skips, when CRONJOB_API_KEY is missing —
+# a run that reports success without having looked is the failure this whole
+# repository keeps finding.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'check = read-only report; apply = create or fix the two jobs'
+        type: choice
+        options:
+          - check
+          - apply
+        default: check
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cron-scheduler
+  cancel-in-progress: false
+
+jobs:
+  scheduler:
+    name: cron-job.org jobs for keep-warm and the SLA sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Check or apply the two jobs
+        env:
+          CRONJOB_API_KEY: ${{ secrets.CRONJOB_API_KEY }}
+          CRON_SECRET: ${{ secrets.PROD_CRON_SECRET }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL || 'https://nmwc-cm.vercel.app' }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -uo pipefail
+          case "$MODE" in
+            check|apply) ;;
+            *) echo "::error::mode must be check or apply"; exit 1 ;;
+          esac
+          npx tsx scripts/ops/cron-scheduler.ts "--${MODE}"
