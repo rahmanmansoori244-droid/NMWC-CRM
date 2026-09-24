@@ -109,6 +109,32 @@ const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5 MB
 const DAY_CODES = new Set(['SAT', 'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI']);
 const STATUS_CODES = new Set(['ACTIVE', 'CLOSED', 'SUSPENDED']);
 
+/**
+ * The shortest address the DATABASE will accept for a branch.
+ *
+ * `Branch_address_minlength` — CHECK (length(btrim(address)) >= 3) — is created
+ * in prisma/migrations/20260510120000_senior_audit_remediation/migration.sql and
+ * is NOT visible in schema.prisma, which is how the import came to send values it
+ * refuses. tests/unit/branch-address-guard.test.ts reads the number back out of
+ * that migration and fails if the two ever disagree, because a comment asking the
+ * next person to keep them in step is not a guard.
+ */
+const BRANCH_ADDRESS_MIN = 3;
+
+/**
+ * An address the database will accept, or null so the caller can fall back.
+ *
+ * Returns null for absent, blank AND too-short, because all three are the same
+ * thing from the importer's point of view: a value that cannot be stored. The
+ * distinction cost 26 customers three failed loads on 2026-09-23 — the fallback
+ * chain handled '' and let 'X' through to Postgres, which threw a CHECK violation
+ * that surfaced with no error code and the message "promote failed (UNKNOWN)".
+ */
+function usableBranchAddress(v: unknown): string | null {
+  const s = typeof v === 'string' ? v.trim() : '';
+  return s.length >= BRANCH_ADDRESS_MIN ? s : null;
+}
+
 export async function uploadAccountMasterAction(
   formData: FormData
 ): SafeAction<{ batchId: string; clean: number; issues: number }> {
@@ -1310,9 +1336,26 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           // `??` does NOT fall through '' — so the branch got an empty address and
           // the whole customer group was REJECTED at promote (address is required).
           // `||` falls through the empty string to the 'Address pending' placeholder.
+          //
+          // AND THE SAME DEFECT ONE NOTCH ALONG, 2026-09-23: empty is not the only
+          // address the database refuses. `Branch_address_minlength` requires three
+          // characters after trimming, and `||` does not fall through a non-empty
+          // string, so a 1-2 character address sailed past this line and was thrown
+          // out by Postgres instead. 26 customers carried a one- or two-letter area
+          // abbreviation from the source sheet and were rejected on ALL THREE loads
+          // that day — reported as "promote failed (UNKNOWN)", because a CHECK
+          // violation reaches Prisma as PrismaClientUnknownRequestError, which
+          // carries no `code` at all. usableBranchAddress() applies the database's
+          // own rule here, where there is still a fallback to reach for.
+          // The second candidate KEEPS the short value rather than discarding it.
+          // "X" is not noise — it is the area abbreviation the source sheet holds,
+          // and it is the only address those customers have. Qualifying it to
+          // "X, Main, MCT" clears the minimum and loses nothing; falling straight
+          // to branch+region would throw the one real datum away to satisfy a
+          // length check.
           address:
-            p.address ||
-            [p.branchName, p.regionCode].filter(Boolean).join(', ') ||
+            usableBranchAddress(p.address) ??
+            usableBranchAddress([p.address, p.branchName, p.regionCode].filter(Boolean).join(', ')) ??
             'Address pending',
           dayOfVisit: p.dayOfVisit ?? null,
           status: p.customerStatus ?? null,
@@ -1820,15 +1863,34 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           continue;
         }
 
+        // A CHECK violation carries NO Prisma code, so this used to read "promote
+        // failed (UNKNOWN)" and tell the Steward nothing whatsoever — 26 customers
+        // failed three consecutive loads on 2026-09-23 with that message and the
+        // cause had to be found by hand, against the database, hours later.
+        //
+        // F-15 forbids putting the raw Prisma message in here, and rightly: it
+        // embeds the value that broke the constraint, which for this table can be a
+        // phone or a CR number. But the CONSTRAINT NAME is not a value — it is a
+        // schema identifier, fixed at migration time and identical for every row
+        // that trips it. Extracting just that name is PII-safe and is the whole
+        // difference between "UNKNOWN" and "Branch_address_minlength".
+        const constraintName = /constraint "([A-Za-z0-9_]+)"/.exec(
+          err instanceof Error ? err.message : ''
+        )?.[1];
+
         logger.warn(
-          { code, target: meta, custCode, batchId, crosswalk: !!crosswalk },
+          { code, target: meta, constraint: constraintName, custCode, batchId, crosswalk: !!crosswalk },
           'import.promote.row_failed'
         );
         // Mark the failed row(s) REJECTED in a SEPARATE transaction so the
         // failure persists even though the row-level promote rolled back.
         const reason =
           crosswalk ??
-          (code === 'P2002' ? `duplicate ${(meta ?? []).join(', ')}` : `promote failed (${code})`);
+          (code === 'P2002'
+            ? `duplicate ${(meta ?? []).join(', ')}`
+            : constraintName
+              ? `the database refused this row: ${constraintName} — steward review`
+              : `promote failed (${code})`);
         try {
           await prisma.importRow.updateMany({
             where: { id: { in: g.rowIds } },
