@@ -29,5 +29,10 @@
     "**/*.tsx",
     ".next/types/**/*.ts"
   ],
-  "exclude": ["node_modules", ".next", "dist", "playwright-report", "test-results"]
+  // Never add ".next" here. `exclude` filters the `include` globs above, so it
+  // silently dropped .next/types/link.d.ts (what makes `typedRoutes` check any
+  // href) and validator.ts (route handler and layout checks), and every route
+  // went unchecked. Nothing outside .next/types is reached: the `**` globs skip
+  // dot-directories. Pinned by tests/unit/typed-routes-guard.test.ts.
+  "exclude": ["node_modules", "dist", "playwright-report", "test-results"]
 }

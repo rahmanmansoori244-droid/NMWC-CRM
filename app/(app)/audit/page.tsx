@@ -1,3 +1,4 @@
+import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
@@ -95,7 +96,7 @@ export default async function AuditPage({
     }),
   ]);
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const qs = (overrides: Partial<Search>) => {
+  const qs = (overrides: Partial<Search>): Route => {
     const p = new URLSearchParams();
     const merged: Search = { ...sp, ...overrides };
     for (const k of Object.keys(merged) as (keyof Search)[]) {

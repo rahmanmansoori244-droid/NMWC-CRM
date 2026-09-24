@@ -1,3 +1,4 @@
+import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
@@ -8,6 +9,9 @@ import Link from 'next/link';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 
 export const metadata = { title: 'Work items · NMWC' };
+
+/** Where a work item can lead: any static page, or one of these dynamic pages. */
+type WorkHref = Route<`/approvals/${string}` | `/customers/${string}` | `/import/${string}`>;
 
 export default async function WorkPage() {
   const session = await auth();
@@ -22,7 +26,7 @@ export default async function WorkPage() {
     category: string;
     title: string;
     subtitle?: string;
-    href: string;
+    href: WorkHref;
     state?: string;
     when?: Date | null;
   }> = [];
@@ -30,7 +34,7 @@ export default async function WorkPage() {
   if (role === Role.SALESMAN) {
     // Phase 1 creation flow: a CREATE request (customerId null) is revised on
     // the create form, not the customer profile — route its rows there.
-    const editHref = (e: { id: string; process: string; customerId: string | null }) =>
+    const editHref = (e: { id: string; process: string; customerId: string | null }): WorkHref =>
       e.process === 'CREATE' ? `/customers/new?edit=${e.id}` : `/customers/${e.customerId}`;
     const editTitle = (e: {
       customer: { legalName: string } | null;

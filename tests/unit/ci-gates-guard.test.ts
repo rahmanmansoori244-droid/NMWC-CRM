@@ -257,6 +257,24 @@ describe('the build cannot migrate production before it typechecks', () => {
     if (/npm run lint/.test(build)) expect(pkg.scripts.lint).toMatch(/\bnext lint\b/);
   });
 
+  it('generates route types BEFORE it typechecks, in the build and in CI', () => {
+    // `typedRoutes` checks an href only through .next/types/link.d.ts, which
+    // `next typegen` writes. A fresh checkout (Vercel, CI) has no .next, and tsc
+    // says nothing about it: next-env.d.ts's reference to the missing routes.d.ts
+    // is skipped, and `Route` from 'next' falls back to `string & {}`. Every href
+    // goes unchecked and the typecheck is green (2026-09-24). Whether tsc then
+    // actually rejects a bad href is typed-routes-guard.test.ts's job; this pins
+    // that the types exist by the time it runs.
+    const typegen = build.indexOf('next typegen');
+    expect(typegen, 'the build script must generate route types').toBeGreaterThan(-1);
+    expect(typegen).toBeLessThan(build.indexOf('tsc --noEmit'));
+    // CI typechecks through `npm run typecheck`, not the build script.
+    const typecheck = pkg.scripts.typecheck ?? '';
+    expect(typecheck.indexOf('next typegen'), 'typecheck must generate route types').toBeGreaterThan(-1);
+    expect(typecheck.indexOf('next typegen')).toBeLessThan(typecheck.indexOf('tsc --noEmit'));
+    expect(stepBlocks('lint-test-build')).toContain('run: npm run typecheck');
+  });
+
   it('still migrates ahead of the build, which is why the order matters', () => {
     // Not decoration: this coupling is the reason a late failure is expensive.
     // Remove the migrate step and the app stops deploying its own schema.
