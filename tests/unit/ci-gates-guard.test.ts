@@ -33,6 +33,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
+import { load } from 'js-yaml';
 import { runScriptOf as runScriptOfIn, runStep, type Outcome } from '../support/workflow-step';
 
 const CI_PATH = '.github/workflows/ci.yml';
@@ -78,6 +79,21 @@ function stepBlocks(id: string): string[] {
 /** The `run:` script of one step of ci.yml — see tests/support/workflow-step.ts. */
 const runScriptOf = (stepName: string): string => runScriptOfIn(RAW, stepName);
 
+/**
+ * The workflow as GitHub reads it. The line-based helpers above stay for what bash
+ * runs; anything about the workflow's STRUCTURE — which steps exist, which carry a
+ * condition, what triggers it — is read from this, because a parser has no
+ * spellings to miss (review, 2026-09-24).
+ */
+type Step = { name?: string; uses?: string; run?: string; [key: string]: unknown };
+const workflow = load(RAW) as {
+  on?: Record<string, unknown>;
+  jobs?: Record<string, { if?: unknown; steps?: Step[] }>;
+};
+function stepsOf(id: string): Step[] {
+  return workflow.jobs?.[id]?.steps ?? [];
+}
+
 const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
   scripts: Record<string, string>;
 };
@@ -120,7 +136,8 @@ function smokeOutput(opts: {
     | 'job-failed'
     | 'mixed'
     | 'stateless'
-    | 'unknown';
+    | 'unknown'
+    | 'refused';
   alsoBroken?: boolean;
 }): string {
   /** The dead-man line for each case. Alarms are `job:state`, as smoke.ts prints them. */
@@ -143,6 +160,8 @@ function smokeOutput(opts: {
     // health payload has no state for that job. Neither is "has not run".
     stateless: '503 alarms=[db-backup] failed=[]',
     unknown: '503 alarms=[db-backup:unknown] failed=[]',
+    // /api/health refused the bearer outright: what smoke prints on a 401.
+    refused: '401 alarms=[] failed=[]',
   };
   const rows = [
     checkLine(true, 'health (anonymous)', '200 {"status":"ok"} keys=1'),
@@ -243,8 +262,11 @@ describe('the build cannot migrate production before it typechecks', () => {
       expect(script, `"${script}" must be one line`).not.toMatch(/[\r\n]/);
       for (const seg of script.split(' && ')) {
         expect(seg.trim(), 'an empty command between two &&').not.toBe('');
-        expect(seg, `"${seg}" must be one plain command`).not.toMatch(/[;|&]/);
-        const nested = /^\s*npm run (\S+)\s*$/.exec(seg)?.[1];
+        // `$(…)` and backticks run a command whose failure the chain never sees:
+        // `echo $(tsc --noEmit)` passes whatever tsc said (review, 2026-09-24).
+        expect(seg, `"${seg}" must be one plain command`).not.toMatch(/[;|&$`]/);
+        // Followed with arguments too: `npm run lint --silent` runs the same script.
+        const nested = /^\s*npm run (\S+)(?:\s|$)/.exec(seg)?.[1];
         if (nested && !seen.includes(nested)) {
           const body = pkg.scripts[nested];
           expect(body, `npm run ${nested} must exist`).toBeDefined();
@@ -253,9 +275,18 @@ describe('the build cannot migrate production before it typechecks', () => {
       }
     };
     expect(build.split(' && ').length).toBeGreaterThanOrEqual(5);
-    plainChain(build);
-    // CI and CLAUDE.md typecheck through `npm run typecheck`; it gets the same rule.
-    plainChain(pkg.scripts.typecheck ?? '');
+    // Everything the deploy and CI run through npm: the build, and the three
+    // scripts lint-test-build calls by name. `lint` and `test` were not held to
+    // this, so `"test": "vitest run || true"` removed the unit gate (review,
+    // 2026-09-24).
+    for (const name of ['build', 'typecheck', 'lint', 'test']) {
+      expect(pkg.scripts[name], `npm run ${name} must exist`).toBeDefined();
+      plainChain(pkg.scripts[name]!);
+      // npm runs `pre<name>` before and `post<name>` after, unasked: a `prebuild`
+      // holding `prisma migrate deploy` would migrate before any check ran.
+      expect(pkg.scripts[`pre${name}`], `no pre${name} script`).toBeUndefined();
+      expect(pkg.scripts[`post${name}`], `no post${name} script`).toBeUndefined();
+    }
   });
 
   it('typecheck clears the per-page route types first, so a deleted page cannot fail it', () => {
@@ -389,32 +420,76 @@ describe('every gate in ci.yml is still wired', () => {
     // that one step, and the job goes green having checked nothing: the smoke
     // step, `npm test`, the integration suites. The executed scenarios in this file
     // cannot see it either, because runScriptOf takes the `run:` block and not the
-    // step's `if:` (review, 2026-09-24). Even `if: failure()` disables a check it
-    // sits on. So a condition is allowed only on an artifact upload, which checks
-    // nothing, and never on a step with a `run:`.
+    // step's `if:`. Even `if: failure()` disables a check it sits on. So a
+    // condition is allowed only on an artifact upload, which checks nothing.
+    //
+    // Read from the PARSED workflow, the way GitHub reads it. Two rounds of review
+    // (2026-09-24) found spellings a line-based match missed: `- if:` as the first
+    // key, then the flow style `- { if: false, run: npm test }`, a quoted `"if":`,
+    // a list indented four spaces. A parser has no spellings.
     let conditional = 0;
     for (const id of JOBS) {
-      for (const step of stepBlocks(id)) {
-        // A key is either the step's FIRST key — `- if: …` is the same step with
-        // the condition written first, and stepBlocks leaves it at column 0 — or
-        // one of the keys under it at eight spaces. Reading only the second let
-        // `- if: github.event_name == 'pull_request'` above `run: npm test` skip
-        // the whole unit suite with this test green (review, 2026-09-24).
-        const key = (k: string) => new RegExp(`(^|\\n {8})${k}:`);
-        if (!key('if').test(step)) continue;
+      for (const [i, step] of stepsOf(id).entries()) {
+        if (!('if' in step)) continue;
         conditional += 1;
-        const name = step.split('\n')[0];
-        expect(step, `${id} / ${name}: only an upload may be conditional`).toMatch(
-          new RegExp(`(^|\\n {8})uses: actions/upload-artifact@`)
+        const label = `${id} step ${i + 1} (${step.name ?? step.uses ?? step.run ?? '?'})`;
+        expect(String(step.uses ?? ''), `${label}: only an upload may be conditional`).toMatch(
+          /^actions\/upload-artifact@/
         );
-        expect(step, `${id} / ${name}: a conditional step must not run anything`).not.toMatch(
-          key('run')
-        );
+        expect(step.run, `${label}: a conditional step must not run anything`).toBeUndefined();
       }
     }
-    // The two uploads that exist today. Without this the loop can pass on nothing,
-    // e.g. if stepBlocks stopped finding steps.
+    // The two uploads that exist today. Without this the loop can pass on nothing.
     expect(conditional).toBe(2);
+  });
+
+  it('every gate still runs its check — deleting the step is not a way to pass', () => {
+    // Nothing required the checks to EXIST: deleting `- run: npm test`, or moving
+    // it into a local composite action with its own `if:`, left lint-test-build
+    // green with the unit suite gone (review, 2026-09-24). Each gate's defining
+    // command must appear, verbatim, as a line of one of its own steps.
+    const REQUIRED: Record<string, string[]> = {
+      'lint-test-build': ['npm run typecheck', 'npm run lint', 'npm test', 'npx next build'],
+      'db-tests': ['npx prisma migrate deploy', 'npx vitest run tests/integration'],
+      e2e: ['npx next build', 'npx playwright test tests/e2e/login.spec.ts'],
+      'restore-chain': ['npx tsx scripts/ops/restore-verify.ts'],
+      'post-deploy-smoke': ['npx tsx scripts/ops/smoke.ts --expect-commit "$GITHUB_SHA"'],
+    };
+    for (const [id, commands] of Object.entries(REQUIRED)) {
+      const lines = stepsOf(id).flatMap((s) =>
+        String(s.run ?? '')
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith('#'))
+      );
+      for (const cmd of commands) {
+        expect(
+          lines.some((l) => l === cmd || l.startsWith(`${cmd} `)),
+          `${id} must run: ${cmd}`
+        ).toBe(true);
+      }
+    }
+    expect(
+      stepsOf('secrets-scan').some((s) => String(s.uses ?? '').startsWith('gitleaks/gitleaks-action@'))
+    ).toBe(true);
+    // And no gate hands its check to a local action, whose steps nothing here reads.
+    for (const id of JOBS) {
+      for (const s of stepsOf(id)) {
+        expect(String(s.uses ?? ''), `${id}: no local composite action in a gate`).not.toMatch(/^\.{1,2}\//);
+      }
+    }
+  });
+
+  it('the parsed workflow agrees: triggered on every push, no gate job conditional', () => {
+    // The same two facts the line-based tests above read, from GitHub's view of the
+    // file, so a spelling those regular expressions miss cannot pass both.
+    expect(Object.keys(workflow.on ?? {})).toEqual(['push']);
+    expect(workflow.on?.push ?? null, 'push carries no branch or path filter').toBeNull();
+    for (const id of JOBS) {
+      const cond = workflow.jobs?.[id]?.if;
+      if (id === 'post-deploy-smoke') expect(cond).toBe("github.ref == 'refs/heads/main'");
+      else expect(cond, `${id} must not be conditional`).toBeUndefined();
+    }
   });
 
   it('the browser gate carries no condition at all', () => {
@@ -573,7 +648,7 @@ describe('the smoke step really does wait for the deploy', () => {
 
   /** What smoke prints while /api/health refuses the bearer: no commit to compare. */
   const refusedOutput = () => {
-    const out = smokeOutput({ serving: false, cron: 'probe-errored' }).replace(
+    const out = smokeOutput({ serving: false, cron: 'refused' }).replace(
       'running 0ffee12, expected abc1234',
       'running unknown, expected abc1234'
     );
@@ -595,14 +670,44 @@ describe('the smoke step really does wait for the deploy', () => {
     expect(smokeRuns(o)).toBe(3);
   });
 
-  it('names the bearer, not the deployment, when it is still refused at the end', () => {
-    // Retrying for 12 minutes and then saying "check the Vercel deployment" sent
-    // the reader to the wrong place (review, 2026-09-24).
+  it('names the bearer — and the deployment — when it is still refused at the end', () => {
+    // Retrying for 12 minutes and then saying only "check the Vercel deployment"
+    // sent the reader past the secret; saying only "it is the secret" sent them
+    // past a deployment that predates it or broke its check. A 401 cannot tell
+    // those apart from outside, so the error names both (review, 2026-09-24).
     const o = runSmokeStep([{ code: 1, out: refusedOutput() }]);
     expect(o.status, o.output).toBe(1);
     expect(smokeRuns(o)).toBeGreaterThan(1);
-    expect(o.output).toMatch(/::error::[^\n]*HEALTH_BEARER/);
-    expect(o.output).not.toContain('Check the Vercel deployment');
+    expect(o.output).toMatch(/::error::[^\n]*REFUSED[^\n]*HEALTH_BEARER/);
+    // And it sends the reader to the deployment as well — a message that merely
+    // mentions one while concluding "this is the secret" is the misdirection.
+    expect(o.output).toMatch(/::error::[^\n]*this commit's Vercel deployment as well as the secret/);
+    expect(o.output).not.toMatch(/::error::[^\n]*This is the secret/);
+    expect(o.output).not.toContain('still not serving');
+  });
+
+  it('does not let one blip on the LAST attempt hide every refusal before it', () => {
+    // The cause was read from attempt 24 alone: 23 refusals then one network blip
+    // printed "check the Vercel deployment" (review, 2026-09-24).
+    const o = runSmokeStep([
+      ...Array.from({ length: 23 }, () => ({ code: 1, out: refusedOutput() })),
+      { code: 1, out: 'FAIL  health (anonymous)   threw: fetch failed\n1 of 1 FAILED\n' },
+    ]);
+    expect(o.status, o.output).toBe(1);
+    expect(smokeRuns(o)).toBe(24);
+    expect(o.output).toMatch(/::error::[^\n]*REFUSED/);
+    expect(o.output).not.toContain('still not serving');
+  });
+
+  it('says the COMMIT is missing, not the secret, when the bearer was accepted', () => {
+    // `running unknown` beside a dead-man line that answered 200 or 503 means the
+    // bearer worked and VERCEL_GIT_COMMIT_SHA did not reach the deployment.
+    const accepted = refusedOutput().replace('401 alarms=[] failed=[]', '503 alarms=[db-backup:never] failed=[]');
+    expect(accepted).toContain('503 alarms=');
+    const o = runSmokeStep([{ code: 1, out: accepted }]);
+    expect(o.status, o.output).toBe(1);
+    expect(o.output).toMatch(/::error::[^\n]*ACCEPTED[^\n]*VERCEL_GIT_COMMIT_SHA/);
+    expect(o.output).not.toMatch(/::error::[^\n]*REFUSED/);
   });
 
   it('does not retry a refusal, because waiting cannot fix it', () => {

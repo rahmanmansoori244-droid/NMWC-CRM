@@ -510,6 +510,7 @@ jobs:
           fi
           SHORT=$(echo "$GITHUB_SHA" | cut -c1-7)
           SERVING=0
+          UNKNOWN=
           for ATTEMPT in $(seq 1 24); do
             echo "--- attempt ${ATTEMPT}/24 — is production serving ${SHORT} yet?"
             CODE=0
@@ -530,6 +531,18 @@ jobs:
             # happened on main on 2026-09-24, and failing fast on it (3b1632d) would
             # have failed that healthy deploy. A bearer that is still refused when
             # the wait runs out is named below instead of blaming the deployment.
+            # Remember a commit-less answer from ANY attempt, and which kind: the
+            # dead-man line reads 401 when the bearer itself was refused, 200 or 503
+            # when it was accepted and the deployment simply reported no commit. The
+            # cause is decided from every attempt, not the last: one blip on attempt
+            # 24 used to hide 23 refusals (review, 2026-09-24).
+            if grep -qE '^FAIL +production is running the commit you think it is +running unknown,' smoke.log; then
+              if grep -qE '^(PASS|FAIL) +monitor bearer unlocks the detail.* 401 alarms=' smoke.log; then
+                UNKNOWN=refused
+              else
+                UNKNOWN=accepted
+              fi
+            fi
             # Only the WAIT is retried. Once smoke's own commit check passes the
             # deploy has landed, and retrying cannot change what else it found.
             if grep -qE '^PASS +production is running the commit you think it is' smoke.log; then
@@ -539,8 +552,15 @@ jobs:
             sleep 15
           done
           if [ "$SERVING" != "1" ]; then
-            if grep -qE '^FAIL +production is running the commit you think it is +running unknown,' smoke.log; then
-              echo "::error::after 24 attempts (~12 minutes) production still would not say which commit it serves ('unknown'): the monitor bearer is being REFUSED. The HEALTH_BEARER repository secret does not match HEALTH_BEARER in Vercel Production, or that one is shorter than 20 characters (less often, VERCEL_GIT_COMMIT_SHA is missing). This is the secret, not the deployment."
+            # Named from what the log proves, and no further: from outside, a secret
+            # that differs and a live deployment that predates it or broke its check
+            # look the same, so a refusal names both (review, 2026-09-24).
+            if [ "$UNKNOWN" = "refused" ]; then
+              echo "::error::after 24 attempts (~12 minutes) production never said which commit it serves: /api/health REFUSED the monitor bearer (401). Either HEALTH_BEARER differs between this repository and Vercel Production (or the Vercel one is under 20 characters), or the deployment that is live predates it or this commit broke its check. Look at this commit's Vercel deployment as well as the secret."
+              exit 1
+            fi
+            if [ "$UNKNOWN" = "accepted" ]; then
+              echo "::error::after 24 attempts (~12 minutes) production ACCEPTED the monitor bearer but reported no commit ('unknown'): VERCEL_GIT_COMMIT_SHA is missing from the deployment, so nothing can tell which build is live. Check this commit's Vercel deployment."
               exit 1
             fi
             echo "::error::after 24 attempts (~12 minutes) production is still not serving ${SHORT}. Check the Vercel deployment for this commit before assuming the app is fine."

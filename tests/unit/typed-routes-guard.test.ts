@@ -117,8 +117,14 @@ beforeAll(() => {
   // A run killed part-way leaves a probe behind, and its bad hrefs would fail
   // every typecheck in this checkout until someone deleted it.
   for (const name of readdirSync(PROBE_PARENT)) {
-    if (name.startsWith(PROBE_PREFIX)) {
-      rmSync(join(PROBE_PARENT, name), { recursive: true, force: true });
+    if (!name.startsWith(PROBE_PREFIX)) continue;
+    const path = join(PROBE_PARENT, name);
+    // Only one old enough to be a killed run's. A fresh one belongs to a run going
+    // on in this checkout right now — the user's and an agent's — and deleting it
+    // failed that run with TS5058 (review, 2026-09-24). A run takes well under a
+    // minute.
+    if (Date.now() - statSync(path).mtimeMs > 10 * 60_000) {
+      rmSync(path, { recursive: true, force: true });
     }
   }
 
@@ -221,6 +227,21 @@ describe('typed routes are enforced by the typecheck', () => {
 
   it('accepts the same shapes pointed at real routes', () => {
     expect(probeErrors('good.tsx'), result.tscOutput).toEqual([]);
+  });
+
+  it('keeps every tracked source file in the project program, .tsx included', () => {
+    // The probe enters through `files`, so the checks above no longer prove the
+    // project's own include still reaches .tsx: dropping "**/*.tsx" from
+    // tsconfig — which `next typegen` does not put back — left every page, layout
+    // and error boundary unchecked with this file green (review, 2026-09-24).
+    const tracked = spawnSync('git', ['ls-files', '*.ts', '*.tsx'], { cwd: ROOT, encoding: 'utf8' })
+      .stdout.split(/\r?\n/)
+      .map((f) => f.trim())
+      .filter(Boolean);
+    expect(tracked.filter((f) => f.endsWith('.tsx')).length, 'git listed the .tsx files').toBeGreaterThan(20);
+    const listed = result.projectFiles.map((f) => f.trim().toLowerCase());
+    const missing = tracked.filter((f) => !listed.some((l) => l.endsWith(`/${f.toLowerCase()}`)));
+    expect(missing, 'tracked source files the project typecheck does not compile').toEqual([]);
   });
 
   it('keeps its bad hrefs out of the project program while it runs', () => {

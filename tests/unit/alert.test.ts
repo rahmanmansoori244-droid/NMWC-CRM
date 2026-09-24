@@ -376,11 +376,19 @@ describe('sendAlert — the webhook URL is a credential', () => {
     // template literal carrying the URL, or a pino format argument walked past
     // them (review, 2026-09-24).
     const exact = [
-      ...src.matchAll(/logger\.\w+\(\s*\{[\s\S]*?\}\s*,\s*'[a-z_.]+'\s*\);/g),
+      ...src.matchAll(/logger\.\w+\(\s*\{[^{}]*\}\s*,\s*'[a-z_.]+'\s*\);/g),
     ].length;
     expect(exact, 'every logger call is exactly (payload, \'literal.message\')').toBe(
       [...src.matchAll(/logger\.\w+\(/g)].length
     );
+    // And `logger` appears ONLY in those calls. `logger?.warn`, `logger['warn']`,
+    // a destructured `warn` and `.bind(logger)` each make a call every scan here
+    // is blind to, and `console.*` is a second logger of its own (review,
+    // 2026-09-24). The payload pattern above also no longer spans braces, so a
+    // lazy match cannot run on into a second argument.
+    expect(src, 'lib/alert.ts must not write to the console').not.toMatch(/\bconsole\b/);
+    const uses = [...src.replace(/^import .*$/gm, '').matchAll(/\blogger\b/g)].length;
+    expect(uses, 'every use of `logger` is one of the exact calls').toBe(exact);
     for (const payload of payloads) {
       expect(payload, 'a logger payload in lib/alert.ts').not.toMatch(/url/i);
       expect(payload, 'a logger payload in lib/alert.ts').not.toMatch(/\.message\b/);
