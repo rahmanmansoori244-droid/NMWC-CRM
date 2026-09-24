@@ -79,7 +79,7 @@ jobs:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.BACKUP_R2_ACCOUNT_ID }}
       R2_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22
