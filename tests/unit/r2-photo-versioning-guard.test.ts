@@ -19,7 +19,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { ACTIONS_ENV, runScriptOf, runStep } from '../support/workflow-step';
+import { runScriptOf, runStep } from '../support/workflow-step';
 import {
   argvIssue,
   ruleScope,
@@ -374,7 +374,7 @@ describe('the check is wired to something that actually runs', () => {
     const on = /^on:\n((?: {2,}.*\n|\s*\n)*)/m.exec(r2Yaml)?.[1] ?? '';
     return [...on.matchAll(/^ {2}([a-z_]+):/gm)].map((m) => m[1]!);
   })();
-  const runVerify = (backupsRc: number, photosRc: number, trigger: string) => {
+  const runVerify = (backupsRc: number, photosRc: number, trigger: string, tokens: 'unset' | 'set') => {
     const stubs = [
       'npx() {',
       '  echo "npx $*" >> "$STUB_DIR/calls"',
@@ -385,24 +385,32 @@ describe('the check is wired to something that actually runs', () => {
       '  return 97',
       '}',
     ].join('\n');
-    const unset = Object.fromEntries(
+    // Both states the admin tokens are ever in: absent (today — an unset secret
+    // arrives as '') and minted. An early exit keyed on either one passed when
+    // only the first was tried (review, 2026-09-24).
+    const secrets = Object.fromEntries(
       [
         'BACKUP_R2_ADMIN_ACCESS_KEY_ID',
         'BACKUP_R2_ADMIN_SECRET_ACCESS_KEY',
         'R2_ADMIN_ACCESS_KEY_ID',
         'R2_ADMIN_SECRET_ACCESS_KEY',
-      ].map((k) => [k, ''])
+      ].map((k) => [k, tokens === 'set' ? `fake-${k.toLowerCase()}` : ''])
     );
     return runStep(verifyScript, stubs, {
-      ...ACTIONS_ENV,
+      GITHUB_JOB: 'r2-config',
       GITHUB_EVENT_NAME: trigger,
       GITHUB_REF: 'refs/heads/main',
-      ...unset,
+      ...secrets,
     });
   };
-  /** One outcome per trigger, labelled, for the assertions below. */
+  /** One outcome per trigger x token state, labelled, for the assertions below. */
   const runEach = (backupsRc: number, photosRc: number) =>
-    TRIGGERS.map((t) => ({ t, o: runVerify(backupsRc, photosRc, t) }));
+    TRIGGERS.flatMap((trigger) =>
+      (['unset', 'set'] as const).map((tokens) => ({
+        t: `${trigger}/tokens ${tokens}`,
+        o: runVerify(backupsRc, photosRc, trigger, tokens),
+      }))
+    );
   const ranBoth = (o: { calls: string[] }) =>
     o.calls.some((c) => c.includes('r2-backups-lifecycle.ts --check')) &&
     o.calls.some((c) => c.includes('r2-photos-versioning.ts --check'));

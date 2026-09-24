@@ -33,12 +33,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
-import {
-  ACTIONS_ENV,
-  runScriptOf as runScriptOfIn,
-  runStep,
-  type Outcome,
-} from '../support/workflow-step';
+import { runScriptOf as runScriptOfIn, runStep, type Outcome } from '../support/workflow-step';
 
 const CI_PATH = '.github/workflows/ci.yml';
 const SMOKE_PATH = 'scripts/ops/smoke.ts';
@@ -204,10 +199,11 @@ function runSmokeStep(attempts: Attempt[], env: Record<string, string> = {}): Ou
     smokeScript,
     stubs,
     {
-      // What Actions sets for this job, which only ever runs on a push to main. A
-      // step that branched on any of these would otherwise be tested in an
-      // environment it never runs in (review, 2026-09-24, on the R2 guard).
-      ...ACTIONS_ENV,
+      // What Actions sets for this job, which only ever runs on a push to main
+      // (runStep adds CI and GITHUB_ACTIONS). A step that branched on any of these
+      // would otherwise be tested in an environment it never runs in (review,
+      // 2026-09-24, on the R2 guard).
+      GITHUB_JOB: 'post-deploy-smoke',
       GITHUB_EVENT_NAME: 'push',
       GITHUB_REF: 'refs/heads/main',
       GITHUB_SHA: SHA,
@@ -230,6 +226,21 @@ describe('the build cannot migrate production before it typechecks', () => {
     expect(build).toContain('prisma generate');
     expect(build).toContain('prisma migrate deploy');
     expect(build).toContain('next build');
+  });
+
+  it('is one && chain, so a failing typecheck or lint STOPS the migrate', () => {
+    // Every ordering assertion below compares positions, and positions say
+    // nothing about what happens when a step fails: `next lint ; prisma migrate
+    // deploy` or `next lint || true && prisma migrate deploy` keeps every position
+    // and migrates production after a failed check (review, 2026-09-24). So the
+    // script must be commands joined by `&&` and nothing else — no `;`, no `||`,
+    // no pipe, no background `&`.
+    const segments = build.split(' && ');
+    expect(segments.length).toBeGreaterThanOrEqual(5);
+    for (const seg of segments) {
+      expect(seg.trim(), 'an empty command between two &&').not.toBe('');
+      expect(seg, `"${seg}" must be one plain command`).not.toMatch(/[;|&]/);
+    }
   });
 
   it('typechecks BEFORE the migrate step', () => {
@@ -325,6 +336,34 @@ describe('every gate in ci.yml is still wired', () => {
         expect(conds, `${id} must not be conditional`).toEqual([]);
       }
     }
+  });
+
+  it('no step that runs a check is conditional — only evidence uploads may be', () => {
+    // Job-level `if:` is covered above. A STEP-level `if: false` — or `if:
+    // github.event_name == 'pull_request'` on a job that only runs on push — skips
+    // that one step, and the job goes green having checked nothing: the smoke
+    // step, `npm test`, the integration suites. The executed scenarios in this file
+    // cannot see it either, because runScriptOf takes the `run:` block and not the
+    // step's `if:` (review, 2026-09-24). Even `if: failure()` disables a check it
+    // sits on. So a condition is allowed only on an artifact upload, which checks
+    // nothing, and never on a step with a `run:`.
+    let conditional = 0;
+    for (const id of JOBS) {
+      for (const step of stepBlocks(id)) {
+        if (!/^ {8}if:/m.test(step)) continue;
+        conditional += 1;
+        const name = step.split('\n')[0];
+        expect(step, `${id} / ${name}: only an upload may be conditional`).toMatch(
+          /^ {8}uses: actions\/upload-artifact@/m
+        );
+        expect(step, `${id} / ${name}: a conditional step must not run anything`).not.toMatch(
+          /^ {8}run:/m
+        );
+      }
+    }
+    // The two uploads that exist today. Without this the loop can pass on nothing,
+    // e.g. if stepBlocks stopped finding steps.
+    expect(conditional).toBe(2);
   });
 
   it('the browser gate carries no condition at all', () => {
@@ -481,6 +520,22 @@ describe('the smoke step really does wait for the deploy', () => {
     expect(o.output).toContain('still not serving');
   });
 
+  it('fails at once, naming the bearer, when production will not say its commit', () => {
+    // `running unknown` is /api/health refusing the bearer — the GitHub secret and
+    // the Vercel variable differ. It used to retry for 12 minutes and then blame
+    // the Vercel deployment (review, 2026-09-24).
+    const refused = smokeOutput({ serving: false, cron: 'probe-errored' }).replace(
+      'running 0ffee12, expected abc1234',
+      'running unknown, expected abc1234'
+    );
+    expect(refused).toContain('running unknown,');
+    const o = runSmokeStep([{ code: 1, out: refused }]);
+    expect(o.status, o.output).toBe(1);
+    expect(smokeRuns(o), 'no retry: waiting cannot fix a refused bearer').toBe(1);
+    expect(o.output).toMatch(/::error::[^\n]*HEALTH_BEARER/);
+    expect(o.output).not.toContain('still not serving');
+  });
+
   it('does not retry a refusal, because waiting cannot fix it', () => {
     // Exit 2 is smoke saying the bearer is unusable or the flag lost its value.
     const o = runSmokeStep([{ code: 2, out: 'refusing to run\n' }]);
@@ -623,7 +678,11 @@ describe('the e2e step tears its server down and reports the suite exit code', (
       'kill() { echo "kill $*" >> "$STUB_DIR/calls"; return 0; }',
       'sleep() { :; }',
     ].join('\n');
-    const o = runStep(script, stubs, {});
+    const o = runStep(script, stubs, {
+      GITHUB_JOB: 'e2e',
+      GITHUB_EVENT_NAME: 'push',
+      GITHUB_REF: 'refs/heads/claude/some-branch',
+    });
     // Under an inherited -e the bare `npx playwright test` aborted here, so
     // neither of these was ever reached.
     expect(o.calls.some((c) => c.startsWith('kill')), o.output).toBe(true);

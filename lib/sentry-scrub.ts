@@ -80,6 +80,12 @@ function webhookFragments(): string[] {
     // and its query-less form above are redacted whatever their length.
     if (u.pathname.length >= MIN_FRAGMENT) out.add(u.pathname);
     if (u.search.length > MIN_FRAGMENT) out.add(u.search.slice(1));
+    // The hostname too. Some bridges put the whole credential there — a Pipedream
+    // trigger is `https://<token>.m.pipedream.net/` with no auth of its own — and
+    // the fetch span records it on its own as `server.address` (review,
+    // 2026-09-24). Replacing a well-known host such as hooks.slack.com costs
+    // nothing: it appears in an event only because of this very request.
+    if (u.hostname.length >= MIN_FRAGMENT) out.add(u.hostname);
   } catch {
     // Unparseable: the raw string is all there is to look for.
   }

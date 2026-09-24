@@ -523,6 +523,15 @@ jobs:
               echo "::error::smoke refused to run (exit 2): the bearer is set but unusable, or the flag lost its value. Not retrying — waiting cannot fix it."
               exit 1
             fi
+            # A commit of `unknown` is not "the old build is still live" — the old
+            # build names its own commit. It means /api/health would not say, which
+            # in practice is the bearer being REFUSED: the repository secret and the
+            # Vercel variable differ. Waiting cannot fix that, and retrying it for 12
+            # minutes ended by blaming the Vercel deployment (review, 2026-09-24).
+            if grep -qE '^FAIL +production is running the commit you think it is +running unknown,' smoke.log; then
+              echo "::error::production would not say which commit it is serving ('unknown'). Almost always the monitor bearer was REFUSED: the HEALTH_BEARER repository secret does not match HEALTH_BEARER in Vercel Production, or that one is shorter than 20 characters. Less often VERCEL_GIT_COMMIT_SHA is missing from the deployment. Not retrying — waiting cannot fix either."
+              exit 1
+            fi
             # Only the WAIT is retried. Once smoke's own commit check passes the
             # deploy has landed, and retrying cannot change what else it found.
             if grep -qE '^PASS +production is running the commit you think it is' smoke.log; then
@@ -560,7 +569,8 @@ jobs:
           # job's next success, so one failed nightly dump turned every merge red
           # for a day — the gate-red-for-an-unrelated-reason that gets switched off.
           # A failing job is reported by its own alert (lib/heartbeat.ts) and by the
-          # /api/health monitor; this job reports it too, and gates the deploy.
+          # /api/health monitor. This job names it in a ::warning:: and gates only
+          # on the deploy's own checks.
           FAILS=$(grep -c '^FAIL' smoke.log || true)
           CRON=$(grep -cE '^FAIL +monitor bearer unlocks the detail' smoke.log || true)
           PROBES=$(grep -cE 'failed=\[[^]]+\]' smoke.log || true)

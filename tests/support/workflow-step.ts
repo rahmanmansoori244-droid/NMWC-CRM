@@ -80,10 +80,11 @@ export function resolveBash(): { bash: string; extraPath: string | null } {
 export type Outcome = { status: number; output: string; calls: string[] };
 
 /**
- * Variables every Actions run has. `runStep` otherwise hands the step THIS
- * process's environment, in which none of them exist — so a step that exits early
- * on `$GITHUB_EVENT_NAME` passed every scenario while doing nothing on its real
- * trigger (review, 2026-09-24). Each caller adds the event and ref its job runs on.
+ * Variables every Actions run has, applied by `runStep` under the caller's own.
+ * Without them a step is tested in THIS process's environment, where none exist —
+ * so a step that exits early on `$GITHUB_EVENT_NAME` passed every scenario while
+ * doing nothing on its real trigger (review, 2026-09-24). Each caller adds the
+ * job, event and ref it runs on (GITHUB_JOB, GITHUB_EVENT_NAME, GITHUB_REF).
  */
 export const ACTIONS_ENV: Record<string, string> = { CI: 'true', GITHUB_ACTIONS: 'true' };
 
@@ -110,7 +111,7 @@ export function runStep(
     childEnv.PATH = extraPath
       ? extraPath + delimiter + (process.env.PATH ?? '')
       : (process.env.PATH ?? '');
-    Object.assign(childEnv, env);
+    Object.assign(childEnv, ACTIONS_ENV, env);
     const res = spawnSync(bash, ['-e', 'step.sh'], {
       cwd: dir,
       env: childEnv,

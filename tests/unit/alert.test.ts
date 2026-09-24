@@ -380,6 +380,28 @@ describe('sendAlert — the webhook URL is a credential', () => {
       // input guard returns first — this keeps it harmless if that guard moves.
       expect(payload, 'a logger payload in lib/alert.ts').not.toMatch(/\ba\.\w/);
     }
+    // And every field in every payload is one of these, with exactly this value.
+    // The patterns above are a denylist, and `cause: (err as Error)?.cause` walked
+    // through it — undici's real parse error carries the whole webhook URL in its
+    // cause, where the fake error in the test above has none (review, 2026-09-24).
+    const ALLOWED: Record<string, string> = {
+      event: 'event',
+      retryAfterSec: 'retryAfterSec',
+      status: 'res.status',
+      err: 'failureLabel(err)',
+    };
+    for (const payload of payloads) {
+      const fields = payload
+        .slice(1, -1)
+        .split(',')
+        .map((f) => f.trim())
+        .filter(Boolean);
+      for (const field of fields) {
+        const [key, value = key] = field.split(/\s*:\s*/);
+        expect(Object.keys(ALLOWED), `field "${field}" in a lib/alert.ts log line`).toContain(key);
+        expect(value, `field "${field}" in a lib/alert.ts log line`).toBe(ALLOWED[key!]);
+      }
+    }
   });
 });
 
@@ -751,9 +773,12 @@ describe('every alert has a caller and every caller has an alert', () => {
     // adjacency.
     //
     // The sweep alerts on escalations, never on a quiet run — after its summary log
-    // line and immediately before it answers.
+    // line and immediately before it answers — and a second-level escalation is
+    // CRITICAL. Without the severity in this pin, `severity: 'warn'` put the P1 this
+    // file's dedup tests close straight back, with every test green (review,
+    // 2026-09-24): a warn and a critical share nothing only if they differ.
     expect(sources.get('app/api/cron/sla-escalate/route.ts')).toMatch(
-      /'cron\.sla_escalate'\);\s*if \(escalated > 0 \|\| level2 > 0\) \{\s*await sendAlert\(\{[\s\S]*?\}\);\s*\}\s*return NextResponse\.json\(\{ escalated, level2,/
+      /'cron\.sla_escalate'\);\s*if \(escalated > 0 \|\| level2 > 0\) \{\s*await sendAlert\(\{\s*severity: level2 > 0 \? 'critical' : 'warn',[\s\S]*?\}\);\s*\}\s*return NextResponse\.json\(\{ escalated, level2,/
     );
     // The import's decision is proved by behaviour below (lib/import-rejection-
     // alert.ts). This pins the one thing behaviour cannot see: that the service

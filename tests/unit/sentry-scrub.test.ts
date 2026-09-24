@@ -312,20 +312,37 @@ describe('the alert webhook URL never reaches Sentry', () => {
     expect(out).not.toContain('f00dfacecafebeef1234');
   });
 
+  it('redacts a secret carried in the HOSTNAME, which the fetch span records on its own', () => {
+    // A Pipedream-style trigger has no path and no query: the host IS the token,
+    // and undici's span sets `server.address` to it (review, 2026-09-24).
+    const hostToken = 'https://eo2abc3def4ghi5.m.pipedream.net';
+    const event = {
+      type: 'transaction',
+      spans: [
+        {
+          description: 'POST',
+          data: { 'server.address': 'eo2abc3def4ghi5.m.pipedream.net', 'url.full': `${hostToken}/` },
+        },
+      ],
+    } as unknown as SentryEvent;
+    const out = withHook(hostToken, () => JSON.stringify(scrubEvent(event)));
+    expect(out).not.toContain('eo2abc3def4ghi5');
+  });
+
   it('does not treat a SHORT path or query as the secret, or it would redact everything', () => {
     // `https://bridge.example.com/api?x` added `/api` and `x` as fragments, and every
     // event lost every `/api` and every letter x (review, 2026-09-24). The URL itself
-    // is still redacted — here in the query-stripped form Sentry records, which for
-    // a path this short only the origin+path fragment can catch.
-    const short = 'https://bridge.example.com/api?x';
+    // is still redacted — here in the query-stripped form Sentry records, which with
+    // a host AND a path this short only the origin+path fragment can catch.
+    const short = 'https://b.io/api?x';
     const event = {
       transaction: 'GET /api/health',
-      breadcrumbs: [{ message: 'fixed the xyz index', data: { url: 'https://bridge.example.com/api' } }],
+      breadcrumbs: [{ message: 'fixed the xyz index', data: { url: 'https://b.io/api' } }],
     } as unknown as SentryEvent;
     const out = withHook(short, () => scrubEvent(event));
     expect(out.transaction).toBe('GET /api/health');
     expect(out.breadcrumbs![0]!.message).toBe('fixed the xyz index');
-    expect(JSON.stringify(out)).not.toContain('bridge.example.com/api');
+    expect(JSON.stringify(out)).not.toContain('b.io/api');
   });
 
   it('is a no-op when no webhook is configured — the client and the Edge', () => {
