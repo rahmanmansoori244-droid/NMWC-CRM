@@ -28,7 +28,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 const ROOT = process.cwd();
@@ -105,6 +105,7 @@ const result = {
   typegenStatus: -1 as number | null,
   typegenOutput: '',
   linkTypesWritten: false,
+  projectFiles: [] as string[],
   tscStatus: -1 as number | null,
   tscOutput: '',
   programFiles: [] as string[],
@@ -121,26 +122,46 @@ beforeAll(() => {
     }
   }
 
-  // From clean, as a fresh checkout has it: `next typegen` does not delete a
-  // link.d.ts it no longer writes, so with `typedRoutes` switched off a stale copy
-  // would keep this test green while CI checked nothing.
-  rmSync(TYPES_DIR, { recursive: true, force: true });
+  // `next typegen` does not delete a link.d.ts it no longer writes, so with
+  // `typedRoutes` switched off a stale copy would keep this test green while CI
+  // checked nothing. This used to delete .next/types first; that pulled the route
+  // types out from under any typecheck running in the same checkout (review,
+  // 2026-09-24). Requiring THIS run to have written the file proves the same
+  // thing without touching anyone else's.
+  const started = Date.now();
   const typegen = run(NEXT, ['typegen']);
   result.typegenStatus = typegen.status;
   result.typegenOutput = `${typegen.stdout ?? ''}${typegen.stderr ?? ''}`;
-  result.linkTypesWritten = existsSync(join(TYPES_DIR, 'link.d.ts'));
+  const link = join(TYPES_DIR, 'link.d.ts');
+  // Two seconds of slack for filesystem timestamp granularity.
+  result.linkTypesWritten = existsSync(link) && statSync(link).mtimeMs >= started - 2_000;
 
   const dir = mkdtempSync(join(PROBE_PARENT, PROBE_PREFIX));
   result.probeDir = basename(dir);
   try {
     writeFileSync(join(dir, 'bad.tsx'), BAD_PROBE, 'utf8');
     writeFileSync(join(dir, 'good.tsx'), GOOD_PROBE, 'utf8');
-    // The project's own typecheck: same tsconfig, whole program. Incremental is
-    // off so a cached result can neither hide the probe nor slow the next real run.
+    // The project's own tsconfig, extended by ONLY `files`: include, exclude and
+    // every compiler option are inherited unchanged, so whether the route types
+    // reach the program is still the project's own answer. The probe comes in
+    // through `files` because the project excludes this directory — so that a
+    // typecheck running in the same checkout meanwhile never sees these bad
+    // hrefs (review, 2026-09-24).
+    writeFileSync(
+      join(dir, 'tsconfig.json'),
+      JSON.stringify({ extends: '../../tsconfig.json', files: ['./bad.tsx', './good.tsx'] }),
+      'utf8'
+    );
+    // And prove that exclusion holds: the project's own program, listed while
+    // the probe exists, must not contain it.
+    const listed = run(TSC, ['-p', 'tsconfig.json', '--listFilesOnly']);
+    result.projectFiles = `${listed.stdout ?? ''}`.replace(/\\/g, '/').split(/\r?\n/);
+    // Incremental is off so a cached result can neither hide the probe nor slow
+    // the next real run.
     const tsc = run(TSC, [
       '--noEmit',
       '-p',
-      'tsconfig.json',
+      join(dir, 'tsconfig.json'),
       '--incremental',
       'false',
       '--pretty',
@@ -200,5 +221,12 @@ describe('typed routes are enforced by the typecheck', () => {
 
   it('accepts the same shapes pointed at real routes', () => {
     expect(probeErrors('good.tsx'), result.tscOutput).toEqual([]);
+  });
+
+  it('keeps its bad hrefs out of the project program while it runs', () => {
+    // Otherwise any typecheck, build or editor in this checkout fails on them
+    // for the length of this test (review, 2026-09-24).
+    expect(result.projectFiles.length, 'the listing ran').toBeGreaterThan(50);
+    expect(result.projectFiles.filter((f) => f.includes(PROBE_PREFIX))).toEqual([]);
   });
 });

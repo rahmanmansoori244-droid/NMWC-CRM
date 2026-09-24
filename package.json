@@ -9,7 +9,7 @@
     "postinstall": "prisma generate",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "next typegen && tsc --noEmit",
+    "typecheck": "node -e \"require('fs').rmSync('.next/types/app',{recursive:true,force:true})\" && next typegen && tsc --noEmit",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,md,json}\"",
     "test": "vitest run",

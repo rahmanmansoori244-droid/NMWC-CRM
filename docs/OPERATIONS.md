@@ -67,7 +67,7 @@ npm run db:migrate -- --name describe_change
 npx prisma migrate deploy
 ```
 
-- **Migrations ARE applied by the Vercel build.** `package.json` `build` runs `prisma generate && prisma migrate deploy && next build`, so any migration on the deployed commit is applied to the database in `DIRECT_URL` as part of the deploy. (This line previously said the opposite; it was wrong, and it matters — a rollback of the application does not roll back the schema, and a restore followed by a deploy will re-apply migrations.)
+- **Migrations ARE applied by the Vercel build.** `package.json` `build` runs `prisma generate && next typegen && tsc --noEmit && next lint && prisma migrate deploy && next build --no-lint`, so any migration on the deployed commit is applied to the database in `DIRECT_URL` as part of the deploy — but only after the typecheck and lint have passed. A deploy that failed in `next typegen`, `tsc` or `next lint` applied nothing; one that failed inside `next build` HAS applied its migrations. (This line previously said the opposite; it was wrong, and it matters — a rollback of the application does not roll back the schema, and a restore followed by a deploy will re-apply migrations.)
 
 ## 5b. First-time post-deploy operator checklist
 

@@ -523,15 +523,13 @@ jobs:
               echo "::error::smoke refused to run (exit 2): the bearer is set but unusable, or the flag lost its value. Not retrying — waiting cannot fix it."
               exit 1
             fi
-            # A commit of `unknown` is not "the old build is still live" — the old
-            # build names its own commit. It means /api/health would not say, which
-            # in practice is the bearer being REFUSED: the repository secret and the
-            # Vercel variable differ. Waiting cannot fix that, and retrying it for 12
-            # minutes ended by blaming the Vercel deployment (review, 2026-09-24).
-            if grep -qE '^FAIL +production is running the commit you think it is +running unknown,' smoke.log; then
-              echo "::error::production would not say which commit it is serving ('unknown'). Almost always the monitor bearer was REFUSED: the HEALTH_BEARER repository secret does not match HEALTH_BEARER in Vercel Production, or that one is shorter than 20 characters. Less often VERCEL_GIT_COMMIT_SHA is missing from the deployment. Not retrying — waiting cannot fix either."
-              exit 1
-            fi
+            # `running unknown` (/api/health refused the bearer) is retried like any
+            # other not-yet: it is what the PREVIOUS deployment answers when the
+            # bearer was just created or rotated in Vercel, because a variable
+            # reaches only deployments made after it — the new one accepts it. That
+            # happened on main on 2026-09-24, and failing fast on it (3b1632d) would
+            # have failed that healthy deploy. A bearer that is still refused when
+            # the wait runs out is named below instead of blaming the deployment.
             # Only the WAIT is retried. Once smoke's own commit check passes the
             # deploy has landed, and retrying cannot change what else it found.
             if grep -qE '^PASS +production is running the commit you think it is' smoke.log; then
@@ -541,6 +539,10 @@ jobs:
             sleep 15
           done
           if [ "$SERVING" != "1" ]; then
+            if grep -qE '^FAIL +production is running the commit you think it is +running unknown,' smoke.log; then
+              echo "::error::after 24 attempts (~12 minutes) production still would not say which commit it serves ('unknown'): the monitor bearer is being REFUSED. The HEALTH_BEARER repository secret does not match HEALTH_BEARER in Vercel Production, or that one is shorter than 20 characters (less often, VERCEL_GIT_COMMIT_SHA is missing). This is the secret, not the deployment."
+              exit 1
+            fi
             echo "::error::after 24 attempts (~12 minutes) production is still not serving ${SHORT}. Check the Vercel deployment for this commit before assuming the app is fine."
             exit 1
           fi

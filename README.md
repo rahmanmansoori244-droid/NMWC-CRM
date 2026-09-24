@@ -29,7 +29,7 @@ npm run dev                   # http://localhost:3000
 |---|---|
 | `npm run dev` | Local dev server |
 | `npm run build` | Production build |
-| `npm run typecheck` | `next typegen && tsc --noEmit` — route types first, or no href is checked |
+| `npm run typecheck` | clears `.next/types/app`, then `next typegen && tsc --noEmit` — route types first, or no href is checked; the clearing stops a deleted page's leftover types failing it |
 | `npm run lint` | ESLint |
 | `npm test` | Vitest unit/integration |
 | `npm run test:e2e` | Playwright E2E |

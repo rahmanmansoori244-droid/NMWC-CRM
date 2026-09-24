@@ -39,9 +39,13 @@ refuses surfaces *after* migrations have already been applied to the production
 database, leaving it migrated but undeployed. Since 2026-09-24 the build script
 typechecks and lints ahead of the migrate (`tests/unit/ci-gates-guard.test.ts`
 pins the order), but a compile or prerender failure inside `next build` still
-lands after it. Run `npm run typecheck`, `npm run lint` and the unit suite before
-pushing anything. Not bare `npx tsc --noEmit`: without `next typegen` first there
-are no route types, and it passes a `<Link>` to a page that does not exist.
+lands after it — and so do the per-page type checks (a page's exports, its
+`params`/`searchParams` types), because Next writes those files only while
+`next build` compiles. Only CI's `next build` on the branch catches them before a
+migrate, which is one more reason `main` moves only to a CI-green commit. Run
+`npm run typecheck`, `npm run lint` and the unit suite before pushing anything.
+Not bare `npx tsc --noEmit`: without `next typegen` first there are no route
+types, and it passes a `<Link>` to a page that does not exist.
 
 **Gate the merge on CI's exit code, not on the command that printed it.** Chaining
 a push after a status check with `&&` or `;` pushes regardless — that put a red

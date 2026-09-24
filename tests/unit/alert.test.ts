@@ -371,6 +371,16 @@ describe('sendAlert — the webhook URL is a credential', () => {
     expect(payloads.length, 'every logger call here passes an object literal first').toBe(
       [...src.matchAll(/logger\.\w+\(/g)].length
     );
+    // And its message is a plain string literal with nothing after it. The payload
+    // checks below read only the first argument, so `'alert.failed' + cause`, a
+    // template literal carrying the URL, or a pino format argument walked past
+    // them (review, 2026-09-24).
+    const exact = [
+      ...src.matchAll(/logger\.\w+\(\s*\{[\s\S]*?\}\s*,\s*'[a-z_.]+'\s*\);/g),
+    ].length;
+    expect(exact, 'every logger call is exactly (payload, \'literal.message\')').toBe(
+      [...src.matchAll(/logger\.\w+\(/g)].length
+    );
     for (const payload of payloads) {
       expect(payload, 'a logger payload in lib/alert.ts').not.toMatch(/url/i);
       expect(payload, 'a logger payload in lib/alert.ts').not.toMatch(/\.message\b/);

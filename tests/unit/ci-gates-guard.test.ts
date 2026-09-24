@@ -235,12 +235,39 @@ describe('the build cannot migrate production before it typechecks', () => {
     // and migrates production after a failed check (review, 2026-09-24). So the
     // script must be commands joined by `&&` and nothing else — no `;`, no `||`,
     // no pipe, no background `&`.
-    const segments = build.split(' && ');
-    expect(segments.length).toBeGreaterThanOrEqual(5);
-    for (const seg of segments) {
-      expect(seg.trim(), 'an empty command between two &&').not.toBe('');
-      expect(seg, `"${seg}" must be one plain command`).not.toMatch(/[;|&]/);
-    }
+    // A NEWLINE is a separator too: sh runs `…next lint\nprisma migrate deploy`
+    // as two lists, and the second migrates whatever the first said. And an
+    // `npm run <x>` segment is only as safe as <x>, so those are followed and held
+    // to the same rule (review, 2026-09-24).
+    const plainChain = (script: string, seen: string[] = []): void => {
+      expect(script, `"${script}" must be one line`).not.toMatch(/[\r\n]/);
+      for (const seg of script.split(' && ')) {
+        expect(seg.trim(), 'an empty command between two &&').not.toBe('');
+        expect(seg, `"${seg}" must be one plain command`).not.toMatch(/[;|&]/);
+        const nested = /^\s*npm run (\S+)\s*$/.exec(seg)?.[1];
+        if (nested && !seen.includes(nested)) {
+          const body = pkg.scripts[nested];
+          expect(body, `npm run ${nested} must exist`).toBeDefined();
+          plainChain(body!, [...seen, nested]);
+        }
+      }
+    };
+    expect(build.split(' && ').length).toBeGreaterThanOrEqual(5);
+    plainChain(build);
+    // CI and CLAUDE.md typecheck through `npm run typecheck`; it gets the same rule.
+    plainChain(pkg.scripts.typecheck ?? '');
+  });
+
+  it('typecheck clears the per-page route types first, so a deleted page cannot fail it', () => {
+    // `next build` and `next dev` write .next/types/app/**/page.ts per page, and
+    // `next typegen` never deletes one. Delete or rename a page and every later
+    // typecheck failed on the orphan with TS2307 until someone cleared .next by
+    // hand (review, 2026-09-24). Clearing them also makes the local typecheck the
+    // one a fresh checkout — CI, Vercel — runs, which never has those files.
+    const typecheck = pkg.scripts.typecheck ?? '';
+    const clear = typecheck.search(/rmSync\('\.next\/types\/app'/);
+    expect(clear, 'typecheck must clear .next/types/app').toBeGreaterThan(-1);
+    expect(clear).toBeLessThan(typecheck.indexOf('next typegen'));
   });
 
   it('typechecks BEFORE the migrate step', () => {
@@ -368,14 +395,20 @@ describe('every gate in ci.yml is still wired', () => {
     let conditional = 0;
     for (const id of JOBS) {
       for (const step of stepBlocks(id)) {
-        if (!/^ {8}if:/m.test(step)) continue;
+        // A key is either the step's FIRST key — `- if: …` is the same step with
+        // the condition written first, and stepBlocks leaves it at column 0 — or
+        // one of the keys under it at eight spaces. Reading only the second let
+        // `- if: github.event_name == 'pull_request'` above `run: npm test` skip
+        // the whole unit suite with this test green (review, 2026-09-24).
+        const key = (k: string) => new RegExp(`(^|\\n {8})${k}:`);
+        if (!key('if').test(step)) continue;
         conditional += 1;
         const name = step.split('\n')[0];
         expect(step, `${id} / ${name}: only an upload may be conditional`).toMatch(
-          /^ {8}uses: actions\/upload-artifact@/m
+          new RegExp(`(^|\\n {8})uses: actions/upload-artifact@`)
         );
         expect(step, `${id} / ${name}: a conditional step must not run anything`).not.toMatch(
-          /^ {8}run:/m
+          key('run')
         );
       }
     }
@@ -538,20 +571,38 @@ describe('the smoke step really does wait for the deploy', () => {
     expect(o.output).toContain('still not serving');
   });
 
-  it('fails at once, naming the bearer, when production will not say its commit', () => {
-    // `running unknown` is /api/health refusing the bearer — the GitHub secret and
-    // the Vercel variable differ. It used to retry for 12 minutes and then blame
-    // the Vercel deployment (review, 2026-09-24).
-    const refused = smokeOutput({ serving: false, cron: 'probe-errored' }).replace(
+  /** What smoke prints while /api/health refuses the bearer: no commit to compare. */
+  const refusedOutput = () => {
+    const out = smokeOutput({ serving: false, cron: 'probe-errored' }).replace(
       'running 0ffee12, expected abc1234',
       'running unknown, expected abc1234'
     );
-    expect(refused).toContain('running unknown,');
-    const o = runSmokeStep([{ code: 1, out: refused }]);
+    expect(out).toContain('running unknown,');
+    return out;
+  };
+
+  it('waits through a refused bearer — the previous deployment right after a rotation', () => {
+    // A Vercel variable reaches only deployments made after it, so the build still
+    // live when a new bearer is set refuses it until this commit's deployment takes
+    // over. That is a healthy deploy, and it happened on main on 2026-09-24;
+    // failing fast on `unknown` (3b1632d) would have failed it (review, same day).
+    const o = runSmokeStep([
+      { code: 1, out: refusedOutput() },
+      { code: 1, out: refusedOutput() },
+      { code: 0, out: smokeOutput({ serving: true, cron: 'quiet' }) },
+    ]);
+    expect(o.status, o.output).toBe(0);
+    expect(smokeRuns(o)).toBe(3);
+  });
+
+  it('names the bearer, not the deployment, when it is still refused at the end', () => {
+    // Retrying for 12 minutes and then saying "check the Vercel deployment" sent
+    // the reader to the wrong place (review, 2026-09-24).
+    const o = runSmokeStep([{ code: 1, out: refusedOutput() }]);
     expect(o.status, o.output).toBe(1);
-    expect(smokeRuns(o), 'no retry: waiting cannot fix a refused bearer').toBe(1);
+    expect(smokeRuns(o)).toBeGreaterThan(1);
     expect(o.output).toMatch(/::error::[^\n]*HEALTH_BEARER/);
-    expect(o.output).not.toContain('still not serving');
+    expect(o.output).not.toContain('Check the Vercel deployment');
   });
 
   it('does not retry a refusal, because waiting cannot fix it', () => {

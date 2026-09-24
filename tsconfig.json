@@ -34,5 +34,10 @@
   // href) and validator.ts (route handler and layout checks), and every route
   // went unchecked. Nothing outside .next/types is reached: the `**` globs skip
   // dot-directories. Pinned by tests/unit/typed-routes-guard.test.ts.
-  "exclude": ["node_modules", "dist", "playwright-report", "test-results"]
+  //
+  // tests/typed-routes-probe-* holds that guard's deliberately BAD hrefs for the
+  // few seconds it runs. Excluded so a typecheck, a build or an editor running at
+  // the same moment does not fail on them; the guard adds its probe back through
+  // `files`, which `exclude` does not filter.
+  "exclude": ["node_modules", "dist", "playwright-report", "test-results", "tests/typed-routes-probe-*"]
 }
