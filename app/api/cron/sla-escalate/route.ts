@@ -33,6 +33,7 @@ import {
 } from '@/lib/working-hours';
 import { TEMIX_QUEUE_WHERE } from '@/lib/temix';
 import { notifyUsers } from '@/lib/notifications';
+import { sendAlert } from '@/lib/alert';
 import { systemAuditEnvelope, writeAudit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
@@ -296,6 +297,30 @@ async function handle(req: NextRequest) {
     : 0;
 
   logger.info({ escalated, level2, temixPinged, gcDeleted, sweepErrors }, 'cron.sla_escalate');
+
+  // GAP-2 (2026-09-24): this sweep escalated into an in-app bell and nothing else.
+  // A breach reached a Notification row, the row reached a screen, and the screen
+  // was not open — which is the whole of "the SLA is enforced" as it shipped.
+  //
+  // Counts only, no customer names: the alert says how many and the app says which
+  // (lib/alert.ts). Sent only when something actually escalated, so a quiet sweep
+  // is silent; awaited rather than fired and forgotten, because Vercel does not
+  // promise to finish work after the response, and safe to await because sendAlert
+  // cannot throw.
+  //
+  // sweepErrors is reported here but deliberately NOT what triggers the alert:
+  // withHeartbeat's `okFrom` below already returns false when sweepErrors > 0, and
+  // lib/heartbeat.ts alerts on any cron run it records as failed. Alerting on it
+  // here too would post the same fact twice under two different event keys.
+  if (escalated > 0 || level2 > 0) {
+    await sendAlert({
+      severity: level2 > 0 ? 'critical' : 'warn',
+      event: 'sla.escalated',
+      message: 'Approval requests passed their SLA and were escalated. Open the app to see which.',
+      counts: { escalated, level2, sweepErrors },
+    });
+  }
+
   return NextResponse.json({ escalated, level2, temixPinged, gcDeleted, sweepErrors });
 }
 

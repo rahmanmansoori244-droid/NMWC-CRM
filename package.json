@@ -5,7 +5,7 @@
   "description": "NMWC Customer Master — field-driven master data cleanup app",
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && prisma migrate deploy && next build",
+    "build": "prisma generate && tsc --noEmit && prisma migrate deploy && next build",
     "postinstall": "prisma generate",
     "start": "next start",
     "lint": "next lint",

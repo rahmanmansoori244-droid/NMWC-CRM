@@ -27,9 +27,21 @@ name: DB Backup
 #   * NO SAME-DAY OVERWRITE. The key carries the full timestamp, not just the
 #     date, so a second run cannot replace the good nightly dump.
 #
-# Retention: 30 days, enforced bucket-side. That rule is now set and verified
-# from code — `npx tsx scripts/ops/r2-backups-lifecycle.ts [--check]` — instead
-# of being a dashboard TODO nobody confirmed.
+# Retention: 30 days, enforced bucket-side. That rule is set and verified from
+# code — `npx tsx scripts/ops/r2-backups-lifecycle.ts [--check]` — instead of
+# being a dashboard TODO nobody confirmed. Since 2026-09-24 that `--check` runs
+# daily, together with the photo bucket's versioning check, in
+# `.github/workflows/r2-config.yml` — because until then nothing ever called
+# either of them.
+#
+# That is a SEPARATE WORKFLOW and not a second job in this file, and the reason is
+# this file. GitHub reports success or failure per WORKFLOW, not per job, and that
+# check is red until the owner mints an admin token per bucket. A job here that is
+# red every night anyway would camouflage a failed backup — the red run is the
+# alarm that caught seven missing nights this month — and would disarm the
+# `ALLOW_PLAINTEXT_BACKUP` guard at the end of this job, whose entire mechanism is
+# this run turning red and being noticed. Nothing bucket-configuration-shaped
+# belongs in here.
 #
 # The restore half lives in `.github/workflows/restore-drill.yml`.
 

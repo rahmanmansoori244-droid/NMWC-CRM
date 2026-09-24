@@ -27,6 +27,7 @@ import { scoreCustomer } from '@/lib/completeness';
 import bcrypt from 'bcryptjs';
 import { logger } from '@/lib/logger';
 import { notifyUsers } from '@/lib/notifications';
+import { sendAlert } from '@/lib/alert';
 import { randomUUID } from 'node:crypto';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
@@ -1979,6 +1980,38 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     }).catch((e) => {
       logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
     });
+
+    // GAP-2 (2026-09-24): a load that rejected rows told nobody. The counters are
+    // on the batch page and the reasons are on the rows, but a Steward who closed
+    // the tab believing "promote finished" had no way to learn that 1,833 of them
+    // did not land — which is exactly what happened on 2026-09-23, twice.
+    //
+    // ONE alert for the whole batch, never one per row: it fires only on the slice
+    // that cleared the last CLEAN row (`done`) and only when that slice still held
+    // the lease — a run that lost the batch must leave the alert to the owner that
+    // finalised it, or a resumed load posts twice for the same finish. Rejections
+    // are counted from the row states, which are the authoritative totals for the
+    // whole batch rather than this slice's share.
+    //
+    // No customer identifiers: counts and the batch id, which is the /import/ URL
+    // segment the operator needs. `failureCustCodes` stays in the audit row, where
+    // it is behind authentication — a webhook is a third party.
+    const rejectedTotal = countOf(ImportRowState.REJECTED);
+    if (done && finalize.count > 0 && rejectedTotal > 0) {
+      await sendAlert({
+        severity: 'warn',
+        event: 'import.rejections',
+        // Per batch, so two masters loaded the same morning both report.
+        scope: batchId,
+        message: 'A customer master load finished with rejected rows. Open the batch to see why.',
+        counts: {
+          rejected: rejectedTotal,
+          promoted: countOf(ImportRowState.PROMOTED),
+          groups: groups.size,
+        },
+        ids: { batchId },
+      });
+    }
 
     // Only the FINAL slice revalidates. An intermediate slice revalidating would
     // re-render the batch page (and re-run its queries) after every pass — dozens of

@@ -145,6 +145,118 @@ jobs:
           RUN_PROMOTE_RELEASE: '1'
           RUN_GOLIVE_FLOW: '1'
 
+  # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
+  # person typing `npm run test:e2e`. It shows: login.spec.ts asserted
+  # `body.service === 'nmwc-cm'` on the ANONYMOUS health probe — a field that
+  # response has never carried, because B-12 keeps it to `{status}` — and the
+  # assertion was wrong for months while nothing ran it. A suite nobody runs
+  # tests the person who wrote it, not the code.
+  #
+  # ONE spec is named here, by path, on purpose. The other,
+  # golive-update-flow.spec.ts, calls test.skip() unless RUN_GOLIVE_E2E is set,
+  # and it cannot be honoured in CI: the browser PUTs three photographs to a
+  # presigned Cloudflare R2 URL and the teardown deletes those objects again, so
+  # running it needs live R2 credentials — and the only photographs bucket that
+  # exists is the production one, holding real customers' shopfronts. Pointing
+  # the suite at the DIRECTORY would wire a spec that reports "skipped" on every
+  # run for ever, which is exactly the shape of the restore drill that reported
+  # skipped for 127 consecutive runs behind a variable nobody created.
+  #
+  # It runs against `next start` on a real production build rather than the
+  # `next dev` server playwright.config.ts starts for a developer: `next dev`
+  # adds 'unsafe-eval' to script-src, and the CSP assertion in this spec is
+  # about the policy PRODUCTION serves. E2E_BASE_URL is what turns that config's
+  # own webServer off.
+  e2e:
+    name: Playwright (login, health probe, CSP) on a production build
+    runs-on: ubuntu-latest
+    # The budget that can actually fire lives on the STEP below, not here. A job
+    # cancelled by its own `timeout-minutes` does NOT run its `if: failure()`
+    # steps, so a hanging suite would skip the trace upload in exactly the case
+    # the upload exists for. A step that exceeds ITS budget merely fails the
+    # step, and the job carries on to the upload. This value stays well above the
+    # step budget so it is only a backstop for the steps that have none (npm ci,
+    # build, browser download) — a hang in those produces no traces to upload.
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: nmwc_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci -d nmwc_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/nmwc_ci
+      DIRECT_URL: postgresql://ci:ci@localhost:5432/nmwc_ci
+      E2E_BASE_URL: http://localhost:3000
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      # `next start` runs with NODE_ENV=production, where lib/auth.ts refuses to
+      # start on a missing or low-entropy AUTH_SECRET. Generated at run time so no
+      # secret-shaped literal lives in the repository.
+      - name: Throw-away env for the build and the server
+        run: |
+          echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      # The anonymous /api/health runs one `SELECT 1` and answers 503 when it
+      # fails (B5), and the spec asserts a 200 — so the database has to be real.
+      - run: npx prisma migrate deploy
+      - run: npx next build
+      - run: npx playwright install --with-deps chromium
+      - name: Serve the build and run the login spec against it
+        # Bounded HERE rather than on the job: a step timeout fails the step and
+        # lets the trace upload below run; a job timeout cancels the job and skips
+        # it. See the note on the job's own timeout-minutes.
+        timeout-minutes: 12
+        run: |
+          set -uo pipefail
+          # GitHub invokes every `run:` block as `bash -e {0}`, and `set -uo
+          # pipefail` does NOT clear an inherited -e. So a bare failing command
+          # aborts the whole step where it stands: `npx playwright test` used to
+          # abort before CODE was captured and before the server was killed, and
+          # the two lines after it never ran. `|| CODE=$?` makes it an AND-OR
+          # list, where -e is suppressed whether it is set or not. Do not
+          # "simplify" it back to a bare invocation.
+          npx next start > next-start.log 2>&1 &
+          SERVER=$!
+          READY=0
+          for _ in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/api/health > /dev/null 2>&1; then READY=1; break; fi
+            sleep 2
+          done
+          if [ "$READY" != "1" ]; then
+            echo "::error::next start never answered /api/health — the spec would have failed for the wrong reason"
+            tail -40 next-start.log
+            kill "$SERVER" 2>/dev/null || true
+            exit 1
+          fi
+          CODE=0
+          npx playwright test tests/e2e/login.spec.ts || CODE=$?
+          kill "$SERVER" 2>/dev/null || true
+          exit "$CODE"
+      - name: Upload the traces of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-${{ github.run_id }}
+          path: |
+            test-results/
+            next-start.log
+          retention-days: 14
+          if-no-files-found: warn
+
   # B3 (2026-09-14): prove the BACKUP AND RESTORE CHAIN itself, on every push.
   #
   # The monthly drill (.github/workflows/restore-drill.yml) exercises the real
@@ -321,3 +433,123 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # GAP-08 (re-benchmark 2026-09-24): fourteen checks, no credentials, fifteen
+  # seconds, every one of them something that has already been wrong on this
+  # system — and it ran only when somebody remembered to type it. One of the
+  # fourteen is "production is running the commit you think it is", which exists
+  # because production served a four-month-old build for weeks and the only
+  # reason anyone noticed was a 404 on a route that should have existed.
+  #
+  # Merging to main deploys, and Vercel builds IN PARALLEL with this workflow. A
+  # job that ran the suite immediately would therefore smoke the PREVIOUS build
+  # and report a pass — the same false green, one level up. So the wait is not a
+  # sleep: `--expect-commit $GITHUB_SHA` makes smoke read the commit production
+  # is actually serving (only visible with the monitor bearer), and the step
+  # retries until that commit is this one or the budget is spent. `needs` on
+  # lint-test-build is the other half: if the build is red, Vercel's build ran
+  # the same `next build` and failed too, so production is still on the old
+  # commit and there is nothing new to smoke.
+  #
+  # Exit 2 is smoke REFUSING the flag — no usable bearer — and is not retried,
+  # because waiting cannot fix it.
+  #
+  # WHAT THIS JOB GATES ON, and what it deliberately does not. Presenting the
+  # bearer also adds smoke's cron dead-man check, and that check alarms on a
+  # scheduled job with NO recorded run: `heartbeatReport` reports `never` for a
+  # missing row (lib/heartbeat.ts), which is the state of every heartbeat until
+  # its job has run once — the nightly dump above all. Gating on it would paint
+  # this job red on every push for a reason that has nothing to do with the
+  # deploy, and a gate that is red for an unrelated reason gets switched off:
+  # that is how this project collected 127 vacuous drill runs. So an alarming
+  # cron job is REPORTED here and does not gate. Its own controls are the monitor
+  # on /api/health (OPERATIONS.md §5d, which is 503 while anything alarms) and
+  # the alert lib/heartbeat.ts pushes on the failing run itself.
+  #
+  # Nothing else is excused. A second failing check, or `failed=[…]` inside the
+  # dead-man check itself — the database, R2 and heartbeat-readability probes —
+  # fails this job, because a bad deploy breaks exactly those.
+  #
+  # It does not skip when the secret is absent, and there is no variable in its
+  # condition. The restore drill spent 127 consecutive runs reporting "skipped"
+  # behind a variable nobody created, inside a workflow that reported success.
+  # "We cannot tell whether the deploy that just happened is the code you
+  # pushed" is a finding, not a no-op.
+  post-deploy-smoke:
+    name: Smoke production once it is serving this commit
+    if: github.ref == 'refs/heads/main'
+    needs: [lint-test-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Wait for production to serve this commit, then smoke it
+        env:
+          HEALTH_BEARER: ${{ secrets.HEALTH_BEARER }}
+        run: |
+          set -uo pipefail
+          # GitHub invokes every `run:` block as `bash -e {0}`, and `set -uo
+          # pipefail` does NOT clear an inherited -e. With a bare
+          # `npx tsx scripts/ops/smoke.ts` the FIRST failing attempt aborted the
+          # whole step, so this loop ran once and the job smoked whatever build
+          # was live at that instant — normally the previous one, since Vercel
+          # deploys in parallel with this workflow. That is the false green this
+          # job exists to prevent, one level up. Every command whose failure is
+          # expected therefore ends in `|| …`, which is an AND-OR list and
+          # suppresses -e whether it is set or not. Do not "simplify" any of them
+          # back to a bare invocation.
+          if [ -z "${HEALTH_BEARER:-}" ]; then
+            echo "::error::HEALTH_BEARER is not set as a repository secret, so nothing can read which commit production is serving. Set it to the SAME value as the HEALTH_BEARER environment variable in Vercel Production. Failing rather than skipping is deliberate — see the comment above this job."
+            exit 1
+          fi
+          SHORT=$(echo "$GITHUB_SHA" | cut -c1-7)
+          SERVING=0
+          for ATTEMPT in $(seq 1 24); do
+            echo "--- attempt ${ATTEMPT}/24 — is production serving ${SHORT} yet?"
+            CODE=0
+            npx tsx scripts/ops/smoke.ts --expect-commit "$GITHUB_SHA" > smoke.log 2>&1 || CODE=$?
+            cat smoke.log
+            if [ "$CODE" = "0" ]; then
+              echo "production is serving ${SHORT} and every check passed"
+              exit 0
+            fi
+            if [ "$CODE" = "2" ]; then
+              echo "::error::smoke refused to run (exit 2): the bearer is set but unusable, or the flag lost its value. Not retrying — waiting cannot fix it."
+              exit 1
+            fi
+            # Only the WAIT is retried. Once smoke's own commit check passes the
+            # deploy has landed, and retrying cannot change what else it found.
+            if grep -qE '^PASS +production is running the commit you think it is' smoke.log; then
+              SERVING=1
+              break
+            fi
+            sleep 15
+          done
+          if [ "$SERVING" != "1" ]; then
+            echo "::error::after 24 attempts (~12 minutes) production is still not serving ${SHORT}. Check the Vercel deployment for this commit before assuming the app is fine."
+            exit 1
+          fi
+          # The deploy landed and something still failed. Exactly one of smoke's
+          # checks can fail for a reason that is not this deploy — the cron
+          # dead-man, which alarms on a job that has no recorded run. See the note
+          # above this job for why that must not gate, and what is not excused.
+          #
+          # An alarming job is the ONLY excuse, so `alarms=[…]` has to name one:
+          # that check also fails on a non-200 with `alarms=[] failed=[]`, which is
+          # the probe itself erroring or refusing the bearer — a deploy problem.
+          FAILS=$(grep -c '^FAIL' smoke.log || true)
+          CRON=$(grep -cE '^FAIL +monitor bearer unlocks the detail' smoke.log || true)
+          ALARMS=$(grep -cE 'alarms=\[[^]]+\]' smoke.log || true)
+          PROBES=$(grep -cE 'failed=\[[^]]+\]' smoke.log || true)
+          if [ "$FAILS" = "1" ] && [ "$CRON" = "1" ] && [ "$ALARMS" = "1" ] && [ "$PROBES" = "0" ]; then
+            echo "::notice::production is serving ${SHORT} and every deploy-level check passed. The cron dead-man is the only failing check and it does not gate this job — a scheduled job that has not run yet reports 'never' and says nothing about this deploy. It is the monitor's alarm, not the deploy's: OPERATIONS.md §5d."
+            grep '^FAIL' smoke.log || true
+            exit 0
+          fi
+          echo "::error::production IS serving ${SHORT}, so the deploy landed, but a check that is about the DEPLOY failed. The run above names it. A cron heartbeat alarm on its own would have passed here, so this is not that."
+          exit 1

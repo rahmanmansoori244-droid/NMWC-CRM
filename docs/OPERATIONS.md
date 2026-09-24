@@ -90,21 +90,30 @@ The workflow `.github/workflows/db-backup.yml` fails at its **Validate** step wi
 6. Trigger a manual run: Actions tab → "DB Backup" → "Run workflow". Confirm green, then check the bucket holds `db/<timestamp>.sql.gz.age`. The `.age` suffix is the proof it was encrypted.
 
 ### C. R2 lifecycle rules for the photos bucket (op note 3)
-Two options — **A is preferred for full automation; B is the fallback if you don't want to mint a new token.**
 
-**Option A (recommended):** create a second R2 token with bucket-admin scope and let our script configure lifecycle rules end-to-end.
-1. Cloudflare → R2 → API tokens → "Create token" → permission "Admin Read & Write" (scoped to the photos account).
-2. Add the new key/secret to your local `.env` as `R2_ADMIN_ACCESS_KEY_ID` and `R2_ADMIN_SECRET_ACCESS_KEY` (separate from the existing `R2_ACCESS_KEY_ID` which is object-only and should stay untouched).
-3. Run `npm run ops:r2-setup`. The script enables Object Versioning and writes the `gc-marked-7d` lifecycle rule + `incomplete-multipart-1d` rule. Re-run any time; idempotent.
-4. The script will fall back to the regular R2 token if the admin key isn't set, so it's safe to run either way — it just prints a warning.
+> **`npm run ops:r2-setup` IS NOT IDEMPOTENT, whatever its own comment says.** It calls
+> `PutBucketLifecycleConfiguration`, which REPLACES a bucket's whole lifecycle
+> configuration with the two rules written inside `scripts/r2-setup-lifecycle.ts`.
+> Anything else on `nmwc-photos` is deleted by that call — including the
+> `noncurrent-versions-30d` rule §6.13 asks you to create, which is the only
+> protection the photographs have against an overwrite or a delete. **Run it before
+> §6.13, or never.** Order and recovery: §6.13 step 0.
 
-**Option B (manual UI):** Cloudflare R2 dashboard → bucket `nmwc-photos` → Settings → Lifecycle rules → Add rule:
+Two options — **B is preferred now; A is only safe on a bucket that has no lifecycle rules yet.**
+
+**Option A (script, first-time only):** create a second R2 token with bucket-admin scope and let the script write both rules in one go.
+1. Cloudflare → R2 → API tokens → "Create token" → permission "Admin Read & Write", then "Apply to specific buckets only" → `nmwc-photos`. Do not make it account-wide: the backups bucket has its own token, so that a leak of one does not expose the other.
+2. Add the new key/secret to your local `.env` as `R2_ADMIN_ACCESS_KEY_ID` and `R2_ADMIN_SECRET_ACCESS_KEY` (separate from the existing `R2_ACCESS_KEY_ID`, which is object-only and should stay untouched).
+3. Run `npm run ops:r2-setup`. It writes the `gc-marked-7d` and `incomplete-multipart-1d` rules — and **only** those two, deleting any others. It also attempts Object Versioning; R2 answered `NotImplemented`, so that part is a no-op and §6.13 step 1 does it in the dashboard.
+4. The script falls back to the regular object-only R2 token if the admin key isn't set, and then prints an `AccessDenied` warning instead of writing anything.
+
+**Option B (manual UI, safe at any time):** Cloudflare R2 dashboard → bucket `nmwc-photos` → Settings → Lifecycle rules → Add rule. Adding rules one at a time in the dashboard leaves the existing ones alone, which is why this is now the preferred route:
 - Tag filter: `gc-marked=true` → Expire 7 days after tag applied.
 - Also add: Multipart upload abort after 1 day.
-- Versioning toggle on the same Settings page.
+- Versioning toggle on the same Settings page, plus the non-current-version rule in §6.13.
 
 ### D. (Optional) Mint a dedicated R2 admin token to remove the warnings
-Even if you finish steps A–C, the daily R2 setup script (`npm run ops:r2-setup`) will continue printing a warning about the photos token lacking bucket-admin scope. To silence it cleanly: follow Option A above and add the admin token vars to `.env`.
+If you skipped Option A, `npm run ops:r2-setup` prints a warning about the photos token lacking bucket-admin scope whenever someone runs it by hand. Nothing runs it on a schedule — read the box above before running it at all. The admin token the *daily* check needs is a repository secret, not a `.env` entry: §6.13 step 4.
 
 ---
 
@@ -199,6 +208,57 @@ The two GitHub Actions workflows (`.github/workflows/keep-warm.yml`, `sla-escala
 
 **If you ever move to Vercel Pro instead**, delete the external jobs and add to `vercel.json` `crons`: `{"path": "/api/cron/keep-warm", "schedule": "*/4 3-14 * * *"}` and `{"path": "/api/cron/sla-escalate", "schedule": "15,45 3-14 * * *"}`. Vercel signs its own cron calls, so no header is needed.
 
+## 5f. Outbound alerts — the only way this system can reach you (GAP-2, 2026-09-24)
+
+Until 2026-09-24 nothing in this system could reach a person who was not looking at a screen. There is no mailer and no SMS: a `Notification` row existing means "visible in-app" and nothing more (`lib/notifications.ts` says so in terms — the e-mail drain queue has no drainer). So the SLA sweep escalated twice an hour into a bell nobody had open, and a cron that stopped running was visible only to whoever thought to curl `/api/health` with the monitor bearer.
+
+There is now one outgoing webhook: one URL, one variable, no account, no vendor.
+
+### What to paste, and where
+
+Create an incoming webhook in whichever channel you actually read:
+
+| Channel | Where the URL comes from |
+|---|---|
+| Slack | Slack → your app → Incoming Webhooks → Add New Webhook to Workspace |
+| Teams | The channel → ⋯ → Connectors → Incoming Webhook |
+| Discord | Channel → Edit Channel → Integrations → Webhooks → New Webhook → Copy URL |
+| WhatsApp | Any bridge that accepts a JSON POST and forwards the `text` field |
+
+Then: Vercel → Settings → Environment Variables → **Production** → `ALERT_WEBHOOK_URL` = that URL → **redeploy**. A new variable does not reach a deployment that is already running, so without the redeploy nothing changes and it reads as the webhook not working.
+
+**The URL is a credential** — whoever holds it can post into that channel. It is never logged, never in the health payload, and must not go into a ticket or a screenshot. It is deliberately **not** a GitHub Actions secret and deliberately **not** in `lib/ops/required-secrets.ts`: that list is the workflows' contract and its drift test fails on any name the workflows do not read (§DO-16).
+
+**Leaving it unset is a valid state**, not an error — `lib/alert.ts` no-ops silently and no sweep, import or cron behaves differently. The cost of leaving it unset is this entire section.
+
+Prove the URL itself is live before you rely on it. Nothing in the app sends a test alert, so this checks the channel, not the wiring:
+
+```bash
+curl -sS -X POST -H 'content-type: application/json' \
+  -d '{"text":"[INFO] nmwc alert test — ignore","content":"[INFO] nmwc alert test — ignore"}' \
+  "$ALERT_WEBHOOK_URL"
+```
+
+### What each alert means when it arrives at 3am
+
+Every message reads `[SEVERITY] event/scope — sentence (counts)` and carries an `env` field, so UAT and production can share one channel. **Counts and self-minted ids only — never a customer name, phone, CR number or address** (the payload in `lib/alert.ts` is an allowlist, and `tests/unit/alert.test.ts` proves it drops the rest). The allowlist covers the field NAMES as well as their values, because the names are rendered into that line too — a filter that checked only values was the 2026-09-24 finding.
+
+| `event` | Fires when | What it means, and what to do |
+|---|---|---|
+| `cron.failed` | A scheduled job records a failed run. `scope` is the job: `sla-escalate`, `keep-warm`, `photo-gc`, `retention-sweep`, `db-backup` | Something scheduled is broken *now*. `db-backup` means last night's dump did not land — go to §6 and the Actions run. `sla-escalate` means approvals are no longer being escalated. Read the detail: `curl -H "Authorization: Bearer $HEALTH_BEARER" …/api/health \| jq .cron` — the scrubbed error text stays there rather than on the webhook. |
+| `sla.escalated` | The SLA sweep escalated at least one request. `critical` when any of them was a *second* escalation | Approvals are sitting past their budget. Nobody is required to act at 3am — the working window is Sun–Thu 08:00–17:00 — but a `critical` means a request has now been waiting over twice its stage budget. Open the app; it names them, the alert deliberately does not. |
+| `import.rejections` | A customer master promote **finished** with rejected rows. `scope` and `ids.batchId` are the batch | The Steward's load is done but incomplete. Open `/import/<batchId>` for the per-row reasons. One alert per batch, never one per row — a load that rejects 1,833 rows sends exactly one message. |
+
+At most **one alert per `event`+`scope` per four-hour window**. A repeat inside the window is dropped and logged as `alert.suppressed`; the SLA sweep runs 24 times a day, and a channel that repeats itself 24 times gets muted, which puts you back where this section started. A condition that is still true when the next window opens raises itself again, so a problem that lasts all day reaches you three or four times rather than once or twenty-four times.
+
+The windows are **fixed clock windows** — 00:00, 04:00, 08:00, 12:00, 16:00 and 20:00 UTC — not four hours measured from the last message. So a condition first reported at 03:59 can report once more a minute later. That is deliberate and it is the smaller fault: measuring from the last message needs a bucket that refills, and on the durable rate limiter this system runs (`lib/rate-limit.ts`, the Postgres backend) a refilling bucket **never re-raised at all** — it was found on 2026-09-24 posting one message for a condition that stayed true for a day, having been documented here as re-raising every four hours. `tests/unit/alert.test.ts` now pins the re-raise against a simulation of that limiter's own statement.
+
+### What this does NOT cover
+
+- **A job that stops running altogether pushes nothing.** No run means no failure to report. `stale` and `never` are still only visible on the pulled `/api/health` probe, so the external monitor in §5d is **still required** — this webhook does not replace it.
+- **No retry.** A webhook that is down for the one POST loses that alert, and the window's single token has already been spent. The condition re-raises on its next occurrence after the window turns.
+- **Nothing else alerts.** Not a degraded health check, not sign-in failures, not R2 errors, not the database being unreachable on its own — only a scheduled job that failed *because* of it.
+- The alert never says *which* customer. That is not an oversight; a webhook is a third party.
 
 ## 6. Backups, recovery, and what they are actually worth
 
@@ -208,7 +268,7 @@ The two GitHub Actions workflows (`.github/workflows/keep-warm.yml`, `sla-escala
 |---|---|---|---|
 | Neon point-in-time recovery | The database, to any instant | 7 days | Same provider, same region as production |
 | Nightly off-Neon dump | The database, as of the dump | 30 days of dumps | Cloudflare R2 `nmwc-backups` — encrypted to the age recipients; until the key is set up (§6.7) the workflow **fails and uploads nothing** |
-| **Nothing** | The photographs in `nmwc-photos` | — | Single copy |
+| **Nothing yet** | The photographs in `nmwc-photos` | — | Single copy. Bucket versioning + a 30-day non-current retention is the chosen answer and is an **owner action** — §6.13. It is an undo, not a second copy: even once it is on, this row still says one copy |
 
 The nightly dump is `.github/workflows/db-backup.yml`: `pg_dump --no-owner --no-privileges --format=plain --no-unlogged-table-data`, gzipped, age-encrypted, uploaded to `db/<timestamp>.sql.gz.age` with a row-count manifest beside it at `db/<timestamp>.manifest.json`.
 
@@ -222,7 +282,7 @@ These are measured, not aspirational. Two different RPOs apply and conflating th
 | Damage older than 7 days, or a Neon-side logical problem | **B — restore the latest dump into a new Neon branch** | Up to the age of the last dump. The schedule says 24 h; GitHub's scheduler actually delivers late and unevenly — across 127 runs only 12 started in the 02:00 UTC hour and the worst observed gap between dumps was **33 h**. Plan for **up to 36 h** | **45–90 min** (the monthly drill publishes the measured number) |
 | Total loss of Neon | **C — rebuild on another Postgres** | As B | **Half a day**, dominated by provisioning and re-pointing, not by the restore |
 
-**Photographs have no recovery path at all.** A database restore brings back `Attachment` rows pointing at objects in `nmwc-photos`. If those objects are gone, the rows are dangling and the CR documents behind credit decisions are gone with them. This is an accepted risk today, not a solved problem.
+**Photographs have no recovery path at all.** A database restore brings back `Attachment` rows pointing at objects in `nmwc-photos`. If those objects are gone, the rows are dangling and the CR documents behind credit decisions are gone with them. This is an accepted risk today, not a solved problem. §6.13 is the owner action that closes the *overwrite and delete* half of it — and only that half: versioning keeps old bytes in the same bucket in the same account, so it survives a mistake and does not survive losing the bucket or the account.
 
 ### 6.3 What a restore does not bring back
 
@@ -318,23 +378,108 @@ Each run writes to its own timestamped key, so a second run on the same day adds
 | The real production dump restores and is complete | `.github/workflows/restore-drill.yml` | monthly + on demand |
 | A restored database refuses audit tampering | `restore-verify.ts` assertion F-01 | both of the above |
 | A backup actually happened last night | `db-backup` heartbeat on bearer `/api/health` | continuously |
-| Dumps are expired after 30 days | `r2-backups-lifecycle.ts --check` | on demand |
+| Dumps are expired after 30 days | `r2-backups-lifecycle.ts --check`, in `.github/workflows/r2-config.yml` | daily |
+| Photo versioning is still on, with a 30-day non-current retention | `r2-photos-versioning.ts --check`, in `.github/workflows/r2-config.yml` | daily |
+
+The bottom two rows read "on demand" until 2026-09-24, and on demand meant never: `r2-backups-lifecycle.ts --check` had been citable as evidence in four documents since 2026-09-14 and no workflow had ever called it.
+
+**Those two live in a workflow of their own, and that is not cosmetic.** GitHub reports success or failure per *workflow*, not per job, and this check is red until the owner mints the admin tokens (§6.13). Sitting as a second job inside `db-backup.yml` it would have camouflaged a failed backup — a red **DB Backup** run is the alarm that caught seven missing nights this month — and it would have disarmed the `ALLOW_PLAINTEXT_BACKUP` guard, whose entire mechanism is that run turning red. So: a red **DB Backup** always means last night's dump, and a red **R2 bucket settings** always means a bucket setting. Neither can hide the other.
 
 ### 6.11 Other backup notes
 
 - **Manual logical dump:** `npx prisma db pull` exports the schema; for data, `pg_dump` against `DIRECT_URL`.
-- **Required GitHub secrets:** `DIRECT_URL`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `PROD_CRON_SECRET`. For the drill also `NEON_API_KEY`, `NEON_PROJECT_ID`, `BACKUP_AGE_IDENTITY`. Repository variables: `BACKUP_AGE_RECIPIENTS`, optionally `PROD_DB_HOST_MARKER` and `MIN_DUMP_BYTES`.
+- **Required GitHub secrets:** `DIRECT_URL`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `PROD_CRON_SECRET`. For the drill also `NEON_API_KEY`, `NEON_PROJECT_ID`, `BACKUP_AGE_IDENTITY` (§6.12). For the daily **R2 bucket settings** workflow also **two** Admin Read & Write R2 tokens, one per bucket and neither of them account-wide — `BACKUP_R2_ADMIN_ACCESS_KEY_ID` + `BACKUP_R2_ADMIN_SECRET_ACCESS_KEY` scoped to `nmwc-backups`, and `R2_ADMIN_ACCESS_KEY_ID` + `R2_ADMIN_SECRET_ACCESS_KEY` scoped to `nmwc-photos`; add `R2_ACCOUNT_ID` only if the photographs live in a different Cloudflare account from the backups (§6.13). Repository variables: `BACKUP_AGE_RECIPIENTS`, optionally `PROD_DB_HOST_MARKER`, `MIN_DUMP_BYTES` and `R2_BUCKET`.
+- **Two admin tokens, not one.** An admin token is the strongest credential a bucket has. One token covering both buckets would mean a leaked photographs credential also reaches every database dump — undoing the separation this whole design rests on, stated in `.github/workflows/db-backup.yml` and again under "R2 backup & versioning" below. `npm run ops:print-secrets` names all four.
+- **`PROD_DB_HOST_MARKER` is not optional for the drill.** It is the only interlock in front of the drill's `DROP SCHEMA public CASCADE`, and the drill refuses to start without it. Optional only for the nightly dump, which merely warns.
+
+### 6.12 Turning the restore drill on (owner: Neon console)
+
+`.github/workflows/restore-drill.yml` has **never run**. `gh run list --workflow=restore-drill.yml` returns nothing.
+
+Two things are true about that and only one of them is a fault. The schedule is `0 4 1 * *` and the workflow landed on `main` in mid-September, so the first *scheduled* run is 1 October — no runs yet is arithmetic, not breakage. But it also **cannot** run: `NEON_API_KEY` and `NEON_PROJECT_ID` do not exist, and the preflight step refuses rather than skipping, which is what you will see if you dispatch it by hand today. Everything else it needs is already there: secrets `BACKUP_AGE_IDENTITY`, `BACKUP_R2_ACCESS_KEY_ID`, `BACKUP_R2_SECRET_ACCESS_KEY`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_BUCKET`, `DIRECT_URL`, `PROD_CRON_SECRET`, and variables `BACKUP_AGE_RECIPIENTS`, `PROD_DB_HOST_MARKER`.
+
+**1. `NEON_PROJECT_ID`.** Neon console → open this project → **Settings → General** → *Project ID* (a string in the shape `cool-forest-12345678`). It is also the `projects/<id>` segment of the console URL. Add it at GitHub → Settings → Secrets and variables → Actions → Secrets → *New repository secret*.
+
+**2. `NEON_API_KEY`.** Neon console → your avatar (top right) → **Account settings → API keys** → *Create new API key*. The value is displayed once; copy it straight into the GitHub secret.
+
+**3. Scope — read this before you create the key.** Neon API keys are not permission-scoped the way an R2 token is. A key that can create a branch can also delete one, and a *personal* key reaches every project your Neon account can see. If your account is on an organization plan, create the key from the **organization's** API keys page and scope it to this project; that is the narrowest thing Neon offers, and it is still a production-destructive credential. The drill calls exactly two endpoints — `POST /projects/{id}/branches` and `DELETE /projects/{id}/branches/{id}` — so nothing is gained by giving it more. Rotate it if the repository's secrets are ever in doubt.
+
+**4. Run it.** Actions → **Restore drill** → *Run workflow* → branch `main`, leave *object key* empty so it takes the newest dump. Expect 10–20 minutes.
+
+**5. Confirm it really restored.** The green tick is not the evidence — the old drill was green 127 times without restoring anything. These four lines are the evidence, and all four must be there:
+
+| Step | The line that proves it | If it is absent |
+|---|---|---|
+| Empty the branch, and prove it is empty | `target is empty (0 tables) — the restore starts from nothing` | The restore loaded into a clone of production and proved nothing. This is the exact hole the old drill had. |
+| Restore | `restore finished with 0 error line(s)` | DDL or data was skipped. |
+| Verify the restored database | `✓ restore verified — N passed, 0 failed`, with `M-01 … tables match` and `F-01 … UPDATE refused by the trigger` | `M-01 skip` means no manifest was found beside the dump, so **row loss was not checked** — the run is weaker than it looks. `F-01` failing means the append-only audit guard did not survive. |
+| Delete the drill branch | `delete branch … → HTTP 200` | A Neon branch holding a full live copy of customer personal data is still there. Delete it by hand, now. |
+
+Then: download the `restore-drill-<run id>` artifact and grep `restore-verify.json` for `"status": "fail"` — there must be none — and check the Neon console's Branches list is free of `restore-drill-*`. Finally put the run's **Measured recovery time** into the RTO column of §6.2, replacing the estimate, and note the date.
+
+**What a false pass would look like**, so you can recognise one: `M-01` reported as `skip`, or the "0 tables" line missing. Neither fails the run on its own.
+
+### 6.13 Photographs — bucket versioning (owner: Cloudflare dashboard)
+
+§6.1 and §6.2 say the photographs have no recovery path. The chosen answer is **R2 object versioning on `nmwc-photos` plus a 30-day non-current-version retention**. It is a dashboard setting; there is no code that can turn it on, so this section is the whole of the work.
+
+**Be clear what it buys.** Versioning keeps the previous bytes when an object is overwritten or deleted, in the **same bucket in the same Cloudflare account**. So it covers an overwrite, an accidental delete, and a faulty `photo-gc` run — the three ways photographs have actually been at risk here. It does **not** survive the bucket being deleted, the Cloudflare account being deleted or suspended, or Cloudflare losing the data. After this is done, §6.1 still reads "one copy": this is not a backup, it is an undo.
+
+**0. Order of work, because one of our own scripts will delete what you are about to create.** `npm run ops:r2-setup` (`scripts/r2-setup-lifecycle.ts`, §5b C) calls `PutBucketLifecycleConfiguration`, which **replaces the bucket's entire lifecycle configuration** with the two rules hard-coded inside it. `noncurrent-versions-30d` is not one of them, so running it after step 2 silently deletes the rule this section exists to create, and the photographs quietly stop being protected.
+
+| | |
+|---|---|
+| **If `gc-marked-7d` is already on the bucket** (it is, in production) | Do not run `npm run ops:r2-setup` again, at all. Add every further rule in the dashboard, which touches only the rule you are editing. |
+| **If you are setting up a fresh bucket** | Run `npm run ops:r2-setup` **first**, then do steps 1–2 here. Never the other way round. |
+| **If someone runs it by mistake anyway** | The daily check goes red the next morning with `no rule expires non-current versions`. Redo step 2. Versions created before the rule was deleted are unaffected — only the expiry is gone — so this is recoverable, which is exactly why the check has to exist rather than be trusted. |
+
+Nothing runs `ops:r2-setup` on a schedule; it is only ever a person at a terminal.
+
+**1. Turn versioning on.** Cloudflare dashboard → **R2** → bucket **`nmwc-photos`** → **Settings** → *Object versioning* → enable. Versioning only protects writes that happen **after** it is on; nothing already overwritten comes back.
+
+**2. Add the non-current-version retention.** Same Settings page → *Object lifecycle rules* → add a rule named `noncurrent-versions-30d` whose action deletes previous / non-current versions after **30 days**. The label for that action has changed wording at least once on Cloudflare's side; it is the one about *previous* or *non-current* versions, not the one that expires objects.
+
+Two things about that rule, both of which the checker treats as findings:
+
+- **It must apply to the whole bucket.** No prefix, no tag filter, no object-size filter, and not a combination of those. A rule narrowed any of those ways leaves every photograph outside it keeping versions forever, and leaves the ones the rule does cover as the only ones protected — the opposite of the intent. (Note that `gc-marked-7d` *is* tag-scoped; that is correct for what it does, and it is not this rule.)
+- **Do not also cap the number of versions kept.** If the dashboard offers "keep the newest N versions" beside the day count, leave it empty. With a cap of 2, a version is expired as soon as two newer ones exist — re-photograph a CR document three times in an afternoon and the original is gone the same afternoon, while the rule still reads "30 days".
+
+Why 30 and not 7: a recovery can restore a database dump up to 30 days old (§6.9), and its `Attachment` rows point at photo objects. A photo version that expires sooner than the oldest restorable dump re-opens the exact gap this is being switched on to close. Longer than 30 keeps personal data past `docs/compliance/DATA-RETENTION-SCHEDULE.md`. The checker treats **either** direction as a finding.
+
+**3. Know what this does to the `gc-marked-7d` rule.** On a versioned bucket, expiring a *current* version writes a delete marker and keeps the bytes as a non-current version. So `photo-gc`'s 7-day window becomes "hidden after 7 days, bytes gone 30 days later". The behaviour the app shows is unchanged; the retention schedule's sentence for photographs is not, and `docs/compliance/DATA-RETENTION-SCHEDULE.md` should be updated to say so.
+
+**4. Let the daily check see it — with one token per bucket.** Neither setting can be read with an object-scoped token, so this needs Admin Read & Write. Mint **two** tokens at *R2 → API tokens*, each one "Apply to specific buckets only":
+
+| Token scoped to | Repository secrets |
+|---|---|
+| `nmwc-photos` | `R2_ADMIN_ACCESS_KEY_ID`, `R2_ADMIN_SECRET_ACCESS_KEY` |
+| `nmwc-backups` | `BACKUP_R2_ADMIN_ACCESS_KEY_ID`, `BACKUP_R2_ADMIN_SECRET_ACCESS_KEY` |
+
+Add `R2_ACCOUNT_ID` as well only if the photographs are in a different Cloudflare account from `nmwc-backups`.
+
+**Do not mint one account-wide token for both.** It is two extra minutes of clicking and it is the difference between a leaked photographs credential exposing the photographs and it exposing every database dump — the separation `.github/workflows/db-backup.yml` and "R2 backup & versioning" below are both built on, and the reason the *upload* tokens were already split. `npm run ops:print-secrets` lists all four and will tell you which are missing.
+
+**Until they exist, `.github/workflows/r2-config.yml` ("R2 bucket settings") fails every day, on both checks.** That is deliberate: a check that reports "skipped" is how the old restore drill stayed green 127 times. It is also its own workflow rather than a job inside `db-backup.yml`, so that this daily red cannot camouflage a failed backup or silence the `ALLOW_PLAINTEXT_BACKUP` guard — see §6.10.
+
+**5. Confirm it took.**
+
+```bash
+R2_ACCOUNT_ID=… R2_ADMIN_ACCESS_KEY_ID=… R2_ADMIN_SECRET_ACCESS_KEY=… \
+  npx tsx scripts/ops/r2-photos-versioning.ts --check
+```
+
+Two ✓ lines and exit 0. It has no apply mode on purpose, and step 0 is why: `PutBucketLifecycleConfiguration` replaces a bucket's *whole* lifecycle configuration, so a script that wrote only the non-current rule would silently delete `gc-marked-7d` — the only thing that ever removes the objects `photo-gc` tags instead of deleting (B-02). It is a checker precisely so that it cannot be the thing that breaks the bucket. If it reports `NotImplemented`, R2 will not answer the versioning query on this bucket; that is reported as a **failure**, because unverified is not verified. Confirm in the dashboard and record the date here.
 
 ### R2 backup & versioning
 
-Two independent buckets, each with its own lifecycle policy.
+Two independent buckets, each with its own lifecycle policy. Both are verified daily by `.github/workflows/r2-config.yml` ("R2 bucket settings") — its own workflow, so that its red cannot be mistaken for, or hide, a failed backup (§6.10).
 
 **`nmwc-photos` (production photo storage)** — configure once:
 
-1. **Lifecycle rule — `gc-marked` expiry:** condition object tag `gc-marked=true`, action expire 7 days after the tag is applied. `app/api/cron/photo-gc/route.ts` tags rather than deletes (B-02), so without this rule tagged objects accumulate forever, and with it there is a 7-day window to recover from a faulty GC run. `npx tsx scripts/r2-setup-lifecycle.ts` sets it if your token has bucket-admin scope.
-2. **Object versioning** if the bucket class supports it — the script attempts it and reports cleanly when R2 does not expose the API.
+1. **Lifecycle rule — `gc-marked` expiry:** condition object tag `gc-marked=true`, action expire 7 days after the tag is applied. `app/api/cron/photo-gc/route.ts` tags rather than deletes (B-02), so without this rule tagged objects accumulate forever, and with it there is a 7-day window to recover from a faulty GC run. Add it **in the dashboard** (§5b C, Option B). `scripts/r2-setup-lifecycle.ts` also writes it, but that call REPLACES the bucket's whole lifecycle configuration and would delete the non-current-version rule in §6.13 — so it is safe only on a bucket that has no other rules yet. §6.13 step 0 has the ordering.
+2. **Object versioning and a 30-day non-current-version retention** — the owner action in §6.13, verified by `scripts/ops/r2-photos-versioning.ts --check`. `scripts/r2-setup-lifecycle.ts` also *attempts* versioning, and R2 answered `NotImplemented`; do it in the dashboard.
 
-**`nmwc-backups`** — see §6.9. Separate credentials from the photos bucket, so a leak of one does not expose the other.
+**`nmwc-backups`** — see §6.9. Separate credentials from the photos bucket, so a leak of one does not expose the other. That holds for the **admin** tokens the daily check uses as much as for the upload tokens: one per bucket, neither account-wide (§6.13 step 4).
 
 ## 7. Common operations
 

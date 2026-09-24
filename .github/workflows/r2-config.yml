@@ -1,0 +1,104 @@
+name: R2 bucket settings
+
+# Gap #3 (adversarial re-benchmark, 2026-09-24). Two bucket-side settings are
+# load-bearing for recovery and NEITHER was checked by anything that runs:
+#
+#   * the 30-day expiry on `nmwc-backups`. `scripts/ops/r2-backups-lifecycle.ts
+#     --check` has been able to verify it since 2026-09-14 and four documents cite
+#     it as the evidence — and no workflow ever called it, so "on demand" meant
+#     never.
+#   * versioning plus a non-current-version retention on `nmwc-photos`, the owner's
+#     chosen answer to a restore returning `Attachment` rows that point at objects
+#     which may be gone (docs/OPERATIONS.md §6.13).
+#
+# WHY THIS IS ITS OWN WORKFLOW AND NOT A SECOND JOB IN db-backup.yml. It was
+# written as one, and review found that wrong twice over. GitHub reports success or
+# failure per WORKFLOW, not per job, and this check is RED from merge until the
+# owner mints the admin tokens — so inside db-backup.yml it would have
+#
+#   * camouflaged the backup job's own failure. A red DB Backup run is the alarm
+#     that caught seven missing nights this month; a workflow that is red every
+#     night anyway is not an alarm.
+#   * disarmed the `ALLOW_PLAINTEXT_BACKUP` guard at the end of that job, whose
+#     entire mechanism is that run turning red and being noticed.
+#
+# Here the two alarms have their own colour and neither can hide the other. Nothing
+# in this workflow touches the dump, the dead-man heartbeat or the database.
+#
+# It FAILS rather than skips while the tokens are absent, and it will be red from
+# its first run until the owner mints them (docs/OPERATIONS.md §6.13). That is the
+# intended reading: the restore drill's predecessor reported "skipped" for 127
+# consecutive runs behind a variable nobody had created, and every one read green.
+
+on:
+  schedule:
+    # 05:00 UTC = 09:00 Oman, daily. Deliberately not 02:00 alongside the dump:
+    # this reads bucket configuration only, so it has nothing to race the backup
+    # for, and a failure raised inside working hours is one the owner sees on the
+    # day it starts rather than the following evening.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  r2-config:
+    name: The bucket settings a recovery depends on are still set
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BACKUP_R2_ACCOUNT_ID: ${{ secrets.BACKUP_R2_ACCOUNT_ID }}
+      BACKUP_R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+      # ONE ADMIN TOKEN PER BUCKET, and both pairs named here on purpose.
+      #
+      # The two buckets have separate credentials precisely so that a leak of one
+      # does not expose the other, and an admin token is the strongest credential
+      # either bucket has: an account-wide one would hand whoever holds the photo
+      # token the backups as well, which is the separation db-backup.yml and
+      # docs/OPERATIONS.md "R2 backup & versioning" both rest on.
+      #
+      # Naming both pairs is also what keeps them from crossing. Each script reads
+      # `<its own pair> ?? <the other pair>`, and a secret that does not exist still
+      # enters a job as an EMPTY STRING: `'' ?? fallback` is `''`, so a name that is
+      # present-but-empty ENDS that chain instead of extending it. The fallbacks stay
+      # in the scripts for a person running one by hand with a single token exported;
+      # in here they are dead, which is the point. Never rewrite these with `||`.
+      BACKUP_R2_ADMIN_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ADMIN_ACCESS_KEY_ID }}
+      BACKUP_R2_ADMIN_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_ADMIN_SECRET_ACCESS_KEY }}
+      R2_ADMIN_ACCESS_KEY_ID: ${{ secrets.R2_ADMIN_ACCESS_KEY_ID }}
+      R2_ADMIN_SECRET_ACCESS_KEY: ${{ secrets.R2_ADMIN_SECRET_ACCESS_KEY }}
+      # The PHOTO bucket is a different bucket from the backups one. An account id is
+      # an identifier rather than a credential, so this one fallback is deliberate and
+      # uses GitHub's `||`, where an unset secret really is falsy: set R2_ACCOUNT_ID
+      # only when the photographs live in a different Cloudflare account, otherwise
+      # this looks for `nmwc-photos` in the backup account and fails with "no bucket",
+      # which is a finding rather than a false pass. R2_BUCKET mirrors lib/r2.ts's
+      # contract, so a bucket renamed in Vercel and not here cannot be checked
+      # silently.
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || secrets.BACKUP_R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ vars.R2_BUCKET || 'nmwc-photos' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Verify both buckets
+        run: |
+          # No `-e`: both checks run every time, so one run names both faults
+          # instead of hiding the second behind the first. One step rather than
+          # two, for the same reason — a second step would need `if: always()` to
+          # survive the first one failing, and an `if:` anywhere in this job is
+          # how a check turns into a 127-run "skipped".
+          set -uo pipefail
+          RC=0
+          npx tsx scripts/ops/r2-backups-lifecycle.ts --check || RC=1
+          echo ''
+          npx tsx scripts/ops/r2-photos-versioning.ts --check || RC=1
+          if [ "$RC" != "0" ]; then
+            echo "::error::a bucket setting a recovery depends on is wrong, or could not be read. Last night's dump and its workflow are unaffected — read the two checks above. Owner steps: docs/OPERATIONS.md §6.13."
+          fi
+          exit $RC

@@ -77,21 +77,38 @@ jobs:
           # PROD_DB_HOST_MARKER belongs here, not only at the drop step: without it the
           # drill would otherwise create a Neon branch — a copy-on-write copy of the
           # production customer data — and only then discover it cannot proceed.
+          #
+          # Written as `if` rather than `[ … ] && MISSING=…`: under `set -e` the
+          # AND-list returns non-zero on every variable that IS set, and whether that
+          # aborts the step is a question the next reader should not have to settle.
+          # (It does not in bash 5. The `if` form does not depend on that.)
           for V in NEON_API_KEY NEON_PROJECT_ID BACKUP_R2_ACCOUNT_ID BACKUP_R2_BUCKET PROD_DB_HOST_MARKER; do
-            [ -z "${!V:-}" ] && MISSING="${MISSING} ${V}"
+            if [ -z "${!V:-}" ]; then MISSING="${MISSING} ${V}"; fi
           done
+          # The R2 credentials reach this job under their AWS_* names, so they are
+          # tested there and reported under the secret names the owner has to create.
+          # They were missing from this list: without them the drill dies inside
+          # `aws s3api list-objects-v2` with "Unable to locate credentials", which
+          # reads as an AWS fault rather than as a secret nobody added — and this step
+          # exists precisely so the first failure names the real cause.
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then MISSING="${MISSING} BACKUP_R2_ACCESS_KEY_ID"; fi
+          if [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then MISSING="${MISSING} BACKUP_R2_SECRET_ACCESS_KEY"; fi
           if [ -n "$MISSING" ]; then
             {
               echo "### Restore drill could not run"
               echo ""
-              echo "Missing repository secrets:${MISSING}"
+              echo "Missing:${MISSING}"
               echo ""
               echo "Until these exist, **no backup of this system has ever been restored** and the recovery time is unknown."
               echo "Add them at Settings → Secrets and variables → Actions:"
-              echo "- \`NEON_API_KEY\` — Neon console → Account settings → API keys"
-              echo "- \`NEON_PROJECT_ID\` — Neon console → Project settings → General"
+              echo "- \`NEON_API_KEY\` — **secret**. Neon console → Account settings → API keys → Create new API key. Prefer a key scoped to this project if your account offers one; a personal key can reach every project you can."
+              echo "- \`NEON_PROJECT_ID\` — **secret**. Neon console → this project → Settings → General → Project ID."
+              echo "- \`BACKUP_R2_ACCESS_KEY_ID\` / \`BACKUP_R2_SECRET_ACCESS_KEY\` — **secrets**. The same R2 token the nightly backup uses; it only needs to READ objects."
+              echo "- \`PROD_DB_HOST_MARKER\` — a **variable**, not a secret: a fragment of the production endpoint host. It is the only interlock in front of \`DROP SCHEMA CASCADE\`."
+              echo ""
+              echo "Full owner steps, and how to confirm the first run really restored: \`docs/OPERATIONS.md\` §6.12."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::restore drill cannot run — missing secrets:${MISSING}"
+            echo "::error::restore drill cannot run — missing:${MISSING}"
             exit 1
           fi
 
@@ -276,13 +293,29 @@ jobs:
           echo "T_VERIFY=$(( $(date -u +%s) - T0 ))" >> "$GITHUB_ENV"
 
       - name: Re-create the runtime role on the restore
-        env:
-          NMWC_APP_PASSWORD: drill-app-role-${{ github.run_id }}-xyz
         run: |
           set -euo pipefail
           # pg_dump carries no roles, and --no-privileges strips every GRANT, so
           # a restored database cannot run the application until this is done.
           # Proving it here means the recovery runbook's step is rehearsed too.
+          #
+          # The password was a step-env literal built from github.run_id, so it was
+          # derivable by anyone who could read the run — and the drill branch host IS
+          # printed, by restore-verify's own masked-URL line. For the minutes the
+          # branch lives, that pair is a login with SELECT over a full copy of 18,703
+          # customers. Generated and masked instead.
+          #
+          # Hex only: the value goes into a SQL literal (app-role.ts refuses a single
+          # quote) and through the sed replacement below, where an ampersand or a
+          # backslash would be a substitution rather than a character.
+          #
+          # Written as a plain name rather than an Actions expression, deliberately.
+          # Expressions are substituted into a run: block before the shell sees it,
+          # including inside comments, so naming it here would have printed the old
+          # password shape into the log for no reason.
+          NMWC_APP_PASSWORD="drill-$(openssl rand -hex 16)"
+          echo "::add-mask::${NMWC_APP_PASSWORD}"
+          export NMWC_APP_PASSWORD
           T0=$(date -u +%s)
           export DIRECT_URL="$DRILL_URL"
           npx tsx scripts/ops/app-role.ts create
@@ -317,8 +350,11 @@ jobs:
             restore.log
             restore-verify.json
             manifest.json
-            dump-rowcounts.tsv
           retention-days: 90
+          # `manifest.json` is legitimately absent for a pre-2026-09-14 dump, so warn
+          # rather than fail. `dump-rowcounts.tsv` used to be listed here and this job
+          # never writes one — db-backup.yml does — so every run carried an unmatched-path
+          # warning, which is how people learn to stop reading warnings.
           if-no-files-found: warn
 
       - name: Summary

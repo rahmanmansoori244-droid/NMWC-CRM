@@ -16,6 +16,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { logger } from './logger';
 import { scrubAndTruncate } from './scrub';
+import { sendAlert } from './alert';
 
 export type HeartbeatKey =
   | 'sla-escalate'
@@ -90,7 +91,55 @@ export type HeartbeatReport = {
   failures: number;
 };
 
-/** Record the outcome of a cron run. Never throws — a heartbeat failure must not fail the job. */
+/**
+ * Tell a human that a scheduled job just failed.
+ *
+ * The error text is deliberately NOT sent. `recordHeartbeat` scrubs it before
+ * storing because a Prisma constraint message quotes the colliding value — a
+ * phone number or a CR number — and even scrubbed it is served only to a
+ * HEALTH_BEARER holder. A webhook is a third party, so the text stays behind
+ * authentication and the alert carries the job's label and nothing else, which is
+ * enough to know what to open.
+ */
+async function alertJobFailed(key: HeartbeatKey): Promise<void> {
+  await sendAlert({
+    severity: 'critical',
+    event: 'cron.failed',
+    // Per job: one bucket shared across jobs would let a dead photo-GC silence
+    // the SLA sweep's outage an hour later, which is worse than no limiter.
+    scope: key,
+    message: `${HEARTBEAT_EXPECTATIONS[key].label} reported a FAILED run. Check /api/health with the monitor bearer.`,
+  });
+}
+
+/**
+ * Record the outcome of a cron run. Never throws — a heartbeat failure must not
+ * fail the job.
+ *
+ * GAP-2 (2026-09-24) — why the outbound alert hangs off THIS function, and not
+ * off /api/health.
+ *
+ * The obvious place was the health route: it already computes an `allOk` across
+ * the database, R2 and every heartbeat. It is the wrong place twice over. It is
+ * PULLED, so an owner who has not configured a monitor yet would get a route that
+ * alerts beautifully and is never called — the same silence GAP-2 is about. And
+ * where a monitor IS configured it already alerts on a non-200 (OPERATIONS.md
+ * §5d), so an alert from inside would only double it. Worse, `scripts/ops/smoke.ts`
+ * calls /api/health with the monitor bearer and CLAUDE.md requires `npm run smoke`
+ * before and after every production change — so alerting there would page the
+ * owner for running a smoke test.
+ *
+ * This function is the opposite on every count: PUSHED, reached on the failing run
+ * itself, and the single point every scheduled outcome in the system already flows
+ * through — the four `withHeartbeat` routes AND the nightly dump, which reports
+ * itself from GitHub Actions through /api/ops/backup-report and so never passes
+ * through the wrapper. Wiring the wrapper instead would have left the backup, the
+ * one job whose silence costs the most, still unable to reach anybody.
+ *
+ * The alert sits OUTSIDE the try below, deliberately: when the database is what
+ * failed, the upsert throws, is swallowed, and the alert is then the only thing
+ * that gets out at all.
+ */
 export async function recordHeartbeat(
   key: HeartbeatKey,
   result: { ok: boolean; durationMs: number; error?: string; detail?: Record<string, unknown> }
@@ -127,6 +176,7 @@ export async function recordHeartbeat(
   } catch (err) {
     logger.warn({ key, err: (err as Error).message }, 'heartbeat.record_failed');
   }
+  if (!result.ok) await alertJobFailed(key);
 }
 
 function inWindow(now: Date, window?: [number, number]): boolean {
@@ -220,6 +270,10 @@ type RouteHandler = (req: NextRequest) => Promise<NextResponse>;
  * missing bearer) is not a run and records nothing. A thrown error records a
  * failed run and becomes a 500. `okFrom` inspects the JSON body to decide
  * whether a completed run counts as healthy (e.g. zero sweep errors).
+ *
+ * A run recorded as not-ok also raises an outbound alert — see `recordHeartbeat`,
+ * which is where that hangs so the nightly dump (which never passes through this
+ * wrapper) is covered by the same code.
  */
 export function withHeartbeat(
   key: HeartbeatKey,

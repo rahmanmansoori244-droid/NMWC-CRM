@@ -62,7 +62,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'BACKUP_R2_ACCOUNT_ID',
     kind: 'secret',
     required: true,
-    workflows: ['db-backup.yml', 'restore-drill.yml'],
+    workflows: ['db-backup.yml', 'restore-drill.yml', 'r2-config.yml'],
     description: 'Cloudflare account hosting the backups bucket.',
     source: 'Cloudflare dashboard → R2 → bucket settings.',
     localEnv: 'R2_ACCOUNT_ID',
@@ -72,7 +72,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'BACKUP_R2_BUCKET',
     kind: 'secret',
     required: true,
-    workflows: ['db-backup.yml', 'restore-drill.yml'],
+    workflows: ['db-backup.yml', 'restore-drill.yml', 'r2-config.yml'],
     description: 'Bucket name. Keep it separate from the photographs bucket.',
     source: 'Create it in the Cloudflare dashboard if it does not exist.',
     consequenceIfMissing: 'Same as BACKUP_R2_ACCOUNT_ID: the dump is taken and discarded.',
@@ -95,6 +95,66 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     source: 'Same flow. Save it before closing the dialog.',
     consequenceIfMissing: 'Upload is refused. Nothing is retained.',
   },
+  // The two ADMIN tokens. An object-scoped token cannot read a bucket's own
+  // configuration, so verifying the settings a recovery depends on needs a stronger
+  // credential — and therefore two of them, one per bucket. An account-wide admin
+  // token would hand whoever holds the photographs' token the backups as well, which
+  // is the separation the whole backup design rests on.
+  {
+    name: 'BACKUP_R2_ADMIN_ACCESS_KEY_ID',
+    kind: 'secret',
+    required: true,
+    workflows: ['r2-config.yml'],
+    description:
+      "Admin Read & Write token scoped to the BACKUPS bucket only. It reads that bucket's lifecycle configuration, which the object-scoped token the nightly upload uses cannot.",
+    source:
+      'Cloudflare R2 → API tokens → Create token → permission "Admin Read & Write", then "Apply to specific buckets only" → the backups bucket. Not account-wide, and not the same token as the photographs bucket.',
+    consequenceIfMissing:
+      'The daily R2 bucket settings workflow fails, and nothing verifies that dumps still expire after 30 days — the retention four compliance documents cite as evidence. The nightly dump itself is unaffected.',
+  },
+  {
+    name: 'BACKUP_R2_ADMIN_SECRET_ACCESS_KEY',
+    kind: 'secret',
+    required: true,
+    workflows: ['r2-config.yml'],
+    description: 'The pair of BACKUP_R2_ADMIN_ACCESS_KEY_ID. Shown once, at creation.',
+    source: 'Same flow. Save it before closing the dialog.',
+    consequenceIfMissing: 'Same as BACKUP_R2_ADMIN_ACCESS_KEY_ID: the 30-day dump retention goes unverified.',
+  },
+  {
+    name: 'R2_ADMIN_ACCESS_KEY_ID',
+    kind: 'secret',
+    required: true,
+    workflows: ['r2-config.yml'],
+    description:
+      "Admin Read & Write token scoped to the PHOTOGRAPHS bucket only. It reads that bucket's versioning state and lifecycle rules; the object-scoped token the app uploads with cannot.",
+    source:
+      'Cloudflare R2 → API tokens → Create token → permission "Admin Read & Write", then "Apply to specific buckets only" → the photographs bucket. A SECOND token, separate from the backups one.',
+    consequenceIfMissing:
+      'The daily R2 bucket settings workflow fails, and nothing verifies photo versioning or its 30-day non-current-version retention — the only thing standing between an overwritten CR document and losing it (docs/OPERATIONS.md §6.13).',
+  },
+  {
+    name: 'R2_ADMIN_SECRET_ACCESS_KEY',
+    kind: 'secret',
+    required: true,
+    workflows: ['r2-config.yml'],
+    description: 'The pair of R2_ADMIN_ACCESS_KEY_ID. Shown once, at creation.',
+    source: 'Same flow. Save it before closing the dialog.',
+    consequenceIfMissing: 'Same as R2_ADMIN_ACCESS_KEY_ID: photo versioning goes unverified.',
+  },
+  {
+    name: 'R2_ACCOUNT_ID',
+    kind: 'secret',
+    required: false,
+    workflows: ['r2-config.yml'],
+    description:
+      'Cloudflare account hosting the PHOTOGRAPHS bucket. Needed only when that is a different account from the one holding the backups.',
+    source:
+      'Cloudflare dashboard → R2 → bucket settings. Leave it unset while both buckets share one account: the check falls back to BACKUP_R2_ACCOUNT_ID.',
+    localEnv: 'R2_ACCOUNT_ID',
+    consequenceIfMissing:
+      'Nothing, while both buckets are in one Cloudflare account. When they are not, the photo check looks for the photographs bucket inside the backup account and fails with "no bucket" — a finding, not a false pass.',
+  },
   {
     name: 'PROD_CRON_SECRET',
     kind: 'secret',
@@ -105,6 +165,21 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     alsoSetOn: 'Vercel → Production → Environment Variables → CRON_SECRET (the SAME value)',
     consequenceIfMissing:
       'Every scheduled call is refused with 401. The SLA sweep stops escalating and the backup report never reaches the dead-man probe — which then alarms, correctly.',
+  },
+  {
+    name: 'HEALTH_BEARER',
+    kind: 'secret',
+    required: true,
+    workflows: ['ci.yml'],
+    description:
+      'Monitor bearer for the detailed /api/health payload. CI presents it after a deploy to main, because the commit production is running is only readable with it.',
+    source:
+      'The value already set as HEALTH_BEARER in Vercel → Production → Environment Variables. Copy it, do not generate a new one.',
+    localEnv: 'HEALTH_BEARER',
+    alsoSetOn:
+      'Vercel → Production → Environment Variables → HEALTH_BEARER (the SAME value, or the two disagree and the check cannot run)',
+    consequenceIfMissing:
+      'The post-deploy smoke job fails on every push to main. Nothing then asserts that the deploy which just happened is the commit you pushed — the check that exists because production served a four-month-old build for weeks.',
   },
   {
     name: 'BACKUP_AGE_IDENTITY',
@@ -175,6 +250,18 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     description: 'Optional second origin to keep warm, normally the UAT preview.',
     source: 'The preview alias URL.',
     consequenceIfMissing: 'Only production is kept warm. Harmless.',
+  },
+  {
+    name: 'R2_BUCKET',
+    kind: 'variable',
+    required: false,
+    workflows: ['r2-config.yml'],
+    description:
+      "Name of the photographs bucket, mirroring lib/r2.ts's own R2_BUCKET contract so a bucket renamed in Vercel and not here cannot be checked silently.",
+    source: 'The bucket name in the Cloudflare dashboard. Leave it unset while it is the default, nmwc-photos.',
+    localEnv: 'R2_BUCKET',
+    consequenceIfMissing:
+      'The built-in default nmwc-photos applies, which is right today. If the bucket is ever renamed and this is not set, the daily check fails with "no bucket" rather than passing against nothing.',
   },
   {
     name: 'MIN_DUMP_BYTES',
