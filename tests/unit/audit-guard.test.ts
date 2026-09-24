@@ -140,6 +140,7 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         // The credit-limit zeroing: same two-row shape, recording Finance's zero
         // being written as a zero rather than left as a blank.
         'scripts/ops/zero-credit-limits.ts',
+        'scripts/ops/apply-quarantined-visit-days.ts',
         // The least-privilege role probe: its insert proves the app role may INSERT
         // but not UPDATE/DELETE the ledger, and the transaction is rolled back. Not
         // an audit record at all.
@@ -196,6 +197,7 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         'scripts/golive/bootstrap-accounts.ts',
         'scripts/ops/requeue-untracked.ts',
         'scripts/ops/zero-credit-limits.ts',
+        'scripts/ops/apply-quarantined-visit-days.ts',
         'scripts/ops/app-role.ts',
       ].sort();
 
