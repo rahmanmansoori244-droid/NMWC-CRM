@@ -280,13 +280,20 @@ if (MONITOR) {
       const res = await get('/api/health', { headers: { authorization: `Bearer ${MONITOR}` } });
       const body = (await res.json()) as {
         checks?: Record<string, string>;
-        cron?: { alarms?: string[] };
+        cron?: { alarms?: string[]; jobs?: Array<{ key?: string; state?: string }> | null };
       };
       const alarms = body.cron?.alarms ?? [];
       const bad = Object.entries(body.checks ?? {}).filter(([, v]) => v === 'fail');
+      // Each alarm carries its STATE — `never`, `stale` or `failed` (lib/heartbeat.ts)
+      // — because the post-deploy job in ci.yml excuses a job that has not run, and
+      // must not excuse one whose last run FAILED: a deploy that breaks keep-warm,
+      // which runs every four minutes inside that job's wait, reads `failed`. A key
+      // with no readable state is printed as `unknown`, which nothing excuses.
+      const stateOf = new Map((body.cron?.jobs ?? []).map((j) => [j.key, j.state] as const));
+      const named = alarms.map((k) => `${k}:${stateOf.get(k) ?? 'unknown'}`);
       return {
         ok: res.status === 200 && alarms.length === 0 && bad.length === 0,
-        detail: `${res.status} alarms=[${alarms.join(',')}] failed=[${bad.map(([k]) => k).join(',')}]`,
+        detail: `${res.status} alarms=[${named.join(',')}] failed=[${bad.map(([k]) => k).join(',')}]`,
       };
     },
   });

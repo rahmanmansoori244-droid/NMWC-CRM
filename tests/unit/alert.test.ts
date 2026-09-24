@@ -9,7 +9,7 @@
  * this variable on every call rather than at import, so one describe below
  * deliberately unsets it to exercise the DURABLE path — the one production runs —
  * against a simulation of its statement, with lib/db mocked. Every case uses its
- * own `scope`, because the dedup bucket is keyed on event+scope and the in-memory
+ * own `scope`, because the dedup bucket is keyed on event+severity+scope and the in-memory
  * buckets are module state shared across this file.
  */
 process.env.RATE_LIMIT_BACKEND = 'memory';
@@ -23,6 +23,7 @@ import {
   ALERT_MESSAGE_MAX,
   ALERT_RENOTIFY_SEC,
 } from '@/lib/alert';
+import { importRejectionAlert } from '@/lib/import-rejection-alert';
 
 const HOOK = 'https://hooks.example.test/services/T0/B0/zzzz';
 
@@ -119,6 +120,39 @@ describe('sendAlert — when it must stay silent', () => {
       })
     ).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('does not log a rejected event key on ANY path, the non-https one included', async () => {
+    // The non-https branch used to run BEFORE the key was validated and logged
+    // `a.event` raw — so a key built from data reached the log through the one
+    // branch whose own comment is about keeping secrets out of it.
+    process.env.ALERT_WEBHOOK_URL = 'http://hooks.example.test/plain';
+    const warn = vi.spyOn(logger, 'warn');
+    const info = vi.spyOn(logger, 'info');
+    const bad = 'sla.escalated Al Maha Trading LLC' as 'sla.escalated';
+    expect(await sendAlert({ severity: 'warn', event: bad, message: 'x' })).toBe(false);
+    const logged = JSON.stringify([...warn.mock.calls, ...info.mock.calls]);
+    expect(logged).not.toContain('Al Maha');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('never throws on malformed input, even with a webhook configured', async () => {
+    // "sendAlert NEVER THROWS" is the contract every caller awaits it on. With a
+    // URL set, `sendAlert(undefined)` threw a TypeError reading `.event`, then threw
+    // AGAIN reading it inside the catch — out of the function (adversarial review,
+    // 2026-09-24). TypeScript stops this at the three call sites; the contract is
+    // for the fourth, written in JavaScript or through a cast.
+    process.env.ALERT_WEBHOOK_URL = HOOK;
+    const warn = vi.spyOn(logger, 'warn');
+    for (const input of [undefined, null, 'cron.failed', 42, {}, { event: 7 }]) {
+      await expect(sendAlert(input as never), `sendAlert(${JSON.stringify(input)})`).resolves.toBe(
+        false
+      );
+    }
+    expect(fetch).not.toHaveBeenCalled();
+    // Refused on purpose, not swallowed by the catch: a swallowed TypeError logs
+    // `alert.failed`, and that is the mutant this line tells apart.
+    expect(warn.mock.calls.map((c) => c[1])).not.toContain('alert.failed');
   });
 });
 
@@ -340,6 +374,11 @@ describe('sendAlert — the webhook URL is a credential', () => {
     for (const payload of payloads) {
       expect(payload, 'a logger payload in lib/alert.ts').not.toMatch(/url/i);
       expect(payload, 'a logger payload in lib/alert.ts').not.toMatch(/\.message\b/);
+      // The validated `event`, never the caller's `a.event`: an unvalidated key is
+      // the suspect value, and reading `a` inside the catch is what re-threw out of
+      // sendAlert when `a` itself was undefined. Harmless today only because the
+      // input guard returns first — this keeps it harmless if that guard moves.
+      expect(payload, 'a logger payload in lib/alert.ts').not.toMatch(/\ba\.\w/);
     }
   });
 });
@@ -416,6 +455,24 @@ describe('sendAlert — the rate limit', () => {
   it('keeps one bucket per job, so a dead cron cannot silence another outage', async () => {
     expect(await alert('joba')).toBe(true);
     expect(await alert('jobb')).toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('does not let a WARN silence a CRITICAL in the same window', async () => {
+    // The SLA sweep's exact sequence. 04:15: one request escalated for the first
+    // time — warn. 04:45: a different request escalated for the SECOND time —
+    // critical. The sweep counts escalations as edges, on the run that performs
+    // them, so with event+scope as the whole key the critical was dropped and never
+    // counted again (adversarial review, 2026-09-24).
+    const sla = (severity: 'warn' | 'critical') =>
+      sendAlert({ severity, event: 'sla.escalated', message: 'escalated' });
+    expect(await sla('warn')).toBe(true);
+    vi.setSystemTime(new Date(BASE.getTime() + 30 * 60_000));
+    expect(await sla('critical'), 'the critical must get through').toBe(true);
+    expect(sentBody(calls, 1).severity).toBe('critical');
+    // And each severity is still deduplicated on its own.
+    expect(await sla('warn')).toBe(false);
+    expect(await sla('critical')).toBe(false);
     expect(calls).toHaveLength(2);
   });
 
@@ -556,6 +613,31 @@ describe('sendAlert — the dedup on the durable backend', () => {
     expect(pg.problems, 'the simulation must still match lib/rate-limit.ts').toEqual([]);
     expect(pg.served(), 'every gate check went through the simulated durable bucket').toBe(9);
   });
+
+  it('lets a CRITICAL through after a WARN in the same window, on this backend too', async () => {
+    const calls: Call[] = [];
+    vi.stubGlobal('fetch', acceptingFetch(calls));
+    process.env.ALERT_WEBHOOK_URL = HOOK;
+    delete process.env.RATE_LIMIT_BACKEND;
+    process.env.DATABASE_URL = 'postgresql://simulated/never-connected';
+    const pg = simulatedPgLimiter();
+    vi.resetModules();
+    vi.doMock('@/lib/db', () => ({ prisma: { $queryRaw: pg.queryRaw } }));
+    const { sendAlert: send } = await import('@/lib/alert');
+
+    vi.useFakeTimers();
+    vi.setSystemTime(BASE);
+    const sla = (severity: 'warn' | 'critical') =>
+      send({ severity, event: 'sla.escalated', message: 'escalated' });
+
+    expect(await sla('warn')).toBe(true);
+    vi.setSystemTime(new Date(BASE.getTime() + 30 * 60_000));
+    expect(await sla('critical')).toBe(true);
+    expect(await sla('critical')).toBe(false);
+    expect(calls.map((_, i) => sentBody(calls, i).severity)).toEqual(['warn', 'critical']);
+    expect(pg.problems).toEqual([]);
+    expect(pg.served(), 'all three gate checks went through the durable bucket').toBe(3);
+  });
 });
 
 /**
@@ -584,6 +666,17 @@ describe('every alert has a caller and every caller has an alert', () => {
 
   const sources = new Map(CALL_SITES.map((f) => [f, strip(readFileSync(f, 'utf8'))]));
 
+  /**
+   * Where each event's literal is written. The import service raises its alert
+   * but the decision — and so the `event:` literal — lives in
+   * lib/import-rejection-alert.ts, because a 'use server' module cannot export it
+   * for a behavioural test.
+   */
+  const EVENT_SOURCES = [...CALL_SITES, 'lib/import-rejection-alert.ts'];
+  const eventSources = new Map(
+    EVENT_SOURCES.map((f) => [f, strip(readFileSync(f, 'utf8'))])
+  );
+
   const declared = (() => {
     const body = strip(readFileSync('lib/alert.ts', 'utf8'));
     const block = /export type AlertEvent =([\s\S]*?);/.exec(body);
@@ -602,7 +695,7 @@ describe('every alert has a caller and every caller has an alert', () => {
 
   it('wires every declared event to exactly one of those call sites', () => {
     for (const event of declared) {
-      const callers = [...sources.entries()].filter(([, src]) =>
+      const callers = [...eventSources.entries()].filter(([, src]) =>
         src.includes(`event: '${event}',`)
       );
       expect(callers.map(([f]) => f), `${event} must be sent from exactly one place`).toHaveLength(1);
@@ -610,7 +703,7 @@ describe('every alert has a caller and every caller has an alert', () => {
   });
 
   it('declares every event those call sites send', () => {
-    for (const [file, src] of sources) {
+    for (const [file, src] of eventSources) {
       for (const m of src.matchAll(/\bevent: '([^']+)'/g)) {
         expect(declared, `${file} sends ${m[1]}`).toContain(m[1]);
       }
@@ -655,12 +748,60 @@ describe('every alert has a caller and every caller has an alert', () => {
     expect(sources.get('app/api/cron/sla-escalate/route.ts')).toMatch(
       /if \(escalated > 0 \|\| level2 > 0\) \{\s*await sendAlert\(\{/
     );
-    // ONE alert per batch: the final slice, still holding the lease, with
-    // rejections. Drop `done` and every slice of a big load alerts; drop the lease
-    // check and a resumed load alerts twice for one finish.
-    expect(sources.get('services/imports.ts')).toMatch(
-      /if \(done && finalize\.count > 0 && rejectedTotal > 0\) \{\s*await sendAlert\(\{/
+    // The import's decision is proved by behaviour below (lib/import-rejection-
+    // alert.ts). This pins the one thing behaviour cannot see: that the service
+    // hands it THIS batch's row states and THIS slice's lease result, and sends
+    // whatever it returns. Pinning the old inline `if` let `countOf(REJECTED)`
+    // become `countOf(CLEAN)` — an alert that can never fire — with this test green.
+    const imports = sources.get('services/imports.ts')!;
+    expect(imports).toMatch(
+      /const stateCounts = await prisma\.importRow\.groupBy\(\{\s*by: \['state'\],\s*where: \{ batchId \},/
     );
+    expect(imports).toMatch(
+      /const rejectionAlert = importRejectionAlert\(\{\s*batchId,\s*stateCounts,\s*finalisedByThisSlice: finalize\.count > 0,\s*groups: groups\.size,\s*\}\);\s*if \(rejectionAlert\) await sendAlert\(rejectionAlert\);/
+    );
+  });
+});
+
+describe('importRejectionAlert — one alert per finished batch, only with rejections', () => {
+  type Counts = Partial<Record<'PENDING' | 'CLEAN' | 'QUARANTINED' | 'PROMOTED' | 'REJECTED', number>>;
+  const rows = (c: Counts) =>
+    Object.entries(c).map(([state, n]) => ({
+      state: state as 'CLEAN',
+      _count: { _all: n as number },
+    }));
+  const BATCH = 'clz3k9x0a0000abcd1234efgh';
+  const decide = (c: Counts, finalisedByThisSlice = true) =>
+    importRejectionAlert({ batchId: BATCH, stateCounts: rows(c), finalisedByThisSlice, groups: 7 });
+
+  it('fires on the finishing slice when rows were rejected, with the WHOLE batch counts', () => {
+    const a = decide({ PROMOTED: 18296, REJECTED: 1833, QUARANTINED: 69 });
+    expect(a).not.toBeNull();
+    expect(a!.event).toBe('import.rejections');
+    expect(a!.severity).toBe('warn');
+    expect(a!.scope).toBe(BATCH);
+    expect(a!.counts).toEqual({ rejected: 1833, promoted: 18296, groups: 7 });
+    expect(a!.ids).toEqual({ batchId: BATCH });
+  });
+
+  it('stays silent while any CLEAN row remains — an intermediate slice', () => {
+    expect(decide({ CLEAN: 1, PROMOTED: 500, REJECTED: 20 })).toBeNull();
+  });
+
+  it('stays silent for a slice that lost the lease, so a resumed load posts once', () => {
+    expect(decide({ PROMOTED: 500, REJECTED: 20 }, false)).toBeNull();
+  });
+
+  it('stays silent on a clean finish — nothing rejected', () => {
+    expect(decide({ PROMOTED: 500, QUARANTINED: 3 })).toBeNull();
+    expect(decide({ PROMOTED: 500, REJECTED: 0 })).toBeNull();
+  });
+
+  it('counts REJECTED, not any other state that happens to be non-zero', () => {
+    // The mutant that motivated moving this here: counting the wrong state. Each
+    // other state is non-zero and REJECTED is zero, so only a correct count is null.
+    expect(decide({ PROMOTED: 5, QUARANTINED: 5, PENDING: 5 })).toBeNull();
+    expect(decide({ REJECTED: 1 })!.counts!.rejected).toBe(1);
   });
 });
 

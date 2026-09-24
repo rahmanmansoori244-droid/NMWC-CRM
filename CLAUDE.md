@@ -34,10 +34,13 @@ heredoc or `-e`, which silently eat backslashes.
 **Merging to `main` deploys to production.** Never fast-forward `main` without an
 explicit yes from the owner.
 
-**`prisma migrate deploy` runs BEFORE `next build`.** So a lint or type error
-surfaces *after* migrations have already been applied to the production database,
-leaving it migrated but undeployed. Run `npx tsc --noEmit`, `npm run lint` and the
-unit suite before pushing anything.
+**`prisma migrate deploy` runs BEFORE `next build`.** So anything `next build`
+refuses surfaces *after* migrations have already been applied to the production
+database, leaving it migrated but undeployed. Since 2026-09-24 the build script
+typechecks and lints ahead of the migrate (`tests/unit/ci-gates-guard.test.ts`
+pins the order), but a compile or prerender failure inside `next build` still
+lands after it. Run `npx tsc --noEmit`, `npm run lint` and the unit suite before
+pushing anything.
 
 **Gate the merge on CI's exit code, not on the command that printed it.** Chaining
 a push after a status check with `&&` or `;` pushes regardless — that put a red

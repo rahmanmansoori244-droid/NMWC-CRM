@@ -19,6 +19,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { runScriptOf, runStep } from '../support/workflow-step';
 import {
   argvIssue,
   ruleScope,
@@ -348,15 +349,73 @@ describe('the check is wired to something that actually runs', () => {
     expect(r2Job).toContain('scripts/ops/r2-backups-lifecycle.ts --check');
   });
 
-  it('runs both even when the first one fails', () => {
-    expect(r2Job).toMatch(/RC=1/);
-    expect(r2Job).toMatch(/exit \$RC/);
-    // Without this pair the step reads as if both checks run and only the first
-    // one does: `set -e` would abort at the `||` of a failing check. Asserting
-    // RC=1 and `exit $RC` alone did not catch that — adding `-e` left this test
-    // green, which is how it was found.
-    expect(r2Job).toMatch(/set -uo pipefail/);
-    expect(r2Job).not.toMatch(/set -euo pipefail/);
+  /**
+   * The step is EXECUTED, under the `bash -e` GitHub runs it with, with `npx`
+   * stubbed so each bucket check passes or fails on demand. The version before
+   * this read the text instead — `RC=1`, `exit $RC`, no `set -euo` — and stayed
+   * green against `|| true` in place of the backups check's `|| RC=1` (a broken
+   * 30-day expiry reads green) and against an early `[ -n "$KEY" ] || { echo; exit; }`
+   * (a bare `exit` returns the echo's 0). Its comment also claimed `-e` would
+   * break the step, which it does not: `cmd || RC=1` is an AND-OR list, and -e
+   * ignores those (adversarial review, 2026-09-24). The admin secrets are left
+   * UNSET below, because that is their state today and it is the state an early
+   * exit would key on.
+   */
+  const VERIFY_STEP = 'Verify both buckets';
+  const verifyScript = runScriptOf(readFileSync(R2_WORKFLOW, 'utf8'), VERIFY_STEP);
+  const runVerify = (backupsRc: number, photosRc: number) => {
+    const stubs = [
+      'npx() {',
+      '  echo "npx $*" >> "$STUB_DIR/calls"',
+      '  case "$*" in',
+      `    *r2-backups-lifecycle.ts*) return ${backupsRc} ;;`,
+      `    *r2-photos-versioning.ts*) return ${photosRc} ;;`,
+      '  esac',
+      '  return 97',
+      '}',
+    ].join('\n');
+    const unset = Object.fromEntries(
+      [
+        'BACKUP_R2_ADMIN_ACCESS_KEY_ID',
+        'BACKUP_R2_ADMIN_SECRET_ACCESS_KEY',
+        'R2_ADMIN_ACCESS_KEY_ID',
+        'R2_ADMIN_SECRET_ACCESS_KEY',
+      ].map((k) => [k, ''])
+    );
+    return runStep(verifyScript, stubs, unset);
+  };
+  const ranBoth = (o: { calls: string[] }) =>
+    o.calls.some((c) => c.includes('r2-backups-lifecycle.ts --check')) &&
+    o.calls.some((c) => c.includes('r2-photos-versioning.ts --check'));
+
+  it('found the step and its script', () => {
+    // Without this every scenario below would run an empty script and pass.
+    expect(verifyScript.length, `${VERIFY_STEP} has a run: block`).toBeGreaterThan(100);
+  });
+
+  it('is green only when BOTH checks pass', () => {
+    const o = runVerify(0, 0);
+    expect(o.status, o.output).toBe(0);
+    expect(ranBoth(o), 'both checks ran').toBe(true);
+  });
+
+  it('is red when only the backups check fails, and still runs the photos check', () => {
+    const o = runVerify(1, 0);
+    expect(o.status, o.output).not.toBe(0);
+    expect(ranBoth(o), 'the second check still ran').toBe(true);
+  });
+
+  it('is red when only the photos check fails', () => {
+    const o = runVerify(0, 1);
+    expect(o.status, o.output).not.toBe(0);
+    expect(ranBoth(o)).toBe(true);
+  });
+
+  it('is red when both fail, and says where the owner steps are', () => {
+    const o = runVerify(1, 1);
+    expect(o.status, o.output).not.toBe(0);
+    expect(ranBoth(o)).toBe(true);
+    expect(o.output).toMatch(/::error::[^\n]*OPERATIONS\.md/);
   });
 
   it('keeps one admin token per bucket, and does not let them cross', () => {

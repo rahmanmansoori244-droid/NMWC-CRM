@@ -72,7 +72,7 @@ export type AlertInput = {
 export const ALERT_TIMEOUT_MS = 5_000;
 
 /**
- * At most one alert per event key per four-hour window.
+ * At most one alert per event, SEVERITY and scope per four-hour window.
  *
  * The SLA sweep runs at :15 and :45 through a twelve-hour Oman window
  * (docs/OPERATIONS.md §5d) — 24 invocations a day. Without a limiter a condition
@@ -80,6 +80,18 @@ export const ALERT_TIMEOUT_MS = 5_000;
  * gets muted, which returns us to GAP-2 by a different route. Four hours caps a
  * persistent condition at four messages inside the working window: raised
  * immediately, then re-raised as each window turns.
+ *
+ * Severity is in the bucket because a WARN must never silence a CRITICAL. With
+ * event+scope alone, a first escalation posted at 04:15 (warn) swallowed a second
+ * escalation at 04:45 (critical) — and the sweep reports escalations as EDGES,
+ * each counted on the one run that performed it, so a suppressed one is never
+ * counted again and nobody was ever told (adversarial review, 2026-09-24).
+ *
+ * "Re-raised as each window turns" holds only for a LEVEL — something every run
+ * re-observes, like `cron.failed` on a job that keeps failing. `sla.escalated` and
+ * `import.rejections` are edges: an occurrence dropped by the window, or by a
+ * failed POST, is not re-announced later. The app is the record for those; the
+ * alert is the prompt to go and look at it.
  */
 export const ALERT_RENOTIFY_SEC = 4 * 60 * 60;
 
@@ -174,6 +186,14 @@ function validScope(scope: string | undefined): string | undefined {
   return typeof scope === 'string' && SCOPE_KEY.test(scope) ? scope : undefined;
 }
 
+/**
+ * The same rule for severity, for the same reason: the dedup key and the wire both
+ * use it, so they must agree on what an unrecognised value means.
+ */
+function validSeverity(severity: unknown): AlertSeverity {
+  return severity === 'critical' || severity === 'warn' ? severity : 'info';
+}
+
 type WirePayload = {
   text: string;
   content: string;
@@ -217,8 +237,7 @@ function wirePayload(a: AlertInput, now: Date): WirePayload {
   for (const [k, v] of Object.entries(a.ids ?? {})) {
     if (FIELD_KEY.test(k) && typeof v === 'string' && isSelfMintedId(v)) ids[k] = v;
   }
-  const severity: AlertSeverity =
-    a.severity === 'critical' || a.severity === 'warn' ? a.severity : 'info';
+  const severity = validSeverity(a.severity);
   const message = scrubAndTruncate(String(a.message ?? ''), ALERT_MESSAGE_MAX);
   const pairs = [...Object.entries(counts), ...Object.entries(ids)]
     .map(([k, v]) => `${k}=${v}`)
@@ -283,19 +302,30 @@ function failureLabel(err: unknown): string {
  * and awaiting is safe precisely because this cannot throw.
  */
 export async function sendAlert(a: AlertInput): Promise<boolean> {
+  // The VALIDATED event key, once there is one. Every log line below — the catch
+  // included — reads this and never `a.event`: an unvalidated key must not be
+  // logged, and touching `a` inside the catch re-threw out of the one function
+  // that promises never to throw when `a` itself was the problem (a JavaScript
+  // caller, or an `as` cast, passing undefined).
+  let event: string | undefined;
   try {
     const url = process.env.ALERT_WEBHOOK_URL?.trim();
     if (!url) return false;
-    if (!url.startsWith('https://')) {
-      // Never log the URL. A Slack/Teams/Discord webhook URL is a bearer
-      // credential: anyone holding it can post into the channel.
-      logger.warn({ event: a.event }, 'alert.url_not_https');
+    if (!a || typeof a !== 'object') {
+      logger.warn({}, 'alert.bad_input');
       return false;
     }
-    if (!EVENT_KEY.test(a.event)) {
+    if (typeof a.event !== 'string' || !EVENT_KEY.test(a.event)) {
       // The rejected key is NOT logged: the only way to reach here is a caller that
       // built the key from data, so the key itself is the suspect value.
       logger.warn({}, 'alert.bad_event_key');
+      return false;
+    }
+    event = a.event;
+    if (!url.startsWith('https://')) {
+      // Never log the URL. A Slack/Teams/Discord webhook URL is a bearer
+      // credential: anyone holding it can post into the channel.
+      logger.warn({ event }, 'alert.url_not_https');
       return false;
     }
     // Durable bucket, not a module-level Map. lib/rate-limit.ts already records
@@ -312,7 +342,7 @@ export async function sendAlert(a: AlertInput): Promise<boolean> {
     const nowMs = Date.now();
     const bucketWindow = alertWindow(nowMs);
     const gate = await checkLimit(
-      `alert:${a.event}${scope ? `:${scope}` : ''}:w${bucketWindow}`,
+      `alert:${event}:${validSeverity(a.severity)}${scope ? `:${scope}` : ''}:w${bucketWindow}`,
       ALERT_LIMIT
     );
     if (!gate.ok) {
@@ -322,7 +352,7 @@ export async function sendAlert(a: AlertInput): Promise<boolean> {
       const retryAfterSec = Math.ceil(
         ((bucketWindow + 1) * ALERT_RENOTIFY_SEC * 1000 - nowMs) / 1000
       );
-      logger.info({ event: a.event, retryAfterSec }, 'alert.suppressed');
+      logger.info({ event, retryAfterSec }, 'alert.suppressed');
       return false;
     }
     // A hanging webhook must not hold the function open to its 60 s ceiling.
@@ -336,7 +366,7 @@ export async function sendAlert(a: AlertInput): Promise<boolean> {
         signal: controller.signal,
       });
       if (!res.ok) {
-        logger.warn({ event: a.event, status: res.status }, 'alert.rejected');
+        logger.warn({ event, status: res.status }, 'alert.rejected');
         return false;
       }
       return true;
@@ -347,12 +377,15 @@ export async function sendAlert(a: AlertInput): Promise<boolean> {
     }
   } catch (err) {
     // Includes the abort. A failed send has already spent this window's token, so
-    // the next occurrence inside the window stays quiet; when the window turns the
-    // condition — if it is still true — raises itself again.
+    // the next occurrence inside the window stays quiet. When the window turns, a
+    // LEVEL that is still true (`cron.failed`) raises itself again; an EDGE does
+    // not — an `import.rejections` lost here is lost for that batch, and an
+    // `sla.escalated` for those escalations. Deliberately no retry: see the file
+    // header, and ALERT_RENOTIFY_SEC for the level/edge distinction.
     //
     // The error's CLASS only, never its text: see failureLabel above. The text can
     // be `Failed to parse URL from <webhook url>`, and that URL is a credential.
-    logger.warn({ event: a.event, err: failureLabel(err) }, 'alert.failed');
+    logger.warn({ event, err: failureLabel(err) }, 'alert.failed');
     return false;
   }
 }

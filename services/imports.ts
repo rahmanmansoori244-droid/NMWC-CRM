@@ -28,6 +28,7 @@ import bcrypt from 'bcryptjs';
 import { logger } from '@/lib/logger';
 import { notifyUsers } from '@/lib/notifications';
 import { sendAlert } from '@/lib/alert';
+import { importRejectionAlert } from '@/lib/import-rejection-alert';
 import { randomUUID } from 'node:crypto';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
@@ -1996,22 +1997,17 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // No customer identifiers: counts and the batch id, which is the /import/ URL
     // segment the operator needs. `failureCustCodes` stays in the audit row, where
     // it is behind authentication — a webhook is a third party.
-    const rejectedTotal = countOf(ImportRowState.REJECTED);
-    if (done && finalize.count > 0 && rejectedTotal > 0) {
-      await sendAlert({
-        severity: 'warn',
-        event: 'import.rejections',
-        // Per batch, so two masters loaded the same morning both report.
-        scope: batchId,
-        message: 'A customer master load finished with rejected rows. Open the batch to see why.',
-        counts: {
-          rejected: rejectedTotal,
-          promoted: countOf(ImportRowState.PROMOTED),
-          groups: groups.size,
-        },
-        ids: { batchId },
-      });
-    }
+    //
+    // The decision is lib/import-rejection-alert.ts, tested by behaviour; what is
+    // pinned here is only that it is handed THIS batch's row states and THIS
+    // slice's finalize result.
+    const rejectionAlert = importRejectionAlert({
+      batchId,
+      stateCounts,
+      finalisedByThisSlice: finalize.count > 0,
+      groups: groups.size,
+    });
+    if (rejectionAlert) await sendAlert(rejectionAlert);
 
     // Only the FINAL slice revalidates. An intermediate slice revalidating would
     // re-render the batch page (and re-run its queries) after every pass — dozens of

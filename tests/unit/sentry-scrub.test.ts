@@ -242,6 +242,73 @@ describe('transaction events go through the same scrubber', () => {
   });
 });
 
+/**
+ * The alert webhook URL rides out on Sentry's own fetch instrumentation, not on
+ * anything this code logs: every outgoing request becomes a span and a breadcrumb,
+ * and Sentry's sanitiser strips the query but keeps the path — where Slack, Teams
+ * and Discord keep the secret (adversarial review, 2026-09-24). The shapes below
+ * are the ones @sentry/node's fetch integration and the OpenTelemetry HTTP
+ * semantic conventions produce.
+ */
+describe('the alert webhook URL never reaches Sentry', () => {
+  const HOOK = 'https://hooks.example.test/services/T0AB12CD/B0EF34GH/zzSecretTokenzz';
+  const PATH = '/services/T0AB12CD/B0EF34GH/zzSecretTokenzz';
+  const SECRET_PARTS = [HOOK, PATH, 'zzSecretTokenzz', 'B0EF34GH/zz'];
+
+  const withHook = <T,>(url: string | undefined, fn: () => T): T => {
+    const before = process.env.ALERT_WEBHOOK_URL;
+    if (url === undefined) delete process.env.ALERT_WEBHOOK_URL;
+    else process.env.ALERT_WEBHOOK_URL = url;
+    try {
+      return fn();
+    } finally {
+      if (before === undefined) delete process.env.ALERT_WEBHOOK_URL;
+      else process.env.ALERT_WEBHOOK_URL = before;
+    }
+  };
+
+  const eventCarrying = (url: string, path: string) =>
+    ({
+      type: 'transaction',
+      transaction: 'GET /api/cron/sla-escalate',
+      contexts: { trace: { data: { 'url.full': url } } },
+      spans: [
+        {
+          description: `POST ${url}`,
+          data: { 'url.full': url, 'http.url': url, 'url.path': path, 'http.target': path, 'http.method': 'POST' },
+        },
+      ],
+      breadcrumbs: [{ category: 'fetch', message: `POST ${url}`, data: { url, method: 'POST', status_code: 200 } }],
+      exception: { values: [{ type: 'TypeError', value: `Failed to parse URL from ${url}` }] },
+      request: { url, query_string: `note=${path}` },
+    }) as unknown as SentryEvent;
+
+  it('redacts the configured URL, its query-less form and its bare path, in every carrier', () => {
+    const out = withHook(HOOK, () => JSON.stringify(scrubEvent(eventCarrying(HOOK, PATH))));
+    for (const part of SECRET_PARTS) expect(out, `must not carry ${part}`).not.toContain(part);
+    expect(out).toContain('[alert-webhook]');
+    // What is NOT secret survives, or the event stops being useful.
+    expect(out).toContain('/api/cron/sla-escalate');
+    expect(out).toContain('POST');
+  });
+
+  it('catches the form Sentry actually records — the query stripped off', () => {
+    // A bridge that authenticates in the query is covered by the query-pair rule;
+    // this is the reverse: the configured URL HAS a query, the recorded one does not.
+    const configured = `${HOOK}?thread=ops`;
+    const out = withHook(configured, () => JSON.stringify(scrubEvent(eventCarrying(HOOK, PATH))));
+    for (const part of SECRET_PARTS) expect(out, `must not carry ${part}`).not.toContain(part);
+  });
+
+  it('is a no-op when no webhook is configured — the client and the Edge', () => {
+    const out = withHook(undefined, () =>
+      JSON.stringify(scrubEvent(eventCarrying('https://nmwc-cm.vercel.app/api/health', '/api/health')))
+    );
+    expect(out).toContain('/api/health');
+    expect(out).not.toContain('[alert-webhook]');
+  });
+});
+
 describe('every runtime wires both hooks', () => {
   it.each(['sentry.server.config.ts', 'sentry.edge.config.ts', 'instrumentation-client.ts'])(
     '%s sets beforeSend AND beforeSendTransaction',

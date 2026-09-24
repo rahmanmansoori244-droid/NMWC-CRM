@@ -47,10 +47,52 @@ function scrubQueryPairs(s: string): string {
   );
 }
 
-/** Query-pair redaction followed by the pattern scrub. Use for any free text. */
-const scrubText = (s: string): string => scrub(scrubQueryPairs(s));
+/**
+ * The alert webhook URL (lib/alert.ts) is a bearer credential — whoever holds it
+ * can post into the owner's channel — and lib/alert.ts keeps it out of every log
+ * line. Sentry does not: its fetch instrumentation records each outgoing request
+ * as a span and a breadcrumb, and its sanitiser (@sentry/core
+ * `getSanitizedUrlStringFromUrlObject`) removes the query string and fragment
+ * but KEEPS THE PATH. For Slack, Teams and Discord the path is the whole of the
+ * secret, and nothing below it — query-pair redaction, the digit-run pattern —
+ * touches a path (adversarial review, 2026-09-24).
+ *
+ * So every string an event carries is checked for the configured URL, its
+ * query-less form and its bare path (a span's `url.path` / `http.target` holds
+ * only that). Exact matches of the one configured value: no pattern here has to
+ * guess what a webhook looks like. Read on every call, because the scrubber is
+ * module state shared by all runtimes and the variable exists only on the server;
+ * on the client and the Edge it is absent and this is a no-op.
+ */
+function webhookFragments(): string[] {
+  const raw = (typeof process !== 'undefined' ? process.env?.ALERT_WEBHOOK_URL : undefined)?.trim();
+  if (!raw) return [];
+  const out = new Set<string>([raw]);
+  try {
+    const u = new URL(raw);
+    out.add(`${u.origin}${u.pathname}`);
+    if (u.pathname.length > 1) out.add(u.pathname);
+    if (u.search.length > 1) out.add(u.search.slice(1));
+  } catch {
+    // Unparseable: the raw string is all there is to look for.
+  }
+  // Longest first, so the whole URL is replaced before a piece of it is.
+  return [...out].sort((a, b) => b.length - a.length);
+}
 
-function scrubUrl(url: string): string {
+function redactWebhook(s: string): string {
+  let out = s;
+  for (const f of webhookFragments()) {
+    if (out.includes(f)) out = out.split(f).join('[alert-webhook]');
+  }
+  return out;
+}
+
+/** Webhook, then query-pair redaction, then the pattern scrub. Use for any free text. */
+const scrubText = (s: string): string => scrub(scrubQueryPairs(redactWebhook(s)));
+
+function scrubUrl(rawUrl: string): string {
+  const url = redactWebhook(rawUrl);
   try {
     const u = new URL(url);
     u.searchParams.forEach((_v, k) => {
@@ -91,15 +133,15 @@ export function scrubEvent<T extends Event>(event: T, _hint?: EventHint): T {
   if (typeof event.transaction === 'string') event.transaction = scrubText(event.transaction);
   const qs = event.request?.query_string;
   if (typeof qs === 'string') {
-    event.request!.query_string = scrubQueryPairs(qs);
+    event.request!.query_string = scrubQueryPairs(redactWebhook(qs));
   } else if (Array.isArray(qs)) {
     event.request!.query_string = qs.map(([k, v]) =>
-      SENSITIVE_PARAM.test(k) ? [k, '[redacted]'] : [k, scrub(v)]
+      SENSITIVE_PARAM.test(k) ? [k, '[redacted]'] : [k, scrub(redactWebhook(v))]
     ) as typeof qs;
   } else if (qs && typeof qs === 'object') {
     for (const [k, v] of Object.entries(qs)) {
       if (typeof v === 'string') {
-        (qs as Record<string, string>)[k] = SENSITIVE_PARAM.test(k) ? '[redacted]' : scrub(v);
+        (qs as Record<string, string>)[k] = SENSITIVE_PARAM.test(k) ? '[redacted]' : scrub(redactWebhook(v));
       }
     }
   }
@@ -122,7 +164,7 @@ export function scrubEvent<T extends Event>(event: T, _hint?: EventHint): T {
   }
   if (event.exception?.values) {
     for (const v of event.exception.values) {
-      if (typeof v.value === 'string') v.value = scrub(v.value);
+      if (typeof v.value === 'string') v.value = scrub(redactWebhook(v.value));
     }
   }
   if (event.breadcrumbs) {

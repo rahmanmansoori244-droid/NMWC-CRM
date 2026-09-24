@@ -32,10 +32,8 @@
  * `if: vars.RUN_E2E == 'true'` on the browser job.
  */
 import { describe, it, expect } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
+import { runScriptOf as runScriptOfIn, runStep, type Outcome } from '../support/workflow-step';
 
 const CI_PATH = '.github/workflows/ci.yml';
 const SMOKE_PATH = 'scripts/ops/smoke.ts';
@@ -77,39 +75,8 @@ function stepBlocks(id: string): string[] {
     .map((s) => s.trimEnd());
 }
 
-/**
- * The `run:` script of one step, dedented exactly as GitHub hands it to bash.
- * Returns '' when the step or its script is not there, which the tests assert
- * against before running anything — an empty script would "pass" every scenario.
- */
-function runScriptOf(stepName: string): string {
-  const lines = RAW.split('\n');
-  const start = lines.findIndex((l) => l.trim() === `- name: ${stepName}`);
-  if (start < 0) return '';
-  let at = -1;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (/^\s+- name: /.test(lines[i]!)) break;
-    if (/^\s+run: \|\s*$/.test(lines[i]!)) {
-      at = i;
-      break;
-    }
-  }
-  if (at < 0) return '';
-  const body: string[] = [];
-  let indent = -1;
-  for (let i = at + 1; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (line.trim() === '') {
-      body.push('');
-      continue;
-    }
-    const own = line.length - line.trimStart().length;
-    if (indent < 0) indent = own;
-    if (own < indent) break;
-    body.push(line.slice(indent));
-  }
-  return body.join('\n');
-}
+/** The `run:` script of one step of ci.yml — see tests/support/workflow-step.ts. */
+const runScriptOf = (stepName: string): string => runScriptOfIn(RAW, stepName);
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
   scripts: Record<string, string>;
@@ -129,80 +96,6 @@ const JOBS = [
   'post-deploy-smoke',
 ];
 
-/**
- * bash, the way Actions has it. On Linux it is on PATH; on a Windows developer
- * box it ships with git, together with the coreutils the scripts use (`seq`,
- * `cut`, `grep`), so that directory is prepended to PATH for the child. There is
- * deliberately no skip-if-missing branch: a guard that quietly does not run is
- * the failure mode this whole file exists to end.
- */
-let cachedBash: { bash: string; extraPath: string | null } | null = null;
-function resolveBash(): { bash: string; extraPath: string | null } {
-  if (cachedBash) return cachedBash;
-  if (process.platform !== 'win32') {
-    cachedBash = { bash: 'bash', extraPath: null };
-    return cachedBash;
-  }
-  const execPath = execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim().replace(/\\/g, '/');
-  let dir = execPath;
-  for (let up = 0; up < 6 && dir.includes('/'); up++) {
-    const bin = `${dir}/usr/bin`;
-    if (existsSync(`${bin}/bash.exe`)) {
-      cachedBash = { bash: `${bin}/bash.exe`, extraPath: bin };
-      return cachedBash;
-    }
-    dir = dir.slice(0, dir.lastIndexOf('/'));
-  }
-  throw new Error(
-    'no bash found beside git: this guard executes the workflow step for real and cannot assert anything without one'
-  );
-}
-
-type Outcome = { status: number; output: string; calls: string[] };
-
-/**
- * Run a workflow `run:` script the way GitHub Actions does — `bash -e <file>` —
- * with `stubs` prepended. The inherited `-e` is the whole point: it is what made
- * the retry loop exit on its first iteration.
- */
-function runStep(
-  script: string,
-  stubs: string,
-  env: Record<string, string>,
-  files: Record<string, string> = {}
-): Outcome {
-  const dir = mkdtempSync(join(tmpdir(), 'nmwc-ci-gate-'));
-  try {
-    writeFileSync(join(dir, 'step.sh'), `${stubs}\n${script}`, 'utf8');
-    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body, 'utf8');
-    const { bash, extraPath } = resolveBash();
-    const childEnv: NodeJS.ProcessEnv = { ...process.env, STUB_DIR: dir.replace(/\\/g, '/') };
-    // Windows spells it `Path`; two spellings in one environment block is a
-    // coin toss for which one the child resolves commands with.
-    for (const k of Object.keys(childEnv)) if (k.toLowerCase() === 'path') delete childEnv[k];
-    childEnv.PATH = extraPath
-      ? extraPath + delimiter + (process.env.PATH ?? '')
-      : (process.env.PATH ?? '');
-    Object.assign(childEnv, env);
-    const res = spawnSync(bash, ['-e', 'step.sh'], {
-      cwd: dir,
-      env: childEnv,
-      encoding: 'utf8',
-      timeout: 60_000,
-    });
-    const callsFile = join(dir, 'calls');
-    return {
-      status: res.status ?? -1,
-      output: `${res.stdout ?? ''}${res.stderr ?? ''}`,
-      calls: existsSync(callsFile)
-        ? readFileSync(callsFile, 'utf8').split('\n').filter(Boolean)
-        : [],
-    };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 /* ------------------------------------------------------------------------- *
  * Fabricated smoke output. The two check NAMES and the line format are
  * asserted against scripts/ops/smoke.ts below, so a rename there turns this
@@ -219,9 +112,35 @@ function checkLine(ok: boolean, name: string, detail: string): string {
 /** One run's stdout, as smoke.ts prints it. */
 function smokeOutput(opts: {
   serving: boolean;
-  cron: 'quiet' | 'alarming' | 'probe-failed' | 'probe-errored';
+  cron:
+    | 'quiet'
+    | 'alarming'
+    | 'probe-failed'
+    | 'probe-errored'
+    | 'job-failed'
+    | 'mixed'
+    | 'stateless';
   alsoBroken?: boolean;
 }): string {
+  /** The dead-man line for each case. Alarms are `job:state`, as smoke.ts prints them. */
+  const CRON_DETAIL: Record<Exclude<typeof opts.cron, 'quiet'>, string> = {
+    // Jobs that have simply not run: the only thing the step excuses.
+    alarming: '503 alarms=[db-backup:never,retention-sweep:stale] failed=[]',
+    // R2 unreachable AND a job that has not run: the excuse must not swallow the
+    // first because of the second.
+    'probe-failed': '503 alarms=[db-backup:never] failed=[r2]',
+    // The probe itself answered 500, or refused the bearer: nothing alarms and
+    // nothing is named, and this is NOT a job that has not run yet.
+    'probe-errored': '500 alarms=[] failed=[]',
+    // A job whose last run FAILED — what a deploy that breaks keep-warm produces
+    // inside the wait. Excused by the first version of the step (review, 2026-09-24).
+    'job-failed': '503 alarms=[keep-warm:failed] failed=[]',
+    // One job idle, one failed: the idle one must not carry the failed one through.
+    mixed: '503 alarms=[db-backup:never,keep-warm:failed] failed=[]',
+    // An alarm with no readable state — an older smoke, or a health payload
+    // without `jobs`. Unknown is not "has not run".
+    stateless: '503 alarms=[db-backup] failed=[]',
+  };
   const rows = [
     checkLine(true, 'health (anonymous)', '200 {"status":"ok"} keys=1'),
     checkLine(!opts.alsoBroken, 'login page renders', '200, 41234 bytes'),
@@ -232,15 +151,7 @@ function smokeOutput(opts: {
     ),
     opts.cron === 'quiet'
       ? checkLine(true, CRON_CHECK, '200 alarms=[] failed=[]')
-      : opts.cron === 'alarming'
-        ? checkLine(false, CRON_CHECK, '503 alarms=[db-backup,retention-sweep] failed=[]')
-        : opts.cron === 'probe-failed'
-          ? // R2 unreachable AND a job that has not run: the excuse must not
-            // swallow the first because of the second.
-            checkLine(false, CRON_CHECK, '503 alarms=[db-backup] failed=[r2]')
-          : // The probe itself answered 500, or refused the bearer: nothing alarms
-            // and nothing is named, and this is NOT a job that has not run yet.
-            checkLine(false, CRON_CHECK, '500 alarms=[] failed=[]'),
+      : checkLine(false, CRON_CHECK, CRON_DETAIL[opts.cron]),
   ];
   const failed = rows.filter((r) => r.startsWith('FAIL')).length;
   return [
@@ -315,6 +226,23 @@ describe('the build cannot migrate production before it typechecks', () => {
     expect(tsc).toBeLessThan(build.indexOf('prisma migrate deploy'));
   });
 
+  it('lints BEFORE the migrate step, and does not rely on next build to do it', () => {
+    // `next build` lints as well as typechecking, so a lint error was the other
+    // half of the same hazard: migrations applied, then the build refuses.
+    // Moving the lint ahead of the migrate and passing `--no-lint` to the build
+    // keeps the total work the same (pre-flight review, 2026-09-24).
+    const lint = build.search(/\b(next lint|npm run lint)\b/);
+    expect(lint, 'the build script must lint').toBeGreaterThan(-1);
+    expect(lint).toBeLessThan(build.indexOf('prisma migrate deploy'));
+    // If the build's own lint pass is switched off, the explicit one above is the
+    // only lint — which is exactly why it must come first.
+    if (/next build[^&]*--no-lint/.test(build)) {
+      expect(lint).toBeLessThan(build.indexOf('next build'));
+    }
+    // `npm run lint` must still BE the linter, or the step above lints nothing.
+    if (/npm run lint/.test(build)) expect(pkg.scripts.lint).toMatch(/\bnext lint\b/);
+  });
+
   it('still migrates ahead of the build, which is why the order matters', () => {
     // Not decoration: this coupling is the reason a late failure is expensive.
     // Remove the migrate step and the app stops deploying its own schema.
@@ -351,6 +279,37 @@ describe('every gate in ci.yml is still wired', () => {
     for (const id of JOBS) {
       const soft = [...jobBlock(id).matchAll(/continue-on-error:\s*(\S+)/g)].map((m) => m[1]!);
       expect(soft.filter((v) => v !== 'false'), `${id} fails when it fails`).toEqual([]);
+    }
+  });
+
+  it('runs on every push, to every branch', () => {
+    // A job that is wired but never TRIGGERED is the same gate switched off.
+    // `on: push` → `on: workflow_dispatch` left every assertion in this file green
+    // (adversarial review, 2026-09-24): nothing read the trigger at all.
+    const on = /^on:\n((?: {2,}.*\n|\s*\n)*)/m.exec(ci)?.[1] ?? '';
+    expect(on, 'ci.yml must have an on: block').not.toBe('');
+    expect(on).toMatch(/^ {2}push:\s*$/m);
+    // A filter under push narrows it: `branches: [main]` would take the gates off
+    // every branch, which is where they run BEFORE anything reaches production.
+    expect(on).not.toMatch(/\b(branches|branches-ignore|paths|paths-ignore|tags|tags-ignore):/);
+  });
+
+  it('no gate is conditional, except the smoke job on exactly main', () => {
+    // `if: false` on db-tests left every assertion green, because the only
+    // condition check rejected `vars.` — and `false` is not a variable. A gate job
+    // carries NO job-level `if:` at all; job-level keys sit at four spaces, so a
+    // step's `if: failure()` at eight is not what this reads.
+    for (const id of JOBS) {
+      const conds = [...jobBlock(id).matchAll(/^ {4}if:\s*(.+)$/gm)].map((m) => m[1]!.trim());
+      if (id === 'post-deploy-smoke') {
+        // Equality, not "contains": `github.ref == 'refs/heads/main' && false`
+        // contains the ref and never runs.
+        expect(conds, 'the smoke job runs on main and on nothing else').toEqual([
+          "github.ref == 'refs/heads/main'",
+        ]);
+      } else {
+        expect(conds, `${id} must not be conditional`).toEqual([]);
+      }
     }
   });
 
@@ -463,6 +422,9 @@ describe('the smoke suite runs after a deploy to main', () => {
     );
     expect(smokeSrc).toMatch(/alarms=\[/);
     expect(smokeSrc).toMatch(/failed=\[/);
+    // Each alarm as `job:state`, with `unknown` when the payload has no state — the
+    // exact shape the step's `(never|stale)` test reads.
+    expect(smokeSrc).toContain("`${k}:${stateOf.get(k) ?? 'unknown'}`");
     expect(smokeJob).toContain(COMMIT_CHECK);
     expect(smokeJob).toContain('monitor bearer unlocks the detail');
   });
@@ -562,6 +524,28 @@ describe('the smoke step is red for the DEPLOY, not for a job that has not run y
     const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron: 'probe-errored' }) }]);
     expect(o.status, o.output).toBe(1);
     expect(o.output).toContain('about the DEPLOY');
+  });
+
+  it('a job whose last run FAILED is not excused — that is what a deploy that breaks it looks like', () => {
+    const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron: 'job-failed' }) }]);
+    expect(o.status, o.output).toBe(1);
+    expect(o.output).toContain('LAST RUN FAILED');
+    expect(o.output).toContain('keep-warm:failed');
+    expect(o.output).not.toMatch(/::notice::/);
+    expect(smokeRuns(o), 'the deploy has landed, so waiting cannot change it').toBe(1);
+  });
+
+  it('an idle job does not carry a failed one through', () => {
+    const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron: 'mixed' }) }]);
+    expect(o.status, o.output).toBe(1);
+    expect(o.output).toContain('LAST RUN FAILED');
+  });
+
+  it('an alarm with no readable state is not excused', () => {
+    // `unknown` is not "has not run", and neither is a bare key.
+    const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron: 'stateless' }) }]);
+    expect(o.status, o.output).toBe(1);
+    expect(o.output).not.toMatch(/::notice::/);
   });
 
   it('a second failing check is not excused either', () => {
