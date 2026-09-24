@@ -263,5 +263,9 @@ describe('the workbook on disk is not a pre-rule build', () => {
     // Routes sheet is codes, names and region codes, and nothing else is read here.
     expect(issues, issues.join('; ')).toEqual([]);
     expect(rows, 'the Routes sheet is empty, so nothing was checked').toBeGreaterThan(0);
-  });
+    // The budget is for the READ. The whole go-live workbook loads in a few seconds
+    // on its own and took over 10 s under the full suite on Windows — past vitest's
+    // 5 s default — so it failed as a flake in two of four full runs on 2026-09-24.
+    // A wrong route name still fails at once.
+  }, 60_000);
 });

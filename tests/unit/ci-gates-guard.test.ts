@@ -448,12 +448,32 @@ describe('every gate in ci.yml is still wired', () => {
     // it into a local composite action with its own `if:`, left lint-test-build
     // green with the unit suite gone (review, 2026-09-24). Each gate's defining
     // command must appear, verbatim, as a line of one of its own steps.
-    const REQUIRED: Record<string, string[]> = {
-      'lint-test-build': ['npm run typecheck', 'npm run lint', 'npm test', 'npx next build'],
-      'db-tests': ['npx prisma migrate deploy', 'npx vitest run tests/integration'],
-      e2e: ['npx next build', 'npx playwright test tests/e2e/login.spec.ts'],
-      'restore-chain': ['npx tsx scripts/ops/restore-verify.ts'],
-      'post-deploy-smoke': ['npx tsx scripts/ops/smoke.ts --expect-commit "$GITHUB_SHA"'],
+    //
+    // And present is not enough: `npm test || true` is present. A command that is
+    // listed EXACT must be the whole line — no argument, no operator, so neither
+    // `|| true` nor a debugging `npm test -- one.test.ts` survives (review,
+    // 2026-09-24). The others may take arguments and redirects but no shell
+    // operator, except the one this file EXECUTES and proves is checked:
+    // `|| CODE=$?`, whose code the step then exits with.
+    const REQUIRED: Record<string, Array<{ cmd: string; exact: boolean }>> = {
+      'lint-test-build': ['npm run typecheck', 'npm run lint', 'npm test', 'npx next build'].map((cmd) => ({ cmd, exact: true })),
+      'db-tests': ['npx prisma migrate deploy', 'npx vitest run tests/integration'].map((cmd) => ({ cmd, exact: true })),
+      e2e: [
+        { cmd: 'npx next build', exact: true },
+        { cmd: 'npx playwright test tests/e2e/login.spec.ts', exact: false },
+      ],
+      'restore-chain': [{ cmd: 'npx tsx scripts/ops/restore-verify.ts', exact: false }],
+      'post-deploy-smoke': [{ cmd: 'npx tsx scripts/ops/smoke.ts --expect-commit "$GITHUB_SHA"', exact: false }],
+    };
+    const gating = (line: string, { cmd, exact }: { cmd: string; exact: boolean }) => {
+      if (line === cmd) return true;
+      if (exact || !line.startsWith(`${cmd} `)) return false;
+      const rest = line
+        .slice(cmd.length)
+        .replace(/\s*\|\|\s*CODE=\$\?\s*$/, '')
+        .replace(/\s*2>&1/g, '')
+        .replace(/\s*>\s*\S+/g, '');
+      return !/\|\||\||;|&|`|\$\(/.test(rest);
     };
     for (const [id, commands] of Object.entries(REQUIRED)) {
       const lines = stepsOf(id).flatMap((s) =>
@@ -462,11 +482,11 @@ describe('every gate in ci.yml is still wired', () => {
           .map((l) => l.trim())
           .filter((l) => l && !l.startsWith('#'))
       );
-      for (const cmd of commands) {
-        expect(
-          lines.some((l) => l === cmd || l.startsWith(`${cmd} `)),
-          `${id} must run: ${cmd}`
-        ).toBe(true);
+      for (const want of commands) {
+        expect(lines.some((l) => gating(l, want)), `${id} must run, un-softened: ${want.cmd}`).toBe(true);
+        // And no OTHER line runs it softened beside the good one.
+        const softened = lines.filter((l) => l.startsWith(want.cmd) && !gating(l, want));
+        expect(softened, `${id}: ${want.cmd} run in a way that cannot fail the job`).toEqual([]);
       }
     }
     expect(
@@ -476,6 +496,27 @@ describe('every gate in ci.yml is still wired', () => {
     for (const id of JOBS) {
       for (const s of stepsOf(id)) {
         expect(String(s.uses ?? ''), `${id}: no local composite action in a gate`).not.toMatch(/^\.{1,2}\//);
+      }
+    }
+  });
+
+  it('nothing in the parsed workflow can switch a gate off from the side', () => {
+    // Valid for GitHub, invisible to every check above, and each one empties a
+    // gate: a `shell:` or `defaults.run.shell` of `echo {0}` (every step exits 0
+    // without running), a quoted `"continue-on-error": true` that the text
+    // regex cannot see, and a `needs:` on a job that never runs (review,
+    // 2026-09-24). None is used today, so none is allowed.
+    const wf = workflow as Record<string, unknown>;
+    expect(wf.defaults, 'no workflow-level defaults').toBeUndefined();
+    for (const id of JOBS) {
+      const job = (workflow.jobs?.[id] ?? {}) as Record<string, unknown>;
+      expect(job.defaults, `${id}: no job-level defaults`).toBeUndefined();
+      expect(job['continue-on-error'], `${id}: no continue-on-error`).toBeUndefined();
+      const needs = ([] as unknown[]).concat(job.needs ?? []);
+      for (const n of needs) expect(JOBS, `${id} needs ${String(n)}, which is not a gate`).toContain(n);
+      for (const [i, step] of stepsOf(id).entries()) {
+        expect(step.shell, `${id} step ${i + 1}: no custom shell`).toBeUndefined();
+        expect(step['continue-on-error'], `${id} step ${i + 1}: no continue-on-error`).toBeUndefined();
       }
     }
   });
@@ -697,6 +738,21 @@ describe('the smoke step really does wait for the deploy', () => {
     expect(smokeRuns(o)).toBe(24);
     expect(o.output).toMatch(/::error::[^\n]*REFUSED/);
     expect(o.output).not.toContain('still not serving');
+  });
+
+  it('does not let a blip on the dead-man line relabel 23 refusals as accepted', () => {
+    // The last attempt still says `running unknown`, but its dead-man request
+    // failed outright. That is no evidence the bearer was accepted, so the answer
+    // from the 23 attempts before it stands (review, 2026-09-24).
+    const blip = refusedOutput().replace('401 alarms=[] failed=[]', 'threw: fetch failed');
+    expect(blip).toContain('threw: fetch failed');
+    const o = runSmokeStep([
+      ...Array.from({ length: 23 }, () => ({ code: 1, out: refusedOutput() })),
+      { code: 1, out: blip },
+    ]);
+    expect(o.status, o.output).toBe(1);
+    expect(o.output).toMatch(/::error::[^\n]*REFUSED/);
+    expect(o.output).not.toMatch(/::error::[^\n]*ACCEPTED/);
   });
 
   it('says the COMMIT is missing, not the secret, when the bearer was accepted', () => {

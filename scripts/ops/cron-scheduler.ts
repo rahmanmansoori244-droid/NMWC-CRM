@@ -265,6 +265,13 @@ export type RunEnv = {
 
 const iso = (unix?: number) => (unix && unix > 0 ? new Date(unix * 1000).toISOString().slice(0, 16) + 'Z' : '—');
 const norm = (u?: string) => (u ?? '').replace(/\/+$/, '');
+const originOf = (u?: string) => {
+  try {
+    return `${new URL(u ?? '').origin}/…`;
+  } catch {
+    return '(unreadable URL)';
+  }
+};
 
 /**
  * The whole behaviour. Returns the exit code: 0 only when both jobs exist, are
@@ -315,7 +322,14 @@ export async function run(mode: 'check' | 'apply', env: RunEnv, deps: Deps): Pro
   }
 
   const desired = CRON_JOBS.map((spec) => desiredJob(spec, baseUrl, bearer));
-  const list = async () => (await api<{ jobs?: ApiJob[] }>('GET', '/jobs')).jobs ?? [];
+  // `someFailed` is cron-job.org saying the list is INCOMPLETE: a node holding some
+  // of the account's jobs did not answer, and its jobs are simply left out. Acting
+  // on that list creates a second copy of a job that is only hidden, and reading it
+  // reports a job missing that exists (review, 2026-09-24).
+  const list = async () => {
+    const r = await api<{ jobs?: ApiJob[]; someFailed?: boolean }>('GET', '/jobs');
+    return { jobs: r.jobs ?? [], complete: r.someFailed !== true };
+  };
 
   try {
     if (mode === 'apply') {
@@ -328,11 +342,31 @@ export async function run(mode: 'check' | 'apply', env: RunEnv, deps: Deps): Pro
       });
       await res.arrayBuffer().catch(() => undefined);
       say(`probe: GET ${warm.url} with the bearer → HTTP ${res.status}`);
-      if (res.status < 200 || res.status >= 300) {
+      // Only a 401 says the SECRET is wrong. A 404 is the URL, a 5xx is production
+      // being unwell (keep-warm answers 503 when the database does not) — and
+      // telling the owner to re-copy a secret that is fine is the misdirection this
+      // repository keeps removing (review, 2026-09-24). Nothing is written in any.
+      if (res.status === 401 || res.status === 403) {
         say('::error::production refused PROD_CRON_SECRET, so no job was written. It must equal CRON_SECRET in Vercel → Production.');
         return 1;
       }
-      const jobs = await list();
+      if (res.status === 404) {
+        say(`::error::there is no keep-warm route at ${warm.url}, so no job was written. Check APP_BASE_URL (the repository variable, default https://nmwc-cm.vercel.app).`);
+        return 1;
+      }
+      if (res.status >= 500) {
+        say(`::error::production answered HTTP ${res.status} — it is unwell right now (503 is the database not answering), so the secret could not be tested and no job was written. Run apply again once /api/health is green.`);
+        return 1;
+      }
+      if (res.status < 200 || res.status >= 300) {
+        say(`::error::production answered an unexpected HTTP ${res.status}, so no job was written.`);
+        return 1;
+      }
+      const { jobs, complete } = await list();
+      if (!complete) {
+        say('::error::cron-job.org could not list every job on the account right now (someFailed), so nothing was written: a job it could not show may already exist, and a second copy would double every call. Run apply again later.');
+        return 1;
+      }
       for (const want of desired) {
         const matches = jobs.filter((j) => norm(j.url) === norm(want.url));
         if (matches.length === 0) {
@@ -356,8 +390,11 @@ export async function run(mode: 'check' | 'apply', env: RunEnv, deps: Deps): Pro
       say('re-reading what cron-job.org now holds:');
     }
 
-    const jobs = await list();
-    let ok = true;
+    const { jobs, complete } = await list();
+    let ok = complete;
+    if (!complete) {
+      say('✗ cron-job.org could not list every job on the account (someFailed): a job reported missing below may exist, and a duplicate may be hidden. Run check again later.');
+    }
     for (const want of desired) {
       const all = jobs.filter((j) => norm(j.url) === norm(want.url));
       const enabled = all.filter((j) => j.enabled !== false);
@@ -400,7 +437,11 @@ export async function run(mode: 'check' | 'apply', env: RunEnv, deps: Deps): Pro
     if (others.length) {
       say('');
       say(`${others.length} other job(s) on this account, not touched:`);
-      for (const j of others) say(`  job ${j.jobId}: ${j.enabled ? 'enabled' : 'disabled'} ${j.url}`);
+      // Origin only. These are the owner's other jobs, and a URL can carry a
+      // credential in its path or query string that is nobody's business in an
+      // Actions log — say() redacts only the two secrets this script knows
+      // (review, 2026-09-24).
+      for (const j of others) say(`  job ${j.jobId}: ${j.enabled ? 'enabled' : 'disabled'} ${originOf(j.url)}`);
     }
     say('');
     say(ok ? '✓ both jobs exist, are enabled and match.' : '✗ the jobs are not as they should be (see above).');

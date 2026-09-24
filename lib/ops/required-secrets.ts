@@ -162,7 +162,8 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     workflows: ['cron-scheduler.yml', 'db-backup.yml', 'keep-warm.yml', 'sla-escalate.yml'],
     description: 'Bearer token the scheduled jobs present to the production endpoints.',
     source: 'Generate one value (32+ random characters) and use it in BOTH places below.',
-    alsoSetOn: 'Vercel → Production → Environment Variables → CRON_SECRET (the SAME value)',
+    alsoSetOn:
+      'Vercel → Production → Environment Variables → CRON_SECRET (the SAME value). Then re-run Actions → External cron scheduler → apply, which rewrites the bearer the two cron-job.org jobs send — otherwise they answer 401 every four minutes until cron-job.org disables them.',
     consequenceIfMissing:
       'Every scheduled call is refused with 401. The SLA sweep stops escalating and the backup report never reaches the dead-man probe — which then alarms, correctly.',
   },

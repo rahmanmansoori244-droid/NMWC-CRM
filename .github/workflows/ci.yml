@@ -537,9 +537,13 @@ jobs:
             # cause is decided from every attempt, not the last: one blip on attempt
             # 24 used to hide 23 refusals (review, 2026-09-24).
             if grep -qE '^FAIL +production is running the commit you think it is +running unknown,' smoke.log; then
+              # Classified only on a POSITIVE reading of the dead-man line. A blip on
+              # that line (threw: fetch failed) proves nothing either way, so it keeps
+              # the earlier attempts' answer instead of overwriting it (review,
+              # 2026-09-24).
               if grep -qE '^(PASS|FAIL) +monitor bearer unlocks the detail.* 401 alarms=' smoke.log; then
                 UNKNOWN=refused
-              else
+              elif grep -qE '^(PASS|FAIL) +monitor bearer unlocks the detail.* (200|503) alarms=' smoke.log; then
                 UNKNOWN=accepted
               fi
             fi

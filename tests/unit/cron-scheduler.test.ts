@@ -24,6 +24,7 @@ import {
   type JobBody,
 } from '@/scripts/ops/cron-scheduler';
 import { HEARTBEAT_EXPECTATIONS } from '@/lib/heartbeat';
+import { REQUIRED_SECRETS } from '@/lib/ops/required-secrets';
 import { runScriptOf, runStep } from '../support/workflow-step';
 
 // Zero-entropy on purpose: gitleaks scans this repository, and a realistic-looking
@@ -41,7 +42,16 @@ type Call = { method: string; url: string; auth: string | null; body: unknown };
  * cron-job.org, as its REST documentation describes it, plus the production
  * keep-warm route the apply mode probes first.
  */
-function fakeWorld(opts: { jobs?: Stored[]; probeStatus?: number; apiStatus?: number; throwWith?: string } = {}) {
+function fakeWorld(
+  opts: {
+    jobs?: Stored[];
+    probeStatus?: number;
+    apiStatus?: number;
+    throwWith?: string;
+    /** Jobs on a cron-job.org node that is not answering: left out of the list. */
+    hidden?: number[];
+  } = {}
+) {
   const jobs = new Map<number, Stored>((opts.jobs ?? []).map((j) => [j.jobId, structuredClone(j)]));
   let nextId = 9000;
   const calls: Call[] = [];
@@ -64,9 +74,12 @@ function fakeWorld(opts: { jobs?: Stored[]; probeStatus?: number; apiStatus?: nu
     const id = Number(/^\/jobs\/(\d+)/.exec(path)?.[1]);
     if (method === 'GET' && path === '/jobs') {
       // The list carries no extendedData, as the real one does not.
+      const hidden = new Set(opts.hidden ?? []);
       return json(200, {
-        jobs: [...jobs.values()].map(({ extendedData: _omit, ...rest }) => rest),
-        someFailed: false,
+        jobs: [...jobs.values()]
+          .filter((j) => !hidden.has(j.jobId))
+          .map(({ extendedData: _omit, ...rest }) => rest),
+        someFailed: hidden.size > 0,
       });
     }
     if (method === 'PUT' && path === '/jobs') {
@@ -331,6 +344,75 @@ describe('run — check', () => {
   });
 });
 
+describe('run — an incomplete job list is never acted on', () => {
+  // cron-job.org leaves out the jobs on a node that does not answer and says so
+  // with someFailed. Acting on that list created a duplicate of a hidden job and
+  // still ended green (review, 2026-09-24).
+  it('apply writes nothing while the list is incomplete', async () => {
+    const w = fakeWorld({
+      jobs: [
+        { ...want('keep-warm'), jobId: 51 },
+        { ...want('sla-escalate'), jobId: 52 },
+      ],
+      hidden: [51, 52],
+    });
+    const r = await go('apply', w);
+    expect(r.code).toBe(1);
+    expect(r.writes).toEqual([]);
+    expect(r.out).toMatch(/could not list every job/);
+    expect(w.jobs.size).toBe(2);
+  });
+
+  it('check is red, and says why, while the list is incomplete', async () => {
+    const w = fakeWorld({
+      jobs: [
+        { ...want('keep-warm'), jobId: 61 },
+        { ...want('sla-escalate'), jobId: 62 },
+        { ...want('sla-escalate'), jobId: 63 },
+      ],
+      // The duplicate is the hidden one: the visible pair alone would read green.
+      hidden: [63],
+    });
+    const r = await go('check', w);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/could not list every job/);
+  });
+});
+
+describe('run — the probe says which thing is wrong', () => {
+  it('blames the secret only for a 401', async () => {
+    for (const status of [404, 500, 503]) {
+      const w = fakeWorld({ probeStatus: status });
+      const r = await go('apply', w);
+      expect(r.code, `HTTP ${status}`).toBe(1);
+      expect(r.writes, `HTTP ${status}`).toEqual([]);
+      expect(r.out, `HTTP ${status}`).not.toMatch(/refused PROD_CRON_SECRET/);
+    }
+  });
+
+  it('points a 404 at APP_BASE_URL and a 5xx at production\'s health', async () => {
+    expect((await go('apply', fakeWorld({ probeStatus: 404 }))).out).toMatch(/APP_BASE_URL/);
+    expect((await go('apply', fakeWorld({ probeStatus: 503 }))).out).toMatch(/database/);
+  });
+});
+
+describe('run — the owner\'s other jobs', () => {
+  it('are listed by origin only, so a credential in their URL stays out of the log', async () => {
+    const w = fakeWorld({
+      jobs: [
+        { ...want('keep-warm'), jobId: 71 },
+        { ...want('sla-escalate'), jobId: 72 },
+        { jobId: 73, url: 'https://hooks.example.org/ping/abc/def?token=zzz', enabled: true },
+      ],
+    });
+    const r = await go('check', w);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('https://hooks.example.org/…');
+    expect(r.out).not.toContain('token=zzz');
+    expect(r.out).not.toContain('/ping/abc');
+  });
+});
+
 describe('run — failures say what they mean and still print no secret', () => {
   it('turns a cron-job.org error into its documented meaning, not its body', async () => {
     // The fake's error body quotes the secret, as an error echoing the request might.
@@ -345,6 +427,18 @@ describe('run — failures say what they mean and still print no secret', () => 
     const r = await go('apply', w);
     expect(r.code).toBe(1);
     expect(r.out).toContain('[redacted]');
+  });
+});
+
+describe('the secret\'s checklist knows about the jobs', () => {
+  it('tells whoever rotates PROD_CRON_SECRET to re-run apply', () => {
+    // The registry said the value lives in two places. After this, it lives in
+    // three, and a rotation that misses cron-job.org is a 401 every four minutes
+    // until the jobs are disabled (review, 2026-09-24).
+    const entry = REQUIRED_SECRETS.find((r) => r.name === 'PROD_CRON_SECRET');
+    expect(entry?.workflows).toContain('cron-scheduler.yml');
+    expect(entry?.alsoSetOn).toMatch(/External cron scheduler/);
+    expect(entry?.alsoSetOn).toMatch(/apply/);
   });
 });
 
