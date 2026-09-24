@@ -92,7 +92,7 @@ jobs:
       MIN_DUMP_BYTES: ${{ vars.MIN_DUMP_BYTES || '80000' }}
     steps:
       - name: Checkout (for the manifest query)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Postgres 17 client and age
         run: |
