@@ -117,3 +117,31 @@ describe('every submit path answers a replay before doing anything else', () => 
     expect(named).toHaveLength(4);
   });
 });
+
+describe('the photo slot attaches and removes over fetch, not a server action', () => {
+  // A stalled server action cannot be aborted and queues every later one: after
+  // an attach with no answer, Retry, the next slot's attach and every Remove
+  // never left the phone (post-merge review of 30ec23a).
+  it('components/nmwc/PhotoCaptureSlot.tsx', () => {
+    const s = src('components/nmwc/PhotoCaptureSlot.tsx');
+    expect(s).not.toMatch(/from '@\/services\//);
+    expect(s).toMatch(/postAction\('\/api\/photos\/attach', /);
+    expect(s).toMatch(/postAction\('\/api\/photos\/detach', /);
+  });
+
+  it.each([
+    ['app/api/photos/attach/route.ts', 'attachPhotoAction'],
+    ['app/api/photos/detach/route.ts', 'detachPhotoAction'],
+  ])('%s calls the same service function, behind the same-origin and sign-in checks', (path, fn) => {
+    const s = src(path);
+    expect(s).toMatch(new RegExp(`import \\{ ${fn} \\} from '@/services/photos'`));
+    const crossSite = s.indexOf('refuseCrossSite(req)');
+    const signedIn = s.indexOf('await auth()');
+    const read = s.indexOf('readJsonObject(req)');
+    const call = s.indexOf(`await ${fn}(`);
+    expect([crossSite, signedIn, read, call].every((i) => i > -1)).toBe(true);
+    expect(crossSite).toBeLessThan(signedIn);
+    expect(signedIn).toBeLessThan(read);
+    expect(read).toBeLessThan(call);
+  });
+});

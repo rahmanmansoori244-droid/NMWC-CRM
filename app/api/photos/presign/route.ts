@@ -6,6 +6,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { logger } from '@/lib/logger';
 import { checkLimit, PHOTO_LIMIT } from '@/lib/rate-limit';
+import { PRESIGN_EXPIRES_S } from '@/lib/photo-attach';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
         ContentType: mimeType,
         ContentLength: bytes,
       }),
-      { expiresIn: 600 } // 10 minutes
+      { expiresIn: PRESIGN_EXPIRES_S } // 10 minutes
     );
 
     return NextResponse.json({

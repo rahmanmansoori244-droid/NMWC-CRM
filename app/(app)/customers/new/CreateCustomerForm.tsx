@@ -11,7 +11,7 @@
  *  - paymentTerms is chosen up front and routes the approval chain
  *    (CASH → SUP→ACC, CREDIT → SUP→FM→GM→ACC) + reveals the credit block.
  */
-import { useCallback, useId, useEffect, useRef, useState, useTransition } from 'react';
+import { useCallback, useId, useEffect, useRef, useState } from 'react';
 import type { DayOfWeek, EditState, PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
@@ -175,7 +175,10 @@ export function CreateCustomerForm({
   // UAT-07: one id prefix per form instance, so the labels on the inline
   // selects can point at their controls. Branch rows append their own key.
   const uid = useId();
-  const [pending, start] = useTransition();
+  // A submit on its way: plain state, not useTransition — while any server
+  // action was in flight on the page, `pending` stayed true after the answer
+  // (EnrichmentForm says how; post-merge review of 30ec23a).
+  const [sending, setSending] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [info, setInfo] = useState<string | null>(null);
   const submitLockRef = useRef(false);
@@ -309,7 +312,7 @@ export function CreateCustomerForm({
   // No NEW photo once a submit is on its way: it could not be in the request
   // that already left, and the /work navigation after the answer would cut
   // its upload off (item 22 review).
-  const photosLocked = pending || arrived;
+  const photosLocked = sending || arrived;
   const onPhotoBusy = useCallback((busy: boolean) => setUploading((n) => n + (busy ? 1 : -1)), []);
   const submitBlocked = readOnly || arrived || uploading > 0 || missingMandatory.length > 0;
 
@@ -513,6 +516,7 @@ export function CreateCustomerForm({
     if (!isDraft && uploading > 0) return;
     if (submitLockRef.current) return;
     submitLockRef.current = true;
+    setSending(true);
     setErrors({});
     setInfo(null);
     // The notice stays while this try is in flight — its Try again reads
@@ -577,86 +581,85 @@ export function CreateCustomerForm({
       writeUnanswered([...unansweredRef.current.filter((x) => x !== submissionId), submissionId].slice(-3));
     }
 
-    start(async () => {
-      try {
-        // Item 22: over fetch, not the server action (lib/submit-client.ts).
-        const outcome = await postForm<SubmitReceipt>('customer-create', { ...payload, submissionId });
-        const ids = idsRef.current!;
-        ids.settle(outcome);
-        // null for a first-time success; every other outcome is said beside
-        // the button. The sends kept on the phone count as a doubt too: after
-        // a reload they are not in this form's SubmissionIds, and an offline
-        // try read "nothing was sent" over one that may have arrived (item 22
-        // review). Read before this send's own id comes off the list below.
-        const earlierOnPhone = unansweredRef.current.some((x) => x !== submissionId);
-        setNotice(
-          noticeFor(outcome, { doubt: ids.doubt === 'none' && earlierOnPhone ? 'earlier' : ids.doubt })
-        );
-        if (neverSaved) {
-          // Did not land: refused, or never read and no earlier try of it was.
-          const refused = outcome.kind === 'answered' && !outcome.result.ok;
-          const unread =
-            outcome.kind === 'offline' || outcome.kind === 'signedOut' || outcome.kind === 'maintenance';
-          if (refused || (unread && !triedBefore)) {
-            writeUnanswered(unansweredRef.current.filter((x) => x !== submissionId));
-          }
+    try {
+      // Item 22: over fetch, not the server action (lib/submit-client.ts).
+      const outcome = await postForm<SubmitReceipt>('customer-create', { ...payload, submissionId });
+      const ids = idsRef.current!;
+      ids.settle(outcome);
+      // null for a first-time success; every other outcome is said beside
+      // the button. The sends kept on the phone count as a doubt too: after
+      // a reload they are not in this form's SubmissionIds, and an offline
+      // try read "nothing was sent" over one that may have arrived (item 22
+      // review). Read before this send's own id comes off the list below.
+      const earlierOnPhone = unansweredRef.current.some((x) => x !== submissionId);
+      setNotice(
+        noticeFor(outcome, { doubt: ids.doubt === 'none' && earlierOnPhone ? 'earlier' : ids.doubt })
+      );
+      if (neverSaved) {
+        // Did not land: refused, or never read and no earlier try of it was.
+        const refused = outcome.kind === 'answered' && !outcome.result.ok;
+        const unread =
+          outcome.kind === 'offline' || outcome.kind === 'signedOut' || outcome.kind === 'maintenance';
+        if (refused || (unread && !triedBefore)) {
+          writeUnanswered(unansweredRef.current.filter((x) => x !== submissionId));
         }
-        if (outcome.kind !== 'answered') return;
-        const result = outcome.result;
-        if (!result.ok) {
-          if (result.fields) {
-            // Any key without a rendered slot must still surface somewhere —
-            // otherwise the submit appears to silently do nothing.
-            const rendered =
-              /^(customer\.(legalName|crNumber|crPhoto|channelId|subChannelId|primaryPhone|altPhone|contactPerson|contactRole)|credit\.(requestedCreditLimit|requestedPaymentTermDays)|guarantee|branch\.\d+\.(branchName|address|areaDescription|gps|dayOfVisit|openingHours|deliveryWindow|shopPhoto|signboardPhoto)|_form)$/;
-            const orphaned = Object.entries(result.fields).filter(([k]) => !rendered.test(k));
-            setErrors({
-              ...result.fields,
-              ...(orphaned.length > 0 && !result.fields._form
-                ? { _form: orphaned.map(([, v]) => v).join(' · ') }
-                : {}),
-            });
-          }
-          return;
+      }
+      if (outcome.kind !== 'answered') return;
+      const result = outcome.result;
+      if (!result.ok) {
+        if (result.fields) {
+          // Any key without a rendered slot must still surface somewhere —
+          // otherwise the submit appears to silently do nothing.
+          const rendered =
+            /^(customer\.(legalName|crNumber|crPhoto|channelId|subChannelId|primaryPhone|altPhone|contactPerson|contactRole)|credit\.(requestedCreditLimit|requestedPaymentTermDays)|guarantee|branch\.\d+\.(branchName|address|areaDescription|gps|dayOfVisit|openingHours|deliveryWindow|shopPhoto|signboardPhoto)|_form)$/;
+          const orphaned = Object.entries(result.fields).filter(([k]) => !rendered.test(k));
+          setErrors({
+            ...result.fields,
+            ...(orphaned.length > 0 && !result.fields._form
+              ? { _form: orphaned.map(([, v]) => v).join(' · ') }
+              : {}),
+          });
         }
-        const res = result.data;
-        if (res.replayed) {
-          // It had already arrived: said above, beside the button. Stay. The
-          // request exists on the server now, so the never-saved copy on the
-          // phone goes — else the next "New customer" opens pre-filled with
-          // this shop. A saved draft becomes this form's request.
-          dropPhoneCopy();
-          if (res.state === 'DRAFT') {
-            setEditId(res.editId);
-            if (typeof window !== 'undefined') {
-              window.history.replaceState(null, '', `/customers/new?edit=${res.editId}`);
-            }
-          } else if (res.state === 'SUBMITTED' || res.state === 'APPROVED') {
-            setArrived(true);
-          }
-          return;
-        }
+        return;
+      }
+      const res = result.data;
+      if (res.replayed) {
+        // It had already arrived: said above, beside the button. Stay. The
+        // request exists on the server now, so the never-saved copy on the
+        // phone goes — else the next "New customer" opens pre-filled with
+        // this shop. A saved draft becomes this form's request.
         dropPhoneCopy();
-        if (isDraft) {
+        if (res.state === 'DRAFT') {
           setEditId(res.editId);
-          setNotice({ tone: 'received', text: '✓ Draft saved. Finish and submit when ready.' });
-          // Pin the URL to this request so a refresh resumes it (no reload).
           if (typeof window !== 'undefined') {
             window.history.replaceState(null, '', `/customers/new?edit=${res.editId}`);
           }
-        } else {
-          // Item 22: said beside the button BEFORE moving on — the next page can
-          // be slow or fail to load on weak signal. A document load of Work
-          // (lib/navigate.ts): the router cache would still list this as a
-          // draft, forward or on Back.
+        } else if (res.state === 'SUBMITTED' || res.state === 'APPROVED') {
           setArrived(true);
-          setNotice({ tone: 'received', text: '✓ Submitted for approval. It arrived — nothing more to do.' });
-          hardReplace('/work');
         }
-      } finally {
-        submitLockRef.current = false;
+        return;
       }
-    });
+      dropPhoneCopy();
+      if (isDraft) {
+        setEditId(res.editId);
+        setNotice({ tone: 'received', text: '✓ Draft saved. Finish and submit when ready.' });
+        // Pin the URL to this request so a refresh resumes it (no reload).
+        if (typeof window !== 'undefined') {
+          window.history.replaceState(null, '', `/customers/new?edit=${res.editId}`);
+        }
+      } else {
+        // Item 22: said beside the button BEFORE moving on — the next page can
+        // be slow or fail to load on weak signal. A document load of Work
+        // (lib/navigate.ts): the router cache would still list this as a
+        // draft, forward or on Back.
+        setArrived(true);
+        setNotice({ tone: 'received', text: '✓ Submitted for approval. It arrived — nothing more to do.' });
+        hardReplace('/work');
+      }
+    } finally {
+      submitLockRef.current = false;
+      setSending(false);
+    }
   }
 
   return (
@@ -1205,7 +1208,7 @@ export function CreateCustomerForm({
           <div className="sticky bottom-0 -mx-4 mt-4 flex flex-col border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
             <SubmitNoticeBox
               notice={notice}
-              busy={pending}
+              busy={sending}
               onRetry={() => submit(lastWasDraftRef.current)}
             />
             {!arrived && uploading > 0 && (
@@ -1214,7 +1217,7 @@ export function CreateCustomerForm({
             <div className="flex items-center justify-start gap-3">
               <button
                 type="button"
-                disabled={pending || submitBlocked}
+                disabled={sending || submitBlocked}
                 onClick={() => submit(false)}
                 className="rounded-md bg-brand-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                 title={
@@ -1225,15 +1228,15 @@ export function CreateCustomerForm({
                       : ''
                 }
               >
-                {arrived ? 'Sent ✓' : pending ? 'Submitting…' : 'Submit for approval ▶'}
+                {arrived ? 'Sent ✓' : sending ? 'Submitting…' : 'Submit for approval ▶'}
               </button>
               <button
                 type="button"
-                disabled={pending || arrived}
+                disabled={sending || arrived}
                 onClick={() => submit(true)}
                 className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
               >
-                {pending ? 'Saving…' : 'Save draft'}
+                {sending ? 'Saving…' : 'Save draft'}
               </button>
             </div>
           </div>

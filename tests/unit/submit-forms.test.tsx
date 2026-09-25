@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
-import { useEffect } from 'react';
+import { startTransition, useEffect } from 'react';
 
 const router = vi.hoisted(() => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
@@ -94,6 +94,28 @@ afterEach(() => {
 const goOffline = () => {
   vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
   replies.push(noAnswer);
+};
+
+/**
+ * Some other server action still in flight on the page. Next dispatches one
+ * inside startTransition and holds the router state on a promise until it is
+ * answered, and React 19 settles pending transitions together: while it waits,
+ * no useTransition on the page reads "not pending" (post-merge review of
+ * 30ec23a — a stalled photo attach did this). Returns the release.
+ */
+const holdAnAction = () => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  act(() => {
+    startTransition(async () => {
+      await held;
+    });
+  });
+  return () =>
+    act(async () => {
+      release();
+      await held;
+    });
 };
 
 /** Under fake timers, where waitFor cannot poll: let the submit's continuation run. */
@@ -464,8 +486,7 @@ describe('the customer update form', () => {
     try {
       await waitFor(() => expect(new Set(locks())).toEqual(new Set(['yes'])));
     } finally {
-      // Always answer: a send left pending keeps React's transition open for
-      // every later test in this file.
+      // Always answer: a send left pending would outlive this test.
       await act(async () => {
         reply(await answer({ ok: true, data: { editId: 'e1', state: 'SUBMITTED', submittedAt: null, replayed: false } })());
       });
@@ -548,6 +569,35 @@ describe('the customer update form', () => {
       expect(JSON.parse(window.localStorage.getItem(draftKey)!).contactPerson).toBe('Said Al Harthy');
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  // The buttons read useTransition's `pending`: after the answer, Submit still
+  // said "Submitting…", Save draft "Saving…", Try again "Trying…" (disabled),
+  // and the slots stayed locked — hiding the Retry upload they asked him to tap.
+  it('an answer frees the buttons and the photos at once, while some other server action is still in flight', async () => {
+    renderForm();
+    const locks = () => [...document.querySelectorAll('[data-slot]')].map((e) => e.getAttribute('data-locked'));
+    const release = holdAnAction();
+    try {
+      replies.push(noAnswer);
+      fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/cannot tell if it arrived/));
+      await waitFor(() => expect(screen.getByRole('alert').querySelector('button')!.textContent).toBe('Try again'));
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Save draft' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled();
+      expect(new Set(locks())).toEqual(new Set(['no']));
+
+      // …and a try that is answered, too.
+      replies.push(answer({ ok: true, data: { editId: 'd1', state: 'DRAFT', submittedAt: null, replayed: false } }));
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/^✓ Draft saved/));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Save draft' })).toBeEnabled());
+      expect(screen.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled();
+      expect(new Set(locks())).toEqual(new Set(['no']));
+    } finally {
+      await release();
     }
   });
 });
@@ -636,10 +686,12 @@ describe('the new-customer form', () => {
     renderCreate();
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]!.url).toBe(`/api/forms/customer-create?submissionId=${sent[0]!.body.submissionId}`);
-    // End the dead tab's send. React 19 entangles async transitions: one left
-    // pending for good kept `pending` true in every later test in this file —
-    // Try again read "Trying…" and stayed disabled (in the app, postForm's
-    // timeout always ends a send).
+    // End the dead tab's send (in the app, postForm's timeout always ends one).
+    // While the forms used useTransition, one left pending for good kept
+    // `pending` true in every later test in this file — Try again read
+    // "Trying…" and stayed disabled. The same entanglement with a stalled
+    // server action was the post-merge review's defect in the app (see
+    // holdAnAction); BranchStatusActions still uses a transition.
     await act(async () => {
       dropSend(new TypeError('Failed to fetch'));
     });
@@ -937,5 +989,31 @@ describe('the new-customer form', () => {
     });
     expect(sent).toHaveLength(1);
     expect(nav.hardReplace).not.toHaveBeenCalled();
+  });
+
+  it('an answer frees the buttons and the photos at once, while some other server action is still in flight', async () => {
+    render(<CreateCustomerForm channels={channels} initial={complete} sessionUserId="u1" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled());
+    const locks = () => [...document.querySelectorAll('[data-slot]')].map((e) => e.getAttribute('data-locked'));
+    const release = holdAnAction();
+    try {
+      replies.push(noAnswer);
+      fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/cannot tell if it arrived/));
+      await waitFor(() => expect(screen.getByRole('alert').querySelector('button')!.textContent).toBe('Try again'));
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Save draft' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled();
+      expect(new Set(locks())).toEqual(new Set(['no']));
+
+      replies.push(answer({ ok: true, data: { editId: 'd7', state: 'DRAFT', submittedAt: null, replayed: false } }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+      await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/^✓ Draft saved/));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Save draft' })).toBeEnabled());
+      expect(screen.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled();
+      expect(new Set(locks())).toEqual(new Set(['no']));
+    } finally {
+      await release();
+    }
   });
 });

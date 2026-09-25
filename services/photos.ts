@@ -3,7 +3,7 @@
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { auth } from '@/lib/auth';
-import { Role, AttachmentKind, type Prisma } from '@prisma/client';
+import { Role, AttachmentKind, type Attachment, type Prisma } from '@prisma/client';
 import {
   ForbiddenError,
   ValidationError,
@@ -33,6 +33,33 @@ const branchAttach = z.object({
 const attachSchema = z.union([customerAttach, branchAttach]);
 
 /**
+ * Whether the attachment's own columns put it on exactly the target asked for,
+ * as an attach to that target leaves them (the kind included: an attach sets
+ * it). The slot column itself is read with the target, after the scope checks.
+ */
+function wiredTo(
+  att: Pick<Attachment, 'kind' | 'customerId' | 'branchId' | 'branchExtraId' | 'editId'>,
+  data: z.output<typeof attachSchema>
+): boolean {
+  if (att.editId) return false;
+  if ('customerId' in data) {
+    return (
+      att.kind === AttachmentKind.CR &&
+      att.customerId === data.customerId &&
+      !att.branchId &&
+      !att.branchExtraId
+    );
+  }
+  if (att.customerId || att.branchId !== data.branchId) return false;
+  if (data.slot === 'FREE') {
+    return att.kind === AttachmentKind.FREE && att.branchExtraId === data.branchId;
+  }
+  return att.kind === AttachmentKind[data.slot] && !att.branchExtraId;
+}
+
+const detachSchema = z.object({ attachmentId: z.string().cuid() });
+
+/**
  * Wire a freshly-uploaded Attachment to a customer or branch slot.
  *
  * Trust-boundary checks layered here (RBAC-05-011, NEW-PHOTO-001/002/003):
@@ -40,7 +67,9 @@ const attachSchema = z.union([customerAttach, branchAttach]);
  *     PRD §4 says they don't capture photos. MANAGER goes through the
  *     dedicated rewire path with `forceOverrideAction` (out of scope here).
  *   • Attachment must not be soft-deleted (`deletedAt`).
- *   • Attachment must be a fresh upload (no customerId/branchId/branchExtraId).
+ *   • Attachment must be a fresh upload (no customerId/branchId/branchExtraId/
+ *     editId) — or already on exactly the slot asked for, which is answered ok
+ *     with nothing written (the photo slot's re-send of an unanswered attach).
  *   • Attachment must have been uploaded by the caller (Steward bypass for
  *     legitimate "rewire orphan" — flagged with FORCE_OVERRIDE audit row).
  *   • slot must match the attachment.kind (no swapping a SHOP photo into the
@@ -52,6 +81,8 @@ const attachSchema = z.union([customerAttach, branchAttach]);
  * SafeAction-wrapped public entry. Photo attach errors (slot/kind mismatch,
  * route scope, soft-deleted attachment) must be visible to the salesman so
  * they can act — the SC-render-omitted generic was useless for diagnosis.
+ * The photo slot reaches it through app/api/photos/attach, not as a server
+ * action: one that stalls cannot be aborted, and queues every later one.
  */
 export async function attachPhotoAction(
   input: z.input<typeof attachSchema>
@@ -95,13 +126,17 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
   if (!isAdmin && att.capturedById !== session.user.id) {
     throw new NotFoundError('Attachment not found.');
   }
-  // Must be a fresh upload, not already attached anywhere. `editId` counts as
-  // wired: a photo claimed by a pending CREATE request must not be re-routed
-  // onto an unrelated customer/branch slot (Phase 1 creation flow). So a
-  // second attach of the same photo writes nothing — which is what makes the
-  // photo slot's re-send of an attach that got no answer safe; the slot reads
-  // this refusal, after such a re-send, as "the first one landed".
-  if (att.customerId || att.branchId || att.branchExtraId || att.editId) {
+  // Must be a fresh upload, not already attached anywhere else. `editId` counts
+  // as wired: a photo claimed by a pending CREATE request must not be re-routed
+  // onto an unrelated customer/branch slot (Phase 1 creation flow). A photo
+  // already on the slot asked for is not refused: once the checks below pass
+  // and the slot still holds it, the answer is ok and nothing is written. The
+  // photo slot re-sends an attach that got no answer, and this is how it learns
+  // the first one landed (post-merge review of 30ec23a: it read the refusal as
+  // "landed" instead, and a re-send answered "the database did not respond"
+  // left a photo that was on the slot showing as failed).
+  const wired = Boolean(att.customerId || att.branchId || att.branchExtraId || att.editId);
+  if (wired && !wiredTo(att, data)) {
     throw new ValidationError({ attachmentId: ALREADY_ATTACHED_MESSAGE });
   }
   // NEW-PHOTO-001: slot must match the attachment.kind, except FREE which
@@ -146,6 +181,11 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         c,
         scope
       );
+    }
+    if (wired) {
+      if (c.crPhotoId !== att.id) throw new ValidationError({ attachmentId: ALREADY_ATTACHED_MESSAGE });
+      logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.attach.already_on_slot');
+      return { ok: true as const };
     }
     // DG-06: capture the request envelope before opening the transaction.
     const env = await getAuditEnvelope(session.user.id);
@@ -207,6 +247,18 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         b.customer,
         scope
       );
+    }
+    if (wired) {
+      // FREE has no slot column: the attachment's own columns are the wiring.
+      const holds =
+        data.slot === 'SHOP'
+          ? b.shopPhotoId === att.id
+          : data.slot === 'SIGNBOARD'
+            ? b.signboardPhotoId === att.id
+            : true;
+      if (!holds) throw new ValidationError({ attachmentId: ALREADY_ATTACHED_MESSAGE });
+      logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.attach.already_on_slot');
+      return { ok: true as const };
     }
 
     // DG-06: same as the CR branch — envelope before the transaction.
@@ -287,6 +339,7 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
  * filters `deletedAt: null` correctly hides the row. The slot clear is
  * scoped to the caller's reachable customer/branch so a Steward detach
  * doesn't blank a slot on a customer the actor never had scope over.
+ * The photo slot reaches it through app/api/photos/detach.
  */
 export async function detachPhotoAction(
   input: { attachmentId: string }
@@ -299,8 +352,14 @@ export async function detachPhotoAction(
 async function detachPhotoCore(input: { attachmentId: string }) {
   const session = await auth();
   if (!session?.user) throw new ForbiddenError('Not signed in.');
+  // The id goes into a `where`: unchecked, an object there is a filter (and a
+  // missing one no filter at all), acting on a photo the caller did not name.
+  const parsed = detachSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new ValidationError({ attachmentId: 'A valid photo id is required.' });
+  }
   const att = await prisma.attachment.findFirst({
-    where: { id: input.attachmentId, deletedAt: null },
+    where: { id: parsed.data.attachmentId, deletedAt: null },
   });
   if (!att) throw new NotFoundError('Attachment not found.');
 

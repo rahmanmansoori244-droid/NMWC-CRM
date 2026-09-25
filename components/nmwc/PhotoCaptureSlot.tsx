@@ -3,8 +3,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Camera, Image as ImageIcon, Trash2, RefreshCw, Check, Loader2, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { attachPhotoAction, detachPhotoAction } from '@/services/photos';
-import { ALREADY_ATTACHED_MESSAGE } from '@/lib/photo-attach';
+import type { ActionResult } from '@/lib/errors';
 
 export type PhotoSlotKind = 'SHOP' | 'SIGNBOARD' | 'CR' | 'FREE' | 'GUARANTEE';
 export type AttachTarget =
@@ -101,15 +100,45 @@ const RETRY_DELAYS = [500, 1500, 4500];
  * "Retry upload", and the slot is no longer busy.
  *
  * Silence, not total time: a 1.6 MB photo on a slow link takes minutes and is
- * fine while its bytes move, so the clock restarts on every progress event and
- * when the body has gone. 45 s leaves room for bytes the phone had buffered
- * before its last progress event to drain.
+ * fine while its bytes move, so the clock restarts on every progress event.
+ * That holds only until the body has gone — see postBodyDeadlineMs.
  */
 export const UPLOAD_STALL_MS = 45_000;
 
 /**
- * Presign, finalize and attach are small requests: they get as long as a
- * submit does (SUBMIT_TIMEOUT_MS), far past a normal answer and under the
+ * Once the whole body has been counted as sent, progress says nothing more: the
+ * phone has handed the bytes to its send buffer — on Android cellular, hundreds
+ * of KB to MBs — so progress reads 100% and the upload's load event fires within
+ * seconds, and nothing fires again until R2 answers after the buffer has
+ * drained. On a 50–150 kbps uplink that is 40–150 s later. A flat 45 s from
+ * there aborted a PUT that was still moving, the retries did the same, and so
+ * did every Retry upload: the mandatory photo could never go up (post-merge
+ * review of 30ec23a).
+ *
+ * So from then on the PUT gets one deadline, set once and not restarted: the
+ * silence limit, plus the time the body would take to drain at
+ * DRAIN_FLOOR_BYTES_PER_S (4 KB/s, about 32 kbps) — 3¼ minutes for a typical
+ * 600 KB photo. It stops growing at 2 MiB, so the longest is about 9¼
+ * minutes, shorter than the presigned URL's 10-minute life
+ * (PRESIGN_EXPIRES_S).
+ */
+export const DRAIN_FLOOR_BYTES_PER_S = 4 * 1024;
+const DRAIN_BODY_CAP_BYTES = 2 * 1024 * 1024;
+export function postBodyDeadlineMs(bytes: number): number {
+  const drainS = Math.ceil(Math.min(bytes, DRAIN_BODY_CAP_BYTES) / DRAIN_FLOOR_BYTES_PER_S);
+  return UPLOAD_STALL_MS + drainS * 1000;
+}
+
+/**
+ * That deadline running out. Not retried: a retry would send the same bytes
+ * into the same slow link and wait as long again. The salesman decides when.
+ */
+export const SLOW_LINK_MESSAGE =
+  'The connection is too slow to finish sending this photo. Move to better signal, then tap Retry upload.';
+
+/**
+ * Presign, finalize, attach and detach are small requests: they get as long as
+ * a submit does (SUBMIT_TIMEOUT_MS), far past a normal answer and under the
  * server's 60 s limit.
  */
 export const PHOTO_STEP_TIMEOUT_MS = 30_000;
@@ -118,8 +147,18 @@ export const PHOTO_STEP_TIMEOUT_MS = 30_000;
 const networkError = () => new Error('Network error');
 
 /** What a slot says when its attach got no answer — it may still have landed. */
-const ATTACH_NO_ANSWER =
+export const ATTACH_NO_ANSWER =
   'The photo is up, but attaching it got no answer. Tap Retry upload.';
+
+/** The attach route's 401: turned away before anything was read. */
+const ATTACH_SIGNED_OUT =
+  'You need to sign in again, so the photo is not attached yet. Keep this page open, sign in in another tab, then tap Retry upload.';
+
+/**
+ * runAction's codes for a database that dropped or did not answer: not an
+ * answer about the attach (lib/submit-client.ts treats them the same way).
+ */
+const TRANSIENT_DB_CODES = new Set(['DB_INTERRUPTED', 'DB_UNAVAILABLE']);
 
 class HttpError extends Error {
   status: number;
@@ -171,13 +210,28 @@ function putWithProgress(
     // ontimeout handler that stood here never ran — xhr.timeout was never set,
     // and 0 means no limit.
     let stall: ReturnType<typeof setTimeout> | undefined;
+    let bodyGone = false;
     const quiet = () => clearTimeout(stall);
+    // While bytes are still being counted out: silence is a dead connection.
     const watch = () => {
+      if (bodyGone) return;
       quiet();
       stall = setTimeout(() => {
         xhr.abort();
         reject(networkError());
       }, UPLOAD_STALL_MS);
+    };
+    // After the last byte: one deadline for R2's answer, by the body's size.
+    const drain = () => {
+      if (bodyGone) return;
+      bodyGone = true;
+      quiet();
+      stall = setTimeout(() => {
+        // Rejected before the abort, whose handler would say "Network error" —
+        // which retryable() would send straight back into the same slow link.
+        reject(new Error(SLOW_LINK_MESSAGE));
+        xhr.abort();
+      }, postBodyDeadlineMs(body.size));
     };
     xhr.open('PUT', url);
     for (const [k, v] of Object.entries(headers)) {
@@ -188,13 +242,16 @@ function putWithProgress(
       }
     }
     xhr.upload.onprogress = (e) => {
-      watch();
       if (e.lengthComputable && e.total > 0) {
         onProgress(Math.round((e.loaded / e.total) * 100));
+        if (e.loaded >= e.total) {
+          drain();
+          return;
+        }
       }
+      watch();
     };
-    // The body has gone: R2's answer gets a full stretch of its own.
-    xhr.upload.onload = watch;
+    xhr.upload.onload = drain;
     xhr.onload = () => {
       quiet();
       if (xhr.status >= 200 && xhr.status < 300) {
@@ -220,8 +277,9 @@ function putWithProgress(
 /**
  * A JSON POST with a limit (PHOTO_STEP_TIMEOUT_MS) on the whole exchange —
  * reading the reply included, since a body can stall after its headers. Given
- * up, it fails as a dropped connection, which retryable() tries again; an
- * AbortError it does not know would have ended the chain at the first stall.
+ * up, the request is aborted and fails as a dropped connection, which
+ * retryable() tries again; an AbortError it does not know would have ended the
+ * chain at the first stall.
  */
 async function postJson<T>(url: string, body: unknown, failMessage: string): Promise<T> {
   const abort = new AbortController();
@@ -244,15 +302,19 @@ async function postJson<T>(url: string, body: unknown, failMessage: string): Pro
 }
 
 /**
- * Stop waiting after `ms`, for work that cannot be aborted: a server action
- * (lib/submit-client.ts). The work itself goes on, and may still land.
+ * Attach and detach go to app/api/photos/attach|detach, which reply with the
+ * service's own `{ ok, … }` (lib/errors.ts runAction). Not server actions: a
+ * server action cannot be aborted, and Next runs them one at a time, so after
+ * an attach with no answer, Retry's re-send — and every other slot's attach,
+ * and every Remove — queued behind the stalled one and never left the phone
+ * (post-merge review of 30ec23a). Anything but a reply of that shape throws,
+ * as no answer: postJson's abort at PHOTO_STEP_TIMEOUT_MS, a dropped
+ * connection, a server fault, a page that is not JSON.
  */
-function withinTime<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
-  });
-  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+async function postAction(url: string, body: unknown): Promise<ActionResult<unknown>> {
+  const reply = await postJson<ActionResult<unknown> | null>(url, body, ATTACH_NO_ANSWER);
+  if (typeof reply?.ok !== 'boolean') throw new Error(ATTACH_NO_ANSWER);
+  return reply;
 }
 
 export function PhotoCaptureSlot({
@@ -309,12 +371,13 @@ export function PhotoCaptureSlot({
   // the user to re-photograph the storefront.
   const [retainedBlob, setRetainedBlob] = useState<Blob | null>(null);
   const [retainedHash, setRetainedHash] = useState<string | null>(null);
-  // The retained photo is up and finalized, but its attach got no answer: this
-  // is its attachment. Retry then sends only the attach again, not the photo
-  // over the same weak signal. services/photos.ts refuses a second attach of
-  // one attachment and writes nothing, so after such a re-send "already
-  // attached" means the first one landed. A new photo replaces it; an answered
-  // attach ends it.
+  // The retained photo is up and finalized, but its attach got no answer (or
+  // "the database dropped / did not respond", which is none either): this is
+  // its attachment. Retry then sends only the attach again, not the photo over
+  // the same weak signal. That is safe because services/photos.ts answers an
+  // attach of a photo to the slot it is already on with ok and writes nothing,
+  // and refuses one on any other slot — so the re-send's answer is the truth
+  // either way. A new photo replaces it; any other answer ends it.
   const unanswered = useRef<string | null>(null);
 
   async function uploadChain(blob: Blob, hash: string) {
@@ -361,42 +424,37 @@ export function PhotoCaptureSlot({
       }
 
       // 4) Wire to a customer/branch slot if requested.
-      // PROD-006: the action returns `{ ok, code, message, fields? }` shape —
-      // see lib/errors.ts (runAction). Surface the error message directly so
-      // photo wiring failures (slot/kind mismatch, route scope, soft-deleted
-      // attachment) reach the salesman instead of being lost to a generic SC
-      // render error.
+      // PROD-006: the reply is the service's `{ ok, code, message, fields? }`
+      // (lib/errors.ts runAction). Surface the error message directly so photo
+      // wiring failures (slot/kind mismatch, route scope, soft-deleted
+      // attachment) reach the salesman.
       if (attachTo) {
         const target =
           attachTo.kind === 'customer'
             ? { customerId: attachTo.customerId, slot: 'CR' as const }
             : { branchId: attachTo.branchId, slot: attachTo.slot };
-        let attachRes: Awaited<ReturnType<typeof attachPhotoAction>>;
+        let attachRes: ActionResult<unknown>;
         try {
-          attachRes = await withinTime(
-            attachPhotoAction({ attachmentId, ...target }),
-            PHOTO_STEP_TIMEOUT_MS,
-            ATTACH_NO_ANSWER
-          );
+          attachRes = await postAction('/api/photos/attach', { attachmentId, ...target });
         } catch (e) {
-          // No answer — the wait ran out, or the call failed on its way back.
+          // No answer — given up and aborted, or it failed on its way back.
           unanswered.current = attachmentId;
-          throw e;
+          throw new Error(
+            e instanceof HttpError && e.status === 401 ? ATTACH_SIGNED_OUT : ATTACH_NO_ANSWER
+          );
         }
         // "May or may not have been saved" (lib/db-errors mayHaveCommitted) is
-        // no answer either: keep the attachment so Retry re-sends only the
-        // attach, and "already attached" then reads as landed. As a refusal it
-        // made that Retry fail with "already attached" for a photo that was on.
-        if (!attachRes.ok && attachRes.code === 'DB_INTERRUPTED') {
+        // no answer either, and neither is "the database did not respond": that
+        // one says nothing was saved by THIS call, not by an earlier one with no
+        // answer. Keep the attachment, so Retry re-sends only the attach; as a
+        // refusal it made the next Retry upload again and fail "already
+        // attached" for a photo that was on the slot.
+        if (!attachRes.ok && TRANSIENT_DB_CODES.has(attachRes.code)) {
           unanswered.current = attachmentId;
           throw new Error(attachRes.message);
         }
         unanswered.current = null;
-        const landedBefore =
-          resend != null &&
-          !attachRes.ok &&
-          attachRes.fields?.attachmentId === ALREADY_ATTACHED_MESSAGE;
-        if (!attachRes.ok && !landedBefore) {
+        if (!attachRes.ok) {
           throw new Error(
             attachRes.fields
               ? Object.values(attachRes.fields).join(' ')
@@ -471,19 +529,27 @@ export function PhotoCaptureSlot({
     if (disabled) setConfirmingDelete(false);
   }, [disabled]);
 
+  // A Remove on its way: the confirm says so and takes no second tap. As a
+  // server action it could queue behind a stalled attach for minutes, with the
+  // confirm open and nothing happening (post-merge review of 30ec23a).
+  const [removing, setRemoving] = useState(false);
+
   async function actuallyClear() {
-    if (disabled) return;
-    if (photo?.previewUrl) URL.revokeObjectURL(photo.previewUrl);
+    if (disabled || removing) return;
     if (photo?.attachmentId && attachTo) {
+      setRemoving(true);
       try {
-        // detachPhotoAction returns the new ActionResult shape; we still
-        // best-effort-clear locally on any failure (network / 404). The
-        // form's stale state will reconcile on next refresh.
-        await detachPhotoAction({ attachmentId: photo.attachmentId });
+        // Over fetch, given up after PHOTO_STEP_TIMEOUT_MS. The slot is cleared
+        // whatever the answer (network, 404, a refusal) — best effort, as
+        // before; the form's stale state reconciles on the next load.
+        await postAction('/api/photos/detach', { attachmentId: photo.attachmentId });
       } catch {
         /* still clear locally */
+      } finally {
+        setRemoving(false);
       }
     }
+    if (photo?.previewUrl) URL.revokeObjectURL(photo.previewUrl);
     setPhoto(null);
     setProgress('idle');
     setError(null);
@@ -595,7 +661,7 @@ export function PhotoCaptureSlot({
           e.currentTarget.value = '';
         }}
       />
-      {!busy && !confirmingDelete && !disabled && (
+      {!busy && !confirmingDelete && !removing && !disabled && (
         <div className="absolute right-1 top-1 z-20 flex gap-1">
           {filled && (
             <button
@@ -660,16 +726,18 @@ export function PhotoCaptureSlot({
             <button
               type="button"
               onClick={() => setConfirmingDelete(false)}
-              className="rounded-md border border-slate-300 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              disabled={removing}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
             >
               Keep
             </button>
             <button
               type="button"
               onClick={actuallyClear}
-              className="rounded-md bg-red-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-red-700"
+              disabled={removing}
+              className="rounded-md bg-red-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:bg-slate-400"
             >
-              Remove
+              {removing ? 'Removing…' : 'Remove'}
             </button>
           </div>
         </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useId, useState, useTransition, useEffect, useRef } from 'react';
+import { useCallback, useId, useState, useEffect, useRef } from 'react';
 import { Role, type CustomerStatus, type DayOfWeek, type PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
 import { surfaceUnrenderedErrors, enrichmentFormRendersError } from '@/lib/form-errors';
@@ -105,11 +105,17 @@ export function EnrichmentForm({
   // UAT-07: one id prefix per form instance, so the labels on the inline
   // selects can point at their controls. Branch rows append their own key.
   const uid = useId();
-  const [pending, start] = useTransition();
+  // A submit on its way: plain state, not useTransition. Next dispatches every
+  // server action inside a transition and React settles pending transitions
+  // together, so while ANY action was in flight on the page — a stalled photo
+  // attach — this form's own `pending` stayed true after its answer:
+  // "Submitting…", a disabled "Trying…", and the slots locked with their Retry
+  // upload hidden (post-merge review of 30ec23a).
+  const [sending, setSending] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [info, setInfo] = useState<string | null>(null);
   // UXI-004: synchronous lock so a rapid double-tap on Submit never fires the
-  // server action twice. `pending` from useTransition flips asynchronously.
+  // request twice. `sending` is state, and flips only on the next render.
   const submitLockRef = useRef(false);
   // Item 22: what happened to the last submit, said beside the button; the
   // submission ids that make a retry safe; and which button the retry repeats.
@@ -177,7 +183,7 @@ export function EnrichmentForm({
   const subChannels = channels.find((c) => c.id === channelId)?.subChannels ?? [];
 
   // Photo slots are wired server-side the moment a capture finishes
-  // (PhotoCaptureSlot → attachPhotoAction), but the mandatory gate below used to
+  // (PhotoCaptureSlot → /api/photos/attach), but the mandatory gate below used to
   // read the INITIAL server snapshot only — so after taking the three required
   // photos the Submit button stayed disabled ("Missing: shop photo …") until the
   // salesman reloaded the page. Track the live slot state instead (go-live fix).
@@ -201,7 +207,7 @@ export function EnrichmentForm({
   // …and no NEW photo once a submit is on its way. Submit is held while a photo
   // uploads, but a photo started after the tap would still be cut off by the
   // page load that follows the answer — silently, beside "It arrived".
-  const photosLocked = pending || arrived;
+  const photosLocked = sending || arrived;
 
   // Client-side mandatory-field gate. Mirrors the server check in
   // services/edits.ts so the salesman gets immediate feedback and can't
@@ -364,9 +370,10 @@ export function EnrichmentForm({
     // line beside the button says why nothing happens.
     if (!isDraft && uploading > 0) return;
     // UXI-004: synchronous lock so a fast double-tap on the Submit button
-    // can't fire two parallel server actions before useTransition flips.
+    // can't fire two parallel requests before `sending` renders.
     if (submitLockRef.current) return;
     submitLockRef.current = true;
+    setSending(true);
     setErrors({});
     setInfo(null);
     // The notice stays while this try is in flight — its Try again reads
@@ -415,79 +422,78 @@ export function EnrichmentForm({
     // The same payload after no answer keeps its id, so a retry is never written twice.
     const submissionId = idsRef.current.idFor(body);
 
-    start(async () => {
-      try {
-        // Item 22: over fetch, not the server action (lib/submit-client.ts says
-        // why). The answer is the action's own `{ ok, data?, code, message,
-        // fields? }` (PROD-006, lib/errors.ts runAction) — or what is known
-        // when there was none.
-        const outcome = await postForm<SubmitReceipt>('customer-edit', { ...body, submissionId });
-        const ids = idsRef.current!;
-        ids.settle(outcome);
-        // null for a first-time success and for field errors, which say
-        // themselves; every other outcome is said beside the button.
-        setNotice(noticeFor(outcome, { doubt: ids.doubt }));
-        if (outcome.kind !== 'answered') return;
-        const result = outcome.result;
-        if (!result.ok) {
-          if (result.fields) {
-            // A key with no slot on this form still surfaces, at the top.
-            setErrors(surfaceUnrenderedErrors(result.fields, enrichmentFormRendersError));
-          }
-          return;
+    try {
+      // Item 22: over fetch, not the server action (lib/submit-client.ts says
+      // why). The answer is the action's own `{ ok, data?, code, message,
+      // fields? }` (PROD-006, lib/errors.ts runAction) — or what is known
+      // when there was none.
+      const outcome = await postForm<SubmitReceipt>('customer-edit', { ...body, submissionId });
+      const ids = idsRef.current!;
+      ids.settle(outcome);
+      // null for a first-time success and for field errors, which say
+      // themselves; every other outcome is said beside the button.
+      setNotice(noticeFor(outcome, { doubt: ids.doubt }));
+      if (outcome.kind !== 'answered') return;
+      const result = outcome.result;
+      if (!result.ok) {
+        if (result.fields) {
+          // A key with no slot on this form still surfaces, at the top.
+          setErrors(surfaceUnrenderedErrors(result.fields, enrichmentFormRendersError));
         }
-        const res = result.data;
-        if (res.replayed) {
-          // It had already arrived: said above, beside the button. Stay — there
-          // is nothing to send, and moving on would hide the answer.
-          if (res.state === 'SUBMITTED' || res.state === 'APPROVED') {
-            // The form stays, so a later edit may still save: drop only the
-            // autosave already due, which would write back what just arrived.
-            if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-            if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
-            if (!isDraft) setArrived(true);
-          }
-          return;
+        return;
+      }
+      const res = result.data;
+      if (res.replayed) {
+        // It had already arrived: said above, beside the button. Stay — there
+        // is nothing to send, and moving on would hide the answer.
+        if (res.state === 'SUBMITTED' || res.state === 'APPROVED') {
+          // The form stays, so a later edit may still save: drop only the
+          // autosave already due, which would write back what just arrived.
+          if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+          if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+          if (!isDraft) setArrived(true);
         }
-        if (isDraft) {
-          // Owner decision (item 22): the draft stays on this phone, as the
-          // guide promises — no longer deleted by a successful save.
-          setNotice({
-            tone: 'received',
-            // When approving what is pending replaces this draft
-            // (lib/enrichment-draft.ts) — say so now, not after. A pending
-            // close does not; see pendingReplacesDraft in lib/submission-replay.ts.
-            text: pendingReplacesDraft
-              ? '✓ Draft saved on this phone. If the changes already waiting are approved first, they replace it.'
-              : '✓ Draft saved. It stays on this phone until you submit.',
-          });
-          return;
-        }
-        draftGoneRef.current = true;
-        if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
-        // Item 22: said beside the button BEFORE moving on — on weak signal the
-        // next page can take a while, or fail to load, and the salesman must
-        // already know that this arrived.
-        setArrived(true);
+        return;
+      }
+      if (isDraft) {
+        // Owner decision (item 22): the draft stays on this phone, as the
+        // guide promises — no longer deleted by a successful save.
         setNotice({
           tone: 'received',
-          text:
-            res.state === 'APPROVED'
-              ? `✓ Saved (auto-approved as ${userRole}).`
-              : '✓ Submitted for approval. It arrived — nothing more to do.',
+          // When approving what is pending replaces this draft
+          // (lib/enrichment-draft.ts) — say so now, not after. A pending
+          // close does not; see pendingReplacesDraft in lib/submission-replay.ts.
+          text: pendingReplacesDraft
+            ? '✓ Draft saved on this phone. If the changes already waiting are approved first, they replace it.'
+            : '✓ Draft saved. It stays on this phone until you submit.',
         });
-        // UXI-005: replace, not push, so Back doesn't return to a stale,
-        // fully-populated form that encourages a duplicate submit. A document
-        // load (lib/navigate.ts): revalidatePath in a route handler does not
-        // clear the browser's router cache (a server action's did), so a
-        // client navigation — or Back afterwards — showed the old values. The
-        // transition ends as soon as this returns, long before the next page
-        // is in: `arrived`, not `pending`, is what keeps the bar locked.
-        hardReplace(`/customers/${customer.id}`);
-      } finally {
-        submitLockRef.current = false;
+        return;
       }
-    });
+      draftGoneRef.current = true;
+      if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+      // Item 22: said beside the button BEFORE moving on — on weak signal the
+      // next page can take a while, or fail to load, and the salesman must
+      // already know that this arrived.
+      setArrived(true);
+      setNotice({
+        tone: 'received',
+        text:
+          res.state === 'APPROVED'
+            ? `✓ Saved (auto-approved as ${userRole}).`
+            : '✓ Submitted for approval. It arrived — nothing more to do.',
+      });
+      // UXI-005: replace, not push, so Back doesn't return to a stale,
+      // fully-populated form that encourages a duplicate submit. A document
+      // load (lib/navigate.ts): revalidatePath in a route handler does not
+      // clear the browser's router cache (a server action's did), so a
+      // client navigation — or Back afterwards — showed the old values.
+      // `sending` ends as soon as this returns, long before the next page is
+      // in: `arrived`, not `sending`, is what keeps the bar locked.
+      hardReplace(`/customers/${customer.id}`);
+    } finally {
+      submitLockRef.current = false;
+      setSending(false);
+    }
   }
 
   return (
@@ -836,7 +842,7 @@ export function EnrichmentForm({
       <div className="sticky bottom-0 -mx-4 mt-4 flex flex-col border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
         <SubmitNoticeBox
           notice={notice}
-          busy={pending}
+          busy={sending}
           onRetry={() => submit(lastWasDraftRef.current)}
         />
         {canSubmit && !arrived && uploading > 0 && (
@@ -845,23 +851,23 @@ export function EnrichmentForm({
         <div className="flex items-center justify-start gap-3">
           <button
             type="button"
-            disabled={pending || submitBlocked}
+            disabled={sending || submitBlocked}
             onClick={() => submit(false)}
             className="rounded-md bg-brand-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             title={submitTitle}
           >
-            {arrived ? 'Sent ✓' : pending ? 'Submitting…' : 'Submit for approval ▶'}
+            {arrived ? 'Sent ✓' : sending ? 'Submitting…' : 'Submit for approval ▶'}
           </button>
           {/* Off once it arrived, as on the create form: a tap while the next
               page loads (or after a replayed answer, which stays) wrote a stray
               DRAFT and swapped "It arrived" for "…until you submit". */}
           <button
             type="button"
-            disabled={pending || arrived}
+            disabled={sending || arrived}
             onClick={() => submit(true)}
             className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
           >
-            {pending ? 'Saving…' : 'Save draft'}
+            {sending ? 'Saving…' : 'Save draft'}
           </button>
         </div>
       </div>

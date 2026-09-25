@@ -17,7 +17,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 
-vi.mock('@/services/photos', () => ({ attachPhotoAction: vi.fn(), detachPhotoAction: vi.fn() }));
 vi.mock('@/components/nmwc/GpsCaptureButton', () => ({ GpsCaptureButton: () => <span>gps</span> }));
 const nav = vi.hoisted(() => ({ hardReplace: vi.fn() }));
 vi.mock('@/lib/navigate', () => nav);

@@ -9,6 +9,7 @@ import { submitEditAction } from '@/services/edits';
 import { submitCreateAction } from '@/services/creates';
 import { markBranchClosedAction, requestReactivationAction } from '@/services/reactivations';
 import type { ActionResult } from '@/lib/errors';
+import { readJsonObject, refuse, refuseCrossSite } from '@/lib/fetch-route';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,32 +45,13 @@ function formDataOf(body: Json): FormData {
   return fd;
 }
 
-/** The host an Origin header names, or null for "null" and anything unparseable. */
-function originHost(origin: string): string | null {
-  try {
-    return new URL(origin).host;
-  } catch {
-    return null;
-  }
-}
-
-const refuse = (status: number, code: string, message: string) =>
-  NextResponse.json({ ok: false, code, message }, { status });
-
 export async function POST(req: NextRequest, ctx: { params: Promise<{ form: string }> }) {
   const { form } = await ctx.params;
   const run = Object.hasOwn(FORMS, form) ? FORMS[form] : undefined;
   if (!run) return refuse(404, 'NOT_FOUND', 'Unknown form.');
-  // Same-origin only. A JSON body cannot be sent cross-site without a CORS
-  // preflight this route never grants, and a browser that sends Origin must
-  // name this host — the check a server action gets from Next for free.
-  if (!(req.headers.get('content-type') ?? '').startsWith('application/json')) {
-    return refuse(415, 'UNSUPPORTED_MEDIA_TYPE', 'Send JSON.');
-  }
-  const origin = req.headers.get('origin');
-  if (origin && originHost(origin) !== (req.headers.get('x-forwarded-host') ?? req.headers.get('host'))) {
-    return refuse(403, 'FORBIDDEN', 'Cross-site request refused.');
-  }
+  // Same-origin JSON only — the check a server action gets from Next for free.
+  const crossSite = refuseCrossSite(req);
+  if (crossSite) return crossSite;
   // Signed out: say so with its own status, so the phone can tell "sign in and
   // Try again — nothing was sent" from an answer. The sign-in gate in the
   // middleware does NOT stop this request (auth.config.ts: its `false` is
@@ -78,16 +60,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ form: stri
   if (!(await auth())?.user) {
     return refuse(401, 'SIGNED_OUT', 'You are signed out, so nothing was sent.');
   }
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return refuse(400, 'INVALID_JSON', 'The request was not valid JSON.');
-  }
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return refuse(400, 'INVALID_JSON', 'The request was not a JSON object.');
-  }
-  return NextResponse.json(await run(body as Json));
+  const read = await readJsonObject(req);
+  if ('refused' in read) return read.refused;
+  return NextResponse.json(await run(read.body));
 }
 
 /**
