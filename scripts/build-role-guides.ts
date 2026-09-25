@@ -1050,10 +1050,10 @@ const STEWARD_EN: Guide = {
           html: 'After the customer-master upload finishes, you land on the batch page. The <strong>Recent batches</strong> table on the Import page also lists every batch.',
         },
         {
-          html: 'The page shows six figures: <strong>Total · Clean · Quarantined · Promoted · Rejected · Left to promote</strong>. The table below opens on <strong>Needs attention</strong> — every REJECTED and QUARANTINED row. The other views are <strong>Rejected</strong>, <strong>Quarantined</strong>, <strong>Loaded with a warning</strong> and <strong>All rows</strong>; each says how many rows it holds, and <strong>Previous / Next</strong> reach every one of them, however long the file. Each row shows the customer, its branch, route and day, what happened to it in words, and — under <strong>As uploaded</strong> — the values exactly as your sheet had them.',
+          html: 'The page shows six figures: <strong>Total · Clean · Quarantined · Promoted · Rejected · Left to promote</strong>. The table below opens on <strong>Needs attention</strong> — every REJECTED and QUARANTINED row you have not excluded. The other views are <strong>Rejected</strong>, <strong>Quarantined</strong>, <strong>Loaded with a warning</strong>, <strong>Excluded</strong> and <strong>All rows</strong>; each says how many rows it holds, and <strong>Previous / Next</strong> reach every one of them, however long the file. Each row shows the customer, its branch, route and day, what happened to it in words, and — under <strong>As uploaded</strong> — the values exactly as your sheet had them.',
         },
         {
-          html: 'Review the <strong>QUARANTINED</strong> rows first — bad phone format, an unknown channel or visit-day code, a duplicate phone or CR on a different customer. When the reason names a customer already in the master (“phone already exists in master on customer X”), open that customer first: it may be the same shop. Fix the source row in your copy of the xlsx and re-import it, or accept that it stays out. Quarantined rows are never promoted, and they cannot be fixed or released inside the app yet.',
+          html: 'Review the <strong>QUARANTINED</strong> rows first — bad phone format, an unknown channel or visit-day code, a duplicate phone or CR on a different customer. When the reason names a customer already in the master (“phone already exists in master on customer X”), open that customer first: it may be the same shop. Each problem row has a <strong>Fix</strong> column: <strong>Correct…</strong> changes only the cells its problem names (never payment terms, credit or the Temix code) and checks the row again; <strong>Release shared phone…</strong>, offered only when the phone being on another customer is the row’s one problem, lets it through with your written reason; <strong>Re-check</strong> checks it again as it stands; <strong>Exclude…</strong> records, with a reason, that it stays out. A fixed row turns CLEAN and the batch can be promoted again — click <strong>Promote</strong> to load it. The row as your sheet had it is kept; your corrections are shown beside it.',
         },
         {
           html: 'Click <strong>Promote N clean rows</strong>. On a full master this <strong>runs in passes</strong> — the button reads “Promoting… 1,200 done, 2,100 left” and keeps going by itself. Leave the tab open until it reports <strong>Done</strong>.',
@@ -1065,10 +1065,10 @@ const STEWARD_EN: Guide = {
           html: 'Only <strong>one</strong> customer import can be promoted at a time. A second attempt is refused and names the file already running — finish (or abandon) that one first.',
         },
         {
-          html: 'When it finishes, <strong>reconcile</strong>: <em>Left to promote</em> must be 0, and <em>Promoted + Rejected + Quarantined</em> must equal <em>Total</em>. Then open the <strong>Rejected</strong> view and read every row: a rejected row is <strong>not</strong> in the master. Typical reasons are a branch code that already belongs to another customer, or a Temix code recorded on a different customer. Correct the source and re-import those customers. Then open <strong>Loaded with a warning</strong>: those customers are in the master, but something in the row was substituted or not applied — a route or region that was not found, or, for a customer already linked to Temix, branch values that the import does not change. Change those branch values on the customer’s page; a branch the master does not have yet cannot be added in the app.',
+          html: 'When it finishes, <strong>reconcile</strong>: <em>Left to promote</em> must be 0, and <em>Promoted + Rejected + Quarantined</em> must equal <em>Total</em>. Then open the <strong>Rejected</strong> view and read every row: a rejected row is <strong>not</strong> in the master. Typical reasons are a branch code that already belongs to another customer, a Temix code recorded on a different customer, or payment terms that disagree with the ones on record. Fix a rejected row as above — <strong>Re-check</strong> takes its whole customer with it — or exclude it. A payment-terms or crosswalk rejection comes back rejected until the master itself changes. Then open <strong>Loaded with a warning</strong>: those customers are in the master, but something in the row was substituted or not applied — a route or region that was not found, or, for a customer already linked to Temix, branch values in a file row, which a re-import never changes. Change those on the customer’s page.',
         },
         {
-          html: 'Record the six figures (a screenshot of the batch page is enough) as the evidence that the load was checked. The load is complete only when every rejected and quarantined row is resolved or formally accepted as excluded.',
+          html: 'Record the six figures (a screenshot of the batch page is enough) as the evidence that the load was checked. The load is complete when <strong>Needs attention</strong> is empty: every rejected and quarantined row fixed and loaded, or excluded with a reason. Until then the batch stays on your <strong>Work</strong> list.',
         },
       ],
       callouts: [
@@ -1099,13 +1099,13 @@ const STEWARD_EN: Guide = {
           img: 'steward-06-duplicates.png',
         },
         {
-          html: 'Each pair card shows the match reason at the top — <strong>PHONE</strong> (exact phone number match across two customers), <strong>CR</strong> (same Commercial Registration number), or <strong>NAME</strong> (fuzzy similarity ≥ 0.7).',
+          html: 'Each pair card shows the match reason at the top — <strong>CR-number match</strong> (the same Commercial Registration number, typed with any digits or spacing) or <strong>Name + phone + region match</strong> (the same name, ignoring case and spacing, the same phone, and a region both have a branch in). A shared phone alone is not a match: one owner often runs several shops on one number.',
         },
         {
           html: 'Compare the two cards side-by-side: NMWC code, phone, CR, branch count. The customer with more branches and a higher completeness score is usually the better keeper.',
         },
         {
-          html: 'Three actions:<ul><li><strong>Mark distinct</strong> — these are NOT duplicates. The pair is recorded in the audit log and will not surface again.</li><li><strong>Keep ←</strong> — the LEFT customer is the survivor. The right one is soft-deleted. Its branches and edit history move to the survivor.</li><li><strong>Keep →</strong> — same, but the RIGHT customer survives.</li></ul>',
+          html: 'Three actions:<ul><li><strong>Mark distinct</strong> — these are NOT duplicates. The pair is hidden until what they share changes (a new shared CR, or a name or phone changed into another shared one); <strong>Marked distinct</strong>, lower on the page, lists hidden pairs with an <strong>Undo</strong>.</li><li><strong>Keep ←</strong> — the LEFT customer is the survivor. The right one is soft-deleted. Its branches and edit history move to the survivor.</li><li><strong>Keep →</strong> — same, but the RIGHT customer survives.</li></ul>',
         },
       ],
       callouts: [
@@ -1262,11 +1262,11 @@ const STEWARD_EN: Guide = {
         rows: [
           [
             '"Branch not updated" on a row that loaded',
-            'The customer is linked to Temix, so the import refreshed its customer fields only and left its branches alone. Change the branch values on the customer’s page. A branch the master does not have cannot be added in the app yet.',
+            'The customer is linked to Temix, so a file row refreshes its Temix fields only and leaves its branches alone. Change the branch values on the customer’s page. A branch that was held back is added by fixing its held-back row on the batch page, not by uploading it again.',
           ],
           [
             '"phone already exists in master on customer X"',
-            'Open customer X. If it is the same shop, the held-back row is not needed. If it is a different shop sharing the owner’s phone, it cannot be loaded with that phone today — note it and raise it with the data owner.',
+            'Open customer X. If it is the same shop, exclude the held-back row. If it is a different shop sharing the owner’s phone, use Release shared phone… on the row, with the reason, then promote the batch.',
           ],
           [
             '"Phone now belongs to X (Y) — reject and ask the salesman"',
@@ -1278,7 +1278,7 @@ const STEWARD_EN: Guide = {
           ],
           [
             '"Customer master has many duplicates"',
-            'Run a duplicate review session. Sort by similarity. Tackle PHONE matches first (1.0 similarity = same phone), then CR, then NAME.',
+            'Run a duplicate review session on the Duplicates page. CR-number matches come first, then name + phone + region matches. The page says how many pairs there are in all and shows the first 50.',
           ],
           [
             '"Export failed"',

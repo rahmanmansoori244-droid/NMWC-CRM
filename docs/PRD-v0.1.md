@@ -326,7 +326,7 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 | `password` | string | min 12 chars, 1 uppercase + 1 digit | client + server |
 | `nmwc_code` | string | unique; format `[A-Z]{2,4}\d{3,6}` (legacy) or `NMWC-YYYY-NNNNNN` (system) | server |
 | `legal_name` | string | 2–200 chars; HTML stripped; trimmed; not editable on Credit by Salesman | server |
-| `cr_number` | string | optional; if present, 5–50 chars, alphanumeric + `-`; auto-normalized (uppercase, strip spaces); not editable on Credit by Salesman | server |
+| `cr_number` | string | optional; if present, 5–50 chars, alphanumeric + `-`; auto-normalized (uppercase, strip spaces; since item 16 also Arabic-Indic digits to ASCII and invisible characters removed); not editable on Credit by Salesman | server |
 | `primary_phone` | string | required; regex `^[\d\s\-\+\(\)]{7,20}$`; normalized to `+968 XXXXXXXX` for Oman numbers when possible | server |
 | `alt_phone` | string | optional; same regex | server |
 | `contact_person` | string | 2–200 chars; HTML stripped | server |

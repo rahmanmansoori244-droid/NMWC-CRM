@@ -509,24 +509,30 @@ The rotation is audit-logged.
 1. Sign in as Steward.
 2. `/import` → upload xlsx → review batch → Promote.
 3. Existing customers (matching by `cust_code`) are upserted — but not all in the same way.
-   Read this before re-importing (checked against `services/imports.ts` on 2026-09-25, item 20):
+   Read this before re-importing (checked against `services/imports.ts` on 2026-09-26, item 20):
    - **A customer that already has a Temix code** — every go-live customer — takes the
      *refresh* lane. Only the Temix-owned fields (Temix code, payment terms, credit figures)
-     are refreshed. Its branches are **neither created nor changed**, so a corrected branch
-     row lands nothing. The batch page lists such rows under **Loaded with a warning**
-     ("Branch not updated") when their branch values differ from the master. Change those
-     values on the customer's page; a missing branch cannot be added in the app yet.
+     are refreshed, and a **file row never creates or changes its branches**: the file cannot
+     be told apart from an inbound Temix refresh or an old copy of the master, and branches
+     are the CRM's. Such rows are listed under **Loaded with a warning** ("Branch not
+     updated") when their branch is missing or differs. Change an existing branch on the
+     customer's page. A held-back branch row is loaded by **fixing it on the batch page**
+     (Correct / Re-check / Release): a row fixed in the app creates its branch, or updates it
+     from the cells it gave, and queues the customer for the next Temix batch.
    - The refresh also flips each such customer from UPLOADED to **SYNCED**, as though Temix
      had confirmed the last batch. Do not re-import the full master while a Temix batch is
      waiting for its acknowledgement.
-   - **A customer with no Temix code** takes the full lane. Upload **all** of its branch rows
-     together: its status and channel are worked out from the rows in the file, so a file
-     carrying only one CLOSED branch closes the customer. Each branch row's name, address,
-     route and region overwrite the master's, and a blank address or route is replaced by a
-     placeholder ("Address pending", the UNASSIGNED route) rather than kept.
-   - **Always include `branch_code`.** A row without one is numbered by its position among
-     that customer's clean rows in the file (X-01, X-02 …), so a file with only some of a
-     customer's rows can overwrite a sibling branch.
+   - **A customer with no Temix code** takes the full lane. Its status follows all its live
+     branches, not only the rows in the file. A blank name, address or route keeps the stored
+     value (a NEW branch still gets "Main", "Address pending" or the UNASSIGNED route).
+   - **Always include `branch_code`.** Once a customer has branches, a row without one is
+     rejected: it would be numbered by its position in the file and could overwrite a sibling.
+4. Problem rows are fixed on the batch page, not with scripts: **Correct…** (only the cells the
+   problem names; never payment terms, credit or the Temix code), **Release shared phone…**
+   (with a reason; audited as FORCE_OVERRIDE), **Re-check**, **Exclude…** (with a reason). A fix
+   is refused while the batch is being promoted, and in an upload older than another that
+   carries the same customer — fix it in the newest one. A row whose data the 90-day retention
+   sweep has cleared can only be excluded or uploaded again.
 
 ### Export the cleaned master for ERP
 1. Sign in as Steward (or Manager).
@@ -587,7 +593,7 @@ It applies a row only when the customer has exactly one live branch of that name
 
 ### Spot a duplicate in the live master
 1. Sign in as Steward.
-2. `/duplicates` → review pairs (PHONE matches first, then CR, then fuzzy NAME).
+2. `/duplicates` → review pairs: CR-number matches first, then name + phone + region (item 16: any shared region; names compared ignoring case and spacing). A phone alone is not a match. "Mark distinct" hides a pair until what they share changes; "Marked distinct" lists them with Undo.
 3. Click "Keep ←" / "Keep →" to merge; loser is soft-deleted, branches reassigned, AuditLog written.
 
 ### Reactivate a closed shop
