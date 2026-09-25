@@ -32,6 +32,8 @@ export function LabeledField({
   mono,
   inputMode,
   maxLength,
+  type,
+  autoComplete,
 }: {
   label: string;
   value: string;
@@ -44,6 +46,17 @@ export function LabeledField({
   mono?: boolean;
   inputMode?: 'decimal' | 'numeric';
   maxLength?: number;
+  /**
+   * 'tel' opens the phone keypad — digits and '+', which is everything
+   * lib/phone.ts accepts. Never 'number': it drops the '+' and leading zeros.
+   * Benchmark item 36: every phone field opened the full QWERTY keyboard.
+   */
+  type?: 'text' | 'tel';
+  /**
+   * The customer phone fields pass 'off'. 'tel' would offer the DEVICE OWNER's
+   * number — the salesman's own — as a one-tap fill for a customer's phone.
+   */
+  autoComplete?: string;
 }) {
   const id = useId();
   const cls = `block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500 ${mono ? 'font-mono text-[15px]' : ''} ${disabled ? 'cursor-not-allowed bg-slate-100' : ''}`;
@@ -69,7 +82,9 @@ export function LabeledField({
           value={value}
           disabled={disabled}
           placeholder={placeholder}
+          type={type}
           inputMode={inputMode}
+          autoComplete={autoComplete}
           maxLength={maxLength}
           onChange={(e) => onChange(e.currentTarget.value)}
           className={cls}

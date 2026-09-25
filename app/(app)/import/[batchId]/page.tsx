@@ -1,3 +1,4 @@
+import { TableScroll } from '@/components/nmwc/TableScroll';
 import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
@@ -111,7 +112,7 @@ export default async function ImportBatchPage({
       )}
 
       <section className="px-4 pb-6 sm:px-6">
-        <div className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+        <TableScroll label="Import rows" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
           <table className="min-w-full divide-y divide-slate-200 text-xs">
             <thead className="bg-slate-50 text-left uppercase tracking-wide text-slate-500">
               <tr>
@@ -149,7 +150,7 @@ export default async function ImportBatchPage({
               )}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       </section>
     </main>
   );

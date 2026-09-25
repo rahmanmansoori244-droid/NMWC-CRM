@@ -1,3 +1,4 @@
+import { TableScroll } from '@/components/nmwc/TableScroll';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
@@ -69,7 +70,7 @@ export default async function TemixPage() {
             description="Generate an upload file when approved customers are waiting."
           />
         ) : (
-          <div className="overflow-x-auto rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+          <TableScroll label="Temix batches" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
             <table className="w-full text-left text-sm">
               <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                 <tr>
@@ -109,7 +110,7 @@ export default async function TemixPage() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
         )}
         <p className="mt-3 text-xs text-slate-500">
           Flow: generate a batch (queued rows flip to “uploaded”) → carry the sheet to Temix →

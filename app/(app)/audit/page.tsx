@@ -1,3 +1,4 @@
+import { TableScroll } from '@/components/nmwc/TableScroll';
 import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -157,7 +158,7 @@ export default async function AuditPage({
       </form>
 
       <div className="p-4 sm:p-6">
-        <div className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+        <TableScroll label="Audit log" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
           <table className="min-w-full divide-y divide-slate-200 text-xs">
             <thead className="bg-slate-50 text-left uppercase tracking-wide text-slate-500">
               <tr>
@@ -189,7 +190,7 @@ export default async function AuditPage({
               )}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
         {lastPage > 1 && (
           <nav className="mt-4 flex items-center justify-between text-sm">
             <Link

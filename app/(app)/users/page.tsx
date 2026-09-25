@@ -1,3 +1,4 @@
+import { TableScroll } from '@/components/nmwc/TableScroll';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
@@ -210,7 +211,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
           the table into the Create-user column. */}
       <UsersFeedback>
         <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-[1fr_360px]">
-          <section className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+          <TableScroll label="Accounts" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-600">
                 <tr>
@@ -270,7 +271,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                 )}
               </tbody>
             </table>
-          </section>
+          </TableScroll>
 
           <aside className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">

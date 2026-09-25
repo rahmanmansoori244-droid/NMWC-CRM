@@ -512,6 +512,8 @@ export function EnrichmentForm({
         <div className="grid gap-3 md:grid-cols-2">
           <Field
             label="Primary phone *"
+            type="tel"
+            autoComplete="off"
             placeholder="+968 9XXX XXXX"
             value={primaryPhone}
             onChange={setPrimaryPhone}
@@ -519,6 +521,8 @@ export function EnrichmentForm({
           />
           <Field
             label="Alt phone"
+            type="tel"
+            autoComplete="off"
             placeholder="+968 …"
             value={altPhone}
             onChange={setAltPhone}
@@ -609,7 +613,7 @@ export function EnrichmentForm({
                 <label className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500">
                   Equipment at the shop
                 </label>
-                <div className="grid gap-2 md:grid-cols-3">
+                <div className="grid gap-2 lg:grid-cols-3">
                   <StepperInput
                     name={`coolers-${b.id}`}
                     label="Coolers"

@@ -179,7 +179,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
         </p>
       </div>
 
-      <ul className="grid gap-3 px-4 sm:px-6">
+      <ul className="grid grid-cols-1 gap-3 px-4 sm:px-6">
         {items.map((e) => {
           const checked = selected.has(e.id);
           return (
@@ -199,13 +199,15 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
               />
               <Link
                 href={`/approvals/${e.id}`}
-                className="flex min-w-0 flex-1 items-start gap-3"
+                className="flex min-w-0 flex-1 flex-wrap items-start gap-3 sm:flex-nowrap"
               >
                 <CompletenessRing
                   value={e.customer?.completenessScore ?? 0}
                   size={44}
                 />
-                <div className="min-w-0 flex-1">
+                {/* 56px = the 44px CompletenessRing + gap-3: the text takes the rest of
+                    the first line on a phone, and the pills wrap below it. */}
+                <div className="min-w-0 flex-1 basis-[calc(100%-56px)] sm:basis-0">
                   <h3 className="flex items-center gap-1.5 truncate text-sm font-semibold text-slate-900">
                     {e.isCreate && (
                       <span className="inline-flex shrink-0 rounded-full bg-brand-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-700">
@@ -223,7 +225,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                     Submitted by {e.submittedByFullName}
                   </p>
                 </div>
-                <div className="flex flex-col items-end gap-1 text-right text-xs">
+                <div className="flex flex-wrap items-center gap-1 pl-14 text-xs sm:flex-col sm:flex-nowrap sm:items-end sm:pl-0 sm:text-right">
                   {/* Working-hours SLA pill (nights/Fridays don't count against the reviewer). */}
                   {e.sla && (
                     <span

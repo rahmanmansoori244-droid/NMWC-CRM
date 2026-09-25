@@ -1,3 +1,4 @@
+import { TableScroll } from '@/components/nmwc/TableScroll';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
@@ -92,7 +93,7 @@ export default async function ImportPage() {
 
       <section className="px-4 pb-6 sm:px-6">
         <h2 className="mb-2 text-sm font-semibold text-slate-700">Recent batches</h2>
-        <div className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+        <TableScroll label="Recent import batches" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
           <table className="min-w-full divide-y divide-slate-200 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
@@ -141,7 +142,7 @@ export default async function ImportPage() {
               )}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       </section>
     </main>
   );

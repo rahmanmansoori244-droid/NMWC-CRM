@@ -1,4 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
+import { LocationLinks, PhoneLink } from '@/components/nmwc/ContactLinks';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
@@ -219,7 +220,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
       <div className="space-y-4 p-4 sm:p-6">
         {!isPending && (
           <div
-            className={`rounded-md px-3 py-2 text-sm font-medium ring-1 ring-inset ${
+            className={`rounded-md px-3 py-2 text-sm font-medium ring-1 ring-inset [overflow-wrap:anywhere] ${
               edit.state === 'APPROVED'
                 ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
                 : 'bg-amber-50 text-amber-800 ring-amber-200'
@@ -237,7 +238,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
         {/* Chain progress — which step this request is on, and every decision
             taken so far (append-only EditApproval history). */}
         {chain.length > 0 && (
-          <section className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+          <section className={SECTION}>
             <header className="border-b border-slate-200 bg-slate-50 px-4 py-2">
               <h2 className="text-sm font-semibold text-slate-700">Approval chain</h2>
             </header>
@@ -266,8 +267,11 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
             {edit.steps.length > 0 && (
               <ul className="divide-y divide-slate-100 border-t border-slate-100 text-xs">
                 {edit.steps.map((s) => (
-                  <li key={s.id} className="flex items-start justify-between gap-3 px-4 py-2">
-                    <span>
+                  <li
+                    key={s.id}
+                    className="flex flex-col gap-0.5 px-4 py-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3"
+                  >
+                    <span className="min-w-0">
                       <strong
                         className={s.decision === 'APPROVED' ? 'text-emerald-700' : 'text-red-700'}
                       >
@@ -301,8 +305,14 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     : null
                 }
               />
-              <DetailRow label="Primary phone" value={draft.primaryPhone} />
-              <DetailRow label="Alt phone" value={draft.altPhone} />
+              <DetailRow
+                label="Primary phone"
+                value={draft.primaryPhone ? <PhoneLink phone={draft.primaryPhone} /> : null}
+              />
+              <DetailRow
+                label="Alt phone"
+                value={draft.altPhone ? <PhoneLink phone={draft.altPhone} /> : null}
+              />
               <DetailRow
                 label="Contact"
                 value={
@@ -361,9 +371,14 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                   <DetailRow
                     label="GPS"
                     value={
-                      b.gpsLat != null && b.gpsLng != null
-                        ? `${b.gpsLat.toFixed(5)}, ${b.gpsLng.toFixed(5)}${b.gpsAccuracy != null ? ` (±${Math.round(b.gpsAccuracy)}m)` : ''}`
-                        : null
+                      b.gpsLat != null && b.gpsLng != null ? (
+                        <span className="flex flex-col items-start gap-2">
+                          <span className="font-mono">
+                            {`${b.gpsLat.toFixed(5)}, ${b.gpsLng.toFixed(5)}${b.gpsAccuracy != null ? ` (±${Math.round(b.gpsAccuracy)}m)` : ''}`}
+                          </span>
+                          <LocationLinks lat={b.gpsLat} lng={b.gpsLng} />
+                        </span>
+                      ) : null
                     }
                   />
                   <DetailRow label="Day of visit" value={b.dayOfVisit} />
@@ -389,6 +404,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                 label={c.field.replace('customer.', '')}
                 before={display(c.field, c.before)}
                 after={display(c.field, c.after)}
+                phone={c.field === 'customer.primaryPhone' || c.field === 'customer.altPhone'}
               />
             ))}
           </DiffSection>
@@ -413,7 +429,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                 ))}
                 {gps && (
                   <div className="px-4 py-2.5 text-sm">
-                    <MapLink lat={gps.lat} lng={gps.lng} label="View proposed location on map" />
+                    <LocationLinks lat={gps.lat} lng={gps.lng} pinLabel="View proposed location on map" />
                   </div>
                 )}
               </DiffSection>
@@ -448,7 +464,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     emptyText="No signboard photo yet"
                   />
                   {extras.length > 0 && <PhotoRow label="Other photos" ids={extras} />}
-                  <div className="grid grid-cols-[140px_1fr] gap-3 px-4 py-2.5 text-sm">
+                  <div className={ROW}>
                     <div className="font-medium text-slate-600">Location on file</div>
                     <div className="text-slate-900">
                       {b.gpsLat != null && b.gpsLng != null ? (
@@ -460,8 +476,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                           {b.gpsCapturedAt
                             ? ` · captured ${new Date(b.gpsCapturedAt).toLocaleString('en-GB')}`
                             : ''}
-                          <span className="ml-2">
-                            <MapLink lat={b.gpsLat} lng={b.gpsLng} label="Open in Google Maps" />
+                          <span className="mt-2 block">
+                            <LocationLinks lat={b.gpsLat} lng={b.gpsLng} pinLabel="Open in Google Maps" />
                           </span>
                         </>
                       ) : (
@@ -483,7 +499,10 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
       </div>
 
       {isPending && (
-        <div className="sticky bottom-0 -mx-4 mt-4 border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
+        // No negative margin: this bar is a child of <main>, which has no horizontal
+        // padding to cancel, so `-mx-4 sm:-mx-6` made it wider than the screen — a
+        // sideways scroll on every phone and a 24px scrollbar on desktop (item 37).
+        <div className="sticky bottom-0 mt-4 border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:p-6">
           <ApproveRejectActions editId={edit.id} />
         </div>
       )}
@@ -491,9 +510,25 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   );
 }
 
+/**
+ * Benchmark item 37 — this screen broke on a phone. Two rules, measured at 360px:
+ *
+ * ROW: label above value on a phone, the old two columns from 640px (sm). The
+ * value track is minmax(0,1fr), never a bare `1fr`: a bare 1fr track has an
+ * `auto` minimum, so its longest unbreakable word (a phone number, an ISO date,
+ * a URL) sized the column and pushed the After column and Approve off-screen.
+ * `break-words` does not help there — it does not lower the minimum width.
+ *
+ * SECTION: `[overflow-wrap:anywhere]`, inherited by everything inside, is what
+ * actually lets an unbreakable token wrap; `break-words` left the page 425–483px.
+ */
+const ROW = 'grid grid-cols-1 gap-1 px-4 py-2.5 text-sm sm:grid-cols-[140px_minmax(0,1fr)] sm:gap-3';
+const SECTION =
+  'overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200 [overflow-wrap:anywhere]';
+
 function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+    <section className={SECTION}>
       <header className="border-b border-slate-200 bg-slate-50 px-4 py-2">
         <h2 className="text-sm font-semibold text-slate-700">{title}</h2>
       </header>
@@ -502,27 +537,13 @@ function DetailSection({ title, children }: { title: string; children: React.Rea
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: unknown }) {
+function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
   if (value == null || value === '') return null;
   return (
-    <div className="grid grid-cols-[140px_1fr] gap-3 px-4 py-2.5 text-sm">
+    <div className={ROW}>
       <div className="font-medium text-slate-600">{label}</div>
-      <div className="break-words text-slate-900">{String(value)}</div>
+      <div className="break-words text-slate-900">{value}</div>
     </div>
-  );
-}
-
-/** Google Maps deep link — works on any phone/desktop without an API key. */
-function MapLink({ lat, lng, label }: { lat: number; lng: number; label: string }) {
-  return (
-    <a
-      href={`https://www.google.com/maps?q=${lat.toFixed(6)},${lng.toFixed(6)}`}
-      target="_blank"
-      rel="noreferrer"
-      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-brand-700 hover:bg-brand-50"
-    >
-      📍 {label}
-    </a>
   );
 }
 
@@ -540,14 +561,14 @@ function PhotoRow({
   if (ids.length === 0) {
     if (!emptyText) return null;
     return (
-      <div className="grid grid-cols-[140px_1fr] gap-3 px-4 py-2.5 text-sm">
+      <div className={ROW}>
         <div className="font-medium text-slate-600">{label}</div>
         <div className="text-slate-500">{emptyText}</div>
       </div>
     );
   }
   return (
-    <div className="grid grid-cols-[140px_1fr] gap-3 px-4 py-2.5 text-sm">
+    <div className={ROW}>
       <div className="font-medium text-slate-600">{label}</div>
       <div className="flex flex-wrap gap-2">
         {ids.map((id) => (
@@ -567,7 +588,7 @@ function PhotoRow({
 
 function DiffSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+    <section className={SECTION}>
       <header className="border-b border-slate-200 bg-slate-50 px-4 py-2">
         <h2 className="text-sm font-semibold text-slate-700">{title}</h2>
       </header>
@@ -576,17 +597,32 @@ function DiffSection({ title, children }: { title: string; children: React.React
   );
 }
 
-function DiffRow({ label, before, after }: { label: string; before: unknown; after: unknown }) {
+function DiffRow({
+  label,
+  before,
+  after,
+  phone,
+}: {
+  label: string;
+  before: unknown;
+  after: unknown;
+  /** The values are phone numbers: render them tap-to-call (item 40). */
+  phone?: boolean;
+}) {
+  const show = (v: unknown) =>
+    phone && typeof v === 'string' && v ? <PhoneLink phone={v} /> : formatValue(v);
   return (
-    <div className="grid grid-cols-[140px_1fr_1fr] gap-3 px-4 py-3 text-sm">
-      <div className="font-medium text-slate-600">{label}</div>
+    // Label on its own line, Before/After side by side on a phone; the old
+    // three columns from 640px. minmax(0,1fr), never a bare 1fr (see ROW).
+    <div className="grid grid-cols-2 gap-2 px-4 py-3 text-sm sm:grid-cols-[140px_minmax(0,1fr)_minmax(0,1fr)] sm:gap-3">
+      <div className="col-span-2 font-medium text-slate-600 sm:col-span-1">{label}</div>
       <div className="rounded-md bg-red-50 px-2 py-1 text-red-700 ring-1 ring-red-200">
         <div className="text-[10px] font-semibold uppercase tracking-wide opacity-70">Before</div>
-        <div className="break-words">{formatValue(before)}</div>
+        <div className="break-words">{show(before)}</div>
       </div>
       <div className="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700 ring-1 ring-emerald-200">
         <div className="text-[10px] font-semibold uppercase tracking-wide opacity-70">After</div>
-        <div className="break-words">{formatValue(after)}</div>
+        <div className="break-words">{show(after)}</div>
       </div>
     </div>
   );

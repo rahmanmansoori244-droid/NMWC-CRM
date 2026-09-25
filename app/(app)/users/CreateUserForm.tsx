@@ -141,7 +141,7 @@ export function CreateUserForm({
         </div>
       )}
       <Field label="Email (optional)" name="email" type="email" error={errors.email} />
-      <Field label="Phone (optional)" name="phone" error={errors.phone} />
+      <Field label="Phone (optional)" name="phone" type="tel" error={errors.phone} />
       <Field
         label="Password"
         name={PASSWORD_FIELD}

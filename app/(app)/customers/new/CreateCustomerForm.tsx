@@ -562,6 +562,8 @@ export function CreateCustomerForm({
         <div className="grid gap-3 md:grid-cols-2">
           <Field
             label="Primary phone *"
+            type="tel"
+            autoComplete="off"
             placeholder="+968 9XXX XXXX"
             value={primaryPhone}
             onChange={setPrimaryPhone}
@@ -571,6 +573,8 @@ export function CreateCustomerForm({
           />
           <Field
             label="Alt phone"
+            type="tel"
+            autoComplete="off"
             placeholder="+968 …"
             value={altPhone}
             onChange={setAltPhone}
@@ -773,7 +777,7 @@ export function CreateCustomerForm({
               <label className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500">
                 Equipment at the shop
               </label>
-              <div className="grid gap-2 md:grid-cols-3">
+              <div className="grid gap-2 lg:grid-cols-3">
                 <StepperInput
                   name={`coolers-${s.key}`}
                   label="Coolers"

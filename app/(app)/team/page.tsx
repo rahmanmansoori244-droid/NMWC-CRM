@@ -1,3 +1,4 @@
+import { TableScroll } from '@/components/nmwc/TableScroll';
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
@@ -28,7 +29,7 @@ export default async function TeamPage() {
     <main>
       <PageHeader title="My team" subtitle={`${reports.length} salesmen`} />
       <div className="p-4 sm:p-6">
-        <div className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+        <TableScroll label="Team" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
           <table className="min-w-full divide-y divide-slate-200 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
@@ -62,7 +63,7 @@ export default async function TeamPage() {
               )}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       </div>
     </main>
   );

@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
 import { MergeForm } from './MergeForm';
+import { PhoneLink } from '@/components/nmwc/ContactLinks';
 
 export const metadata = { title: 'Duplicates · NMWC' };
 
@@ -83,7 +84,7 @@ function Side({ side }: { side: { id: string; nmwcCode: string; legalName: strin
         <p className="font-mono text-xs text-slate-500">{side.nmwcCode}</p>
         <dl className="mt-2 grid grid-cols-[80px_1fr] gap-y-0.5 text-xs">
           <dt className="text-slate-500">Phone</dt>
-          <dd>{side.primaryPhone ?? '—'}</dd>
+          <dd>{side.primaryPhone ? <PhoneLink phone={side.primaryPhone} /> : '—'}</dd>
           <dt className="text-slate-500">CR</dt>
           <dd className="font-mono">{side.crNumber ?? '—'}</dd>
           <dt className="text-slate-500">Branches</dt>

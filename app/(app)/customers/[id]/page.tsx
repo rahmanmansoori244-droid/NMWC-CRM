@@ -10,6 +10,7 @@ import { BRANCH_MAX_SCORE } from '@/lib/completeness';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
+import { LocationLinks, PhoneLink } from '@/components/nmwc/ContactLinks';
 import { ArchiveCustomerButton } from './ArchiveCustomerButton';
 import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil } from 'lucide-react';
 
@@ -80,7 +81,8 @@ export default async function CustomerProfilePage({
         title={customer.legalName}
         subtitle={customer.nmwcCode}
         actions={
-          <div className="flex items-center gap-2">
+          // Wraps: a manager's five controls are 357px, wider than a 360px phone less its gutter.
+          <div className="flex flex-wrap items-center gap-2">
             <PaymentTermsPill terms={customer.paymentTerms} />
             <StatusBadge status={customer.status} />
             <CompletenessRing value={customer.completenessScore} size={48} />
@@ -118,10 +120,13 @@ export default async function CustomerProfilePage({
           <Row label="Sub-channel" value={customer.subChannel?.label ?? '—'} />
           <Row
             label="Primary phone"
-            value={customer.primaryPhone ?? '—'}
+            value={customer.primaryPhone ? <PhoneLink phone={customer.primaryPhone} /> : '—'}
             icon={<Phone className="h-4 w-4 text-slate-400" />}
           />
-          <Row label="Alt phone" value={customer.altPhone ?? '—'} />
+          <Row
+            label="Alt phone"
+            value={customer.altPhone ? <PhoneLink phone={customer.altPhone} /> : '—'}
+          />
           <Row
             label="Contact"
             value={
@@ -155,25 +160,16 @@ export default async function CustomerProfilePage({
                   icon={<MapPin className="h-4 w-4 text-slate-400" />}
                 />
                 {b.gpsLat != null && b.gpsLng != null && (
-                  <Row
-                    label="GPS"
-                    value={
-                      <span className="flex flex-wrap items-center gap-2">
-                        <span>
-                          {b.gpsLat.toFixed(5)}, {b.gpsLng.toFixed(5)}
-                        </span>
-                        <a
-                          href={`https://www.google.com/maps?q=${b.gpsLat.toFixed(6)},${b.gpsLng.toFixed(6)}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="rounded-md border border-slate-300 bg-white px-2 py-0.5 font-sans text-xs font-medium text-brand-700 hover:bg-brand-50"
-                        >
-                          📍 Open in Maps
-                        </a>
-                      </span>
-                    }
-                    mono
-                  />
+                  <>
+                    <Row label="GPS" value={`${b.gpsLat.toFixed(5)}, ${b.gpsLng.toFixed(5)}`} mono />
+                    {/* Its own line, not inside the Row's value: from md the branch
+                        cards are two-up beside the sidebar, which leaves the value
+                        column about 60px at 768, and the two 44px chips spilled out
+                        of the card and under its neighbour (item 40). */}
+                    <div className="my-1">
+                      <LocationLinks lat={b.gpsLat} lng={b.gpsLng} />
+                    </div>
+                  </>
                 )}
                 <Row
                   label="Day of visit"
@@ -256,13 +252,13 @@ function Row({
   icon?: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[120px_1fr] items-start gap-2 text-base">
+    <div className="grid grid-cols-[120px_minmax(0,1fr)] items-start gap-2 text-base [overflow-wrap:anywhere]">
       <dt className="text-slate-500">{label}</dt>
       <dd
         className={`flex items-start gap-2 break-words text-slate-900 ${mono ? 'font-mono text-[15px]' : ''}`}
       >
         {icon}
-        <span>{value}</span>
+        <span className="min-w-0">{value}</span>
       </dd>
     </div>
   );
@@ -275,7 +271,7 @@ function Row({
  */
 function PhotoRow({ label, photo }: { label: string; photo: { id: string } | null }) {
   return (
-    <div className="grid grid-cols-[120px_1fr] items-start gap-2 text-base">
+    <div className="grid grid-cols-[120px_minmax(0,1fr)] items-start gap-2 text-base [overflow-wrap:anywhere]">
       <dt className="text-slate-500">{label}</dt>
       <dd>
         {photo ? (

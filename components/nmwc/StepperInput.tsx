@@ -2,6 +2,15 @@
 
 import { Minus, Plus } from 'lucide-react';
 
+/**
+ * 44×44 CSS px, the minimum tap target (WCAG 2.5.5, Apple HIG; docs/UX-SPEC.md).
+ * Benchmark item 39: the buttons were `p-1` around a 16px icon inside a 1px
+ * border — 26×26 — and a salesman counting coolers one-handed missed them.
+ * tests/unit/mobile-quick-wins.test.tsx measures the compiled CSS.
+ */
+const STEP_BUTTON =
+  'flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-40';
+
 export function StepperInput({
   name,
   label,
@@ -27,17 +36,17 @@ export function StepperInput({
     onChange(v);
   }
   return (
-    <div className="flex items-center justify-between rounded-md border border-slate-300 bg-white px-3 py-2">
-      <span className="text-sm font-medium text-slate-700">{label}</span>
-      <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-slate-300 bg-white px-3 py-2">
+      <span className="flex-1 text-sm font-medium text-slate-700">{label}</span>
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         <button
           type="button"
           onClick={() => set(value - 1)}
           disabled={disabled || value <= min}
-          className="rounded-md border border-slate-300 p-1 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          className={STEP_BUTTON}
           aria-label={`Decrease ${label}`}
         >
-          <Minus className="h-4 w-4" />
+          <Minus className="h-5 w-5" />
         </button>
         <input
           type="number"
@@ -66,16 +75,16 @@ export function StepperInput({
             const n = parseInt(raw, 10);
             if (Number.isFinite(n)) set(n);
           }}
-          className="w-14 rounded-md border-0 bg-transparent text-center text-lg font-semibold tabular-nums focus:outline-none focus:ring-2 focus:ring-brand-500"
+          className="h-11 w-14 rounded-md border-0 bg-transparent text-center text-lg font-semibold tabular-nums focus:outline-none focus:ring-2 focus:ring-brand-500"
         />
         <button
           type="button"
           onClick={() => set(value + 1)}
           disabled={disabled || value >= max}
-          className="rounded-md border border-slate-300 p-1 text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          className={STEP_BUTTON}
           aria-label={`Increase ${label}`}
         >
-          <Plus className="h-4 w-4" />
+          <Plus className="h-5 w-5" />
         </button>
       </div>
     </div>
