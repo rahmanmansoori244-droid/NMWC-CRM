@@ -1,7 +1,8 @@
 /**
  * The /duplicates card actions (app/(app)/duplicates/MergeForm.tsx), benchmark
- * item 16. "Mark distinct" is permanent — the pair never returns and the app has
- * no undo — so it asks first, like the merge buttons always did. And a refusal
+ * item 16. "Mark distinct" hides the pair from every later scan, so it asks
+ * first, like the merge buttons always did — and since the owner's decision of
+ * 2026-09-25 the question says the pair can come back and be undone. A refusal
  * no longer shows in the same green as "✓ Merged".
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -38,7 +39,11 @@ describe('MergeForm', () => {
     expect(ask).toHaveBeenCalledTimes(1);
     expect(ask.mock.calls[0][0]).toContain('Al Noor (N-1)');
     expect(ask.mock.calls[0][0]).toContain('Al Nour (N-2)');
-    expect(ask.mock.calls[0][0]).toMatch(/cannot be undone/);
+    // No longer permanent (owner decision 2026-09-25): the question says when the
+    // pair comes back and where to undo it, and no longer that it cannot be undone.
+    expect(ask.mock.calls[0][0]).not.toMatch(/cannot be undone/);
+    expect(ask.mock.calls[0][0]).toMatch(/hidden until they come to share a different CR number, name or phone/);
+    expect(ask.mock.calls[0][0]).toMatch(/undo this under "Marked distinct"/);
     expect(h.dismiss).not.toHaveBeenCalled();
   });
 

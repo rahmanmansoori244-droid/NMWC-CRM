@@ -7,6 +7,7 @@
  */
 import { EditProcess, EditState, type Prisma } from '@prisma/client';
 import { ConflictError } from './errors';
+import { nameKey } from './name-key';
 import { omanWhen } from './submission';
 import { shownTime } from './submission-replay';
 
@@ -31,10 +32,30 @@ export async function lockCrForUpdate(tx: Prisma.TransactionClient, crNumberNorm
  * final approvals could then materialize duplicate live customers
  * (adversarial-review CONFIRMED finding).
  *
- * Keys are computed in JS (toLowerCase) on BOTH sides of any race, so the two
- * competing transactions always derive identical lock keys. Locks are taken
+ * Keys are computed in JS on BOTH sides of any race, so the two competing
+ * transactions always derive identical lock keys. The name part is
+ * lib/name-key.ts nameKey — the same key the triple check below compares — so
+ * two requests for "Al Noor  Shop" and "Al Noor Shop" queue on one lock instead
+ * of both passing the check in parallel (item 16: the key used to be a plain
+ * toLowerCase, which neither trimmed nor collapsed spaces). Locks are taken
  * in a deterministic sorted order to prevent lock-order deadlocks.
  */
+export function createIdentityLockKeys(args: {
+  crNumberNorm: string | null;
+  legalName: string;
+  primaryPhoneNorm: string | null;
+  regionIds: string[];
+}): string[] {
+  const keys: string[] = [];
+  if (args.crNumberNorm) keys.push(`nmwc:cr:${args.crNumberNorm}`);
+  if (args.primaryPhoneNorm) {
+    for (const regionId of args.regionIds) {
+      keys.push(`nmwc:triple:${nameKey(args.legalName)}|${args.primaryPhoneNorm}|${regionId}`);
+    }
+  }
+  return keys.sort();
+}
+
 export async function lockCreateIdentity(
   tx: Prisma.TransactionClient,
   args: {
@@ -44,26 +65,27 @@ export async function lockCreateIdentity(
     regionIds: string[];
   }
 ): Promise<void> {
-  const keys: string[] = [];
-  if (args.crNumberNorm) keys.push(`nmwc:cr:${args.crNumberNorm}`);
-  if (args.primaryPhoneNorm) {
-    for (const regionId of args.regionIds) {
-      keys.push(`nmwc:triple:${args.legalName.toLowerCase()}|${args.primaryPhoneNorm}|${regionId}`);
-    }
-  }
-  keys.sort();
-  for (const key of keys) {
+  for (const key of createIdentityLockKeys(args)) {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 42))`;
   }
 }
 
 /**
  * Exact-duplicate hard-block (owner-confirmed 2026-07-15): reject when the CR
- * (normalized) or the EXACT_TRIPLE (legalName casefold + primaryPhoneNorm +
+ * (normalized) or the EXACT_TRIPLE (name key + primaryPhoneNorm + any shared
  * region) already exists on a live customer or another open CREATE request.
  * Re-run at finalize with includeOpenRequests=false — a colliding customer
  * may appear during the multi-day chain, but open requests were already
  * serialized against each other at submit.
+ *
+ * The name is compared with lib/name-key.ts nameKey, the key the duplicate
+ * detector uses (owner decision 2026-09-25, item 16): whitespace runs
+ * collapsed, ends trimmed, case folded. Postgres cannot apply that function, so
+ * the triple leg narrows in SQL by normalized phone and region — the columns it
+ * always matched exactly — and compares the names here. Before this the name
+ * was compared in SQL, case-insensitively and nothing more, so "Al Noor  Shop"
+ * with a doubled space, or with a pasted no-break space, was created beside
+ * "Al Noor Shop" and then flagged by the detector as a duplicate of it.
  */
 export async function assertNoExactCreateDuplicate(
   tx: Prisma.TransactionClient,
@@ -129,15 +151,20 @@ export async function assertNoExactCreateDuplicate(
   }
 
   if (args.primaryPhoneNorm && args.regionIds.length > 0) {
-    const tripleLive = await tx.customer.findFirst({
+    const want = nameKey(args.legalName);
+    // Every live customer on this phone with a live branch in one of these
+    // regions — a handful even for an owner who runs several shops on one
+    // number — then the one whose name key matches.
+    const livePhoneRegion = await tx.customer.findMany({
       where: {
-        legalName: { equals: args.legalName, mode: 'insensitive' },
         primaryPhoneNorm: args.primaryPhoneNorm,
         deletedAt: null,
         branches: { some: { regionId: { in: args.regionIds }, deletedAt: null } },
       },
+      orderBy: { nmwcCode: 'asc' },
       select: { nmwcCode: true, legalName: true },
     });
+    const tripleLive = livePhoneRegion.find((c) => nameKey(c.legalName) === want);
     if (tripleLive) {
       throw new ConflictError(
         'DUPLICATE_CUSTOMER',
@@ -145,9 +172,8 @@ export async function assertNoExactCreateDuplicate(
       );
     }
     if (args.includeOpenRequests) {
-      const tripleOpen = await tx.editCustomerDraft.findFirst({
+      const openPhoneRegion = await tx.editCustomerDraft.findMany({
         where: {
-          legalName: { equals: args.legalName, mode: 'insensitive' },
           primaryPhoneNorm: args.primaryPhoneNorm,
           edit: {
             state: { in: openStates },
@@ -156,8 +182,9 @@ export async function assertNoExactCreateDuplicate(
             ...(args.excludeEditId ? { id: { not: args.excludeEditId } } : {}),
           },
         },
-        select: openSelect,
+        select: { legalName: true, ...openSelect },
       });
+      const tripleOpen = openPhoneRegion.find((d) => nameKey(d.legalName) === want);
       if (tripleOpen) {
         throw new ConflictError(
           'DUPLICATE_CUSTOMER',

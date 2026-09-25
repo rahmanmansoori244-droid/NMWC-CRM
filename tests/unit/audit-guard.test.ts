@@ -141,6 +141,9 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         // being written as a zero rather than left as a blank.
         'scripts/ops/zero-credit-limits.ts',
         'scripts/ops/apply-quarantined-visit-days.ts',
+        // The CR-norm recompute (item 16): same two-row shape, recording how many
+        // stored normalized CRs were recomputed — counts only, never a CR value.
+        'scripts/ops/recompute-cr-norm.ts',
         // The least-privilege role probe: its insert proves the app role may INSERT
         // but not UPDATE/DELETE the ledger, and the transaction is rolled back. Not
         // an audit record at all.
@@ -198,6 +201,7 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         'scripts/ops/requeue-untracked.ts',
         'scripts/ops/zero-credit-limits.ts',
         'scripts/ops/apply-quarantined-visit-days.ts',
+        'scripts/ops/recompute-cr-norm.ts',
         'scripts/ops/app-role.ts',
       ].sort();
 

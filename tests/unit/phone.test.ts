@@ -79,9 +79,46 @@ describe('lib/cr — CR normalization', () => {
     expect(normalizeCR('01234567')).not.toBe(normalizeCR('1234567'));
   });
 
-  // OPEN — owner decision (item 16): folding these changes the stored crNumberNorm,
-  // so existing rows would need a one-off recompute. Today they never match their
-  // ASCII twins, in the detector or in the create-time CR block.
-  it.todo('Arabic-Indic digits fold to ASCII (١٢٣٤٥٦٧ = 1234567)');
-  it.todo('zero-width characters are stripped (123\\u200B4567 = 1234567)');
+  // Owner decision 2026-09-25 (item 16): a CR typed on an Arabic keyboard, or
+  // pasted with an invisible character in it, is the same CR as its plain ASCII
+  // twin — in the duplicate detector and in the create-time CR block alike, since
+  // both compare this function's output. Stored norms written before this are
+  // corrected by scripts/ops/recompute-cr-norm.ts.
+  it('Arabic-Indic and Persian digits fold to ASCII', () => {
+    expect(normalizeCR('\u0661\u0662\u0663\u0664\u0665\u0666\u0667')).toBe('1234567');
+    expect(normalizeCR('\u06F1\u06F2\u06F3\u06F4\u06F5\u06F6\u06F7')).toBe('1234567');
+    expect(normalizeCR('\u0660\u0669')).toBe('09'); // both ends of the Arabic-Indic block
+    expect(normalizeCR('\u06F0\u06F9')).toBe('09'); // and of the Persian block
+    // Mixed with ASCII, punctuation and letters, which stay what they were.
+    expect(normalizeCR('cr-\u0661\u0662/\u06F3')).toBe('CR-12/3');
+  });
+
+  it('zero-width and other invisible format characters are stripped', () => {
+    const invisible = [
+      '\u00AD', // soft hyphen
+      '\u061C', // Arabic letter mark
+      '\u200B', '\u200C', '\u200D', '\u200E', '\u200F', // zero-width space/joiners, LRM, RLM
+      '\u202A', '\u202E', // bidi embedding / override
+      '\u2060', '\u2061', '\u2062', '\u2063', '\u2064', // word joiner, invisible operators
+      '\u2066', '\u2069', // bidi isolates
+      '\uFEFF', // byte-order mark / zero-width no-break space
+    ];
+    for (const ch of invisible) {
+      expect(normalizeCR(`123${ch}4567`), `U+${ch.charCodeAt(0).toString(16).toUpperCase()}`).toBe('1234567');
+      expect(normalizeCR(`${ch}1234567${ch}`)).toBe('1234567');
+    }
+    // A value that is nothing but invisible characters is no CR at all.
+    expect(normalizeCR('\u200B\u200E\uFEFF')).toBeNull();
+  });
+
+  it('an Arabic-Indic CR with a zero-width character is its ASCII twin', () => {
+    expect(normalizeCR('\u200F\u0661\u0662\u0663 \u0664\u0665\u0666\u0667')).toBe(normalizeCR('1234567'));
+  });
+
+  it('the fold changes nothing else: punctuation, letters and leading zeros are kept', () => {
+    expect(normalizeCR('\u0660\u0661\u0662')).toBe('012');
+    expect(normalizeCR('\u0660\u0661\u0662')).not.toBe(normalizeCR('12'));
+    expect(normalizeCR('\u0661\u0662/\u0662\u0660\u0662\u0664')).toBe('12/2024');
+    expect(normalizeCR('\u0661\u0662/\u0662\u0660\u0662\u0664')).not.toBe(normalizeCR('122024'));
+  });
 });

@@ -17,7 +17,10 @@ import { resolveArchiveTemixState } from '@/lib/temix';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import {
   pairCandidates,
-  parseDismissed,
+  parseDismissals,
+  matchSignals,
+  dismissalHides,
+  pairKey,
   type DupRow,
   type DuplicateScan,
 } from '@/lib/duplicate-pairing';
@@ -45,14 +48,18 @@ async function requireSteward() {
  *     different areas — name fuzziness produced ~50 false positives per run
  *     and caused the steward to lose trust in the queue.
  *
- * The rules themselves (exact CR; exact name + phone + region) and how pairs
- * are counted live in lib/duplicate-pairing.ts, where they are tested. This
- * function reads the rows and the Steward's dismissals.
+ * The rules themselves (exact CR; exact name + phone + a shared region) and how
+ * pairs are counted live in lib/duplicate-pairing.ts, where they are tested.
+ * This function reads the rows and the Steward's "Mark distinct" history.
  *
- * Both reads are ordered so the page shows the same pairs, in the same order,
- * from one load to the next. The branch order also makes "first live branch"
- * mean one branch — the lowest branch code — instead of whichever row the
- * database returned first.
+ * Every live branch's region is read, not the first one's: the owner decided
+ * (2026-09-25, item 16) that the triple matches on ANY shared region, the rule
+ * the new-customer block already applied. The live-branch count is the length
+ * of that same list.
+ *
+ * Customers are read in code order so the page shows the same pairs, in the
+ * same order, from one load to the next. The pair history is read in the order
+ * it was written, because the latest row for a pair decides it.
  */
 export async function findDuplicateCandidates(limit = 100): Promise<DuplicateScan> {
   await requireSteward();
@@ -69,21 +76,21 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateSca
       crNumber: true,
       crNumberNorm: true,
       completenessScore: true,
-      branches: {
-        where: { deletedAt: null },
-        orderBy: { branchCode: 'asc' },
-        select: { regionId: true },
-        take: 1,
-      },
-      _count: { select: { branches: { where: { deletedAt: null } } } },
+      branches: { where: { deletedAt: null }, select: { regionId: true } },
     },
   });
 
-  // Steward-dismissed pairs: dismissDuplicateCore writes an AuditLog row with
-  // entityType 'CustomerPair' and entityId 'aId|bId'.
-  const dismissedAuditRows = await prisma.auditLog.findMany({
+  // dismissDuplicateCore and undoDismissDuplicateCore write these: AuditLog rows
+  // with entityType 'CustomerPair' and entityId 'aId|bId'.
+  const pairLog = await prisma.auditLog.findMany({
     where: { entityType: 'CustomerPair' },
-    select: { entityId: true },
+    orderBy: [{ at: 'asc' }, { id: 'asc' }],
+    select: {
+      entityId: true,
+      after: true,
+      at: true,
+      actor: { select: { fullName: true, username: true } },
+    },
   });
 
   const rows: DupRow[] = customers.map((c) => ({
@@ -95,12 +102,19 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateSca
     crNumber: c.crNumber,
     crNumberNorm: c.crNumberNorm,
     completenessScore: c.completenessScore,
-    branchCount: c._count.branches,
-    firstRegionId: c.branches[0]?.regionId ?? null,
+    branchCount: c.branches.length,
+    regionIds: [...new Set(c.branches.map((b) => b.regionId))],
   }));
   return pairCandidates(
     rows,
-    parseDismissed(dismissedAuditRows.map((r) => r.entityId)),
+    parseDismissals(
+      pairLog.map((r) => ({
+        entityId: r.entityId,
+        after: r.after,
+        at: r.at,
+        by: r.actor?.fullName || r.actor?.username || null,
+      }))
+    ),
     limit
   );
 }
@@ -378,8 +392,8 @@ export async function dismissDuplicateAction(formData: FormData): SafeAction<voi
   return runAction(() => dismissDuplicateCore(formData));
 }
 
-async function dismissDuplicateCore(formData: FormData) {
-  const session = await requireSteward();
+/** The two ids of a "Mark distinct" or undo request, checked before any read. */
+function readPair(formData: FormData): { aId: string; bId: string } {
   const aId = String(formData.get('aId') ?? '');
   const bId = String(formData.get('bId') ?? '');
   if (!aId || !bId) throw new ValidationError({ _form: 'Pair required.' });
@@ -388,18 +402,101 @@ async function dismissDuplicateCore(formData: FormData) {
   if (aId === bId || aId.includes('|') || bId.includes('|')) {
     throw new ValidationError({ _form: 'Pick two different customers.' });
   }
-  const live = await prisma.customer.count({ where: { id: { in: [aId, bId] }, deletedAt: null } });
-  if (live !== 2) {
+  return { aId, bId };
+}
+
+/**
+ * Both customers of a pair, live, with what their match signals are computed
+ * from — read now, on the server, never taken from the form.
+ */
+async function readLivePair(aId: string, bId: string) {
+  const found = await prisma.customer.findMany({
+    where: { id: { in: [aId, bId] }, deletedAt: null },
+    select: {
+      id: true,
+      legalName: true,
+      primaryPhoneNorm: true,
+      crNumberNorm: true,
+      branches: { where: { deletedAt: null }, select: { regionId: true } },
+    },
+  });
+  const a = found.find((c) => c.id === aId);
+  const b = found.find((c) => c.id === bId);
+  if (!a || !b) {
     throw new NotFoundError('One of these customers was merged or archived. Refresh the page.');
   }
-  // Permanent: the detector hides this pair, in both orders, for as long as the
-  // row exists (lib/duplicate-pairing.ts parseDismissed), and the ledger is
-  // append-only, so the app has no undo. The page asks before sending.
+  const row = (c: typeof a) => ({
+    legalName: c.legalName,
+    primaryPhoneNorm: c.primaryPhoneNorm,
+    crNumberNorm: c.crNumberNorm,
+    regionIds: c.branches.map((br) => br.regionId),
+  });
+  return { a: row(a), b: row(b) };
+}
+
+async function dismissDuplicateCore(formData: FormData) {
+  const session = await requireSteward();
+  const { aId, bId } = readPair(formData);
+  const { a, b } = await readLivePair(aId, bId);
+  // What the pair matches on now, as digests, never as values: the ledger is
+  // append-only, so a CR number or phone written here would be personal data
+  // kept forever. The dismissal holds while the pair matches on nothing else
+  // (lib/duplicate-pairing.ts dismissalHides) — a new shared CR, or a rule that
+  // newly matches, brings the pair back. If the data moves between this read and
+  // the write, the pair reappears on the next load rather than staying hidden on
+  // a match nobody saw, which is the safe way round.
+  const signals = matchSignals(a, b);
+  if (signals.length === 0) {
+    throw new ValidationError({
+      _form:
+        'These two customers no longer share a CR number, or a name, phone and region, so they are not a suspected pair. Refresh the page.',
+    });
+  }
   await writeAudit(null, await getAuditEnvelope(session.id), {
     action: 'UPDATE',
     entityType: 'CustomerPair',
     entityId: `${aId}|${bId}`,
+    after: { signals },
     reason: 'Deemed distinct by steward',
+  });
+  revalidatePath('/duplicates');
+}
+
+/**
+ * Undo "Mark distinct": the pair goes back on the list (owner decision
+ * 2026-09-25). The ledger is append-only, so the dismissal row stays and an undo
+ * row follows it; the detector reads the pair's rows in order and the latest one
+ * wins.
+ */
+export async function undoDismissDuplicateAction(formData: FormData): SafeAction<void> {
+  return runAction(() => undoDismissDuplicateCore(formData));
+}
+
+async function undoDismissDuplicateCore(formData: FormData) {
+  const session = await requireSteward();
+  const { aId, bId } = readPair(formData);
+  const { a, b } = await readLivePair(aId, bId);
+  const history = await prisma.auditLog.findMany({
+    where: { entityType: 'CustomerPair', entityId: { in: [`${aId}|${bId}`, `${bId}|${aId}`] } },
+    orderBy: [{ at: 'asc' }, { id: 'asc' }],
+    select: { entityId: true, after: true, at: true },
+  });
+  // The same test the page uses to list the pair under "Marked distinct": a pair
+  // that was never dismissed, was undone already, or came back on its own
+  // because its match changed has nothing to undo, and an undo row for it would
+  // be a ledger entry for a change that did not happen.
+  const current = parseDismissals(history).get(pairKey(aId, bId));
+  if (!dismissalHides(current, matchSignals(a, b))) {
+    throw new ValidationError({
+      _form: 'This pair is not marked distinct, so there is nothing to undo. Refresh the page.',
+    });
+  }
+  await writeAudit(null, await getAuditEnvelope(session.id), {
+    action: 'UPDATE',
+    entityType: 'CustomerPair',
+    entityId: `${aId}|${bId}`,
+    after: { undo: true },
+    reason: 'Steward undid "Mark distinct": the pair is a suspected duplicate again',
   });
   revalidatePath('/duplicates');
 }

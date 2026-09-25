@@ -34,6 +34,7 @@
     "ops:zero-credit-limits": "tsx scripts/ops/zero-credit-limits.ts",
     "ops:visit-days": "tsx scripts/ops/apply-quarantined-visit-days.ts",
     "ops:export-crm-terms": "tsx scripts/ops/export-crm-terms.ts",
+    "ops:recompute-cr-norm": "tsx scripts/ops/recompute-cr-norm.ts",
     "verify:credentials": "tsx scripts/golive/verify-credentials.ts"
   },
   "dependencies": {

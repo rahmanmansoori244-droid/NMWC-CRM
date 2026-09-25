@@ -74,10 +74,14 @@ export function MergeForm({
   }
 
   function dismiss() {
-    // Permanent: the pair never comes back, and the app has no undo.
+    // Still asked first: it hides the pair from every later scan. But it is no
+    // longer permanent (owner decision 2026-09-25) — the pair returns on its own
+    // when its CR, name or phone changes into a new match, and the Steward can
+    // undo it from "Marked distinct" — so the question no longer says it cannot
+    // be undone.
     if (
       !confirm(
-        `Mark "${aLabel}" and "${bLabel}" as different customers? This pair will not be suggested again, and this cannot be undone in the app.`
+        `Mark "${aLabel}" and "${bLabel}" as different customers? The pair will be hidden until they come to share a different CR number, name or phone. You can undo this under "Marked distinct" on this page.`
       )
     )
       return;

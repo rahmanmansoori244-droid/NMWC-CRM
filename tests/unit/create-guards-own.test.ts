@@ -10,13 +10,15 @@ import { assertNoExactCreateDuplicate } from '@/lib/create-guards';
 import { omanWhen } from '@/lib/submission';
 
 const sentAt = new Date('2026-09-25T06:42:00.000Z');
+// The CR leg asks for one row (findFirst); the name + phone + region leg reads
+// every open request on the phone and region and compares names itself (item 16:
+// the shared name key), so it asks with findMany.
 const tx = (openEdit: Record<string, unknown> | null, which: 'cr' | 'triple') =>
   ({
-    customer: { findFirst: vi.fn(async () => null) },
+    customer: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
     editCustomerDraft: {
-      findFirst: vi.fn(async (args: { where: Record<string, unknown> }) =>
-        openEdit && ((which === 'cr') === 'crNumberNorm' in args.where) ? { edit: openEdit } : null
-      ),
+      findFirst: vi.fn(async () => (openEdit && which === 'cr' ? { edit: openEdit } : null)),
+      findMany: vi.fn(async () => (openEdit && which === 'triple' ? [{ legalName: 'Al Noor', edit: openEdit }] : [])),
     },
   }) as never;
 const args = {
