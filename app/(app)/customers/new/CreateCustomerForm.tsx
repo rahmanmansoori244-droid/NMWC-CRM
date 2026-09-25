@@ -908,7 +908,22 @@ export function CreateCustomerForm({
                   initial={{ attachmentId: gid, remoteUrl: `/api/photos/${gid}` }}
                   onChange={(p) => {
                     if (readOnly) return;
-                    if (!p) setGuarantees((g) => ({ ...g, ids: g.ids.filter((x) => x !== gid) }));
+                    const next = p?.attachmentId;
+                    // A retake replaces this document in place. Only a removal was
+                    // handled: the screen showed the new document while the request
+                    // still sent the old id (found by the item-22 review agent).
+                    setGuarantees((g) =>
+                      !next
+                        ? { ...g, ids: g.ids.filter((x) => x !== gid) }
+                        : next === gid
+                          ? g
+                          : {
+                              ...g,
+                              ids: g.ids
+                                .map((x) => (x === gid ? next : x))
+                                .filter((x, i, all) => all.indexOf(x) === i),
+                            }
+                    );
                   }}
                   onBusyChange={onPhotoBusy}
                 />

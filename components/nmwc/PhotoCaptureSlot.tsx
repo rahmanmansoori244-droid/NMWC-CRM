@@ -383,6 +383,14 @@ export function PhotoCaptureSlot({
           unanswered.current = attachmentId;
           throw e;
         }
+        // "May or may not have been saved" (lib/db-errors mayHaveCommitted) is
+        // no answer either: keep the attachment so Retry re-sends only the
+        // attach, and "already attached" then reads as landed. As a refusal it
+        // made that Retry fail with "already attached" for a photo that was on.
+        if (!attachRes.ok && attachRes.code === 'DB_INTERRUPTED') {
+          unanswered.current = attachmentId;
+          throw new Error(attachRes.message);
+        }
         unanswered.current = null;
         const landedBefore =
           resend != null &&

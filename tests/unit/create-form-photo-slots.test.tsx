@@ -280,6 +280,24 @@ describe('the new-customer form, with real photo slots', () => {
     expect(formBodies[0]!.guaranteeAttachmentIds).toEqual(['g1', 'att-1']);
   });
 
+  it('a retaken guarantee document replaces the old one in the request, in place', async () => {
+    // Its onChange handled only a removal: the screen showed the new document
+    // while the request still sent the old id.
+    const credit = complete({
+      customer: { ...complete().customer, paymentTerms: 'CREDIT' },
+      credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
+      guaranteeAttachmentIds: ['g1', 'g2'],
+    });
+    render(<CreateCustomerForm channels={channels} initial={credit} sessionUserId="u1" />);
+    await waitFor(() => expect(submitBtn()).toBeEnabled());
+    pick(slotInputs('Guarantee doc')[0]!); // retake g1
+    await waitFor(() => expect(putFor(1)).toBeDefined());
+    await act(async () => putFor(1)!.finish());
+    await waitFor(() => expect(submitBtn()).toBeEnabled());
+    const body = await saveDraft();
+    expect(body.guaranteeAttachmentIds).toEqual(['att-1', 'g2']);
+  });
+
   it('a guarantee document finished in the empty slot makes way for a fresh empty slot', async () => {
     const credit = complete({
       customer: { ...complete().customer, paymentTerms: 'CREDIT' },

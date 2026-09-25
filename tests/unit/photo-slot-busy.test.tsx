@@ -440,6 +440,35 @@ describe('a stalled step ends in Retry upload, so it cannot hold Submit', () => 
       expect(retryButton()).toBeNull();
     }));
 
+  it('an attach answered "may or may not have been saved" is treated as no answer: Retry re-sends only the attach, and "already attached" means it landed', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      photos.attachPhotoAction
+        .mockResolvedValueOnce({
+          ok: false,
+          code: 'DB_INTERRUPTED',
+          message: 'The connection dropped — this may or may not have been saved.',
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          code: 'VALIDATION_FAILED',
+          message: 'Validation failed',
+          fields: { attachmentId: ALREADY_ATTACHED_MESSAGE },
+        });
+      const onChange = vi.fn();
+      const view = render(<PhotoCaptureSlot kind="SHOP" attachTo={shopOfB1} onChange={onChange} />);
+      pick(view.container);
+      await settleUntil(() => xhrs.length === 1);
+      act(() => xhrs[0]!.answer());
+      await settleUntil(() => retryButton() !== null);
+      expect(onChange).not.toHaveBeenCalled();
+      fireEvent.click(retryButton()!);
+      await settleUntil(() => onChange.mock.calls.length === 1);
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: 'att-1' }));
+      expect(xhrs).toHaveLength(1); // the photo was not sent again
+      expect(retryButton()).toBeNull();
+    }));
+
   it('once an attach IS answered, its refusal stands: the next Retry sends the photo again', () =>
     withFakeTimers(async () => {
       uploadable();
