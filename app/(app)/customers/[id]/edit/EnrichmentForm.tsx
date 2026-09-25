@@ -1,7 +1,6 @@
 'use client';
 
 import { useId, useState, useTransition, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
 import { Role, type CustomerStatus, type DayOfWeek, type PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
 import { surfaceUnrenderedErrors, enrichmentFormRendersError } from '@/lib/form-errors';
@@ -11,6 +10,7 @@ import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import { postForm, noticeFor, SubmissionIds, type SubmitNotice } from '@/lib/submit-client';
 import type { SubmitReceipt } from '@/lib/submission';
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
+import { hardReplace } from '@/lib/navigate';
 import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
 import { isRequired, type SubmitGate } from '@/lib/submit-gate';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
@@ -73,6 +73,7 @@ export function EnrichmentForm({
   lockCr,
   userRole,
   canSubmit,
+  pendingReplacesDraft = false,
   sessionUserId,
   gate: gateProp,
 }: {
@@ -84,6 +85,12 @@ export function EnrichmentForm({
   lockCr: boolean;
   userRole: Role;
   canSubmit: boolean;
+  /**
+   * Item 22: a pending UPDATE of this customer exists — approving it changes
+   * the values this draft started from, which then replaces the draft. False
+   * for a pending close or reactivation, which leaves the draft alone.
+   */
+  pendingReplacesDraft?: boolean;
   // UXI-002: scope localStorage drafts by user. A shared device used by two
   // salesmen on the same customer would otherwise inject one user's typing
   // into the other's session.
@@ -94,7 +101,6 @@ export function EnrichmentForm({
   const gate: SubmitGate = gateProp ?? 'FULL';
   const req = (field: string) => isRequired(field, gate);
   const star = (field: string) => (req(field) ? ' *' : '');
-  const router = useRouter();
   // UAT-07: one id prefix per form instance, so the labels on the inline
   // selects can point at their controls. Branch rows append their own key.
   const uid = useId();
@@ -415,11 +421,12 @@ export function EnrichmentForm({
           // guide promises — no longer deleted by a successful save.
           setNotice({
             tone: 'received',
-            // With his earlier changes still pending, approving them replaces
-            // this draft (lib/enrichment-draft.ts) — say so now, not after.
-            text: canSubmit
-              ? '✓ Draft saved. It stays on this phone until you submit.'
-              : '✓ Draft saved on this phone. If the changes already waiting are approved first, they replace it.',
+            // With changes to this customer still pending, approving them
+            // replaces this draft (lib/enrichment-draft.ts) — say so now, not
+            // after. A pending close or reactivation does not.
+            text: pendingReplacesDraft
+              ? '✓ Draft saved on this phone. If the changes already waiting are approved first, they replace it.'
+              : '✓ Draft saved. It stays on this phone until you submit.',
           });
           return;
         }
@@ -435,13 +442,12 @@ export function EnrichmentForm({
               ? `✓ Saved (auto-approved as ${userRole}).`
               : '✓ Submitted for approval. It arrived — nothing more to do.',
         });
-        // UXI-005: router.replace (not push) so Back doesn't return to a
-        // stale, fully-populated form that encourages a duplicate submit. A URL
-        // the router cache cannot hold: revalidatePath in a route handler does
-        // not clear the browser's cache (a server action's did), so the bare
-        // path could come back with the old values — and a refresh on top would
-        // be a second fetch on weak signal. The page ignores `sent`.
-        router.replace(`/customers/${customer.id}?sent=${res.editId}`);
+        // UXI-005: replace, not push, so Back doesn't return to a stale,
+        // fully-populated form that encourages a duplicate submit. A document
+        // load (lib/navigate.ts): revalidatePath in a route handler does not
+        // clear the browser's router cache (a server action's did), so a
+        // client navigation — or Back afterwards — showed the old values.
+        hardReplace(`/customers/${customer.id}`);
       } finally {
         submitLockRef.current = false;
       }

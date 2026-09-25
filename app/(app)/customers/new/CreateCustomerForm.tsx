@@ -11,8 +11,7 @@
  *  - paymentTerms is chosen up front and routes the approval chain
  *    (CASH → SUP→ACC, CREDIT → SUP→FM→GM→ACC) + reveals the credit block.
  */
-import { useId, useEffect, useRef, useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useId, useEffect, useRef, useState, useTransition } from 'react';
 import type { DayOfWeek, EditState, PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
@@ -27,6 +26,7 @@ import {
 } from '@/lib/submit-client';
 import { alreadyReceivedMessage, submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
+import { hardReplace } from '@/lib/navigate';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
 
 type ChannelWithSubs = {
@@ -130,7 +130,6 @@ export function CreateCustomerForm({
   initial: CreateFormInitial | null;
   sessionUserId: string;
 }) {
-  const router = useRouter();
   // UAT-07: one id prefix per form instance, so the labels on the inline
   // selects can point at their controls. Branch rows append their own key.
   const uid = useId();
@@ -151,6 +150,19 @@ export function CreateCustomerForm({
   // branches, points and photos never lived on the phone, and without the
   // answer the form could only say "add them again" to a request already in.
   const unansweredRef = useRef<string[]>([]);
+  // Set once this form's request is known to be on the server: from then on
+  // nothing may write the never-saved phone copy — not even an autosave
+  // already due, which can fire before the re-render that would clear it.
+  const phoneCopyGoneRef = useRef(false);
+  // The reload check can outlive the form (a tap on Work while it waits);
+  // after unmount it must not remove, navigate or say anything.
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
 
   // A SUBMITTED request is read-only for the salesman until it is decided.
   const readOnly = initial?.state === 'SUBMITTED';
@@ -248,6 +260,32 @@ export function CreateCustomerForm({
   // null) the server is the source of truth — restoring a stale local copy
   // over it would silently mask edits made from another device.
   const draftKey = `nmwc:create:${sessionUserId}:${editId ?? 'new'}`;
+
+  /** Item 22: the sends that may have landed, written to the phone copy at once. */
+  const writeUnanswered = useCallback(
+    (ids: string[]) => {
+      unansweredRef.current = ids;
+      if (phoneCopyGoneRef.current) return;
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(draftKey) ?? '{}');
+        window.localStorage.setItem(draftKey, JSON.stringify({ ...saved, unanswered: ids }));
+      } catch {
+        /* a full or blocked storage only loses the reload check */
+      }
+    },
+    [draftKey]
+  );
+
+  /** Item 22: the request is on the server — the never-saved copy goes, for good. */
+  const dropPhoneCopy = useCallback(() => {
+    phoneCopyGoneRef.current = true;
+    unansweredRef.current = [];
+    try {
+      window.localStorage.removeItem(draftKey);
+    } catch {
+      /* ignore */
+    }
+  }, [draftKey]);
   const restoredRef = useRef(false);
   useEffect(() => {
     if (restoredRef.current || readOnly) return;
@@ -294,25 +332,32 @@ export function CreateCustomerForm({
         );
         void (async () => {
           let noAnswer = false;
+          const checked: string[] = [];
           for (const id of [...unanswered].reverse()) {
             const r = await fetchCreateReceipt(id);
+            // Gone (he moved on): do nothing to the page he is on now.
+            if (unmountedRef.current) return;
             if (r.kind === 'noAnswer') {
               noAnswer = true;
               continue;
             }
+            checked.push(id);
             if (!r.receipt) continue;
-            // It landed. The request is on the server; the phone copy goes.
-            unansweredRef.current = [];
-            window.localStorage.removeItem(draftKey);
+            // It landed: the request is on the server, the phone copy goes, and
+            // nothing writes it back — not even an autosave already due.
+            dropPhoneCopy();
+            setArrived(true);
             if (r.receipt.state === 'DRAFT') {
               // A saved draft: open it, with its branches, points and photos.
-              window.location.replace(`/customers/new?edit=${r.receipt.editId}`);
+              hardReplace(`/customers/new?edit=${r.receipt.editId}`);
               return;
             }
-            setArrived(true);
             setInfo(`Your last send arrived after all. ${alreadyReceivedMessage(r.receipt)}`);
             return;
           }
+          // Off the list: only what was checked and did not land. A send made
+          // while the check ran, or one it could not ask about, stays.
+          writeUnanswered(unansweredRef.current.filter((x) => !checked.includes(x)));
           if (noAnswer) {
             setInfo(
               'Restored the details you typed on this phone. Your last send got no answer and may have arrived — when you have signal, check Work before adding photos again.'
@@ -320,7 +365,6 @@ export function CreateCustomerForm({
             return;
           }
           // None landed: the form is all there is.
-          unansweredRef.current = [];
           setInfo(RESTORED);
         })();
       }
@@ -328,14 +372,14 @@ export function CreateCustomerForm({
       /* ignore */
     }
     // restoredRef guards against re-runs; `initial` is stable per mount.
-  }, [draftKey, readOnly, initial]);
+  }, [draftKey, readOnly, initial, dropPhoneCopy, writeUnanswered]);
 
   useEffect(() => {
     // Item 22: nothing is written once the request is in — a typo fixed after
     // "Already received" must not refill the never-saved copy with this shop.
     if (readOnly || arrived) return;
     const handle = setTimeout(() => {
-      if (typeof window === 'undefined') return;
+      if (typeof window === 'undefined' || phoneCopyGoneRef.current) return;
       window.localStorage.setItem(
         draftKey,
         JSON.stringify({
@@ -458,6 +502,15 @@ export function CreateCustomerForm({
     idsRef.current ??= new SubmissionIds();
     // The same payload after no answer keeps its id, so a retry is never written twice.
     const submissionId = idsRef.current.idFor(payload);
+    // Item 22: on a never-saved form this send's id goes on the phone BEFORE it
+    // is sent. A reload or a killed tab mid-send runs no continuation, and the
+    // reload must still be able to ask whether it landed. It comes off when an
+    // outcome settles it.
+    const neverSaved = !editId;
+    const triedBefore = idsRef.current.doubt === 'this';
+    if (neverSaved) {
+      writeUnanswered([...unansweredRef.current.filter((x) => x !== submissionId), submissionId].slice(-3));
+    }
 
     start(async () => {
       try {
@@ -468,20 +521,13 @@ export function CreateCustomerForm({
         // null for a first-time success; every other outcome is said beside
         // the button.
         setNotice(noticeFor(outcome, { doubt: ids.doubt }));
-        if (outcome.kind === 'unconfirmed' && !editId) {
-          // Item 22: on the phone, so a reload can ask whether it landed.
-          unansweredRef.current = [
-            ...unansweredRef.current.filter((x) => x !== submissionId),
-            submissionId,
-          ].slice(-3);
-          try {
-            const saved = JSON.parse(window.localStorage.getItem(draftKey) ?? '{}');
-            window.localStorage.setItem(
-              draftKey,
-              JSON.stringify({ ...saved, unanswered: unansweredRef.current })
-            );
-          } catch {
-            /* a full or blocked storage only loses the reload check */
+        if (neverSaved) {
+          // Did not land: refused, or never read and no earlier try of it was.
+          const refused = outcome.kind === 'answered' && !outcome.result.ok;
+          const unread =
+            outcome.kind === 'offline' || outcome.kind === 'signedOut' || outcome.kind === 'maintenance';
+          if (refused || (unread && !triedBefore)) {
+            writeUnanswered(unansweredRef.current.filter((x) => x !== submissionId));
           }
         }
         if (outcome.kind !== 'answered') return;
@@ -508,7 +554,7 @@ export function CreateCustomerForm({
           // request exists on the server now, so the never-saved copy on the
           // phone goes — else the next "New customer" opens pre-filled with
           // this shop. A saved draft becomes this form's request.
-          if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+          dropPhoneCopy();
           if (res.state === 'DRAFT') {
             setEditId(res.editId);
             if (typeof window !== 'undefined') {
@@ -519,7 +565,7 @@ export function CreateCustomerForm({
           }
           return;
         }
-        if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+        dropPhoneCopy();
         if (isDraft) {
           setEditId(res.editId);
           setNotice({ tone: 'received', text: '✓ Draft saved. Finish and submit when ready.' });
@@ -529,14 +575,12 @@ export function CreateCustomerForm({
           }
         } else {
           // Item 22: said beside the button BEFORE moving on — the next page can
-          // be slow or fail to load on weak signal. The refresh: revalidatePath
-          // in a route handler does not clear the browser's router cache (a
-          // server action's did), so My work could still list this as a draft.
+          // be slow or fail to load on weak signal. A document load of Work
+          // (lib/navigate.ts): the router cache would still list this as a
+          // draft, forward or on Back.
           setArrived(true);
           setNotice({ tone: 'received', text: '✓ Submitted for approval. It arrived — nothing more to do.' });
-          // A URL the router cache cannot hold (see EnrichmentForm): one fresh
-          // fetch of Work, not a cached copy still listing this as a draft.
-          router.replace(`/work?sent=${res.editId}`);
+          hardReplace('/work');
         }
       } finally {
         submitLockRef.current = false;

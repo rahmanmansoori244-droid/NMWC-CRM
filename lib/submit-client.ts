@@ -122,10 +122,11 @@ export async function postForm<T>(
  */
 export class SubmissionIds {
   private open: { id: string; fingerprint: string; uncertain: boolean } | null = null;
-  // A try went unanswered since the last answer — whatever payload it carried.
-  // Survives a new id: the salesman changing the form does not make the earlier
-  // send any less likely to have arrived.
-  private unansweredSinceAnswer = false;
+  // Ids whose try got no answer and that nothing has settled since — whatever
+  // payload they carried. Survives a new id: changing the form does not make an
+  // earlier send any less likely to have arrived. An id leaves only when an
+  // answer settles IT (a refusal of another payload says nothing about it).
+  private unanswered = new Set<string>();
 
   constructor(private readonly mint: () => string = newSubmissionId) {}
 
@@ -140,11 +141,15 @@ export class SubmissionIds {
   /** Call with every outcome: an answer spends the id; no answer keeps it for the retry. */
   settle(outcome: SubmitOutcome<unknown>): void {
     if (outcome.kind === 'answered') {
+      // Answered for the open id: it landed now or before (a replay), or it
+      // was refused — either way that id's doubt is settled.
+      if (this.open) this.unanswered.delete(this.open.id);
+      // A request that is IN: the earlier doubts are moot for what he does next.
+      if (outcome.result.ok) this.unanswered.clear();
       this.open = null;
-      this.unansweredSinceAnswer = false;
-    } else if (outcome.kind === 'unconfirmed') {
-      if (this.open) this.open.uncertain = true;
-      this.unansweredSinceAnswer = true;
+    } else if (outcome.kind === 'unconfirmed' && this.open) {
+      this.open.uncertain = true;
+      this.unanswered.add(this.open.id);
     }
   }
 
@@ -155,7 +160,7 @@ export class SubmissionIds {
    */
   get doubt(): SubmitDoubt {
     if (this.open?.uncertain) return 'this';
-    return this.unansweredSinceAnswer ? 'earlier' : 'none';
+    return this.unanswered.size > 0 ? 'earlier' : 'none';
   }
 }
 
@@ -196,7 +201,12 @@ export function noticeFor(
       return { tone: 'failed', text: UNCONFIRMED_MESSAGE, retry: true };
     case 'answered': {
       const r = outcome.result;
-      if (!r.ok) return { tone: 'failed', text: r.fields ? FIX_FIELDS_MESSAGE : r.message, retry: false };
+      if (!r.ok) {
+        // Fields to fix: say so here, the fields say what. A form-level refusal
+        // alone ("No changes to submit.") has nothing marked red: say it itself.
+        const perField = Object.keys(r.fields ?? {}).some((k) => k !== '_form');
+        return { tone: 'failed', text: perField ? FIX_FIELDS_MESSAGE : (r.fields?._form ?? r.message), retry: false };
+      }
       const receipt = r.data as Partial<SubmitReceipt> | undefined;
       if (receipt?.replayed && receipt.state && receipt.editId) {
         const text = alreadyReceivedMessage(receipt as SubmitReceipt, now);

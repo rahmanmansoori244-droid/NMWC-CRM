@@ -9,7 +9,7 @@ import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { EnrichmentForm } from './EnrichmentForm';
 import { salesmanSubmitGate } from '@/lib/submit-gate';
-import { ownPendingBanner } from '@/lib/submission-replay';
+import { ownPendingBanner, requestKindOf } from '@/lib/submission-replay';
 
 export const metadata = { title: 'Enrich · NMWC' };
 // UXI-005: never serve a stale cached form. Without this, hitting Back after
@@ -183,6 +183,7 @@ export default async function EditCustomerPage({
         lockCr={lockCr}
         userRole={session.user.role}
         canSubmit={!pending}
+        pendingReplacesDraft={!!pending && requestKindOf(pending) === 'update'}
         sessionUserId={session.user.id}
         gate={salesmanSubmitGate()}
       />

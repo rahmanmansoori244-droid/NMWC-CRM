@@ -79,6 +79,21 @@ describe('every submit path answers a replay before doing anything else', () => 
     expect(idLines, 'CustomerEdit writes that carry the submission id').toBeGreaterThanOrEqual(writes);
   });
 
+  it.each([
+    ['app/(app)/customers/[id]/edit/EnrichmentForm.tsx', '`/customers/${customer.id}`'],
+    ['app/(app)/customers/new/CreateCustomerForm.tsx', "'/work'"],
+  ])('%s leaves after a submit by a document load, not the router (stale cache forward or on Back)', (path, target) => {
+    const s = src(path);
+    expect(s).toContain(`hardReplace(${target})`);
+    expect(s).not.toMatch(/\brouter\.(replace|push|refresh)\(/);
+  });
+
+  it('the create path tells the duplicate guard who is asking — else his own request reads as someone else\'s', () => {
+    const s = src('services/creates.ts');
+    const call = s.slice(s.indexOf('assertNoExactCreateDuplicate(tx, {'));
+    expect(call.slice(0, call.indexOf('});'))).toMatch(/\bcallerId: session\.id\b/);
+  });
+
   it('the route serves exactly the forms the client can name', () => {
     const client = src('lib/submit-client.ts');
     const union = client.match(/export type FieldForm =([^;]+);/)![1]!;

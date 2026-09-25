@@ -24,6 +24,9 @@ vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({
   },
 }));
 vi.mock('@/components/nmwc/GpsCaptureButton', () => ({ GpsCaptureButton: () => <span>gps</span> }));
+// A document load after a submit (lib/navigate.ts); jsdom cannot spy on location.replace.
+const nav = vi.hoisted(() => ({ hardReplace: vi.fn() }));
+vi.mock('@/lib/navigate', () => nav);
 
 import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
 import { EnrichmentForm } from '@/app/(app)/customers/[id]/edit/EnrichmentForm';
@@ -51,6 +54,7 @@ beforeEach(() => {
   sent = [];
   replies = [];
   for (const f of Object.values(router)) f.mockReset();
+  nav.hardReplace.mockReset();
   window.localStorage.clear();
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     sent.push({ url, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : {} });
@@ -221,7 +225,7 @@ describe('the customer update form', () => {
     expect(screen.getByText(/older than the latest server changes/)).toBeTruthy();
   });
 
-  it('a first-time submit is said beside the button before it moves on, to a page the cache cannot hold', async () => {
+  it('a first-time submit is said beside the button before it moves on, by a document load (no stale cache, forward or Back)', async () => {
     renderForm();
     // Let the mount-time autosave write the phone copy first — else the "cleared"
     // check below passes whether or not the submit clears it (post-merge review).
@@ -235,9 +239,10 @@ describe('the customer update form', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('✓ Saved (auto-approved as MANAGER).'));
     expect(screen.getByRole('button', { name: 'Sent ✓' })).toBeTruthy();
-    // A fresh URL, so the one navigation fetches fresh data — not a cached page
-    // plus a second full refresh on weak signal.
-    expect(router.replace).toHaveBeenCalledWith('/customers/cust1?sent=e1');
+    // One document load: fresh data now, and no router cache left for Back to
+    // show the customer as it was before the submit (post-merge review).
+    expect(nav.hardReplace).toHaveBeenCalledWith('/customers/cust1');
+    expect(router.replace).not.toHaveBeenCalled();
     expect(router.refresh).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(draftKey)).toBeNull();
   });
@@ -280,7 +285,7 @@ describe('the customer update form', () => {
     expect(screen.getByText('Enter a valid Oman number.')).toBeTruthy();
   });
 
-  it('with his changes already pending, "Draft saved" says approval of them replaces it', async () => {
+  it('with only a close or reactivation pending, "Draft saved" promises nothing about replacing it', async () => {
     render(
       <EnrichmentForm
         customer={customer}
@@ -289,6 +294,28 @@ describe('the customer update form', () => {
         lockCr={false}
         userRole="MANAGER"
         canSubmit={false}
+        pendingReplacesDraft={false}
+        sessionUserId="u1"
+        gate="CORE"
+      />
+    );
+    replies.push(answer({ ok: true, data: { editId: 'd1', state: 'DRAFT', submittedAt: null, replayed: false } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toBe('✓ Draft saved. It stays on this phone until you submit.')
+    );
+  });
+
+  it('with changes to this customer already pending, "Draft saved" says approval of them replaces it', async () => {
+    render(
+      <EnrichmentForm
+        customer={customer}
+        channels={[]}
+        lockName
+        lockCr={false}
+        userRole="MANAGER"
+        canSubmit={false}
+        pendingReplacesDraft
         sessionUserId="u1"
         gate="CORE"
       />
@@ -310,15 +337,46 @@ describe('the new-customer form', () => {
   const seed = (extra: Record<string, unknown> = {}) =>
     window.localStorage.setItem(newKey, JSON.stringify({ legalName: 'Blue Sea Cafe', crNumber: '7654321', ...extra }));
 
-  it('a send with no answer is remembered on the phone, so a reload can ask', async () => {
+  it('a send with no answer is remembered on the phone — and the autosave keeps it there', async () => {
     renderCreate();
     fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
     replies.push(noAnswer);
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await screen.findByRole('button', { name: 'Try again' });
+    // Let the debounced autosave rewrite the copy: it must carry the ids too
+    // (post-merge review: read too early, the check passed without them).
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
     const stored = JSON.parse(window.localStorage.getItem(newKey)!);
+    expect(stored.legalName).toBe('Blue Sea Cafe');
     expect(stored.unanswered).toEqual([sent[0]!.body.submissionId]);
     expect(isSubmissionId(stored.unanswered[0])).toBe(true);
+  });
+
+  it('the id is on the phone BEFORE the send — a reload mid-send can still ask', async () => {
+    const first = renderCreate();
+    fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
+    replies.push(() => new Promise<Response>(() => {})); // the send never answers
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    const stored = JSON.parse(window.localStorage.getItem(newKey)!);
+    expect(stored.unanswered).toEqual([sent[0]!.body.submissionId]);
+    // The tab is killed mid-send; the reload asks about that id.
+    first.unmount();
+    replies.push(answer({ ok: true, data: null }));
+    renderCreate();
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]!.url).toBe(`/api/forms/customer-create?submissionId=${sent[0]!.body.submissionId}`);
+  });
+
+  it('a refused send comes off the list — it did not land', async () => {
+    renderCreate();
+    fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
+    replies.push(answer({ ok: false, code: 'VALIDATION_FAILED', message: 'x', fields: { 'customer.legalName': 'Too short.' } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => expect(screen.getByText('Too short.')).toBeTruthy());
+    expect(JSON.parse(window.localStorage.getItem(newKey) ?? '{}').unanswered ?? []).toEqual([]);
   });
 
   it('reloaded after a send that got no answer: it asks, and says the send arrived', async () => {
@@ -336,6 +394,71 @@ describe('the new-customer form', () => {
       await new Promise((r) => setTimeout(r, 600));
     });
     expect(window.localStorage.getItem(newKey)).toBeNull();
+  });
+
+  it('reloaded, and the send landed as a DRAFT: opens it by a document load, and nothing refills the phone copy', async () => {
+    seed({ unanswered: [sid] });
+    replies.push(answer({ ok: true, data: { editId: 'd9', state: 'DRAFT', submittedAt: null, replayed: true } }));
+    renderCreate();
+    await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledWith('/customers/new?edit=d9'));
+    // The restore armed an autosave; it must not write the copy back after the
+    // removal (post-merge review), nor may a keystroke before the page goes.
+    fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe (edited)' } });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    expect(window.localStorage.getItem(newKey)).toBeNull();
+  });
+
+  it('an autosave already due when the check finds the request does not write the copy back', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      seed({ unanswered: [sid] });
+      let answerCheck!: (r: Response) => void;
+      replies.push(() => new Promise<Response>((resolve) => (answerCheck = resolve)));
+      renderCreate(); // the restore sets fields, arming the 500 ms autosave
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(sent).toHaveLength(1);
+      await act(async () => {
+        vi.advanceTimersByTime(499);
+        answerCheck(
+          new Response(JSON.stringify({ ok: true, data: { editId: 'e1', state: 'SUBMITTED', submittedAt: null, replayed: true } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+        // Let the check's continuation run (it drops the copy) — but fire the
+        // due timer BEFORE React re-renders, which would otherwise clear it.
+        for (let i = 0; i < 50 && window.localStorage.getItem(newKey) !== null; i++) await Promise.resolve();
+        expect(window.localStorage.getItem(newKey)).toBeNull();
+        vi.advanceTimersByTime(1);
+      });
+      expect(window.localStorage.getItem(newKey)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a check still waiting when the form goes does nothing to the page he moved to', async () => {
+    seed({ unanswered: [sid] });
+    let answerCheck!: (r: Response) => void;
+    replies.push(() => new Promise<Response>((resolve) => (answerCheck = resolve)));
+    const view = renderCreate();
+    await waitFor(() => expect(sent).toHaveLength(1));
+    view.unmount(); // he tapped Work
+    await act(async () => {
+      answerCheck(
+        new Response(JSON.stringify({ ok: true, data: { editId: 'd9', state: 'DRAFT', submittedAt: null, replayed: true } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(nav.hardReplace).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(newKey)).not.toBeNull();
   });
 
   it('reloaded, and the send did not land: the usual restore — rebuild what the phone did not keep', async () => {

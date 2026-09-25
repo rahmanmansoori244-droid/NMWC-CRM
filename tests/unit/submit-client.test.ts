@@ -208,6 +208,22 @@ describe('SubmissionIds — when a retry reuses its id', () => {
     expect(s.doubt).toBe('none');
   });
 
+  it('a refusal of a DIFFERENT payload does not settle the doubt about an earlier send; one of the same payload does', () => {
+    const s = ids();
+    s.idFor({ a: 1 });
+    s.settle({ kind: 'unconfirmed' }); // id-1 may have arrived
+    s.idFor({ a: 2 });
+    s.settle({ kind: 'answered', result: { ok: false, code: 'VALIDATION_FAILED', message: 'x', fields: { f: 'y' } } });
+    expect(s.doubt).toBe('earlier'); // the refusal was about id-2, not id-1 (post-merge review)
+    // A retry of the SAME payload that is refused: that send did not land.
+    const t = ids();
+    t.idFor({ a: 1 });
+    t.settle({ kind: 'unconfirmed' });
+    t.idFor({ a: 1 });
+    t.settle({ kind: 'answered', result: { ok: false, code: 'VALIDATION_FAILED', message: 'x', fields: { f: 'y' } } });
+    expect(t.doubt).toBe('none');
+  });
+
   it('any answer spends the id, ok or not', () => {
     const s = ids();
     s.idFor({ a: 1 });
@@ -314,6 +330,15 @@ describe('the words beside the button', () => {
   it('a first-time success leaves the notice to the form', () => {
     const fresh = { editId: 'e1', state: 'SUBMITTED', submittedAt: null, replayed: false };
     expect(noticeFor({ kind: 'answered', result: { ok: true, data: fresh } })).toBeNull();
+  });
+
+  it('a form-level refusal alone has nothing marked red: it is said itself, not "fix the fields"', () => {
+    expect(
+      noticeFor({
+        kind: 'answered',
+        result: { ok: false, code: 'VALIDATION_FAILED', message: 'Validation failed', fields: { _form: 'No changes to submit.' } },
+      })
+    ).toEqual({ tone: 'failed', text: 'No changes to submit.', retry: false });
   });
 
   it('a field error is said beside the button too — a red notice from the last try must not just vanish', () => {
