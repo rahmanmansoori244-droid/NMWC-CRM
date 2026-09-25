@@ -1050,10 +1050,10 @@ const STEWARD_EN: Guide = {
           html: 'After the customer-master upload finishes, you land on the batch page. The <strong>Recent batches</strong> table on the Import page also lists every batch.',
         },
         {
-          html: 'The page shows six figures: <strong>Total · Clean · Quarantined · Promoted · Rejected · Left to promote</strong>. Rows that need a decision (<strong>REJECTED</strong> and <strong>QUARANTINED</strong>) are always listed <em>first</em> in the table below, each with its reason, so none can hide further down a long file.',
+          html: 'The page shows six figures: <strong>Total · Clean · Quarantined · Promoted · Rejected · Left to promote</strong>. The table below opens on <strong>Needs attention</strong> — every REJECTED and QUARANTINED row. The other views are <strong>Rejected</strong>, <strong>Quarantined</strong>, <strong>Loaded with a warning</strong> and <strong>All rows</strong>; each says how many rows it holds, and <strong>Previous / Next</strong> reach every one of them, however long the file. Each row shows the customer, its branch, route and day, what happened to it in words, and — under <strong>As uploaded</strong> — the values exactly as your sheet had them.',
         },
         {
-          html: 'Review the <strong>QUARANTINED</strong> rows first — bad phone format, an unknown channel or visit-day code, a duplicate phone or CR on a different customer. Fix the source row in your copy of the xlsx and re-import it, or accept that it stays out. Quarantined rows are never promoted.',
+          html: 'Review the <strong>QUARANTINED</strong> rows first — bad phone format, an unknown channel or visit-day code, a duplicate phone or CR on a different customer. When the reason names a customer already in the master (“phone already exists in master on customer X”), open that customer first: it may be the same shop. Fix the source row in your copy of the xlsx and re-import it, or accept that it stays out. Quarantined rows are never promoted, and they cannot be fixed or released inside the app yet.',
         },
         {
           html: 'Click <strong>Promote N clean rows</strong>. On a full master this <strong>runs in passes</strong> — the button reads “Promoting… 1,200 done, 2,100 left” and keeps going by itself. Leave the tab open until it reports <strong>Done</strong>.',
@@ -1065,7 +1065,7 @@ const STEWARD_EN: Guide = {
           html: 'Only <strong>one</strong> customer import can be promoted at a time. A second attempt is refused and names the file already running — finish (or abandon) that one first.',
         },
         {
-          html: 'When it finishes, <strong>reconcile</strong>: <em>Left to promote</em> must be 0, and <em>Promoted + Rejected + Quarantined</em> must equal <em>Total</em>. Then open every <strong>REJECTED</strong> row: a rejected row is <strong>not</strong> in the master. Typical reasons are a branch code that already belongs to another customer, or a Temix code recorded on a different customer. Correct the source and re-import those customers.',
+          html: 'When it finishes, <strong>reconcile</strong>: <em>Left to promote</em> must be 0, and <em>Promoted + Rejected + Quarantined</em> must equal <em>Total</em>. Then open the <strong>Rejected</strong> view and read every row: a rejected row is <strong>not</strong> in the master. Typical reasons are a branch code that already belongs to another customer, or a Temix code recorded on a different customer. Correct the source and re-import those customers. Then open <strong>Loaded with a warning</strong>: those customers are in the master, but something in the row was substituted or not applied — a route or region that was not found, or, for a customer already linked to Temix, branch values that the import does not change. Change those branch values on the customer’s page; a branch the master does not have yet cannot be added in the app.',
         },
         {
           html: 'Record the six figures (a screenshot of the batch page is enough) as the evidence that the load was checked. The load is complete only when every rejected and quarantined row is resolved or formally accepted as excluded.',
@@ -1261,8 +1261,12 @@ const STEWARD_EN: Guide = {
         headers: ['Situation', 'What to do'],
         rows: [
           [
-            '"Cannot promote — quarantined rows"',
-            'Open the batch, fix or reject the QUARANTINED rows, then re-promote.',
+            '"Branch not updated" on a row that loaded',
+            'The customer is linked to Temix, so the import refreshed its customer fields only and left its branches alone. Change the branch values on the customer’s page. A branch the master does not have cannot be added in the app yet.',
+          ],
+          [
+            '"phone already exists in master on customer X"',
+            'Open customer X. If it is the same shop, the held-back row is not needed. If it is a different shop sharing the owner’s phone, it cannot be loaded with that phone today — note it and raise it with the data owner.',
           ],
           [
             '"Phone now belongs to X (Y) — reject and ask the salesman"',

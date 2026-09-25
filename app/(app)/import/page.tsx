@@ -106,6 +106,7 @@ export default async function ImportPage() {
                 <th className="px-4 py-2 font-medium">Clean</th>
                 <th className="px-4 py-2 font-medium">Quarantined</th>
                 <th className="px-4 py-2 font-medium">Promoted</th>
+                <th className="px-4 py-2 font-medium">Rejected</th>
                 <th></th>
               </tr>
             </thead>
@@ -123,6 +124,7 @@ export default async function ImportPage() {
                   <td className="px-4 py-2 text-right text-emerald-700">{b.cleanRows}</td>
                   <td className="px-4 py-2 text-right text-amber-700">{b.quarantinedRows}</td>
                   <td className="px-4 py-2 text-right text-blue-700">{b.promotedRows}</td>
+                  <td className="px-4 py-2 text-right text-red-700">{b.rejectedRows}</td>
                   <td className="px-4 py-2 text-right">
                     <Link
                       href={`/import/${b.id}`}
@@ -135,7 +137,7 @@ export default async function ImportPage() {
               ))}
               {batches.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-4 py-6 text-center text-xs text-slate-400">
+                  <td colSpan={11} className="px-4 py-6 text-center text-xs text-slate-400">
                     No imports yet.
                   </td>
                 </tr>

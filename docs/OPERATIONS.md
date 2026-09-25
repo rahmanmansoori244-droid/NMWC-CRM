@@ -508,7 +508,25 @@ The rotation is audit-logged.
 ### Re-import the master after a bulk fix
 1. Sign in as Steward.
 2. `/import` → upload xlsx → review batch → Promote.
-3. Existing customers (matching by `cust_code`) are upserted.
+3. Existing customers (matching by `cust_code`) are upserted — but not all in the same way.
+   Read this before re-importing (checked against `services/imports.ts` on 2026-09-25, item 20):
+   - **A customer that already has a Temix code** — every go-live customer — takes the
+     *refresh* lane. Only the Temix-owned fields (Temix code, payment terms, credit figures)
+     are refreshed. Its branches are **neither created nor changed**, so a corrected branch
+     row lands nothing. The batch page lists such rows under **Loaded with a warning**
+     ("Branch not updated") when their branch values differ from the master. Change those
+     values on the customer's page; a missing branch cannot be added in the app yet.
+   - The refresh also flips each such customer from UPLOADED to **SYNCED**, as though Temix
+     had confirmed the last batch. Do not re-import the full master while a Temix batch is
+     waiting for its acknowledgement.
+   - **A customer with no Temix code** takes the full lane. Upload **all** of its branch rows
+     together: its status and channel are worked out from the rows in the file, so a file
+     carrying only one CLOSED branch closes the customer. Each branch row's name, address,
+     route and region overwrite the master's, and a blank address or route is replaced by a
+     placeholder ("Address pending", the UNASSIGNED route) rather than kept.
+   - **Always include `branch_code`.** A row without one is numbered by its position among
+     that customer's clean rows in the file (X-01, X-02 …), so a file with only some of a
+     customer's rows can overwrite a sibling branch.
 
 ### Export the cleaned master for ERP
 1. Sign in as Steward (or Manager).

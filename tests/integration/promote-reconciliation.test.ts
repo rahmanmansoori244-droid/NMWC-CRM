@@ -38,7 +38,7 @@ vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {}
 const HEADERS = [
   'cust_code', 'cust_name', 'branch_code', 'sales_region', 'route', 'address',
   'phone', 'contact_person', 'cr_no', 'payment_terms', 'credit_limit',
-  'payment_term_days', 'temix_code',
+  'payment_term_days', 'temix_code', 'day_of_visit',
 ] as const;
 type Row = Partial<Record<(typeof HEADERS)[number], string | number>>;
 
@@ -84,6 +84,8 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
   }
 
   beforeAll(async () => {
+    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     imports = await import('@/services/imports');
     await cleanupAll().catch(() => {}); // crash-idempotency from a previous run
@@ -364,8 +366,11 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     const rows = await prisma.importRow.findMany({ where: { batchId: batch1 } });
     const urRow = rows.find((r) => (r.parsed as { custCode?: string })?.custCode === `${P}-UR`);
     expect(urRow?.state).toBe('PROMOTED');
-    const issues = (urRow?.issues as { field: string; message: string }[]) ?? [];
-    expect(issues.some((i) => i.field === '_resolve')).toBe(true); // warning surfaced
+    // The warning says where the branch went. It used to end "; assigned to
+    // UNASSIGNED" — false here, because the route resolved (item 20).
+    expect(urRow?.issues).toEqual([
+      { field: '_resolve', message: 'region "ZZNOWHERE" not found — used the region of route "ZZMCT-R01"' },
+    ]);
   });
 
   it('F-17: unknown ROUTE falls back to the UNASSIGNED pair (trigger-consistent), row PROMOTED with warning', async () => {
@@ -376,6 +381,12 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(unRoute).toBeTruthy();
     expect(cust!.branches[0].routeId).toBe(unRoute!.id);
     expect(cust!.branches[0].regionId).toBe(unRoute!.regionId); // region+route consistent
+    const rows = await prisma.importRow.findMany({ where: { batchId: batch1 } });
+    const xrRow = rows.find((r) => (r.parsed as { custCode?: string })?.custCode === `${P}-XR`);
+    expect(xrRow?.state).toBe('PROMOTED');
+    expect(xrRow?.issues).toEqual([
+      { field: '_resolve', message: 'route "ZZNO-R99" not found — branch parked in UNASSIGNED' },
+    ]);
   });
 
   it('identity model: bare-suffix branch codes are composed custcode-branchcode (no cross-customer collision)', async () => {
@@ -549,11 +560,139 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(up.ok).toBe(true);
     await promoteFully(imports, (up as { ok: true; data: { batchId: string } }).data.batchId);
 
-    const after = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: code } });
+    const after = await prisma.customer.findUniqueOrThrow({
+      where: { nmwcCode: code },
+      include: { branches: true },
+    });
     // CRM-owned identity is NOT clobbered by an inbound ERP refresh. That is the
     // field-ownership rule the narrow lane exists to enforce, and narrowing the
     // lane test must not have weakened it.
     expect(after.legalName).toBe('ZZ CRM Owned Name');
+    // Nor does it add the branch the row described — and the row now SAYS so,
+    // instead of reading PROMOTED as if the branch had landed (item 20).
+    expect(after.branches).toEqual([]);
+    const [row] = await prisma.importRow.findMany({
+      where: { batchId: (up as { ok: true; data: { batchId: string } }).data.batchId },
+    });
+    expect(row.state).toBe('PROMOTED');
+    expect(row.issues).toEqual([
+      {
+        field: '_lane',
+        message: `branch ${code}-01 is not in the master and was not added — a Temix refresh updates customer fields only`,
+      },
+    ]);
+  });
+
+  it('item 20: a refresh row names the branch values it did not apply; a row that matches, or leaves a cell blank, says nothing', async () => {
+    const code = `${P}-XW2`;
+    const cust = await prisma.customer.create({
+      data: { nmwcCode: code, legalName: 'ZZ Refresh Two', temixCode: code, paymentTerms: 'CASH' },
+    });
+    for (const [n, day] of [['01', 'SUN'], ['02', 'TUE']] as const) {
+      await prisma.branch.create({
+        data: {
+          customerId: cust.id,
+          branchCode: `${code}-${n}`,
+          branchName: `Branch ${n}`,
+          address: `Way 3${n}, Muscat`,
+          regionId: ids.region,
+          routeId: ids.route,
+          dayOfVisit: day,
+        },
+      });
+    }
+    const fd = new FormData();
+    fd.set(
+      'file',
+      new File(
+        [
+          await sheetBuf([
+            {
+              cust_code: code,
+              cust_name: 'ZZ Refresh Two',
+              branch_code: `${code}-01`,
+              sales_region: 'ZZMCT',
+              route: 'ZZMCT-R01',
+              address: 'Way 99, Muscat', // differs
+              day_of_visit: 'MON', // differs
+              temix_code: code,
+            },
+            {
+              cust_code: code,
+              cust_name: 'ZZ Refresh Two',
+              branch_code: `${code}-02`,
+              sales_region: 'ZZMCT',
+              route: 'ZZMCT-R01',
+              address: 'Way 302, Muscat', // the same
+              // day_of_visit left blank: a blank asks for nothing, so it is no difference
+              temix_code: code,
+            },
+          ]),
+        ],
+        'refresh2.xlsx',
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      )
+    );
+    const up = await imports.uploadCustomerMasterAction(fd);
+    expect(up.ok).toBe(true);
+    const batchId = (up as { ok: true; data: { batchId: string } }).data.batchId;
+    await promoteFully(imports, batchId);
+
+    const rows = await prisma.importRow.findMany({ where: { batchId }, orderBy: { rowNumber: 'asc' } });
+    expect(rows.map((r) => r.state)).toEqual(['PROMOTED', 'PROMOTED']);
+    expect(rows[0].issues).toEqual([
+      {
+        field: '_lane',
+        message: `branch ${code}-01: address, visit day in this row differ from the master and were not applied — a Temix refresh updates customer fields only`,
+      },
+    ]);
+    expect(rows[1].issues).toBeNull();
+    // The lane's contract is unchanged: nothing on the branch moved.
+    const b1 = await prisma.branch.findUniqueOrThrow({ where: { branchCode: `${code}-01` } });
+    expect([b1.address, b1.dayOfVisit]).toEqual(['Way 301, Muscat', 'SUN']);
+  });
+
+  it('item 20: a go-live row rejected for payment terms names the real reason', async () => {
+    // Every go-live row carries temix_code; the customer it meets may not. The
+    // rejection used to say "the row carries no temix_code" — untrue for all
+    // 1,833 rows rejected this way on 2026-09-23.
+    const code = `${P}-GLPT`;
+    await prisma.customer.create({
+      data: { nmwcCode: code, legalName: 'ZZ Go-live Terms', paymentTerms: 'CREDIT', creditLimit: 100, paymentTermDays: 30 },
+    });
+    const fd = new FormData();
+    fd.set(
+      'file',
+      new File(
+        [
+          await sheetBuf([
+            {
+              cust_code: code,
+              cust_name: 'ZZ Go-live Terms',
+              branch_code: `${code}-01`,
+              sales_region: 'ZZMCT',
+              route: 'ZZMCT-R01',
+              address: 'Way 40, Muscat',
+              payment_terms: 'CASH',
+              temix_code: code,
+            },
+          ]),
+        ],
+        'glpt.xlsx',
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      )
+    );
+    const up = await imports.uploadCustomerMasterAction(fd);
+    expect(up.ok).toBe(true);
+    const batchId = (up as { ok: true; data: { batchId: string } }).data.batchId;
+    await promoteFully(imports, batchId);
+    const [row] = await prisma.importRow.findMany({ where: { batchId } });
+    expect(row.state).toBe('REJECTED');
+    const message = (row.issues as { message: string }[])[0].message;
+    expect(message).toMatch(/the customer has no Temix code on record/);
+    expect(message).not.toMatch(/row carries no temix_code/);
+    const after = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: code } });
+    expect(after.paymentTerms).toBe('CREDIT');
   });
 
 });

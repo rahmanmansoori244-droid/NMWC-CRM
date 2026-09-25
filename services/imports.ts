@@ -384,6 +384,7 @@ async function uploadAccountMasterCore(
       }
 
       let ownedRouteId: string | null = null;
+      let ownedRouteCode: string | null = null;
       if (role === Role.SALESMAN) {
         if (!routeCode) {
           issues.push({ sheet: 'Users', row: sheetRow, message: 'salesman needs route_code' });
@@ -398,35 +399,8 @@ async function uploadAccountMasterCore(
           });
           continue;
         }
-        // F-18: audit any silent ownedRoute reassignment so the Manager has a
-        // forensic trail of "salesman.X used to own this route, salesman.Y
-        // owns it now". Previously the displaced owner was detached without
-        // any record, leaving a confused salesman with an empty /today.
-        const displacedOwners = await prisma.user.findMany({
-          where: { ownedRouteId: route.id, NOT: { username } },
-          select: { id: true, username: true },
-        });
-        if (displacedOwners.length > 0) {
-          await prisma.user.updateMany({
-            where: { ownedRouteId: route.id, NOT: { username } },
-            data: { ownedRouteId: null },
-          });
-          // A loop, not createMany: writeAudit is the only writer of ip and
-          // userAgent and it writes one row at a time. That costs nothing here —
-          // User.ownedRouteId is @unique, so at most ONE user can own a route
-          // and this list is 0 or 1 rows by construction.
-          for (const u of displacedOwners) {
-            await writeAudit(null, env, {
-              action: 'REASSIGN',
-              entityType: 'User',
-              entityId: u.id,
-              before: { ownedRouteCode: routeCode } as unknown as Prisma.InputJsonValue,
-              after: { ownedRouteCode: null } as unknown as Prisma.InputJsonValue,
-              reason: `route ${routeCode} reassigned to ${username} via import`,
-            });
-          }
-        }
         ownedRouteId = route.id;
+        ownedRouteCode = routeCode;
       }
 
       // QA-010 / QA-011: only set passwordHash + role on INSERT or when
@@ -581,10 +555,49 @@ async function uploadAccountMasterCore(
       if (ownedRouteId) data.ownedRoute = { connect: { id: ownedRouteId } };
 
       try {
-        const user = await prisma.user.upsert({
-          where: { username },
-          update,
-          create: data,
+        // F-18: a salesman row takes its route from whoever owns it now, and the
+        // move is audited so the Manager can see "salesman.X used to own this
+        // route, salesman.Y owns it now".
+        //
+        // It happens HERE, with the account write, and not where the route is
+        // resolved. It used to run before the row's remaining checks, so a row
+        // then skipped for a missing password or a bad region code — or whose
+        // upsert failed on a duplicate email — had already taken the route off
+        // its owner and written an audit row naming a user that was never
+        // created: the route was left with no salesman at all. In one
+        // transaction the two stand or fall together.
+        const user = await prisma.$transaction(async (tx) => {
+          if (ownedRouteId) {
+            const displacedOwners = await tx.user.findMany({
+              where: { ownedRouteId, NOT: { username } },
+              select: { id: true },
+            });
+            if (displacedOwners.length > 0) {
+              await tx.user.updateMany({
+                where: { ownedRouteId, NOT: { username } },
+                data: { ownedRouteId: null },
+              });
+              // A loop, not createMany: writeAudit is the only writer of ip and
+              // userAgent and it writes one row at a time. That costs nothing
+              // here — User.ownedRouteId is @unique, so at most ONE user can own
+              // a route and this list is 0 or 1 rows by construction.
+              for (const u of displacedOwners) {
+                await writeAudit(tx, env, {
+                  action: 'REASSIGN',
+                  entityType: 'User',
+                  entityId: u.id,
+                  before: { ownedRouteCode } as unknown as Prisma.InputJsonValue,
+                  after: { ownedRouteCode: null } as unknown as Prisma.InputJsonValue,
+                  reason: `route ${ownedRouteCode} reassigned to ${username} via import`,
+                });
+              }
+            }
+          }
+          return tx.user.upsert({
+            where: { username },
+            update,
+            create: data,
+          });
         });
         // Audit any sensitive change. Not swallowed, and deliberately so: these
         // sit inside the per-row try/catch, so a failed insert becomes a
@@ -690,6 +703,14 @@ async function uploadAccountMasterCore(
 // Strategy: parse-only (rows go into ImportRow as PENDING). Steward then
 // promotes a batch when ready. v1.1 will add an inline review screen; for
 // now, we expose a "promote" action that creates customers in bulk.
+
+/** "customer X", or "customers X, Y, Z and 4 more" — never an unbounded list in a row's issues. */
+function heldBackBy(codes: string[]): string {
+  const unique = [...new Set(codes)];
+  if (unique.length === 1) return `customer ${unique[0]}`;
+  const shown = unique.slice(0, 3).join(', ');
+  return unique.length > 3 ? `customers ${shown} and ${unique.length - 3} more` : `customers ${shown}`;
+}
 
 export async function uploadCustomerMasterAction(
   formData: FormData
@@ -843,10 +864,15 @@ async function uploadCustomerMasterCore(
         message: `duplicate phone in this file (also rows ${phoneOtherRows.join(', ')})`,
       });
     }
-    if (phone && (masterPhones.get(phone) ?? []).some((code) => code !== custCode)) {
+    // These two used to end "review in /duplicates". That screen cannot help: it
+    // pairs customers already in the master, never a held-back row, and it does
+    // not treat a shared phone as a signal at all. Name the customer instead, so
+    // the Steward can open it.
+    const phoneOwners = phone ? (masterPhones.get(phone) ?? []).filter((code) => code !== custCode) : [];
+    if (phoneOwners.length > 0) {
       issues.push({
         field: 'phone',
-        message: 'phone already exists in master — review in /duplicates',
+        message: `phone already exists in master on ${heldBackBy(phoneOwners)}`,
       });
     }
     const crOtherRows = crNorm
@@ -858,10 +884,11 @@ async function uploadCustomerMasterCore(
         message: `duplicate CR in this file (also rows ${crOtherRows.join(', ')})`,
       });
     }
-    if (crNorm && (masterCrs.get(crNorm) ?? []).some((code) => code !== custCode)) {
+    const crOwners = crNorm ? (masterCrs.get(crNorm) ?? []).filter((code) => code !== custCode) : [];
+    if (crOwners.length > 0) {
       issues.push({
         field: 'cr_no',
-        message: 'CR already exists in master — review in /duplicates',
+        message: `CR already exists in master on ${heldBackBy(crOwners)}`,
       });
     }
     // F-12: strict whitelist on payment terms — silently defaulting `Crdit`
@@ -1048,6 +1075,77 @@ const PROMOTE_LEASE_MS = 90_000;
  * batch quickly instead of holding it for the full lease.
  */
 const PROMOTE_HANDOFF_GRACE_MS = 20_000;
+
+/**
+ * For a group promoted on the Temix refresh lane: add a '_lane' warning to each
+ * row whose branch is not in the master, or whose branch values differ from the
+ * master's, since that lane applied none of them. A value the row left blank
+ * is not a difference — it asked for nothing. Advisory: the caller ignores a
+ * failure here, exactly as it does for the '_resolve' warnings.
+ */
+async function noteRefreshSkippedBranches(
+  custCode: string,
+  rowIds: string[],
+  parsed: Array<{
+    branchName: string | null;
+    routeCode: string | null;
+    address: string | null;
+    dayOfVisit?: string | null;
+    customerStatus?: string | null;
+  }>,
+  resolved: Array<{
+    branchCode: string;
+    branchName: string;
+    routeId: string;
+    address: string;
+    dayOfVisit: string | null;
+    status: string | null;
+  }>
+): Promise<void> {
+  const stored = await prisma.branch.findMany({
+    where: {
+      branchCode: { in: resolved.map((r) => r.branchCode) },
+      deletedAt: null,
+      customer: { nmwcCode: custCode },
+    },
+    select: {
+      branchCode: true,
+      branchName: true,
+      routeId: true,
+      address: true,
+      dayOfVisit: true,
+      status: true,
+    },
+  });
+  const byCode = new Map(stored.map((b) => [b.branchCode, b]));
+  const tail = 'a Temix refresh updates customer fields only';
+  for (const [i, rowId] of rowIds.entries()) {
+    const want = resolved[i];
+    const p = parsed[i];
+    if (!want || !p) continue;
+    const have = byCode.get(want.branchCode);
+    let message: string | null = null;
+    if (!have) {
+      message = `branch ${want.branchCode} is not in the master and was not added — ${tail}`;
+    } else {
+      const differs: string[] = [];
+      if (p.branchName && want.branchName !== have.branchName) differs.push('branch name');
+      if (p.address && want.address !== have.address) differs.push('address');
+      if (p.routeCode && want.routeId !== have.routeId) differs.push('route');
+      if (p.dayOfVisit && want.dayOfVisit !== have.dayOfVisit) differs.push('visit day');
+      if (p.customerStatus && want.status !== have.status) differs.push('status');
+      if (differs.length > 0) {
+        message = `branch ${want.branchCode}: ${differs.join(', ')} in this row differ from the master and were not applied — ${tail}`;
+      }
+    }
+    if (message) {
+      await prisma.importRow.update({
+        where: { id: rowId },
+        data: { issues: [{ field: '_lane', message }] as Prisma.InputJsonValue },
+      });
+    }
+  }
+}
 
 export async function promoteCustomerBatchAction(
   formData: FormData
@@ -1276,12 +1374,19 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // (regions/routes) is administered by the Steward and is not mutated by this
         // loop, so a snapshot taken at the top of the slice is authoritative for it.
         const region = p.regionCode ? (regionByCode.get(p.regionCode.toUpperCase()) ?? null) : null;
-        if (p.regionCode && !region) {
-          groupResolveErrors.push(`region "${p.regionCode}" not found`);
-        }
         const route = p.routeCode ? (routeByCode.get(p.routeCode.toUpperCase()) ?? null) : null;
+        // Each warning says where the branch actually went. They all used to get
+        // "; assigned to UNASSIGNED" appended when written, which was false
+        // whenever the route resolved: the branch went to that route's region.
+        if (p.regionCode && !region) {
+          groupResolveErrors.push(
+            route
+              ? `region "${p.regionCode}" not found — used the region of route "${p.routeCode}"`
+              : `region "${p.regionCode}" not found — branch parked in UNASSIGNED`
+          );
+        }
         if (p.routeCode && !route) {
-          groupResolveErrors.push(`route "${p.routeCode}" not found`);
+          groupResolveErrors.push(`route "${p.routeCode}" not found — branch parked in UNASSIGNED`);
         }
         // QA P-02 fix: the fallback previously used the UNASSIGNED ROUTE's id as a
         // REGION id, so the B-19 region-consistency trigger (Branch.regionId must
@@ -1306,7 +1411,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           // satisfy the B-19 trigger) so the steward can add the missing route.
           effectiveRouteId = unassignedRoute!.id;
           effectiveRegionId = unassignedRoute!.regionId;
-          if (p.regionCode && region) {
+          // Only when there was no route at all: an unknown route has its own
+          // warning above, and "provided without a route" would be untrue.
+          if (p.regionCode && region && !p.routeCode) {
             groupResolveErrors.push(
               `region "${p.regionCode}" was provided without a route — branch parked in UNASSIGNED; add a route to keep the region`
             );
@@ -1650,8 +1757,13 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // never nulls creditLimit/paymentTermDays, so the flip would leave a CASH
                 // customer carrying a live credit limit that lib/temix.ts then suppresses
                 // on export -- the CRM and the ERP would disagree, silently.
+                // Two ways to arrive here, and the message used to name only one. A
+                // go-live row DOES carry a temix_code; it is the stored customer that
+                // has none to match it against, so the refresh lane was closed to it.
                 throw new Error(
-                  'CROSSWALK:payment_terms disagrees with the terms already recorded for this customer and the row carries no temix_code — refresh from Temix, or move the terms through the credit chain; steward review'
+                  first.temixCode
+                    ? 'CROSSWALK:payment_terms disagrees with the terms already recorded for this customer, and the customer has no Temix code on record for this row to refresh from — move the terms through the credit chain; steward review'
+                    : 'CROSSWALK:payment_terms disagrees with the terms already recorded for this customer and the row carries no temix_code — refresh from Temix, or move the terms through the credit chain; steward review'
                 );
               }
               if (!existing && pt === 'CREDIT' && !first.temixCode) {
@@ -1813,6 +1925,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           { timeout: 20_000, maxWait: 10_000 }
         );
         promoted += g.rowIds.length;
+        if (refreshedRow) {
+          // The refresh lane writes customer-level fields only; it never creates or
+          // changes a branch. That is its contract, but it used to be invisible: a
+          // Steward who fixed a held-back branch row and uploaded it again saw the
+          // row PROMOTED and the counts balance, while the branch was never
+          // written. Say so on each row whose branch data did not land.
+          await noteRefreshSkippedBranches(custCode, g.rowIds, g.parsed, resolvedBranches).catch(
+            () => undefined
+          );
+        }
         if (groupResolveErrors.length > 0 && !refreshedRow) {
           // F-17: surface the phantom-region warning in the row's issues so the
           // Steward can fix the reference data and re-run the import. Row stays
@@ -1825,7 +1947,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               data: {
                 issues: groupResolveErrors.map((m) => ({
                   field: '_resolve',
-                  message: `${m}; assigned to UNASSIGNED`,
+                  message: m,
                 })) as Prisma.InputJsonValue,
               },
             })
