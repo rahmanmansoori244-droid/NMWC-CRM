@@ -855,6 +855,57 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(JSON.stringify(audit?.after)).toContain(reason);
   });
 
+  it("a manager's direct write: a typed point clears the LIVE accuracy too, and marks only its own branch", async () => {
+    type Change = { field: string; before: unknown; after: unknown; gpsSource?: string; gpsManualReason?: string };
+    const customerId = ids.customerIds[0]!;
+    const b1 = ids.branchIds[`${sfx}001`]!;
+    // A second branch with a device fix on file, so there is an accuracy to clear.
+    const second = await prisma.branch.create({
+      data: {
+        customerId,
+        branchCode: `${sfx}001-02`,
+        branchName: 'Second shop',
+        regionId: ids.regionId,
+        routeId: ids.routeId,
+        address: 'Way 1200, Ruwi',
+        gpsLat: 23.55,
+        gpsLng: 58.35,
+        gpsAccuracy: 12,
+      },
+    });
+    const reason = 'Inside a concrete arcade, no satellite fix; used the landlord pin.';
+    asManager();
+    const res = await edits.submitEditAction({
+      customerId,
+      isDraft: false,
+      customer: {},
+      branches: [
+        // Branch 1: a device fix. Branch 2: typed in by hand.
+        { branchId: b1, gpsLat: 23.62, gpsLng: 58.42, gpsAccuracy: 5, gpsCapturedAt: new Date('2026-09-13T08:00:00.000Z') },
+        { branchId: second.id, gpsLat: 23.5555, gpsLng: 58.3555, gpsCapturedAt: new Date('2026-09-13T08:00:00.000Z'), gpsManualReason: reason },
+      ],
+    });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.state).toBe('APPROVED'); // Manager: direct write, no queue
+
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: res.data.editId } });
+    const changes = row.fieldChanges as Change[];
+    const of = (branchId: string) => changes.filter((c) => c.field.startsWith(`branch.${branchId}.`));
+    // Only the typed branch is marked.
+    expect(of(second.id).length).toBeGreaterThan(0);
+    for (const c of of(second.id)) expect(c.gpsSource, c.field).toBe('MANUAL');
+    for (const c of of(b1)) expect(c.gpsSource, c.field).toBeUndefined();
+    expect(of(second.id).find((c) => c.field.endsWith('.gpsAccuracy'))).toMatchObject({ before: 12, after: null });
+
+    // The LIVE branches match what the record says.
+    const live2 = await prisma.branch.findUniqueOrThrow({ where: { id: second.id } });
+    expect(live2.gpsLat).toBeCloseTo(23.5555, 4);
+    expect(live2.gpsAccuracy).toBeNull();
+    const live1 = await prisma.branch.findUniqueOrThrow({ where: { id: b1 } });
+    expect(live1.gpsAccuracy).toBe(5);
+  });
+
   // ── 9. a typed-in point on a NEW-customer request (item 41) ───────────────
   it('a new-customer draft keeps a typed-in point as a marker, rebuilt on every save so it never goes stale', async () => {
     const creates = await import('@/services/creates');
@@ -867,6 +918,11 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
       customer: { legalName: `ZZ Manual GPS ${sfx}`, paymentTerms: 'CASH' as const },
       branches: [{ branchName: 'Main', gpsLat: 23.61, gpsLng: 58.41, ...branch }],
     });
+
+    // A reason too short to say anything is refused in the branch's GPS slot.
+    const short = await creates.submitCreateAction(payload({ gpsManualReason: 'gps' }));
+    expect(short.ok).toBe(false);
+    if (!short.ok) expect(Object.keys(short.fields ?? {})).toEqual(['branch.0.gps']);
 
     const first = await creates.submitCreateAction(payload({ gpsManualReason: reason }));
     expect(first.ok, JSON.stringify(first)).toBe(true);

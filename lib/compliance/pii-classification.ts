@@ -208,7 +208,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'CustomerEdit.fieldChanges': {
     subject: 'customer',
     kind: 'snapshot',
-    note: 'before/after values of the customer and branch fields above — a second copy of the same personal data; plus, for a GPS point typed in by hand, the salesman’s own free-text reason (item 41), which the APPROVE audit row also copies',
+    note: 'before/after values of the customer and branch fields above — a second copy of the same personal data; plus, for a GPS point typed in by hand, the salesman’s own free-text reason (item 41), which the UPDATE APPROVE audit row also copies',
   },
   'CustomerEdit.attachmentChanges': { subject: 'none', kind: 'image reference' },
   'CustomerEdit.isReactivation': { subject: 'none' },
@@ -327,7 +327,11 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
     kind: 'snapshot',
     note: 'full field snapshot — legal name, CR number, phones, contact person, notes, address, GPS. Cannot be edited or deleted except in an owner-session maintenance transaction (migrations 20260914150000 + 20260914160000)',
   },
-  'AuditLog.after': { subject: 'customer', kind: 'snapshot', note: 'as above' },
+  'AuditLog.after': {
+    subject: 'customer',
+    kind: 'snapshot',
+    note: 'as above; an UPDATE approval also copies CustomerEdit.fieldChanges here, including a salesman’s free-text manual-GPS reason (item 41)',
+  },
   'AuditLog.reason': { subject: 'customer', kind: 'free text' },
   'AuditLog.ip': { subject: 'employee', kind: 'device', note: 'source IP of the member of staff' },
   'AuditLog.userAgent': { subject: 'employee', kind: 'device', note: 'browser and device string' },

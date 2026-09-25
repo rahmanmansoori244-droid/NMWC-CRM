@@ -55,6 +55,27 @@ export const gpsManualReasonSchema = z
       .max(500, 'Keep the reason under 500 characters.')
   );
 
+/**
+ * UPDATE, before the diff: takes the reason off a branch payload (it is not a
+ * Branch column) and returns it ONLY when the typed point actually moves — either
+ * coordinate. Then the payload's accuracy is cleared: a typed point has none, and
+ * the previous fix's ±N m must not stay beside coordinates it never described.
+ * A reason with an unmoved point returns null and changes nothing else.
+ */
+export function takeManualGpsReason(
+  live: { gpsLat: number | null; gpsLng: number | null },
+  payload: Record<string, unknown>
+): string | null {
+  const reason = typeof payload.gpsManualReason === 'string' ? payload.gpsManualReason : null;
+  delete payload.gpsManualReason;
+  const moves =
+    (payload.gpsLat !== undefined && payload.gpsLat !== live.gpsLat) ||
+    (payload.gpsLng !== undefined && payload.gpsLng !== live.gpsLng);
+  if (!reason || !moves) return null;
+  payload.gpsAccuracy = null;
+  return reason;
+}
+
 /** UPDATE: mark this branch's gps entries (already built by diffFields) as typed. */
 export function markManualGps(branchChanges: FieldChange[], reason: string): void {
   for (const c of branchChanges) {

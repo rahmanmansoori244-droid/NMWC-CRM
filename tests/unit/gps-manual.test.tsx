@@ -21,8 +21,10 @@ import {
   manualGpsReasonForBranch,
   manualGpsReasonForPoint,
   markManualGps,
+  takeManualGpsReason,
   type FieldChange,
 } from '@/lib/gps-manual';
+import { enrichmentFormRendersError, surfaceUnrenderedErrors } from '@/lib/form-errors';
 import { submitEditSchema } from '@/lib/validation/edit';
 import { submitCreateSchema } from '@/lib/validation/create';
 
@@ -72,6 +74,88 @@ describe('41 — the reason, as stored', () => {
   });
 });
 
+describe('41 — which submits carry the marker (services/edits.ts, per branch)', () => {
+  const live = { gpsLat: 23.588, gpsLng: 58.3829 };
+  const typed = (over: Record<string, unknown>) => ({
+    branchId: 'b1',
+    gpsLat: 23.588,
+    gpsLng: 58.3829,
+    // A typed point always carries a FRESH capture time (GpsCaptureButton).
+    gpsCapturedAt: new Date('2026-09-25T08:00:00.000Z'),
+    gpsManualReason: REASON,
+    ...over,
+  });
+
+  it('a move of EITHER coordinate returns the reason and clears the accuracy', () => {
+    for (const over of [{ gpsLat: 23.6012 }, { gpsLng: 58.4021 }, { gpsLat: 23.6012, gpsLng: 58.4021 }]) {
+      const payload: Record<string, unknown> = typed(over);
+      expect(takeManualGpsReason(live, payload), JSON.stringify(over)).toBe(REASON);
+      expect(payload.gpsAccuracy).toBeNull();
+      expect('gpsManualReason' in payload).toBe(false);
+    }
+  });
+
+  it('a reason with the point unchanged returns nothing and touches nothing but the reason', () => {
+    // Only the capture time differs — as it always does for a re-typed point.
+    const payload: Record<string, unknown> = typed({});
+    expect(takeManualGpsReason(live, payload)).toBeNull();
+    expect('gpsAccuracy' in payload).toBe(false);
+    expect('gpsManualReason' in payload).toBe(false);
+  });
+
+  it('a moved point with no reason is a device fix: nothing returned, accuracy kept', () => {
+    const payload: Record<string, unknown> = { branchId: 'b1', gpsLat: 23.7, gpsLng: 58.5, gpsAccuracy: 6 };
+    expect(takeManualGpsReason(live, payload)).toBeNull();
+    expect(payload.gpsAccuracy).toBe(6);
+  });
+
+  it('a first point on a branch with none on file counts as a move', () => {
+    expect(takeManualGpsReason({ gpsLat: null, gpsLng: null }, typed({}))).toBe(REASON);
+  });
+});
+
+describe('41 — the enrichment form shows every error the server returns', () => {
+  it('a branch error with no slot on the form surfaces at the top', () => {
+    const fields = { 'branch.b1.address': 'Address is too short.', 'customer.contactPerson': 'Too short.' };
+    expect(surfaceUnrenderedErrors(fields, enrichmentFormRendersError)._form).toBe('Address is too short.');
+  });
+
+  it("the branch's gps slot and customer fields render in place; an existing _form is kept", () => {
+    expect(enrichmentFormRendersError('branch.b1.gps')).toBe(true);
+    expect(enrichmentFormRendersError('customer.primaryPhone')).toBe(true);
+    expect(enrichmentFormRendersError('branch.b1.gpsManualReason')).toBe(false);
+    const inPlace = { 'branch.b1.gps': 'Latitude must be inside Oman (≥16°N).' };
+    expect(surfaceUnrenderedErrors(inPlace, enrichmentFormRendersError)).toEqual(inPlace);
+    const both = { _form: 'No changes to submit.', 'branch.b1.status': 'x' };
+    expect(surfaceUnrenderedErrors(both, enrichmentFormRendersError)._form).toBe('No changes to submit.');
+  });
+
+  it('the form uses them, and shows the gps error beside the GPS button', () => {
+    const src = read('app/(app)/customers/[id]/edit/EnrichmentForm.tsx');
+    expect(src).toMatch(/setErrors\(surfaceUnrenderedErrors\(result\.fields, enrichmentFormRendersError\)\)/);
+    expect(src).toMatch(/<GpsCaptureButton[\s\S]{0,300}?\/>\s*\{errors\[`branch\.\$\{b\.id\}\.gps`\] && \(/);
+  });
+});
+
+describe('41 — what the salesman sees is what is submitted', () => {
+  it('a restored local draft remounts the GPS buttons, once per draft', () => {
+    const src = read('app/(app)/customers/[id]/edit/EnrichmentForm.tsx');
+    expect(src).toMatch(/<GpsCaptureButton\s+key=\{restoreGeneration\}/);
+    expect(src).toMatch(/if \(d\.branchStates\) \{\s*setBranchStates\([^;]*;\s*setRestoreGeneration\(\(g\) => g \+ 1\);/);
+    // Once per draft key: a mid-session re-render must not re-restore and remount.
+    expect(src).toMatch(/if \(restoredForKeyRef\.current === draftKey\) return;\s*restoredForKeyRef\.current = draftKey;/);
+  });
+
+  it('a resumed new-customer request keeps the Manual badge and its reason', () => {
+    expect(read('app/(app)/customers/new/page.tsx')).toMatch(
+      /gpsManualReason: manualGpsReasonForPoint\(edit\.fieldChanges, b\.gpsLat, b\.gpsLng\)/
+    );
+    expect(read('app/(app)/customers/new/CreateCustomerForm.tsx')).toMatch(
+      /\.\.\.\(b\.gpsManualReason \? \{ isManual: true, manualReason: b\.gpsManualReason \} : \{\}\)/
+    );
+  });
+});
+
 describe('41 — the marker', () => {
   const changes = (): FieldChange[] => [
     { field: 'customer.contactRole', before: 'Owner', after: 'Partner' },
@@ -93,6 +177,21 @@ describe('41 — the marker', () => {
     expect(manualGpsReasonForBranch(list, 'b1')).toBe(REASON);
     expect(manualGpsReasonForBranch(list, 'b2')).toBeNull();
     expect(manualGpsReasonForBranch(changes(), 'b1')).toBeNull();
+    // The queue pill reads UPDATE-shaped requests too, not only CREATE markers.
+    expect(hasManualGps(list)).toBe(true);
+    expect(hasManualGps(changes())).toBe(false);
+  });
+
+  it('UPDATE: a typed move of one coordinate is still found, and only for its own branch', () => {
+    const b1: FieldChange[] = [{ field: 'branch.b1.gpsLng', before: 58.3, after: 58.4 }];
+    const b2: FieldChange[] = [
+      { field: 'branch.b2.gpsLat', before: 23.1, after: 23.2 },
+      { field: 'branch.b2.gpsLng', before: 58.1, after: 58.2 },
+    ];
+    markManualGps(b1, REASON);
+    const all = [...b1, ...b2];
+    expect(manualGpsReasonForBranch(all, 'b1')).toBe(REASON);
+    expect(manualGpsReasonForBranch(all, 'b2')).toBeNull();
   });
 
   it('CREATE: one element per typed branch, matched to its draft by its point, and never counted', () => {
@@ -107,6 +206,7 @@ describe('41 — the marker', () => {
     expect(manualGpsReasonForPoint(list, 23.61, 58.41)).toBe(REASON);
     // A draft at another point — or the same branch moved since — is not flagged.
     expect(manualGpsReasonForPoint(list, 23.62, 58.41)).toBeNull();
+    expect(manualGpsReasonForPoint(list, 23.61, 58.42)).toBeNull();
     expect(manualGpsReasonForPoint(list, null, 58.41)).toBeNull();
     expect(countFieldChanges(list)).toBe(0);
     expect(hasManualGps(list)).toBe(true);

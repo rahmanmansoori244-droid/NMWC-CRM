@@ -56,8 +56,8 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | | |
 |---|---|
 | **Purpose** | Control who may change a customer record, and record who approved a credit limit or payment terms. |
-| **Personal data** | Before/after snapshots of every field in A1 (`CustomerEdit.fieldChanges`, and a second copy in `AuditLog.before/after`); the approver's identity, role, decision, reason and timing. |
-| **Subjects** | Customer contacts; employees (as approvers and submitters). |
+| **Personal data** | Before/after snapshots of every field in A1 (`CustomerEdit.fieldChanges`, and a second copy in `AuditLog.before/after`); the approver's identity, role, decision, reason and timing; and, for a GPS point the salesman typed in by hand, the salesman's own free-text reason (since 2026-09-25, item 41), which may name people — kept in `CustomerEdit.fieldChanges` and, once an update is approved, copied into that `APPROVE` row's `AuditLog.after`. |
+| **Subjects** | Customer contacts; employees (as approvers and submitters, and as the authors of a manual-GPS reason). |
 | **Recipients** | NMWC staff in the approval chain. |
 | **Retention** | Indefinite. `AuditLog` and `EditApproval` are **append-only at the database** (migrations `20260914150000`, `20260914160000`) and cannot be edited or deleted by any application credential. |
 | **Lawful basis** | **[COUNSEL]** — and specifically whether the evidential purpose justifies retaining customer identifiers in a ledger that cannot be edited. See `PDPL-ASSESSMENT.md` Q4. |

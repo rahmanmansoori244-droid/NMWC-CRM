@@ -4,6 +4,7 @@ import { useId, useState, useTransition, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Role, type CustomerStatus, type DayOfWeek, type PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
+import { surfaceUnrenderedErrors, enrichmentFormRendersError } from '@/lib/form-errors';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
@@ -220,7 +221,15 @@ export function EnrichmentForm({
   // form submitted the restored one — including a typed point and its reason
   // (item 41) the salesman could not see. Bumped on restore to remount them.
   const [restoreGeneration, setRestoreGeneration] = useState(0);
+  // Restore runs ONCE per draft key, on mount. customerUpdatedAtMs also changes
+  // mid-session — the salesman's own CR photo attach revalidates this page — and a
+  // re-run then re-applied the draft over live typing, remounted the GPS buttons
+  // (losing an open manual entry or an in-flight capture), or told the salesman
+  // their own draft was stale. A ref, so a StrictMode double run also counts once.
+  const restoredForKeyRef = useRef<string | null>(null);
   useEffect(() => {
+    if (restoredForKeyRef.current === draftKey) return;
+    restoredForKeyRef.current = draftKey;
     const saved = typeof window !== 'undefined' ? window.localStorage.getItem(draftKey) : null;
     if (!saved) return;
     try {
@@ -355,18 +364,8 @@ export function EnrichmentForm({
         });
         if (!result.ok) {
           if (result.fields) {
-            // Only customer fields and each branch's `gps` have a slot on this form.
-            // Anything else must still surface, or the submit appears to do
-            // nothing at all — which is what a rejected branch field used to do.
-            const orphaned = Object.entries(result.fields).filter(
-              ([k]) => k !== '_form' && !k.startsWith('customer.') && !/^branch\.[^.]+\.gps$/.test(k)
-            );
-            setErrors({
-              ...result.fields,
-              ...(orphaned.length > 0 && !result.fields._form
-                ? { _form: orphaned.map(([, v]) => v).join(' · ') }
-                : {}),
-            });
+            // A key with no slot on this form still surfaces, at the top.
+            setErrors(surfaceUnrenderedErrors(result.fields, enrichmentFormRendersError));
           } else {
             setErrors({ _form: result.message });
           }

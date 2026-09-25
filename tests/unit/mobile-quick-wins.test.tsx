@@ -420,6 +420,23 @@ describe('41 — the approver sees a point that was typed in by hand', () => {
     expect(container.textContent).not.toMatch(/gpsSource|gpsManualReason|MANUAL/);
   });
 
+  it('UPDATE, two branches: the note sits only in the section of the branch that was typed', async () => {
+    const edit = updateEdit();
+    const b2 = { ...edit.customer.branches[0]!, id: 'b2', branchName: 'Second shop', branchCode: 'B-02' };
+    edit.customer.branches.push(b2);
+    const second: FieldChange[] = [
+      { field: 'branch.b2.gpsLat', before: 23.4, after: 23.41 },
+      { field: 'branch.b2.gpsLng', before: 58.2, after: 58.21 },
+    ];
+    markManualGps(edit.fieldChanges as FieldChange[], REASON); // b1 typed; b2 a device fix
+    edit.fieldChanges.push(...(second as typeof edit.fieldChanges));
+    await renderReview(edit, [...branches, { id: 'b2', branchName: 'Second shop', route: { code: 'C4' } }]);
+    const notes = screen.getAllByText(/Location typed in by hand/);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.closest('section')!.textContent).toContain('Branch: Main');
+    expect(notes[0]!.closest('section')!.textContent).not.toContain('Second shop');
+  });
+
   it('UPDATE: nothing when the point came from the device', async () => {
     await renderReview(updateEdit(), branches);
     expect(screen.queryByText(/Location typed in by hand/)).toBeNull();

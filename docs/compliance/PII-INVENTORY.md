@@ -104,7 +104,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | `reviewedById` | Employee | behaviour |  |
 | `reviewedAt` | Employee | behaviour |  |
 | `decisionReason` | Customer contact | free text | approver’s words; may describe the customer or the submitting employee |
-| `fieldChanges` | Customer contact | snapshot | before/after values of the customer and branch fields above — a second copy of the same personal data; plus, for a GPS point typed in by hand, the salesman’s own free-text reason (item 41), which the APPROVE audit row also copies |
+| `fieldChanges` | Customer contact | snapshot | before/after values of the customer and branch fields above — a second copy of the same personal data; plus, for a GPS point typed in by hand, the salesman’s own free-text reason (item 41), which the UPDATE APPROVE audit row also copies |
 | `paymentTermsAtSubmit` | Customer entity (personal if a sole establishment) | financial |  |
 | `approvalChain` | Employee | snapshot | the roles and step order frozen at submit time |
 | `requestedCreditLimit` | Customer entity (personal if a sole establishment) | financial |  |
@@ -163,7 +163,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | `actorId` | Employee | identifier | who did it |
 | `action` | Employee | behaviour |  |
 | `before` | Customer contact | snapshot | full field snapshot — legal name, CR number, phones, contact person, notes, address, GPS. Cannot be edited or deleted except in an owner-session maintenance transaction (migrations 20260914150000 + 20260914160000) |
-| `after` | Customer contact | snapshot | as above |
+| `after` | Customer contact | snapshot | as above; an UPDATE approval also copies CustomerEdit.fieldChanges here, including a salesman’s free-text manual-GPS reason (item 41) |
 | `reason` | Customer contact | free text |  |
 | `ip` | Employee | device | source IP of the member of staff |
 | `userAgent` | Employee | device | browser and device string |

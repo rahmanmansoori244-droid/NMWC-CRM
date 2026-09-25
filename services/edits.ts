@@ -20,7 +20,7 @@ import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isFieldLocked, canActOnStep } from '@/lib/permissions';
 import { submitEditSchema, type SubmitEditInput } from '@/lib/validation/edit';
 import { normalizePhone } from '@/lib/phone';
-import { markManualGps, type FieldChange } from '@/lib/gps-manual';
+import { markManualGps, takeManualGpsReason, type FieldChange } from '@/lib/gps-manual';
 import { normalizeCR } from '@/lib/cr';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
@@ -407,6 +407,10 @@ async function submitEditCore(
 
   // Branch-level diffs
   const branchById = new Map(customer.branches.map((b) => [b.id, b] as const));
+  // What the direct-write lane applies: the same cleaned values the diff below is
+  // built from, not the raw input — otherwise a typed point (item 41) would be
+  // recorded with its accuracy cleared while the live branch kept the old one.
+  const appliedBranches: Array<Record<string, unknown>> = [];
   for (const bp of bInputs) {
     const branch = branchById.get(bp.branchId);
     if (!branch) {
@@ -455,23 +459,17 @@ async function submitEditCore(
     }
 
     // Item 41 (owner: option A): a point the salesman TYPED IN keeps that fact,
-    // and the reason, on this branch's gps entries. Only when the point actually
-    // moves — a reason with no new point marks nothing and changes nothing. A typed
-    // point has no device accuracy, so the previous fix's ±N m is cleared rather
-    // than left beside coordinates it never described.
-    const manualReason = typeof bpClean.gpsManualReason === 'string' ? bpClean.gpsManualReason : undefined;
-    delete bpClean.gpsManualReason;
-    const pointMoves =
-      (bpClean.gpsLat !== undefined && bpClean.gpsLat !== branch.gpsLat) ||
-      (bpClean.gpsLng !== undefined && bpClean.gpsLng !== branch.gpsLng);
-    if (manualReason && pointMoves) bpClean.gpsAccuracy = null;
+    // and the reason, on this branch's gps entries — only when the point moves,
+    // and with the old accuracy cleared (lib/gps-manual.ts, takeManualGpsReason).
+    const manualReason = takeManualGpsReason(branch, bpClean);
 
     const branchChanges = diffFields(branchBefore, bpClean, BRANCH_FIELDS).map((c) => ({
       ...c,
       field: `branch.${branch.id}.${c.field}`,
     }));
-    if (manualReason && pointMoves) markManualGps(branchChanges, manualReason);
+    if (manualReason) markManualGps(branchChanges, manualReason);
     fieldChanges.push(...branchChanges);
+    appliedBranches.push(bpClean);
   }
 
   if (fieldChanges.length === 0 && !isDraft) {
@@ -554,7 +552,13 @@ async function submitEditCore(
           ...chainFields,
         },
       });
-      await applyEditChanges(tx, customer.id, customerProposed, bInputs, me.id);
+      await applyEditChanges(
+        tx,
+        customer.id,
+        customerProposed,
+        appliedBranches as unknown as SubmitEditInput['branches'],
+        me.id
+      );
       await writeAudit(tx, env, {
         action: 'UPDATE',
         entityType: 'Customer',

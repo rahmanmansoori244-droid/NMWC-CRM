@@ -92,6 +92,26 @@ describe('40b — CustomerCard: Call and Directions beside the profile link', ()
     expect(container.querySelector('.pb-4')).toBeNull();
   });
 
+  it('drops an undialable phone even when there is a Directions chip to show', () => {
+    const { container } = render(
+      <CustomerCard customer={{ ...customer, primaryPhone: 'ask the owner' }} primaryBranch={branch} href="/customers/c1" />
+    );
+    expect(screen.getAllByRole('link').map((a) => a.textContent)).toEqual([
+      expect.stringContaining('Al Maha'),
+      'Directions',
+    ]);
+    expect(container.textContent).not.toContain('ask the owner');
+  });
+
+  it('marks keyboard focus only, and lifts only over the profile link', () => {
+    const { container } = render(<CustomerCard customer={customer} primaryBranch={branch} href="/customers/c1" />);
+    const cls = container.querySelector('article')!.className.split(/\s+/);
+    // focus-within also matched a tapped chip and left the ring lit behind the dialer.
+    expect(cls).toContain('has-[:focus-visible]:ring-brand-500');
+    expect(cls).toContain('has-[>a:hover]:shadow-md');
+    expect(cls.filter((c) => /^(focus-within|hover):/.test(c))).toEqual([]);
+  });
+
   it('shows Call alone, or Directions alone, when that is all there is', () => {
     render(<CustomerCard customer={customer} primaryBranch={{ ...branch, gpsLat: null }} href="/customers/c1" />);
     expect(screen.getAllByRole('link').map((a) => a.textContent)).toEqual([

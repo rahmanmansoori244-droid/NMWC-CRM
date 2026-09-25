@@ -55,7 +55,10 @@ export function CustomerCard<T extends string>({ customer, primaryBranch, href }
     telHref(customer.primaryPhone) !== null || directionsHref(primaryBranch?.gpsLat, primaryBranch?.gpsLng) !== null;
 
   return (
-    <article className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200 hover:shadow-md focus-within:ring-brand-500">
+    // Hover lifts the card only over its profile link (the chip strip is not a
+    // link), and the ring marks KEYBOARD focus only: focus-within also matched a
+    // tapped chip and left the ring lit behind the dialer or the Maps tab.
+    <article className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200 has-[>a:hover]:shadow-md has-[:focus-visible]:ring-brand-500">
       {href ? (
         // A link wrapping block content gets NO accessible name from it (name-from-
         // content stops at the structure), so screen readers announced a bare
