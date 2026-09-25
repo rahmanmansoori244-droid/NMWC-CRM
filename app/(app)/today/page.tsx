@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import { Search } from 'lucide-react';
+import { Search, UserPlus } from 'lucide-react';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { PageHeader } from '@/components/nmwc/PageHeader';
@@ -93,6 +93,18 @@ export default async function TodayPage() {
           month: 'long',
           year: 'numeric',
         })}
+        actions={
+          // Owner decision 2026-09-25: a salesman on a phone had no way to start
+          // a new customer. The only link to a blank form was in the sidebar,
+          // which is hidden below the md breakpoint, and the bottom bar has none.
+          <Link
+            href="/customers/new"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-brand-600 px-4 text-base font-semibold text-white hover:bg-brand-700"
+          >
+            <UserPlus className="h-4 w-4" aria-hidden />
+            New customer
+          </Link>
+        }
       />
 
       <div className="grid grid-cols-3 gap-2 px-4 pt-4 sm:gap-3 sm:px-6">
