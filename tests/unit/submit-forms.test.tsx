@@ -22,16 +22,18 @@ vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({
     kind,
     onChange,
     onBusyChange,
+    disabled,
   }: {
     kind: string;
     onChange?: (p: { attachmentId: string }) => void;
     onBusyChange?: (busy: boolean) => void;
+    disabled?: boolean;
   }) => {
     useEffect(() => {
       onChange?.({ attachmentId: 'att-evidence' });
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
     return (
-      <span>
+      <span data-slot={kind} data-locked={disabled ? 'yes' : 'no'}>
         photo
         <button type="button" onClick={() => onBusyChange?.(true)}>{`start ${kind} upload`}</button>
         <button type="button" onClick={() => onBusyChange?.(false)}>{`finish ${kind} upload`}</button>
@@ -446,6 +448,30 @@ describe('the customer update form', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     expect(sent).toHaveLength(1);
     expect(screen.getByRole('status').textContent).toBe('✓ Submitted for approval. It arrived — nothing more to do.');
+  });
+
+  it('no slot takes a new photo while a submit is on its way, or once it has arrived', async () => {
+    // Submit is held while a photo uploads — but a photo STARTED after the tap
+    // would be cut off by the page load that follows the answer (item 22 review).
+    renderForm();
+    const locks = () => [...document.querySelectorAll('[data-slot]')].map((e) => e.getAttribute('data-locked'));
+    expect(locks()).toHaveLength(5);
+    expect(new Set(locks())).toEqual(new Set(['no']));
+    let reply!: (r: Response) => void;
+    replies.push(() => new Promise<Response>((resolve) => (reply = resolve)));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    try {
+      await waitFor(() => expect(new Set(locks())).toEqual(new Set(['yes'])));
+    } finally {
+      // Always answer: a send left pending keeps React's transition open for
+      // every later test in this file.
+      await act(async () => {
+        reply(await answer({ ok: true, data: { editId: 'e1', state: 'SUBMITTED', submittedAt: null, replayed: false } })());
+      });
+    }
+    await waitFor(() => expect(nav.hardReplace).toHaveBeenCalled());
+    expect(new Set(locks())).toEqual(new Set(['yes']));
   });
 
   it('after a replayed "Already received", Save draft is off too — the form stays, with nothing to send', async () => {
@@ -875,6 +901,27 @@ describe('the new-customer form', () => {
       fireEvent.click(screen.getAllByRole('button', { name: /^finish \w+ upload$/ })[i]!);
       expect(submitBtn(), `${kind} #${i}`).toBeEnabled();
     });
+  });
+
+  it('no slot takes a new photo while a submit is on its way — it could not be in the request that left', async () => {
+    render(<CreateCustomerForm channels={channels} initial={complete} sessionUserId="u1" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled());
+    const locks = () => [...document.querySelectorAll('[data-slot]')].map((e) => e.getAttribute('data-locked'));
+    expect(locks().length).toBeGreaterThan(0);
+    expect(new Set(locks())).toEqual(new Set(['no']));
+    let reply!: (r: Response) => void;
+    replies.push(() => new Promise<Response>((resolve) => (reply = resolve)));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    try {
+      await waitFor(() => expect(new Set(locks())).toEqual(new Set(['yes'])));
+    } finally {
+      await act(async () => {
+        reply(await answer({ ok: true, data: { editId: 'd7', state: 'SUBMITTED', submittedAt: null, replayed: false } })());
+      });
+    }
+    await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledWith('/work'));
+    expect(new Set(locks())).toEqual(new Set(['yes']));
   });
 
   it('Try again of a Submit waits for a photo too', async () => {

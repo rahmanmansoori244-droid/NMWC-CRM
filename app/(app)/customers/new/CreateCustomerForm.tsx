@@ -285,6 +285,10 @@ export function CreateCustomerForm({
   // not in the payload yet — its id arrives only when it is done — and the
   // document load of Work after Submit would abort it.
   const [uploading, setUploading] = useState(0);
+  // No NEW photo once a submit is on its way: it could not be in the request
+  // that already left, and the /work navigation after the answer would cut
+  // its upload off (item 22 review).
+  const photosLocked = pending || arrived;
   const onPhotoBusy = useCallback((busy: boolean) => setUploading((n) => n + (busy ? 1 : -1)), []);
   const submitBlocked = readOnly || arrived || uploading > 0 || missingMandatory.length > 0;
 
@@ -720,7 +724,7 @@ export function CreateCustomerForm({
               <PhotoCaptureSlot
                 kind="CR"
                 required
-                disabled={readOnly}
+                disabled={readOnly || photosLocked}
                 initial={
                   crPhotoId
                     ? { attachmentId: crPhotoId, remoteUrl: `/api/photos/${crPhotoId}` }
@@ -879,7 +883,7 @@ export function CreateCustomerForm({
                 <PhotoCaptureSlot
                   key={gid}
                   kind="GUARANTEE"
-                  disabled={readOnly}
+                  disabled={readOnly || photosLocked}
                   initial={{ attachmentId: gid, remoteUrl: `/api/photos/${gid}` }}
                   onChange={(p) => {
                     if (readOnly) return;
@@ -903,6 +907,7 @@ export function CreateCustomerForm({
                     }
                   }}
                   onBusyChange={onPhotoBusy}
+                  disabled={photosLocked}
                 />
               )}
             </div>
@@ -1061,7 +1066,7 @@ export function CreateCustomerForm({
                 <PhotoCaptureSlot
                   kind="SHOP"
                   required
-                  disabled={readOnly}
+                  disabled={readOnly || photosLocked}
                   capturedLat={s.gps?.lat}
                   capturedLng={s.gps?.lng}
                   initial={
@@ -1077,7 +1082,7 @@ export function CreateCustomerForm({
                 <PhotoCaptureSlot
                   kind="SIGNBOARD"
                   required
-                  disabled={readOnly}
+                  disabled={readOnly || photosLocked}
                   capturedLat={s.gps?.lat}
                   capturedLng={s.gps?.lng}
                   initial={
@@ -1099,7 +1104,7 @@ export function CreateCustomerForm({
                     <PhotoCaptureSlot
                       key={existing ?? `extra-${slotIdx}`}
                       kind="FREE"
-                      disabled={readOnly}
+                      disabled={readOnly || photosLocked}
                       capturedLat={s.gps?.lat}
                       capturedLng={s.gps?.lng}
                       initial={

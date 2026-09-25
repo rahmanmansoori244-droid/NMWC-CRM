@@ -198,6 +198,10 @@ export function EnrichmentForm({
   // photo was lost while the salesman read "It arrived" (item 22 review).
   const [uploading, setUploading] = useState(0);
   const onPhotoBusy = useCallback((busy: boolean) => setUploading((n) => n + (busy ? 1 : -1)), []);
+  // …and no NEW photo once a submit is on its way. Submit is held while a photo
+  // uploads, but a photo started after the tap would still be cut off by the
+  // page load that follows the answer — silently, beside "It arrived".
+  const photosLocked = pending || arrived;
 
   // Client-side mandatory-field gate. Mirrors the server check in
   // services/edits.ts so the salesman gets immediate feedback and can't
@@ -543,6 +547,7 @@ export function EnrichmentForm({
                 attachTo={{ kind: 'customer', customerId: customer.id, slot: 'CR' }}
                 onChange={(p) => setCrPhotoId(p?.attachmentId ?? null)}
                 onBusyChange={onPhotoBusy}
+                disabled={photosLocked}
               />
             </div>
           </div>
@@ -780,6 +785,7 @@ export function EnrichmentForm({
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'SHOP' }}
                     onChange={(p) => setBranchPhoto(b.id, 'shop', p?.attachmentId ?? null)}
                     onBusyChange={onPhotoBusy}
+                    disabled={photosLocked}
                   />
                   <PhotoCaptureSlot
                     kind="SIGNBOARD"
@@ -797,6 +803,7 @@ export function EnrichmentForm({
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'SIGNBOARD' }}
                     onChange={(p) => setBranchPhoto(b.id, 'signboard', p?.attachmentId ?? null)}
                     onBusyChange={onPhotoBusy}
+                    disabled={photosLocked}
                   />
                   <PhotoCaptureSlot
                     kind="FREE"
@@ -804,6 +811,7 @@ export function EnrichmentForm({
                     capturedLng={s.gps?.lng}
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'FREE' }}
                     onBusyChange={onPhotoBusy}
+                    disabled={photosLocked}
                   />
                   <PhotoCaptureSlot
                     kind="FREE"
@@ -811,6 +819,7 @@ export function EnrichmentForm({
                     capturedLng={s.gps?.lng}
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'FREE' }}
                     onBusyChange={onPhotoBusy}
+                    disabled={photosLocked}
                   />
                 </div>
               </div>
