@@ -9,7 +9,7 @@ import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { EnrichmentForm } from './EnrichmentForm';
 import { salesmanSubmitGate } from '@/lib/submit-gate';
-import { ownPendingBanner, requestKindOf } from '@/lib/submission-replay';
+import { ownPendingBanner, pendingReplacesDraft, requestKindOf } from '@/lib/submission-replay';
 
 export const metadata = { title: 'Enrich · NMWC' };
 // UXI-005: never serve a stale cached form. Without this, hitting Back after
@@ -183,7 +183,9 @@ export default async function EditCustomerPage({
         lockCr={lockCr}
         userRole={session.user.role}
         canSubmit={!pending}
-        pendingReplacesDraft={!!pending && requestKindOf(pending) === 'update'}
+        // A reactivation replaces the draft too, when it turns the customer
+        // ACTIVE (item 22 review) — the rule lives in the helper.
+        pendingReplacesDraft={pendingReplacesDraft(pending ? requestKindOf(pending) : null, customer.status)}
         sessionUserId={session.user.id}
         gate={salesmanSubmitGate()}
       />

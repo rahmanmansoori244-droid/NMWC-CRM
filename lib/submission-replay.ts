@@ -14,7 +14,14 @@
  * a replay. A different payload is a different id, and gets the conflict it
  * always got — never "any open request of mine".
  */
-import { EditState, EditTarget, type EditProcess, type Prisma, type PrismaClient } from '@prisma/client';
+import {
+  EditState,
+  EditTarget,
+  type CustomerStatus,
+  type EditProcess,
+  type Prisma,
+  type PrismaClient,
+} from '@prisma/client';
 import { ConflictError } from '@/lib/errors';
 import { omanWhen, type SubmitReceipt } from '@/lib/submission';
 
@@ -112,6 +119,22 @@ export type RequestKind = 'update' | 'close' | 'reactivate';
 export function requestKindOf(e: { target: EditTarget; isReactivation: boolean }): RequestKind {
   if (e.target === EditTarget.BRANCH) return e.isReactivation ? 'reactivate' : 'close';
   return 'update';
+}
+
+/**
+ * Whether approving the customer's pending request replaces a draft saved on the
+ * edit form meanwhile — the draft is dropped when the server values it started
+ * from change (lib/enrichment-draft.ts), and the "Draft saved" line must say so
+ * before, not after. An update changes them. A close changes only its branch's
+ * status, which is not among them. A reactivation sets the CUSTOMER active once
+ * every branch is (services/reactivations.ts), so for a customer that is not
+ * ACTIVE now it changes them too: "stays on this phone" was false there (item 22
+ * review). Said for every such customer, even one with another branch still
+ * closed — the edit page's branch list is narrowed to the caller's scope and
+ * cannot tell, and a spare warning costs less than a lost draft.
+ */
+export function pendingReplacesDraft(kind: RequestKind | null, customerStatus: CustomerStatus): boolean {
+  return kind === 'update' || (kind === 'reactivate' && customerStatus !== 'ACTIVE');
 }
 
 const KIND_PHRASE: Record<RequestKind, string> = {

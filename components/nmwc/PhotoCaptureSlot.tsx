@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Camera, Image as ImageIcon, Trash2, RefreshCw, Check, Loader2, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { attachPhotoAction, detachPhotoAction } from '@/services/photos';
@@ -171,6 +171,7 @@ export function PhotoCaptureSlot({
   capturedLng,
   attachTo,
   disabled,
+  onBusyChange,
 }: {
   kind: PhotoSlotKind;
   required?: boolean;
@@ -186,6 +187,14 @@ export function PhotoCaptureSlot({
    * clear anything — a visually frozen view must not fire server calls.
    */
   disabled?: boolean;
+  /**
+   * true when a photo starts compressing or uploading, then exactly one false
+   * when that ends — attached, failed, or the slot gone. The field forms leave
+   * after Submit by a document load, which aborts an upload still in flight:
+   * the photo was lost while the salesman read "It arrived" (item 22 review).
+   * onChange cannot tell them — it fires only once the photo is attached.
+   */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const inputId = useId();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -299,14 +308,17 @@ export function PhotoCaptureSlot({
     setProgress('compressing');
     setUploadPct(0);
     let blob: Blob;
+    let hash: string;
     try {
       blob = await compressImage(file);
+      // Inside the try: a failed hash used to leave the slot "Compressing…" for
+      // good — and now that a busy slot holds Submit, the form with it.
+      hash = await sha256Hex(blob);
     } catch (e) {
       setError((e as Error).message);
       setProgress('error');
       return;
     }
-    const hash = await sha256Hex(blob);
     // B-08: retain so a final-failure "Retry upload" works without re-photographing.
     setRetainedBlob(blob);
     setRetainedHash(hash);
@@ -344,6 +356,21 @@ export function PhotoCaptureSlot({
 
   const filled = photo != null;
   const busy = progress === 'compressing' || progress === 'uploading';
+  // Driven by `busy` itself, not by each step of the chain, so every way in and
+  // out — pick, Retry upload, attached, failed — is covered; the cleanup runs
+  // when busy ends AND when the slot unmounts mid-upload, so a parent that
+  // counts busy slots never drifts. The latest callback, without re-running
+  // the effect (and reporting false-then-true) each time the parent renders.
+  const onBusyChangeRef = useRef(onBusyChange);
+  useEffect(() => {
+    onBusyChangeRef.current = onBusyChange;
+  });
+  useEffect(() => {
+    if (!busy) return;
+    const report = onBusyChangeRef.current;
+    report?.(true);
+    return () => report?.(false);
+  }, [busy]);
   const imgSrc = photo?.previewUrl ?? photo?.remoteUrl;
   const canRetry = progress === 'error' && retainedBlob != null && retainedHash != null;
 

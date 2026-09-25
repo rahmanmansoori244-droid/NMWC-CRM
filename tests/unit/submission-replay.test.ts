@@ -11,6 +11,7 @@ import {
   findReceipt,
   ownOpenRequestMessage,
   ownPendingBanner,
+  pendingReplacesDraft,
   shownTime,
 } from '@/lib/submission-replay';
 import type { SubmitReceipt } from '@/lib/submission';
@@ -115,6 +116,28 @@ describe('shownTime', () => {
   it('anything else shows when it was sent', () => {
     expect(shownTime({ state: 'SUBMITTED', submittedAt, updatedAt })).toBe(submittedAt);
     expect(shownTime({ state: 'SUBMITTED', submittedAt: null, updatedAt })).toBe(updatedAt);
+  });
+});
+
+describe('pendingReplacesDraft — whether approving what is pending throws away a draft saved meanwhile', () => {
+  // The draft is dropped when the server values it started from change, and
+  // the customer's status is one of them (lib/enrichment-draft.ts).
+  it('a pending update does, whatever the status', () => {
+    for (const st of ['ACTIVE', 'CLOSED', 'SUSPENDED'] as const) expect(pendingReplacesDraft('update', st)).toBe(true);
+  });
+
+  it('a pending close does not: it changes only its branch, which is not in the draft base', () => {
+    for (const st of ['ACTIVE', 'CLOSED', 'SUSPENDED'] as const) expect(pendingReplacesDraft('close', st)).toBe(false);
+  });
+
+  it('a reactivation does when it turns the customer ACTIVE — never when it already is (item 22 review)', () => {
+    expect(pendingReplacesDraft('reactivate', 'ACTIVE')).toBe(false);
+    expect(pendingReplacesDraft('reactivate', 'CLOSED')).toBe(true);
+    expect(pendingReplacesDraft('reactivate', 'SUSPENDED')).toBe(true);
+  });
+
+  it('nothing pending: nothing replaces it', () => {
+    expect(pendingReplacesDraft(null, 'CLOSED')).toBe(false);
   });
 });
 

@@ -14,13 +14,29 @@ import { useEffect } from 'react';
 const router = vi.hoisted(() => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 // The photo and GPS widgets talk to the camera, R2 and geolocation; a photo
-// here is simply "already attached".
+// here is simply "already attached". Its two buttons stand for an upload that
+// starts and one that ends — the onBusyChange contract, which
+// photo-slot-busy.test.tsx pins on the real slot.
 vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({
-  PhotoCaptureSlot: ({ onChange }: { onChange?: (p: { attachmentId: string }) => void }) => {
+  PhotoCaptureSlot: ({
+    kind,
+    onChange,
+    onBusyChange,
+  }: {
+    kind: string;
+    onChange?: (p: { attachmentId: string }) => void;
+    onBusyChange?: (busy: boolean) => void;
+  }) => {
     useEffect(() => {
       onChange?.({ attachmentId: 'att-evidence' });
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
-    return <span>photo</span>;
+    return (
+      <span>
+        photo
+        <button type="button" onClick={() => onBusyChange?.(true)}>{`start ${kind} upload`}</button>
+        <button type="button" onClick={() => onBusyChange?.(false)}>{`finish ${kind} upload`}</button>
+      </span>
+    );
   },
 }));
 vi.mock('@/components/nmwc/GpsCaptureButton', () => ({ GpsCaptureButton: () => <span>gps</span> }));
@@ -31,10 +47,13 @@ vi.mock('@/lib/navigate', () => nav);
 import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
 import { EnrichmentForm } from '@/app/(app)/customers/[id]/edit/EnrichmentForm';
 import { enrichmentBase } from '@/lib/enrichment-draft';
-import { CreateCustomerForm } from '@/app/(app)/customers/new/CreateCustomerForm';
+import { CreateCustomerForm, type CreateFormInitial } from '@/app/(app)/customers/new/CreateCustomerForm';
 import {
   FIX_FIELDS_MESSAGE,
   OFFLINE_AFTER_EARLIER_MESSAGE,
+  OFFLINE_AFTER_UNCONFIRMED_MESSAGE,
+  OFFLINE_MESSAGE,
+  PHOTO_UPLOADING_MESSAGE,
   submissionIdSchema,
 } from '@/lib/submission';
 
@@ -73,6 +92,16 @@ afterEach(() => {
 const goOffline = () => {
   vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
   replies.push(noAnswer);
+};
+
+/** Under fake timers, where waitFor cannot poll: let the submit's continuation run. */
+const settleUntil = async (done: () => boolean) => {
+  for (let i = 0; i < 50 && !done(); i++) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+  expect(done()).toBe(true);
 };
 
 describe('close / reactivate', () => {
@@ -285,7 +314,10 @@ describe('the customer update form', () => {
     expect(screen.getByText('Enter a valid Oman number.')).toBeTruthy();
   });
 
-  it('with only a close or reactivation pending, "Draft saved" promises nothing about replacing it', async () => {
+  // What the page passes for each pending kind is pendingReplacesDraft
+  // (submission-replay.test.ts); a reactivation of a customer that is not ACTIVE
+  // passes true, and reads as the test after this one.
+  it('with only a close pending, "Draft saved" promises nothing about replacing it', async () => {
     render(
       <EnrichmentForm
         customer={customer}
@@ -328,6 +360,170 @@ describe('the customer update form', () => {
       )
     );
   });
+
+  // Item 22 review: Submit leaves by a document load, which aborts an upload in
+  // flight — the photo was lost while the salesman read "It arrived".
+  it('Submit waits while any photo is still uploading — optional slots too, for every role', async () => {
+    renderForm(); // a MANAGER: no mandatory gate at all, and a direct write that leaves at once
+    const submitBtn = () => screen.getByRole('button', { name: 'Submit for approval ▶' });
+    expect(submitBtn()).toBeEnabled();
+    // The CR photo, then the second FREE slot too — neither of which the gate reads.
+    fireEvent.click(screen.getByRole('button', { name: 'start CR upload' }));
+    expect(submitBtn()).toBeDisabled();
+    fireEvent.click(screen.getAllByRole('button', { name: 'start FREE upload' })[1]!);
+    expect(submitBtn()).toBeDisabled();
+    expect(submitBtn().title).toBe(PHOTO_UPLOADING_MESSAGE);
+    expect(screen.getByText(PHOTO_UPLOADING_MESSAGE)).toBeTruthy();
+    // Save draft does not leave the page: it stays usable.
+    expect(screen.getByRole('button', { name: 'Save draft' })).toBeEnabled();
+    fireEvent.click(submitBtn());
+    fireEvent.click(screen.getByRole('button', { name: 'finish CR upload' }));
+    expect(submitBtn()).toBeDisabled(); // counted, not a flag: the FREE photo is still going up
+    fireEvent.click(submitBtn());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(sent).toHaveLength(0);
+    expect(nav.hardReplace).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'finish FREE upload' })[1]!);
+    expect(submitBtn()).toBeEnabled();
+    expect(screen.queryByText(PHOTO_UPLOADING_MESSAGE)).toBeNull();
+    replies.push(answer({ ok: true, data: { editId: 'e1', state: 'APPROVED', submittedAt: null, replayed: false } }));
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledTimes(1));
+    expect(sent).toHaveLength(1);
+  });
+
+  it('every slot holds it: the CR photo, shop, signboard and both FREE', () => {
+    renderForm();
+    const submitBtn = () => screen.getByRole('button', { name: 'Submit for approval ▶' });
+    const starts = screen.getAllByRole('button', { name: /^start \w+ upload$/ });
+    const finishes = screen.getAllByRole('button', { name: /^finish \w+ upload$/ });
+    expect(starts.map((b) => b.textContent)).toEqual([
+      'start CR upload',
+      'start SHOP upload',
+      'start SIGNBOARD upload',
+      'start FREE upload',
+      'start FREE upload',
+    ]);
+    starts.forEach((start, i) => {
+      fireEvent.click(start);
+      expect(submitBtn(), start.textContent!).toBeDisabled();
+      fireEvent.click(finishes[i]!);
+      expect(submitBtn(), start.textContent!).toBeEnabled();
+    });
+  });
+
+  it('Try again of a Submit waits for a photo too — it leaves the page the same way', async () => {
+    renderForm();
+    replies.push(noAnswer);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+    await screen.findByRole('button', { name: 'Try again' });
+    fireEvent.click(screen.getByRole('button', { name: 'start SIGNBOARD upload' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(sent).toHaveLength(1);
+    expect(screen.getByText(PHOTO_UPLOADING_MESSAGE)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'finish SIGNBOARD upload' }));
+    replies.push(answer({ ok: true, data: { editId: 'e1', state: 'APPROVED', submittedAt: null, replayed: false } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledTimes(1));
+    expect(sent[1]!.body.submissionId).toBe(sent[0]!.body.submissionId);
+  });
+
+  it('once a submit arrived, Save draft is off — a tap while the next page loads wrote a stray draft', async () => {
+    renderForm();
+    replies.push(answer({ ok: true, data: { editId: 'e1', state: 'SUBMITTED', submittedAt: null, replayed: false } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+    await waitFor(() => expect(nav.hardReplace).toHaveBeenCalled());
+    // hardReplace is mocked, so the form stays — as the real one does until the
+    // next document is in; the transition has ended by then.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save draft' })).toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    expect(sent).toHaveLength(1);
+    expect(screen.getByRole('status').textContent).toBe('✓ Submitted for approval. It arrived — nothing more to do.');
+  });
+
+  it('after a replayed "Already received", Save draft is off too — the form stays, with nothing to send', async () => {
+    renderForm();
+    replies.push(noAnswer);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    replies.push(
+      answer({ ok: true, data: { editId: 'e1', state: 'SUBMITTED', submittedAt: '2026-09-25T06:42:00.000Z', replayed: true } })
+    );
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/^✓ Already received at/));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save draft' })).toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    expect(sent).toHaveLength(2);
+  });
+
+  it('an autosave already due when the submit arrives does not write the phone copy back', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      renderForm();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      expect(window.localStorage.getItem(draftKey)).not.toBeNull();
+      fireEvent.change(screen.getByDisplayValue('Said'), { target: { value: 'Said Al Harthy' } }); // arms the 500 ms autosave
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+      });
+      replies.push(answer({ ok: true, data: { editId: 'e1', state: 'APPROVED', submittedAt: null, replayed: false } }));
+      fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+      await settleUntil(() => nav.hardReplace.mock.calls.length > 0);
+      expect(window.localStorage.getItem(draftKey)).toBeNull();
+      // The page is leaving: the save due at 500 ms must not bring it back.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+      expect(window.localStorage.getItem(draftKey)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a replayed "Already received" drops the autosave already due — and a later edit still saves', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      renderForm();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      replies.push(noAnswer);
+      fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+      await settleUntil(() => screen.queryByRole('button', { name: 'Try again' }) !== null);
+      // A change undone: the payload, and so its id, are the same — but the
+      // autosave is armed, as by any keystroke.
+      fireEvent.change(screen.getByDisplayValue('Said'), { target: { value: 'Said X' } });
+      fireEvent.change(screen.getByDisplayValue('Said X'), { target: { value: 'Said' } });
+      replies.push(
+        answer({ ok: true, data: { editId: 'e1', state: 'SUBMITTED', submittedAt: '2026-09-25T06:42:00.000Z', replayed: true } })
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      await settleUntil(() => /^✓ Already received at/.test(screen.getByRole('status').textContent ?? ''));
+      expect(sent[1]!.body.submissionId).toBe(sent[0]!.body.submissionId);
+      expect(window.localStorage.getItem(draftKey)).toBeNull();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      expect(window.localStorage.getItem(draftKey)).toBeNull();
+      // The form stays on this path: what he types next is his, and is kept.
+      fireEvent.change(screen.getByDisplayValue('Said'), { target: { value: 'Said Al Harthy' } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      expect(JSON.parse(window.localStorage.getItem(draftKey)!).contactPerson).toBe('Said Al Harthy');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('the new-customer form', () => {
@@ -336,6 +532,51 @@ describe('the new-customer form', () => {
   const renderCreate = () => render(<CreateCustomerForm channels={[]} initial={null} sessionUserId="u1" />);
   const seed = (extra: Record<string, unknown> = {}) =>
     window.localStorage.setItem(newKey, JSON.stringify({ legalName: 'Blue Sea Cafe', crNumber: '7654321', ...extra }));
+  // A saved draft with everything filled in, so Submit is enabled (the mocked
+  // slots attach their photos on mount).
+  const channels = [{ id: 'ch1', key: 'retail', label: 'Retail', subChannels: [{ id: 'sc1', key: 'grocery', label: 'Grocery' }] }];
+  const complete: CreateFormInitial = {
+    editId: 'd7',
+    state: 'DRAFT',
+    decisionReason: null,
+    pendingRole: null,
+    customer: {
+      legalName: 'Blue Sea Cafe',
+      paymentTerms: 'CASH',
+      crNumber: '7654321',
+      channelId: 'ch1',
+      subChannelId: 'sc1',
+      primaryPhone: '+96891234567',
+      altPhone: '',
+      contactPerson: 'Said',
+      contactRole: '',
+      notes: '',
+      crPhotoAttachmentId: 'att-cr',
+    },
+    credit: { requestedCreditLimit: null, requestedPaymentTermDays: null },
+    guaranteeAttachmentIds: [],
+    branches: [
+      {
+        branchName: 'Main',
+        address: 'Way 1, Ruwi',
+        areaDescription: '',
+        gpsLat: 23.5,
+        gpsLng: 58.3,
+        gpsAccuracy: 5,
+        gpsCapturedAt: '2026-09-24T08:00:00.000Z',
+        gpsManualReason: null,
+        dayOfVisit: 'SUN',
+        openingHours: '',
+        deliveryWindow: '',
+        coolersCount: 0,
+        standsCount: 0,
+        emptyBottlesCount: 0,
+        shopPhotoAttachmentId: 'att-shop',
+        signboardPhotoAttachmentId: 'att-sign',
+        extraPhotoAttachmentIds: [],
+      },
+    ],
+  };
 
   it('a send with no answer is remembered on the phone — and the autosave keeps it there', async () => {
     renderCreate();
@@ -357,7 +598,8 @@ describe('the new-customer form', () => {
   it('the id is on the phone BEFORE the send — a reload mid-send can still ask', async () => {
     const first = renderCreate();
     fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
-    replies.push(() => new Promise<Response>(() => {})); // the send never answers
+    let dropSend!: (e: Error) => void;
+    replies.push(() => new Promise<Response>((_resolve, reject) => (dropSend = reject))); // the send does not answer
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     const stored = JSON.parse(window.localStorage.getItem(newKey)!);
@@ -368,6 +610,13 @@ describe('the new-customer form', () => {
     renderCreate();
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]!.url).toBe(`/api/forms/customer-create?submissionId=${sent[0]!.body.submissionId}`);
+    // End the dead tab's send. React 19 entangles async transitions: one left
+    // pending for good kept `pending` true in every later test in this file —
+    // Try again read "Trying…" and stayed disabled (in the app, postForm's
+    // timeout always ends a send).
+    await act(async () => {
+      dropSend(new TypeError('Failed to fetch'));
+    });
   });
 
   it('a refused send comes off the list — it did not land', async () => {
@@ -475,5 +724,171 @@ describe('the new-customer form', () => {
     renderCreate();
     await waitFor(() => expect(screen.getByText(/Your last send got no answer and may have arrived/)).toBeTruthy());
     expect(screen.getByDisplayValue('Blue Sea Cafe')).toBeTruthy();
+  });
+
+  // Item 22 review: the send kept on the phone is not in this mount's
+  // SubmissionIds, and the offline notice read "nothing was sent" over it.
+  it('reloaded, the check got no answer, then an offline send: still says the earlier send may have arrived', async () => {
+    seed({ unanswered: [sid] });
+    replies.push(noAnswer);
+    renderCreate();
+    await waitFor(() => expect(screen.getByText(/Your last send got no answer and may have arrived/)).toBeTruthy());
+    goOffline();
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(OFFLINE_AFTER_EARLIER_MESSAGE));
+    // …and it stays on the phone for the next reload to ask about; this try's own id did not leave.
+    expect(JSON.parse(window.localStorage.getItem(newKey)!).unanswered).toEqual([sid]);
+  });
+
+  // Item 22 review: `refused || (unread && !triedBefore)` had no test at all —
+  // both of these mutants passed every form test.
+  it('no answer, then an offline Try again: the send that may have landed stays on the phone', async () => {
+    renderCreate();
+    fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
+    replies.push(noAnswer);
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    const id = sent[0]!.body.submissionId;
+    goOffline();
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(OFFLINE_AFTER_UNCONFIRMED_MESSAGE));
+    expect(sent[1]!.body.submissionId).toBe(id);
+    expect(JSON.parse(window.localStorage.getItem(newKey)!).unanswered).toEqual([id]);
+  });
+
+  it('a first Save draft with no signal left nothing to ask about', async () => {
+    renderCreate();
+    fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
+    goOffline();
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(OFFLINE_MESSAGE));
+    expect(JSON.parse(window.localStorage.getItem(newKey) ?? '{}').unanswered ?? []).toEqual([]);
+  });
+
+  // Item 22 review: the autosave wrote an empty copy on every visit, and the
+  // next one said "Restored the details you typed" over a blank form.
+  it('a visit that typed nothing leaves no copy, and the next visit claims no restore', async () => {
+    const first = renderCreate();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    expect(window.localStorage.getItem(newKey)).toBeNull();
+    first.unmount();
+    renderCreate();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(screen.queryByText(/^Restored the details you typed/)).toBeNull();
+  });
+
+  it('clearing every field removes the copy — the old text does not come back', async () => {
+    const first = renderCreate();
+    fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    expect(JSON.parse(window.localStorage.getItem(newKey)!).legalName).toBe('Blue Sea Cafe');
+    fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: '' } });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    expect(window.localStorage.getItem(newKey)).toBeNull();
+    first.unmount();
+    renderCreate();
+    expect(screen.queryByText(/^Restored the details you typed/)).toBeNull();
+    expect(screen.queryByDisplayValue('Blue Sea Cafe')).toBeNull();
+  });
+
+  it('an empty form whose send got no answer keeps its copy — the id still has to be asked about', async () => {
+    renderCreate(); // the mount arms the autosave; the send goes before it fires
+    replies.push(noAnswer);
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await screen.findByRole('button', { name: 'Try again' });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    expect(JSON.parse(window.localStorage.getItem(newKey)!).unanswered).toEqual([sent[0]!.body.submissionId]);
+  });
+
+  it('an empty copy already on the phone (written before this fix) is not announced as restored', async () => {
+    window.localStorage.setItem(
+      newKey,
+      JSON.stringify({ legalName: '  ', crNumber: '', paymentTerms: 'CASH', notes: '', savedAt: 1, unanswered: [] })
+    );
+    renderCreate();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(screen.queryByText(/^Restored the details you typed/)).toBeNull();
+  });
+
+  it.each([
+    ['a typed field', { legalName: 'Blue Sea Cafe' }],
+    ['Credit chosen, nothing else', { paymentTerms: 'CREDIT' }],
+  ])('a copy with %s in it is restored, and says so', async (_l, copy) => {
+    window.localStorage.setItem(newKey, JSON.stringify(copy));
+    renderCreate();
+    await waitFor(() => expect(screen.getByText(/^Restored the details you typed on this phone\. Branch details/)).toBeTruthy());
+  });
+
+  it('Submit waits while a photo is still uploading — it is not in the payload yet, and leaving for Work would abort it', async () => {
+    render(<CreateCustomerForm channels={channels} initial={complete} sessionUserId="u1" />);
+    const submitBtn = () => screen.getByRole('button', { name: 'Submit for approval ▶' });
+    await waitFor(() => expect(submitBtn()).toBeEnabled());
+    fireEvent.click(screen.getAllByRole('button', { name: 'start FREE upload' })[0]!);
+    expect(submitBtn()).toBeDisabled();
+    expect(submitBtn().title).toBe(PHOTO_UPLOADING_MESSAGE);
+    expect(screen.getByText(PHOTO_UPLOADING_MESSAGE)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save draft' })).toBeEnabled();
+    fireEvent.click(submitBtn());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(sent).toHaveLength(0);
+    expect(nav.hardReplace).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'finish FREE upload' })[0]!);
+    expect(submitBtn()).toBeEnabled();
+    replies.push(answer({ ok: true, data: { editId: 'd7', state: 'SUBMITTED', submittedAt: null, replayed: false } }));
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledWith('/work'));
+  });
+
+  it('every slot holds it: CR, each guarantee document, shop, signboard and both FREE', async () => {
+    const credit: CreateFormInitial = {
+      ...complete,
+      customer: { ...complete.customer, paymentTerms: 'CREDIT' },
+      credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
+      guaranteeAttachmentIds: ['att-g1'],
+    };
+    render(<CreateCustomerForm channels={channels} initial={credit} sessionUserId="u1" />);
+    const submitBtn = () => screen.getByRole('button', { name: 'Submit for approval ▶' });
+    await waitFor(() => expect(submitBtn()).toBeEnabled());
+    const kinds = screen.getAllByRole('button', { name: /^start \w+ upload$/ }).map((b) => b.textContent);
+    for (const k of ['CR', 'GUARANTEE', 'SHOP', 'SIGNBOARD', 'FREE']) expect(kinds).toContain(`start ${k} upload`);
+    expect(kinds.filter((k) => k === 'start FREE upload')).toHaveLength(2);
+    // The existing guarantee document AND the empty slot for the next one.
+    expect(kinds.filter((k) => k === 'start GUARANTEE upload').length).toBeGreaterThanOrEqual(2);
+    kinds.forEach((kind, i) => {
+      fireEvent.click(screen.getAllByRole('button', { name: /^start \w+ upload$/ })[i]!);
+      expect(submitBtn(), `${kind} #${i}`).toBeDisabled();
+      fireEvent.click(screen.getAllByRole('button', { name: /^finish \w+ upload$/ })[i]!);
+      expect(submitBtn(), `${kind} #${i}`).toBeEnabled();
+    });
+  });
+
+  it('Try again of a Submit waits for a photo too', async () => {
+    render(<CreateCustomerForm channels={channels} initial={complete} sessionUserId="u1" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled());
+    replies.push(noAnswer);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+    await screen.findByRole('button', { name: 'Try again' });
+    fireEvent.click(screen.getByRole('button', { name: 'start CR upload' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(sent).toHaveLength(1);
+    expect(nav.hardReplace).not.toHaveBeenCalled();
   });
 });

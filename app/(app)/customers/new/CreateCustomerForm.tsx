@@ -24,7 +24,12 @@ import {
   SubmissionIds,
   type SubmitNotice,
 } from '@/lib/submit-client';
-import { alreadyReceivedMessage, submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
+import {
+  alreadyReceivedMessage,
+  PHOTO_UPLOADING_MESSAGE,
+  submissionIdSchema,
+  type SubmitReceipt,
+} from '@/lib/submission';
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { hardReplace } from '@/lib/navigate';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
@@ -100,6 +105,29 @@ type BState = {
   signboardPhotoId: string | null;
   extraPhotoIds: string[];
 };
+
+/**
+ * Whether the never-saved phone copy holds anything the salesman typed. The
+ * autosave wrote an empty copy on every visit, and the next one said "Restored
+ * the details you typed" over a blank form (item 22 review): an empty copy is
+ * not written, and one found anyway is not announced.
+ */
+function typedAnything(d: Record<string, unknown>): boolean {
+  if (d.paymentTerms === 'CREDIT') return true;
+  return [
+    d.legalName,
+    d.crNumber,
+    d.channelId,
+    d.subChannelId,
+    d.primaryPhone,
+    d.altPhone,
+    d.contactPerson,
+    d.contactRole,
+    d.notes,
+    d.creditLimit,
+    d.termDays,
+  ].some((v) => typeof v === 'string' && v.trim() !== '');
+}
 
 let branchKeyCounter = 1;
 function emptyBranch(): BState {
@@ -253,7 +281,12 @@ export function CreateCustomerForm({
     if (!s.shopPhotoId) missingMandatory.push(`${tag} shop photo`);
     if (!s.signboardPhotoId) missingMandatory.push(`${tag} signboard photo`);
   });
-  const submitBlocked = readOnly || arrived || missingMandatory.length > 0;
+  // Photos still going up, in every slot (item 22 review). One mid-upload is
+  // not in the payload yet — its id arrives only when it is done — and the
+  // document load of Work after Submit would abort it.
+  const [uploading, setUploading] = useState(0);
+  const onPhotoBusy = useCallback((busy: boolean) => setUploading((n) => n + (busy ? 1 : -1)), []);
+  const submitBlocked = readOnly || arrived || uploading > 0 || missingMandatory.length > 0;
 
   // ── Local draft auto-save (UXI-002 posture: scoped per user + request). ──
   // Only for NEVER-server-saved forms: once a server draft exists (initial !=
@@ -323,7 +356,7 @@ export function CreateCustomerForm({
         ? d.unanswered.filter((x: unknown) => submissionIdSchema.safeParse(x).success)
         : [];
       if (unanswered.length === 0) {
-        setInfo(RESTORED);
+        if (typedAnything(d)) setInfo(RESTORED);
       } else {
         // A send got no answer before this reload. Ask before inviting a rebuild.
         unansweredRef.current = unanswered;
@@ -380,25 +413,29 @@ export function CreateCustomerForm({
     if (readOnly || arrived) return;
     const handle = setTimeout(() => {
       if (typeof window === 'undefined' || phoneCopyGoneRef.current) return;
-      window.localStorage.setItem(
-        draftKey,
-        JSON.stringify({
-          legalName,
-          paymentTerms,
-          crNumber,
-          channelId,
-          subChannelId,
-          primaryPhone,
-          altPhone,
-          contactPerson,
-          contactRole,
-          notes,
-          creditLimit,
-          termDays,
-          savedAt: Date.now(),
-          unanswered: unansweredRef.current,
-        })
-      );
+      const copy = {
+        legalName,
+        paymentTerms,
+        crNumber,
+        channelId,
+        subChannelId,
+        primaryPhone,
+        altPhone,
+        contactPerson,
+        contactRole,
+        notes,
+        creditLimit,
+        termDays,
+        savedAt: Date.now(),
+        unanswered: unansweredRef.current,
+      };
+      // Nothing typed and no send to ask about: no copy. Removed, not just
+      // skipped — clearing every field must not leave the old text to return.
+      if (!typedAnything(copy) && unansweredRef.current.length === 0) {
+        window.localStorage.removeItem(draftKey);
+        return;
+      }
+      window.localStorage.setItem(draftKey, JSON.stringify(copy));
     }, 500);
     return () => clearTimeout(handle);
   }, [
@@ -446,6 +483,9 @@ export function CreateCustomerForm({
   }
 
   async function submit(isDraft: boolean) {
+    // Try again repeats a Submit too, past the button disabled while a photo is
+    // going up. The line beside the button says why nothing happens.
+    if (!isDraft && uploading > 0) return;
     if (submitLockRef.current) return;
     submitLockRef.current = true;
     setErrors({});
@@ -519,8 +559,14 @@ export function CreateCustomerForm({
         const ids = idsRef.current!;
         ids.settle(outcome);
         // null for a first-time success; every other outcome is said beside
-        // the button.
-        setNotice(noticeFor(outcome, { doubt: ids.doubt }));
+        // the button. The sends kept on the phone count as a doubt too: after
+        // a reload they are not in this form's SubmissionIds, and an offline
+        // try read "nothing was sent" over one that may have arrived (item 22
+        // review). Read before this send's own id comes off the list below.
+        const earlierOnPhone = unansweredRef.current.some((x) => x !== submissionId);
+        setNotice(
+          noticeFor(outcome, { doubt: ids.doubt === 'none' && earlierOnPhone ? 'earlier' : ids.doubt })
+        );
         if (neverSaved) {
           // Did not land: refused, or never read and no earlier try of it was.
           const refused = outcome.kind === 'answered' && !outcome.result.ok;
@@ -681,6 +727,7 @@ export function CreateCustomerForm({
                     : null
                 }
                 onChange={(p) => !readOnly && setCrPhotoId(p?.attachmentId ?? null)}
+                onBusyChange={onPhotoBusy}
               />
             </div>
           </div>
@@ -838,6 +885,7 @@ export function CreateCustomerForm({
                     if (readOnly) return;
                     if (!p) setGuaranteeIds((ids) => ids.filter((x) => x !== gid));
                   }}
+                  onBusyChange={onPhotoBusy}
                 />
               ))}
               {!readOnly && guaranteeIds.length < 10 && (
@@ -854,6 +902,7 @@ export function CreateCustomerForm({
                       );
                     }
                   }}
+                  onBusyChange={onPhotoBusy}
                 />
               )}
             </div>
@@ -1023,6 +1072,7 @@ export function CreateCustomerForm({
                   onChange={(p) =>
                     !readOnly && setBranch(s.key, { shopPhotoId: p?.attachmentId ?? null })
                   }
+                  onBusyChange={onPhotoBusy}
                 />
                 <PhotoCaptureSlot
                   kind="SIGNBOARD"
@@ -1041,6 +1091,7 @@ export function CreateCustomerForm({
                   onChange={(p) =>
                     !readOnly && setBranch(s.key, { signboardPhotoId: p?.attachmentId ?? null })
                   }
+                  onBusyChange={onPhotoBusy}
                 />
                 {[0, 1].map((slotIdx) => {
                   const existing = s.extraPhotoIds[slotIdx] ?? null;
@@ -1067,6 +1118,7 @@ export function CreateCustomerForm({
                           })(),
                         });
                       }}
+                      onBusyChange={onPhotoBusy}
                     />
                   );
                 })}
@@ -1107,13 +1159,22 @@ export function CreateCustomerForm({
               busy={pending}
               onRetry={() => submit(lastWasDraftRef.current)}
             />
+            {!arrived && uploading > 0 && (
+              <p className="mb-2 text-sm font-medium text-slate-600">{PHOTO_UPLOADING_MESSAGE}</p>
+            )}
             <div className="flex items-center justify-start gap-3">
               <button
                 type="button"
                 disabled={pending || submitBlocked}
                 onClick={() => submit(false)}
                 className="rounded-md bg-brand-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                title={missingMandatory.length > 0 ? `Missing: ${missingMandatory.join(', ')}` : ''}
+                title={
+                  uploading > 0
+                    ? PHOTO_UPLOADING_MESSAGE
+                    : missingMandatory.length > 0
+                      ? `Missing: ${missingMandatory.join(', ')}`
+                      : ''
+                }
               >
                 {arrived ? 'Sent ✓' : pending ? 'Submitting…' : 'Submit for approval ▶'}
               </button>

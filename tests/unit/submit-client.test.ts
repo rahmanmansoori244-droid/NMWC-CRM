@@ -224,6 +224,37 @@ describe('SubmissionIds — when a retry reuses its id', () => {
     expect(t.doubt).toBe('none');
   });
 
+  it('an ok saved DRAFT says nothing about an earlier Submit that got no answer; a request that is IN does', () => {
+    // The edit form saves a draft beside a pending edit (the server's one-open
+    // check is for a submit only), so an ok draft cannot show the earlier Submit
+    // missed. It used to clear the doubt, and the next offline try read
+    // "nothing was sent" (item 22 review).
+    const draft = { editId: 'd1', state: 'DRAFT' as const, submittedAt: null, replayed: false };
+    const s = ids();
+    s.idFor({ isDraft: false });
+    s.settle({ kind: 'unconfirmed' });
+    s.idFor({ isDraft: true });
+    s.settle({ kind: 'answered', result: { ok: true, data: draft } });
+    expect(s.doubt).toBe('earlier');
+    expect(noticeFor({ kind: 'offline' }, { doubt: s.doubt })).toEqual({
+      tone: 'failed',
+      text: OFFLINE_AFTER_EARLIER_MESSAGE,
+      retry: true,
+    });
+    // A replayed draft is no more "in" than a fresh one.
+    s.idFor({ isDraft: true, n: 2 });
+    s.settle({ kind: 'answered', result: { ok: true, data: { ...draft, replayed: true } } });
+    expect(s.doubt).toBe('earlier');
+    // A submit that is in would have been refused had the earlier one landed: settled.
+    const t = ids();
+    t.idFor({ isDraft: false });
+    t.settle({ kind: 'unconfirmed' });
+    t.idFor({ isDraft: false, changed: true });
+    t.settle({ kind: 'answered', result: { ok: true, data: { ...draft, state: 'SUBMITTED' } } });
+    expect(t.doubt).toBe('none');
+    expect(noticeFor({ kind: 'offline' }, { doubt: t.doubt })).toEqual({ tone: 'failed', text: OFFLINE_MESSAGE, retry: true });
+  });
+
   it('any answer spends the id, ok or not', () => {
     const s = ids();
     s.idFor({ a: 1 });

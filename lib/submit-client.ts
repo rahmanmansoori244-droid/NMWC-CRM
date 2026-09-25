@@ -144,8 +144,14 @@ export class SubmissionIds {
       // Answered for the open id: it landed now or before (a replay), or it
       // was refused — either way that id's doubt is settled.
       if (this.open) this.unanswered.delete(this.open.id);
-      // A request that is IN: the earlier doubts are moot for what he does next.
-      if (outcome.result.ok) this.unanswered.clear();
+      // A request that is IN settles the earlier doubts: a submit that had landed
+      // would have refused it. A saved DRAFT is not in, and says nothing about an
+      // earlier Submit — the edit form saves one beside a pending edit — so an
+      // offline try after it still says the earlier one may have arrived.
+      const state = outcome.result.ok
+        ? (outcome.result.data as Partial<SubmitReceipt> | undefined)?.state
+        : undefined;
+      if (outcome.result.ok && state !== 'DRAFT') this.unanswered.clear();
       this.open = null;
     } else if (outcome.kind === 'unconfirmed' && this.open) {
       this.open.uncertain = true;

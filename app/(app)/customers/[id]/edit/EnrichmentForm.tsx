@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState, useTransition, useEffect, useRef } from 'react';
+import { useCallback, useId, useState, useTransition, useEffect, useRef } from 'react';
 import { Role, type CustomerStatus, type DayOfWeek, type PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
 import { surfaceUnrenderedErrors, enrichmentFormRendersError } from '@/lib/form-errors';
@@ -8,7 +8,7 @@ import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import { postForm, noticeFor, SubmissionIds, type SubmitNotice } from '@/lib/submit-client';
-import type { SubmitReceipt } from '@/lib/submission';
+import { PHOTO_UPLOADING_MESSAGE, type SubmitReceipt } from '@/lib/submission';
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { hardReplace } from '@/lib/navigate';
 import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
@@ -86,9 +86,10 @@ export function EnrichmentForm({
   userRole: Role;
   canSubmit: boolean;
   /**
-   * Item 22: a pending UPDATE of this customer exists — approving it changes
-   * the values this draft started from, which then replaces the draft. False
-   * for a pending close or reactivation, which leaves the draft alone.
+   * Item 22: approving this customer's pending request changes the values this
+   * draft started from, which then replaces the draft — a pending update, or a
+   * reactivation of a customer that is not ACTIVE (pendingReplacesDraft in
+   * lib/submission-replay.ts). False for a pending close, which leaves it alone.
    */
   pendingReplacesDraft?: boolean;
   // UXI-002: scope localStorage drafts by user. A shared device used by two
@@ -191,6 +192,12 @@ export function EnrichmentForm({
   function setBranchPhoto(branchId: string, slot: 'shop' | 'signboard', id: string | null) {
     setBranchPhotos((s) => ({ ...s, [branchId]: { ...s[branchId], [slot]: id } }));
   }
+  // Photos still going up, in every slot — optional ones and retakes included,
+  // which the gate below never sees (it reads a photo only once attached).
+  // Submit leaves by a document load, and that aborts an upload in flight: the
+  // photo was lost while the salesman read "It arrived" (item 22 review).
+  const [uploading, setUploading] = useState(0);
+  const onPhotoBusy = useCallback((busy: boolean) => setUploading((n) => n + (busy ? 1 : -1)), []);
 
   // Client-side mandatory-field gate. Mirrors the server check in
   // services/edits.ts so the salesman gets immediate feedback and can't
@@ -222,13 +229,19 @@ export function EnrichmentForm({
         missingMandatory.push(`${tag} signboard photo`);
     });
   }
+  // For every role: a Manager's direct write leaves the same way.
   const submitBlocked =
-    !canSubmit || arrived || (userRole === Role.SALESMAN && missingMandatory.length > 0);
+    !canSubmit ||
+    arrived ||
+    uploading > 0 ||
+    (userRole === Role.SALESMAN && missingMandatory.length > 0);
   const submitTitle = !canSubmit
     ? 'Pending edit already in review'
-    : missingMandatory.length > 0
-      ? `Missing: ${missingMandatory.join(', ')}`
-      : '';
+    : uploading > 0
+      ? PHOTO_UPLOADING_MESSAGE
+      : missingMandatory.length > 0
+        ? `Missing: ${missingMandatory.join(', ')}`
+        : '';
 
   // ── Local draft auto-save (IndexedDB-lite via localStorage for v1) ───────
   // UXI-002: scope by user. UXI-003: scope by customer.updatedAt as well —
@@ -289,10 +302,18 @@ export function EnrichmentForm({
     }
   }, [draftKey, customerUpdatedAtMs]);
 
+  // Set when a submit arrived and the page is leaving: from then on nothing
+  // writes the phone copy — not a keystroke's autosave already due, which fired
+  // after the removal and brought back what had just arrived, nor a GPS fix
+  // landing during the document load (item 22 review; the create form's
+  // phoneCopyGoneRef). The pending timer, so a replay that stays can drop it.
+  const draftGoneRef = useRef(false);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Auto-save every change (debounced)
   useEffect(() => {
     const handle = setTimeout(() => {
-      if (typeof window === 'undefined') return;
+      if (typeof window === 'undefined' || draftGoneRef.current) return;
       window.localStorage.setItem(
         draftKey,
         JSON.stringify({
@@ -311,6 +332,7 @@ export function EnrichmentForm({
         })
       );
     }, 500);
+    autosaveTimerRef.current = handle;
     // Item 22: a green "saved" no longer describes the form once it changes.
     setNotice((n) => (n?.tone === 'received' ? null : n));
     return () => clearTimeout(handle);
@@ -333,6 +355,10 @@ export function EnrichmentForm({
   }
 
   async function submit(isDraft: boolean) {
+    // Try again repeats a Submit too, and its button is not the one disabled
+    // while a photo is going up; a success here would leave and abort it. The
+    // line beside the button says why nothing happens.
+    if (!isDraft && uploading > 0) return;
     // UXI-004: synchronous lock so a fast double-tap on the Submit button
     // can't fire two parallel server actions before useTransition flips.
     if (submitLockRef.current) return;
@@ -411,6 +437,9 @@ export function EnrichmentForm({
           // It had already arrived: said above, beside the button. Stay — there
           // is nothing to send, and moving on would hide the answer.
           if (res.state === 'SUBMITTED' || res.state === 'APPROVED') {
+            // The form stays, so a later edit may still save: drop only the
+            // autosave already due, which would write back what just arrived.
+            if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
             if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
             if (!isDraft) setArrived(true);
           }
@@ -421,15 +450,16 @@ export function EnrichmentForm({
           // guide promises — no longer deleted by a successful save.
           setNotice({
             tone: 'received',
-            // With changes to this customer still pending, approving them
-            // replaces this draft (lib/enrichment-draft.ts) — say so now, not
-            // after. A pending close or reactivation does not.
+            // When approving what is pending replaces this draft
+            // (lib/enrichment-draft.ts) — say so now, not after. A pending
+            // close does not; see pendingReplacesDraft in lib/submission-replay.ts.
             text: pendingReplacesDraft
               ? '✓ Draft saved on this phone. If the changes already waiting are approved first, they replace it.'
               : '✓ Draft saved. It stays on this phone until you submit.',
           });
           return;
         }
+        draftGoneRef.current = true;
         if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
         // Item 22: said beside the button BEFORE moving on — on weak signal the
         // next page can take a while, or fail to load, and the salesman must
@@ -446,7 +476,9 @@ export function EnrichmentForm({
         // fully-populated form that encourages a duplicate submit. A document
         // load (lib/navigate.ts): revalidatePath in a route handler does not
         // clear the browser's router cache (a server action's did), so a
-        // client navigation — or Back afterwards — showed the old values.
+        // client navigation — or Back afterwards — showed the old values. The
+        // transition ends as soon as this returns, long before the next page
+        // is in: `arrived`, not `pending`, is what keeps the bar locked.
         hardReplace(`/customers/${customer.id}`);
       } finally {
         submitLockRef.current = false;
@@ -510,6 +542,7 @@ export function EnrichmentForm({
                 }
                 attachTo={{ kind: 'customer', customerId: customer.id, slot: 'CR' }}
                 onChange={(p) => setCrPhotoId(p?.attachmentId ?? null)}
+                onBusyChange={onPhotoBusy}
               />
             </div>
           </div>
@@ -746,6 +779,7 @@ export function EnrichmentForm({
                     }
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'SHOP' }}
                     onChange={(p) => setBranchPhoto(b.id, 'shop', p?.attachmentId ?? null)}
+                    onBusyChange={onPhotoBusy}
                   />
                   <PhotoCaptureSlot
                     kind="SIGNBOARD"
@@ -762,18 +796,21 @@ export function EnrichmentForm({
                     }
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'SIGNBOARD' }}
                     onChange={(p) => setBranchPhoto(b.id, 'signboard', p?.attachmentId ?? null)}
+                    onBusyChange={onPhotoBusy}
                   />
                   <PhotoCaptureSlot
                     kind="FREE"
                     capturedLat={s.gps?.lat}
                     capturedLng={s.gps?.lng}
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'FREE' }}
+                    onBusyChange={onPhotoBusy}
                   />
                   <PhotoCaptureSlot
                     kind="FREE"
                     capturedLat={s.gps?.lat}
                     capturedLng={s.gps?.lng}
                     attachTo={{ kind: 'branch', branchId: b.id, slot: 'FREE' }}
+                    onBusyChange={onPhotoBusy}
                   />
                 </div>
               </div>
@@ -793,6 +830,9 @@ export function EnrichmentForm({
           busy={pending}
           onRetry={() => submit(lastWasDraftRef.current)}
         />
+        {canSubmit && !arrived && uploading > 0 && (
+          <p className="mb-2 text-sm font-medium text-slate-600">{PHOTO_UPLOADING_MESSAGE}</p>
+        )}
         <div className="flex items-center justify-start gap-3">
           <button
             type="button"
@@ -803,9 +843,12 @@ export function EnrichmentForm({
           >
             {arrived ? 'Sent ✓' : pending ? 'Submitting…' : 'Submit for approval ▶'}
           </button>
+          {/* Off once it arrived, as on the create form: a tap while the next
+              page loads (or after a replayed answer, which stays) wrote a stray
+              DRAFT and swapped "It arrived" for "…until you submit". */}
           <button
             type="button"
-            disabled={pending}
+            disabled={pending || arrived}
             onClick={() => submit(true)}
             className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
           >

@@ -126,6 +126,12 @@ export const SIGNED_OUT_MESSAGE =
  */
 export const FIX_FIELDS_MESSAGE = 'Not sent — fix what is marked in red, then submit again.';
 
+/**
+ * Submit waits while a photo is still going up: the form leaves after Submit by
+ * a document load (lib/navigate.ts), and that load aborts an upload in flight.
+ */
+export const PHOTO_UPLOADING_MESSAGE = 'Wait — a photo is still uploading.';
+
 /** The app was closed for maintenance: the request was turned away unread. */
 export const MAINTENANCE_MESSAGE =
   'The app is closed for maintenance, so this was not sent. Your changes are still here. Tap Try again in a few minutes.';

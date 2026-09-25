@@ -88,6 +88,19 @@ describe('every submit path answers a replay before doing anything else', () => 
     expect(s).not.toMatch(/\brouter\.(replace|push|refresh)\(/);
   });
 
+  it('the edit page words "Draft saved" by pendingReplacesDraft, with the pending kind AND the customer status', () => {
+    // A rule of the kind alone ("update") said a draft beside a pending
+    // reactivation stays on the phone — but approving one turns a CLOSED
+    // customer ACTIVE, which drops the draft (item 22 review). The helper is
+    // unit-tested; this pins that the page is what calls it.
+    const s = src('app/(app)/customers/[id]/edit/page.tsx');
+    expect(s).toMatch(/import \{[^}]*\bpendingReplacesDraft\b[^}]*\} from '@\/lib\/submission-replay'/);
+    expect(s).toMatch(
+      /\bpendingReplacesDraft=\{pendingReplacesDraft\(\s*pending \? requestKindOf\(pending\) : null,\s*customer\.status\s*\)\}/
+    );
+    expect(s.match(/\bpendingReplacesDraft=/g) ?? []).toHaveLength(1);
+  });
+
   it('the create path tells the duplicate guard who is asking — else his own request reads as someone else\'s', () => {
     const s = src('services/creates.ts');
     const call = s.slice(s.indexOf('assertNoExactCreateDuplicate(tx, {'));
