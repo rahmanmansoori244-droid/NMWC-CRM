@@ -385,7 +385,7 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     const xrRow = rows.find((r) => (r.parsed as { custCode?: string })?.custCode === `${P}-XR`);
     expect(xrRow?.state).toBe('PROMOTED');
     expect(xrRow?.issues).toEqual([
-      { field: '_resolve', message: 'route "ZZNO-R99" not found — branch parked in UNASSIGNED' },
+      { field: '_resolve', message: 'route "ZZNO-R99" not found — a new branch is parked in UNASSIGNED, an existing one keeps its route' },
     ]);
   });
 
@@ -568,8 +568,9 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     // field-ownership rule the narrow lane exists to enforce, and narrowing the
     // lane test must not have weakened it.
     expect(after.legalName).toBe('ZZ CRM Owned Name');
-    // Nor does it add the branch the row described — and the row now SAYS so,
-    // instead of reading PROMOTED as if the branch had landed (item 20).
+    // Nor does a plain file row add the branch it describes (item 20): only a
+    // row the Steward fixed in the app does (import-fixes.test.ts). The row now
+    // SAYS so, instead of reading PROMOTED as if the branch had landed.
     expect(after.branches).toEqual([]);
     const [row] = await prisma.importRow.findMany({
       where: { batchId: (up as { ok: true; data: { batchId: string } }).data.batchId },
@@ -578,7 +579,7 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(row.issues).toEqual([
       {
         field: '_lane',
-        message: `branch ${code}-01 is not in the master and was not added — a Temix refresh updates customer fields only`,
+        message: `branch ${code}-01 is not in the master and was not added — a re-import does not add branches to a customer linked to Temix; fix the held-back row on its batch page instead`,
       },
     ]);
   });
@@ -643,7 +644,7 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(rows[0].issues).toEqual([
       {
         field: '_lane',
-        message: `branch ${code}-01: address, visit day in this row differ from the master and were not applied — a Temix refresh updates customer fields only`,
+        message: `branch ${code}-01: address, visit day in this row differ from the master and were not applied — a re-import does not change an existing branch of a customer linked to Temix; change it on the customer page`,
       },
     ]);
     expect(rows[1].issues).toBeNull();

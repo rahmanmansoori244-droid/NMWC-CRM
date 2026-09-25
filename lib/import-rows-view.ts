@@ -11,7 +11,7 @@
  */
 import { ImportRowState, Prisma } from '@prisma/client';
 
-export const ROW_VIEWS = ['problems', 'rejected', 'quarantined', 'warnings', 'all'] as const;
+export const ROW_VIEWS = ['problems', 'rejected', 'quarantined', 'warnings', 'excluded', 'all'] as const;
 export type RowView = (typeof ROW_VIEWS)[number];
 
 export const ROWS_PAGE_SIZE = 100;
@@ -21,8 +21,30 @@ export const ROW_VIEW_LABEL: Record<RowView, string> = {
   rejected: 'Rejected',
   quarantined: 'Quarantined',
   warnings: 'Loaded with a warning',
+  excluded: 'Excluded',
   all: 'All rows',
 };
+
+/**
+ * A row the Steward still has to deal with: held back or rejected, and not
+ * accepted as excluded. The Work list shows a batch while it has one.
+ */
+export const OPEN_PROBLEM_ROW = {
+  state: { in: [ImportRowState.QUARANTINED, ImportRowState.REJECTED] },
+  excludedAt: null,
+} satisfies Prisma.ImportRowWhereInput;
+
+/** A row fixed in the app and waiting for the batch to be promoted again. */
+export const FIXED_WAITING_ROW = {
+  state: ImportRowState.CLEAN,
+  parsed: { path: ['fixedInApp'], equals: true },
+} satisfies Prisma.ImportRowWhereInput;
+
+/** The Work list's rule for a customer batch the Steward must come back to. */
+export const WORK_BATCH_ROWS: Prisma.ImportBatchWhereInput[] = [
+  { kind: 'CUSTOMER', rows: { some: OPEN_PROBLEM_ROW } },
+  { kind: 'CUSTOMER', rows: { some: FIXED_WAITING_ROW } },
+];
 
 export function parseRowView(value: string | undefined): RowView {
   return (ROW_VIEWS as readonly string[]).includes(value ?? '') ? (value as RowView) : 'problems';
@@ -34,37 +56,50 @@ export function parsePage(value: string | undefined): number {
 }
 
 /**
- * The rows a view lists. "Loaded with a warning" is a PROMOTED row that carries
- * issues: the customer landed, but a route or region was substituted, or the
- * Temix refresh lane left the row's branch data unapplied.
+ * The rows a view lists. "Needs attention" is every held-back or rejected row
+ * the Steward has not accepted as excluded; "Rejected" and "Quarantined" list
+ * all of them, excluded or not, so the reconciliation still adds up. "Loaded
+ * with a warning" is a PROMOTED row that carries issues: the customer landed,
+ * but a route or region was substituted, or its branch was left as it was.
  */
 export function rowViewWhere(batchId: string, view: RowView): Prisma.ImportRowWhereInput {
   switch (view) {
     case 'problems':
-      return { batchId, state: { in: [ImportRowState.REJECTED, ImportRowState.QUARANTINED] } };
+      return {
+        batchId,
+        state: { in: [ImportRowState.REJECTED, ImportRowState.QUARANTINED] },
+        excludedAt: null,
+      };
     case 'rejected':
       return { batchId, state: ImportRowState.REJECTED };
     case 'quarantined':
       return { batchId, state: ImportRowState.QUARANTINED };
     case 'warnings':
       return { batchId, state: ImportRowState.PROMOTED, issues: { not: Prisma.DbNull } };
+    case 'excluded':
+      return { batchId, excludedAt: { not: null } };
     case 'all':
       return { batchId };
   }
 }
 
-/** How many rows each view holds, from a per-state count and the warning count. */
+/**
+ * How many rows each view holds, from a per-state count, the warning count and
+ * the excluded count. Only held-back and rejected rows can be excluded.
+ */
 export function viewCounts(
   byState: Partial<Record<ImportRowState, number>>,
-  warnings: number
+  warnings: number,
+  excluded = 0
 ): Record<RowView, number> {
   const n = (s: ImportRowState) => byState[s] ?? 0;
   const all = Object.values(byState).reduce<number>((sum, v) => sum + (v ?? 0), 0);
   return {
-    problems: n(ImportRowState.REJECTED) + n(ImportRowState.QUARANTINED),
+    problems: n(ImportRowState.REJECTED) + n(ImportRowState.QUARANTINED) - excluded,
     rejected: n(ImportRowState.REJECTED),
     quarantined: n(ImportRowState.QUARANTINED),
     warnings,
+    excluded,
     all,
   };
 }

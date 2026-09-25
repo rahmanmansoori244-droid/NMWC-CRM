@@ -26,6 +26,10 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
   const oldRowId = `${sfx}-old`;
   const freshRowId = `${sfx}-fresh`;
   const stagedRowId = `${sfx}-staged`;
+  // Item 20: held-back rows — excluded long ago, excluded lately, not excluded.
+  const heldExcludedOld = `${sfx}-qx-old`;
+  const heldExcludedNew = `${sfx}-qx-new`;
+  const heldOpen = `${sfx}-q-open`;
   let stagedBatchId = '';
 
   const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
@@ -89,6 +93,8 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
           parsed: PERSONAL,
           issues: [{ field: 'phone', message: `duplicate of ${PERSONAL.phone}` }],
           state: 'PROMOTED',
+          // Cells the Steward corrected in the app are the same customer data.
+          corrections: { cells: { phone: PERSONAL.phone, cust_name: PERSONAL.legal_name } },
         },
       });
       await prisma.$executeRawUnsafe(
@@ -96,6 +102,29 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
         daysAgo(age),
         id
       );
+    }
+
+    for (const [id, excludedDaysAgo, n] of [
+      [heldExcludedOld, 120, 10],
+      [heldExcludedNew, 3, 11],
+      [heldOpen, null, 12],
+    ] as const) {
+      await prisma.importRow.create({
+        data: {
+          id,
+          batchId,
+          rowNumber: n,
+          raw: PERSONAL,
+          parsed: PERSONAL,
+          issues: [{ field: 'phone', message: 'phone already exists in master on customer X' }],
+          corrections: { cells: { phone: PERSONAL.phone } },
+          state: 'QUARANTINED',
+          ...(excludedDaysAgo === null
+            ? {}
+            : { excludedAt: daysAgo(excludedDaysAgo), excludedById: userId, excludedReason: 'stays out' }),
+        },
+      });
+      await prisma.$executeRawUnsafe(`UPDATE "ImportRow" SET "createdAt" = $1 WHERE "id" = $2`, daysAgo(200), id);
     }
 
     // A spent rate-limit bucket keyed on a username, and a fresh one.
@@ -168,6 +197,22 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
     // Nothing of the customer is left anywhere in the row.
     expect(JSON.stringify(old)).not.toContain(PERSONAL.phone);
     expect(JSON.stringify(old)).not.toContain(PERSONAL.contact_person);
+  });
+
+  it('item 20: a held-back row accepted as excluded 90+ days ago is cleared like a rejected one, corrections included', async () => {
+    const gone = await prisma.importRow.findUniqueOrThrow({ where: { id: heldExcludedOld } });
+    expect([gone.raw, gone.parsed, gone.issues, gone.corrections]).toEqual([{}, null, null, null]);
+    // The exclusion itself is the record, and outlives the payload.
+    expect(gone.excludedAt).not.toBeNull();
+    expect(gone.state).toBe('QUARANTINED');
+  });
+
+  it('item 20: a held-back row excluded lately, or not excluded at all, keeps its payload', async () => {
+    for (const id of [heldExcludedNew, heldOpen]) {
+      const kept = await prisma.importRow.findUniqueOrThrow({ where: { id } });
+      expect(JSON.stringify(kept.raw)).toContain(PERSONAL.phone);
+      expect(kept.corrections).not.toBeNull();
+    }
   });
 
   it('leaves rows inside the retention window untouched', async () => {

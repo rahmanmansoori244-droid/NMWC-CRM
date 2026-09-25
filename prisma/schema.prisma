@@ -210,6 +210,7 @@ model User {
   capturedAttachments Attachment[]      @relation("AttachmentCapturer")
   uploadedImports     ImportBatch[]     @relation("ImportUploader")
   reviewedImports     ImportRow[]       @relation("ImportReviewer")
+  excludedImports     ImportRow[]       @relation("ImportExcluder")
   requestedExports    ExportJob[]       @relation("ExportRequester")
   // B-15: previous password hashes used to block reuse on change-password.
   passwordHistory     PasswordHistory[]
@@ -557,19 +558,26 @@ model ImportBatch {
 }
 
 model ImportRow {
-  id           String         @id @default(cuid())
-  batchId      String
-  rowNumber    Int
-  raw          Json
-  parsed       Json?
-  state        ImportRowState @default(PENDING)
-  issues       Json?
-  reviewedById String?
-  reviewedAt   DateTime?
-  createdAt    DateTime       @default(now())
+  id             String         @id @default(cuid())
+  batchId        String
+  rowNumber      Int
+  raw            Json
+  parsed         Json?
+  state          ImportRowState @default(PENDING)
+  issues         Json?
+  reviewedById   String?
+  reviewedAt     DateTime?
+  createdAt      DateTime       @default(now())
+  // Item 20: cells the Steward corrected in the app; raw stays as uploaded.
+  corrections    Json?
+  // Item 20: "accepted as excluded" — a column so the 90-day sweep of issues cannot undo it.
+  excludedAt     DateTime?
+  excludedById   String?
+  excludedReason String?
 
   batch            ImportBatch @relation(fields: [batchId], references: [id])
   reviewedBy       User?       @relation("ImportReviewer", fields: [reviewedById], references: [id])
+  excludedBy       User?       @relation("ImportExcluder", fields: [excludedById], references: [id])
   promotedCustomer Customer?
 
   @@index([batchId, state])

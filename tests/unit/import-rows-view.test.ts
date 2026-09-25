@@ -26,7 +26,13 @@ describe('views', () => {
   });
 
   it('each view selects its rows, always inside the batch', () => {
-    expect(rowViewWhere('b1', 'problems')).toEqual({ batchId: 'b1', state: { in: ['REJECTED', 'QUARANTINED'] } });
+    // "Needs attention" leaves out what the Steward accepted as excluded (item 20).
+    expect(rowViewWhere('b1', 'problems')).toEqual({
+      batchId: 'b1',
+      state: { in: ['REJECTED', 'QUARANTINED'] },
+      excludedAt: null,
+    });
+    expect(rowViewWhere('b1', 'excluded')).toEqual({ batchId: 'b1', excludedAt: { not: null } });
     expect(rowViewWhere('b1', 'rejected')).toEqual({ batchId: 'b1', state: 'REJECTED' });
     expect(rowViewWhere('b1', 'quarantined')).toEqual({ batchId: 'b1', state: 'QUARANTINED' });
     expect(rowViewWhere('b1', 'warnings')).toEqual({
@@ -38,14 +44,15 @@ describe('views', () => {
   });
 
   it('counts each view from the per-state totals', () => {
-    expect(viewCounts({ CLEAN: 3, PROMOTED: 20, QUARANTINED: 4, REJECTED: 1833 }, 7)).toEqual({
-      problems: 1837,
+    expect(viewCounts({ CLEAN: 3, PROMOTED: 20, QUARANTINED: 4, REJECTED: 1833 }, 7, 30)).toEqual({
+      problems: 1807,
       rejected: 1833,
       quarantined: 4,
       warnings: 7,
+      excluded: 30,
       all: 1860,
     });
-    expect(viewCounts({}, 0)).toEqual({ problems: 0, rejected: 0, quarantined: 0, warnings: 0, all: 0 });
+    expect(viewCounts({}, 0)).toEqual({ problems: 0, rejected: 0, quarantined: 0, warnings: 0, excluded: 0, all: 0 });
   });
 });
 

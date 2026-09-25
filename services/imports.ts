@@ -19,7 +19,6 @@ import {
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 import { parseWorkbook } from '@/lib/excel';
-import { normalizePhone, isValidPhoneFormat } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
 import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
 import { checkLimit } from '@/lib/rate-limit';
@@ -31,6 +30,12 @@ import { sendAlert } from '@/lib/alert';
 import { importRejectionAlert } from '@/lib/import-rejection-alert';
 import { randomUUID } from 'node:crypto';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import {
+  checkCustomerRow,
+  fileCollisions,
+  type SheetRow,
+} from '@/lib/import-row-check';
+import { masterCollisionMaps } from '@/lib/import-master-lookup';
 
 // RBAC-05-009 / PRD §4: import is Steward-only. The previous lax gate accepted
 // MANAGER too, conflating Steward (master-data ops) and Manager (people ops)
@@ -44,29 +49,6 @@ async function requireSteward() {
     throw new ForbiddenError('Only the Data Steward can run imports.');
   }
   return session.user;
-}
-
-/**
- * F-05 / QA-029 — strip HTML tags before persisting any user-supplied text
- * field. Mirrors the same helper used on the edit form (lib/validation/edit).
- * Without this, an import row carrying `legalName="<script>…</script>"` lands
- * in the master verbatim, then propagates back through Excel exports and JSON
- * audit-log views.
- */
-function stripHtml(s: unknown): string {
-  return String(s ?? '')
-    .replace(/<[^>]+>/g, '')
-    .trim();
-}
-
-/**
- * F-05 — refuse cells whose value starts with a spreadsheet formula trigger
- * (`=`, `+`, `-`, `@`, tab, CR). Matches the export-side escape but applied
- * on the way IN so the data in the master is never hostile to begin with.
- */
-function isFormulaPayload(s: unknown): boolean {
-  const v = String(s ?? '').trim();
-  return v.length > 0 && /^[=+\-@\t\r]/.test(v);
 }
 
 // ── Account master import (regions, routes, users) ────────────────────────
@@ -106,10 +88,6 @@ function uc(v: unknown): string {
 
 // QA-012: hard cap on uploaded xlsx (zip-bomb defense)
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5 MB
-
-// Accepted codes for the go-live enrichment columns (see uploadCustomerMasterCore).
-const DAY_CODES = new Set(['SAT', 'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI']);
-const STATUS_CODES = new Set(['ACTIVE', 'CLOSED', 'SUSPENDED']);
 
 /**
  * The shortest address the DATABASE will accept for a branch.
@@ -704,14 +682,6 @@ async function uploadAccountMasterCore(
 // promotes a batch when ready. v1.1 will add an inline review screen; for
 // now, we expose a "promote" action that creates customers in bulk.
 
-/** "customer X", or "customers X, Y, Z and 4 more" — never an unbounded list in a row's issues. */
-function heldBackBy(codes: string[]): string {
-  const unique = [...new Set(codes)];
-  if (unique.length === 1) return `customer ${unique[0]}`;
-  const shown = unique.slice(0, 3).join(', ');
-  return unique.length > 3 ? `customers ${shown} and ${unique.length - 3} more` : `customers ${shown}`;
-}
-
 export async function uploadCustomerMasterAction(
   formData: FormData
 ): SafeAction<{ batchId: string; clean: number; quarantined: number }> {
@@ -762,250 +732,26 @@ async function uploadCustomerMasterCore(
   const importRows: Prisma.ImportRowCreateManyInput[] = [];
   let clean = 0;
   let quarantined = 0;
-  // F-04: build collision maps inside the file + against the live master so
-  // the parse step queues duplicates for review instead of silently
-  // P2002-failing on promote.
-  // Each occurrence carries its owning cust_code so a legitimate MULTI-BRANCH
-  // customer — whose branch rows repeat the SAME phone/CR (exactly how promote
-  // groups branch rows by cust_code into one customer) — is not flagged against
-  // ITSELF. Only a value shared across DIFFERENT cust_codes is an in-file
-  // duplicate, mirroring the master cross-check's `code !== custCode` exclusion.
-  // Before this, importing a real master quarantined every multi-branch customer
-  // (F-UAT-7: the medium synthetic master lost 324/499 rows this way).
-  type FileDup = { row: number; code: string };
-  const phonesInFile = new Map<string, FileDup[]>();
-  const crsInFile = new Map<string, FileDup[]>();
+  // F-04: collision maps inside the file (lib/import-row-check.ts fileCollisions)
+  // and against the live master below, so the parse step queues duplicates for
+  // review instead of silently P2002-failing on promote.
+  const sheetRows = sheet.rows.map((row, i) => ({ row: row as SheetRow, rowNumber: i + 2 }));
+  const { phonesInFile, crsInFile } = fileCollisions(sheetRows);
   // Accepted `channel` codes — the Channel table's keys, read once per upload.
   const channelKeys = new Set(
     (await prisma.channel.findMany({ select: { key: true } })).map((c) => c.key.toUpperCase())
   );
+  // Against the live master: one query each (lib/import-master-lookup.ts).
+  const { masterPhones, masterCrs } = await masterCollisionMaps(
+    [...phonesInFile.keys()],
+    [...crsInFile.keys()]
+  );
+
+  // The per-row rules live in lib/import-row-check.ts, shared with the Steward's
+  // in-app fix of a held-back row (item 20), so the two can never disagree.
+  const ctx = { channelKeys, phonesInFile, crsInFile, masterPhones, masterCrs };
   for (const [i, row] of sheet.rows.entries()) {
-    const rowCode = stripHtml(
-      row.cust_code ?? row.custcode ?? row.CUSTCODE ?? row.code ?? row.Code
-    ).trim();
-    const phoneNorm = normalizePhone(
-      String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim() || null
-    );
-    if (phoneNorm) {
-      const a = phonesInFile.get(phoneNorm) ?? [];
-      a.push({ row: i + 2, code: rowCode });
-      phonesInFile.set(phoneNorm, a);
-    }
-    const crNorm = normalizeCR(String(row.cr_no ?? row['CR NO'] ?? '').trim() || null);
-    if (crNorm) {
-      const a = crsInFile.get(crNorm) ?? [];
-      a.push({ row: i + 2, code: rowCode });
-      crsInFile.set(crNorm, a);
-    }
-  }
-  // Cross-check against the live master in one query each. Keyed by the
-  // OWNING nmwcCode so a row that updates its own customer (a re-import or a
-  // Temix refresh of the existing master) does not self-collide — previously
-  // this used bare Sets and every refresh row of a known customer was
-  // quarantined against itself.
-  const phoneList = [...phonesInFile.keys()];
-  const crList = [...crsInFile.keys()];
-  const masterPhones = new Map<string, string[]>();
-  if (phoneList.length) {
-    for (const c of await prisma.customer.findMany({
-      where: { primaryPhoneNorm: { in: phoneList }, deletedAt: null },
-      select: { primaryPhoneNorm: true, nmwcCode: true },
-    })) {
-      if (!c.primaryPhoneNorm) continue;
-      const a = masterPhones.get(c.primaryPhoneNorm) ?? [];
-      a.push(c.nmwcCode);
-      masterPhones.set(c.primaryPhoneNorm, a);
-    }
-  }
-  const masterCrs = new Map<string, string[]>();
-  if (crList.length) {
-    for (const c of await prisma.customer.findMany({
-      where: { crNumberNorm: { in: crList }, deletedAt: null },
-      select: { crNumberNorm: true, nmwcCode: true },
-    })) {
-      if (!c.crNumberNorm) continue;
-      const a = masterCrs.get(c.crNumberNorm) ?? [];
-      a.push(c.nmwcCode);
-      masterCrs.set(c.crNumberNorm, a);
-    }
-  }
-
-  for (const [i, row] of sheet.rows.entries()) {
-    const issues: { field: string; message: string }[] = [];
-    // F-05: stripHtml on every text field at parse time so nothing hostile
-    // reaches the master. Then re-screen for spreadsheet formula prefixes.
-    const custCode = stripHtml(
-      row.cust_code ?? row.custcode ?? row.CUSTCODE ?? row.code ?? row.Code
-    ).trim();
-    const custName = stripHtml(row.cust_name ?? row['CUST NAME'] ?? row.name);
-    // Read the SAME header fallbacks as normalizePhone below — otherwise a phone
-    // supplied in the 'PHONE' or 'Primary Phone' column skipped the format check
-    // entirely (an invalid number in those columns was silently accepted).
-    const phoneRaw = String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim();
-    const phone = normalizePhone(
-      String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim() || null
-    );
-    const crNorm = normalizeCR(String(row.cr_no ?? row['CR NO'] ?? '').trim() || null);
-
-    if (!custCode) issues.push({ field: 'cust_code', message: 'required' });
-    if (!custName) issues.push({ field: 'cust_name', message: 'required' });
-    if (phoneRaw && !isValidPhoneFormat(phoneRaw)) {
-      issues.push({ field: 'phone', message: 'invalid format' });
-    }
-    // In-file dup only when the SAME phone/CR appears under a DIFFERENT
-    // cust_code — a multi-branch customer sharing one phone/CR across its own
-    // branch rows is legitimate and must NOT self-quarantine (F-UAT-7).
-    const phoneOtherRows = phone
-      ? (phonesInFile.get(phone) ?? []).filter((e) => e.code !== custCode).map((e) => e.row)
-      : [];
-    if (phoneOtherRows.length > 0) {
-      issues.push({
-        field: 'phone',
-        message: `duplicate phone in this file (also rows ${phoneOtherRows.join(', ')})`,
-      });
-    }
-    // These two used to end "review in /duplicates". That screen cannot help: it
-    // pairs customers already in the master, never a held-back row, and it does
-    // not treat a shared phone as a signal at all. Name the customer instead, so
-    // the Steward can open it.
-    const phoneOwners = phone ? (masterPhones.get(phone) ?? []).filter((code) => code !== custCode) : [];
-    if (phoneOwners.length > 0) {
-      issues.push({
-        field: 'phone',
-        message: `phone already exists in master on ${heldBackBy(phoneOwners)}`,
-      });
-    }
-    const crOtherRows = crNorm
-      ? (crsInFile.get(crNorm) ?? []).filter((e) => e.code !== custCode).map((e) => e.row)
-      : [];
-    if (crOtherRows.length > 0) {
-      issues.push({
-        field: 'cr_no',
-        message: `duplicate CR in this file (also rows ${crOtherRows.join(', ')})`,
-      });
-    }
-    const crOwners = crNorm ? (masterCrs.get(crNorm) ?? []).filter((code) => code !== custCode) : [];
-    if (crOwners.length > 0) {
-      issues.push({
-        field: 'cr_no',
-        message: `CR already exists in master on ${heldBackBy(crOwners)}`,
-      });
-    }
-    // F-12: strict whitelist on payment terms — silently defaulting `Crdit`
-    // to CASH ate the field-lock semantics for credit customers.
-    // `paymentTermsPresent` records whether the sheet EXPLICITLY stated a
-    // value: the Temix-refresh lane must distinguish "column absent — keep
-    // the customer's current terms" from "Temix says CASH" (an absent column
-    // silently flipping CREDIT customers to CASH was an adversarial-review
-    // CONFIRMED finding). Legacy create/full-upsert paths keep the CASH
-    // default unchanged.
-    const ptRaw = String(row.payment_terms ?? row['PAYMENT TERMS'] ?? '')
-      .trim()
-      .toUpperCase();
-    let paymentTerms = 'CASH';
-    const paymentTermsPresent = ptRaw === 'CASH' || ptRaw === 'CREDIT';
-    if (ptRaw && !paymentTermsPresent) {
-      issues.push({ field: 'payment_terms', message: `expected CASH or CREDIT, got "${ptRaw}"` });
-    } else if (ptRaw === 'CREDIT') {
-      paymentTerms = 'CREDIT';
-    }
-    // F-05: refuse formula payloads in any text field.
-    for (const field of ['cust_name', 'address', 'contact_person', 'notes']) {
-      if (isFormulaPayload((row as Record<string, unknown>)[field])) {
-        issues.push({
-          field,
-          message: 'cell starts with a spreadsheet formula trigger; remove it',
-        });
-      }
-    }
-
-    // Phase 1 Temix refresh columns (all optional — a plain master sheet
-    // without them behaves exactly as before):
-    //  - temix_code: the ERP's code for this customer. Presence marks the row
-    //    as a REFRESH row at promote time (crosswalk backfill + narrow update).
-    //  - credit_limit / payment_term_days: authoritatively FROM Temix
-    //    (owner-locked) for existing CREDIT customers.
-    const temixCode =
-      stripHtml(row.temix_code ?? row.temixcode ?? row['TEMIX CODE'] ?? row['Temix Code']).trim() ||
-      null;
-    let creditLimit: number | null = null;
-    const creditRaw = String(row.credit_limit ?? row['CREDIT LIMIT'] ?? '').trim();
-    if (creditRaw) {
-      const n = Number(creditRaw);
-      if (!Number.isFinite(n) || n < 0 || n > 99_999_999_999) {
-        issues.push({
-          field: 'credit_limit',
-          message: `expected a non-negative number, got "${creditRaw}"`,
-        });
-      } else {
-        creditLimit = Math.round(n * 1000) / 1000;
-      }
-    }
-    let paymentTermDays: number | null = null;
-    const termRaw = String(row.payment_term_days ?? row['PAYMENT TERM DAYS'] ?? '').trim();
-    if (termRaw) {
-      const n = Number(termRaw);
-      if (!Number.isInteger(n) || n < 0 || n > 365) {
-        issues.push({
-          field: 'payment_term_days',
-          message: `expected whole days 0-365, got "${termRaw}"`,
-        });
-      } else {
-        paymentTermDays = n;
-      }
-    }
-
-    // Go-live enrichment columns. All optional; a value that is present but not
-    // one of the accepted codes holds the row for review rather than being
-    // silently dropped, since each of them changes how the field team works
-    // the customer (which day it is visited, whether it is closed).
-    const channelRaw = uc(row.channel ?? row.CHANNEL ?? '');
-    let channelKey: string | null = null;
-    if (channelRaw) {
-      if (channelKeys.has(channelRaw)) channelKey = channelRaw;
-      else issues.push({ field: 'channel', message: `unknown channel "${channelRaw}"` });
-    }
-    const dayRaw = uc(row.day_of_visit ?? row['DAY OF VISIT'] ?? '');
-    let dayOfVisit: string | null = null;
-    if (dayRaw) {
-      if (DAY_CODES.has(dayRaw)) dayOfVisit = dayRaw;
-      else
-        issues.push({
-          field: 'day_of_visit',
-          message: `expected SAT/SUN/MON/TUE/WED/THU/FRI, got "${dayRaw}"`,
-        });
-    }
-    const statusRaw = uc(row.customer_status ?? row['CUSTOMER STATUS'] ?? '');
-    let customerStatus: string | null = null;
-    if (statusRaw) {
-      if (STATUS_CODES.has(statusRaw)) customerStatus = statusRaw;
-      else
-        issues.push({
-          field: 'customer_status',
-          message: `expected ACTIVE/CLOSED/SUSPENDED, got "${statusRaw}"`,
-        });
-    }
-
-    const parsed = {
-      custCode,
-      custName,
-      channelKey,
-      dayOfVisit,
-      customerStatus,
-      branchCode: stripHtml(row.branch_code ?? row['CUST BRANCH']) || null,
-      branchName: stripHtml(row.branch_name ?? row['CUST BRANCH'] ?? row.branch) || null,
-      regionCode: stripHtml(row.sales_region ?? row['SALES REGION'] ?? row.region) || null,
-      routeCode: stripHtml(row.route ?? row['ROUTE']) || null,
-      address: stripHtml(row.address ?? row.ADDRSS ?? row.ADDRESS) || null,
-      phone,
-      contactPerson: stripHtml(row.contact_person ?? row['CONTACT PERSON']) || null,
-      crNumber: stripHtml(row.cr_no ?? row['CR NO']) || null,
-      paymentTerms,
-      paymentTermsPresent,
-      temixCode,
-      creditLimit,
-      paymentTermDays,
-    };
+    const { parsed, issues } = checkCustomerRow(row as SheetRow, ctx);
 
     importRows.push({
       batchId: batch.id,
@@ -1076,74 +822,166 @@ const PROMOTE_LEASE_MS = 90_000;
  */
 const PROMOTE_HANDOFF_GRACE_MS = 20_000;
 
+type LaneBranch = {
+  sheetCode: string | null;
+  branchCode: string;
+  branchName: string;
+  regionId: string;
+  routeId: string;
+  address: string;
+  dayOfVisit: string | null;
+  status: string | null;
+  nameGiven: boolean;
+  routeResolved: boolean;
+  sheetAddress: string | null;
+  fixedInApp: boolean;
+};
+
 /**
- * For a group promoted on the Temix refresh lane: add a '_lane' warning to each
- * row whose branch is not in the master, or whose branch values differ from the
- * master's, since that lane applied none of them. A value the row left blank
- * is not a difference — it asked for nothing. Advisory: the caller ignores a
- * failure here, exactly as it does for the '_resolve' warnings.
+ * The branch half of a Temix refresh group — owner decision 2026-09-25,
+ * "branch only". The refresh itself writes the Temix-owned customer fields and
+ * nothing else about the customer. A row the Data Steward FIXED IN THE APP
+ * (services/import-fixes.ts) then creates its branch when no branch anywhere
+ * has the code, or updates it from the cells the row supplied — a held-back
+ * branch row of a go-live customer used to land nothing at all.
+ *
+ * A plain file row changes no branch, and says so. The file cannot tell a
+ * Steward's correction from an inbound Temix refresh or an old copy of the
+ * go-live master, and branches are the CRM's: letting such a file create or
+ * overwrite them would undo changes approved in the app since, and would turn
+ * a Temix acknowledgement back into a pending upload. No row moves a branch
+ * from another customer, revives one from the archive, or guesses the branch
+ * of a row with no branch_code.
+ *
+ * Returns, per row, a note for the Steward, or null. A branch written here
+ * changes what Temix holds, so the customer is queued for the next batch, as
+ * an approved edit or a merge queues it.
  */
-async function noteRefreshSkippedBranches(
-  custCode: string,
-  rowIds: string[],
-  parsed: Array<{
-    branchName: string | null;
-    routeCode: string | null;
-    address: string | null;
-    dayOfVisit?: string | null;
-    customerStatus?: string | null;
-  }>,
-  resolved: Array<{
-    branchCode: string;
-    branchName: string;
-    routeId: string;
-    address: string;
-    dayOfVisit: string | null;
-    status: string | null;
-  }>
-): Promise<void> {
-  const stored = await prisma.branch.findMany({
-    where: {
-      branchCode: { in: resolved.map((r) => r.branchCode) },
-      deletedAt: null,
-      customer: { nmwcCode: custCode },
-    },
-    select: {
-      branchCode: true,
-      branchName: true,
-      routeId: true,
-      address: true,
-      dayOfVisit: true,
-      status: true,
-    },
-  });
-  const byCode = new Map(stored.map((b) => [b.branchCode, b]));
-  const tail = 'a Temix refresh updates customer fields only';
-  for (const [i, rowId] of rowIds.entries()) {
-    const want = resolved[i];
-    const p = parsed[i];
-    if (!want || !p) continue;
-    const have = byCode.get(want.branchCode);
-    let message: string | null = null;
-    if (!have) {
-      message = `branch ${want.branchCode} is not in the master and was not added — ${tail}`;
-    } else {
-      const differs: string[] = [];
-      if (p.branchName && want.branchName !== have.branchName) differs.push('branch name');
-      if (p.address && want.address !== have.address) differs.push('address');
-      if (p.routeCode && want.routeId !== have.routeId) differs.push('route');
-      if (p.dayOfVisit && want.dayOfVisit !== have.dayOfVisit) differs.push('visit day');
-      if (p.customerStatus && want.status !== have.status) differs.push('status');
-      if (differs.length > 0) {
-        message = `branch ${want.branchCode}: ${differs.join(', ')} in this row differ from the master and were not applied — ${tail}`;
+async function refreshLaneBranches(
+  tx: Prisma.TransactionClient,
+  args: { customerId: string; custCode: string; resolved: LaneBranch[]; me: string }
+): Promise<Array<string | null>> {
+  const { customerId, resolved, me } = args;
+  const notes: Array<string | null> = [];
+  let wrote = false;
+  for (const r of resolved) {
+    if (!r.sheetCode) {
+      notes.push(
+        'no branch_code — the import cannot tell which branch this row is, so no branch was changed'
+      );
+      continue;
+    }
+    const found = await tx.branch.findUnique({
+      where: { branchCode: r.branchCode },
+      select: {
+        id: true,
+        customerId: true,
+        deletedAt: true,
+        branchName: true,
+        routeId: true,
+        address: true,
+        dayOfVisit: true,
+        status: true,
+        customer: { select: { nmwcCode: true } },
+      },
+    });
+    if (!found) {
+      if (!r.fixedInApp) {
+        notes.push(
+          `branch ${r.branchCode} is not in the master and was not added — a re-import does not add branches to a customer linked to Temix; fix the held-back row on its batch page instead`
+        );
+        continue;
       }
-    }
-    if (message) {
-      await prisma.importRow.update({
-        where: { id: rowId },
-        data: { issues: [{ field: '_lane', message }] as Prisma.InputJsonValue },
+      await tx.branch.create({
+        data: {
+          branchCode: r.branchCode,
+          branchName: r.branchName,
+          regionId: r.regionId,
+          routeId: r.routeId,
+          address: r.address,
+          customerId,
+          dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? null,
+          status: (r.status as CustomerStatus | null) ?? 'ACTIVE',
+          lastStatusChangeAt: r.status === 'CLOSED' ? new Date() : null,
+          createdById: me,
+          lastEditedById: me,
+        },
       });
+      wrote = true;
+      notes.push(null);
+      continue;
     }
+    if (found.customerId !== customerId) {
+      notes.push(`branch ${r.branchCode} belongs to customer ${found.customer.nmwcCode} and was not moved`);
+      continue;
+    }
+    if (found.deletedAt) {
+      notes.push(`branch ${r.branchCode} was archived and was not revived`);
+      continue;
+    }
+    const differs: string[] = [];
+    if (r.nameGiven && r.branchName !== found.branchName) differs.push('branch name');
+    if (r.sheetAddress && r.sheetAddress !== found.address) differs.push('address');
+    if (r.routeResolved && r.routeId !== found.routeId) differs.push('route');
+    if (r.dayOfVisit && r.dayOfVisit !== found.dayOfVisit) differs.push('visit day');
+    if (r.status && r.status !== found.status) differs.push('status');
+    if (differs.length === 0) {
+      notes.push(null);
+      continue;
+    }
+    if (!r.fixedInApp) {
+      notes.push(
+        `branch ${r.branchCode}: ${differs.join(', ')} in this row differ from the master and were not applied — a re-import does not change an existing branch of a customer linked to Temix; change it on the customer page`
+      );
+      continue;
+    }
+    await tx.branch.update({
+      where: { id: found.id },
+      data: {
+        branchName: r.nameGiven ? r.branchName : undefined,
+        regionId: r.routeResolved ? r.regionId : undefined,
+        routeId: r.routeResolved ? r.routeId : undefined,
+        address: r.sheetAddress ?? undefined,
+        dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
+        status: (r.status as CustomerStatus | null) ?? undefined,
+        lastStatusChangeAt: r.status && r.status !== found.status ? new Date() : undefined,
+        lastEditedById: me,
+      },
+    });
+    wrote = true;
+    notes.push(null);
+  }
+  if (wrote) {
+    await tx.customer.updateMany({
+      where: { id: customerId, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
+      data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
+    });
+  }
+  return notes;
+}
+
+/**
+ * Put each refresh row's branch note on the row as a '_lane' issue. The
+ * group's route/region warnings go on the rows whose branch was written —
+ * elsewhere the branch was not touched, so they would say something false.
+ * Advisory: the caller ignores a failure here, as it does for the ordinary
+ * lane's '_resolve' warnings.
+ */
+async function writeLaneNotes(
+  rowIds: string[],
+  notes: Array<string | null>,
+  resolveErrors: string[]
+): Promise<void> {
+  for (const [i, rowId] of rowIds.entries()) {
+    const note = notes[i] ?? null;
+    const issues = note
+      ? [{ field: '_lane', message: note }]
+      : resolveErrors.map((m) => ({ field: '_resolve', message: m }));
+    if (issues.length === 0) continue;
+    await prisma.importRow.update({
+      where: { id: rowId },
+      data: { issues: issues as Prisma.InputJsonValue },
+    });
   }
 }
 
@@ -1300,6 +1138,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       channelKey?: string | null;
       dayOfVisit?: string | null;
       customerStatus?: string | null;
+      // Item 20: set when the Data Steward fixed this row in the app
+      // (services/import-fixes.ts). Only such a row may change an existing
+      // branch of a customer linked to Temix.
+      fixedInApp?: boolean;
     };
     const groups = new Map<string, { rowIds: string[]; parsed: ParsedShape[] }>();
     for (const row of cleanRows) {
@@ -1362,6 +1204,14 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         address: string;
         dayOfVisit: string | null;
         status: string | null;
+        // Item 20: what the ROW supplied, as opposed to the fallbacks above it. An
+        // existing branch is updated only from values the sheet actually gave; a
+        // blank cell keeps the stored value instead of writing "Address pending",
+        // "Main" or the UNASSIGNED route over real data.
+        nameGiven: boolean;
+        routeResolved: boolean;
+        sheetAddress: string | null;
+        fixedInApp: boolean;
       }> = [];
       const groupResolveErrors: string[] = [];
       for (const [bi, p] of g.parsed.entries()) {
@@ -1386,7 +1236,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           );
         }
         if (p.routeCode && !route) {
-          groupResolveErrors.push(`route "${p.routeCode}" not found — branch parked in UNASSIGNED`);
+          groupResolveErrors.push(
+            `route "${p.routeCode}" not found — a new branch is parked in UNASSIGNED, an existing one keeps its route`
+          );
         }
         // QA P-02 fix: the fallback previously used the UNASSIGNED ROUTE's id as a
         // REGION id, so the B-19 region-consistency trigger (Branch.regionId must
@@ -1415,7 +1267,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           // warning above, and "provided without a route" would be untrue.
           if (p.regionCode && region && !p.routeCode) {
             groupResolveErrors.push(
-              `region "${p.regionCode}" was provided without a route — branch parked in UNASSIGNED; add a route to keep the region`
+              `region "${p.regionCode}" was provided without a route — a new branch is parked in UNASSIGNED, an existing one keeps its route; add a route to keep the region`
             );
           }
         }
@@ -1468,6 +1320,13 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             'Address pending',
           dayOfVisit: p.dayOfVisit ?? null,
           status: p.customerStatus ?? null,
+          nameGiven: !!p.branchName,
+          routeResolved: !!route,
+          sheetAddress: p.address
+            ? (usableBranchAddress(p.address) ??
+              usableBranchAddress([p.address, p.branchName, p.regionCode].filter(Boolean).join(', ')))
+            : null,
+          fixedInApp: p.fixedInApp === true,
         });
       }
 
@@ -1515,6 +1374,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
 
       try {
         let refreshedRow = false;
+        // Per row of a refresh group: what happened to its branch, when that is
+        // worth telling the Steward. Written after the transaction commits.
+        let laneNotes: Array<string | null> = [];
         // final-hunt #32, extended to promote: this interactive transaction makes
         // ~9 sequential round trips (customer read + upsert, per-branch ownership
         // check + upsert, row state, completeness). Prisma's DEFAULT 5s ceiling is
@@ -1644,6 +1506,41 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               );
             }
             refreshedRow = isRefresh;
+
+            // Item 20 (owner decision 2026-09-25): a row with no branch_code is
+            // numbered by its position among this customer's clean rows in THIS
+            // file, so once the customer has branches, a file with only some of its
+            // rows gives a row the code of a sibling — and the upsert below would
+            // overwrite that sibling. It cannot be told which branch it is; refuse.
+            if (
+              !isRefresh &&
+              existing &&
+              !existing.deletedAt &&
+              resolvedBranches.some((r) => !r.sheetCode)
+            ) {
+              const has = await tx.branch.count({ where: { customerId: existing.id, deletedAt: null } });
+              if (has > 0) {
+                throw new Error(
+                  'CROSSWALK:a row has no branch_code, and this customer already has branches — the import cannot tell which branch the row is; add branch_code; steward review'
+                );
+              }
+            }
+            // Item 20 (owner decision): the customer's status follows ALL its live
+            // branches, not only the rows in this file. A file carrying one CLOSED
+            // branch of a customer whose other branch is ACTIVE used to close the
+            // customer.
+            let customerStatus = groupStatus;
+            if (existing && !existing.deletedAt && groupStatus && groupStatus !== 'ACTIVE') {
+              const otherActive = await tx.branch.count({
+                where: {
+                  customerId: existing.id,
+                  deletedAt: null,
+                  status: 'ACTIVE',
+                  branchCode: { notIn: resolvedBranches.map((r) => r.branchCode) },
+                },
+              });
+              if (otherActive > 0) customerStatus = 'ACTIVE';
+            }
             let customerId: string;
             if (isRefresh) {
               // ── Temix REFRESH row (existing live customer + temix_code) ──
@@ -1798,7 +1695,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   crNumber: first.crNumber ?? undefined,
                   crNumberNorm: first.crNumber ? normalizeCR(first.crNumber) : undefined,
                   channelId: groupChannelId ?? undefined,
-                  status: groupStatus ?? undefined,
+                  status: customerStatus ?? undefined,
                   lastEditedById: me.id,
                   // B-05: bump the optimistic version so a concurrent edit-approve
                   // sees VERSION_CONFLICT rather than a silently lost update.
@@ -1874,11 +1771,15 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 }
                 await tx.branch.upsert({
                   where: { branchCode: r.branchCode },
+                  // Item 20 (owner decision): a blank cell keeps the stored value.
+                  // This wrote the fallbacks unconditionally, so a re-import with an
+                  // empty address or route replaced a salesman's approved address with
+                  // "Address pending" and moved the branch to UNASSIGNED.
                   update: {
-                    branchName: r.branchName,
-                    regionId: r.regionId,
-                    routeId: r.routeId,
-                    address: r.address,
+                    branchName: r.nameGiven ? r.branchName : undefined,
+                    regionId: r.routeResolved ? r.regionId : undefined,
+                    routeId: r.routeResolved ? r.routeId : undefined,
+                    address: r.sheetAddress ?? undefined,
                     customerId,
                     dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
                     status: (r.status as CustomerStatus | null) ?? undefined,
@@ -1901,6 +1802,13 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   },
                 });
               }
+            } else {
+              laneNotes = await refreshLaneBranches(tx, {
+                customerId,
+                custCode,
+                resolved: resolvedBranches,
+                me: me.id,
+              });
             }
             await tx.importRow.updateMany({
               where: { id: { in: g.rowIds } },
@@ -1926,14 +1834,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         );
         promoted += g.rowIds.length;
         if (refreshedRow) {
-          // The refresh lane writes customer-level fields only; it never creates or
-          // changes a branch. That is its contract, but it used to be invisible: a
-          // Steward who fixed a held-back branch row and uploaded it again saw the
-          // row PROMOTED and the counts balance, while the branch was never
-          // written. Say so on each row whose branch data did not land.
-          await noteRefreshSkippedBranches(custCode, g.rowIds, g.parsed, resolvedBranches).catch(
-            () => undefined
-          );
+          // The branch outcome of each refresh row: a branch left as it was, and
+          // why. It used to be invisible — the row read PROMOTED and the counts
+          // balanced while the branch it described was never written.
+          await writeLaneNotes(g.rowIds, laneNotes, groupResolveErrors).catch(() => undefined);
         }
         if (groupResolveErrors.length > 0 && !refreshedRow) {
           // F-17: surface the phantom-region warning in the row's issues so the

@@ -286,6 +286,10 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'ImportRow.reviewedById': { subject: 'employee', kind: 'behaviour' },
   'ImportRow.reviewedAt': { subject: 'employee', kind: 'behaviour' },
   'ImportRow.createdAt': { subject: 'none', note: RECORD_META },
+  'ImportRow.corrections': { subject: 'customer', kind: 'snapshot', note: 'cells the Steward corrected in the app (item 20); cleared with raw by the retention sweep' },
+  'ImportRow.excludedAt': { subject: 'employee', kind: 'behaviour' },
+  'ImportRow.excludedById': { subject: 'employee', kind: 'behaviour' },
+  'ImportRow.excludedReason': { subject: 'employee', kind: 'free text', note: 'why the Steward accepted the row as excluded; may name the customer' },
 
   // ---- CronHeartbeat -------------------------------------------------------
   'CronHeartbeat.key': { subject: 'none' },
@@ -334,7 +338,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'AuditLog.after': {
     subject: 'customer',
     kind: 'snapshot',
-    note: 'as above; an UPDATE approval also copies CustomerEdit.fieldChanges here, including a salesman’s free-text manual-GPS reason (item 41)',
+    note: 'as above; an UPDATE approval also copies CustomerEdit.fieldChanges here, including a salesman’s free-text manual-GPS reason (item 41). A duplicate dismissal stores truncated, unkeyed sha256 digests of the shared CR and of name + phone (item 16) — for a short CR the value can be recovered by brute force',
   },
   'AuditLog.reason': { subject: 'customer', kind: 'free text' },
   'AuditLog.ip': { subject: 'employee', kind: 'device', note: 'source IP of the member of staff' },

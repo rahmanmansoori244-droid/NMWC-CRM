@@ -89,18 +89,27 @@ async function handle(req: NextRequest) {
   //    Raw SQL on purpose: Prisma reads `undefined` as "leave this column
   //    alone", so the obvious `{ raw: {}, parsed: undefined }` silently kept the
   //    customer's name, address, phone and CR number in `parsed`.
+  //
+  //    Item 20: "corrections" (cells the Steward fixed in the app) is the same
+  //    customer data and goes with the rest. And a held-back row the Steward
+  //    accepted as excluded is finished too — it will never be promoted — so it
+  //    follows the same rule as a rejected one, counted from when it was
+  //    excluded. Before, a QUARANTINED row kept its payload for ever.
   try {
     const cleared = await prisma.$executeRaw`
       UPDATE "ImportRow"
-         SET "raw" = '{}'::jsonb, "parsed" = NULL, "issues" = NULL
+         SET "raw" = '{}'::jsonb, "parsed" = NULL, "issues" = NULL, "corrections" = NULL
        WHERE "id" IN (
          SELECT r."id"
            FROM "ImportRow" r
            JOIN "ImportBatch" b ON b."id" = r."batchId"
           WHERE r."createdAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
-            AND r."state" IN ('PROMOTED', 'REJECTED')
+            AND (
+                  r."state" IN ('PROMOTED', 'REJECTED')
+               OR (r."state" = 'QUARANTINED' AND r."excludedAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)})
+            )
             AND b."status" IN ('PROMOTED', 'FAILED')
-            AND (r."raw" <> '{}'::jsonb OR r."parsed" IS NOT NULL OR r."issues" IS NOT NULL)
+            AND (r."raw" <> '{}'::jsonb OR r."parsed" IS NOT NULL OR r."issues" IS NOT NULL OR r."corrections" IS NOT NULL)
           ORDER BY r."createdAt"
           LIMIT ${BATCH}
        )`;

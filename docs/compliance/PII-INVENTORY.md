@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**281 stored columns across 23 tables** — Customer contact: 25 · Employee: 61 · Customer entity (personal if a sole establishment): 36 · Not personal data: 159.
+**285 stored columns across 23 tables** — Customer contact: 26 · Employee: 64 · Customer entity (personal if a sole establishment): 36 · Not personal data: 159.
 
 ## Columns holding personal data
 
@@ -142,6 +142,10 @@ Every column the database stores, classified by whose personal data it is. This 
 | `issues` | Customer contact | free text | validation messages quote the offending value |
 | `reviewedById` | Employee | behaviour |  |
 | `reviewedAt` | Employee | behaviour |  |
+| `corrections` | Customer contact | snapshot | cells the Steward corrected in the app (item 20); cleared with raw by the retention sweep |
+| `excludedAt` | Employee | behaviour |  |
+| `excludedById` | Employee | behaviour |  |
+| `excludedReason` | Employee | free text | why the Steward accepted the row as excluded; may name the customer |
 
 ### RateLimit
 
@@ -163,7 +167,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | `actorId` | Employee | identifier | who did it |
 | `action` | Employee | behaviour |  |
 | `before` | Customer contact | snapshot | full field snapshot — legal name, CR number, phones, contact person, notes, address, GPS. Cannot be edited or deleted except in an owner-session maintenance transaction (migrations 20260914150000 + 20260914160000) |
-| `after` | Customer contact | snapshot | as above; an UPDATE approval also copies CustomerEdit.fieldChanges here, including a salesman’s free-text manual-GPS reason (item 41) |
+| `after` | Customer contact | snapshot | as above; an UPDATE approval also copies CustomerEdit.fieldChanges here, including a salesman’s free-text manual-GPS reason (item 41). A duplicate dismissal stores truncated, unkeyed sha256 digests of the shared CR and of name + phone (item 16) — for a short CR the value can be recovered by brute force |
 | `reason` | Customer contact | free text |  |
 | `ip` | Employee | device | source IP of the member of staff |
 | `userAgent` | Employee | device | browser and device string |

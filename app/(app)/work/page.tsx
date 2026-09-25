@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
+import { OPEN_PROBLEM_ROW, WORK_BATCH_ROWS } from '@/lib/import-rows-view';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import Link from 'next/link';
@@ -218,26 +219,41 @@ export default async function WorkPage() {
     // timeout, network drop) — it sits in PROMOTING with no live lease. That needs
     // the Steward's attention just as much as a FAILED batch, and without this it
     // would be invisible here: promote no longer writes FAILED at all.
+    //
+    // Item 20: a batch is listed while it has a held-back or rejected row that is
+    // neither fixed nor accepted as excluded, and while rows fixed in the app are
+    // waiting to be promoted. It used to be listed while its UPLOAD-TIME
+    // quarantine count was above zero — for ever, since nothing could lower it —
+    // and never for rejections alone, so a batch that lost 1,833 customers at
+    // promote was not on this page at all.
     const failed = await prisma.importBatch.findMany({
       where: {
         OR: [
           { status: 'FAILED' },
           { status: 'PROMOTING', promoteLeaseUntil: null },
           { status: 'PROMOTING', promoteLeaseUntil: { lt: new Date() } },
-          { quarantinedRows: { gt: 0 } },
+          ...WORK_BATCH_ROWS,
         ],
       },
       orderBy: { uploadedAt: 'desc' },
       take: 30,
+      include: { _count: { select: { rows: { where: OPEN_PROBLEM_ROW } } } },
     });
     items = failed.map((b) => ({
       id: b.id,
-      category: b.status === 'PROMOTING' ? 'Import to resume' : 'Import to review',
+      category:
+        b.status === 'PROMOTING'
+          ? 'Import to resume'
+          : b._count.rows > 0
+            ? 'Import to review'
+            : 'Import to promote',
       title: b.filename,
       subtitle:
         b.status === 'PROMOTING'
           ? `Promote interrupted — ${b.promotedRows} of ${b.totalRows} rows loaded`
-          : `${b.quarantinedRows} quarantined / ${b.totalRows} total`,
+          : b._count.rows > 0
+            ? `${b._count.rows.toLocaleString('en-US')} row${b._count.rows === 1 ? '' : 's'} held back or rejected, not yet fixed or excluded`
+            : 'Rows fixed in the app are waiting to be promoted',
       href: `/import/${b.id}`,
       when: b.uploadedAt,
     }));
