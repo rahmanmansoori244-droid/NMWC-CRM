@@ -528,28 +528,44 @@ The rotation is audit-logged.
      page). The /export workbook and template rows with a blank `temix_code` take this lane.
      Most customers created by the go-live load carry a Temix code; the ~3,300 pilot-seeded ones
      do not, and always take this lane.
-   - On the full lane a customer's status follows all its live branches, not only the file's rows;
-     a blank name, address or route keeps the stored value (a NEW branch still gets "Main",
-     "Address pending" or the UNASSIGNED route); and once a customer has branches, a row with no
-     `branch_code` is rejected — it would be numbered by its position in the file and could
-     overwrite a sibling. **Always include `branch_code`.**
+   - On the full lane a customer's status follows all its live branches, not only the file's rows:
+     it is settled after the branches are written, and a blank `customer_status` cell says nothing
+     (its branch keeps its stored status, and a branch it creates is ACTIVE). A blank name, address
+     or route keeps the stored value (a NEW branch still gets "Main", "Address pending" or the
+     UNASSIGNED route); and once a customer has branches, a row with no `branch_code` is rejected
+     — it would be numbered by its position in the file and could overwrite a sibling. **Always
+     include `branch_code`.**
 4. Problem rows are fixed on the batch page, not with scripts: **Correct…** (only the cells the
    problem names; never payment terms, credit or the Temix code; only changed cells are
    recorded), **Release shared phone…** (with a reason; audited as FORCE_OVERRIDE),
    **Re-check**, **Exclude…** (with a reason). A fixed row waits under **Fixed, waiting to
    promote** and can be taken back with **Withdraw fix** until the batch is promoted.
    - **A row fixed in the app for a customer linked to Temix is always "branch only"** (owner
-     decision 2026-09-25), whatever its `temix_code` cell says: it creates its branch, or
-     updates it from the cells it gave, changes nothing else about the customer, and queues the
-     customer for the next Temix batch. It does not flip UPLOADED to SYNCED. A fixed row that
-     cannot be applied — no `branch_code` (every go-live head-office row), a code another
-     customer holds, an archived branch — comes back **REJECTED** with `branch_code` offered for
-     correction; a code this customer does not use yet creates a new branch.
-   - A fix is refused while the batch is being promoted; in an upload older than another that
-     carries the same customer (the message says whether to fix it there or exclude this one,
-     and the page offers only Exclude on such rows); and on a row uploaded more than 90 days ago,
-     when the newer uploads' data may already be swept. A row whose data the 90-day retention
-     sweep has cleared can only be excluded or uploaded again.
+     decision 2026-09-25), whatever its `temix_code` cell says and whatever rows are beside it in
+     the promote — decided per row: it creates its branch, or updates it from the cells it gave,
+     changes nothing else about the customer (not the name, phone, CR, contact or channel, and
+     not the credit figures), and queues the customer for the next Temix batch. The plain rows
+     beside it take the lane their first row decides, as above. A fixed row that corrected or
+     released one of those customer-level values says on the row that it was **not written**
+     ("change it on the customer page"), and the batch page says so before the Steward corrects
+     or releases one. A fixed row alone is no word from Temix, so it does not flip UPLOADED to
+     SYNCED. A fixed row that cannot be applied — no `branch_code` (every go-live head-office
+     row), a code another customer holds, an archived branch — comes back **REJECTED** with
+     `branch_code` offered for correction; a code this customer does not use yet creates a new
+     branch.
+   - Only the row the Steward acts on counts as fixed. A rejected row takes its customer's other
+     rejected rows in the batch back to CLEAN with it, as the plain rows they were; **Withdraw
+     fix** takes them back again, and a promoted batch that a fix set back to READY is PROMOTED
+     again when nothing is left to promote.
+   - **Fix only in the newest upload.** A fix is refused while the batch is being promoted; in an
+     upload older than another that carries the same customer — for a customer linked to Temix,
+     only one that carries the same *branch* and wrote or may write it (a plain refresh row never
+     does, so an inbound Temix refresh does not block a held-back branch row); and on a row
+     uploaded more than 90 days ago, when the newer uploads' data may already be swept. The page
+     offers only Exclude on such rows, in the server's words. Promote asks the same question
+     again: **a fix that a newer upload overtook while it waited is rejected at promote** rather
+     than loaded over the newer data. A row whose data the 90-day retention sweep has cleared can
+     only be excluded or uploaded again.
 
 ### Export the cleaned master for ERP
 1. Sign in as Steward (or Manager).

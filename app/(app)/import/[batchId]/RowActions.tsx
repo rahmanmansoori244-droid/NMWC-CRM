@@ -33,6 +33,7 @@ export function RowActions({
   canRecheck,
   excluded,
   superseded,
+  linkedToTemix = false,
 }: {
   rowId: string;
   batchId: string;
@@ -47,15 +48,29 @@ export function RowActions({
   canRecheck: boolean;
   excluded: { by: string; reason: string } | null;
   /**
-   * Why a newer upload of the same customer rules out fixing this row (the
-   * server refuses it with the same words); only Exclude is offered then.
+   * Why this row cannot be fixed — a newer upload overtook it, or it is past
+   * the fix window — in the server's words; only Exclude is offered then. On a
+   * fix waiting to promote: why promote will reject it.
    */
   superseded?: string | null;
+  /**
+   * The row's customer is linked to Temix and the row offers a customer-level
+   * cell or a phone release: a fix there loads only the branch.
+   */
+  linkedToTemix?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [open, setOpen] = useState<'correct' | 'release' | 'exclude' | null>(null);
   const [cells, setCells] = useState<Record<string, string>>(current);
+  // The cells the Correct form was opened for. A fix of a sibling row can
+  // re-check this one under the open form and change which cells its problem
+  // names; saving then sent a cell the form showed but never held, as blank —
+  // clearing a phone nobody touched (post-merge review). Such a form is closed.
+  const formFor = `${state}|${editable.join(',')}`;
+  const [openedFor, setOpenedFor] = useState(formFor);
+  const correctStale = open === 'correct' && openedFor !== formFor;
+  const shown = (c: string) => cells[c] ?? current[c] ?? '';
   const [reason, setReason] = useState('');
   const [msg, setMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
@@ -101,13 +116,25 @@ export function RowActions({
     // this, a mistyped correction had to be loaded or the batch never promoted.
     return (
       <div className="grid gap-1 text-xs">
-        <p className="text-slate-600">Fixed in the app — loads on the next promote.</p>
+        {superseded ? (
+          <p className="text-red-700">{superseded}</p>
+        ) : (
+          <p className="text-slate-600">Fixed in the app — loads on the next promote.</p>
+        )}
         <button
           type="button"
           disabled={pending}
           onClick={() => {
-            if (!confirm('Withdraw this fix? The row goes back to what it was before you fixed it, and your corrections are dropped.')) return;
-            run(withdrawImportRowFixAction, withRow(), () => 'Fix withdrawn.');
+            if (
+              !confirm(
+                'Withdraw this fix? The row goes back to what it was before you fixed it, and your corrections are dropped. Any of its customer\'s rows that were rejected with it go back too.'
+              )
+            )
+              return;
+            run(withdrawImportRowFixAction, withRow(), (r) => {
+              const rows = r.ok ? (r.data as { rows?: number } | undefined)?.rows : undefined;
+              return rows && rows > 1 ? `Fix withdrawn — ${rows} rows back to what they were.` : 'Fix withdrawn.';
+            });
           }}
           className="min-h-9 justify-self-start rounded-md border border-slate-300 bg-white px-3 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
         >
@@ -140,6 +167,13 @@ export function RowActions({
   return (
     <div className="grid gap-2 text-xs">
       {superseded && <p className="text-slate-600">{superseded}</p>}
+      {linkedToTemix && !superseded && (
+        <p className="text-amber-800">
+          This customer is linked to Temix, so a fix here loads only this row&rsquo;s branch. A
+          phone, name, CR, contact person or channel corrected here &mdash; or a released phone
+          &mdash; is not written to the customer: change those on the customer page.
+        </p>
+      )}
       {!canRecheck && (
         <p className="text-slate-500">
           This row&rsquo;s data was cleared by the 90-day retention sweep. Upload the corrected row
@@ -166,13 +200,16 @@ export function RowActions({
           <button
             type="button"
             disabled={pending}
-            aria-expanded={open === 'correct'}
+            aria-expanded={open === 'correct' && !correctStale}
             onClick={() => {
               // Start from the row as it stands now. The form's state outlived
               // router.refresh, so after a partial fix it still held a cell the
               // row no longer names, and every later save was refused for it.
-              if (open !== 'correct') setCells(current);
-              setOpen(open === 'correct' ? null : 'correct');
+              if (open !== 'correct' || correctStale) {
+                setCells(current);
+                setOpenedFor(formFor);
+                setOpen('correct');
+              } else setOpen(null);
             }}
             className="min-h-9 rounded-md border border-slate-300 bg-white px-3 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
@@ -201,7 +238,12 @@ export function RowActions({
         </button>
       </div>
 
-      {open === 'correct' && (
+      {correctStale && (
+        <p role="status" className="text-slate-600">
+          This row&rsquo;s problem changed while the form was open. Open Correct&hellip; again.
+        </p>
+      )}
+      {open === 'correct' && !correctStale && (
         <form
           className="grid gap-2 rounded-md bg-slate-50 p-2 ring-1 ring-slate-200"
           onSubmit={(e) => {
@@ -209,8 +251,8 @@ export function RowActions({
             // Only the cells this row names now, and only those the Steward changed.
             const sent = Object.fromEntries(
               editable
-                .filter((c) => (cells[c] ?? '').trim() !== (current[c] ?? '').trim())
-                .map((c) => [c, cells[c] ?? ''])
+                .filter((c) => shown(c).trim() !== (current[c] ?? '').trim())
+                .map((c) => [c, shown(c)])
             );
             if (Object.keys(sent).length === 0) {
               setMsg({ tone: 'error', text: 'Nothing changed. Use Re-check to check the row as it stands.' });
@@ -224,7 +266,7 @@ export function RowActions({
               <span className="font-medium text-slate-700">{CELL_LABEL[c] ?? c}</span>
               <input
                 id={`fix-${rowId}-${c}`}
-                value={cells[c] ?? current[c] ?? ''}
+                value={shown(c)}
                 onChange={(e) => setCells({ ...cells, [c]: e.target.value })}
                 className="min-h-9 rounded-md border border-slate-300 px-2 text-slate-900"
               />

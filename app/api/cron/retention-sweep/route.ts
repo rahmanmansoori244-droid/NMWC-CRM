@@ -46,6 +46,15 @@ const IMPORT_PAYLOAD_DAYS = IMPORT_PAYLOAD_DAYS_SHARED;
 const UNREAD_NOTIFICATION_DAYS = 180;
 /** Bound the work per run so the job stays well inside the function timeout. */
 const BATCH = 500;
+/**
+ * Import payloads are cleared in bounded statements, repeated while rows are
+ * left and time remains. Every go-live row crosses the 90-day line on the same
+ * day — some 40,000 of them — and one 500-row statement a day would have kept
+ * them months past the schedule while the heartbeat stayed green (post-merge
+ * review). The budget leaves the other steps room inside the 60 s limit.
+ */
+const IMPORT_BATCH = 2000;
+const IMPORT_BUDGET_MS = 30_000;
 
 function cutoff(days: number): Date {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -83,10 +92,10 @@ async function handle(req: NextRequest) {
   //    `services/imports.ts` reads `row.parsed` to promote a row. Clearing it on
   //    a row that has not been promoted or rejected yet would leave a staged
   //    batch permanently unpromotable, which a rollback cannot undo because the
-  //    payload is gone. So the predicate requires a terminal ROW state AND a
-  //    terminal BATCH status; anything still in flight keeps its payload however
-  //    old it is, and an operator who abandons a batch can still see what was in
-  //    it.
+  //    payload is gone. So the predicate requires a terminal ROW state, in a
+  //    batch that is not being promoted; a CLEAN row keeps its payload however
+  //    old it is, and an operator who abandons a batch before promoting it can
+  //    still see what was in it.
   //
   //    Raw SQL on purpose: Prisma reads `undefined` as "leave this column
   //    alone", so the obvious `{ raw: {}, parsed: undefined }` silently kept the
@@ -97,29 +106,46 @@ async function handle(req: NextRequest) {
   //    accepted as excluded is finished too — it will never be promoted — so it
   //    follows the same rule as a rejected one, counted from when it was
   //    excluded. Before, a QUARANTINED row kept its payload for ever.
+  //
+  //    A PROMOTED or REJECTED row is finished whatever its batch's status, bar
+  //    a batch being promoted right now: promote reads only CLEAN rows, and a
+  //    fix refuses a row past the same 90 days. Requiring a PROMOTED or FAILED
+  //    batch kept every row of a promoted batch that a fix had set back to
+  //    READY — for ever, once the fix was withdrawn and nothing was left to
+  //    promote (post-merge review). The CLEAN rows of such a batch are the ones
+  //    promote still needs, and keep their payload.
   try {
-    const cleared = await prisma.$executeRaw`
-      UPDATE "ImportRow"
-         SET "raw" = '{}'::jsonb, "parsed" = NULL, "issues" = NULL, "corrections" = NULL
-       WHERE "id" IN (
-         SELECT r."id"
-           FROM "ImportRow" r
-           JOIN "ImportBatch" b ON b."id" = r."batchId"
-          WHERE r."createdAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
+    const started = Date.now();
+    let cleared = 0;
+    let last = 0;
+    do {
+      last = await prisma.$executeRaw`
+        UPDATE "ImportRow"
+           SET "raw" = '{}'::jsonb, "parsed" = NULL, "issues" = NULL, "corrections" = NULL
+         WHERE "id" IN (
+           SELECT r."id"
+             FROM "ImportRow" r
+             JOIN "ImportBatch" b ON b."id" = r."batchId"
+            WHERE r."createdAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
+            AND b."status" <> 'PROMOTING'
             AND (
-                  (r."state" IN ('PROMOTED', 'REJECTED') AND b."status" IN ('PROMOTED', 'FAILED'))
+                  r."state" IN ('PROMOTED', 'REJECTED')
                -- An excluded held-back row is read by nothing (promote reads CLEAN
-               -- rows; a fix refuses excluded ones), so its batch's status does not
-               -- matter — except a batch being promoted right now. A wrong file
-               -- excluded whole never leaves READY, and kept its data for ever.
-               OR (r."state" = 'QUARANTINED' AND r."excludedAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
-                   AND b."status" <> 'PROMOTING')
+               -- rows; a fix refuses excluded ones), so it is finished too. A
+               -- wrong file excluded whole never leaves READY, and kept its data
+               -- for ever.
+               OR (r."state" = 'QUARANTINED' AND r."excludedAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)})
             )
             AND (r."raw" <> '{}'::jsonb OR r."parsed" IS NOT NULL OR r."issues" IS NOT NULL OR r."corrections" IS NOT NULL)
           ORDER BY r."createdAt"
-          LIMIT ${BATCH}
+          LIMIT ${IMPORT_BATCH}
        )`;
+      cleared += last;
+    } while (last === IMPORT_BATCH && Date.now() - started < IMPORT_BUDGET_MS);
     swept.importRowPayloads = cleared;
+    // Rows still waiting when the budget ran out: tomorrow's run takes them,
+    // and the heartbeat detail says so instead of reading as caught up.
+    if (last === IMPORT_BATCH) swept.importRowPayloadsBehind = 1;
   } catch (err) {
     errors += 1;
     logger.error({ err: (err as Error).message }, 'retention.import_rows_failed');

@@ -14,6 +14,7 @@ type Row = {
   parsed: unknown;
   issues: unknown;
   corrections?: unknown;
+  createdAt?: Date;
   excludedAt?: Date | null;
   excludedReason?: string | null;
   excludedBy?: { fullName: string } | null;
@@ -23,7 +24,18 @@ const h = vi.hoisted(() => ({
   user: { id: 's', role: 'STEWARD', username: 's' } as { id: string; role: string; username: string },
   rows: [] as Row[],
   findMany: vi.fn(),
-  newer: [] as Array<{ code: string; filename: string; rowNumber: number; state: string; excluded: boolean }>,
+  newer: [] as Array<{
+    code: string;
+    filename: string;
+    rowNumber: number;
+    state: string;
+    excluded: boolean;
+    branchCode?: string | null;
+    fixedInApp?: boolean;
+    refreshRow?: boolean;
+  }>,
+  /** Customers linked to Temix (a stored Temix code). */
+  linked: [] as string[],
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
@@ -61,8 +73,12 @@ vi.mock('@/lib/db', () => {
   };
   return {
     prisma: {
-      // lib/import-master-lookup newerUploadsCarrying: which customers a newer upload carries.
+      // lib/import-master-lookup newerUploadsCarrying: the rows of newer uploads carrying these customers.
       $queryRaw: async () => h.newer,
+      customer: {
+        findMany: async ({ where }: { where: { nmwcCode: { in: string[] } } }) =>
+          h.linked.filter((c) => where.nmwcCode.in.includes(c)).map((nmwcCode) => ({ nmwcCode })),
+      },
       importBatch: {
         findUnique: async () => ({
           id: 'b1',
@@ -106,13 +122,14 @@ const rejected = (n: number): Row => ({
 beforeEach(() => {
   h.rows = [];
   h.newer = [];
+  h.linked = [];
   h.findMany.mockReset();
   h.findMany.mockImplementation(async ({ where, skip, take }: { where: Record<string, unknown>; skip: number; take: number }) => {
     const st = where.state as string | { in: string[] } | undefined;
     const list = h.rows.filter((r) =>
       typeof st === 'string' ? r.state === st : st ? st.in.includes(r.state) : true
     );
-    return list.slice(skip, skip + take);
+    return list.slice(skip, skip + take).map((r) => ({ createdAt: new Date(), ...r }));
   });
 });
 afterEach(cleanup);
@@ -237,6 +254,76 @@ describe('/import/[batchId]', () => {
     expect(within(rowOf('G')).queryAllByRole('button')).toEqual([]); // a plain clean row: nothing to do
     const nav = screen.getByRole('navigation', { name: 'Which rows' });
     expect(within(nav).getByRole('link', { name: /Fixed, waiting to promote/ }).textContent).toBe('Fixed, waiting to promote1');
+  });
+
+  it('a row past the 90-day fix window offers only Exclude, in the words the server refuses with', async () => {
+    const old = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000);
+    h.rows = [
+      { id: 'q1', rowNumber: 2, state: 'QUARANTINED', raw: { cust_code: 'A', phone: '99758980' }, parsed: { custCode: 'A' }, issues: [{ field: 'phone', message: 'phone already exists in master on customer H' }], createdAt: old },
+      { id: 'q2', rowNumber: 3, state: 'QUARANTINED', raw: { cust_code: 'B', day_of_visit: 'XYZ' }, parsed: { custCode: 'B' }, issues: [{ field: 'day_of_visit', message: 'x' }] },
+    ];
+    await open({ show: 'all' });
+    const rowOf = (code: string) => screen.getAllByText(code)[0].closest('tr')!;
+    const buttons = (code: string) => within(rowOf(code)).queryAllByRole('button').map((b) => b.textContent);
+    expect(buttons('A')).toEqual(['Exclude…']);
+    expect(rowOf('A').textContent).toMatch(/Row 2 was uploaded more than 90 days ago.*Exclude it, or upload the corrected row again/);
+    expect(buttons('B')).toEqual(['Re-check', 'Correct…', 'Exclude…']);
+  });
+
+  it('a fix waiting to promote that a newer upload overtook says promote will reject it, and still offers Withdraw fix', async () => {
+    h.rows = [
+      { id: 'c1', rowNumber: 2, state: 'CLEAN', raw: { cust_code: 'F' }, parsed: { custCode: 'F', fixedInApp: true }, issues: null },
+    ];
+    h.newer = [{ code: 'F', filename: 'later.xlsx', rowNumber: 4, state: 'PROMOTED', excluded: false }];
+    await open({ show: 'all' });
+    const row = screen.getAllByText('F')[0].closest('tr')!;
+    expect(row.textContent).toMatch(/this fix will not load: promote rejects it/);
+    expect(row.textContent).not.toMatch(/loads on the next promote/);
+    expect(within(row).getByRole('button', { name: 'Withdraw fix' })).toBeTruthy();
+  });
+
+  it('for a customer linked to Temix only a newer row about the same branch rules a fix out — a plain refresh row never does', async () => {
+    const heldBranch = (id: string, n: number, code: string, branch: string): Row => ({
+      id,
+      rowNumber: n,
+      state: 'QUARANTINED',
+      raw: { cust_code: code, branch_code: branch, day_of_visit: 'XYZ' },
+      parsed: { custCode: code, branchCode: branch },
+      issues: [{ field: 'day_of_visit', message: 'x' }],
+    });
+    h.rows = [heldBranch('a', 2, 'T1', '02'), heldBranch('b', 3, 'T2', '02'), heldBranch('c', 4, 'T3', '02')];
+    h.linked = ['T1', 'T2', 'T3'];
+    h.newer = [
+      // The inbound Temix refresh carried T1's branch 02 as a plain row: it wrote no branch.
+      { code: 'T1', filename: 'temix.xlsx', rowNumber: 7, state: 'PROMOTED', excluded: false, branchCode: 'T1-02', refreshRow: true },
+      // A newer upload FIXED T2's branch 02 in the app: that one wrote it.
+      { code: 'T2', filename: 'later.xlsx', rowNumber: 8, state: 'PROMOTED', excluded: false, branchCode: '02', fixedInApp: true, refreshRow: true },
+      // A newer upload touched T3's OTHER branch only.
+      { code: 'T3', filename: 'later.xlsx', rowNumber: 9, state: 'QUARANTINED', excluded: false, branchCode: 'T3-03' },
+    ];
+    await open({ show: 'all' });
+    const rowOf = (code: string) => screen.getAllByText(code)[0].closest('tr')!;
+    const buttons = (code: string) => within(rowOf(code)).queryAllByRole('button').map((b) => b.textContent);
+    expect(buttons('T1')).toEqual(['Re-check', 'Correct…', 'Exclude…']);
+    expect(buttons('T2')).toEqual(['Exclude…']);
+    expect(rowOf('T2').textContent).toMatch(/was loaded again from a newer upload, "later\.xlsx" \(row 8\)/);
+    expect(buttons('T3')).toEqual(['Re-check', 'Correct…', 'Exclude…']);
+  });
+
+  it('a row of a customer linked to Temix says, before a release or a customer-level correction, that only the branch loads', async () => {
+    h.rows = [
+      { id: 'q1', rowNumber: 2, state: 'QUARANTINED', raw: { cust_code: 'L', phone: '99758980' }, parsed: { custCode: 'L' }, issues: [{ field: 'phone', message: 'phone already exists in master on customer H' }] },
+      { id: 'q2', rowNumber: 3, state: 'QUARANTINED', raw: { cust_code: 'M', day_of_visit: 'XYZ' }, parsed: { custCode: 'M' }, issues: [{ field: 'day_of_visit', message: 'x' }] },
+      { id: 'q3', rowNumber: 4, state: 'QUARANTINED', raw: { cust_code: 'N', phone: '99758981' }, parsed: { custCode: 'N' }, issues: [{ field: 'phone', message: 'phone already exists in master on customer H' }] },
+    ];
+    h.linked = ['L', 'M'];
+    await open({ show: 'all' });
+    const rowOf = (code: string) => screen.getAllByText(code)[0].closest('tr')!;
+    expect(rowOf('L').textContent).toMatch(/linked to Temix, so a fix here loads only this row.s branch/);
+    // A visit day is the branch's own: nothing to warn about.
+    expect(rowOf('M').textContent).not.toMatch(/linked to Temix/);
+    // Not linked: the full lane writes the phone.
+    expect(rowOf('N').textContent).not.toMatch(/linked to Temix/);
   });
 
   it('a Manager is sent home', async () => {

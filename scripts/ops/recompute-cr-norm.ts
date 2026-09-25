@@ -48,6 +48,16 @@
  * REVERSIBLE BY CONSTRUCTION: the old norm is what the previous normalizeCR made
  * of crNumber, and this script never touches crNumber.
  *
+ * "MARK DISTINCT" SURVIVES IT. A dismissal on /duplicates stores a digest of the
+ * CR norm the pair shared (lib/duplicate-pairing.ts) and lapses when the pair's
+ * match changes. Re-folding a CR the two customers ALREADY shared changes the
+ * digest but not the match, so without a hand every pair the Steward marked
+ * distinct on such a CR came back reading "what they share has changed"
+ * (post-merge review). The run counts those pairs, and --apply appends one
+ * CustomerPair row per pair carrying the new digests, after the norm writes —
+ * the dismissal then holds as it did. A pair whose CRs become equal only now is
+ * a new match, and comes back, as the owner decided.
+ *
  * TARGETS ANY DATABASE, NAMED. The safety is the one from requeue-untracked.ts,
  * whose guards it imports: --expect-host is required for the dry run too, the
  * dry run resolves the audit actor so it rehearses every refusal --apply has,
@@ -56,6 +66,14 @@
  */
 import { PrismaClient, EditProcess, EditState, type Prisma } from '@prisma/client';
 import { normalizeCR } from '../../lib/cr';
+import {
+  dismissalHides,
+  matchSignals,
+  pairKey,
+  parseDismissals,
+  type PairLogRow,
+  type SignalRow,
+} from '../../lib/duplicate-pairing';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
 
 export type NormRow = { id: string; crNumber: string | null; crNumberNorm: string | null };
@@ -101,6 +119,44 @@ export function crPairCount(norms: Iterable<string | null>): number {
   return pairs;
 }
 
+export type PairCustomer = SignalRow & { id: string; deletedAt: Date | null };
+
+/**
+ * The "Mark distinct" dismissals that hide a pair now, on a CR the two
+ * customers already share, and that would stop hiding it only because that
+ * shared CR's norm is re-folded: each with the signals to carry forward. A
+ * dismissal from before signals were stored hides whatever the pair matches,
+ * so it needs nothing. A pair that matches on anything the Steward did not
+ * dismiss — a CR shared only after the re-fold, say — is left to come back.
+ */
+export function dismissalsToCarry(
+  customers: PairCustomer[],
+  pairLog: PairLogRow[],
+  normAfter: ReadonlyMap<string, string | null>
+): Array<{ entityId: string; signals: string[] }> {
+  const live = new Map(customers.filter((c) => c.deletedAt === null).map((c) => [c.id, c]));
+  const after = (c: PairCustomer): SignalRow => ({
+    ...c,
+    crNumberNorm: normAfter.has(c.id) ? normAfter.get(c.id)! : c.crNumberNorm,
+  });
+  const out: Array<{ entityId: string; signals: string[] }> = [];
+  for (const [key, d] of parseDismissals(pairLog)) {
+    if (d.signals === null) continue;
+    const [aId, bId] = key.split('|');
+    const a = live.get(aId);
+    const b = live.get(bId);
+    if (!a || !b) continue;
+    const before = matchSignals(a, b);
+    if (!before.some((x) => x.startsWith('cr:')) || !dismissalHides(d, before)) continue;
+    const next = matchSignals(after(a), after(b));
+    if (!next.some((x) => x.startsWith('cr:')) || dismissalHides(d, next)) continue;
+    const stored = d.signals;
+    if (!next.filter((x) => !x.startsWith('cr:')).every((x) => stored.has(x))) continue;
+    out.push({ entityId: pairKey(aId, bId), signals: next });
+  }
+  return out;
+}
+
 const OPEN_STATES: EditState[] = [EditState.DRAFT, EditState.SUBMITTED, EditState.NEEDS_CORRECTION];
 const HAS_CR = { OR: [{ crNumber: { not: null } }, { crNumberNorm: { not: null } }] };
 
@@ -133,10 +189,22 @@ async function main(): Promise<number> {
     await connectWaking(prisma);
 
     const read = async () => {
-      const customers = await prisma.customer.findMany({
-        where: HAS_CR,
-        select: { id: true, crNumber: true, crNumberNorm: true, deletedAt: true, updatedAt: true },
-      });
+      const customers = (
+        await prisma.customer.findMany({
+          where: HAS_CR,
+          select: {
+            id: true,
+            crNumber: true,
+            crNumberNorm: true,
+            deletedAt: true,
+            updatedAt: true,
+            // What a pair's match signals are computed from (lib/duplicate-pairing.ts).
+            legalName: true,
+            primaryPhoneNorm: true,
+            branches: { where: { deletedAt: null }, select: { regionId: true } },
+          },
+        })
+      ).map(({ branches, ...c }) => ({ ...c, regionIds: [...new Set(branches.map((x) => x.regionId))] }));
       const drafts = await prisma.editCustomerDraft.findMany({
         where: HAS_CR,
         select: {
@@ -146,9 +214,15 @@ async function main(): Promise<number> {
           edit: { select: { state: true, process: true } },
         },
       });
-      return { customers, drafts };
+      // The Steward's "Mark distinct" history, in the order it was written.
+      const pairLog = await prisma.auditLog.findMany({
+        where: { entityType: 'CustomerPair' },
+        orderBy: [{ at: 'asc' }, { id: 'asc' }],
+        select: { entityId: true, after: true, at: true },
+      });
+      return { customers, drafts, pairLog };
     };
-    const { customers, drafts } = await read();
+    const { customers, drafts, pairLog } = await read();
     const custFixes = planCrNormFixes(customers);
     const draftFixes = planCrNormFixes(drafts);
     const isOpen = (d: (typeof drafts)[number]) =>
@@ -176,6 +250,8 @@ async function main(): Promise<number> {
       return !!n && liveNormsAfter.has(n);
     }).length;
 
+    const carryPlanned = dismissalsToCarry(customers, pairLog, nextOf);
+
     const liveFixes = custFixes.filter((f) => f.deletedAt === null).length;
     const openFixes = draftFixes.filter(isOpen).length;
     console.log(`Customers with a CR:              ${customers.length}`);
@@ -192,6 +268,10 @@ async function main(): Promise<number> {
     if (draftFixes.length > 0) console.log(`                                  ${kinds(draftFixes)}`);
     console.log(`CR pairs on /duplicates:          ${pairsBefore} now, ${pairsAfter} after`);
     console.log(`Open requests whose CR will equal a live customer's: ${openColliding}`);
+    console.log(
+      `Pairs marked distinct on a CR this re-folds: ${carryPlanned.length}` +
+        (carryPlanned.length > 0 ? ' (kept marked distinct by --apply)' : '')
+    );
 
     if (custFixes.length + draftFixes.length === 0) {
       console.log('\nNothing to do: every stored norm is what normalizeCR makes of its CR.');
@@ -239,6 +319,7 @@ async function main(): Promise<number> {
           drafts: draftFixes.length,
           crPairsBefore: pairsBefore,
           crPairsAfter: pairsAfter,
+          dismissalsToCarry: carryPlanned.length,
           host,
         } as unknown as Prisma.InputJsonValue,
       },
@@ -268,6 +349,30 @@ async function main(): Promise<number> {
       else draftSkipped += 1;
     }
 
+    // Carried forward from the norms as they now stand, so a row this run
+    // skipped (changed while it read) decides nothing. Digests only, as the
+    // Steward's own rows hold.
+    const now = await read();
+    const carry = dismissalsToCarry(
+      customers,
+      pairLog,
+      new Map(now.customers.map((c) => [c.id, c.crNumberNorm]))
+    );
+    for (const c of carry) {
+      await prisma.auditLog.create({
+        data: {
+          actorId: actor.id,
+          action: 'UPDATE',
+          entityType: 'CustomerPair',
+          entityId: c.entityId,
+          after: { signals: c.signals } as unknown as Prisma.InputJsonValue,
+          reason:
+            'Kept marked distinct by scripts/ops/recompute-cr-norm.ts: the CR these customers ' +
+            'share was only re-normalized (item 16), so the Steward\'s "Mark distinct" still applies.',
+        },
+      });
+    }
+
     await prisma.auditLog.create({
       data: {
         actorId: actor.id,
@@ -287,12 +392,12 @@ async function main(): Promise<number> {
           customersSkipped: custSkipped,
           draftsWritten: draftWritten,
           draftsSkipped: draftSkipped,
+          dismissalsCarried: carry.length,
         } as unknown as Prisma.InputJsonValue,
       },
     });
 
-    const again = await read();
-    const remaining = planCrNormFixes(again.customers).length + planCrNormFixes(again.drafts).length;
+    const remaining = planCrNormFixes(now.customers).length + planCrNormFixes(now.drafts).length;
     console.log('='.repeat(76));
     console.log(
       `Wrote ${custWritten} customer(s) and ${draftWritten} draft(s); ` +
@@ -307,6 +412,7 @@ async function main(): Promise<number> {
     console.log(`  customers       ${custWritten} written, ${custSkipped} skipped`);
     console.log(`  drafts          ${draftWritten} written, ${draftSkipped} skipped`);
     console.log(`  CR pairs        ${pairsBefore} -> ${pairsAfter} on /duplicates`);
+    console.log(`  marked distinct ${carry.length} pair(s) kept marked`);
     console.log(
       `  audit rows      AuditLog entityType=CrNormRecompute entityId=${at.toISOString()} (STARTING + COMPLETED)`
     );

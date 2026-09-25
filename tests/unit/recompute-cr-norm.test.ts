@@ -15,8 +15,11 @@ import {
   fixKind,
   guardedWhere,
   crPairCount,
+  dismissalsToCarry,
+  type PairCustomer,
 } from '../../scripts/ops/recompute-cr-norm';
 import { normalizeCR } from '@/lib/cr';
+import { dismissalHides, matchSignals, parseDismissals, signalHash } from '@/lib/duplicate-pairing';
 
 const ARABIC = String.fromCharCode(0x661, 0x662, 0x663, 0x664, 0x665, 0x666, 0x667);
 const ZW = String.fromCharCode(0x200b);
@@ -90,6 +93,62 @@ describe('crPairCount', () => {
   });
 });
 
+describe('dismissalsToCarry — "Mark distinct" survives the re-fold (post-merge review)', () => {
+  const cust = (id: string, cr: string | null, over: Partial<PairCustomer> = {}): PairCustomer => ({
+    id,
+    deletedAt: null,
+    legalName: `Shop ${id}`,
+    primaryPhoneNorm: null,
+    crNumberNorm: cr,
+    regionIds: ['R1'],
+    ...over,
+  });
+  const dismissed = (a: PairCustomer, b: PairCustomer, at = new Date('2026-09-26T08:00:00Z')) => ({
+    entityId: `${a.id}|${b.id}`,
+    after: { signals: matchSignals(a, b) },
+    at,
+  });
+
+  it('a pair marked distinct on a CR it already shared keeps its dismissal, with the new digest', () => {
+    // Both stored the unfolded norm; the Steward marked them distinct after the deploy.
+    const a = cust('a', ARABIC);
+    const b = cust('b', ARABIC);
+    const next = new Map([
+      ['a', '1234567'],
+      ['b', '1234567'],
+    ]);
+    const carry = dismissalsToCarry([a, b], [dismissed(a, b)], next);
+    expect(carry).toEqual([{ entityId: 'a|b', signals: [`cr:${signalHash('1234567')}`] }]);
+    // Carried forward, the dismissal hides the pair as it stands after the run.
+    const log = [dismissed(a, b), { entityId: carry[0].entityId, after: { signals: carry[0].signals }, at: new Date('2026-09-27T00:00:00Z') }];
+    const d = parseDismissals(log).get('a|b');
+    expect(dismissalHides(d, matchSignals({ ...a, crNumberNorm: '1234567' }, { ...b, crNumberNorm: '1234567' }))).toBe(true);
+  });
+
+  it('a pair whose CRs become equal only now is a new match, and comes back', () => {
+    // Marked distinct on name + phone + region; the CRs differed until the fold.
+    const a = cust('a', ARABIC, { legalName: 'Al Noor', primaryPhoneNorm: '+96899758980' });
+    const b = cust('b', '1234567', { legalName: 'Al Noor', primaryPhoneNorm: '+96899758980' });
+    const next = new Map([['a', '1234567']]);
+    expect(dismissalsToCarry([a, b], [dismissed(a, b)], next)).toEqual([]);
+  });
+
+  it('nothing to carry: an undone dismissal, a legacy one, an archived customer, a CR not re-folded', () => {
+    const a = cust('a', ARABIC);
+    const b = cust('b', ARABIC);
+    const next = new Map([
+      ['a', '1234567'],
+      ['b', '1234567'],
+    ]);
+    const undone = [dismissed(a, b), { entityId: 'a|b', after: { undo: true }, at: new Date('2026-09-26T09:00:00Z') }];
+    expect(dismissalsToCarry([a, b], undone, next)).toEqual([]);
+    // Written before signals were stored: it hides whatever the pair matches.
+    expect(dismissalsToCarry([a, b], [{ entityId: 'a|b', after: null, at: new Date() }], next)).toEqual([]);
+    expect(dismissalsToCarry([a, { ...b, deletedAt: new Date() }], [dismissed(a, b)], next)).toEqual([]);
+    expect(dismissalsToCarry([a, b], [dismissed(a, b)], new Map())).toEqual([]);
+  });
+});
+
 describe('the script keeps the operator conventions (comment-stripped source)', () => {
   const src = stripComments(readFileSync('scripts/ops/recompute-cr-norm.ts', 'utf8'), 'x.ts');
   const main = src.slice(src.indexOf('async function main('));
@@ -131,6 +190,14 @@ describe('the script keeps the operator conventions (comment-stripped source)', 
     for (const m of main.matchAll(/auditLog\.create\(([\s\S]*?)\n {4}\}\);/g)) {
       expect(m[1]).not.toMatch(/\.crNumber|\.next\b|f\.crNumberNorm/);
     }
+  });
+
+  it('keeps a dismissal only after the norm writes, from the norms as they then stand, as digests', () => {
+    const carryRow = main.indexOf('entityId: c.entityId');
+    expect(carryRow).toBeGreaterThan(main.indexOf('prisma.customer.updateMany('));
+    expect(carryRow).toBeGreaterThan(main.indexOf('prisma.editCustomerDraft.updateMany('));
+    expect(main.slice(0, carryRow)).toMatch(/const now = await read\(\);\s*const carry = dismissalsToCarry\(/);
+    expect(main.slice(carryRow, carryRow + 200)).toMatch(/after: \{ signals: c\.signals \}/);
   });
 
   it('runs main() only as a command, so importing it for these tests opens no connection', () => {

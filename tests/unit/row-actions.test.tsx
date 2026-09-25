@@ -87,7 +87,47 @@ describe('RowActions — Correct, reopened', () => {
   });
 });
 
+describe('RowActions — the row changes under an open Correct form (post-merge review)', () => {
+  it('closes the form, so a cell it never held is not sent as blank', () => {
+    // Opened for a rejected row's branch_code…
+    const view = render(<RowActions {...base} state="REJECTED" editable={['branch_code']} current={{ branch_code: '' }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Correct…' }));
+    expect(screen.getByLabelText(/Branch code/)).toBeTruthy();
+    // …then a fix of a sibling re-checked it: now held back for its phone.
+    view.rerender(<RowActions {...base} state="QUARANTINED" editable={['phone']} current={{ phone: '99758980' }} />);
+    expect(screen.queryByRole('button', { name: 'Save and re-check' })).toBeNull();
+    expect(screen.getByRole('status').textContent).toMatch(/problem changed while the form was open/);
+    expect(h.correct).not.toHaveBeenCalled();
+    // Opened again, it holds the row as it stands.
+    fireEvent.click(screen.getByRole('button', { name: 'Correct…' }));
+    expect((screen.getByLabelText(/^Phone/) as HTMLInputElement).value).toBe('99758980');
+  });
+});
+
+describe('RowActions — a customer linked to Temix', () => {
+  it('says a fix loads only the branch', () => {
+    render(<RowActions {...base} state="QUARANTINED" canRelease editable={['phone']} current={{ phone: '99758980' }} linkedToTemix />);
+    expect(document.body.textContent).toMatch(/linked to Temix, so a fix here loads only this row.s branch/);
+    expect(document.body.textContent).toMatch(/not written to the customer/);
+  });
+});
+
 describe('RowActions — a fixed row waiting to promote', () => {
+  it('says so when a newer upload overtook it, and still offers Withdraw fix', () => {
+    render(<RowActions {...base} state="CLEAN" editable={[]} current={{}} superseded="Customer F is also in a newer upload, so this fix will not load." />);
+    expect(document.body.textContent).toMatch(/this fix will not load/);
+    expect(document.body.textContent).not.toMatch(/loads on the next promote/);
+    expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual(['Withdraw fix']);
+  });
+
+  it('says how many rows went back when the fix took its customer’s other rows with it', async () => {
+    h.withdraw.mockResolvedValue({ ok: true, data: { rows: 3 } });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<RowActions {...base} state="CLEAN" editable={[]} current={{}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Withdraw fix' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Fix withdrawn — 3 rows back to what they were.'));
+  });
+
   it('offers only Withdraw fix, and asks first', async () => {
     h.withdraw.mockResolvedValue({ ok: true, data: undefined });
     const ask = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);

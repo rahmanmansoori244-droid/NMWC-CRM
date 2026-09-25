@@ -12,11 +12,15 @@ import {
   canReleasePhone,
   cellValue,
   correctedRow,
+  CUSTOMER_LEVEL_CELLS,
   editableColumns,
+  fixWindowClosed,
+  fixWindowMessage,
   newerUploadMessage,
   readCorrections,
+  supersededFixMessage,
 } from '@/lib/import-row-fix';
-import { newerUploadsCarrying } from '@/lib/import-master-lookup';
+import { fixTarget, newerUploadsCarrying } from '@/lib/import-master-lookup';
 import {
   ROW_VIEWS,
   ROW_VIEW_LABEL,
@@ -84,17 +88,47 @@ export default async function ImportBatchPage({
   // Rows can be fixed only on a customer-master batch; the account master is
   // re-uploaded instead (its rows keep no values to fix).
   const fixable = batch.kind === 'CUSTOMER';
-  // A row whose customer a newer upload also carries cannot be fixed here — the
-  // server refuses it (services/import-fixes.ts). Ask the same question once for
-  // the page, so the row offers Exclude instead of buttons that always fail.
+  // A row a newer upload of its customer (or, for a customer linked to Temix,
+  // of its branch) has overtaken cannot be fixed here — the server refuses it
+  // (services/import-fixes.ts), and promote rejects a fix waiting here that was
+  // overtaken after it was made. Ask the same question once for the page, so
+  // the row offers Exclude (or Withdraw fix) instead of buttons that always fail.
   const codeOf = (parsed: unknown) => (parsed as { custCode?: string } | null)?.custCode ?? null;
+  const branchOf = (parsed: unknown) =>
+    (parsed as { branchCode?: string | null } | null)?.branchCode ?? null;
+  const isFixedWaiting = (r: (typeof displayRows)[number]) =>
+    r.state === 'CLEAN' &&
+    !r.excludedAt &&
+    (r.parsed as { fixedInApp?: boolean } | null)?.fixedInApp === true;
+  const isProblem = (r: (typeof displayRows)[number]) =>
+    r.state === 'QUARANTINED' || r.state === 'REJECTED';
+  const askAbout = fixable
+    ? displayRows.filter((r) => !r.excludedAt && (isProblem(r) || isFixedWaiting(r)))
+    : [];
   const superseded = fixable
     ? await newerUploadsCarrying(
         prisma,
         batch.uploadedAt,
-        [...new Set(displayRows.map((r) => codeOf(r.parsed)).filter((c): c is string => !!c))]
+        askAbout.flatMap((r) => {
+          const code = codeOf(r.parsed);
+          return code ? [fixTarget(r.id, code, branchOf(r.parsed))] : [];
+        })
       )
     : new Map();
+  // Customers linked to Temix: a fix loads only the row's branch there, so the
+  // row says so before the Steward corrects a customer-level cell or releases
+  // a phone that would not be written (post-merge review).
+  const askCodes = [...new Set(askAbout.map((r) => codeOf(r.parsed)).filter((c): c is string => !!c))];
+  const linkedCodes = new Set(
+    askCodes.length > 0
+      ? (
+          await prisma.customer.findMany({
+            where: { nmwcCode: { in: askCodes }, deletedAt: null, temixCode: { not: null } },
+            select: { nmwcCode: true },
+          })
+        ).map((c) => c.nmwcCode)
+      : []
+  );
   const href = (v: RowView, p = 1): Route => (p > 1 ? `?show=${v}&page=${p}` : `?show=${v}`);
 
   // RK-3: promote runs in slices, so "how much is left" is the live CLEAN count,
@@ -213,15 +247,25 @@ export default async function ImportBatchPage({
                 const uploaded = uploadedValues(r.raw);
                 const fixes = readCorrections(r.corrections);
                 const corrected = Object.keys(fixes.cells ?? {});
-                const problem = r.state === 'QUARANTINED' || r.state === 'REJECTED';
-                const fixedWaiting =
-                  r.state === 'CLEAN' &&
-                  !r.excludedAt &&
-                  (r.parsed as { fixedInApp?: boolean } | null)?.fixedInApp === true;
+                const problem = isProblem(r);
+                const fixedWaiting = isFixedWaiting(r);
                 const code = codeOf(r.parsed);
-                const newer = code ? superseded.get(code) : undefined;
+                const newer = superseded.get(r.id);
                 const editable = editableColumns(r.issues);
                 const now = correctedRow(r.raw, fixes);
+                // Past the fix window the server refuses every fix (assertFixable
+                // runs first): say so in its words and offer Exclude — the page
+                // offered Re-check, Correct and Release that always failed.
+                const windowClosed =
+                  problem && !r.excludedAt && uploaded.length > 0 && fixWindowClosed(r.createdAt);
+                const blocked = windowClosed
+                  ? fixWindowMessage(r.rowNumber)
+                  : newer && code
+                    ? fixedWaiting
+                      ? supersededFixMessage(code, newer)
+                      : newerUploadMessage(code, newer)
+                    : null;
+                const linked = !!code && linkedCodes.has(code);
                 return (
                   <tr key={r.id} className="align-top hover:bg-slate-50">
                     <td className="px-3 py-2 font-mono text-[11px] tabular-nums">#{r.rowNumber}</td>
@@ -284,7 +328,14 @@ export default async function ImportBatchPage({
                             rowId={r.id}
                             batchId={batch.id}
                             state={r.state as 'QUARANTINED' | 'REJECTED' | 'CLEAN'}
-                            superseded={newer && code ? newerUploadMessage(code, newer) : null}
+                            superseded={blocked}
+                            linkedToTemix={
+                              linked &&
+                              ((uploaded.length > 0 &&
+                                r.state === 'QUARANTINED' &&
+                                canReleasePhone(r.issues)) ||
+                                editable.some((c) => CUSTOMER_LEVEL_CELLS.has(c)))
+                            }
                             editable={uploaded.length > 0 ? editable : []}
                             current={Object.fromEntries(editable.map((c) => [c, cellValue(now, c)]))}
                             canRelease={uploaded.length > 0 && r.state === 'QUARANTINED' && canReleasePhone(r.issues)}

@@ -11,8 +11,12 @@
  *
  *   RUN_RETENTION_SWEEP=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/retention-sweep.test.ts
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog } from '../support/audit';
+
+// The setup writes some thirty rows one round trip at a time, over a WAN link
+// to the test database; the 10 s default hook timeout is not enough for that.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 const ENABLED = process.env.RUN_RETENTION_SWEEP === '1' && !!process.env.DATABASE_URL;
 const sfx = `ret${Date.now().toString(36)}`;
@@ -33,6 +37,12 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
   // …and one excluded long ago in a batch that never left READY (a wrong file, excluded whole).
   const heldExcludedStaged = `${sfx}-qx-staged`;
   let stagedBatchId = '';
+  // Post-merge review: a promoted batch a fix set back to READY, and one being
+  // promoted right now — each with a PROMOTED, a REJECTED and a CLEAN row.
+  let reopenedBatchId = '';
+  let promotingBatchId = '';
+  const reopened = (s: string) => `${sfx}-ro-${s}`;
+  const promoting = (s: string) => `${sfx}-pg-${s}`;
 
   const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
   const PERSONAL = {
@@ -145,6 +155,27 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
     });
     await prisma.$executeRawUnsafe(`UPDATE "ImportRow" SET "createdAt" = $1 WHERE "id" = $2`, daysAgo(200), heldExcludedStaged);
 
+    for (const [status, rowId] of [
+      ['READY', reopened],
+      ['PROMOTING', promoting],
+    ] as const) {
+      const b = await prisma.importBatch.create({
+        data: { filename: `${sfx}-${status}.xlsx`, kind: 'CUSTOMER', status, uploadedById: userId },
+      });
+      if (status === 'READY') reopenedBatchId = b.id;
+      else promotingBatchId = b.id;
+      for (const [n, state] of [
+        [1, 'PROMOTED'],
+        [2, 'REJECTED'],
+        [3, 'CLEAN'],
+      ] as const) {
+        await prisma.importRow.create({
+          data: { id: rowId(state), batchId: b.id, rowNumber: n, raw: PERSONAL, parsed: PERSONAL, state },
+        });
+        await prisma.$executeRawUnsafe(`UPDATE "ImportRow" SET "createdAt" = $1 WHERE "id" = $2`, daysAgo(120), rowId(state));
+      }
+    }
+
     // A spent rate-limit bucket keyed on a username, and a fresh one.
     await prisma.rateLimit.create({ data: { key: `login:user:${sfx}.old`, tokens: 4 } });
     await prisma.rateLimit.create({ data: { key: `login:user:${sfx}.new`, tokens: 4 } });
@@ -176,8 +207,9 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
 
   afterAll(async () => {
     if (!prisma) return;
-    await prisma.importRow.deleteMany({ where: { batchId: { in: [batchId, stagedBatchId] } } });
-    await prisma.importBatch.deleteMany({ where: { id: { in: [batchId, stagedBatchId] } } });
+    const ours = [batchId, stagedBatchId, reopenedBatchId, promotingBatchId].filter(Boolean);
+    await prisma.importRow.deleteMany({ where: { batchId: { in: ours } } });
+    await prisma.importBatch.deleteMany({ where: { id: { in: ours } } });
     await prisma.notification.deleteMany({ where: { userId } });
     await prisma.rateLimit.deleteMany({ where: { key: { startsWith: `login:user:${sfx}` } } });
     await purgeAuditLog(prisma, { where: { actorId: userId } });
@@ -254,6 +286,24 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
     expect(staged.parsed).not.toBeNull();
     expect(JSON.stringify(staged.raw)).toContain(PERSONAL.phone);
     expect(staged.issues).not.toBeNull();
+  });
+
+  it('a promoted batch a fix set back to READY: its finished rows are cleared, the CLEAN row promote still needs is not', async () => {
+    // Its rows used to be kept for ever once the fix was withdrawn and nothing
+    // was left to promote (post-merge review).
+    for (const state of ['PROMOTED', 'REJECTED'] as const) {
+      const gone = await prisma.importRow.findUniqueOrThrow({ where: { id: reopened(state) } });
+      expect([gone.raw, gone.parsed]).toEqual([{}, null]);
+    }
+    const kept = await prisma.importRow.findUniqueOrThrow({ where: { id: reopened('CLEAN') } });
+    expect(JSON.stringify(kept.parsed)).toContain(PERSONAL.phone);
+  });
+
+  it('a batch being promoted right now is left alone', async () => {
+    for (const state of ['PROMOTED', 'REJECTED', 'CLEAN'] as const) {
+      const kept = await prisma.importRow.findUniqueOrThrow({ where: { id: promoting(state) } });
+      expect(JSON.stringify(kept.raw)).toContain(PERSONAL.phone);
+    }
   });
 
   it('is idempotent and makes progress — a second run re-clears nothing', async () => {

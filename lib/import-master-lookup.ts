@@ -11,7 +11,12 @@
  */
 import { prisma } from '@/lib/db';
 import type { Prisma } from '@prisma/client';
-import type { NewerUpload } from '@/lib/import-row-fix';
+import {
+  composeBranchCode,
+  supersedingUpload,
+  type NewerCandidate,
+  type NewerUpload,
+} from '@/lib/import-row-fix';
 
 export async function masterCollisionMaps(
   phones: string[],
@@ -44,34 +49,83 @@ export async function masterCollisionMaps(
   return { masterPhones, masterCrs };
 }
 
+/** A row whose fix a newer upload may rule out: `key` names it in the answer. */
+export type FixTarget = { key: string; code: string; branch: string | null };
+
 /**
- * For each customer code, the row in the NEWEST customer upload after
- * `uploadedAt` that carries it. The batch page uses it to offer only
- * "Exclude" on a row a newer upload has superseded, and the fix actions use it
- * to refuse one — the same query, so the page never offers what the server
- * refuses.
+ * For each target, the newer customer upload (after `uploadedAt`) that rules
+ * out fixing it, if any — `supersedingUpload` decides, per customer: any newer
+ * upload for a customer not linked to Temix, only a newer row about the same
+ * branch for one that is. The batch page uses it to offer only "Exclude" (or
+ * "Withdraw fix"), the fix actions to refuse, and promote to reject a fix that
+ * a newer upload overtook while it waited — one rule, so the page never offers
+ * what the server refuses.
  */
 export async function newerUploadsCarrying(
   db: Prisma.TransactionClient | typeof prisma,
   uploadedAt: Date,
-  codes: string[]
+  targets: FixTarget[]
 ): Promise<Map<string, NewerUpload>> {
   const out = new Map<string, NewerUpload>();
+  const codes = [...new Set(targets.map((t) => t.code))];
   if (codes.length === 0) return out;
   const rows = await db.$queryRaw<
-    Array<{ code: string; filename: string; rowNumber: number; state: string; excluded: boolean }>
+    Array<{
+      code: string;
+      filename: string;
+      rowNumber: number;
+      state: string;
+      excluded: boolean;
+      branchCode: string | null;
+      fixedInApp: boolean | null;
+      refreshRow: boolean | null;
+    }>
   >`
-    SELECT DISTINCT ON (r."parsed"->>'custCode')
-           r."parsed"->>'custCode' AS "code", b."filename", r."rowNumber",
-           r."state"::text AS "state", (r."excludedAt" IS NOT NULL) AS "excluded"
+    SELECT r."parsed"->>'custCode' AS "code", b."filename", r."rowNumber",
+           r."state"::text AS "state", (r."excludedAt" IS NOT NULL) AS "excluded",
+           r."parsed"->>'branchCode' AS "branchCode",
+           (r."parsed"->>'fixedInApp') = 'true' AS "fixedInApp",
+           (c."temixCode" IS NOT NULL
+             AND r."parsed"->>'temixCode' = c."temixCode"
+             AND b."id" IS DISTINCT FROM c."importBatchId") AS "refreshRow"
       FROM "ImportRow" r
       JOIN "ImportBatch" b ON b."id" = r."batchId"
+      LEFT JOIN "Customer" c ON c."nmwcCode" = r."parsed"->>'custCode'
      WHERE b."kind" = 'CUSTOMER'
        AND b."uploadedAt" > ${uploadedAt}
        AND r."parsed"->>'custCode' = ANY(${codes})
-     ORDER BY r."parsed"->>'custCode', b."uploadedAt" DESC, r."rowNumber"`;
+     ORDER BY b."uploadedAt" DESC, r."rowNumber"`;
+  const byCode = new Map<string, NewerCandidate[]>();
   for (const r of rows) {
-    out.set(r.code, { filename: r.filename, rowNumber: r.rowNumber, state: r.state, excluded: r.excluded });
+    const list = byCode.get(r.code) ?? [];
+    list.push({
+      filename: r.filename,
+      rowNumber: r.rowNumber,
+      state: r.state,
+      excluded: r.excluded,
+      branch: r.branchCode ? composeBranchCode(r.code, r.branchCode) : null,
+      fixedInApp: r.fixedInApp === true,
+      refreshRow: r.refreshRow === true,
+    });
+    byCode.set(r.code, list);
+  }
+  if (byCode.size === 0) return out;
+  const linked = new Set(
+    (
+      await db.customer.findMany({
+        where: { nmwcCode: { in: [...byCode.keys()] }, deletedAt: null, temixCode: { not: null } },
+        select: { nmwcCode: true },
+      })
+    ).map((c) => c.nmwcCode)
+  );
+  for (const t of targets) {
+    const hit = supersedingUpload(t, linked.has(t.code), byCode.get(t.code) ?? []);
+    if (hit) out.set(t.key, hit);
   }
   return out;
+}
+
+/** A row's fix target: its customer code and its branch code composed under it. */
+export function fixTarget(key: string, code: string, branchCell: string | null): FixTarget {
+  return { key, code, branch: branchCell ? composeBranchCode(code, branchCell) : null };
 }

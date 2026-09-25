@@ -13,6 +13,7 @@
  *    the corrections laid over it.
  */
 import type { SheetRow } from '@/lib/import-row-check';
+import { normalizeCR } from '@/lib/cr';
 
 export type Corrections = {
   /** Sheet column → the value the Steward entered. */
@@ -199,7 +200,75 @@ export function fixWindowClosed(createdAt: Date, now: Date = new Date()): boolea
   return now.getTime() - createdAt.getTime() > IMPORT_PAYLOAD_DAYS * 24 * 60 * 60 * 1000;
 }
 
+/**
+ * The refusal of a row past the fix window, in the words the server uses — the
+ * batch page shows it in place of buttons the server would refuse (post-merge
+ * review: the page offered Re-check, Correct and Release on such rows).
+ */
+export function fixWindowMessage(rowNumber: number): string {
+  return `Row ${rowNumber} was uploaded more than ${IMPORT_PAYLOAD_DAYS} days ago, past the window in which a newer upload of the same customer can still be seen. Exclude it, or upload the corrected row again.`;
+}
+
+/**
+ * The branch code a sheet's branch_code resolves to under its customer — the
+ * rule promote applies (QA P-01): a bare suffix like '01' is composed under
+ * the customer code; a code already composed, or equal to the customer code,
+ * passes through.
+ */
+export function composeBranchCode(custCode: string, sheetCode: string): string {
+  const cc = custCode.trim().toUpperCase();
+  const raw = sheetCode.trim().toUpperCase();
+  return raw === cc || raw.startsWith(`${cc}-`) ? raw : `${cc}-${raw}`;
+}
+
 export type NewerUpload = { filename: string; rowNumber: number; state: string; excluded: boolean };
+
+/** A row of a newer customer upload carrying the same customer, newest upload first. */
+export type NewerCandidate = NewerUpload & {
+  /** Its branch code composed under its customer, or null when the cell is blank. */
+  branch: string | null;
+  fixedInApp: boolean;
+  /**
+   * It carries the customer's own Temix code and is not the row that created
+   * the customer: it took (or will take) the refresh lane, which writes no branch.
+   */
+  refreshRow: boolean;
+};
+
+/**
+ * The newer upload that rules out fixing a row, or null.
+ *
+ * A fixed row of a customer NOT linked to Temix takes the full lane and writes
+ * the customer's own fields, so any newer upload of the customer wins.
+ *
+ * A fixed row of a customer linked to Temix writes only its own branch (owner
+ * decision, "branch only"), so only a newer row about THAT branch rules it out.
+ * A plain refresh row writes no branch at all, so it never does. Keyed on the
+ * customer alone, the routine inbound Temix refresh blocked every held-back
+ * branch row of every customer it carried — while its own note told the
+ * Steward to fix exactly that row (post-merge review).
+ */
+export function supersedingUpload(
+  target: { branch: string | null },
+  linked: boolean,
+  newestFirst: NewerCandidate[]
+): NewerUpload | null {
+  const pick = (n: NewerCandidate): NewerUpload => ({
+    filename: n.filename,
+    rowNumber: n.rowNumber,
+    state: n.state,
+    excluded: n.excluded,
+  });
+  if (!linked) return newestFirst[0] ? pick(newestFirst[0]) : null;
+  if (!target.branch) return null;
+  const hit = newestFirst.find((n) => {
+    if (n.branch !== target.branch) return false;
+    const loadsNoBranch =
+      n.refreshRow && !n.fixedInApp && !n.excluded && (n.state === 'PROMOTED' || n.state === 'CLEAN');
+    return !loadsNoBranch;
+  });
+  return hit ? pick(hit) : null;
+}
 
 /**
  * Why a row cannot be fixed because a newer upload carries its customer, and
@@ -219,6 +288,82 @@ export function newerUploadMessage(code: string, n: NewerUpload): string {
     return `Customer ${code} was loaded again from ${where}. This older row can no longer be fixed — exclude it.`;
   }
   return `Customer ${code} is also in ${where}, ready to load there. This older row can no longer be fixed — exclude it.`;
+}
+
+/**
+ * A fix waiting to promote that a newer upload has since overtaken. Promote
+ * rejects it rather than load the older row over the newer upload — the rule
+ * used to be checked only when the fix was made, so a fix made first and
+ * promoted after a newer upload still loaded (post-merge review).
+ */
+export function supersededFixMessage(code: string, n: NewerUpload): string {
+  const where = `a newer upload, "${n.filename}" (row ${n.rowNumber})`;
+  const next =
+    !n.excluded && (n.state === 'QUARANTINED' || n.state === 'REJECTED')
+      ? 'Withdraw this fix and fix the row in that upload instead.'
+      : 'Withdraw this fix, then exclude the row.';
+  return `Customer ${code} is also in ${where}, so this fix will not load: promote rejects it rather than load older data over that upload. ${next}`;
+}
+
+/** Customer-level cells, which a fix for a customer linked to Temix never writes. */
+const CUSTOMER_CELLS: ReadonlyArray<readonly [string, string]> = [
+  ['cust_name', 'name'],
+  ['phone', 'phone'],
+  ['cr_no', 'CR number'],
+  ['contact_person', 'contact person'],
+  ['channel', 'channel'],
+];
+export const CUSTOMER_LEVEL_CELLS: ReadonlySet<string> = new Set(CUSTOMER_CELLS.map(([k]) => k));
+
+export type StoredCustomerFields = {
+  legalName: string;
+  primaryPhoneNorm: string | null;
+  crNumberNorm: string | null;
+  contactPerson: string | null;
+  channelKey: string | null;
+};
+
+export type RowCustomerFields = {
+  custName: string;
+  /** Normalized, as the check parses it. */
+  phone: string | null;
+  crNumber: string | null;
+  contactPerson: string | null;
+  channelKey?: string | null;
+};
+
+/**
+ * The customer-level values the Steward corrected — or, for the phone,
+ * released — on a row that promote then loads branch only, and that differ
+ * from the customer: none of them is written (owner decision, "branch only").
+ * The row used to read PROMOTED with nothing said, so a released phone looked
+ * loaded (post-merge review). A blank value asks for nothing.
+ */
+export function unwrittenCustomerCells(
+  c: Corrections,
+  row: RowCustomerFields,
+  stored: StoredCustomerFields
+): string[] {
+  const asked = new Set(Object.keys(c.cells ?? {}));
+  if (c.phoneReleased) asked.add('phone');
+  const same = (a: string | null | undefined, b: string | null | undefined) =>
+    (a ?? '').trim().toUpperCase() === (b ?? '').trim().toUpperCase();
+  const differs: Record<string, boolean> = {
+    cust_name: !!row.custName && !same(row.custName, stored.legalName),
+    phone: !!row.phone && row.phone !== stored.primaryPhoneNorm,
+    cr_no: !!row.crNumber && normalizeCR(row.crNumber) !== stored.crNumberNorm,
+    contact_person: !!row.contactPerson && !same(row.contactPerson, stored.contactPerson),
+    channel: !!row.channelKey && !same(row.channelKey, stored.channelKey),
+  };
+  return CUSTOMER_CELLS.filter(([k]) => asked.has(k) && differs[k]).map(([, label]) => label);
+}
+
+/** The row's note when `unwrittenCustomerCells` found any, else null. */
+export function branchOnlyNote(labels: string[]): string | null {
+  if (labels.length === 0) return null;
+  const one = labels.length === 1;
+  const list = one ? labels[0] : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+  return `the ${list} in this row ${one ? 'was' : 'were'} not written — for a customer linked to Temix a row fixed in the app loads only its branch; change ${one ? 'it' : 'them'} on the customer page`;
 }
 
 /** The cells whose value the Steward actually changed, against the row as it stands. */

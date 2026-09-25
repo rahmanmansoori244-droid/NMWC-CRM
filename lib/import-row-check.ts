@@ -105,6 +105,11 @@ export function rowCustCode(row: SheetRow): string {
   return stripHtml(row.cust_code ?? row.custcode ?? row.CUSTCODE ?? row.code ?? row.Code).trim();
 }
 
+/** The branch_code cell as the check reads it, or null when blank. */
+export function rowBranchCode(row: SheetRow): string | null {
+  return stripHtml(row.branch_code ?? row['CUST BRANCH']) || null;
+}
+
 export function rowPhoneNorm(row: SheetRow): string | null {
   return normalizePhone(
     String(row.phone ?? row.PHONE ?? row['Primary Phone'] ?? '').trim() || null
@@ -318,7 +323,7 @@ export function checkCustomerRow(
     channelKey,
     dayOfVisit,
     customerStatus,
-    branchCode: stripHtml(row.branch_code ?? row['CUST BRANCH']) || null,
+    branchCode: rowBranchCode(row),
     branchName: stripHtml(row.branch_name ?? row['CUST BRANCH'] ?? row.branch) || null,
     regionCode: stripHtml(row.sales_region ?? row['SALES REGION'] ?? row.region) || null,
     routeCode: stripHtml(row.route ?? row['ROUTE']) || null,
