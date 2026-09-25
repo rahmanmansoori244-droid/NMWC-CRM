@@ -2,7 +2,8 @@
 /**
  * The field-update report at scale (benchmark item 28): its size ceiling (refuses
  * only above the measured 60,000 rows, before reading a single branch), and the
- * approved_by index that replaced a rows × changes scan. The rest of the report is
+ * approved_by index that replaced a rows × changes scan, and its paging (bounded
+ * pages by branch code, scoped every time, then ordered by route). The rest is
  * covered against a real database in tests/integration/golive-update-flow.test.ts
  * (section 7), which checks approved_by on a single-branch customer only.
  */
@@ -23,6 +24,8 @@ vi.mock('@/lib/db', () => ({
 }));
 
 import { approvalIndex, approvedByFor, buildChangeReport, CHANGE_REPORT_ROW_CEILING } from '@/lib/change-report';
+import { parseWorkbook } from '@/lib/excel';
+import { matchesWhere } from '../support/where-eval';
 
 describe('approved_by — who approved changes on a row', () => {
   const row = (cust_code: string, branch_code: string, decision: string, decided_by: string) => ({
@@ -82,5 +85,99 @@ describe('buildChangeReport — ceiling', () => {
     // No branches in this mock, so no rows — what matters is that it was not refused.
     expect(out.rowCount).toBe(0);
     expect(out.bytes.byteLength).toBeGreaterThan(0);
+  });
+});
+
+describe('buildChangeReport — reads a page at a time', () => {
+  /** A branch as the report's page query returns it (customer, region, route included). */
+  const reportBranch = (branchCode: string, route: string) => ({
+    id: `b-${branchCode}`,
+    customerId: `c-${branchCode}`,
+    branchCode,
+    branchName: `Branch ${branchCode}`,
+    routeId: `r-${route}`,
+    address: 'Way 1',
+    areaDescription: null,
+    gpsLat: null,
+    gpsLng: null,
+    gpsAccuracy: null,
+    gpsCapturedAt: null,
+    dayOfVisit: 'SUN',
+    openingHours: null,
+    deliveryWindow: null,
+    coolersCount: 0,
+    standsCount: 0,
+    emptyBottlesCount: 0,
+    status: 'ACTIVE',
+    shopPhotoId: null,
+    signboardPhotoId: null,
+    shopPhoto: null,
+    signboardPhoto: null,
+    region: { name: 'Muscat', code: 'MCT' },
+    route: { id: `r-${route}`, code: route },
+    customer: {
+      nmwcCode: `C-${branchCode}`,
+      legalName: 'Shop',
+      paymentTerms: 'CASH',
+      status: 'ACTIVE',
+      channel: null,
+      subChannel: null,
+      primaryPhone: null,
+      altPhone: null,
+      contactPerson: null,
+      contactRole: null,
+      crNumber: null,
+      crPhotoId: null,
+      crPhoto: null,
+      notes: null,
+      completenessScore: 50,
+    },
+  });
+
+  it('pages by branch code with the scope on every page, then orders by route', async () => {
+    // Codes interleave the routes, as customer numbers do.
+    const table = [
+      reportBranch('0001-01', 'C5'),
+      reportBranch('0002-01', 'C4'),
+      reportBranch('0003-01', 'C5'),
+      reportBranch('0004-01', 'C4'),
+      reportBranch('0005-01', 'C4'),
+    ];
+    h.findMany.mockReset();
+    h.findMany.mockImplementation(async (args: { take: number; where: { AND: Record<string, unknown>[] } }) => {
+      if (h.findMany.mock.calls.length > 100) throw new Error('paging never ended');
+      const after = args.where.AND[1];
+      return table.filter((b) => !after || matchesWhere(b, after)).slice(0, args.take);
+    });
+    h.count.mockResolvedValueOnce(table.length);
+    const out = await buildChangeReport(steward, {}, { pageSize: 2 });
+
+    const calls = h.findMany.mock.calls.map((c) => c[0]);
+    // Three pages of at most 2, each strictly after the last code read, each scoped.
+    expect(calls).toHaveLength(3);
+    for (const a of calls) {
+      expect(a.take).toBe(2);
+      expect(a.orderBy).toEqual({ branchCode: 'asc' });
+      expect(a.where.customer).toEqual({ deletedAt: null });
+      expect(a.where.AND[0]).toEqual(calls[0].where.AND[0]);
+      expect(a.cursor).toBeUndefined();
+      expect(a.skip).toBeUndefined();
+    }
+    expect(calls.map((a) => a.where.AND[1])).toEqual([
+      undefined,
+      { branchCode: { gt: '0002-01' } },
+      { branchCode: { gt: '0004-01' } },
+    ]);
+
+    // Every branch once, grouped by route code, branch-code order kept within a route.
+    expect(out.rowCount).toBe(5);
+    const sheet = (await parseWorkbook(out.bytes)).find((s) => s.name === 'Customers')!;
+    expect(sheet.rows.map((r) => `${r.route} ${r.branch_code}`)).toEqual([
+      'C4 0002-01',
+      'C4 0004-01',
+      'C4 0005-01',
+      'C5 0001-01',
+      'C5 0003-01',
+    ]);
   });
 });

@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { stripComments } from '../support/strip-comments';
+import { matchesWhere } from '../support/where-eval';
 
 const h = vi.hoisted(() => ({
   user: { id: 'u1', role: 'STEWARD', username: 'steward.x' } as { id: string; role: string; username: string },
@@ -77,28 +78,19 @@ const branch = (i: number) => ({
 });
 
 /** The value predicate the export adds for every page after the first, or undefined. */
-type After = { regionId: string; branchCode: string };
-function afterOf(where: { AND?: unknown[] }): After | undefined {
-  const or = (where.AND?.[1] as { OR?: Array<Record<string, unknown>> } | undefined)?.OR;
-  if (!or) return undefined;
-  return {
-    regionId: (or[0]!.regionId as { gt: string }).gt,
-    branchCode: (or[1]!.branchCode as { gt: string }).gt,
-  };
-}
+const afterOf = (where: { AND?: unknown[] }) => where.AND?.[1] as Record<string, unknown> | undefined;
 
-/** findMany behaving like the page query: rows strictly after the key, in (region, code) order. */
+/**
+ * findMany behaving like the page query: the page predicate evaluated as written,
+ * in (region, code) order. A predicate that never ends is stopped, not left to hang.
+ */
 function servePages() {
   h.findMany.mockImplementation(async (args: { take: number; where: { AND?: unknown[] } }) => {
-    const a = afterOf(args.where);
+    if (h.findMany.mock.calls.length > 1_000) throw new Error('paging never ended');
+    const after = afterOf(args.where);
     return h.rows
       .filter((r) => r.live !== false)
-      .filter(
-        (r) =>
-          !a ||
-          String(r.regionId) > a.regionId ||
-          (r.regionId === a.regionId && String(r.branchCode) > a.branchCode)
-      )
+      .filter((r) => !after || matchesWhere(r, after))
       .sort((x, y) => (`${x.regionId}|${x.branchCode}` < `${y.regionId}|${y.branchCode}` ? -1 : 1))
       .slice(0, args.take)
       .map((r) => ({ ...r }));
@@ -129,7 +121,13 @@ describe('customerMasterRows — a page at a time', () => {
     // the last row read", by value — no Prisma cursor, no offset.
     expect(calls[0].where).toBe(where);
     expect(calls.slice(1).map((a) => a.where.AND[0])).toEqual([where, where]);
-    expect(calls.slice(1).map((a) => afterOf(a.where)?.branchCode)).toEqual(['B-00002', 'B-00004']);
+    // After (r1, B-00002): a later region, or the SAME region and a later code. The
+    // second arm without its region loops forever once codes interleave across regions.
+    expect(calls.slice(1).map((a) => afterOf(a.where))).toEqual(
+      ['B-00002', 'B-00004'].map((code) => ({
+        OR: [{ regionId: { gt: 'r1' } }, { regionId: 'r1', branchCode: { gt: code } }],
+      }))
+    );
     for (const a of calls) {
       expect(a.cursor).toBeUndefined();
       expect(a.skip).toBeUndefined();
@@ -172,6 +170,15 @@ describe('customerMasterRows — a page at a time', () => {
       completeness_pct: 70,
       last_edited_at: '2026-09-24T08:00:00.000Z',
     });
+  });
+
+  it('reads every row once when branch codes interleave across regions, as ERP numbers do', async () => {
+    const codes: Record<string, number[]> = { r1: [3, 6, 9], r2: [1, 4, 7, 10] };
+    h.rows = Object.entries(codes).flatMap(([regionId, ns]) => ns.map((i) => ({ ...branch(i), regionId })));
+    const out: string[] = [];
+    for await (const r of customerMasterRows({}, 2)) out.push(String(r.branch_code));
+    const expected = ['B-00003', 'B-00006', 'B-00009', 'B-00001', 'B-00004', 'B-00007', 'B-00010'];
+    expect(out).toEqual(expected);
   });
 
   it("a page's last row archived before the next page costs only itself", async () => {

@@ -954,7 +954,10 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
   // ── 10. the customer master export, read a page at a time (item 28) ───────
   it('the master export pages by keyset on Postgres: the same rows, in the same order, as one query', async () => {
     const rowsLib = await import('@/lib/customer-master-rows');
-    // Two branches in the other region, so pages cross a region boundary.
+    // Two branches in the other region, so pages cross a region boundary. Their codes
+    // straddle every code in the near region (000 < 001..009 < 099), so the codes
+    // interleave across regions whichever region id sorts first — as real ERP numbers
+    // do. Only then does a page predicate that forgets the region loop or skip here.
     const farRoute = await prisma.route.create({
       data: { code: `QF${sfx}`.toUpperCase(), name: `QF route ${sfx}`, regionId: ids.otherRegionId },
     });
@@ -967,8 +970,8 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
         channelId,
         temixCode: `${sfx}020`,
         branches: {
-          create: [1, 2].map((n) => ({
-            branchCode: `${sfx}020-0${n}`,
+          create: ['000', '099'].map((n) => ({
+            branchCode: `${sfx}${n}-01`,
             branchName: `Far ${n}`,
             regionId: ids.otherRegionId,
             routeId: farRoute.id,
@@ -991,7 +994,10 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(oneQuery.length, 'more than one page of 2').toBeGreaterThan(2);
     expect(new Set(oneQuery.map((b) => b.regionId)).size, 'two regions').toBe(2);
     const paged: string[] = [];
-    for await (const r of rowsLib.customerMasterRows(where, 2)) paged.push(String(r.branch_code));
+    for await (const r of rowsLib.customerMasterRows(where, 2)) {
+      paged.push(String(r.branch_code));
+      if (paged.length > oneQuery.length) break; // a predicate that cycles: fail, don't hang
+    }
     expect(paged).toEqual(oneQuery.map((b) => b.branchCode));
 
     // End to end, as the region's manager: every branch in scope, and the ledger row.
@@ -1007,10 +1013,28 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     });
     expect(audit).not.toBeNull();
   });
-  // ── 11. the report read route by route keeps its order and its scope (item 28) ──
+  // ── 11. the report: read by branch code, ordered by route, scoped (item 28) ──
   it('the field-update report lists routes by code then branches by code, and never a deleted branch', async () => {
-    // A soft-deleted branch on an in-scope route: the scope excludes it, and the
-    // per-route page must apply the scope, not just the route.
+    // Codes that interleave the routes: a QB branch before every QA code and a QA
+    // branch after QB's 009-01. Read in branch-code order the routes alternate, so
+    // only the report's own route sort produces the order asserted below.
+    for (const [customerId, routeId, code] of [
+      [ids.otherCustomerId, ids.otherRouteId, `${sfx}000-50`],
+      [ids.customerIds[0]!, ids.routeId, `${sfx}010-01`],
+    ] as const) {
+      await prisma.branch.create({
+        data: {
+          customerId,
+          branchCode: code,
+          branchName: `Interleaved ${code}`,
+          regionId: ids.regionId,
+          routeId,
+          address: 'Way 2, Ruwi',
+        },
+      });
+    }
+    // A soft-deleted branch on an in-scope route: the scope excludes it, and every
+    // later page must apply the scope, not just the branch-code predicate.
     const gone = await prisma.branch.create({
       data: {
         customerId: ids.customerIds[0]!,
