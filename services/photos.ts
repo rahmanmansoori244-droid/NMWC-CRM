@@ -16,6 +16,7 @@ import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { loadScope, assertCanAccessAttachment, assertCanEditCustomer } from '@/lib/access';
+import { ALREADY_ATTACHED_MESSAGE } from '@/lib/photo-attach';
 
 const customerAttach = z.object({
   attachmentId: z.string().cuid(),
@@ -96,9 +97,12 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
   }
   // Must be a fresh upload, not already attached anywhere. `editId` counts as
   // wired: a photo claimed by a pending CREATE request must not be re-routed
-  // onto an unrelated customer/branch slot (Phase 1 creation flow).
+  // onto an unrelated customer/branch slot (Phase 1 creation flow). So a
+  // second attach of the same photo writes nothing — which is what makes the
+  // photo slot's re-send of an attach that got no answer safe; the slot reads
+  // this refusal, after such a re-send, as "the first one landed".
   if (att.customerId || att.branchId || att.branchExtraId || att.editId) {
-    throw new ValidationError({ attachmentId: 'Attachment already wired to a slot.' });
+    throw new ValidationError({ attachmentId: ALREADY_ATTACHED_MESSAGE });
   }
   // NEW-PHOTO-001: slot must match the attachment.kind, except FREE which
   // accepts anything (it's a generic extra-photo bucket).

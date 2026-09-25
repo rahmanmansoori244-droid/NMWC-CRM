@@ -103,8 +103,22 @@ type BState = {
   bottles: number;
   shopPhotoId: string | null;
   signboardPhotoId: string | null;
-  extraPhotoIds: string[];
+  /** By slot position, null for an empty slot — see extraPositions. */
+  extraPhotoIds: (string | null)[];
 };
+
+/**
+ * The extra photos by slot position, never a compacted list (item 22 review).
+ * Compacted, a photo moved to another position when a sibling finished or was
+ * removed; the slots were keyed by the photo they showed, so a slot still
+ * uploading remounted and let Submit go beside its running upload, and each
+ * slot's onChange wrote back the list from its own render, dropping the photo
+ * that had finished first. Compacted only for the payload. Any photo past the
+ * two slots (not reachable from this form) is kept, as before.
+ */
+function extraPositions(ids: string[]): (string | null)[] {
+  return [ids[0] ?? null, ids[1] ?? null, ...ids.slice(2)];
+}
 
 /**
  * Whether the never-saved phone copy holds anything the salesman typed. The
@@ -145,7 +159,7 @@ function emptyBranch(): BState {
     bottles: 0,
     shopPhotoId: null,
     signboardPhotoId: null,
-    extraPhotoIds: [],
+    extraPhotoIds: extraPositions([]),
   };
 }
 
@@ -216,9 +230,16 @@ export function CreateCustomerForm({
       ? String(initial.credit.requestedPaymentTermDays)
       : ''
   );
-  const [guaranteeIds, setGuaranteeIds] = useState<string[]>(
-    initial?.guaranteeAttachmentIds ?? []
-  );
+  // The documents, and the key of the empty slot for the next one: a fresh
+  // slot only when a new document is in. It was keyed by the number of
+  // documents, so removing another one remounted it mid-upload and let Submit
+  // go (item 22 review). One state, so the key moves with the list, never for
+  // a document already on it.
+  const [guarantees, setGuarantees] = useState(() => ({
+    ids: initial?.guaranteeAttachmentIds ?? [],
+    emptySlot: 0,
+  }));
+  const guaranteeIds = guarantees.ids;
 
   const [branchStates, setBranchStates] = useState<BState[]>(() => {
     if (initial && initial.branches.length > 0) {
@@ -247,7 +268,7 @@ export function CreateCustomerForm({
         bottles: b.emptyBottlesCount,
         shopPhotoId: b.shopPhotoAttachmentId,
         signboardPhotoId: b.signboardPhotoAttachmentId,
-        extraPhotoIds: b.extraPhotoAttachmentIds,
+        extraPhotoIds: extraPositions(b.extraPhotoAttachmentIds),
       }));
     }
     return [emptyBranch()];
@@ -539,7 +560,7 @@ export function CreateCustomerForm({
         emptyBottlesCount: s.bottles,
         shopPhotoAttachmentId: s.shopPhotoId ?? undefined,
         signboardPhotoAttachmentId: s.signboardPhotoId ?? undefined,
-        extraPhotoAttachmentIds: s.extraPhotoIds,
+        extraPhotoAttachmentIds: s.extraPhotoIds.filter((id): id is string => id != null),
       })),
     };
 
@@ -887,7 +908,7 @@ export function CreateCustomerForm({
                   initial={{ attachmentId: gid, remoteUrl: `/api/photos/${gid}` }}
                   onChange={(p) => {
                     if (readOnly) return;
-                    if (!p) setGuaranteeIds((ids) => ids.filter((x) => x !== gid));
+                    if (!p) setGuarantees((g) => ({ ...g, ids: g.ids.filter((x) => x !== gid) }));
                   }}
                   onBusyChange={onPhotoBusy}
                 />
@@ -896,13 +917,14 @@ export function CreateCustomerForm({
                 <PhotoCaptureSlot
                   // Reset the empty slot after each successful capture so a
                   // fresh one appears for the next document.
-                  key={`empty-${guaranteeIds.length}`}
+                  key={`empty-${guarantees.emptySlot}`}
                   kind="GUARANTEE"
                   required={guaranteeIds.length === 0}
                   onChange={(p) => {
-                    if (p?.attachmentId) {
-                      setGuaranteeIds((ids) =>
-                        ids.includes(p.attachmentId) ? ids : [...ids, p.attachmentId]
+                    const id = p?.attachmentId;
+                    if (id) {
+                      setGuarantees((g) =>
+                        g.ids.includes(id) ? g : { ids: [...g.ids, id], emptySlot: g.emptySlot + 1 }
                       );
                     }
                   }}
@@ -1102,7 +1124,9 @@ export function CreateCustomerForm({
                   const existing = s.extraPhotoIds[slotIdx] ?? null;
                   return (
                     <PhotoCaptureSlot
-                      key={existing ?? `extra-${slotIdx}`}
+                      // By position only, and each slot writes only its own
+                      // position, into the list as it is NOW (extraPositions).
+                      key={`extra-${slotIdx}`}
                       kind="FREE"
                       disabled={readOnly || photosLocked}
                       capturedLat={s.gps?.lat}
@@ -1114,14 +1138,19 @@ export function CreateCustomerForm({
                       }
                       onChange={(p) => {
                         if (readOnly) return;
-                        setBranch(s.key, {
-                          extraPhotoIds: (() => {
-                            const next = [...s.extraPhotoIds];
-                            if (p?.attachmentId) next[slotIdx] = p.attachmentId;
-                            else next.splice(slotIdx, 1);
-                            return next.filter(Boolean);
-                          })(),
-                        });
+                        const id = p?.attachmentId ?? null;
+                        setBranchStates((list) =>
+                          list.map((b) =>
+                            b.key === s.key
+                              ? {
+                                  ...b,
+                                  extraPhotoIds: b.extraPhotoIds.map((v, i) =>
+                                    i === slotIdx ? id : v
+                                  ),
+                                }
+                              : b
+                          )
+                        );
                       }}
                       onBusyChange={onPhotoBusy}
                     />

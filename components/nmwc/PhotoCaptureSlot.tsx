@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Camera, Image as ImageIcon, Trash2, RefreshCw, Check, Loader2, RotateCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { attachPhotoAction, detachPhotoAction } from '@/services/photos';
+import { ALREADY_ATTACHED_MESSAGE } from '@/lib/photo-attach';
 
 export type PhotoSlotKind = 'SHOP' | 'SIGNBOARD' | 'CR' | 'FREE' | 'GUARANTEE';
 export type AttachTarget =
@@ -90,6 +91,36 @@ function delay(ms: number): Promise<void> {
 // validation error is wasted radio time.
 const RETRY_DELAYS = [500, 1500, 4500];
 
+/**
+ * How long the PUT may go without a sign of life (item 22 review). No step of
+ * the chain had a limit: a connection that died without an error — a mapping
+ * dropped somewhere on weak signal — left the slot "Uploading…" until the
+ * phone's TCP stack gave up, many minutes later. Since e5d4043 a busy slot
+ * holds Submit, so the whole form waited with it, with no way to cancel. A
+ * stall now fails like a dropped connection: retried on a fresh one, then
+ * "Retry upload", and the slot is no longer busy.
+ *
+ * Silence, not total time: a 1.6 MB photo on a slow link takes minutes and is
+ * fine while its bytes move, so the clock restarts on every progress event and
+ * when the body has gone. 45 s leaves room for bytes the phone had buffered
+ * before its last progress event to drain.
+ */
+export const UPLOAD_STALL_MS = 45_000;
+
+/**
+ * Presign, finalize and attach are small requests: they get as long as a
+ * submit does (SUBMIT_TIMEOUT_MS), far past a normal answer and under the
+ * server's 60 s limit.
+ */
+export const PHOTO_STEP_TIMEOUT_MS = 30_000;
+
+/** The failure isRetryable() knows as a dropped connection. */
+const networkError = () => new Error('Network error');
+
+/** What a slot says when its attach got no answer — it may still have landed. */
+const ATTACH_NO_ANSWER =
+  'The photo is up, but attaching it got no answer. Tap Retry upload.';
+
 class HttpError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -135,6 +166,19 @@ function putWithProgress(
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    // A stall watchdog (UPLOAD_STALL_MS), not xhr.timeout: that bounds the
+    // TOTAL time and would fail a slow upload that is still moving. The
+    // ontimeout handler that stood here never ran — xhr.timeout was never set,
+    // and 0 means no limit.
+    let stall: ReturnType<typeof setTimeout> | undefined;
+    const quiet = () => clearTimeout(stall);
+    const watch = () => {
+      quiet();
+      stall = setTimeout(() => {
+        xhr.abort();
+        reject(networkError());
+      }, UPLOAD_STALL_MS);
+    };
     xhr.open('PUT', url);
     for (const [k, v] of Object.entries(headers)) {
       try {
@@ -144,11 +188,15 @@ function putWithProgress(
       }
     }
     xhr.upload.onprogress = (e) => {
+      watch();
       if (e.lengthComputable && e.total > 0) {
         onProgress(Math.round((e.loaded / e.total) * 100));
       }
     };
+    // The body has gone: R2's answer gets a full stretch of its own.
+    xhr.upload.onload = watch;
     xhr.onload = () => {
+      quiet();
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress(100);
         resolve();
@@ -156,10 +204,55 @@ function putWithProgress(
         reject(new HttpError(xhr.status, `Upload failed (${xhr.status}).`));
       }
     };
-    xhr.onerror = () => reject(new Error('Network error'));
-    xhr.ontimeout = () => reject(new Error('Network error'));
+    xhr.onerror = () => {
+      quiet();
+      reject(networkError());
+    };
+    xhr.onabort = () => {
+      quiet();
+      reject(networkError());
+    };
+    watch();
     xhr.send(body);
   });
+}
+
+/**
+ * A JSON POST with a limit (PHOTO_STEP_TIMEOUT_MS) on the whole exchange —
+ * reading the reply included, since a body can stall after its headers. Given
+ * up, it fails as a dropped connection, which retryable() tries again; an
+ * AbortError it does not know would have ended the chain at the first stall.
+ */
+async function postJson<T>(url: string, body: unknown, failMessage: string): Promise<T> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), PHOTO_STEP_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: abort.signal,
+    });
+    if (!res.ok) throw new HttpError(res.status, failMessage);
+    return (await res.json()) as T;
+  } catch (err) {
+    if (abort.signal.aborted) throw networkError();
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Stop waiting after `ms`, for work that cannot be aborted: a server action
+ * (lib/submit-client.ts). The work itself goes on, and may still land.
+ */
+function withinTime<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
 export function PhotoCaptureSlot({
@@ -182,17 +275,23 @@ export function PhotoCaptureSlot({
   /** When provided, the photo is wired to a customer/branch slot immediately after finalize. */
   attachTo?: AttachTarget;
   /**
-   * Read-only rendering (e.g. a SUBMITTED create request): hides the
-   * capture/retake/remove controls entirely so the slot cannot upload or
-   * clear anything — a visually frozen view must not fire server calls.
+   * Nothing new starts: no capture, retake or remove, no Retry upload (a
+   * failed upload's message stays in view), and a Remove confirm left open
+   * closes. Used for a read-only view (a SUBMITTED create request), where a
+   * frozen view must not fire server calls, and by the field forms while a
+   * submit is on its way or has arrived, where a photo started then would be
+   * cut off by the page load after the answer (item 22 review). An upload
+   * already running is not interrupted; the forms hold Submit for it.
    */
   disabled?: boolean;
   /**
    * true when a photo starts compressing or uploading, then exactly one false
-   * when that ends — attached, failed, or the slot gone. The field forms leave
-   * after Submit by a document load, which aborts an upload still in flight:
-   * the photo was lost while the salesman read "It arrived" (item 22 review).
-   * onChange cannot tell them — it fires only once the photo is attached.
+   * when that ends — attached or failed. A slot that unmounts mid-upload does
+   * not stop the upload, so its false comes when the upload ends, not at the
+   * unmount. The field forms leave after Submit by a document load, which
+   * aborts an upload still in flight: the photo was lost while the salesman
+   * read "It arrived" (item 22 review). onChange cannot tell them — it fires
+   * only once the photo is attached.
    */
   onBusyChange?: (busy: boolean) => void;
 }) {
@@ -210,51 +309,56 @@ export function PhotoCaptureSlot({
   // the user to re-photograph the storefront.
   const [retainedBlob, setRetainedBlob] = useState<Blob | null>(null);
   const [retainedHash, setRetainedHash] = useState<string | null>(null);
+  // The retained photo is up and finalized, but its attach got no answer: this
+  // is its attachment. Retry then sends only the attach again, not the photo
+  // over the same weak signal. services/photos.ts refuses a second attach of
+  // one attachment and writes nothing, so after such a re-send "already
+  // attached" means the first one landed. A new photo replaces it; an answered
+  // attach ends it.
+  const unanswered = useRef<string | null>(null);
 
   async function uploadChain(blob: Blob, hash: string) {
+    const resend = unanswered.current;
     setError(null);
     setProgress('uploading');
-    setUploadPct(0);
+    setUploadPct(resend ? 100 : 0);
     try {
-      // 1) Presign
-      const presignData = await retryable(async () => {
-        const res = await fetch('/api/photos/presign', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ kind, mimeType: 'image/jpeg', bytes: blob.size }),
-        });
-        if (!res.ok) throw new HttpError(res.status, 'Could not get upload URL.');
-        return (await res.json()) as {
-          url: string;
-          key: string;
-          headers: Record<string, string>;
-        };
-      });
+      let attachmentId: string;
+      if (resend) {
+        attachmentId = resend;
+      } else {
+        // 1) Presign
+        const presignData = await retryable(() =>
+          postJson<{ url: string; key: string; headers: Record<string, string> }>(
+            '/api/photos/presign',
+            { kind, mimeType: 'image/jpeg', bytes: blob.size },
+            'Could not get upload URL.'
+          )
+        );
 
-      // 2) PUT to R2 with byte progress.
-      await retryable(() =>
-        putWithProgress(presignData.url, presignData.headers, blob, (pct) =>
-          setUploadPct(pct)
-        )
-      );
+        // 2) PUT to R2 with byte progress.
+        await retryable(() =>
+          putWithProgress(presignData.url, presignData.headers, blob, (pct) =>
+            setUploadPct(pct)
+          )
+        );
 
-      // 3) Finalize
-      const finalizeData = await retryable(async () => {
-        const res = await fetch('/api/photos/finalize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            key: presignData.key,
-            kind,
-            hash,
-            capturedAt: new Date().toISOString(),
-            capturedLat,
-            capturedLng,
-          }),
-        });
-        if (!res.ok) throw new HttpError(res.status, 'Finalize failed.');
-        return (await res.json()) as { attachmentId: string };
-      });
+        // 3) Finalize
+        ({ attachmentId } = await retryable(() =>
+          postJson<{ attachmentId: string }>(
+            '/api/photos/finalize',
+            {
+              key: presignData.key,
+              kind,
+              hash,
+              capturedAt: new Date().toISOString(),
+              capturedLat,
+              capturedLng,
+            },
+            'Finalize failed.'
+          )
+        ));
+      }
 
       // 4) Wire to a customer/branch slot if requested.
       // PROD-006: the action returns `{ ok, code, message, fields? }` shape —
@@ -263,19 +367,28 @@ export function PhotoCaptureSlot({
       // attachment) reach the salesman instead of being lost to a generic SC
       // render error.
       if (attachTo) {
-        const attachRes =
+        const target =
           attachTo.kind === 'customer'
-            ? await attachPhotoAction({
-                attachmentId: finalizeData.attachmentId,
-                customerId: attachTo.customerId,
-                slot: 'CR',
-              })
-            : await attachPhotoAction({
-                attachmentId: finalizeData.attachmentId,
-                branchId: attachTo.branchId,
-                slot: attachTo.slot,
-              });
-        if (!attachRes.ok) {
+            ? { customerId: attachTo.customerId, slot: 'CR' as const }
+            : { branchId: attachTo.branchId, slot: attachTo.slot };
+        let attachRes: Awaited<ReturnType<typeof attachPhotoAction>>;
+        try {
+          attachRes = await withinTime(
+            attachPhotoAction({ attachmentId, ...target }),
+            PHOTO_STEP_TIMEOUT_MS,
+            ATTACH_NO_ANSWER
+          );
+        } catch (e) {
+          // No answer — the wait ran out, or the call failed on its way back.
+          unanswered.current = attachmentId;
+          throw e;
+        }
+        unanswered.current = null;
+        const landedBefore =
+          resend != null &&
+          !attachRes.ok &&
+          attachRes.fields?.attachmentId === ALREADY_ATTACHED_MESSAGE;
+        if (!attachRes.ok && !landedBefore) {
           throw new Error(
             attachRes.fields
               ? Object.values(attachRes.fields).join(' ')
@@ -285,7 +398,7 @@ export function PhotoCaptureSlot({
       }
 
       const previewUrl = URL.createObjectURL(blob);
-      const next: AttachedPhoto = { attachmentId: finalizeData.attachmentId, previewUrl };
+      const next: AttachedPhoto = { attachmentId, previewUrl };
       setPhoto(next);
       setProgress('done');
       setUploadPct(100);
@@ -320,9 +433,22 @@ export function PhotoCaptureSlot({
       return;
     }
     // B-08: retain so a final-failure "Retry upload" works without re-photographing.
+    unanswered.current = null;
     setRetainedBlob(blob);
     setRetainedHash(hash);
     await uploadChain(blob, hash);
+  }
+
+  // The chain running now (a pick or a Retry). Unmounting does not stop it: it
+  // runs on and still calls onChange. So a slot that goes mid-upload says
+  // "not busy" when this ends, not when it unmounts (below).
+  const chainRef = useRef<Promise<void> | null>(null);
+  function run(chain: Promise<void>) {
+    chainRef.current = chain;
+    const ended = () => {
+      if (chainRef.current === chain) chainRef.current = null;
+    };
+    void chain.then(ended, ended);
   }
 
   // UXI-001 (Critical): photo deletion is destructive. The user must
@@ -331,8 +457,14 @@ export function PhotoCaptureSlot({
   // losing them blocks customer submit until the salesman is back at the
   // shop.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // A confirm opened before the lock would still remove (and detach) after
+  // Submit had gone (item 22 review): the lock closes it.
+  useEffect(() => {
+    if (disabled) setConfirmingDelete(false);
+  }, [disabled]);
 
   async function actuallyClear() {
+    if (disabled) return;
     if (photo?.previewUrl) URL.revokeObjectURL(photo.previewUrl);
     if (photo?.attachmentId && attachTo) {
       try {
@@ -369,7 +501,20 @@ export function PhotoCaptureSlot({
     if (!busy) return;
     const report = onBusyChangeRef.current;
     report?.(true);
-    return () => report?.(false);
+    return () => {
+      // Busy ended: the chain is over, say so now. Unmounted mid-upload: the
+      // chain runs on, so say it when that ends. Said at the unmount, false let
+      // Submit go beside a photo still going up, and the page load after the
+      // answer cut it off (item 22 review: the new-customer form re-keyed an
+      // uploading slot when a sibling finished or was removed).
+      const running = chainRef.current;
+      if (!running) {
+        report?.(false);
+        return;
+      }
+      const ended = () => report?.(false);
+      void running.then(ended, ended);
+    };
   }, [busy]);
   const imgSrc = photo?.previewUrl ?? photo?.remoteUrl;
   const canRetry = progress === 'error' && retainedBlob != null && retainedHash != null;
@@ -436,7 +581,7 @@ export function PhotoCaptureSlot({
         className="hidden"
         onChange={(e) => {
           const f = e.currentTarget.files?.[0];
-          if (f && !disabled) onPicked(f);
+          if (f && !disabled) run(onPicked(f));
           // B-08: clear the input value so the same file name can be
           // re-picked, but the compressed blob stays in retainedBlob.
           e.currentTarget.value = '';
@@ -469,19 +614,26 @@ export function PhotoCaptureSlot({
           would cost 30+ seconds). */}
       {canRetry && (
         <div className="absolute inset-x-1 bottom-1 z-20 flex flex-col items-center gap-1 rounded-md bg-white/95 p-2 text-center text-xs text-slate-900 shadow-sm">
+          {/* The message stays while locked: in 'error' this is the only place
+              it shows. The button does not — tapped during a submit, it
+              started an upload that the page load after the answer cut off
+              (item 22 review). */}
           <span className="font-medium text-red-700">{error ?? 'Upload failed.'}</span>
-          <button
-            type="button"
-            onClick={() => {
-              if (retainedBlob && retainedHash) {
-                void uploadChain(retainedBlob, retainedHash);
-              }
-            }}
-            className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-700"
-          >
-            <RotateCw className="h-3.5 w-3.5" />
-            Retry upload
-          </button>
+          {!disabled && (
+            <button
+              type="button"
+              onClick={() => {
+                if (disabled) return;
+                if (retainedBlob && retainedHash) {
+                  run(uploadChain(retainedBlob, retainedHash));
+                }
+              }}
+              className="inline-flex items-center gap-1 rounded-md bg-brand-600 px-3 py-2 text-xs font-semibold text-white hover:bg-brand-700"
+            >
+              <RotateCw className="h-3.5 w-3.5" />
+              Retry upload
+            </button>
+          )}
         </div>
       )}
       {/* UXI-001: confirm dialog overlay. Required photos get a stronger
