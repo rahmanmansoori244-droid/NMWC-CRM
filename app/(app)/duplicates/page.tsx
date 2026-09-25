@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { Role } from '@prisma/client';
 import { findDuplicateCandidates } from '@/services/duplicates';
+import { duplicatesSubtitle } from '@/lib/duplicate-pairing';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
@@ -10,26 +11,28 @@ import { PhoneLink } from '@/components/nmwc/ContactLinks';
 
 export const metadata = { title: 'Duplicates · NMWC' };
 
+const PAGE_SIZE = 50;
+
 export default async function DuplicatesPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
   // RBAC-05-009: PRD §4 reserves duplicate merge to STEWARD only.
   if (session.user.role !== Role.STEWARD) redirect('/home');
 
-  const candidates = await findDuplicateCandidates(50);
+  const { pairs: candidates, total } = await findDuplicateCandidates(PAGE_SIZE);
 
   return (
     <main>
       <PageHeader
         title="Duplicate review"
-        subtitle={`${candidates.length} suspected pair${candidates.length === 1 ? '' : 's'} (showing top 50)`}
+        subtitle={duplicatesSubtitle(candidates.length, total)}
       />
 
       <div className="p-4 sm:p-6">
         {candidates.length === 0 ? (
           <EmptyState
-            title="No duplicates detected"
-            description="Phone, CR, and fuzzy-name matches are all clean."
+            title="No suspected duplicates"
+            description="The check pairs customers who share a CR number, or share the exact name, phone and region. Pairs marked distinct are not shown again."
           />
         ) : (
           <ul className="grid gap-3">

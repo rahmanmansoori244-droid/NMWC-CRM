@@ -15,6 +15,12 @@ import { logger } from '@/lib/logger';
 import { scoreCustomer } from '@/lib/completeness';
 import { resolveArchiveTemixState } from '@/lib/temix';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import {
+  pairCandidates,
+  parseDismissed,
+  type DupRow,
+  type DuplicateScan,
+} from '@/lib/duplicate-pairing';
 
 // RBAC-05-009: PRD §4 reserves duplicate merge to STEWARD. Previous code
 // also accepted MANAGER which conflated master-data ops with people-ops
@@ -28,29 +34,6 @@ async function requireSteward() {
   return session.user;
 }
 
-export type DuplicateCandidate = {
-  reason: 'CR' | 'EXACT_TRIPLE'; // CR-number match (high-confidence) OR exact name+phone+region match
-  similarity: number; // 0–1
-  a: {
-    id: string;
-    nmwcCode: string;
-    legalName: string;
-    primaryPhone: string | null;
-    crNumber: string | null;
-    completenessScore: number;
-    branchCount: number;
-  };
-  b: {
-    id: string;
-    nmwcCode: string;
-    legalName: string;
-    primaryPhone: string | null;
-    crNumber: string | null;
-    completenessScore: number;
-    branchCount: number;
-  };
-};
-
 /**
  * P1.4 (2026-05-10) — find duplicate candidate pairs across the live
  * customer master, but ONLY high-confidence pairs.
@@ -62,23 +45,21 @@ export type DuplicateCandidate = {
  *     different areas — name fuzziness produced ~50 false positives per run
  *     and caused the steward to lose trust in the queue.
  *
- * New rules (only the ones that survive both real-world tests):
- *   1. EXACT CR-number match across different customers (rare, almost
- *      always a true duplicate — same legal entity registered twice).
- *   2. EXACT legalName + EXACT primaryPhone + same regionId — a very
- *      strong signal that the same shop was entered twice.
+ * The rules themselves (exact CR; exact name + phone + region) and how pairs
+ * are counted live in lib/duplicate-pairing.ts, where they are tested. This
+ * function reads the rows and the Steward's dismissals.
  *
- * Dropped: PHONE-only (legitimate), NAME-fuzzy (too noisy).
- *
- * Returns up to `limit` pairs sorted by reason strength.
+ * Both reads are ordered so the page shows the same pairs, in the same order,
+ * from one load to the next. The branch order also makes "first live branch"
+ * mean one branch — the lowest branch code — instead of whichever row the
+ * database returned first.
  */
-export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCandidate[]> {
+export async function findDuplicateCandidates(limit = 100): Promise<DuplicateScan> {
   await requireSteward();
 
-  // We need region context for the EXACT_TRIPLE rule. Pull the customer's
-  // first branch's region (post-flatten there's exactly one).
   const customers = await prisma.customer.findMany({
     where: { deletedAt: null },
+    orderBy: { nmwcCode: 'asc' },
     select: {
       id: true,
       nmwcCode: true,
@@ -90,6 +71,7 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCan
       completenessScore: true,
       branches: {
         where: { deletedAt: null },
+        orderBy: { branchCode: 'asc' },
         select: { regionId: true },
         take: 1,
       },
@@ -97,103 +79,30 @@ export async function findDuplicateCandidates(limit = 100): Promise<DuplicateCan
     },
   });
 
-  // Honor steward-dismissed pairs (writes AuditLog row with
-  // entityType='CustomerPair', entityId='aId|bId').
+  // Steward-dismissed pairs: dismissDuplicateCore writes an AuditLog row with
+  // entityType 'CustomerPair' and entityId 'aId|bId'.
   const dismissedAuditRows = await prisma.auditLog.findMany({
     where: { entityType: 'CustomerPair' },
     select: { entityId: true },
   });
-  const dismissedKeys = new Set<string>();
-  for (const r of dismissedAuditRows) {
-    if (!r.entityId.includes('|')) continue;
-    const [a, b] = r.entityId.split('|');
-    if (a && b) {
-      dismissedKeys.add(`${a}|${b}`);
-      dismissedKeys.add(`${b}|${a}`);
-    }
-  }
-  const isDismissed = (a: string, b: string) =>
-    dismissedKeys.has(`${a}|${b}`) || dismissedKeys.has(`${b}|${a}`);
 
-  const out: DuplicateCandidate[] = [];
-  const seen = new Set<string>();
-
-  function pushPair(
-    reason: DuplicateCandidate['reason'],
-    similarity: number,
-    a: (typeof customers)[number],
-    b: (typeof customers)[number]
-  ) {
-    if (isDismissed(a.id, b.id)) return;
-    const key = `${a.id}|${b.id}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ reason, similarity, a: pickSummary(a), b: pickSummary(b) });
-  }
-
-  // Rule 1: CR-number exact match.
-  const byCr = new Map<string, typeof customers>();
-  for (const c of customers) {
-    if (!c.crNumberNorm) continue;
-    const arr = byCr.get(c.crNumberNorm) ?? [];
-    arr.push(c);
-    byCr.set(c.crNumberNorm, arr);
-  }
-  for (const [, group] of byCr) {
-    if (group.length < 2) continue;
-    for (let i = 0; i < group.length; i++) {
-      for (let j = i + 1; j < group.length && out.length < limit; j++) {
-        pushPair('CR', 1.0, group[i], group[j]);
-      }
-    }
-  }
-
-  // Rule 2: same legalName + same primaryPhone + same region.
-  // Build a triple-key and look for collisions.
-  const byTriple = new Map<string, typeof customers>();
-  for (const c of customers) {
-    if (!c.legalName || !c.primaryPhoneNorm || !c.branches[0]?.regionId) continue;
-    const triple = `${c.legalName.toLowerCase().trim()}|${c.primaryPhoneNorm}|${c.branches[0].regionId}`;
-    const arr = byTriple.get(triple) ?? [];
-    arr.push(c);
-    byTriple.set(triple, arr);
-  }
-  for (const [, group] of byTriple) {
-    if (group.length < 2) continue;
-    for (let i = 0; i < group.length; i++) {
-      for (let j = i + 1; j < group.length && out.length < limit; j++) {
-        pushPair('EXACT_TRIPLE', 1.0, group[i], group[j]);
-      }
-    }
-  }
-
-  // Sort: CR first (strongest), then triple matches.
-  out.sort((a, b) => {
-    const rank = (r: DuplicateCandidate['reason']) => (r === 'CR' ? 0 : 1);
-    return rank(a.reason) - rank(b.reason);
-  });
-
-  return out.slice(0, limit);
-}
-
-function pickSummary(c: {
-  id: string;
-  nmwcCode: string;
-  legalName: string;
-  primaryPhone: string | null;
-  crNumber: string | null;
-  completenessScore: number;
-  _count: { branches: number };
-}): DuplicateCandidate['a'] {
-  return {
+  const rows: DupRow[] = customers.map((c) => ({
     id: c.id,
     nmwcCode: c.nmwcCode,
     legalName: c.legalName,
     primaryPhone: c.primaryPhone,
+    primaryPhoneNorm: c.primaryPhoneNorm,
     crNumber: c.crNumber,
+    crNumberNorm: c.crNumberNorm,
     completenessScore: c.completenessScore,
     branchCount: c._count.branches,
-  };
+    firstRegionId: c.branches[0]?.regionId ?? null,
+  }));
+  return pairCandidates(
+    rows,
+    parseDismissed(dismissedAuditRows.map((r) => r.entityId)),
+    limit
+  );
 }
 
 // (P1.4 2026-05-10) — fuzzy-name + n-gram + Jaccard helpers were removed
@@ -474,8 +383,18 @@ async function dismissDuplicateCore(formData: FormData) {
   const aId = String(formData.get('aId') ?? '');
   const bId = String(formData.get('bId') ?? '');
   if (!aId || !bId) throw new ValidationError({ _form: 'Pair required.' });
-  // We just record an audit note; future detector runs will still surface them, but the steward
-  // can use this as a paper trail for "deemed distinct".
+  // The pair is stored as "aId|bId", so an id holding "|" would name a different
+  // pair; and a customer cannot be distinct from itself.
+  if (aId === bId || aId.includes('|') || bId.includes('|')) {
+    throw new ValidationError({ _form: 'Pick two different customers.' });
+  }
+  const live = await prisma.customer.count({ where: { id: { in: [aId, bId] }, deletedAt: null } });
+  if (live !== 2) {
+    throw new NotFoundError('One of these customers was merged or archived. Refresh the page.');
+  }
+  // Permanent: the detector hides this pair, in both orders, for as long as the
+  // row exists (lib/duplicate-pairing.ts parseDismissed), and the ledger is
+  // append-only, so the app has no undo. The page asks before sending.
   await writeAudit(null, await getAuditEnvelope(session.id), {
     action: 'UPDATE',
     entityType: 'CustomerPair',

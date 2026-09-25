@@ -18,6 +18,13 @@ export function MergeForm({
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
+  // Only a success reads green: an error used to show in the same emerald as
+  // "Merged", so a refused merge looked like a done one.
+  const [tone, setTone] = useState<'ok' | 'error'>('ok');
+  const say = (text: string | null | undefined, t: 'ok' | 'error') => {
+    setMsg(text ?? null);
+    setTone(t);
+  };
   // When the action reports a cross-region merge, we remember which direction was
   // chosen and reveal a reason input so the steward can confirm — without this the
   // cross-region merge was a permanent dead-end (SR-UI-01).
@@ -50,23 +57,30 @@ export function MergeForm({
           // the steward stuck on an un-actionable error naming a raw parameter.
           if (!opts && /cross-region/i.test(text ?? '')) {
             setCrossRegion({ winnerId, loserId });
-            setMsg('This is a cross-region merge. Enter a reason and confirm below.');
+            say('This is a cross-region merge. Enter a reason and confirm below.', 'ok');
           } else {
-            setMsg(text);
+            say(text, 'error');
           }
           return;
         }
         setCrossRegion(null);
         setReason('');
-        setMsg('✓ Merged.');
+        say('✓ Merged.', 'ok');
         router.refresh();
       } catch (err) {
-        setMsg(err instanceof Error ? err.message : 'Failed.');
+        say(err instanceof Error ? err.message : 'Failed.', 'error');
       }
     });
   }
 
   function dismiss() {
+    // Permanent: the pair never comes back, and the app has no undo.
+    if (
+      !confirm(
+        `Mark "${aLabel}" and "${bLabel}" as different customers? This pair will not be suggested again, and this cannot be undone in the app.`
+      )
+    )
+      return;
     setMsg(null);
     const fd = new FormData();
     fd.set('aId', aId);
@@ -75,24 +89,29 @@ export function MergeForm({
       try {
         const res = await dismissDuplicateAction(fd);
         if (!res.ok) {
-          setMsg(
-            res.fields
-              ? Object.values(res.fields).join(' ')
-              : res.message
-          );
+          say(res.fields ? Object.values(res.fields).join(' ') : res.message, 'error');
           return;
         }
-        setMsg('Marked as distinct.');
+        say('Marked as distinct.', 'ok');
         router.refresh();
       } catch (err) {
-        setMsg(err instanceof Error ? err.message : 'Failed.');
+        say(err instanceof Error ? err.message : 'Failed.', 'error');
       }
     });
   }
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
-      {msg && <span className={crossRegion ? 'text-amber-700' : 'text-emerald-700'}>{msg}</span>}
+      {msg && (
+        <span
+          role={tone === 'error' ? 'alert' : 'status'}
+          className={
+            tone === 'error' ? 'text-red-700' : crossRegion ? 'text-amber-700' : 'text-emerald-700'
+          }
+        >
+          {msg}
+        </span>
+      )}
       {crossRegion && (
         <div className="flex w-full flex-wrap items-center justify-end gap-2 rounded-md bg-amber-50 p-2 ring-1 ring-amber-200">
           <input

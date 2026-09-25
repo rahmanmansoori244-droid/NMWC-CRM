@@ -58,4 +58,30 @@ describe('lib/cr — CR normalization', () => {
     expect(normalizeCR('cr_1234-567')).toBe('CR_1234-567');
     expect(normalizeCR('1234567/2024')).toBe('1234567/2024');
   });
+
+  // Benchmark item 16: the duplicate detector groups on the stored norm, so what
+  // this function folds decides which customers are ever paired.
+  it('empty, missing and whitespace-only CRs are no CR at all — so they never group', () => {
+    expect(normalizeCR(null)).toBeNull();
+    expect(normalizeCR(undefined)).toBeNull();
+    expect(normalizeCR('')).toBeNull();
+    expect(normalizeCR(' \t\n  ')).toBeNull();
+  });
+
+  it('strips every kind of whitespace, everywhere in the value', () => {
+    expect(normalizeCR('12\t34\n5 6  7')).toBe('1234567');
+    expect(normalizeCR('123 4567')).toBe('1234567'); // no-break space, as pasted from Excel
+  });
+
+  it('two CRs differing only in punctuation or a leading zero stay different', () => {
+    expect(normalizeCR('1234567/2024')).not.toBe(normalizeCR('12345672024'));
+    expect(normalizeCR('01234567')).toBe('01234567');
+    expect(normalizeCR('01234567')).not.toBe(normalizeCR('1234567'));
+  });
+
+  // OPEN — owner decision (item 16): folding these changes the stored crNumberNorm,
+  // so existing rows would need a one-off recompute. Today they never match their
+  // ASCII twins, in the detector or in the create-time CR block.
+  it.todo('Arabic-Indic digits fold to ASCII (١٢٣٤٥٦٧ = 1234567)');
+  it.todo('zero-width characters are stripped (123\\u200B4567 = 1234567)');
 });
