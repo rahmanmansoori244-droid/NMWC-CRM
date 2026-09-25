@@ -44,6 +44,7 @@ import {
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { normalizePhone } from '@/lib/phone';
+import { manualGpsMarker } from '@/lib/gps-manual';
 import { normalizeCR } from '@/lib/cr';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
 import { resolveChain, stepDeadline } from '@/lib/approval-chains';
@@ -74,7 +75,7 @@ function zodIssuesToFields(issues: ZodIssue[]): Record<string, string> {
       const sub = p.slice(2).join('.');
       // Map schema field names onto the form's rendered error slots.
       const key =
-        sub === 'gpsLat' || sub === 'gpsLng'
+        sub === 'gpsLat' || sub === 'gpsLng' || sub === 'gpsManualReason'
           ? 'gps'
           : sub === 'shopPhotoAttachmentId'
             ? 'shopPhoto'
@@ -307,6 +308,14 @@ async function submitCreateCore(
     signboardPhotoAttachmentId: b.signboardPhotoAttachmentId ?? null,
     extraPhotoAttachmentIds: b.extraPhotoAttachmentIds as unknown as Prisma.InputJsonValue,
   }));
+  // Item 41 (owner: option A): a point typed in by hand is kept, with its reason,
+  // as a marker in fieldChanges — EditBranchDraft has no column for it. Rebuilt
+  // from THIS payload on every save, so a resubmit never carries a stale one.
+  const gpsMarkers = data.branches.flatMap((b, i) =>
+    b.gpsManualReason && b.gpsLat != null && b.gpsLng != null
+      ? [manualGpsMarker(i, b.gpsLat, b.gpsLng, b.gpsManualReason)]
+      : []
+  );
 
   // DG-06: envelope built before the transaction opens (services/users.ts
   // pattern). getAuditEnvelope degrades to null ip/userAgent rather than
@@ -381,7 +390,12 @@ async function submitCreateCore(
           cycle: existing.cycle,
           submittedById: session.id,
         },
-        data: { ...stateFields, ...creditFields, cycle },
+        data: {
+          ...stateFields,
+          ...creditFields,
+          cycle,
+          fieldChanges: gpsMarkers as unknown as Prisma.InputJsonValue,
+        },
       });
       if (claim.count === 0) {
         throw new ConflictError(
@@ -403,7 +417,7 @@ async function submitCreateCore(
           process: EditProcess.CREATE,
           customerId: null,
           submittedById: session.id,
-          fieldChanges: [] as unknown as Prisma.InputJsonValue,
+          fieldChanges: gpsMarkers as unknown as Prisma.InputJsonValue,
           attachmentChanges: [] as unknown as Prisma.InputJsonValue,
           cycle: 1,
           ...stateFields,

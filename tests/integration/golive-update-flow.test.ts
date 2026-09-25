@@ -237,7 +237,8 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     if (!prisma) return;
     const allCustomerIds = [...ids.customerIds, ids.otherCustomerId].filter(Boolean);
     const editRows = await prisma.customerEdit.findMany({
-      where: { customerId: { in: allCustomerIds } },
+      // By submitter too: a new-customer request (section 9) has no customerId.
+      where: { OR: [{ customerId: { in: allCustomerIds } }, { submittedById: { in: ids.userIds } }] },
       select: { id: true },
     });
     const editIds = editRows.map((e) => e.id);
@@ -773,5 +774,122 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
       { since: testStart, regionIds: [ids.regionId] }
     );
     expect(none.rowCount).toBe(0);
+  });
+  // ── 8. a point typed in by hand (benchmark item 41) ───────────────────────
+  it('a typed-in GPS point keeps its reason on the gps entries, clears the old accuracy, and reaches the audit row', async () => {
+    type Change = { field: string; before: unknown; after: unknown; gpsSource?: string; gpsManualReason?: string };
+    asSalesman();
+    const customerId = ids.customerIds[0]!;
+    const branchId = ids.branchIds[`${sfx}001`]!;
+    // Section 6 left contactRole 'Owner / Partner'. The first submit below sets it
+    // back to 'Owner' (so it is not empty); after that only the GPS moves.
+    const reason = 'Phone GPS would not lock inside the souq; read the point off Google Maps.';
+
+    // A reason with the point unchanged marks nothing: there is nothing to mark.
+    const quiet = await edits.submitEditAction(
+      fullPayload(customerId, branchId, {
+        customer: { contactRole: 'Owner' },
+        branch: { gpsAccuracy: undefined, gpsManualReason: reason },
+      })
+    );
+    expect(quiet.ok, JSON.stringify(quiet)).toBe(true);
+    if (!quiet.ok) return;
+    const quietRow = await prisma.customerEdit.findUniqueOrThrow({ where: { id: quiet.data.editId } });
+    expect((quietRow.fieldChanges as Change[]).map((c) => c.field)).toEqual(['customer.contactRole']);
+    expect(JSON.stringify(quietRow.fieldChanges)).not.toContain('MANUAL');
+    asManager();
+    const fdQuiet = new FormData();
+    fdQuiet.set('editId', quiet.data.editId);
+    expect((await edits.approveEditAction(fdQuiet)).ok).toBe(true);
+
+    // A reason too short to say anything is refused — in the GPS slot the form shows.
+    asSalesman();
+    const short = await edits.submitEditAction(
+      fullPayload(customerId, branchId, { branch: { gpsLat: 23.6012, gpsLng: 58.4021, gpsManualReason: 'gps' } })
+    );
+    expect(short.ok).toBe(false);
+    if (!short.ok) expect(Object.keys(short.fields ?? {})).toEqual([`branch.${branchId}.gps`]);
+
+    // The typed point itself. The reason arrives with HTML in it and is stored without.
+    const res = await edits.submitEditAction(
+      fullPayload(customerId, branchId, {
+        customer: { contactRole: 'Owner' },
+        branch: {
+          gpsLat: 23.6012,
+          gpsLng: 58.4021,
+          gpsAccuracy: undefined,
+          gpsCapturedAt: new Date('2026-09-12T08:00:00.000Z'),
+          gpsManualReason: '<b>' + reason + '</b>',
+        },
+      })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: res.data.editId } });
+    const changes = row.fieldChanges as Change[];
+    // No new element: the marker rides on the branch's own gps entries, so every
+    // count that reads fieldChanges is unchanged.
+    expect(changes.map((c) => c.field).sort()).toEqual(
+      ['gpsAccuracy', 'gpsCapturedAt', 'gpsLat', 'gpsLng'].map((f) => `branch.${branchId}.${f}`)
+    );
+    for (const c of changes) {
+      expect(c.gpsSource, c.field).toBe('MANUAL');
+      expect(c.gpsManualReason, c.field).toBe(reason);
+    }
+    // The old device fix's accuracy does not stay beside a point it never described.
+    expect(changes.find((c) => c.field.endsWith('.gpsAccuracy'))).toMatchObject({ before: 8, after: null });
+
+    asManager();
+    const fd = new FormData();
+    fd.set('editId', res.data.editId);
+    const ok = await edits.approveEditAction(fd);
+    expect(ok.ok, JSON.stringify(ok)).toBe(true);
+    const b = await prisma.branch.findUniqueOrThrow({ where: { id: branchId } });
+    expect(b.gpsLat).toBeCloseTo(23.6012, 4);
+    expect(b.gpsLng).toBeCloseTo(58.4021, 4);
+    expect(b.gpsAccuracy).toBeNull();
+    // Owner-accepted (option A): the reason is in the APPROVE audit row.
+    const audit = await prisma.auditLog.findFirst({
+      where: { actorId: ids.managerId, action: 'APPROVE', entityId: res.data.editId },
+    });
+    expect(JSON.stringify(audit?.after)).toContain(reason);
+  });
+
+  // ── 9. a typed-in point on a NEW-customer request (item 41) ───────────────
+  it('a new-customer draft keeps a typed-in point as a marker, rebuilt on every save so it never goes stale', async () => {
+    const creates = await import('@/services/creates');
+    const gm = await import('@/lib/gps-manual');
+    asSalesman();
+    const reason = 'GPS kept timing out in the basement shop.';
+    const payload = (branch: Record<string, unknown>, editId?: string) => ({
+      ...(editId ? { editId } : {}),
+      isDraft: true,
+      customer: { legalName: `ZZ Manual GPS ${sfx}`, paymentTerms: 'CASH' as const },
+      branches: [{ branchName: 'Main', gpsLat: 23.61, gpsLng: 58.41, ...branch }],
+    });
+
+    const first = await creates.submitCreateAction(payload({ gpsManualReason: reason }));
+    expect(first.ok, JSON.stringify(first)).toBe(true);
+    if (!first.ok) return;
+    const editId = first.data.editId;
+    let row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(gm.manualGpsReasonForPoint(row.fieldChanges, 23.61, 58.41)).toBe(reason);
+    expect(gm.countFieldChanges(row.fieldChanges)).toBe(0);
+    expect(gm.hasManualGps(row.fieldChanges)).toBe(true);
+
+    // Saved again, still typed: the marker is rewritten, not duplicated.
+    const again = await creates.submitCreateAction(payload({ gpsManualReason: reason }, editId));
+    expect(again.ok, JSON.stringify(again)).toBe(true);
+    row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(row.fieldChanges as unknown[]).toHaveLength(1);
+
+    // Re-saved with a device fix at a new point: the old marker is gone, not carried.
+    const device = await creates.submitCreateAction(
+      payload({ gpsLat: 23.62, gpsLng: 58.42, gpsAccuracy: 6 }, editId)
+    );
+    expect(device.ok, JSON.stringify(device)).toBe(true);
+    row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(row.fieldChanges).toEqual([]);
+    expect(gm.hasManualGps(row.fieldChanges)).toBe(false);
   });
 });

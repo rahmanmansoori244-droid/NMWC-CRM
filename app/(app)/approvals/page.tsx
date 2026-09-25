@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { loadScope } from '@/lib/access';
 import { formatSlaStatus } from '@/lib/working-hours';
+import { countFieldChanges, hasManualGps } from '@/lib/gps-manual';
 import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
 
 export const metadata = { title: 'Approvals · NMWC' };
@@ -125,7 +126,9 @@ export default async function ApprovalsPage() {
   // component and let it own the multi-select + bulk action UI. The per-row
   // link still goes to /approvals/[id] for nuanced reviews.
   const queueItems: ApprovalQueueItem[] = items.map((e) => {
-    const changesCount = Array.isArray(e.fieldChanges) ? e.fieldChanges.length : 0;
+    // Real field changes only: a new-customer request carries item 41 markers
+    // in fieldChanges, which are notes about a point, not changes.
+    const changesCount = countFieldChanges(e.fieldChanges);
     const ageHours = e.submittedAt
       ? Math.round((Date.now() - new Date(e.submittedAt).getTime()) / (60 * 60 * 1000))
       : 0;
@@ -138,6 +141,7 @@ export default async function ApprovalsPage() {
       id: e.id,
       ageHours,
       changesCount,
+      manualGps: hasManualGps(e.fieldChanges),
       isCreate,
       paymentTerms: isCreate ? (e.customerDraft?.paymentTerms ?? null) : null,
       customer: e.customer

@@ -33,6 +33,7 @@ import { loadExcelJS, escapeFormulaCell } from './excel';
 import { resolveExportScope, scopedBranchWhere } from './export-scope';
 import { ForbiddenError } from './errors';
 import { logger } from './logger';
+import { mapPinHref } from './contact-links';
 
 export type ChangeReportFilters = {
   /** Window start (inclusive). Defaults to the beginning of time. */
@@ -516,6 +517,7 @@ export async function buildChangeReport(
     );
     const salesman = salesmanByRoute.get(b.routeId);
     const extraCount = (extrasByBranch.get(b.id) ?? []).length;
+    const pin = mapPinHref(b.gpsLat, b.gpsLng);
 
     const values: Record<string, unknown> = {
       cust_code: s(c.nmwcCode),
@@ -542,13 +544,7 @@ export async function buildChangeReport(
       gps_lng: b.gpsLng ?? '',
       gps_accuracy_m: b.gpsAccuracy != null ? Math.round(b.gpsAccuracy) : '',
       gps_captured_at: omanStamp(b.gpsCapturedAt),
-      gps_map:
-        b.gpsLat != null && b.gpsLng != null
-          ? {
-              text: 'map',
-              hyperlink: `https://www.google.com/maps?q=${b.gpsLat.toFixed(6)},${b.gpsLng.toFixed(6)}`,
-            }
-          : '',
+      gps_map: pin ? { text: 'map', hyperlink: pin } : '',
       day_of_visit: b.dayOfVisit ?? '',
       opening_hours: s(b.openingHours ?? ''),
       delivery_window: s(b.deliveryWindow ?? ''),

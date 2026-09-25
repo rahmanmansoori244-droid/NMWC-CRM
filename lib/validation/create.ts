@@ -15,6 +15,7 @@
  */
 import { z } from 'zod';
 import { DayOfWeek, PaymentTerms } from '@prisma/client';
+import { gpsManualReasonSchema } from '../gps-manual';
 
 // UXI-006: accept Arabic-Indic digits (٠-٩) — the server normalizes them via
 // normalizePhone; rejecting them at the schema would fail perfectly valid
@@ -69,6 +70,9 @@ export const createBranchDraftSchema = z.object({
     .optional(),
   gpsAccuracy: z.number().min(0).max(10000).optional(),
   gpsCapturedAt: z.coerce.date().optional(),
+  // Item 41: present only when the point was typed in. Not an EditBranchDraft
+  // column — services/creates.ts stores it as a marker in fieldChanges.
+  gpsManualReason: gpsManualReasonSchema.optional(),
   dayOfVisit: z.nativeEnum(DayOfWeek).optional(),
   openingHours: optionalStr(z.string().max(100).transform(stripHtml)),
   deliveryWindow: optionalStr(z.string().max(100).transform(stripHtml)),

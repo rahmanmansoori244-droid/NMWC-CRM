@@ -11,6 +11,7 @@ import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
 import { LocationLinks, PhoneLink } from '@/components/nmwc/ContactLinks';
+import { countFieldChanges } from '@/lib/gps-manual';
 import { ArchiveCustomerButton } from './ArchiveCustomerButton';
 import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil } from 'lucide-react';
 
@@ -206,7 +207,7 @@ export default async function CustomerProfilePage({
                   <div className="min-w-0">
                     <div className="font-medium text-slate-900">
                       {e.submittedBy.fullName} submitted{' '}
-                      {Array.isArray(e.fieldChanges) ? e.fieldChanges.length : 0} change(s)
+                      {countFieldChanges(e.fieldChanges)} change(s)
                     </div>
                     <div className="text-sm text-slate-500">
                       {e.submittedAt?.toLocaleString('en-GB') ?? 'draft'}

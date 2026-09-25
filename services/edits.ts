@@ -20,6 +20,7 @@ import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isFieldLocked, canActOnStep } from '@/lib/permissions';
 import { submitEditSchema, type SubmitEditInput } from '@/lib/validation/edit';
 import { normalizePhone } from '@/lib/phone';
+import { markManualGps, type FieldChange } from '@/lib/gps-manual';
 import { normalizeCR } from '@/lib/cr';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
@@ -44,7 +45,7 @@ async function requireUser() {
  * Convert a partial branch payload into a list of {field, before, after} diff entries.
  * Drops fields that are unchanged or `undefined`.
  */
-type FieldChange = { field: string; before: unknown; after: unknown };
+// FieldChange comes from lib/gps-manual: it carries item 41's optional marker.
 
 function diffFields(
   previous: Record<string, unknown>,
@@ -243,8 +244,8 @@ async function submitEditCore(
           ?.branchId;
         if (branchId) {
           const sub = p.slice(2).join('.');
-          // gpsLat/gpsLng both render under one `gps` slot in the form.
-          const key = sub === 'gpsLat' || sub === 'gpsLng' ? 'gps' : sub;
+          // gpsLat/gpsLng (and a typed point's reason) render under one `gps` slot.
+          const key = sub === 'gpsLat' || sub === 'gpsLng' || sub === 'gpsManualReason' ? 'gps' : sub;
           fields[`branch.${branchId}.${key}`] = issue.message;
           continue;
         }
@@ -453,9 +454,24 @@ async function submitEditCore(
       }
     }
 
-    diffFields(branchBefore, bpClean, BRANCH_FIELDS).forEach((c) =>
-      fieldChanges.push({ ...c, field: `branch.${branch.id}.${c.field}` })
-    );
+    // Item 41 (owner: option A): a point the salesman TYPED IN keeps that fact,
+    // and the reason, on this branch's gps entries. Only when the point actually
+    // moves — a reason with no new point marks nothing and changes nothing. A typed
+    // point has no device accuracy, so the previous fix's ±N m is cleared rather
+    // than left beside coordinates it never described.
+    const manualReason = typeof bpClean.gpsManualReason === 'string' ? bpClean.gpsManualReason : undefined;
+    delete bpClean.gpsManualReason;
+    const pointMoves =
+      (bpClean.gpsLat !== undefined && bpClean.gpsLat !== branch.gpsLat) ||
+      (bpClean.gpsLng !== undefined && bpClean.gpsLng !== branch.gpsLng);
+    if (manualReason && pointMoves) bpClean.gpsAccuracy = null;
+
+    const branchChanges = diffFields(branchBefore, bpClean, BRANCH_FIELDS).map((c) => ({
+      ...c,
+      field: `branch.${branch.id}.${c.field}`,
+    }));
+    if (manualReason && pointMoves) markManualGps(branchChanges, manualReason);
+    fieldChanges.push(...branchChanges);
   }
 
   if (fieldChanges.length === 0 && !isDraft) {

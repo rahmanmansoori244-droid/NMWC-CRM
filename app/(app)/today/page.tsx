@@ -74,6 +74,7 @@ export default async function TodayPage() {
             paymentTerms: true,
             status: true,
             completenessScore: true,
+            primaryPhone: true,
           },
         },
       },
@@ -136,7 +137,8 @@ export default async function TodayPage() {
               <CustomerCard
                 key={b.id}
                 customer={b.customer}
-                primaryBranch={{ branchName: b.branchName, address: b.address }}
+                // This card IS this branch's visit: Directions go to this branch.
+                primaryBranch={{ branchName: b.branchName, address: b.address, gpsLat: b.gpsLat, gpsLng: b.gpsLng }}
                 href={`/customers/${b.customer.id}`}
               />
             ))}

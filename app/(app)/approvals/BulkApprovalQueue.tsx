@@ -23,6 +23,8 @@ export type ApprovalQueueItem = {
   id: string;
   ageHours: number;
   changesCount: number;
+  /** Item 41: a branch point in this request was typed in by hand, not a GPS fix. */
+  manualGps: boolean;
   /** Working-hours SLA pill (server-computed); null for legacy rows without a deadline. */
   sla: { label: string; tone: 'ok' | 'warn' | 'overdue' } | null;
   escalationLevel: number;
@@ -239,6 +241,12 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                     >
                       {e.escalationLevel > 0 ? '⚠ ' : ''}
                       {e.sla.label}
+                    </span>
+                  )}
+                  {/* Item 41: seen BEFORE a bulk approve, not only on the detail page. */}
+                  {e.manualGps && (
+                    <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 font-semibold text-amber-800 ring-1 ring-amber-200">
+                      Typed GPS
                     </span>
                   )}
                   <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">

@@ -8,8 +8,9 @@ export type Gps = {
   lng: number;
   accuracy?: number;
   capturedAt: Date;
-  /** B-07: client-side flags so supervisors can spot manually-entered points
-   *  during review even though the schema doesn't persist them. */
+  /** B-07: a point typed in by hand, and why. Both forms send the reason as
+   *  `gpsManualReason`, and the change request keeps it as a marker the approver
+   *  sees (item 41, lib/gps-manual.ts). */
   isManual?: boolean;
   manualReason?: string;
 };

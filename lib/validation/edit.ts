@@ -1,6 +1,6 @@
 /**
  * Zod schemas for the enrichment-edit payload submitted by salesmen.
- * Used by both client (react-hook-form resolver) and server (input parsing).
+ * Parsed on the server (services/edits.ts); the form does not use a resolver.
  *
  * The shape mirrors PRD §5/§6 — Customer-level + Branch-level fields the
  * salesman is allowed to edit. Field locks (Credit customers) are enforced at
@@ -8,6 +8,7 @@
  */
 import { z } from 'zod';
 import { CustomerStatus, DayOfWeek, PaymentTerms } from '@prisma/client';
+import { gpsManualReasonSchema } from '../gps-manual';
 
 const phoneRegex = /^[\d\s\-+()]{7,20}$/;
 
@@ -68,6 +69,9 @@ export const branchEditSchema = z.object({
     .optional(),
   gpsAccuracy: z.number().min(0).max(10000).optional(),
   gpsCapturedAt: z.coerce.date().optional(),
+  // Item 41: present only when the salesman TYPED the point in. Not a Branch
+  // column — services/edits.ts turns it into a marker on the gps entries.
+  gpsManualReason: gpsManualReasonSchema.optional(),
 
   dayOfVisit: z.nativeEnum(DayOfWeek).optional(),
   openingHours: z.string().max(100).transform(stripHtml).optional().or(z.literal('').transform(() => undefined)),

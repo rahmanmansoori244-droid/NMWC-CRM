@@ -59,6 +59,8 @@ export type CreateFormInitial = {
     gpsLng: number | null;
     gpsAccuracy: number | null;
     gpsCapturedAt: string | null;
+    /** Item 41: the reason, when this draft point was typed in (from the fieldChanges marker). */
+    gpsManualReason: string | null;
     dayOfVisit: DayOfWeek | null;
     openingHours: string;
     deliveryWindow: string;
@@ -172,6 +174,9 @@ export function CreateCustomerForm({
                 lng: b.gpsLng,
                 accuracy: b.gpsAccuracy ?? undefined,
                 capturedAt: b.gpsCapturedAt ? new Date(b.gpsCapturedAt) : new Date(),
+                // Resuming a draft or a returned request keeps the Manual badge and
+                // the reason, so resubmitting does not silently drop them.
+                ...(b.gpsManualReason ? { isManual: true, manualReason: b.gpsManualReason } : {}),
               }
             : null,
         dayOfVisit: b.dayOfVisit ?? '',
@@ -342,6 +347,8 @@ export function CreateCustomerForm({
         gpsLng: s.gps?.lng,
         gpsAccuracy: s.gps?.accuracy,
         gpsCapturedAt: s.gps?.capturedAt,
+        // Item 41: a typed-in point says so, with the reason the salesman gave.
+        gpsManualReason: s.gps?.isManual ? s.gps.manualReason : undefined,
         dayOfVisit: s.dayOfVisit || undefined,
         openingHours: s.openingHours.trim() || undefined,
         deliveryWindow: s.deliveryWindow.trim() || undefined,

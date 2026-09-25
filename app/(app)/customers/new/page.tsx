@@ -3,6 +3,7 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
+import { manualGpsReasonForPoint } from '@/lib/gps-manual';
 import { CreateCustomerForm, type CreateFormInitial } from './CreateCustomerForm';
 
 export const metadata = { title: 'New customer · NMWC' };
@@ -87,6 +88,7 @@ export default async function NewCustomerPage({
         gpsLng: b.gpsLng,
         gpsAccuracy: b.gpsAccuracy,
         gpsCapturedAt: b.gpsCapturedAt ? b.gpsCapturedAt.toISOString() : null,
+        gpsManualReason: manualGpsReasonForPoint(edit.fieldChanges, b.gpsLat, b.gpsLng),
         dayOfVisit: b.dayOfVisit,
         openingHours: b.openingHours ?? '',
         deliveryWindow: b.deliveryWindow ?? '',

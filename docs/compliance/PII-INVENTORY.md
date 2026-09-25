@@ -104,7 +104,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | `reviewedById` | Employee | behaviour |  |
 | `reviewedAt` | Employee | behaviour |  |
 | `decisionReason` | Customer contact | free text | approver’s words; may describe the customer or the submitting employee |
-| `fieldChanges` | Customer contact | snapshot | before/after values of the customer and branch fields above — a second copy of the same personal data |
+| `fieldChanges` | Customer contact | snapshot | before/after values of the customer and branch fields above — a second copy of the same personal data; plus, for a GPS point typed in by hand, the salesman’s own free-text reason (item 41), which the APPROVE audit row also copies |
 | `paymentTermsAtSubmit` | Customer entity (personal if a sole establishment) | financial |  |
 | `approvalChain` | Employee | snapshot | the roles and step order frozen at submit time |
 | `requestedCreditLimit` | Customer entity (personal if a sole establishment) | financial |  |

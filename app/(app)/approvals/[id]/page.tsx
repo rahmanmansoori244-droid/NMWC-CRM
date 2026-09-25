@@ -6,6 +6,8 @@ import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { parseChain } from '@/lib/approval-chains';
+import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-manual';
+import { AlertTriangle } from 'lucide-react';
 import { ApproveRejectActions } from './ApproveRejectActions';
 
 export const metadata = { title: 'Approval · NMWC' };
@@ -377,6 +379,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                             {`${b.gpsLat.toFixed(5)}, ${b.gpsLng.toFixed(5)}${b.gpsAccuracy != null ? ` (±${Math.round(b.gpsAccuracy)}m)` : ''}`}
                           </span>
                           <LocationLinks lat={b.gpsLat} lng={b.gpsLng} />
+                          <ManualGpsNote reason={manualGpsReasonForPoint(edit.fieldChanges, b.gpsLat, b.gpsLng)} />
                         </span>
                       ) : null
                     }
@@ -414,6 +417,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           [...branchChangesByBranch.entries()].map(([branchId, list]) => {
             const b = branchMap.get(branchId);
             const gps = proposedGps(list);
+            const manualReason = manualGpsReasonForBranch(edit.fieldChanges, branchId);
             return (
               <DiffSection
                 key={branchId}
@@ -430,6 +434,11 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                 {gps && (
                   <div className="px-4 py-2.5 text-sm">
                     <LocationLinks lat={gps.lat} lng={gps.lng} pinLabel="View proposed location on map" />
+                  </div>
+                )}
+                {manualReason && (
+                  <div className="px-4 pb-2.5">
+                    <ManualGpsNote reason={manualReason} />
                   </div>
                 )}
               </DiffSection>
@@ -534,6 +543,23 @@ function DetailSection({ title, children }: { title: string; children: React.Rea
       </header>
       <div className="divide-y divide-slate-100">{children}</div>
     </section>
+  );
+}
+
+/**
+ * Item 41: the salesman typed this point in because GPS did not work. Said
+ * plainly, with their reason, where the approver looks at the location — bulk
+ * approval shows a pill for the same thing on the queue card.
+ */
+function ManualGpsNote({ reason }: { reason: string | null }) {
+  if (!reason) return null;
+  return (
+    <p className="flex items-start gap-1.5 rounded-md bg-amber-50 px-2.5 py-1.5 text-sm text-amber-900 ring-1 ring-amber-200">
+      <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+      <span>
+        <span className="font-semibold">Location typed in by hand.</span> GPS did not work: “{reason}”
+      </span>
+    </p>
   );
 }
 

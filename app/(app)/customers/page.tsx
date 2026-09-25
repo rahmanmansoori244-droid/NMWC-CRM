@@ -200,7 +200,10 @@ export default async function CustomersPage({
         paymentTerms: true,
         status: true,
         completenessScore: true,
-        branches: { ...branchInclude, select: { branchName: true, address: true } },
+        // Call and Directions on the card (item 40b, owner: all roles). The branch
+        // is still the scoped one from branchInclude, so its GPS is in scope.
+        primaryPhone: true,
+        branches: { ...branchInclude, select: { branchName: true, address: true, gpsLat: true, gpsLng: true } },
       },
     }),
     getAllActiveRegions(),

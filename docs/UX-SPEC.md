@@ -197,6 +197,7 @@ For each screen below: purpose, content, primary action, edge cases. ASCII layou
 - "Today's customers" list (sorted by Day-of-Visit = today, then sequence)
   - Per row: customer name (bold), branch name (muted), small address line, `<CompletenessRing />` (top-right), `<PaymentTermsPill />`, status icon
   - Tap row → `/customers/:id`
+  - Under the row, when there is something to tap: a 44px **Call** chip (the customer's primary phone, only if it dials) and a **Directions** chip (this branch's GPS, only if it has a real point). They sit beside the row's link, never inside it.
 - Empty state: "No customers due today. View full route →"
 
 **Primary action:** Tap a customer row.
@@ -239,7 +240,7 @@ For each screen below: purpose, content, primary action, edge cases. ASCII layou
 - Search bar (top, sticky): searches name, code, phone
 - Filter chips: `All`, `Pending`, `Rejected`, `Complete`, `Closed`
 - Day-of-visit filter (dropdown: Sat–Fri, default = All)
-- List (same row format as `/today`)
+- List (same row format as `/today`, Call and Directions included; Directions go to the customer's first in-scope branch, the one whose address the row shows)
 - Infinite scroll or pagination (200/page)
 
 **Edge cases:** Empty filter → "No customers match these filters." Slow connection → skeleton rows.

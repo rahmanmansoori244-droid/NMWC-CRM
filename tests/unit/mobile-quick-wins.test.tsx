@@ -38,6 +38,7 @@ import { StepperInput } from '@/components/nmwc/StepperInput';
 import { TableScroll, TABLE_SCROLL_CLASSES } from '@/components/nmwc/TableScroll';
 import { LocationLinks, PhoneLink } from '@/components/nmwc/ContactLinks';
 import { directionsHref, mapPinHref, telHref } from '@/lib/contact-links';
+import { manualGpsMarker, markManualGps, type FieldChange } from '@/lib/gps-manual';
 
 /* ------------------------------------------------------------------------- *
  * Mocks for rendering the approval review page and the customer profile (37, 40).
@@ -402,6 +403,39 @@ describe('37 — the approvals queue on a phone', () => {
   });
 });
 
+describe('41 — the approver sees a point that was typed in by hand', () => {
+  const REASON = 'Phone GPS broken; read the point off Google Maps.';
+  const branches = [{ id: 'b1', branchName: 'Main', route: { code: 'C4' } }];
+
+  it('UPDATE: a note with the reason beside the proposed location, and no raw marker rows', async () => {
+    const edit = updateEdit();
+    markManualGps(edit.fieldChanges as FieldChange[], REASON);
+    const { container } = await renderReview(edit, branches);
+    const note = screen.getByText(/Location typed in by hand/).closest('p')!;
+    expect(note.textContent).toContain(REASON);
+    // It sits in the branch's own section, with the proposed-location link.
+    const section = note.closest('section')!;
+    expect(within(section).getByRole('link', { name: /view proposed location on map/i })).toBeTruthy();
+    // The marker's keys are data, not rows.
+    expect(container.textContent).not.toMatch(/gpsSource|gpsManualReason|MANUAL/);
+  });
+
+  it('UPDATE: nothing when the point came from the device', async () => {
+    await renderReview(updateEdit(), branches);
+    expect(screen.queryByText(/Location typed in by hand/)).toBeNull();
+  });
+
+  it("CREATE: the note on the draft branch whose point it is, and not on another point's", async () => {
+    const edit = { ...createEdit(), fieldChanges: [manualGpsMarker(0, 23.67, 58.19, REASON)] };
+    await renderReview(edit);
+    const branch = screen.getByRole('heading', { name: /Branch 1: Seeb/ }).closest('section')!;
+    expect(within(branch).getByText(/Location typed in by hand/).closest('p')!.textContent).toContain(REASON);
+    cleanup();
+    await renderReview({ ...createEdit(), fieldChanges: [manualGpsMarker(0, 23.5, 58.19, REASON)] });
+    expect(screen.queryByText(/Location typed in by hand/)).toBeNull();
+  });
+});
+
 describe('38 — tables scroll inside themselves', () => {
   it('TableScroll is a named, focusable region that scrolls and contains its width', () => {
     render(
@@ -595,7 +629,17 @@ describe('40 — tap-to-call and directions', () => {
   });
 
   it('no page builds a maps URL by hand, and the phone displays use PhoneLink', () => {
-    for (const f of UI_FILES) {
+    // UI, and the server code that writes links into workbooks: the data-residency
+    // register says every Google Maps link is built in lib/contact-links.ts.
+    const tsFiles = (dir: string): string[] =>
+      readdirSync(dir).flatMap((name) => {
+        const p = join(dir, name).replace(/\\/g, '/');
+        if (statSync(p).isDirectory()) return tsFiles(p);
+        return /\.tsx?$/.test(p) ? [p] : [];
+      });
+    const files = [...UI_FILES, ...tsFiles('lib'), ...tsFiles('services')].filter((f) => f !== 'lib/contact-links.ts');
+    expect(files).toContain('lib/change-report.ts');
+    for (const f of files) {
       expect(read(f), `${f} — use lib/contact-links.ts`).not.toContain('google.com/maps');
     }
     expect(read('app/(app)/customers/[id]/page.tsx')).toMatch(/<PhoneLink phone=\{customer\.primaryPhone\}/);

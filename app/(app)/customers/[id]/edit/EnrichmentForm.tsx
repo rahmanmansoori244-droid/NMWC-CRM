@@ -215,6 +215,11 @@ export function EnrichmentForm({
   // we warn the user that there are newer server changes.
   const customerUpdatedAtMs = new Date(customer.updatedAt).getTime();
   const draftKey = `nmwc:draft:${sessionUserId}:${customer.id}`;
+  // GpsCaptureButton reads its `initial` only when it mounts. A restore replaces
+  // the branch GPS after that, so the chip kept showing the old point while the
+  // form submitted the restored one — including a typed point and its reason
+  // (item 41) the salesman could not see. Bumped on restore to remount them.
+  const [restoreGeneration, setRestoreGeneration] = useState(0);
   useEffect(() => {
     const saved = typeof window !== 'undefined' ? window.localStorage.getItem(draftKey) : null;
     if (!saved) return;
@@ -242,7 +247,10 @@ export function EnrichmentForm({
       if (typeof d.contactPerson === 'string') setContactPerson(d.contactPerson);
       if (typeof d.contactRole === 'string') setContactRole(d.contactRole);
       if (typeof d.notes === 'string') setNotes(d.notes);
-      if (d.branchStates) setBranchStates((prev) => ({ ...prev, ...d.branchStates }));
+      if (d.branchStates) {
+        setBranchStates((prev) => ({ ...prev, ...d.branchStates }));
+        setRestoreGeneration((g) => g + 1);
+      }
       setInfo('Restored a local draft from your last visit.');
     } catch {
       /* ignore */
@@ -324,6 +332,8 @@ export function EnrichmentForm({
       gpsLng: s.gps?.lng,
       gpsAccuracy: s.gps?.accuracy,
       gpsCapturedAt: s.gps?.capturedAt,
+      // Item 41: a typed-in point says so, with the reason the salesman gave.
+      gpsManualReason: s.gps?.isManual ? s.gps.manualReason : undefined,
       dayOfVisit: s.dayOfVisit || undefined,
       openingHours: s.openingHours.trim() || undefined,
       deliveryWindow: s.deliveryWindow.trim() || undefined,
@@ -345,7 +355,18 @@ export function EnrichmentForm({
         });
         if (!result.ok) {
           if (result.fields) {
-            setErrors(result.fields);
+            // Only customer fields and each branch's `gps` have a slot on this form.
+            // Anything else must still surface, or the submit appears to do
+            // nothing at all — which is what a rejected branch field used to do.
+            const orphaned = Object.entries(result.fields).filter(
+              ([k]) => k !== '_form' && !k.startsWith('customer.') && !/^branch\.[^.]+\.gps$/.test(k)
+            );
+            setErrors({
+              ...result.fields,
+              ...(orphaned.length > 0 && !result.fields._form
+                ? { _form: orphaned.map(([, v]) => v).join(' · ') }
+                : {}),
+            });
           } else {
             setErrors({ _form: result.message });
           }
@@ -568,10 +589,14 @@ export function EnrichmentForm({
                   Location * (required to submit)
                 </label>
                 <GpsCaptureButton
+                  key={restoreGeneration}
                   initial={s.gps}
                   onCapture={(g) => setBranch(b.id, { gps: g })}
                   required
                 />
+                {errors[`branch.${b.id}.gps`] && (
+                  <p className="mt-1 text-sm font-medium text-red-600">{errors[`branch.${b.id}.gps`]}</p>
+                )}
               </div>
 
               <div className="grid gap-3 md:grid-cols-3">

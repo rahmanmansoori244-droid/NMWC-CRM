@@ -10,8 +10,11 @@
  *   - The pin link keeps whatever label the page passes ("Open in Maps",
  *     "View proposed location on map"), and the second link is named only
  *     "Directions", so strict name locators on the old labels stay unique.
+ *
+ * No customer name in any link's name: Sentry's click breadcrumbs record the
+ * clicked element's aria-label, and the scrubber removes phones, not names.
  */
-import { MapPin, Navigation } from 'lucide-react';
+import { MapPin, Navigation, Phone } from 'lucide-react';
 import { directionsHref, mapPinHref, telHref } from '@/lib/contact-links';
 
 const PHONE = 'font-medium text-brand-700 underline underline-offset-2 hover:text-brand-800';
@@ -41,18 +44,42 @@ export function LocationLinks({
   pinLabel?: string;
 }) {
   const pin = mapPinHref(lat, lng);
-  const directions = directionsHref(lat, lng);
-  if (!pin || !directions) return null;
+  if (!pin) return null;
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
       <a href={pin} target="_blank" rel="noopener noreferrer" className={CHIP}>
         <MapPin aria-hidden="true" className="h-4 w-4" />
         {pinLabel}
       </a>
-      <a href={directions} target="_blank" rel="noopener noreferrer" className={CHIP}>
-        <Navigation aria-hidden="true" className="h-4 w-4" />
-        Directions
-      </a>
+      <DirectionsChip lat={lat} lng={lng} />
     </span>
+  );
+}
+
+/** Turn-by-turn to a point, as a 44px chip. Nothing when the point is not a real one. */
+export function DirectionsChip({ lat, lng }: { lat: number | null | undefined; lng: number | null | undefined }) {
+  const href = directionsHref(lat, lng);
+  if (!href) return null;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" className={CHIP}>
+      <Navigation aria-hidden="true" className="h-4 w-4" />
+      Directions
+    </a>
+  );
+}
+
+/**
+ * Tap-to-call as a 44px chip, for a list row where an inline PhoneLink would be
+ * too small a target. Nothing at all when the value cannot be dialled: a row of
+ * cards is no place for an unusable number shown as text.
+ */
+export function CallChip({ phone }: { phone: string | null | undefined }) {
+  const href = telHref(phone);
+  if (!href) return null;
+  return (
+    <a href={href} className={CHIP}>
+      <Phone aria-hidden="true" className="h-4 w-4" />
+      {phone}
+    </a>
   );
 }
