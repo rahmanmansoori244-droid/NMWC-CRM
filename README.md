@@ -2,6 +2,8 @@
 
 Field-driven customer master data cleanup app for National Mineral Water Company (Oman).
 
+> **Auditing or reviewing this code? Start with [AUDITOR-BRIEF.md](AUDITOR-BRIEF.md)** — what the system does, the rules the team works by, the owner's deliberate choices, what is not done, and which docs below are out of date.
+
 > **Status:** Milestone 0 — foundation. See [docs/PRD-v0.1.md](docs/PRD-v0.1.md), [docs/UX-SPEC.md](docs/UX-SPEC.md), [docs/TECH-SPEC.md](docs/TECH-SPEC.md).
 
 ## Stack
