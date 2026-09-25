@@ -44,11 +44,15 @@ import {
   type FileDup,
   type SheetRow,
 } from '@/lib/import-row-check';
-import { masterCollisionMaps } from '@/lib/import-master-lookup';
+import { masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
 import {
   acceptCells,
   canReleasePhone,
+  changedCells,
   correctedRow,
+  fixWindowClosed,
+  IMPORT_PAYLOAD_DAYS,
+  newerUploadMessage,
   readCorrections,
   type Corrections,
 } from '@/lib/import-row-fix';
@@ -119,6 +123,7 @@ type RowForFix = {
   issues: Prisma.JsonValue;
   corrections: Prisma.JsonValue;
   excludedAt: Date | null;
+  createdAt: Date;
 };
 
 const rowSelect = {
@@ -131,6 +136,7 @@ const rowSelect = {
   issues: true,
   corrections: true,
   excludedAt: true,
+  createdAt: true,
 } as const;
 
 function assertFixable(row: RowForFix) {
@@ -142,6 +148,11 @@ function assertFixable(row: RowForFix) {
   if (row.excludedAt) {
     throw new ValidationError({
       _form: `Row ${row.rowNumber} was accepted as excluded. Include it again first.`,
+    });
+  }
+  if (fixWindowClosed(row.createdAt)) {
+    throw new ValidationError({
+      _form: `Row ${row.rowNumber} was uploaded more than ${IMPORT_PAYLOAD_DAYS} days ago, past the window in which a newer upload of the same customer can still be seen. Exclude it, or upload the corrected row again.`,
     });
   }
   const raw = row.raw as Record<string, unknown> | null;
@@ -180,21 +191,9 @@ async function targetsFor(tx: Tx, row: RowForFix): Promise<RowForFix[]> {
  * would load that older data over what the newer upload wrote.
  */
 async function refuseIfNewerUpload(tx: Tx, batch: LockedBatch, codes: string[]) {
-  if (codes.length === 0) return;
-  const newer = await tx.importRow.findFirst({
-    where: {
-      batch: { kind: 'CUSTOMER', uploadedAt: { gt: batch.uploadedAt } },
-      OR: codes.map((c) => ({ parsed: { path: ['custCode'], equals: c } })),
-    },
-    select: { batch: { select: { filename: true, uploadedAt: true } }, parsed: true },
-  });
-  if (newer) {
-    const code = (newer.parsed as { custCode?: string } | null)?.custCode ?? codes[0];
-    throw new ConflictError(
-      'NEWER_UPLOAD',
-      `A newer upload, "${newer.batch.filename}", also carries customer ${code}. Fix the row there instead — fixing this older one would load older data over it.`
-    );
-  }
+  const newer = await newerUploadsCarrying(tx, batch.uploadedAt, codes);
+  const first = [...newer][0];
+  if (first) throw new ConflictError('NEWER_UPLOAD', newerUploadMessage(first[0], first[1]));
 }
 
 /**
@@ -264,13 +263,17 @@ async function recheck(
       phoneReleased: !!c.phoneReleased,
     });
     const nextState = issues.length > 0 ? ImportRowState.QUARANTINED : ImportRowState.CLEAN;
+    // fixedFrom: the state and reasons the row had before its FIRST fix, so a
+    // mistaken fix can be withdrawn back to exactly that (pre-merge review).
+    const prev = (t.parsed ?? {}) as { fixedFrom?: unknown };
+    const fixedFrom = prev.fixedFrom ?? { state: t.state, issues: t.issues };
     const res = await tx.importRow.updateMany({
       where: { id: t.id, state: t.state, excludedAt: null },
       data: {
         state: nextState,
         // fixedInApp: promote may then create or update this row's branch even
         // for a customer linked to Temix (owner decision, "branch only").
-        parsed: { ...parsed, fixedInApp: true } as unknown as Prisma.InputJsonValue,
+        parsed: { ...parsed, fixedInApp: true, fixedFrom } as unknown as Prisma.InputJsonValue,
         issues: issues.length > 0 ? (issues as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
         corrections:
           Object.keys(c).length > 0 ? (c as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
@@ -380,12 +383,19 @@ async function correctCore(formData: FormData): Promise<FixResult> {
     const accepted = acceptCells(row.issues, sent);
     if (!accepted.ok) throw new ValidationError({ _form: accepted.message });
     const mine = readCorrections(row.corrections);
-    const merged: Corrections = { ...mine, cells: { ...(mine.cells ?? {}), ...accepted.cells } };
+    // Only what the Steward changed. The form is pre-filled, and recording every
+    // offered cell said "corrected in the app" of values nobody touched — in
+    // the audit row too, which keeps no values to check it against.
+    const changed = changedCells(accepted.cells, correctedRow(row.raw, mine));
+    if (Object.keys(changed).length === 0) {
+      throw new ValidationError({ _form: 'Nothing changed. Use Re-check to check the row as it stands.' });
+    }
+    const merged: Corrections = { ...mine, cells: { ...(mine.cells ?? {}), ...changed } };
     const targets = await targetsFor(tx, row);
     // A corrected customer code is the identity the newest-upload rule is about.
     await refuseIfNewerUpload(tx, batch, [
       ...codesOf(targets),
-      ...(accepted.cells.cust_code ? [accepted.cells.cust_code] : []),
+      ...(changed.cust_code ? [changed.cust_code] : []),
     ]);
     const r = await recheck(tx, batch, targets, (t) =>
       t.id === row.id ? merged : readCorrections(t.corrections)
@@ -393,7 +403,7 @@ async function correctCore(formData: FormData): Promise<FixResult> {
     // Column names only. The values are customer data, and this ledger keeps
     // them for ever; the row itself holds them until the retention sweep.
     await audit(tx, env, 'UPDATE', row.id, 'Import row corrected by the Data Steward', {
-      columns: Object.keys(accepted.cells).sort(),
+      columns: Object.keys(changed).sort(),
       ...r,
     });
     return r;
@@ -444,6 +454,78 @@ async function releaseCore(formData: FormData): Promise<FixResult> {
   });
   done(batchId);
   return result;
+}
+
+// ── Withdraw a fix ──────────────────────────────────────────────────────────
+
+/**
+ * Put a row fixed in the app back to exactly what it was before its first fix
+ * — its state and reasons, with the corrections dropped — so it can be
+ * corrected again or excluded. Once a fix turned a row CLEAN nothing could
+ * touch it before promote (pre-merge review): a mistyped correction had to be
+ * loaded, or the batch never promoted. A cust_code typed wrong would merge the
+ * row into another customer and overwrite its fields.
+ */
+export async function withdrawImportRowFixAction(formData: FormData): SafeAction<void> {
+  return runAction(() => withdrawCore(formData));
+}
+
+async function withdrawCore(formData: FormData): Promise<void> {
+  const me = await requireSteward();
+  const rowId = String(formData.get('rowId') ?? '');
+  if (!rowId) throw new ValidationError({ _form: 'Row required.' });
+  const env = await getAuditEnvelope(me.id);
+  const batchId = await batchIdOf(rowId);
+  await withBatch(batchId, async (tx, batch) => {
+    const row = await loadRow(tx, rowId);
+    const parsedNow = (row.parsed ?? {}) as {
+      fixedInApp?: boolean;
+      fixedFrom?: { state?: unknown; issues?: unknown };
+    };
+    if (row.state !== ImportRowState.CLEAN || parsedNow.fixedInApp !== true || row.excludedAt) {
+      throw new ValidationError({ _form: `Row ${row.rowNumber} is not a fixed row waiting to be promoted.` });
+    }
+    const from = parsedNow.fixedFrom;
+    const state =
+      from?.state === ImportRowState.REJECTED ? ImportRowState.REJECTED : ImportRowState.QUARANTINED;
+    const issues =
+      Array.isArray(from?.issues) && from.issues.length > 0
+        ? (from.issues as Prisma.InputJsonValue)
+        : ([{ field: '_fix', message: 'fix withdrawn by the Data Steward — correct the row again or exclude it' }] as Prisma.InputJsonValue);
+    // The row as uploaded, parsed again: a withdrawn cust_code correction must
+    // not leave the row carrying the code it was mistakenly given.
+    const channelKeys = new Set(
+      (await tx.channel.findMany({ select: { key: true } })).map((c) => c.key.toUpperCase())
+    );
+    const empty = new Map();
+    const { parsed } = checkCustomerRow((row.raw ?? {}) as SheetRow, {
+      channelKeys,
+      phonesInFile: empty,
+      crsInFile: empty,
+      masterPhones: empty,
+      masterCrs: empty,
+    });
+    const res = await tx.importRow.updateMany({
+      where: { id: row.id, state: ImportRowState.CLEAN, excludedAt: null },
+      data: {
+        state,
+        issues,
+        parsed: parsed as unknown as Prisma.InputJsonValue,
+        corrections: Prisma.DbNull,
+      },
+    });
+    if (res.count !== 1) {
+      throw new ConflictError('ROW_CHANGED', `Row ${row.rowNumber} changed meanwhile. Refresh and try again.`);
+    }
+    const counts = await tx.importRow.groupBy({ by: ['state'], where: { batchId: batch.id }, _count: { _all: true } });
+    const n = (s: ImportRowState) => counts.find((x) => x.state === s)?._count._all ?? 0;
+    await tx.importBatch.update({
+      where: { id: batch.id },
+      data: { quarantinedRows: n(ImportRowState.QUARANTINED), rejectedRows: n(ImportRowState.REJECTED) },
+    });
+    await audit(tx, env, 'UPDATE', row.id, 'Import row fix withdrawn by the Data Steward', { state });
+  });
+  done(batchId);
 }
 
 // ── Accept as excluded / include again ──────────────────────────────────────

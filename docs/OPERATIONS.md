@@ -509,30 +509,47 @@ The rotation is audit-logged.
 1. Sign in as Steward.
 2. `/import` → upload xlsx → review batch → Promote.
 3. Existing customers (matching by `cust_code`) are upserted — but not all in the same way.
-   Read this before re-importing (checked against `services/imports.ts` on 2026-09-26, item 20):
-   - **A customer that already has a Temix code** — every go-live customer — takes the
-     *refresh* lane. Only the Temix-owned fields (Temix code, payment terms, credit figures)
-     are refreshed, and a **file row never creates or changes its branches**: the file cannot
-     be told apart from an inbound Temix refresh or an old copy of the master, and branches
-     are the CRM's. Such rows are listed under **Loaded with a warning** ("Branch not
-     updated") when their branch is missing or differs. Change an existing branch on the
-     customer's page. A held-back branch row is loaded by **fixing it on the batch page**
-     (Correct / Re-check / Release): a row fixed in the app creates its branch, or updates it
-     from the cells it gave, and queues the customer for the next Temix batch.
-   - The refresh also flips each such customer from UPLOADED to **SYNCED**, as though Temix
-     had confirmed the last batch. Do not re-import the full master while a Temix batch is
-     waiting for its acknowledgement.
-   - **A customer with no Temix code** takes the full lane. Its status follows all its live
-     branches, not only the rows in the file. A blank name, address or route keeps the stored
-     value (a NEW branch still gets "Main", "Address pending" or the UNASSIGNED route).
-   - **Always include `branch_code`.** Once a customer has branches, a row without one is
-     rejected: it would be numbered by its position in the file and could overwrite a sibling.
+   **The lane is decided by each ROW, not by the customer** (checked against `services/imports.ts`
+   on 2026-09-26, item 20):
+   - **A file row whose `temix_code` equals the Temix code already stored on the customer**
+     takes the *refresh* lane. Only the Temix-owned fields (Temix code, payment terms, credit
+     figures) are refreshed, and the row **never creates or changes a branch**: a file cannot be
+     told apart from an inbound Temix refresh or an old copy of the master, and branches are the
+     CRM's. Such rows are listed under **Loaded with a warning** ("Branch not updated") when their
+     branch is missing or differs; change an existing branch on the customer's page. The refresh
+     also flips the customer from UPLOADED to **SYNCED**, as though Temix had confirmed the last
+     batch — do not re-import the full master while a Temix batch is waiting for its
+     acknowledgement. A row with a *different* non-blank `temix_code` is rejected.
+   - **Every other file row takes the full lane — including a row with a blank `temix_code` for a
+     customer that has one.** It overwrites the legal name, and the phone, CR, contact, channel and
+     status wherever the row gives them, and the branch cells it gives; it adds no warning, and it
+     does **not** queue the customer for Temix, so the ERP keeps the old values. For a customer
+     that has a Temix code, always fill `temix_code` with its stored code (it is on the customer
+     page). The /export workbook and template rows with a blank `temix_code` take this lane.
+     Most customers created by the go-live load carry a Temix code; the ~3,300 pilot-seeded ones
+     do not, and always take this lane.
+   - On the full lane a customer's status follows all its live branches, not only the file's rows;
+     a blank name, address or route keeps the stored value (a NEW branch still gets "Main",
+     "Address pending" or the UNASSIGNED route); and once a customer has branches, a row with no
+     `branch_code` is rejected — it would be numbered by its position in the file and could
+     overwrite a sibling. **Always include `branch_code`.**
 4. Problem rows are fixed on the batch page, not with scripts: **Correct…** (only the cells the
-   problem names; never payment terms, credit or the Temix code), **Release shared phone…**
-   (with a reason; audited as FORCE_OVERRIDE), **Re-check**, **Exclude…** (with a reason). A fix
-   is refused while the batch is being promoted, and in an upload older than another that
-   carries the same customer — fix it in the newest one. A row whose data the 90-day retention
-   sweep has cleared can only be excluded or uploaded again.
+   problem names; never payment terms, credit or the Temix code; only changed cells are
+   recorded), **Release shared phone…** (with a reason; audited as FORCE_OVERRIDE),
+   **Re-check**, **Exclude…** (with a reason). A fixed row waits under **Fixed, waiting to
+   promote** and can be taken back with **Withdraw fix** until the batch is promoted.
+   - **A row fixed in the app for a customer linked to Temix is always "branch only"** (owner
+     decision 2026-09-25), whatever its `temix_code` cell says: it creates its branch, or
+     updates it from the cells it gave, changes nothing else about the customer, and queues the
+     customer for the next Temix batch. It does not flip UPLOADED to SYNCED. A fixed row that
+     cannot be applied — no `branch_code` (every go-live head-office row), a code another
+     customer holds, an archived branch — comes back **REJECTED** with `branch_code` offered for
+     correction; a code this customer does not use yet creates a new branch.
+   - A fix is refused while the batch is being promoted; in an upload older than another that
+     carries the same customer (the message says whether to fix it there or exclude this one,
+     and the page offers only Exclude on such rows); and on a row uploaded more than 90 days ago,
+     when the newer uploads' data may already be swept. A row whose data the 90-day retention
+     sweep has cleared can only be excluded or uploaded again.
 
 ### Export the cleaned master for ERP
 1. Sign in as Steward (or Manager).

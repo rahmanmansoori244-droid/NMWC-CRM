@@ -32,6 +32,7 @@ import { prisma } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { cronAuthorized } from '@/lib/cron-auth';
 import { withHeartbeat } from '@/lib/heartbeat';
+import { IMPORT_PAYLOAD_DAYS as IMPORT_PAYLOAD_DAYS_SHARED } from '@/lib/import-row-fix';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,7 +40,8 @@ export const dynamic = 'force-dynamic';
 /** Token-bucket state is meaningless once the bucket has refilled — hours, not days. */
 const RATE_LIMIT_DAYS = 1;
 /** An import batch stays resumable and reconcilable for a quarter; then the raw payload goes. */
-const IMPORT_PAYLOAD_DAYS = 90;
+// Shared with the Steward's in-app fix, which refuses a row past it.
+const IMPORT_PAYLOAD_DAYS = IMPORT_PAYLOAD_DAYS_SHARED;
 /** Unread notifications: the read ones are already swept at 90 days by the SLA job. */
 const UNREAD_NOTIFICATION_DAYS = 180;
 /** Bound the work per run so the job stays well inside the function timeout. */
@@ -105,10 +107,14 @@ async function handle(req: NextRequest) {
            JOIN "ImportBatch" b ON b."id" = r."batchId"
           WHERE r."createdAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
             AND (
-                  r."state" IN ('PROMOTED', 'REJECTED')
-               OR (r."state" = 'QUARANTINED' AND r."excludedAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)})
+                  (r."state" IN ('PROMOTED', 'REJECTED') AND b."status" IN ('PROMOTED', 'FAILED'))
+               -- An excluded held-back row is read by nothing (promote reads CLEAN
+               -- rows; a fix refuses excluded ones), so its batch's status does not
+               -- matter — except a batch being promoted right now. A wrong file
+               -- excluded whole never leaves READY, and kept its data for ever.
+               OR (r."state" = 'QUARANTINED' AND r."excludedAt" < ${cutoff(IMPORT_PAYLOAD_DAYS)}
+                   AND b."status" <> 'PROMOTING')
             )
-            AND b."status" IN ('PROMOTED', 'FAILED')
             AND (r."raw" <> '{}'::jsonb OR r."parsed" IS NOT NULL OR r."issues" IS NOT NULL OR r."corrections" IS NOT NULL)
           ORDER BY r."createdAt"
           LIMIT ${BATCH}

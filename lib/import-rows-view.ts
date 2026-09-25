@@ -11,13 +11,22 @@
  */
 import { ImportRowState, Prisma } from '@prisma/client';
 
-export const ROW_VIEWS = ['problems', 'rejected', 'quarantined', 'warnings', 'excluded', 'all'] as const;
+export const ROW_VIEWS = [
+  'problems',
+  'fixed',
+  'rejected',
+  'quarantined',
+  'warnings',
+  'excluded',
+  'all',
+] as const;
 export type RowView = (typeof ROW_VIEWS)[number];
 
 export const ROWS_PAGE_SIZE = 100;
 
 export const ROW_VIEW_LABEL: Record<RowView, string> = {
   problems: 'Needs attention',
+  fixed: 'Fixed, waiting to promote',
   rejected: 'Rejected',
   quarantined: 'Quarantined',
   warnings: 'Loaded with a warning',
@@ -76,6 +85,8 @@ export function rowViewWhere(batchId: string, view: RowView): Prisma.ImportRowWh
       return { batchId, state: ImportRowState.QUARANTINED };
     case 'warnings':
       return { batchId, state: ImportRowState.PROMOTED, issues: { not: Prisma.DbNull } };
+    case 'fixed':
+      return { batchId, ...FIXED_WAITING_ROW, excludedAt: null };
     case 'excluded':
       return { batchId, excludedAt: { not: null } };
     case 'all':
@@ -90,12 +101,14 @@ export function rowViewWhere(batchId: string, view: RowView): Prisma.ImportRowWh
 export function viewCounts(
   byState: Partial<Record<ImportRowState, number>>,
   warnings: number,
-  excluded = 0
+  excluded = 0,
+  fixed = 0
 ): Record<RowView, number> {
   const n = (s: ImportRowState) => byState[s] ?? 0;
   const all = Object.values(byState).reduce<number>((sum, v) => sum + (v ?? 0), 0);
   return {
     problems: n(ImportRowState.REJECTED) + n(ImportRowState.QUARANTINED) - excluded,
+    fixed,
     rejected: n(ImportRowState.REJECTED),
     quarantined: n(ImportRowState.QUARANTINED),
     warnings,

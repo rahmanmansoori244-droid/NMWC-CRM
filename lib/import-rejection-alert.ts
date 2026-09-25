@@ -24,18 +24,26 @@ export type RowStateCount = { state: ImportRowState; _count: { _all: number } };
  * finalize matched the row). A slice that lost the batch leaves the alert to the
  * owner that finalised it; otherwise a resumed load posts twice for one finish.
  * Counts come from the row states of the WHOLE batch, not from this slice.
+ *
+ * Rejected rows the Steward has accepted as excluded (item 20) are dealt with:
+ * they are not counted, and a batch whose every rejection is excluded sends
+ * nothing. A fixed batch is promoted again, and each finish used to re-send
+ * the alert for all of them.
  */
 export function importRejectionAlert(args: {
   batchId: string;
   stateCounts: readonly RowStateCount[];
   finalisedByThisSlice: boolean;
   groups: number;
+  /** REJECTED rows already accepted as excluded. */
+  excludedRejected?: number;
 }): AlertInput | null {
   const countOf = (s: ImportRowState) =>
     args.stateCounts.find((c) => c.state === s)?._count._all ?? 0;
   const done = countOf(ImportRowState.CLEAN) === 0;
-  const rejected = countOf(ImportRowState.REJECTED);
-  if (!done || !args.finalisedByThisSlice || rejected === 0) return null;
+  const excluded = args.excludedRejected ?? 0;
+  const rejected = countOf(ImportRowState.REJECTED) - excluded;
+  if (!done || !args.finalisedByThisSlice || rejected <= 0) return null;
   return {
     severity: 'warn',
     event: 'import.rejections',
@@ -44,6 +52,7 @@ export function importRejectionAlert(args: {
     message: 'A customer master load finished with rejected rows. Open the batch to see why.',
     counts: {
       rejected,
+      ...(excluded > 0 ? { excluded } : {}),
       promoted: countOf(ImportRowState.PROMOTED),
       groups: args.groups,
     },

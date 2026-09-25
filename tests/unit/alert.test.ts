@@ -809,8 +809,10 @@ describe('every alert has a caller and every caller has an alert', () => {
     );
     // And it sits at the slice's top level: straight after the audit write's
     // `.catch(…)` closes, straight before the final-slice revalidation.
+    // Item 20: the rejected rows already accepted as excluded are counted for THIS
+    // batch and handed over, so a re-promoted fixed batch does not re-alert them.
     expect(imports).toMatch(
-      /'import\.audit_failed'\);\s*\}\);\s*const rejectionAlert = importRejectionAlert\(\{\s*batchId,\s*stateCounts,\s*finalisedByThisSlice: finalize\.count > 0,\s*groups: groups\.size,\s*\}\);\s*if \(rejectionAlert\) await sendAlert\(rejectionAlert\);\s*if \(done\) \{\s*revalidatePath\('\/import'\);/
+      /'import\.audit_failed'\);\s*\}\);\s*const excludedRejected =\s*done && finalize\.count > 0\s*\?\s*await prisma\.importRow\.count\(\{\s*where: \{ batchId, state: ImportRowState\.REJECTED, excludedAt: \{ not: null \} \},\s*\}\)\s*:\s*0;\s*const rejectionAlert = importRejectionAlert\(\{\s*batchId,\s*stateCounts,\s*finalisedByThisSlice: finalize\.count > 0,\s*groups: groups\.size,\s*excludedRejected,\s*\}\);\s*if \(rejectionAlert\) await sendAlert\(rejectionAlert\);\s*if \(done\) \{\s*revalidatePath\('\/import'\);/
     );
   });
 });
@@ -854,6 +856,19 @@ describe('importRejectionAlert — one alert per finished batch, only with rejec
     // other state is non-zero and REJECTED is zero, so only a correct count is null.
     expect(decide({ PROMOTED: 5, QUARANTINED: 5, PENDING: 5 })).toBeNull();
     expect(decide({ REJECTED: 1 })!.counts!.rejected).toBe(1);
+  });
+
+  it('item 20: rejections already accepted as excluded are dealt with — not counted, and not alerted on alone', () => {
+    const withExcluded = (excludedRejected: number) =>
+      importRejectionAlert({
+        batchId: BATCH,
+        stateCounts: rows({ PROMOTED: 18296, REJECTED: 1833 }),
+        finalisedByThisSlice: true,
+        groups: 7,
+        excludedRejected,
+      });
+    expect(withExcluded(1800)!.counts).toEqual({ rejected: 33, excluded: 1800, promoted: 18296, groups: 7 });
+    expect(withExcluded(1833)).toBeNull();
   });
 });
 

@@ -42,7 +42,7 @@ describe('one row check for the upload and the fix', () => {
 });
 
 describe('every fix action', () => {
-  const cores = ['recheckCore', 'correctCore', 'releaseCore', 'excludeCore', 'includeCore'];
+  const cores = ['recheckCore', 'correctCore', 'releaseCore', 'withdrawCore', 'excludeCore', 'includeCore'];
 
   it.each(cores)('%s checks the role before anything else, and writes inside the batch lock', (name) => {
     const b = body(fixes, name);

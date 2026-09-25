@@ -242,14 +242,14 @@ export default async function WorkPage() {
     items = failed.map((b) => ({
       id: b.id,
       category:
-        b.status === 'PROMOTING'
+        b.status === 'PROMOTING' || b.status === 'FAILED'
           ? 'Import to resume'
           : b._count.rows > 0
             ? 'Import to review'
             : 'Import to promote',
       title: b.filename,
       subtitle:
-        b.status === 'PROMOTING'
+        b.status === 'PROMOTING' || b.status === 'FAILED'
           ? `Promote interrupted — ${b.promotedRows} of ${b.totalRows} rows loaded`
           : b._count.rows > 0
             ? `${b._count.rows.toLocaleString('en-US')} row${b._count.rows === 1 ? '' : 's'} held back or rejected, not yet fixed or excluded`

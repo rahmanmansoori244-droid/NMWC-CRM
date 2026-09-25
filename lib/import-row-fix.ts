@@ -184,3 +184,44 @@ export function cellValue(row: SheetRow, column: string): string {
   }
   return '';
 }
+
+/**
+ * How long an import row keeps its data: the retention sweep empties a
+ * finished row's payload after this many days (app/api/cron/retention-sweep).
+ * A fix is refused past it too. The newest-upload check reads the newer
+ * batches' payloads, and once the sweep has emptied them it would no longer
+ * see that a newer upload carries the same customer — so an older row could
+ * be loaded over newer data (pre-merge review).
+ */
+export const IMPORT_PAYLOAD_DAYS = 90;
+
+export function fixWindowClosed(createdAt: Date, now: Date = new Date()): boolean {
+  return now.getTime() - createdAt.getTime() > IMPORT_PAYLOAD_DAYS * 24 * 60 * 60 * 1000;
+}
+
+export type NewerUpload = { filename: string; rowNumber: number; state: string; excluded: boolean };
+
+/**
+ * Why a row cannot be fixed because a newer upload carries its customer, and
+ * what to do instead — which depends on what that newer row is. It used to say
+ * "fix the row there" even when the newer row had loaded (an inbound Temix
+ * refresh, say), so there was nothing there to fix.
+ */
+export function newerUploadMessage(code: string, n: NewerUpload): string {
+  const where = `a newer upload, "${n.filename}" (row ${n.rowNumber})`;
+  if (n.excluded) {
+    return `Customer ${code} is also in ${where}, where it was excluded. Include it again there and fix it, or exclude this older row.`;
+  }
+  if (n.state === 'QUARANTINED' || n.state === 'REJECTED') {
+    return `Customer ${code} is also in ${where}, still held back there. Fix it in that upload instead — fixing this older row would load older data over it.`;
+  }
+  if (n.state === 'PROMOTED') {
+    return `Customer ${code} was loaded again from ${where}. This older row can no longer be fixed — exclude it.`;
+  }
+  return `Customer ${code} is also in ${where}, ready to load there. This older row can no longer be fixed — exclude it.`;
+}
+
+/** The cells whose value the Steward actually changed, against the row as it stands. */
+export function changedCells(cells: Record<string, string>, now: SheetRow): Record<string, string> {
+  return Object.fromEntries(Object.entries(cells).filter(([c, v]) => v !== cellValue(now, c).trim()));
+}

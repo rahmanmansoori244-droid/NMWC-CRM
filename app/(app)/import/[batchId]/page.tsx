@@ -13,8 +13,10 @@ import {
   cellValue,
   correctedRow,
   editableColumns,
+  newerUploadMessage,
   readCorrections,
 } from '@/lib/import-row-fix';
+import { newerUploadsCarrying } from '@/lib/import-master-lookup';
 import {
   ROW_VIEWS,
   ROW_VIEW_LABEL,
@@ -58,15 +60,17 @@ export default async function ImportBatchPage({
   // rows and the first 100 others, with nothing past them: one go-live load had
   // 1,833 rejections, and the Steward could open 200. Now each view pages through
   // all of its rows, and says how many there are.
-  const [stateCounts, warningCount, excludedCount] = await Promise.all([
+  const [stateCounts, warningCount, excludedCount, fixedCount] = await Promise.all([
     prisma.importRow.groupBy({ by: ['state'], where: { batchId }, _count: { _all: true } }),
     prisma.importRow.count({ where: rowViewWhere(batchId, 'warnings') }),
     prisma.importRow.count({ where: rowViewWhere(batchId, 'excluded') }),
+    prisma.importRow.count({ where: rowViewWhere(batchId, 'fixed') }),
   ]);
   const counts = viewCounts(
     Object.fromEntries(stateCounts.map((c) => [c.state, c._count._all])),
     warningCount,
-    excludedCount
+    excludedCount,
+    fixedCount
   );
   const pages = lastPage(counts[view]);
   const page = Math.min(parsePage(sp.page), pages);
@@ -80,6 +84,17 @@ export default async function ImportBatchPage({
   // Rows can be fixed only on a customer-master batch; the account master is
   // re-uploaded instead (its rows keep no values to fix).
   const fixable = batch.kind === 'CUSTOMER';
+  // A row whose customer a newer upload also carries cannot be fixed here — the
+  // server refuses it (services/import-fixes.ts). Ask the same question once for
+  // the page, so the row offers Exclude instead of buttons that always fail.
+  const codeOf = (parsed: unknown) => (parsed as { custCode?: string } | null)?.custCode ?? null;
+  const superseded = fixable
+    ? await newerUploadsCarrying(
+        prisma,
+        batch.uploadedAt,
+        [...new Set(displayRows.map((r) => codeOf(r.parsed)).filter((c): c is string => !!c))]
+      )
+    : new Map();
   const href = (v: RowView, p = 1): Route => (p > 1 ? `?show=${v}&page=${p}` : `?show=${v}`);
 
   // RK-3: promote runs in slices, so "how much is left" is the live CLEAN count,
@@ -199,6 +214,12 @@ export default async function ImportBatchPage({
                 const fixes = readCorrections(r.corrections);
                 const corrected = Object.keys(fixes.cells ?? {});
                 const problem = r.state === 'QUARANTINED' || r.state === 'REJECTED';
+                const fixedWaiting =
+                  r.state === 'CLEAN' &&
+                  !r.excludedAt &&
+                  (r.parsed as { fixedInApp?: boolean } | null)?.fixedInApp === true;
+                const code = codeOf(r.parsed);
+                const newer = code ? superseded.get(code) : undefined;
                 const editable = editableColumns(r.issues);
                 const now = correctedRow(r.raw, fixes);
                 return (
@@ -258,11 +279,12 @@ export default async function ImportBatchPage({
                     </td>
                     {fixable && (
                       <td className="min-w-[220px] px-3 py-2">
-                        {problem ? (
+                        {problem || fixedWaiting ? (
                           <RowActions
                             rowId={r.id}
                             batchId={batch.id}
-                            state={r.state as 'QUARANTINED' | 'REJECTED'}
+                            state={r.state as 'QUARANTINED' | 'REJECTED' | 'CLEAN'}
+                            superseded={newer && code ? newerUploadMessage(code, newer) : null}
                             editable={uploaded.length > 0 ? editable : []}
                             current={Object.fromEntries(editable.map((c) => [c, cellValue(now, c)]))}
                             canRelease={uploaded.length > 0 && r.state === 'QUARANTINED' && canReleasePhone(r.issues)}

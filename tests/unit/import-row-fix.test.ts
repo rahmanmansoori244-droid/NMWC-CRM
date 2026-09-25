@@ -7,8 +7,12 @@ import {
   acceptCells,
   canReleasePhone,
   cellValue,
+  changedCells,
   correctedRow,
   editableColumns,
+  fixWindowClosed,
+  IMPORT_PAYLOAD_DAYS,
+  newerUploadMessage,
   readCorrections,
 } from '@/lib/import-row-fix';
 
@@ -109,5 +113,53 @@ describe('the row as uploaded, with the corrections laid over it', () => {
     });
     expect(readCorrections(null)).toEqual({});
     expect(readCorrections([1])).toEqual({});
+  });
+});
+
+describe('pre-merge review: the refresh-lane rejections name branch_code, so the cell is offered', () => {
+  it('a fixed row the refresh lane cannot apply comes back rejected with branch_code editable', () => {
+    const p = (message: string) => editableColumns([{ field: '_promote', message }]);
+    expect(
+      p('a row fixed in the app has no branch_code — the import cannot tell which branch it is; add branch_code (a code this customer does not use yet creates a new branch); steward review')
+    ).toEqual(['branch_code']);
+    expect(p('branch_code X-09 already belongs to Y — steward review')).toEqual(['branch_code']);
+    expect(p('branch_code X-02 is archived and is not revived — use another branch_code; steward review')).toEqual(['branch_code']);
+  });
+});
+
+describe('newerUploadMessage — what to do depends on what the newer row is', () => {
+  const n = (state: string, excluded = false) => ({ filename: 'later.xlsx', rowNumber: 9, state, excluded });
+  it('held back there: fix it there', () => {
+    expect(newerUploadMessage('C1', n('QUARANTINED'))).toMatch(/still held back there\. Fix it in that upload instead/);
+    expect(newerUploadMessage('C1', n('REJECTED'))).toMatch(/Fix it in that upload instead/);
+  });
+  it('excluded there: include it there, or exclude this one', () => {
+    expect(newerUploadMessage('C1', n('QUARANTINED', true))).toMatch(/where it was excluded\. Include it again there/);
+  });
+  it('loaded there (a later file, an inbound Temix refresh): nothing to fix there — exclude this older row', () => {
+    expect(newerUploadMessage('C1', n('PROMOTED'))).toBe(
+      'Customer C1 was loaded again from a newer upload, "later.xlsx" (row 9). This older row can no longer be fixed — exclude it.'
+    );
+    expect(newerUploadMessage('C1', n('CLEAN'))).toBe(
+      'Customer C1 is also in a newer upload, "later.xlsx" (row 9), ready to load there. This older row can no longer be fixed — exclude it.'
+    );
+  });
+});
+
+describe('the fix window and changed cells', () => {
+  it('closes after the retention sweep period, so the newest-upload check never runs blind', () => {
+    const now = new Date('2026-12-30T00:00:00Z');
+    const day = 24 * 60 * 60 * 1000;
+    expect(IMPORT_PAYLOAD_DAYS).toBe(90);
+    expect(fixWindowClosed(new Date(now.getTime() - 89 * day), now)).toBe(false);
+    expect(fixWindowClosed(new Date(now.getTime() - 91 * day), now)).toBe(true);
+  });
+
+  it('records only what the Steward changed, against the row as it stands', () => {
+    const now = correctedRow({ phone: '9999', day_of_visit: 'XYZ' }, { cells: { day_of_visit: 'SUN' } });
+    expect(changedCells({ phone: '9999', day_of_visit: 'SUN' }, now)).toEqual({});
+    expect(changedCells({ phone: '99758980', day_of_visit: 'SUN' }, now)).toEqual({ phone: '99758980' });
+    // Putting a cell back to its uploaded value is a change too.
+    expect(changedCells({ day_of_visit: 'XYZ' }, now)).toEqual({ day_of_visit: 'XYZ' });
   });
 });

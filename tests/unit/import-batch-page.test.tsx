@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   user: { id: 's', role: 'STEWARD', username: 's' } as { id: string; role: string; username: string },
   rows: [] as Row[],
   findMany: vi.fn(),
+  newer: [] as Array<{ code: string; filename: string; rowNumber: number; state: string; excluded: boolean }>,
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
@@ -42,6 +43,7 @@ vi.mock('@/services/import-fixes', () => ({
   releaseImportRowPhoneAction: vi.fn(),
   excludeImportRowsAction: vi.fn(),
   includeImportRowAction: vi.fn(),
+  withdrawImportRowFixAction: vi.fn(),
 }));
 vi.mock('@/lib/db', () => {
   const matches = (r: Row, where: Record<string, unknown>) => {
@@ -54,10 +56,13 @@ vi.mock('@/lib/db', () => {
       if (want === null && r.excludedAt) return false;
       if (want !== null && !r.excludedAt) return false;
     }
+    if ('parsed' in where && (r.parsed as { fixedInApp?: boolean } | null)?.fixedInApp !== true) return false;
     return true;
   };
   return {
     prisma: {
+      // lib/import-master-lookup newerUploadsCarrying: which customers a newer upload carries.
+      $queryRaw: async () => h.newer,
       importBatch: {
         findUnique: async () => ({
           id: 'b1',
@@ -70,6 +75,7 @@ vi.mock('@/lib/db', () => {
           promotedRows: h.rows.filter((r) => r.state === 'PROMOTED').length,
           rejectedRows: h.rows.filter((r) => r.state === 'REJECTED').length,
           promoteLeaseUntil: null,
+          uploadedAt: new Date('2026-09-23T10:00:00Z'),
           uploadedBy: { fullName: 'S' },
         }),
       },
@@ -99,6 +105,7 @@ const rejected = (n: number): Row => ({
 
 beforeEach(() => {
   h.rows = [];
+  h.newer = [];
   h.findMany.mockReset();
   h.findMany.mockImplementation(async ({ where, skip, take }: { where: Record<string, unknown>; skip: number; take: number }) => {
     const st = where.state as string | { in: string[] } | undefined;
@@ -203,6 +210,33 @@ describe('/import/[batchId]', () => {
     expect(screen.getByText(/cleared by the 90-day retention sweep/)).toBeTruthy();
     const swept = screen.getByText(/cleared by the 90-day retention sweep/).closest('td')!;
     expect(within(swept).queryAllByRole('button').map((b) => b.textContent)).toEqual(['Exclude…']);
+  });
+
+  it('a row a newer upload superseded offers only Exclude, and says why', async () => {
+    h.rows = [
+      { id: 'q1', rowNumber: 2, state: 'QUARANTINED', raw: { cust_code: 'A', day_of_visit: 'XYZ' }, parsed: { custCode: 'A' }, issues: [{ field: 'day_of_visit', message: 'x' }] },
+      { id: 'q2', rowNumber: 3, state: 'QUARANTINED', raw: { cust_code: 'B', day_of_visit: 'XYZ' }, parsed: { custCode: 'B' }, issues: [{ field: 'day_of_visit', message: 'x' }] },
+    ];
+    h.newer = [{ code: 'A', filename: 'later.xlsx', rowNumber: 9, state: 'PROMOTED', excluded: false }];
+    await open({ show: 'all' });
+    const rowOf = (code: string) => screen.getAllByText(code)[0].closest('tr')!;
+    const buttons = (code: string) => within(rowOf(code)).queryAllByRole('button').map((b) => b.textContent);
+    expect(buttons('A')).toEqual(['Exclude…']);
+    expect(rowOf('A').textContent).toMatch(/was loaded again from a newer upload, "later\.xlsx" \(row 9\)/);
+    expect(buttons('B')).toEqual(['Re-check', 'Correct…', 'Exclude…']);
+  });
+
+  it('a row fixed in the app, waiting to promote, offers Withdraw fix — and has its own view', async () => {
+    h.rows = [
+      { id: 'c1', rowNumber: 2, state: 'CLEAN', raw: { cust_code: 'F' }, parsed: { custCode: 'F', fixedInApp: true }, issues: null },
+      { id: 'c2', rowNumber: 3, state: 'CLEAN', raw: { cust_code: 'G' }, parsed: { custCode: 'G' }, issues: null },
+    ];
+    await open({ show: 'all' });
+    const rowOf = (code: string) => screen.getAllByText(code)[0].closest('tr')!;
+    expect(within(rowOf('F')).getByRole('button', { name: 'Withdraw fix' })).toBeTruthy();
+    expect(within(rowOf('G')).queryAllByRole('button')).toEqual([]); // a plain clean row: nothing to do
+    const nav = screen.getByRole('navigation', { name: 'Which rows' });
+    expect(within(nav).getByRole('link', { name: /Fixed, waiting to promote/ }).textContent).toBe('Fixed, waiting to promote1');
   });
 
   it('a Manager is sent home', async () => {

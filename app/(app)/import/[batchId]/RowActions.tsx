@@ -8,6 +8,7 @@ import {
   includeImportRowAction,
   recheckImportRowAction,
   releaseImportRowPhoneAction,
+  withdrawImportRowFixAction,
 } from '@/services/import-fixes';
 import { CELL_LABEL } from '@/lib/import-row-fix';
 import type { ActionResult } from '@/lib/errors';
@@ -31,10 +32,12 @@ export function RowActions({
   canRelease,
   canRecheck,
   excluded,
+  superseded,
 }: {
   rowId: string;
   batchId: string;
-  state: 'QUARANTINED' | 'REJECTED';
+  /** CLEAN only for a row fixed in the app and waiting to be promoted. */
+  state: 'QUARANTINED' | 'REJECTED' | 'CLEAN';
   /** Cells the row's problem names, in form order. */
   editable: string[];
   /** Each editable cell's value now: corrected if corrected, else as uploaded. */
@@ -43,6 +46,11 @@ export function RowActions({
   /** False once the 90-day retention sweep has cleared the row's data. */
   canRecheck: boolean;
   excluded: { by: string; reason: string } | null;
+  /**
+   * Why a newer upload of the same customer rules out fixing this row (the
+   * server refuses it with the same words); only Exclude is offered then.
+   */
+  superseded?: string | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -88,6 +96,28 @@ export function RowActions({
     return fd;
   };
 
+  if (state === 'CLEAN') {
+    // A fix already made, waiting to be promoted: it can be taken back — before
+    // this, a mistyped correction had to be loaded or the batch never promoted.
+    return (
+      <div className="grid gap-1 text-xs">
+        <p className="text-slate-600">Fixed in the app — loads on the next promote.</p>
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => {
+            if (!confirm('Withdraw this fix? The row goes back to what it was before you fixed it, and your corrections are dropped.')) return;
+            run(withdrawImportRowFixAction, withRow(), () => 'Fix withdrawn.');
+          }}
+          className="min-h-9 justify-self-start rounded-md border border-slate-300 bg-white px-3 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          Withdraw fix
+        </button>
+        {msg && <Note msg={msg} />}
+      </div>
+    );
+  }
+
   if (excluded) {
     return (
       <div className="grid gap-1 text-xs">
@@ -109,6 +139,7 @@ export function RowActions({
 
   return (
     <div className="grid gap-2 text-xs">
+      {superseded && <p className="text-slate-600">{superseded}</p>}
       {!canRecheck && (
         <p className="text-slate-500">
           This row&rsquo;s data was cleared by the 90-day retention sweep. Upload the corrected row
@@ -116,7 +147,7 @@ export function RowActions({
         </p>
       )}
       <div className="flex flex-wrap gap-1.5">
-        {canRecheck && (
+        {canRecheck && !superseded && (
           <button
             type="button"
             disabled={pending}
@@ -131,18 +162,24 @@ export function RowActions({
             Re-check
           </button>
         )}
-        {editable.length > 0 && (
+        {editable.length > 0 && !superseded && (
           <button
             type="button"
             disabled={pending}
             aria-expanded={open === 'correct'}
-            onClick={() => setOpen(open === 'correct' ? null : 'correct')}
+            onClick={() => {
+              // Start from the row as it stands now. The form's state outlived
+              // router.refresh, so after a partial fix it still held a cell the
+              // row no longer names, and every later save was refused for it.
+              if (open !== 'correct') setCells(current);
+              setOpen(open === 'correct' ? null : 'correct');
+            }}
             className="min-h-9 rounded-md border border-slate-300 bg-white px-3 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             Correct…
           </button>
         )}
-        {canRelease && (
+        {canRelease && !superseded && (
           <button
             type="button"
             disabled={pending}
@@ -169,7 +206,17 @@ export function RowActions({
           className="grid gap-2 rounded-md bg-slate-50 p-2 ring-1 ring-slate-200"
           onSubmit={(e) => {
             e.preventDefault();
-            run(correctImportRowAction, withRow({ cells: JSON.stringify(cells) }), fixed);
+            // Only the cells this row names now, and only those the Steward changed.
+            const sent = Object.fromEntries(
+              editable
+                .filter((c) => (cells[c] ?? '').trim() !== (current[c] ?? '').trim())
+                .map((c) => [c, cells[c] ?? ''])
+            );
+            if (Object.keys(sent).length === 0) {
+              setMsg({ tone: 'error', text: 'Nothing changed. Use Re-check to check the row as it stands.' });
+              return;
+            }
+            run(correctImportRowAction, withRow({ cells: JSON.stringify(sent) }), fixed);
           }}
         >
           {editable.map((c) => (
@@ -177,7 +224,7 @@ export function RowActions({
               <span className="font-medium text-slate-700">{CELL_LABEL[c] ?? c}</span>
               <input
                 id={`fix-${rowId}-${c}`}
-                value={cells[c] ?? ''}
+                value={cells[c] ?? current[c] ?? ''}
                 onChange={(e) => setCells({ ...cells, [c]: e.target.value })}
                 className="min-h-9 rounded-md border border-slate-300 px-2 text-slate-900"
               />

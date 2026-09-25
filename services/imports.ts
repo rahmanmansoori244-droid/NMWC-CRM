@@ -853,23 +853,53 @@ type LaneBranch = {
  * from another customer, revives one from the archive, or guesses the branch
  * of a row with no branch_code.
  *
- * Returns, per row, a note for the Steward, or null. A branch written here
- * changes what Temix holds, so the customer is queued for the next batch, as
- * an approved edit or a merge queues it.
+ * A row FIXED IN THE APP that cannot be applied — no branch_code, a code that
+ * belongs to another customer, an archived branch — throws a CROSSWALK error,
+ * so the customer is REJECTED and the Steward can correct its branch_code
+ * (lib/import-row-fix.ts offers that cell for these messages, which must not
+ * mention Temix). It used to be closed as PROMOTED with a note: every go-live
+ * head-office row has a blank branch_code, so fixing one held back for its
+ * phone loaded nothing and could never be fixed again (pre-merge review).
+ *
+ * Returns, per row, a note for the Steward (or null) and whether its branch
+ * was written. A branch written here changes what Temix holds, so the customer
+ * is queued for the next batch, as an approved edit or a merge queues it.
  */
+type LaneOutcome = { notes: Array<string | null>; written: boolean[] };
+
 async function refreshLaneBranches(
   tx: Prisma.TransactionClient,
   args: { customerId: string; custCode: string; resolved: LaneBranch[]; me: string }
-): Promise<Array<string | null>> {
+): Promise<LaneOutcome> {
   const { customerId, resolved, me } = args;
   const notes: Array<string | null> = [];
-  let wrote = false;
+  const written: boolean[] = [];
+  const skip = (note: string | null) => {
+    notes.push(note);
+    written.push(false);
+  };
   for (const r of resolved) {
     if (!r.sheetCode) {
-      notes.push(
-        'no branch_code — the import cannot tell which branch this row is, so no branch was changed'
-      );
+      if (r.fixedInApp) {
+        throw new Error(
+          'CROSSWALK:a row fixed in the app has no branch_code — the import cannot tell which branch it is; add branch_code (a code this customer does not use yet creates a new branch); steward review'
+        );
+      }
+      skip('no branch_code — the import cannot tell which branch this row is, so no branch was changed');
       continue;
+    }
+    // As on the ordinary lane: a code the Steward typed that is already another
+    // customer's must not be quietly re-prefixed into a new branch of this one.
+    if (r.fixedInApp && r.sheetCode !== r.branchCode) {
+      const rawOwner = await tx.branch.findUnique({
+        where: { branchCode: r.sheetCode },
+        select: { customerId: true, customer: { select: { nmwcCode: true } } },
+      });
+      if (rawOwner && rawOwner.customerId !== customerId) {
+        throw new Error(
+          `CROSSWALK:branch_code ${r.sheetCode} already belongs to ${rawOwner.customer.nmwcCode} — steward review`
+        );
+      }
     }
     const found = await tx.branch.findUnique({
       where: { branchCode: r.branchCode },
@@ -887,7 +917,7 @@ async function refreshLaneBranches(
     });
     if (!found) {
       if (!r.fixedInApp) {
-        notes.push(
+        skip(
           `branch ${r.branchCode} is not in the master and was not added — a re-import does not add branches to a customer linked to Temix; fix the held-back row on its batch page instead`
         );
         continue;
@@ -907,16 +937,26 @@ async function refreshLaneBranches(
           lastEditedById: me,
         },
       });
-      wrote = true;
       notes.push(null);
+      written.push(true);
       continue;
     }
     if (found.customerId !== customerId) {
-      notes.push(`branch ${r.branchCode} belongs to customer ${found.customer.nmwcCode} and was not moved`);
+      if (r.fixedInApp) {
+        throw new Error(
+          `CROSSWALK:branch_code ${r.branchCode} already belongs to ${found.customer.nmwcCode} — steward review`
+        );
+      }
+      skip(`branch ${r.branchCode} belongs to customer ${found.customer.nmwcCode} and was not moved`);
       continue;
     }
     if (found.deletedAt) {
-      notes.push(`branch ${r.branchCode} was archived and was not revived`);
+      if (r.fixedInApp) {
+        throw new Error(
+          `CROSSWALK:branch_code ${r.branchCode} is archived and is not revived — use another branch_code; steward review`
+        );
+      }
+      skip(`branch ${r.branchCode} was archived and was not revived`);
       continue;
     }
     const differs: string[] = [];
@@ -926,11 +966,11 @@ async function refreshLaneBranches(
     if (r.dayOfVisit && r.dayOfVisit !== found.dayOfVisit) differs.push('visit day');
     if (r.status && r.status !== found.status) differs.push('status');
     if (differs.length === 0) {
-      notes.push(null);
+      skip(null);
       continue;
     }
     if (!r.fixedInApp) {
-      notes.push(
+      skip(
         `branch ${r.branchCode}: ${differs.join(', ')} in this row differ from the master and were not applied — a re-import does not change an existing branch of a customer linked to Temix; change it on the customer page`
       );
       continue;
@@ -948,35 +988,37 @@ async function refreshLaneBranches(
         lastEditedById: me,
       },
     });
-    wrote = true;
     notes.push(null);
+    written.push(true);
   }
-  if (wrote) {
+  if (written.some(Boolean)) {
     await tx.customer.updateMany({
       where: { id: customerId, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
       data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
     });
   }
-  return notes;
+  return { notes, written };
 }
 
 /**
  * Put each refresh row's branch note on the row as a '_lane' issue. The
- * group's route/region warnings go on the rows whose branch was written —
- * elsewhere the branch was not touched, so they would say something false.
+ * group's route/region warnings go only on rows whose branch was actually
+ * written — on a row left as it was they would say something false.
  * Advisory: the caller ignores a failure here, as it does for the ordinary
  * lane's '_resolve' warnings.
  */
 async function writeLaneNotes(
   rowIds: string[],
-  notes: Array<string | null>,
+  lane: LaneOutcome,
   resolveErrors: string[]
 ): Promise<void> {
   for (const [i, rowId] of rowIds.entries()) {
-    const note = notes[i] ?? null;
+    const note = lane.notes[i] ?? null;
     const issues = note
       ? [{ field: '_lane', message: note }]
-      : resolveErrors.map((m) => ({ field: '_resolve', message: m }));
+      : lane.written[i]
+        ? resolveErrors.map((m) => ({ field: '_resolve', message: m }))
+        : [];
     if (issues.length === 0) continue;
     await prisma.importRow.update({
       where: { id: rowId },
@@ -1232,7 +1274,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           groupResolveErrors.push(
             route
               ? `region "${p.regionCode}" not found — used the region of route "${p.routeCode}"`
-              : `region "${p.regionCode}" not found — branch parked in UNASSIGNED`
+              : `region "${p.regionCode}" not found — a new branch is parked in UNASSIGNED, an existing one keeps its route`
           );
         }
         if (p.routeCode && !route) {
@@ -1376,7 +1418,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         let refreshedRow = false;
         // Per row of a refresh group: what happened to its branch, when that is
         // worth telling the Steward. Written after the transaction commits.
-        let laneNotes: Array<string | null> = [];
+        let lane: LaneOutcome = { notes: [], written: [] };
         // final-hunt #32, extended to promote: this interactive transaction makes
         // ~9 sequential round trips (customer read + upsert, per-branch ownership
         // check + upsert, row state, completeness). Prisma's DEFAULT 5s ceiling is
@@ -1505,7 +1547,21 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 'CROSSWALK:this customer is already crosswalked to a different Temix code — changing it is a deliberate re-crosswalk, not an import; steward review'
               );
             }
-            refreshedRow = isRefresh;
+            // Owner decision 2026-09-25, "branch only": a row the Steward fixed in
+            // the app for a customer linked to Temix writes that branch and nothing
+            // else about the customer — also when its sheet left temix_code blank.
+            // That row would otherwise take the full lane and overwrite the name,
+            // phone, CR, contact, channel and status from an old sheet, and never
+            // queue the change for Temix (pre-merge review).
+            const fixedBranchOnly =
+              !isRefresh &&
+              !!existing &&
+              !existing.deletedAt &&
+              !!existing.temixCode &&
+              !first.temixCode &&
+              g.parsed.every((p) => p.fixedInApp === true);
+            const branchOnly = isRefresh || fixedBranchOnly;
+            refreshedRow = branchOnly;
 
             // Item 20 (owner decision 2026-09-25): a row with no branch_code is
             // numbered by its position among this customer's clean rows in THIS
@@ -1513,7 +1569,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // rows gives a row the code of a sibling — and the upsert below would
             // overwrite that sibling. It cannot be told which branch it is; refuse.
             if (
-              !isRefresh &&
+              !branchOnly &&
               existing &&
               !existing.deletedAt &&
               resolvedBranches.some((r) => !r.sheetCode)
@@ -1582,11 +1638,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               });
               // Blueprint §8.3: the inbound refresh is what flips UPLOADED →
               // SYNCED. Guarded so a PENDING_UPLOAD row (correction approved
-              // after the last batch) keeps its place in the queue.
-              await tx.customer.updateMany({
-                where: { id: existing!.id, temixSyncState: 'UPLOADED' },
-                data: { temixSyncState: 'SYNCED' },
-              });
+              // after the last batch) keeps its place in the queue. Not when every
+              // row is one the Steward fixed in the app: that is no word from Temix,
+              // and a batch still awaiting its acknowledgement would read as
+              // confirmed. UPLOADED is the safe side — the next real refresh flips it.
+              if (!g.parsed.every((p) => p.fixedInApp === true)) {
+                await tx.customer.updateMany({
+                  where: { id: existing!.id, temixSyncState: 'UPLOADED' },
+                  data: { temixSyncState: 'SYNCED' },
+                });
+              }
               // TEMIX_SYNC_ACKED: the ERP code just landed for the first time —
               // tell the originating submitter their customer is live in Temix.
               if (!existing!.temixCode && first.temixCode && existing!.createdById) {
@@ -1597,6 +1658,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   customerId: existing!.id,
                 });
               }
+              customerId = existing!.id;
+            } else if (fixedBranchOnly) {
               customerId = existing!.id;
             } else {
               // SEC-03/09 (2): credit standing is approval-gated or ERP-authoritative,
@@ -1735,7 +1798,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               });
               customerId = customer.id;
             }
-            if (!isRefresh) {
+            if (!branchOnly) {
               for (const r of resolvedBranches) {
                 // QA P-01 fix (branch-steal guard): branchCode is globally unique
                 // and the upsert's update path includes customerId — without this
@@ -1803,7 +1866,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 });
               }
             } else {
-              laneNotes = await refreshLaneBranches(tx, {
+              lane = await refreshLaneBranches(tx, {
                 customerId,
                 custCode,
                 resolved: resolvedBranches,
@@ -1837,7 +1900,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           // The branch outcome of each refresh row: a branch left as it was, and
           // why. It used to be invisible — the row read PROMOTED and the counts
           // balanced while the branch it described was never written.
-          await writeLaneNotes(g.rowIds, laneNotes, groupResolveErrors).catch(() => undefined);
+          await writeLaneNotes(g.rowIds, lane, groupResolveErrors).catch(() => undefined);
         }
         if (groupResolveErrors.length > 0 && !refreshedRow) {
           // F-17: surface the phantom-region warning in the row's issues so the
@@ -2027,11 +2090,20 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // The decision is lib/import-rejection-alert.ts, tested by behaviour; what is
     // pinned here is only that it is handed THIS batch's row states and THIS
     // slice's finalize result.
+    // A fixed batch is promoted again, and each finish used to re-send the
+    // alert for every REJECTED row — including the ones already excluded.
+    const excludedRejected =
+      done && finalize.count > 0
+        ? await prisma.importRow.count({
+            where: { batchId, state: ImportRowState.REJECTED, excludedAt: { not: null } },
+          })
+        : 0;
     const rejectionAlert = importRejectionAlert({
       batchId,
       stateCounts,
       finalisedByThisSlice: finalize.count > 0,
       groups: groups.size,
+      excludedRejected,
     });
     if (rejectionAlert) await sendAlert(rejectionAlert);
 

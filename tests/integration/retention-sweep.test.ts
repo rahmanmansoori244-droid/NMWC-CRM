@@ -30,6 +30,8 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
   const heldExcludedOld = `${sfx}-qx-old`;
   const heldExcludedNew = `${sfx}-qx-new`;
   const heldOpen = `${sfx}-q-open`;
+  // …and one excluded long ago in a batch that never left READY (a wrong file, excluded whole).
+  const heldExcludedStaged = `${sfx}-qx-staged`;
   let stagedBatchId = '';
 
   const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
@@ -127,6 +129,22 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
       await prisma.$executeRawUnsafe(`UPDATE "ImportRow" SET "createdAt" = $1 WHERE "id" = $2`, daysAgo(200), id);
     }
 
+    await prisma.importRow.create({
+      data: {
+        id: heldExcludedStaged,
+        batchId: stagedBatchId,
+        rowNumber: 2,
+        raw: PERSONAL,
+        parsed: PERSONAL,
+        issues: [{ field: 'cust_code', message: 'required' }],
+        state: 'QUARANTINED',
+        excludedAt: daysAgo(120),
+        excludedById: userId,
+        excludedReason: 'wrong file',
+      },
+    });
+    await prisma.$executeRawUnsafe(`UPDATE "ImportRow" SET "createdAt" = $1 WHERE "id" = $2`, daysAgo(200), heldExcludedStaged);
+
     // A spent rate-limit bucket keyed on a username, and a fresh one.
     await prisma.rateLimit.create({ data: { key: `login:user:${sfx}.old`, tokens: 4 } });
     await prisma.rateLimit.create({ data: { key: `login:user:${sfx}.new`, tokens: 4 } });
@@ -205,6 +223,12 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
     // The exclusion itself is the record, and outlives the payload.
     expect(gone.excludedAt).not.toBeNull();
     expect(gone.state).toBe('QUARANTINED');
+  });
+
+  it('item 20: an excluded held-back row is cleared even in a batch that never left READY — nothing reads it', async () => {
+    const gone = await prisma.importRow.findUniqueOrThrow({ where: { id: heldExcludedStaged } });
+    expect([gone.raw, gone.parsed, gone.issues]).toEqual([{}, null, null]);
+    // The staged batch's CLEAN row is still untouched (the P0 below).
   });
 
   it('item 20: a held-back row excluded lately, or not excluded at all, keeps its payload', async () => {

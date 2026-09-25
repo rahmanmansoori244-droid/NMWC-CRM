@@ -10,6 +10,8 @@
  * quarantined against itself.
  */
 import { prisma } from '@/lib/db';
+import type { Prisma } from '@prisma/client';
+import type { NewerUpload } from '@/lib/import-row-fix';
 
 export async function masterCollisionMaps(
   phones: string[],
@@ -40,4 +42,36 @@ export async function masterCollisionMaps(
     }
   }
   return { masterPhones, masterCrs };
+}
+
+/**
+ * For each customer code, the row in the NEWEST customer upload after
+ * `uploadedAt` that carries it. The batch page uses it to offer only
+ * "Exclude" on a row a newer upload has superseded, and the fix actions use it
+ * to refuse one — the same query, so the page never offers what the server
+ * refuses.
+ */
+export async function newerUploadsCarrying(
+  db: Prisma.TransactionClient | typeof prisma,
+  uploadedAt: Date,
+  codes: string[]
+): Promise<Map<string, NewerUpload>> {
+  const out = new Map<string, NewerUpload>();
+  if (codes.length === 0) return out;
+  const rows = await db.$queryRaw<
+    Array<{ code: string; filename: string; rowNumber: number; state: string; excluded: boolean }>
+  >`
+    SELECT DISTINCT ON (r."parsed"->>'custCode')
+           r."parsed"->>'custCode' AS "code", b."filename", r."rowNumber",
+           r."state"::text AS "state", (r."excludedAt" IS NOT NULL) AS "excluded"
+      FROM "ImportRow" r
+      JOIN "ImportBatch" b ON b."id" = r."batchId"
+     WHERE b."kind" = 'CUSTOMER'
+       AND b."uploadedAt" > ${uploadedAt}
+       AND r."parsed"->>'custCode' = ANY(${codes})
+     ORDER BY r."parsed"->>'custCode', b."uploadedAt" DESC, r."rowNumber"`;
+  for (const r of rows) {
+    out.set(r.code, { filename: r.filename, rowNumber: r.rowNumber, state: r.state, excluded: r.excluded });
+  }
+  return out;
 }
