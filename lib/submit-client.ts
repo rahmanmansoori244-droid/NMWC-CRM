@@ -21,8 +21,10 @@
 import type { ActionResult } from '@/lib/errors';
 import {
   alreadyReceivedMessage,
+  FIX_FIELDS_MESSAGE,
   MAINTENANCE_MESSAGE,
   newSubmissionId,
+  OFFLINE_AFTER_EARLIER_MESSAGE,
   OFFLINE_AFTER_UNCONFIRMED_MESSAGE,
   OFFLINE_MESSAGE,
   SIGNED_OUT_MESSAGE,
@@ -120,6 +122,10 @@ export async function postForm<T>(
  */
 export class SubmissionIds {
   private open: { id: string; fingerprint: string; uncertain: boolean } | null = null;
+  // A try went unanswered since the last answer — whatever payload it carried.
+  // Survives a new id: the salesman changing the form does not make the earlier
+  // send any less likely to have arrived.
+  private unansweredSinceAnswer = false;
 
   constructor(private readonly mint: () => string = newSubmissionId) {}
 
@@ -133,15 +139,27 @@ export class SubmissionIds {
 
   /** Call with every outcome: an answer spends the id; no answer keeps it for the retry. */
   settle(outcome: SubmitOutcome<unknown>): void {
-    if (outcome.kind === 'answered') this.open = null;
-    else if (outcome.kind === 'unconfirmed' && this.open) this.open.uncertain = true;
+    if (outcome.kind === 'answered') {
+      this.open = null;
+      this.unansweredSinceAnswer = false;
+    } else if (outcome.kind === 'unconfirmed') {
+      if (this.open) this.open.uncertain = true;
+      this.unansweredSinceAnswer = true;
+    }
   }
 
-  /** Whether a try with the open id went unanswered — it may have arrived. */
-  get uncertain(): boolean {
-    return this.open?.uncertain ?? false;
+  /**
+   * What may have arrived without an answer: 'this' — a try of the open id, so
+   * a retry is answered "Already received" if it landed; 'earlier' — a try of a
+   * payload changed since; 'none'.
+   */
+  get doubt(): SubmitDoubt {
+    if (this.open?.uncertain) return 'this';
+    return this.unansweredSinceAnswer ? 'earlier' : 'none';
   }
 }
+
+export type SubmitDoubt = 'this' | 'earlier' | 'none';
 
 /** What the salesman reads beside the button after a submit. */
 export type SubmitNotice =
@@ -150,19 +168,24 @@ export type SubmitNotice =
 
 /**
  * The notice for an outcome that is not a plain success. Returns null for a
- * first-time success (the form says its own "Submitted") and for an answered
- * error the form renders against its fields. `earlierUncertain`: a previous try
- * of this same payload got no answer (SubmissionIds.uncertain).
+ * first-time success (the form says its own "Submitted"). An answered error
+ * with fields says so beside the button; the fields say what. `doubt`: what may
+ * have arrived unanswered before this outcome (SubmissionIds.doubt).
  */
 export function noticeFor(
   outcome: SubmitOutcome<unknown>,
-  { now = new Date(), earlierUncertain = false }: { now?: Date; earlierUncertain?: boolean } = {}
+  { now = new Date(), doubt = 'none' }: { now?: Date; doubt?: SubmitDoubt } = {}
 ): SubmitNotice | null {
   switch (outcome.kind) {
     case 'offline':
       return {
         tone: 'failed',
-        text: earlierUncertain ? OFFLINE_AFTER_UNCONFIRMED_MESSAGE : OFFLINE_MESSAGE,
+        text:
+          doubt === 'this'
+            ? OFFLINE_AFTER_UNCONFIRMED_MESSAGE
+            : doubt === 'earlier'
+              ? OFFLINE_AFTER_EARLIER_MESSAGE
+              : OFFLINE_MESSAGE,
         retry: true,
       };
     case 'signedOut':
@@ -173,7 +196,7 @@ export function noticeFor(
       return { tone: 'failed', text: UNCONFIRMED_MESSAGE, retry: true };
     case 'answered': {
       const r = outcome.result;
-      if (!r.ok) return r.fields ? null : { tone: 'failed', text: r.message, retry: false };
+      if (!r.ok) return { tone: 'failed', text: r.fields ? FIX_FIELDS_MESSAGE : r.message, retry: false };
       const receipt = r.data as Partial<SubmitReceipt> | undefined;
       if (receipt?.replayed && receipt.state && receipt.editId) {
         const text = alreadyReceivedMessage(receipt as SubmitReceipt, now);
@@ -183,5 +206,35 @@ export function noticeFor(
       }
       return null;
     }
+  }
+}
+
+/**
+ * Whether a submission id landed as a new-customer request — asked by a form
+ * reloaded after a send that got no answer (the id was kept on the phone). The
+ * receipt, null when it did not land, or "noAnswer" when the question itself
+ * got none.
+ */
+export async function fetchCreateReceipt(
+  submissionId: string,
+  { timeoutMs = SUBMIT_TIMEOUT_MS }: { timeoutMs?: number } = {}
+): Promise<{ kind: 'answered'; receipt: SubmitReceipt | null } | { kind: 'noAnswer' }> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  try {
+    const res = await fetch(
+      `/api/forms/customer-create?submissionId=${encodeURIComponent(submissionId)}`,
+      { signal: abort.signal, credentials: 'same-origin', cache: 'no-store', redirect: 'manual' }
+    );
+    if (!res.ok || !(res.headers.get('content-type') ?? '').includes('application/json')) {
+      return { kind: 'noAnswer' };
+    }
+    const json = (await res.json()) as { ok?: unknown; data?: unknown };
+    if (json?.ok !== true) return { kind: 'noAnswer' };
+    return { kind: 'answered', receipt: (json.data as SubmitReceipt | null) ?? null };
+  } catch {
+    return { kind: 'noAnswer' };
+  } finally {
+    clearTimeout(timer);
   }
 }

@@ -1145,7 +1145,8 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(changed.ok).toBe(false);
     if (!changed.ok) {
       expect(changed.code).toBe('EDIT_LOCKED');
-      expect(changed.message).toMatch(/^Your changes sent at \d\d:\d\d already arrived and are waiting for approval/);
+      // The time is "10:42", or "25 Sept, 10:42" if this run crossed midnight Muscat.
+      expect(changed.message).toMatch(/^Your changes sent at (?:\d{1,2} \w+, )?\d\d:\d\d already arrived and are waiting for approval/);
     }
 
     // The same id for a different customer is refused, not answered with this receipt.
@@ -1244,7 +1245,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
       // A conflict with no field, so the form says it beside the button.
       expect(changed.code).toBe('REQUEST_ALREADY_SENT');
       expect(changed.fields).toBeUndefined();
-      expect(changed.message).toMatch(/^These photos are already in your draft saved at \d\d:\d\d\. Open it from My work/);
+      expect(changed.message).toMatch(/^These photos are already in your draft saved at (?:\d{1,2} \w+, )?\d\d:\d\d\. Open it from Work/);
     }
   });
 
@@ -1285,7 +1286,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     if (!changed.ok) {
       expect(changed.code).toBe('OPEN_EDIT_EXISTS');
       expect(changed.message).toMatch(
-        /^Your request to mark a branch closed, sent at \d\d:\d\d, already arrived and is waiting for review/
+        /^Your request to mark a branch closed, sent at (?:\d{1,2} \w+, )?\d\d:\d\d, already arrived and is waiting for review/
       );
     }
 
@@ -1299,7 +1300,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     if (!update.ok) {
       expect(update.code).toBe('EDIT_LOCKED');
       expect(update.message).toMatch(
-        /^Your request to mark a branch closed, sent at \d\d:\d\d, is still waiting for review, so these changes were NOT sent/
+        /^Your request to mark a branch closed, sent at (?:\d{1,2} \w+, )?\d\d:\d\d, is still waiting for review, so these changes were NOT sent/
       );
     }
   });
@@ -1335,5 +1336,48 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
       where: { entityType: 'CustomerEdit', entityId: editId, action: 'UPDATE' },
     });
     expect(updates).toBe(1);
+  });
+
+  it('a reactivation request retried with its id is answered, and written once', async () => {
+    // The third form in the owner's scope. Its receipt must match a
+    // reactivation (isReactivation: true) on this branch — or every lost-reply
+    // retry would read "confused with another request".
+    const react = await import('@/services/reactivations');
+    asSalesman();
+    const { customerId, branchId } = await lostReplyCustomer(`${sfx}016`);
+    await prisma.branch.update({
+      where: { id: branchId },
+      data: { status: 'CLOSED', lastStatusChangeAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) },
+    });
+    const evidence = await prisma.attachment.create({
+      data: {
+        kind: 'FREE',
+        r2Key: `2026/09/25/${ids.salesmanId}/FREE/${randomUUID()}.jpg`,
+        mimeType: 'image/jpeg',
+        bytes: 1000,
+        capturedById: ids.salesmanId,
+        capturedAt: new Date(),
+        branchExtraId: branchId,
+      },
+    });
+    ids.attachmentIds.push(evidence.id);
+    const reactivate = (submissionId: string) => {
+      const fd = new FormData();
+      fd.set('branchId', branchId);
+      fd.set('reason', 'Open again under the same owner.');
+      fd.set('attachmentId', evidence.id);
+      fd.set('submissionId', submissionId);
+      return react.requestReactivationAction(fd);
+    };
+    const sid = randomUUID();
+    const first = await reactivate(sid);
+    expect(first.ok, JSON.stringify(first)).toBe(true);
+    if (!first.ok) return;
+    expect(first.data).toMatchObject({ state: 'SUBMITTED', replayed: false });
+    const retry = await reactivate(sid);
+    expect(retry.ok && retry.data).toMatchObject({ editId: first.data.editId, state: 'SUBMITTED', replayed: true });
+    expect(await prisma.customerEdit.count({ where: { customerId } })).toBe(1);
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: first.data.editId } });
+    expect(row).toMatchObject({ isReactivation: true, submissionId: sid, branchId });
   });
 });

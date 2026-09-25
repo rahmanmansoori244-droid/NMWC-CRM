@@ -119,45 +119,59 @@ describe('shownTime', () => {
 });
 
 describe('the words for his own open request', () => {
-  const at = new Date('2026-09-25T06:42:00.000Z'); // 10:42 Muscat
+  // CLAUDE.md: a fixture that reads the real clock is never asserted against a
+  // literal. The helpers take `now`; every call here passes this one. (The first
+  // version read the real clock and went red at 00:00 Muscat the day it merged.)
+  const now = new Date('2026-09-25T10:00:00.000Z'); // 14:00 Muscat, 25 Sep
+  const at = new Date('2026-09-25T06:42:00.000Z'); // 10:42 Muscat, same day
   const update = { target: 'CUSTOMER' as const, isReactivation: false, branchId: null, submittedAt: at };
   const close = (branchId: string) => ({ target: 'BRANCH' as const, isReactivation: false, branchId, submittedAt: at });
   const reactivate = { target: 'BRANCH' as const, isReactivation: true, branchId: 'b1', submittedAt: at };
 
   it('the same request: it arrived', () => {
-    expect(ownOpenRequestMessage(update, { kind: 'update' })).toMatch(/^Your changes sent at 10:42 already arrived/);
-    expect(ownOpenRequestMessage(close('b1'), { kind: 'close', branchId: 'b1' })).toMatch(
+    expect(ownOpenRequestMessage(update, { kind: 'update' }, now)).toMatch(/^Your changes sent at 10:42 already arrived/);
+    expect(ownOpenRequestMessage(close('b1'), { kind: 'close', branchId: 'b1' }, now)).toMatch(
       /^Your request to mark a branch closed, sent at 10:42, already arrived/
     );
   });
 
   it('a different request: names what is waiting, and that THIS was not sent', () => {
-    expect(ownOpenRequestMessage(close('b1'), { kind: 'update' })).toBe(
+    expect(ownOpenRequestMessage(close('b1'), { kind: 'update' }, now)).toBe(
       'Your request to mark a branch closed, sent at 10:42, is still waiting for review, so these changes were NOT sent. Send them once that is decided.'
     );
-    expect(ownOpenRequestMessage(update, { kind: 'close', branchId: 'b1' })).toBe(
+    expect(ownOpenRequestMessage(update, { kind: 'close', branchId: 'b1' }, now)).toBe(
       'Your changes to this customer, sent at 10:42, are still waiting for approval, so this request was NOT sent. Send it once that is decided.'
     );
     // Same kind, another branch: not "it arrived".
-    expect(ownOpenRequestMessage(close('b2'), { kind: 'close', branchId: 'b1' })).toMatch(/NOT sent/);
-    expect(ownOpenRequestMessage(reactivate, { kind: 'close', branchId: 'b1' })).toMatch(
+    expect(ownOpenRequestMessage(close('b2'), { kind: 'close', branchId: 'b1' }, now)).toMatch(/NOT sent/);
+    expect(ownOpenRequestMessage(reactivate, { kind: 'close', branchId: 'b1' }, now)).toMatch(
       /^Your request to reactivate a branch, sent at 10:42, is still waiting/
     );
   });
 
+  it('on another day it names the day — so the clock it reads is the one it is given', () => {
+    const nextDay = new Date('2026-09-26T05:00:00.000Z');
+    expect(ownOpenRequestMessage(update, { kind: 'update' }, nextDay)).toMatch(/^Your changes sent at 25 Sept, 10:42/);
+    expect(ownPendingBanner(update, nextDay)).toMatch(/^Your changes sent at 25 Sept, 10:42/);
+  });
+
   it('never names an approver: a reactivation is a Manager’s, not "your supervisor’s"', () => {
     for (const m of [
-      ownOpenRequestMessage(update, { kind: 'update' }),
-      ownOpenRequestMessage(reactivate, { kind: 'reactivate', branchId: 'b1' }),
-      ownPendingBanner(update),
-      ownPendingBanner(reactivate),
+      ownOpenRequestMessage(update, { kind: 'update' }, now),
+      ownOpenRequestMessage(reactivate, { kind: 'reactivate', branchId: 'b1' }, now),
+      ownPendingBanner(update, now),
+      ownPendingBanner(reactivate, now),
     ]) {
       expect(m).not.toMatch(/supervisor|manager/i);
     }
   });
 
-  it('the edit page banner names what is waiting', () => {
-    expect(ownPendingBanner(update)).toMatch(/^Your changes sent at 10:42 arrived and are waiting for approval/);
-    expect(ownPendingBanner(close('b1'))).toMatch(/^Your request to mark a branch closed, sent at 10:42, is waiting for review/);
+  it('the edit page banner names what is waiting — and does not invite a draft its approval would replace', () => {
+    expect(ownPendingBanner(update, now)).toBe(
+      'Your changes sent at 10:42 arrived and are waiting for approval. You cannot submit again until they are decided.'
+    );
+    expect(ownPendingBanner(close('b1'), now)).toBe(
+      'Your request to mark a branch closed, sent at 10:42, is waiting for review. You cannot submit changes until it is decided.'
+    );
   });
 });

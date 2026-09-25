@@ -131,9 +131,10 @@ const KIND_PHRASE: Record<RequestKind, string> = {
  */
 export function ownOpenRequestMessage(
   open: { target: EditTarget; isReactivation: boolean; branchId: string | null; submittedAt: Date | null },
-  sending: { kind: RequestKind; branchId?: string }
+  sending: { kind: RequestKind; branchId?: string },
+  now: Date = new Date()
 ): string {
-  const at = open.submittedAt ? ` at ${omanWhen(open.submittedAt)}` : '';
+  const at = open.submittedAt ? ` at ${omanWhen(open.submittedAt, now)}` : '';
   const openKind = requestKindOf(open);
   const sameRequest = openKind === sending.kind && (openKind === 'update' || open.branchId === sending.branchId);
   if (sameRequest) {
@@ -149,16 +150,16 @@ export function ownOpenRequestMessage(
 /**
  * The edit page's banner when the customer's open request is the salesman's own
  * — after a lost reply, reloading the page is how he learns his submit landed.
- * It names what is waiting: a pending close is not "your changes".
+ * It names what is waiting: a pending close is not "your changes". It does not
+ * invite a draft: approving the pending changes replaces one saved meanwhile.
  */
-export function ownPendingBanner(open: {
-  target: EditTarget;
-  isReactivation: boolean;
-  submittedAt: Date | null;
-}): string {
-  const at = open.submittedAt ? ` at ${omanWhen(open.submittedAt)}` : '';
+export function ownPendingBanner(
+  open: { target: EditTarget; isReactivation: boolean; submittedAt: Date | null },
+  now: Date = new Date()
+): string {
+  const at = open.submittedAt ? ` at ${omanWhen(open.submittedAt, now)}` : '';
   const kind = requestKindOf(open);
   return kind === 'update'
-    ? `Your changes sent${at} arrived and are waiting for approval. You can save a draft, but cannot submit again until they are decided.`
-    : `Your ${KIND_PHRASE[kind]}, sent${at}, is waiting for review. You can save a draft, but cannot submit changes until it is decided.`;
+    ? `Your changes sent${at} arrived and are waiting for approval. You cannot submit again until they are decided.`
+    : `Your ${KIND_PHRASE[kind]}, sent${at}, is waiting for review. You cannot submit changes until it is decided.`;
 }

@@ -7,6 +7,8 @@
  */
 import { EditProcess, EditState, type Prisma } from '@prisma/client';
 import { ConflictError } from './errors';
+import { omanWhen } from './submission';
+import { shownTime } from './submission-replay';
 
 /**
  * Serialize concurrent submits/finalizes for the same normalized CR inside
@@ -72,9 +74,26 @@ export async function assertNoExactCreateDuplicate(
     regionIds: string[];
     excludeEditId?: string;
     includeOpenRequests: boolean;
+    /**
+     * Item 22: who is asking. When the open request in the way is theirs — a
+     * send whose reply was lost, then a reload and a rebuild — say so, and
+     * when it was sent, instead of "another request", which reads as someone
+     * else's.
+     */
+    callerId?: string;
   }
 ): Promise<void> {
   const openStates = [EditState.DRAFT, EditState.SUBMITTED, EditState.NEEDS_CORRECTION];
+  const openSelect = {
+    edit: { select: { submittedById: true, state: true, submittedAt: true, updatedAt: true } },
+  } as const;
+  const ownRequest = (
+    open: { edit: { submittedById: string; state: EditState; submittedAt: Date | null; updatedAt: Date } },
+    what: string
+  ) =>
+    args.callerId && open.edit.submittedById === args.callerId
+      ? `Your own new-customer request ${what}, ${open.edit.state === EditState.DRAFT ? 'saved as a draft' : 'sent'} at ${omanWhen(shownTime(open.edit))}, is already in progress — see Work.`
+      : null;
 
   if (args.crNumberNorm) {
     const liveCr = await tx.customer.findFirst({
@@ -97,12 +116,13 @@ export async function assertNoExactCreateDuplicate(
             ...(args.excludeEditId ? { id: { not: args.excludeEditId } } : {}),
           },
         },
-        select: { id: true },
+        select: openSelect,
       });
       if (openCr) {
         throw new ConflictError(
           'DUPLICATE_CR',
-          'Another new-customer request with this CR number is already in progress.'
+          ownRequest(openCr, 'with this CR number') ??
+            'Another new-customer request with this CR number is already in progress.'
         );
       }
     }
@@ -136,12 +156,13 @@ export async function assertNoExactCreateDuplicate(
             ...(args.excludeEditId ? { id: { not: args.excludeEditId } } : {}),
           },
         },
-        select: { id: true },
+        select: openSelect,
       });
       if (tripleOpen) {
         throw new ConflictError(
           'DUPLICATE_CUSTOMER',
-          'Another new-customer request for this shop (same name, phone and region) is already in progress.'
+          ownRequest(tripleOpen, 'for this shop (same name, phone and region)') ??
+            'Another new-customer request for this shop (same name, phone and region) is already in progress.'
         );
       }
     }

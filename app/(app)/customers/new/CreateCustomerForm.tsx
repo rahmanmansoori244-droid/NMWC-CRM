@@ -18,8 +18,14 @@ import { FormSection } from '@/components/nmwc/FormSection';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
-import { postForm, noticeFor, SubmissionIds, type SubmitNotice } from '@/lib/submit-client';
-import type { SubmitReceipt } from '@/lib/submission';
+import {
+  fetchCreateReceipt,
+  postForm,
+  noticeFor,
+  SubmissionIds,
+  type SubmitNotice,
+} from '@/lib/submit-client';
+import { alreadyReceivedMessage, submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
 
@@ -140,6 +146,11 @@ export function CreateCustomerForm({
   const lastWasDraftRef = useRef(false);
   // Set when a retry learns the request had already arrived: nothing to send.
   const [arrived, setArrived] = useState(false);
+  // Item 22: ids of sends from this never-saved form that got no answer. Kept
+  // in the phone copy, so a reload can ask the server whether one landed — the
+  // branches, points and photos never lived on the phone, and without the
+  // answer the form could only say "add them again" to a request already in.
+  const unansweredRef = useRef<string[]>([]);
 
   // A SUBMITTED request is read-only for the salesman until it is decided.
   const readOnly = initial?.state === 'SUBMITTED';
@@ -268,9 +279,51 @@ export function CreateCustomerForm({
       // Item 22: this form was never saved to the server (a server draft would
       // have been loaded instead), so nothing else was kept anywhere. The old
       // text said photos, GPS and branches were "kept on the server".
-      setInfo(
-        'Restored the details you typed on this phone. Branch details, GPS points and photos are not kept on the phone — add them again, then tap Save draft to keep everything.'
-      );
+      const RESTORED =
+        'Restored the details you typed on this phone. Branch details, GPS points and photos are not kept on the phone — add them again, then tap Save draft to keep everything.';
+      const unanswered: string[] = Array.isArray(d.unanswered)
+        ? d.unanswered.filter((x: unknown) => submissionIdSchema.safeParse(x).success)
+        : [];
+      if (unanswered.length === 0) {
+        setInfo(RESTORED);
+      } else {
+        // A send got no answer before this reload. Ask before inviting a rebuild.
+        unansweredRef.current = unanswered;
+        setInfo(
+          'Restored the details you typed on this phone. Your last send got no answer — checking whether it arrived…'
+        );
+        void (async () => {
+          let noAnswer = false;
+          for (const id of [...unanswered].reverse()) {
+            const r = await fetchCreateReceipt(id);
+            if (r.kind === 'noAnswer') {
+              noAnswer = true;
+              continue;
+            }
+            if (!r.receipt) continue;
+            // It landed. The request is on the server; the phone copy goes.
+            unansweredRef.current = [];
+            window.localStorage.removeItem(draftKey);
+            if (r.receipt.state === 'DRAFT') {
+              // A saved draft: open it, with its branches, points and photos.
+              window.location.replace(`/customers/new?edit=${r.receipt.editId}`);
+              return;
+            }
+            setArrived(true);
+            setInfo(`Your last send arrived after all. ${alreadyReceivedMessage(r.receipt)}`);
+            return;
+          }
+          if (noAnswer) {
+            setInfo(
+              'Restored the details you typed on this phone. Your last send got no answer and may have arrived — when you have signal, check Work before adding photos again.'
+            );
+            return;
+          }
+          // None landed: the form is all there is.
+          unansweredRef.current = [];
+          setInfo(RESTORED);
+        })();
+      }
     } catch {
       /* ignore */
     }
@@ -278,7 +331,9 @@ export function CreateCustomerForm({
   }, [draftKey, readOnly, initial]);
 
   useEffect(() => {
-    if (readOnly) return;
+    // Item 22: nothing is written once the request is in — a typo fixed after
+    // "Already received" must not refill the never-saved copy with this shop.
+    if (readOnly || arrived) return;
     const handle = setTimeout(() => {
       if (typeof window === 'undefined') return;
       window.localStorage.setItem(
@@ -297,12 +352,14 @@ export function CreateCustomerForm({
           creditLimit,
           termDays,
           savedAt: Date.now(),
+          unanswered: unansweredRef.current,
         })
       );
     }, 500);
     return () => clearTimeout(handle);
   }, [
     readOnly,
+    arrived,
     draftKey,
     legalName,
     paymentTerms,
@@ -408,9 +465,25 @@ export function CreateCustomerForm({
         const outcome = await postForm<SubmitReceipt>('customer-create', { ...payload, submissionId });
         const ids = idsRef.current!;
         ids.settle(outcome);
-        // null for a first-time success and for field errors, which say
-        // themselves; every other outcome is said beside the button.
-        setNotice(noticeFor(outcome, { earlierUncertain: ids.uncertain }));
+        // null for a first-time success; every other outcome is said beside
+        // the button.
+        setNotice(noticeFor(outcome, { doubt: ids.doubt }));
+        if (outcome.kind === 'unconfirmed' && !editId) {
+          // Item 22: on the phone, so a reload can ask whether it landed.
+          unansweredRef.current = [
+            ...unansweredRef.current.filter((x) => x !== submissionId),
+            submissionId,
+          ].slice(-3);
+          try {
+            const saved = JSON.parse(window.localStorage.getItem(draftKey) ?? '{}');
+            window.localStorage.setItem(
+              draftKey,
+              JSON.stringify({ ...saved, unanswered: unansweredRef.current })
+            );
+          } catch {
+            /* a full or blocked storage only loses the reload check */
+          }
+        }
         if (outcome.kind !== 'answered') return;
         const result = outcome.result;
         if (!result.ok) {
@@ -461,8 +534,9 @@ export function CreateCustomerForm({
           // server action's did), so My work could still list this as a draft.
           setArrived(true);
           setNotice({ tone: 'received', text: '✓ Submitted for approval. It arrived — nothing more to do.' });
-          router.replace('/work');
-          router.refresh();
+          // A URL the router cache cannot hold (see EnrichmentForm): one fresh
+          // fetch of Work, not a cached copy still listing this as a draft.
+          router.replace(`/work?sent=${res.editId}`);
         }
       } finally {
         submitLockRef.current = false;

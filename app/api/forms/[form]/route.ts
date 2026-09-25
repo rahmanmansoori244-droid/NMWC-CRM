@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
+import { EditProcess } from '@prisma/client';
+import { prisma } from '@/lib/db';
+import { findReceipt } from '@/lib/submission-replay';
+import { submissionIdSchema } from '@/lib/submission';
+import { AppError } from '@/lib/errors';
 import { submitEditAction } from '@/services/edits';
 import { submitCreateAction } from '@/services/creates';
 import { markBranchClosedAction, requestReactivationAction } from '@/services/reactivations';
@@ -83,4 +88,33 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ form: stri
     return refuse(400, 'INVALID_JSON', 'The request was not a JSON object.');
   }
   return NextResponse.json(await run(body as Json));
+}
+
+/**
+ * Item 22: did this submission id land as a new-customer request? Asked by the
+ * new-customer form when it reloads after a send that got no answer: its
+ * branches, points and photos never lived on the phone, so without the answer
+ * it could only tell the salesman to rebuild a request that may already be in.
+ * Only the caller's own requests are looked up; a receipt of another kind is
+ * "not landed as this", never an error. The update form needs no such thing —
+ * its page says on reload whether his edit is pending.
+ */
+export async function GET(req: NextRequest, ctx: { params: Promise<{ form: string }> }) {
+  const { form } = await ctx.params;
+  if (form !== 'customer-create') return refuse(404, 'NOT_FOUND', 'Unknown form.');
+  const session = await auth();
+  if (!session?.user) return refuse(401, 'SIGNED_OUT', 'You are signed out.');
+  const submissionId = submissionIdSchema.safeParse(req.nextUrl.searchParams.get('submissionId')).data;
+  if (!submissionId) return refuse(400, 'INVALID_ID', 'A submission id is required.');
+  try {
+    const receipt = await findReceipt(prisma, session.user.id, submissionId, {
+      process: EditProcess.CREATE,
+    });
+    return NextResponse.json({ ok: true, data: receipt });
+  } catch (err) {
+    if (err instanceof AppError && err.code === 'SUBMISSION_ID_REUSED') {
+      return NextResponse.json({ ok: true, data: null });
+    }
+    throw err;
+  }
 }

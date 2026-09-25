@@ -74,9 +74,10 @@ export function alreadyReceivedMessage(r: SubmitReceipt, now: Date = new Date())
     case 'APPROVED':
       return `✓ Already received${at}, and approved since. Nothing more to do.`;
     case 'NEEDS_CORRECTION':
-      return `Already received${at}, and sent back for correction since. Open My work to see why.`;
+      return `Already received${at}, and sent back for correction since. Open Work to see why.`;
     case 'REJECTED':
-      return `Already received${at}, and rejected since. Open My work to see why.`;
+      // No screen shows a salesman a rejection's reason, so none is promised.
+      return `Already received${at}, and rejected since — it was not applied.`;
   }
 }
 
@@ -96,6 +97,15 @@ export const OFFLINE_MESSAGE =
 export const OFFLINE_AFTER_UNCONFIRMED_MESSAGE =
   'No signal — this try was not sent, but the one before may have arrived. Tap Try again when you have signal: if it arrived you will see “Already received”.';
 
+/**
+ * This try did not leave the phone, and it is not the payload that went
+ * unanswered — the salesman changed the form since. That earlier send may still
+ * have arrived; a retry of THIS payload cannot answer "Already received" for it,
+ * so none is promised: the app says what it finds.
+ */
+export const OFFLINE_AFTER_EARLIER_MESSAGE =
+  'No signal — this was not sent, but an earlier try may have arrived. Tap Try again when you have signal and the app will say what it finds.';
+
 /** Sent, but no answer came back: it may or may not have arrived. */
 export const UNCONFIRMED_MESSAGE =
   'No answer — we cannot tell if it arrived. Your changes are still here. Tap Try again: if it arrived you will see “Already received”; it is never sent twice.';
@@ -108,6 +118,13 @@ export const UNCONFIRMED_MESSAGE =
  */
 export const SIGNED_OUT_MESSAGE =
   'You need to sign in again, so this was not sent. Keep this page open, sign in in another tab, then come back and tap Try again.';
+
+/**
+ * The server read it and refused fields. The fields say so where they are, above
+ * the sticky bar and often off-screen; this says it where the thumb is, so the
+ * red notice from a previous try does not simply vanish and read as success.
+ */
+export const FIX_FIELDS_MESSAGE = 'Not sent — fix what is marked in red, then submit again.';
 
 /** The app was closed for maintenance: the request was turned away unread. */
 export const MAINTENANCE_MESSAGE =

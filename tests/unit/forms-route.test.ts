@@ -13,8 +13,10 @@ const h = vi.hoisted(() => ({
   create: vi.fn(),
   close: vi.fn(),
   reactivate: vi.fn(),
+  findUnique: vi.fn(),
   signedIn: true,
 }));
+vi.mock('@/lib/db', () => ({ prisma: { customerEdit: { findUnique: h.findUnique } } }));
 vi.mock('@/lib/auth', () => ({
   auth: async () => (h.signedIn ? { user: { id: 'u1', role: 'SALESMAN', username: 'c4' } } : null),
 }));
@@ -25,7 +27,7 @@ vi.mock('@/services/reactivations', () => ({
   requestReactivationAction: h.reactivate,
 }));
 
-import { POST } from '@/app/api/forms/[form]/route';
+import { GET, POST } from '@/app/api/forms/[form]/route';
 
 const HOST = 'nmwc.example';
 function post(form: string, body: unknown, headers: Record<string, string> = {}) {
@@ -40,6 +42,7 @@ function post(form: string, body: unknown, headers: Record<string, string> = {})
 const ACTIONS = [h.edit, h.create, h.close, h.reactivate];
 beforeEach(() => {
   h.signedIn = true;
+  h.findUnique.mockReset().mockResolvedValue(null);
   for (const f of ACTIONS) f.mockReset().mockResolvedValue({ ok: true, data: { editId: 'e1' } });
 });
 
@@ -118,5 +121,59 @@ describe('POST /api/forms/[form]', () => {
   it('lets a programmer error propagate (500, reported) instead of answering', async () => {
     h.edit.mockRejectedValue(new Error('bug'));
     await expect(post('customer-edit', {})).rejects.toThrow('bug');
+  });
+});
+
+describe('GET /api/forms/customer-create?submissionId= — did a lost send land?', () => {
+  const sid = '3f1c1d2e-7a4b-4c5d-9e8f-0a1b2c3d4e5f';
+  const get = (form: string, query: string) =>
+    GET(new NextRequest(`https://${HOST}/api/forms/${form}${query}`, { headers: { host: HOST } }), {
+      params: Promise.resolve({ form }),
+    });
+  const row = {
+    id: 'e1',
+    state: 'SUBMITTED',
+    process: 'CREATE',
+    target: 'CUSTOMER',
+    customerId: null,
+    branchId: null,
+    isReactivation: false,
+    submittedAt: new Date('2026-09-25T06:42:00.000Z'),
+    updatedAt: new Date('2026-09-25T06:42:00.000Z'),
+  };
+
+  it("answers with the caller's own receipt", async () => {
+    h.findUnique.mockResolvedValue(row);
+    const res = await get('customer-create', `?submissionId=${sid}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      data: { editId: 'e1', state: 'SUBMITTED', submittedAt: '2026-09-25T06:42:00.000Z', replayed: true },
+    });
+    // Looked up among the SIGNED-IN user's requests only.
+    expect(h.findUnique.mock.calls[0]![0].where).toEqual({
+      submittedById_submissionId: { submittedById: 'u1', submissionId: sid },
+    });
+  });
+
+  it('not landed: null', async () => {
+    const res = await get('customer-create', `?submissionId=${sid}`);
+    expect(await res.json()).toEqual({ ok: true, data: null });
+  });
+
+  it('an id that landed as another kind of request is "not landed as this", never an error', async () => {
+    h.findUnique.mockResolvedValue({ ...row, process: 'UPDATE' });
+    const res = await get('customer-create', `?submissionId=${sid}`);
+    expect(await res.json()).toEqual({ ok: true, data: null });
+  });
+
+  it('refuses the signed-out, a missing or malformed id, and any other form', async () => {
+    h.signedIn = false;
+    expect((await get('customer-create', `?submissionId=${sid}`)).status).toBe(401);
+    h.signedIn = true;
+    expect((await get('customer-create', '')).status).toBe(400);
+    expect((await get('customer-create', '?submissionId=not-a-uuid')).status).toBe(400);
+    expect((await get('customer-edit', `?submissionId=${sid}`)).status).toBe(404);
+    expect(h.findUnique).not.toHaveBeenCalled();
   });
 });

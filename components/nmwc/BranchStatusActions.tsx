@@ -62,7 +62,7 @@ export function BranchStatusActions({
       );
       const ids = idsRef.current!;
       ids.settle(outcome);
-      const said = noticeFor(outcome, { earlierUncertain: ids.uncertain });
+      const said = noticeFor(outcome, { doubt: ids.doubt });
       if (outcome.kind !== 'answered' || !outcome.result.ok || said?.tone === 'failed') {
         // No answer, a refusal, or "it arrived, and was sent back since":
         // kept in view with the form.

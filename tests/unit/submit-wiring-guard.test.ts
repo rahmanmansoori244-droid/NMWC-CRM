@@ -65,8 +65,18 @@ describe('every submit path answers a replay before doing anything else', () => 
     expect(work, `the work does not run through answerIfLanded(${once})`).toBeGreaterThan(-1);
     expect(replay).toBeLessThan(work);
     expect(outer, 'real work before the receipt').not.toMatch(/checkLimit\(|prisma\.branch\.findFirst\(/);
-    // The id is stored on the row the work writes, or a retry can never find it.
-    expect(fnBody(s, once)).toMatch(/submissionId[,:]/);
+    // The id is stored on every CustomerEdit the work writes, or a retry can
+    // never find it. Counted in the BODY: the signature's own
+    // "submissionId: string | undefined" once satisfied a looser check alone
+    // (post-merge review of b7d9041).
+    const onceText = fnBody(s, once);
+    const bodyStart = onceText.indexOf('): Promise<SubmitReceipt> {');
+    expect(bodyStart, `${once} signature`).toBeGreaterThan(-1);
+    const body = onceText.slice(bodyStart);
+    const writes = (body.match(/customerEdit\.(create|updateMany)\(/g) ?? []).length;
+    const idLines = (body.match(/^\s+submissionId(,|: )/gm) ?? []).length;
+    expect(writes, 'CustomerEdit writes').toBeGreaterThan(0);
+    expect(idLines, 'CustomerEdit writes that carry the submission id').toBeGreaterThanOrEqual(writes);
   });
 
   it('the route serves exactly the forms the client can name', () => {

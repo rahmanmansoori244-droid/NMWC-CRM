@@ -390,7 +390,7 @@ export function EnrichmentForm({
         ids.settle(outcome);
         // null for a first-time success and for field errors, which say
         // themselves; every other outcome is said beside the button.
-        setNotice(noticeFor(outcome, { earlierUncertain: ids.uncertain }));
+        setNotice(noticeFor(outcome, { doubt: ids.doubt }));
         if (outcome.kind !== 'answered') return;
         const result = outcome.result;
         if (!result.ok) {
@@ -415,7 +415,11 @@ export function EnrichmentForm({
           // guide promises — no longer deleted by a successful save.
           setNotice({
             tone: 'received',
-            text: '✓ Draft saved. It stays on this phone until you submit.',
+            // With his earlier changes still pending, approving them replaces
+            // this draft (lib/enrichment-draft.ts) — say so now, not after.
+            text: canSubmit
+              ? '✓ Draft saved. It stays on this phone until you submit.'
+              : '✓ Draft saved on this phone. If the changes already waiting are approved first, they replace it.',
           });
           return;
         }
@@ -432,12 +436,12 @@ export function EnrichmentForm({
               : '✓ Submitted for approval. It arrived — nothing more to do.',
         });
         // UXI-005: router.replace (not push) so Back doesn't return to a
-        // stale, fully-populated form that encourages a duplicate submit. The
-        // refresh: revalidatePath in a route handler does not clear the
-        // browser's router cache (a server action's did), so without it a page
-        // seen in the last 30 s comes back showing the old values.
-        router.replace(`/customers/${customer.id}`);
-        router.refresh();
+        // stale, fully-populated form that encourages a duplicate submit. A URL
+        // the router cache cannot hold: revalidatePath in a route handler does
+        // not clear the browser's cache (a server action's did), so the bare
+        // path could come back with the old values — and a refresh on top would
+        // be a second fetch on weak signal. The page ignores `sent`.
+        router.replace(`/customers/${customer.id}?sent=${res.editId}`);
       } finally {
         submitLockRef.current = false;
       }

@@ -28,8 +28,17 @@ vi.mock('@/components/nmwc/GpsCaptureButton', () => ({ GpsCaptureButton: () => <
 import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
 import { EnrichmentForm } from '@/app/(app)/customers/[id]/edit/EnrichmentForm';
 import { enrichmentBase } from '@/lib/enrichment-draft';
+import { CreateCustomerForm } from '@/app/(app)/customers/new/CreateCustomerForm';
+import {
+  FIX_FIELDS_MESSAGE,
+  OFFLINE_AFTER_EARLIER_MESSAGE,
+  submissionIdSchema,
+} from '@/lib/submission';
 
-type Sent = { url: string; body: Record<string, unknown> };
+/** A real v4 id: a comparison of two missing ids (undefined === undefined) proves nothing. */
+const isSubmissionId = (v: unknown) => submissionIdSchema.safeParse(v).success;
+
+type Sent = { url: string; method: string; body: Record<string, unknown> };
 let sent: Sent[] = [];
 let replies: Array<() => Promise<Response>> = [];
 const answer = (body: unknown) => async () =>
@@ -43,8 +52,8 @@ beforeEach(() => {
   replies = [];
   for (const f of Object.values(router)) f.mockReset();
   window.localStorage.clear();
-  vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
-    sent.push({ url, body: JSON.parse(String(init.body)) });
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
+    sent.push({ url, method: init.method ?? 'GET', body: init.body ? JSON.parse(String(init.body)) : {} });
     const next = replies.shift();
     if (!next) throw new Error('no reply queued');
     return next();
@@ -53,7 +62,14 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
+
+/** No network interface at all: postForm reports "offline" (nothing left the phone). */
+const goOffline = () => {
+  vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
+  replies.push(noAnswer);
+};
 
 describe('close / reactivate', () => {
   it('no answer, then Try again: the same route and the same id; "Already received" closes the form', async () => {
@@ -76,6 +92,7 @@ describe('close / reactivate', () => {
 
     expect(sent.map((s) => s.url)).toEqual(['/api/forms/branch-close', '/api/forms/branch-close']);
     expect(sent[0]!.body).toMatchObject({ branchId: 'b1', reason: 'Shop shut for good.', attachmentId: 'att-evidence' });
+    expect(isSubmissionId(sent[0]!.body.submissionId)).toBe(true);
     expect(sent[1]!.body.submissionId).toBe(sent[0]!.body.submissionId);
     expect(screen.queryByRole('button', { name: 'Submit closure' })).toBeNull(); // form closed
     expect(router.refresh).toHaveBeenCalled();
@@ -166,6 +183,7 @@ describe('the customer update form', () => {
 
     expect(sent.map((s) => s.url)).toEqual(['/api/forms/customer-edit', '/api/forms/customer-edit']);
     expect(sent.map((s) => s.body.isDraft)).toEqual([true, true]);
+    expect(isSubmissionId(sent[0]!.body.submissionId)).toBe(true);
     expect(sent[1]!.body.submissionId).toBe(sent[0]!.body.submissionId);
     // The owner's call: a saved draft stays on the phone.
     expect(window.localStorage.getItem(draftKey)).not.toBeNull();
@@ -203,16 +221,24 @@ describe('the customer update form', () => {
     expect(screen.getByText(/older than the latest server changes/)).toBeTruthy();
   });
 
-  it('a first-time submit is said beside the button before it moves on, and refreshes what it moves to', async () => {
+  it('a first-time submit is said beside the button before it moves on, to a page the cache cannot hold', async () => {
     renderForm();
+    // Let the mount-time autosave write the phone copy first — else the "cleared"
+    // check below passes whether or not the submit clears it (post-merge review).
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    expect(window.localStorage.getItem(draftKey)).not.toBeNull();
     replies.push(
       answer({ ok: true, data: { editId: 'e1', state: 'APPROVED', submittedAt: '2026-09-25T06:42:00.000Z', replayed: false } })
     );
     fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('✓ Saved (auto-approved as MANAGER).'));
     expect(screen.getByRole('button', { name: 'Sent ✓' })).toBeTruthy();
-    expect(router.replace).toHaveBeenCalledWith('/customers/cust1');
-    expect(router.refresh).toHaveBeenCalled();
+    // A fresh URL, so the one navigation fetches fresh data — not a cached page
+    // plus a second full refresh on weak signal.
+    expect(router.replace).toHaveBeenCalledWith('/customers/cust1?sent=e1');
+    expect(router.refresh).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(draftKey)).toBeNull();
   });
 
@@ -226,5 +252,105 @@ describe('the customer update form', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]!.body.submissionId).not.toBe(sent[0]!.body.submissionId);
+  });
+
+  it('after "No answer", a changed form sent while offline keeps the doubt about the earlier send', async () => {
+    renderForm();
+    replies.push(noAnswer);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+    await screen.findByRole('button', { name: 'Try again' });
+    fireEvent.change(screen.getByDisplayValue('Said'), { target: { value: 'Said Al Harthy' } });
+    goOffline();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(OFFLINE_AFTER_EARLIER_MESSAGE));
+    expect(screen.getByRole('alert').textContent).not.toMatch(/^No signal — nothing was sent/);
+  });
+
+  it('a field error is said beside the button — the red notice of the last try does not just vanish', async () => {
+    renderForm();
+    replies.push(noAnswer);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for approval ▶' }));
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+    replies.push(
+      answer({ ok: false, code: 'VALIDATION_FAILED', message: 'x', fields: { 'customer.primaryPhone': 'Enter a valid Oman number.' } })
+    );
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(FIX_FIELDS_MESSAGE));
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.getByText('Enter a valid Oman number.')).toBeTruthy();
+  });
+
+  it('with his changes already pending, "Draft saved" says approval of them replaces it', async () => {
+    render(
+      <EnrichmentForm
+        customer={customer}
+        channels={[]}
+        lockName
+        lockCr={false}
+        userRole="MANAGER"
+        canSubmit={false}
+        sessionUserId="u1"
+        gate="CORE"
+      />
+    );
+    replies.push(answer({ ok: true, data: { editId: 'd1', state: 'DRAFT', submittedAt: null, replayed: false } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toBe(
+        '✓ Draft saved on this phone. If the changes already waiting are approved first, they replace it.'
+      )
+    );
+  });
+});
+
+describe('the new-customer form', () => {
+  const newKey = 'nmwc:create:u1:new';
+  const sid = '3f1c1d2e-7a4b-4c5d-9e8f-0a1b2c3d4e5f';
+  const renderCreate = () => render(<CreateCustomerForm channels={[]} initial={null} sessionUserId="u1" />);
+  const seed = (extra: Record<string, unknown> = {}) =>
+    window.localStorage.setItem(newKey, JSON.stringify({ legalName: 'Blue Sea Cafe', crNumber: '7654321', ...extra }));
+
+  it('a send with no answer is remembered on the phone, so a reload can ask', async () => {
+    renderCreate();
+    fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe' } });
+    replies.push(noAnswer);
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await screen.findByRole('button', { name: 'Try again' });
+    const stored = JSON.parse(window.localStorage.getItem(newKey)!);
+    expect(stored.unanswered).toEqual([sent[0]!.body.submissionId]);
+    expect(isSubmissionId(stored.unanswered[0])).toBe(true);
+  });
+
+  it('reloaded after a send that got no answer: it asks, and says the send arrived', async () => {
+    seed({ unanswered: [sid] });
+    replies.push(answer({ ok: true, data: { editId: 'e1', state: 'SUBMITTED', submittedAt: '2026-09-25T06:42:00.000Z', replayed: true } }));
+    renderCreate();
+    await waitFor(() => expect(screen.getByText(/^Your last send arrived after all\. ✓ Already received at/)).toBeTruthy());
+    expect(sent.map((x) => `${x.method} ${x.url}`)).toEqual([`GET /api/forms/customer-create?submissionId=${sid}`]);
+    // The request is on the server: the phone copy goes, and nothing is sent again.
+    expect(window.localStorage.getItem(newKey)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Sent ✓' })).toBeTruthy();
+    // …and a typo fixed now does not refill the never-saved copy with this shop.
+    fireEvent.change(screen.getByLabelText(/Legal name/), { target: { value: 'Blue Sea Cafe (fixed)' } });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    expect(window.localStorage.getItem(newKey)).toBeNull();
+  });
+
+  it('reloaded, and the send did not land: the usual restore — rebuild what the phone did not keep', async () => {
+    seed({ unanswered: [sid] });
+    replies.push(answer({ ok: true, data: null }));
+    renderCreate();
+    await waitFor(() => expect(screen.getByText(/^Restored the details you typed on this phone\. Branch details/)).toBeTruthy());
+    expect(screen.getByDisplayValue('Blue Sea Cafe')).toBeTruthy();
+  });
+
+  it('reloaded with no signal to ask: says the send may have arrived, before inviting a rebuild', async () => {
+    seed({ unanswered: [sid] });
+    replies.push(noAnswer);
+    renderCreate();
+    await waitFor(() => expect(screen.getByText(/Your last send got no answer and may have arrived/)).toBeTruthy());
+    expect(screen.getByDisplayValue('Blue Sea Cafe')).toBeTruthy();
   });
 });

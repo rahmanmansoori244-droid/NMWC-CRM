@@ -357,6 +357,7 @@ async function submitCreateOnce(
         regionIds: [route.regionId],
       });
       await assertNoExactCreateDuplicate(tx, {
+        callerId: session.id,
         crNumberNorm,
         legalName: c.legalName,
         primaryPhoneNorm,
@@ -574,7 +575,7 @@ async function photoClaimedConflict(
   return new ConflictError(
     'REQUEST_ALREADY_SENT',
     other.state === EditState.DRAFT
-      ? `These photos are already in your draft saved at ${when}. Open it from My work to carry on — anything you changed since was not saved.`
-      : `This request already arrived at ${when} — see My work. Anything you changed since was not sent.`
+      ? `These photos are already in your draft saved at ${when}. Open it from Work to carry on — anything you changed since was not saved.`
+      : `This request already arrived at ${when} — see Work. Anything you changed since was not sent.`
   );
 }
