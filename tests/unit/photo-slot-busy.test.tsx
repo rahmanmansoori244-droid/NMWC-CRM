@@ -108,7 +108,9 @@ describe('PhotoCaptureSlot onBusyChange', () => {
     const view = render(<PhotoCaptureSlot kind="SHOP" onBusyChange={(b) => calls.push(b)} />);
     pick(view.container);
     const retry = await screen.findByRole('button', { name: /Retry upload/ });
-    expect(calls).toEqual([true, false]);
+    // The slot reports from an effect, which React runs AFTER the render that
+    // shows "Retry upload" — asserting at once raced it (red on CI, 2026-09-26).
+    await waitFor(() => expect(calls).toEqual([true, false]));
     fireEvent.click(retry);
     await waitFor(() => expect(calls).toEqual([true, false, true, false]));
   });
