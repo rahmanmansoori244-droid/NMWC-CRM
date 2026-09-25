@@ -1128,7 +1128,7 @@ const STEWARD_EN: Guide = {
           html: 'Pick filters: region(s), route(s), status, payment terms (cash / credit), completeness threshold (e.g. only records ≥ 80% complete), updated since.',
         },
         {
-          html: 'Click <strong>Download .xlsx</strong> — one row per branch in the import shape, so it can be re-uploaded after editing. <strong>Download all (no filters)</strong> gives the whole master (up to 25,000 rows).',
+          html: 'Click <strong>Download .xlsx</strong> — one row per branch in the import shape, so it can be re-uploaded after editing. <strong>Download all (no filters)</strong> gives the whole master (up to 60,000 rows in one file).',
         },
         {
           html: '<strong>Field-update report:</strong> in the amber box pick the window (from / until) and click <strong>Download field-update report</strong>. Sheet <em>Customers</em> is the same master with every cell changed by an approved salesman edit in the window in <strong>yellow</strong> (hover for was → now, by, when), pending proposals in <strong>orange</strong>, photos added in yellow; sheet <em>Changes</em> lists every change, <em>By salesman</em> the totals, <em>Legend</em> the colours. Unhighlighted cells were not touched.',

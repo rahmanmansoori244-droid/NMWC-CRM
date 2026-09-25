@@ -5,7 +5,8 @@ import { Role, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
-import { buildWorkbook } from '@/lib/excel';
+import { buildWorkbookStreamed } from '@/lib/excel';
+import { CUSTOMER_MASTER_COLUMNS, customerMasterRows } from '@/lib/customer-master-rows';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 async function requireExport() {
@@ -22,6 +23,9 @@ async function requireExport() {
   return session.user;
 }
 
+/** Item 28: the largest export one file may hold — see the count check in buildCustomerExport. */
+const EXPORT_ROW_CEILING = 60_000;
+
 export type ExportFilters = {
   regionIds?: string[];
   routeIds?: string[];
@@ -33,8 +37,12 @@ export type ExportFilters = {
 };
 
 /**
- * Build the Excel workbook in memory and return its bytes.
- * Synchronous — fits comfortably in a serverless invocation for our scale (~3k rows).
+ * The customer master, one row per branch, as .xlsx bytes.
+ *
+ * Benchmark item 28: this was capped at 25,000 rows with the master at 20,596,
+ * because it held every row and every cell in memory (~1 GB at 25k). Rows are
+ * now read in keyset pages and written through the streaming workbook writer,
+ * so memory is one page plus the finished file. See EXPORT_ROW_CEILING.
  */
 export async function buildCustomerExport(filters: ExportFilters) {
   const me = await requireExport();
@@ -103,74 +111,24 @@ export async function buildCustomerExport(filters: ExportFilters) {
   }
   if (filters.updatedSince) customerWhere.updatedAt = { gte: filters.updatedSince };
 
-  // F-16: hard cap rows. The go-live master is ~20k branches (one per Timix
-  // customer-branch), so the old 10k cap refused the Steward's "Download all".
-  // 25k × ~35 columns builds in a few seconds and well inside the 60s function
-  // budget; anything bigger needs the streaming path (v1.1).
-  const EXPORT_ROW_CAP = 25000;
-  const totalCount = await prisma.branch.count({
-    where: { ...branchWhere, customer: customerWhere },
-  });
-  if (totalCount > EXPORT_ROW_CAP) {
+  // Item 28: the ceiling is what has been MEASURED to build inside the function's
+  // 60 s budget on this platform — 60,000 rows in 13 s at 637 MB (2026-09-25),
+  // three times the 20,596-row master — not a guess. Beyond it, an export needs a
+  // background job (owner decision: a stored export is a new copy of PII at rest).
+  const where = { ...branchWhere, customer: customerWhere };
+  const totalCount = await prisma.branch.count({ where });
+  if (totalCount > EXPORT_ROW_CEILING) {
     throw new ForbiddenError(
-      `Export too large: ${totalCount} rows. Apply more filters to narrow the result (max ${EXPORT_ROW_CAP}).`
+      `Export too large: ${totalCount} rows. One file holds up to ${EXPORT_ROW_CEILING.toLocaleString('en-US')} rows — filter by region or route and export in parts.`
     );
   }
 
-  // We export one row per branch (mirrors import shape)
-  const rows = await prisma.branch.findMany({
-    where: { ...branchWhere, customer: customerWhere },
-    orderBy: [{ regionId: 'asc' }, { branchCode: 'asc' }],
-    take: EXPORT_ROW_CAP,
-    include: {
-      customer: {
-        include: { channel: true, subChannel: true },
-      },
-      region: true,
-      route: true,
-      shopPhoto: { select: { id: true } },
-      signboardPhoto: { select: { id: true } },
-    },
-  });
-
-  const exportRows = rows.map((b) => ({
-    cust_code: b.customer.nmwcCode,
-    cust_name: b.customer.legalName,
-    payment_terms: b.customer.paymentTerms,
-    cr_no: b.customer.crNumber ?? '',
-    cr_photo: b.customer.crPhotoId ? 'yes' : '',
-    branch_code: b.branchCode,
-    branch_name: b.branchName,
-    sales_region: b.region.name,
-    region_code: b.region.code,
-    route: b.route.code,
-    address: b.address,
-    area_description: b.areaDescription ?? '',
-    phone: b.customer.primaryPhone ?? '',
-    alt_phone: b.customer.altPhone ?? '',
-    contact_person: b.customer.contactPerson ?? '',
-    contact_role: b.customer.contactRole ?? '',
-    channel: b.customer.channel?.label ?? '',
-    sub_channel: b.customer.subChannel?.label ?? '',
-    day_of_visit: b.dayOfVisit ?? '',
-    opening_hours: b.openingHours ?? '',
-    delivery_window: b.deliveryWindow ?? '',
-    gps_lat: b.gpsLat ?? '',
-    gps_lng: b.gpsLng ?? '',
-    gps_captured_at: b.gpsCapturedAt?.toISOString() ?? '',
-    coolers: b.coolersCount,
-    stands: b.standsCount,
-    empty_bottles: b.emptyBottlesCount,
-    shop_photo: b.shopPhoto ? 'yes' : '',
-    signboard_photo: b.signboardPhoto ? 'yes' : '',
-    customer_status: b.customer.status,
-    branch_status: b.status,
-    completeness_pct: b.customer.completenessScore,
-    last_edited_at: b.updatedAt.toISOString(),
-  }));
-
-  const wb = await buildWorkbook(exportRows, 'Customer Master');
-  const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
+  // One row per branch (mirrors the import shape), read a page at a time.
+  const { bytes, rowCount } = await buildWorkbookStreamed(
+    CUSTOMER_MASTER_COLUMNS,
+    customerMasterRows(where),
+    'Customer Master'
+  );
   const stamp = new Date().toISOString().slice(0, 10);
 
   // DG-06/07: no longer best-effort. For a read-only export the AuditLog row is
@@ -187,13 +145,14 @@ export async function buildCustomerExport(filters: ExportFilters) {
     action: 'EXPORT',
     entityType: 'Export',
     entityId: stamp,
-    reason: `customers ${exportRows.length}`,
+    reason: `customers ${rowCount}`,
   });
-  logger.info({ count: exportRows.length, by: me.id }, 'export.customers');
+  logger.info({ count: rowCount, by: me.id }, 'export.customers');
 
   return {
-    bytes: new Uint8Array(buf),
+    bytes,
     filename: `nmwc-customer-master-${stamp}.xlsx`,
-    rowCount: exportRows.length,
+    rowCount,
   };
 }
+

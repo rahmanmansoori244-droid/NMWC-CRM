@@ -948,4 +948,28 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(row.fieldChanges).toEqual([]);
     expect(gm.hasManualGps(row.fieldChanges)).toBe(false);
   });
+  // ── 10. the customer master export, read a page at a time (item 28) ───────
+  it('the master export pages by keyset on Postgres: the same rows, in the same order, as one query', async () => {
+    const rowsLib = await import('@/lib/customer-master-rows');
+    const where = { deletedAt: null, regionId: { in: [ids.regionId] }, customer: { deletedAt: null } };
+    const oneQuery = await prisma.branch.findMany({
+      where,
+      orderBy: [{ regionId: 'asc' }, { branchCode: 'asc' }],
+      select: { branchCode: true },
+    });
+    expect(oneQuery.length, 'more than one page of 2').toBeGreaterThan(2);
+    const paged: string[] = [];
+    for await (const r of rowsLib.customerMasterRows(where, 2)) paged.push(String(r.branch_code));
+    expect(paged).toEqual(oneQuery.map((b) => b.branchCode));
+
+    // End to end, as the region's manager: every branch in scope, and the ledger row.
+    const exportsSvc = await import('@/services/exports');
+    asManager();
+    const out = await exportsSvc.buildCustomerExport({});
+    expect(out.rowCount).toBe(oneQuery.length);
+    const audit = await prisma.auditLog.findFirst({
+      where: { actorId: ids.managerId, action: 'EXPORT', reason: `customers ${oneQuery.length}` },
+    });
+    expect(audit).not.toBeNull();
+  });
 });

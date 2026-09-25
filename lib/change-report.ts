@@ -27,13 +27,14 @@
  * Role scope is the export scope (lib/export-scope.ts): Supervisor = team
  * routes, Manager = managed regions, Steward/Viewer = org-wide.
  */
-import { EditState, EditProcess, type Role } from '@prisma/client';
+import { EditState, EditProcess, type Prisma, type Role } from '@prisma/client';
 import { prisma } from './db';
-import { loadExcelJS, escapeFormulaCell } from './excel';
+import { openStreamedWorkbook, escapeFormulaCell } from './excel';
 import { resolveExportScope, scopedBranchWhere } from './export-scope';
 import { ForbiddenError } from './errors';
 import { logger } from './logger';
 import { mapPinHref } from './contact-links';
+import { afterCursor, keysetPages } from './keyset';
 
 export type ChangeReportFilters = {
   /** Window start (inclusive). Defaults to the beginning of time. */
@@ -48,11 +49,46 @@ export type ChangeReportFilters = {
   includePending?: boolean;
 };
 
-export const CHANGE_REPORT_ROW_CAP = 25_000;
+/**
+ * Item 28: the largest report one file may hold. It was 25,000 with the master at
+ * 20,596, because the whole styled workbook lived in memory. Rows are now read a
+ * page at a time and written through the streaming writer; 60,000 is what was
+ * MEASURED to build inside the 60 s function budget on this platform (2026-09-25).
+ */
+export const CHANGE_REPORT_ROW_CEILING = 60_000;
+/** Branch rows per database page. */
+const REPORT_PAGE_SIZE = 2000;
 
 const FILL_APPROVED = 'FFFFFF00'; // yellow — approved & applied
 const FILL_PENDING = 'FFFFC000'; // orange — submitted, awaiting decision
 const FILL_HEADER = 'FFD9E1F2';
+
+type ApprovalRow = { cust_code: string; branch_code: string; decision: string; decided_by: string };
+type ApprovalIndex = Map<string, { branch_code: string; decided_by: string }[]>;
+
+/**
+ * "approved_by" is per edit, not per cell — read off the change rows. Indexed by
+ * customer once (item 28): scanning every change row for every branch row was
+ * rows × changes, which grows with the org AND with time.
+ */
+export function approvalIndex(changeRows: readonly ApprovalRow[]): ApprovalIndex {
+  const index: ApprovalIndex = new Map();
+  for (const r of changeRows) {
+    if (r.decision !== 'APPROVED' || !r.decided_by) continue;
+    const list = index.get(r.cust_code) ?? [];
+    list.push({ branch_code: r.branch_code, decided_by: r.decided_by });
+    index.set(r.cust_code, list);
+  }
+  return index;
+}
+
+/** Who approved changes on this row: the customer-level ones and this branch's own, first-seen order. */
+export function approvedByFor(index: ApprovalIndex, custCode: string, branchCode: string): string {
+  const who = (index.get(custCode) ?? [])
+    .filter((r) => r.branch_code === '' || r.branch_code === branchCode)
+    .map((r) => r.decided_by);
+  return [...new Set(who)].join(', ');
+}
 
 type Col = { key: string; header: string; width: number };
 const COLUMNS: Col[] = [
@@ -190,9 +226,9 @@ export async function buildChangeReport(
   const total = await prisma.branch.count({
     where: { ...branchWhere, customer: { deletedAt: null } },
   });
-  if (total > CHANGE_REPORT_ROW_CAP) {
+  if (total > CHANGE_REPORT_ROW_CEILING) {
     throw new ForbiddenError(
-      `Report too large: ${total} rows. Narrow by region/route (max ${CHANGE_REPORT_ROW_CAP}).`
+      `Report too large: ${total} rows. One report holds up to ${CHANGE_REPORT_ROW_CEILING.toLocaleString('en-US')} rows — narrow by region or route.`
     );
   }
 
@@ -225,24 +261,43 @@ export async function buildChangeReport(
       : fmt(v);
 
   // ── The master rows (one per live branch in scope) ────────────────────────
-  const branches = await prisma.branch.findMany({
-    where: { ...branchWhere, customer: { deletedAt: null } },
-    orderBy: [{ route: { code: 'asc' } }, { branchCode: 'asc' }],
-    take: CHANGE_REPORT_ROW_CAP,
-    include: {
-      customer: {
-        include: {
-          channel: { select: { label: true } },
-          subChannel: { select: { label: true } },
-          crPhoto: { select: { id: true, createdAt: true, capturedById: true } },
-        },
+  // Item 28: a route at a time, a page at a time — the order the report always
+  // had (route code, then branch code), without one query whose relation lookups
+  // become IN-lists of every customer id in the org.
+  const include = {
+    customer: {
+      include: {
+        channel: { select: { label: true } },
+        subChannel: { select: { label: true } },
+        crPhoto: { select: { id: true, createdAt: true, capturedById: true } },
       },
-      region: { select: { name: true, code: true } },
-      route: { select: { id: true, code: true } },
-      shopPhoto: { select: { id: true, createdAt: true, capturedById: true } },
-      signboardPhoto: { select: { id: true, createdAt: true, capturedById: true } },
     },
+    region: { select: { name: true, code: true } },
+    route: { select: { id: true, code: true } },
+    shopPhoto: { select: { id: true, createdAt: true, capturedById: true } },
+    signboardPhoto: { select: { id: true, createdAt: true, capturedById: true } },
+  } satisfies Prisma.BranchInclude;
+  const pageOf = (routeId: string, cursor?: string) =>
+    prisma.branch.findMany({
+      where: { AND: [branchWhere, { routeId }], customer: { deletedAt: null } },
+      orderBy: { branchCode: 'asc' },
+      take: REPORT_PAGE_SIZE,
+      ...afterCursor(cursor),
+      include,
+    });
+  const branches: Awaited<ReturnType<typeof pageOf>> = [];
+  // Only the routes that hold a branch in scope: a region manager's report should
+  // not pay a round trip for every route in the organisation.
+  const routesInOrder = await prisma.route.findMany({
+    where: { branches: { some: { AND: [branchWhere], customer: { deletedAt: null } } } },
+    select: { id: true },
+    orderBy: { code: 'asc' },
   });
+  for (const r of routesInOrder) {
+    for await (const page of keysetPages((cursor) => pageOf(r.id, cursor), REPORT_PAGE_SIZE)) {
+      branches.push(...page);
+    }
+  }
   const customerIds = new Set(branches.map((b) => b.customerId));
   const branchById = new Map(branches.map((b) => [b.id, b] as const));
 
@@ -472,8 +527,9 @@ export async function buildChangeReport(
   }
 
   // ── Workbook ─────────────────────────────────────────────────────────────
-  const ExcelJS = await loadExcelJS();
-  const wb = new ExcelJS.Workbook();
+  // Item 28: the streaming writer — each row is serialised as it is committed, so
+  // memory does not hold a styled cell model of every row until the end.
+  const { wb, finish } = await openStreamedWorkbook();
   wb.creator = 'NMWC Customer Master';
   wb.created = new Date();
 
@@ -486,6 +542,9 @@ export async function buildChangeReport(
   let changedRows = 0;
   let writtenRows = 0;
   const s = (v: unknown) => escapeFormulaCell(v == null ? '' : v);
+
+  const approvals = approvalIndex(changeRows);
+
 
   for (const b of branches) {
     const c = b.customer;
@@ -503,18 +562,7 @@ export async function buildChangeReport(
       .filter((d): d is Date => !!d)
       .sort((x, y) => y.getTime() - x.getTime())[0];
     const uniq = (xs: string[]) => [...new Set(xs)].join(', ');
-    // "approved_by" is per edit, not per cell — read it off the change rows.
-    const approvedBy = uniq(
-      changeRows
-        .filter(
-          (r) =>
-            r.decision === 'APPROVED' &&
-            r.cust_code === c.nmwcCode &&
-            (r.branch_code === '' || r.branch_code === b.branchCode)
-        )
-        .map((r) => r.decided_by)
-        .filter(Boolean)
-    );
+    const approvedBy = approvedByFor(approvals, c.nmwcCode, b.branchCode);
     const salesman = salesmanByRoute.get(b.routeId);
     const extraCount = (extrasByBranch.get(b.id) ?? []).length;
     const pin = mapPinHref(b.gpsLat, b.gpsLng);
@@ -581,7 +629,9 @@ export async function buildChangeReport(
     if (hasMarks) {
       row.getCell('cust_code').font = { bold: true };
     }
+    row.commit();
   }
+  ws.commit();
 
   // Sheet 2 — Changes
   const wc = wb.addWorksheet('Changes', { views: [{ state: 'frozen', ySplit: 1 }] });
@@ -616,7 +666,9 @@ export async function buildChangeReport(
       pattern: 'solid',
       fgColor: { argb: r.decision === 'PENDING' ? FILL_PENDING : FILL_APPROVED },
     };
+    row.commit();
   }
+  wc.commit();
 
   // Sheet 3 — By salesman
   const wt = wb.addWorksheet('By salesman');
@@ -633,7 +685,7 @@ export async function buildChangeReport(
   wt.getRow(1).font = { bold: true };
   wt.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: FILL_HEADER } };
   for (const t of [...tally.values()].sort((a, b) => a.username.localeCompare(b.username))) {
-    wt.addRow({
+    const row = wt.addRow({
       username: t.username,
       fullName: s(t.fullName),
       customers: t.customers.size,
@@ -643,7 +695,9 @@ export async function buildChangeReport(
       photosAdded: t.photosAdded,
       pendingEdits: t.pendingEdits,
     });
+    row.commit();
   }
+  wt.commit();
 
   // Sheet 4 — Legend
   const wl = wb.addWorksheet('Legend');
@@ -672,16 +726,18 @@ export async function buildChangeReport(
   for (const [k, v, fill] of legend) {
     const row = wl.addRow({ k, v });
     if (fill) row.getCell('k').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+    row.commit();
   }
+  wl.commit();
 
-  const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
+  const bytes = await finish();
   const stamp = new Date().toISOString().slice(0, 10);
   logger.info(
     { rows: writtenRows, changed: changedRows, edits: scopedEdits.length, by: me.id },
     'export.change_report'
   );
   return {
-    bytes: new Uint8Array(buf),
+    bytes,
     filename: `nmwc-field-updates-${stamp}.xlsx`,
     rowCount: writtenRows,
     changedRows,

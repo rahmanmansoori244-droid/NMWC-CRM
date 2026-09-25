@@ -137,3 +137,75 @@ export async function buildWorkbook(rows: Record<string, unknown>[], sheetName =
   ws.getRow(1).font = { bold: true };
   return wb;
 }
+
+/**
+ * An exceljs STREAMING workbook whose output collects in memory. Add worksheets,
+ * commit each row after styling it (rows cannot be touched once committed), commit
+ * each sheet before starting the next, then finish() for the file.
+ *
+ * Styles on (the report's fills, notes and bold headers need them) and shared
+ * strings on (repeated values — region, route, status — are stored once, as
+ * buildWorkbook's output has them).
+ */
+export async function openStreamedWorkbook() {
+  const ExcelJS = await loadExcelJS();
+  const { PassThrough } = await import('node:stream');
+  const sink = new PassThrough();
+  const chunks: Buffer[] = [];
+  sink.on('data', (c: Buffer) => chunks.push(c));
+  const finished = new Promise<void>((resolve, reject) => {
+    sink.on('end', resolve);
+    sink.on('error', reject);
+  });
+  const wb = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: sink, useStyles: true, useSharedStrings: true });
+  return {
+    wb,
+    async finish(): Promise<Uint8Array<ArrayBuffer>> {
+      await wb.commit();
+      await finished;
+      // Copied into a plain ArrayBuffer: a Response body cannot take a view over
+      // Node's shared Buffer pool.
+      const all = Buffer.concat(chunks);
+      const bytes = new Uint8Array(new ArrayBuffer(all.byteLength));
+      bytes.set(all);
+      return bytes;
+    },
+  };
+}
+
+/**
+ * Benchmark item 28: a single-sheet workbook of any length in bounded memory.
+ *
+ * buildWorkbook keeps a cell model of every row until writeBuffer — about 1 GB
+ * of RSS at 25k rows of the customer master (measured), which is why that export
+ * was capped. exceljs's STREAMING writer serialises each row into the zip as it
+ * is committed, so memory holds the finished file (a few MB) plus one page of
+ * source rows. Measured on the production platform (2026-09-25): 60,000 rows,
+ * 15.5 MB, 13 s, 637 MB peak RSS.
+ *
+ * The bytes come back WHOLE, not as a stream: the caller can still write its
+ * audit row and send the file only once the build has succeeded, so a database
+ * error mid-way is an error response, never a truncated download.
+ *
+ * Columns are fixed up front (a stream cannot take the union of keys over rows it
+ * has not read yet), and every cell is formula-escaped exactly as buildWorkbook does.
+ */
+export async function buildWorkbookStreamed(
+  columns: readonly string[],
+  rows: AsyncIterable<Record<string, unknown>>,
+  sheetName = 'Sheet1'
+): Promise<{ bytes: Uint8Array<ArrayBuffer>; rowCount: number }> {
+  const { wb, finish } = await openStreamedWorkbook();
+  const ws = wb.addWorksheet(sheetName);
+  ws.columns = columns.map((h) => ({ header: h, key: h, width: Math.max(12, h.length + 2) }));
+  ws.getRow(1).font = { bold: true };
+  let rowCount = 0;
+  for await (const r of rows) {
+    const safe: Record<string, unknown> = {};
+    for (const k of columns) safe[k] = escapeFormulaCell(r[k]);
+    ws.addRow(safe).commit();
+    rowCount++;
+  }
+  ws.commit();
+  return { bytes: await finish(), rowCount };
+}
