@@ -34,7 +34,7 @@ import { resolveExportScope, scopedBranchWhere } from './export-scope';
 import { ForbiddenError } from './errors';
 import { logger } from './logger';
 import { mapPinHref } from './contact-links';
-import { afterCursor, keysetPages } from './keyset';
+import { keysetPages } from './keyset';
 
 export type ChangeReportFilters = {
   /** Window start (inclusive). Defaults to the beginning of time. */
@@ -51,9 +51,13 @@ export type ChangeReportFilters = {
 
 /**
  * Item 28: the largest report one file may hold. It was 25,000 with the master at
- * 20,596, because the whole styled workbook lived in memory. Rows are now read a
- * page at a time and written through the streaming writer; 60,000 is what was
- * MEASURED to build inside the 60 s function budget on this platform (2026-09-25).
+ * 20,596, because the whole styled workbook lived in memory. The writer now
+ * streams. What was measured (2026-09-25): the streaming writer on the platform,
+ * 60,000 export-shaped rows in 13 s at 637 MB; and this report's own workbook
+ * shape (42 columns, fills, notes, links) benchmarked locally at 60,000 rows,
+ * 19.8 s and 896 MB — about 30 s on the platform by the same calibration. With the
+ * paged reads, an ESTIMATED 35-40 s: inside the 60 s budget, with less margin than
+ * the export has. Re-measure before raising it.
  */
 export const CHANGE_REPORT_ROW_CEILING = 60_000;
 /** Branch rows per database page. */
@@ -180,17 +184,21 @@ type Mark = {
 };
 
 /** Oman wall-clock, unambiguous in a spreadsheet: "2026-09-13 14:05". */
+// One formatter for the whole report: building an Intl.DateTimeFormat per call cost
+// about 2.7 s over a 60,000-row report (item 28 benchmark).
+const OMAN_STAMP = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Muscat',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
 function omanStamp(d: Date | null | undefined): string {
   if (!d) return '';
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Muscat',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(d);
+  const parts = OMAN_STAMP.formatToParts(d);
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
   return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
 }
@@ -215,7 +223,9 @@ function fmt(v: unknown): string {
 
 export async function buildChangeReport(
   me: { id: string; role: Role; username: string },
-  filters: ChangeReportFilters
+  filters: ChangeReportFilters,
+  // Rows per database page; smaller only in tests, to cross page boundaries on a small fixture.
+  { pageSize = REPORT_PAGE_SIZE }: { pageSize?: number } = {}
 ) {
   const scope = await resolveExportScope(me);
   const branchWhere = scopedBranchWhere(scope, filters);
@@ -261,9 +271,11 @@ export async function buildChangeReport(
       : fmt(v);
 
   // ── The master rows (one per live branch in scope) ────────────────────────
-  // Item 28: a route at a time, a page at a time — the order the report always
-  // had (route code, then branch code), without one query whose relation lookups
-  // become IN-lists of every customer id in the org.
+  // Item 28: read a page at a time by branch code (strictly after the last one
+  // read — lib/keyset.ts), so no query's relation lookups become IN-lists of every
+  // customer id in the org; then order as the report always has, by route code
+  // then branch code. One pass over one key: a branch re-routed mid-read cannot
+  // appear twice or vanish, as it could when routes were read one by one.
   const include = {
     customer: {
       include: {
@@ -277,27 +289,20 @@ export async function buildChangeReport(
     shopPhoto: { select: { id: true, createdAt: true, capturedById: true } },
     signboardPhoto: { select: { id: true, createdAt: true, capturedById: true } },
   } satisfies Prisma.BranchInclude;
-  const pageOf = (routeId: string, cursor?: string) =>
+  const pageOf = (last: { branchCode: string } | undefined) =>
     prisma.branch.findMany({
-      where: { AND: [branchWhere, { routeId }], customer: { deletedAt: null } },
+      where: {
+        AND: [branchWhere, ...(last ? [{ branchCode: { gt: last.branchCode } }] : [])],
+        customer: { deletedAt: null },
+      },
       orderBy: { branchCode: 'asc' },
-      take: REPORT_PAGE_SIZE,
-      ...afterCursor(cursor),
+      take: pageSize,
       include,
     });
   const branches: Awaited<ReturnType<typeof pageOf>> = [];
-  // Only the routes that hold a branch in scope: a region manager's report should
-  // not pay a round trip for every route in the organisation.
-  const routesInOrder = await prisma.route.findMany({
-    where: { branches: { some: { AND: [branchWhere], customer: { deletedAt: null } } } },
-    select: { id: true },
-    orderBy: { code: 'asc' },
-  });
-  for (const r of routesInOrder) {
-    for await (const page of keysetPages((cursor) => pageOf(r.id, cursor), REPORT_PAGE_SIZE)) {
-      branches.push(...page);
-    }
-  }
+  for await (const page of keysetPages(pageOf, pageSize)) branches.push(...page);
+  // Stable: within a route, the database's branch-code order is kept.
+  branches.sort((a, b) => (a.route.code < b.route.code ? -1 : a.route.code > b.route.code ? 1 : 0));
   const customerIds = new Set(branches.map((b) => b.customerId));
   const branchById = new Map(branches.map((b) => [b.id, b] as const));
 

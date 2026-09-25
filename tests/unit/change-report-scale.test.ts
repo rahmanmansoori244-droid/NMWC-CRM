@@ -13,11 +13,10 @@ const h = vi.hoisted(() => ({ count: vi.fn(), findMany: vi.fn() }));
 vi.mock('@/lib/auth', () => ({ auth: async () => null }));
 vi.mock('@/lib/db', () => ({
   prisma: {
-    branch: { count: h.count, findMany: h.findMany },
+    branch: { count: h.count, findMany: h.findMany.mockResolvedValue([]) },
     channel: { findMany: async () => [] },
     subChannel: { findMany: async () => [] },
     user: { findMany: async () => [] },
-    route: { findMany: async () => [] },
     attachment: { findMany: async () => [] },
     customerEdit: { findMany: async () => [] },
   },
@@ -57,20 +56,30 @@ describe('approved_by — who approved changes on a row', () => {
 const steward = { id: 's1', role: 'STEWARD' as const, username: 'steward.x' };
 
 describe('buildChangeReport — ceiling', () => {
-  it('is the measured 60,000, not the old 25,000', () => {
+  it('is 60,000, not the old 25,000', () => {
     expect(CHANGE_REPORT_ROW_CEILING).toBe(60_000);
   });
 
   it('refuses one row over it, before reading any branch', async () => {
+    h.findMany.mockClear();
     h.count.mockResolvedValueOnce(60_001);
     await expect(buildChangeReport(steward, {})).rejects.toThrow(/60,000 rows/);
     expect(h.findMany).not.toHaveBeenCalled();
   });
 
+  it('builds at exactly the ceiling — and does read the branches', async () => {
+    h.findMany.mockClear();
+    h.count.mockResolvedValueOnce(60_000);
+    await buildChangeReport(steward, {});
+    expect(h.findMany).toHaveBeenCalled();
+  });
+
   it('builds at the old cap and above it', async () => {
+    h.findMany.mockClear();
     h.count.mockResolvedValueOnce(25_001);
     const out = await buildChangeReport(steward, {});
-    // No routes in this mock, so no rows — what matters is that it was not refused.
+    expect(h.findMany).toHaveBeenCalled();
+    // No branches in this mock, so no rows — what matters is that it was not refused.
     expect(out.rowCount).toBe(0);
     expect(out.bytes.byteLength).toBeGreaterThan(0);
   });

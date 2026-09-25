@@ -76,6 +76,9 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     branchIds: {} as Record<string, string>,
     userIds: [] as string[],
     attachmentIds: [] as string[],
+    // Section 10: a customer and route in the OTHER region, for the export's region boundary.
+    extraCustomerIds: [] as string[],
+    extraRouteIds: [] as string[],
   };
   let subChannelId = '';
   let channelId = '';
@@ -235,7 +238,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
 
   afterAll(async () => {
     if (!prisma) return;
-    const allCustomerIds = [...ids.customerIds, ids.otherCustomerId].filter(Boolean);
+    const allCustomerIds = [...ids.customerIds, ids.otherCustomerId, ...ids.extraCustomerIds].filter(Boolean);
     const editRows = await prisma.customerEdit.findMany({
       // By submitter too: a new-customer request (section 9) has no customerId.
       where: { OR: [{ customerId: { in: allCustomerIds } }, { submittedById: { in: ids.userIds } }] },
@@ -258,7 +261,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
       await prisma.user.update({ where: { id }, data: { managedRegions: { set: [] } } }).catch(() => undefined);
     }
     await prisma.user.deleteMany({ where: { id: { in: ids.userIds } } });
-    await prisma.route.deleteMany({ where: { id: { in: [ids.routeId, ids.otherRouteId] } } });
+    await prisma.route.deleteMany({ where: { id: { in: [ids.routeId, ids.otherRouteId, ...ids.extraRouteIds] } } });
     await prisma.region.deleteMany({ where: { id: { in: [ids.regionId, ids.otherRegionId] } } });
     await prisma.$disconnect();
   });
@@ -951,13 +954,42 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
   // ── 10. the customer master export, read a page at a time (item 28) ───────
   it('the master export pages by keyset on Postgres: the same rows, in the same order, as one query', async () => {
     const rowsLib = await import('@/lib/customer-master-rows');
-    const where = { deletedAt: null, regionId: { in: [ids.regionId] }, customer: { deletedAt: null } };
+    // Two branches in the other region, so pages cross a region boundary.
+    const farRoute = await prisma.route.create({
+      data: { code: `QF${sfx}`.toUpperCase(), name: `QF route ${sfx}`, regionId: ids.otherRegionId },
+    });
+    ids.extraRouteIds.push(farRoute.id);
+    const far = await prisma.customer.create({
+      data: {
+        nmwcCode: `${sfx}020`,
+        legalName: `Far shop ${sfx}`,
+        paymentTerms: 'CASH',
+        channelId,
+        temixCode: `${sfx}020`,
+        branches: {
+          create: [1, 2].map((n) => ({
+            branchCode: `${sfx}020-0${n}`,
+            branchName: `Far ${n}`,
+            regionId: ids.otherRegionId,
+            routeId: farRoute.id,
+            address: 'Far away',
+          })),
+        },
+      },
+    });
+    ids.extraCustomerIds.push(far.id);
+    const where = {
+      deletedAt: null,
+      regionId: { in: [ids.regionId, ids.otherRegionId] },
+      customer: { deletedAt: null },
+    };
     const oneQuery = await prisma.branch.findMany({
       where,
       orderBy: [{ regionId: 'asc' }, { branchCode: 'asc' }],
-      select: { branchCode: true },
+      select: { branchCode: true, regionId: true },
     });
     expect(oneQuery.length, 'more than one page of 2').toBeGreaterThan(2);
+    expect(new Set(oneQuery.map((b) => b.regionId)).size, 'two regions').toBe(2);
     const paged: string[] = [];
     for await (const r of rowsLib.customerMasterRows(where, 2)) paged.push(String(r.branch_code));
     expect(paged).toEqual(oneQuery.map((b) => b.branchCode));
@@ -966,10 +998,63 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const exportsSvc = await import('@/services/exports');
     asManager();
     const out = await exportsSvc.buildCustomerExport({});
-    expect(out.rowCount).toBe(oneQuery.length);
+    const inManagerScope = await prisma.branch.count({
+      where: { deletedAt: null, regionId: { in: [ids.regionId] }, customer: { deletedAt: null } },
+    });
+    expect(out.rowCount).toBe(inManagerScope);
     const audit = await prisma.auditLog.findFirst({
-      where: { actorId: ids.managerId, action: 'EXPORT', reason: `customers ${oneQuery.length}` },
+      where: { actorId: ids.managerId, action: 'EXPORT', reason: `customers ${inManagerScope}` },
     });
     expect(audit).not.toBeNull();
+  });
+  // ── 11. the report read route by route keeps its order and its scope (item 28) ──
+  it('the field-update report lists routes by code then branches by code, and never a deleted branch', async () => {
+    // A soft-deleted branch on an in-scope route: the scope excludes it, and the
+    // per-route page must apply the scope, not just the route.
+    const gone = await prisma.branch.create({
+      data: {
+        customerId: ids.customerIds[0]!,
+        branchCode: `${sfx}001-99`,
+        branchName: 'Closed and removed',
+        regionId: ids.regionId,
+        routeId: ids.routeId,
+        address: 'Way 1, Ruwi',
+        deletedAt: new Date(),
+      },
+    });
+    asManager();
+    const out = await report.buildChangeReport(
+      { id: ids.managerId, role: 'MANAGER', username: `qa.mgr.${sfx}` },
+      { regionIds: [ids.regionId] },
+      { pageSize: 2 } // cross page boundaries on this small fixture
+    );
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(out.bytes as unknown as Parameters<typeof wb.xlsx.load>[0]);
+    const ws = wb.getWorksheet('Customers')!;
+    const header: string[] = [];
+    ws.getRow(1).eachCell((c, i) => (header[i] = String(c.value)));
+    const col = (name: string) => header.indexOf(name);
+    const rows: Array<{ route: string; branch: string }> = [];
+    ws.eachRow((r, n) => {
+      if (n > 1) rows.push({ route: String(r.getCell(col('route')).value), branch: String(r.getCell(col('branch_code')).value) });
+    });
+    expect(rows.map((r) => r.branch)).not.toContain(gone.branchCode);
+    // Every in-scope branch exactly once, across the page boundaries.
+    const inScope = await prisma.branch.count({
+      where: { deletedAt: null, regionId: { in: [ids.regionId] }, customer: { deletedAt: null } },
+    });
+    expect(rows).toHaveLength(inScope);
+    expect(new Set(rows.map((r) => r.branch)).size).toBe(rows.length);
+    // Both of the region's routes are in the file (QA… before QB…), each in branch-code order.
+    expect(new Set(rows.map((r) => r.route)).size).toBeGreaterThan(1);
+    const sorted = [...rows].sort((a, b) => (a.route === b.route ? (a.branch < b.branch ? -1 : 1) : a.route < b.route ? -1 : 1));
+    expect(rows).toEqual(sorted);
+
+    // The master export applies the same scope.
+    const exportsSvc = await import('@/services/exports');
+    const master = await exportsSvc.buildCustomerExport({ regionIds: [ids.regionId] });
+    const [sheet] = await (await import('@/lib/excel')).parseWorkbook(master.bytes);
+    expect(sheet!.rows.map((r) => r.branch_code)).not.toContain(gone.branchCode);
   });
 });

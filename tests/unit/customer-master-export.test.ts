@@ -6,6 +6,8 @@
  * (F-01: intersected with the user's filters, fail-closed) is pinned here too.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { stripComments } from '../support/strip-comments';
 
 const h = vi.hoisted(() => ({
   user: { id: 'u1', role: 'STEWARD', username: 'steward.x' } as { id: string; role: string; username: string },
@@ -37,6 +39,7 @@ import { parseWorkbook } from '@/lib/excel';
 
 /** A branch row as the export's `select` returns it. */
 const branch = (i: number) => ({
+  regionId: 'r1',
   branchCode: `B-${String(i).padStart(5, '0')}`,
   branchName: `Branch ${i}`,
   address: `Way ${i}`,
@@ -73,11 +76,32 @@ const branch = (i: number) => ({
   },
 });
 
-/** findMany behaving like Prisma's keyset paging over h.rows. */
+/** The value predicate the export adds for every page after the first, or undefined. */
+type After = { regionId: string; branchCode: string };
+function afterOf(where: { AND?: unknown[] }): After | undefined {
+  const or = (where.AND?.[1] as { OR?: Array<Record<string, unknown>> } | undefined)?.OR;
+  if (!or) return undefined;
+  return {
+    regionId: (or[0]!.regionId as { gt: string }).gt,
+    branchCode: (or[1]!.branchCode as { gt: string }).gt,
+  };
+}
+
+/** findMany behaving like the page query: rows strictly after the key, in (region, code) order. */
 function servePages() {
-  h.findMany.mockImplementation(async (args: { take: number; cursor?: { branchCode: string }; skip?: number }) => {
-    const from = args.cursor ? h.rows.findIndex((r) => r.branchCode === args.cursor!.branchCode) + (args.skip ?? 0) : 0;
-    return h.rows.slice(from, from + args.take);
+  h.findMany.mockImplementation(async (args: { take: number; where: { AND?: unknown[] } }) => {
+    const a = afterOf(args.where);
+    return h.rows
+      .filter((r) => r.live !== false)
+      .filter(
+        (r) =>
+          !a ||
+          String(r.regionId) > a.regionId ||
+          (r.regionId === a.regionId && String(r.branchCode) > a.branchCode)
+      )
+      .sort((x, y) => (`${x.regionId}|${x.branchCode}` < `${y.regionId}|${y.branchCode}` ? -1 : 1))
+      .slice(0, args.take)
+      .map((r) => ({ ...r }));
   });
 }
 
@@ -101,14 +125,73 @@ describe('customerMasterRows — a page at a time', () => {
 
     expect(out.map((r) => r.branch_code)).toEqual(h.rows.map((r) => r.branchCode));
     const calls = h.findMany.mock.calls.map((c) => c[0]);
-    expect(calls.map((a) => a.cursor?.branchCode)).toEqual([undefined, 'B-00002', 'B-00004']);
+    // The first page is the scope as given; every later one is the scope AND "after
+    // the last row read", by value — no Prisma cursor, no offset.
+    expect(calls[0].where).toBe(where);
+    expect(calls.slice(1).map((a) => a.where.AND[0])).toEqual([where, where]);
+    expect(calls.slice(1).map((a) => afterOf(a.where)?.branchCode)).toEqual(['B-00002', 'B-00004']);
     for (const a of calls) {
-      expect(a.where).toBe(where);
+      expect(a.cursor).toBeUndefined();
+      expect(a.skip).toBeUndefined();
       expect(a.take).toBe(2);
       expect(a.orderBy).toEqual([{ regionId: 'asc' }, { branchCode: 'asc' }]);
     }
-    expect(Object.keys(out[0]!).sort()).toEqual([...CUSTOMER_MASTER_COLUMNS].sort());
-    expect(out[0]).toMatchObject({ cust_code: 'NMWC-1', sales_region: 'Muscat', region_code: 'MCT', shop_photo: 'yes', phone: '+96895551234' });
+    // Every one of the 33 columns, from the field it should come from.
+    expect(out[0]).toEqual({
+      cust_code: 'NMWC-1',
+      cust_name: '=Shop 1',
+      payment_terms: 'CASH',
+      cr_no: '',
+      cr_photo: '',
+      branch_code: 'B-00001',
+      branch_name: 'Branch 1',
+      sales_region: 'Muscat',
+      region_code: 'MCT',
+      route: 'C4',
+      address: 'Way 1',
+      area_description: '',
+      phone: '+96895551234',
+      alt_phone: '',
+      contact_person: '',
+      contact_role: '',
+      channel: 'Retail',
+      sub_channel: '',
+      day_of_visit: 'SUN',
+      opening_hours: '',
+      delivery_window: '',
+      gps_lat: 23.5,
+      gps_lng: 58.3,
+      gps_captured_at: '2026-09-24T08:00:00.000Z',
+      coolers: 1,
+      stands: 0,
+      empty_bottles: 2,
+      shop_photo: 'yes',
+      signboard_photo: '',
+      customer_status: 'ACTIVE',
+      branch_status: 'ACTIVE',
+      completeness_pct: 70,
+      last_edited_at: '2026-09-24T08:00:00.000Z',
+    });
+  });
+
+  it("a page's last row archived before the next page costs only itself", async () => {
+    h.rows = [1, 2, 3, 4, 5].map(branch) as Array<Record<string, unknown>>;
+    const out: string[] = [];
+    for await (const r of customerMasterRows({}, 2)) {
+      out.push(String(r.branch_code));
+      if (r.branch_code === 'B-00002') h.rows[1]!.live = false; // archived mid-export
+    }
+    expect(out).toEqual(['B-00001', 'B-00002', 'B-00003', 'B-00004', 'B-00005']);
+  });
+
+  it('a page\'s last row moved to a later region does not skip the regions in between', async () => {
+    h.rows = [1, 2, 3, 4, 5].map((i) => ({ ...branch(i), regionId: i <= 2 ? 'r1' : 'r2' })) as Array<Record<string, unknown>>;
+    const out: string[] = [];
+    for await (const r of customerMasterRows({}, 2)) {
+      out.push(String(r.branch_code));
+      if (r.branch_code === 'B-00002') h.rows[1]!.regionId = 'r9'; // re-regioned by an import
+    }
+    for (const code of ['B-00001', 'B-00003', 'B-00004', 'B-00005']) expect(out, code).toContain(code);
   });
 });
 
@@ -127,6 +210,25 @@ describe('buildCustomerExport', () => {
     expect(sheet!.rows[0]!.cust_name).toBe(`'=Shop 0`);
   }, 60_000);
 
+  it('builds at exactly the ceiling', async () => {
+    h.count_.mockResolvedValue(60_000);
+    const out = await buildCustomerExport({});
+    expect(out.rowCount).toBe(0);
+    expect(h.findMany).toHaveBeenCalled();
+  });
+
+  it('a database failure mid-way is an error with NO ledger row, never a partial file', async () => {
+    h.rows = Array.from({ length: 5_000 }, (_, i) => branch(i));
+    h.count_.mockResolvedValue(h.rows.length);
+    let n = 0;
+    h.findMany.mockImplementation(async (args: { take: number }) => {
+      if (++n === 2) throw new Error('connection reset');
+      return h.rows.slice(0, args.take);
+    });
+    await expect(buildCustomerExport({})).rejects.toThrow('connection reset');
+    expect(h.writeAudit).not.toHaveBeenCalled();
+  });
+
   it('refuses above the measured ceiling BEFORE reading a row or writing an audit row', async () => {
     h.count_.mockResolvedValue(60_001);
     await expect(buildCustomerExport({})).rejects.toThrow(/60,000 rows/);
@@ -140,6 +242,8 @@ describe('buildCustomerExport', () => {
     h.count_.mockResolvedValue(0);
     await buildCustomerExport({ routeIds: ['route-other'] });
     expect(h.count_.mock.calls[0]![0].where.routeId).toEqual({ in: ['__none__'] });
+    // The rows are read with exactly the scope that was counted.
+    expect(h.findMany.mock.calls[0]![0].where).toBe(h.count_.mock.calls[0]![0].where);
   });
 
   it('F-01: fail-closed for a Manager with no regions and a Supervisor with no team', async () => {
@@ -150,6 +254,12 @@ describe('buildCustomerExport', () => {
     h.user = { id: 's1', role: 'SUPERVISOR', username: 'sup' };
     await buildCustomerExport({});
     expect(h.count_.mock.calls[1]![0].where.routeId).toEqual({ in: ['__none__'] });
+  });
+
+  it('builds through the streaming writer, not the in-memory one the ceiling was measured without', () => {
+    const src = stripComments(readFileSync('services/exports.ts', 'utf8'), 'services/exports.ts');
+    expect(src).toMatch(/buildWorkbookStreamed\(/);
+    expect(src).not.toMatch(/\bbuildWorkbook\(/);
   });
 
   it('refuses a role that cannot export', async () => {

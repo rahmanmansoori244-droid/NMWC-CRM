@@ -1,28 +1,27 @@
 /**
- * Keyset pagination over branches, for reads too large to hold or to fetch in one
- * query (benchmark item 28: the customer master export and the field-update report).
+ * Keyset pagination for reads too large to hold or fetch in one query (benchmark
+ * item 28: the customer master export and the field-update report).
  *
- * Each page starts AFTER the last branchCode of the previous one (branchCode is
- * unique), never at an offset: an offset query re-reads every earlier row, so a
- * deep page costs as much as the whole table. `fetchPage` must order by branchCode
- * last and apply `{ cursor: { branchCode }, skip: 1 }` when given a cursor.
+ * Each next page is fetched with a STRICT predicate on the key of the last row AS
+ * IT WAS READ — never with Prisma's `cursor` + `skip: 1`. That pair re-reads the
+ * cursor row's CURRENT values and then skips one row by position, so if the
+ * boundary row was archived, re-scored or re-regioned between two pages, it
+ * silently dropped the next row or jumped over thousands. With a value predicate,
+ * a row that changes mid-read can at worst be missed or repeated itself; no other
+ * row moves. (Found by the adversarial review of the first version.)
+ *
+ * `fetchPage(last)` gets undefined for the first page, then the last row of the
+ * previous page, and must order by the same key it filters on.
  */
-export async function* keysetPages<T extends { branchCode: string }>(
-  fetchPage: (cursor: string | undefined) => Promise<T[]>,
+export async function* keysetPages<T>(
+  fetchPage: (last: T | undefined) => Promise<T[]>,
   pageSize: number
 ): AsyncGenerator<T[]> {
-  let cursor: string | undefined;
+  let last: T | undefined;
   for (;;) {
-    const page = await fetchPage(cursor);
+    const page = await fetchPage(last);
     if (page.length > 0) yield page;
     if (page.length < pageSize) return;
-    cursor = page[page.length - 1]!.branchCode;
+    last = page[page.length - 1];
   }
-}
-
-/** The Prisma arguments for a page after `cursor` (nothing for the first page). */
-export function afterCursor(
-  cursor: string | undefined
-): { cursor: { branchCode: string }; skip: number } | Record<never, never> {
-  return cursor ? { cursor: { branchCode: cursor }, skip: 1 } : {};
 }

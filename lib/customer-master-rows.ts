@@ -8,7 +8,7 @@
  */
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { afterCursor, keysetPages } from '@/lib/keyset';
+import { keysetPages } from '@/lib/keyset';
 
 /** Rows per database page: bounded memory, and few enough round trips (~11 for today's master). */
 export const CUSTOMER_MASTER_PAGE_SIZE = 2000;
@@ -51,22 +51,34 @@ export const CUSTOMER_MASTER_COLUMNS = [
 
 /**
  * The export rows, a page at a time, in the order they always had (region, then
- * branch code). Keyset paging on branchCode (unique), never skip/offset, so each
- * page costs the same however deep into the master it is. `select`, not
- * `include`: only the columns the file carries are fetched.
+ * branch code). Each page starts strictly after the (regionId, branchCode) of the
+ * last row read (lib/keyset.ts) — never at an offset, so a deep page costs the same
+ * as the first. `select`, not `include`: only the columns the file carries.
  */
 export async function* customerMasterRows(
   where: Prisma.BranchWhereInput,
   pageSize = CUSTOMER_MASTER_PAGE_SIZE
 ): AsyncGenerator<Record<string, unknown>> {
   const pages = keysetPages(
-    (cursor) =>
+    (last: { regionId: string; branchCode: string } | undefined) =>
       prisma.branch.findMany({
-        where,
+        where: last
+          ? {
+              AND: [
+                where,
+                {
+                  OR: [
+                    { regionId: { gt: last.regionId } },
+                    { regionId: last.regionId, branchCode: { gt: last.branchCode } },
+                  ],
+                },
+              ],
+            }
+          : where,
         orderBy: [{ regionId: 'asc' }, { branchCode: 'asc' }],
         take: pageSize,
-        ...afterCursor(cursor),
         select: {
+          regionId: true,
           branchCode: true,
           branchName: true,
           address: true,

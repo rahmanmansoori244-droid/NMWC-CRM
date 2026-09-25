@@ -43,7 +43,10 @@ export default async function ExportPage() {
             share <code>cust_code</code> but have distinct <code>branch_code</code>.
           </p>
           <p className="mb-2 text-amber-800">
-            Columns mirror the import shape so you can re-upload after editing.
+            <strong>Not an import file.</strong> Some columns differ from what the importer
+            expects (region and channel are names here, and the customer status would be
+            applied to every branch), so re-uploading this workbook can change data you did
+            not edit. For bulk changes, start from the import template.
           </p>
           <p className="mb-3 text-xs text-amber-700">
             Photo columns show <code>yes</code> when a photo is present. The actual files stay in

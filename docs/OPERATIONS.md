@@ -513,7 +513,11 @@ The rotation is audit-logged.
 ### Export the cleaned master for ERP
 1. Sign in as Steward (or Manager).
 2. `/export` → choose filters → **Download .xlsx**.
-3. Workbook columns mirror the import shape so it round-trips.
+3. The workbook is a report, **not an import file**: `sales_region` and `channel` are the
+   region name and channel label (the importer expects the code and the key), and
+   `customer_status` would be applied to every branch. Re-uploading it can reopen closed
+   branches. For bulk fixes, start from the import template (found 2026-09-25, item 28;
+   making it round-trip is an open owner decision).
 
 ### Requeue customers the ERP was never told about (one-off, 2026-09-23)
 
