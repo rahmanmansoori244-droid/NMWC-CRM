@@ -105,6 +105,14 @@ being asserted passes or fails for the wrong reason.
 after a large `npm ci` and pass on every rerun.** An exceljs load-time cost against
 a 5-second timeout. Not a defect; rerun before investigating.
 
+**Windows: `ci-gates-guard.test.ts` takes minutes, and a step that did not finish
+is not a step that failed.** It executes the real smoke step in Git Bash, where
+every process costs ~0.25 s, and five scenarios run all 24 attempts. The old 60 s
+spawn budget killed them under a full suite run, and they failed as "expected -1
+to be 1", which reads as the step answering wrongly (2026-09-25). `runStep` now
+throws `did not finish` instead. Do not shrink the attempt budget to speed them
+up: what those scenarios prove is about the 24th attempt.
+
 ---
 
 ## Process

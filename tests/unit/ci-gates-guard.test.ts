@@ -34,7 +34,12 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { load } from 'js-yaml';
-import { runScriptOf as runScriptOfIn, runStep, type Outcome } from '../support/workflow-step';
+import {
+  runScriptOf as runScriptOfIn,
+  runStep,
+  STEP_TEST_TIMEOUT_MS,
+  type Outcome,
+} from '../support/workflow-step';
 
 const CI_PATH = '.github/workflows/ci.yml';
 const SMOKE_PATH = 'scripts/ops/smoke.ts';
@@ -193,19 +198,27 @@ type Attempt = { code: number; out: string };
 const SMOKE_STEP = 'Wait for production to serve this commit, then smoke it';
 const smokeScript = runScriptOf(SMOKE_STEP);
 
-/** Run the smoke step with `npx` answering each attempt in turn and `sleep` instant. */
+/**
+ * Run the smoke step with `npx` answering each attempt in turn and `sleep` instant.
+ * The last answer repeats, so one attempt stands for "every attempt from here on".
+ *
+ * The stub starts no process — bash builtins only. On Windows every process Git
+ * Bash starts costs ~0.25 s, and the two `cat`s it used to run were a third of
+ * each attempt, 24 times over. The step's own `cat` and `grep`s stay real,
+ * because they are what is under test (2026-09-25).
+ */
 function runSmokeStep(attempts: Attempt[], env: Record<string, string> = {}): Outcome {
   const stubs = [
     'CALLS=0',
     'npx() {',
     '  CALLS=$((CALLS + 1))',
     '  echo "npx $*" >> "$STUB_DIR/calls"',
-    '  if [ -f "$STUB_DIR/out-$CALLS" ]; then',
-    '    cat "$STUB_DIR/out-$CALLS"',
-    '    return "$(cat "$STUB_DIR/code-$CALLS")"',
-    '  fi',
-    `  cat "$STUB_DIR/out-${attempts.length}"`,
-    `  return "$(cat "$STUB_DIR/code-${attempts.length}")"`,
+    '  local n=$CALLS lines rc',
+    `  [ -f "$STUB_DIR/out-$n" ] || n=${attempts.length}`,
+    '  mapfile -t lines < "$STUB_DIR/out-$n"',
+    "  printf '%s\\n' \"${lines[@]}\"",
+    '  read -r rc < "$STUB_DIR/code-$n" || :',
+    '  return "$rc"',
     '}',
     'sleep() { echo "sleep $*" >> "$STUB_DIR/calls"; }',
   ].join('\n');
@@ -655,8 +668,14 @@ describe('the smoke suite runs after a deploy to main', () => {
  * invokes a `run:` block, and the previous version of this section matched
  * `for ATTEMPT in $(seq 1 24)` while that inherited `-e` made the loop exit on
  * its first iteration.
+ *
+ * Five of these run the step's real budget of 24 attempts, because what they
+ * prove is about 23 refusals and the 24th. That is about a second on Linux and
+ * most of a minute on Windows; STEP_TIMEOUT_MS in tests/support/workflow-step.ts
+ * is sized for it. The budget is a literal in the step, not an input, so there is
+ * no smaller one to run instead — and a smaller one would prove less.
  */
-describe('the smoke step really does wait for the deploy', () => {
+describe('the smoke step really does wait for the deploy', { timeout: STEP_TEST_TIMEOUT_MS }, () => {
   it('found the step and its script', () => {
     // Without this the scenarios below would run an empty script and pass.
     expect(smokeScript.length, `${SMOKE_STEP} has a run: block`).toBeGreaterThan(500);
@@ -795,7 +814,7 @@ describe('the smoke step really does wait for the deploy', () => {
  * with the deploy, and a gate that is red for an unrelated reason gets switched
  * off: that is how this project collected 127 vacuous drill runs.
  */
-describe('the smoke step is red for the DEPLOY, not for a job that has not run yet', () => {
+describe('the smoke step is red for the DEPLOY, not for a job that has not run yet', { timeout: STEP_TEST_TIMEOUT_MS }, () => {
   it('a cron heartbeat alarm alone does not fail the deploy gate', () => {
     const o = runSmokeStep([{ code: 1, out: smokeOutput({ serving: true, cron: 'alarming' }) }]);
     expect(o.status, o.output).toBe(0);
@@ -885,7 +904,7 @@ describe('the smoke step is red for the DEPLOY, not for a job that has not run y
  * the step goes red either way — but the two lines after the suite never ran, so
  * the server was left up and the spec's exit code was never the step's own.
  */
-describe('the e2e step tears its server down and reports the suite exit code', () => {
+describe('the e2e step tears its server down and reports the suite exit code', { timeout: STEP_TEST_TIMEOUT_MS }, () => {
   const E2E_STEP = 'Serve the build and run the login spec against it';
   const script = runScriptOf(E2E_STEP);
 

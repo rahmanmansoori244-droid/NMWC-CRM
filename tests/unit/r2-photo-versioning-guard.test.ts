@@ -19,7 +19,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { runScriptOf, runStep } from '../support/workflow-step';
+import { runScriptOf, runStep, STEP_TEST_TIMEOUT_MS } from '../support/workflow-step';
 import {
   argvIssue,
   ruleScope,
@@ -331,7 +331,7 @@ describe('a bucket it cannot read is not a bucket with no rules', () => {
   });
 });
 
-describe('the check is wired to something that actually runs', () => {
+describe('the check is wired to something that actually runs', { timeout: STEP_TEST_TIMEOUT_MS }, () => {
   it('finds the r2-config job', () => {
     // If this job is renamed or removed, every assertion below would pass vacuously.
     expect(r2Job, `${R2_WORKFLOW} has no r2-config job`).not.toBe('');

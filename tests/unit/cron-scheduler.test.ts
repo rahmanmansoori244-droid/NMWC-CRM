@@ -25,7 +25,7 @@ import {
 } from '@/scripts/ops/cron-scheduler';
 import { HEARTBEAT_EXPECTATIONS } from '@/lib/heartbeat';
 import { REQUIRED_SECRETS } from '@/lib/ops/required-secrets';
-import { runScriptOf, runStep } from '../support/workflow-step';
+import { runScriptOf, runStep, STEP_TEST_TIMEOUT_MS } from '../support/workflow-step';
 
 // Zero-entropy on purpose: gitleaks scans this repository, and a realistic-looking
 // fixture is a finding (it flagged the first version of this file). cron-auth.test.ts
@@ -452,7 +452,7 @@ describe('argvMode', () => {
   });
 });
 
-describe('the workflow runs it, with the secrets it needs, and cannot skip', () => {
+describe('the workflow runs it, with the secrets it needs, and cannot skip', { timeout: STEP_TEST_TIMEOUT_MS }, () => {
   const RAW = readFileSync('.github/workflows/cron-scheduler.yml', 'utf8').replace(/\r\n/g, '\n');
   const yml = RAW.split('\n')
     .filter((l) => !l.trim().startsWith('#'))
