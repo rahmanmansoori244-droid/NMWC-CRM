@@ -9,6 +9,7 @@ import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { EnrichmentForm } from './EnrichmentForm';
 import { salesmanSubmitGate } from '@/lib/submit-gate';
+import { ownPendingBanner } from '@/lib/submission-replay';
 
 export const metadata = { title: 'Enrich · NMWC' };
 // UXI-005: never serve a stale cached form. Without this, hitting Back after
@@ -135,8 +136,18 @@ export default async function EditCustomerPage({
   // Existing pending edit?
   const pending = await prisma.customerEdit.findFirst({
     where: { customerId: customer.id, state: 'SUBMITTED' },
-    select: { id: true, submittedAt: true, submittedBy: { select: { fullName: true } } },
+    select: {
+      id: true,
+      submittedAt: true,
+      submittedById: true,
+      target: true,
+      isReactivation: true,
+      submittedBy: { select: { fullName: true } },
+    },
   });
+  // Item 22: after a lost reply, reloading this page is how a salesman finds out
+  // whether his submit landed. His own pending edit says so in those words.
+  const pendingIsMine = pending?.submittedById === session.user.id;
 
   return (
     <main className="pb-24">
@@ -153,8 +164,15 @@ export default async function EditCustomerPage({
 
       {pending && (
         <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
-          A submission is already pending review (by {pending.submittedBy.fullName}). You can save
-          drafts but cannot submit until the supervisor decides.
+          {pendingIsMine ? (
+            // Names what is waiting: his pending close is not "your changes".
+            ownPendingBanner(pending)
+          ) : (
+            <>
+              A submission is already pending review (by {pending.submittedBy.fullName}). You can
+              save drafts but cannot submit until the supervisor decides.
+            </>
+          )}
         </div>
       )}
 

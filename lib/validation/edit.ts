@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { CustomerStatus, DayOfWeek, PaymentTerms } from '@prisma/client';
 import { gpsManualReasonSchema } from '../gps-manual';
+import { submissionIdSchema } from '../submission';
 
 const phoneRegex = /^[\d\s\-+()]{7,20}$/;
 
@@ -89,6 +90,8 @@ export const submitEditSchema = z.object({
   isDraft: z.boolean().default(false),
   customer: customerEditSchema,
   branches: z.array(branchEditSchema).min(0),
+  /** Item 22: the phone's id for this payload, so a retry is never written twice. */
+  submissionId: submissionIdSchema.optional(),
 });
 
 export type SubmitEditInput = z.infer<typeof submitEditSchema>;

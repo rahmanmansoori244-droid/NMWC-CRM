@@ -214,6 +214,10 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'CustomerEdit.isReactivation': { subject: 'none' },
   'CustomerEdit.isWrongRoute': { subject: 'none' },
   'CustomerEdit.newRouteId': { subject: 'none', note: STRUCTURAL },
+  'CustomerEdit.submissionId': {
+    subject: 'none',
+    note: 'a random id the phone mints for each submit, so a retry is never written twice (item 22); identifies the request, not a person or a device',
+  },
   'CustomerEdit.process': { subject: 'none' },
   'CustomerEdit.paymentTermsAtSubmit': { subject: 'business-or-person', kind: 'financial' },
   'CustomerEdit.approvalChain': { subject: 'employee', kind: 'snapshot', note: 'the roles and step order frozen at submit time' },

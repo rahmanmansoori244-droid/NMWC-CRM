@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, EditState, EditTarget, type Prisma } from '@prisma/client';
+import { Role, EditState, EditTarget, EditProcess, type Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth';
 import {
   ForbiddenError,
@@ -17,6 +17,14 @@ import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from '@/lib/working-hours';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import {
+  answerIfLanded,
+  findReceipt,
+  isUniqueViolation,
+  ownOpenRequestMessage,
+  type RequestKind,
+} from '@/lib/submission-replay';
+import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 
 async function require(role?: Role[]) {
   const session = await auth();
@@ -32,16 +40,48 @@ async function require(role?: Role[]) {
  * partial-unique index). A reactivation or close-shop submitted while an unrelated
  * change is still pending trips a raw P2002 — an opaque UNIQUE_CONSTRAINT dead-end
  * for the salesman (final-hunt #16/#24). Translate it into an actionable message.
+ *
+ * Item 22: when the open request is the salesman's own, say what it is — the
+ * same request means his earlier attempt arrived; another one means this was
+ * not sent. (The violation may also be this submit's own id, from a retry that
+ * overlapped the first attempt; answerIfLanded answers that from the receipt.)
  */
-function asOpenEditConflict(err: unknown): never {
-  if ((err as { code?: string }).code === 'P2002') {
-    throw new ConflictError(
-      'OPEN_EDIT_EXISTS',
-      'This customer already has a pending change awaiting review. That must be approved or rejected before you can submit another.'
-    );
-  }
-  throw err;
+async function openEditConflict(
+  err: unknown,
+  meId: string,
+  customerId: string,
+  sending: { kind: RequestKind; branchId: string }
+): Promise<never> {
+  if (!isUniqueViolation(err)) throw err;
+  const open = await prisma.customerEdit.findFirst({
+    where: { customerId, state: EditState.SUBMITTED },
+    select: { submittedById: true, target: true, isReactivation: true, branchId: true, submittedAt: true },
+  });
+  throw new ConflictError(
+    'OPEN_EDIT_EXISTS',
+    open?.submittedById === meId
+      ? ownOpenRequestMessage(open, sending)
+      : 'This customer already has a pending change awaiting review. That must be approved or rejected before you can submit another.'
+  );
 }
+
+/**
+ * Item 22: this submit's receipt, if its id already landed as this kind of
+ * request on this branch — asked first, and again if the submit fails.
+ */
+function receiptFor(meId: string, formData: FormData, isReactivation: boolean) {
+  const submissionId = submissionIdSchema.safeParse(formData.get('submissionId')).data;
+  const branchId = String(formData.get('branchId') ?? '');
+  return () =>
+    findReceipt(prisma, meId, submissionId, {
+      process: EditProcess.UPDATE,
+      target: EditTarget.BRANCH,
+      branchId,
+      isReactivation,
+    });
+}
+
+type SessionUser = Awaited<ReturnType<typeof require>>;
 
 /**
  * Salesman submits a reactivation request for a CLOSED branch.
@@ -51,14 +91,21 @@ function asOpenEditConflict(err: unknown): never {
  * sets Attachment.branchExtraId or shopPhotoId), then submits this action with
  * the attachment id.
  */
-export async function requestReactivationAction(
-  formData: FormData
-): SafeAction<{ editId: string }> {
+export async function requestReactivationAction(formData: FormData): SafeAction<SubmitReceipt> {
   return runAction(() => requestReactivationCore(formData));
 }
 
-async function requestReactivationCore(formData: FormData): Promise<{ editId: string }> {
+async function requestReactivationCore(formData: FormData): Promise<SubmitReceipt> {
   const me = await require([Role.SALESMAN]);
+  // Item 22: a retry of a request that already landed is answered, not re-run —
+  // before the checks below, which its own approval may since have changed.
+  const receipt = receiptFor(me.id, formData, true);
+  const replayed = await receipt();
+  if (replayed) return replayed;
+  return answerIfLanded(() => requestReactivationOnce(formData, me), receipt);
+}
+
+async function requestReactivationOnce(formData: FormData, me: SessionUser): Promise<SubmitReceipt> {
   const branchId = String(formData.get('branchId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim();
   const attachmentId = String(formData.get('attachmentId') ?? '');
@@ -143,27 +190,36 @@ async function requestReactivationCore(formData: FormData): Promise<{ editId: st
       attachmentChanges: [
         { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
       ] as unknown as Prisma.InputJsonValue,
+      submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
     },
-  }).catch(asOpenEditConflict);
+  }).catch((err: unknown) =>
+    openEditConflict(err, me.id, branch.customerId, { kind: 'reactivate', branchId: branch.id })
+  );
 
   logger.info({ editId: edit.id, by: me.id }, 'reactivation.request');
   revalidatePath('/work');
   revalidatePath(`/customers/${branch.customerId}`);
-  return { editId: edit.id };
+  return { editId: edit.id, state: edit.state, submittedAt: reactSubmittedAt.toISOString(), replayed: false };
 }
 
 /**
  * Salesman marks a branch as CLOSED. Requires a fresh photo (≤24h old) of the
  * closed shop attached as the `shopPhotoId` slot or as a free photo.
  */
-export async function markBranchClosedAction(
-  formData: FormData
-): SafeAction<{ editId: string }> {
+export async function markBranchClosedAction(formData: FormData): SafeAction<SubmitReceipt> {
   return runAction(() => markBranchClosedCore(formData));
 }
 
-async function markBranchClosedCore(formData: FormData): Promise<{ editId: string }> {
+async function markBranchClosedCore(formData: FormData): Promise<SubmitReceipt> {
   const me = await require([Role.SALESMAN]);
+  // Item 22: as for a reactivation — a retry of a close that landed is answered.
+  const receipt = receiptFor(me.id, formData, false);
+  const replayed = await receipt();
+  if (replayed) return replayed;
+  return answerIfLanded(() => markBranchClosedOnce(formData, me), receipt);
+}
+
+async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promise<SubmitReceipt> {
   const branchId = String(formData.get('branchId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim();
   const attachmentId = String(formData.get('attachmentId') ?? '');
@@ -244,12 +300,15 @@ async function markBranchClosedCore(formData: FormData): Promise<{ editId: strin
       attachmentChanges: [
         { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
       ] as unknown as Prisma.InputJsonValue,
+      submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
     },
-  }).catch(asOpenEditConflict);
+  }).catch((err: unknown) =>
+    openEditConflict(err, me.id, branch.customerId, { kind: 'close', branchId: branch.id })
+  );
   logger.info({ editId: edit.id, by: me.id }, 'branch.close.request');
   revalidatePath('/work');
   revalidatePath(`/customers/${branch.customerId}`);
-  return { editId: edit.id };
+  return { editId: edit.id, state: edit.state, submittedAt: closeSubmittedAt.toISOString(), replayed: false };
 }
 
 /**

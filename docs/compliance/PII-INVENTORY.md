@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**280 stored columns across 23 tables** — Customer contact: 25 · Employee: 61 · Customer entity (personal if a sole establishment): 36 · Not personal data: 158.
+**281 stored columns across 23 tables** — Customer contact: 25 · Employee: 61 · Customer entity (personal if a sole establishment): 36 · Not personal data: 159.
 
 ## Columns holding personal data
 
@@ -299,6 +299,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | CustomerEdit | `isReactivation` | Boolean | structural / operational value |
 | CustomerEdit | `isWrongRoute` | Boolean | structural / operational value |
 | CustomerEdit | `newRouteId` | String | foreign key / structural value |
+| CustomerEdit | `submissionId` | String | a random id the phone mints for each submit, so a retry is never written twice (item 22); identifies the request, not a person or a device |
 | CustomerEdit | `process` | EditProcess | structural / operational value |
 | CustomerEdit | `currentStepIndex` | Int | structural / operational value |
 | CustomerEdit | `pendingRole` | Role | structural / operational value |

@@ -59,6 +59,8 @@ import {
 import { resolveStepAudience, notifyUsers } from '@/lib/notifications';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from '@/lib/create-guards';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { answerIfLanded, findReceipt, shownTime } from '@/lib/submission-replay';
+import { omanWhen, submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 
 async function requireUser() {
   const session = await auth();
@@ -100,16 +102,35 @@ function zodIssuesToFields(issues: ZodIssue[]): Record<string, string> {
   return fields;
 }
 
-export async function submitCreateAction(
-  input: SubmitCreateInput
-): SafeAction<{ editId: string; state: EditState }> {
+export async function submitCreateAction(input: SubmitCreateInput): SafeAction<SubmitReceipt> {
   return runAction(() => submitCreateCore(input));
 }
 
-async function submitCreateCore(
-  input: SubmitCreateInput
-): Promise<{ editId: string; state: EditState }> {
+async function submitCreateCore(input: SubmitCreateInput): Promise<SubmitReceipt> {
   const session = await requireUser();
+  // Item 22: a retry of a submit that already landed is answered from what it
+  // wrote. Without this, a lost reply on a fresh form dead-ended: the retry was
+  // refused because its photos "belong to another request" — the salesman's own.
+  const submissionId = submissionIdSchema.safeParse(input?.submissionId).data;
+  const rawEditId = typeof input?.editId === 'string' ? input.editId : undefined;
+  const receipt = () =>
+    findReceipt(prisma, session.id, submissionId, {
+      process: EditProcess.CREATE,
+      ...(rawEditId ? { editId: rawEditId } : {}),
+    });
+  const replayed = await receipt();
+  if (replayed) return replayed;
+  // …and one that overlapped its first attempt — refused by the identity lock's
+  // duplicate check, the id's unique index, the photo claim or the draft claim —
+  // is answered the same way instead of with the refusal.
+  return answerIfLanded(() => submitCreateOnce(input, session, submissionId), receipt);
+}
+
+async function submitCreateOnce(
+  input: SubmitCreateInput,
+  session: Awaited<ReturnType<typeof requireUser>>,
+  submissionId: string | undefined
+): Promise<SubmitReceipt> {
   const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
     throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
@@ -245,7 +266,7 @@ async function submitCreateCore(
       throw new ValidationError({ _form: 'A referenced photo is already wired to a customer.' });
     }
     if (a.editId && a.editId !== existing?.id) {
-      throw new ValidationError({ _form: 'A referenced photo belongs to another request.' });
+      throw await photoClaimedConflict(a.editId, session.id);
     }
     if (a.kind !== (AttachmentKind[ref.expect] as AttachmentKind)) {
       throw new ValidationError({
@@ -389,12 +410,22 @@ async function submitCreateCore(
           state: existing.state,
           cycle: existing.cycle,
           submittedById: session.id,
+          // Item 22: a draft save changes neither state nor cycle, so without
+          // this an overlapping retry of the SAME save re-passed the claim and
+          // rewrote the drafts (and wrote a second audit row). Its own id on
+          // the row means it landed: the claim misses, and the receipt answers.
+          ...(submissionId
+            ? { OR: [{ submissionId: null }, { submissionId: { not: submissionId } }] }
+            : {}),
         },
         data: {
           ...stateFields,
           ...creditFields,
           cycle,
           fieldChanges: gpsMarkers as unknown as Prisma.InputJsonValue,
+          // Item 22: the latest write's id answers its own retry. Undefined
+          // (an older client) leaves the column as it was.
+          submissionId,
         },
       });
       if (claim.count === 0) {
@@ -420,6 +451,7 @@ async function submitCreateCore(
           fieldChanges: gpsMarkers as unknown as Prisma.InputJsonValue,
           attachmentChanges: [] as unknown as Prisma.InputJsonValue,
           cycle: 1,
+          submissionId,
           ...stateFields,
           ...creditFields,
         },
@@ -512,5 +544,37 @@ async function submitCreateCore(
 
   revalidatePath('/work');
   revalidatePath('/approvals');
-  return { editId: edit.id, state: isDraft ? EditState.DRAFT : EditState.SUBMITTED };
+  return {
+    editId: edit.id,
+    state: isDraft ? EditState.DRAFT : EditState.SUBMITTED,
+    submittedAt: edit.submittedAt?.toISOString() ?? null,
+    replayed: false,
+  };
+}
+
+/**
+ * A referenced photo is already claimed by another request. When that request
+ * is the salesman's OWN (item 22: the reply to a first attempt was lost, and the
+ * retry changed something, so it carries a new id), say where his work went —
+ * the old message read like somebody else had his photos. A conflict, not a
+ * field error: it has no field, and the form says it beside the button.
+ */
+async function photoClaimedConflict(
+  editId: string,
+  meId: string
+): Promise<ValidationError | ConflictError> {
+  const other = await prisma.customerEdit.findUnique({
+    where: { id: editId },
+    select: { submittedById: true, state: true, submittedAt: true, updatedAt: true },
+  });
+  if (!other || other.submittedById !== meId) {
+    return new ValidationError({ _form: 'A referenced photo belongs to another request.' });
+  }
+  const when = omanWhen(shownTime(other));
+  return new ConflictError(
+    'REQUEST_ALREADY_SENT',
+    other.state === EditState.DRAFT
+      ? `These photos are already in your draft saved at ${when}. Open it from My work to carry on — anything you changed since was not saved.`
+      : `This request already arrived at ${when} — see My work. Anything you changed since was not sent.`
+  );
 }

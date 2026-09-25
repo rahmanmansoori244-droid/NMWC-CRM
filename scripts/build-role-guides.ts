@@ -481,6 +481,10 @@ const SALESMAN_EN: Guide = {
             "I'm mid-form and need to leave",
             'Tap "Save draft". You can come back within 7 days and finish.',
           ],
+          [
+            'The signal dropped while I was submitting',
+            'The app says, beside the button, whether your submit arrived. Stay on the page and tap "Try again" when you have signal. If it had already arrived you see "Already received" — it is never sent twice.',
+          ],
         ],
       },
     },

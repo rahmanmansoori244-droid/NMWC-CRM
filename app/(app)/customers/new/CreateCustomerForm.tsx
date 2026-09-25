@@ -18,7 +18,9 @@ import { FormSection } from '@/components/nmwc/FormSection';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
-import { submitCreateAction } from '@/services/creates';
+import { postForm, noticeFor, SubmissionIds, type SubmitNotice } from '@/lib/submit-client';
+import type { SubmitReceipt } from '@/lib/submission';
+import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
 
 type ChannelWithSubs = {
@@ -131,6 +133,13 @@ export function CreateCustomerForm({
   const [info, setInfo] = useState<string | null>(null);
   const submitLockRef = useRef(false);
   const [editId, setEditId] = useState<string | null>(initial?.editId ?? null);
+  // Item 22: what happened to the last submit, said beside the button; the
+  // submission ids that make a retry safe; and which button the retry repeats.
+  const [notice, setNotice] = useState<SubmitNotice | null>(null);
+  const idsRef = useRef<SubmissionIds | null>(null);
+  const lastWasDraftRef = useRef(false);
+  // Set when a retry learns the request had already arrived: nothing to send.
+  const [arrived, setArrived] = useState(false);
 
   // A SUBMITTED request is read-only for the salesman until it is decided.
   const readOnly = initial?.state === 'SUBMITTED';
@@ -221,7 +230,7 @@ export function CreateCustomerForm({
     if (!s.shopPhotoId) missingMandatory.push(`${tag} shop photo`);
     if (!s.signboardPhotoId) missingMandatory.push(`${tag} signboard photo`);
   });
-  const submitBlocked = readOnly || missingMandatory.length > 0;
+  const submitBlocked = readOnly || arrived || missingMandatory.length > 0;
 
   // ── Local draft auto-save (UXI-002 posture: scoped per user + request). ──
   // Only for NEVER-server-saved forms: once a server draft exists (initial !=
@@ -256,8 +265,11 @@ export function CreateCustomerForm({
       if (typeof d.notes === 'string') setNotes(d.notes);
       if (typeof d.creditLimit === 'string') setCreditLimit(d.creditLimit);
       if (typeof d.termDays === 'string') setTermDays(d.termDays);
+      // Item 22: this form was never saved to the server (a server draft would
+      // have been loaded instead), so nothing else was kept anywhere. The old
+      // text said photos, GPS and branches were "kept on the server".
       setInfo(
-        'Restored the details you typed on this device. Photos, GPS and branch details are kept on the server — save a draft to keep everything.'
+        'Restored the details you typed on this phone. Branch details, GPS points and photos are not kept on the phone — add them again, then tap Save draft to keep everything.'
       );
     } catch {
       /* ignore */
@@ -306,6 +318,28 @@ export function CreateCustomerForm({
     termDays,
   ]);
 
+  // Item 22: a green "saved" or "received" no longer describes the form once it
+  // changes; a failure notice stays until the next try replaces it.
+  useEffect(() => {
+    setNotice((n) => (n?.tone === 'received' ? null : n));
+  }, [
+    legalName,
+    paymentTerms,
+    crNumber,
+    channelId,
+    subChannelId,
+    primaryPhone,
+    altPhone,
+    contactPerson,
+    contactRole,
+    notes,
+    creditLimit,
+    termDays,
+    crPhotoId,
+    guaranteeIds,
+    branchStates,
+  ]);
+
   function setBranch(key: number, patch: Partial<BState>) {
     setBranchStates((list) => list.map((b) => (b.key === key ? { ...b, ...patch } : b)));
   }
@@ -315,6 +349,9 @@ export function CreateCustomerForm({
     submitLockRef.current = true;
     setErrors({});
     setInfo(null);
+    // The notice stays while this try is in flight — its Try again reads
+    // "Trying…" under the thumb — and each outcome below replaces it.
+    lastWasDraftRef.current = isDraft;
 
     const payload = {
       editId: editId ?? undefined,
@@ -361,9 +398,21 @@ export function CreateCustomerForm({
       })),
     };
 
+    idsRef.current ??= new SubmissionIds();
+    // The same payload after no answer keeps its id, so a retry is never written twice.
+    const submissionId = idsRef.current.idFor(payload);
+
     start(async () => {
       try {
-        const result = await submitCreateAction(payload);
+        // Item 22: over fetch, not the server action (lib/submit-client.ts).
+        const outcome = await postForm<SubmitReceipt>('customer-create', { ...payload, submissionId });
+        const ids = idsRef.current!;
+        ids.settle(outcome);
+        // null for a first-time success and for field errors, which say
+        // themselves; every other outcome is said beside the button.
+        setNotice(noticeFor(outcome, { earlierUncertain: ids.uncertain }));
+        if (outcome.kind !== 'answered') return;
+        const result = outcome.result;
         if (!result.ok) {
           if (result.fields) {
             // Any key without a rendered slot must still surface somewhere —
@@ -377,25 +426,44 @@ export function CreateCustomerForm({
                 ? { _form: orphaned.map(([, v]) => v).join(' · ') }
                 : {}),
             });
-          } else {
-            setErrors({ _form: result.message });
+          }
+          return;
+        }
+        const res = result.data;
+        if (res.replayed) {
+          // It had already arrived: said above, beside the button. Stay. The
+          // request exists on the server now, so the never-saved copy on the
+          // phone goes — else the next "New customer" opens pre-filled with
+          // this shop. A saved draft becomes this form's request.
+          if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+          if (res.state === 'DRAFT') {
+            setEditId(res.editId);
+            if (typeof window !== 'undefined') {
+              window.history.replaceState(null, '', `/customers/new?edit=${res.editId}`);
+            }
+          } else if (res.state === 'SUBMITTED' || res.state === 'APPROVED') {
+            setArrived(true);
           }
           return;
         }
         if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
         if (isDraft) {
-          setEditId(result.data.editId);
-          setInfo('✓ Draft saved. Finish and submit when ready.');
+          setEditId(res.editId);
+          setNotice({ tone: 'received', text: '✓ Draft saved. Finish and submit when ready.' });
           // Pin the URL to this request so a refresh resumes it (no reload).
           if (typeof window !== 'undefined') {
-            window.history.replaceState(null, '', `/customers/new?edit=${result.data.editId}`);
+            window.history.replaceState(null, '', `/customers/new?edit=${res.editId}`);
           }
         } else {
-          setInfo('✓ Submitted for approval.');
+          // Item 22: said beside the button BEFORE moving on — the next page can
+          // be slow or fail to load on weak signal. The refresh: revalidatePath
+          // in a route handler does not clear the browser's router cache (a
+          // server action's did), so My work could still list this as a draft.
+          setArrived(true);
+          setNotice({ tone: 'received', text: '✓ Submitted for approval. It arrived — nothing more to do.' });
           router.replace('/work');
+          router.refresh();
         }
-      } catch (err) {
-        setErrors({ _form: err instanceof Error ? err.message : 'Failed to save.' });
       } finally {
         submitLockRef.current = false;
       }
@@ -915,24 +983,31 @@ export function CreateCustomerForm({
       {!readOnly && (
         <>
           <div className="mb-3" />
-          <div className="sticky bottom-0 -mx-4 mt-4 flex items-center justify-start gap-3 border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
-            <button
-              type="button"
-              disabled={pending || submitBlocked}
-              onClick={() => submit(false)}
-              className="rounded-md bg-brand-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-              title={missingMandatory.length > 0 ? `Missing: ${missingMandatory.join(', ')}` : ''}
-            >
-              {pending ? 'Submitting…' : 'Submit for approval ▶'}
-            </button>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => submit(true)}
-              className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-            >
-              {pending ? 'Saving…' : 'Save draft'}
-            </button>
+          <div className="sticky bottom-0 -mx-4 mt-4 flex flex-col border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
+            <SubmitNoticeBox
+              notice={notice}
+              busy={pending}
+              onRetry={() => submit(lastWasDraftRef.current)}
+            />
+            <div className="flex items-center justify-start gap-3">
+              <button
+                type="button"
+                disabled={pending || submitBlocked}
+                onClick={() => submit(false)}
+                className="rounded-md bg-brand-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                title={missingMandatory.length > 0 ? `Missing: ${missingMandatory.join(', ')}` : ''}
+              >
+                {arrived ? 'Sent ✓' : pending ? 'Submitting…' : 'Submit for approval ▶'}
+              </button>
+              <button
+                type="button"
+                disabled={pending || arrived}
+                onClick={() => submit(true)}
+                className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {pending ? 'Saving…' : 'Save draft'}
+              </button>
+            </div>
           </div>
 
           {missingMandatory.length > 0 && (

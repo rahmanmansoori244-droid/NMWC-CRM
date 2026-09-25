@@ -8,7 +8,10 @@ import { surfaceUnrenderedErrors, enrichmentFormRendersError } from '@/lib/form-
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
-import { submitEditAction } from '@/services/edits';
+import { postForm, noticeFor, SubmissionIds, type SubmitNotice } from '@/lib/submit-client';
+import type { SubmitReceipt } from '@/lib/submission';
+import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
+import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
 import { isRequired, type SubmitGate } from '@/lib/submit-gate';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
 
@@ -101,6 +104,17 @@ export function EnrichmentForm({
   // UXI-004: synchronous lock so a rapid double-tap on Submit never fires the
   // server action twice. `pending` from useTransition flips asynchronously.
   const submitLockRef = useRef(false);
+  // Item 22: what happened to the last submit, said beside the button; the
+  // submission ids that make a retry safe; and which button the retry repeats.
+  const [notice, setNotice] = useState<SubmitNotice | null>(null);
+  const idsRef = useRef<SubmissionIds | null>(null);
+  const lastWasDraftRef = useRef(false);
+  // Set when a retry learns the submit had already arrived: nothing to send.
+  const [arrived, setArrived] = useState(false);
+  // Item 22: the server values this form started from. The phone draft is stale
+  // only when these change on the server — not when a photo bumps updatedAt.
+  const baseRef = useRef<string | null>(null);
+  if (baseRef.current === null) baseRef.current = enrichmentBase(customer);
 
   // Customer-level state
   const [legalName, setLegalName] = useState(customer.legalName);
@@ -202,7 +216,8 @@ export function EnrichmentForm({
         missingMandatory.push(`${tag} signboard photo`);
     });
   }
-  const submitBlocked = !canSubmit || (userRole === Role.SALESMAN && missingMandatory.length > 0);
+  const submitBlocked =
+    !canSubmit || arrived || (userRole === Role.SALESMAN && missingMandatory.length > 0);
   const submitTitle = !canSubmit
     ? 'Pending edit already in review'
     : missingMandatory.length > 0
@@ -234,9 +249,11 @@ export function EnrichmentForm({
     if (!saved) return;
     try {
       const d = JSON.parse(saved);
-      // UXI-003: stale-draft guard. If the server has been updated after the
-      // draft was saved, prefer server data and tell the user.
-      if (typeof d.savedAt === 'number' && d.savedAt < customerUpdatedAtMs) {
+      // UXI-003: stale-draft guard. If the server values the draft started from
+      // have changed since, prefer server data and tell the user. Item 22: by
+      // the values, not updatedAt — a photo taken after typing bumps updatedAt,
+      // and every such draft used to be thrown away here.
+      if (draftIsStale(d, baseRef.current!, customerUpdatedAtMs)) {
         setInfo(
           'Your offline draft is older than the latest server changes. The form has been refreshed — re-enter anything you still need.'
         );
@@ -284,9 +301,12 @@ export function EnrichmentForm({
           notes,
           branchStates,
           savedAt: Date.now(),
+          base: baseRef.current,
         })
       );
     }, 500);
+    // Item 22: a green "saved" no longer describes the form once it changes.
+    setNotice((n) => (n?.tone === 'received' ? null : n));
     return () => clearTimeout(handle);
   }, [
     draftKey,
@@ -313,6 +333,9 @@ export function EnrichmentForm({
     submitLockRef.current = true;
     setErrors({});
     setInfo(null);
+    // The notice stays while this try is in flight — its Try again reads
+    // "Trying…" under the thumb — and each outcome below replaces it.
+    lastWasDraftRef.current = isDraft;
 
     // EL-01 mirror: salesmen cannot SUBMIT a customer-level status flip via
     // the regular edit form. Drop the status field from the payload entirely
@@ -351,43 +374,70 @@ export function EnrichmentForm({
       emptyBottlesCount: s.bottles,
     }));
 
+    const body = { customerId: customer.id, isDraft, customer: customerPayload, branches };
+    idsRef.current ??= new SubmissionIds();
+    // The same payload after no answer keeps its id, so a retry is never written twice.
+    const submissionId = idsRef.current.idFor(body);
+
     start(async () => {
       try {
-        // PROD-006: server actions return `{ ok, data?, code, message,
-        // fields? }` — they no longer throw AppError across the SC boundary.
-        // See lib/errors.ts (runAction).
-        const result = await submitEditAction({
-          customerId: customer.id,
-          isDraft,
-          customer: customerPayload,
-          branches,
-        });
+        // Item 22: over fetch, not the server action (lib/submit-client.ts says
+        // why). The answer is the action's own `{ ok, data?, code, message,
+        // fields? }` (PROD-006, lib/errors.ts runAction) — or what is known
+        // when there was none.
+        const outcome = await postForm<SubmitReceipt>('customer-edit', { ...body, submissionId });
+        const ids = idsRef.current!;
+        ids.settle(outcome);
+        // null for a first-time success and for field errors, which say
+        // themselves; every other outcome is said beside the button.
+        setNotice(noticeFor(outcome, { earlierUncertain: ids.uncertain }));
+        if (outcome.kind !== 'answered') return;
+        const result = outcome.result;
         if (!result.ok) {
           if (result.fields) {
             // A key with no slot on this form still surfaces, at the top.
             setErrors(surfaceUnrenderedErrors(result.fields, enrichmentFormRendersError));
-          } else {
-            setErrors({ _form: result.message });
           }
           return;
         }
         const res = result.data;
-        if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
-        if (isDraft) {
-          setInfo('✓ Draft saved.');
-        } else if (res.state === 'APPROVED') {
-          setInfo('✓ Saved (auto-approved as ' + userRole + ').');
-          // UXI-005: router.replace (not push) so Back doesn't return to a
-          // stale, fully-populated form that encourages a duplicate submit.
-          router.replace(`/customers/${customer.id}`);
-        } else {
-          setInfo('✓ Submitted to your supervisor for approval.');
-          router.replace(`/customers/${customer.id}`);
+        if (res.replayed) {
+          // It had already arrived: said above, beside the button. Stay — there
+          // is nothing to send, and moving on would hide the answer.
+          if (res.state === 'SUBMITTED' || res.state === 'APPROVED') {
+            if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+            if (!isDraft) setArrived(true);
+          }
+          return;
         }
-      } catch (err) {
-        // Genuine 500s only reach here — AppError is converted to the
-        // returned shape above.
-        setErrors({ _form: err instanceof Error ? err.message : 'Failed to save.' });
+        if (isDraft) {
+          // Owner decision (item 22): the draft stays on this phone, as the
+          // guide promises — no longer deleted by a successful save.
+          setNotice({
+            tone: 'received',
+            text: '✓ Draft saved. It stays on this phone until you submit.',
+          });
+          return;
+        }
+        if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+        // Item 22: said beside the button BEFORE moving on — on weak signal the
+        // next page can take a while, or fail to load, and the salesman must
+        // already know that this arrived.
+        setArrived(true);
+        setNotice({
+          tone: 'received',
+          text:
+            res.state === 'APPROVED'
+              ? `✓ Saved (auto-approved as ${userRole}).`
+              : '✓ Submitted for approval. It arrived — nothing more to do.',
+        });
+        // UXI-005: router.replace (not push) so Back doesn't return to a
+        // stale, fully-populated form that encourages a duplicate submit. The
+        // refresh: revalidatePath in a route handler does not clear the
+        // browser's router cache (a server action's did), so without it a page
+        // seen in the last 30 s comes back showing the old values.
+        router.replace(`/customers/${customer.id}`);
+        router.refresh();
       } finally {
         submitLockRef.current = false;
       }
@@ -727,24 +777,31 @@ export function EnrichmentForm({
           Save Draft on the right. gap-3 prevents fat-finger confusion, and
           mb-3 above the bar gives a 12px safe-zone over the previous content. */}
       <div className="mb-3" />
-      <div className="sticky bottom-0 -mx-4 mt-4 flex items-center justify-start gap-3 border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
-        <button
-          type="button"
-          disabled={pending || submitBlocked}
-          onClick={() => submit(false)}
-          className="rounded-md bg-brand-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-          title={submitTitle}
-        >
-          {pending ? 'Submitting…' : 'Submit for approval ▶'}
-        </button>
-        <button
-          type="button"
-          disabled={pending}
-          onClick={() => submit(true)}
-          className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-        >
-          {pending ? 'Saving…' : 'Save draft'}
-        </button>
+      <div className="sticky bottom-0 -mx-4 mt-4 flex flex-col border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
+        <SubmitNoticeBox
+          notice={notice}
+          busy={pending}
+          onRetry={() => submit(lastWasDraftRef.current)}
+        />
+        <div className="flex items-center justify-start gap-3">
+          <button
+            type="button"
+            disabled={pending || submitBlocked}
+            onClick={() => submit(false)}
+            className="rounded-md bg-brand-600 px-5 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            title={submitTitle}
+          >
+            {arrived ? 'Sent ✓' : pending ? 'Submitting…' : 'Submit for approval ▶'}
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => submit(true)}
+            className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+          >
+            {pending ? 'Saving…' : 'Save draft'}
+          </button>
+        </div>
       </div>
 
       {userRole === Role.SALESMAN && missingMandatory.length > 0 && canSubmit && (

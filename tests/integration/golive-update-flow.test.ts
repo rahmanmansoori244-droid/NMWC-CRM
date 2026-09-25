@@ -1081,4 +1081,259 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const [sheet] = await (await import('@/lib/excel')).parseWorkbook(master.bytes);
     expect(sheet!.rows.map((r) => r.branch_code)).not.toContain(gone.branchCode);
   });
+
+  // ── 12. a lost reply: the retry is answered, never written twice (item 22) ──
+  /** A customer of its own on the salesman's route, so no earlier open edit is in the way. */
+  async function lostReplyCustomer(code: string) {
+    const c = await prisma.customer.create({
+      data: {
+        nmwcCode: code,
+        legalName: `Lost reply ${code}`,
+        paymentTerms: 'CASH',
+        channelId,
+        temixCode: code,
+        branches: {
+          create: {
+            branchCode: `${code}-01`,
+            branchName: `Lost reply ${code}`,
+            regionId: ids.regionId,
+            routeId: ids.routeId,
+            address: 'Imported address, Muscat',
+          },
+        },
+      },
+      include: { branches: true },
+    });
+    ids.extraCustomerIds.push(c.id);
+    return { customerId: c.id, branchId: c.branches[0]!.id };
+  }
+  /** A salesman's submit needs a shop photo on the branch (the CORE gate). */
+  async function withShopPhoto(branchId: string) {
+    const shop = await finalizedPhoto('SHOP');
+    expect((await photos.attachPhotoAction({ attachmentId: shop, branchId, slot: 'SHOP' })).ok).toBe(true);
+  }
+
+  it('an update retried with its submission id is answered "already received" and written once — even after it was sent back', async () => {
+    asSalesman();
+    const { customerId, branchId } = await lostReplyCustomer(`${sfx}012`);
+    await withShopPhoto(branchId);
+    const sid = randomUUID();
+    const send = (id = sid, overrides: Record<string, unknown> = {}) =>
+      edits.submitEditAction({ ...fullPayload(customerId, branchId, overrides), submissionId: id });
+
+    const first = await send();
+    expect(first.ok, JSON.stringify(first)).toBe(true);
+    if (!first.ok) return;
+    expect(first.data).toMatchObject({ state: 'SUBMITTED', replayed: false });
+    const notified = await prisma.notification.count({ where: { editId: first.data.editId } });
+    expect(notified).toBeGreaterThan(0);
+
+    // The reply was lost; the phone sends the same payload with the same id.
+    const retry = await send();
+    expect(retry).toEqual({
+      ok: true,
+      data: { editId: first.data.editId, state: 'SUBMITTED', submittedAt: first.data.submittedAt, replayed: true },
+    });
+    expect(await prisma.customerEdit.count({ where: { customerId } })).toBe(1);
+    expect(await prisma.notification.count({ where: { editId: first.data.editId } })).toBe(notified);
+    const stored = await prisma.customerEdit.findUniqueOrThrow({ where: { id: first.data.editId } });
+    expect(stored.submissionId).toBe(sid);
+
+    // Changed after the lost reply: a new id, so not a replay — refused, but told
+    // in words that it is HIS submit, and that it arrived.
+    const changed = await send(randomUUID(), { customer: { contactRole: 'Manager' } });
+    expect(changed.ok).toBe(false);
+    if (!changed.ok) {
+      expect(changed.code).toBe('EDIT_LOCKED');
+      expect(changed.message).toMatch(/^Your changes sent at \d\d:\d\d already arrived and are waiting for approval/);
+    }
+
+    // The same id for a different customer is refused, not answered with this receipt.
+    const reused = await edits.submitEditAction({
+      ...fullPayload(ids.customerIds[1]!, ids.branchIds[`${sfx}002`]!),
+      submissionId: sid,
+    });
+    expect(reused.ok).toBe(false);
+    if (!reused.ok) expect(reused.code).toBe('SUBMISSION_ID_REUSED');
+
+    // Sent back before the retry arrived: the retry says so, and does NOT put the
+    // same content in front of the approver again (it used to).
+    asManager();
+    const fd = new FormData();
+    fd.set('editId', first.data.editId);
+    fd.set('reason', 'Please confirm the contact with the shop.');
+    fd.set('category', 'wrong_info');
+    expect((await edits.rejectEditAction(fd)).ok).toBe(true);
+    asSalesman();
+    const late = await send();
+    expect(late.ok).toBe(true);
+    if (late.ok) {
+      expect(late.data).toMatchObject({ editId: first.data.editId, state: 'NEEDS_CORRECTION', replayed: true });
+    }
+    expect(await prisma.customerEdit.count({ where: { customerId, state: 'SUBMITTED' } })).toBe(0);
+    expect(await prisma.customerEdit.count({ where: { customerId } })).toBe(1);
+  });
+
+  it('two overlapping attempts with one id: one request, both answered with it', async () => {
+    asSalesman();
+    const { customerId, branchId } = await lostReplyCustomer(`${sfx}013`);
+    await withShopPhoto(branchId);
+    const body = { ...fullPayload(customerId, branchId), submissionId: randomUUID() };
+    const [a, b] = await Promise.all([edits.submitEditAction(body), edits.submitEditAction(body)]);
+    expect(a.ok, JSON.stringify(a)).toBe(true);
+    expect(b.ok, JSON.stringify(b)).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(a.data.editId).toBe(b.data.editId);
+    expect([a.data.replayed, b.data.replayed].filter(Boolean)).toHaveLength(1);
+    expect(await prisma.customerEdit.count({ where: { customerId } })).toBe(1);
+  });
+
+  it("a manager's direct write retried with its id is applied once: one edit, one audit row", async () => {
+    asManager();
+    const { customerId } = await lostReplyCustomer(`${sfx}014`);
+    // Minimal, as section 8: a direct write applies to the live customer, and the
+    // full payload's phone is already live on customer 001 (unique while active).
+    const body = {
+      customerId,
+      isDraft: false,
+      customer: { contactPerson: 'Direct write once' },
+      branches: [],
+      submissionId: randomUUID(),
+    };
+    // Overlapping, then once more after both finished.
+    const [a, b] = await Promise.all([edits.submitEditAction(body), edits.submitEditAction(body)]);
+    const c = await edits.submitEditAction(body);
+    for (const r of [a, b, c]) expect(r.ok, JSON.stringify(r)).toBe(true);
+    if (!a.ok || !b.ok || !c.ok) return;
+    expect(new Set([a.data.editId, b.data.editId, c.data.editId]).size).toBe(1);
+    expect(c.data).toMatchObject({ state: 'APPROVED', replayed: true });
+    expect(await prisma.customerEdit.count({ where: { customerId } })).toBe(1);
+    const audits = await prisma.auditLog.count({
+      where: { entityType: 'Customer', entityId: customerId, reason: { startsWith: 'direct-write:' } },
+    });
+    expect(audits).toBe(1);
+    const live = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
+    expect(live.contactPerson).toBe('Direct write once');
+  });
+
+  it('a new-customer draft retried with its id is one draft; a changed retry is told where its photos went', async () => {
+    const creates = await import('@/services/creates');
+    asSalesman();
+    const shop = await finalizedPhoto('SHOP');
+    const draft = (legalName: string, submissionId: string) => ({
+      isDraft: true,
+      customer: { legalName, paymentTerms: 'CASH' as const },
+      branches: [{ branchName: 'Main', shopPhotoAttachmentId: shop }],
+      submissionId,
+    });
+    const sid = randomUUID();
+    const first = await creates.submitCreateAction(draft(`ZZ Lost reply ${sfx}`, sid));
+    expect(first.ok, JSON.stringify(first)).toBe(true);
+    if (!first.ok) return;
+    const retry = await creates.submitCreateAction(draft(`ZZ Lost reply ${sfx}`, sid));
+    expect(retry.ok && retry.data).toMatchObject({ editId: first.data.editId, state: 'DRAFT', replayed: true });
+    expect(await prisma.customerEdit.count({ where: { submittedById: ids.salesmanId, submissionId: sid } })).toBe(1);
+    expect(await prisma.editCustomerDraft.count({ where: { editId: first.data.editId } })).toBe(1);
+
+    // The form never learned its draft's id (the reply was lost), and the name
+    // was corrected before retrying: a new id. Its photo is in his own draft —
+    // say so, rather than "belongs to another request".
+    const changed = await creates.submitCreateAction(draft(`ZZ Lost reply (fixed) ${sfx}`, randomUUID()));
+    expect(changed.ok).toBe(false);
+    if (!changed.ok) {
+      // A conflict with no field, so the form says it beside the button.
+      expect(changed.code).toBe('REQUEST_ALREADY_SENT');
+      expect(changed.fields).toBeUndefined();
+      expect(changed.message).toMatch(/^These photos are already in your draft saved at \d\d:\d\d\. Open it from My work/);
+    }
+  });
+
+  it('a close-shop request retried with its id is answered, and a changed one is told it is his own', async () => {
+    const react = await import('@/services/reactivations');
+    asSalesman();
+    const { customerId, branchId } = await lostReplyCustomer(`${sfx}015`);
+    const evidence = await prisma.attachment.create({
+      data: {
+        kind: 'FREE',
+        r2Key: `2026/09/25/${ids.salesmanId}/FREE/${randomUUID()}.jpg`,
+        mimeType: 'image/jpeg',
+        bytes: 1000,
+        capturedById: ids.salesmanId,
+        capturedAt: new Date(),
+        branchExtraId: branchId,
+      },
+    });
+    ids.attachmentIds.push(evidence.id);
+    const close = (submissionId: string, reason = 'Shop shut permanently — seen today.') => {
+      const fd = new FormData();
+      fd.set('branchId', branchId);
+      fd.set('reason', reason);
+      fd.set('attachmentId', evidence.id);
+      fd.set('submissionId', submissionId);
+      return react.markBranchClosedAction(fd);
+    };
+    const sid = randomUUID();
+    const first = await close(sid);
+    expect(first.ok, JSON.stringify(first)).toBe(true);
+    if (!first.ok) return;
+    const retry = await close(sid);
+    expect(retry.ok && retry.data).toMatchObject({ editId: first.data.editId, state: 'SUBMITTED', replayed: true });
+    expect(await prisma.customerEdit.count({ where: { customerId } })).toBe(1);
+
+    const changed = await close(randomUUID(), 'Shop shut permanently — shutters down.');
+    expect(changed.ok).toBe(false);
+    if (!changed.ok) {
+      expect(changed.code).toBe('OPEN_EDIT_EXISTS');
+      expect(changed.message).toMatch(
+        /^Your request to mark a branch closed, sent at \d\d:\d\d, already arrived and is waiting for review/
+      );
+    }
+
+    // A DIFFERENT request of his is refused by the pending close. It must not be
+    // told "your changes arrived" — it was not sent (post-review fix).
+    const update = await edits.submitEditAction({
+      ...fullPayload(customerId, branchId),
+      submissionId: randomUUID(),
+    });
+    expect(update.ok).toBe(false);
+    if (!update.ok) {
+      expect(update.code).toBe('EDIT_LOCKED');
+      expect(update.message).toMatch(
+        /^Your request to mark a branch closed, sent at \d\d:\d\d, is still waiting for review, so these changes were NOT sent/
+      );
+    }
+  });
+
+  it('a resumed new-customer draft saved twice at once with one id is written once', async () => {
+    const creates = await import('@/services/creates');
+    asSalesman();
+    const first = await creates.submitCreateAction({
+      isDraft: true,
+      customer: { legalName: `ZZ Resumed draft ${sfx}`, paymentTerms: 'CASH' as const },
+      branches: [{ branchName: 'Main' }],
+      submissionId: randomUUID(),
+    });
+    expect(first.ok, JSON.stringify(first)).toBe(true);
+    if (!first.ok) return;
+    const editId = first.data.editId;
+    // Resumed, edited, saved — and the save overlaps its own retry. A draft save
+    // changes neither state nor cycle, so the claim alone let both through.
+    const save = {
+      editId,
+      isDraft: true,
+      customer: { legalName: `ZZ Resumed draft (edited) ${sfx}`, paymentTerms: 'CASH' as const },
+      branches: [{ branchName: 'Main' }],
+      submissionId: randomUUID(),
+    };
+    const [a, b] = await Promise.all([creates.submitCreateAction(save), creates.submitCreateAction(save)]);
+    expect(a.ok, JSON.stringify(a)).toBe(true);
+    expect(b.ok, JSON.stringify(b)).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect([a.data.editId, b.data.editId]).toEqual([editId, editId]);
+    expect([a.data.replayed, b.data.replayed].filter(Boolean)).toHaveLength(1);
+    const updates = await prisma.auditLog.count({
+      where: { entityType: 'CustomerEdit', entityId: editId, action: 'UPDATE' },
+    });
+    expect(updates).toBe(1);
+  });
 });

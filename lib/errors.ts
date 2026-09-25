@@ -1,4 +1,4 @@
-import { isTransientDbError } from './db-errors';
+import { isTransientDbError, mayHaveCommitted } from './db-errors';
 
 export class AppError extends Error {
   readonly code: string;
@@ -154,12 +154,24 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
     // engine faults were once recorded as permanent row rejections — so the
     // same classifier is used here.
     if (isTransientDbError(err, code ?? '')) {
-      return {
-        ok: false,
-        code: code === 'P1017' ? 'DB_INTERRUPTED' : 'DB_UNAVAILABLE',
-        message:
-          'The database did not respond in time. Nothing was saved — please try again in a moment.',
-      };
+      // A connection or engine that died mid-request may have died after the
+      // commit, so it must not promise that nothing was saved (item 22: telling
+      // a salesman the opposite of what happened is the defect either way). The
+      // field forms treat both codes as "no answer" and retry with the same
+      // submission id, which finds out (lib/submit-client.ts).
+      return mayHaveCommitted(err, code ?? '')
+        ? {
+            ok: false,
+            code: 'DB_INTERRUPTED',
+            message:
+              'The connection to the database dropped mid-request, so this may or may not have been saved. Check before you try again.',
+          }
+        : {
+            ok: false,
+            code: 'DB_UNAVAILABLE',
+            message:
+              'The database did not respond in time. Nothing was saved — please try again in a moment.',
+          };
     }
     // Genuine programmer error: re-throw so Next.js / Sentry can capture.
     throw err;

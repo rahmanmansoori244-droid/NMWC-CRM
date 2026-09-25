@@ -14,6 +14,7 @@
  *     never needed.
  */
 import { z } from 'zod';
+import { submissionIdSchema } from '../submission';
 import { DayOfWeek, PaymentTerms } from '@prisma/client';
 import { gpsManualReasonSchema } from '../gps-manual';
 
@@ -89,6 +90,8 @@ export const submitCreateSchema = z.object({
   editId: z.string().cuid().optional(),
   isDraft: z.boolean().default(false),
   customer: createCustomerDraftSchema,
+  /** Item 22: the phone's id for this payload, so a retry is never written twice. */
+  submissionId: submissionIdSchema.optional(),
   /**
    * CREDIT application figures. FM/GM approve or reject these REQUESTED
    * values — no amendment (owner-confirmed) — and finalize copies them onto

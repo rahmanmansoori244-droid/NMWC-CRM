@@ -107,6 +107,10 @@ export function maintenanceResponse(req: NextRequest): NextResponse | null {
       // browser caches the closed page past the maintenance itself.
       'retry-after': '900',
       'cache-control': 'no-store, must-revalidate',
+      // Item 22: lets a field form's submit tell "closed, nothing was read"
+      // from a server fault after which the write may have landed
+      // (lib/submit-client.ts MAINTENANCE_HEADER).
+      'x-nmwc-maintenance': '1',
     },
   });
 }

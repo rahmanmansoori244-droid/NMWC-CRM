@@ -34,3 +34,17 @@ export function isTransientDbError(err: unknown, code: string): boolean {
     msg
   );
 }
+
+/**
+ * Of those, the faults that can come AFTER the commit: the connection or the
+ * engine died mid-request, or gave up waiting on a statement the database may
+ * still have finished. What was written is unknown, so nothing may promise that
+ * nothing was saved (item 22). The rest — unreachable, no pool connection, an
+ * interactive transaction that closed (and so rolled back) — failed before any
+ * write could stand.
+ */
+export function mayHaveCommitted(err: unknown, code: string): boolean {
+  if (code === 'P1017' || code === 'P1008') return true;
+  const msg = err instanceof Error ? err.message : '';
+  return /Response from the Engine was empty|Server has closed the connection/i.test(msg);
+}

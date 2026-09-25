@@ -24,6 +24,8 @@ import { markManualGps, takeManualGpsReason, type FieldChange } from '@/lib/gps-
 import { normalizeCR } from '@/lib/cr';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
+import { answerIfLanded, findReceipt, ownOpenRequestMessage } from '@/lib/submission-replay';
+import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import {
   resolveChain,
   parseChain,
@@ -214,16 +216,38 @@ function collectMissingMandatory(
  * message?, fields? }` — see lib/errors.ts. Throws are reserved for
  * programmer errors / framework signals (NEXT_REDIRECT).
  */
-export async function submitEditAction(
-  input: SubmitEditInput
-): SafeAction<{ editId: string; state: EditState }> {
+export async function submitEditAction(input: SubmitEditInput): SafeAction<SubmitReceipt> {
   return runAction(() => submitEditCore(input));
 }
 
-async function submitEditCore(
-  input: SubmitEditInput
-): Promise<{ editId: string; state: EditState }> {
+async function submitEditCore(input: SubmitEditInput): Promise<SubmitReceipt> {
   const session = await requireUser();
+  // Item 22: a retry of a submit that already landed is answered from what it
+  // wrote, before anything else runs — not rate-limited, not re-validated
+  // against a customer its own approval may have changed since.
+  const submissionId = submissionIdSchema.safeParse(input?.submissionId).data;
+  const rawCustomerId = typeof input?.customerId === 'string' ? input.customerId : undefined;
+  const receipt = () =>
+    rawCustomerId
+      ? findReceipt(prisma, session.id, submissionId, {
+          process: EditProcess.UPDATE,
+          target: EditTarget.CUSTOMER,
+          customerId: rawCustomerId,
+        })
+      : Promise.resolve(null);
+  const replayed = await receipt();
+  if (replayed) return replayed;
+  // …and one that overlapped its first attempt, and was refused by what that
+  // attempt changed (the one-open-edit index, "No changes to submit" after a
+  // direct write), is answered the same way instead of with the refusal.
+  return answerIfLanded(() => submitEditOnce(input, session, submissionId), receipt);
+}
+
+async function submitEditOnce(
+  input: SubmitEditInput,
+  session: Awaited<ReturnType<typeof requireUser>>,
+  submissionId: string | undefined
+): Promise<SubmitReceipt> {
   const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
     throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
@@ -311,7 +335,11 @@ async function submitEditCore(
     if (existing) {
       throw new ConflictError(
         'EDIT_LOCKED',
-        'A submitted edit is already pending review for this customer.'
+        // Item 22: when the open request is his own, say what it is — after a
+        // lost reply this is how he learns his earlier submit arrived.
+        existing.submittedById === session.id
+          ? ownOpenRequestMessage(existing, { kind: 'update' })
+          : 'A submitted edit is already pending review for this customer.'
       );
     }
   }
@@ -549,6 +577,10 @@ async function submitEditCore(
           reviewedAt: new Date(),
           fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
           attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+          // Item 22: an overlapping retry of this write is refused on the id
+          // (the database holds it until this commits), so the master is never
+          // written twice — before, it was: two APPROVED edits, two audit rows.
+          submissionId,
           ...chainFields,
         },
       });
@@ -588,6 +620,7 @@ async function submitEditCore(
           submittedAt,
           fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
           attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+          submissionId,
           ...chainFields,
           ...pendingFields,
         },
@@ -651,7 +684,12 @@ async function submitEditCore(
   revalidatePath('/today');
   revalidatePath('/customers');
   revalidatePath('/work');
-  return { editId: edit.id, state: edit.state };
+  return {
+    editId: edit.id,
+    state: edit.state,
+    submittedAt: edit.submittedAt?.toISOString() ?? null,
+    replayed: false,
+  };
 }
 
 async function applyEditChanges(

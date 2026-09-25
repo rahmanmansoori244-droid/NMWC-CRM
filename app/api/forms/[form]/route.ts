@@ -1,0 +1,86 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@/lib/auth';
+import { submitEditAction } from '@/services/edits';
+import { submitCreateAction } from '@/services/creates';
+import { markBranchClosedAction, requestReactivationAction } from '@/services/reactivations';
+import type { ActionResult } from '@/lib/errors';
+
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+/**
+ * The field forms' submits, over fetch (benchmark item 22; lib/submit-client.ts
+ * says why not a server action: a stalled one cannot be aborted, and every later
+ * action queues behind it). Each form calls the SAME function its server action
+ * was, so the checks, the audit and the submission-id replay are one code path.
+ *
+ * The reply is always the action's own `{ ok, … }` shape with status 200 — ok or
+ * not, the server read the request and answered. Anything else the client treats
+ * as "no answer": a 500 here is a programmer error thrown by runAction, left to
+ * propagate so it reaches the error reporting.
+ */
+type Json = Record<string, unknown>;
+
+const FORMS: Record<string, (body: Json) => Promise<ActionResult<unknown>>> = {
+  // The schemas inside each action validate the body; nothing is trusted here.
+  'customer-edit': (body) => submitEditAction(body as Parameters<typeof submitEditAction>[0]),
+  'customer-create': (body) => submitCreateAction(body as Parameters<typeof submitCreateAction>[0]),
+  'branch-close': (body) => markBranchClosedAction(formDataOf(body)),
+  'branch-reactivate': (body) => requestReactivationAction(formDataOf(body)),
+};
+
+/** The close / reactivate actions read FormData (their server-action shape). */
+function formDataOf(body: Json): FormData {
+  const fd = new FormData();
+  for (const key of ['branchId', 'reason', 'attachmentId', 'submissionId']) {
+    const v = body[key];
+    if (typeof v === 'string') fd.set(key, v);
+  }
+  return fd;
+}
+
+/** The host an Origin header names, or null for "null" and anything unparseable. */
+function originHost(origin: string): string | null {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return null;
+  }
+}
+
+const refuse = (status: number, code: string, message: string) =>
+  NextResponse.json({ ok: false, code, message }, { status });
+
+export async function POST(req: NextRequest, ctx: { params: Promise<{ form: string }> }) {
+  const { form } = await ctx.params;
+  const run = Object.hasOwn(FORMS, form) ? FORMS[form] : undefined;
+  if (!run) return refuse(404, 'NOT_FOUND', 'Unknown form.');
+  // Same-origin only. A JSON body cannot be sent cross-site without a CORS
+  // preflight this route never grants, and a browser that sends Origin must
+  // name this host — the check a server action gets from Next for free.
+  if (!(req.headers.get('content-type') ?? '').startsWith('application/json')) {
+    return refuse(415, 'UNSUPPORTED_MEDIA_TYPE', 'Send JSON.');
+  }
+  const origin = req.headers.get('origin');
+  if (origin && originHost(origin) !== (req.headers.get('x-forwarded-host') ?? req.headers.get('host'))) {
+    return refuse(403, 'FORBIDDEN', 'Cross-site request refused.');
+  }
+  // Signed out: say so with its own status, so the phone can tell "sign in and
+  // Try again — nothing was sent" from an answer. The sign-in gate in the
+  // middleware does NOT stop this request (auth.config.ts: its `false` is
+  // discarded), so without this the action's "Not signed in." came back as a
+  // final answer, with no Try again (post-review fix).
+  if (!(await auth())?.user) {
+    return refuse(401, 'SIGNED_OUT', 'You are signed out, so nothing was sent.');
+  }
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return refuse(400, 'INVALID_JSON', 'The request was not valid JSON.');
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return refuse(400, 'INVALID_JSON', 'The request was not a JSON object.');
+  }
+  return NextResponse.json(await run(body as Json));
+}

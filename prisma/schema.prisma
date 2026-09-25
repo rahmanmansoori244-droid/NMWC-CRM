@@ -424,6 +424,11 @@ model CustomerEdit {
   isWrongRoute      Boolean    @default(false)
   newRouteId        String?
 
+  // Item 22: the id the phone minted for this submit. A retry carrying an id the
+  // submitter already sent is answered with this row's receipt, never written
+  // twice (lib/submission-replay.ts). Null for rows no field form wrote.
+  submissionId      String?
+
   // Phase 1: net-new CREATE support (customerId is null for a CREATE request;
   // the proposed payload lives in EditCustomerDraft + EditBranchDraft[]).
   process EditProcess @default(UPDATE)
@@ -469,6 +474,7 @@ model CustomerEdit {
   @@index([branchId, state])
   @@index([pendingRole, state])
   @@index([state, slaDueAt])
+  @@unique([submittedById, submissionId])
 }
 
 // ── ATTACHMENTS ──────────────────────────────────────

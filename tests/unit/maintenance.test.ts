@@ -37,6 +37,10 @@ describe('maintenanceResponse', () => {
     expect(res!.headers.get('retry-after')).toBe('900');
     // A cached closed page outlives the maintenance and is worse than the outage.
     expect(res!.headers.get('cache-control')).toMatch(/no-store/);
+    // Item 22: the field forms read this as "closed, nothing was read", not as a
+    // fault after which the submit may have landed (lib/submit-client.ts).
+    const { MAINTENANCE_HEADER } = await import('@/lib/submit-client');
+    expect(res!.headers.get(MAINTENANCE_HEADER)).toBe('1');
     const body = await res!.text();
     // Both languages, because the people who see this are field staff.
     expect(body).toMatch(/temporarily closed/i);
