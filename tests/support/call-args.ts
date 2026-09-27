@@ -43,14 +43,33 @@ export function callArguments(src: string, callee: RegExp): string[] {
   return out;
 }
 
-/** The `{ … }` that follows `key:` in some text, e.g. the `where` of a Prisma call. */
+/** Every `{ … }` that follows `key:` in some text — each occurrence, not just the first. */
+export function objectsAfter(src: string, key: RegExp): string[] {
+  const out: string[] = [];
+  const re = new RegExp(key.source, key.flags.includes('g') ? key.flags : `${key.flags}g`);
+  for (const m of src.matchAll(re)) {
+    let i = m.index! + m[0].length;
+    while (i < src.length && /\s/.test(src[i]!)) i++;
+    if (src[i] === '{') out.push(balanced(src, i, m[0]));
+  }
+  return out;
+}
+
+/** The first `{ … }` after `key:` (e.g. the `where` of one Prisma call's arguments). */
 export function objectAfter(src: string, key: RegExp): string | null {
-  const m = key.exec(src);
-  if (!m) return null;
-  let i = m.index + m[0].length;
-  while (i < src.length && /\s/.test(src[i]!)) i++;
-  if (src[i] !== '{') return null;
-  return balanced(src, i, m[0]);
+  return objectsAfter(src, key)[0] ?? null;
+}
+
+/** The text of an object literal with every nested `{…}`, `[…]` and `(…)` removed. */
+export function topLevel(objectText: string): string {
+  let out = '';
+  let depth = 0;
+  for (const c of objectText) {
+    if (c === '{' || c === '[' || c === '(') depth++;
+    else if (c === '}' || c === ']' || c === ')') depth--;
+    else if (depth === 0) out += c;
+  }
+  return out;
 }
 
 /** Every .ts/.tsx file under the given directories. */

@@ -73,22 +73,39 @@ text. It reports company-wide counts and durations, which is why a Manager scope
 to one region may see it.
 
 Per-step figures are the exception, because some steps have a single holder. The
-General Manager step and the Finance Manager step each have one, so their on-time
-share, their median and their open queue are that one colleague's own record.
+General Manager step and the Finance Manager step each have one, so a figure that
+is theirs alone is that colleague's own record.
 
-For a Manager, every line on the page stands for at least three different people,
-and so does anything that can be worked out from the lines shown. The company-wide
-figure is above the step lines, so "company-wide minus the steps shown" gives away
-whatever is not shown. Hiding a small step is therefore not enough. Small steps are
-folded into one "other steps" line. While that line would still stand for fewer
-than three people, the smallest step shown is folded in with them. If everything
-together is fewer than three people, no step line is shown. People are counted as a
-set of decisions actually measured: one Manager who decides both the Supervisor
-step and reactivations is one person. The waiting queues follow the same rule, and
-when the only requests waiting are at steps too few people hold, the page says
-requests are waiting without saying how many.
+**The Data Steward** sees every step on its own.
 
-The Data Steward sees every step.
+**A Manager** sees three fixed groups, always the same three, whatever the data:
+
+- the Supervisor step;
+- the Accountant, Finance Manager and GM steps together;
+- reactivations.
+
+A group's figures are shown only when at least three different people stand
+behind them: people who decided a measured approval, or, for a waiting queue,
+people who can decide it. Otherwise the group says so and shows no figure. The
+company-wide approvals figure is shown to a Manager only when it too stands for
+three or more people, and when taking the shown groups away from it would still
+leave three or more.
+
+Three earlier versions of this rule each leaked the single-holder figures:
+
+- hiding a small step, while the company-wide figure above it gave it back by
+  subtraction;
+- folding it in with whichever step was smallest that day, so two page loads gave
+  it back;
+- keeping the company-wide figure when only one or two people stood behind
+  everything.
+
+The fixed groups close all three.
+
+**What no rule hides:** a live figure compared across two page loads shows the
+decisions made in between. If exactly one decision happened in between, and it
+was the GM's, the change is that decision. This is true of any live total, and
+the page is live on purpose.
 
 The error text of a failed job stays behind the monitor bearer on `/api/health`
 (OPERATIONS.md §5d).

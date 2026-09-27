@@ -52,7 +52,10 @@ function status(over: Partial<ServiceStatus> = {}): ServiceStatus {
     },
     openApprovals: [
       { role: 'SUPERVISOR', open: 4, pastDue: 2, oldestWorkingMinutes: 700, holders: MANAGERS },
+      { role: 'ACCOUNTANT', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: ACCOUNTANTS },
+      { role: 'FINANCE_MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: ['fm'] },
       { role: 'GM', open: 2, pastDue: 1, oldestWorkingMinutes: 660, holders: ['gm'] },
+      { role: 'MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: MANAGERS },
     ],
     temix: { status: 'met', waiting: 0, oldestWaitingSince: null, uploadedAwaitingTemix: 0 },
     imports: { status: 'breached', stuckPromotes: 1, stuckUploads: 0 },
@@ -124,6 +127,7 @@ describe('what it says', () => {
   });
 
   it('says what it could not count instead of guessing', async () => {
+    h.user = { id: 'x', role: 'STEWARD', username: 'x' };
     render(await StatusPage());
     expect(screen.getByText(/3 decisions made before the SLA was recorded/)).toBeTruthy();
     expect(screen.getByText(/5 with no probe at all/)).toBeTruthy();
@@ -131,10 +135,11 @@ describe('what it says', () => {
   });
 
   it('shows the open queue in working time', async () => {
-    // For a Manager the one-person GM queue folds in with the Supervisor queue.
+    // A Manager: the Supervisor queue, the credit steps together, reactivations.
     render(await StatusPage());
-    expect(screen.getByText('Other steps together')).toBeTruthy();
-    expect(screen.getByText(/3 past due · oldest waiting 11 h 40 m of working time/)).toBeTruthy();
+    expect(screen.getByText(/2 past due · oldest waiting 11 h 40 m of working time/)).toBeTruthy();
+    expect(screen.getByText('Accountant, Finance Manager and GM')).toBeTruthy();
+    expect(screen.getByText(/1 past due · oldest waiting 11 h 0 m of working time/)).toBeTruthy();
   });
 
   it('the Data Steward sees each queue on its own', async () => {
@@ -168,45 +173,89 @@ describe('what it says', () => {
 });
 
 describe('one colleague’s decision speed is not shown to the Managers', () => {
-  it('a Manager does not see the General Manager step on its own — it is folded in with the Accountants', async () => {
+  const card = () => screen.getByRole('heading', { name: 'Approvals decided within their SLA' }).closest('article')!;
+
+  it('a Manager sees the GM only inside the credit steps, with the accountants', async () => {
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     const { container } = render(await StatusPage());
-    const card = screen.getByRole('heading', { name: 'Approvals decided within their SLA' }).closest('article')!;
-    expect(card.textContent).toContain('63 of 80 decisions on time');
-    expect(card.textContent).toContain('Supervisor step: 30/40 on time');
-    // GM (1 person) + the smallest shown step (7 accountants): 33/40, 8 people.
-    expect(card.textContent).toContain('Other steps together: 33/40 on time');
-    expect(card.textContent).not.toContain('General manager');
-    expect(card.textContent).not.toContain('Accountant step');
-    // Company-wide minus the lines shown is the "other steps" line — nothing smaller.
-    expect(63 - 30).toBe(33);
+    expect(card().textContent).toContain('63 of 80 decisions on time');
+    expect(card().textContent).toContain('Supervisor step: 30/40 on time');
+    // GM 3/5 + accountants 30/35 = 33/40, 8 people; no median of medians.
+    expect(card().textContent).toContain('Accountant, Finance Manager and GM steps: 33/40 on time');
+    expect(card().textContent).not.toMatch(/Accountant, Finance Manager and GM steps: 33\/40 on time, median/);
     expect(container.textContent).not.toContain('General manager');
+    expect(container.textContent).not.toContain('Accountant step');
   });
 
-  it('a Manager is not told "nothing is waiting" when only single-holder steps have requests waiting', async () => {
+  it('the same three groups whatever the data: a GM decision adds no line and removes none', async () => {
+    h.user = { id: 'x', role: 'MANAGER', username: 'x' };
+    const lines = () =>
+      [...card().querySelectorAll('p')]
+        .map((p) => p.textContent!.split(':')[0]!)
+        .filter((l) => /^(Supervisor step|Accountant, Finance Manager and GM steps|Manager \(reactivations\))$/.test(l));
+    const before = status();
+    before.approvals.tiers = before.approvals.tiers.filter((t) => t.role !== 'GM');
+    h.load.mockResolvedValue(before);
+    render(await StatusPage());
+    const a = lines();
+    cleanup();
+    h.load.mockResolvedValue(status());
+    render(await StatusPage());
+    expect(lines()).toEqual(a);
+    expect(a).toEqual(['Supervisor step', 'Accountant, Finance Manager and GM steps', 'Manager (reactivations)']);
+  });
+
+  it('with fewer than three people behind all decisions, not even the company-wide figure is shown', async () => {
+    // The first tracked decisions after the deploy can all be one person's.
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     h.load.mockResolvedValue(
-      status({ openApprovals: [{ role: 'GM', open: 2, pastDue: 1, oldestWorkingMinutes: 660, holders: ['gm'] }] })
+      status({
+        approvals: {
+          good: 1, total: 2, ratio: 0.5, budgetLeft: -4, status: 'breached', since: new Date('2026-10-04T05:00:00Z'), untracked: 0,
+          tiers: [{ role: 'GM', decided: 2, tracked: 2, within: 1, p50Minutes: 300, p90Minutes: 500, people: ['gm'] }],
+        },
+      })
+    );
+    render(await StatusPage());
+    const text = card().textContent!;
+    expect(text).not.toContain('50.0%');
+    expect(text).not.toContain('1 of 2');
+    expect(text).not.toContain('Error budget');
+    expect(text).not.toContain('Measuring since');
+    expect(text).not.toContain('Missed');
+    expect(text).toContain('Steward only');
+    expect(text).toContain('Fewer than three people stand behind these figures');
+  });
+
+  it('the waiting queues: always the same three cards; a credit-steps queue too few people hold shows no figures', async () => {
+    h.user = { id: 'x', role: 'MANAGER', username: 'x' };
+    h.load.mockResolvedValue(
+      status({
+        openApprovals: [
+          { role: 'SUPERVISOR', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: MANAGERS },
+          { role: 'ACCOUNTANT', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: [] },
+          { role: 'FINANCE_MANAGER', open: 1, pastDue: 1, oldestWorkingMinutes: 550, holders: ['fm'] },
+          { role: 'GM', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: ['gm'] },
+          { role: 'MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: MANAGERS },
+        ],
+      })
     );
     const { container } = render(await StatusPage());
     expect(container.textContent).not.toContain('Nothing is waiting for an approver');
-    expect(container.textContent).toContain('Requests are waiting at steps that fewer than three people decide');
-    // No count: with one hidden step it would be the GM's own queue.
-    expect(container.textContent).not.toMatch(/General manager/);
+    expect(container.textContent).toContain('fewer than three people decide these steps');
+    // The Finance Manager's one late request is not readable anywhere.
+    expect(container.textContent).not.toMatch(/9 h 10 m/);
   });
 
-  it('"nothing is waiting" when nothing is', async () => {
-    h.user = { id: 'x', role: 'MANAGER', username: 'x' };
-    h.load.mockResolvedValue(status({ openApprovals: [] }));
-    const { container } = render(await StatusPage());
-    expect(container.textContent).toContain('Nothing is waiting for an approver');
-  });
-
-  it('the Data Steward sees every step', async () => {
+  it('the Data Steward sees every step, and "nothing is waiting" when nothing is', async () => {
     h.user = { id: 'x', role: 'STEWARD', username: 'x' };
     const { container } = render(await StatusPage());
     expect(container.textContent).toContain('General manager step: 3/5 on time');
     expect(container.textContent).toContain('Accountant step: 30/35 on time');
+    cleanup();
+    h.load.mockResolvedValue(status({ openApprovals: [] }));
+    const again = render(await StatusPage());
+    expect(again.container.textContent).toContain('Nothing is waiting for an approver');
   });
 });
 

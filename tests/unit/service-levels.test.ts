@@ -27,7 +27,10 @@ import {
   slotAttainment,
   slotStarts,
   temixBacklogStatus,
-  tiersForViewer,
+  approvalsForManager,
+  queuesForManager,
+  MANAGER_VIEW_GROUPS,
+  STEP_ROLES,
   windowStart,
   type TierDecisions,
 } from '@/lib/service-levels';
@@ -277,78 +280,115 @@ describe('approvals', () => {
   });
 });
 
-describe('a Manager is never shown one colleague’s decision speed — not even by subtraction', () => {
+describe('a Manager is never shown one colleague’s decision speed', () => {
   const ids = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
   const t = (role: string, people: string[], within = 4, tracked = 5): TierDecisions => ({
     role, decided: tracked, tracked, within, p50Minutes: 30, p90Minutes: 90, people,
   });
-  const fold = (hidden: TierDecisions[]): TierDecisions => ({
-    ...t('OTHER', [...new Set(hidden.flatMap((x) => x.people))]),
-    within: hidden.reduce((n, x) => n + x.within, 0),
-    tracked: hidden.reduce((n, x) => n + x.tracked, 0),
-  });
-  const view = (tiers: TierDecisions[], who = 'MANAGER') => tiersForViewer(tiers, (x) => x.people, who, fold);
-
   // The production shape: 11 Managers decide the Supervisor step, 7 accountants
-  // their step, and one person each holds the Finance Manager and GM steps.
+  // their step, one person each holds the Finance Manager and GM steps.
   const prod = () => [
     t('SUPERVISOR', ids('m', 11), 38, 40),
     t('FINANCE_MANAGER', ['fm'], 2, 6),
     t('GM', ['gm'], 3, 5),
     t('ACCOUNTANT', ids('acc', 7), 30, 35),
   ];
+  const shownKeys = (tiers: TierDecisions[]) => approvalsForManager(tiers).groups.filter((g) => g.shown).map((g) => g.group.key);
 
-  it('the Data Steward sees every tier', () => {
-    expect(view(prod(), 'STEWARD').map((x) => x.role)).toEqual(['SUPERVISOR', 'FINANCE_MANAGER', 'GM', 'ACCOUNTANT']);
-  });
-
-  it('a Manager: the two single-holder steps fold in with the smallest shown step until 3+ people stand behind them', () => {
-    const shown = view(prod());
-    expect(shown.map((x) => x.role)).toEqual(['SUPERVISOR', 'OTHER']);
-    const other = shown.find((x) => x.role === 'OTHER')!;
-    expect(new Set(other.people).size).toBe(9); // fm + gm + 7 accountants
-  });
-
-  it('whatever a Manager can subtract from the company-wide figure stands for at least 3 people', () => {
-    // The company-wide line is over every tier, so the tiers not shown on their
-    // own can be worked out as "company-wide minus the shown lines". That group
-    // must be exactly the "other steps" line, standing for 3+ people — or, when
-    // no tier line is shown, the whole company.
-    const cases = [
-      prod(),
-      [t('SUPERVISOR', ids('m', 11)), t('FINANCE_MANAGER', ['fm'])],
-      [t('SUPERVISOR', ids('m', 11)), t('GM', ['gm']), t('FINANCE_MANAGER', ['fm']), t('MANAGER', ['m1', 'm2'])],
-      [t('SUPERVISOR', ids('m', 5)), t('ACCOUNTANT', ids('a', 4)), t('GM', ['gm'])],
-    ];
-    for (const tiers of cases) {
-      const shown = view(tiers);
-      for (const x of shown) expect(new Set(x.people).size, x.role).toBeGreaterThanOrEqual(MIN_PEOPLE_FOR_TIER_DETAIL);
-      const ownLines = new Set(shown.filter((x) => x.role !== 'OTHER').map((x) => x.role));
-      const derivable = tiers.filter((x) => !ownLines.has(x.role));
-      if (derivable.length === 0 || shown.length === 0) continue;
-      const other = shown.find((x) => x.role === 'OTHER');
-      expect(other, 'the tiers not shown on their own must be the "other steps" line').toBeDefined();
-      expect(other!.tracked).toBe(derivable.reduce((n, x) => n + x.tracked, 0));
-      expect(new Set(derivable.flatMap((x) => x.people)).size).toBeGreaterThanOrEqual(MIN_PEOPLE_FOR_TIER_DETAIL);
-    }
-  });
-
-  it('people are counted as a set: one Manager on two steps is one person', () => {
-    // Supervisor step by m1, m2; reactivations by m1 only: 2 people, not 3.
-    const shown = view([t('SUPERVISOR', ['m1', 'm2']), t('MANAGER', ['m1'])]);
-    expect(shown).toEqual([]);
-  });
-
-  it('with everything together still under 3 people, no tier line is shown', () => {
-    expect(view([t('GM', ['gm']), t('FINANCE_MANAGER', ['fm'])])).toEqual([]);
+  it('the groups are fixed, and each step belongs to exactly one', () => {
+    expect(MANAGER_VIEW_GROUPS.map((g) => g.key)).toEqual(['SUPERVISOR', 'CREDIT', 'MANAGER']);
+    const roles = MANAGER_VIEW_GROUPS.flatMap((g) => g.roles);
+    expect(new Set(roles).size).toBe(roles.length);
+    expect([...roles].sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SUPERVISOR']);
+    expect(STEP_ROLES).toEqual(roles);
     expect(MIN_PEOPLE_FOR_TIER_DETAIL).toBe(3);
   });
 
-  it('a Supervisor step is held by the Supervisors and the Managers (the region fallback)', () => {
-    const users = [
-      ...ids('m', 11).map((id) => ({ id, role: 'MANAGER' })),
-      { id: 'gm', role: 'GM' },
+  it('the Finance Manager and GM are always counted with the accountants, never alone', () => {
+    const view = approvalsForManager(prod());
+    const credit = view.groups.find((g) => g.group.key === 'CREDIT')!;
+    expect(credit.shown).toBe(true);
+    expect(credit.decisions.tracked).toBe(6 + 5 + 35);
+    expect(credit.decisions.within).toBe(2 + 3 + 30);
+    expect(credit.decisions.people).toHaveLength(9);
+    // A median of three steps' medians is nobody's figure.
+    expect(credit.decisions.p50Minutes).toBeNull();
+    expect(view.headlineShown).toBe(true);
+  });
+
+  it('which groups are shown does not depend on the order the rows arrive in', () => {
+    const tiers = prod();
+    const reversed = [...tiers].reverse();
+    expect(shownKeys(reversed)).toEqual(shownKeys(tiers));
+    expect(approvalsForManager(reversed).groups.map((g) => g.decisions.tracked)).toEqual(
+      approvalsForManager(tiers).groups.map((g) => g.decisions.tracked)
+    );
+  });
+
+  it('it does not depend on which steps had decisions either: a new GM decision changes no group boundary', () => {
+    const before = [t('SUPERVISOR', ids('m', 11)), t('ACCOUNTANT', ids('acc', 7))];
+    const after = [...before, t('GM', ['gm'], 0, 1)];
+    expect(shownKeys(after)).toEqual(shownKeys(before));
+    expect(approvalsForManager(after).groups.map((g) => g.group.key)).toEqual(['SUPERVISOR', 'CREDIT', 'MANAGER']);
+  });
+
+  it('whatever can be subtracted from the company-wide figure stands for at least 3 people', () => {
+    const cases = [
+      prod(),
+      [t('SUPERVISOR', ids('m', 11)), t('FINANCE_MANAGER', ['fm'])],
+      [t('SUPERVISOR', ids('m', 11)), t('GM', ['gm']), t('MANAGER', ['m1', 'm2'])],
+      [t('SUPERVISOR', ids('m', 5)), t('ACCOUNTANT', ['a1', 'a2']), t('GM', ['gm'])],
+      [t('GM', ['gm'], 1, 2)],
+      [t('SUPERVISOR', ['m1', 'm2']), t('MANAGER', ['m1'])],
     ];
+    for (const tiers of cases) {
+      const view = approvalsForManager(tiers);
+      for (const g of view.groups.filter((x) => x.shown)) expect(g.decisions.people.length).toBeGreaterThanOrEqual(3);
+      if (!view.headlineShown) continue;
+      // company-wide minus every shown group = the groups not shown, together
+      const hidden = view.groups.filter((x) => !x.shown && x.decisions.tracked > 0);
+      if (hidden.length === 0) continue;
+      expect(new Set(hidden.flatMap((x) => x.decisions.people)).size).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('the company-wide figure itself is withheld when fewer than 3 people stand behind it', () => {
+    // The first tracked decisions after the deploy can all be one person's.
+    expect(approvalsForManager([t('GM', ['gm'], 1, 2)]).headlineShown).toBe(false);
+    // One Manager on two steps is one person: 2 people, not 3.
+    expect(approvalsForManager([t('SUPERVISOR', ['m1', 'm2']), t('MANAGER', ['m1'])]).headlineShown).toBe(false);
+  });
+
+  it('and when a hidden group could be recovered from it by subtraction', () => {
+    // Supervisor step shown (5 people), credit steps hidden (GM alone): the
+    // company-wide figure minus the Supervisor line would be the GM's record.
+    const view = approvalsForManager([t('SUPERVISOR', ids('m', 5)), t('GM', ['gm'], 1, 2)]);
+    expect(view.groups.find((g) => g.group.key === 'SUPERVISOR')!.shown).toBe(true);
+    expect(view.groups.find((g) => g.group.key === 'CREDIT')!.shown).toBe(false);
+    expect(view.headlineShown).toBe(false);
+  });
+
+  it('the waiting queues: three cards every time, figures only where 3+ people can decide', () => {
+    const q = (role: string, holders: string[], open = 0) => ({ role, open, pastDue: 0, oldestWorkingMinutes: null, holders });
+    const cards = queuesForManager([
+      q('SUPERVISOR', ids('m', 11), 4),
+      q('ACCOUNTANT', ids('acc', 7)),
+      q('FINANCE_MANAGER', ['fm'], 1),
+      q('GM', ['gm']),
+      q('MANAGER', ids('m', 11)),
+    ]);
+    expect(cards.map((c) => c.group.key)).toEqual(['SUPERVISOR', 'CREDIT', 'MANAGER']);
+    expect(cards.every((c) => c.shown)).toBe(true);
+    expect(cards.find((c) => c.group.key === 'CREDIT')!.queue.open).toBe(1);
+    // With no accountant (a pilot), the credit group stands for 2 people — the
+    // Finance Manager and the GM — and is withheld, however many cards there are.
+    const small = queuesForManager([q('FINANCE_MANAGER', ['fm'], 1), q('GM', ['gm'])]);
+    expect(small.find((c) => c.group.key === 'CREDIT')!.shown).toBe(false);
+    expect(small).toHaveLength(3);
+  });
+
+  it('a Supervisor step is held by the Supervisors and the Managers (the region fallback)', () => {
+    const users = [...ids('m', 11).map((id) => ({ id, role: 'MANAGER' })), { id: 'gm', role: 'GM' }];
     const holders = holdersByStep(users);
     expect(holders('SUPERVISOR')).toHaveLength(11);
     expect(holders('GM')).toEqual(['gm']);

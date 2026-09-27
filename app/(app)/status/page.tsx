@@ -10,12 +10,11 @@ import {
   formatPct,
   formatWorkingMinutes,
   sloById,
-  tiersForViewer,
+  approvalsForManager,
+  queuesForManager,
   type SloId,
   type SloStatus,
-  type TierDecisions,
 } from '@/lib/service-levels';
-import type { OpenTier } from '@/lib/service-status';
 import { omanWhen } from '@/lib/submission';
 
 export const metadata = { title: 'Service status · NMWC' };
@@ -28,7 +27,7 @@ export const dynamic = 'force-dynamic';
  * Steward and Managers (STATUS_ROLES). Everything on it is a company-wide count
  * or duration, with no customer, no error text and no named person. A step one
  * or two people decide is folded away for a Manager, because its figures would
- * be that colleague's own (lib/service-levels.ts tiersForViewer). Targets and
+ * be that colleague's own (lib/service-levels.ts approvalsForManager). Targets and
  * definitions live in lib/service-levels.ts and docs/SERVICE-LEVELS.md.
  */
 export default async function StatusPage() {
@@ -43,7 +42,7 @@ export default async function StatusPage() {
     <main>
       <PageHeader
         title="Service status"
-        subtitle="Whether the system is keeping its promises — measured from what it records. Company-wide figures; no customer is named, and no approval step decided by fewer than three people is shown on its own to a Manager."
+        subtitle="Whether the system is keeping its promises — measured from what it records. Company-wide figures; no customer is named. Managers see the approval steps in three fixed groups, each shown only when three or more people stand behind it."
         actions={
           <p className="text-xs text-slate-500">
             Measured at <span className="font-medium tabular-nums">{omanWhen(s.now, s.now)}</span> Oman time
@@ -108,19 +107,24 @@ const STATUS_TONE: Record<SloStatus, { chip: string; label: string }> = {
   'no-data': { chip: 'bg-slate-100 text-slate-700 ring-slate-200', label: 'Not measured yet' },
 };
 
+const WITHHELD = { chip: 'bg-slate-100 text-slate-700 ring-slate-200', label: 'Steward only' };
+
 function SloCard({
   id,
   status,
   value,
+  withheld = false,
   children,
 }: {
   id: SloId;
   status: SloStatus;
   value: string;
+  /** The figure stands for too few people to show this viewer. */
+  withheld?: boolean;
   children?: React.ReactNode;
 }) {
   const def = sloById(id);
-  const tone = STATUS_TONE[status];
+  const tone = withheld ? WITHHELD : STATUS_TONE[status];
   const target = `Target: ${def.targetLabel}`;
   return (
     <article className="flex flex-col rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
@@ -168,44 +172,64 @@ const TIER_LABEL: Record<string, string> = {
   FINANCE_MANAGER: 'Finance manager step',
   GM: 'General manager step',
   MANAGER: 'Manager (reactivations)',
-  OTHER: 'Other steps together',
 };
 
-/** Several hidden tiers shown together as one line. */
-function foldDecisions(hidden: TierDecisions[]): TierDecisions {
-  return {
-    role: 'OTHER',
-    decided: hidden.reduce((n, t) => n + t.decided, 0),
-    tracked: hidden.reduce((n, t) => n + t.tracked, 0),
-    within: hidden.reduce((n, t) => n + t.within, 0),
-    // A median of medians would be a number nobody measured.
-    p50Minutes: null,
-    p90Minutes: null,
-    // The same person on two steps is one person.
-    people: [...new Set(hidden.flatMap((t) => t.people))],
-  };
+function TierLine({ label, t }: { label: string; t: { within: number; tracked: number; p50Minutes: number | null; p90Minutes: number | null } }) {
+  return (
+    <p className="tabular-nums">
+      {label}: {t.tracked > 0 ? `${t.within}/${t.tracked} on time` : 'no tracked decisions'}
+      {t.p50Minutes !== null && `, median ${formatWorkingMinutes(t.p50Minutes)}`}
+      {t.p90Minutes !== null && `, slowest 10% over ${formatWorkingMinutes(t.p90Minutes)}`}
+    </p>
+  );
 }
+
+const FEWER_THAN_THREE = 'fewer than three people decided these in the window, so the figures are shown to the Data Steward only';
 
 function ApprovalsCard({ s, viewer }: { s: ServiceStatus; viewer: string }) {
   const a = s.approvals;
-  const tiers = tiersForViewer(
-    a.tiers.filter((t) => t.decided > 0),
-    (t) => t.people,
-    viewer,
-    foldDecisions
-  );
+  if (viewer !== 'STEWARD') {
+    // A Manager: fixed groups, figures only where 3+ people stand behind them
+    // (lib/service-levels.ts approvalsForManager).
+    const view = approvalsForManager(a.tiers);
+    return (
+      <SloCard
+        id="approvals"
+        status={a.status}
+        value={view.headlineShown ? formatPct(a.ratio) : '—'}
+        withheld={!view.headlineShown}
+      >
+        {view.headlineShown ? (
+          <p className="tabular-nums">
+            {a.good.toLocaleString('en-GB')} of {a.total.toLocaleString('en-GB')} decisions on time
+          </p>
+        ) : (
+          <p>Fewer than three people stand behind these figures, so they are shown to the Data Steward only.</p>
+        )}
+        {view.groups.map((g) =>
+          g.shown ? (
+            <TierLine key={g.group.key} label={g.group.label} t={g.decisions} />
+          ) : (
+            <p key={g.group.key}>
+              {g.group.label}: {FEWER_THAN_THREE}.
+            </p>
+          )
+        )}
+        {view.headlineShown && <Budget left={a.budgetLeft} />}
+        {view.headlineShown && <Since since={a.since} now={s.now} />}
+      </SloCard>
+    );
+  }
   return (
     <SloCard id="approvals" status={a.status} value={formatPct(a.ratio)}>
       <p className="tabular-nums">
         {a.good.toLocaleString('en-GB')} of {a.total.toLocaleString('en-GB')} decisions on time
       </p>
-      {tiers.map((t) => (
-        <p key={t.role} className="tabular-nums">
-          {TIER_LABEL[t.role] ?? t.role}: {t.tracked > 0 ? `${t.within}/${t.tracked} on time` : 'no tracked decisions'}
-          {t.p50Minutes !== null && `, median ${formatWorkingMinutes(t.p50Minutes)}`}
-          {t.p90Minutes !== null && `, slowest 10% over ${formatWorkingMinutes(t.p90Minutes)}`}
-        </p>
-      ))}
+      {a.tiers
+        .filter((t) => t.decided > 0)
+        .map((t) => (
+          <TierLine key={t.role} label={TIER_LABEL[t.role] ?? t.role} t={t} />
+        ))}
       {a.untracked > 0 && (
         <p>
           {a.untracked.toLocaleString('en-GB')} decision{a.untracked === 1 ? '' : 's'} made before the SLA was recorded
@@ -293,21 +317,48 @@ function ImportsCard({ s }: { s: ServiceStatus }) {
 
 // ── Right now ─────────────────────────────────────────────────────────────
 
-/** Several hidden queues shown together as one card. */
-function foldOpen(hidden: OpenTier[]): OpenTier {
-  const oldest = hidden.map((t) => t.oldestWorkingMinutes).filter((m): m is number => m !== null);
-  return {
-    role: 'OTHER',
-    open: hidden.reduce((n, t) => n + t.open, 0),
-    pastDue: hidden.reduce((n, t) => n + t.pastDue, 0),
-    oldestWorkingMinutes: oldest.length ? Math.max(...oldest) : null,
-    holders: [...new Set(hidden.flatMap((t) => t.holders))],
-  };
+function QueueCard({
+  label,
+  q,
+}: {
+  label: string;
+  q: { open: number; pastDue: number; oldestWorkingMinutes: number | null } | null;
+}) {
+  const late = q !== null && q.pastDue > 0;
+  return (
+    <article
+      className={`rounded-lg p-4 shadow-sm ring-1 ${
+        late ? 'bg-amber-50 text-amber-900 ring-amber-200' : 'bg-white text-slate-800 ring-slate-200'
+      }`}
+    >
+      <h3 className="text-xs font-medium uppercase tracking-wide opacity-70">{label}</h3>
+      <p className="mt-1 text-3xl font-bold tabular-nums">{q === null ? '—' : q.open}</p>
+      <p className="mt-1 text-xs tabular-nums opacity-80">
+        {q === null
+          ? 'fewer than three people decide these steps, so the Data Steward sees them'
+          : `${q.pastDue > 0 ? `${q.pastDue} past due` : 'none past due'}${
+              q.oldestWorkingMinutes !== null
+                ? ` · oldest waiting ${formatWorkingMinutes(q.oldestWorkingMinutes)} of working time`
+                : ''
+            }`}
+      </p>
+    </article>
+  );
 }
 
 function OpenApprovals({ s, viewer }: { s: ServiceStatus; viewer: string }) {
+  if (viewer !== 'STEWARD') {
+    // A Manager: the same three cards every time, whatever is waiting — a card
+    // that appeared only when a step had work would itself say so.
+    return (
+      <div className="grid gap-3 sm:grid-cols-3">
+        {queuesForManager(s.openApprovals).map((g) => (
+          <QueueCard key={g.group.key} label={g.group.label.replace(/ steps?$/, '')} q={g.shown ? g.queue : null} />
+        ))}
+      </div>
+    );
+  }
   const open = s.openApprovals.filter((t) => t.open > 0);
-  const tiers = tiersForViewer(open, (t) => t.holders, viewer, foldOpen);
   if (open.length === 0) {
     return (
       <p className="rounded-lg bg-white p-5 text-sm text-slate-600 shadow-sm ring-1 ring-slate-200">
@@ -315,35 +366,10 @@ function OpenApprovals({ s, viewer }: { s: ServiceStatus; viewer: string }) {
       </p>
     );
   }
-  if (tiers.length === 0) {
-    // Requests ARE waiting, at steps too few people hold to show (review of
-    // f05752e: this used to say nothing was waiting). No count: with one hidden
-    // step, the count would be that colleague's own queue.
-    return (
-      <p className="rounded-lg bg-white p-5 text-sm text-slate-600 shadow-sm ring-1 ring-slate-200">
-        Requests are waiting at steps that fewer than three people decide, so they are not shown here. The Data
-        Steward sees them.
-      </p>
-    );
-  }
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {tiers.map((t) => (
-        <article
-          key={t.role}
-          className={`rounded-lg p-4 shadow-sm ring-1 ${
-            t.pastDue > 0 ? 'bg-amber-50 text-amber-900 ring-amber-200' : 'bg-white text-slate-800 ring-slate-200'
-          }`}
-        >
-          <h3 className="text-xs font-medium uppercase tracking-wide opacity-70">
-            {(TIER_LABEL[t.role] ?? t.role).replace(/ step$/, '')}
-          </h3>
-          <p className="mt-1 text-3xl font-bold tabular-nums">{t.open}</p>
-          <p className="mt-1 text-xs tabular-nums opacity-80">
-            {t.pastDue > 0 ? `${t.pastDue} past due` : 'none past due'}
-            {t.oldestWorkingMinutes !== null && ` · oldest waiting ${formatWorkingMinutes(t.oldestWorkingMinutes)} of working time`}
-          </p>
-        </article>
+      {open.map((t) => (
+        <QueueCard key={t.role} label={(TIER_LABEL[t.role] ?? t.role).replace(/ step$/, '')} q={t} />
       ))}
     </div>
   );

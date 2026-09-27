@@ -126,8 +126,8 @@ export const SWEEP_SLOTS_PER_DAY = 24;
  * for a tier at least this many people decide or hold. The General Manager and
  * the Finance Manager steps each have one holder, so their tier figures ARE one
  * named colleague's decision speed (PII-INVENTORY: EditApproval.workingMinutes is
- * "how long this named person took"). A Manager sees those folded into "other
- * steps"; the Data Steward sees every tier (review, 2026-09-27).
+ * "how long this named person took"). A Manager sees fixed groups of steps
+ * (approvalsForManager, queuesForManager); the Data Steward sees every step.
  */
 export const MIN_PEOPLE_FOR_TIER_DETAIL = 3;
 
@@ -306,43 +306,117 @@ export type TierDecisions = {
   /**
    * The people who made the tracked decisions — the ones the figures above come
    * from (user ids, distinct). Used only to decide what a Manager may see
-   * (tiersForViewer); never rendered.
+   * (approvalsForManager); never rendered.
    */
   people: string[];
 };
 
 /**
- * What a viewer may see per tier. The Data Steward sees every tier.
+ * What a Manager may see of the approval steps (reviews of 2026-09-27).
  *
- * For a Manager every line shown must stand for at least
- * MIN_PEOPLE_FOR_TIER_DETAIL distinct people, and so must anything a Manager can
- * work out from the lines shown. The company-wide figure sits above the tier
- * lines, so the tiers not shown are exactly "the company-wide figure minus the
- * shown lines" — dropping a small tier hides nothing (review of f05752e,
- * 2026-09-27). So the small tiers are folded into one "other steps" line, and
- * while that group still stands for fewer than MIN people the smallest shown tier
- * is folded in too (complementary suppression). If even everything together is
- * fewer than MIN people, no tier line is shown at all.
+ * The General Manager and Finance Manager steps have one holder each, so any
+ * figure that is theirs alone is that colleague's own record. Three earlier
+ * rules each leaked it:
+ *   - hiding a small step while the company-wide figure sat above the shown
+ *     steps — "company-wide minus the shown steps" gave it back;
+ *   - folding small steps together with whichever shown step was smallest — the
+ *     choice moved with the data, so two page loads gave it back;
+ *   - hiding every step line but keeping the company-wide figure when fewer than
+ *     three people stood behind everything.
  *
- * People are counted as a set, not a sum: a Manager who decides both the
- * Supervisor step and reactivations is one person, not two.
+ * So a Manager sees FIXED groups that do not depend on the data: the Supervisor
+ * step; the Accountant, Finance Manager and GM steps together; and reactivations.
+ * Every group is always listed. A group's figures are shown only when at least
+ * MIN_PEOPLE_FOR_TIER_DETAIL distinct people stand behind them, and the
+ * company-wide figure only when it too stands for that many and cannot be
+ * narrowed below that many by taking the shown groups away. The Data Steward
+ * sees every step on its own.
+ *
+ * What no rule can hide: a live figure compared across two page loads shows the
+ * decisions made in between. That is inherent in any live total, and it is said
+ * in docs/SERVICE-LEVELS.md.
  */
-export function tiersForViewer<T extends { role: string }>(
-  tiers: T[],
-  peopleOf: (t: T) => readonly string[],
-  viewerRole: string,
-  fold: (hidden: T[]) => T
-): T[] {
-  if (viewerRole === 'STEWARD') return tiers;
-  const size = (group: T[]) => new Set(group.flatMap(peopleOf)).size;
-  const hidden = tiers.filter((t) => size([t]) < MIN_PEOPLE_FOR_TIER_DETAIL);
-  if (hidden.length === 0) return tiers;
-  const shown = tiers.filter((t) => size([t]) >= MIN_PEOPLE_FOR_TIER_DETAIL);
-  const bySize = [...shown].sort((a, b) => size([a]) - size([b]));
-  while (size(hidden) < MIN_PEOPLE_FOR_TIER_DETAIL && bySize.length > 0) hidden.push(bySize.shift()!);
-  if (size(hidden) < MIN_PEOPLE_FOR_TIER_DETAIL) return [];
-  const kept = shown.filter((t) => bySize.includes(t));
-  return [...kept, fold(hidden)];
+export type StepGroup = { key: 'SUPERVISOR' | 'CREDIT' | 'MANAGER'; label: string; roles: readonly string[] };
+
+export const MANAGER_VIEW_GROUPS: readonly StepGroup[] = [
+  { key: 'SUPERVISOR', label: 'Supervisor step', roles: ['SUPERVISOR'] },
+  { key: 'CREDIT', label: 'Accountant, Finance Manager and GM steps', roles: ['ACCOUNTANT', 'FINANCE_MANAGER', 'GM'] },
+  { key: 'MANAGER', label: 'Manager (reactivations)', roles: ['MANAGER'] },
+];
+
+/** The approval step roles, for loaders that must report every step even when empty. */
+export const STEP_ROLES: readonly string[] = MANAGER_VIEW_GROUPS.flatMap((g) => g.roles);
+
+/** Several steps as one: counts add, people are a set; a median of medians is nobody's figure. */
+export function mergeDecisions(role: string, members: TierDecisions[]): TierDecisions {
+  return {
+    role,
+    decided: members.reduce((n, t) => n + t.decided, 0),
+    tracked: members.reduce((n, t) => n + t.tracked, 0),
+    within: members.reduce((n, t) => n + t.within, 0),
+    p50Minutes: members.length === 1 ? members[0]!.p50Minutes : null,
+    p90Minutes: members.length === 1 ? members[0]!.p90Minutes : null,
+    people: [...new Set(members.flatMap((t) => t.people))],
+  };
+}
+
+export type ManagerApprovalsView = {
+  /** Whether the company-wide figure may be shown to a Manager. */
+  headlineShown: boolean;
+  groups: { group: StepGroup; decisions: TierDecisions; shown: boolean }[];
+};
+
+export function approvalsForManager(tiers: TierDecisions[]): ManagerApprovalsView {
+  const groups = MANAGER_VIEW_GROUPS.map((group) => {
+    const decisions = mergeDecisions(
+      group.key,
+      tiers.filter((t) => group.roles.includes(t.role))
+    );
+    return { group, decisions, shown: decisions.people.length >= MIN_PEOPLE_FOR_TIER_DETAIL };
+  });
+  // A step outside every group (none today) is treated as hidden, never shown.
+  const outside = tiers.filter((t) => !STEP_ROLES.includes(t.role));
+  const everyone = new Set(tiers.flatMap((t) => t.people)).size;
+  const derivable = [
+    ...groups.filter((x) => !x.shown && x.decisions.tracked > 0).map((x) => x.decisions),
+    ...outside.filter((t) => t.tracked > 0),
+  ];
+  const derivablePeople = new Set(derivable.flatMap((t) => t.people)).size;
+  const headlineShown =
+    everyone >= MIN_PEOPLE_FOR_TIER_DETAIL && (derivable.length === 0 || derivablePeople >= MIN_PEOPLE_FOR_TIER_DETAIL);
+  return { headlineShown, groups };
+}
+
+/** An open queue as the page shows it. */
+export type QueueLike = {
+  role: string;
+  open: number;
+  pastDue: number;
+  oldestWorkingMinutes: number | null;
+  holders: string[];
+};
+
+/**
+ * The waiting queues for a Manager: the same fixed groups, always all three,
+ * whether or not anything waits — a card that appeared only when a step had work
+ * would itself say so. A group whose steps fewer than three people decide shows
+ * no figures. There is no total on this card to subtract from.
+ */
+export function queuesForManager<Q extends QueueLike>(
+  queues: Q[]
+): { group: StepGroup; queue: QueueLike; shown: boolean }[] {
+  return MANAGER_VIEW_GROUPS.map((group) => {
+    const members = queues.filter((q) => group.roles.includes(q.role));
+    const oldest = members.map((q) => q.oldestWorkingMinutes).filter((m): m is number => m !== null);
+    const queue: QueueLike = {
+      role: group.key,
+      open: members.reduce((n, q) => n + q.open, 0),
+      pastDue: members.reduce((n, q) => n + q.pastDue, 0),
+      oldestWorkingMinutes: oldest.length ? Math.max(...oldest) : null,
+      holders: [...new Set(members.flatMap((q) => q.holders))],
+    };
+    return { group, queue, shown: queue.holders.length >= MIN_PEOPLE_FOR_TIER_DETAIL };
+  });
 }
 
 export function approvalsResult(tiers: TierDecisions[]): RatioResult & { untracked: number } {

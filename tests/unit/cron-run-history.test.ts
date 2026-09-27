@@ -19,7 +19,7 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/alert', () => ({ sendAlert: db.alert }));
 
 import { classifyRunSource, recordHeartbeat, withHeartbeat } from '@/lib/heartbeat';
-import { callArguments, objectAfter, sourceFiles } from '../support/call-args';
+import { callArguments, objectAfter, objectsAfter, sourceFiles, topLevel } from '../support/call-args';
 import { stripComments } from '../support/strip-comments';
 
 beforeEach(() => {
@@ -152,7 +152,9 @@ describe('the approval engine snapshots the stage on every decision it records',
       // In the WHERE, where it guards the claim — not in the data it writes.
       const where = objectAfter(c, /\bwhere\s*:/);
       expect(where, 'a claim without a where').not.toBeNull();
-      expect(where!).toMatch(/stageEnteredAt:\s*edit\.stageEnteredAt/);
+      // At the top level of the where — not tucked inside an OR, where it would
+      // not constrain the claim.
+      expect(topLevel(where!)).toMatch(/stageEnteredAt:\s*edit\.stageEnteredAt/);
     }
   });
 
@@ -165,9 +167,11 @@ describe('the approval engine snapshots the stage on every decision it records',
     for (const [f, src] of code) {
       expect(src, f).not.toMatch(/INSERT\s+INTO\s+"?EditApproval"?/i);
       for (const rel of relations) {
-        const nested = objectAfter(src, new RegExp(`\\b${rel}\\s*:`));
-        if (nested === null) continue;
-        expect(nested, `${f}: a nested write through ${rel}`).not.toMatch(/\b(create\w*|connectOrCreate|upsert)\b/);
+        // Every occurrence: an `include: { steps: true }` first in the file
+        // must not hide a `data: { steps: { create } }` later (post-merge review).
+        for (const nested of objectsAfter(src, new RegExp(`\\b${rel}\\s*:`))) {
+          expect(nested, `${f}: a nested write through ${rel}`).not.toMatch(/\b(create\w*|connectOrCreate|upsert)\b/);
+        }
       }
     }
   });

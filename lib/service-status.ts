@@ -11,12 +11,13 @@
  * as /api/perf-probe, AUDITOR-BRIEF §5). Two things keep it that way:
  *   - a job's last error text is dropped here (withoutErrorText): it is scrubbed,
  *     but it stays behind the monitor bearer (lib/heartbeat.ts);
- *   - per-tier figures carry the set of people behind them, and for a Manager the
- *     page shows no line — and nothing derivable from the lines it shows —
- *     standing for fewer than MIN_PEOPLE_FOR_TIER_DETAIL people
- *     (lib/service-levels.ts tiersForViewer). The General Manager and Finance
- *     Manager steps have one holder each, so their tier IS one colleague's
- *     decision speed (reviews of 2026-09-27).
+ *   - per-step figures carry the set of people behind them, and a Manager sees
+ *     fixed groups of steps whose figures are shown only when at least
+ *     MIN_PEOPLE_FOR_TIER_DETAIL people stand behind them, nor anything derivable
+ *     that stands for fewer (lib/service-levels.ts approvalsForManager,
+ *     queuesForManager). The General Manager and Finance Manager steps have one
+ *     holder each, so their step IS one colleague's decision speed (reviews of
+ *     2026-09-27).
  *
  * Bounded reads: CronRun by (key, at), at most 30 days of one job; approval
  * decisions by the EditApproval (at) index, aggregated in SQL to one row per tier;
@@ -35,6 +36,7 @@ import {
   PARSING_LOOKBACK_HOURS,
   PARSING_STUCK_AFTER_MIN,
   PROMOTE_STUCK_AFTER_MIN,
+  STEP_ROLES,
   approvalsResult,
   availabilityResult,
   backupResult,
@@ -59,7 +61,7 @@ export type OpenTier = {
   pastDue: number;
   /** Working minutes the oldest open step has waited. */
   oldestWorkingMinutes: number | null;
-  /** The active people who can decide this step (user ids; see tiersForViewer). Never rendered. */
+  /** The active people who can decide this step (user ids; see queuesForManager). Never rendered. */
   holders: string[];
 };
 
@@ -189,7 +191,8 @@ async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firs
            array_agg(DISTINCT "actorId") FILTER (WHERE "slaDueAt" IS NOT NULL) AS "people"
       FROM "EditApproval"
      WHERE "at" >= ${from}
-     GROUP BY "role"`;
+     GROUP BY "role"
+     ORDER BY "role"`;
   const [first] = await prisma.$queryRaw<{ first: Date | null }[]>`
     SELECT min("at") AS "first" FROM "EditApproval" WHERE "slaDueAt" IS NOT NULL`;
 
@@ -272,13 +275,20 @@ async function openApprovals(now: Date): Promise<OpenTier[]> {
     prisma.user.findMany({ where: { isActive: true }, select: { id: true, role: true } }),
   ]);
   const holders = holdersByStep(active);
-  return rows.map((r) => ({
-    role: r.role,
-    open: r.open,
-    pastDue: r.pastDue,
-    oldestWorkingMinutes: r.oldest ? workingMinutesBetween(r.oldest, now) : null,
-    holders: holders(r.role),
-  }));
+  // Every step, waiting or not: a Manager's cards must not appear or vanish with
+  // the data (lib/service-levels.ts queuesForManager).
+  const byRole = new Map(rows.map((r) => [r.role, r]));
+  const roles = [...STEP_ROLES, ...rows.map((r) => r.role).filter((r) => !STEP_ROLES.includes(r))];
+  return roles.map((role) => {
+    const r = byRole.get(role);
+    return {
+      role,
+      open: r?.open ?? 0,
+      pastDue: r?.pastDue ?? 0,
+      oldestWorkingMinutes: r?.oldest ? workingMinutesBetween(r.oldest, now) : null,
+      holders: holders(role),
+    };
+  });
 }
 
 async function temix(now: Date): Promise<ServiceStatus['temix']> {
