@@ -44,6 +44,12 @@ export type FixBlocks = {
   blocked: Map<string, string>;
   /** For a row a fix only brought back with it: the row number of the row that fix acted on. */
   releasedWith: Map<string, number>;
+  /**
+   * Held-back rows whose fix can still be withdrawn: the row a fix acted on,
+   * come back held back, while rows that fix released wait CLEAN
+   * (services/import-fixes.ts withdrawCore).
+   */
+  withdrawable: Set<string>;
 };
 
 type P = { custCode?: string; branchCode?: string | null; fixedInApp?: boolean; fixedFrom?: unknown };
@@ -60,6 +66,7 @@ export async function fixBlocks(
 ): Promise<FixBlocks> {
   const blocked = new Map<string, string>();
   const releasedWith = new Map<string, number>();
+  const withdrawable = new Set<string>();
   const targets: FixTarget[] = [];
   // How to word a hit on each target, keyed like the targets.
   const say = new Map<string, { rowId: string; message: (code: string, n: Parameters<typeof newerUploadMessage>[1]) => string }>();
@@ -100,11 +107,27 @@ export async function fixBlocks(
   }
 
   // ── Fixes waiting to promote, as the units promote judges ───────────────
-  if (rows.some(isFixRow)) {
+  // Only the units of the rows on screen are read: reading every CLEAN row of
+  // a 20,000-row batch, payload and all, on each render was megabytes per
+  // page (pre-merge review).
+  const heldWithFix = rows.filter(
+    (r) => r.state === 'QUARANTINED' && !r.excludedAt && !!p(r.parsed).fixedFrom
+  );
+  const unitIds = [
+    ...new Set([...rows.filter(isFixRow), ...heldWithFix].map((r) => fixUnitOf(r.id, r.parsed))),
+  ];
+  if (unitIds.length > 0) {
     const all = await db.importRow.findMany({
-      where: { batchId: batch.id, state: 'CLEAN', excludedAt: null },
+      where: {
+        batchId: batch.id,
+        state: { in: ['CLEAN', 'QUARANTINED'] },
+        excludedAt: null,
+        OR: [{ id: { in: unitIds } }, ...unitIds.map((u) => ({ parsed: { path: ['fixGroup'], equals: u } }))],
+      },
       select: { id: true, rowNumber: true, parsed: true, createdAt: true, excludedAt: true, state: true },
     });
+    const cleanUnits = new Set(all.filter(isFixRow).map((m) => fixUnitOf(m.id, m.parsed)));
+    for (const r of heldWithFix) if (cleanUnits.has(fixUnitOf(r.id, r.parsed))) withdrawable.add(r.id);
     const members = all.filter(isFixRow);
     const units = new Map<string, typeof members>();
     for (const m of members) {
@@ -114,7 +137,8 @@ export async function fixBlocks(
     const shown = new Set(rows.filter(isFixRow).map((r) => r.id));
     for (const [unit, list] of units) {
       if (!list.some((m) => shown.has(m.id))) continue;
-      const acted = list.find((m) => m.id === unit);
+      // The acted row may itself have come back held back: look in every row read.
+      const acted = all.find((m) => m.id === unit);
       for (const m of list) {
         if (shown.has(m.id) && p(m.parsed).fixedInApp !== true && acted) releasedWith.set(m.id, acted.rowNumber);
       }
@@ -151,7 +175,7 @@ export async function fixBlocks(
       const m = unitHit.get(unit);
       if (m && !blocked.has(id)) blocked.set(id, m);
     }
-    return { blocked, releasedWith };
+    return { blocked, releasedWith, withdrawable };
   }
 
   const hits = targets.length ? await newerUploadsCarrying(db, batch.uploadedAt, targets) : new Map();
@@ -160,5 +184,5 @@ export async function fixBlocks(
     const how = say.get(t.key);
     if (n && how && !blocked.has(how.rowId)) blocked.set(how.rowId, how.message(t.code, n));
   }
-  return { blocked, releasedWith };
+  return { blocked, releasedWith, withdrawable };
 }

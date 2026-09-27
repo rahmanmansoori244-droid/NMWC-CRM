@@ -235,6 +235,20 @@ describe('supersedingUpload — which newer row rules a fix out (post-merge revi
   it('linked: a newer row with no branch_code that is not a plain refresh row counts against every branch', () => {
     expect(supersedingUpload({ branch: 'X-01' }, true, [c({ branch: null })])).not.toBeNull();
     expect(supersedingUpload({ branch: null }, true, [c({ branch: null })])).not.toBeNull();
+    // A full-lane one fixed in the app counts too: the upload that created the customer wrote -01.
+    expect(supersedingUpload({ branch: 'X-01' }, true, [c({ branch: null, fixedInApp: true })])).not.toBeNull();
+  });
+
+  // Pre-merge review of eb1a430: a blank refresh row writes no branch in any
+  // state, so it must not block — counting it re-opened "an inbound refresh
+  // blocks every held-back branch row" whenever that row was held back.
+  it.each([
+    ['held back', { state: 'QUARANTINED' }],
+    ['rejected', { state: 'REJECTED' }],
+    ['excluded', { excluded: true }],
+    ['fixed in the app', { fixedInApp: true }],
+  ])('linked: a %s refresh row with no branch_code blocks nothing', (_n, over) => {
+    expect(supersedingUpload({ branch: 'X-01' }, true, [c({ branch: null, refreshRow: true, ...over })])).toBeNull();
   });
 
   // Pre-merge review: only a row that loads branch only gets the branch rule.

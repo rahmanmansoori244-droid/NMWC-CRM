@@ -14,6 +14,7 @@ import {
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
+import { lockCustomerRow } from '@/lib/locks';
 import { stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from '@/lib/working-hours';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
@@ -377,6 +378,10 @@ async function approveReactivationCore(formData: FormData) {
         'This reactivation was just decided by another reviewer. Refresh to see the current state.'
       );
     }
+    // The customer's row lock before the branch write (lib/locks.ts): photo
+    // attach and Remove take it first too, and the opposite order deadlocked
+    // on the same branch (pre-merge review).
+    await lockCustomerRow(tx, edit.customerId!);
     await tx.branch.update({
       where: { id: edit.branchId! },
       data: {

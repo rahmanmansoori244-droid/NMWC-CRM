@@ -339,9 +339,11 @@ async function main(): Promise<number> {
     // one: after the writes, a pair left half-written no longer shares a CR
     // and could never be carried (pre-merge review). They are worked out from
     // the pair history read now, not at the start of the run, so an Undo or a
-    // Mark distinct made meanwhile is honoured. Digests only, as the Steward's
-    // own rows hold; `carried` keeps the Steward's own stamp on /duplicates
-    // (lib/duplicate-pairing.ts parseDismissals).
+    // Mark distinct made meanwhile is honoured; and a carried row only ever
+    // continues a dismissal in force when /duplicates reads it — landing after
+    // an Undo it hides nothing (lib/duplicate-pairing.ts parseDismissals).
+    // Digests only, as the Steward's own rows hold; `carried` keeps the
+    // Steward's own stamp.
     const freshPairLog = (await read()).pairLog;
     const carry = dismissalsToCarry(customers, freshPairLog, nextOf);
     for (const c of carry) {

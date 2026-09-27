@@ -206,9 +206,12 @@ export function parseDismissals(rows: Iterable<PairLogRow>): Map<string, Dismiss
     // after.carried) continues the Steward's dismissal: it keeps that
     // dismissal's date, name and place in the list. Read as its own, every
     // carried pair showed the run's date and the operator (pre-merge review).
-    const prev = out.get(key);
-    if (after.carried === true && prev) {
-      out.set(key, { at: prev.at, by: prev.by, signals: new Set(signals as string[]) });
+    // It never starts one: written after an Undo that landed between the
+    // script's read and its write, it re-hid the pair the Steward had just put
+    // back, under the Steward's own name (pre-merge review).
+    if (after.carried === true) {
+      const prev = out.get(key);
+      if (prev) out.set(key, { at: prev.at, by: prev.by, signals: new Set(signals as string[]) });
       continue;
     }
     // Deleted first so the map's order is the order dismissals took effect.

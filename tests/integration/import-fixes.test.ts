@@ -853,4 +853,47 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     ]);
     expect(after.status).toBe('ACTIVE');
   });
+
+  // ── Pre-merge review of a996945..eb1a430 ─────────────────────────────────
+
+  it('a row that came back held back from a fix and is released on its own stays in that fix: Withdraw takes all of them back', async () => {
+    const N = `${P}-PMN`;
+    const b = await upload([
+      { cust_code: N, cust_name: 'ZZ November', branch_code: '', address: 'Way 63, Muscat', phone: phone(14) },
+      { cust_code: N, cust_name: 'ZZ November', branch_code: `${N}-02`, address: 'Way 64, Muscat' },
+      { cust_code: N, cust_name: 'ZZ November', branch_code: `${N}-02`, address: 'Way 65, Muscat' },
+    ]);
+    await promoteFully(imports, b); // a shared branch_code: the customer is rejected whole
+    expect((await rowsOf(b)).map((r) => r.state)).toEqual(['REJECTED', 'REJECTED', 'REJECTED']);
+    // Meanwhile another customer with the head office's phone reaches the master.
+    await prisma.customer.create({
+      data: { nmwcCode: `${P}-PMHOLD14`, legalName: 'ZZ Holder 14', paymentTerms: 'CASH', primaryPhone: phone(14), primaryPhoneNorm: `+968${phone(14)}` },
+    });
+    const [n1, , n3] = await rowsOf(b);
+    await fixes.correctImportRowAction(fd({ rowId: n3.id, cells: JSON.stringify({ branch_code: `${N}-03` }) }));
+    expect((await rowsOf(b)).map((r) => r.state)).toEqual(['QUARANTINED', 'CLEAN', 'CLEAN']);
+    expect(await fixes.releaseImportRowPhoneAction(fd({ rowId: n1.id, reason: 'same owner, head office' }))).toMatchObject({ ok: true });
+    expect(await fixes.withdrawImportRowFixAction(fd({ rowId: n3.id }))).toEqual({ ok: true, data: { rows: 3 } });
+    expect((await rowsOf(b)).map((r) => r.state)).toEqual(['REJECTED', 'REJECTED', 'REJECTED']);
+  });
+
+  it('a fixed row that came back held back can still withdraw its fix, taking back the rows it released', async () => {
+    const O = `${P}-PMO`;
+    const b = await upload([
+      { cust_code: O, cust_name: 'ZZ Oscar', branch_code: `${O}-01`, address: 'Way 66, Muscat', phone: phone(15) },
+      { cust_code: O, cust_name: 'ZZ Oscar', branch_code: `${O}-01`, address: 'Way 67, Muscat' },
+    ]);
+    await promoteFully(imports, b);
+    await prisma.customer.create({
+      data: { nmwcCode: `${P}-PMHOLD15`, legalName: 'ZZ Holder 15', paymentTerms: 'CASH', primaryPhone: phone(15), primaryPhoneNorm: `+968${phone(15)}` },
+    });
+    const [o1] = await rowsOf(b);
+    await fixes.correctImportRowAction(fd({ rowId: o1.id, cells: JSON.stringify({ branch_code: `${O}-02` }) }));
+    expect((await rowsOf(b)).map((r) => r.state)).toEqual(['QUARANTINED', 'CLEAN']);
+    expect(await fixes.withdrawImportRowFixAction(fd({ rowId: o1.id }))).toEqual({ ok: true, data: { rows: 2 } });
+    const back = await rowsOf(b);
+    expect(back.map((r) => r.state)).toEqual(['REJECTED', 'REJECTED']);
+    expect(back[0].corrections).toBeNull();
+    expect((await batchOf(b)).status).toBe('PROMOTED');
+  });
 });

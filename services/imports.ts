@@ -36,6 +36,7 @@ import {
   type SheetRow,
 } from '@/lib/import-row-check';
 import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
+import { lockCustomerRow } from '@/lib/locks';
 import {
   branchOnlyNote,
   composeBranchCode,
@@ -1264,6 +1265,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         const n = overtaken.get(m.id);
         if (n && !why.has(m.unit)) why.set(m.unit, (x) => newerUploadMessage(x.code, n));
       }
+      // One failure per customer, as the main loop counts them: a rejected
+      // three-row unit read as "3 customer(s) failed" (pre-merge review).
+      const failedByCode = new Map<string, { rowIds: string[]; reason: string }>();
       for (const m of fixMembers) {
         const reasonOf = why.get(m.unit);
         const g = groups.get(m.code);
@@ -1283,8 +1287,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             reviewedAt: new Date(),
           },
         });
-        failures.push({ custCode: m.code, rowIds: [m.id], reason });
+        const f = failedByCode.get(m.code) ?? { rowIds: [], reason };
+        f.rowIds.push(m.id);
+        failedByCode.set(m.code, f);
       }
+      for (const [custCode, f] of failedByCode) failures.push({ custCode, ...f });
     }
 
     // Ensure the UNASSIGNED region+route pair exists — the fail-safe landing place
@@ -1693,6 +1700,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 );
               }
             }
+            // Every row fixed in the app: branch writes come first, the
+            // customer's own row after (the phone fill, the score). Take the
+            // customer's row lock first, as photo attach and Remove do
+            // (lib/locks.ts), or the two orders deadlock on the same branch
+            // (pre-merge review). The other lanes write the customer first.
+            if (!refreshLane && !fullLane && existing) await lockCustomerRow(tx, existing.id);
             let customerId: string;
             if (refreshLane) {
               // ── Temix REFRESH row (existing live customer + temix_code) ──

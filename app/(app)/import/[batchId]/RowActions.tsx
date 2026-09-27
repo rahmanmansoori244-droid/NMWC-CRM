@@ -34,6 +34,8 @@ export function RowActions({
   excluded,
   superseded,
   linkedToTemix = false,
+  releasedWith = null,
+  canWithdraw = false,
 }: {
   rowId: string;
   batchId: string;
@@ -58,6 +60,10 @@ export function RowActions({
    * cell or a phone release: a fix there loads only the branch.
    */
   linkedToTemix?: boolean;
+  /** CLEAN only: the row a fix acted on, when this row only came back with it. */
+  releasedWith?: number | null;
+  /** A held-back row whose fix can still be withdrawn (rows it released wait CLEAN). */
+  canWithdraw?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -111,31 +117,37 @@ export function RowActions({
     return fd;
   };
 
+  const withdraw = () => {
+    if (
+      !confirm(
+        'Withdraw this fix? The row goes back to what it was before you fixed it, and your corrections are dropped. Rows this fix brought back with it go back too.'
+      )
+    )
+      return;
+    run(withdrawImportRowFixAction, withRow(), (r) => {
+      const rows = r.ok ? (r.data as { rows?: number } | undefined)?.rows : undefined;
+      return rows && rows > 1 ? `Fix withdrawn — ${rows} rows back to what they were.` : 'Fix withdrawn.';
+    });
+  };
+
   if (state === 'CLEAN') {
     // A fix already made, waiting to be promoted: it can be taken back — before
     // this, a mistyped correction had to be loaded or the batch never promoted.
+    // A row that only came back with another row's fix takes it back too.
     return (
       <div className="grid gap-1 text-xs">
+        {releasedWith != null && (
+          <p className="text-slate-600">Came back with the fix of row {releasedWith} and loads with it.</p>
+        )}
         {superseded ? (
           <p className="text-red-700">{superseded}</p>
-        ) : (
+        ) : releasedWith == null ? (
           <p className="text-slate-600">Fixed in the app — loads on the next promote.</p>
-        )}
+        ) : null}
         <button
           type="button"
           disabled={pending}
-          onClick={() => {
-            if (
-              !confirm(
-                'Withdraw this fix? The row goes back to what it was before you fixed it, and your corrections are dropped. Rows this fix brought back with it go back too.'
-              )
-            )
-              return;
-            run(withdrawImportRowFixAction, withRow(), (r) => {
-              const rows = r.ok ? (r.data as { rows?: number } | undefined)?.rows : undefined;
-              return rows && rows > 1 ? `Fix withdrawn — ${rows} rows back to what they were.` : 'Fix withdrawn.';
-            });
-          }}
+          onClick={withdraw}
           className="min-h-9 justify-self-start rounded-md border border-slate-300 bg-white px-3 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
         >
           Withdraw fix
@@ -226,6 +238,17 @@ export function RowActions({
             className="min-h-9 rounded-md border border-amber-300 bg-amber-50 px-3 font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
           >
             Release shared phone…
+          </button>
+        )}
+        {canWithdraw && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={withdraw}
+            title="The rows this fix brought back are waiting to load; withdrawing takes them back with this one."
+            className="min-h-9 rounded-md border border-slate-300 bg-white px-3 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            Withdraw fix
           </button>
         )}
         <button

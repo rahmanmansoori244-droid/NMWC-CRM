@@ -557,9 +557,10 @@ describe('a dismissal carried forward by the CR recompute (pre-merge review)', (
     expect([...d.keys()]).toEqual(['a|b', 'c|d']);
   });
 
-  it('with no dismissal in force (undone meanwhile) it stands as its own row', () => {
+  it('with no dismissal in force (undone meanwhile) it hides nothing: the Undo stands', () => {
     const d = parseDismissals([steward, { entityId: 'a|b', after: { undo: true }, at: at('2026-09-26T10:00:00Z') }, carried]);
-    expect(d.get('a|b')).toMatchObject({ at: at('2026-09-27T00:00:00Z'), by: 'operator' });
+    expect(d.get('a|b')).toBeUndefined();
+    expect(parseDismissals([carried]).size).toBe(0);
   });
 });
 

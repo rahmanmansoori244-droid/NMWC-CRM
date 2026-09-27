@@ -22,6 +22,7 @@ import { submitEditSchema, type SubmitEditInput } from '@/lib/validation/edit';
 import { normalizePhone } from '@/lib/phone';
 import { markManualGps, takeManualGpsReason, type FieldChange } from '@/lib/gps-manual';
 import { normalizeCR } from '@/lib/cr';
+import { lockCustomerRow } from '@/lib/locks';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
 import { answerIfLanded, findReceipt, ownOpenRequestMessage } from '@/lib/submission-replay';
@@ -1269,6 +1270,12 @@ async function approveEditCore(formData: FormData) {
           actorId: session.id,
         },
       });
+      // The customer's row lock before any branch write (lib/locks.ts): photo
+      // attach and Remove take it first too, and applyEditChanges writes a
+      // branch before its customer, so the two orders deadlocked on the same
+      // branch (pre-merge review). It also makes the EL-04 read below truly
+      // serialized against a concurrent Remove.
+      await lockCustomerRow(tx, edit.customerId!);
       // EL-04 (Critical): re-run the mandatory-field gate at approve time. The
       // submit-time gate enforces "salesman cannot submit a half-empty record", but
       // photos and other slot data live OUTSIDE `fieldChanges` and can be detached

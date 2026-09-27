@@ -17,6 +17,7 @@ import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { loadScope, assertCanAccessAttachment, assertCanEditCustomer } from '@/lib/access';
 import { ALREADY_ATTACHED_MESSAGE } from '@/lib/photo-attach';
+import { lockCustomerRow } from '@/lib/locks';
 
 const customerAttach = z.object({
   attachmentId: z.string().cuid(),
@@ -32,17 +33,12 @@ const branchAttach = z.object({
 
 const attachSchema = z.union([customerAttach, branchAttach]);
 
-/**
- * The customer's row lock, taken before anything else in a photo transaction.
- * Attach and Remove reach the server over plain fetches now (9edcbad), so two
- * photos taken on one phone can land together, and each recomputes the
- * completeness score from what it reads: without the lock the later one wrote
- * a score that left out the other photo (pre-merge review). With it, every
- * photo write on one customer runs one at a time, reading committed data.
- */
-async function lockCustomer(tx: Prisma.TransactionClient, customerId: string) {
-  await tx.$queryRaw`SELECT "id" FROM "Customer" WHERE "id" = ${customerId} FOR UPDATE`;
-}
+// The customer's row lock (lib/locks.ts), taken before anything else in a
+// photo transaction. Attach and Remove reach the server over plain fetches
+// now (9edcbad), so two photos taken on one phone can land together, and each
+// recomputes the completeness score from what it reads: without the lock the
+// later one wrote a score that left out the other photo (pre-merge review).
+const lockCustomer = lockCustomerRow;
 
 /**
  * Whether the attachment's own columns put it on exactly the target asked for,

@@ -353,12 +353,31 @@ describe('/import/[batchId]', () => {
     await open({ show: 'all' });
     const rowOf = (n: string) => screen.getByText(n).closest('tr')!;
     expect(rowOf('#3').textContent).toMatch(/Came back with the fix of row 2 and loads with it/);
-    expect(within(rowOf('#3')).queryAllByRole('button')).toEqual([]);
+    // It can take the fix back itself (pre-merge review of eb1a430).
+    expect(within(rowOf('#3')).queryAllByRole('button').map((b) => b.textContent)).toEqual(['Withdraw fix']);
     cleanup();
     h.newer = [{ code: 'F', filename: 'later.xlsx', rowNumber: 4, state: 'PROMOTED', excluded: false }];
     await open({ show: 'all' });
     expect(rowOf('#2').textContent).toMatch(/this fix will not load: promote rejects it/);
     expect(rowOf('#3').textContent).toMatch(/this fix will not load: promote rejects it/);
+  });
+
+  // Pre-merge review of eb1a430: the row a fix acted on can come back held back
+  // while the rows it released wait CLEAN; they could be neither withdrawn nor
+  // excluded, and loaded at the next promote.
+  it('a fixed row come back held back, with rows it released waiting, offers Withdraw fix', async () => {
+    h.rows = [
+      { id: 'f', rowNumber: 2, state: 'QUARANTINED', raw: { cust_code: 'F', phone: '99758980' }, parsed: { custCode: 'F', fixedInApp: true, fixedFrom: { state: 'REJECTED' }, fixGroup: 'f' }, issues: [{ field: 'phone', message: 'phone already exists in master on customer H' }] },
+      { id: 's', rowNumber: 3, state: 'CLEAN', raw: { cust_code: 'F' }, parsed: { custCode: 'F', fixedFrom: { state: 'REJECTED' }, fixGroup: 'f' }, issues: null },
+      { id: 'q', rowNumber: 4, state: 'QUARANTINED', raw: { cust_code: 'G', phone: '99758981' }, parsed: { custCode: 'G', fixedInApp: true, fixedFrom: { state: 'QUARANTINED' }, fixGroup: 'q' }, issues: [{ field: 'phone', message: 'phone already exists in master on customer H' }] },
+    ];
+    await open({ show: 'all' });
+    const rowOf = (n: string) => screen.getByText(n).closest('tr')!;
+    const buttons = (n: string) => within(rowOf(n)).queryAllByRole('button').map((b) => b.textContent);
+    expect(buttons('#2')).toContain('Withdraw fix');
+    expect(rowOf('#3').textContent).toMatch(/Came back with the fix of row 2/);
+    // Nothing of its fix is waiting: a held-back row is fixed or excluded, not withdrawn.
+    expect(buttons('#4')).not.toContain('Withdraw fix');
   });
 
   it('a fix waiting past the 90-day window says promote will reject it', async () => {

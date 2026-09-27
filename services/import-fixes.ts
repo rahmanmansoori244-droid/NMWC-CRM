@@ -225,7 +225,12 @@ async function refuseIfNewerUpload(
     }
   }
   const newer = await newerUploadsCarrying(tx, batch.uploadedAt, targets);
-  const hit = targets.find((t) => newer.has(t.key));
+  // The acted row's own answer first, as the batch page words it: naming a
+  // sibling first told the Steward to exclude that row, and the retry was then
+  // refused about the acted row itself (pre-merge review).
+  const hit =
+    targets.find((t) => newer.has(t.key) && rowOf.get(t.key)!.id === actedRowId) ??
+    targets.find((t) => newer.has(t.key));
   if (!hit) return;
   const hitRow = rowOf.get(hit.key)!;
   const n = newer.get(hit.key)!;
@@ -251,6 +256,14 @@ async function recheck(
   actedRowId: string
 ): Promise<{ clean: number; held: number }> {
   const targetIds = new Set(targets.map((t) => t.id));
+  // The unit this action's rows belong to: the acted row's own, when an earlier
+  // fix already brought it back with others — a row that came back held back
+  // and is fixed on its own stays with the rows it was rejected with, so
+  // Withdraw from any of them takes them all back and promote judges them as
+  // one (pre-merge review: re-fixing it moved it into a unit of its own, and a
+  // withdraw left it to load part of the customer alone).
+  const actedPrev = targets.find((t) => t.id === actedRowId)?.parsed as { fixGroup?: unknown } | null;
+  const group = typeof actedPrev?.fixGroup === 'string' && actedPrev.fixGroup ? actedPrev.fixGroup : actedRowId;
   const corrected = targets.map((t) => ({
     t,
     c: correctionsFor(t),
@@ -331,7 +344,7 @@ async function recheck(
           ...parsed,
           ...(fixedInApp ? { fixedInApp: true } : {}),
           fixedFrom,
-          fixGroup: actedRowId,
+          fixGroup: group,
         } as unknown as Prisma.InputJsonValue,
         issues: issues.length > 0 ? (issues as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
         corrections:
@@ -557,17 +570,14 @@ async function withdrawCore(formData: FormData): Promise<{ rows: number }> {
   const rows = await withBatch(batchId, async (tx, batch) => {
     const row = await loadRow(tx, rowId);
     const parsedNow = (row.parsed ?? {}) as { fixedInApp?: boolean; fixedFrom?: FixedFrom; fixGroup?: string };
-    if (row.state !== ImportRowState.CLEAN || parsedNow.fixedInApp !== true || row.excludedAt) {
-      throw new ValidationError({ _form: `Row ${row.rowNumber} is not a fixed row waiting to be promoted.` });
-    }
-    // The other rows the same fix brought back with this one. A row fixed
+    // The rows the same fix brought back with this one (its unit). A row fixed
     // before fixGroup existed stands alone.
-    const siblings = parsedNow.fixGroup
+    const unit = parsedNow.fixGroup
       ? await tx.importRow.findMany({
           where: {
             batchId: row.batchId,
             id: { not: row.id },
-            state: ImportRowState.CLEAN,
+            state: { in: [ImportRowState.CLEAN, ImportRowState.QUARANTINED] },
             excludedAt: null,
             parsed: { path: ['fixGroup'], equals: parsedNow.fixGroup },
           },
@@ -575,6 +585,24 @@ async function withdrawCore(formData: FormData): Promise<{ rows: number }> {
           orderBy: { rowNumber: 'asc' },
         })
       : [];
+    // Withdraw undoes a fix from any row of its unit that is still waiting: the
+    // row acted on, a row that came back with it (CLEAN, fixedFrom), or the
+    // acted row come back held back while rows it released wait CLEAN — those
+    // could be neither withdrawn nor excluded, and loaded at the next promote
+    // (pre-merge review).
+    const hasFix = !!parsedNow.fixedFrom || parsedNow.fixedInApp === true;
+    const waiting =
+      !row.excludedAt &&
+      hasFix &&
+      (row.state === ImportRowState.CLEAN ||
+        (row.state === ImportRowState.QUARANTINED &&
+          unit.some((u) => u.state === ImportRowState.CLEAN)));
+    if (!waiting) {
+      throw new ValidationError({ _form: `Row ${row.rowNumber} is not a fixed row waiting to be promoted.` });
+    }
+    // Members still carrying a fix (a held-back member without one was never
+    // brought back by it).
+    const siblings = unit.filter((u) => !!((u.parsed ?? {}) as { fixedFrom?: FixedFrom }).fixedFrom);
     const channelKeys = new Set(
       (await tx.channel.findMany({ select: { key: true } })).map((c) => c.key.toUpperCase())
     );
@@ -597,7 +625,7 @@ async function withdrawCore(formData: FormData): Promise<{ rows: number }> {
         masterCrs: empty,
       });
       const res = await tx.importRow.updateMany({
-        where: { id: r.id, state: ImportRowState.CLEAN, excludedAt: null },
+        where: { id: r.id, state: r.state, excludedAt: null },
         data: {
           state,
           issues,

@@ -271,10 +271,17 @@ export function supersedingUpload(
   });
   if (!branchRule) return newestFirst[0] ? pick(newestFirst[0]) : null;
   const hit = newestFirst.find((n) => {
+    // A row with no branch_code is numbered by position only on the full lane.
+    // A refresh row writes no branch while its cell is blank, in any state —
+    // plain it is skipped, fixed it is rejected until a code is typed, and then
+    // it is judged by that code — so a blank one never counts. Counting it
+    // blocked every branch fix of the customer once one inbound refresh row was
+    // held back, rejected, excluded or fixed (pre-merge review).
+    if (n.branch === null) return !n.refreshRow;
     const loadsNoBranch =
       n.refreshRow && !n.fixedInApp && !n.excluded && (n.state === 'PROMOTED' || n.state === 'CLEAN');
     if (loadsNoBranch) return false;
-    return n.branch === null || n.branch === target.branch;
+    return n.branch === target.branch;
   });
   return hit ? pick(hit) : null;
 }

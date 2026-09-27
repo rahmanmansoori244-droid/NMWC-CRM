@@ -110,7 +110,7 @@ export default async function ImportBatchPage({
         batch,
         displayRows.map((r) => ({ ...r, hasData: uploadedValues(r.raw).length > 0 }))
       )
-    : { blocked: new Map<string, string>(), releasedWith: new Map<string, number>() };
+    : { blocked: new Map<string, string>(), releasedWith: new Map<string, number>(), withdrawable: new Set<string>() };
   // Customers linked to Temix: a fix loads only the row's branch there, so the
   // row says so before the Steward corrects a customer-level cell or releases
   // a phone that would not be written (post-merge review).
@@ -308,12 +308,14 @@ export default async function ImportBatchPage({
                     </td>
                     {fixable && (
                       <td className="min-w-[220px] px-3 py-2">
-                        {problem || fixedWaiting ? (
+                        {problem || fixedWaiting || released ? (
                           <RowActions
                             rowId={r.id}
                             batchId={batch.id}
                             state={r.state as 'QUARANTINED' | 'REJECTED' | 'CLEAN'}
                             superseded={blocked}
+                            releasedWith={released ? (fb.releasedWith.get(r.id) ?? null) : null}
+                            canWithdraw={fb.withdrawable.has(r.id)}
                             linkedToTemix={
                               linked &&
                               ((uploaded.length > 0 &&
@@ -331,15 +333,6 @@ export default async function ImportBatchPage({
                                 : null
                             }
                           />
-                        ) : released ? (
-                          <div className="grid gap-1 text-xs">
-                            <p className="text-slate-600">
-                              {fb.releasedWith.has(r.id)
-                                ? `Came back with the fix of row ${fb.releasedWith.get(r.id)} and loads with it; Withdraw fix on that row takes it back.`
-                                : 'Came back with a fix of its customer, and loads with it.'}
-                            </p>
-                            {blocked && <p className="text-red-700">{blocked}</p>}
-                          </div>
                         ) : null}
                       </td>
                     )}

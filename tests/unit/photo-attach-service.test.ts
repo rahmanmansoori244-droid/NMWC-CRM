@@ -387,3 +387,36 @@ describe('who edits, attaches and removes: one set of roles', () => {
     );
   });
 });
+
+// Pre-merge review of eb1a430: photo attach and Remove lock the customer row
+// before a branch; any transaction writing a branch and then its customer must
+// take that lock first too, or the two orders deadlock on the same branch.
+describe('one lock order: the customer row before its branches', () => {
+  const src = (f: string) => stripComments(readFileSync(f, 'utf8'), f);
+  const before = (text: string, lock: RegExp, write: RegExp) => {
+    const l = text.search(lock);
+    const w = text.search(write);
+    expect(l).toBeGreaterThan(-1);
+    expect(w).toBeGreaterThan(-1);
+    expect(l).toBeLessThan(w);
+  };
+  it('approving an edit locks the customer before applyEditChanges writes its branches', () => {
+    const edits = src('services/edits.ts');
+    const approve = edits.slice(edits.indexOf('async function approveEditCore'));
+    before(approve, /await lockCustomerRow\(tx, edit\.customerId!\)/, /await applyEditChanges\(tx,/);
+  });
+  it('approving a reactivation locks the customer before the branch write', () => {
+    const r = src('services/reactivations.ts');
+    before(r, /await lockCustomerRow\(tx, edit\.customerId!\)/, /await tx\.branch\.update\(\{\s*where: \{ id: edit\.branchId! \}/);
+  });
+  it('a branch-only import locks the customer before refreshLaneBranches', () => {
+    const i = src('services/imports.ts');
+    const promote = i.slice(i.indexOf('async function promoteCustomerBatchCore'));
+    before(promote, /if \(!refreshLane && !fullLane && existing\) await lockCustomerRow\(tx, existing\.id\)/, /await refreshLaneBranches\(tx,/);
+  });
+  it('photo attach and Remove take it first', () => {
+    const photos = src('services/photos.ts');
+    expect(photos.match(/await lockCustomer\(tx,/g)?.length).toBe(3);
+    expect(photos).toMatch(/const lockCustomer = lockCustomerRow;/);
+  });
+});
