@@ -63,7 +63,7 @@ export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/reactivations', label: 'Reactivations', icon: AlertTriangle },
     { href: '/audit', label: 'Audit log', icon: ScrollText },
     { href: '/work', label: 'Work items', icon: Inbox },
-    // Item 9: company-wide service levels (lib/service-levels.ts STATUS_ROLES).
+    // Item 9: service levels; a Manager's approvals are their regions' (lib/service-levels.ts STATUS_ROLES).
     { href: '/status', label: 'Service status', icon: Activity },
   ],
   STEWARD: [

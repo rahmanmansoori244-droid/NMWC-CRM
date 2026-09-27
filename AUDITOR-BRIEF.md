@@ -59,7 +59,7 @@ services/*.ts        15 'use server' modules exporting 47 async functions (serve
 prisma/              schema.prisma, 20 migrations, seeds, ad-hoc test scripts (§2)
 scripts/             ops/ (smoke, app-role, restore-verify, cron-scheduler, R2 checks), qa/, golive/,
                      compliance/, plus ~16 historical scripts at the root (§2)
-tests/unit           88 files, 1,480 tests (vitest + jsdom); one runs only where golive-data/ exists
+tests/unit           88 files, 1,481 tests (vitest + jsdom); one runs only where golive-data/ exists
 tests/integration    30 DB-backed suites gated by RUN_* flags; 27 run in CI
 tests/e2e            2 Playwright specs; only login.spec.ts runs in CI
 tests/support        strip-comments (TypeScript-parser based), jsx-ast, where-eval, workflow-step,
@@ -98,7 +98,7 @@ Eight roles (`Role` enum; checks in `lib/permissions.ts`, `lib/access.ts`). Scop
 | ACCOUNTANT | managed regions | final step of both CREATE chains |
 | FINANCE_MANAGER, GM | everything (read) | steps on the CREDIT chain only |
 
-**Service status** (`/status`, item 9): STEWARD and MANAGER only (page gate plus the nav, pinned together by `tests/unit/status-page.test.tsx`). No customer, no error text (`withoutErrorText` drops a job's `lastError` in `lib/service-status.ts`). System figures (availability, SLA sweep, backups, ERP hand-off, stuck imports) are company-wide for both roles, like `perf-probe`. Approval figures are people's decisions: the Steward's are company-wide, every step on its own; anyone else's `loadServiceStatus` scope is their `managedRegionIds` (`ApprovalsScope`, no default), so a MANAGER counts only requests in their own regions, by the same test `/approvals/[id]` uses to let them open a request (`openableInRegions` / `openableInRegionsSql`, held equal to the page's gate against real Postgres in `tests/integration/service-levels.test.ts`), shown in three fixed groups (Supervisor step; Accountant + Finance Manager + GM steps; reactivations). No regions counts nothing. Four earlier rules that showed Managers company-wide figures with a three-person threshold each leaked the single-holder GM and Finance Manager steps by subtraction (post-merge review and attack test, 2026-09-27); counting only openable requests leaves nothing to subtract down to.
+**Service status** (`/status`, item 9): STEWARD and MANAGER only (page gate plus the nav, pinned together by `tests/unit/status-page.test.tsx`). No customer, no error text (`withoutErrorText` drops a job's `lastError` in `lib/service-status.ts`). System figures (availability, SLA sweep, backups, ERP hand-off, stuck imports) are company-wide for both roles, like `perf-probe`. Approval figures are people's decisions. The Steward's are company-wide, every step on its own. Anyone else's `loadServiceStatus` scope is their `managedRegionIds` (`ApprovalsScope`, no default). For that scope the loader keeps only the steps a Manager takes part in: the Supervisor step and reactivations (`MANAGER_VIEW_ROLES`). It also keeps only requests the Manager can open at `/approvals/[id]`, by the page's own gate (`openableInRegions` / `openableInRegionsSql`, held equal to a re-implementation of that gate against real Postgres, plus a source guard on the gate). Reactivations are counted by the reactivated branch's region, as `/reactivations` does (`countedInRegions`). "Measuring since" is computed under the same scope. No regions counts nothing. The Accountant, Finance Manager and GM steps are Steward-only: no other screen shows a Manager their due times, and their budgets are an open owner decision. Five earlier rules leaked the single-holder GM and Finance Manager records (post-merge review and two attack tests, 2026-09-27): four were company-wide figures with a three-person threshold, broken by subtraction; the fifth printed the credit steps' on-time verdicts.
 
 Export roles: MANAGER, STEWARD, VIEWER, SUPERVISOR. Separation of duty: the submitter never acts on his own request, and no user acts on two different steps within one **cycle** (`canActOnStep`; a resubmitted CREATE starts a new cycle).
 
@@ -290,7 +290,7 @@ Do not report these as defects without new evidence; you may of course challenge
 - **Structural guards** assert on source or configuration where the historical defect was "a correct helper nobody called": `submit-wiring-guard`, `audit-guard` and `branch-address-guard` read comment-stripped source; `ci-gates-guard` executes the workflow's shell steps under `bash -e` with stubs; `typed-routes-guard` compiles probe files; `pii-classification` parses the schema. 11 test files still strip comments with a naive regex that `tests/support/strip-comments.ts` documents as wrong.
 - **Mutation testing by hand**, recorded in commit messages (e.g. `efe3729` 11/11 unit mutants; `ab5867f` 20/20; `2d1e702` 11/11). No Stryker config.
 - **Adversarial review after merges**: three to six lenses, each finding put to one or two independent skeptics; confirmed findings are fixed in a follow-up commit whose message lists them.
-- **What the tests actually exercise (read "1,480 unit tests" with this in mind):**
+- **What the tests actually exercise (read "1,481 unit tests" with this in mind):**
   - Service functions are exercised against real Postgres by the integration suites; 25 of 30 mock `@/lib/auth`, so the real session path runs only in `tests/e2e/login.spec.ts`.
   - Unit tests reach services mostly through source-text guards or `vi.mock`; some run a service with Prisma mocked, among them `customer-master-export.test.ts`, `duplicates-service.test.ts` and `photo-attach-service.test.ts` (`services/photos.ts` through its two routes).
   - No test exercises `services/temix.ts`, `customers.ts`, `routes.ts`, `saved-views.ts`, `notifications-actions.ts` or `customer-export.ts` for behaviour. Duplicate detection gained unit tests (the pure pairing, the service with Prisma mocked, the page and the card) and a Postgres suite `duplicate-detection.test.ts` riding `RUN_MERGE_TESTS` (item 16).
@@ -349,7 +349,7 @@ Trust the code. Known stale or contradictory documents:
 npm ci
 npm run typecheck        # next typegen + tsc --noEmit
 npm run lint
-npm test                 # 1,480 unit tests (one skips without golive-data/); integration files collect and skip
+npm test                 # 1,481 unit tests (one skips without golive-data/); integration files collect and skip
 npx next build           # no migrate; needs AUTH_SECRET >= 32 varied chars and placeholder DATABASE_URL/DIRECT_URL
 ```
 

@@ -143,11 +143,10 @@ describe('what it says', () => {
   });
 
   it('shows the open queue in working time', async () => {
-    // A Manager: the Supervisor queue, the credit steps together, reactivations.
-    render(await StatusPage());
+    // A Manager: the Supervisor queue and reactivations; the GM's queue is not theirs.
+    const { container } = render(await StatusPage());
     expect(screen.getByText(/2 past due · oldest waiting 11 h 40 m of working time/)).toBeTruthy();
-    expect(screen.getByText('Accountant, Finance Manager and GM')).toBeTruthy();
-    expect(screen.getByText(/1 past due · oldest waiting 11 h 0 m of working time/)).toBeTruthy();
+    expect(container.textContent).not.toMatch(/11 h 0 m/);
   });
 
   it('the Data Steward sees each queue on its own', async () => {
@@ -191,7 +190,7 @@ describe('a Manager’s approval figures are their own regions’ requests, neve
     expect(h.scopeFor).toHaveBeenCalledWith('mgr-1');
     expect(h.load).toHaveBeenCalledTimes(1);
     expect(h.load.mock.calls[0]![0]).toEqual({ regionIds: ['r-north', 'r-south'] });
-    expect(card().textContent).toContain('Requests in your regions only.');
+    expect(card().textContent).toContain('The Supervisor step and reactivations, on requests in your regions.');
     expect(screen.getByRole('heading', { name: 'Approvals waiting in your regions' })).toBeTruthy();
     cleanup();
 
@@ -218,24 +217,26 @@ describe('a Manager’s approval figures are their own regions’ requests, neve
     expect(card().textContent).toContain('You manage no regions, so no approvals are counted for you.');
   });
 
-  it('a Manager sees the GM only inside the credit steps, with the accountants', async () => {
+  it('the Accountant, Finance Manager and GM steps are never on a Manager’s page', async () => {
+    // Their due times are on no other screen a Manager has, their budgets are an
+    // open owner decision, and two of them have one holder each.
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     const { container } = render(await StatusPage());
-    expect(card().textContent).toContain('63 of 80 decisions on time');
     expect(card().textContent).toContain('Supervisor step: 30/40 on time');
-    // GM 3/5 + accountants 30/35 = 33/40; no median of medians.
-    expect(card().textContent).toContain('Accountant, Finance Manager and GM steps: 33/40 on time');
-    expect(card().textContent).not.toMatch(/Accountant, Finance Manager and GM steps: 33\/40 on time, median/);
+    expect(card().textContent).toContain('The Accountant, Finance Manager and GM steps are reported to the Data Steward.');
+    // The fixture carries GM 3/5 and accountants 30/35: neither, nor their sum, is printed.
+    expect(container.textContent).not.toMatch(/3\/5|30\/35|33\/40/);
     expect(container.textContent).not.toContain('General manager');
     expect(container.textContent).not.toContain('Accountant step');
+    expect(container.textContent).not.toMatch(/Accountant, Finance Manager and GM steps:/);
   });
 
-  it('the same three groups whatever the data: a GM decision adds no line and removes none', async () => {
+  it('the same lines whatever the data: a GM decision adds no line and removes none', async () => {
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     const lines = () =>
       [...card().querySelectorAll('p')]
         .map((p) => p.textContent!.split(':')[0]!)
-        .filter((l) => /^(Supervisor step|Accountant, Finance Manager and GM steps|Manager \(reactivations\))$/.test(l));
+        .filter((l) => /^(Supervisor step|Manager \(reactivations\))$/.test(l));
     const before = status();
     before.approvals.tiers = before.approvals.tiers.filter((t) => t.role !== 'GM');
     h.load.mockResolvedValue(before);
@@ -245,30 +246,36 @@ describe('a Manager’s approval figures are their own regions’ requests, neve
     h.load.mockResolvedValue(status());
     render(await StatusPage());
     expect(lines()).toEqual(a);
-    expect(a).toEqual(['Supervisor step', 'Accountant, Finance Manager and GM steps', 'Manager (reactivations)']);
+    expect(a).toEqual(['Supervisor step', 'Manager (reactivations)']);
   });
 
-  it('the waiting queues: always the same three cards, the credit steps added together', async () => {
+  it('the waiting queues: the same two cards every time, and no credit step among them', async () => {
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     h.load.mockResolvedValue(
       status({
         openApprovals: [
           { role: 'SUPERVISOR', open: 0, pastDue: 0, oldestWorkingMinutes: null },
           { role: 'FINANCE_MANAGER', open: 1, pastDue: 1, oldestWorkingMinutes: 550 },
-          { role: 'GM', open: 2, pastDue: 0, oldestWorkingMinutes: 100 },
+          { role: 'MANAGER', open: 2, pastDue: 0, oldestWorkingMinutes: 100 },
         ],
       })
     );
     const { container } = render(await StatusPage());
     expect(container.textContent).not.toContain('Nothing is waiting for an approver');
     const cards = [...container.querySelectorAll('section[aria-labelledby="queue-heading"] article')];
-    expect(cards.map((c) => c.querySelector('h3')!.textContent)).toEqual([
-      'Supervisor',
-      'Accountant, Finance Manager and GM',
-      'Manager (reactivations)',
-    ]);
-    expect(cards[1]!.textContent).toContain('3');
-    expect(cards[1]!.textContent).toContain('1 past due · oldest waiting 9 h 10 m of working time');
+    expect(cards.map((c) => c.querySelector('h3')!.textContent)).toEqual(['Supervisor', 'Manager (reactivations)']);
+    expect(cards[1]!.textContent).toContain('none past due · oldest waiting 1 h 40 m of working time');
+    // The Finance Manager's late request is nowhere on it.
+    expect(container.textContent).not.toMatch(/9 h 10 m/);
+  });
+
+  it('the loader copies the request page’s MANAGER gate, and that gate is still the one it copies', () => {
+    // lib/service-status.ts openableInRegions / openableInRegionsSql and the
+    // integration test's re-implementation mirror these two expressions.
+    const src = stripComments(readFileSync('app/(app)/approvals/[id]/page.tsx', 'utf8'));
+    expect(src).toContain('edit.branchDrafts.map((b) => b.route.regionId)');
+    expect(src).toContain(".filter((b) => !b.deletedAt).map((b) => b.regionId)");
+    expect(src).toContain('scope.managedRegionIds.includes(r)');
   });
 
   it('the Data Steward sees every step, and "nothing is waiting" when nothing is', async () => {

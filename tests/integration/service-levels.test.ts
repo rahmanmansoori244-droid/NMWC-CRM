@@ -37,7 +37,8 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
   const reg = { in: '', out: '', routeIn: '', routeOut: '', routeMoved: '' };
   const cust: string[] = [];
   const e = {} as Record<
-    'in' | 'out' | 'deleted' | 'multi' | 'createIn' | 'createMoved' | 'reactIn' | 'reactOut' | 'waitingIn' | 'waitingOut',
+    | 'in' | 'out' | 'early' | 'deleted' | 'multi' | 'createIn' | 'createMoved' | 'createLinked'
+    | 'reactIn' | 'reactOut' | 'reactMultiOut' | 'waitingIn' | 'waitingOut' | 'waitingReactMultiOut',
     string
   >;
 
@@ -152,7 +153,8 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       data: Record<string, unknown>,
       role: 'SUPERVISOR' | 'ACCOUNTANT' | 'FINANCE_MANAGER' | 'GM',
       onTime: boolean,
-      minutes: number
+      minutes: number,
+      day = R
     ) => {
       const edit = await prisma.customerEdit.create({
         data: {
@@ -165,13 +167,16 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       await prisma.editApproval.create({
         data: {
           editId: edit.id, cycle: 1, stepIndex: 0, role, decision: 'APPROVED', actorId: userId,
-          at: R(onTime ? '06:00:00' : '14:00:00'), stageEnteredAt: R('04:00:00'), slaDueAt: R('12:00:00'),
+          at: day(onTime ? '06:00:00' : '14:00:00'), stageEnteredAt: day('04:00:00'), slaDueAt: day('12:00:00'),
           workingMinutes: minutes,
         },
       });
     };
     await decided('in', { customerId: cIn.id }, 'SUPERVISOR', true, 60);
     await decided('out', { customerId: cOut.id }, 'GM', false, 900);
+    // The earliest tracked decision of all, the day before and in the other
+    // region: a Manager of "in" must not be shown its minute as "Measuring since".
+    await decided('early', { customerId: cOut.id }, 'SUPERVISOR', true, 120, (iso) => new Date(`2099-05-09T${iso}Z`));
     await decided('deleted', { customerId: cDeleted.id }, 'FINANCE_MANAGER', true, 30);
     await decided('multi', { customerId: cMulti.id }, 'ACCOUNTANT', false, 700);
     const draft = (routeId: string) => ({
@@ -181,12 +186,20 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     await decided('createIn', draft(reg.routeIn), 'SUPERVISOR', true, 90);
     await decided('createMoved', draft(reg.routeMoved), 'GM', true, 45);
     await prisma.route.update({ where: { id: reg.routeMoved }, data: { regionId: rOut.id } });
+    // A finalized CREATE is linked to its customer (lib/create-finalize.ts). Its
+    // draft route is in "in", the customer's live branch in "out": the request
+    // page follows the draft, so "in" may open it and "out" may not.
+    await decided('createLinked', { ...draft(reg.routeIn), customerId: cOut.id }, 'ACCOUNTANT', true, 30);
 
-    const reactivation = async (key: 'reactIn' | 'reactOut', c: { id: string; branchIds: string[] }) => {
+    const reactivation = async (
+      key: 'reactIn' | 'reactOut' | 'reactMultiOut',
+      c: { id: string; branchIds: string[] },
+      branch = 0
+    ) => {
       const edit = await prisma.customerEdit.create({
         data: {
           target: 'CUSTOMER', submittedById: userId, state: 'APPROVED', isReactivation: true,
-          customerId: c.id, branchId: c.branchIds[0]!, fieldChanges: [], attachmentChanges: [],
+          customerId: c.id, branchId: c.branchIds[branch]!, fieldChanges: [], attachmentChanges: [],
           submittedAt: R('04:00:00'), stageEnteredAt: R('04:00:00'), slaDueAt: R('12:00:00'), reviewedAt: R('05:00:00'),
           reviewedById: managerId,
         },
@@ -196,6 +209,19 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     };
     await reactivation('reactIn', cIn);
     await reactivation('reactOut', cOut);
+    // The multi-region customer's branch in "out": decided by "out"'s Managers
+    // (/reactivations, approveReactivation). "in" may open the request, but it is
+    // not "in"'s reactivation to be counted on.
+    await reactivation('reactMultiOut', cMulti, 0);
+    const waitingReact = await prisma.customerEdit.create({
+      data: {
+        target: 'CUSTOMER', submittedById: userId, state: 'SUBMITTED', pendingRole: 'MANAGER', isReactivation: true,
+        customerId: cMulti.id, branchId: cMulti.branchIds[0]!, fieldChanges: [], attachmentChanges: [],
+        submittedAt: R('04:00:00'), stageEnteredAt: R('04:00:00'), slaDueAt: R('12:00:00'),
+      },
+    });
+    editIds.push(waitingReact.id);
+    e.waitingReactMultiOut = waitingReact.id;
 
     const waiting2 = async (key: 'waitingIn' | 'waitingOut', customerId: string, pendingRole: 'ACCOUNTANT' | 'GM') => {
       const edit = await prisma.customerEdit.create({
@@ -300,43 +326,86 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       );
       expect(new Set(byPrisma.map((r) => r.id)), `Prisma, regions ${managed.length}`).toEqual(byPage);
       expect(new Set(bySql.map((r) => r.id)), `SQL, regions ${managed.length}`).toEqual(byPage);
+
+      // What a Manager's figures count: the same in Prisma and SQL, and never a
+      // request the page would not open.
+      const countedPrisma = await prisma.customerEdit.findMany({
+        where: { id: { in: all }, ...svc.countedInRegions(managed) },
+        select: { id: true },
+      });
+      const countedSql = await prisma.$queryRaw<{ id: string }[]>(
+        Prisma.sql`SELECT e."id" FROM "CustomerEdit" e WHERE e."id" = ANY(${all}::text[]) AND ${svc.__internal.countedInRegionsSql(managed)}`
+      );
+      const counted = new Set(countedPrisma.map((r) => r.id));
+      expect(new Set(countedSql.map((r) => r.id)), `counted SQL, regions ${managed.length}`).toEqual(counted);
+      for (const id of counted) expect(byPage.has(id), `counted but not openable: ${id}`).toBe(true);
     }
     // The cases themselves: live branch in the region, a multi-region customer,
-    // a draft on a route there now — yes; the other region, a deleted branch, a
-    // draft whose route has since moved away — no.
-    expect(await pageLetsOpen([reg.in])).toEqual(new Set([e.in, e.multi, e.createIn, e.reactIn, e.waitingIn]));
+    // a draft on a route there now, a finalized CREATE whose draft route is here
+    // though its customer's branch is not — yes; the other region, a deleted
+    // branch, a draft whose route has since moved away — no.
+    expect(await pageLetsOpen([reg.in])).toEqual(
+      new Set([e.in, e.multi, e.createIn, e.createLinked, e.reactIn, e.reactMultiOut, e.waitingIn, e.waitingReactMultiOut])
+    );
+    expect((await pageLetsOpen([reg.out])).has(e.createLinked)).toBe(false);
+    // Counted for "in": all of that but the other region's branch's reactivations.
+    const countedIn = await prisma.customerEdit.findMany({
+      where: { id: { in: all }, ...svc.countedInRegions([reg.in]) },
+      select: { id: true },
+    });
+    expect(new Set(countedIn.map((r) => r.id))).toEqual(
+      new Set([e.in, e.multi, e.createIn, e.createLinked, e.reactIn, e.waitingIn])
+    );
   });
 
-  it('a Manager’s approval tiers count only those requests; the company’s count every one', async () => {
-    const mine = (await svc.__internal.approvalTiers(REGION_FROM, { regionIds: [reg.in] })).tiers;
-    expect(mine).toEqual([
-      // Enum order (SUPERVISOR before ACCOUNTANT), then reactivations.
+  it('a Manager’s approval tiers: their steps, their regions; the company’s count every one', async () => {
+    const tiers = async (regionIds: string[]) => svc.__internal.approvalTiers(REGION_FROM, { regionIds });
+    const mine = await tiers([reg.in]);
+    // No Accountant, Finance Manager or GM row, though "in" has an Accountant decision.
+    expect(mine.tiers).toEqual([
       { role: 'SUPERVISOR', decided: 2, tracked: 2, within: 2, p50Minutes: 75, p90Minutes: 87 },
-      { role: 'ACCOUNTANT', decided: 1, tracked: 1, within: 0, p50Minutes: 700, p90Minutes: 700 },
       { role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 60, p90Minutes: 60 },
     ]);
-    // The out-of-region GM decisions and the Finance Manager's on a customer
-    // whose only branch here is deleted are nowhere in it — but the company's has them.
-    const company = (await svc.__internal.approvalTiers(REGION_FROM, 'company')).tiers;
-    expect(company.find((t) => t.role === 'GM')?.decided).toBe(2);
-    expect(company.find((t) => t.role === 'FINANCE_MANAGER')?.decided).toBe(1);
-    // No regions counts nothing.
-    expect((await svc.__internal.approvalTiers(REGION_FROM, { regionIds: [] })).tiers).toEqual([]);
+    // "Measuring since" is the earliest decision these figures count — the
+    // reactivation at 05:00 — not the company's first, out of region, the day before.
+    expect(mine.firstCounted).toEqual(R('05:00:00'));
+    // "out" counts its own reactivations, the multi-region customer's included.
+    const theirs = await tiers([reg.out]);
+    expect(theirs.tiers).toEqual([
+      { role: 'SUPERVISOR', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120 },
+      { role: 'MANAGER', decided: 2, tracked: 2, within: 2, p50Minutes: 60, p90Minutes: 60 },
+    ]);
+    expect(theirs.firstCounted).toEqual(new Date('2099-05-09T06:00:00Z'));
+    // No regions counts nothing, and measures from nothing.
+    expect(await tiers([])).toEqual({ tiers: [], firstCounted: null });
+    // The company's has every step.
+    const company = await svc.__internal.approvalTiers(REGION_FROM, 'company');
+    expect(company.tiers.find((t) => t.role === 'GM')?.decided).toBe(2);
+    expect(company.tiers.find((t) => t.role === 'FINANCE_MANAGER')?.decided).toBe(1);
+    expect(company.tiers.find((t) => t.role === 'ACCOUNTANT')?.decided).toBe(2);
+    expect(company.firstCounted!.getTime()).toBeLessThanOrEqual(new Date('2099-05-09T06:00:00Z').getTime());
   });
 
-  it('a Manager’s waiting queues count only those requests too', async () => {
+  it('a Manager’s waiting queues: their steps, their regions', async () => {
     const now = new Date('2099-06-02T00:00:00Z');
-    const open = (tiers: { role: string; open: number }[], role: string) => tiers.find((t) => t.role === role)?.open;
-    const mine = await svc.__internal.openApprovals(now, { regionIds: [reg.in] });
-    expect(open(mine, 'ACCOUNTANT')).toBe(1);
-    expect(open(mine, 'GM')).toBe(0);
+    const view = (tiers: { role: string; open: number }[]) => tiers.map((t) => [t.role, t.open]);
+    // "in" has a request waiting at the Accountant step: not a Manager's step.
     // The request with no customer at all waits at the Supervisor step: nobody's region.
-    expect(open(mine, 'SUPERVISOR')).toBe(0);
-    const none = await svc.__internal.openApprovals(now, { regionIds: [] });
-    expect(none.every((t) => t.open === 0)).toBe(true);
+    expect(view(await svc.__internal.openApprovals(now, { regionIds: [reg.in] }))).toEqual([
+      ['SUPERVISOR', 0],
+      ['MANAGER', 0],
+    ]);
+    expect(view(await svc.__internal.openApprovals(now, { regionIds: [reg.out] }))).toEqual([
+      ['SUPERVISOR', 0],
+      ['MANAGER', 1],
+    ]);
+    expect(view(await svc.__internal.openApprovals(now, { regionIds: [] }))).toEqual([
+      ['SUPERVISOR', 0],
+      ['MANAGER', 0],
+    ]);
     const company = await svc.__internal.openApprovals(now, 'company');
-    expect(open(company, 'SUPERVISOR')).toBeGreaterThanOrEqual(1);
-    expect(open(company, 'GM')).toBeGreaterThanOrEqual(1);
+    const open = (role: string) => company.find((t) => t.role === role)?.open ?? 0;
+    for (const role of ['SUPERVISOR', 'ACCOUNTANT', 'GM', 'MANAGER']) expect(open(role), role).toBeGreaterThanOrEqual(1);
   });
 
   it('the whole loader runs against real Postgres and returns verdicts', async () => {

@@ -91,10 +91,12 @@ export const SLOS: readonly SloDefinition[] = [
 ] as const;
 
 /**
- * Who may open the Service status page: the Data Steward and the Managers. It
- * shows company-wide counts only (lib/service-status.ts), which is why a
- * region-scoped Manager may see it. The nav (components/nmwc/Sidebar.tsx) must
- * offer the page to exactly these roles; tests/unit/status-page.test.tsx pins it.
+ * Who may open the Service status page: the Data Steward and the Managers. Its
+ * system figures are company-wide; its approval figures are the whole company's
+ * only for the Data Steward, and for anyone else only the steps a Manager takes
+ * part in, on requests in their own regions (ApprovalsScope, approvalsForManager).
+ * The nav (components/nmwc/Sidebar.tsx) must offer the page to exactly these
+ * roles; tests/unit/status-page.test.tsx pins it.
  */
 export const STATUS_ROLES: readonly string[] = ['STEWARD', 'MANAGER'];
 
@@ -298,17 +300,22 @@ export type TierDecisions = {
 /**
  * What a Manager sees of the approval steps (reviews of 2026-09-27).
  *
- * The approval figures a Manager sees are built only from requests in the
- * Manager's own regions: the requests /approvals/[id] already lets that Manager
- * open, with every step's decision, who made it and when
- * (lib/service-status.ts openableInRegions). The page therefore adds nothing the
- * Manager could not already read there; it only adds it up.
+ * A Manager sees the two steps a Manager takes part in: the Supervisor step
+ * (their Supervisors', and their own as the region fallback) and reactivations
+ * (decided by the Managers). Both are counted only on requests in the Manager's
+ * own regions (lib/service-status.ts ApprovalsScope): requests that Manager can
+ * already open at /approvals/[id], and whose Supervisor-step due times their
+ * /approvals queue shows. The Accountant, Finance Manager and GM steps are the
+ * Data Steward's alone: nowhere else does a Manager see their due times, their
+ * budgets are still an open owner decision, and two of them have one holder
+ * each, so any figure of theirs is that colleague's own record. The Data Steward
+ * sees the whole company, every step on its own.
  *
- * Four earlier rules tried to show Managers company-wide figures while hiding
- * any figure that stood for fewer than three people. Each one leaked, because a
- * Manager already knows part of any company-wide figure (their own decisions,
- * every request in their regions, the GM-step breaches every Manager is
- * notified of) and can subtract it:
+ * Four earlier rules showed Managers company-wide figures and hid any figure
+ * that stood for fewer than three people. Each leaked the GM's and Finance
+ * Manager's records, because a Manager already knows part of any company-wide
+ * figure (their own decisions, every request in their regions, the GM-step
+ * breaches every Manager is notified of) and can subtract it:
  *   - hiding a small step while the company-wide figure sat above the shown
  *     steps;
  *   - folding small steps in with whichever shown step was smallest, a choice
@@ -316,25 +323,21 @@ export type TierDecisions = {
  *   - keeping the company-wide figure when fewer than three people stood behind
  *     everything;
  *   - counting the viewing Manager as one of the three.
- * Counting only requests the Manager can already open ends that whole class,
- * because there is nothing left to subtract down to.
- *
- * A Manager still sees the steps in FIXED groups: the Supervisor step; the
- * Accountant, Finance Manager and GM steps together; and reactivations. The
- * facts are theirs to open one request at a time, but the page does not print a
- * running scorecard of the GM or the Finance Manager. The Data Steward sees the
- * whole company, every step on its own.
+ * A fifth, counting all steps on the Manager's own requests, still printed the
+ * credit steps' on-time verdicts, which no other screen gives a Manager.
  */
-export type StepGroup = { key: 'SUPERVISOR' | 'CREDIT' | 'MANAGER'; label: string; roles: readonly string[] };
+export type StepGroup = { key: 'SUPERVISOR' | 'MANAGER'; label: string; roles: readonly string[] };
 
 export const MANAGER_VIEW_GROUPS: readonly StepGroup[] = [
   { key: 'SUPERVISOR', label: 'Supervisor step', roles: ['SUPERVISOR'] },
-  { key: 'CREDIT', label: 'Accountant, Finance Manager and GM steps', roles: ['ACCOUNTANT', 'FINANCE_MANAGER', 'GM'] },
   { key: 'MANAGER', label: 'Manager (reactivations)', roles: ['MANAGER'] },
 ];
 
-/** The approval step roles, for loaders that must report every step even when empty. */
-export const STEP_ROLES: readonly string[] = MANAGER_VIEW_GROUPS.flatMap((g) => g.roles);
+/** The step roles a Manager's figures may count (lib/service-status.ts filters by them). */
+export const MANAGER_VIEW_ROLES: readonly string[] = MANAGER_VIEW_GROUPS.flatMap((g) => g.roles);
+
+/** Every approval step role, for loaders that must report every step even when empty. */
+export const STEP_ROLES: readonly string[] = ['SUPERVISOR', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER'];
 
 /** Several steps as one: counts add; a median of medians is nobody's figure. */
 export function mergeDecisions(role: string, members: TierDecisions[]): TierDecisions {
@@ -348,7 +351,7 @@ export function mergeDecisions(role: string, members: TierDecisions[]): TierDeci
   };
 }
 
-/** A Manager's approval lines: the three fixed groups, always all three, in this order. */
+/** A Manager's approval lines: their groups, always all of them, in this order. */
 export function approvalsForManager(tiers: TierDecisions[]): { group: StepGroup; decisions: TierDecisions }[] {
   return MANAGER_VIEW_GROUPS.map((group) => ({
     group,
@@ -367,7 +370,7 @@ export type QueueLike = {
   oldestWorkingMinutes: number | null;
 };
 
-/** A Manager's waiting queues: the same three fixed groups, always all three. */
+/** A Manager's waiting queues: their groups, always all of them. */
 export function queuesForManager(queues: QueueLike[]): { group: StepGroup; queue: QueueLike }[] {
   return MANAGER_VIEW_GROUPS.map((group) => {
     const members = queues.filter((q) => group.roles.includes(q.role));

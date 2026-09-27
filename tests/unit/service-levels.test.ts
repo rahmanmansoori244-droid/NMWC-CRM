@@ -29,6 +29,7 @@ import {
   approvalsForManager,
   queuesForManager,
   MANAGER_VIEW_GROUPS,
+  MANAGER_VIEW_ROLES,
   STEP_ROLES,
   windowStart,
   type TierDecisions,
@@ -279,49 +280,47 @@ describe('approvals', () => {
   });
 });
 
-describe('a Manager sees the approval steps in three fixed groups', () => {
-  // Which requests those are (the Manager's own regions) is the loader's job,
-  // proved against real SQL in tests/integration/service-levels.test.ts; the page
-  // passing the viewer's regions is pinned in tests/unit/status-page.test.tsx.
+describe('a Manager sees only the steps a Manager takes part in', () => {
+  // Which requests those are (the Manager's own regions) and which steps the
+  // loader keeps are proved against real SQL in tests/integration/service-levels.test.ts;
+  // the page passing the viewer's regions is pinned in tests/unit/status-page.test.tsx.
   const t = (role: string, within = 4, tracked = 5): TierDecisions => ({
     role, decided: tracked, tracked, within, p50Minutes: 30, p90Minutes: 90,
   });
-  const keys = ['SUPERVISOR', 'CREDIT', 'MANAGER'];
+  const keys = ['SUPERVISOR', 'MANAGER'];
 
-  it('the groups are fixed, and each step belongs to exactly one', () => {
+  it('the Supervisor step and reactivations; never the Accountant, Finance Manager or GM steps', () => {
     expect(MANAGER_VIEW_GROUPS.map((g) => g.key)).toEqual(keys);
-    const roles = MANAGER_VIEW_GROUPS.flatMap((g) => g.roles);
-    expect(new Set(roles).size).toBe(roles.length);
-    expect([...roles].sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SUPERVISOR']);
-    expect(STEP_ROLES).toEqual(roles);
+    expect(MANAGER_VIEW_ROLES).toEqual(['SUPERVISOR', 'MANAGER']);
+    for (const credit of ['ACCOUNTANT', 'FINANCE_MANAGER', 'GM']) expect(MANAGER_VIEW_ROLES).not.toContain(credit);
+    // Every step is still reported to the Data Steward.
+    expect([...STEP_ROLES].sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SUPERVISOR']);
   });
 
-  it('the Finance Manager and GM are counted with the accountants, never on a line of their own', () => {
-    const groups = approvalsForManager([t('SUPERVISOR', 38, 40), t('FINANCE_MANAGER', 2, 6), t('GM', 3, 5), t('ACCOUNTANT', 30, 35)]);
-    const credit = groups.find((g) => g.group.key === 'CREDIT')!;
-    expect(credit.decisions.tracked).toBe(6 + 5 + 35);
-    expect(credit.decisions.within).toBe(2 + 3 + 30);
-    // A median of three steps' medians is nobody's figure.
-    expect(credit.decisions.p50Minutes).toBeNull();
-    expect(groups.find((g) => g.group.key === 'SUPERVISOR')!.decisions.p50Minutes).toBe(30);
+  it('a credit-step row that reached the grouping anyway is on no line', () => {
+    const groups = approvalsForManager([t('SUPERVISOR', 38, 40), t('FINANCE_MANAGER', 2, 6), t('GM', 3, 5), t('MANAGER', 1, 1)]);
+    expect(groups.map((g) => [g.group.key, g.decisions.within, g.decisions.tracked])).toEqual([
+      ['SUPERVISOR', 38, 40],
+      ['MANAGER', 1, 1],
+    ]);
   });
 
-  it('all three groups, in the same order, whatever the data and whatever order the rows arrive in', () => {
-    const tiers = [t('GM', 1, 2), t('SUPERVISOR'), t('ACCOUNTANT')];
+  it('all groups, in the same order, whatever the data and whatever order the rows arrive in', () => {
+    const tiers = [t('MANAGER', 1, 2), t('SUPERVISOR')];
     expect(approvalsForManager(tiers).map((g) => g.group.key)).toEqual(keys);
     expect(approvalsForManager([...tiers].reverse())).toEqual(approvalsForManager(tiers));
     expect(approvalsForManager([]).map((g) => [g.group.key, g.decisions.tracked])).toEqual(keys.map((k) => [k, 0]));
   });
 
-  it('the waiting queues: the same three cards, the credit steps added together', () => {
+  it('the waiting queues: the same cards, and no credit step among them', () => {
     const q = (role: string, open = 0, pastDue = 0, oldestWorkingMinutes: number | null = null) => ({
       role, open, pastDue, oldestWorkingMinutes,
     });
-    const cards = queuesForManager([q('GM', 2, 1, 660), q('SUPERVISOR', 4, 2, 700), q('FINANCE_MANAGER', 1, 0, 30)]);
+    const cards = queuesForManager([q('GM', 2, 1, 660), q('SUPERVISOR', 4, 2, 700), q('MANAGER', 1, 0, 30)]);
     expect(cards.map((c) => c.group.key)).toEqual(keys);
-    expect(cards[1]!.queue).toEqual({ role: 'CREDIT', open: 3, pastDue: 1, oldestWorkingMinutes: 660 });
-    expect(cards[2]!.queue).toEqual({ role: 'MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null });
-    expect(queuesForManager([]).map((c) => c.queue.open)).toEqual([0, 0, 0]);
+    expect(cards[0]!.queue).toEqual({ role: 'SUPERVISOR', open: 4, pastDue: 2, oldestWorkingMinutes: 700 });
+    expect(cards[1]!.queue).toEqual({ role: 'MANAGER', open: 1, pastDue: 0, oldestWorkingMinutes: 30 });
+    expect(queuesForManager([]).map((c) => c.queue.open)).toEqual([0, 0]);
   });
 });
 

@@ -10,12 +10,13 @@
  *   - a job's last error text is dropped here (withoutErrorText): it is scrubbed,
  *     but it stays behind the monitor bearer (lib/heartbeat.ts);
  *   - the approval figures are people's decisions, so for anyone but the Data
- *     Steward they are read from the requests in the viewer's own regions only
- *     (ApprovalsScope, openableInRegions): requests that viewer can already open at
- *     /approvals/[id], every step with who decided it and when. Company-wide
- *     approval figures leaked single-holder steps (the GM, the Finance Manager)
- *     by subtraction under four different rules (reviews of 2026-09-27;
- *     lib/service-levels.ts approvalsForManager says how).
+ *     Steward they are read only at the steps a Manager takes part in (the
+ *     Supervisor step and reactivations), on requests in the viewer's own regions
+ *     (ApprovalsScope, countedInRegions): requests that viewer can already open
+ *     at /approvals/[id]. Company-wide approval figures leaked single-holder
+ *     steps (the GM, the Finance Manager) by subtraction under four different
+ *     rules (reviews of 2026-09-27; lib/service-levels.ts approvalsForManager
+ *     says how).
  * Everything else is a company-wide count or duration about the system, not a
  * person, the same call as /api/perf-probe (AUDITOR-BRIEF §5).
  *
@@ -36,6 +37,7 @@ import {
   PARSING_LOOKBACK_HOURS,
   PARSING_STUCK_AFTER_MIN,
   PROMOTE_STUCK_AFTER_MIN,
+  MANAGER_VIEW_ROLES,
   STEP_ROLES,
   approvalsResult,
   availabilityResult,
@@ -100,6 +102,41 @@ function openableInRegionsSql(regionIds: string[]): Prisma.Sql {
        SELECT 1 FROM "Branch" b
         WHERE b."customerId" = e."customerId" AND b."deletedAt" IS NULL
           AND b."regionId" = ANY(${regionIds}::text[]))))`;
+}
+
+/**
+ * What a Manager's figures count: requests they can open (openableInRegions),
+ * and of reactivations only those of a branch in their regions — the ones
+ * /reactivations lists for them and approveReactivation lets them decide. A
+ * customer with branches in two regions must not put one region's reactivation
+ * on the other region's Manager's figures (review of f0e6776). A subset of
+ * openableInRegions, so it counts nothing that Manager cannot open.
+ */
+export function countedInRegions(regionIds: string[]): Prisma.CustomerEditWhereInput {
+  return {
+    AND: [
+      openableInRegions(regionIds),
+      { OR: [{ isReactivation: false }, { branch: { regionId: { in: regionIds } } }] },
+    ],
+  };
+}
+
+/** countedInRegions over the CustomerEdit aliased `e`. */
+function countedInRegionsSql(regionIds: string[]): Prisma.Sql {
+  return Prisma.sql`(${openableInRegionsSql(regionIds)}
+    AND (NOT e."isReactivation" OR EXISTS (
+       SELECT 1 FROM "Branch" rb WHERE rb."id" = e."branchId" AND rb."regionId" = ANY(${regionIds}::text[]))))`;
+}
+
+/**
+ * The rows a non-company scope keeps: requests counted in its regions, at the
+ * steps a Manager takes part in (lib/service-levels.ts MANAGER_VIEW_ROLES).
+ * `role` is the SQL for the row's step.
+ */
+function managerScopeSql(scope: ApprovalsScope, role: Prisma.Sql): Prisma.Sql {
+  if (scope === 'company') return Prisma.empty;
+  return Prisma.sql`AND ${countedInRegionsSql(scope.regionIds)}
+    AND ${role} = ANY(${[...MANAGER_VIEW_ROLES]}::text[])`;
 }
 
 export type ServiceStatus = {
@@ -227,11 +264,18 @@ async function approvalTiers(
       FROM "EditApproval" a
       JOIN "CustomerEdit" e ON e."id" = a."editId"
      WHERE a."at" >= ${from}
-       ${scope === 'company' ? Prisma.empty : Prisma.sql`AND ${openableInRegionsSql(scope.regionIds)}`}
+       ${managerScopeSql(scope, Prisma.sql`a."role"::text`)}
      GROUP BY a."role"
      ORDER BY a."role"`;
+  // "Measuring since" is the earliest decision these figures could count, under
+  // the same scope: a Manager must not be shown the minute of the company's
+  // first decision, made on a request they cannot open (review of f0e6776).
   const [first] = await prisma.$queryRaw<{ first: Date | null }[]>`
-    SELECT min("at") AS "first" FROM "EditApproval" WHERE "slaDueAt" IS NOT NULL`;
+    SELECT min(a."at") AS "first"
+      FROM "EditApproval" a
+      JOIN "CustomerEdit" e ON e."id" = a."editId"
+     WHERE a."slaDueAt" IS NOT NULL
+       ${managerScopeSql(scope, Prisma.sql`a."role"::text`)}`;
 
   const tiers: TierDecisions[] = steps.map((s) => ({
     role: s.role,
@@ -248,7 +292,7 @@ async function approvalTiers(
       isReactivation: true,
       reviewedAt: { gte: from },
       state: { in: [EditState.APPROVED, EditState.NEEDS_CORRECTION] },
-      ...(scope === 'company' ? {} : { AND: [openableInRegions(scope.regionIds)] }),
+      ...(scope === 'company' ? {} : { AND: [countedInRegions(scope.regionIds)] }),
     },
     select: { stageEnteredAt: true, submittedAt: true, slaDueAt: true, reviewedAt: true },
   });
@@ -294,11 +338,12 @@ async function openApprovals(now: Date, scope: ApprovalsScope): Promise<OpenTier
            min(COALESCE(e."stageEnteredAt", e."submittedAt")) AS "oldest"
       FROM "CustomerEdit" e
      WHERE e."state" = 'SUBMITTED'
-       ${scope === 'company' ? Prisma.empty : Prisma.sql`AND ${openableInRegionsSql(scope.regionIds)}`}
+       ${managerScopeSql(scope, Prisma.sql`COALESCE(e."pendingRole"::text, 'SUPERVISOR')`)}
      GROUP BY 1`;
   // Every step, waiting or not, so the page lists the same steps whatever waits.
   const byRole = new Map(rows.map((r) => [r.role, r]));
-  const roles = [...STEP_ROLES, ...rows.map((r) => r.role).filter((r) => !STEP_ROLES.includes(r))];
+  const steps = scope === 'company' ? STEP_ROLES : MANAGER_VIEW_ROLES;
+  const roles = [...steps, ...rows.map((r) => r.role).filter((r) => !steps.includes(r))];
   return roles.map((role) => {
     const r = byRole.get(role);
     return {
@@ -419,4 +464,5 @@ export const __internal = {
   p95DbMs,
   lastVercelRuns,
   openableInRegionsSql,
+  countedInRegionsSql,
 };
