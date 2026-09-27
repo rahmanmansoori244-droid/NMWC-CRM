@@ -81,10 +81,13 @@ export default async function EditCustomerPage({
   // RBAC-05-005: SUPERVISOR may not edit (they approve). VIEWER read-only.
   // Previously the page rendered the form for SUPERVISOR and the server
   // action then refused on submit, losing all the typed fields. Redirect at
-  // the page level so they never see the form.
+  // the page level so they never see the form. The same for every role that
+  // can neither submit an edit (services/edits.ts), attach a photo nor — owner
+  // decision 2026-09-27 — remove one: only SALESMAN, STEWARD and MANAGER edit.
   if (
-    session.user.role === Role.SUPERVISOR ||
-    session.user.role === Role.VIEWER
+    session.user.role !== Role.SALESMAN &&
+    session.user.role !== Role.STEWARD &&
+    session.user.role !== Role.MANAGER
   ) {
     redirect(`/customers/${customer.id}`);
   }

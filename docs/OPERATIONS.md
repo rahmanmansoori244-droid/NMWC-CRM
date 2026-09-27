@@ -544,7 +544,9 @@ The rotation is audit-logged.
      decision 2026-09-25), whatever its `temix_code` cell says and whatever rows are beside it in
      the promote — decided per row: it creates its branch, or updates it from the cells it gave,
      changes nothing else about the customer (not the name, phone, CR, contact or channel, and
-     not the credit figures), and queues the customer for the next Temix batch. The plain rows
+     not the credit figures) — except that its phone fills the customer's phone when the customer
+     has none (owner decision 2026-09-27; never over an existing phone) — and queues the customer
+     for the next Temix batch. The plain rows
      beside it take the lane their first row decides, as above. A fixed row that corrected or
      released one of those customer-level values says on the row that it was **not written**
      ("change it on the customer page"), and the batch page says so before the Steward corrects

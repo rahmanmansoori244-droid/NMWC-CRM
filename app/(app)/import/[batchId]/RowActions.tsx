@@ -171,7 +171,8 @@ export function RowActions({
         <p className="text-amber-800">
           This customer is linked to Temix, so a fix here loads only this row&rsquo;s branch. A
           phone, name, CR, contact person or channel corrected here &mdash; or a released phone
-          &mdash; is not written to the customer: change those on the customer page.
+          &mdash; is not written to the customer, except a phone when the customer has none:
+          change the rest on the customer page.
         </p>
       )}
       {!canRecheck && (

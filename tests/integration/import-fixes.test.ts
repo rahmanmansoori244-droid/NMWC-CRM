@@ -580,7 +580,8 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     const rows = await rowsOf(b);
     expect(rows.map((r) => r.state)).toEqual(['PROMOTED', 'PROMOTED', 'PROMOTED']);
     const msgs = (r: (typeof rows)[number]) => ((r.issues ?? []) as { message: string }[]).map((i) => i.message).join(' | ');
-    expect(msgs(rows[0])).toMatch(/^the phone in this row was not written — for a customer linked to Temix a row fixed in the app loads only its branch/);
+    // Owner decision 2026-09-27: the released phone fills the customer's empty phone.
+    expect(msgs(rows[0])).not.toMatch(/phone in this row was not written/);
     expect(msgs(rows[1])).toMatch(/visit day in this row differ from the master and were not applied/);
     expect(msgs(rows[2])).toMatch(/no branch_code — the import cannot tell which branch this row is/);
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: cust.id }, include: { branches: { orderBy: { branchCode: 'asc' } } } });
@@ -590,10 +591,28 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
       [`${A}-03`, null, 'CLOSED'],
       [`${A}-HQ`, null, 'ACTIVE'],
     ]);
-    expect(after.primaryPhoneNorm).toBeNull(); // branch only — and the row says so
+    expect(after.primaryPhoneNorm).toBe(`+968${phone(11)}`); // it had none
     // A plain row loaded (Temix's word: UPLOADED → SYNCED), then the fixed row's
     // new branch queued the customer again.
     expect(after.temixSyncState).toBe('PENDING_UPLOAD');
+  });
+
+  it('a customer linked to Temix that already has a phone keeps it: a released phone is not written, and the row says so', async () => {
+    const M = `${P}-PMM`;
+    await prisma.customer.create({
+      data: { nmwcCode: `${P}-PMHOLD12`, legalName: 'ZZ Holder 12', paymentTerms: 'CASH', primaryPhone: phone(12), primaryPhoneNorm: `+968${phone(12)}` },
+    });
+    const cust = await prisma.customer.create({
+      data: { nmwcCode: M, legalName: 'ZZ Mike CRM', temixCode: M, paymentTerms: 'CASH', primaryPhone: phone(13), primaryPhoneNorm: `+968${phone(13)}` },
+    });
+    const b = await upload([{ cust_code: M, cust_name: 'ZZ Mike', branch_code: `${M}-01`, address: 'Way 62, Muscat', phone: phone(12), temix_code: M }]);
+    const [r] = await rowsOf(b);
+    expect(await fixes.releaseImportRowPhoneAction(fd({ rowId: r.id, reason: 'same owner, second shop' }))).toMatchObject({ ok: true });
+    await promoteFully(imports, b);
+    const row = await prisma.importRow.findUniqueOrThrow({ where: { id: r.id } });
+    expect(row.state).toBe('PROMOTED');
+    expect(((row.issues ?? []) as { message: string }[]).map((i) => i.message).join(' | ')).toMatch(/^the phone in this row was not written/);
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: cust.id } })).primaryPhoneNorm).toBe(`+968${phone(13)}`);
   });
 
   it("withdrawing a fix takes back the customer's other rows it released, and a promoted batch the fix set back to READY is PROMOTED again", async () => {

@@ -15,6 +15,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
+import { readFileSync } from 'node:fs';
+import { stripComments } from '../support/strip-comments';
 
 const s = vi.hoisted(() => ({
   user: { id: 'u1', role: 'SALESMAN', username: 'c4' } as { id: string; role: string; username: string },
@@ -290,6 +292,37 @@ describe('detach, through the route', () => {
     expect(wrote()).toBe(0);
   });
 
+  // Owner decision 2026-09-27 (pre-merge review): only the roles that can
+  // attach a photo may remove one. The rule refused VIEWER alone, so these four
+  // could remove any photo they could see.
+  it.each(['SUPERVISOR', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM'])(
+    '%s cannot remove a photo, even one it can see',
+    async (role) => {
+      s.user = { id: 'x1', role, username: 'x1' };
+      s.scope = { ownedRouteId: null as unknown as string, teamRouteIds: ['r1'], managedRegionIds: ['g1'] };
+      db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1 }));
+      db.branch.findUnique.mockResolvedValue({ customerId: CUST });
+      db.customer.findFirst.mockResolvedValue(customer());
+      const res = await detach({ attachmentId: ATT });
+      expect(res).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+      if (role === 'FINANCE_MANAGER' || role === 'GM') {
+        // Org-wide readers: past the scope check, refused by the role.
+        expect(res.message).toBe('Your role cannot remove photos.');
+      }
+      expect(wrote()).toBe(0);
+    }
+  );
+
+  it.each(['STEWARD', 'MANAGER'])('%s can still remove a photo in scope', async (role) => {
+    s.user = { id: 'x2', role, username: 'x2' };
+    s.scope = { ownedRouteId: null as unknown as string, teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1, capturedById: 'someone-else' }));
+    db.branch.findUnique.mockResolvedValue(branch());
+    db.customer.findFirst.mockResolvedValue(customer());
+    db.customer.findUnique.mockResolvedValue(customer());
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+  });
+
   it('a salesman removes only photos he captured, on his own route', async () => {
     db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1, capturedById: 'someone-else' }));
     db.branch.findUnique.mockResolvedValue({ customerId: CUST });
@@ -333,5 +366,24 @@ describe('detach, through the route', () => {
     for (const order of db.attachment.update.mock.invocationCallOrder) {
       expect(order).toBeGreaterThan(db.$queryRaw.mock.invocationCallOrder[0]);
     }
+  });
+});
+
+// Owner decision 2026-09-27: the roles that remove a photo are the roles that
+// attach one and submit an edit. The edit form, and the Enrich button that
+// leads to it, used to be open to Accountant, Finance Manager and GM, where
+// nothing could be saved; the same three roles gate all of them now.
+describe('who edits, attaches and removes: one set of roles', () => {
+  const src = (f: string) => stripComments(readFileSync(f, 'utf8'), f);
+  const THREE = /role !== Role\.SALESMAN &&\s*session\.user\.role !== Role\.STEWARD &&\s*session\.user\.role !== Role\.MANAGER/;
+  it('the detach refusal, the edit page redirect and the Enrich button agree', () => {
+    const photos = src('services/photos.ts');
+    const detach = photos.slice(photos.indexOf('async function detachPhotoCore'));
+    expect(detach).toMatch(THREE);
+    expect(detach).toMatch(/Your role cannot remove photos\./);
+    expect(src('app/(app)/customers/[id]/edit/page.tsx')).toMatch(THREE);
+    expect(src('app/(app)/customers/[id]/page.tsx')).toMatch(
+      /const canEdit =\s*session\.user\.role === Role\.SALESMAN \|\|\s*session\.user\.role === Role\.STEWARD \|\|\s*session\.user\.role === Role\.MANAGER;/
+    );
   });
 });

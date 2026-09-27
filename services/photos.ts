@@ -392,8 +392,16 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   const scope = await loadScope(session.user.id);
   await assertCanAccessAttachment(sessionUser, att, scope);
 
-  if (session.user.role === Role.VIEWER) {
-    throw new ForbiddenError('Read-only role cannot delete photos.');
+  // Owner decision 2026-09-27: only the roles that can attach a photo may
+  // remove one. This refused VIEWER alone, so a Supervisor, Accountant, Finance
+  // Manager or GM could remove any photo they could see — though none of them
+  // can attach one or submit an edit (pre-merge review).
+  if (
+    session.user.role !== Role.SALESMAN &&
+    session.user.role !== Role.STEWARD &&
+    session.user.role !== Role.MANAGER
+  ) {
+    throw new ForbiddenError('Your role cannot remove photos.');
   }
   if (session.user.role === Role.SALESMAN && att.capturedById !== session.user.id) {
     throw new ForbiddenError('You can only remove photos you captured.');

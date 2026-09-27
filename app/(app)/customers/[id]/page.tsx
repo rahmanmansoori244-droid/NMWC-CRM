@@ -72,9 +72,13 @@ export default async function CustomerProfilePage({
   // matches), but other branches may not be.
   customer.branches = filterBranchesByScope(sessionUser, customer.branches, scope);
 
+  // The roles that can submit an edit, attach a photo and (owner decision
+  // 2026-09-27) remove one. Supervisors approve; Accountant, Finance Manager and
+  // GM approve credit — the form offered them nothing they could save.
   const canEdit =
-    session.user.role !== Role.VIEWER &&
-    session.user.role !== Role.SUPERVISOR; // supervisors approve, don't edit directly
+    session.user.role === Role.SALESMAN ||
+    session.user.role === Role.STEWARD ||
+    session.user.role === Role.MANAGER;
 
   return (
     <main>

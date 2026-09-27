@@ -1995,9 +1995,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               });
             }
             // What a fixed row asked for and did not get: branch only writes none
-            // of the customer's own fields, and the row read PROMOTED with nothing
-            // said — a released phone looked loaded (post-merge review). Compared
-            // with the customer as it stands after this group's own writes.
+            // of the customer's own fields — but an empty phone, below — and the
+            // row read PROMOTED with nothing said: a released phone looked loaded
+            // (post-merge review). Compared with the customer as it stands after
+            // this group's own writes.
             if (linked && isFixed.some(Boolean)) {
               const now = fullLane
                 ? await tx.customer.findUnique({
@@ -2012,9 +2013,34 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   })
                 : existing;
               if (now) {
+                // Owner decision 2026-09-27: the phone on a row fixed in the app
+                // FILLS the customer's phone when it has none — every go-live
+                // head-office row is the only row carrying the phone, and the row
+                // held back for a shared phone, so a released one landed nowhere.
+                // Never over a phone the customer has. Queued for Temix, like
+                // any change to what Temix holds.
+                let phoneNow = now.primaryPhoneNorm;
+                const fill = phoneNow ? null : (g.parsed.find((p, i) => isFixed[i] && p.phone)?.phone ?? null);
+                if (fill) {
+                  await tx.customer.update({
+                    where: { id: customerId },
+                    data: {
+                      primaryPhone: fill,
+                      primaryPhoneNorm: fill,
+                      lastEditedById: me.id,
+                      // B-05: an edit form open on this customer must see it changed.
+                      version: { increment: 1 },
+                    },
+                  });
+                  await tx.customer.updateMany({
+                    where: { id: customerId, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
+                    data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
+                  });
+                  phoneNow = fill;
+                }
                 const stored = {
                   legalName: now.legalName,
-                  primaryPhoneNorm: now.primaryPhoneNorm,
+                  primaryPhoneNorm: phoneNow,
                   crNumberNorm: now.crNumberNorm,
                   contactPerson: now.contactPerson,
                   channelKey: now.channel?.key ?? null,
