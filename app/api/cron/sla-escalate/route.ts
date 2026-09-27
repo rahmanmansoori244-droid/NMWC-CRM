@@ -2,10 +2,12 @@
  * SLA escalation sweep — Phase 1 SLA/notifications increment.
  *
  * GET handler (deliberately: the OLD system's sla-check cron was POST-only
- * while the scheduler sends GET, so it never fired once — BUG-03). Invoked by
- * .github/workflows/sla-escalate.yml every 30 minutes inside the Oman working
- * window (Vercel Hobby rejects sub-daily schedules; the keep-warm workflow set
- * the pattern). Bearer-authed with CRON_SECRET (lib/cron-auth.ts).
+ * while the scheduler sends GET, so it never fired once — BUG-03). Invoked every
+ * 30 minutes inside the Oman working window by Vercel's own cron since the Pro
+ * plan (vercel.json, 2026-09-27); cron-job.org and
+ * .github/workflows/sla-escalate.yml call it too until they are retired, which
+ * the claims below make harmless. Bearer-authed with CRON_SECRET
+ * (lib/cron-auth.ts), which Vercel sends itself.
  *
  * Sweeps (all idempotent-claim guarded — a racing decision always wins):
  *  1. Level-1: SUBMITTED past slaDueAt at escalationLevel 0 → mark breached,

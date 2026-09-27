@@ -22,11 +22,11 @@ These are the roots. Whoever holds them can reset every secret below.
 | Account | What it controls | Holder today | Can a second person be added? |
 |---|---|---|---|
 | GitHub (`rahmanmansoori244-droid`) | The code; `main` deploys to production; every Actions secret (backup, cron, restore drill) | Owner | On a personal repository a collaborator can push but cannot manage settings or secrets. A second administrator needs the repository moved into a GitHub organisation (the free plan allows this). |
-| Vercel (project `nmwc-cm`, Hobby plan) | The production deployment, rollback, every runtime variable in §2 | Owner | The Hobby plan has one member. A second member needs the Pro plan, which is billed per member. |
+| Vercel (project `nmwc-cm`, **Pro plan since 2026-09-27**) | The production deployment, rollback, the scheduled jobs, the logs, every runtime variable in §2 | Owner | Yes: Settings → Members. A developer seat is $20 a month. A Viewer seat is free and read-only, which is enough to read the logs and the deployments but not to deploy or change a variable. |
 | Neon (production endpoint `ep-sweet-haze`, UAT `ep-lucky-bar`) | The database, point-in-time restore, the owner role | Owner | Check Neon → Organization → Members for the current plan. |
 | Cloudflare (R2 buckets `nmwc-photos` and the backup bucket) | Every photograph, every nightly dump, their API tokens | Owner | Cloudflare → Manage account → Members. |
 | Sentry | Error reports from all three runtimes | Owner | The free plan has one user. |
-| cron-job.org | The keep-warm and SLA sweep schedules | Owner | Single login. It can be rebuilt instead: a new API key plus Actions → External cron scheduler → `apply` recreates both jobs (OPERATIONS.md §5d). |
+| cron-job.org | The keep-warm and SLA sweep schedules — **being retired**: Vercel runs both since the Pro plan (OPERATIONS.md §5d) | Owner | Not needed once retired. Retiring it also ends the only third-party copy of `CRON_SECRET`. |
 | The alert destination (`ALERT_WEBHOOK_URL`, once set) | Where failed-job and SLA alerts land | Not set yet | Point it at a channel two people read (OPERATIONS.md §5f). |
 
 Check each provider's current plan page before acting on the "second person" column.
@@ -46,7 +46,7 @@ one complete list: OPERATIONS.md §3 used to be that list and had fallen behind.
 | `AUTH_SECRET` / `NEXTAUTH_SECRET` | S | Signs every session | Anyone can mint a session as any user. Rotating it signs everyone out. | Each other (same value) |
 | `AUTH_URL` / `NEXTAUTH_URL` | | The production origin, for sign-in redirects | — | Each other |
 | `AUTH_TRUST_HOST` | | `true`; read by Auth.js itself, not by this code | — | — |
-| `CRON_SECRET` | S | Bearer that the scheduled jobs present | Anyone can trigger the sweeps (they are idempotent) | GitHub `PROD_CRON_SECRET`; then re-run the External cron scheduler `apply` so cron-job.org sends the new one |
+| `CRON_SECRET` | S | Bearer that the scheduled jobs present. Vercel's own cron sends it automatically. | Anyone can trigger the sweeps (they are idempotent) | GitHub `PROD_CRON_SECRET`; while cron-job.org is still in use, re-run the External cron scheduler `apply` so it sends the new one |
 | `HEALTH_BEARER` | S | Unlocks the detailed `/api/health` | Exposes the running commit, the job states and their last (scrubbed) errors | GitHub `HEALTH_BEARER` (CI's post-deploy smoke) |
 | `R2_ACCOUNT_ID` | | The Cloudflare account the photo bucket lives in | — | — |
 | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | S | Photo uploads and reads | Every photograph, the confidential documents included. Revoke the token in Cloudflare and issue a new one. | — |
@@ -91,8 +91,9 @@ and `NEXT_PUBLIC_SENTRY_RELEASE` at build time.
 **Owner decision, not yet made:** who the second holder is, and which of these is used.
 
 1. **A second administrator on each account.** This is the cleanest option: nobody shares
-   a password and every action is attributable. It costs the Vercel Pro and paid Sentry
-   plans, and a GitHub organisation (free).
+   a password and every action is attributable. Vercel is on Pro now, so this costs $20 a
+   month for their developer seat (a free Viewer seat can read but not deploy). It also
+   needs a paid Sentry plan and a GitHub organisation (free).
 2. **Sealed break-glass credentials.** The owner's logins are kept in a password-manager
    vault or a sealed envelope that a named second person can open, and opening it is
    recorded. It costs nothing, but everything is done as the owner, so the audit trail
@@ -110,9 +111,10 @@ for the owner.
 Rotating one value often means changing it in two or three places. The **Must match**
 column in §2 lists them. Two are easy to forget:
 
-- **`CRON_SECRET`**: Vercel, then GitHub `PROD_CRON_SECRET`, then the External cron
-  scheduler `apply`. Until that last step, cron-job.org answers 401 every four minutes
-  and then disables the jobs.
+- **`CRON_SECRET`**: Vercel, then GitHub `PROD_CRON_SECRET`. Vercel's own cron picks
+  the new value up at the next deploy. While cron-job.org is still in use, also run the
+  External cron scheduler `apply`, or cron-job.org answers 401 every four minutes and
+  then disables its jobs.
 - **The owner database password**: Vercel `DIRECT_URL`, GitHub `DIRECT_URL`, then every
   local `.env`. Neon branches share the role's password, so UAT changes with it.
   CREDENTIAL-ROTATION.md is the full procedure.

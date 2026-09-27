@@ -596,6 +596,9 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(notif).not.toBeNull();
     const step = await prisma.editApproval.findFirst({ where: { editId: approvedEditId } });
     expect(step?.decision).toBe('APPROVED');
+    // Item 9: the final UPDATE approval records its stage too.
+    expect(step?.slaDueAt).not.toBeNull();
+    expect(step?.workingMinutes).not.toBeNull();
   });
 
   // ── 6. reject → needs correction → resubmit ───────────────────────────────
@@ -624,6 +627,11 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const after = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
     expect(after.state).toBe('NEEDS_CORRECTION');
     expect(after.decisionReason).toContain('Contact role');
+    // Item 9: a send-back is a decision on the stage, snapshotted like an approval —
+    // taken before the send-back cleared the change request's due time.
+    const rejected = await prisma.editApproval.findFirstOrThrow({ where: { editId, decision: 'REJECTED' } });
+    expect(rejected.slaDueAt).not.toBeNull();
+    expect(after.slaDueAt).toBeNull();
     const mine = await prisma.customerEdit.findMany({
       where: { submittedById: ids.salesmanId, state: 'NEEDS_CORRECTION' },
     });

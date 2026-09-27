@@ -34,6 +34,7 @@ import {
   stepDeadline,
   resolveRejectTarget,
 } from '@/lib/approval-chains';
+import { stageSnapshot } from '@/lib/working-hours';
 import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/notifications';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
@@ -966,6 +967,8 @@ async function approveEditCore(formData: FormData) {
             role: step.role,
             decision: 'APPROVED',
             actorId: session.id,
+            // Item 9: the stage as it stood when decided (lib/working-hours.ts).
+            ...stageSnapshot(edit, advancedAt),
           },
         });
         await writeAudit(tx, env, {
@@ -1055,6 +1058,7 @@ async function approveEditCore(formData: FormData) {
             role: step.role,
             decision: 'APPROVED',
             actorId: session.id,
+            ...stageSnapshot(edit, finalizedAt),
           },
         });
         const finalized = await finalizeCreateInTx(
@@ -1268,6 +1272,7 @@ async function approveEditCore(formData: FormData) {
           role: step.role,
           decision: 'APPROVED',
           actorId: session.id,
+          ...stageSnapshot(edit, new Date()),
         },
       });
       // The customer's row lock before any branch write (lib/locks.ts): photo
@@ -1563,6 +1568,7 @@ async function rejectEditCore(formData: FormData) {
         decision: 'REJECTED',
         actorId: session.id,
         reason,
+        ...stageSnapshot(edit, rejectedAt),
       },
     });
     const data: Prisma.CustomerEditUncheckedUpdateManyInput =

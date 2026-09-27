@@ -57,10 +57,10 @@ export type HeartbeatExpectation = {
 };
 
 export const HEARTBEAT_EXPECTATIONS: Record<HeartbeatKey, HeartbeatExpectation> = {
-  // .github/workflows/sla-escalate.yml: '15,45 3-14 * * *'
+  // vercel.json crons (Pro, 2026-09-27) + backups: '15,45 3-14 * * *'
   // Approvals that stall are never escalated: critical.
   'sla-escalate': { label: 'SLA escalation sweep', severity: 'critical', everyMinutes: 30, activeHoursUtc: [3, 15] },
-  // .github/workflows/keep-warm.yml: '*/4 3-14 * * *'
+  // vercel.json crons (Pro, 2026-09-27) + backups: '*/4 3-14 * * *'
   // Only speed: a missed ping costs the next user one cold start.
   'keep-warm': { label: 'Keep-warm ping', severity: 'warning', everyMinutes: 4, activeHoursUtc: [3, 15] },
   // vercel.json crons: daily. Housekeeping: a missed night keeps orphaned uploads a day longer.
@@ -172,7 +172,17 @@ async function alertJobFailed(key: HeartbeatKey): Promise<void> {
  */
 export async function recordHeartbeat(
   key: HeartbeatKey,
-  result: { ok: boolean; durationMs: number; error?: string; detail?: Record<string, unknown> }
+  result: {
+    ok: boolean;
+    durationMs: number;
+    error?: string;
+    detail?: Record<string, unknown>;
+    /** When the run began. Defaults to now minus durationMs. */
+    startedAt?: Date;
+    source?: RunSource;
+    /** Keep-warm's database round trip on its own. */
+    dbMs?: number;
+  }
 ): Promise<void> {
   const now = new Date();
   // B6: a cron error can embed a phone number or an e-mail (a Prisma constraint
@@ -206,7 +216,43 @@ export async function recordHeartbeat(
   } catch (err) {
     logger.warn({ key, err: (err as Error).message }, 'heartbeat.record_failed');
   }
+  // Item 9: the run's history row, in a try of its own. The heartbeat above is
+  // what the monitor alarms on and must never be lost to this write failing — a
+  // preview database without the table, say. No error text and no detail here:
+  // both can quote a customer's phone, and this table keeps 90 days of rows.
+  try {
+    await prisma.cronRun.create({
+      data: {
+        key,
+        at: result.startedAt ?? new Date(now.getTime() - Math.max(0, result.durationMs)),
+        ok: result.ok,
+        durationMs: toInt4(result.durationMs),
+        dbMs: result.dbMs === undefined ? null : toInt4(result.dbMs),
+        source: result.source ?? null,
+      },
+    });
+  } catch (err) {
+    logger.warn({ key, err: (err as Error).message }, 'heartbeat.run_record_failed');
+  }
   if (!result.ok) await alertJobFailed(key);
+}
+
+/** A Postgres INTEGER, whatever a caller reports: a reported duration is not trusted to fit. */
+function toInt4(ms: number): number {
+  if (!Number.isFinite(ms) || ms < 0) return 0;
+  return Math.min(Math.round(ms), 2_147_483_647);
+}
+
+/** Which scheduler called a cron route — never the raw User-Agent, which is not ours to keep. */
+export type RunSource = 'vercel' | 'cron-job.org' | 'github' | 'other';
+
+export function classifyRunSource(userAgent: string | null | undefined): RunSource {
+  const ua = userAgent ?? '';
+  if (/vercel-cron/i.test(ua)) return 'vercel';
+  if (/cron-job\.org/i.test(ua)) return 'cron-job.org';
+  // The GitHub workflows call with curl.
+  if (/^curl\//i.test(ua) || /github/i.test(ua)) return 'github';
+  return 'other';
 }
 
 function inWindow(now: Date, window?: [number, number]): boolean {
@@ -314,6 +360,8 @@ export function withHeartbeat(
 ): RouteHandler {
   return async (req) => {
     const started = Date.now();
+    const startedAt = new Date(started);
+    const source = classifyRunSource(req.headers.get('user-agent'));
     try {
       const res = await handler(req);
       if (res.status === 401) return res;
@@ -327,12 +375,21 @@ export function withHeartbeat(
         ok: okFrom(body, res.status),
         durationMs: Date.now() - started,
         detail: body ?? undefined,
+        startedAt,
+        source,
+        dbMs: typeof body?.dbMs === 'number' ? body.dbMs : undefined,
       });
       return res;
     } catch (err) {
       const message = (err as Error).message ?? String(err);
       logger.error({ key, err: message }, 'cron.run_failed');
-      await recordHeartbeat(key, { ok: false, durationMs: Date.now() - started, error: message });
+      await recordHeartbeat(key, {
+        ok: false,
+        durationMs: Date.now() - started,
+        error: message,
+        startedAt,
+        source,
+      });
       return NextResponse.json({ error: 'CRON_FAILED', key }, { status: 500 });
     }
   };

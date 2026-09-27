@@ -203,6 +203,10 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
       n2.id
     );
     await prisma.notification.update({ where: { id: n2.id }, data: { readAt: new Date() } });
+
+    // Item 9: scheduled-run history past its 90 days, and a run inside them.
+    await prisma.cronRun.create({ data: { id: `${sfx}-run-old`, key: `${sfx}-job`, at: daysAgo(91), ok: true, durationMs: 1 } });
+    await prisma.cronRun.create({ data: { id: `${sfx}-run-new`, key: `${sfx}-job`, at: daysAgo(89), ok: true, durationMs: 1 } });
   });
 
   afterAll(async () => {
@@ -212,6 +216,7 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
     await prisma.importBatch.deleteMany({ where: { id: { in: ours } } });
     await prisma.notification.deleteMany({ where: { userId } });
     await prisma.rateLimit.deleteMany({ where: { key: { startsWith: `login:user:${sfx}` } } });
+    await prisma.cronRun.deleteMany({ where: { key: `${sfx}-job` } });
     await purgeAuditLog(prisma, { where: { actorId: userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
     await prisma.$disconnect();
@@ -315,6 +320,11 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
   it('deletes spent rate-limit buckets and keeps live ones', async () => {
     expect(await prisma.rateLimit.findUnique({ where: { key: `login:user:${sfx}.old` } })).toBeNull();
     expect(await prisma.rateLimit.findUnique({ where: { key: `login:user:${sfx}.new` } })).not.toBeNull();
+  });
+
+  it('item 9: prunes scheduled-run history past 90 days and keeps the rest', async () => {
+    const left = await prisma.cronRun.findMany({ where: { key: `${sfx}-job` }, select: { id: true } });
+    expect(left.map((r) => r.id)).toEqual([`${sfx}-run-new`]);
   });
 
   it('deletes long-unread notifications and leaves read ones to the SLA sweep', async () => {

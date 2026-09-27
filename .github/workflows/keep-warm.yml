@@ -4,8 +4,10 @@ name: Keep production warm
 # function warm during Oman business hours, so users never hit the 2-3 s
 # cold start.
 #
-# Why not Vercel cron: the Hobby plan rejects sub-daily cron schedules.
-# GitHub Actions allows */4 minute schedules for free.
+# A BACKUP since 2026-09-27: the project is on Vercel Pro, and vercel.json's
+# crons run keep-warm every 4 minutes. This workflow was the scheduler while the
+# Hobby plan rejected sub-daily schedules, and GitHub delivers it late and
+# sparsely, so it only matters if Vercel's cron stops.
 #
 # Coverage: 07:00–19:00 Oman = 03:00–15:00 UTC. Outside that window we let
 # the function go cold to save Vercel invocations (cold-start at midnight

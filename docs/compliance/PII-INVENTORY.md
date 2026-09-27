@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**285 stored columns across 23 tables** — Customer contact: 26 · Employee: 64 · Customer entity (personal if a sole establishment): 36 · Not personal data: 159.
+**295 stored columns across 24 tables** — Customer contact: 26 · Employee: 67 · Customer entity (personal if a sole establishment): 36 · Not personal data: 166.
 
 ## Columns holding personal data
 
@@ -211,6 +211,9 @@ Every column the database stores, classified by whose personal data it is. This 
 | `actorId` | Employee | identifier |  |
 | `reason` | Customer contact | free text |  |
 | `at` | Employee | behaviour |  |
+| `stageEnteredAt` | Employee | behaviour |  |
+| `slaDueAt` | Employee | behaviour |  |
+| `workingMinutes` | Employee | behaviour | how long this named person took to decide |
 
 ### Notification
 
@@ -229,7 +232,7 @@ Every column the database stores, classified by whose personal data it is. This 
 
 ## Tables with no personal data
 
-`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CodeSequence`
+`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CronRun`, `CodeSequence`
 
 ## Columns classified as not personal data
 
@@ -348,6 +351,13 @@ Every column the database stores, classified by whose personal data it is. This 
 | CronHeartbeat | `failures` | Int | structural / operational value |
 | CronHeartbeat | `createdAt` | DateTime | record timestamp, not an attribute of a person |
 | CronHeartbeat | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
+| CronRun | `id` | String | foreign key / structural value |
+| CronRun | `key` | String | structural / operational value |
+| CronRun | `at` | DateTime | record timestamp, not an attribute of a person |
+| CronRun | `ok` | Boolean | structural / operational value |
+| CronRun | `durationMs` | Int | structural / operational value |
+| CronRun | `dbMs` | Int | structural / operational value |
+| CronRun | `source` | String | a fixed label ('vercel', 'cron-job.org', 'github', 'other'), not the User-Agent |
 | RateLimit | `tokens` | Float | structural / operational value |
 | RateLimit | `lastRefill` | DateTime | record timestamp, not an attribute of a person |
 | RateLimit | `updatedAt` | DateTime | record timestamp, not an attribute of a person |

@@ -600,6 +600,26 @@ model CronHeartbeat {
   updatedAt      DateTime @updatedAt
 }
 
+// Item 9: one row per scheduled run, so service levels can be measured over a
+// window (CronHeartbeat keeps only the last run). Written by recordHeartbeat
+// (lib/heartbeat.ts); pruned after 90 days by the retention sweep. Never holds an
+// error text or a run's detail — those can quote a customer's phone.
+model CronRun {
+  id         String   @id @default(cuid())
+  key        String
+  // Run START, UTC.
+  at         DateTime
+  ok         Boolean
+  durationMs Int
+  // Keep-warm only: the database round trip on its own.
+  dbMs       Int?
+  // Which scheduler called: 'vercel' | 'cron-job.org' | 'github' | 'other'.
+  // Classified from the User-Agent; the header itself is never stored.
+  source     String?
+
+  @@index([key, at])
+}
+
 // ── RATE LIMIT ──────────────────────────────────────
 // QA-015: durable rate limiter that survives across Vercel function instances.
 // Token-bucket: each row holds the bucket's current tokens and the last refill
@@ -734,12 +754,18 @@ model EditApproval {
   actorId   String
   reason    String?  @db.Text
   at        DateTime @default(now())
+  // Item 9: the stage as it stood when this decision was made
+  // (lib/working-hours.ts stageSnapshot). Null on rows written before 2026-09-27.
+  stageEnteredAt DateTime?
+  slaDueAt       DateTime?
+  workingMinutes Int?
 
   edit  CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
   actor User         @relation("StepActor", fields: [actorId], references: [id])
 
   @@index([editId, at(sort: Desc)])
   @@index([actorId])
+  @@index([at(sort: Desc)])
 }
 
 // In-app + email notification. Row exists ⇒ visible in-app; emailedAt marks the

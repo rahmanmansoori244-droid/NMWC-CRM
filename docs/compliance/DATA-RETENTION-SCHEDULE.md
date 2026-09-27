@@ -18,12 +18,13 @@ Two columns matter more than the periods themselves: **Enforced by** and **Prove
 | Notifications, read | 90 days | `app/api/cron/sla-escalate/route.ts` | — |
 | Notifications, unread | 180 days | `app/api/cron/retention-sweep/route.ts` | — |
 | Login rate-limit rows (username, source IP) | 1 day | `app/api/cron/retention-sweep/route.ts` | — |
+| Scheduled-run history (`CronRun`: job, start, outcome, durations, which scheduler — no error text, no personal data) | 90 days: three of the 30-day windows the service levels are measured over (item 9) | `app/api/cron/retention-sweep/route.ts` (daily; `nmwc_app` holds DELETE on this table for that reason) | `tests/integration/retention-sweep.test.ts` (CI) |
 | Previous password hashes | Last 5 per user | `services/users.ts` | — |
 | Employee accounts | Never deleted; disabled only. Seven `ON DELETE RESTRICT` foreign keys make deletion impossible while the ledger exists | — | — |
 | Database dumps (`nmwc-backups`, prefix `db/`) | 30 days | R2 lifecycle rule, **now set and checkable from code** | `npx tsx scripts/ops/r2-backups-lifecycle.ts --check` |
 | Neon point-in-time recovery | 7 days | Neon plan setting | — |
 | Error telemetry (Sentry) | **[OWNER]** — Sentry org retention, typically 90 days | Sentry | — |
-| Application logs (Vercel) | ~1 day on the current plan | Vercel | — |
+| Application logs (Vercel) | 30 days on Pro with Observability Plus (since 2026-09-27; 1 day without it). Phones, e-mails and 7–12 digit runs are scrubbed before a line is written | Vercel | — |
 
 ## Why the rate-limit period is one day and not thirty
 

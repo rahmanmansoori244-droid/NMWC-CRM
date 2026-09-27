@@ -55,6 +55,9 @@ const BATCH = 500;
  */
 const IMPORT_BATCH = 2000;
 const IMPORT_BUDGET_MS = 30_000;
+/** Scheduled-run history: the service-level report reads 30 days; keep three windows. */
+export const CRON_RUN_DAYS = 90;
+const CRON_RUN_BATCH = 2000;
 
 function cutoff(days: number): Date {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -167,6 +170,24 @@ async function handle(req: NextRequest) {
   } catch (err) {
     errors += 1;
     logger.error({ err: (err as Error).message }, 'retention.notifications_failed');
+  }
+
+  // 4. Scheduled-run history (item 9). Three 30-day service-level windows, then
+  //    gone. Up to ~450 rows arrive a day while three schedulers call keep-warm;
+  //    one 2,000-row statement a day stays ahead of that with room to catch up.
+  try {
+    const count = await prisma.$executeRaw`
+      DELETE FROM "CronRun"
+       WHERE "id" IN (
+         SELECT "id" FROM "CronRun"
+          WHERE "at" < ${cutoff(CRON_RUN_DAYS)}
+          ORDER BY "at"
+          LIMIT ${CRON_RUN_BATCH}
+       )`;
+    swept.cronRuns = count;
+  } catch (err) {
+    errors += 1;
+    logger.error({ err: (err as Error).message }, 'retention.cron_runs_failed');
   }
 
   logger.info({ swept, errors }, 'cron.retention_sweep');

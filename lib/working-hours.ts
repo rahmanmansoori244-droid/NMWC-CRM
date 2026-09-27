@@ -113,7 +113,7 @@ export function slaDeadline(start: Date, slaMinutes: number): Date {
 }
 
 /** Working minutes in [a, b]; 0 when b ≤ a. */
-function workingMinutesBetween(a: Date, b: Date): number {
+export function workingMinutesBetween(a: Date, b: Date): number {
   if (b.getTime() <= a.getTime()) return 0;
   if (DAY_CAPACITY_MIN <= 0 || WORK_DAYS.size === 0) {
     return Math.round((b.getTime() - a.getTime()) / 60_000);
@@ -131,6 +131,32 @@ function workingMinutesBetween(a: Date, b: Date): number {
     local = nextWorkingInstant(nextDayStart(local));
   }
   return total;
+}
+
+/**
+ * Item 9 (re-benchmark, 2026-09-24): what a stage looked like when it was decided,
+ * written onto the `EditApproval` row that records the decision.
+ *
+ * The change request carries SLA state for its CURRENT stage only, and the next
+ * advance or step-back overwrites it (services/edits.ts), so "was this stage
+ * decided inside its SLA?" could not be answered for any stage already past. The
+ * decision row is append-only and never rewritten, so a snapshot there is the
+ * permanent record the service-level report reads (lib/service-levels.ts).
+ *
+ * `stageEnteredAt` falls back to `submittedAt` for rows stamped before
+ * stageEnteredAt existed; `workingMinutes` is null when neither is known, and the
+ * report counts such a decision as untracked rather than guessing.
+ */
+export function stageSnapshot(
+  edit: { stageEnteredAt: Date | null; slaDueAt: Date | null; submittedAt: Date | null },
+  decidedAt: Date
+): { stageEnteredAt: Date | null; slaDueAt: Date | null; workingMinutes: number | null } {
+  const entered = edit.stageEnteredAt ?? edit.submittedAt ?? null;
+  return {
+    stageEnteredAt: entered,
+    slaDueAt: edit.slaDueAt,
+    workingMinutes: entered ? workingMinutesBetween(entered, decidedAt) : null,
+  };
 }
 
 /** Working minutes until `dueAt` (negative = overdue by that many working minutes). */

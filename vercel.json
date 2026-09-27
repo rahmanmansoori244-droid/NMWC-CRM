@@ -19,6 +19,14 @@
     {
       "path": "/api/cron/retention-sweep",
       "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/keep-warm",
+      "schedule": "*/4 3-14 * * *"
+    },
+    {
+      "path": "/api/cron/sla-escalate",
+      "schedule": "15,45 3-14 * * *"
     }
   ]
 }

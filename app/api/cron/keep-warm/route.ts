@@ -9,7 +9,8 @@
  * the window people actually use it.
  *
  * Schedule: every 4 minutes during 03:00-15:00 UTC (= 07:00-19:00 Oman).
- *   See vercel.json `crons` entry.
+ *   vercel.json `crons` since the Pro plan (2026-09-27); cron-job.org and the
+ *   GitHub workflow call it too until they are retired (OPERATIONS.md §5d).
  *
  * What it does:
  *   - Authenticates via CRON_SECRET (same secret photo-gc uses).
@@ -17,8 +18,11 @@
  *   - Pre-fetches the reference-data caches so they're warm too.
  *   - Returns a tiny JSON ack.
  *
- * Cost: 1 function invocation × 180/day × 30 days = 5,400/month. Each call
- * is <200 ms function time. Well within the free tier.
+ * Cost: 1 function invocation × 180/day × 30 days = 5,400/month per scheduler.
+ * Each call is <200 ms function time.
+ *
+ * Item 9: each run is also the availability probe. Its CronRun rows are what
+ * lib/service-levels.ts turns into "share of 4-minute slots the app answered".
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
@@ -46,8 +50,13 @@ async function handle(req: NextRequest) {
   const started = Date.now();
   let dbOk = false;
   let refsOk = false;
+  // Item 9: the database round trip on its own, stored per run (CronRun.dbMs) —
+  // elapsedMs below also includes the reference-data loads.
+  let dbMs: number | null = null;
   try {
+    const dbStarted = Date.now();
     await prisma.$queryRaw`SELECT 1`;
+    dbMs = Date.now() - dbStarted;
     dbOk = true;
   } catch (err) {
     logger.warn({ err: (err as Error).message }, 'keep-warm.db_fail');
@@ -73,6 +82,7 @@ async function handle(req: NextRequest) {
       db: dbOk,
       refs: refsOk,
       elapsedMs,
+      ...(dbMs === null ? {} : { dbMs }),
     },
     { status: dbOk ? 200 : 503 }
   );

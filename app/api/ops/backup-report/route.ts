@@ -16,7 +16,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { cronAuthorized } from '@/lib/cron-auth';
-import { recordHeartbeat } from '@/lib/heartbeat';
+import { classifyRunSource, recordHeartbeat } from '@/lib/heartbeat';
 import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
@@ -55,6 +55,9 @@ export async function POST(req: NextRequest) {
     durationMs: Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : 0,
     error: ok ? undefined : (clean(body.error, 500) ?? 'backup workflow reported failure'),
     detail,
+    // Item 9: the run's history row. Its start is the report time minus the
+    // reported duration (recordHeartbeat's default).
+    source: classifyRunSource(req.headers.get('user-agent')),
   });
 
   logger.info({ ok, objectKey: detail.objectKey, bytes: detail.bytes }, 'ops.backup_reported');

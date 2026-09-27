@@ -940,6 +940,10 @@ const MANAGER_EN: Guide = {
           ['<strong>Audit log</strong>', 'Every action ever taken in your region.'],
           ['<strong>Approvals</strong>', "Your salesmen's pending updates — review with photos and map, approve or reject."],
           ['<strong>Export</strong>', 'Customer master .xlsx and the field-update report (changes highlighted).'],
+          [
+            '<strong>Service status</strong>',
+            'Whether the system keeps its promises: the app answering, approvals on time, the nightly backup. Company-wide figures; “Missed” means act.',
+          ],
         ],
       },
     ],
@@ -1315,6 +1319,10 @@ const STEWARD_EN: Guide = {
           ['<strong>Keep ← / Keep →</strong>', 'Merge a duplicate. The chosen side survives.'],
           ['<strong>Generate export</strong>', 'Produce a filtered xlsx for the ERP team.'],
           ['<strong>Audit log</strong>', 'Every action ever taken — searchable.'],
+          [
+            '<strong>Service status</strong>',
+            'The service levels, measured: availability, approvals on time, the SLA sweep, backups, the Temix queue and stuck imports.',
+          ],
         ],
       },
       {
@@ -1999,6 +2007,10 @@ const MANAGER_AR: Guide = {
           ['<strong>سجل التدقيق</strong>', 'كل عمل في منطقتك على الإطلاق.'],
           ['<strong>الموافقات</strong>', 'تحديثات مندوبيك المعلّقة — راجعها مع الصور والخريطة، ثم اعتمد أو ارفض.'],
           ['<strong>تصدير</strong>', 'ملف إكسل للسجل الرئيسي وتقرير التحديثات الميدانية (التغييرات ملوّنة).'],
+          [
+            '<strong>حالة الخدمة</strong>',
+            'هل يفي النظام بوعوده: توفّر التطبيق، الموافقات في وقتها، النسخة الاحتياطية الليلية. أرقام على مستوى الشركة؛ «لم يتحقق» يعني أن عليك التصرّف.',
+          ],
         ],
       },
     ],

@@ -193,6 +193,10 @@ Point an external uptime monitor at this URL with the bearer header and alert on
 
 The anonymous probe (no header) answers 503 when the database is unreachable, so a plain uptime check sees a real outage. It retries once after 750 ms first, so one pooler blip is logged (`health.db.retry`) and not reported as an outage.
 
+**Since 2026-09-27 the project is on Vercel Pro, and Vercel runs all four jobs itself.** `vercel.json` `crons` now holds keep-warm (`*/4 3-14 * * *`) and the SLA sweep (`15,45 3-14 * * *`) beside photo GC and the retention sweep. Pro runs them within the minute. Vercel sends `Authorization: Bearer <CRON_SECRET>` itself, so no header is set anywhere, and the external scheduler below is no longer needed. **Retire it once the Vercel jobs are proven** (owner): after the deploy, the Service status page's "The SLA escalation sweep runs" card, or `CronRun` rows with `source = 'vercel'`, show Vercel calling. Then disable both jobs at cron-job.org (Cronjobs → each job → Disable), delete the `CRONJOB_API_KEY` repository secret, and cron-job.org no longer holds a copy of `CRON_SECRET`. Until then the two schedulers run side by side, which is harmless: keep-warm is free to repeat, and the sweep claims each escalation once. The GitHub workflows (`keep-warm.yml`, `sla-escalate.yml`) stay as a late, sparse backup.
+
+What follows is how the external scheduler was set up, kept for the record and for a rollback to Hobby.
+
 **Scheduler decision (D3) — owner chose an EXTERNAL scheduler (2026-09-14).** GitHub Actions delivered 2–4 of the ~180 configured keep-warm runs a day, so the SLA sweep effectively did not run. The jobs stay where they are (plain authenticated GET endpoints); only the caller changes.
 
 Set up at any free cron service (cron-job.org, EasyCron, Better Uptime's "heartbeat + request" — the steps below use cron-job.org):
@@ -223,7 +227,22 @@ curl -s -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api
 
 The two GitHub Actions workflows (`.github/workflows/keep-warm.yml`, `sla-escalate.yml`) can be left enabled as a free backup — the sweep is idempotent and a duplicate keep-warm ping costs nothing. Note they use `curl -fsSL`, so with the B5 change they now go red when the endpoint answers 503, which is the intended signal.
 
-**If you ever move to Vercel Pro instead**, delete the external jobs and add to `vercel.json` `crons`: `{"path": "/api/cron/keep-warm", "schedule": "*/4 3-14 * * *"}` and `{"path": "/api/cron/sla-escalate", "schedule": "15,45 3-14 * * *"}`. Vercel signs its own cron calls, so no header is needed.
+**Done 2026-09-27:** the move to Vercel Pro, described at the top of this section.
+
+## 5g. Finding what happened — logs and the error Reference (item 10, 2026-09-27)
+
+Vercel keeps runtime logs for **30 days** on Pro with **Observability Plus**, which is on by default for teams upgraded after 3 April 2026. Check it once under Vercel → Settings → Billing → Observability Plus. Without it, logs are kept for 1 day.
+
+- **A user quotes a Reference from the error screen:** paste it into Vercel → Logs → search. Every server error writes a `request.error` line carrying that `digest` and the route it happened on (`instrumentation.ts`). The request's other log lines are grouped under it. The same Reference is a Sentry tag: search `digest:<reference>`.
+- **Only the problems:** use the Level filter → Warning / Error. Since this change the app writes warnings and errors to stderr, which is how Vercel decides a line's level. Before it, every line was filed as info and the filter found nothing.
+- **One job:** filter the Request Path by `/api/cron/<job>`, or use Vercel → Settings → Cron Jobs → View Logs.
+- **What is not in the logs:** customer phone numbers, e-mails and 7–12 digit runs are scrubbed before a line is written (`lib/scrub.ts`). The one exception is a `digest`, which is a hash of the error and is kept whole so the Reference can be found.
+
+**Tracing:** Sentry samples 10% of requests. Vercel Observability → Functions shows latency by route, with p75 and a per-path breakdown on Observability Plus.
+
+## 5h. Service levels (item 9, 2026-09-27)
+
+The targets and how each is measured: [SERVICE-LEVELS.md](SERVICE-LEVELS.md). The live figures: the **Service status** page, in the menu for the Data Steward and the Managers. It is built from `CronRun` (one row per scheduled run, 90 days) and the stage snapshot on each approval decision, and measures from 2026-09-27 onward.
 
 ## 5f. Outbound alerts — the only way this system can reach you (GAP-2, 2026-09-24)
 

@@ -202,4 +202,22 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(Number(cust.creditLimit)).toBe(REQUESTED_LIMIT);
     expect(cust.paymentTermDays).toBe(REQUESTED_DAYS);
   });
+
+  it('item 9: every step decision records the stage it decided — entered, due, working minutes', async () => {
+    // The change request keeps SLA state for its CURRENT stage only; this ledger
+    // row is the only lasting record of whether each stage met its SLA.
+    const steps = await prisma.editApproval.findMany({ where: { editId }, orderBy: { stepIndex: 'asc' } });
+    expect(steps.map((s) => s.role)).toEqual(['SUPERVISOR', 'FINANCE_MANAGER', 'GM', 'ACCOUNTANT']);
+    for (const s of steps) {
+      expect(s.stageEnteredAt, s.role).not.toBeNull();
+      expect(s.slaDueAt, s.role).not.toBeNull();
+      expect(s.workingMinutes, s.role).not.toBeNull();
+      expect(s.workingMinutes!, s.role).toBeGreaterThanOrEqual(0);
+      expect(s.slaDueAt!.getTime(), s.role).toBeGreaterThan(s.stageEnteredAt!.getTime());
+    }
+    // Each stage starts when the one before it was decided, not at submit.
+    for (let i = 1; i < steps.length; i++) {
+      expect(steps[i]!.stageEnteredAt!.getTime()).toBeGreaterThan(steps[0]!.stageEnteredAt!.getTime());
+    }
+  });
 });

@@ -1,9 +1,10 @@
 # SLA escalation sweep — Phase 1 SLA/notifications increment.
 #
-# GitHub Actions, not Vercel cron: Vercel Hobby rejects sub-daily schedules
-# and escalation needs sub-daily resolution (mirrors keep-warm.yml exactly).
-# GH schedules can lag 5-15 min — acceptable against 8-working-hour SLAs; we
-# do not promise minute-exact escalation.
+# A BACKUP since 2026-09-27: the project is on Vercel Pro, and vercel.json's
+# crons run this sweep at :15 and :45 within the minute. This workflow was the
+# scheduler while Vercel Hobby rejected sub-daily schedules; GitHub delivers it
+# late and sparsely (2-4 runs a day measured), so it only matters if Vercel's
+# cron stops. Duplicate runs are harmless: every escalation is claimed once.
 #
 # The route is a GET handler ON PURPOSE: the OLD system's sla-check cron was
 # POST-only while the scheduler sent GET, so it never fired once (BUG-03).

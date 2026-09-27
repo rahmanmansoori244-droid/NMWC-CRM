@@ -118,7 +118,9 @@ async function grant() {
     // This list is every model the request path actually deletes from — verified
     // by grepping `.delete(`/`.deleteMany(` and `DELETE FROM` across app, lib and
     // services. Add to it only with the same evidence. RateLimit is here because
-    // the pg rate-limit backend prunes its own rows.
+    // the pg rate-limit backend prunes its own rows. CronRun (item 9, 2026-09-27)
+    // because the retention sweep prunes run history past 90 days
+    // (app/api/cron/retention-sweep/route.ts, step 4).
     const DELETABLE = [
       'Attachment',
       'Notification',
@@ -126,6 +128,7 @@ async function grant() {
       'EditBranchDraft',
       'PasswordHistory',
       'RateLimit',
+      'CronRun',
     ];
     const stmts = [
       `GRANT CONNECT ON DATABASE "${db}" TO "${ROLE}"`,
@@ -271,6 +274,13 @@ async function verify() {
           await expectRefused(tx, 'CustomerEdit DELETE (cascade path into the ledger)', () =>
             tx.$executeRawUnsafe(`DELETE FROM "CustomerEdit" WHERE false`)
           );
+          // Item 9: the first table created since these grants. Its INSERT comes
+          // from the default privileges, which nothing else has exercised, and its
+          // DELETE from DELETABLE. Without either, the run history silently stops
+          // or the retention sweep fails, while every other probe here passes.
+          await tx.$executeRaw`INSERT INTO "CronRun" ("id", "key", "at", "ok", "durationMs") VALUES (${`verify-${Date.now()}`}, 'verify', NOW(), true, 0)`;
+          await tx.$executeRawUnsafe(`DELETE FROM "CronRun" WHERE "key" = 'verify'`);
+          console.log('  ✓ CronRun insert + delete (run history, pruned by the retention sweep)');
           await expectRefused(tx, 'DDL (ALTER TABLE)', () => tx.$executeRawUnsafe(`ALTER TABLE "RateLimit" ADD COLUMN "x" INTEGER`));
           await expectRefused(tx, 'read _prisma_migrations', () => tx.$queryRawUnsafe(`SELECT count(*) FROM "_prisma_migrations"`));
           throw new Rollback();

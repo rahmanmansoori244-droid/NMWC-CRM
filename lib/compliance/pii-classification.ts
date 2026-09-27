@@ -303,6 +303,17 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'CronHeartbeat.createdAt': { subject: 'none', note: RECORD_META },
   'CronHeartbeat.updatedAt': { subject: 'none', note: RECORD_META },
 
+  // ---- CronRun: one row per scheduled run (item 9) ------------------------
+  // Deliberately no error text and no run detail: those can quote a customer's
+  // phone. The scheduler is stored as a fixed label, never the User-Agent.
+  'CronRun.id': { subject: 'none', note: STRUCTURAL },
+  'CronRun.key': { subject: 'none' },
+  'CronRun.at': { subject: 'none', note: RECORD_META },
+  'CronRun.ok': { subject: 'none' },
+  'CronRun.durationMs': { subject: 'none' },
+  'CronRun.dbMs': { subject: 'none' },
+  'CronRun.source': { subject: 'none', note: "a fixed label ('vercel', 'cron-job.org', 'github', 'other'), not the User-Agent" },
+
   // ---- RateLimit -----------------------------------------------------------
   'RateLimit.key': {
     subject: 'employee',
@@ -392,6 +403,12 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'EditApproval.actorId': { subject: 'employee', kind: 'identifier' },
   'EditApproval.reason': { subject: 'customer', kind: 'free text' },
   'EditApproval.at': { subject: 'employee', kind: 'behaviour' },
+  // Item 9: the stage as it stood when this person decided it — together they say
+  // whether a named approver met the SLA, the same class as the SLA columns on
+  // CustomerEdit.
+  'EditApproval.stageEnteredAt': { subject: 'employee', kind: 'behaviour' },
+  'EditApproval.slaDueAt': { subject: 'employee', kind: 'behaviour' },
+  'EditApproval.workingMinutes': { subject: 'employee', kind: 'behaviour', note: 'how long this named person took to decide' },
 
   // ---- Notification --------------------------------------------------------
   'Notification.id': { subject: 'none', note: STRUCTURAL },

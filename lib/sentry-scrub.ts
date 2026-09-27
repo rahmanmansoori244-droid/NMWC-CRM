@@ -15,7 +15,7 @@
  * addresses.
  */
 import type { Event, EventHint } from '@sentry/nextjs';
-import { scrubString } from './scrub';
+import { isErrorDigest, scrubString } from './scrub';
 
 /**
  * Query-string keys whose VALUE is replaced wholesale rather than pattern-scrubbed.
@@ -200,9 +200,6 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
   return event;
 }
 
-/** Next's digests are hashes: short, and made of these characters only. */
-const DIGEST_SHAPE = /^[0-9A-Za-z_-]{1,64}$/;
-
 /**
  * Item 10 (re-benchmark, 2026-09-24: "no log search"): make the reference a user
  * reads off the error screen findable.
@@ -222,6 +219,6 @@ const DIGEST_SHAPE = /^[0-9A-Za-z_-]{1,64}$/;
  */
 function tagDigest(event: Event, hint?: EventHint): void {
   const digest = (hint?.originalException as { digest?: unknown } | null | undefined)?.digest;
-  if (typeof digest !== 'string' || !DIGEST_SHAPE.test(digest)) return;
+  if (!isErrorDigest(digest)) return;
   event.tags = { ...event.tags, digest };
 }

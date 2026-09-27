@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Menu,
   X,
+  Activity,
 } from 'lucide-react';
 
 type NavItem = {
@@ -33,7 +34,9 @@ type NavItem = {
   icon: React.ComponentType<{ className?: string }>;
 };
 
-const NAV_BY_ROLE: Record<Role, NavItem[]> = {
+// Exported for tests/unit/status-page.test.tsx: a page is only reachable if the
+// menu offers it, and nothing else ties the two together.
+export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
   SALESMAN: [
     { href: '/today', label: 'Today', icon: CalendarCheck },
     { href: '/customers', label: 'Customers', icon: Search },
@@ -60,6 +63,8 @@ const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/reactivations', label: 'Reactivations', icon: AlertTriangle },
     { href: '/audit', label: 'Audit log', icon: ScrollText },
     { href: '/work', label: 'Work items', icon: Inbox },
+    // Item 9: company-wide service levels (lib/service-levels.ts STATUS_ROLES).
+    { href: '/status', label: 'Service status', icon: Activity },
   ],
   STEWARD: [
     { href: '/import', label: 'Import', icon: Upload },
@@ -71,6 +76,7 @@ const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/routes', label: 'Routes & regions', icon: Map },
     { href: '/users', label: 'Users', icon: Users },
     { href: '/work', label: 'Work items', icon: Inbox },
+    { href: '/status', label: 'Service status', icon: Activity },
   ],
   VIEWER: [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
