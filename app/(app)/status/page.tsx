@@ -27,10 +27,10 @@ export const dynamic = 'force-dynamic';
  *
  * Steward and Managers (STATUS_ROLES). No customer, no error text and no named
  * person. The approval figures are people's decisions: the Data Steward sees the
- * whole company's, anyone else only the Supervisor step and reactivations on
- * requests in their own regions — requests they can already open at
- * /approvals/[id] (lib/service-levels.ts approvalsForManager). Everything else
- * is company-wide.
+ * whole company's, anyone else only the Supervisor step on requests in their
+ * own regions — requests they can already open at /approvals/[id], at the step
+ * whose due times their /approvals queue shows (lib/service-levels.ts
+ * approvalsForManager). Everything else is company-wide.
  * Targets and definitions live in lib/service-levels.ts and docs/SERVICE-LEVELS.md.
  */
 export default async function StatusPage() {
@@ -52,7 +52,7 @@ export default async function StatusPage() {
         subtitle={
           scope === 'company'
             ? 'Whether the system is keeping its promises — measured from what it records. Company-wide figures; no customer is named.'
-            : 'Whether the system is keeping its promises — measured from what it records. No customer is named. Approvals count the Supervisor step and reactivations in your regions; everything else is company-wide.'
+            : 'Whether the system is keeping its promises — measured from what it records. No customer is named. Approvals count the Supervisor step in your regions; everything else is company-wide.'
         }
         actions={
           <p className="text-xs text-slate-500">
@@ -193,14 +193,14 @@ function TierLine({ label, t }: { label: string; t: { within: number; tracked: n
 function ApprovalsCard({ s, scope }: { s: ServiceStatus; scope: ApprovalsScope }) {
   const a = s.approvals;
   if (scope !== 'company') {
-    // A Manager: the Supervisor step and reactivations, in their own regions
+    // A Manager: the Supervisor step, in their own regions
     // (lib/service-levels.ts approvalsForManager).
     return (
       <SloCard id="approvals" status={a.status} value={formatPct(a.ratio)}>
         <p>
           {scope.regionIds.length === 0
             ? 'You manage no regions, so no approvals are counted for you.'
-            : 'The Supervisor step and reactivations, on requests in your regions.'}
+            : 'The Supervisor step, on requests in your regions.'}
         </p>
         <p className="tabular-nums">
           {a.good.toLocaleString('en-GB')} of {a.total.toLocaleString('en-GB')} decisions on time
@@ -208,7 +208,7 @@ function ApprovalsCard({ s, scope }: { s: ServiceStatus; scope: ApprovalsScope }
         {approvalsForManager(a.tiers).map((g) => (
           <TierLine key={g.group.key} label={g.group.label} t={g.decisions} />
         ))}
-        <p>The Accountant, Finance Manager and GM steps are reported to the Data Steward.</p>
+        <p>The Accountant, Finance Manager and GM steps and reactivations are reported to the Data Steward.</p>
         <Budget left={a.budgetLeft} />
         <Since since={a.since} now={s.now} />
       </SloCard>
@@ -338,7 +338,7 @@ function QueueCard({
 
 function OpenApprovals({ s, scope }: { s: ServiceStatus; scope: ApprovalsScope }) {
   if (scope !== 'company') {
-    // A Manager: their steps on their regions' requests, the same cards every time.
+    // A Manager: the Supervisor step on their regions' requests, always shown.
     return (
       <div className="grid gap-3 sm:grid-cols-2">
         {queuesForManager(s.openApprovals).map((g) => (

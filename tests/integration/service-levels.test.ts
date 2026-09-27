@@ -358,51 +358,39 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     );
   });
 
-  it('a Manager’s approval tiers: their steps, their regions; the company’s count every one', async () => {
+  it('a Manager’s approval tiers: the Supervisor step in their regions; the company’s count every step', async () => {
     const tiers = async (regionIds: string[]) => svc.__internal.approvalTiers(REGION_FROM, { regionIds });
     const mine = await tiers([reg.in]);
-    // No Accountant, Finance Manager or GM row, though "in" has an Accountant decision.
-    expect(mine.tiers).toEqual([
-      { role: 'SUPERVISOR', decided: 2, tracked: 2, within: 2, p50Minutes: 75, p90Minutes: 87 },
-      { role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 60, p90Minutes: 60 },
-    ]);
-    // "Measuring since" is the earliest decision these figures count — the
-    // reactivation at 05:00 — not the company's first, out of region, the day before.
-    expect(mine.firstCounted).toEqual(R('05:00:00'));
-    // "out" counts its own reactivations, the multi-region customer's included.
+    // No Accountant row though "in" has Accountant decisions, and no reactivations
+    // row though "in" has a decided reactivation: no Manager screen shows their due times.
+    expect(mine.tiers).toEqual([{ role: 'SUPERVISOR', decided: 2, tracked: 2, within: 2, p50Minutes: 75, p90Minutes: 87 }]);
+    // "Measuring since" is the earliest decision these figures count — "in"'s
+    // Supervisor decisions at 06:00 — not the company's first, out of region, the day before.
+    expect(mine.firstCounted).toEqual(R('06:00:00'));
     const theirs = await tiers([reg.out]);
-    expect(theirs.tiers).toEqual([
-      { role: 'SUPERVISOR', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120 },
-      { role: 'MANAGER', decided: 2, tracked: 2, within: 2, p50Minutes: 60, p90Minutes: 60 },
-    ]);
+    expect(theirs.tiers).toEqual([{ role: 'SUPERVISOR', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120 }]);
     expect(theirs.firstCounted).toEqual(new Date('2099-05-09T06:00:00Z'));
     // No regions counts nothing, and measures from nothing.
     expect(await tiers([])).toEqual({ tiers: [], firstCounted: null });
-    // The company's has every step.
+    // The company's has every step, reactivations included.
     const company = await svc.__internal.approvalTiers(REGION_FROM, 'company');
     expect(company.tiers.find((t) => t.role === 'GM')?.decided).toBe(2);
     expect(company.tiers.find((t) => t.role === 'FINANCE_MANAGER')?.decided).toBe(1);
     expect(company.tiers.find((t) => t.role === 'ACCOUNTANT')?.decided).toBe(2);
+    // Three region reactivations on 10 May, and the suite's first one on 1 June.
+    expect(company.tiers.find((t) => t.role === 'MANAGER')?.decided).toBe(4);
     expect(company.firstCounted!.getTime()).toBeLessThanOrEqual(new Date('2099-05-09T06:00:00Z').getTime());
   });
 
-  it('a Manager’s waiting queues: their steps, their regions', async () => {
+  it('a Manager’s waiting queue: the Supervisor step in their regions', async () => {
     const now = new Date('2099-06-02T00:00:00Z');
     const view = (tiers: { role: string; open: number }[]) => tiers.map((t) => [t.role, t.open]);
-    // "in" has a request waiting at the Accountant step: not a Manager's step.
-    // The request with no customer at all waits at the Supervisor step: nobody's region.
-    expect(view(await svc.__internal.openApprovals(now, { regionIds: [reg.in] }))).toEqual([
-      ['SUPERVISOR', 0],
-      ['MANAGER', 0],
-    ]);
-    expect(view(await svc.__internal.openApprovals(now, { regionIds: [reg.out] }))).toEqual([
-      ['SUPERVISOR', 0],
-      ['MANAGER', 1],
-    ]);
-    expect(view(await svc.__internal.openApprovals(now, { regionIds: [] }))).toEqual([
-      ['SUPERVISOR', 0],
-      ['MANAGER', 0],
-    ]);
+    // "in" has a request waiting at the Accountant step and "out" a reactivation:
+    // neither is on a Manager's page. The request with no customer at all waits
+    // at the Supervisor step: nobody's region.
+    for (const regionIds of [[reg.in], [reg.out], [] as string[]]) {
+      expect(view(await svc.__internal.openApprovals(now, { regionIds }))).toEqual([['SUPERVISOR', 0]]);
+    }
     const company = await svc.__internal.openApprovals(now, 'company');
     const open = (role: string) => company.find((t) => t.role === role)?.open ?? 0;
     for (const role of ['SUPERVISOR', 'ACCOUNTANT', 'GM', 'MANAGER']) expect(open(role), role).toBeGreaterThanOrEqual(1);

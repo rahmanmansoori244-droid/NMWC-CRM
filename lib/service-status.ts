@@ -10,10 +10,10 @@
  *   - a job's last error text is dropped here (withoutErrorText): it is scrubbed,
  *     but it stays behind the monitor bearer (lib/heartbeat.ts);
  *   - the approval figures are people's decisions, so for anyone but the Data
- *     Steward they are read only at the steps a Manager takes part in (the
- *     Supervisor step and reactivations), on requests in the viewer's own regions
- *     (ApprovalsScope, countedInRegions): requests that viewer can already open
- *     at /approvals/[id]. Company-wide approval figures leaked single-holder
+ *     Steward they are read only at the Supervisor step, on requests in the
+ *     viewer's own regions (ApprovalsScope, countedInRegions): requests that
+ *     viewer can already open at /approvals/[id], at the one step whose due
+ *     times their /approvals queue shows. Company-wide approval figures leaked single-holder
  *     steps (the GM, the Finance Manager) by subtraction under four different
  *     rules (reviews of 2026-09-27; lib/service-levels.ts approvalsForManager
  *     says how).
@@ -130,7 +130,7 @@ function countedInRegionsSql(regionIds: string[]): Prisma.Sql {
 
 /**
  * The rows a non-company scope keeps: requests counted in its regions, at the
- * steps a Manager takes part in (lib/service-levels.ts MANAGER_VIEW_ROLES).
+ * steps a Manager's view counts (lib/service-levels.ts MANAGER_VIEW_ROLES).
  * `role` is the SQL for the row's step.
  */
 function managerScopeSql(scope: ApprovalsScope, role: Prisma.Sql): Prisma.Sql {
@@ -238,8 +238,9 @@ async function runs(key: string, from: Date): Promise<RunSample[]> {
  * Reactivations are decided outside the step engine and write no EditApproval
  * row. Their change request has kept its due time and its decision time since
  * July 2026, so they are read from there as the MANAGER tier, and counted from
- * those records rather than from the snapshot date; `firstCounted` says when the
- * earliest decision counted in the window was made.
+ * those records rather than from the snapshot date. `firstCounted` is the
+ * earliest tracked decision these figures could count, ever — fixed, so a
+ * "Measuring since" line never moves with the window (review of dfa0ea9).
  */
 async function approvalTiers(
   from: Date,
@@ -287,15 +288,28 @@ async function approvalTiers(
   }));
   let firstCounted: Date | null = first?.first ?? null;
 
-  const reactivations = await prisma.customerEdit.findMany({
-    where: {
-      isReactivation: true,
-      reviewedAt: { gte: from },
-      state: { in: [EditState.APPROVED, EditState.NEEDS_CORRECTION] },
-      ...(scope === 'company' ? {} : { AND: [countedInRegions(scope.regionIds)] }),
-    },
-    select: { stageEnteredAt: true, submittedAt: true, slaDueAt: true, reviewedAt: true },
-  });
+  // Reactivations are the MANAGER tier: the company's, or a scope's only when a
+  // Manager's view counts that step (it does not: lib/service-levels.ts).
+  if (scope !== 'company' && !MANAGER_VIEW_ROLES.includes('MANAGER')) return { tiers, firstCounted };
+  const reactivationWhere: Prisma.CustomerEditWhereInput = {
+    isReactivation: true,
+    state: { in: [EditState.APPROVED, EditState.NEEDS_CORRECTION] },
+    ...(scope === 'company' ? {} : { AND: [countedInRegions(scope.regionIds)] }),
+  };
+  const [reactivations, firstReactivation] = await Promise.all([
+    prisma.customerEdit.findMany({
+      where: { ...reactivationWhere, reviewedAt: { gte: from } },
+      select: { stageEnteredAt: true, submittedAt: true, slaDueAt: true, reviewedAt: true },
+    }),
+    // "Measuring since" is the earliest tracked decision ever counted, not the
+    // earliest inside the window: that one moves every day (review of dfa0ea9).
+    prisma.customerEdit.aggregate({
+      where: { ...reactivationWhere, reviewedAt: { not: null }, slaDueAt: { not: null } },
+      _min: { reviewedAt: true },
+    }),
+  ]);
+  const earliest = firstReactivation._min.reviewedAt;
+  if (earliest && (!firstCounted || earliest.getTime() < firstCounted.getTime())) firstCounted = earliest;
   if (reactivations.length > 0) {
     const minutes: number[] = [];
     let tracked = 0;
@@ -304,7 +318,6 @@ async function approvalTiers(
       if (!r.reviewedAt || !r.slaDueAt) continue;
       tracked += 1;
       if (r.reviewedAt.getTime() <= r.slaDueAt.getTime()) within += 1;
-      if (!firstCounted || r.reviewedAt.getTime() < firstCounted.getTime()) firstCounted = r.reviewedAt;
       const entered = r.stageEnteredAt ?? r.submittedAt;
       if (entered) minutes.push(workingMinutesBetween(entered, r.reviewedAt));
     }

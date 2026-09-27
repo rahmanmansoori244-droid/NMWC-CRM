@@ -942,7 +942,7 @@ const MANAGER_EN: Guide = {
           ['<strong>Export</strong>', 'Customer master .xlsx and the field-update report (changes highlighted).'],
           [
             '<strong>Service status</strong>',
-            'Whether the system keeps its promises: the app answering, approvals on time, the nightly backup. Approvals count the Supervisor step and reactivations in your regions; the rest is company-wide. “Missed” means act.',
+            'Whether the system keeps its promises: the app answering, approvals on time, the nightly backup. Approvals count the Supervisor step in your regions; the rest is company-wide. “Missed” means act.',
           ],
         ],
       },
@@ -2009,7 +2009,7 @@ const MANAGER_AR: Guide = {
           ['<strong>تصدير</strong>', 'ملف إكسل للسجل الرئيسي وتقرير التحديثات الميدانية (التغييرات ملوّنة).'],
           [
             '<strong>حالة الخدمة</strong>',
-            'هل يفي النظام بوعوده: توفّر التطبيق، الموافقات في وقتها، النسخة الاحتياطية الليلية. الموافقات تشمل خطوة المشرف وطلبات إعادة التفعيل في مناطقك فقط، وبقية الأرقام على مستوى الشركة. «لم يتحقق» يعني أن عليك التصرّف.',
+            'هل يفي النظام بوعوده: توفّر التطبيق، الموافقات في وقتها، النسخة الاحتياطية الليلية. الموافقات تشمل خطوة المشرف في مناطقك فقط، وبقية الأرقام على مستوى الشركة. «لم يتحقق» يعني أن عليك التصرّف.',
           ],
         ],
       },

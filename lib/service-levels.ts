@@ -93,8 +93,8 @@ export const SLOS: readonly SloDefinition[] = [
 /**
  * Who may open the Service status page: the Data Steward and the Managers. Its
  * system figures are company-wide; its approval figures are the whole company's
- * only for the Data Steward, and for anyone else only the steps a Manager takes
- * part in, on requests in their own regions (ApprovalsScope, approvalsForManager).
+ * only for the Data Steward, and for anyone else only the Supervisor step, on
+ * requests in their own regions (ApprovalsScope, approvalsForManager).
  * The nav (components/nmwc/Sidebar.tsx) must offer the page to exactly these
  * roles; tests/unit/status-page.test.tsx pins it.
  */
@@ -300,16 +300,22 @@ export type TierDecisions = {
 /**
  * What a Manager sees of the approval steps (reviews of 2026-09-27).
  *
- * A Manager sees the two steps a Manager takes part in: the Supervisor step
- * (their Supervisors', and their own as the region fallback) and reactivations
- * (decided by the Managers). Both are counted only on requests in the Manager's
- * own regions (lib/service-status.ts ApprovalsScope): requests that Manager can
- * already open at /approvals/[id], and whose Supervisor-step due times their
- * /approvals queue shows. The Accountant, Finance Manager and GM steps are the
- * Data Steward's alone: nowhere else does a Manager see their due times, their
- * budgets are still an open owner decision, and two of them have one holder
- * each, so any figure of theirs is that colleague's own record. The Data Steward
- * sees the whole company, every step on its own.
+ * A Manager sees one step: the Supervisor step (their Supervisors', and their
+ * own as the region fallback), counted only on requests in the Manager's own
+ * regions (lib/service-status.ts ApprovalsScope). Those are requests the Manager
+ * can already open at /approvals/[id]; their due times are on the Manager's
+ * /approvals queue (the SLA pill); and the step's 8-hour budget is
+ * owner-confirmed. Every other step is the Data Steward's alone, because an
+ * on-time verdict needs a due time no Manager screen shows:
+ *   - the Accountant, Finance Manager and GM steps: no Manager screen shows
+ *     their due times; the Finance Manager and GM budgets are still placeholders
+ *     (owner question Q-sla); and those two steps have one holder each, so any
+ *     figure of theirs is that colleague's own record;
+ *   - reactivations: /reactivations shows no due time, their breaches notify
+ *     the GM and the Steward, never a Manager, and the 16-hour budget is a
+ *     placeholder too (Q-sla). Where two Managers share a region, the figure
+ *     would be the other Manager's record (post-merge review of dfa0ea9).
+ * The Data Steward sees the whole company, every step on its own.
  *
  * Four earlier rules showed Managers company-wide figures and hid any figure
  * that stood for fewer than three people. Each leaked the GM's and Finance
@@ -324,13 +330,13 @@ export type TierDecisions = {
  *     everything;
  *   - counting the viewing Manager as one of the three.
  * A fifth, counting all steps on the Manager's own requests, still printed the
- * credit steps' on-time verdicts, which no other screen gives a Manager.
+ * credit steps' on-time verdicts, which no other screen gives a Manager; a sixth
+ * kept reactivations, whose due times no Manager screen shows either.
  */
-export type StepGroup = { key: 'SUPERVISOR' | 'MANAGER'; label: string; roles: readonly string[] };
+export type StepGroup = { key: 'SUPERVISOR'; label: string; roles: readonly string[] };
 
 export const MANAGER_VIEW_GROUPS: readonly StepGroup[] = [
   { key: 'SUPERVISOR', label: 'Supervisor step', roles: ['SUPERVISOR'] },
-  { key: 'MANAGER', label: 'Manager (reactivations)', roles: ['MANAGER'] },
 ];
 
 /** The step roles a Manager's figures may count (lib/service-status.ts filters by them). */

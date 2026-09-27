@@ -143,7 +143,7 @@ describe('what it says', () => {
   });
 
   it('shows the open queue in working time', async () => {
-    // A Manager: the Supervisor queue and reactivations; the GM's queue is not theirs.
+    // A Manager: the Supervisor queue only; the GM's queue is not theirs.
     const { container } = render(await StatusPage());
     expect(screen.getByText(/2 past due · oldest waiting 11 h 40 m of working time/)).toBeTruthy();
     expect(container.textContent).not.toMatch(/11 h 0 m/);
@@ -190,7 +190,7 @@ describe('a Manager’s approval figures are their own regions’ requests, neve
     expect(h.scopeFor).toHaveBeenCalledWith('mgr-1');
     expect(h.load).toHaveBeenCalledTimes(1);
     expect(h.load.mock.calls[0]![0]).toEqual({ regionIds: ['r-north', 'r-south'] });
-    expect(card().textContent).toContain('The Supervisor step and reactivations, on requests in your regions.');
+    expect(card().textContent).toContain('The Supervisor step, on requests in your regions.');
     expect(screen.getByRole('heading', { name: 'Approvals waiting in your regions' })).toBeTruthy();
     cleanup();
 
@@ -217,26 +217,29 @@ describe('a Manager’s approval figures are their own regions’ requests, neve
     expect(card().textContent).toContain('You manage no regions, so no approvals are counted for you.');
   });
 
-  it('the Accountant, Finance Manager and GM steps are never on a Manager’s page', async () => {
-    // Their due times are on no other screen a Manager has, their budgets are an
-    // open owner decision, and two of them have one holder each.
+  it('no step but the Supervisor step has a line on a Manager’s page', async () => {
+    // No Manager screen shows the other steps' due times (lib/service-levels.ts).
+    // The loader drops them for a Manager (tests/integration/service-levels.test.ts);
+    // this fixture passes them anyway, and the page still prints no line for them.
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     const { container } = render(await StatusPage());
     expect(card().textContent).toContain('Supervisor step: 30/40 on time');
-    expect(card().textContent).toContain('The Accountant, Finance Manager and GM steps are reported to the Data Steward.');
-    // The fixture carries GM 3/5 and accountants 30/35: neither, nor their sum, is printed.
+    expect(card().textContent).toContain(
+      'The Accountant, Finance Manager and GM steps and reactivations are reported to the Data Steward.'
+    );
     expect(container.textContent).not.toMatch(/3\/5|30\/35|33\/40/);
     expect(container.textContent).not.toContain('General manager');
     expect(container.textContent).not.toContain('Accountant step');
     expect(container.textContent).not.toMatch(/Accountant, Finance Manager and GM steps:/);
+    expect(container.textContent).not.toMatch(/Manager \(reactivations\):/);
   });
 
-  it('the same lines whatever the data: a GM decision adds no line and removes none', async () => {
+  it('the same line whatever the data: a GM decision adds no line and removes none', async () => {
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     const lines = () =>
       [...card().querySelectorAll('p')]
         .map((p) => p.textContent!.split(':')[0]!)
-        .filter((l) => /^(Supervisor step|Manager \(reactivations\))$/.test(l));
+        .filter((l) => /step$|\(reactivations\)$/.test(l));
     const before = status();
     before.approvals.tiers = before.approvals.tiers.filter((t) => t.role !== 'GM');
     h.load.mockResolvedValue(before);
@@ -246,10 +249,10 @@ describe('a Manager’s approval figures are their own regions’ requests, neve
     h.load.mockResolvedValue(status());
     render(await StatusPage());
     expect(lines()).toEqual(a);
-    expect(a).toEqual(['Supervisor step', 'Manager (reactivations)']);
+    expect(a).toEqual(['Supervisor step']);
   });
 
-  it('the waiting queues: the same two cards every time, and no credit step among them', async () => {
+  it('the waiting queue: the Supervisor step only, shown every time', async () => {
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     h.load.mockResolvedValue(
       status({
@@ -263,10 +266,10 @@ describe('a Manager’s approval figures are their own regions’ requests, neve
     const { container } = render(await StatusPage());
     expect(container.textContent).not.toContain('Nothing is waiting for an approver');
     const cards = [...container.querySelectorAll('section[aria-labelledby="queue-heading"] article')];
-    expect(cards.map((c) => c.querySelector('h3')!.textContent)).toEqual(['Supervisor', 'Manager (reactivations)']);
-    expect(cards[1]!.textContent).toContain('none past due · oldest waiting 1 h 40 m of working time');
-    // The Finance Manager's late request is nowhere on it.
-    expect(container.textContent).not.toMatch(/9 h 10 m/);
+    expect(cards.map((c) => c.querySelector('h3')!.textContent)).toEqual(['Supervisor']);
+    expect(cards[0]!.textContent).toContain('none past due');
+    // The Finance Manager's late request and the reactivations are nowhere on it.
+    expect(container.textContent).not.toMatch(/9 h 10 m|1 h 40 m/);
   });
 
   it('the loader copies the request page’s MANAGER gate, and that gate is still the one it copies', () => {
