@@ -75,6 +75,9 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
         target: 'CUSTOMER', submittedById: userId, state: 'APPROVED', isReactivation: true,
         fieldChanges: [], attachmentChanges: [],
         submittedAt: T('04:00:00'), stageEnteredAt: T('04:00:00'), slaDueAt: T('12:00:00'), reviewedAt: T('06:00:00'),
+        // Who decided it: the tier's "people" count, which decides whether a
+        // Manager may see the tier on its own.
+        reviewedById: userId,
       },
     });
     editIds.push(re.id);

@@ -56,7 +56,9 @@ const BATCH = 500;
 const IMPORT_BATCH = 2000;
 const IMPORT_BUDGET_MS = 30_000;
 /** Scheduled-run history: the service-level report reads 30 days; keep three windows. */
-export const CRON_RUN_DAYS = 90;
+// Not exported: a route file may export only what Next allows, and only
+// `next build` checks that (CLAUDE.md).
+const CRON_RUN_DAYS = 90;
 const CRON_RUN_BATCH = 2000;
 
 function cutoff(days: number): Date {
