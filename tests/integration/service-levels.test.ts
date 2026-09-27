@@ -26,6 +26,7 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
   let prisma: import('@prisma/client').PrismaClient;
   let svc: typeof import('@/lib/service-status');
   let userId = '';
+  let managerId = '';
   const editIds: string[] = [];
 
   beforeAll(async () => {
@@ -37,6 +38,19 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       data: { username: `${sfx}.op`, fullName: 'SLO Operator', role: 'STEWARD', passwordHash: 'x' },
     });
     userId = u.id;
+    const m = await prisma.user.create({
+      data: { username: `${sfx}.mgr`, fullName: 'SLO Manager', role: 'MANAGER', passwordHash: 'x' },
+    });
+    managerId = m.id;
+    // One request waiting at the Supervisor step, for the open-queue test.
+    const waiting = await prisma.customerEdit.create({
+      data: {
+        target: 'CUSTOMER', submittedById: userId, state: 'SUBMITTED', pendingRole: 'SUPERVISOR',
+        submittedAt: T('04:00:00'), stageEnteredAt: T('04:00:00'), slaDueAt: T('12:00:00'),
+        fieldChanges: [], attachmentChanges: [],
+      },
+    });
+    editIds.push(waiting.id);
 
     // Keep-warm: two schedulers in the 03:00 slot (one failed), one failed run in
     // 03:04, nothing in 03:08, one success in 03:12.
@@ -88,7 +102,7 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     await prisma.cronRun.deleteMany({ where: { id: { startsWith: sfx } } });
     // The step ledger is append-only: its rows go with their edit, in a maintenance window.
     if (editIds.length) await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
-    await prisma.user.deleteMany({ where: { id: userId } });
+    await prisma.user.deleteMany({ where: { id: { in: [userId, managerId].filter(Boolean) } } });
     await prisma.$disconnect();
   });
 
@@ -114,9 +128,11 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     const { tiers } = await svc.__internal.approvalTiers(FROM);
     const sup = tiers.find((t) => t.role === 'SUPERVISOR');
     // One person made all four decisions: the page folds this tier for a Manager.
-    expect(sup).toEqual({ role: 'SUPERVISOR', decided: 4, tracked: 3, within: 2, p50Minutes: 120, p90Minutes: 504, people: 1 });
+    expect(sup).toEqual({
+      role: 'SUPERVISOR', decided: 4, tracked: 3, within: 2, p50Minutes: 120, p90Minutes: 504, people: [userId],
+    });
     const mgr = tiers.find((t) => t.role === 'MANAGER');
-    expect(mgr).toEqual({ role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120, people: 1 });
+    expect(mgr).toEqual({ role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120, people: [userId] });
   });
 
   it('the last successful run from Vercel’s own cron, per job — the check before retiring cron-job.org', async () => {
@@ -125,11 +141,18 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     expect(last.get('keep-warm')).toEqual(T('03:00:05'));
   });
 
-  it('the open queue carries how many people can decide each step', async () => {
-    for (const t of await svc.__internal.openApprovals(new Date('2099-06-02T00:00:00Z'))) {
-      expect(t.holders, t.role).toBeGreaterThanOrEqual(0);
-      expect(t.open, t.role).toBeGreaterThanOrEqual(t.pastDue);
-    }
+  it('the open queue carries the people who can decide each step', async () => {
+    // The seeded request waits at the Supervisor step, which Supervisors and
+    // (as the region fallback) Managers decide. Our active Manager must be among
+    // its holders; the role names read from the users must match the queue's.
+    const tiers = await svc.__internal.openApprovals(new Date('2099-06-02T00:00:00Z'));
+    const sup = tiers.find((t) => t.role === 'SUPERVISOR');
+    expect(sup, 'the waiting Supervisor-step request').toBeDefined();
+    expect(sup!.open).toBeGreaterThanOrEqual(1);
+    expect(sup!.holders).toContain(managerId);
+    const active = await prisma.user.count({ where: { isActive: true, role: { in: ['SUPERVISOR', 'MANAGER'] } } });
+    expect(sup!.holders.length).toBeLessThanOrEqual(active + 5); // other suites add users in parallel
+    expect(sup!.holders.length).toBeGreaterThanOrEqual(1);
   });
 
   it('the whole loader runs against real Postgres and returns verdicts', async () => {

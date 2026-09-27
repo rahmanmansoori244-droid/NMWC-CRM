@@ -99,8 +99,11 @@ describe('2. the reference survives the scrubber, and only under its own key', (
         for (const m of args.matchAll(/(?<![.\w])digest\b(?!\s*\()/g)) {
           seen += 1;
           const rest = args.slice(m.index!);
-          expect(rest, `${f}: ${rest.slice(0, 60)}`).toMatch(/^digest\s*:\s*(?:error|err|e)\??\.digest\b/);
+          // The whole value is an error's digest — `e?.digest ?? phone` is not.
+          expect(rest, `${f}: ${rest.slice(0, 60)}`).toMatch(/^digest\s*:\s*(?:error|err|e)\??\.digest\s*(?:,|\}|$)/);
         }
+        // A computed key could put anything under the exempt name.
+        expect(args, `${f}: a computed key in a logger call`).not.toMatch(/\[\s*(DIGEST_KEY|['"`]digest['"`])\s*\]/);
       }
     }
     expect(seen).toBeGreaterThanOrEqual(3); // app/error.tsx, app/(app)/error.tsx, instrumentation.ts

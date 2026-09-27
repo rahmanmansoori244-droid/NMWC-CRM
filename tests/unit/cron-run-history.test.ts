@@ -19,7 +19,7 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/alert', () => ({ sendAlert: db.alert }));
 
 import { classifyRunSource, recordHeartbeat, withHeartbeat } from '@/lib/heartbeat';
-import { callArguments, sourceFiles } from '../support/call-args';
+import { callArguments, objectAfter, sourceFiles } from '../support/call-args';
 import { stripComments } from '../support/strip-comments';
 
 beforeEach(() => {
@@ -129,7 +129,8 @@ describe('the approval engine snapshots the stage on every decision it records',
   it('every Prisma insert into EditApproval carries the stage as it was decided', () => {
     let sites = 0;
     for (const [f, src] of code) {
-      for (const args of callArguments(src, /\beditApproval\.(create|createMany|upsert)\b/)) {
+      // create, createMany, createManyAndReturn, upsert — anything that makes a row.
+      for (const args of callArguments(src, /\beditApproval\.(create\w*|upsert)\b/)) {
         sites += 1;
         // `stageSnapshot(edit, …)`: the change request as loaded BEFORE the claim,
         // i.e. the stage being decided, not the one it advances to.
@@ -147,14 +148,27 @@ describe('the approval engine snapshots the stage on every decision it records',
       /currentStepIndex:\s*(stepIndex|rejectStepIndex)\b/.test(a)
     );
     expect(claims).toHaveLength(4);
-    for (const c of claims) expect(c).toMatch(/stageEnteredAt:\s*edit\.stageEnteredAt/);
+    for (const c of claims) {
+      // In the WHERE, where it guards the claim — not in the data it writes.
+      const where = objectAfter(c, /\bwhere\s*:/);
+      expect(where, 'a claim without a where').not.toBeNull();
+      expect(where!).toMatch(/stageEnteredAt:\s*edit\.stageEnteredAt/);
+    }
   });
 
   it('nothing inserts into EditApproval any other way', () => {
+    // Every relation that points at EditApproval, read from the schema, so a new
+    // one is covered the day it is added (CustomerEdit's steps, User's decisions).
+    const schema = readFileSync('prisma/schema.prisma', 'utf8');
+    const relations = [...schema.matchAll(/^\s+(\w+)\s+EditApproval\[\]/gm)].map((m) => m[1]!);
+    expect(relations.length).toBeGreaterThanOrEqual(2);
     for (const [f, src] of code) {
       expect(src, f).not.toMatch(/INSERT\s+INTO\s+"?EditApproval"?/i);
-      // A nested write through the change request would bypass the call sites above.
-      expect(src, f).not.toMatch(/\b(steps|approvals|editApprovals)\s*:\s*\{\s*(create|createMany|connectOrCreate)\b/);
+      for (const rel of relations) {
+        const nested = objectAfter(src, new RegExp(`\\b${rel}\\s*:`));
+        if (nested === null) continue;
+        expect(nested, `${f}: a nested write through ${rel}`).not.toMatch(/\b(create\w*|connectOrCreate|upsert)\b/);
+      }
     }
   });
 });

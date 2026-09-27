@@ -5,10 +5,31 @@
  * structural guards read the wrong span (review, 2026-09-27).
  *
  * String and template literals are skipped so a bracket inside one does not
- * count. Run it on comment-stripped source (tests/support/strip-comments.ts).
+ * count. Run it on comment-stripped source (tests/support/strip-comments.ts). A
+ * call it cannot balance is an error, never a silent skip: a guard that quietly
+ * drops the call it cannot read passes for the wrong reason (review of f05752e).
  */
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+
+/** The text between an opening bracket at `open` and its match. */
+function balanced(src: string, open: number, where: string): string {
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const c = src[i]!;
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      for (i++; i < src.length && src[i] !== quote; i++) if (src[i] === '\\') i++;
+      continue;
+    }
+    if (c === '(' || c === '{' || c === '[') depth++;
+    else if (c === ')' || c === '}' || c === ']') {
+      depth--;
+      if (depth === 0) return src.slice(open + 1, i);
+    }
+  }
+  throw new Error(`call-args: unbalanced brackets after ${where} — the guard cannot read this call`);
+}
 
 export function callArguments(src: string, callee: RegExp): string[] {
   const out: string[] = [];
@@ -17,26 +38,19 @@ export function callArguments(src: string, callee: RegExp): string[] {
     let i = m.index! + m[0].length;
     while (i < src.length && /\s/.test(src[i]!)) i++;
     if (src[i] !== '(') continue;
-    const start = i + 1;
-    let depth = 0;
-    for (; i < src.length; i++) {
-      const c = src[i]!;
-      if (c === '"' || c === "'" || c === '`') {
-        const quote = c;
-        for (i++; i < src.length && src[i] !== quote; i++) if (src[i] === '\\') i++;
-        continue;
-      }
-      if (c === '(' || c === '{' || c === '[') depth++;
-      else if (c === ')' || c === '}' || c === ']') {
-        depth--;
-        if (depth === 0) {
-          out.push(src.slice(start, i));
-          break;
-        }
-      }
-    }
+    out.push(balanced(src, i, m[0]));
   }
   return out;
+}
+
+/** The `{ … }` that follows `key:` in some text, e.g. the `where` of a Prisma call. */
+export function objectAfter(src: string, key: RegExp): string | null {
+  const m = key.exec(src);
+  if (!m) return null;
+  let i = m.index + m[0].length;
+  while (i < src.length && /\s/.test(src[i]!)) i++;
+  if (src[i] !== '{') return null;
+  return balanced(src, i, m[0]);
 }
 
 /** Every .ts/.tsx file under the given directories. */

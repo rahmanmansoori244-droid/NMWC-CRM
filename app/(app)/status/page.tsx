@@ -181,7 +181,8 @@ function foldDecisions(hidden: TierDecisions[]): TierDecisions {
     // A median of medians would be a number nobody measured.
     p50Minutes: null,
     p90Minutes: null,
-    people: hidden.reduce((n, t) => n + t.people, 0),
+    // The same person on two steps is one person.
+    people: [...new Set(hidden.flatMap((t) => t.people))],
   };
 }
 
@@ -300,21 +301,28 @@ function foldOpen(hidden: OpenTier[]): OpenTier {
     open: hidden.reduce((n, t) => n + t.open, 0),
     pastDue: hidden.reduce((n, t) => n + t.pastDue, 0),
     oldestWorkingMinutes: oldest.length ? Math.max(...oldest) : null,
-    holders: hidden.reduce((n, t) => n + t.holders, 0),
+    holders: [...new Set(hidden.flatMap((t) => t.holders))],
   };
 }
 
 function OpenApprovals({ s, viewer }: { s: ServiceStatus; viewer: string }) {
-  const tiers = tiersForViewer(
-    s.openApprovals.filter((t) => t.open > 0),
-    (t) => t.holders,
-    viewer,
-    foldOpen
-  );
-  if (tiers.length === 0) {
+  const open = s.openApprovals.filter((t) => t.open > 0);
+  const tiers = tiersForViewer(open, (t) => t.holders, viewer, foldOpen);
+  if (open.length === 0) {
     return (
       <p className="rounded-lg bg-white p-5 text-sm text-slate-600 shadow-sm ring-1 ring-slate-200">
         Nothing is waiting for an approver.
+      </p>
+    );
+  }
+  if (tiers.length === 0) {
+    // Requests ARE waiting, at steps too few people hold to show (review of
+    // f05752e: this used to say nothing was waiting). No count: with one hidden
+    // step, the count would be that colleague's own queue.
+    return (
+      <p className="rounded-lg bg-white p-5 text-sm text-slate-600 shadow-sm ring-1 ring-slate-200">
+        Requests are waiting at steps that fewer than three people decide, so they are not shown here. The Data
+        Steward sees them.
       </p>
     );
   }
@@ -328,7 +336,7 @@ function OpenApprovals({ s, viewer }: { s: ServiceStatus; viewer: string }) {
           }`}
         >
           <h3 className="text-xs font-medium uppercase tracking-wide opacity-70">
-            {(TIER_LABEL[t.role] ?? t.role).replace(' step', '')}
+            {(TIER_LABEL[t.role] ?? t.role).replace(/ step$/, '')}
           </h3>
           <p className="mt-1 text-3xl font-bold tabular-nums">{t.open}</p>
           <p className="mt-1 text-xs tabular-nums opacity-80">

@@ -68,9 +68,21 @@ describe('ratio verdicts and the error budget', () => {
   });
 
   it('exactly the allowance is on budget, one more is not — despite float error', () => {
-    // 0.005 × 5400 = 26.999…: 27 bad slots is the allowance.
+    // (1 - 0.995) × 5400 is 27.000…025; 27 bad slots is the allowance.
     expect(ratioVerdict(5400 - 27, 5400, 0.995, 5400).status).toBe('at-risk');
     expect(ratioVerdict(5400 - 28, 5400, 0.995, 5400).status).toBe('breached');
+  });
+
+  it('exactly 90% is at risk with 0% left — not "Error budget spent"', () => {
+    // (1 - 0.9) × 40 is 3.999…: the budget line used to read "spent" here.
+    for (const [good, total] of [[9, 10], [36, 40], [90, 100], [450, 500]]) {
+      const v = ratioVerdict(good!, total!, 0.9);
+      expect(v.status, `${good}/${total}`).toBe('at-risk');
+      expect(v.budgetLeft, `${good}/${total}`).toBe(0);
+      expect(formatBudget(v.budgetLeft)).toBe('0% of the error budget left');
+    }
+    // One night missed of 30 is exactly the backup budget, too.
+    expect(ratioVerdict(29, 30, 29 / 30, 30).budgetLeft).toBe(0);
   });
 });
 
@@ -223,7 +235,7 @@ describe('backups are judged per UTC day, and today is not judged yet', () => {
 
 describe('approvals', () => {
   const tier = (role: string, over: Partial<TierDecisions> = {}): TierDecisions => ({
-    role, decided: 10, tracked: 10, within: 9, p50Minutes: 60, p90Minutes: 400, people: 5, ...over,
+    role, decided: 10, tracked: 10, within: 9, p50Minutes: 60, p90Minutes: 400, people: ['a', 'b', 'c', 'd', 'e'], ...over,
   });
 
   it('judges only the decisions that carry the snapshot, and says how many do not', () => {
@@ -265,35 +277,82 @@ describe('approvals', () => {
   });
 });
 
-describe('a Manager is never shown one colleague’s decision speed', () => {
-  const t = (role: string, people: number): TierDecisions => ({
-    role, decided: 5, tracked: 5, within: 4, p50Minutes: 30, p90Minutes: 90, people,
+describe('a Manager is never shown one colleague’s decision speed — not even by subtraction', () => {
+  const ids = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
+  const t = (role: string, people: string[], within = 4, tracked = 5): TierDecisions => ({
+    role, decided: tracked, tracked, within, p50Minutes: 30, p90Minutes: 90, people,
   });
-  const fold = (hidden: TierDecisions[]): TierDecisions => t('OTHER', hidden.reduce((n, x) => n + x.people, 0));
+  const fold = (hidden: TierDecisions[]): TierDecisions => ({
+    ...t('OTHER', [...new Set(hidden.flatMap((x) => x.people))]),
+    within: hidden.reduce((n, x) => n + x.within, 0),
+    tracked: hidden.reduce((n, x) => n + x.tracked, 0),
+  });
+  const view = (tiers: TierDecisions[], who = 'MANAGER') => tiersForViewer(tiers, (x) => x.people, who, fold);
+
+  // The production shape: 11 Managers decide the Supervisor step, 7 accountants
+  // their step, and one person each holds the Finance Manager and GM steps.
+  const prod = () => [
+    t('SUPERVISOR', ids('m', 11), 38, 40),
+    t('FINANCE_MANAGER', ['fm'], 2, 6),
+    t('GM', ['gm'], 3, 5),
+    t('ACCOUNTANT', ids('acc', 7), 30, 35),
+  ];
 
   it('the Data Steward sees every tier', () => {
-    const tiers = [t('SUPERVISOR', 12), t('GM', 1), t('FINANCE_MANAGER', 1)];
-    expect(tiersForViewer(tiers, (x) => x.people, 'STEWARD', fold).map((x) => x.role)).toEqual([
-      'SUPERVISOR', 'GM', 'FINANCE_MANAGER',
-    ]);
+    expect(view(prod(), 'STEWARD').map((x) => x.role)).toEqual(['SUPERVISOR', 'FINANCE_MANAGER', 'GM', 'ACCOUNTANT']);
   });
 
-  it('a Manager: single-holder tiers are left out when even together they are too few people', () => {
-    const tiers = [t('SUPERVISOR', 12), t('GM', 1), t('FINANCE_MANAGER', 1)];
-    expect(tiersForViewer(tiers, (x) => x.people, 'MANAGER', fold).map((x) => x.role)).toEqual(['SUPERVISOR']);
+  it('a Manager: the two single-holder steps fold in with the smallest shown step until 3+ people stand behind them', () => {
+    const shown = view(prod());
+    expect(shown.map((x) => x.role)).toEqual(['SUPERVISOR', 'OTHER']);
+    const other = shown.find((x) => x.role === 'OTHER')!;
+    expect(new Set(other.people).size).toBe(9); // fm + gm + 7 accountants
   });
 
-  it('a Manager: small tiers are shown folded together once enough people stand behind them', () => {
-    const tiers = [t('SUPERVISOR', 12), t('GM', 1), t('ACCOUNTANT', 2)];
-    expect(tiersForViewer(tiers, (x) => x.people, 'MANAGER', fold).map((x) => x.role)).toEqual(['SUPERVISOR', 'OTHER']);
+  it('whatever a Manager can subtract from the company-wide figure stands for at least 3 people', () => {
+    // The company-wide line is over every tier, so the tiers not shown on their
+    // own can be worked out as "company-wide minus the shown lines". That group
+    // must be exactly the "other steps" line, standing for 3+ people — or, when
+    // no tier line is shown, the whole company.
+    const cases = [
+      prod(),
+      [t('SUPERVISOR', ids('m', 11)), t('FINANCE_MANAGER', ['fm'])],
+      [t('SUPERVISOR', ids('m', 11)), t('GM', ['gm']), t('FINANCE_MANAGER', ['fm']), t('MANAGER', ['m1', 'm2'])],
+      [t('SUPERVISOR', ids('m', 5)), t('ACCOUNTANT', ids('a', 4)), t('GM', ['gm'])],
+    ];
+    for (const tiers of cases) {
+      const shown = view(tiers);
+      for (const x of shown) expect(new Set(x.people).size, x.role).toBeGreaterThanOrEqual(MIN_PEOPLE_FOR_TIER_DETAIL);
+      const ownLines = new Set(shown.filter((x) => x.role !== 'OTHER').map((x) => x.role));
+      const derivable = tiers.filter((x) => !ownLines.has(x.role));
+      if (derivable.length === 0 || shown.length === 0) continue;
+      const other = shown.find((x) => x.role === 'OTHER');
+      expect(other, 'the tiers not shown on their own must be the "other steps" line').toBeDefined();
+      expect(other!.tracked).toBe(derivable.reduce((n, x) => n + x.tracked, 0));
+      expect(new Set(derivable.flatMap((x) => x.people)).size).toBeGreaterThanOrEqual(MIN_PEOPLE_FOR_TIER_DETAIL);
+    }
+  });
+
+  it('people are counted as a set: one Manager on two steps is one person', () => {
+    // Supervisor step by m1, m2; reactivations by m1 only: 2 people, not 3.
+    const shown = view([t('SUPERVISOR', ['m1', 'm2']), t('MANAGER', ['m1'])]);
+    expect(shown).toEqual([]);
+  });
+
+  it('with everything together still under 3 people, no tier line is shown', () => {
+    expect(view([t('GM', ['gm']), t('FINANCE_MANAGER', ['fm'])])).toEqual([]);
     expect(MIN_PEOPLE_FOR_TIER_DETAIL).toBe(3);
   });
 
   it('a Supervisor step is held by the Supervisors and the Managers (the region fallback)', () => {
-    const holders = holdersByStep(new Map([['SUPERVISOR', 0], ['MANAGER', 11], ['GM', 1]]));
-    expect(holders('SUPERVISOR')).toBe(11);
-    expect(holders('GM')).toBe(1);
-    expect(holders('FINANCE_MANAGER')).toBe(0);
+    const users = [
+      ...ids('m', 11).map((id) => ({ id, role: 'MANAGER' })),
+      { id: 'gm', role: 'GM' },
+    ];
+    const holders = holdersByStep(users);
+    expect(holders('SUPERVISOR')).toHaveLength(11);
+    expect(holders('GM')).toEqual(['gm']);
+    expect(holders('FINANCE_MANAGER')).toEqual([]);
   });
 });
 

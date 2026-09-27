@@ -11,10 +11,12 @@
  * as /api/perf-probe, AUDITOR-BRIEF §5). Two things keep it that way:
  *   - a job's last error text is dropped here (withoutErrorText): it is scrubbed,
  *     but it stays behind the monitor bearer (lib/heartbeat.ts);
- *   - per-tier figures carry how many people stand behind them, and the page
- *     folds a tier with fewer than MIN_PEOPLE_FOR_TIER_DETAIL for a Manager — the
- *     General Manager and Finance Manager steps have one holder each, so their
- *     tier IS one colleague's decision speed (review, 2026-09-27).
+ *   - per-tier figures carry the set of people behind them, and for a Manager the
+ *     page shows no line — and nothing derivable from the lines it shows —
+ *     standing for fewer than MIN_PEOPLE_FOR_TIER_DETAIL people
+ *     (lib/service-levels.ts tiersForViewer). The General Manager and Finance
+ *     Manager steps have one holder each, so their tier IS one colleague's
+ *     decision speed (reviews of 2026-09-27).
  *
  * Bounded reads: CronRun by (key, at), at most 30 days of one job; approval
  * decisions by the EditApproval (at) index, aggregated in SQL to one row per tier;
@@ -57,8 +59,8 @@ export type OpenTier = {
   pastDue: number;
   /** Working minutes the oldest open step has waited. */
   oldestWorkingMinutes: number | null;
-  /** Active people who can decide this step (see MIN_PEOPLE_FOR_TIER_DETAIL). */
-  holders: number;
+  /** The active people who can decide this step (user ids; see tiersForViewer). Never rendered. */
+  holders: string[];
 };
 
 export type ServiceStatus = {
@@ -172,16 +174,19 @@ async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firs
       within: number;
       p50: number | null;
       p90: number | null;
-      people: number;
+      people: string[] | null;
     }[]
   >`
     SELECT "role"::text AS "role",
            count(*)::int AS "decided",
            count(*) FILTER (WHERE "slaDueAt" IS NOT NULL)::int AS "tracked",
            count(*) FILTER (WHERE "slaDueAt" IS NOT NULL AND "at" <= "slaDueAt")::int AS "within",
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY "workingMinutes") AS "p50",
-           percentile_cont(0.9) WITHIN GROUP (ORDER BY "workingMinutes") AS "p90",
-           count(DISTINCT "actorId")::int AS "people"
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY "workingMinutes") FILTER (WHERE "slaDueAt" IS NOT NULL) AS "p50",
+           percentile_cont(0.9) WITHIN GROUP (ORDER BY "workingMinutes") FILTER (WHERE "slaDueAt" IS NOT NULL) AS "p90",
+           -- The people behind the figures above: tracked decisions only. Counting
+           -- every decider in the window let a tier whose only tracked decisions
+           -- were one person's pass the three-person rule (review of f05752e).
+           array_agg(DISTINCT "actorId") FILTER (WHERE "slaDueAt" IS NOT NULL) AS "people"
       FROM "EditApproval"
      WHERE "at" >= ${from}
      GROUP BY "role"`;
@@ -195,7 +200,7 @@ async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firs
     within: s.within,
     p50Minutes: s.p50 === null ? null : Math.round(Number(s.p50)),
     p90Minutes: s.p90 === null ? null : Math.round(Number(s.p90)),
-    people: s.people,
+    people: s.people ?? [],
   }));
   let firstCounted: Date | null = first?.first ?? null;
 
@@ -213,9 +218,9 @@ async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firs
     let tracked = 0;
     let within = 0;
     for (const r of reactivations) {
-      if (r.reviewedById) people.add(r.reviewedById);
       if (!r.reviewedAt || !r.slaDueAt) continue;
       tracked += 1;
+      if (r.reviewedById) people.add(r.reviewedById);
       if (r.reviewedAt.getTime() <= r.slaDueAt.getTime()) within += 1;
       if (!firstCounted || r.reviewedAt.getTime() < firstCounted.getTime()) firstCounted = r.reviewedAt;
       const entered = r.stageEnteredAt ?? r.submittedAt;
@@ -228,7 +233,7 @@ async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firs
       within,
       p50Minutes: percentile(minutes, 0.5),
       p90Minutes: percentile(minutes, 0.9),
-      people: people.size,
+      people: [...people],
     });
   }
   return { tiers, firstCounted };
@@ -248,11 +253,9 @@ export function percentile(values: number[], p: number): number | null {
  * Who can decide each step: its role's active accounts. Managers also decide the
  * Supervisor step (the region fallback), and the MANAGER queue is reactivations.
  */
-export function holdersByStep(activeByRole: Map<string, number>): (step: string) => number {
-  return (step) =>
-    step === Role.SUPERVISOR
-      ? (activeByRole.get(Role.SUPERVISOR) ?? 0) + (activeByRole.get(Role.MANAGER) ?? 0)
-      : (activeByRole.get(step) ?? 0);
+export function holdersByStep(active: { id: string; role: string }[]): (step: string) => string[] {
+  const roles = (step: string) => (step === Role.SUPERVISOR ? [Role.SUPERVISOR, Role.MANAGER] : [step]);
+  return (step) => active.filter((u) => (roles(step) as string[]).includes(u.role)).map((u) => u.id);
 }
 
 async function openApprovals(now: Date): Promise<OpenTier[]> {
@@ -265,9 +268,10 @@ async function openApprovals(now: Date): Promise<OpenTier[]> {
         FROM "CustomerEdit"
        WHERE "state" = 'SUBMITTED'
        GROUP BY 1`,
-    prisma.user.groupBy({ by: ['role'], where: { isActive: true }, _count: { _all: true } }),
+    // A few dozen accounts: read once, to know who stands behind each queue.
+    prisma.user.findMany({ where: { isActive: true }, select: { id: true, role: true } }),
   ]);
-  const holders = holdersByStep(new Map(active.map((a) => [a.role as string, a._count._all])));
+  const holders = holdersByStep(active);
   return rows.map((r) => ({
     role: r.role,
     open: r.open,

@@ -160,13 +160,14 @@ export type RatioResult = {
 export function ratioVerdict(good: number, total: number, target: number, fullWindowTotal = 0): RatioResult {
   if (total <= 0) return { good, total, ratio: null, budgetLeft: null, status: 'no-data' };
   const ratio = good / total;
-  const allowedBad = (1 - target) * Math.max(total, fullWindowTotal);
+  // Rounded once, and used for both the verdict and the budget: (1 - 0.9) × 40 is
+  // 3.999…, which made exactly 90% read "At risk" beside "Error budget spent"
+  // (review of f05752e); (1 - 0.995) × 5400 errs the other way, 27.000…025.
+  const allowedBad = Math.round((1 - target) * Math.max(total, fullWindowTotal) * 1e9) / 1e9;
   const bad = total - good;
   // A 100% target has no budget: any bad event spends all of it.
   const budgetLeft = allowedBad > 0 ? 1 - bad / allowedBad : bad === 0 ? 1 : -Infinity;
-  // The epsilon absorbs float error: 0.005 × 5400 is 26.999…, and 27 bad slots is on budget.
-  const status: SloStatus =
-    bad > allowedBad + 1e-9 ? 'breached' : budgetLeft < AT_RISK_BUDGET_LEFT ? 'at-risk' : 'met';
+  const status: SloStatus = bad > allowedBad ? 'breached' : budgetLeft < AT_RISK_BUDGET_LEFT ? 'at-risk' : 'met';
   return { good, total, ratio, budgetLeft, status };
 }
 
@@ -302,30 +303,46 @@ export type TierDecisions = {
   within: number;
   p50Minutes: number | null;
   p90Minutes: number | null;
-  /** How many different people made these decisions (see MIN_PEOPLE_FOR_TIER_DETAIL). */
-  people: number;
+  /**
+   * The people who made the tracked decisions — the ones the figures above come
+   * from (user ids, distinct). Used only to decide what a Manager may see
+   * (tiersForViewer); never rendered.
+   */
+  people: string[];
 };
 
 /**
- * What a viewer may see per tier. The Data Steward sees every tier. A Manager sees
- * a tier's own line only when at least MIN_PEOPLE_FOR_TIER_DETAIL people stand
- * behind it. The rest are folded into one "other steps" line, and that line too
- * is shown only if enough people stand behind it together; otherwise it is left
- * out (the company-wide figure above still counts them). No single colleague's
- * decision speed is shown to the Managers (review, 2026-09-27).
+ * What a viewer may see per tier. The Data Steward sees every tier.
+ *
+ * For a Manager every line shown must stand for at least
+ * MIN_PEOPLE_FOR_TIER_DETAIL distinct people, and so must anything a Manager can
+ * work out from the lines shown. The company-wide figure sits above the tier
+ * lines, so the tiers not shown are exactly "the company-wide figure minus the
+ * shown lines" — dropping a small tier hides nothing (review of f05752e,
+ * 2026-09-27). So the small tiers are folded into one "other steps" line, and
+ * while that group still stands for fewer than MIN people the smallest shown tier
+ * is folded in too (complementary suppression). If even everything together is
+ * fewer than MIN people, no tier line is shown at all.
+ *
+ * People are counted as a set, not a sum: a Manager who decides both the
+ * Supervisor step and reactivations is one person, not two.
  */
 export function tiersForViewer<T extends { role: string }>(
   tiers: T[],
-  peopleOf: (t: T) => number,
+  peopleOf: (t: T) => readonly string[],
   viewerRole: string,
   fold: (hidden: T[]) => T
 ): T[] {
   if (viewerRole === 'STEWARD') return tiers;
-  const shown = tiers.filter((t) => peopleOf(t) >= MIN_PEOPLE_FOR_TIER_DETAIL);
-  const hidden = tiers.filter((t) => peopleOf(t) < MIN_PEOPLE_FOR_TIER_DETAIL);
-  if (hidden.length === 0) return shown;
-  const folded = fold(hidden);
-  return peopleOf(folded) >= MIN_PEOPLE_FOR_TIER_DETAIL ? [...shown, folded] : shown;
+  const size = (group: T[]) => new Set(group.flatMap(peopleOf)).size;
+  const hidden = tiers.filter((t) => size([t]) < MIN_PEOPLE_FOR_TIER_DETAIL);
+  if (hidden.length === 0) return tiers;
+  const shown = tiers.filter((t) => size([t]) >= MIN_PEOPLE_FOR_TIER_DETAIL);
+  const bySize = [...shown].sort((a, b) => size([a]) - size([b]));
+  while (size(hidden) < MIN_PEOPLE_FOR_TIER_DETAIL && bySize.length > 0) hidden.push(bySize.shift()!);
+  if (size(hidden) < MIN_PEOPLE_FOR_TIER_DETAIL) return [];
+  const kept = shown.filter((t) => bySize.includes(t));
+  return [...kept, fold(hidden)];
 }
 
 export function approvalsResult(tiers: TierDecisions[]): RatioResult & { untracked: number } {

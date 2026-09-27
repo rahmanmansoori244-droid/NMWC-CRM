@@ -74,11 +74,21 @@ to one region may see it.
 
 Per-step figures are the exception, because some steps have a single holder. The
 General Manager step and the Finance Manager step each have one, so their on-time
-share, their median and their open queue are that one colleague's own record. A
-Manager is shown a step's figures only when at least three people decide it. Smaller
-steps are shown to a Manager folded into "other steps", and only if at least three
-people stand behind that line together; otherwise it is left out, and the
-company-wide figure still counts them. The Data Steward sees every step.
+share, their median and their open queue are that one colleague's own record.
+
+For a Manager, every line on the page stands for at least three different people,
+and so does anything that can be worked out from the lines shown. The company-wide
+figure is above the step lines, so "company-wide minus the steps shown" gives away
+whatever is not shown. Hiding a small step is therefore not enough. Small steps are
+folded into one "other steps" line. While that line would still stand for fewer
+than three people, the smallest step shown is folded in with them. If everything
+together is fewer than three people, no step line is shown. People are counted as a
+set of decisions actually measured: one Manager who decides both the Supervisor
+step and reactivations is one person. The waiting queues follow the same rule, and
+when the only requests waiting are at steps too few people hold, the page says
+requests are waiting without saying how many.
+
+The Data Steward sees every step.
 
 The error text of a failed job stays behind the monitor bearer on `/api/health`
 (OPERATIONS.md §5d).

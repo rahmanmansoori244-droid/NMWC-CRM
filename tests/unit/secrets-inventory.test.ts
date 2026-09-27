@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { stripComments } from '../support/strip-comments';
 
 const DIRS = ['app', 'lib', 'services', 'components'];
 const ROOT_FILES = [
@@ -34,13 +35,14 @@ function sourceFiles(dir: string): string[] {
 }
 
 // Comments stripped first: a comment that quotes `process.env.X` is not a read.
-const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
+// The TypeScript-parser stripper: a regex one mangles `//` inside a string.
+const strip = (s: string, f = 'file.tsx') => stripComments(s, f);
 
 function namesReadByTheApp(): Set<string> {
   const names = new Set<string>();
   const files = [...DIRS.flatMap(sourceFiles), ...ROOT_FILES];
   for (const f of files) {
-    for (const m of strip(readFileSync(f, 'utf8')).matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1]!);
+    for (const m of strip(readFileSync(f, 'utf8'), f).matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1]!);
   }
   // Prisma reads its connection strings from the schema, not from TypeScript.
   for (const m of readFileSync('prisma/schema.prisma', 'utf8').matchAll(/env\("([A-Z0-9_]+)"\)/g)) names.add(m[1]!);

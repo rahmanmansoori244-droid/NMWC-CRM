@@ -223,6 +223,11 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       // would read as "decided in 0 minutes, on time" for every step.
       expect(s.stageEnteredAt, s.role).toEqual(stageBefore[i]!.stageEnteredAt);
       expect(s.slaDueAt, s.role).toEqual(stageBefore[i]!.slaDueAt);
+      // Equal is not enough: null on both sides would pass, and every decision
+      // would then count as untracked (review of f05752e).
+      expect(s.stageEnteredAt, s.role).not.toBeNull();
+      expect(s.slaDueAt, s.role).not.toBeNull();
+      expect(s.slaDueAt!.getTime(), s.role).toBeGreaterThan(s.stageEnteredAt!.getTime());
       expect(s.workingMinutes, s.role).not.toBeNull();
       expect(s.workingMinutes!, s.role).toBeGreaterThanOrEqual(0);
     }

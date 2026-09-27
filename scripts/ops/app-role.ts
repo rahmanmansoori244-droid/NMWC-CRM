@@ -81,7 +81,13 @@ async function create() {
  * it only with the same evidence. RateLimit is here because the pg rate-limit
  * backend prunes its own rows. CronRun (item 9, 2026-09-27) because the
  * retention sweep prunes run history past 90 days
- * (app/api/cron/retention-sweep/route.ts, step 4).
+ * (app/api/cron/retention-sweep/route.ts, step 4). _ManagerRegions (2026-09-27)
+ * because the account-master import replaces a manager's regions with
+ * `managedRegions: { set: [...] }` (services/imports.ts), which deletes join
+ * rows: a grep for `.delete(` does not find it, and the first `status` run
+ * against production showed the role's old blanket DELETE was all that covered
+ * it. Nested writes count as evidence too: `set`, `disconnect` on a many-to-many,
+ * `deleteMany` inside `data`.
  */
 const DELETABLE = [
   'Attachment',
@@ -91,6 +97,7 @@ const DELETABLE = [
   'PasswordHistory',
   'RateLimit',
   'CronRun',
+  '_ManagerRegions',
 ];
 
 async function status() {
@@ -105,19 +112,42 @@ async function status() {
     console.log(`connected as ${me} on ${db}`);
     console.log(`role ${ROLE}: ${n > 0 ? 'exists' : 'does not exist yet'}`);
     if (n > 0) {
-      const checked = ['AuditLog', 'EditApproval', 'CustomerEdit', 'Customer', ...DELETABLE];
+      // Every table in the schema, not a chosen few: DELETE must be held on
+      // exactly DELETABLE. A table missing it breaks a sweep; a table holding it
+      // that should not is the runtime credential able to empty it.
       const acl = await owner.$queryRawUnsafe<{ relname: string; can_delete: boolean }[]>(
         `SELECT relname, has_table_privilege('${ROLE}', oid, 'DELETE') AS can_delete
            FROM pg_class
           WHERE relnamespace = 'public'::regnamespace
-            AND relname IN (${checked.map((t) => `'${t}'`).join(', ')})
+            AND relkind IN ('r', 'p')
           ORDER BY relname`
       );
+      let wrong = 0;
       for (const r of acl) {
         const want = DELETABLE.includes(r.relname);
-        const note = want && !r.can_delete ? '  <-- MISSING: run `grant` (a table added since the last grant)' : '';
+        const note =
+          want && !r.can_delete
+            ? '  <-- MISSING: run `grant` (a table added since the last grant)'
+            : !want && r.can_delete
+              ? '  <-- UNEXPECTED: run `grant`, which takes it back'
+              : '';
+        if (note) wrong += 1;
         console.log(`  ${r.relname}: DELETE ${r.can_delete ? 'GRANTED' : 'refused'}${note}`);
       }
+      // A default privilege would hand DELETE to the next table a migration adds.
+      const [{ n: defaultDeletes }] = await owner.$queryRawUnsafe<{ n: number }[]>(
+        `SELECT count(*)::int AS n
+           FROM pg_default_acl d, aclexplode(d.defaclacl) a
+          WHERE d.defaclnamespace = 'public'::regnamespace
+            AND d.defaclobjtype = 'r'
+            AND a.grantee = (SELECT oid FROM pg_roles WHERE rolname = '${ROLE}')
+            AND a.privilege_type = 'DELETE'`
+      );
+      if (defaultDeletes > 0) {
+        wrong += 1;
+        console.log('  default privileges: DELETE on future tables  <-- UNEXPECTED: run `grant`');
+      }
+      console.log(wrong === 0 ? 'DELETE is held exactly where it should be' : `${wrong} DELETE problem(s): run \`grant\``);
     }
   } finally {
     await owner.$disconnect();
@@ -146,6 +176,14 @@ async function grant() {
       `GRANT CONNECT ON DATABASE "${db}" TO "${ROLE}"`,
       `GRANT USAGE ON SCHEMA public TO "${ROLE}"`,
       `GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO "${ROLE}"`,
+      // An earlier version of this set granted DELETE on ALL tables and in the
+      // default privileges, and a GRANT never takes anything away, so a role
+      // first provisioned then (production, 2026-09-15) kept DELETE everywhere
+      // through every later `grant` (review of f05752e). Take it all back first,
+      // then give it to exactly DELETABLE; same transaction, so there is no moment
+      // in between.
+      `REVOKE DELETE ON ALL TABLES IN SCHEMA public FROM "${ROLE}"`,
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "${me}" IN SCHEMA public REVOKE DELETE ON TABLES FROM "${ROLE}"`,
       ...DELETABLE.map((t) => `GRANT DELETE ON "${t}" TO "${ROLE}"`),
       `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "${ROLE}"`,
       // append-only ledgers: insert only
@@ -294,6 +332,13 @@ async function verify() {
           await tx.$executeRaw`INSERT INTO "CronRun" ("id", "key", "at", "ok", "durationMs") VALUES (${`verify-${Date.now()}`}, 'verify', NOW(), true, 0)`;
           await tx.$executeRawUnsafe(`DELETE FROM "CronRun" WHERE "key" = 'verify'`);
           console.log('  ✓ CronRun insert + delete (run history, pruned by the retention sweep)');
+          // The account-master import replaces a manager's regions with `set`,
+          // which deletes join rows.
+          await tx.$executeRawUnsafe(`DELETE FROM "_ManagerRegions" WHERE false`);
+          console.log('  ✓ _ManagerRegions delete (a manager\'s regions re-set by the account import)');
+          // And a table the runtime has no business deleting from: the blanket
+          // DELETE an earlier grant left behind must be gone.
+          await expectRefused(tx, 'Branch DELETE by ACL', () => tx.$executeRawUnsafe(`DELETE FROM "Branch" WHERE false`));
           await expectRefused(tx, 'DDL (ALTER TABLE)', () => tx.$executeRawUnsafe(`ALTER TABLE "RateLimit" ADD COLUMN "x" INTEGER`));
           await expectRefused(tx, 'read _prisma_migrations', () => tx.$queryRawUnsafe(`SELECT count(*) FROM "_prisma_migrations"`));
           throw new Rollback();
