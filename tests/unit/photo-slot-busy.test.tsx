@@ -61,7 +61,10 @@ class FakeXHR {
   onerror: (() => void) | null = null;
   onabort: (() => void) | null = null;
   ontimeout: (() => void) | null = null;
-  open() {}
+  url = '';
+  open(_method: string, url: string) {
+    this.url = url;
+  }
   setRequestHeader() {}
   send() {
     xhrs.push(this);
@@ -454,6 +457,31 @@ describe('a stalled step ends in Retry upload, so it cannot hold Submit', () => 
       expect(xhrs).toHaveLength(1);
       await settleUntil(() => calls.length === 2);
       expect(calls).toEqual([true, false]);
+    }));
+
+  // Pre-merge review of 9edcbad: a drop after the body retried the PUT on the
+  // FIRST presigned URL, with a fresh deadline each time — a third try could
+  // start after that URL's 10-minute life and be refused with a 403.
+  it('a connection that drops while R2 is draining the body is retried on a URL of its own, and the photo lands', () =>
+    withFakeTimers(async () => {
+      uploadable(PHOTO_BYTES);
+      const onChange = vi.fn();
+      const view = render(<PhotoCaptureSlot kind="SHOP" onChange={onChange} />);
+      pick(view.container);
+      await settleUntil(() => xhrs.length === 1);
+      expect(xhrs[0]!.url).toBe('/r2/1');
+      act(() => xhrs[0]!.progress(100));
+      act(() => xhrs[0]!.bodySent());
+      await advance(150_000); // inside the post-body deadline (195 s for this photo)
+      act(() => xhrs[0]!.onerror?.());
+      await advance(500);
+      await settleUntil(() => xhrs.length === 2);
+      expect(count('/api/photos/presign')).toBe(2);
+      expect(xhrs[1]!.url).toBe('/r2/2');
+      act(() => xhrs[1]!.answer());
+      await settleUntil(() => onChange.mock.calls.length === 1);
+      // Finalized under the key of the try that went up.
+      expect((requests('/api/photos/finalize')[0]!.body as { key: string }).key).toBe('k2');
     }));
 
   it('the wait after the body is bounded, and ends before the presigned URL does', () => {

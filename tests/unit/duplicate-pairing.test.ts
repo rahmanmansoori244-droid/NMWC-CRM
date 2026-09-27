@@ -544,6 +544,25 @@ describe('undo — the latest row for a pair wins', () => {
   });
 });
 
+describe('a dismissal carried forward by the CR recompute (pre-merge review)', () => {
+  const at = (iso: string) => new Date(iso);
+  const signals = [`cr:${createHash('sha256').update('7', 'utf8').digest('hex').slice(0, 16)}`];
+  const steward = { entityId: 'a|b', after: { signals }, at: at('2026-09-26T08:00:00Z'), by: 'Sara' };
+  const other = { entityId: 'c|d', after: { signals }, at: at('2026-09-26T09:00:00Z'), by: 'Sara' };
+  const carried = { entityId: 'a|b', after: { signals, carried: true }, at: at('2026-09-27T00:00:00Z'), by: 'operator' };
+
+  it("keeps the Steward's date, name and place in the list", () => {
+    const d = parseDismissals([steward, other, carried]);
+    expect(d.get('a|b')).toMatchObject({ at: at('2026-09-26T08:00:00Z'), by: 'Sara' });
+    expect([...d.keys()]).toEqual(['a|b', 'c|d']);
+  });
+
+  it('with no dismissal in force (undone meanwhile) it stands as its own row', () => {
+    const d = parseDismissals([steward, { entityId: 'a|b', after: { undo: true }, at: at('2026-09-26T10:00:00Z') }, carried]);
+    expect(d.get('a|b')).toMatchObject({ at: at('2026-09-27T00:00:00Z'), by: 'operator' });
+  });
+});
+
 describe('the "Marked distinct" list', () => {
   const t = (d: number) => new Date(Date.UTC(2026, 8, d));
 

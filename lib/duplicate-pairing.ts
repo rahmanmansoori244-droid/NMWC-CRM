@@ -202,6 +202,15 @@ export function parseDismissals(rows: Iterable<PairLogRow>): Map<string, Dismiss
     const signals = after.signals;
     if (!Array.isArray(signals) || signals.length === 0) continue;
     if (!signals.every((s) => typeof s === 'string' && SIGNAL.test(s))) continue;
+    // A row the CR recompute carried forward (scripts/ops/recompute-cr-norm.ts,
+    // after.carried) continues the Steward's dismissal: it keeps that
+    // dismissal's date, name and place in the list. Read as its own, every
+    // carried pair showed the run's date and the operator (pre-merge review).
+    const prev = out.get(key);
+    if (after.carried === true && prev) {
+      out.set(key, { at: prev.at, by: prev.by, signals: new Set(signals as string[]) });
+      continue;
+    }
     // Deleted first so the map's order is the order dismissals took effect.
     out.delete(key);
     out.set(key, { ...stamp, signals: new Set(signals as string[]) });

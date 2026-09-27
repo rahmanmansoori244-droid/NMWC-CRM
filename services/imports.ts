@@ -35,15 +35,13 @@ import {
   fileCollisions,
   type SheetRow,
 } from '@/lib/import-row-check';
-import {
-  fixTarget,
-  masterCollisionMaps,
-  newerUploadsCarrying,
-  type FixTarget,
-} from '@/lib/import-master-lookup';
+import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
 import {
   branchOnlyNote,
   composeBranchCode,
+  fixUnitOf,
+  fixWindowClosed,
+  fixWindowMessage,
   newerUploadMessage,
   readCorrections,
   unwrittenCustomerCells,
@@ -1170,7 +1168,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // fixed rows carry one.
     const cleanRows = await prisma.importRow.findMany({
       where: { batchId, state: ImportRowState.CLEAN },
-      select: { id: true, parsed: true, corrections: true },
+      select: { id: true, parsed: true, corrections: true, rowNumber: true, createdAt: true },
       orderBy: { rowNumber: 'asc' },
     });
 
@@ -1201,11 +1199,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
       // (services/import-fixes.ts). Only such a row may change an existing
       // branch of a customer linked to Temix.
       fixedInApp?: boolean;
+      // Set on every row a fix in the app brought back (services/import-fixes.ts
+      // recheck): the state before the first fix, and the acted row's id.
+      fixedFrom?: unknown;
+      fixGroup?: string;
     };
     const groups = new Map<
       string,
       { rowIds: string[]; parsed: ParsedShape[]; corrections: Prisma.JsonValue[] }
     >();
+    const rowMeta = new Map(cleanRows.map((r) => [r.id, { rowNumber: r.rowNumber, createdAt: r.createdAt }]));
     for (const row of cleanRows) {
       const p = row.parsed as unknown as ParsedShape | null;
       if (!p?.custCode) continue;
@@ -1218,33 +1221,61 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
 
     const failures: Array<{ custCode: string; rowIds: string[]; reason: string }> = [];
 
-    // Item 20, post-merge review: the newest-upload rule (a row is fixed only
-    // in the newest upload carrying its customer — or, for a customer linked to
-    // Temix, its branch) was checked only when the fix was made. A fix made
-    // first and overtaken by a newer upload while it waited still loaded older
-    // data over that upload here. Ask again for the fixed rows — plain rows
-    // keep the upload's own rules — and reject an overtaken one in the words
-    // the batch page uses, so it can then only be excluded.
-    const fixedTargets: FixTarget[] = [];
+    // Item 20: the rows a fix in the app brought back — the row acted on, and
+    // its customer's rows it released with it (parsed.fixedFrom, one
+    // parsed.fixGroup) — are checked again here, as ONE unit:
+    //  - past the fix window the newer uploads may be swept, so the check
+    //    below would go blind; such a fix is rejected (pre-merge review);
+    //  - the newest-upload rule was checked only when the fix was made, so a
+    //    fix overtaken by a newer upload while it waited loaded older data over
+    //    it (post-merge review). Each row is judged by its own rule — branch
+    //    only for a fixed row of a customer linked to Temix, the customer for
+    //    every other — and one overtaken row rejects its whole unit: the
+    //    released rows used to load alone, older data included (pre-merge
+    //    review).
+    // Rejected in the words the batch page uses, so they can then only be
+    // excluded. Plain rows keep the upload's own rules.
+    type FixMember = { id: string; code: string; p: ParsedShape; unit: string };
+    const fixMembers: FixMember[] = [];
     for (const [code, g] of groups) {
       g.parsed.forEach((p, i) => {
-        if (p.fixedInApp === true) fixedTargets.push(fixTarget(g.rowIds[i], code, p.branchCode));
+        if (p.fixedInApp === true || p.fixedFrom) {
+          fixMembers.push({ id: g.rowIds[i], code, p, unit: fixUnitOf(g.rowIds[i], p) });
+        }
       });
     }
-    if (fixedTargets.length > 0) {
-      const overtaken = await newerUploadsCarrying(prisma, preflight.uploadedAt, fixedTargets);
-      for (const t of fixedTargets) {
-        const n = overtaken.get(t.key);
-        const g = groups.get(t.code);
-        if (!n || !g) continue;
-        const reason = newerUploadMessage(t.code, n);
-        const i = g.rowIds.indexOf(t.key);
+    if (fixMembers.length > 0) {
+      const why = new Map<string, (m: FixMember) => string>();
+      for (const m of fixMembers) {
+        const meta = rowMeta.get(m.id)!;
+        if (!why.has(m.unit) && fixWindowClosed(meta.createdAt)) {
+          why.set(m.unit, (x) => fixWindowMessage(rowMeta.get(x.id)!.rowNumber));
+        }
+      }
+      const toAsk = fixMembers.filter((m) => !why.has(m.unit));
+      const overtaken = toAsk.length
+        ? await newerUploadsCarrying(
+            prisma,
+            preflight.uploadedAt,
+            toAsk.map((m) => fixTarget(m.id, m.code, m.p.branchCode, m.p.fixedInApp === true))
+          )
+        : new Map();
+      for (const m of toAsk) {
+        const n = overtaken.get(m.id);
+        if (n && !why.has(m.unit)) why.set(m.unit, (x) => newerUploadMessage(x.code, n));
+      }
+      for (const m of fixMembers) {
+        const reasonOf = why.get(m.unit);
+        const g = groups.get(m.code);
+        if (!reasonOf || !g) continue;
+        const reason = reasonOf(m);
+        const i = g.rowIds.indexOf(m.id);
         g.rowIds.splice(i, 1);
         g.parsed.splice(i, 1);
         g.corrections.splice(i, 1);
-        if (g.rowIds.length === 0) groups.delete(t.code);
+        if (g.rowIds.length === 0) groups.delete(m.code);
         await prisma.importRow.updateMany({
-          where: { id: t.key, state: ImportRowState.CLEAN },
+          where: { id: m.id, state: ImportRowState.CLEAN },
           data: {
             state: ImportRowState.REJECTED,
             issues: [{ field: '_promote', message: reason }] as Prisma.InputJsonValue,
@@ -1252,7 +1283,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             reviewedAt: new Date(),
           },
         });
-        failures.push({ custCode: t.code, rowIds: [t.key], reason });
+        failures.push({ custCode: m.code, rowIds: [m.id], reason });
       }
     }
 
@@ -1932,21 +1963,6 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   },
                 });
               }
-              // Item 20 (owner decision): the customer's status follows ALL its
-              // live branches. Settled once they are written, over every live
-              // branch: a row with a blank status cell keeps its branch's stored
-              // status, and a branch it creates is ACTIVE — both count. Counting
-              // only the branches outside the file closed a customer whose other
-              // branch, in the same file, stayed ACTIVE (post-merge review).
-              if (statedStatus && statedStatus !== 'ACTIVE') {
-                const liveActive = await tx.branch.count({
-                  where: { customerId, deletedAt: null, status: 'ACTIVE' },
-                });
-                await tx.customer.update({
-                  where: { id: customerId },
-                  data: { status: liveActive > 0 ? 'ACTIVE' : statedStatus },
-                });
-              }
               for (const i of fullIdx) rowNotes[i] = { note: null, written: true };
             }
             if (laneIdx.length > 0) {
@@ -1958,6 +1974,24 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               });
               laneIdx.forEach((i, k) => {
                 rowNotes[i] = { note: out.notes[k] ?? null, written: out.written[k] ?? false };
+              });
+            }
+            // Item 20 (owner decision): the customer's status follows ALL its
+            // live branches. Settled once every branch of this group is written —
+            // the full lane's and the fixed rows' alike — over every live
+            // branch: a row with a blank status cell keeps its branch's stored
+            // status, and a branch it creates is ACTIVE; all count. Counting
+            // only the branches outside the file closed a customer whose other
+            // branch, in the same file, stayed ACTIVE (post-merge review); and
+            // counting before the fixed rows' branches were written could leave
+            // a customer CLOSED beside an ACTIVE branch (pre-merge review).
+            if (fullLane && statedStatus && statedStatus !== 'ACTIVE') {
+              const liveActive = await tx.branch.count({
+                where: { customerId, deletedAt: null, status: 'ACTIVE' },
+              });
+              await tx.customer.update({
+                where: { id: customerId },
+                data: { status: liveActive > 0 ? 'ACTIVE' : statedStatus },
               });
             }
             // What a fixed row asked for and did not get: branch only writes none

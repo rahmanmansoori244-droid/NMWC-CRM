@@ -129,7 +129,9 @@ beforeEach(() => {
     const list = h.rows.filter((r) =>
       typeof st === 'string' ? r.state === st : st ? st.in.includes(r.state) : true
     );
-    return list.slice(skip, skip + take).map((r) => ({ createdAt: new Date(), ...r }));
+    // A page asks with skip/take; lib/import-fix-blocks asks for every match.
+    const page = skip === undefined ? list : list.slice(skip, skip + take);
+    return page.map((r) => ({ createdAt: new Date(), ...r }));
   });
 });
 afterEach(cleanup);
@@ -324,6 +326,50 @@ describe('/import/[batchId]', () => {
     expect(rowOf('M').textContent).not.toMatch(/linked to Temix/);
     // Not linked: the full lane writes the phone.
     expect(rowOf('N').textContent).not.toMatch(/linked to Temix/);
+  });
+
+  // Pre-merge review: the server fixes a rejected row with its customer's other
+  // rejected rows, so the page must ask about them too.
+  it("a rejected row whose sibling a newer upload overtook offers only Exclude, naming that row", async () => {
+    h.rows = [
+      { id: 'a', rowNumber: 2, state: 'REJECTED', raw: { cust_code: 'L', branch_code: 'L-01' }, parsed: { custCode: 'L', branchCode: 'L-01' }, issues: [{ field: '_promote', message: 'the database refused this row: Branch_address_minlength — steward review' }] },
+      { id: 'b', rowNumber: 3, state: 'REJECTED', raw: { cust_code: 'L', branch_code: 'L-02' }, parsed: { custCode: 'L', branchCode: 'L-02' }, issues: [{ field: '_promote', message: 'the database refused this row: Branch_address_minlength — steward review' }] },
+    ];
+    h.linked = ['L'];
+    h.newer = [{ code: 'L', filename: 'later.xlsx', rowNumber: 9, state: 'PROMOTED', excluded: false, branchCode: 'L-02' }];
+    await open({ show: 'all' });
+    const rowOf = (n: string) => screen.getByText(n).closest('tr')!;
+    const buttons = (n: string) => within(rowOf(n)).queryAllByRole('button').map((b) => b.textContent);
+    expect(buttons('#2')).toEqual(['Exclude…']);
+    expect(rowOf('#2').textContent).toMatch(/Row 3 of customer L, rejected together with this one, is also in a newer upload.*Exclude row 3 first, then fix this row\./);
+    expect(buttons('#3')).toEqual(['Exclude…']);
+  });
+
+  it('a row a fix only brought back says which row it came back with, and that it will not load when the fix is overtaken', async () => {
+    h.rows = [
+      { id: 'f', rowNumber: 2, state: 'CLEAN', raw: { cust_code: 'F' }, parsed: { custCode: 'F', fixedInApp: true, fixedFrom: { state: 'REJECTED' }, fixGroup: 'f' }, issues: null },
+      { id: 's', rowNumber: 3, state: 'CLEAN', raw: { cust_code: 'F' }, parsed: { custCode: 'F', fixedFrom: { state: 'REJECTED' }, fixGroup: 'f' }, issues: null },
+    ];
+    await open({ show: 'all' });
+    const rowOf = (n: string) => screen.getByText(n).closest('tr')!;
+    expect(rowOf('#3').textContent).toMatch(/Came back with the fix of row 2 and loads with it/);
+    expect(within(rowOf('#3')).queryAllByRole('button')).toEqual([]);
+    cleanup();
+    h.newer = [{ code: 'F', filename: 'later.xlsx', rowNumber: 4, state: 'PROMOTED', excluded: false }];
+    await open({ show: 'all' });
+    expect(rowOf('#2').textContent).toMatch(/this fix will not load: promote rejects it/);
+    expect(rowOf('#3').textContent).toMatch(/this fix will not load: promote rejects it/);
+  });
+
+  it('a fix waiting past the 90-day window says promote will reject it', async () => {
+    const old = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000);
+    h.rows = [
+      { id: 'f', rowNumber: 2, state: 'CLEAN', raw: { cust_code: 'F' }, parsed: { custCode: 'F', fixedInApp: true, fixedFrom: { state: 'QUARANTINED' }, fixGroup: 'f' }, issues: null, createdAt: old },
+    ];
+    await open({ show: 'all' });
+    const row = screen.getByText('#2').closest('tr')!;
+    expect(row.textContent).toMatch(/Row 2 was uploaded more than 90 days ago, so this fix will not load: promote rejects it/);
+    expect(within(row).getByRole('button', { name: 'Withdraw fix' })).toBeTruthy();
   });
 
   it('a Manager is sent home', async () => {

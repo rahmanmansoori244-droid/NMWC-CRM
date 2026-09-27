@@ -14,13 +14,9 @@ import {
   correctedRow,
   CUSTOMER_LEVEL_CELLS,
   editableColumns,
-  fixWindowClosed,
-  fixWindowMessage,
-  newerUploadMessage,
   readCorrections,
-  supersededFixMessage,
 } from '@/lib/import-row-fix';
-import { fixTarget, newerUploadsCarrying } from '@/lib/import-master-lookup';
+import { fixBlocks } from '@/lib/import-fix-blocks';
 import {
   ROW_VIEWS,
   ROW_VIEW_LABEL,
@@ -88,33 +84,33 @@ export default async function ImportBatchPage({
   // Rows can be fixed only on a customer-master batch; the account master is
   // re-uploaded instead (its rows keep no values to fix).
   const fixable = batch.kind === 'CUSTOMER';
-  // A row a newer upload of its customer (or, for a customer linked to Temix,
-  // of its branch) has overtaken cannot be fixed here — the server refuses it
-  // (services/import-fixes.ts), and promote rejects a fix waiting here that was
-  // overtaken after it was made. Ask the same question once for the page, so
-  // the row offers Exclude (or Withdraw fix) instead of buttons that always fail.
+  // Whether each row can still be fixed — or its waiting fix still load — asked
+  // as the server asks it (lib/import-fix-blocks.ts): the fix window, a newer
+  // upload of the row or of a row fixed with it. The row then offers Exclude
+  // (or Withdraw fix), in the server's words, instead of buttons that fail.
   const codeOf = (parsed: unknown) => (parsed as { custCode?: string } | null)?.custCode ?? null;
-  const branchOf = (parsed: unknown) =>
-    (parsed as { branchCode?: string | null } | null)?.branchCode ?? null;
   const isFixedWaiting = (r: (typeof displayRows)[number]) =>
     r.state === 'CLEAN' &&
     !r.excludedAt &&
     (r.parsed as { fixedInApp?: boolean } | null)?.fixedInApp === true;
   const isProblem = (r: (typeof displayRows)[number]) =>
     r.state === 'QUARANTINED' || r.state === 'REJECTED';
+  /** A row a fix brought back only with the row it acted on (parsed.fixGroup). */
+  const isReleased = (r: (typeof displayRows)[number]) =>
+    r.state === 'CLEAN' &&
+    !r.excludedAt &&
+    !isFixedWaiting(r) &&
+    !!(r.parsed as { fixedFrom?: unknown } | null)?.fixedFrom;
   const askAbout = fixable
     ? displayRows.filter((r) => !r.excludedAt && (isProblem(r) || isFixedWaiting(r)))
     : [];
-  const superseded = fixable
-    ? await newerUploadsCarrying(
+  const fb = fixable
+    ? await fixBlocks(
         prisma,
-        batch.uploadedAt,
-        askAbout.flatMap((r) => {
-          const code = codeOf(r.parsed);
-          return code ? [fixTarget(r.id, code, branchOf(r.parsed))] : [];
-        })
+        batch,
+        displayRows.map((r) => ({ ...r, hasData: uploadedValues(r.raw).length > 0 }))
       )
-    : new Map();
+    : { blocked: new Map<string, string>(), releasedWith: new Map<string, number>() };
   // Customers linked to Temix: a fix loads only the row's branch there, so the
   // row says so before the Steward corrects a customer-level cell or releases
   // a phone that would not be written (post-merge review).
@@ -249,22 +245,11 @@ export default async function ImportBatchPage({
                 const corrected = Object.keys(fixes.cells ?? {});
                 const problem = isProblem(r);
                 const fixedWaiting = isFixedWaiting(r);
+                const released = isReleased(r);
                 const code = codeOf(r.parsed);
-                const newer = superseded.get(r.id);
                 const editable = editableColumns(r.issues);
                 const now = correctedRow(r.raw, fixes);
-                // Past the fix window the server refuses every fix (assertFixable
-                // runs first): say so in its words and offer Exclude — the page
-                // offered Re-check, Correct and Release that always failed.
-                const windowClosed =
-                  problem && !r.excludedAt && uploaded.length > 0 && fixWindowClosed(r.createdAt);
-                const blocked = windowClosed
-                  ? fixWindowMessage(r.rowNumber)
-                  : newer && code
-                    ? fixedWaiting
-                      ? supersededFixMessage(code, newer)
-                      : newerUploadMessage(code, newer)
-                    : null;
+                const blocked = fb.blocked.get(r.id) ?? null;
                 const linked = !!code && linkedCodes.has(code);
                 return (
                   <tr key={r.id} className="align-top hover:bg-slate-50">
@@ -346,6 +331,15 @@ export default async function ImportBatchPage({
                                 : null
                             }
                           />
+                        ) : released ? (
+                          <div className="grid gap-1 text-xs">
+                            <p className="text-slate-600">
+                              {fb.releasedWith.has(r.id)
+                                ? `Came back with the fix of row ${fb.releasedWith.get(r.id)} and loads with it; Withdraw fix on that row takes it back.`
+                                : 'Came back with a fix of its customer, and loads with it.'}
+                            </p>
+                            {blocked && <p className="text-red-700">{blocked}</p>}
+                          </div>
                         ) : null}
                       </td>
                     )}

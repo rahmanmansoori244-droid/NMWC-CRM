@@ -60,6 +60,7 @@ import {
   fixWindowMessage,
   newerUploadMessage,
   readCorrections,
+  siblingSupersededMessage,
   type Corrections,
 } from '@/lib/import-row-fix';
 
@@ -200,22 +201,40 @@ async function targetsFor(tx: Tx, row: RowForFix): Promise<RowForFix[]> {
 async function refuseIfNewerUpload(
   tx: Tx,
   batch: LockedBatch,
-  rows: Array<{ row: RowForFix; c: Corrections }>
+  rows: Array<{ row: RowForFix; c: Corrections }>,
+  actedRowId: string
 ) {
   const targets: FixTarget[] = [];
+  const rowOf = new Map<string, RowForFix>();
   for (const { row, c } of rows) {
     const now = correctedRow(row.raw, c);
     const branch = rowBranchCode(now);
+    // The acted row, and one fixed before, load branch only for a customer
+    // linked to Temix; a row the fix only brings back loads as a plain row.
+    const fixed =
+      row.id === actedRowId || (row.parsed as { fixedInApp?: boolean } | null)?.fixedInApp === true;
     const codes = new Set(
       [rowCustCode(now), (row.parsed as { custCode?: string } | null)?.custCode].filter(
         (x): x is string => !!x
       )
     );
-    for (const code of codes) targets.push(fixTarget(String(targets.length), code, branch));
+    for (const code of codes) {
+      const key = `${row.id}#${targets.length}`;
+      rowOf.set(key, row);
+      targets.push(fixTarget(key, code, branch, fixed));
+    }
   }
   const newer = await newerUploadsCarrying(tx, batch.uploadedAt, targets);
   const hit = targets.find((t) => newer.has(t.key));
-  if (hit) throw new ConflictError('NEWER_UPLOAD', newerUploadMessage(hit.code, newer.get(hit.key)!));
+  if (!hit) return;
+  const hitRow = rowOf.get(hit.key)!;
+  const n = newer.get(hit.key)!;
+  throw new ConflictError(
+    'NEWER_UPLOAD',
+    hitRow.id === actedRowId
+      ? newerUploadMessage(hit.code, n)
+      : siblingSupersededMessage(hitRow.rowNumber, hit.code, n)
+  );
 }
 
 /**
@@ -304,10 +323,15 @@ async function recheck(
       where: { id: t.id, state: t.state, excludedAt: null },
       data: {
         state: nextState,
+        // fixGroup: every row this action brings back carries the acted row's
+        // id, so the rows load together or not at all (promote), and Withdraw
+        // takes back exactly them — inferring the group from the customer code
+        // took back separate fixes too (pre-merge review).
         parsed: {
           ...parsed,
           ...(fixedInApp ? { fixedInApp: true } : {}),
           fixedFrom,
+          fixGroup: actedRowId,
         } as unknown as Prisma.InputJsonValue,
         issues: issues.length > 0 ? (issues as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
         corrections:
@@ -382,7 +406,8 @@ async function recheckCore(formData: FormData): Promise<FixResult> {
     await refuseIfNewerUpload(
       tx,
       batch,
-      targets.map((t) => ({ row: t, c: readCorrections(t.corrections) }))
+      targets.map((t) => ({ row: t, c: readCorrections(t.corrections) })),
+      row.id
     );
     const r = await recheck(tx, batch, targets, (t) => readCorrections(t.corrections), row.id);
     await audit(tx, env, 'UPDATE', row.id, 'Import row re-checked by the Data Steward', {
@@ -437,7 +462,8 @@ async function correctCore(formData: FormData): Promise<FixResult> {
     await refuseIfNewerUpload(
       tx,
       batch,
-      targets.map((t) => ({ row: t, c: correctionsFor(t) }))
+      targets.map((t) => ({ row: t, c: correctionsFor(t) })),
+      row.id
     );
     const r = await recheck(tx, batch, targets, correctionsFor, row.id);
     // Column names only. The values are customer data, and this ledger keeps
@@ -480,7 +506,7 @@ async function releaseCore(formData: FormData): Promise<FixResult> {
       });
     }
     const merged: Corrections = { ...readCorrections(row.corrections), phoneReleased: { reason } };
-    await refuseIfNewerUpload(tx, batch, [{ row, c: merged }]);
+    await refuseIfNewerUpload(tx, batch, [{ row, c: merged }], row.id);
     const r = await recheck(tx, batch, [row], () => merged, row.id);
     await audit(
       tx,
@@ -509,7 +535,10 @@ async function releaseCore(formData: FormData): Promise<FixResult> {
  * A fix of a rejected row re-checks its customer's other rejected rows with it
  * (targetsFor), so withdrawing it takes those back too: withdrawing one row
  * left the rest CLEAN, and the next promote loaded part of the customer
- * without the row that carried its phone (post-merge review).
+ * without the row that carried its phone (post-merge review). Exactly the rows
+ * that fix brought back (parsed.fixGroup) — not every fixed row of the
+ * customer, which undid separate fixes and dropped their corrections
+ * (pre-merge review).
  */
 export async function withdrawImportRowFixAction(
   formData: FormData
@@ -527,36 +556,25 @@ async function withdrawCore(formData: FormData): Promise<{ rows: number }> {
   const batchId = await batchIdOf(rowId);
   const rows = await withBatch(batchId, async (tx, batch) => {
     const row = await loadRow(tx, rowId);
-    const parsedNow = (row.parsed ?? {}) as { fixedInApp?: boolean; fixedFrom?: FixedFrom };
+    const parsedNow = (row.parsed ?? {}) as { fixedInApp?: boolean; fixedFrom?: FixedFrom; fixGroup?: string };
     if (row.state !== ImportRowState.CLEAN || parsedNow.fixedInApp !== true || row.excludedAt) {
       throw new ValidationError({ _form: `Row ${row.rowNumber} is not a fixed row waiting to be promoted.` });
     }
-    // The customer's other rows a fix released from REJECTED: they were
-    // rejected together with this one, and go back together. Matched on the
-    // code the row carries now and the one it was uploaded with, in case the
-    // fix corrected cust_code.
-    const codes = [
-      ...new Set(
-        [(row.parsed as { custCode?: string } | null)?.custCode, rowCustCode((row.raw ?? {}) as SheetRow)].filter(
-          (x): x is string => !!x
-        )
-      ),
-    ];
-    const siblings = (
-      await tx.importRow.findMany({
-        where: {
-          batchId: row.batchId,
-          id: { not: row.id },
-          state: ImportRowState.CLEAN,
-          excludedAt: null,
-          OR: codes.map((code) => ({ parsed: { path: ['custCode'], equals: code } })),
-        },
-        select: rowSelect,
-        orderBy: { rowNumber: 'asc' },
-      })
-    ).filter(
-      (s) => ((s.parsed ?? {}) as { fixedFrom?: FixedFrom }).fixedFrom?.state === ImportRowState.REJECTED
-    );
+    // The other rows the same fix brought back with this one. A row fixed
+    // before fixGroup existed stands alone.
+    const siblings = parsedNow.fixGroup
+      ? await tx.importRow.findMany({
+          where: {
+            batchId: row.batchId,
+            id: { not: row.id },
+            state: ImportRowState.CLEAN,
+            excludedAt: null,
+            parsed: { path: ['fixGroup'], equals: parsedNow.fixGroup },
+          },
+          select: rowSelect,
+          orderBy: { rowNumber: 'asc' },
+        })
+      : [];
     const channelKeys = new Set(
       (await tx.channel.findMany({ select: { key: true } })).map((c) => c.key.toUpperCase())
     );

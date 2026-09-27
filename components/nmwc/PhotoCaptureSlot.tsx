@@ -390,21 +390,20 @@ export function PhotoCaptureSlot({
       if (resend) {
         attachmentId = resend;
       } else {
-        // 1) Presign
-        const presignData = await retryable(() =>
-          postJson<{ url: string; key: string; headers: Record<string, string> }>(
+        // 1) Presign and 2) PUT to R2 with byte progress — retried TOGETHER, so
+        // every try sends to a URL of its own. Retrying the PUT alone reused the
+        // first URL: a connection that dropped during a long post-body wait sent
+        // its third try after that URL's 10-minute life, R2 refused it (403),
+        // and Submit had waited the whole time (pre-merge review).
+        const presignData = await retryable(async () => {
+          const p = await postJson<{ url: string; key: string; headers: Record<string, string> }>(
             '/api/photos/presign',
             { kind, mimeType: 'image/jpeg', bytes: blob.size },
             'Could not get upload URL.'
-          )
-        );
-
-        // 2) PUT to R2 with byte progress.
-        await retryable(() =>
-          putWithProgress(presignData.url, presignData.headers, blob, (pct) =>
-            setUploadPct(pct)
-          )
-        );
+          );
+          await putWithProgress(p.url, p.headers, blob, (pct) => setUploadPct(pct));
+          return p;
+        });
 
         // 3) Finalize
         ({ attachmentId } = await retryable(() =>

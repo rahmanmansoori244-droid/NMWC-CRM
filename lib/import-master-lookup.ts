@@ -49,8 +49,13 @@ export async function masterCollisionMaps(
   return { masterPhones, masterCrs };
 }
 
-/** A row whose fix a newer upload may rule out: `key` names it in the answer. */
-export type FixTarget = { key: string; code: string; branch: string | null };
+/**
+ * A row whose fix a newer upload may rule out: `key` names it in the answer.
+ * `fixed`: the row is (or is being) fixed in the app itself, so for a
+ * customer linked to Temix it loads branch only; a row a fix only brought back
+ * with it loads as the plain row it is.
+ */
+export type FixTarget = { key: string; code: string; branch: string | null; fixed: boolean };
 
 /**
  * For each target, the newer customer upload (after `uploadedAt`) that rules
@@ -85,9 +90,14 @@ export async function newerUploadsCarrying(
            r."state"::text AS "state", (r."excludedAt" IS NOT NULL) AS "excluded",
            r."parsed"->>'branchCode' AS "branchCode",
            (r."parsed"->>'fixedInApp') = 'true' AS "fixedInApp",
+           -- The refresh lane is decided for the customer's rows of one upload
+           -- together (from its first plain row), so a row counts as a refresh
+           -- row only when every row of the customer in that upload carries the
+           -- customer's own Temix code (pre-merge review).
            (c."temixCode" IS NOT NULL
-             AND r."parsed"->>'temixCode' = c."temixCode"
-             AND b."id" IS DISTINCT FROM c."importBatchId") AS "refreshRow"
+             AND b."id" IS DISTINCT FROM c."importBatchId"
+             AND bool_and(COALESCE(r."parsed"->>'temixCode', '') = c."temixCode")
+                   OVER (PARTITION BY r."batchId", r."parsed"->>'custCode')) AS "refreshRow"
       FROM "ImportRow" r
       JOIN "ImportBatch" b ON b."id" = r."batchId"
       LEFT JOIN "Customer" c ON c."nmwcCode" = r."parsed"->>'custCode'
@@ -119,13 +129,18 @@ export async function newerUploadsCarrying(
     ).map((c) => c.nmwcCode)
   );
   for (const t of targets) {
-    const hit = supersedingUpload(t, linked.has(t.code), byCode.get(t.code) ?? []);
+    const hit = supersedingUpload(t, linked.has(t.code) && t.fixed, byCode.get(t.code) ?? []);
     if (hit) out.set(t.key, hit);
   }
   return out;
 }
 
 /** A row's fix target: its customer code and its branch code composed under it. */
-export function fixTarget(key: string, code: string, branchCell: string | null): FixTarget {
-  return { key, code, branch: branchCell ? composeBranchCode(code, branchCell) : null };
+export function fixTarget(
+  key: string,
+  code: string,
+  branchCell: string | null,
+  fixed: boolean
+): FixTarget {
+  return { key, code, branch: branchCell ? composeBranchCode(code, branchCell) : null, fixed };
 }

@@ -127,7 +127,7 @@ export function RowActions({
           onClick={() => {
             if (
               !confirm(
-                'Withdraw this fix? The row goes back to what it was before you fixed it, and your corrections are dropped. Any of its customer\'s rows that were rejected with it go back too.'
+                'Withdraw this fix? The row goes back to what it was before you fixed it, and your corrections are dropped. Rows this fix brought back with it go back too.'
               )
             )
               return;

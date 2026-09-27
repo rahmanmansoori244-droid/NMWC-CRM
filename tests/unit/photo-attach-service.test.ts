@@ -42,6 +42,8 @@ const db = vi.hoisted(() => ({
   },
   user: { findUniqueOrThrow: vi.fn() },
   $transaction: vi.fn(),
+  // The customer row lock every photo transaction takes first.
+  $queryRaw: vi.fn(),
 }));
 const audit = vi.hoisted(() => ({ writeAudit: vi.fn(), getAuditEnvelope: vi.fn() }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
@@ -126,6 +128,7 @@ beforeEach(() => {
     for (const f of Object.values(group)) f.mockReset();
   }
   db.$transaction.mockReset().mockImplementation(async (fn: (tx: typeof db) => unknown) => fn(db));
+  db.$queryRaw.mockReset().mockResolvedValue([]);
   audit.writeAudit.mockReset();
   audit.getAuditEnvelope.mockReset().mockResolvedValue({});
   db.user.findUniqueOrThrow.mockResolvedValue({ ownedRouteId: 'r1' });
@@ -203,6 +206,25 @@ describe('attach, through the route: every check still refuses before a write', 
       data: { branchId: B1, kind: 'SHOP' },
     });
     expect(audit.writeAudit).toHaveBeenCalledTimes(1);
+  });
+
+  // Pre-merge review of 9edcbad: attaches from one phone now overlap, and each
+  // recomputes the completeness score from what it reads — the later one wrote
+  // a score that left out the other photo. The customer's row lock comes first.
+  it.each([
+    ['a branch photo', () => photo(), { branchId: B1, slot: 'SHOP' }],
+    ['the CR photo', () => photo({ kind: 'CR' }), { customerId: CUST, slot: 'CR' }],
+  ])('%s: the transaction locks the customer row before it reads or writes anything', async (_n, att, body) => {
+    db.attachment.findUnique.mockResolvedValue(att());
+    expect(await attach({ attachmentId: ATT, ...body })).toEqual({ ok: true });
+    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+    const [sql, id] = db.$queryRaw.mock.calls[0] as [TemplateStringsArray, string];
+    expect(sql.join('?')).toMatch(/FROM "Customer" WHERE "id" = \? FOR UPDATE/);
+    expect(id).toBe(CUST);
+    const lockedAt = db.$queryRaw.mock.invocationCallOrder[0];
+    for (const f of [db.attachment.update, db.branch.update, db.customer.update, db.customer.findUniqueOrThrow, db.branch.findUniqueOrThrow]) {
+      for (const order of f.mock.invocationCallOrder) expect(order).toBeGreaterThan(lockedAt);
+    }
   });
 });
 
@@ -305,5 +327,11 @@ describe('detach, through the route', () => {
       data: { deletedAt: expect.any(Date), hash: null },
     });
     expect(audit.writeAudit).toHaveBeenCalledTimes(1);
+    // The branch's customer is locked first, as on attach.
+    const [, id] = db.$queryRaw.mock.calls[0] as [TemplateStringsArray, string];
+    expect(id).toBe(CUST);
+    for (const order of db.attachment.update.mock.invocationCallOrder) {
+      expect(order).toBeGreaterThan(db.$queryRaw.mock.invocationCallOrder[0]);
+    }
   });
 });

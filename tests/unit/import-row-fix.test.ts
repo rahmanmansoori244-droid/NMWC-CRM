@@ -222,10 +222,28 @@ describe('supersedingUpload — which newer row rules a fix out (post-merge revi
     expect(supersedingUpload({ branch: 'X-02' }, true, [c({ refreshRow: true, excluded: true })])).not.toBeNull();
   });
 
-  it('linked: a newer row about another branch, or with no branch_code, does not', () => {
-    expect(supersedingUpload({ branch: 'X-02' }, true, [c({ branch: 'X-03' }), c({ branch: null })])).toBeNull();
-    // A row with no branch_code of its own is rejected at promote until it has one.
+  it('linked: a newer row about another branch does not; a plain refresh row with no branch_code does not either', () => {
+    expect(supersedingUpload({ branch: 'X-02' }, true, [c({ branch: 'X-03' })])).toBeNull();
+    expect(supersedingUpload({ branch: 'X-02' }, true, [c({ branch: null, refreshRow: true })])).toBeNull();
+    // A target with no branch_code of its own meets only rows that could be any branch.
     expect(supersedingUpload({ branch: null }, true, [c({})])).toBeNull();
+  });
+
+  // Pre-merge review: the full lane numbers a row with no branch_code by its
+  // position — the upload that created the customer wrote its head office as
+  // -01 — so the rule cannot tell which branch such a row wrote.
+  it('linked: a newer row with no branch_code that is not a plain refresh row counts against every branch', () => {
+    expect(supersedingUpload({ branch: 'X-01' }, true, [c({ branch: null })])).not.toBeNull();
+    expect(supersedingUpload({ branch: null }, true, [c({ branch: null })])).not.toBeNull();
+  });
+
+  // Pre-merge review: only a row that loads branch only gets the branch rule.
+  // A plain row a fix brought back writes the customer's own fields (the
+  // refresh lane's credit figures), so any newer upload of the customer wins.
+  it('a row that does not load branch only is judged for the whole customer, even when linked', () => {
+    const refresh = c({ refreshRow: true, branch: 'X-09' });
+    expect(supersedingUpload({ branch: 'X-02' }, true, [refresh])).toBeNull();
+    expect(supersedingUpload({ branch: 'X-02' }, false, [refresh])).toMatchObject({ rowNumber: 5 });
   });
 
   it('linked: the newest matching row answers', () => {

@@ -54,8 +54,10 @@
  * digest but not the match, so without a hand every pair the Steward marked
  * distinct on such a CR came back reading "what they share has changed"
  * (post-merge review). The run counts those pairs, and --apply appends one
- * CustomerPair row per pair carrying the new digests, after the norm writes —
- * the dismissal then holds as it did. A pair whose CRs become equal only now is
+ * CustomerPair row per pair BEFORE the first norm write, holding the old and
+ * the new digest with the rest of the Steward's signals — the dismissal then
+ * holds whatever state the run leaves (pre-merge review), and keeps the
+ * Steward's date and name on /duplicates. A pair whose CRs become equal only now is
  * a new match, and comes back, as the owner decided.
  *
  * TARGETS ANY DATABASE, NAMED. The safety is the one from requeue-untracked.ts,
@@ -152,7 +154,14 @@ export function dismissalsToCarry(
     if (!next.some((x) => x.startsWith('cr:')) || dismissalHides(d, next)) continue;
     const stored = d.signals;
     if (!next.filter((x) => !x.startsWith('cr:')).every((x) => stored.has(x))) continue;
-    out.push({ entityId: pairKey(aId, bId), signals: next });
+    // Everything the Steward's dismissal held, plus the new CR digest. Keeping
+    // the old digest hides the pair in every state a run can leave it in —
+    // both norms old, both new, or one of each after a skipped or failed write
+    // — and keeping the rest keeps it as wide as the Steward made it (the
+    // pair's match at run time dropped a triple that was not matching just
+    // then, and the pair came back when it matched again: pre-merge review).
+    const nextCr = next.find((x) => x.startsWith('cr:'))!;
+    out.push({ entityId: pairKey(aId, bId), signals: [...new Set([...stored, nextCr])] });
   }
   return out;
 }
@@ -325,6 +334,31 @@ async function main(): Promise<number> {
       },
     });
 
+    // The carried dismissals go in BEFORE the first norm write, holding the
+    // old and the new digest, so no skipped write, crash or re-run can lose
+    // one: after the writes, a pair left half-written no longer shares a CR
+    // and could never be carried (pre-merge review). They are worked out from
+    // the pair history read now, not at the start of the run, so an Undo or a
+    // Mark distinct made meanwhile is honoured. Digests only, as the Steward's
+    // own rows hold; `carried` keeps the Steward's own stamp on /duplicates
+    // (lib/duplicate-pairing.ts parseDismissals).
+    const freshPairLog = (await read()).pairLog;
+    const carry = dismissalsToCarry(customers, freshPairLog, nextOf);
+    for (const c of carry) {
+      await prisma.auditLog.create({
+        data: {
+          actorId: actor.id,
+          action: 'UPDATE',
+          entityType: 'CustomerPair',
+          entityId: c.entityId,
+          after: { signals: c.signals, carried: true } as unknown as Prisma.InputJsonValue,
+          reason:
+            'Kept marked distinct by scripts/ops/recompute-cr-norm.ts: the CR these customers ' +
+            'share is only re-normalized (item 16), so the Steward\'s "Mark distinct" still applies.',
+        },
+      });
+    }
+
     let custWritten = 0;
     let custSkipped = 0;
     for (const f of custFixes) {
@@ -349,29 +383,7 @@ async function main(): Promise<number> {
       else draftSkipped += 1;
     }
 
-    // Carried forward from the norms as they now stand, so a row this run
-    // skipped (changed while it read) decides nothing. Digests only, as the
-    // Steward's own rows hold.
     const now = await read();
-    const carry = dismissalsToCarry(
-      customers,
-      pairLog,
-      new Map(now.customers.map((c) => [c.id, c.crNumberNorm]))
-    );
-    for (const c of carry) {
-      await prisma.auditLog.create({
-        data: {
-          actorId: actor.id,
-          action: 'UPDATE',
-          entityType: 'CustomerPair',
-          entityId: c.entityId,
-          after: { signals: c.signals } as unknown as Prisma.InputJsonValue,
-          reason:
-            'Kept marked distinct by scripts/ops/recompute-cr-norm.ts: the CR these customers ' +
-            'share was only re-normalized (item 16), so the Steward\'s "Mark distinct" still applies.',
-        },
-      });
-    }
 
     await prisma.auditLog.create({
       data: {

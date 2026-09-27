@@ -554,18 +554,26 @@ The rotation is audit-logged.
      `branch_code` offered for correction; a code this customer does not use yet creates a new
      branch.
    - Only the row the Steward acts on counts as fixed. A rejected row takes its customer's other
-     rejected rows in the batch back to CLEAN with it, as the plain rows they were; **Withdraw
-     fix** takes them back again, and a promoted batch that a fix set back to READY is PROMOTED
-     again when nothing is left to promote.
-   - **Fix only in the newest upload.** A fix is refused while the batch is being promoted; in an
-     upload older than another that carries the same customer — for a customer linked to Temix,
-     only one that carries the same *branch* and wrote or may write it (a plain refresh row never
-     does, so an inbound Temix refresh does not block a held-back branch row); and on a row
-     uploaded more than 90 days ago, when the newer uploads' data may already be swept. The page
-     offers only Exclude on such rows, in the server's words. Promote asks the same question
-     again: **a fix that a newer upload overtook while it waited is rejected at promote** rather
-     than loaded over the newer data. A row whose data the 90-day retention sweep has cleared can
-     only be excluded or uploaded again.
+     rejected rows in the batch back to CLEAN with it, as the plain rows they were; the page says
+     so on them ("came back with the fix of row N"). All the rows one fix brought back form one
+     unit (`parsed.fixGroup`): they load together or not at all, and **Withdraw fix** takes back
+     exactly them — never a separate fix of the same customer. A promoted batch that a fix set
+     back to READY is PROMOTED again when nothing is left to promote.
+   - **Fix only in the newest upload.** A fix is refused while the batch is being promoted; on a
+     row uploaded more than 90 days ago, when the newer uploads' data may already be swept; and
+     in an upload older than another that carries the same customer. Each row of the fix is
+     judged by its own rule: the row acted on, for a customer linked to Temix, only against a
+     newer row about the same *branch* that wrote or may write it (a plain refresh row never
+     does, so an inbound Temix refresh does not block a held-back branch row; a newer row with no
+     `branch_code` counts against every branch); every other row — including a linked
+     customer's row the fix only brings back, which loads as a plain row and writes the
+     customer's own fields — against any newer upload of the customer. A rejected row is refused
+     when one of its customer's other rejected rows is overtaken, and the message names that
+     row: exclude it first. The page offers only Exclude on such rows, in the server's words.
+     Promote asks again for every unit: **a fix that waited past the 90 days, or that a newer
+     upload overtook while it waited, is rejected at promote with every row it brought back**
+     rather than loaded over the newer data. A row whose data the 90-day retention sweep has
+     cleared can only be excluded or uploaded again.
 
 ### Export the cleaned master for ERP
 1. Sign in as Steward (or Manager).

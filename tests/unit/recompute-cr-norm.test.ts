@@ -118,11 +118,42 @@ describe('dismissalsToCarry — "Mark distinct" survives the re-fold (post-merge
       ['b', '1234567'],
     ]);
     const carry = dismissalsToCarry([a, b], [dismissed(a, b)], next);
-    expect(carry).toEqual([{ entityId: 'a|b', signals: [`cr:${signalHash('1234567')}`] }]);
-    // Carried forward, the dismissal hides the pair as it stands after the run.
-    const log = [dismissed(a, b), { entityId: carry[0].entityId, after: { signals: carry[0].signals }, at: new Date('2026-09-27T00:00:00Z') }];
+    // The Steward's own signals plus the new digest (pre-merge review).
+    expect(carry).toEqual([
+      { entityId: 'a|b', signals: [`cr:${signalHash(ARABIC)}`, `cr:${signalHash('1234567')}`] },
+    ]);
+    const log = [
+      dismissed(a, b),
+      { entityId: carry[0].entityId, after: { signals: carry[0].signals, carried: true }, at: new Date('2026-09-27T00:00:00Z') },
+    ];
     const d = parseDismissals(log).get('a|b');
-    expect(dismissalHides(d, matchSignals({ ...a, crNumberNorm: '1234567' }, { ...b, crNumberNorm: '1234567' }))).toBe(true);
+    // It hides the pair in every state a run can leave: both norms old, both
+    // new, or one of each after a skipped or failed write.
+    const after = { ...a, crNumberNorm: '1234567' };
+    const afterB = { ...b, crNumberNorm: '1234567' };
+    expect(dismissalHides(d, matchSignals(a, b))).toBe(true);
+    expect(dismissalHides(d, matchSignals(after, afterB))).toBe(true);
+    expect(matchSignals(after, b)).toEqual([]); // half-written: no longer a pair at all
+    // And the Steward's date and name stay on it.
+    expect(d?.at).toEqual(new Date('2026-09-26T08:00:00Z'));
+  });
+
+  it('a triple the pair was not matching at run time stays in the carried dismissal', () => {
+    // Marked distinct on CR + name/phone/region; at run time b's branch has moved,
+    // so only the CR matches. When it moves back the pair must stay hidden.
+    const a = cust('a', ARABIC, { legalName: 'Al Noor', primaryPhoneNorm: '+96899758980' });
+    const b = cust('b', ARABIC, { legalName: 'Al Noor', primaryPhoneNorm: '+96899758980' });
+    const marked = dismissed(a, b); // cr + triple
+    const moved = { ...b, regionIds: ['R2'] };
+    const next = new Map([
+      ['a', '1234567'],
+      ['b', '1234567'],
+    ]);
+    const [c] = dismissalsToCarry([a, moved], [marked], next);
+    const d = parseDismissals([marked, { entityId: c.entityId, after: { signals: c.signals, carried: true }, at: new Date() }]).get('a|b');
+    const back = matchSignals({ ...a, crNumberNorm: '1234567' }, { ...b, crNumberNorm: '1234567' });
+    expect(back.some((x) => x.startsWith('triple:'))).toBe(true);
+    expect(dismissalHides(d, back)).toBe(true);
   });
 
   it('a pair whose CRs become equal only now is a new match, and comes back', () => {
@@ -187,17 +218,18 @@ describe('the script keeps the operator conventions (comment-stripped source)', 
     for (const m of main.matchAll(/console\.log\(([\s\S]*?)\);/g)) {
       expect(m[1]).not.toMatch(/\.crNumber|\.next\b|crNumberNorm/);
     }
-    for (const m of main.matchAll(/auditLog\.create\(([\s\S]*?)\n {4}\}\);/g)) {
+    for (const m of main.matchAll(/auditLog\.create\(([\s\S]*?)\n\s*\}\);/g)) {
       expect(m[1]).not.toMatch(/\.crNumber|\.next\b|f\.crNumberNorm/);
     }
   });
 
-  it('keeps a dismissal only after the norm writes, from the norms as they then stand, as digests', () => {
+  it('keeps a dismissal BEFORE the first norm write, from the pair history read then, as digests marked carried', () => {
     const carryRow = main.indexOf('entityId: c.entityId');
-    expect(carryRow).toBeGreaterThan(main.indexOf('prisma.customer.updateMany('));
-    expect(carryRow).toBeGreaterThan(main.indexOf('prisma.editCustomerDraft.updateMany('));
-    expect(main.slice(0, carryRow)).toMatch(/const now = await read\(\);\s*const carry = dismissalsToCarry\(/);
-    expect(main.slice(carryRow, carryRow + 200)).toMatch(/after: \{ signals: c\.signals \}/);
+    expect(carryRow).toBeGreaterThan(main.indexOf('if (!apply)'));
+    expect(carryRow).toBeLessThan(main.indexOf('prisma.customer.updateMany('));
+    expect(carryRow).toBeLessThan(main.indexOf('prisma.editCustomerDraft.updateMany('));
+    expect(main.slice(0, carryRow)).toMatch(/const freshPairLog = \(await read\(\)\)\.pairLog;\s*const carry = dismissalsToCarry\(customers, freshPairLog, nextOf\)/);
+    expect(main.slice(carryRow, carryRow + 200)).toMatch(/after: \{ signals: c\.signals, carried: true \}/);
   });
 
   it('runs main() only as a command, so importing it for these tests opens no connection', () => {

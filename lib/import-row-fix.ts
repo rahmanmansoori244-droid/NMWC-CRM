@@ -229,8 +229,9 @@ export type NewerCandidate = NewerUpload & {
   branch: string | null;
   fixedInApp: boolean;
   /**
-   * It carries the customer's own Temix code and is not the row that created
-   * the customer: it took (or will take) the refresh lane, which writes no branch.
+   * Every row of the customer in its upload carries the customer's own Temix
+   * code, and that upload did not create the customer: it took (or will take)
+   * the refresh lane, which writes no branch.
    */
   refreshRow: boolean;
 };
@@ -238,19 +239,28 @@ export type NewerCandidate = NewerUpload & {
 /**
  * The newer upload that rules out fixing a row, or null.
  *
- * A fixed row of a customer NOT linked to Temix takes the full lane and writes
- * the customer's own fields, so any newer upload of the customer wins.
+ * `branchRule` is true only for a row that promote will load "branch only":
+ * one FIXED IN THE APP, of a customer linked to Temix (owner decision). It
+ * writes only its own branch, so only a newer row about THAT branch rules it
+ * out, and a plain refresh row, which writes no branch, never does. Keyed on
+ * the customer alone, the routine inbound Temix refresh blocked every
+ * held-back branch row of every customer it carried (post-merge review).
  *
- * A fixed row of a customer linked to Temix writes only its own branch (owner
- * decision, "branch only"), so only a newer row about THAT branch rules it out.
- * A plain refresh row writes no branch at all, so it never does. Keyed on the
- * customer alone, the routine inbound Temix refresh blocked every held-back
- * branch row of every customer it carried — while its own note told the
- * Steward to fix exactly that row (post-merge review).
+ * Every other row — a fixed row of a customer not linked to Temix, and any
+ * plain row, including a linked customer's row a fix only brought back with it
+ * — writes the customer's own fields (the full lane's name, phone and CR, the
+ * refresh lane's credit figures), so any newer upload of the customer wins.
+ * The branch rule was applied to those too, and an older refresh row could
+ * reload out-of-date credit terms (pre-merge review).
+ *
+ * A newer row with no branch_code that is not a plain refresh row counts
+ * against every branch: the full lane numbers such rows by their position —
+ * the batch that created the customer wrote its head office as -01 — so the
+ * rule cannot tell which branch it wrote (pre-merge review).
  */
 export function supersedingUpload(
   target: { branch: string | null },
-  linked: boolean,
+  branchRule: boolean,
   newestFirst: NewerCandidate[]
 ): NewerUpload | null {
   const pick = (n: NewerCandidate): NewerUpload => ({
@@ -259,15 +269,46 @@ export function supersedingUpload(
     state: n.state,
     excluded: n.excluded,
   });
-  if (!linked) return newestFirst[0] ? pick(newestFirst[0]) : null;
-  if (!target.branch) return null;
+  if (!branchRule) return newestFirst[0] ? pick(newestFirst[0]) : null;
   const hit = newestFirst.find((n) => {
-    if (n.branch !== target.branch) return false;
     const loadsNoBranch =
       n.refreshRow && !n.fixedInApp && !n.excluded && (n.state === 'PROMOTED' || n.state === 'CLEAN');
-    return !loadsNoBranch;
+    if (loadsNoBranch) return false;
+    return n.branch === null || n.branch === target.branch;
   });
   return hit ? pick(hit) : null;
+}
+
+/**
+ * A rejected row is fixed with its customer's other rejected rows in the batch
+ * (services/import-fixes.ts targetsFor), so one of THEM being overtaken rules
+ * the fix out too — said about that row, with what to do (pre-merge review:
+ * the page offered the fix, and the refusal named only the customer).
+ */
+export function siblingSupersededMessage(rowNumber: number, code: string, n: NewerUpload): string {
+  return `Row ${rowNumber} of customer ${code}, rejected together with this one, is also in a newer upload, "${n.filename}" (row ${n.rowNumber}), so it cannot be loaded from here. Exclude row ${rowNumber} first, then fix this row.`;
+}
+
+/**
+ * A fix waiting to promote whose rows are past the fix window: promote rejects
+ * it, because the newer uploads it would have to be checked against may be
+ * swept by now (pre-merge review — the window was enforced only when a fix was
+ * made, so a fix that waited 90 days loaded unchecked).
+ */
+export function fixExpiredMessage(rowNumber: number): string {
+  return `Row ${rowNumber} was uploaded more than ${IMPORT_PAYLOAD_DAYS} days ago, so this fix will not load: promote rejects it. Withdraw the fix, then exclude the row, or upload the corrected row again.`;
+}
+
+/**
+ * The fix a row came back with: one Re-check, Correct or Release acts on a
+ * row, and on its customer's other rejected rows with it; all of them carry
+ * the acted row's id (parsed.fixGroup, services/import-fixes.ts recheck).
+ * They load together or not at all, and Withdraw takes them back together.
+ * A row fixed before fixGroup existed stands alone.
+ */
+export function fixUnitOf(rowId: string, parsed: unknown): string {
+  const g = (parsed as { fixGroup?: unknown } | null)?.fixGroup;
+  return typeof g === 'string' && g ? g : rowId;
 }
 
 /**

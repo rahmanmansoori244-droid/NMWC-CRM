@@ -726,4 +726,112 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     expect(g.branches.map((x) => x.status)).toEqual(['CLOSED', 'ACTIVE']);
     expect(g.status).toBe('ACTIVE');
   });
+
+  // ── Pre-merge review of 14a9356..a996945 ─────────────────────────────────
+
+  it('a fix overtaken while it waited is rejected with EVERY row it brought back — none of them loads older data', async () => {
+    const H = `${P}-PMH`;
+    const older = await upload([
+      { cust_code: H, cust_name: 'ZZ Hotel Old', branch_code: `${H}-01`, address: 'Way 50, Muscat', day_of_visit: 'SUN' },
+      { cust_code: H, cust_name: 'ZZ Hotel Old', branch_code: `${H}-01`, address: 'Way 51, Muscat' },
+    ]);
+    await promoteFully(imports, older); // a shared branch_code: the customer is rejected whole
+    const [, h2] = await rowsOf(older);
+    expect(await fixes.correctImportRowAction(fd({ rowId: h2.id, cells: JSON.stringify({ branch_code: `${H}-02` }) }))).toMatchObject({
+      ok: true,
+      data: { clean: 2 },
+    });
+    const newer = await upload([{ cust_code: H, cust_name: 'ZZ Hotel New', branch_code: `${H}-01`, address: 'Way 52, Muscat', day_of_visit: 'WED' }]);
+    await promoteFully(imports, newer);
+    await promoteFully(imports, older);
+    const rows = await rowsOf(older);
+    expect(rows.map((r) => r.state)).toEqual(['REJECTED', 'REJECTED']);
+    for (const r of rows) {
+      expect(((r.issues ?? []) as { message: string }[])[0].message).toMatch(/was loaded again from a newer upload/);
+    }
+    const h = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: H }, include: { branches: true } });
+    expect([h.legalName, h.branches.map((b) => [b.branchCode, b.address, b.dayOfVisit])]).toEqual([
+      'ZZ Hotel New',
+      [[`${H}-01`, 'Way 52, Muscat', 'WED']],
+    ]);
+  });
+
+  it('a customer linked to Temix: a row a fix only brings back is judged for the whole customer, so an older refresh row cannot reload old credit terms', async () => {
+    const I = `${P}-PMI`;
+    const cust = await prisma.customer.create({
+      data: { nmwcCode: I, legalName: 'ZZ India CRM', temixCode: I, paymentTerms: 'CASH', temixSyncState: 'SYNCED' },
+    });
+    await prisma.branch.create({
+      data: { customerId: cust.id, branchCode: `${I}-01`, branchName: 'Main', address: 'Way 53, Muscat', regionId, routeId },
+    });
+    // An older refresh whose two rows came back rejected together.
+    const older = await upload([
+      { cust_code: I, cust_name: 'ZZ India', branch_code: `${I}-02`, address: 'Way 54, Muscat', temix_code: I },
+      { cust_code: I, cust_name: 'ZZ India', branch_code: `${I}-02`, address: 'Way 55, Muscat', temix_code: I },
+    ]);
+    await promoteFully(imports, older);
+    expect((await rowsOf(older)).map((r) => r.state)).toEqual(['REJECTED', 'REJECTED']);
+    // The routine inbound refresh loads meanwhile.
+    const refresh = await upload([{ cust_code: I, cust_name: 'ZZ India', branch_code: `${I}-01`, address: 'Way 53, Muscat', temix_code: I }]);
+    await promoteFully(imports, refresh);
+    const [i1, i2] = await rowsOf(older);
+    const res = await fixes.correctImportRowAction(fd({ rowId: i2.id, cells: JSON.stringify({ branch_code: `${I}-03` }) }));
+    expect(res).toMatchObject({ ok: false, code: 'NEWER_UPLOAD' });
+    expect(JSON.stringify(res)).toContain(`Row ${i1.rowNumber} of customer ${I}, rejected together with this one`);
+  });
+
+  it('withdrawing a fix takes back only the rows that fix brought back — a separate fix of the customer stays', async () => {
+    const J = `${P}-PMJ`;
+    const b = await upload([
+      { cust_code: J, cust_name: 'ZZ Juliet', branch_code: `${J}-01`, address: 'Way 56, Muscat', day_of_visit: 'XX' },
+      { cust_code: J, cust_name: 'ZZ Juliet', branch_code: `${J}-02`, address: 'Way 57, Muscat' },
+      { cust_code: J, cust_name: 'ZZ Juliet', branch_code: `${J}-02`, address: 'Way 58, Muscat' },
+    ]);
+    await promoteFully(imports, b); // row 1 held back; rows 2 and 3 share a code and are rejected
+    const [j1, j2, j3] = await rowsOf(b);
+    expect([j1.state, j2.state, j3.state]).toEqual(['QUARANTINED', 'REJECTED', 'REJECTED']);
+    expect(await fixes.correctImportRowAction(fd({ rowId: j3.id, cells: JSON.stringify({ branch_code: `${J}-03` }) }))).toMatchObject({ ok: true });
+    expect(await fixes.correctImportRowAction(fd({ rowId: j1.id, cells: JSON.stringify({ day_of_visit: 'SAT' }) }))).toMatchObject({ ok: true });
+    // Withdrawing the held-back row's own fix leaves the other fix alone.
+    expect(await fixes.withdrawImportRowFixAction(fd({ rowId: j1.id }))).toEqual({ ok: true, data: { rows: 1 } });
+    const after = await rowsOf(b);
+    expect(after.map((r) => r.state)).toEqual(['QUARANTINED', 'CLEAN', 'CLEAN']);
+    expect(after[2].corrections).toMatchObject({ cells: { branch_code: `${J}-03` } });
+  });
+
+  it('a fix that waited past the 90-day window is rejected at promote — the newer uploads it must be checked against may be gone', async () => {
+    const K = `${P}-PMK`;
+    const b = await upload([{ cust_code: K, cust_name: 'ZZ Kilo', branch_code: `${K}-01`, address: 'Way 59, Muscat', day_of_visit: 'XX' }]);
+    const [k] = await rowsOf(b);
+    expect(await fixes.correctImportRowAction(fd({ rowId: k.id, cells: JSON.stringify({ day_of_visit: 'MON' }) }))).toMatchObject({ ok: true });
+    await prisma.$executeRawUnsafe(`UPDATE "ImportRow" SET "createdAt" = now() - interval '91 days' WHERE "id" = $1`, k.id);
+    await promoteFully(imports, b);
+    const after = await prisma.importRow.findUniqueOrThrow({ where: { id: k.id } });
+    expect(after.state).toBe('REJECTED');
+    expect(((after.issues ?? []) as { message: string }[])[0].message).toMatch(/uploaded more than 90 days ago/);
+    expect(await prisma.customer.count({ where: { nmwcCode: K } })).toBe(0);
+  });
+
+  it("a customer linked to Temix: the status is settled after the fixed rows' branches are written too", async () => {
+    const L = `${P}-PML`;
+    const cust = await prisma.customer.create({
+      data: { nmwcCode: L, legalName: 'ZZ Lima CRM', temixCode: L, paymentTerms: 'CASH', temixSyncState: 'SYNCED' },
+    });
+    await prisma.branch.create({
+      data: { customerId: cust.id, branchCode: `${L}-01`, branchName: 'Main', address: 'Way 60, Muscat', regionId, routeId },
+    });
+    const b = await upload([
+      { cust_code: L, cust_name: 'ZZ Lima', branch_code: `${L}-01`, address: 'Way 60, Muscat', customer_status: 'CLOSED' },
+      { cust_code: L, cust_name: 'ZZ Lima', branch_code: `${L}-02`, address: 'Way 61, Muscat', day_of_visit: 'XX' },
+    ]);
+    const [, l2] = await rowsOf(b);
+    expect(await fixes.correctImportRowAction(fd({ rowId: l2.id, cells: JSON.stringify({ day_of_visit: 'TUE' }) }))).toMatchObject({ ok: true });
+    await promoteFully(imports, b);
+    const after = await prisma.customer.findUniqueOrThrow({ where: { id: cust.id }, include: { branches: { orderBy: { branchCode: 'asc' } } } });
+    expect(after.branches.map((x) => [x.branchCode, x.status])).toEqual([
+      [`${L}-01`, 'CLOSED'],
+      [`${L}-02`, 'ACTIVE'],
+    ]);
+    expect(after.status).toBe('ACTIVE');
+  });
 });

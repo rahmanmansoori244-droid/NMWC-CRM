@@ -33,6 +33,18 @@ const branchAttach = z.object({
 const attachSchema = z.union([customerAttach, branchAttach]);
 
 /**
+ * The customer's row lock, taken before anything else in a photo transaction.
+ * Attach and Remove reach the server over plain fetches now (9edcbad), so two
+ * photos taken on one phone can land together, and each recomputes the
+ * completeness score from what it reads: without the lock the later one wrote
+ * a score that left out the other photo (pre-merge review). With it, every
+ * photo write on one customer runs one at a time, reading committed data.
+ */
+async function lockCustomer(tx: Prisma.TransactionClient, customerId: string) {
+  await tx.$queryRaw`SELECT "id" FROM "Customer" WHERE "id" = ${customerId} FOR UPDATE`;
+}
+
+/**
  * Whether the attachment's own columns put it on exactly the target asked for,
  * as an attach to that target leaves them (the kind included: an attach sets
  * it). The slot column itself is read with the target, after the scope checks.
@@ -190,10 +202,13 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     // DG-06: capture the request envelope before opening the transaction.
     const env = await getAuditEnvelope(session.user.id);
     await prisma.$transaction(async (tx) => {
+      await lockCustomer(tx, c.id);
       // NEW-PHOTO-003: soft-delete the prior CR photo on replacement so it no
       // longer dedupes against future uploads, no longer counts in storage,
-      // and the R2 GC cron has a clean signal to remove the object.
-      const prev = c.crPhotoId;
+      // and the R2 GC cron has a clean signal to remove the object. Read under
+      // the lock: another attach may have replaced it since the read above.
+      const prev = (await tx.customer.findUniqueOrThrow({ where: { id: c.id }, select: { crPhotoId: true } }))
+        .crPhotoId;
       if (prev && prev !== att.id) {
         await tx.attachment.update({
           where: { id: prev },
@@ -264,13 +279,19 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     // DG-06: same as the CR branch — envelope before the transaction.
     const env = await getAuditEnvelope(session.user.id);
     await prisma.$transaction(async (tx) => {
+      await lockCustomer(tx, b.customerId);
+      // The slots as they stand under the lock, not as read before it.
+      const now = await tx.branch.findUniqueOrThrow({
+        where: { id: b.id },
+        select: { shopPhotoId: true, signboardPhotoId: true },
+      });
       const updateBranch: Prisma.BranchUpdateInput = { lastEditedById: session.user.id };
       // NEW-PHOTO-003: soft-delete the prior shop/signboard photo on
       // replacement so storage doesn't balloon and dedupe stays correct.
       if (data.slot === 'SHOP') {
-        if (b.shopPhotoId && b.shopPhotoId !== att.id) {
+        if (now.shopPhotoId && now.shopPhotoId !== att.id) {
           await tx.attachment.update({
-            where: { id: b.shopPhotoId },
+            where: { id: now.shopPhotoId },
             data: { deletedAt: new Date(), hash: null },
           });
         }
@@ -281,9 +302,9 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         updateBranch.shopPhoto = { connect: { id: att.id } };
         await tx.branch.update({ where: { id: b.id }, data: updateBranch });
       } else if (data.slot === 'SIGNBOARD') {
-        if (b.signboardPhotoId && b.signboardPhotoId !== att.id) {
+        if (now.signboardPhotoId && now.signboardPhotoId !== att.id) {
           await tx.attachment.update({
-            where: { id: b.signboardPhotoId },
+            where: { id: now.signboardPhotoId },
             data: { deletedAt: new Date(), hash: null },
           });
         }
@@ -384,7 +405,14 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   // soft-deletes the prior), each Attachment row points to at most one slot.
   // DG-06: envelope before the transaction (see attachPhotoCore).
   const env = await getAuditEnvelope(session.user.id);
+  const ownerId =
+    att.customerId ??
+    (att.branchId
+      ? ((await prisma.branch.findUnique({ where: { id: att.branchId }, select: { customerId: true } }))
+          ?.customerId ?? null)
+      : null);
   await prisma.$transaction(async (tx) => {
+    if (ownerId) await lockCustomer(tx, ownerId);
     if (att.customerId) {
       await tx.customer.updateMany({
         where: { id: att.customerId, crPhotoId: att.id },
