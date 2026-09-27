@@ -1,7 +1,8 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { PageHeader } from '@/components/nmwc/PageHeader';
-import { loadServiceStatus, type JobState, type ServiceStatus } from '@/lib/service-status';
+import { loadScope } from '@/lib/access';
+import { loadServiceStatus, type ApprovalsScope, type JobState, type ServiceStatus } from '@/lib/service-status';
 import {
   STATUS_ROLES,
   TEMIX_BACKLOG_MAX_DAYS,
@@ -24,25 +25,34 @@ export const dynamic = 'force-dynamic';
  * Item 9 (re-benchmark, 2026-09-24): the service levels, measured — so "is it
  * working" has an answer before a user has to complain.
  *
- * Steward and Managers (STATUS_ROLES). Everything on it is a company-wide count
- * or duration, with no customer, no error text and no named person. A step one
- * or two people decide is folded away for a Manager, because its figures would
- * be that colleague's own (lib/service-levels.ts approvalsForManager). Targets and
- * definitions live in lib/service-levels.ts and docs/SERVICE-LEVELS.md.
+ * Steward and Managers (STATUS_ROLES). No customer, no error text and no named
+ * person. The approval figures are people's decisions: the Data Steward sees the
+ * whole company's, anyone else only those on requests in their own regions —
+ * requests they can already open at /approvals/[id] — in three fixed groups
+ * (lib/service-levels.ts approvalsForManager). Everything else is company-wide.
+ * Targets and definitions live in lib/service-levels.ts and docs/SERVICE-LEVELS.md.
  */
 export default async function StatusPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
   if (!STATUS_ROLES.includes(session.user.role)) redirect('/home');
 
-  const s = await loadServiceStatus();
   const viewer = session.user.role;
+  // Only the Data Steward counts the whole company's approvals; anyone else
+  // counts their own regions', fail-closed (no regions counts nothing).
+  const scope: ApprovalsScope =
+    viewer === 'STEWARD' ? 'company' : { regionIds: (await loadScope(session.user.id)).managedRegionIds };
+  const s = await loadServiceStatus(scope);
 
   return (
     <main>
       <PageHeader
         title="Service status"
-        subtitle="Whether the system is keeping its promises — measured from what it records. Company-wide figures; no customer is named. Managers see the approval steps in three fixed groups, each shown only when three or more people stand behind it."
+        subtitle={
+          scope === 'company'
+            ? 'Whether the system is keeping its promises — measured from what it records. Company-wide figures; no customer is named.'
+            : 'Whether the system is keeping its promises — measured from what it records. No customer is named. Approvals count the requests in your regions; everything else is company-wide.'
+        }
         actions={
           <p className="text-xs text-slate-500">
             Measured at <span className="font-medium tabular-nums">{omanWhen(s.now, s.now)}</span> Oman time
@@ -57,7 +67,7 @@ export default async function StatusPage() {
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <AvailabilityCard s={s} />
-            <ApprovalsCard s={s} viewer={viewer} />
+            <ApprovalsCard s={s} scope={scope} />
             <SweepCard s={s} />
             <BackupCard s={s} />
             <TemixCard s={s} />
@@ -67,9 +77,9 @@ export default async function StatusPage() {
 
         <section aria-labelledby="queue-heading">
           <h2 id="queue-heading" className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            Approvals waiting right now
+            {scope === 'company' ? 'Approvals waiting right now' : 'Approvals waiting in your regions'}
           </h2>
-          <OpenApprovals s={s} viewer={viewer} />
+          <OpenApprovals s={s} scope={scope} />
         </section>
 
         <section aria-labelledby="jobs-heading">
@@ -107,24 +117,19 @@ const STATUS_TONE: Record<SloStatus, { chip: string; label: string }> = {
   'no-data': { chip: 'bg-slate-100 text-slate-700 ring-slate-200', label: 'Not measured yet' },
 };
 
-const WITHHELD = { chip: 'bg-slate-100 text-slate-700 ring-slate-200', label: 'Steward only' };
-
 function SloCard({
   id,
   status,
   value,
-  withheld = false,
   children,
 }: {
   id: SloId;
   status: SloStatus;
   value: string;
-  /** The figure stands for too few people to show this viewer. */
-  withheld?: boolean;
   children?: React.ReactNode;
 }) {
   const def = sloById(id);
-  const tone = withheld ? WITHHELD : STATUS_TONE[status];
+  const tone = STATUS_TONE[status];
   const target = `Target: ${def.targetLabel}`;
   return (
     <article className="flex flex-col rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
@@ -184,39 +189,26 @@ function TierLine({ label, t }: { label: string; t: { within: number; tracked: n
   );
 }
 
-const FEWER_THAN_THREE = 'fewer than three people decided these in the window, so the figures are shown to the Data Steward only';
-
-function ApprovalsCard({ s, viewer }: { s: ServiceStatus; viewer: string }) {
+function ApprovalsCard({ s, scope }: { s: ServiceStatus; scope: ApprovalsScope }) {
   const a = s.approvals;
-  if (viewer !== 'STEWARD') {
-    // A Manager: fixed groups, figures only where 3+ people stand behind them
+  if (scope !== 'company') {
+    // A Manager: requests in their own regions only, in the three fixed groups
     // (lib/service-levels.ts approvalsForManager).
-    const view = approvalsForManager(a.tiers);
     return (
-      <SloCard
-        id="approvals"
-        status={a.status}
-        value={view.headlineShown ? formatPct(a.ratio) : '—'}
-        withheld={!view.headlineShown}
-      >
-        {view.headlineShown ? (
-          <p className="tabular-nums">
-            {a.good.toLocaleString('en-GB')} of {a.total.toLocaleString('en-GB')} decisions on time
-          </p>
-        ) : (
-          <p>Fewer than three people stand behind these figures, so they are shown to the Data Steward only.</p>
-        )}
-        {view.groups.map((g) =>
-          g.shown ? (
-            <TierLine key={g.group.key} label={g.group.label} t={g.decisions} />
-          ) : (
-            <p key={g.group.key}>
-              {g.group.label}: {FEWER_THAN_THREE}.
-            </p>
-          )
-        )}
-        {view.headlineShown && <Budget left={a.budgetLeft} />}
-        {view.headlineShown && <Since since={a.since} now={s.now} />}
+      <SloCard id="approvals" status={a.status} value={formatPct(a.ratio)}>
+        <p>
+          {scope.regionIds.length === 0
+            ? 'You manage no regions, so no approvals are counted for you.'
+            : 'Requests in your regions only.'}
+        </p>
+        <p className="tabular-nums">
+          {a.good.toLocaleString('en-GB')} of {a.total.toLocaleString('en-GB')} decisions on time
+        </p>
+        {approvalsForManager(a.tiers).map((g) => (
+          <TierLine key={g.group.key} label={g.group.label} t={g.decisions} />
+        ))}
+        <Budget left={a.budgetLeft} />
+        <Since since={a.since} now={s.now} />
       </SloCard>
     );
   }
@@ -322,9 +314,9 @@ function QueueCard({
   q,
 }: {
   label: string;
-  q: { open: number; pastDue: number; oldestWorkingMinutes: number | null } | null;
+  q: { open: number; pastDue: number; oldestWorkingMinutes: number | null };
 }) {
-  const late = q !== null && q.pastDue > 0;
+  const late = q.pastDue > 0;
   return (
     <article
       className={`rounded-lg p-4 shadow-sm ring-1 ${
@@ -332,28 +324,23 @@ function QueueCard({
       }`}
     >
       <h3 className="text-xs font-medium uppercase tracking-wide opacity-70">{label}</h3>
-      <p className="mt-1 text-3xl font-bold tabular-nums">{q === null ? '—' : q.open}</p>
+      <p className="mt-1 text-3xl font-bold tabular-nums">{q.open}</p>
       <p className="mt-1 text-xs tabular-nums opacity-80">
-        {q === null
-          ? 'fewer than three people decide these steps, so the Data Steward sees them'
-          : `${q.pastDue > 0 ? `${q.pastDue} past due` : 'none past due'}${
-              q.oldestWorkingMinutes !== null
-                ? ` · oldest waiting ${formatWorkingMinutes(q.oldestWorkingMinutes)} of working time`
-                : ''
-            }`}
+        {q.pastDue > 0 ? `${q.pastDue} past due` : 'none past due'}
+        {q.oldestWorkingMinutes !== null &&
+          ` · oldest waiting ${formatWorkingMinutes(q.oldestWorkingMinutes)} of working time`}
       </p>
     </article>
   );
 }
 
-function OpenApprovals({ s, viewer }: { s: ServiceStatus; viewer: string }) {
-  if (viewer !== 'STEWARD') {
-    // A Manager: the same three cards every time, whatever is waiting — a card
-    // that appeared only when a step had work would itself say so.
+function OpenApprovals({ s, scope }: { s: ServiceStatus; scope: ApprovalsScope }) {
+  if (scope !== 'company') {
+    // A Manager: their regions' requests, the same three cards every time.
     return (
       <div className="grid gap-3 sm:grid-cols-3">
         {queuesForManager(s.openApprovals).map((g) => (
-          <QueueCard key={g.group.key} label={g.group.label.replace(/ steps?$/, '')} q={g.shown ? g.queue : null} />
+          <QueueCard key={g.group.key} label={g.group.label.replace(/ steps?$/, '')} q={g.queue} />
         ))}
       </div>
     );

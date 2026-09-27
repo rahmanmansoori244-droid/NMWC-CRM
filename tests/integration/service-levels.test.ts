@@ -4,8 +4,9 @@
  * The verdicts are unit-tested (tests/unit/service-levels.test.ts); what only a
  * database can prove is the SQL — date_bin's slot grid lining up with the one
  * slotStarts() walks, bool_or collapsing two schedulers into one slot,
- * percentile_cont over the snapshot minutes, the enum casts, and the whole loader
- * running end to end.
+ * percentile_cont over the snapshot minutes, the enum casts, the whole loader
+ * running end to end, and the region test that decides which approvals a Manager's
+ * figures are made of: exactly the requests /approvals/[id] lets that Manager open.
  *
  * Every row this suite writes is dated in 2099 and every query reads from 2099
  * on, so rows other suites write in parallel cannot change what it asserts.
@@ -21,6 +22,10 @@ const ENABLED = process.env.RUN_SERVICE_LEVELS === '1' && !!process.env.DATABASE
 const sfx = `slo${Date.now().toString(36)}`;
 const T = (iso: string) => new Date(`2099-06-01T${iso}Z`);
 const FROM = new Date('2099-06-01T00:00:00Z');
+// The region fixtures are dated a month earlier, so the company-wide assertions
+// read from FROM see none of them.
+const R = (iso: string) => new Date(`2099-05-10T${iso}Z`);
+const REGION_FROM = new Date('2099-05-01T00:00:00Z');
 
 describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
   let prisma: import('@prisma/client').PrismaClient;
@@ -28,6 +33,13 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
   let userId = '';
   let managerId = '';
   const editIds: string[] = [];
+  // A Manager of region "in"; region "out" is someone else's.
+  const reg = { in: '', out: '', routeIn: '', routeOut: '', routeMoved: '' };
+  const cust: string[] = [];
+  const e = {} as Record<
+    'in' | 'out' | 'deleted' | 'multi' | 'createIn' | 'createMoved' | 'reactIn' | 'reactOut' | 'waitingIn' | 'waitingOut',
+    string
+  >;
 
   beforeAll(async () => {
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
@@ -95,6 +107,109 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       },
     });
     editIds.push(re.id);
+
+    // ── Regions: which requests a Manager of region "in" can open ────────────
+    const rIn = await prisma.region.create({ data: { name: `SLO In ${sfx}`, code: `${sfx}-IN` } });
+    const rOut = await prisma.region.create({ data: { name: `SLO Out ${sfx}`, code: `${sfx}-OUT` } });
+    reg.in = rIn.id;
+    reg.out = rOut.id;
+    const route = (code: string, regionId: string) =>
+      prisma.route.create({ data: { name: `SLO ${code}`, code: `${sfx}-${code}`, regionId } });
+    reg.routeIn = (await route('RIN', rIn.id)).id;
+    reg.routeOut = (await route('ROUT', rOut.id)).id;
+    // Drafted in region "in", then the route is moved to "out" (below): the request
+    // page follows the route's CURRENT region, so the Manager of "in" can no longer open it.
+    reg.routeMoved = (await route('RMOVED', rIn.id)).id;
+
+    const customer = async (key: string, branches: { regionId: string; routeId: string; deleted?: boolean }[]) => {
+      const c = await prisma.customer.create({
+        data: { nmwcCode: `${sfx}-${key}`, legalName: `SLO ${key}`, createdById: userId },
+      });
+      cust.push(c.id);
+      const ids: string[] = [];
+      for (const [i, b] of branches.entries()) {
+        const row = await prisma.branch.create({
+          data: {
+            customerId: c.id, branchCode: `${sfx}-${key}-${i}`, branchName: `SLO ${key} ${i}`, address: 'SLO Way 1',
+            routeId: b.routeId, regionId: b.regionId, status: 'ACTIVE', deletedAt: b.deleted ? R('00:00:00') : null,
+          },
+        });
+        ids.push(row.id);
+      }
+      return { id: c.id, branchIds: ids };
+    };
+    const cIn = await customer('CIN', [{ regionId: rIn.id, routeId: reg.routeIn }]);
+    const cOut = await customer('COUT', [{ regionId: rOut.id, routeId: reg.routeOut }]);
+    const cDeleted = await customer('CDEL', [{ regionId: rIn.id, routeId: reg.routeIn, deleted: true }]);
+    const cMulti = await customer('CMULTI', [
+      { regionId: rOut.id, routeId: reg.routeOut },
+      { regionId: rIn.id, routeId: reg.routeIn },
+    ]);
+
+    // One decided request per case, each with one tracked decision.
+    const decided = async (
+      key: keyof typeof e,
+      data: Record<string, unknown>,
+      role: 'SUPERVISOR' | 'ACCOUNTANT' | 'FINANCE_MANAGER' | 'GM',
+      onTime: boolean,
+      minutes: number
+    ) => {
+      const edit = await prisma.customerEdit.create({
+        data: {
+          target: 'CUSTOMER', submittedById: userId, state: 'APPROVED', fieldChanges: [], attachmentChanges: [],
+          ...data,
+        } as never,
+      });
+      editIds.push(edit.id);
+      e[key] = edit.id;
+      await prisma.editApproval.create({
+        data: {
+          editId: edit.id, cycle: 1, stepIndex: 0, role, decision: 'APPROVED', actorId: userId,
+          at: R(onTime ? '06:00:00' : '14:00:00'), stageEnteredAt: R('04:00:00'), slaDueAt: R('12:00:00'),
+          workingMinutes: minutes,
+        },
+      });
+    };
+    await decided('in', { customerId: cIn.id }, 'SUPERVISOR', true, 60);
+    await decided('out', { customerId: cOut.id }, 'GM', false, 900);
+    await decided('deleted', { customerId: cDeleted.id }, 'FINANCE_MANAGER', true, 30);
+    await decided('multi', { customerId: cMulti.id }, 'ACCOUNTANT', false, 700);
+    const draft = (routeId: string) => ({
+      process: 'CREATE', customerId: null,
+      branchDrafts: { create: [{ branchName: 'SLO draft', regionId: rIn.id, routeId, address: 'SLO Way 2' }] },
+    });
+    await decided('createIn', draft(reg.routeIn), 'SUPERVISOR', true, 90);
+    await decided('createMoved', draft(reg.routeMoved), 'GM', true, 45);
+    await prisma.route.update({ where: { id: reg.routeMoved }, data: { regionId: rOut.id } });
+
+    const reactivation = async (key: 'reactIn' | 'reactOut', c: { id: string; branchIds: string[] }) => {
+      const edit = await prisma.customerEdit.create({
+        data: {
+          target: 'CUSTOMER', submittedById: userId, state: 'APPROVED', isReactivation: true,
+          customerId: c.id, branchId: c.branchIds[0]!, fieldChanges: [], attachmentChanges: [],
+          submittedAt: R('04:00:00'), stageEnteredAt: R('04:00:00'), slaDueAt: R('12:00:00'), reviewedAt: R('05:00:00'),
+          reviewedById: managerId,
+        },
+      });
+      editIds.push(edit.id);
+      e[key] = edit.id;
+    };
+    await reactivation('reactIn', cIn);
+    await reactivation('reactOut', cOut);
+
+    const waiting2 = async (key: 'waitingIn' | 'waitingOut', customerId: string, pendingRole: 'ACCOUNTANT' | 'GM') => {
+      const edit = await prisma.customerEdit.create({
+        data: {
+          target: 'CUSTOMER', submittedById: userId, state: 'SUBMITTED', pendingRole, customerId,
+          submittedAt: R('04:00:00'), stageEnteredAt: R('04:00:00'), slaDueAt: R('12:00:00'),
+          fieldChanges: [], attachmentChanges: [],
+        },
+      });
+      editIds.push(edit.id);
+      e[key] = edit.id;
+    };
+    await waiting2('waitingIn', cIn.id, 'ACCOUNTANT');
+    await waiting2('waitingOut', cOut.id, 'GM');
   });
 
   afterAll(async () => {
@@ -102,6 +217,12 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     await prisma.cronRun.deleteMany({ where: { id: { startsWith: sfx } } });
     // The step ledger is append-only: its rows go with their edit, in a maintenance window.
     if (editIds.length) await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
+    if (cust.length) {
+      await prisma.branch.deleteMany({ where: { customerId: { in: cust } } });
+      await prisma.customer.deleteMany({ where: { id: { in: cust } } });
+    }
+    await prisma.route.deleteMany({ where: { id: { in: [reg.routeIn, reg.routeOut, reg.routeMoved].filter(Boolean) } } });
+    await prisma.region.deleteMany({ where: { id: { in: [reg.in, reg.out].filter(Boolean) } } });
     await prisma.user.deleteMany({ where: { id: { in: [userId, managerId].filter(Boolean) } } });
     await prisma.$disconnect();
   });
@@ -125,14 +246,11 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
   });
 
   it('approval tiers: tracked vs untracked, on time, and percentiles of the snapshot minutes', async () => {
-    const { tiers } = await svc.__internal.approvalTiers(FROM);
+    const { tiers } = await svc.__internal.approvalTiers(FROM, 'company');
     const sup = tiers.find((t) => t.role === 'SUPERVISOR');
-    // One person made all four decisions: the page folds this tier for a Manager.
-    expect(sup).toEqual({
-      role: 'SUPERVISOR', decided: 4, tracked: 3, within: 2, p50Minutes: 120, p90Minutes: 504, people: [userId],
-    });
+    expect(sup).toEqual({ role: 'SUPERVISOR', decided: 4, tracked: 3, within: 2, p50Minutes: 120, p90Minutes: 504 });
     const mgr = tiers.find((t) => t.role === 'MANAGER');
-    expect(mgr).toEqual({ role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120, people: [userId] });
+    expect(mgr).toEqual({ role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120 });
   });
 
   it('the last successful run from Vercel’s own cron, per job — the check before retiring cron-job.org', async () => {
@@ -141,22 +259,88 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     expect(last.get('keep-warm')).toEqual(T('03:00:05'));
   });
 
-  it('the open queue carries the people who can decide each step', async () => {
-    // The seeded request waits at the Supervisor step, which Supervisors and
-    // (as the region fallback) Managers decide. Our active Manager must be among
-    // its holders; the role names read from the users must match the queue's.
-    const tiers = await svc.__internal.openApprovals(new Date('2099-06-02T00:00:00Z'));
-    const sup = tiers.find((t) => t.role === 'SUPERVISOR');
-    expect(sup, 'the waiting Supervisor-step request').toBeDefined();
-    expect(sup!.open).toBeGreaterThanOrEqual(1);
-    expect(sup!.holders).toContain(managerId);
-    const active = await prisma.user.count({ where: { isActive: true, role: { in: ['SUPERVISOR', 'MANAGER'] } } });
-    expect(sup!.holders.length).toBeLessThanOrEqual(active + 5); // other suites add users in parallel
-    expect(sup!.holders.length).toBeGreaterThanOrEqual(1);
+  // ── A Manager's figures: only requests that Manager can already open ──────
+
+  /**
+   * Which of our requests app/(app)/approvals/[id]/page.tsx lets a Manager of
+   * `managed` open: its MANAGER gate, re-implemented over the same relations.
+   */
+  const pageLetsOpen = async (managed: string[]) => {
+    const edits = await prisma.customerEdit.findMany({
+      where: { id: { in: Object.values(e) } },
+      select: {
+        id: true,
+        process: true,
+        branchDrafts: { select: { route: { select: { regionId: true } } } },
+        customer: { select: { branches: { select: { regionId: true, deletedAt: true } } } },
+      },
+    });
+    const open = new Set<string>();
+    for (const edit of edits) {
+      const regionIds =
+        edit.process === 'CREATE'
+          ? edit.branchDrafts.map((b) => b.route.regionId)
+          : (edit.customer?.branches ?? []).filter((b) => !b.deletedAt).map((b) => b.regionId);
+      if (regionIds.some((r) => managed.includes(r))) open.add(edit.id);
+    }
+    return open;
+  };
+
+  it('the region test is the request page’s, in Prisma and in SQL alike', async () => {
+    const all = Object.values(e);
+    for (const managed of [[reg.in], [reg.out], [reg.in, reg.out], [] as string[]]) {
+      const byPage = await pageLetsOpen(managed);
+      const byPrisma = await prisma.customerEdit.findMany({
+        where: { id: { in: all }, ...svc.openableInRegions(managed) },
+        select: { id: true },
+      });
+      const { Prisma } = await import('@prisma/client');
+      const bySql = await prisma.$queryRaw<{ id: string }[]>(
+        Prisma.sql`SELECT e."id" FROM "CustomerEdit" e WHERE e."id" = ANY(${all}::text[]) AND ${svc.__internal.openableInRegionsSql(managed)}`
+      );
+      expect(new Set(byPrisma.map((r) => r.id)), `Prisma, regions ${managed.length}`).toEqual(byPage);
+      expect(new Set(bySql.map((r) => r.id)), `SQL, regions ${managed.length}`).toEqual(byPage);
+    }
+    // The cases themselves: live branch in the region, a multi-region customer,
+    // a draft on a route there now — yes; the other region, a deleted branch, a
+    // draft whose route has since moved away — no.
+    expect(await pageLetsOpen([reg.in])).toEqual(new Set([e.in, e.multi, e.createIn, e.reactIn, e.waitingIn]));
+  });
+
+  it('a Manager’s approval tiers count only those requests; the company’s count every one', async () => {
+    const mine = (await svc.__internal.approvalTiers(REGION_FROM, { regionIds: [reg.in] })).tiers;
+    expect(mine).toEqual([
+      // Enum order (SUPERVISOR before ACCOUNTANT), then reactivations.
+      { role: 'SUPERVISOR', decided: 2, tracked: 2, within: 2, p50Minutes: 75, p90Minutes: 87 },
+      { role: 'ACCOUNTANT', decided: 1, tracked: 1, within: 0, p50Minutes: 700, p90Minutes: 700 },
+      { role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 60, p90Minutes: 60 },
+    ]);
+    // The out-of-region GM decisions and the Finance Manager's on a customer
+    // whose only branch here is deleted are nowhere in it — but the company's has them.
+    const company = (await svc.__internal.approvalTiers(REGION_FROM, 'company')).tiers;
+    expect(company.find((t) => t.role === 'GM')?.decided).toBe(2);
+    expect(company.find((t) => t.role === 'FINANCE_MANAGER')?.decided).toBe(1);
+    // No regions counts nothing.
+    expect((await svc.__internal.approvalTiers(REGION_FROM, { regionIds: [] })).tiers).toEqual([]);
+  });
+
+  it('a Manager’s waiting queues count only those requests too', async () => {
+    const now = new Date('2099-06-02T00:00:00Z');
+    const open = (tiers: { role: string; open: number }[], role: string) => tiers.find((t) => t.role === role)?.open;
+    const mine = await svc.__internal.openApprovals(now, { regionIds: [reg.in] });
+    expect(open(mine, 'ACCOUNTANT')).toBe(1);
+    expect(open(mine, 'GM')).toBe(0);
+    // The request with no customer at all waits at the Supervisor step: nobody's region.
+    expect(open(mine, 'SUPERVISOR')).toBe(0);
+    const none = await svc.__internal.openApprovals(now, { regionIds: [] });
+    expect(none.every((t) => t.open === 0)).toBe(true);
+    const company = await svc.__internal.openApprovals(now, 'company');
+    expect(open(company, 'SUPERVISOR')).toBeGreaterThanOrEqual(1);
+    expect(open(company, 'GM')).toBeGreaterThanOrEqual(1);
   });
 
   it('the whole loader runs against real Postgres and returns verdicts', async () => {
-    const s = await svc.loadServiceStatus(new Date('2099-06-02T00:00:00Z'));
+    const s = await svc.loadServiceStatus('company', new Date('2099-06-02T00:00:00Z'));
     const statuses = ['met', 'at-risk', 'breached', 'no-data'];
     for (const v of [s.availability, s.slaSweep, s.backup, s.approvals]) expect(statuses).toContain(v.status);
     expect(statuses).toContain(s.temix.status);

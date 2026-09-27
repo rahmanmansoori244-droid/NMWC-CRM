@@ -11,8 +11,16 @@ import { withoutErrorText, type ServiceStatus } from '@/lib/service-status';
 const h = vi.hoisted(() => ({
   user: { id: 'u', role: 'STEWARD', username: 'u' } as { id: string; role: string; username: string } | null,
   load: vi.fn(),
+  regions: ['r-north', 'r-south'] as string[],
+  scopeFor: vi.fn(),
 }));
 vi.mock('@/lib/auth', () => ({ auth: async () => (h.user ? { user: h.user } : null) }));
+vi.mock('@/lib/access', () => ({
+  loadScope: async (userId: string) => {
+    h.scopeFor(userId);
+    return { ownedRouteId: null, teamRouteIds: [], managedRegionIds: h.regions };
+  },
+}));
 vi.mock('next/navigation', () => ({
   redirect: (to: string) => {
     throw new Error(`REDIRECT ${to}`);
@@ -29,8 +37,6 @@ import { NAV_BY_ROLE } from '@/components/nmwc/Sidebar';
 import { STATUS_ROLES } from '@/lib/service-levels';
 
 const NOW = new Date('2026-10-05T08:00:00Z');
-const MANAGERS = Array.from({ length: 11 }, (_, i) => `m${i}`);
-const ACCOUNTANTS = Array.from({ length: 7 }, (_, i) => `acc${i}`);
 
 function status(over: Partial<ServiceStatus> = {}): ServiceStatus {
   const slot = { okSlots: 0, failedSlots: 0, silentSlots: 0 };
@@ -45,17 +51,17 @@ function status(over: Partial<ServiceStatus> = {}): ServiceStatus {
     approvals: {
       good: 63, total: 80, ratio: 63 / 80, budgetLeft: -1.125, status: 'breached', since: null, untracked: 3,
       tiers: [
-        { role: 'SUPERVISOR', decided: 43, tracked: 40, within: 30, p50Minutes: 95, p90Minutes: 610, people: MANAGERS },
-        { role: 'GM', decided: 5, tracked: 5, within: 3, p50Minutes: 360, p90Minutes: 840, people: ['gm'] },
-        { role: 'ACCOUNTANT', decided: 35, tracked: 35, within: 30, p50Minutes: 120, p90Minutes: 700, people: ACCOUNTANTS },
+        { role: 'SUPERVISOR', decided: 43, tracked: 40, within: 30, p50Minutes: 95, p90Minutes: 610 },
+        { role: 'GM', decided: 5, tracked: 5, within: 3, p50Minutes: 360, p90Minutes: 840 },
+        { role: 'ACCOUNTANT', decided: 35, tracked: 35, within: 30, p50Minutes: 120, p90Minutes: 700 },
       ],
     },
     openApprovals: [
-      { role: 'SUPERVISOR', open: 4, pastDue: 2, oldestWorkingMinutes: 700, holders: MANAGERS },
-      { role: 'ACCOUNTANT', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: ACCOUNTANTS },
-      { role: 'FINANCE_MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: ['fm'] },
-      { role: 'GM', open: 2, pastDue: 1, oldestWorkingMinutes: 660, holders: ['gm'] },
-      { role: 'MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: MANAGERS },
+      { role: 'SUPERVISOR', open: 4, pastDue: 2, oldestWorkingMinutes: 700 },
+      { role: 'ACCOUNTANT', open: 0, pastDue: 0, oldestWorkingMinutes: null },
+      { role: 'FINANCE_MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null },
+      { role: 'GM', open: 2, pastDue: 1, oldestWorkingMinutes: 660 },
+      { role: 'MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null },
     ],
     temix: { status: 'met', waiting: 0, oldestWaitingSince: null, uploadedAwaitingTemix: 0 },
     imports: { status: 'breached', stuckPromotes: 1, stuckUploads: 0 },
@@ -72,6 +78,8 @@ function status(over: Partial<ServiceStatus> = {}): ServiceStatus {
 
 beforeEach(() => {
   h.load.mockReset().mockResolvedValue(status());
+  h.scopeFor.mockReset();
+  h.regions = ['r-north', 'r-south'];
 });
 afterEach(() => cleanup());
 
@@ -161,7 +169,7 @@ describe('what it says', () => {
       status({
         approvals: {
           good: 188, total: 209, ratio: 188 / 209, budgetLeft: -0.0047, status: 'breached', since: null, untracked: 0,
-          tiers: [{ role: 'SUPERVISOR', decided: 209, tracked: 209, within: 188, p50Minutes: 90, p90Minutes: 480, people: MANAGERS }],
+          tiers: [{ role: 'SUPERVISOR', decided: 209, tracked: 209, within: 188, p50Minutes: 90, p90Minutes: 480 }],
         },
       })
     );
@@ -172,15 +180,50 @@ describe('what it says', () => {
   });
 });
 
-describe('one colleague’s decision speed is not shown to the Managers', () => {
+describe('a Manager’s approval figures are their own regions’ requests, never the company’s', () => {
   const card = () => screen.getByRole('heading', { name: 'Approvals decided within their SLA' }).closest('article')!;
+
+  it('the loader is asked for the Manager’s own regions, and for the whole company only by the Data Steward', async () => {
+    // Company-wide approval figures leaked the GM’s and the Finance Manager’s
+    // records by subtraction under four different rules (lib/service-levels.ts).
+    h.user = { id: 'mgr-1', role: 'MANAGER', username: 'x' };
+    render(await StatusPage());
+    expect(h.scopeFor).toHaveBeenCalledWith('mgr-1');
+    expect(h.load).toHaveBeenCalledTimes(1);
+    expect(h.load.mock.calls[0]![0]).toEqual({ regionIds: ['r-north', 'r-south'] });
+    expect(card().textContent).toContain('Requests in your regions only.');
+    expect(screen.getByRole('heading', { name: 'Approvals waiting in your regions' })).toBeTruthy();
+    cleanup();
+
+    h.user = { id: 'st-1', role: 'STEWARD', username: 'x' };
+    h.load.mockClear();
+    h.scopeFor.mockClear();
+    render(await StatusPage());
+    expect(h.load.mock.calls[0]![0]).toBe('company');
+    expect(h.scopeFor).not.toHaveBeenCalled();
+    expect(card().textContent).not.toContain('your regions');
+  });
+
+  it('a Manager with no regions counts nothing, and is told why', async () => {
+    h.user = { id: 'mgr-2', role: 'MANAGER', username: 'x' };
+    h.regions = [];
+    h.load.mockResolvedValue(
+      status({
+        approvals: { good: 0, total: 0, ratio: null, budgetLeft: null, status: 'no-data', since: null, untracked: 0, tiers: [] },
+        openApprovals: [],
+      })
+    );
+    render(await StatusPage());
+    expect(h.load.mock.calls[0]![0]).toEqual({ regionIds: [] });
+    expect(card().textContent).toContain('You manage no regions, so no approvals are counted for you.');
+  });
 
   it('a Manager sees the GM only inside the credit steps, with the accountants', async () => {
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     const { container } = render(await StatusPage());
     expect(card().textContent).toContain('63 of 80 decisions on time');
     expect(card().textContent).toContain('Supervisor step: 30/40 on time');
-    // GM 3/5 + accountants 30/35 = 33/40, 8 people; no median of medians.
+    // GM 3/5 + accountants 30/35 = 33/40; no median of medians.
     expect(card().textContent).toContain('Accountant, Finance Manager and GM steps: 33/40 on time');
     expect(card().textContent).not.toMatch(/Accountant, Finance Manager and GM steps: 33\/40 on time, median/);
     expect(container.textContent).not.toContain('General manager');
@@ -205,46 +248,27 @@ describe('one colleague’s decision speed is not shown to the Managers', () => 
     expect(a).toEqual(['Supervisor step', 'Accountant, Finance Manager and GM steps', 'Manager (reactivations)']);
   });
 
-  it('with fewer than three people behind all decisions, not even the company-wide figure is shown', async () => {
-    // The first tracked decisions after the deploy can all be one person's.
-    h.user = { id: 'x', role: 'MANAGER', username: 'x' };
-    h.load.mockResolvedValue(
-      status({
-        approvals: {
-          good: 1, total: 2, ratio: 0.5, budgetLeft: -4, status: 'breached', since: new Date('2026-10-04T05:00:00Z'), untracked: 0,
-          tiers: [{ role: 'GM', decided: 2, tracked: 2, within: 1, p50Minutes: 300, p90Minutes: 500, people: ['gm'] }],
-        },
-      })
-    );
-    render(await StatusPage());
-    const text = card().textContent!;
-    expect(text).not.toContain('50.0%');
-    expect(text).not.toContain('1 of 2');
-    expect(text).not.toContain('Error budget');
-    expect(text).not.toContain('Measuring since');
-    expect(text).not.toContain('Missed');
-    expect(text).toContain('Steward only');
-    expect(text).toContain('Fewer than three people stand behind these figures');
-  });
-
-  it('the waiting queues: always the same three cards; a credit-steps queue too few people hold shows no figures', async () => {
+  it('the waiting queues: always the same three cards, the credit steps added together', async () => {
     h.user = { id: 'x', role: 'MANAGER', username: 'x' };
     h.load.mockResolvedValue(
       status({
         openApprovals: [
-          { role: 'SUPERVISOR', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: MANAGERS },
-          { role: 'ACCOUNTANT', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: [] },
-          { role: 'FINANCE_MANAGER', open: 1, pastDue: 1, oldestWorkingMinutes: 550, holders: ['fm'] },
-          { role: 'GM', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: ['gm'] },
-          { role: 'MANAGER', open: 0, pastDue: 0, oldestWorkingMinutes: null, holders: MANAGERS },
+          { role: 'SUPERVISOR', open: 0, pastDue: 0, oldestWorkingMinutes: null },
+          { role: 'FINANCE_MANAGER', open: 1, pastDue: 1, oldestWorkingMinutes: 550 },
+          { role: 'GM', open: 2, pastDue: 0, oldestWorkingMinutes: 100 },
         ],
       })
     );
     const { container } = render(await StatusPage());
     expect(container.textContent).not.toContain('Nothing is waiting for an approver');
-    expect(container.textContent).toContain('fewer than three people decide these steps');
-    // The Finance Manager's one late request is not readable anywhere.
-    expect(container.textContent).not.toMatch(/9 h 10 m/);
+    const cards = [...container.querySelectorAll('section[aria-labelledby="queue-heading"] article')];
+    expect(cards.map((c) => c.querySelector('h3')!.textContent)).toEqual([
+      'Supervisor',
+      'Accountant, Finance Manager and GM',
+      'Manager (reactivations)',
+    ]);
+    expect(cards[1]!.textContent).toContain('3');
+    expect(cards[1]!.textContent).toContain('1 past due · oldest waiting 9 h 10 m of working time');
   });
 
   it('the Data Steward sees every step, and "nothing is waiting" when nothing is', async () => {

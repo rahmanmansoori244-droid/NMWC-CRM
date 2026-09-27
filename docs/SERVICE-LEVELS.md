@@ -17,7 +17,7 @@ with your recommendations"). Change them in both places together.
 | Objective | Target | How it is measured |
 |---|---|---|
 | **The app answers** | 99.5% of slots, 30 days | Every 4 minutes from 07:00 to 19:00 Oman, the keep-warm probe calls the app, which queries its database. A 4-minute slot is good when a probe in it succeeded. A slot with no probe at all counts against the target, because when the app or its database is down the probe cannot record anything, so an outage looks exactly like silence. 99.5% allows 27 four-minute slots in 30 days: about 108 minutes of outage between 07:00 and 19:00. |
-| **Approvals decided within their SLA** | 90% of decisions, 30 days | Every approval step approved or sent back, compared with the time that step was due. The due time is set on the Sunday–Thursday 08:00–17:00 working calendar from the budget frozen when the request was submitted. Reactivations count as the Manager tier. |
+| **Approvals decided within their SLA** | 90% of decisions, 30 days | Every approval step approved or sent back, compared with the time that step was due. The due time is set on the Sunday–Thursday 08:00–17:00 working calendar from the budget frozen when the request was submitted. Reactivations count as the Manager tier. A Manager's page counts only the requests in their own regions (see *Who sees it*). |
 | **The SLA escalation sweep runs** | 95% of half-hours, 30 days | The sweep is due at :15 and :45 from 07:15 to 18:45 Oman. Each half-hour is good when a sweep in it succeeded. If the sweep stops, overdue approvals stop being escalated. |
 | **A backup every night** | 29 of every 30 days | A successful off-Neon database dump on each UTC day. Today is not judged until it is over. |
 | **The ERP hand-off is current** | Nothing waiting over 7 days | The oldest customer waiting for the Temix upload, in the same queue the Temix page counts. |
@@ -69,43 +69,50 @@ since" gives the earliest decision counted.
 ## Who sees it
 
 The Data Steward and the Managers. The page names no customer and shows no error
-text. It reports company-wide counts and durations, which is why a Manager scoped
-to one region may see it.
+text.
 
-Per-step figures are the exception, because some steps have a single holder. The
-General Manager step and the Finance Manager step each have one, so a figure that
-is theirs alone is that colleague's own record.
+Most of it is about the system, not about people: availability, the SLA sweep,
+backups, the ERP hand-off and stuck imports. Those figures are company-wide for
+everyone.
 
-**The Data Steward** sees every step on its own.
+The approvals figures are different. They are made of people's decisions, and
+two steps have a single holder each: the General Manager and the Finance
+Manager. A figure that is theirs alone is that colleague's own record.
 
-**A Manager** sees three fixed groups, always the same three, whatever the data:
+**The Data Steward** sees the whole company, every step on its own.
+
+**A Manager** sees approvals only on requests in their own regions. These are
+exactly the requests the Manager can already open on the
+request's own page (`/approvals/[id]`), which shows every step, who decided it
+and when. The Service status page adds those decisions up. It adds no request,
+decision or time that the Manager could not read there one request at a time.
+A Manager with no regions sees no approvals.
+
+The Manager sees them in three fixed groups, always the same three:
 
 - the Supervisor step;
 - the Accountant, Finance Manager and GM steps together;
 - reactivations.
 
-A group's figures are shown only when at least three different people stand
-behind them: people who decided a measured approval, or, for a waiting queue,
-people who can decide it. Otherwise the group says so and shows no figure. The
-company-wide approvals figure is shown to a Manager only when it too stands for
-three or more people, and when taking the shown groups away from it would still
-leave three or more.
+The facts behind each group are the Manager's to open, but the page does not
+print a running scorecard for the GM or the Finance Manager. The same three
+groups are used for what is waiting now.
 
-Three earlier versions of this rule each leaked the single-holder figures:
+Four earlier versions showed Managers company-wide approvals figures and hid
+any figure that stood for fewer than three people. Each one leaked, because a
+Manager already knows part of any company-wide figure and can subtract it: their
+own decisions, every request in their regions, and the GM-step breaches every
+Manager is notified of. The four rules were:
 
-- hiding a small step, while the company-wide figure above it gave it back by
-  subtraction;
-- folding it in with whichever step was smallest that day, so two page loads gave
-  it back;
+- hiding a small step while the company-wide figure above it gave it back;
+- folding it in with whichever step was smallest that day, so two page loads
+  gave it back;
 - keeping the company-wide figure when only one or two people stood behind
-  everything.
+  everything;
+- counting the viewing Manager as one of the three people.
 
-The fixed groups close all three.
-
-**What no rule hides:** a live figure compared across two page loads shows the
-decisions made in between. If exactly one decision happened in between, and it
-was the GM's, the change is that decision. This is true of any live total, and
-the page is live on purpose.
+Counting only requests the Manager can already open ends that whole class,
+because nothing is left to subtract down to.
 
 The error text of a failed job stays behind the monitor bearer on `/api/health`
 (OPERATIONS.md §5d).

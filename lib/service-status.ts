@@ -6,18 +6,18 @@
  * Not a server action (no 'use server'), so nothing here is callable from the
  * browser; the page gates the role before calling it.
  *
- * Every figure is a company-wide count or duration: no customer is named and no
- * person is named. That is why a region-scoped Manager may see it (the same call
- * as /api/perf-probe, AUDITOR-BRIEF §5). Two things keep it that way:
+ * No customer is named and no person is named. Two things keep it that way:
  *   - a job's last error text is dropped here (withoutErrorText): it is scrubbed,
  *     but it stays behind the monitor bearer (lib/heartbeat.ts);
- *   - per-step figures carry the set of people behind them, and a Manager sees
- *     fixed groups of steps whose figures are shown only when at least
- *     MIN_PEOPLE_FOR_TIER_DETAIL people stand behind them, nor anything derivable
- *     that stands for fewer (lib/service-levels.ts approvalsForManager,
- *     queuesForManager). The General Manager and Finance Manager steps have one
- *     holder each, so their step IS one colleague's decision speed (reviews of
- *     2026-09-27).
+ *   - the approval figures are people's decisions, so for anyone but the Data
+ *     Steward they are read from the requests in the viewer's own regions only
+ *     (ApprovalsScope, openableInRegions): requests that viewer can already open at
+ *     /approvals/[id], every step with who decided it and when. Company-wide
+ *     approval figures leaked single-holder steps (the GM, the Finance Manager)
+ *     by subtraction under four different rules (reviews of 2026-09-27;
+ *     lib/service-levels.ts approvalsForManager says how).
+ * Everything else is a company-wide count or duration about the system, not a
+ * person, the same call as /api/perf-probe (AUDITOR-BRIEF §5).
  *
  * Bounded reads: CronRun by (key, at), at most 30 days of one job; approval
  * decisions by the EditApproval (at) index, aggregated in SQL to one row per tier;
@@ -27,7 +27,7 @@
  * chart. Acceptable at this page's audience and this data's size; an index on
  * CustomerEdit(reviewedAt) would fix both if either grows.
  */
-import { EditState, ImportBatchStatus, Role } from '@prisma/client';
+import { EditState, ImportBatchStatus, Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { loadHeartbeatReport, type HeartbeatReport } from './heartbeat';
 import { TEMIX_QUEUE_WHERE } from './temix';
@@ -61,9 +61,46 @@ export type OpenTier = {
   pastDue: number;
   /** Working minutes the oldest open step has waited. */
   oldestWorkingMinutes: number | null;
-  /** The active people who can decide this step (user ids; see queuesForManager). Never rendered. */
-  holders: string[];
 };
+
+/**
+ * Whose approvals the figures count: the whole company (the Data Steward), or the
+ * requests in these regions (anyone else — a Manager's `managedRegionIds`; none
+ * at all counts nothing).
+ */
+export type ApprovalsScope = 'company' | { regionIds: string[] };
+
+/**
+ * The requests a Manager of these regions can open at /approvals/[id], by the
+ * test that page applies: a CREATE by the CURRENT region of its draft branches'
+ * routes, anything else by the customer's live branches. Built only from these,
+ * a figure adds nothing that Manager could not already read one request at a
+ * time. openableInRegionsSql is the same test for the raw queries;
+ * tests/integration/service-levels.test.ts holds both to the page's.
+ */
+export function openableInRegions(regionIds: string[]): Prisma.CustomerEditWhereInput {
+  return {
+    OR: [
+      { process: 'CREATE', branchDrafts: { some: { route: { regionId: { in: regionIds } } } } },
+      {
+        process: { not: 'CREATE' },
+        customer: { branches: { some: { regionId: { in: regionIds }, deletedAt: null } } },
+      },
+    ],
+  };
+}
+
+/** openableInRegions over the CustomerEdit aliased `e`. */
+function openableInRegionsSql(regionIds: string[]): Prisma.Sql {
+  return Prisma.sql`(
+    (e."process" = 'CREATE' AND EXISTS (
+       SELECT 1 FROM "EditBranchDraft" d JOIN "Route" r ON r."id" = d."routeId"
+        WHERE d."editId" = e."id" AND r."regionId" = ANY(${regionIds}::text[])))
+    OR (e."process" <> 'CREATE' AND EXISTS (
+       SELECT 1 FROM "Branch" b
+        WHERE b."customerId" = e."customerId" AND b."deletedAt" IS NULL
+          AND b."regionId" = ANY(${regionIds}::text[]))))`;
+}
 
 export type ServiceStatus = {
   now: Date;
@@ -167,7 +204,10 @@ async function runs(key: string, from: Date): Promise<RunSample[]> {
  * those records rather than from the snapshot date; `firstCounted` says when the
  * earliest decision counted in the window was made.
  */
-async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firstCounted: Date | null }> {
+async function approvalTiers(
+  from: Date,
+  scope: ApprovalsScope
+): Promise<{ tiers: TierDecisions[]; firstCounted: Date | null }> {
   const steps = await prisma.$queryRaw<
     {
       role: string;
@@ -176,23 +216,20 @@ async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firs
       within: number;
       p50: number | null;
       p90: number | null;
-      people: string[] | null;
     }[]
   >`
-    SELECT "role"::text AS "role",
+    SELECT a."role"::text AS "role",
            count(*)::int AS "decided",
-           count(*) FILTER (WHERE "slaDueAt" IS NOT NULL)::int AS "tracked",
-           count(*) FILTER (WHERE "slaDueAt" IS NOT NULL AND "at" <= "slaDueAt")::int AS "within",
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY "workingMinutes") FILTER (WHERE "slaDueAt" IS NOT NULL) AS "p50",
-           percentile_cont(0.9) WITHIN GROUP (ORDER BY "workingMinutes") FILTER (WHERE "slaDueAt" IS NOT NULL) AS "p90",
-           -- The people behind the figures above: tracked decisions only. Counting
-           -- every decider in the window let a tier whose only tracked decisions
-           -- were one person's pass the three-person rule (review of f05752e).
-           array_agg(DISTINCT "actorId") FILTER (WHERE "slaDueAt" IS NOT NULL) AS "people"
-      FROM "EditApproval"
-     WHERE "at" >= ${from}
-     GROUP BY "role"
-     ORDER BY "role"`;
+           count(*) FILTER (WHERE a."slaDueAt" IS NOT NULL)::int AS "tracked",
+           count(*) FILTER (WHERE a."slaDueAt" IS NOT NULL AND a."at" <= a."slaDueAt")::int AS "within",
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY a."workingMinutes") FILTER (WHERE a."slaDueAt" IS NOT NULL) AS "p50",
+           percentile_cont(0.9) WITHIN GROUP (ORDER BY a."workingMinutes") FILTER (WHERE a."slaDueAt" IS NOT NULL) AS "p90"
+      FROM "EditApproval" a
+      JOIN "CustomerEdit" e ON e."id" = a."editId"
+     WHERE a."at" >= ${from}
+       ${scope === 'company' ? Prisma.empty : Prisma.sql`AND ${openableInRegionsSql(scope.regionIds)}`}
+     GROUP BY a."role"
+     ORDER BY a."role"`;
   const [first] = await prisma.$queryRaw<{ first: Date | null }[]>`
     SELECT min("at") AS "first" FROM "EditApproval" WHERE "slaDueAt" IS NOT NULL`;
 
@@ -203,7 +240,6 @@ async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firs
     within: s.within,
     p50Minutes: s.p50 === null ? null : Math.round(Number(s.p50)),
     p90Minutes: s.p90 === null ? null : Math.round(Number(s.p90)),
-    people: s.people ?? [],
   }));
   let firstCounted: Date | null = first?.first ?? null;
 
@@ -212,18 +248,17 @@ async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firs
       isReactivation: true,
       reviewedAt: { gte: from },
       state: { in: [EditState.APPROVED, EditState.NEEDS_CORRECTION] },
+      ...(scope === 'company' ? {} : { AND: [openableInRegions(scope.regionIds)] }),
     },
-    select: { stageEnteredAt: true, submittedAt: true, slaDueAt: true, reviewedAt: true, reviewedById: true },
+    select: { stageEnteredAt: true, submittedAt: true, slaDueAt: true, reviewedAt: true },
   });
   if (reactivations.length > 0) {
     const minutes: number[] = [];
-    const people = new Set<string>();
     let tracked = 0;
     let within = 0;
     for (const r of reactivations) {
       if (!r.reviewedAt || !r.slaDueAt) continue;
       tracked += 1;
-      if (r.reviewedById) people.add(r.reviewedById);
       if (r.reviewedAt.getTime() <= r.slaDueAt.getTime()) within += 1;
       if (!firstCounted || r.reviewedAt.getTime() < firstCounted.getTime()) firstCounted = r.reviewedAt;
       const entered = r.stageEnteredAt ?? r.submittedAt;
@@ -236,7 +271,6 @@ async function approvalTiers(from: Date): Promise<{ tiers: TierDecisions[]; firs
       within,
       p50Minutes: percentile(minutes, 0.5),
       p90Minutes: percentile(minutes, 0.9),
-      people: [...people],
     });
   }
   return { tiers, firstCounted };
@@ -252,31 +286,17 @@ export function percentile(values: number[], p: number): number | null {
   return Math.round(s[lo]! + (s[hi]! - s[lo]!) * (pos - lo));
 }
 
-/**
- * Who can decide each step: its role's active accounts. Managers also decide the
- * Supervisor step (the region fallback), and the MANAGER queue is reactivations.
- */
-export function holdersByStep(active: { id: string; role: string }[]): (step: string) => string[] {
-  const roles = (step: string) => (step === Role.SUPERVISOR ? [Role.SUPERVISOR, Role.MANAGER] : [step]);
-  return (step) => active.filter((u) => (roles(step) as string[]).includes(u.role)).map((u) => u.id);
-}
-
-async function openApprovals(now: Date): Promise<OpenTier[]> {
-  const [rows, active] = await Promise.all([
-    prisma.$queryRaw<{ role: string; open: number; pastDue: number; oldest: Date | null }[]>`
-      SELECT COALESCE("pendingRole"::text, 'SUPERVISOR') AS "role",
-             count(*)::int AS "open",
-             count(*) FILTER (WHERE "slaDueAt" < ${now})::int AS "pastDue",
-             min(COALESCE("stageEnteredAt", "submittedAt")) AS "oldest"
-        FROM "CustomerEdit"
-       WHERE "state" = 'SUBMITTED'
-       GROUP BY 1`,
-    // A few dozen accounts: read once, to know who stands behind each queue.
-    prisma.user.findMany({ where: { isActive: true }, select: { id: true, role: true } }),
-  ]);
-  const holders = holdersByStep(active);
-  // Every step, waiting or not: a Manager's cards must not appear or vanish with
-  // the data (lib/service-levels.ts queuesForManager).
+async function openApprovals(now: Date, scope: ApprovalsScope): Promise<OpenTier[]> {
+  const rows = await prisma.$queryRaw<{ role: string; open: number; pastDue: number; oldest: Date | null }[]>`
+    SELECT COALESCE(e."pendingRole"::text, 'SUPERVISOR') AS "role",
+           count(*)::int AS "open",
+           count(*) FILTER (WHERE e."slaDueAt" < ${now})::int AS "pastDue",
+           min(COALESCE(e."stageEnteredAt", e."submittedAt")) AS "oldest"
+      FROM "CustomerEdit" e
+     WHERE e."state" = 'SUBMITTED'
+       ${scope === 'company' ? Prisma.empty : Prisma.sql`AND ${openableInRegionsSql(scope.regionIds)}`}
+     GROUP BY 1`;
+  // Every step, waiting or not, so the page lists the same steps whatever waits.
   const byRole = new Map(rows.map((r) => [r.role, r]));
   const roles = [...STEP_ROLES, ...rows.map((r) => r.role).filter((r) => !STEP_ROLES.includes(r))];
   return roles.map((role) => {
@@ -286,7 +306,6 @@ async function openApprovals(now: Date): Promise<OpenTier[]> {
       open: r?.open ?? 0,
       pastDue: r?.pastDue ?? 0,
       oldestWorkingMinutes: r?.oldest ? workingMinutesBetween(r.oldest, now) : null,
-      holders: holders(role),
     };
   });
 }
@@ -332,7 +351,11 @@ async function imports(now: Date): Promise<ServiceStatus['imports']> {
   return { status: importsStatus(stuckPromotes, stuckUploads), stuckPromotes, stuckUploads };
 }
 
-export async function loadServiceStatus(now: Date = new Date()): Promise<ServiceStatus> {
+/**
+ * `scope` has no default: every caller says whose approvals it counts, and only
+ * the Data Steward's may be 'company' (app/(app)/status/page.tsx).
+ */
+export async function loadServiceStatus(scope: ApprovalsScope, now: Date = new Date()): Promise<ServiceStatus> {
   const nominal = (days: number) => new Date(now.getTime() - days * DAY);
   const first = await firstRuns();
   const kwFirst = first.get('keep-warm') ?? null;
@@ -354,8 +377,8 @@ export async function loadServiceStatus(now: Date = new Date()): Promise<Service
       availabilityFrom ? p95DbMs(availabilityFrom) : Promise.resolve(null),
       sweepFrom ? runs('sla-escalate', floorTo(sweepFrom, 30 * MIN, 15 * MIN)) : Promise.resolve([]),
       backupFrom ? runs('db-backup', floorTo(backupFrom, DAY)) : Promise.resolve([]),
-      approvalTiers(approvalsNominal),
-      openApprovals(now),
+      approvalTiers(approvalsNominal, scope),
+      openApprovals(now, scope),
       temix(now),
       imports(now),
       loadHeartbeatReport(now),
@@ -388,4 +411,12 @@ function floorTo(d: Date, step: number, offset = 0): Date {
 }
 
 /** Exported for the integration test, which runs the real SQL. */
-export const __internal = { keepWarmSlots, approvalTiers, openApprovals, firstRuns, p95DbMs, lastVercelRuns };
+export const __internal = {
+  keepWarmSlots,
+  approvalTiers,
+  openApprovals,
+  firstRuns,
+  p95DbMs,
+  lastVercelRuns,
+  openableInRegionsSql,
+};
