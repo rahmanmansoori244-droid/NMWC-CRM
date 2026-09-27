@@ -65,3 +65,19 @@ describe('every fix action', () => {
     expect(r).toContain('Role.STEWARD');
   });
 });
+
+// Owner decision 2026-09-27 + pre-merge review: the empty-phone fill reads the
+// customer under its row lock and writes only where the phone is still empty,
+// so a phone approved on an edit meanwhile is never overwritten.
+describe('the empty-phone fill never overwrites a phone', () => {
+  it('reads the customer afresh and writes with a condition on the phone being empty', () => {
+    const at = imports.indexOf('let phoneNow = now.primaryPhoneNorm;');
+    expect(at).toBeGreaterThan(-1);
+    const before = imports.slice(at - 900, at);
+    expect(before).toMatch(/const now = await tx\.customer\.findUnique\(\{\s*where: \{ id: customerId \}/);
+    expect(before).not.toMatch(/: existing;/);
+    const fill = imports.slice(at, at + 2000);
+    expect(fill).toMatch(/tx\.customer\.updateMany\(\{\s*where: \{ id: customerId, OR: \[\{ primaryPhoneNorm: null \}, \{ primaryPhoneNorm: '' \}\] \}/);
+    expect(fill).toMatch(/if \(wrote\.count === 1\)/);
+  });
+});

@@ -44,6 +44,8 @@ export type FixBlocks = {
   blocked: Map<string, string>;
   /** For a row a fix only brought back with it: the row number of the row that fix acted on. */
   releasedWith: Map<string, number>;
+  /** Of those, the rows whose acted row is held back again: they load without it. */
+  releasedAlone: Set<string>;
   /**
    * Held-back rows whose fix can still be withdrawn: the row a fix acted on,
    * come back held back, while rows that fix released wait CLEAN
@@ -67,6 +69,7 @@ export async function fixBlocks(
   const blocked = new Map<string, string>();
   const releasedWith = new Map<string, number>();
   const withdrawable = new Set<string>();
+  const releasedAlone = new Set<string>();
   const targets: FixTarget[] = [];
   // How to word a hit on each target, keyed like the targets.
   const say = new Map<string, { rowId: string; message: (code: string, n: Parameters<typeof newerUploadMessage>[1]) => string }>();
@@ -140,7 +143,12 @@ export async function fixBlocks(
       // The acted row may itself have come back held back: look in every row read.
       const acted = all.find((m) => m.id === unit);
       for (const m of list) {
-        if (shown.has(m.id) && p(m.parsed).fixedInApp !== true && acted) releasedWith.set(m.id, acted.rowNumber);
+        if (shown.has(m.id) && p(m.parsed).fixedInApp !== true && acted) {
+          releasedWith.set(m.id, acted.rowNumber);
+          // Promote loads only CLEAN rows: with the acted row held back again,
+          // this one loads without it (pre-merge review — it said "loads with it").
+          if (acted.state !== 'CLEAN') releasedAlone.add(m.id);
+        }
       }
       if (list.some((m) => fixWindowClosed(m.createdAt))) {
         for (const m of list) if (shown.has(m.id)) blocked.set(m.id, fixExpiredMessage(m.rowNumber));
@@ -175,7 +183,7 @@ export async function fixBlocks(
       const m = unitHit.get(unit);
       if (m && !blocked.has(id)) blocked.set(id, m);
     }
-    return { blocked, releasedWith, withdrawable };
+    return { blocked, releasedWith, releasedAlone, withdrawable };
   }
 
   const hits = targets.length ? await newerUploadsCarrying(db, batch.uploadedAt, targets) : new Map();
@@ -184,5 +192,5 @@ export async function fixBlocks(
     const how = say.get(t.key);
     if (n && how && !blocked.has(how.rowId)) blocked.set(how.rowId, how.message(t.code, n));
   }
-  return { blocked, releasedWith, withdrawable };
+  return { blocked, releasedWith, releasedAlone, withdrawable };
 }

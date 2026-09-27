@@ -110,7 +110,12 @@ export default async function ImportBatchPage({
         batch,
         displayRows.map((r) => ({ ...r, hasData: uploadedValues(r.raw).length > 0 }))
       )
-    : { blocked: new Map<string, string>(), releasedWith: new Map<string, number>(), withdrawable: new Set<string>() };
+    : {
+        blocked: new Map<string, string>(),
+        releasedWith: new Map<string, number>(),
+        releasedAlone: new Set<string>(),
+        withdrawable: new Set<string>(),
+      };
   // Customers linked to Temix: a fix loads only the row's branch there, so the
   // row says so before the Steward corrects a customer-level cell or releases
   // a phone that would not be written (post-merge review).
@@ -315,6 +320,7 @@ export default async function ImportBatchPage({
                             state={r.state as 'QUARANTINED' | 'REJECTED' | 'CLEAN'}
                             superseded={blocked}
                             releasedWith={released ? (fb.releasedWith.get(r.id) ?? null) : null}
+                            releasedAlone={fb.releasedAlone.has(r.id)}
                             canWithdraw={fb.withdrawable.has(r.id)}
                             linkedToTemix={
                               linked &&

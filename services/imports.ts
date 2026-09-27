@@ -2013,18 +2013,19 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // (post-merge review). Compared with the customer as it stands after
             // this group's own writes.
             if (linked && isFixed.some(Boolean)) {
-              const now = fullLane
-                ? await tx.customer.findUnique({
-                    where: { id: customerId },
-                    select: {
-                      legalName: true,
-                      primaryPhoneNorm: true,
-                      crNumberNorm: true,
-                      contactPerson: true,
-                      channel: { select: { key: true } },
-                    },
-                  })
-                : existing;
+              // Read now, under the customer's row lock (every lane holds it by
+              // here): `existing` was read before it, so a phone approved on an
+              // edit meanwhile read as none, and was overwritten (pre-merge review).
+              const now = await tx.customer.findUnique({
+                where: { id: customerId },
+                select: {
+                  legalName: true,
+                  primaryPhoneNorm: true,
+                  crNumberNorm: true,
+                  contactPerson: true,
+                  channel: { select: { key: true } },
+                },
+              });
               if (now) {
                 // Owner decision 2026-09-27: the phone on a row fixed in the app
                 // FILLS the customer's phone when it has none — every go-live
@@ -2033,10 +2034,22 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // Never over a phone the customer has. Queued for Temix, like
                 // any change to what Temix holds.
                 let phoneNow = now.primaryPhoneNorm;
-                const fill = phoneNow ? null : (g.parsed.find((p, i) => isFixed[i] && p.phone)?.phone ?? null);
+                // The phone the Steward released or corrected first, then any
+                // fixed row's: the lowest row number used to win over the one the
+                // Steward had acted on (pre-merge review).
+                const fixedWithPhone = g.parsed
+                  .map((p, i) => ({ p, i }))
+                  .filter(({ p, i }) => isFixed[i] && p.phone);
+                const chosen =
+                  fixedWithPhone.find(({ i }) => {
+                    const c = readCorrections(g.corrections[i]);
+                    return !!c.phoneReleased || c.cells?.phone !== undefined;
+                  }) ?? fixedWithPhone[0];
+                const fill = phoneNow ? null : (chosen?.p.phone ?? null);
                 if (fill) {
-                  await tx.customer.update({
-                    where: { id: customerId },
+                  // Written only where the phone is still empty, whatever was read.
+                  const wrote = await tx.customer.updateMany({
+                    where: { id: customerId, OR: [{ primaryPhoneNorm: null }, { primaryPhoneNorm: '' }] },
                     data: {
                       primaryPhone: fill,
                       primaryPhoneNorm: fill,
@@ -2045,11 +2058,13 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                       version: { increment: 1 },
                     },
                   });
-                  await tx.customer.updateMany({
-                    where: { id: customerId, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
-                    data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
-                  });
-                  phoneNow = fill;
+                  if (wrote.count === 1) {
+                    await tx.customer.updateMany({
+                      where: { id: customerId, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
+                      data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
+                    });
+                    phoneNow = fill;
+                  }
                 }
                 const stored = {
                   legalName: now.legalName,

@@ -35,6 +35,7 @@ export function RowActions({
   superseded,
   linkedToTemix = false,
   releasedWith = null,
+  releasedAlone = false,
   canWithdraw = false,
 }: {
   rowId: string;
@@ -62,6 +63,8 @@ export function RowActions({
   linkedToTemix?: boolean;
   /** CLEAN only: the row a fix acted on, when this row only came back with it. */
   releasedWith?: number | null;
+  /** That row is held back again, so this one loads without it. */
+  releasedAlone?: boolean;
   /** A held-back row whose fix can still be withdrawn (rows it released wait CLEAN). */
   canWithdraw?: boolean;
 }) {
@@ -137,7 +140,11 @@ export function RowActions({
     return (
       <div className="grid gap-1 text-xs">
         {releasedWith != null && (
-          <p className="text-slate-600">Came back with the fix of row {releasedWith} and loads with it.</p>
+          <p className="text-slate-600">
+            {releasedAlone
+              ? `Came back with the fix of row ${releasedWith}, which is held back again: this row loads without it unless you withdraw the fix.`
+              : `Came back with the fix of row ${releasedWith} and loads with it.`}
+          </p>
         )}
         {superseded ? (
           <p className="text-red-700">{superseded}</p>

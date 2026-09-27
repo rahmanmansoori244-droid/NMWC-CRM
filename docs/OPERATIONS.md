@@ -558,7 +558,9 @@ The rotation is audit-logged.
    - Only the row the Steward acts on counts as fixed. A rejected row takes its customer's other
      rejected rows in the batch back to CLEAN with it, as the plain rows they were; the page says
      so on them ("came back with the fix of row N"). All the rows one fix brought back form one
-     unit (`parsed.fixGroup`): they load together or not at all, and **Withdraw fix** — offered on
+     unit (`parsed.fixGroup`): promote rejects them together when one is overtaken or past the fix
+     window (a row of the unit held back again does not load, and the page says the others load
+     without it), and **Withdraw fix** — offered on
      any of them, and on the acted row when it came back held back — takes back exactly them,
      never a separate fix of the same customer. A row of the unit fixed again on its own stays
      in the unit. A promoted batch that a fix set

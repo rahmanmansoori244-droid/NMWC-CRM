@@ -877,6 +877,28 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     expect((await rowsOf(b)).map((r) => r.state)).toEqual(['REJECTED', 'REJECTED', 'REJECTED']);
   });
 
+  it('a customer linked to Temix with no phone takes the phone the Steward released, not a lower row\'s', async () => {
+    const Q = `${P}-PMQ`;
+    await prisma.customer.create({
+      data: { nmwcCode: `${P}-PMHOLD17`, legalName: 'ZZ Holder 17', paymentTerms: 'CASH', primaryPhone: phone(17), primaryPhoneNorm: `+968${phone(17)}` },
+    });
+    const cust = await prisma.customer.create({
+      data: { nmwcCode: Q, legalName: 'ZZ Quebec CRM', temixCode: Q, paymentTerms: 'CASH', temixSyncState: 'SYNCED' },
+    });
+    const b = await upload([
+      { cust_code: Q, cust_name: 'ZZ Quebec', branch_code: `${Q}-01`, address: 'Way 68, Muscat', phone: phone(16), day_of_visit: 'XX', temix_code: Q },
+      { cust_code: Q, cust_name: 'ZZ Quebec', branch_code: `${Q}-02`, address: 'Way 69, Muscat', phone: phone(17), temix_code: Q },
+    ]);
+    const [q1, q2] = await rowsOf(b);
+    expect([q1.state, q2.state]).toEqual(['QUARANTINED', 'QUARANTINED']);
+    expect(await fixes.correctImportRowAction(fd({ rowId: q1.id, cells: JSON.stringify({ day_of_visit: 'SUN' }) }))).toMatchObject({ ok: true });
+    expect(await fixes.releaseImportRowPhoneAction(fd({ rowId: q2.id, reason: 'same owner, head office' }))).toMatchObject({ ok: true });
+    await promoteFully(imports, b);
+    const after = await prisma.customer.findUniqueOrThrow({ where: { id: cust.id } });
+    expect(after.primaryPhoneNorm).toBe(`+968${phone(17)}`);
+    expect(after.temixSyncState).toBe('PENDING_UPLOAD');
+  });
+
   it('a fixed row that came back held back can still withdraw its fix, taking back the rows it released', async () => {
     const O = `${P}-PMO`;
     const b = await upload([

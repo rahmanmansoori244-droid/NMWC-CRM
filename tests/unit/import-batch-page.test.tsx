@@ -375,7 +375,8 @@ describe('/import/[batchId]', () => {
     const rowOf = (n: string) => screen.getByText(n).closest('tr')!;
     const buttons = (n: string) => within(rowOf(n)).queryAllByRole('button').map((b) => b.textContent);
     expect(buttons('#2')).toContain('Withdraw fix');
-    expect(rowOf('#3').textContent).toMatch(/Came back with the fix of row 2/);
+    // Promote loads only CLEAN rows: this one would load without row 2, and says so.
+    expect(rowOf('#3').textContent).toMatch(/Came back with the fix of row 2, which is held back again: this row loads without it unless you withdraw the fix/);
     // Nothing of its fix is waiting: a held-back row is fixed or excluded, not withdrawn.
     expect(buttons('#4')).not.toContain('Withdraw fix');
   });
