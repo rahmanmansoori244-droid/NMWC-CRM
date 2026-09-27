@@ -208,9 +208,16 @@ async function grant() {
     // state, so nothing surfaces it; the docstring's promise that re-running is
     // always safe made it likelier, not less. GRANT and REVOKE are transactional
     // DDL in PostgreSQL, so this costs nothing.
-    await owner.$transaction(async (tx) => {
-      for (const s of stmts) await tx.$executeRawUnsafe(s);
-    });
+    // An explicit budget: Prisma's 5 s default is one round trip per statement too
+    // short once the set grew past twenty statements over a slow link — run from an
+    // operator's machine on 2026-09-27 it timed out and rolled back (whole, so
+    // harmlessly). CI and GitHub-hosted runs sit next to the database.
+    await owner.$transaction(
+      async (tx) => {
+        for (const s of stmts) await tx.$executeRawUnsafe(s);
+      },
+      { maxWait: 10_000, timeout: 120_000 }
+    );
     console.log(`role ${ROLE}: grants applied by ${me} on ${db} (${stmts.length} statements, one transaction)`);
   } finally {
     await owner.$disconnect();
