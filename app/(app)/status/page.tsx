@@ -6,12 +6,16 @@ import {
   STATUS_ROLES,
   TEMIX_BACKLOG_MAX_DAYS,
   formatAge,
+  formatBudget,
   formatPct,
   formatWorkingMinutes,
   sloById,
+  tiersForViewer,
   type SloId,
   type SloStatus,
+  type TierDecisions,
 } from '@/lib/service-levels';
+import type { OpenTier } from '@/lib/service-status';
 import { omanWhen } from '@/lib/submission';
 
 export const metadata = { title: 'Service status · NMWC' };
@@ -22,9 +26,10 @@ export const dynamic = 'force-dynamic';
  * working" has an answer before a user has to complain.
  *
  * Steward and Managers (STATUS_ROLES). Everything on it is a company-wide count
- * or duration: no customer, no person, and no error text (lib/service-status.ts).
- * Targets and definitions live in lib/service-levels.ts and
- * docs/SERVICE-LEVELS.md.
+ * or duration, with no customer, no error text and no named person. A step one
+ * or two people decide is folded away for a Manager, because its figures would
+ * be that colleague's own (lib/service-levels.ts tiersForViewer). Targets and
+ * definitions live in lib/service-levels.ts and docs/SERVICE-LEVELS.md.
  */
 export default async function StatusPage() {
   const session = await auth();
@@ -32,12 +37,13 @@ export default async function StatusPage() {
   if (!STATUS_ROLES.includes(session.user.role)) redirect('/home');
 
   const s = await loadServiceStatus();
+  const viewer = session.user.role;
 
   return (
     <main>
       <PageHeader
         title="Service status"
-        subtitle="Whether the system is keeping its promises — measured from what it records. Company-wide figures; no customer or person is named."
+        subtitle="Whether the system is keeping its promises — measured from what it records. Company-wide figures; no customer is named, and no approval step decided by fewer than three people is shown on its own to a Manager."
         actions={
           <p className="text-xs text-slate-500">
             Measured at <span className="font-medium tabular-nums">{omanWhen(s.now, s.now)}</span> Oman time
@@ -52,7 +58,7 @@ export default async function StatusPage() {
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <AvailabilityCard s={s} />
-            <ApprovalsCard s={s} />
+            <ApprovalsCard s={s} viewer={viewer} />
             <SweepCard s={s} />
             <BackupCard s={s} />
             <TemixCard s={s} />
@@ -64,7 +70,7 @@ export default async function StatusPage() {
           <h2 id="queue-heading" className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
             Approvals waiting right now
           </h2>
-          <OpenApprovals s={s} />
+          <OpenApprovals s={s} viewer={viewer} />
         </section>
 
         <section aria-labelledby="jobs-heading">
@@ -136,9 +142,8 @@ function Since({ since, now }: { since: Date | null; now: Date }) {
 }
 
 function Budget({ left }: { left: number | null }) {
-  if (left === null) return null;
-  const pct = Number.isFinite(left) ? Math.round(left * 100) : -100;
-  return <p>{pct >= 0 ? `${pct}% of the error budget left` : 'Error budget spent'}</p>;
+  const line = formatBudget(left);
+  return line ? <p>{line}</p> : null;
 }
 
 function AvailabilityCard({ s }: { s: ServiceStatus }) {
@@ -163,11 +168,31 @@ const TIER_LABEL: Record<string, string> = {
   FINANCE_MANAGER: 'Finance manager step',
   GM: 'General manager step',
   MANAGER: 'Manager (reactivations)',
+  OTHER: 'Other steps together',
 };
 
-function ApprovalsCard({ s }: { s: ServiceStatus }) {
+/** Several hidden tiers shown together as one line. */
+function foldDecisions(hidden: TierDecisions[]): TierDecisions {
+  return {
+    role: 'OTHER',
+    decided: hidden.reduce((n, t) => n + t.decided, 0),
+    tracked: hidden.reduce((n, t) => n + t.tracked, 0),
+    within: hidden.reduce((n, t) => n + t.within, 0),
+    // A median of medians would be a number nobody measured.
+    p50Minutes: null,
+    p90Minutes: null,
+    people: hidden.reduce((n, t) => n + t.people, 0),
+  };
+}
+
+function ApprovalsCard({ s, viewer }: { s: ServiceStatus; viewer: string }) {
   const a = s.approvals;
-  const tiers = a.tiers.filter((t) => t.decided > 0);
+  const tiers = tiersForViewer(
+    a.tiers.filter((t) => t.decided > 0),
+    (t) => t.people,
+    viewer,
+    foldDecisions
+  );
   return (
     <SloCard id="approvals" status={a.status} value={formatPct(a.ratio)}>
       <p className="tabular-nums">
@@ -257,7 +282,8 @@ function ImportsCard({ s }: { s: ServiceStatus }) {
       )}
       {i.stuckUploads > 0 && (
         <p>
-          {i.stuckUploads} upload{i.stuckUploads === 1 ? '' : 's'} never finished reading — upload the file again.
+          {i.stuckUploads} upload{i.stuckUploads === 1 ? '' : 's'} in the last day never finished reading. Upload the
+          file again; a dead upload drops off this count a day after it started.
         </p>
       )}
     </SloCard>
@@ -266,8 +292,25 @@ function ImportsCard({ s }: { s: ServiceStatus }) {
 
 // ── Right now ─────────────────────────────────────────────────────────────
 
-function OpenApprovals({ s }: { s: ServiceStatus }) {
-  const tiers = s.openApprovals.filter((t) => t.open > 0);
+/** Several hidden queues shown together as one card. */
+function foldOpen(hidden: OpenTier[]): OpenTier {
+  const oldest = hidden.map((t) => t.oldestWorkingMinutes).filter((m): m is number => m !== null);
+  return {
+    role: 'OTHER',
+    open: hidden.reduce((n, t) => n + t.open, 0),
+    pastDue: hidden.reduce((n, t) => n + t.pastDue, 0),
+    oldestWorkingMinutes: oldest.length ? Math.max(...oldest) : null,
+    holders: hidden.reduce((n, t) => n + t.holders, 0),
+  };
+}
+
+function OpenApprovals({ s, viewer }: { s: ServiceStatus; viewer: string }) {
+  const tiers = tiersForViewer(
+    s.openApprovals.filter((t) => t.open > 0),
+    (t) => t.holders,
+    viewer,
+    foldOpen
+  );
   if (tiers.length === 0) {
     return (
       <p className="rounded-lg bg-white p-5 text-sm text-slate-600 shadow-sm ring-1 ring-slate-200">
@@ -325,12 +368,15 @@ function Jobs({ jobs, now }: { jobs: JobState[]; now: Date }) {
             <span className="font-medium text-slate-800">
               {j.label}
               <span className="ml-2 text-xs font-normal text-slate-500">
-                {j.severity === 'critical' ? 'pages when it stops' : 'reported, does not page'}
+                {j.severity === 'critical'
+                  ? 'critical: turns the health check red when it stops'
+                  : 'reported only: the health check stays green'}
               </span>
             </span>
             <span className="text-xs tabular-nums text-slate-600">
               <span className={`font-semibold ${tone}`}>{JOB_STATE_LABEL[j.state] ?? j.state}</span>
               {j.lastRunAt && ` · last run ${omanWhen(j.lastRunAt, now)}`}
+              {j.lastVercelRunAt && ` · Vercel last ran it ${omanWhen(j.lastVercelRunAt, now)}`}
             </span>
           </li>
         );

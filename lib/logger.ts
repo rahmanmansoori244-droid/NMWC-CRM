@@ -40,7 +40,9 @@ function scrubObject<T>(value: T, depth = 0): T {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       // Item 10: the error screen's `Reference:` must stay findable (lib/scrub.ts).
-      out[k] = k === DIGEST_KEY && isErrorDigest(v) ? v : scrubObject(v, depth + 1);
+      // Top level only: a nested `digest` inside some logged payload is scrubbed
+      // like anything else (review, 2026-09-27).
+      out[k] = depth === 0 && k === DIGEST_KEY && isErrorDigest(v) ? v : scrubObject(v, depth + 1);
     }
     return out as T;
   }

@@ -163,7 +163,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     description: 'Bearer token the scheduled jobs present to the production endpoints.',
     source: 'Generate one value (32+ random characters) and use it in BOTH places below.',
     alsoSetOn:
-      'Vercel → Production → Environment Variables → CRON_SECRET (the SAME value). Then re-run Actions → External cron scheduler → apply, which rewrites the bearer the two cron-job.org jobs send — otherwise they answer 401 every four minutes until cron-job.org disables them.',
+      'Vercel → Production → Environment Variables → CRON_SECRET (the SAME value), then redeploy: Vercel\'s own cron (the scheduler since the Pro plan, 2026-09-27) sends the value of the latest deployment. Only while the cron-job.org jobs still exist, also re-run Actions → External cron scheduler → apply, which rewrites the bearer they send; once they are retired (OPERATIONS.md §5d) do NOT run it — it would re-create them.',
     consequenceIfMissing:
       'Every scheduled call is refused with 401. The SLA sweep stops escalating and the backup report never reaches the dead-man probe — which then alarms, correctly.',
   },
@@ -177,7 +177,7 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     source:
       'cron-job.org → Settings → API → create an API key. Leave its IP restriction OFF: GitHub runners use changing addresses, and a restricted key answers 403.',
     consequenceIfMissing:
-      'The External cron scheduler workflow fails red and nothing is created. The GitHub-scheduled keep-warm and SLA sweep carry on as the backup, at the 2–3 runs a day GitHub actually delivers, so /api/health keeps reporting both jobs stale.',
+      'The External cron scheduler workflow fails red and nothing is created. Since the Vercel Pro upgrade (2026-09-27) this is the expected state: Vercel runs keep-warm and the SLA sweep itself, and cron-job.org is being retired (OPERATIONS.md §5d). Delete this secret once its jobs are deleted.',
   },
   {
     name: 'HEALTH_BEARER',

@@ -41,16 +41,22 @@ function status(over: Partial<ServiceStatus> = {}): ServiceStatus {
     backup: { good: 7, total: 7, ratio: 1, budgetLeft: 1, status: 'met', since: null, missedDays: 0 },
     approvals: {
       good: 30, total: 40, ratio: 0.75, budgetLeft: -1.5, status: 'breached', since: null, untracked: 3,
-      tiers: [{ role: 'SUPERVISOR', decided: 43, tracked: 40, within: 30, p50Minutes: 95, p90Minutes: 610 }],
+      tiers: [
+        { role: 'SUPERVISOR', decided: 43, tracked: 40, within: 30, p50Minutes: 95, p90Minutes: 610, people: 11 },
+        { role: 'GM', decided: 5, tracked: 5, within: 3, p50Minutes: 360, p90Minutes: 840, people: 1 },
+      ],
     },
-    openApprovals: [{ role: 'SUPERVISOR', open: 4, pastDue: 2, oldestWorkingMinutes: 700 }],
+    openApprovals: [
+      { role: 'SUPERVISOR', open: 4, pastDue: 2, oldestWorkingMinutes: 700, holders: 11 },
+      { role: 'GM', open: 2, pastDue: 1, oldestWorkingMinutes: 660, holders: 1 },
+    ],
     temix: { status: 'met', waiting: 0, oldestWaitingSince: null, uploadedAwaitingTemix: 0 },
     imports: { status: 'breached', stuckPromotes: 1, stuckUploads: 0 },
     jobs: [
       {
         key: 'keep-warm', label: 'Keep-warm ping', severity: 'warning', state: 'failed', alarm: true,
         lastRunAt: '2026-10-05T07:56:00.000Z', lastOk: false, ageMinutes: 4,
-        expectedEveryMinutes: 4, runs: 10, failures: 1,
+        expectedEveryMinutes: 4, runs: 10, failures: 1, lastVercelRunAt: '2026-10-05T07:52:00.000Z',
       },
     ],
     ...over,
@@ -125,9 +131,43 @@ describe('what it says', () => {
     expect(screen.getByText(/2 past due · oldest waiting 11 h 40 m of working time/)).toBeTruthy();
   });
 
-  it('a warning-tier alarm says it does not page', async () => {
+  it('a warning-tier alarm says it leaves the health check green, and Vercel’s last run is shown', async () => {
     render(await StatusPage());
-    expect(screen.getByText('reported, does not page')).toBeTruthy();
+    expect(screen.getByText('reported only: the health check stays green')).toBeTruthy();
+    // The owner retires cron-job.org once Vercel is seen calling (OPERATIONS §5d).
+    expect(screen.getByText(/Vercel last ran it 11:52/)).toBeTruthy();
+  });
+
+  it('a sliver over budget reads "Error budget spent", never "0% left" beside Missed', async () => {
+    h.load.mockResolvedValue(
+      status({
+        approvals: {
+          good: 188, total: 209, ratio: 188 / 209, budgetLeft: -0.0047, status: 'breached', since: null, untracked: 0,
+          tiers: [{ role: 'SUPERVISOR', decided: 209, tracked: 209, within: 188, p50Minutes: 90, p90Minutes: 480, people: 11 }],
+        },
+      })
+    );
+    render(await StatusPage());
+    const card = screen.getByRole('heading', { name: 'Approvals decided within their SLA' }).closest('article')!;
+    expect(card.textContent).toContain('Error budget spent');
+    expect(card.textContent).not.toContain('0% of the error budget left');
+  });
+});
+
+describe('one colleague’s decision speed is not shown to the Managers', () => {
+  it('a Manager does not see the General Manager step on its own — neither its timings nor its queue', async () => {
+    h.user = { id: 'x', role: 'MANAGER', username: 'x' };
+    const { container } = render(await StatusPage());
+    expect(container.textContent).toContain('Supervisor step');
+    expect(container.textContent).not.toContain('General manager');
+    expect(container.textContent).not.toContain('Other steps');
+  });
+
+  it('the Data Steward sees every step', async () => {
+    h.user = { id: 'x', role: 'STEWARD', username: 'x' };
+    const { container } = render(await StatusPage());
+    expect(container.textContent).toContain('General manager step: 3/5 on time');
+    expect(container.textContent).toContain('General manager');
   });
 });
 
@@ -154,7 +194,7 @@ describe('a job’s error text never reaches the page — it stays behind the mo
     const src = readFileSync('lib/service-status.ts', 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, ' ')
       .replace(/(^|[^:])\/\/.*$/gm, '$1');
-    expect(src).toMatch(/jobs: jobs\.map\(withoutErrorText\)/);
+    expect(src).toMatch(/jobs: jobs\.map\(\(j\) => withoutErrorText\(j,/);
     expect(src).not.toMatch(/lastDetail/);
   });
 });

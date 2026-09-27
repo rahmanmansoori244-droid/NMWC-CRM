@@ -387,6 +387,13 @@ describe('item 10: the Reference on the error screen is searchable in Sentry', (
     expect(out.tags?.digest).toBe('2847590223');
   });
 
+  it('an error Next raised itself is tagged by its hash, the part the server also knows', () => {
+    // The browser shows `<hash>@E<code>`; the server's report has `<hash>`. One tag
+    // value for both, so a quoted Reference finds the server's report too.
+    const out = scrubEvent({} as ErrorEvent, { originalException: withDigest('2847590223@E394') });
+    expect(out.tags?.digest).toBe('2847590223');
+  });
+
   it('keeps the tags the event already had', () => {
     const out = scrubEvent({ tags: { runtime: 'node' } } as unknown as ErrorEvent, {
       originalException: withDigest('abc123'),

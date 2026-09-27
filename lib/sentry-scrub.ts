@@ -15,7 +15,7 @@
  * addresses.
  */
 import type { Event, EventHint } from '@sentry/nextjs';
-import { isErrorDigest, scrubString } from './scrub';
+import { digestHash, isErrorDigest, scrubString } from './scrub';
 
 /**
  * Query-string keys whose VALUE is replaced wholesale rather than pattern-scrubbed.
@@ -220,5 +220,7 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
 function tagDigest(event: Event, hint?: EventHint): void {
   const digest = (hint?.originalException as { digest?: unknown } | null | undefined)?.digest;
   if (!isErrorDigest(digest)) return;
-  event.tags = { ...event.tags, digest };
+  // The hash only: the browser's `<hash>@E<code>` and the server's `<hash>` must
+  // land on one tag, or the quoted Reference finds half the story.
+  event.tags = { ...event.tags, digest: digestHash(digest) };
 }

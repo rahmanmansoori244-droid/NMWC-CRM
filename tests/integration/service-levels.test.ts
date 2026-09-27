@@ -40,12 +40,13 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
 
     // Keep-warm: two schedulers in the 03:00 slot (one failed), one failed run in
     // 03:04, nothing in 03:08, one success in 03:12.
-    const kw = (id: string, at: Date, ok: boolean, dbMs: number | null) =>
-      prisma.cronRun.create({ data: { id: `${sfx}-${id}`, key: 'keep-warm', at, ok, durationMs: 100, dbMs } });
-    await kw('a', T('03:00:05'), true, 10);
-    await kw('b', T('03:00:40'), false, null);
-    await kw('c', T('03:04:10'), false, null);
-    await kw('d', T('03:12:30'), true, 30);
+    const kw = (id: string, at: Date, ok: boolean, dbMs: number | null, source: string) =>
+      prisma.cronRun.create({ data: { id: `${sfx}-${id}`, key: 'keep-warm', at, ok, durationMs: 100, dbMs, source } });
+    await kw('a', T('03:00:05'), true, 10, 'vercel');
+    // A failed probe that still timed a slow round trip: it must not enter the p95.
+    await kw('b', T('03:00:40'), false, 5000, 'cron-job.org');
+    await kw('c', T('03:04:10'), false, null, 'vercel');
+    await kw('d', T('03:12:30'), true, 30, 'cron-job.org');
 
     // Approval decisions: three tracked SUPERVISOR steps (two on time), one
     // untracked (made before the snapshot existed).
@@ -109,9 +110,23 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
   it('approval tiers: tracked vs untracked, on time, and percentiles of the snapshot minutes', async () => {
     const { tiers } = await svc.__internal.approvalTiers(FROM);
     const sup = tiers.find((t) => t.role === 'SUPERVISOR');
-    expect(sup).toEqual({ role: 'SUPERVISOR', decided: 4, tracked: 3, within: 2, p50Minutes: 120, p90Minutes: 504 });
+    // One person made all four decisions: the page folds this tier for a Manager.
+    expect(sup).toEqual({ role: 'SUPERVISOR', decided: 4, tracked: 3, within: 2, p50Minutes: 120, p90Minutes: 504, people: 1 });
     const mgr = tiers.find((t) => t.role === 'MANAGER');
-    expect(mgr).toEqual({ role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120 });
+    expect(mgr).toEqual({ role: 'MANAGER', decided: 1, tracked: 1, within: 1, p50Minutes: 120, p90Minutes: 120, people: 1 });
+  });
+
+  it('the last successful run from Vercel’s own cron, per job — the check before retiring cron-job.org', async () => {
+    const last = await svc.__internal.lastVercelRuns(new Date('2099-06-02T00:00:00Z'));
+    // 03:04:10 was Vercel's too, but it failed; 03:12:30 succeeded, from cron-job.org.
+    expect(last.get('keep-warm')).toEqual(T('03:00:05'));
+  });
+
+  it('the open queue carries how many people can decide each step', async () => {
+    for (const t of await svc.__internal.openApprovals(new Date('2099-06-02T00:00:00Z'))) {
+      expect(t.holders, t.role).toBeGreaterThanOrEqual(0);
+      expect(t.open, t.role).toBeGreaterThanOrEqual(t.pastDue);
+    }
   });
 
   it('the whole loader runs against real Postgres and returns verdicts', async () => {

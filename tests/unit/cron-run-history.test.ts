@@ -19,6 +19,8 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/alert', () => ({ sendAlert: db.alert }));
 
 import { classifyRunSource, recordHeartbeat, withHeartbeat } from '@/lib/heartbeat';
+import { callArguments, sourceFiles } from '../support/call-args';
+import { stripComments } from '../support/strip-comments';
 
 beforeEach(() => {
   db.upsert.mockReset().mockResolvedValue({});
@@ -118,16 +120,41 @@ describe('withHeartbeat passes the run start, the scheduler and keep-warm’s da
 describe('the approval engine snapshots the stage on every decision it records', () => {
   // A decision row written without the snapshot is one the service-level report
   // can never judge; the table is append-only, so it cannot be filled in later.
-  it('every editApproval.create in services/ carries stageSnapshot(...)', () => {
-    const files = ['services/edits.ts', 'services/reactivations.ts', 'services/creates.ts', 'services/duplicates.ts'];
+  // Every file the app and its scripts are built from, comments stripped, every
+  // way Prisma or SQL can insert a row (review, 2026-09-27: the first version
+  // read four named files with a lazy regex).
+  const files = sourceFiles(['app', 'lib', 'services', 'scripts', 'components']).filter((f) => !/\.test\./.test(f));
+  const code = files.map((f) => [f, stripComments(readFileSync(f, 'utf8'), f)] as const);
+
+  it('every Prisma insert into EditApproval carries the stage as it was decided', () => {
     let sites = 0;
-    for (const f of files) {
-      const src = readFileSync(f, 'utf8');
-      for (const m of src.matchAll(/editApproval\.create\(\{([\s\S]*?)\n\s*\}\);/g)) {
+    for (const [f, src] of code) {
+      for (const args of callArguments(src, /\beditApproval\.(create|createMany|upsert)\b/)) {
         sites += 1;
-        expect(m[1], `${f}: an EditApproval insert without the stage snapshot`).toContain('...stageSnapshot(');
+        // `stageSnapshot(edit, …)`: the change request as loaded BEFORE the claim,
+        // i.e. the stage being decided, not the one it advances to.
+        expect(args, `${f}: an EditApproval insert without the stage snapshot`).toMatch(/\.\.\.stageSnapshot\(\s*edit\s*,/);
       }
     }
     expect(sites).toBe(4);
+  });
+
+  it('every decision claim pins the visit to the stage, so a stale decision cannot land on a later visit', () => {
+    // A step-back then a re-advance returns to the same step in the same cycle;
+    // without stageEnteredAt in the claim, a decision loaded before them passed.
+    const src = stripComments(readFileSync('services/edits.ts', 'utf8'), 'edits.ts');
+    const claims = callArguments(src, /\btx\.customerEdit\.updateMany\b/).filter((a) =>
+      /currentStepIndex:\s*(stepIndex|rejectStepIndex)\b/.test(a)
+    );
+    expect(claims).toHaveLength(4);
+    for (const c of claims) expect(c).toMatch(/stageEnteredAt:\s*edit\.stageEnteredAt/);
+  });
+
+  it('nothing inserts into EditApproval any other way', () => {
+    for (const [f, src] of code) {
+      expect(src, f).not.toMatch(/INSERT\s+INTO\s+"?EditApproval"?/i);
+      // A nested write through the change request would bypass the call sites above.
+      expect(src, f).not.toMatch(/\b(steps|approvals|editApprovals)\s*:\s*\{\s*(create|createMany|connectOrCreate)\b/);
+    }
   });
 });

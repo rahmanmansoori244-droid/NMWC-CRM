@@ -939,6 +939,10 @@ async function approveEditCore(formData: FormData) {
             state: EditState.SUBMITTED,
             currentStepIndex: stepIndex,
             cycle: edit.cycle,
+            // The same visit to this stage, not just the same step: a step-back and a
+            // re-advance return to this index in the same cycle, and a decision loaded
+            // before them must not land on the new visit (review, 2026-09-27).
+            stageEnteredAt: edit.stageEnteredAt,
           },
           data: {
             currentStepIndex: stepIndex + 1,
@@ -1036,6 +1040,10 @@ async function approveEditCore(formData: FormData) {
             state: EditState.SUBMITTED,
             currentStepIndex: stepIndex,
             cycle: edit.cycle,
+            // The same visit to this stage, not just the same step: a step-back and a
+            // re-advance return to this index in the same cycle, and a decision loaded
+            // before them must not land on the new visit (review, 2026-09-27).
+            stageEnteredAt: edit.stageEnteredAt,
           },
           data: {
             state: EditState.APPROVED,
@@ -1250,6 +1258,10 @@ async function approveEditCore(formData: FormData) {
           state: EditState.SUBMITTED,
           currentStepIndex: stepIndex,
           cycle: edit.cycle,
+          // The same visit to this stage, not just the same step: a step-back and a
+          // re-advance return to this index in the same cycle, and a decision loaded
+          // before them must not land on the new visit (review, 2026-09-27).
+          stageEnteredAt: edit.stageEnteredAt,
         },
         data: {
           state: EditState.APPROVED,
@@ -1608,6 +1620,10 @@ async function rejectEditCore(formData: FormData) {
         state: EditState.SUBMITTED,
         currentStepIndex: rejectStepIndex,
         cycle: edit.cycle,
+        // The same visit to this stage, not just the same step: a step-back and a
+        // re-advance return to this index in the same cycle, and a decision loaded
+        // before them must not land on the new visit (review, 2026-09-27).
+        stageEnteredAt: edit.stageEnteredAt,
       },
       data,
     });

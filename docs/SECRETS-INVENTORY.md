@@ -26,7 +26,7 @@ These are the roots. Whoever holds them can reset every secret below.
 | Neon (production endpoint `ep-sweet-haze`, UAT `ep-lucky-bar`) | The database, point-in-time restore, the owner role | Owner | Check Neon → Organization → Members for the current plan. |
 | Cloudflare (R2 buckets `nmwc-photos` and the backup bucket) | Every photograph, every nightly dump, their API tokens | Owner | Cloudflare → Manage account → Members. |
 | Sentry | Error reports from all three runtimes | Owner | The free plan has one user. |
-| cron-job.org | The keep-warm and SLA sweep schedules — **being retired**: Vercel runs both since the Pro plan (OPERATIONS.md §5d) | Owner | Not needed once retired. Retiring it also ends the only third-party copy of `CRON_SECRET`. |
+| cron-job.org | The keep-warm and SLA sweep schedules — **being retired**: Vercel runs both since the Pro plan (OPERATIONS.md §5d) | Owner | Not needed once retired. Retiring it properly — delete the jobs and the API key, then rotate `CRON_SECRET` — removes cron-job.org's copy of the secret. Vercel and GitHub Actions (`PROD_CRON_SECRET`) still hold it. |
 | The alert destination (`ALERT_WEBHOOK_URL`, once set) | Where failed-job and SLA alerts land | Not set yet | Point it at a channel two people read (OPERATIONS.md §5f). |
 
 Check each provider's current plan page before acting on the "second person" column.
@@ -46,7 +46,7 @@ one complete list: OPERATIONS.md §3 used to be that list and had fallen behind.
 | `AUTH_SECRET` / `NEXTAUTH_SECRET` | S | Signs every session | Anyone can mint a session as any user. Rotating it signs everyone out. | Each other (same value) |
 | `AUTH_URL` / `NEXTAUTH_URL` | | The production origin, for sign-in redirects | — | Each other |
 | `AUTH_TRUST_HOST` | | `true`; read by Auth.js itself, not by this code | — | — |
-| `CRON_SECRET` | S | Bearer that the scheduled jobs present. Vercel's own cron sends it automatically. | Anyone can trigger the sweeps (they are idempotent) | GitHub `PROD_CRON_SECRET`; while cron-job.org is still in use, re-run the External cron scheduler `apply` so it sends the new one |
+| `CRON_SECRET` | S | Bearer that the scheduled jobs present. Vercel's own cron sends it automatically. | Anyone can trigger the sweeps (they are idempotent), and can post a false "backup succeeded" report to `/api/ops/backup-report`, hiding a failing nightly backup from the health check and the Service status page | GitHub `PROD_CRON_SECRET`; while cron-job.org is still in use, re-run the External cron scheduler `apply` so it sends the new one |
 | `HEALTH_BEARER` | S | Unlocks the detailed `/api/health` | Exposes the running commit, the job states and their last (scrubbed) errors | GitHub `HEALTH_BEARER` (CI's post-deploy smoke) |
 | `R2_ACCOUNT_ID` | | The Cloudflare account the photo bucket lives in | — | — |
 | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | S | Photo uploads and reads | Every photograph, the confidential documents included. Revoke the token in Cloudflare and issue a new one. | — |

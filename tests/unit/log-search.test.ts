@@ -11,8 +11,9 @@
  *   3. Every server error writes that reference, with the route it happened on.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { callArguments, sourceFiles } from '../support/call-args';
+import { stripComments } from '../support/strip-comments';
 
 describe('1. warnings and errors go to stderr, everything else to stdout', () => {
   afterEach(() => vi.restoreAllMocks());
@@ -65,28 +66,41 @@ describe('2. the reference survives the scrubber, and only under its own key', (
     expect(line.digest).toBe('call [phone] now');
   });
 
-  it('`digest` is reserved for Next’s error.digest: no log call puts anything else there', () => {
-    // The exemption is keyed on the name, so the name is the control.
-    const files: string[] = [];
-    const walk = (d: string) => {
-      for (const n of readdirSync(d)) {
-        const p = join(d, n);
-        if (statSync(p).isDirectory()) walk(p);
-        else if (/\.(ts|tsx)$/.test(n)) files.push(p);
-      }
-    };
-    ['app', 'lib', 'services', 'components'].forEach(walk);
-    files.push('instrumentation.ts');
+  it('a `digest` nested inside a logged object is scrubbed: the exemption is top level only', async () => {
+    const err: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => (err.push(String(c)), true));
+    vi.resetModules();
+    const { logger } = await import('@/lib/logger');
+    logger.error({ ctx: { digest: '91234567' } }, 'x');
+    const line = JSON.parse(err.join('').trim().split('\n').at(-1)!);
+    expect(line.ctx.digest).toBe('[phone]');
+  });
+
+  it('a Reference carrying Next’s error code is kept whole', async () => {
+    const err: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => (err.push(String(c)), true));
+    vi.resetModules();
+    const { logger } = await import('@/lib/logger');
+    logger.error({ digest: '2847590223@E394' }, 'x');
+    const line = JSON.parse(err.join('').trim().split('\n').at(-1)!);
+    expect(line.digest).toBe('2847590223@E394');
+  });
+
+  it('`digest` is reserved for an error’s digest: every logger call is checked, shorthand included', () => {
+    // The exemption is keyed on the name, so the name is the control. Every call's
+    // whole argument text (balanced-bracket scan, comments stripped); any property
+    // named digest — written out, or shorthand — must read an error's .digest.
+    const files = [...sourceFiles(['app', 'lib', 'services', 'components']), 'instrumentation.ts'];
     let seen = 0;
     for (const f of files) {
-      const src = readFileSync(f, 'utf8')
-        .replace(/\/\*[\s\S]*?\*\//g, ' ')
-        .replace(/(^|[^:])\/\/.*$/gm, '$1');
-      for (const call of src.matchAll(/logger\.\w+\(\s*\{([^}]*)\}/g)) {
-        const m = /\bdigest\s*:\s*([^,}]+)/.exec(call[1]!);
-        if (!m) continue;
-        seen += 1;
-        expect(m[1]!.trim(), `${f}`).toMatch(/\.digest$|\)\?\.digest$/);
+      const src = stripComments(readFileSync(f, 'utf8'), f);
+      for (const args of callArguments(src, /\blogger\.(?:trace|debug|info|warn|error|fatal|child)\b/)) {
+        // A property named digest: not a member access (.digest / ?.digest).
+        for (const m of args.matchAll(/(?<![.\w])digest\b(?!\s*\()/g)) {
+          seen += 1;
+          const rest = args.slice(m.index!);
+          expect(rest, `${f}: ${rest.slice(0, 60)}`).toMatch(/^digest\s*:\s*(?:error|err|e)\??\.digest\b/);
+        }
       }
     }
     expect(seen).toBeGreaterThanOrEqual(3); // app/error.tsx, app/(app)/error.tsx, instrumentation.ts

@@ -10,10 +10,14 @@
  * nightly backup and Steward-run maintenance scripts).
  *
  *   create  — create the role (or reset its password). Needs NMWC_APP_PASSWORD.
- *   grant   — (re)apply the privilege set. Idempotent; run after every migration
- *             that adds a table is NOT needed thanks to ALTER DEFAULT PRIVILEGES,
- *             but re-running is always safe.
- *   status  — read-only: what database is this, who am I, does the role exist.
+ *   grant   — (re)apply the privilege set. Idempotent and always safe to re-run.
+ *             A migration that adds an ordinary table needs no re-grant: ALTER
+ *             DEFAULT PRIVILEGES gives the role SELECT/INSERT/UPDATE on it. A
+ *             table in DELETABLE DOES need one, because the defaults leave DELETE
+ *             out on purpose — so re-run `grant` after deploying the migration
+ *             that adds it (CronRun, 2026-09-27: OPERATIONS.md §5h).
+ *   status  — read-only: what database is this, who am I, does the role exist,
+ *             and does it hold DELETE exactly where it should.
  *   verify  — connect AS the app role (NMWC_APP_URL) and prove: reads/writes work,
  *             the rate-limit upsert works, audit rows can be inserted but not
  *             changed (not even with the maintenance GUC, not even through the
@@ -71,6 +75,24 @@ async function create() {
  * Read-only. What is this database, who am I connected as, and does the role
  * exist yet? Safe to run against production at any time; changes nothing.
  */
+/**
+ * Every model the request path actually deletes from — verified by grepping
+ * `.delete(`/`.deleteMany(` and `DELETE FROM` across app, lib and services. Add to
+ * it only with the same evidence. RateLimit is here because the pg rate-limit
+ * backend prunes its own rows. CronRun (item 9, 2026-09-27) because the
+ * retention sweep prunes run history past 90 days
+ * (app/api/cron/retention-sweep/route.ts, step 4).
+ */
+const DELETABLE = [
+  'Attachment',
+  'Notification',
+  'SavedView',
+  'EditBranchDraft',
+  'PasswordHistory',
+  'RateLimit',
+  'CronRun',
+];
+
 async function status() {
   const owner = new PrismaClient({ datasourceUrl: ownerUrl() });
   try {
@@ -83,15 +105,18 @@ async function status() {
     console.log(`connected as ${me} on ${db}`);
     console.log(`role ${ROLE}: ${n > 0 ? 'exists' : 'does not exist yet'}`);
     if (n > 0) {
+      const checked = ['AuditLog', 'EditApproval', 'CustomerEdit', 'Customer', ...DELETABLE];
       const acl = await owner.$queryRawUnsafe<{ relname: string; can_delete: boolean }[]>(
         `SELECT relname, has_table_privilege('${ROLE}', oid, 'DELETE') AS can_delete
            FROM pg_class
           WHERE relnamespace = 'public'::regnamespace
-            AND relname IN ('AuditLog', 'EditApproval', 'CustomerEdit', 'Customer')
+            AND relname IN (${checked.map((t) => `'${t}'`).join(', ')})
           ORDER BY relname`
       );
       for (const r of acl) {
-        console.log(`  ${r.relname}: DELETE ${r.can_delete ? 'GRANTED' : 'refused'}`);
+        const want = DELETABLE.includes(r.relname);
+        const note = want && !r.can_delete ? '  <-- MISSING: run `grant` (a table added since the last grant)' : '';
+        console.log(`  ${r.relname}: DELETE ${r.can_delete ? 'GRANTED' : 'refused'}${note}`);
       }
     }
   } finally {
@@ -115,21 +140,8 @@ async function grant() {
     // nullable and the FK is ON DELETE SET NULL, quietly severing edit history
     // from the branch it was about.
     //
-    // This list is every model the request path actually deletes from — verified
-    // by grepping `.delete(`/`.deleteMany(` and `DELETE FROM` across app, lib and
-    // services. Add to it only with the same evidence. RateLimit is here because
-    // the pg rate-limit backend prunes its own rows. CronRun (item 9, 2026-09-27)
-    // because the retention sweep prunes run history past 90 days
-    // (app/api/cron/retention-sweep/route.ts, step 4).
-    const DELETABLE = [
-      'Attachment',
-      'Notification',
-      'SavedView',
-      'EditBranchDraft',
-      'PasswordHistory',
-      'RateLimit',
-      'CronRun',
-    ];
+    // DELETE is granted per table from DELETABLE (above `status`), which says
+    // what earns a table its place there.
     const stmts = [
       `GRANT CONNECT ON DATABASE "${db}" TO "${ROLE}"`,
       `GRANT USAGE ON SCHEMA public TO "${ROLE}"`,
@@ -274,10 +286,11 @@ async function verify() {
           await expectRefused(tx, 'CustomerEdit DELETE (cascade path into the ledger)', () =>
             tx.$executeRawUnsafe(`DELETE FROM "CustomerEdit" WHERE false`)
           );
-          // Item 9: the first table created since these grants. Its INSERT comes
-          // from the default privileges, which nothing else has exercised, and its
-          // DELETE from DELETABLE. Without either, the run history silently stops
-          // or the retention sweep fails, while every other probe here passes.
+          // Item 9: the role can write run history and the retention sweep can
+          // prune it. This runs after `grant`, so it proves the grant covers
+          // CronRun (DELETABLE included); it does not test the default privileges
+          // on their own — `status` shows whether a table added since the last
+          // grant is missing DELETE.
           await tx.$executeRaw`INSERT INTO "CronRun" ("id", "key", "at", "ok", "durationMs") VALUES (${`verify-${Date.now()}`}, 'verify', NOW(), true, 0)`;
           await tx.$executeRawUnsafe(`DELETE FROM "CronRun" WHERE "key" = 'verify'`);
           console.log('  ✓ CronRun insert + delete (run history, pruned by the retention sweep)');

@@ -116,7 +116,12 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     fd.set('editId', editId);
     return edits.approveEditAction(fd);
   }
-  const editState = () => prisma.customerEdit.findUniqueOrThrow({ where: { id: editId }, select: { state: true, currentStepIndex: true, pendingRole: true, customerId: true } });
+  const editState = () => prisma.customerEdit.findUniqueOrThrow({ where: { id: editId }, select: { state: true, currentStepIndex: true, pendingRole: true, customerId: true, stageEnteredAt: true, slaDueAt: true } });
+  // Item 9: the stage each step was decided in, as the change request held it
+  // BEFORE that decision — what the step's EditApproval snapshot must record.
+  const stageBefore: { stageEnteredAt: Date | null; slaDueAt: Date | null }[] = [];
+  const keepStage = (st: { stageEnteredAt: Date | null; slaDueAt: Date | null }) =>
+    stageBefore.push({ stageEnteredAt: st.stageEnteredAt, slaDueAt: st.slaDueAt });
   const customerCount = () => prisma.customer.count({ where: { legalName } });
 
   it('submits the CREDIT request and freezes the 4-step chain', async () => {
@@ -146,6 +151,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(st.pendingRole).toBe('SUPERVISOR');
     expect(st.customerId).toBeNull();
     expect(await customerCount()).toBe(0); // R19: nothing materialized at submit
+    keepStage(st);
   });
 
   it('R19: SUPERVISOR approve advances to FM — still no customer', async () => {
@@ -157,6 +163,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(st.currentStepIndex).toBe(1);
     expect(st.pendingRole).toBe('FINANCE_MANAGER');
     expect(await customerCount()).toBe(0);
+    keepStage(st);
   });
 
   it('R19: FINANCE_MANAGER approve advances to GM — still no customer', async () => {
@@ -167,6 +174,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(st.currentStepIndex).toBe(2);
     expect(st.pendingRole).toBe('GM');
     expect(await customerCount()).toBe(0);
+    keepStage(st);
   });
 
   it('R19: GM approve advances to ACCOUNTANT — still no customer', async () => {
@@ -177,6 +185,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(st.currentStepIndex).toBe(3);
     expect(st.pendingRole).toBe('ACCOUNTANT');
     expect(await customerCount()).toBe(0);
+    keepStage(st);
   });
 
   it('R26 + R19 + R17: two concurrent ACCOUNTANT approvals — exactly one wins, customer materializes once with the ORIGINAL figures', async () => {
@@ -208,16 +217,19 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     // row is the only lasting record of whether each stage met its SLA.
     const steps = await prisma.editApproval.findMany({ where: { editId }, orderBy: { stepIndex: 'asc' } });
     expect(steps.map((s) => s.role)).toEqual(['SUPERVISOR', 'FINANCE_MANAGER', 'GM', 'ACCOUNTANT']);
-    for (const s of steps) {
-      expect(s.stageEnteredAt, s.role).not.toBeNull();
-      expect(s.slaDueAt, s.role).not.toBeNull();
+    expect(stageBefore).toHaveLength(4);
+    for (const [i, s] of steps.entries()) {
+      // Exactly the stage that was decided — not the one it advanced to, which
+      // would read as "decided in 0 minutes, on time" for every step.
+      expect(s.stageEnteredAt, s.role).toEqual(stageBefore[i]!.stageEnteredAt);
+      expect(s.slaDueAt, s.role).toEqual(stageBefore[i]!.slaDueAt);
       expect(s.workingMinutes, s.role).not.toBeNull();
       expect(s.workingMinutes!, s.role).toBeGreaterThanOrEqual(0);
-      expect(s.slaDueAt!.getTime(), s.role).toBeGreaterThan(s.stageEnteredAt!.getTime());
     }
-    // Each stage starts when the one before it was decided, not at submit.
+    // And the stage after each advance began when that advance was made, so no
+    // two steps share a stage.
     for (let i = 1; i < steps.length; i++) {
-      expect(steps[i]!.stageEnteredAt!.getTime()).toBeGreaterThan(steps[0]!.stageEnteredAt!.getTime());
+      expect(steps[i]!.stageEnteredAt!.getTime()).toBeGreaterThan(steps[i - 1]!.stageEnteredAt!.getTime());
     }
   });
 });

@@ -193,7 +193,12 @@ Point an external uptime monitor at this URL with the bearer header and alert on
 
 The anonymous probe (no header) answers 503 when the database is unreachable, so a plain uptime check sees a real outage. It retries once after 750 ms first, so one pooler blip is logged (`health.db.retry`) and not reported as an outage.
 
-**Since 2026-09-27 the project is on Vercel Pro, and Vercel runs all four jobs itself.** `vercel.json` `crons` now holds keep-warm (`*/4 3-14 * * *`) and the SLA sweep (`15,45 3-14 * * *`) beside photo GC and the retention sweep. Pro runs them within the minute. Vercel sends `Authorization: Bearer <CRON_SECRET>` itself, so no header is set anywhere, and the external scheduler below is no longer needed. **Retire it once the Vercel jobs are proven** (owner): after the deploy, the Service status page's "The SLA escalation sweep runs" card, or `CronRun` rows with `source = 'vercel'`, show Vercel calling. Then disable both jobs at cron-job.org (Cronjobs → each job → Disable), delete the `CRONJOB_API_KEY` repository secret, and cron-job.org no longer holds a copy of `CRON_SECRET`. Until then the two schedulers run side by side, which is harmless: keep-warm is free to repeat, and the sweep claims each escalation once. The GitHub workflows (`keep-warm.yml`, `sla-escalate.yml`) stay as a late, sparse backup.
+**Since 2026-09-27 the project is on Vercel Pro, and Vercel runs all four jobs itself.** `vercel.json` `crons` now holds keep-warm (`*/4 3-14 * * *`) and the SLA sweep (`15,45 3-14 * * *`) beside photo GC and the retention sweep. Pro runs them within the minute. Vercel sends `Authorization: Bearer <CRON_SECRET>` itself, so no header is set anywhere, and the external scheduler below is no longer needed. **Retire it once the Vercel jobs are proven** (owner). The check is the Service status page's **Scheduled jobs** list: keep-warm and the SLA escalation sweep must each read "Vercel last ran it …" with a recent time, through a whole working day. The objective cards cannot tell you this, because they count a run from any scheduler. Then:
+1. At cron-job.org, **delete** both jobs (Cronjobs → each job → Delete). Disabling is not enough: a disabled job keeps its stored `Authorization: Bearer <CRON_SECRET>` header.
+2. At cron-job.org, delete the API key (Settings → API). Then delete the `CRONJOB_API_KEY` repository secret in GitHub. Deleting only the GitHub secret leaves the key valid.
+3. Rotate `CRON_SECRET`, because cron-job.org held it: set the new value in Vercel Production and in GitHub `PROD_CRON_SECRET`, then redeploy so Vercel's cron sends the new one. Do **not** run the External cron scheduler `apply` again: it would re-create the jobs and send them the new secret.
+
+After this, only Vercel and GitHub Actions hold `CRON_SECRET`. GitHub still needs it as `PROD_CRON_SECRET` for the nightly backup's report and the backup workflows. Until then the two schedulers run side by side, which is harmless: keep-warm is free to repeat, and the sweep claims each escalation once. The GitHub workflows (`keep-warm.yml`, `sla-escalate.yml`) stay as a late, sparse backup.
 
 What follows is how the external scheduler was set up, kept for the record and for a rollback to Hobby.
 
@@ -233,16 +238,22 @@ The two GitHub Actions workflows (`.github/workflows/keep-warm.yml`, `sla-escala
 
 Vercel keeps runtime logs for **30 days** on Pro with **Observability Plus**, which is on by default for teams upgraded after 3 April 2026. Check it once under Vercel → Settings → Billing → Observability Plus. Without it, logs are kept for 1 day.
 
-- **A user quotes a Reference from the error screen:** paste it into Vercel → Logs → search. Every server error writes a `request.error` line carrying that `digest` and the route it happened on (`instrumentation.ts`). The request's other log lines are grouped under it. The same Reference is a Sentry tag: search `digest:<reference>`.
+- **A user quotes a Reference from the error screen:** paste it into Vercel → Logs → search. Every server error writes a `request.error` line carrying that `digest` and the route it happened on (`instrumentation.ts`). The request's other log lines are grouped under it. The same Reference is a Sentry tag: search `digest:<reference>`. **If the Reference contains `@`** (`2847590223@E394`, an error Next raised itself), search only the part before the `@`: that is what the server knows.
 - **Only the problems:** use the Level filter → Warning / Error. Since this change the app writes warnings and errors to stderr, which is how Vercel decides a line's level. Before it, every line was filed as info and the filter found nothing.
 - **One job:** filter the Request Path by `/api/cron/<job>`, or use Vercel → Settings → Cron Jobs → View Logs.
-- **What is not in the logs:** customer phone numbers, e-mails and 7–12 digit runs are scrubbed before a line is written (`lib/scrub.ts`). The one exception is a `digest`, which is a hash of the error and is kept whole so the Reference can be found.
+- **What the logs may hold.** The app's own log lines, and Prisma's error lines (routed through the app logger since 2026-09-27), have phone numbers, e-mails and 7–12 digit runs scrubbed before they are written (`lib/scrub.ts`). The one exception is a top-level `digest`, a hash of the error, which is kept whole so the Reference can be found. **Three things are not scrubbed**, and Vercel now keeps them for 30 days:
+  - the request path with its query string, which Vercel records for every request. A customer search puts the typed text, often a phone number or a name, in `?q=`;
+  - Next's own printout of an unhandled server error (message and stack);
+  - anything a library writes to the console itself.
+  This is recorded as a known gap in docs/compliance/DATA-RETENTION-SCHEDULE.md.
 
 **Tracing:** Sentry samples 10% of requests. Vercel Observability → Functions shows latency by route, with p75 and a per-path breakdown on Observability Plus.
 
 ## 5h. Service levels (item 9, 2026-09-27)
 
 The targets and how each is measured: [SERVICE-LEVELS.md](SERVICE-LEVELS.md). The live figures: the **Service status** page, in the menu for the Data Steward and the Managers. It is built from `CronRun` (one row per scheduled run, 90 days) and the stage snapshot on each approval decision, and measures from 2026-09-27 onward.
+
+**After this deploy (once): re-run Provision app role** (Actions → Provision app role, typed host confirm). The retention sweep deletes old `CronRun` rows, and the least-privilege role `nmwc_app` gets DELETE on a table only when `grant` runs; the default privileges leave DELETE out on purpose. While production still connects as the owner this changes nothing. It must be done before `DATABASE_URL` moves to `nmwc_app`, or the sweep fails every night. `npx tsx scripts/ops/app-role.ts status` lists every table the role should be able to prune and marks any that is MISSING.
 
 ## 5f. Outbound alerts — the only way this system can reach you (GAP-2, 2026-09-24)
 
@@ -678,7 +689,7 @@ It applies a row only when the customer has exactly one live branch of that name
 
 ### Symptom: `/api/health` (bearer) shows a cron job `stale` / `never` / `failed`
 
-`never` after a deploy: the job has not run yet — check the scheduler (GitHub Actions → the workflow's recent runs, or the external scheduler's log). `stale`: the scheduler stopped calling — GitHub disables schedules on inactive public repos and throttles them generally; re-trigger the workflow by hand and consider option (a)/(b) in §5d. `failed`: open `cron.jobs[].lastError` in the payload; the SLA sweep also logs `cron.sla.row_failed` per row in Vercel logs.
+`never` after a deploy: the job has not run yet. Check the scheduler: **Vercel → Settings → Cron Jobs** first (the Service status page's Scheduled jobs list shows when Vercel last ran each job), then GitHub Actions → the workflow's recent runs, and cron-job.org's log while it is still in use. `stale`: the scheduler stopped calling. On Vercel, check that the cron is listed and enabled and that the latest deployment is the production one; the GitHub backups are late and sparse and will not keep it fresh on their own. `failed`: open `cron.jobs[].lastError` in the payload; the SLA sweep also logs `cron.sla.row_failed` per row in Vercel logs.
 
 ## 5e. Opening an audit-maintenance window (owner only)
 

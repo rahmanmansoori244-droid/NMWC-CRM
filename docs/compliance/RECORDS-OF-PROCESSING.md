@@ -102,7 +102,7 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Purpose** | Run, monitor, back up and support the application. |
 | **Personal data** | Error telemetry (scrubbed of phone numbers and e-mail addresses before it leaves the process — `lib/scrub.ts`, applied in all three Sentry runtimes); application logs; login rate-limit state keyed on username and source IP; a nightly encrypted dump of the entire database. |
 | **Recipients** | Vercel, Neon, Cloudflare, GitHub, Sentry — see `DATA-RESIDENCY-REGISTER.md`. |
-| **Retention** | Rate-limit rows 1 day; dumps 30 days; Sentry per its own org setting **[OWNER]**; Vercel logs ~1 day. |
+| **Retention** | Rate-limit rows 1 day; dumps 30 days; Sentry per its own org setting **[OWNER]**; Vercel logs 30 days with Observability Plus since the Pro upgrade on 2026-09-27 (request paths, including search terms, are not scrubbed: DATA-RETENTION-SCHEDULE.md). |
 | **Lawful basis** | **[COUNSEL]** |
 
 **The rows the ledger cannot attribute to a device.** Nine maintenance scripts write

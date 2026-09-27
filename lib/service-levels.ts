@@ -86,7 +86,7 @@ export const SLOS: readonly SloDefinition[] = [
     kind: 'current',
     targetLabel: 'Nothing stuck',
     measures:
-      'No customer-master promote left interrupted for more than an hour, and no upload still being read after 10 minutes.',
+      'No customer-master promote interrupted and waiting to be resumed, none stalled for more than an hour, and no upload in the last day still being read after 10 minutes.',
   },
 ] as const;
 
@@ -106,8 +106,30 @@ export function sloById(id: SloId): SloDefinition {
 
 /** Current-state thresholds, named once. */
 export const TEMIX_BACKLOG_MAX_DAYS = 7;
+/** A promote whose lease ran out without being released: given this long before it counts. */
 export const PROMOTE_STUCK_AFTER_MIN = 60;
 export const PARSING_STUCK_AFTER_MIN = 10;
+/**
+ * A dead upload (a batch left PARSING when its request died) has no in-app way
+ * out: nothing reads it, and re-uploading creates a new batch. It is counted for a
+ * day, long enough to be seen and re-uploaded, and then stops counting, so one
+ * timeout cannot hold the objective at Missed for ever (review, 2026-09-27).
+ */
+export const PARSING_LOOKBACK_HOURS = 24;
+
+/** Keep-warm slots in a day (every 4 minutes, 03:00–14:59 UTC) and sweep half-hours. */
+export const PROBE_SLOTS_PER_DAY = 180;
+export const SWEEP_SLOTS_PER_DAY = 24;
+
+/**
+ * Per-tier detail (on-time share, median, open queue) is shown to a Manager only
+ * for a tier at least this many people decide or hold. The General Manager and
+ * the Finance Manager steps each have one holder, so their tier figures ARE one
+ * named colleague's decision speed (PII-INVENTORY: EditApproval.workingMinutes is
+ * "how long this named person took"). A Manager sees those folded into "other
+ * steps"; the Data Steward sees every tier (review, 2026-09-27).
+ */
+export const MIN_PEOPLE_FOR_TIER_DETAIL = 3;
 
 // ── Verdicts ──────────────────────────────────────────────────────────────
 
@@ -126,15 +148,25 @@ export type RatioResult = {
   status: SloStatus;
 };
 
-export function ratioVerdict(good: number, total: number, target: number): RatioResult {
+/**
+ * `fullWindowTotal`: how many events a full window holds, when that is known in
+ * advance (slots, days). The budget is the allowance of the WHOLE window: while
+ * fewer than 30 days have been measured, a miss is judged against what the
+ * written objective allows in 30 days ("at most one missed night in 30"), not
+ * against a budget shrunk to the days seen so far, which turned one early miss
+ * into weeks of "Missed" (review, 2026-09-27). Approvals have no fixed count and
+ * are judged on the decisions made.
+ */
+export function ratioVerdict(good: number, total: number, target: number, fullWindowTotal = 0): RatioResult {
   if (total <= 0) return { good, total, ratio: null, budgetLeft: null, status: 'no-data' };
   const ratio = good / total;
-  const allowedBad = (1 - target) * total;
+  const allowedBad = (1 - target) * Math.max(total, fullWindowTotal);
   const bad = total - good;
   // A 100% target has no budget: any bad event spends all of it.
   const budgetLeft = allowedBad > 0 ? 1 - bad / allowedBad : bad === 0 ? 1 : -Infinity;
+  // The epsilon absorbs float error: 0.005 × 5400 is 26.999…, and 27 bad slots is on budget.
   const status: SloStatus =
-    ratio < target ? 'breached' : budgetLeft < AT_RISK_BUDGET_LEFT ? 'at-risk' : 'met';
+    bad > allowedBad + 1e-9 ? 'breached' : budgetLeft < AT_RISK_BUDGET_LEFT ? 'at-risk' : 'met';
   return { good, total, ratio, budgetLeft, status };
 }
 
@@ -201,7 +233,8 @@ export function slotAttainment(
   runs: RunSample[],
   slots: number[],
   stepMin: number,
-  target: number
+  target: number,
+  fullWindowTotal = 0
 ): SlotResult {
   const step = stepMin * MIN;
   const index = new Map<number, 'ok' | 'failed'>();
@@ -221,21 +254,21 @@ export function slotAttainment(
     else if (v === 'failed') failedSlots += 1;
   }
   const silentSlots = slots.length - okSlots - failedSlots;
-  return { ...ratioVerdict(okSlots, slots.length, target), okSlots, failedSlots, silentSlots };
+  return { ...ratioVerdict(okSlots, slots.length, target, fullWindowTotal), okSlots, failedSlots, silentSlots };
 }
 
 /** Keep-warm: every 4 minutes, 03:00–14:59 UTC (07:00–18:59 Oman). */
 export function availabilityResult(runs: RunSample[], from: Date | null, now: Date): SlotResult {
-  const target = sloById('availability').target!;
-  if (!from) return { ...ratioVerdict(0, 0, target), okSlots: 0, failedSlots: 0, silentSlots: 0 };
-  return slotAttainment(runs, slotStarts(from, now, 4, [3, 15]), 4, target);
+  const { target, windowDays } = sloById('availability');
+  if (!from) return { ...ratioVerdict(0, 0, target!), okSlots: 0, failedSlots: 0, silentSlots: 0 };
+  return slotAttainment(runs, slotStarts(from, now, 4, [3, 15]), 4, target!, PROBE_SLOTS_PER_DAY * windowDays!);
 }
 
 /** The SLA sweep: at :15 and :45, 03:15–14:45 UTC — one half-hour slot each. */
 export function slaSweepResult(runs: RunSample[], from: Date | null, now: Date): SlotResult {
-  const target = sloById('sla-sweep').target!;
-  if (!from) return { ...ratioVerdict(0, 0, target), okSlots: 0, failedSlots: 0, silentSlots: 0 };
-  return slotAttainment(runs, slotStarts(from, now, 30, [3, 15], 15), 30, target);
+  const { target, windowDays } = sloById('sla-sweep');
+  if (!from) return { ...ratioVerdict(0, 0, target!), okSlots: 0, failedSlots: 0, silentSlots: 0 };
+  return slotAttainment(runs, slotStarts(from, now, 30, [3, 15], 15), 30, target!, SWEEP_SLOTS_PER_DAY * windowDays!);
 }
 
 /**
@@ -245,14 +278,15 @@ export function slaSweepResult(runs: RunSample[], from: Date | null, now: Date):
  * not have started yet.
  */
 export function backupResult(runs: RunSample[], from: Date | null, now: Date): RatioResult & { missedDays: number } {
-  const target = sloById('backup').target!;
+  const { target: t, windowDays } = sloById('backup');
+  const target = t!;
   if (!from) return { ...ratioVerdict(0, 0, target), missedDays: 0 };
   const today = Math.floor(now.getTime() / DAY) * DAY;
   const days: number[] = [];
   for (let d = Math.floor(from.getTime() / DAY) * DAY; d < today; d += DAY) days.push(d);
   const okDays = new Set(runs.filter((r) => r.ok).map((r) => Math.floor(r.at.getTime() / DAY) * DAY));
   const good = days.filter((d) => okDays.has(d)).length;
-  return { ...ratioVerdict(good, days.length, target), missedDays: days.length - good };
+  return { ...ratioVerdict(good, days.length, target, windowDays!), missedDays: days.length - good };
 }
 
 // ── Approvals ─────────────────────────────────────────────────────────────
@@ -268,7 +302,31 @@ export type TierDecisions = {
   within: number;
   p50Minutes: number | null;
   p90Minutes: number | null;
+  /** How many different people made these decisions (see MIN_PEOPLE_FOR_TIER_DETAIL). */
+  people: number;
 };
+
+/**
+ * What a viewer may see per tier. The Data Steward sees every tier. A Manager sees
+ * a tier's own line only when at least MIN_PEOPLE_FOR_TIER_DETAIL people stand
+ * behind it. The rest are folded into one "other steps" line, and that line too
+ * is shown only if enough people stand behind it together; otherwise it is left
+ * out (the company-wide figure above still counts them). No single colleague's
+ * decision speed is shown to the Managers (review, 2026-09-27).
+ */
+export function tiersForViewer<T extends { role: string }>(
+  tiers: T[],
+  peopleOf: (t: T) => number,
+  viewerRole: string,
+  fold: (hidden: T[]) => T
+): T[] {
+  if (viewerRole === 'STEWARD') return tiers;
+  const shown = tiers.filter((t) => peopleOf(t) >= MIN_PEOPLE_FOR_TIER_DETAIL);
+  const hidden = tiers.filter((t) => peopleOf(t) < MIN_PEOPLE_FOR_TIER_DETAIL);
+  if (hidden.length === 0) return shown;
+  const folded = fold(hidden);
+  return peopleOf(folded) >= MIN_PEOPLE_FOR_TIER_DETAIL ? [...shown, folded] : shown;
+}
 
 export function approvalsResult(tiers: TierDecisions[]): RatioResult & { untracked: number } {
   const target = sloById('approvals').target!;
@@ -306,7 +364,20 @@ export function formatWorkingMinutes(min: number | null): string {
   return `${Math.floor(m / 60)} h ${m % 60} m`;
 }
 
+/**
+ * Truncated, never rounded up: 99.4987% must not print as the 99.50% target
+ * beside a "Missed" chip (review, 2026-09-27). The epsilon keeps an exact 0.995
+ * from flooring to 99.49 through float error.
+ */
 export function formatPct(ratio: number | null, digits = 1): string {
   if (ratio === null) return '—';
-  return `${(ratio * 100).toFixed(digits)}%`;
+  const scale = 10 ** digits;
+  return `${(Math.floor(ratio * 100 * scale + 1e-6) / scale).toFixed(digits)}%`;
+}
+
+/** The error-budget line, decided by the sign of the raw value, so -0.3% never reads "0% left". */
+export function formatBudget(left: number | null): string | null {
+  if (left === null) return null;
+  if (left < 0) return 'Error budget spent';
+  return `${Math.floor(left * 100)}% of the error budget left`;
 }
