@@ -59,7 +59,7 @@ services/*.ts        15 'use server' modules exporting 47 async functions (serve
 prisma/              schema.prisma, 19 migrations, seeds, ad-hoc test scripts (§2)
 scripts/             ops/ (smoke, app-role, restore-verify, cron-scheduler, R2 checks), qa/, golive/,
                      compliance/, plus ~16 historical scripts at the root (§2)
-tests/unit           82 files, 1,319 tests (vitest + jsdom); one runs only where golive-data/ exists
+tests/unit           84 files, 1,380 tests (vitest + jsdom); one runs only where golive-data/ exists
 tests/integration    29 DB-backed suites gated by RUN_* flags; 26 run in CI
 tests/e2e            2 Playwright specs; only login.spec.ts runs in CI
 tests/support        strip-comments (TypeScript-parser based), jsx-ast, where-eval, workflow-step,
@@ -207,7 +207,7 @@ Names only (`.env.example`); **production values are not verifiable from the rep
 | `SALESMAN_SUBMIT_GATE` | `FULL` tightens the salesman submit gate (not in `.env.example`) |
 | `WORK_*`, `SLA_*_MIN` | override the workweek (D1) and the SLA budgets; budgets are frozen onto requests at submit |
 | `PROMOTE_SLICE_BUDGET_MS`, `BULK_BUDGET_MS` | import-promote and bulk-action time slices (not in `.env.example`) |
-| `R2_*`, Sentry vars | storage and error reporting; `/api/health` reports R2 as `pending` (counted as OK) when R2 vars are absent |
+| `R2_*`, Sentry vars | storage and error reporting; with any of the three R2 credentials absent, `/api/health` reports `r2: unconfigured` — a 503 when `VERCEL_ENV=production`, a warning (200) elsewhere (item 12) |
 
 `npm run smoke` checks none of `DEMO_ACCOUNTS_DISABLED`, `RATE_LIMIT_BACKEND`, `SALESMAN_SUBMIT_GATE` or the bypass token.
 
@@ -226,7 +226,7 @@ Names only (`.env.example`); **production values are not verifiable from the rep
   - Vercel crons: `photo-gc` 03:00 UTC, `retention-sweep` 03:30 UTC.
   - `keep-warm` (every 4 min) and `sla-escalate` (:15, :45) in the window 03:00–14:59 UTC **every day**, weekends included — called by **cron-job.org** (owner decision D3, recorded in `docs/GO-LIVE-RUNBOOK.md` §0; whether those jobs exist is **not verifiable from the repo**) and by GitHub Actions as a backup (which delivers late and irregularly). The SLA sweep is claim-guarded and idempotent.
   - `db-backup` 02:00 UTC (GitHub start times have varied from 02 to 13 UTC); `restore-drill` 04:00 UTC on the 1st; `r2-config` 05:00 UTC.
-  - Every cron records a heartbeat; `/api/health` with the bearer alarms on `failed`, `stale` and `never`.
+  - Every cron records a heartbeat; `/api/health` with the bearer alarms on `failed`, `stale` and `never`. Since item 11 only a failed check or a **critical** job (`sla-escalate`, `db-backup`) answers 503; an alarm on a warning job (`keep-warm`, `photo-gc`, `retention-sweep`) answers 200 `status: warn` and is listed in `warnings`, and its failed-run alert is sent as `warn`. The anonymous probe retries the database once (750 ms) before answering 503. Verdict: `lib/health.ts`.
 - **Alerts:** `lib/alert.ts` posts to `ALERT_WEBHOOK_URL`: a closed set of three events (`sla.escalated`, `cron.failed`, `import.rejections`), deduplicated per event/severity/scope in fixed 4-hour UTC windows. The payload carries counts, system-minted ids and a free-text message scrubbed of phones, e-mails and digit runs (not of customer names).
 - **Other workflows:** `cron-scheduler` (dispatch only; creates/fixes the cron-job.org jobs), `provision-app-role` (sets `ALLOW_PRODUCTION=1` on every run; its only gate is a typed `confirm_host`, matched as a substring), `r2-config` (red until the owner mints R2 admin tokens **and** enables photo-bucket versioning with non-current retention).
 - **Operational docs:** `docs/OPERATIONS.md` (partly stale — §15), `docs/CREDENTIAL-ROTATION.md`, `docs/GO-LIVE-RUNBOOK.md` (stale header).
@@ -287,7 +287,7 @@ Do not report these as defects without new evidence; you may of course challenge
 - **Structural guards** assert on source or configuration where the historical defect was "a correct helper nobody called": `submit-wiring-guard`, `audit-guard` and `branch-address-guard` read comment-stripped source; `ci-gates-guard` executes the workflow's shell steps under `bash -e` with stubs; `typed-routes-guard` compiles probe files; `pii-classification` parses the schema. 11 test files still strip comments with a naive regex that `tests/support/strip-comments.ts` documents as wrong.
 - **Mutation testing by hand**, recorded in commit messages (e.g. `efe3729` 11/11 unit mutants; `ab5867f` 20/20; `2d1e702` 11/11). No Stryker config.
 - **Adversarial review after merges**: three to six lenses, each finding put to one or two independent skeptics; confirmed findings are fixed in a follow-up commit whose message lists them.
-- **What the tests actually exercise (read "1,319 unit tests" with this in mind):**
+- **What the tests actually exercise (read "1,380 unit tests" with this in mind):**
   - Service functions are exercised against real Postgres by the integration suites; 25 of 29 mock `@/lib/auth`, so the real session path runs only in `tests/e2e/login.spec.ts`.
   - Unit tests reach services mostly through source-text guards or `vi.mock`; some run a service with Prisma mocked, among them `customer-master-export.test.ts`, `duplicates-service.test.ts` and `photo-attach-service.test.ts` (`services/photos.ts` through its two routes).
   - No test exercises `services/temix.ts`, `customers.ts`, `routes.ts`, `saved-views.ts`, `notifications-actions.ts` or `customer-export.ts` for behaviour. Duplicate detection gained unit tests (the pure pairing, the service with Prisma mocked, the page and the card) and a Postgres suite `duplicate-detection.test.ts` riding `RUN_MERGE_TESTS` (item 16).
@@ -346,7 +346,7 @@ Trust the code. Known stale or contradictory documents:
 npm ci
 npm run typecheck        # next typegen + tsc --noEmit
 npm run lint
-npm test                 # 1,319 unit tests (one skips without golive-data/); integration files collect and skip
+npm test                 # 1,380 unit tests (one skips without golive-data/); integration files collect and skip
 npx next build           # no migrate; needs AUTH_SECRET >= 32 varied chars and placeholder DATABASE_URL/DIRECT_URL
 ```
 

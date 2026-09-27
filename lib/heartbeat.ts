@@ -25,8 +25,25 @@ export type HeartbeatKey =
   | 'db-backup'
   | 'retention-sweep';
 
+/**
+ * Item 11 (re-benchmark, 2026-09-24): "health goes red for minor things".
+ *
+ * Every alarm used to turn the whole bearer probe 503, so the monitor paged for a
+ * keep-warm ping that failed once — a cold start costs a salesman two seconds —
+ * exactly as loudly as for the SLA sweep being dead or a night without a backup.
+ * A monitor that pages for both gets muted, and then it pages for neither.
+ *
+ *   critical — a business process or the data's safety stops: the probe answers
+ *              503 and a failed run alerts as `critical`.
+ *   warning  — a courtesy or housekeeping job: still reported (the probe's
+ *              `warnings`, smoke's `warn=[…]`), and a failed run alerts as
+ *              `warn`, but the probe stays 200. lib/health.ts draws the line.
+ */
+export type HeartbeatSeverity = 'critical' | 'warning';
+
 export type HeartbeatExpectation = {
   label: string;
+  severity: HeartbeatSeverity;
   /** Scheduled interval in minutes. */
   everyMinutes: number;
   /** UTC hour window [start, end) during which the job is expected to run. */
@@ -41,13 +58,16 @@ export type HeartbeatExpectation = {
 
 export const HEARTBEAT_EXPECTATIONS: Record<HeartbeatKey, HeartbeatExpectation> = {
   // .github/workflows/sla-escalate.yml: '15,45 3-14 * * *'
-  'sla-escalate': { label: 'SLA escalation sweep', everyMinutes: 30, activeHoursUtc: [3, 15] },
+  // Approvals that stall are never escalated: critical.
+  'sla-escalate': { label: 'SLA escalation sweep', severity: 'critical', everyMinutes: 30, activeHoursUtc: [3, 15] },
   // .github/workflows/keep-warm.yml: '*/4 3-14 * * *'
-  'keep-warm': { label: 'Keep-warm ping', everyMinutes: 4, activeHoursUtc: [3, 15] },
-  // vercel.json crons: daily
-  'photo-gc': { label: 'Photo garbage collection', everyMinutes: 24 * 60 },
+  // Only speed: a missed ping costs the next user one cold start.
+  'keep-warm': { label: 'Keep-warm ping', severity: 'warning', everyMinutes: 4, activeHoursUtc: [3, 15] },
+  // vercel.json crons: daily. Housekeeping: a missed night keeps orphaned uploads a day longer.
+  'photo-gc': { label: 'Photo garbage collection', severity: 'warning', everyMinutes: 24 * 60 },
   // vercel.json crons: daily. B6 — enforces docs/compliance/DATA-RETENTION-SCHEDULE.md.
-  'retention-sweep': { label: 'Personal-data retention sweep', everyMinutes: 24 * 60 },
+  // Its periods are counted in days and the next run catches up: warning.
+  'retention-sweep': { label: 'Personal-data retention sweep', severity: 'warning', everyMinutes: 24 * 60 },
   // .github/workflows/db-backup.yml: '0 2 * * *' — reported by the workflow
   // itself (POST /api/ops/backup-report), not by a route in this app. B3: a
   // rotated database password or an expired R2 token used to break the nightly
@@ -59,7 +79,14 @@ export const HEARTBEAT_EXPECTATIONS: Record<HeartbeatKey, HeartbeatExpectation> 
   // gaps between consecutive dumps exceeded 24 h, and the worst was 33.2 h. A
   // tighter threshold would page someone most weeks and be ignored inside a
   // month; 40 h still catches a genuinely missed night.
-  'db-backup': { label: 'Nightly off-Neon database dump', everyMinutes: 24 * 60, staleAfterMinutes: 40 * 60 },
+  //
+  // The only copy of the data outside Neon: critical.
+  'db-backup': {
+    label: 'Nightly off-Neon database dump',
+    severity: 'critical',
+    everyMinutes: 24 * 60,
+    staleAfterMinutes: 40 * 60,
+  },
 };
 
 /** A job is "stale" once this many scheduled intervals have passed without a run. */
@@ -80,8 +107,10 @@ export type HeartbeatReport = {
   key: HeartbeatKey;
   label: string;
   state: HeartbeatState;
-  /** True when this state should page someone. */
+  /** True when the job is not running as its schedule says (never / failed / stale). */
   alarm: boolean;
+  /** Whether an alarm on this job pages (critical) or is only reported (warning). */
+  severity: HeartbeatSeverity;
   lastRunAt: string | null;
   lastOk: boolean | null;
   lastError: string | null;
@@ -103,7 +132,8 @@ export type HeartbeatReport = {
  */
 async function alertJobFailed(key: HeartbeatKey): Promise<void> {
   await sendAlert({
-    severity: 'critical',
+    // Item 11: a failed keep-warm ping is not a 3am page.
+    severity: HEARTBEAT_EXPECTATIONS[key].severity === 'critical' ? 'critical' : 'warn',
     event: 'cron.failed',
     // Per job: one bucket shared across jobs would let a dead photo-GC silence
     // the SLA sweep's outage an hour later, which is worse than no limiter.
@@ -241,6 +271,7 @@ export function heartbeatReport(rows: HeartbeatRow[], now: Date = new Date()): H
     const base = {
       key,
       label: exp.label,
+      severity: exp.severity,
       expectedEveryMinutes: exp.everyMinutes,
       lastRunAt: row ? row.lastRunAt.toISOString() : null,
       lastOk: row ? row.lastOk : null,

@@ -133,7 +133,7 @@ function scrubUrl(rawUrl: string): string {
  * `beforeSendTransaction` entirely, so span coverage must be re-verified before
  * that lands.
  */
-export function scrubEvent<T extends Event>(event: T, _hint?: EventHint): T {
+export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
   if (event.request?.headers) {
     delete event.request.headers['authorization'];
     delete event.request.headers['cookie'];
@@ -196,5 +196,32 @@ export function scrubEvent<T extends Event>(event: T, _hint?: EventHint): T {
   }
   // An IP address is personal data and we have no use for it.
   if (event.user) delete event.user.ip_address;
+  tagDigest(event, hint);
   return event;
+}
+
+/** Next's digests are hashes: short, and made of these characters only. */
+const DIGEST_SHAPE = /^[0-9A-Za-z_-]{1,64}$/;
+
+/**
+ * Item 10 (re-benchmark, 2026-09-24: "no log search"): make the reference a user
+ * reads off the error screen findable.
+ *
+ * Every error boundary shows `Reference: <digest>` (app/error.tsx,
+ * app/(app)/error.tsx, app/global-error.tsx), and a user is told to quote it.
+ * Nothing could look it up. The browser's report of the error and the server's
+ * report of the throw that caused it both reach Sentry, but the digest was on
+ * neither as anything searchable, and the server's copy is the only one with the
+ * real message and stack: production sends the browser a redacted error. As a
+ * tag, `digest:<reference>` in Sentry's search returns both.
+ *
+ * Set AFTER the scrub on purpose. A digest is usually a run of 7–12 digits, which
+ * is exactly what the phone pattern redacts; scrubbing it would turn every
+ * reference into "[phone]" and match nothing. It is a hash of the error, not
+ * personal data, and the shape check keeps anything else out of the tag.
+ */
+function tagDigest(event: Event, hint?: EventHint): void {
+  const digest = (hint?.originalException as { digest?: unknown } | null | undefined)?.digest;
+  if (typeof digest !== 'string' || !DIGEST_SHAPE.test(digest)) return;
+  event.tags = { ...event.tags, digest };
 }

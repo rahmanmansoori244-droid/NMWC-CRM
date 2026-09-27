@@ -5,6 +5,7 @@ import { r2, R2_BUCKET } from '@/lib/r2';
 import { HeadBucketCommand } from '@aws-sdk/client-s3';
 import { bearerMatches } from '@/lib/cron-auth';
 import { loadHeartbeatReport } from '@/lib/heartbeat';
+import { evaluateHealth, isProductionDeployment, r2Configured, type CheckState } from '@/lib/health';
 
 /**
  * GAP-01 + B-12 (audit 2026-05-10): minimal-information health endpoint.
@@ -19,21 +20,35 @@ import { loadHeartbeatReport } from '@/lib/heartbeat';
  * With `Authorization: Bearer <HEALTH_BEARER>` (an external monitor) the
  * detailed payload is returned: DB and R2 checks plus the per-job cron
  * heartbeats (lib/heartbeat.ts) — "stale" / "never ran" / "failed" are the
- * dead-man alarms for the SLA sweep, keep-warm and photo GC. The status code
- * is 503 whenever anything alarms, so the monitor needs no body parsing.
+ * dead-man alarms for the scheduled jobs. The status code is 503 when a check
+ * fails or a CRITICAL job alarms, so the monitor needs no body parsing; a
+ * warning-tier job that alarms is listed in `warnings` and the answer stays 200
+ * with status `warn` (item 11, lib/health.ts).
  */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-type CheckStatus = 'ok' | 'fail' | 'pending';
+/** One retry after this pause before the database counts as down. */
+const DB_RETRY_MS = 750;
 
+/**
+ * Item 11: one pooler hiccup used to be enough to answer 503, and to page. A
+ * database that is really down fails twice; one that blinked answers the retry,
+ * and the blink is still logged so a pattern of them is visible.
+ */
 async function dbOk(): Promise<boolean> {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    return true;
-  } catch (err) {
-    logger.warn({ err: (err as Error).message }, 'health.db.fail');
-    return false;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      return true;
+    } catch (err) {
+      if (attempt >= 2) {
+        logger.warn({ err: (err as Error).message }, 'health.db.fail');
+        return false;
+      }
+      logger.info({ err: (err as Error).message }, 'health.db.retry');
+      await new Promise((r) => setTimeout(r, DB_RETRY_MS));
+    }
   }
 }
 
@@ -69,10 +84,11 @@ export async function GET(req: Request) {
     return NextResponse.json({ status: ok ? 'ok' : 'degraded' }, { status: ok ? 200 : 503 });
   }
 
-  const checks: Record<string, CheckStatus> = {
+  const checks: Record<string, CheckState> = {
     app: 'ok',
     db: 'pending',
-    r2: 'pending',
+    // Item 12: never left `pending` — that read as healthy with no R2 at all.
+    r2: r2Configured() ? 'pending' : 'unconfigured',
     // Whether the heartbeats were READ at all. Without this, a failed heartbeat
     // query produced an empty alarm list, which is indistinguishable from "no
     // alarms" — so the probe answered 200 ok while nothing was being evaluated.
@@ -81,17 +97,17 @@ export async function GET(req: Request) {
 
   checks.db = (await dbOk()) ? 'ok' : 'fail';
 
-  try {
-    if (process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID) {
+  if (checks.r2 === 'pending') {
+    try {
       await r2().send(new HeadBucketCommand({ Bucket: R2_BUCKET }), {
         // REL-05: a health probe must never be the slowest thing in the system.
         abortSignal: AbortSignal.timeout(5_000),
       });
       checks.r2 = 'ok';
+    } catch (err) {
+      checks.r2 = 'fail';
+      logger.warn({ err: (err as Error).message }, 'health.r2.fail');
     }
-  } catch (err) {
-    checks.r2 = 'fail';
-    logger.warn({ err: (err as Error).message }, 'health.r2.fail');
   }
 
   // Heartbeats need the database; when it is down they are reported as unknown
@@ -109,14 +125,12 @@ export async function GET(req: Request) {
       logger.warn({ err: (err as Error).message }, 'health.heartbeats.fail');
     }
   }
-  const cronAlarms = (heartbeats ?? []).filter((h) => h.alarm).map((h) => h.key);
-
-  const allOk =
-    Object.values(checks).every((v) => v === 'ok' || v === 'pending') && cronAlarms.length === 0;
+  // Items 11 + 12: lib/health.ts decides what pages (503) and what is only reported.
+  const verdict = evaluateHealth({ checks, jobs: heartbeats, production: isProductionDeployment() });
 
   return NextResponse.json(
     {
-      status: allOk ? 'ok' : 'degraded',
+      status: verdict.status,
       service: 'nmwc-cm',
       version: process.env.npm_package_version ?? 'unknown',
       // B1: production served a four-month-old build for weeks and nothing said
@@ -129,11 +143,15 @@ export async function GET(req: Request) {
       deployedEnv: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? 'unknown',
       timestamp: new Date().toISOString(),
       checks,
+      // Everything worth a look that does not page: warning-tier jobs that alarm,
+      // and an unconfigured dependency off production.
+      warnings: verdict.warnings,
       cron: {
-        alarms: cronAlarms,
+        // Critical jobs only — these, and a failed check, are what answer 503.
+        alarms: verdict.criticalJobs,
         jobs: heartbeats,
       },
     },
-    { status: allOk ? 200 : 503 }
+    { status: verdict.httpStatus }
   );
 }

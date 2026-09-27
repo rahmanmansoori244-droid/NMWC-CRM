@@ -275,15 +275,22 @@ if (MONITOR) {
   });
   checks.push({
     name: 'monitor bearer unlocks the detail, and no cron job is alarming',
-    why: 'this is the endpoint an uptime monitor watches; 503 here means a scheduled job is dead',
+    why: 'this is the endpoint an uptime monitor watches; 503 here means a dependency failed or a critical scheduled job is dead',
     run: async () => {
       const res = await get('/api/health', { headers: { authorization: `Bearer ${MONITOR}` } });
       const body = (await res.json()) as {
         checks?: Record<string, string>;
+        warnings?: string[];
         cron?: { alarms?: string[]; jobs?: Array<{ key?: string; state?: string }> | null };
       };
+      // `alarms` holds the CRITICAL jobs only (items 11/12, lib/health.ts); a
+      // warning-tier job that alarms is printed as `warn=[…]` and does not fail
+      // this check, the same way it does not turn the probe 503.
       const alarms = body.cron?.alarms ?? [];
-      const bad = Object.entries(body.checks ?? {}).filter(([, v]) => v === 'fail');
+      const warnings = body.warnings ?? [];
+      // `unconfigured` counts as bad: smoke is pointed at production, where a
+      // missing R2 means no photograph can be uploaded (item 12).
+      const bad = Object.entries(body.checks ?? {}).filter(([, v]) => v === 'fail' || v === 'unconfigured');
       // Each alarm carries its STATE — `never`, `stale` or `failed` (lib/heartbeat.ts)
       // — so the post-deploy job in ci.yml can say which: it raises a job whose last
       // run FAILED as a warning rather than a notice, and it refuses to excuse a
@@ -292,7 +299,9 @@ if (MONITOR) {
       const named = alarms.map((k) => `${k}:${stateOf.get(k) ?? 'unknown'}`);
       return {
         ok: res.status === 200 && alarms.length === 0 && bad.length === 0,
-        detail: `${res.status} alarms=[${named.join(',')}] failed=[${bad.map(([k]) => k).join(',')}]`,
+        detail:
+          `${res.status} alarms=[${named.join(',')}] failed=[${bad.map(([k]) => k).join(',')}]` +
+          (warnings.length ? ` warn=[${warnings.join(',')}]` : ''),
       };
     },
   });

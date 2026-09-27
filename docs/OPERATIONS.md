@@ -30,15 +30,11 @@ npx vercel env ls
 npx vercel env add SOME_VAR production
 ```
 
-Required:
-- `DATABASE_URL` — Neon pooled connection string
-- `DIRECT_URL` — Neon direct connection (used for migrations only)
-- `NEXTAUTH_SECRET` / `AUTH_SECRET` — 32-byte base64; same value
-- `NEXTAUTH_URL` / `AUTH_URL` — `https://nmwc-cm.vercel.app`
-- `AUTH_TRUST_HOST=true`
-- `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET=nmwc-photos`
-- `NEXT_PUBLIC_SENTRY_DSN`, `SENTRY_ORG`, `SENTRY_PROJECT`
-- `LOG_LEVEL=info`
+**The full list is [SECRETS-INVENTORY.md](SECRETS-INVENTORY.md) §2** — every variable the
+application reads, which ones are secrets, what a leak exposes and which other place must
+hold the same value. A test fails when the code reads a variable that list does not name.
+This section used to keep its own list of eight; the code reads more than thirty, and the
+missing ones included `CRON_SECRET`, `HEALTH_BEARER` and `ALERT_WEBHOOK_URL`.
 
 ## 4. Deploy
 
@@ -183,7 +179,19 @@ Every scheduled job (`sla-escalate`, `keep-warm`, `photo-gc`) records a heartbea
 curl -s -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health | jq .cron
 ```
 
-States: `ok`, `outside-window` (not expected right now), `failed` (last run reported an error), `stale` (no run for 3 × the schedule interval inside its window), `never` (no run recorded). `failed`, `stale` and `never` set `status: degraded` and **HTTP 503** — point an external uptime monitor at this URL with the bearer header and alert on non-200. The anonymous probe (no header) now also answers 503 when the database is unreachable, so a plain uptime check sees a real outage.
+States: `ok`, `outside-window` (not expected right now), `failed` (last run reported an error), `stale` (no run for 3 × the schedule interval inside its window), `never` (no run recorded). `failed`, `stale` and `never` are alarms.
+
+**What pages and what does not (item 11, 2026-09-27).** Each job has a tier in `lib/heartbeat.ts`, and `lib/health.ts` turns them into the answer:
+
+| Answer | When | Body |
+|---|---|---|
+| **503** `status: degraded` | a check fails (`db`, `r2`, `heartbeats`), R2 is **unconfigured on production**, or a **critical** job alarms: `sla-escalate` (approvals stop escalating) or `db-backup` (no off-Neon copy) | `cron.alarms` names the critical jobs |
+| **200** `status: warn` | only a **warning** job alarms: `keep-warm` (speed only), `photo-gc`, `retention-sweep` (housekeeping; the next run catches up), or R2 unconfigured off production | `warnings: ["keep-warm:failed", …]` |
+| **200** `status: ok` | nothing to report | |
+
+Point an external uptime monitor at this URL with the bearer header and alert on non-200. It then pages only for the critical row. The warning rows are still visible: in the body, as `warn=[…]` on smoke's dead-man line, and as a `warn` (not `critical`) webhook alert when a warning job's run fails. Before this change any alarm answered 503, so one failed keep-warm ping paged as loudly as a dead SLA sweep. To move a job between tiers, change its `severity` in `HEARTBEAT_EXPECTATIONS`. `tests/unit/health-verdict.test.ts` pins which jobs are critical, so the change has to be deliberate.
+
+The anonymous probe (no header) answers 503 when the database is unreachable, so a plain uptime check sees a real outage. It retries once after 750 ms first, so one pooler blip is logged (`health.db.retry`) and not reported as an outage.
 
 **Scheduler decision (D3) — owner chose an EXTERNAL scheduler (2026-09-14).** GitHub Actions delivered 2–4 of the ~180 configured keep-warm runs a day, so the SLA sweep effectively did not run. The jobs stay where they are (plain authenticated GET endpoints); only the caller changes.
 
@@ -685,6 +693,7 @@ Since B5 (2026-09-14) the public `/api/health` itself answers **503 `{ "status":
 curl -fsSL -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health | jq
 ```
 - `db: fail` → Neon project may be sleeping (free tier auto-suspends). Hit any page; first load wakes it. If persistent: check Neon console.
+- `r2: unconfigured` → one of `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` is missing from this deployment. On production that is a 503: no photograph can be uploaded. Set it in Vercel and redeploy.
 - `r2: fail` → check R2 bucket exists and the API token isn't revoked. Test: `curl -X HEAD https://<account>.r2.cloudflarestorage.com/nmwc-photos -H "Authorization: ..."`.
 
 ### Symptom: Sign-in 500s

@@ -54,13 +54,40 @@ describe('an unreadable dead man is a failure, not an empty alarm list', () => {
   });
 
   it('folds that into the aggregate, so a failed read cannot answer 200', () => {
-    // allOk treats 'pending' as acceptable — which is correct, because heartbeats
-    // stay 'pending' only when the database is already down and reported failed.
-    expect(src).toMatch(/Object\.values\(checks\)\.every/);
-    expect(src).toMatch(/cronAlarms\.length === 0/);
+    // The verdict is lib/health.ts's evaluateHealth, which answers 503 for any
+    // failed check — `heartbeats` included (tests/unit/health-verdict.test.ts
+    // proves it by behaviour). What this pins is that the route USES it, for both
+    // the body and the status code, and does not keep a private verdict of its own.
+    expect(src).toMatch(/evaluateHealth\(\{\s*checks,/);
+    expect(src).toMatch(/status:\s*verdict\.status/);
+    expect(src).toMatch(/\{\s*status:\s*verdict\.httpStatus\s*\}/);
+    expect(src).not.toMatch(/allOk/);
   });
 
   it('the failure is logged as well as reported', () => {
     expect(src).toMatch(/health\.heartbeats\.fail/);
+  });
+});
+
+describe('item 12: an R2 with no credentials is not read as healthy', () => {
+  it('starts as unconfigured, never as the neutral pending, when the credentials are missing', () => {
+    expect(src).toMatch(/r2:\s*r2Configured\(\)\s*\?\s*'pending'\s*:\s*'unconfigured'/);
+  });
+
+  it('probes the bucket only when it is configured, and a probe that throws is a fail', () => {
+    expect(src).toMatch(/if \(checks\.r2 === 'pending'\)/);
+    expect(src).toMatch(/checks\.r2 = 'fail'/);
+  });
+
+  it('judges it against the production deployment, not NODE_ENV', () => {
+    // NODE_ENV is "production" on every built deployment, previews included.
+    expect(src).toMatch(/production:\s*isProductionDeployment\(\)/);
+  });
+});
+
+describe('item 11: one blip is not an outage', () => {
+  it('retries the database once before answering degraded', () => {
+    expect(src).toMatch(/attempt >= 2/);
+    expect(src).toMatch(/health\.db\.retry/);
   });
 });

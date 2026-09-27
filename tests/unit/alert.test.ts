@@ -888,7 +888,7 @@ describe('a failed cron run actually reaches the webhook', () => {
     delete process.env.ALERT_WEBHOOK_URL;
   });
 
-  async function record(key: 'photo-gc' | 'keep-warm' | 'retention-sweep', ok: boolean) {
+  async function record(key: 'photo-gc' | 'keep-warm' | 'retention-sweep' | 'sla-escalate' | 'db-backup', ok: boolean) {
     const calls: Call[] = [];
     vi.stubGlobal('fetch', acceptingFetch(calls));
     vi.doMock('@/lib/db', () => ({ prisma: { cronHeartbeat: { upsert } } }));
@@ -903,7 +903,16 @@ describe('a failed cron run actually reaches the webhook', () => {
     const body = sentBody(calls);
     expect(body.event).toBe('cron.failed');
     expect(body.scope).toBe('photo-gc');
-    expect(body.severity).toBe('critical');
+    // Item 11: photo GC is housekeeping — reported, not a 3am page.
+    expect(body.severity).toBe('warn');
+  });
+
+  it('alerts as critical only for the jobs whose failure stops a process or the backup', async () => {
+    for (const key of ['sla-escalate', 'db-backup'] as const) {
+      const calls = await record(key, false);
+      expect(sentBody(calls).severity, key).toBe('critical');
+    }
+    expect(sentBody(await record('keep-warm', false)).severity).toBe('warn');
   });
 
   it('stays silent when the run succeeded', async () => {

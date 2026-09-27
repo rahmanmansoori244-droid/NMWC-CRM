@@ -367,3 +367,40 @@ describe('every runtime wires both hooks', () => {
     }
   );
 });
+
+describe('item 10: the Reference on the error screen is searchable in Sentry', () => {
+  // Every error boundary shows `Reference: <digest>`. The server's report is the
+  // only one with the real message; tagging both reports with the digest is what
+  // lets a quoted reference find it.
+  const withDigest = (digest: unknown) => Object.assign(new Error('boom'), { digest });
+
+  it('tags the event with the digest of the error that caused it', () => {
+    const out = scrubEvent({ exception: { values: [{ value: 'boom' }] } } as ErrorEvent, {
+      originalException: withDigest('2847590223'),
+    });
+    expect(out.tags?.digest).toBe('2847590223');
+  });
+
+  it('is not scrubbed as a phone number, which a 7-12 digit digest otherwise would be', () => {
+    expect(scrub('2847590223')).toBe('[phone]');
+    const out = scrubEvent({} as ErrorEvent, { originalException: withDigest('2847590223') });
+    expect(out.tags?.digest).toBe('2847590223');
+  });
+
+  it('keeps the tags the event already had', () => {
+    const out = scrubEvent({ tags: { runtime: 'node' } } as unknown as ErrorEvent, {
+      originalException: withDigest('abc123'),
+    });
+    expect(out.tags).toEqual({ runtime: 'node', digest: 'abc123' });
+  });
+
+  it('tags nothing when there is no digest, or when it is not digest-shaped', () => {
+    for (const hint of [undefined, {}, { originalException: new Error('x') }, { originalException: 'str' }]) {
+      expect(scrubEvent({} as ErrorEvent, hint as never).tags?.digest).toBeUndefined();
+    }
+    // Anything that is not a short hash stays out of a tag, whatever it carries.
+    for (const bad of ['ali.said@example.com', 'has space', 'x'.repeat(65), 42]) {
+      expect(scrubEvent({} as ErrorEvent, { originalException: withDigest(bad) }).tags?.digest).toBeUndefined();
+    }
+  });
+});
