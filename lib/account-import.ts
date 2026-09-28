@@ -8,6 +8,7 @@
  */
 import type { Role } from '@prisma/client';
 import { isTransientDbError, mayHaveCommitted } from './db-errors';
+import { scrubAndTruncate } from './scrub';
 
 /** Roles an import may neither mint nor change; the Users UI owns them. */
 const ADMIN_ROLES: readonly Role[] = ['MANAGER', 'STEWARD'];
@@ -191,6 +192,47 @@ export function accountRowFailure(err: unknown, subject: string): RowFailure {
   return refused(`it could not be saved (${code || name}).`);
 }
 
+/**
+ * The error's name and what its message says, for the log line and the Sentry
+ * report of a row (or a batch report) that failed. The issue text above never
+ * carries the message, so without this an unexpected fault left nothing behind
+ * but "could not be saved (TypeError)".
+ *
+ * Not the whole message: a Prisma validation error prints the call's arguments
+ * between its first line (which call) and its last (why) — for this table that
+ * includes the password hash — and a Postgres error's detail quotes the failing
+ * row or key. So the first and last lines only, with any detail cut off, then
+ * scrubbed of phone numbers and e-mail addresses before it is shortened.
+ */
+export function errorLogFields(err: unknown): { errName: string; err: string } {
+  const errName = err instanceof Error ? err.name : typeof err;
+  const raw = err instanceof Error ? err.message : String(err);
+  const lines = raw
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const text = (lines.length > 1 ? `${lines[0]} … ${lines[lines.length - 1]}` : (lines[0] ?? ''))
+    .replace(/\s*(?:\bdetail\b|Failing row contains|\bKey \().*$/i, ' [detail cut]');
+  return { errName, err: scrubAndTruncate(text, 300) };
+}
+
+/**
+ * The error sent to Sentry for a failure that was not the database going away:
+ * the original's name and stack frames, with errorLogFields' text for its
+ * message, because the SDK sends an exception's message as it stands.
+ */
+export function reportableError(err: unknown): Error {
+  const { errName, err: message } = errorLogFields(err);
+  const out = new Error(message);
+  out.name = errName;
+  const frames =
+    err instanceof Error && typeof err.stack === 'string'
+      ? err.stack.split('\n').filter((l) => /^ {4}at /.test(l))
+      : [];
+  out.stack = [`${errName}: ${message}`, ...frames].join('\n');
+  return out;
+}
+
 /** X-IMPORTS-3: the issue for a row the import never reached because it stopped. */
 export const ACCOUNT_ROW_NOT_PROCESSED =
   'not processed: the import stopped because the database stopped answering. Nothing was written for this row. Import it again.';
@@ -207,15 +249,26 @@ export function accountImportInterruptedMessage(p: {
   uncertain: number;
   notApplied: number;
   recorded: boolean;
+  /**
+   * When the report could not be saved for a reason other than the database not
+   * answering (isTransientDbError false): the Prisma code or the error's name.
+   * Without it, an unrecorded report is put down to the database.
+   */
+  reportFault?: string;
 }): string {
   const applied = `${p.applied} row(s) were applied and are saved`;
   const uncertain =
     p.uncertain > 0
       ? `; ${p.uncertain} may or may not have been, because the connection dropped while they were being saved`
       : '';
-  const rerun =
-    'Upload the same file again once the CRM responds. A row that was already applied changes nothing the second time, except that a row with reset_password set to yes issues its password again, so take those rows out first.';
-  return p.recorded
-    ? `The database stopped answering, so the import stopped part-way. ${applied}${uncertain}. The ${p.notApplied} row(s) that were not applied are listed on this upload's batch page. ${rerun}`
-    : `${applied}${uncertain}, but the database stopped answering before this upload's report could be saved, so the ${p.notApplied} row(s) that were not applied are not listed anywhere. ${rerun}`;
+  const again =
+    'A row that was already applied changes nothing the second time, except that a row with reset_password set to yes issues its password again, so take those rows out first.';
+  const rerun = `Upload the same file again once the CRM responds. ${again}`;
+  if (p.recorded) {
+    return `The database stopped answering, so the import stopped part-way. ${applied}${uncertain}. The ${p.notApplied} row(s) that were not applied are listed on this upload's batch page. ${rerun}`;
+  }
+  if (p.reportFault) {
+    return `${applied}${uncertain}, but this upload's report could not be saved (${p.reportFault}), so the ${p.notApplied} row(s) that were not applied are not listed anywhere. The fault is in the CRM, not in the file, and it has been reported. If the file is uploaded again: ${again}`;
+  }
+  return `${applied}${uncertain}, but the database stopped answering before this upload's report could be saved, so the ${p.notApplied} row(s) that were not applied are not listed anywhere. ${rerun}`;
 }

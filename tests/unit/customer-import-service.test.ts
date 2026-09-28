@@ -134,6 +134,21 @@ describe('uploadCustomerMasterAction — N05', () => {
     expect((h.db.importBatch as { create: Fn }).create).not.toHaveBeenCalled();
     expect(staged).toEqual([]);
   });
+
+  it('a heading repeated on a later sheet, which the upload never reads, does not refuse it', async () => {
+    const ExcelJS = await loadExcelJS();
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Customers');
+    ws.addRow(['cust_code', 'cust_name', 'address']);
+    ws.addRow(['C004', 'Fine Shop', 'Way 7, Ruwi']);
+    wb.addWorksheet('Notes').addRow(['note', 'Note']);
+    const buf = Buffer.from((await wb.xlsx.writeBuffer()) as ArrayBuffer);
+    const fd = new FormData();
+    fd.set('file', new File([buf], 'notes.xlsx'));
+    const res = await uploadCustomerMasterAction(fd);
+    expect(res.ok).toBe(true);
+    expect(staged.map((r) => [r.rowNumber, r.parsed.custCode])).toEqual([[2, 'C004']]);
+  });
 });
 
 // ── N03: promote ────────────────────────────────────────────────────────────

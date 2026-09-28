@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 import { PaymentTerms, TemixSyncState, Prisma } from '@prisma/client';
 import {
   buildTemixRows,
+  deactivationCode,
   deactivationsOfLiveCodes,
   mergeTemixClash,
   resolveArchiveTemixState,
@@ -205,10 +206,26 @@ describe('F11: deactivationsOfLiveCodes — the batch invariant', () => {
     expect(deactivationsOfLiveCodes([loser], new Set())).toEqual([]);
   });
 
-  it('a live row is never a deactivation, and an uncoded archive has no code to clash', () => {
+  it('a live row is never a deactivation', () => {
     const live = customer({ temixCode: 'T1' });
-    const uncoded = customer({ temixCode: null, deletedAt: at });
-    expect(deactivationsOfLiveCodes([live, uncoded], new Set(['T1']))).toEqual([]);
+    expect(deactivationsOfLiveCodes([live], new Set(['T1']))).toEqual([]);
+  });
+
+  it('an uncoded archive goes out under its customer code, and clashes when a live customer holds that as its Temix code', () => {
+    const uncoded = customer({ nmwcCode: 'N2', temixCode: null, deletedAt: at });
+    // What the batch would send for it: no temix_code, keyed on cust_code.
+    expect(buildTemixRows([uncoded], 'b').map((r) => `${r.sync_action}:${r.temix_code}:${r.cust_code}`)).toEqual([
+      'DEACTIVATE::N2',
+    ]);
+    expect(deactivationCode(uncoded)).toBe('N2');
+    expect(deactivationsOfLiveCodes([uncoded], new Set(['N2']))).toEqual(['N2']);
+    expect(deactivationsOfLiveCodes([uncoded], new Set(['T1']))).toEqual([]);
+  });
+
+  it('a coded row is deactivated by its Temix code, not its customer code', () => {
+    const coded = customer({ nmwcCode: 'N2', temixCode: 'T2', deletedAt: at });
+    expect(deactivationCode(coded)).toBe('T2');
+    expect(deactivationsOfLiveCodes([coded], new Set(['N2']))).toEqual([]);
   });
 
   it('each clashing code once, sorted', () => {

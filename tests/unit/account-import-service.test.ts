@@ -15,6 +15,11 @@
  *   - User.email and User.ownedRouteId are unique, as in the schema.
  * A fault hook makes any call throw a Prisma-shaped error, for X-IMPORTS-3.
  *
+ * Also: what a failed row or batch report leaves in the log and in Sentry (a
+ * mocked SDK), the run of database failures counted only while unbroken, and —
+ * through the real parser (uploadWorkbook) — Excel row numbers after blank lines
+ * and repeated headings refused only on the sheets the import reads (N05).
+ *
  * tests/integration/import-route-handover.test.ts proves F07's rollback, F08,
  * X-IMPORTS-1, -2 and -4 and ENH-6 against Postgres in CI (RUN_IMPORT_TESTS).
  */
@@ -57,11 +62,20 @@ type Store = {
     issues: Array<{ message: string; sheet: string; row: number }>;
   }>;
 };
-type Sheet = { name: string; headers: string[]; rows: Array<Record<string, string>> };
+type Sheet = {
+  name: string;
+  headers: string[];
+  rows: Array<Record<string, string>>;
+  rowNumbers: number[];
+  duplicateHeadings: Array<{ heading: string; first: string; again: string }>;
+};
 
 const h = vi.hoisted(() => ({
   store: null as unknown as Store,
-  sheets: [] as Sheet[],
+  /** null: the uploaded bytes go through the real parser (uploadWorkbook). */
+  sheets: [] as Sheet[] | null,
+  /** Sentry.captureException. */
+  capture: vi.fn(),
   txOpen: 0,
   txOptions: [] as unknown[],
   seq: 0,
@@ -79,7 +93,14 @@ vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 vi.mock('@/lib/rate-limit', () => ({ checkLimit: async () => ({ ok: true }) }));
-vi.mock('@/lib/excel', () => ({ parseWorkbook: async () => h.sheets }));
+vi.mock('@sentry/nextjs', () => ({ captureException: h.capture }));
+vi.mock('@/lib/excel', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/lib/excel')>();
+  return {
+    ...real,
+    parseWorkbook: async (buf: Uint8Array) => h.sheets ?? real.parseWorkbook(buf),
+  };
+});
 vi.mock('bcryptjs', () => ({ default: { hash: async (p: string) => `hashed:${p}` } }));
 
 // ── The fake database ────────────────────────────────────────────────────────
@@ -309,6 +330,8 @@ vi.mock('@/lib/audit', () => ({
 }));
 
 import { uploadAccountMasterAction } from '@/services/imports';
+import { loadExcelJS } from '@/lib/excel';
+import { logger } from '@/lib/logger';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 const user = (over: Partial<U> & { id: string; username: string; role: string }): U => ({
@@ -326,6 +349,7 @@ const user = (over: Partial<U> & { id: string; username: string; role: string })
 });
 
 beforeEach(() => {
+  vi.clearAllMocks();
   h.seq = 0;
   h.txOpen = 0;
   h.txOptions = [];
@@ -361,9 +385,22 @@ async function upload(sheets: Array<{ name: string; rows: Array<Record<string, s
     name: s.name,
     headers: Object.keys(s.rows[0] ?? {}),
     rows: s.rows,
+    rowNumbers: s.rows.map((_, i) => i + 2),
+    duplicateHeadings: [],
   }));
+  return send(new Uint8Array([1, 2, 3]));
+}
+/** A real workbook, through the real parser: blank lines and headings as Excel has them. */
+async function uploadWorkbook(build: (wb: import('exceljs').Workbook) => void) {
+  const ExcelJS = await loadExcelJS();
+  const wb = new ExcelJS.Workbook();
+  build(wb);
+  h.sheets = null;
+  return send(new Uint8Array((await wb.xlsx.writeBuffer()) as ArrayBuffer));
+}
+async function send(bytes: Uint8Array<ArrayBuffer>) {
   const fd = new FormData();
-  fd.set('file', new File([new Uint8Array([1, 2, 3])], 'account-master.xlsx'));
+  fd.set('file', new File([bytes], 'account-master.xlsx'));
   const res = await uploadAccountMasterAction(fd);
   const batch = h.store.batches.at(-1);
   const messages = h.store.importRows
@@ -910,6 +947,220 @@ describe('X-IMPORTS-3: a database fault mid-import is reported as what it was', 
     expect(messages).toEqual([
       'Users 2: nothing was written for "viewer.1": its email is already used by another record.',
     ]);
+    expect(find('viewer.1')).toBeUndefined();
+  });
+
+  // ── the run is of failures IN A ROW ──
+  const failLookup = (code: string, names: RegExp) => (model: string, op: string, args: any) =>
+    model === 'user' && op === 'findUnique' && names.test(args.where.username)
+      ? prismaError(code)
+      : undefined;
+
+  it('three transient failures with a rule-held row between them do not stop the import', async () => {
+    // viewer.2 is read, then held back by a rule (a new account with no password):
+    // the database answered for it, so the run of failures is broken there.
+    h.failOn = failLookup('P1001', /^viewer\.[134]$/);
+    const rows = viewers(5);
+    rows[1] = { username: 'viewer.2', full_name: 'V2', role: 'VIEWER', password: '' };
+    const { res, messages } = await upload(usersSheet(...rows));
+    const data = okData(res);
+    expect(data).toMatchObject({ clean: 1, issues: 4 });
+    expect(messages).toEqual([
+      expect.stringMatching(/^Users 2: the database did not answer \(P1001\)/),
+      'Users 3: new user needs a password',
+      expect.stringMatching(/^Users 4: the database did not answer \(P1001\)/),
+      expect.stringMatching(/^Users 5: the database did not answer \(P1001\)/),
+    ]);
+    expect(find('viewer.5')).toBeTruthy();
+  });
+
+  it('the same on the Routes sheet: a route held back for an unknown region breaks the run', async () => {
+    h.failOn = (model, op, args) =>
+      model === 'region' && op === 'findUnique' && args.where.code === 'MCT'
+        ? prismaError('P1001')
+        : undefined;
+    const route = (code: string, region: string) => ({ code, name: code, region_code: region });
+    const { res, messages } = await upload([
+      {
+        name: 'Routes',
+        rows: [
+          route('R-1', 'MCT'),
+          route('R-2', 'NOPE'),
+          route('R-3', 'MCT'),
+          route('R-4', 'MCT'),
+          route('R-5', 'BAT'),
+        ],
+      },
+    ]);
+    expect(okData(res)).toMatchObject({ clean: 1, issues: 4 });
+    expect(messages[1]).toBe('Routes 3: region "NOPE" not found');
+    expect(h.store.routes.some((r) => r.code === 'R-5')).toBe(true);
+  });
+
+  it('a row whose read answered and whose write then timed out is still one of the three', async () => {
+    h.failOn = (model, op, args) =>
+      model === 'user' && op === 'upsert' && /^viewer\.[123]$/.test(args.where.username)
+        ? prismaError('P2028')
+        : undefined;
+    const { res, messages } = await upload(usersSheet(...viewers(4)));
+    expect(res.ok).toBe(false);
+    expect((res as { code: string }).code).toBe('IMPORT_INTERRUPTED');
+    expect(messages.at(-1)).toMatch(/^Users 5: not processed: /);
+    expect(find('viewer.4')).toBeUndefined();
+  });
+});
+
+// ── what a failure leaves behind ─────────────────────────────────────────────
+describe('a failed row or report is logged with its message, and reported unless the database went away', () => {
+  const warned = (event: string) =>
+    vi
+      .mocked(logger.warn)
+      .mock.calls.filter((c) => c[1] === event)
+      .map((c) => c[0] as Record<string, unknown>);
+
+  it('an unexpected fault is logged by name and scrubbed message, and sent to Sentry cut down', async () => {
+    h.failOn = (model, op, args) => {
+      if (model !== 'user' || op !== 'upsert') return undefined;
+      if (args.where.username === 'viewer.1')
+        return new TypeError("Cannot read properties of undefined (reading 'id') ali@example.invalid");
+      if (args.where.username === 'viewer.2') return prismaError('P2024');
+      return undefined;
+    };
+    const { res, messages } = await upload(
+      usersSheet(
+        { username: 'viewer.1', full_name: 'V1', role: 'VIEWER', password: '123456789012' },
+        { username: 'viewer.2', full_name: 'V2', role: 'VIEWER', password: '123456789012' }
+      )
+    );
+    expect(okData(res).clean).toBe(0);
+    // The Steward's issue still names the error type only.
+    expect(messages[0]).toBe('Users 2: nothing was written for "viewer.1": it could not be saved (TypeError).');
+    const lines = warned('import.account.row_failed');
+    expect(lines).toEqual([
+      expect.objectContaining({
+        sheet: 'Users',
+        row: 2,
+        errName: 'TypeError',
+        err: "Cannot read properties of undefined (reading 'id') [email]",
+        transient: false,
+      }),
+      expect.objectContaining({
+        sheet: 'Users',
+        row: 3,
+        code: 'P2024',
+        errName: 'Error',
+        err: 'Invalid invocation (P2024): [email][phone]',
+        transient: true,
+      }),
+    ]);
+    // Sentry hears about the bug, not about the database that did not answer.
+    expect(h.capture).toHaveBeenCalledTimes(1);
+    const [sent, ctx] = h.capture.mock.calls[0];
+    expect(sent).toBeInstanceOf(Error);
+    expect(sent.name).toBe('TypeError');
+    expect(sent.message).toBe("Cannot read properties of undefined (reading 'id') [email]");
+    expect(ctx).toEqual({ tags: { event: 'import.account.row_failed' } });
+  });
+
+  it('a report the database refused is not blamed on the database going away, and is sent to Sentry', async () => {
+    h.failOn = (model, op) =>
+      model === 'importBatch' && op === 'update' ? prismaError('P2000') : undefined;
+    const { res } = await upload(usersSheet({ username: 'viewer.1', full_name: 'V', role: 'VIEWER', password: '123456789012' }));
+    expect(res.ok).toBe(false);
+    const fail = res as { ok: false; code: string; message: string };
+    expect(fail.code).toBe('IMPORT_INTERRUPTED');
+    expect(fail.message).toMatch(
+      /^1 row\(s\) were applied and are saved, but this upload's report could not be saved \(P2000\)/
+    );
+    expect(fail.message).not.toMatch(/stopped answering/);
+    expect(vi.mocked(logger.error).mock.calls.find((c) => c[1] === 'import.account.not_recorded')?.[0]).toMatchObject({
+      code: 'P2000',
+      errName: 'Error',
+      err: 'Invalid invocation (P2000): [email][phone]',
+      transient: false,
+    });
+    expect(h.capture).toHaveBeenCalledTimes(1);
+    expect(h.capture.mock.calls[0][1]).toEqual({ tags: { event: 'import.account.not_recorded' } });
+  });
+
+  it('a report the database did not answer for still says so, and is not sent to Sentry', async () => {
+    h.failOn = (model, op) =>
+      model === 'importBatch' && op === 'update' ? prismaError('P1001') : undefined;
+    const { res } = await upload(usersSheet({ username: 'viewer.1', full_name: 'V', role: 'VIEWER', password: '123456789012' }));
+    expect((res as { message: string }).message).toMatch(
+      /but the database stopped answering before this upload's report could be saved/
+    );
+    expect(h.capture).not.toHaveBeenCalled();
+  });
+});
+
+// ── N05 in the account import ────────────────────────────────────────────────
+describe('N05: rows are numbered as Excel shows them, and only the sheets read are checked for repeated headings', () => {
+  it('reports the Excel row number on every sheet, blank lines included', async () => {
+    const { res, messages } = await uploadWorkbook((wb) => {
+      const regions = wb.addWorksheet('Regions');
+      regions.getCell('A1').value = 'code';
+      regions.getCell('B1').value = 'name';
+      regions.getCell('A2').value = 'MCT';
+      regions.getCell('B2').value = 'Muscat';
+      regions.getCell('A4').value = 'NONAME'; // row 3 blank
+      const routes = wb.addWorksheet('Routes');
+      routes.getCell('A1').value = 'code';
+      routes.getCell('B1').value = 'name';
+      routes.getCell('C1').value = 'region_code';
+      routes.getCell('A3').value = 'MCT-09'; // row 2 blank; no name, no region
+      const users = wb.addWorksheet('Users');
+      ['username', 'full_name', 'role', 'password'].forEach((v, i) => (users.getRow(1).getCell(i + 1).value = v));
+      users.getRow(2).values = ['viewer.1', 'V1', 'VIEWER', '123456789012'];
+      // Row 3 left blank, as people do between groups.
+      users.getRow(4).values = ['viewer.2', '', 'VIEWER', '123456789012'];
+      users.getRow(6).values = ['viewer.3', 'V3', 'VIEWER', '123456789012'];
+    });
+    expect(okData(res)).toMatchObject({ clean: 3, issues: 3 });
+    expect(messages).toEqual([
+      'Regions 4: code and name required',
+      'Routes 3: code, name, region_code required',
+      'Users 4: username, full_name, role required',
+    ]);
+    expect(find('viewer.3')).toBeTruthy();
+  });
+
+  it('the Users sheet sorted by role still reports each row where Excel has it', async () => {
+    const { messages } = await uploadWorkbook((wb) => {
+      const users = wb.addWorksheet('Users');
+      ['username', 'full_name', 'role', 'password'].forEach((v, i) => (users.getRow(1).getCell(i + 1).value = v));
+      users.getRow(2).values = ['viewer.1', 'V1', 'VIEWER', 'short'];
+      users.getRow(5).values = ['sup.1', 'S1', 'SUPERVISOR', 'short'];
+    });
+    // Supervisors are processed first; each keeps its own row number.
+    expect(messages).toEqual([
+      'Users 5: password must be 12+ chars (or set must_change_password=yes)',
+      'Users 2: password must be 12+ chars (or set must_change_password=yes)',
+    ]);
+  });
+
+  it('a heading repeated on a sheet the import does not read does not refuse the file', async () => {
+    const { res } = await uploadWorkbook((wb) => {
+      wb.addWorksheet('Instructions').addRow(['Note', 'note']);
+      const users = wb.addWorksheet('Users');
+      users.addRow(['username', 'full_name', 'role', 'password']);
+      users.addRow(['viewer.1', 'V1', 'VIEWER', '123456789012']);
+    });
+    expect(okData(res).clean).toBe(1);
+    expect(find('viewer.1')).toBeTruthy();
+  });
+
+  it('a heading repeated on a sheet it reads refuses the file before anything is written', async () => {
+    const { res } = await uploadWorkbook((wb) => {
+      const users = wb.addWorksheet('Users');
+      users.addRow(['username', 'full_name', 'role', 'password', 'Role']);
+      users.addRow(['viewer.1', 'V1', 'VIEWER', '123456789012', 'MANAGER']);
+    });
+    expect(res.ok).toBe(false);
+    expect(JSON.stringify(res)).toContain(
+      'Sheet \\"Users\\": the heading \\"Role\\" is in more than one column (C and E)'
+    );
+    expect(h.store.batches).toEqual([]);
     expect(find('viewer.1')).toBeUndefined();
   });
 });

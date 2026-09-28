@@ -35,7 +35,27 @@ export type ParsedSheet = {
    * first blank line; report this number instead.
    */
   rowNumbers: number[];
+  /**
+   * Each heading found again in a later column (compared without case): the
+   * heading as written there, the column it was first read from, and the column
+   * it repeats in. The repeat is not read. Recorded rather than thrown, so a
+   * repeat on a sheet the caller never reads (an instructions tab, say) does not
+   * refuse the file; a caller refuses only the sheets it reads, with
+   * duplicateHeadingIssue.
+   */
+  duplicateHeadings: Array<{ heading: string; first: string; again: string }>;
 };
+
+/**
+ * The refusal for a sheet whose heading repeats, naming the sheet and both
+ * columns, or null when every heading is in one column. The later column used to
+ * overwrite the earlier one, blank or not (N05).
+ */
+export function duplicateHeadingIssue(sheet: ParsedSheet): string | null {
+  const d = sheet.duplicateHeadings[0];
+  if (!d) return null;
+  return `Sheet "${sheet.name}": the heading "${d.heading}" is in more than one column (${d.first} and ${d.again}). Keep one, or rename the other.`;
+}
 
 /**
  * N05: a heading is read from its OWN column. The parser used to collect the
@@ -51,8 +71,9 @@ export type ParsedSheet = {
  *  - the heading text is the cell's displayed text, so a rich-text or formula
  *    heading is read as its words, not as "[object Object]";
  *  - the same heading in two columns (compared without case: the importers read
- *    `code ?? Code`) refuses the workbook, naming the sheet and both columns —
- *    the later column used to overwrite the earlier one, blank or not.
+ *    `code ?? Code`) is recorded in that sheet's duplicateHeadings, and the
+ *    caller refuses the file if it reads that sheet — the later column used to
+ *    overwrite the earlier one, blank or not.
  */
 export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<ParsedSheet[]> {
   const ExcelJS = await loadExcelJS();
@@ -65,6 +86,7 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
   let totalRows = 0;
   wb.eachSheet((ws) => {
     const columns: Array<{ col: number; name: string; letter: string }> = [];
+    const duplicateHeadings: ParsedSheet['duplicateHeadings'] = [];
     ws.getRow(1).eachCell({ includeEmpty: false }, (cell, col) => {
       if (cell.type === ExcelJS.ValueType.Merge) return;
       const name = cell.text.trim();
@@ -72,9 +94,8 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
       const letter = cell.address.replace(/\d+$/, '');
       const same = columns.find((c) => c.name.toLowerCase() === name.toLowerCase());
       if (same) {
-        throw new Error(
-          `Sheet "${ws.name}": the heading "${name}" is in more than one column (${same.letter} and ${letter}). Keep one, or rename the other.`
-        );
+        duplicateHeadings.push({ heading: name, first: same.letter, again: letter });
+        return;
       }
       columns.push({ col, name, letter });
     });
@@ -126,7 +147,7 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
         `Workbook has too many rows (>${MAX_TOTAL_ROWS.toLocaleString()}). Split the file into smaller batches.`
       );
     }
-    sheets.push({ name: ws.name, headers, rows, rowNumbers });
+    sheets.push({ name: ws.name, headers, rows, rowNumbers, duplicateHeadings });
   });
   return sheets;
 }

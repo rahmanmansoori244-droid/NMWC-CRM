@@ -38,6 +38,7 @@ import { checkLimit } from '@/lib/rate-limit';
 import { buildWorkbook } from '@/lib/excel';
 import {
   buildTemixRows,
+  deactivationCode,
   deactivationsOfLiveCodes,
   TEMIX_QUEUE_WHERE,
   type TemixExportCustomer,
@@ -126,8 +127,9 @@ export type TemixBatchResult = {
   rowCount: number;
   customerCount: number;
   /**
-   * F11: customer codes left queued, not in this file, because a deactivation
-   * among them carries a Temix code a live customer still holds.
+   * F11: the customer codes of archived customers left queued, not in this file,
+   * because their deactivation would take away a code a live customer still
+   * holds as its Temix code.
    */
   heldBack?: string[];
 };
@@ -197,25 +199,24 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
         _form: `Queue exceeds ${BATCH_ROW_CAP} customers — contact support to split the batch.`,
       });
     }
-    // F11: a deactivation must never go out for a Temix code a live customer
-    // still holds. Checked over the WHOLE queue, before the flip, and the rows
-    // involved are held back — left queued, named to the Steward — rather than
-    // refusing the batch, which would stop every other customer's upload.
+    // F11: a deactivation must never go out for a code a live customer still
+    // holds as its Temix code — an uncoded archived row included, since it goes
+    // out keyed on its customer code (lib/temix.ts deactivationCode). Checked over
+    // the WHOLE queue, before the flip. Only those archived rows are held back —
+    // left queued, named to the Steward. The live holder's own upload still goes
+    // out, and so does everyone else's: refusing the batch would stop them all.
     const deactivating = await tx.customer.findMany({
-      where: { temixSyncState: TemixSyncState.DEACTIVATE_PENDING, temixCode: { not: null } },
-      select: { temixCode: true, deletedAt: true },
+      where: { temixSyncState: TemixSyncState.DEACTIVATE_PENDING },
+      select: { id: true, nmwcCode: true, temixCode: true, deletedAt: true },
+      orderBy: { nmwcCode: 'asc' },
     });
-    const clash = deactivationsOfLiveCodes(
-      deactivating,
-      await codesHeldLive(tx, deactivating.map((c) => c.temixCode!))
+    const clash = new Set(
+      deactivationsOfLiveCodes(
+        deactivating,
+        await codesHeldLive(tx, deactivating.filter((c) => c.deletedAt).map(deactivationCode))
+      )
     );
-    const held = clash.length
-      ? await tx.customer.findMany({
-          where: { AND: [TEMIX_QUEUE_WHERE, { temixCode: { in: clash } }] },
-          select: { id: true, nmwcCode: true },
-          orderBy: { nmwcCode: 'asc' },
-        })
-      : [];
+    const held = deactivating.filter((c) => c.deletedAt && clash.has(deactivationCode(c)));
     const heldBack = held.map((c) => c.nmwcCode);
     const now = new Date();
     const b = await tx.temixSyncBatch.create({
@@ -266,7 +267,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     // Generate hold it back — never send it.
     const lateClash = deactivationsOfLiveCodes(
       queued,
-      await codesHeldLive(tx, queued.filter((c) => c.deletedAt && c.temixCode).map((c) => c.temixCode!))
+      await codesHeldLive(tx, queued.filter((c) => c.deletedAt).map(deactivationCode))
     );
     if (lateClash.length) {
       const why = 'The Temix queue changed while this batch was being built. Generate it again.';

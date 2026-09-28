@@ -62,8 +62,9 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
       {held.length > 0 && (
         <p className="max-w-md text-right text-xs font-medium text-amber-700">
           Not in this file, still queued: {held.slice(0, 10).join(', ')}
-          {held.length > 10 ? ` and ${held.length - 10} more` : ''}. A customer being deactivated
-          carries the same Temix code as a live customer; the codes need correcting first.
+          {held.length > 10 ? ` and ${held.length - 10} more` : ''}. Deactivating these archived
+          customers would take away a Temix code a live customer still holds; the codes need
+          correcting first.
         </p>
       )}
       <ConfirmModal

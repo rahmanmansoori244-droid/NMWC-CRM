@@ -3,9 +3,10 @@
  * services/temix.ts against a small in-memory customer table that honours the
  * where clauses the service uses.
  *
- *  - F11, the batch invariant: a deactivation carrying a Temix code a live
- *    customer still holds is HELD BACK — it and any queued row with the same
- *    code stay queued and are named — while every other customer goes out.
+ *  - F11, the batch invariant: a deactivation that would take away a code a live
+ *    customer still holds as its Temix code — an uncoded archived row goes out
+ *    under its customer code — is HELD BACK: that archived row stays queued and
+ *    is named, while every other customer, the live holder included, goes out.
  *    A whole batch is never refused over one pair; one that races in after the
  *    check rolls the batch back instead of going out.
  *  - X-TEMIX-2: re-downloading a batch is rate-limited and writes one EXPORT
@@ -140,7 +141,7 @@ beforeEach(() => {
 });
 
 describe('generateTemixBatchAction — F11: a shared code is held back, not the batch', () => {
-  it('the merged pair (UPSERT T1 + DEACTIVATE T1) stays queued and named; everyone else goes out', async () => {
+  it('the merged pair (UPSERT T1 + DEACTIVATE T1): only the deactivation is held back and named; the live holder and everyone else go out', async () => {
     model.state.rows = [
       cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
       cust({ nmwcCode: 'N2', temixCode: 'T1', deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
@@ -150,20 +151,52 @@ describe('generateTemixBatchAction — F11: a shared code is held back, not the 
     const res = await generateTemixBatchAction();
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.data.heldBack).toEqual(['N1', 'N2']);
-    expect(res.data.customerCount).toBe(2);
-    expect(await sheetCodes(res.data.base64)).toEqual(['UPSERT:N3', 'DEACTIVATE:N4']);
-    // Held rows keep their place in the queue, untouched.
-    expect(row('N1')).toMatchObject({ temixSyncState: 'PENDING_UPLOAD', lastTemixUploadBatchId: null });
+    expect(res.data.heldBack).toEqual(['N2']);
+    expect(res.data.customerCount).toBe(3);
+    // The live customer's correction is not held hostage by the archived row.
+    expect(await sheetCodes(res.data.base64)).toEqual(['UPSERT:N1', 'UPSERT:N3', 'DEACTIVATE:N4']);
+    expect(row('N1')).toMatchObject({ temixSyncState: 'UPLOADED', lastTemixUploadBatchId: 'batch-new' });
+    // The held row keeps its place in the queue, untouched.
     expect(row('N2')).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING', lastTemixUploadBatchId: null });
     expect(row('N3')).toMatchObject({ temixSyncState: 'UPLOADED', lastTemixUploadBatchId: 'batch-new' });
-    // And the EXPORT ledger row names them.
+    // And the EXPORT ledger row names it.
     expect(h.writeAudit).toHaveBeenCalledTimes(1);
     expect(h.writeAudit.mock.calls[0][2]).toMatchObject({
       action: 'EXPORT',
       entityType: 'TemixSyncBatch',
-      after: { customers: 2, deactivations: 1, heldBack: ['N1', 'N2'] },
+      after: { customers: 3, deactivations: 1, heldBack: ['N2'] },
     });
+  });
+
+  it('an archived row with no Temix code goes out under its customer code, so a live holder of that code holds it back', async () => {
+    model.state.rows = [
+      // A live customer whose Temix code is N2's customer code.
+      cust({ nmwcCode: 'N1', temixCode: 'N2', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+      cust({ nmwcCode: 'N2', temixCode: null, deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
+      // Uncoded and archived, and nobody live holds N6: it goes out as before.
+      cust({ nmwcCode: 'N6', temixCode: null, deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
+    ];
+    const res = await generateTemixBatchAction();
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.heldBack).toEqual(['N2']);
+    expect(await sheetCodes(res.data.base64)).toEqual(['UPSERT:N1', 'DEACTIVATE:N6']);
+    expect(row('N2').temixSyncState).toBe('DEACTIVATE_PENDING');
+  });
+
+  it('an uncoded deactivation racing in after the check rolls the batch back too', async () => {
+    model.state.rows = [
+      cust({ nmwcCode: 'N1', temixCode: 'N5' }), // live, SYNCED, holds N5's customer code
+      cust({ nmwcCode: 'N5', temixCode: null, lastTemixUploadAt: at }),
+      cust({ nmwcCode: 'N3', temixCode: 'T3', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+    ];
+    model.state.beforeFlip = () =>
+      Object.assign(row('N5'), { deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING });
+    const res = await generateTemixBatchAction();
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.message).toBe(
+      'The Temix queue changed while this batch was being built. Generate it again.'
+    );
   });
 
   it('a deactivation of a code held by a live customer OUTSIDE the queue is held back too', async () => {
@@ -181,13 +214,13 @@ describe('generateTemixBatchAction — F11: a shared code is held back, not the 
 
   it('when every queued row is held back, it says which, and nothing is flipped', async () => {
     model.state.rows = [
-      cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+      cust({ nmwcCode: 'N1', temixCode: 'T1' }), // live, SYNCED, not queued
       cust({ nmwcCode: 'N2', temixCode: 'T1', deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
     ];
     const res = await generateTemixBatchAction();
     expect(res.ok).toBe(false);
-    expect(!res.ok && res.message).toBe('Nothing can go to Temix yet. Held back for review: N1, N2.');
-    expect(model.state.rows.map((c) => c.temixSyncState)).toEqual(['PENDING_UPLOAD', 'DEACTIVATE_PENDING']);
+    expect(!res.ok && res.message).toBe('Nothing can go to Temix yet. Held back for review: N2.');
+    expect(model.state.rows.map((c) => c.temixSyncState)).toEqual(['SYNCED', 'DEACTIVATE_PENDING']);
     expect(h.writeAudit).not.toHaveBeenCalled();
   });
 

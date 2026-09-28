@@ -11,7 +11,9 @@ import {
   accountImportInterruptedMessage,
   accountRowFailure,
   accountUpdateAudit,
+  errorLogFields,
   inactiveRouteIssue,
+  reportableError,
   roleMismatchIssue,
   type AccountState,
 } from '@/lib/account-import';
@@ -246,6 +248,81 @@ describe('accountRowFailure (F07 / X-IMPORTS-3)', () => {
   });
 });
 
+describe('errorLogFields / reportableError: what a failed row leaves in the log and in Sentry', () => {
+  it('keeps the name and the message, with phone numbers and e-mail addresses scrubbed', () => {
+    const fields = errorLogFields(
+      new TypeError("Cannot read properties of undefined (reading 'id') ali@example.invalid 96890000000")
+    );
+    expect(fields).toEqual({
+      errName: 'TypeError',
+      // The phone pattern takes the separator before the number with it.
+      err: "Cannot read properties of undefined (reading 'id') [email][phone]",
+    });
+  });
+
+  it('a Prisma validation error keeps its first and last lines, never the arguments printed between them', () => {
+    const err = Object.assign(
+      new Error(
+        [
+          '',
+          'Invalid `prisma.user.upsert()` invocation:',
+          '',
+          '{',
+          '  where: { username: "mct-01" },',
+          '  create: { passwordHash: "$2a$12$abcdefghijklmnopqrstuv", fullName: "Ali Al Balushi" }',
+          '}',
+          '',
+          'Unknown argument `colour`. Available options are marked with ?.',
+        ].join('\n')
+      ),
+      { name: 'PrismaClientValidationError' }
+    );
+    const fields = errorLogFields(err);
+    expect(fields).toEqual({
+      errName: 'PrismaClientValidationError',
+      err: 'Invalid `prisma.user.upsert()` invocation: … Unknown argument `colour`. Available options are marked with ?.',
+    });
+    expect(JSON.stringify(fields)).not.toMatch(/\$2a\$|passwordHash|Balushi|mct-01/);
+  });
+
+  it('cuts a Postgres detail that quotes the failing row or key', () => {
+    const check = errorLogFields(
+      new Error(
+        'Error occurred during query execution: ConnectorError(PostgresError { code: "23514", message: "new row for relation \\"User\\" violates check constraint \\"User_x\\"", severity: "ERROR", detail: Some("Failing row contains (u1, mct-01, $2a$12$hash, Ali).") })'
+      )
+    );
+    expect(check.err).toMatch(/violates check constraint .*User_x.*\[detail cut\]$/);
+    expect(check.err).not.toMatch(/Failing row|\$2a\$|Ali\)/);
+    const key = errorLogFields(new Error('duplicate key value violates unique constraint "User_email_key" Key (email)=(someone) already exists.'));
+    expect(key.err).toBe('duplicate key value violates unique constraint "User_email_key" [detail cut]');
+  });
+
+  it('scrubs before it shortens, so a number cut at the limit is not left half-visible', () => {
+    // Cut first, the limit would leave " 96890" — too short for the pattern.
+    const fields = errorLogFields(new Error(`${'x'.repeat(294)} 96890000000`));
+    expect(fields.err).toHaveLength(300);
+    expect(fields.err).not.toMatch(/9689/);
+  });
+
+  it('a thrown non-Error is named by its type', () => {
+    expect(errorLogFields('boom')).toEqual({ errName: 'string', err: 'boom' });
+  });
+
+  it('the error Sentry is sent carries the name, the cut-down message and the original frames', () => {
+    const original = Object.assign(new Error('line one\n  create: { passwordHash: "$2a$12$zzz" }\nwhy it failed'), {
+      name: 'PrismaClientValidationError',
+    });
+    const sent = reportableError(original);
+    expect(sent.name).toBe('PrismaClientValidationError');
+    expect(sent.message).toBe('line one … why it failed');
+    expect(sent.stack!.split('\n')[0]).toBe('PrismaClientValidationError: line one … why it failed');
+    const frames = original.stack!.split('\n').filter((l) => /^ {4}at /.test(l));
+    expect(frames.length).toBeGreaterThan(0);
+    expect(sent.stack!.split('\n').slice(1)).toEqual(frames);
+    expect(sent.stack).not.toMatch(/passwordHash|\$2a\$/);
+  });
+});
+
 describe('accountImportInterruptedMessage (X-IMPORTS-3)', () => {
   it('when the batch was recorded, points at its page and never says nothing was saved', () => {
     const msg = accountImportInterruptedMessage({
@@ -269,7 +346,23 @@ describe('accountImportInterruptedMessage (X-IMPORTS-3)', () => {
     });
     expect(msg).toMatch(/5 row\(s\) were applied and are saved; 1 may or may not have been/);
     expect(msg).toMatch(/2 row\(s\) that were not applied are not listed anywhere/);
+    expect(msg).toMatch(/the database stopped answering before this upload's report could be saved/);
     expect(msg).not.toMatch(/nothing was saved/i);
+  });
+
+  it('a report the database refused, or a bug, is not put down to the database going away', () => {
+    const msg = accountImportInterruptedMessage({
+      applied: 5,
+      uncertain: 0,
+      notApplied: 2,
+      recorded: false,
+      reportFault: 'P2000',
+    });
+    expect(msg).toMatch(/^5 row\(s\) were applied and are saved, but this upload's report could not be saved \(P2000\)/);
+    expect(msg).toMatch(/2 row\(s\) that were not applied are not listed anywhere/);
+    expect(msg).toMatch(/has been reported/);
+    expect(msg).toMatch(/reset_password/);
+    expect(msg).not.toMatch(/stopped answering|once the CRM responds/);
   });
 
   it('a row the import never reached says so', () => {

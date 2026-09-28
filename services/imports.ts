@@ -19,7 +19,7 @@ import {
   type SafeAction,
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
-import { parseWorkbook } from '@/lib/excel';
+import { duplicateHeadingIssue, parseWorkbook } from '@/lib/excel';
 import { normalizeCR } from '@/lib/cr';
 import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
 import { checkLimit } from '@/lib/rate-limit';
@@ -38,7 +38,9 @@ import {
   accountImportInterruptedMessage,
   accountRowFailure,
   accountUpdateAudit,
+  errorLogFields,
   inactiveRouteIssue,
+  reportableError,
   roleMismatchIssue,
   type AccountState,
 } from '@/lib/account-import';
@@ -137,6 +139,25 @@ function usableBranchAddress(v: unknown): string | null {
   return s.length >= BRANCH_ADDRESS_MIN ? s : null;
 }
 
+/**
+ * A row or batch-report failure that was not the database going away: a bug, or
+ * the database refusing the write. It is caught, so nothing reaches Sentry the way
+ * an uncaught one does (instrumentation.ts), and it is sent here — with the
+ * original's name and stack frames, and its message cut down as the log line's
+ * is. A failed report must never cost the row it is about.
+ *
+ * The SDK is loaded here, on first use, not with the module: every action in this
+ * file would otherwise pay for it on a cold start.
+ */
+async function reportAccountImportFault(err: unknown, event: string): Promise<void> {
+  try {
+    const Sentry = await import('@sentry/nextjs');
+    Sentry.captureException(reportableError(err), { tags: { event } });
+  } catch {
+    /* the log line above still carries it */
+  }
+}
+
 export async function uploadAccountMasterAction(
   formData: FormData
 ): SafeAction<{ batchId: string; clean: number; issues: number }> {
@@ -170,6 +191,14 @@ async function uploadAccountMasterCore(
   } catch (err) {
     throw new ValidationError({ file: `Could not read .xlsx: ${(err as Error).message}` });
   }
+  const regionsSheet = sheets.find((s) => s.name.toLowerCase() === 'regions');
+  const routesSheet = sheets.find((s) => s.name.toLowerCase() === 'routes');
+  const usersSheet = sheets.find((s) => s.name.toLowerCase() === 'users');
+  // N05: a repeated heading refuses the file only on a sheet this import reads.
+  for (const s of [regionsSheet, routesSheet, usersSheet]) {
+    const repeated = s && duplicateHeadingIssue(s);
+    if (repeated) throw new ValidationError({ file: `Could not read .xlsx: ${repeated}` });
+  }
 
   const batch = await prisma.importBatch.create({
     data: {
@@ -192,34 +221,61 @@ async function uploadAccountMasterCore(
   let uncertain = 0;
   let dbFailuresInARow = 0;
   let stopped = false;
+  // The run counts rows IN A ROW that failed because the database did not
+  // answer. A row the database did answer for, and which then ended without such
+  // a failure — held back by a rule — breaks the run as an applied row does, so
+  // three transient failures with rule-held rows between them no longer stop the
+  // import. The reset waits for the row to end, not for its read: a row whose read
+  // answered and whose write then timed out is still one of the three.
+  let rowAnswered = false;
+  const answered = () => {
+    rowAnswered = true;
+  };
+  const nextRow = () => {
+    if (rowAnswered) dbFailuresInARow = 0;
+    rowAnswered = false;
+  };
   const applied = () => {
     cleanCount++;
     dbFailuresInARow = 0;
+    rowAnswered = false;
   };
-  const failed = (sheet: string, row: number, err: unknown, subject: string) => {
+  const failed = async (sheet: string, row: number, err: unknown, subject: string) => {
     const f = accountRowFailure(err, subject);
+    rowAnswered = false;
     issues.push({ sheet, row, message: f.message });
+    // The issue text never carries the error's message; the log line does, cut
+    // down and scrubbed (lib/account-import.ts errorLogFields).
     logger.warn(
-      { sheet, row, code: (err as { code?: unknown })?.code, batchId: batch.id },
+      {
+        sheet,
+        row,
+        code: (err as { code?: unknown })?.code,
+        ...errorLogFields(err),
+        transient: f.transient,
+        batchId: batch.id,
+      },
       'import.account.row_failed'
     );
     if (f.mayHaveCommitted) uncertain++;
     dbFailuresInARow = f.transient ? dbFailuresInARow + 1 : 0;
     if (dbFailuresInARow >= ACCOUNT_IMPORT_STOP_AFTER_DB_FAILURES) stopped = true;
+    if (!f.transient) await reportAccountImportFault(err, 'import.account.row_failed');
   };
 
   // 1) Regions
-  const regionsSheet = sheets.find((s) => s.name.toLowerCase() === 'regions');
   if (regionsSheet) {
     for (const [i, row] of regionsSheet.rows.entries()) {
+      // N05: the row number Excel shows, not index + 2 (wrong after a blank line).
+      const sheetRow = regionsSheet.rowNumbers[i];
       if (stopped) {
-        issues.push({ sheet: 'Regions', row: i + 2, message: ACCOUNT_ROW_NOT_PROCESSED });
+        issues.push({ sheet: 'Regions', row: sheetRow, message: ACCOUNT_ROW_NOT_PROCESSED });
         continue;
       }
       const code = uc(row.code ?? row.Code);
       const name = String(row.name ?? row.Name ?? '').trim();
       if (!code || !name) {
-        issues.push({ sheet: 'Regions', row: i + 2, message: 'code and name required' });
+        issues.push({ sheet: 'Regions', row: sheetRow, message: 'code and name required' });
         continue;
       }
       try {
@@ -251,17 +307,18 @@ async function uploadAccountMasterCore(
         });
         applied();
       } catch (err) {
-        failed('Regions', i + 2, err, `region "${code}"`);
+        await failed('Regions', sheetRow, err, `region "${code}"`);
       }
     }
   }
 
   // 2) Routes
-  const routesSheet = sheets.find((s) => s.name.toLowerCase() === 'routes');
   if (routesSheet) {
     for (const [i, row] of routesSheet.rows.entries()) {
+      nextRow();
+      const sheetRow = routesSheet.rowNumbers[i];
       if (stopped) {
-        issues.push({ sheet: 'Routes', row: i + 2, message: ACCOUNT_ROW_NOT_PROCESSED });
+        issues.push({ sheet: 'Routes', row: sheetRow, message: ACCOUNT_ROW_NOT_PROCESSED });
         continue;
       }
       const code = uc(row.code ?? row.Code);
@@ -270,15 +327,16 @@ async function uploadAccountMasterCore(
       if (!code || !name || !regionCode) {
         issues.push({
           sheet: 'Routes',
-          row: i + 2,
+          row: sheetRow,
           message: 'code, name, region_code required',
         });
         continue;
       }
       try {
         const region = await prisma.region.findUnique({ where: { code: regionCode } });
+        answered();
         if (!region) {
-          issues.push({ sheet: 'Routes', row: i + 2, message: `region "${regionCode}" not found` });
+          issues.push({ sheet: 'Routes', row: sheetRow, message: `region "${regionCode}" not found` });
           continue;
         }
         // X-AUTH-3 / X-IMPORTS-1: as for regions. A route moved to another region
@@ -321,24 +379,25 @@ async function uploadAccountMasterCore(
         });
         applied();
       } catch (err) {
-        failed('Routes', i + 2, err, `route "${code}"`);
+        await failed('Routes', sheetRow, err, `route "${code}"`);
       }
     }
   }
 
   // 3) Users (two passes — supervisors first, then everyone else linking by username)
-  const usersSheet = sheets.find((s) => s.name.toLowerCase() === 'users');
   if (usersSheet) {
     // Keep each row's ORIGINAL spreadsheet position so error messages point at
     // the real row (we process supervisors first, but 'row N' must still be the
-    // line the steward sees in Excel). sheetRow = original index + 2 (header).
+    // line the steward sees in Excel). N05: the row number the parser read it
+    // from — index + 2 is wrong after a blank line.
     const sortedRows = usersSheet.rows
-      .map((row, origIdx) => ({ row, sheetRow: origIdx + 2 }))
+      .map((row, origIdx) => ({ row, sheetRow: usersSheet.rowNumbers[origIdx] }))
       .sort((a, b) => {
         const order = ['MANAGER', 'STEWARD', 'SUPERVISOR', 'SALESMAN', 'VIEWER'];
         return order.indexOf(uc(a.row.role)) - order.indexOf(uc(b.row.role));
       });
     for (const { row, sheetRow } of sortedRows) {
+      nextRow();
       if (stopped) {
         issues.push({ sheet: 'Users', row: sheetRow, message: ACCOUNT_ROW_NOT_PROCESSED });
         continue;
@@ -429,6 +488,7 @@ async function uploadAccountMasterCore(
             managedRegions: { select: { code: true } },
           },
         });
+        answered();
         const isSelf = existing?.id === me.id;
 
         if (isSelf && wantsRoleChange && role !== me.role) {
@@ -818,7 +878,7 @@ async function uploadAccountMasterCore(
         );
         applied();
       } catch (err) {
-        failed('Users', sheetRow, err, `"${username}"`);
+        await failed('Users', sheetRow, err, `"${username}"`);
       }
     }
   }
@@ -827,6 +887,10 @@ async function uploadAccountMasterCore(
   // counted as applied has committed by now, so a failure here must not reach
   // runAction, whose answer to a database fault is "Nothing was saved".
   let recorded = true;
+  // Why the report was not saved, when the database did answer (a Prisma code or
+  // an error name). Unset when it was saved, or when the database stopped
+  // answering — only then does the Steward read "the database stopped answering".
+  let reportFault: string | undefined;
   try {
     await prisma.$transaction(async (tx) => {
       await tx.importBatch.update({
@@ -854,10 +918,25 @@ async function uploadAccountMasterCore(
     });
   } catch (err) {
     recorded = false;
+    const rawCode = (err as { code?: unknown } | null)?.code;
+    const code = typeof rawCode === 'string' ? rawCode : '';
+    const fields = errorLogFields(err);
+    const transient = isTransientDbError(err, code);
     logger.error(
-      { code: (err as { code?: unknown })?.code, batchId: batch.id, clean: cleanCount, issues: issues.length },
+      {
+        code: rawCode,
+        ...fields,
+        transient,
+        batchId: batch.id,
+        clean: cleanCount,
+        issues: issues.length,
+      },
       'import.account.not_recorded'
     );
+    if (!transient) {
+      reportFault = code || fields.errName;
+      await reportAccountImportFault(err, 'import.account.not_recorded');
+    }
   }
 
   // F-19: per-batch audit summary for the Account master too.
@@ -903,6 +982,7 @@ async function uploadAccountMasterCore(
         uncertain,
         notApplied: issues.length - uncertain,
         recorded,
+        reportFault,
       }),
       503
     );
@@ -961,6 +1041,9 @@ async function uploadCustomerMasterCore(
   if (!sheet || sheet.rows.length === 0) {
     throw new ValidationError({ file: 'Workbook is empty.' });
   }
+  // N05: a repeated heading refuses the file only on the sheet this upload reads.
+  const repeated = duplicateHeadingIssue(sheet);
+  if (repeated) throw new ValidationError({ file: `Could not read .xlsx: ${repeated}` });
 
   const batch = await prisma.importBatch.create({
     data: {

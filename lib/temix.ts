@@ -231,21 +231,32 @@ export async function liveTemixCodeHolders(
 }
 
 /**
+ * F11: the code a DEACTIVATE row takes away in Temix. buildTemixRows sends
+ * temix_code = the Temix code and cust_code = the customer code; a row with no
+ * Temix code goes out keyed on its customer code alone, and migrated rows carry
+ * nmwcCode == temixCode (schema.prisma), so that is the code it reaches.
+ */
+export function deactivationCode(c: { nmwcCode: string; temixCode: string | null }): string {
+  return c.temixCode || c.nmwcCode;
+}
+
+/**
  * F11, the batch-level invariant, for any writer and any data already stored:
- * the Temix codes that the DEACTIVATE lane of `customers` (archived rows, as
- * buildTemixRows decides the lane) would send while a live customer still holds
- * the same code (`liveCodes`). Deactivating one of them would take the ERP
- * identity away from a customer the CRM keeps. The batch holds such rows back
- * — the archived row and any queued live row with the same code — rather than
- * refusing the whole batch, which would stop every other customer's upload.
+ * the codes that the DEACTIVATE lane of `customers` (archived rows, as
+ * buildTemixRows decides the lane) would take away (deactivationCode) while a
+ * live customer still holds the same Temix code (`liveCodes`). Deactivating one
+ * of them would take the ERP identity away from a customer the CRM keeps. The
+ * batch holds back those archived rows only — the live holder's own upload still
+ * goes out — rather than refusing the whole batch, which would stop every other
+ * customer's upload.
  */
 export function deactivationsOfLiveCodes(
-  customers: ReadonlyArray<{ temixCode: string | null; deletedAt: Date | null }>,
+  customers: ReadonlyArray<{ nmwcCode: string; temixCode: string | null; deletedAt: Date | null }>,
   liveCodes: ReadonlySet<string>
 ): string[] {
   const out = new Set<string>();
   for (const c of customers) {
-    if (c.deletedAt && c.temixCode && liveCodes.has(c.temixCode)) out.add(c.temixCode);
+    if (c.deletedAt && liveCodes.has(deactivationCode(c))) out.add(deactivationCode(c));
   }
   return [...out].sort();
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildWorkbook, loadExcelJS, parseWorkbook } from '@/lib/excel';
+import { buildWorkbook, duplicateHeadingIssue, loadExcelJS, parseWorkbook } from '@/lib/excel';
 
 /**
  * N05: real ExcelJS workbooks, cell by cell, so a heading can sit in any column
@@ -55,25 +55,37 @@ describe('lib/excel parseWorkbook — N05: every heading reads its own column', 
     for (const r of sheet.rows) expect(Object.keys(r)).not.toContain('');
   });
 
-  it('refuses the same heading in two columns, case-insensitively, naming the sheet and both columns', async () => {
+  it('records the same heading in two columns, case-insensitively, and the refusal names the sheet and both columns', async () => {
     // The later column used to overwrite the earlier one, blank or not: a phone
     // in C became null because F was empty.
     const buf = await sheetFrom({
       A1: 'cust_code', C1: 'phone', F1: 'PHONE ',
       A2: 'C005', C2: '+96891234567',
     });
-    await expect(parseWorkbook(buf)).rejects.toThrow(
+    const [sheet] = await parseWorkbook(buf);
+    expect(sheet.duplicateHeadings).toEqual([{ heading: 'PHONE', first: 'C', again: 'F' }]);
+    expect(duplicateHeadingIssue(sheet)).toBe(
       'Sheet "Customers": the heading "PHONE" is in more than one column (C and F). Keep one, or rename the other.'
     );
+    // The repeat is not read, so it cannot overwrite the first column.
+    expect(sheet.headers).toEqual(['cust_code', 'phone']);
+    expect(sheet.rows).toEqual([{ cust_code: 'C005', phone: '+96891234567' }]);
   });
 
-  it('refuses a duplicate heading on any sheet, not only the first', async () => {
+  it('records a repeated heading on the sheet it is on, and leaves the other sheets clean', async () => {
+    // Refusing the whole workbook stopped an upload over a sheet its importer
+    // never reads; each caller now refuses only the sheets it reads.
     const ExcelJS = await loadExcelJS();
     const wb = new ExcelJS.Workbook();
     wb.addWorksheet('Regions').addRow(['code', 'name']);
     wb.addWorksheet('Routes').addRow(['code', 'name', 'Code']);
     const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
-    await expect(parseWorkbook(buf)).rejects.toThrow(/Sheet "Routes": the heading "Code" is in more than one column \(A and C\)/);
+    const [regions, routes] = await parseWorkbook(buf);
+    expect(duplicateHeadingIssue(regions)).toBeNull();
+    expect(regions.duplicateHeadings).toEqual([]);
+    expect(duplicateHeadingIssue(routes)).toMatch(
+      /^Sheet "Routes": the heading "Code" is in more than one column \(A and C\)/
+    );
   });
 
   it('reads a rich-text, formula or hyperlink heading as its text, not "[object Object]"', async () => {
