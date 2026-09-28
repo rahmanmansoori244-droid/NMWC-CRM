@@ -590,9 +590,12 @@ export function PhotoCaptureSlot({
         // server kept the photo — moved by a merge (PHOTO_CHANGED), not yours,
         // the database did not answer, a password to change first — so the
         // slot keeps it too and says why; clearing it told the form the photo
-        // was gone. "Not found" is the refusal that means it is gone already.
+        // was gone. PHOTO_GONE alone means it is removed already. "Not found"
+        // does not: the scope check says it for a customer archived or a route
+        // reassigned while the form was open, and the photo stays on its slot
+        // (post-merge review, 2026-09-29).
         const reply = await postAction('/api/photos/detach', { attachmentId: photo.attachmentId });
-        if (!reply.ok && reply.code !== 'NOT_FOUND') {
+        if (!reply.ok && reply.code !== 'PHOTO_GONE') {
           refused = reply.fields ? Object.values(reply.fields).join(' ') : reply.message;
         }
       } catch (e) {

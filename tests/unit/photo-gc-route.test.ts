@@ -196,6 +196,58 @@ describe('N09: a failed database step is a failed run', () => {
   });
 });
 
+// Post-merge review (2026-09-29): "object already gone" was a substring test on
+// the error's name and message, and "NotFound" matched inside "ENOTFOUND". A
+// night on which DNS could not find R2 deleted every row it reached — each object
+// left with no row and no tag — and, every call failing that way, was green.
+describe('only R2 itself can say an object is gone', () => {
+  /** What @aws-sdk/client-s3 throws when the R2 host does not resolve. */
+  const dnsFailure = (code: string, verb = 'getaddrinfo') =>
+    Object.assign(new Error(`${verb} ${code} x.r2.cloudflarestorage.com`), { code, $metadata: { attempts: 2 } });
+
+  it('getaddrinfo ENOTFOUND keeps the row, counts an R2 error, and the heartbeat is not a success', async () => {
+    h.rows = [row(1), row(2)];
+    for (const r of h.rows) h.r2Throws.set(r.r2Key, dnsFailure('ENOTFOUND'));
+    const { status, body } = await run();
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ deleted: 0, r2Errors: 2, skipped: 2, scanned: 2 });
+    expect(h.del).not.toHaveBeenCalled();
+    expect(h.rows.map((r) => r.id)).toEqual(['att0001', 'att0002']);
+    expect(recordedOk()).toBe(false);
+    expect(h.alert).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['EAI_AGAIN (a resolver timeout)', dnsFailure('EAI_AGAIN')],
+    ['ECONNRESET', dnsFailure('ECONNRESET', 'read')],
+    ['a request timeout', Object.assign(new Error('Request timed out'), { name: 'TimeoutError' })],
+    ['the deadline abort', Object.assign(new Error('Request aborted'), { name: 'AbortError' })],
+    ['a message that only mentions NoSuchKey or 404', new Error('proxy said NoSuchKey after 404 ms')],
+    ['a 404 that names the bucket, not the object', Object.assign(new Error('The specified bucket does not exist.'), { name: 'NoSuchBucket', $metadata: { httpStatusCode: 404 } })],
+  ])('%s keeps the row', async (_label, err) => {
+    h.rows = [row(1)];
+    h.r2Throws.set(row(1).r2Key, err);
+    const { body } = await run();
+    expect(body).toMatchObject({ deleted: 0, r2Errors: 1, skipped: 1 });
+    expect(h.del).not.toHaveBeenCalled();
+    expect(recordedOk()).toBe(false);
+  });
+
+  it.each([
+    ['NoSuchKey by name', named('NoSuchKey', 'The specified key does not exist.')],
+    ['NoSuchKey by its XML Code', Object.assign(new Error('UnknownError'), { name: 'S3ServiceException', Code: 'NoSuchKey' })],
+    ['NotFound by name', named('NotFound', 'UnknownError')],
+    ['a bare 404 from R2', Object.assign(new Error('UnknownError'), { name: 'S3ServiceException', $metadata: { httpStatusCode: 404 } })],
+  ])('%s: the object is gone, so the row goes and the run is green', async (_label, err) => {
+    h.rows = [row(1)];
+    h.r2Throws.set(row(1).r2Key, err);
+    const { body } = await run();
+    expect(body).toMatchObject({ deleted: 1, r2Errors: 0, skipped: 0 });
+    expect(h.rows).toEqual([]);
+    expect(recordedOk()).toBe(true);
+  });
+});
+
 describe('X-OPS-3: rows that keep failing cannot starve the rest', () => {
   it('250 candidates whose oldest 200 always fail: the other 50 are collected in the same run, and the 200 turn it red', async () => {
     h.rows = Array.from({ length: 250 }, (_, i) => row(i + 1));

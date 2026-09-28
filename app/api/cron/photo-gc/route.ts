@@ -54,6 +54,30 @@ const R2_DEADLINE_MS = 45_000;
 
 type Candidate = { id: string; r2Key: string; deletedAt: Date | null };
 
+/**
+ * Whether R2 itself answered that the object is not there — the one failure on
+ * which dropping the row orphans nothing. Decided from the service's answer
+ * alone: its error name, or the HTTP status it replied with. A substring test on
+ * the message ran before (post-merge review, 2026-09-29): "NotFound" matched
+ * inside "getaddrinfo ENOTFOUND <account>.r2.cloudflarestorage.com", so a night
+ * on which the resolver could not find R2 deleted every row it reached, left
+ * each object with no row and no tag, and — every call failing that way —
+ * reported a green run. A failure with no answer from R2 (DNS, a dropped
+ * connection, a timeout, the deadline's abort) has no status, so it keeps the
+ * row. A 404 that names the bucket is a wrong bucket, not a missing object.
+ */
+function objectIsGone(err: unknown): boolean {
+  const e = err as { name?: unknown; Code?: unknown; $metadata?: { httpStatusCode?: unknown } } | null;
+  if (!e || typeof e !== 'object') return false;
+  if (e.name === 'NoSuchBucket' || e.Code === 'NoSuchBucket') return false;
+  return (
+    e.name === 'NoSuchKey' ||
+    e.Code === 'NoSuchKey' ||
+    e.name === 'NotFound' ||
+    e.$metadata?.httpStatusCode === 404
+  );
+}
+
 async function handle(req: NextRequest) {
   if (!cronAuthorized(req.headers.get('authorization'))) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
@@ -124,15 +148,13 @@ async function handle(req: NextRequest) {
         );
         safeToDelete = true;
       } catch (err) {
-        const name = String((err as { name?: string; Code?: string }).name ?? (err as { Code?: string }).Code ?? '');
-        const msg = String((err as Error).message ?? '');
-        // Object already gone (NoSuchKey / NotFound / 404): nothing to orphan, so
-        // dropping the row is safe. Any other error is transient — keep the row.
-        if (/NoSuchKey|NotFound|404/i.test(name + ' ' + msg)) {
+        // Object already gone, as R2 answered: nothing to orphan, so dropping the
+        // row is safe. Any other failure is transient — keep the row.
+        if (objectIsGone(err)) {
           safeToDelete = true;
         } else {
           r2Errors++;
-          logger.warn({ key: c.r2Key, err: msg.slice(0, 80) }, 'gc.r2_tag_failed');
+          logger.warn({ key: c.r2Key, err: String((err as Error)?.message ?? '').slice(0, 80) }, 'gc.r2_tag_failed');
         }
       } finally {
         clearTimeout(timer);

@@ -61,7 +61,13 @@ vi.mock('@/lib/access', async (importOriginal) => ({
 
 import { POST as attachPOST } from '@/app/api/photos/attach/route';
 import { POST as detachPOST } from '@/app/api/photos/detach/route';
-import { ALREADY_ATTACHED_MESSAGE, PHOTO_CHANGED_MESSAGE, PHOTO_CONFLICT_MESSAGE } from '@/lib/photo-attach';
+import {
+  ALREADY_ATTACHED_MESSAGE,
+  PHOTO_CHANGED_MESSAGE,
+  PHOTO_CONFLICT_MESSAGE,
+  PHOTO_GONE_MESSAGE,
+  PHOTO_TARGET_CHANGED_MESSAGE,
+} from '@/lib/photo-attach';
 import { PHOTO_WRITER_ROLES } from '@/lib/permissions';
 
 const HOST = 'nmwc.example';
@@ -142,6 +148,9 @@ beforeEach(() => {
   db.branch.findUniqueOrThrow.mockResolvedValue(branch());
   db.customer.findFirst.mockResolvedValue(customer());
   db.customer.findUniqueOrThrow.mockResolvedValue(customer());
+  // The attach's second read of its target, under the lock: still as read before it.
+  db.branch.findUnique.mockResolvedValue(branch());
+  db.customer.findUnique.mockResolvedValue(customer());
 });
 
 describe('attach, through the route: every check still refuses before a write', () => {
@@ -229,7 +238,7 @@ describe('attach, through the route: every check still refuses before a write', 
     expect(sql.join('?')).toMatch(/FROM "Customer" WHERE "id" = \? FOR UPDATE/);
     expect(id).toBe(CUST);
     const lockedAt = db.$queryRaw.mock.invocationCallOrder[0];
-    for (const f of [db.attachment.update, db.attachment.updateMany, db.branch.update, db.customer.update, db.customer.findUniqueOrThrow, db.branch.findUniqueOrThrow]) {
+    for (const f of [db.attachment.update, db.attachment.updateMany, db.branch.update, db.customer.update, db.customer.findUniqueOrThrow, db.branch.findUniqueOrThrow, db.customer.findUnique, db.branch.findUnique]) {
       for (const order of f.mock.invocationCallOrder) expect(order).toBeGreaterThan(lockedAt);
     }
   });
@@ -359,7 +368,8 @@ describe('detach, through the route', () => {
     db.customer.findFirst.mockResolvedValue(customer());
     db.customer.findUnique.mockResolvedValue(customer());
     expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
-    expect(db.attachment.findFirst).toHaveBeenCalledWith({ where: { id: ATT, deletedAt: null } });
+    // Read removed or not first (a removed one is PHOTO_GONE, after the checks); live, under the lock.
+    expect(db.attachment.findFirst.mock.calls).toEqual([[{ where: { id: ATT } }], [{ where: { id: ATT, deletedAt: null } }]]);
     // X-PHOTO-1: removed only where the checks found it — guarded on its wiring.
     expect(db.attachment.updateMany).toHaveBeenCalledWith({
       where: { id: ATT, deletedAt: null, customerId: null, branchId: B1, branchExtraId: null, editId: null },
@@ -469,21 +479,21 @@ describe('N06: attach claims the photo under the lock, before anything else is w
       () => photo(),
       () => photo({ branchId: B1 }),
       { branchId: B1, slot: 'SHOP' },
-      () => db.branch.findUnique.mockResolvedValue({ shopPhotoId: ATT, signboardPhotoId: null }),
+      () => db.branch.findUnique.mockResolvedValue(branch({ shopPhotoId: ATT })),
     ],
     [
       'the signboard slot',
       () => photo({ kind: 'SIGNBOARD' }),
       () => photo({ kind: 'SIGNBOARD', branchId: B1 }),
       { branchId: B1, slot: 'SIGNBOARD' },
-      () => db.branch.findUnique.mockResolvedValue({ shopPhotoId: null, signboardPhotoId: ATT }),
+      () => db.branch.findUnique.mockResolvedValue(branch({ signboardPhotoId: ATT })),
     ],
     [
       'the CR slot',
       () => photo({ kind: 'CR' }),
       () => photo({ kind: 'CR', customerId: CUST }),
       { customerId: CUST, slot: 'CR' },
-      () => db.customer.findUnique.mockResolvedValue({ crPhotoId: ATT }),
+      () => db.customer.findUnique.mockResolvedValue(customer({ crPhotoId: ATT })),
     ],
     [
       'the extra photos',
@@ -506,9 +516,77 @@ describe('N06: attach claims the photo under the lock, before anything else is w
   it('its own columns name this slot, but the slot holds another photo: refused', async () => {
     db.attachment.findUnique.mockResolvedValueOnce(photo()).mockResolvedValueOnce(photo({ branchId: B1 }));
     db.attachment.updateMany.mockResolvedValue({ count: 0 });
-    db.branch.findUnique.mockResolvedValue({ shopPhotoId: PREV, signboardPhotoId: null });
+    db.branch.findUnique.mockResolvedValue(branch({ shopPhotoId: PREV }));
     expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toMatchObject({ code: 'PHOTO_CONFLICT' });
     nothingElseWritten();
+  });
+});
+
+// Post-merge review (2026-09-29): attach read its target before any lock and
+// never again. A Steward's merge holding the customer's lock while the attach
+// waited had tombstoned the customer (or moved the branch to the winner) by the
+// time the lock was the attach's: the photo was claimed onto the tombstone and
+// answered ok, or the tombstone was rescored instead of the branch's new owner.
+// Now the target is read again under the lock, before the claim.
+describe('attach reads its target again under the lock, before the claim', () => {
+  const WINNER = 'ckcustomer0000000000000009';
+  const refusedBeforeTheClaim = (res: Awaited<ReturnType<typeof attach>>) => {
+    expect(res).toEqual({ ok: false, code: 'PHOTO_CHANGED', message: PHOTO_TARGET_CHANGED_MESSAGE });
+    expect(db.attachment.updateMany).not.toHaveBeenCalled();
+    expect(db.attachment.update).not.toHaveBeenCalled();
+    expect(db.branch.update).not.toHaveBeenCalled();
+    expect(db.customer.update).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  };
+
+  it('the CR slot: the customer was tombstoned (merged away) between the read and the lock — refused, nothing written', async () => {
+    db.attachment.findUnique.mockResolvedValue(photo({ kind: 'CR' }));
+    db.customer.findUnique.mockResolvedValue(customer({ deletedAt: new Date() }));
+    refusedBeforeTheClaim(await attach({ attachmentId: ATT, customerId: CUST, slot: 'CR' }));
+    expect(db.customer.findUnique).toHaveBeenCalledWith({ where: { id: CUST }, select: { deletedAt: true } });
+  });
+
+  it('the CR slot: the customer row is gone altogether — refused', async () => {
+    db.attachment.findUnique.mockResolvedValue(photo({ kind: 'CR' }));
+    db.customer.findUnique.mockResolvedValue(null);
+    refusedBeforeTheClaim(await attach({ attachmentId: ATT, customerId: CUST, slot: 'CR' }));
+  });
+
+  const BRANCH_TARGETS = [
+    ['the shop slot', () => photo(), { branchId: B1, slot: 'SHOP' }],
+    ['the signboard slot', () => photo({ kind: 'SIGNBOARD' }), { branchId: B1, slot: 'SIGNBOARD' }],
+    ['the extra photos', () => photo(), { branchId: B1, slot: 'FREE' }],
+  ] as const;
+
+  describe.each([
+    ['its branch moved to another customer (a merge)', () => db.branch.findUnique.mockResolvedValue(branch({ customerId: WINNER }))],
+    ['its branch was soft-deleted', () => db.branch.findUnique.mockResolvedValue(branch({ deletedAt: new Date() }))],
+    ['its branch row is gone altogether', () => db.branch.findUnique.mockResolvedValue(null)],
+    ["the branch's customer was tombstoned", () => db.customer.findUnique.mockResolvedValue(customer({ deletedAt: new Date() }))],
+  ])('%s between the read and the lock', (_label, changed) => {
+    it.each(BRANCH_TARGETS)('%s: refused, nothing written', async (_n, att, target) => {
+      db.attachment.findUnique.mockResolvedValue(att());
+      changed();
+      refusedBeforeTheClaim(await attach({ attachmentId: ATT, ...target }));
+      // Read on the transaction, as they stand now: the branch, and the customer that was locked.
+      expect(db.branch.findUnique).toHaveBeenCalledWith({ where: { id: B1 }, select: { customerId: true, deletedAt: true } });
+      expect(db.customer.findUnique).toHaveBeenCalledWith({ where: { id: CUST }, select: { deletedAt: true } });
+    });
+  });
+
+  it.each([
+    ['the CR slot', () => photo({ kind: 'CR' }), { customerId: CUST, slot: 'CR' }, [db.customer.findUnique]],
+    ['a branch slot', () => photo(), { branchId: B1, slot: 'SHOP' }, [db.branch.findUnique, db.customer.findUnique]],
+  ] as const)('%s: the second read is after the lock and before the claim', async (_n, att, target, reads) => {
+    db.attachment.findUnique.mockResolvedValue(att());
+    expect(await attach({ attachmentId: ATT, ...target })).toEqual({ ok: true });
+    const lockedAt = db.$queryRaw.mock.invocationCallOrder[0]!;
+    const claimAt = db.attachment.updateMany.mock.invocationCallOrder[0]!;
+    for (const read of reads) {
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read.mock.invocationCallOrder[0]).toBeGreaterThan(lockedAt);
+      expect(read.mock.invocationCallOrder[0]).toBeLessThan(claimAt);
+    }
   });
 });
 
@@ -557,9 +635,9 @@ describe('X-PHOTO-1: Remove reads the photo again under the lock', () => {
     nothingWritten();
   });
 
-  it('already removed by the time it is read again: ok, and nothing written', async () => {
+  it('already removed by the time it is read again: PHOTO_GONE, and nothing written', async () => {
     db.attachment.findFirst.mockResolvedValueOnce(photo({ branchId: B1 })).mockResolvedValueOnce(null);
-    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: false, code: 'PHOTO_GONE', message: PHOTO_GONE_MESSAGE });
     expect(db.attachment.updateMany).not.toHaveBeenCalled();
     nothingWritten();
   });
@@ -587,6 +665,68 @@ describe('X-PHOTO-1: Remove reads the photo again under the lock', () => {
       for (const order of f.mock.invocationCallOrder) expect(order).toBeGreaterThan(reread);
     }
     expect(db.customer.updateMany).toHaveBeenCalledWith({ where: { id: CUST, crPhotoId: ATT }, data: { crPhotoId: null } });
+  });
+});
+
+// Post-merge review (2026-09-29): the photo slot cleared on NOT_FOUND, taking it
+// to mean "removed already", but the scope check answers NOT_FOUND too — a route
+// reassigned or a customer archived while the form was open — and the slot then
+// showed a photo removed that the server kept. Removed already is PHOTO_GONE now,
+// and only for a caller who passes every check a Remove of it makes: the scope's
+// NOT_FOUND still says nothing about whether the id exists.
+describe('Remove of a photo removed already: PHOTO_GONE, after every check', () => {
+  const gone = (over: Record<string, unknown> = {}) => photo({ branchId: B1, deletedAt: new Date(), ...over });
+  beforeEach(() => {
+    db.branch.findUnique.mockResolvedValue({ customerId: CUST });
+    db.customer.findFirst.mockResolvedValue(customer());
+  });
+
+  it('his own photo, in scope: PHOTO_GONE — no transaction, nothing written', async () => {
+    db.attachment.findFirst.mockResolvedValue(gone());
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: false, code: 'PHOTO_GONE', message: PHOTO_GONE_MESSAGE });
+    expect(db.attachment.findFirst).toHaveBeenCalledTimes(1);
+    expect(wrote()).toBe(0);
+  });
+
+  it('a Steward, anyone’s photo: PHOTO_GONE', async () => {
+    s.user = { id: 'st1', role: 'STEWARD', username: 'st1' };
+    db.attachment.findFirst.mockResolvedValue(gone({ capturedById: 'someone-else' }));
+    expect((await detach({ attachmentId: ATT })).code).toBe('PHOTO_GONE');
+    expect(wrote()).toBe(0);
+  });
+
+  it.each([
+    [
+      'its customer no longer on his route (the scope check)',
+      () => db.customer.findFirst.mockResolvedValue(customer({ branches: [{ routeId: 'r9', regionId: 'g1', deletedAt: null }] })),
+      { code: 'NOT_FOUND', message: 'Customer not found.' },
+    ],
+    ['its customer archived (the scope check)', () => db.customer.findFirst.mockResolvedValue(null), { code: 'NOT_FOUND', message: 'Attachment not found.' }],
+    [
+      'captured by another salesman',
+      () => db.attachment.findFirst.mockResolvedValue(gone({ capturedById: 'someone-else' })),
+      { code: 'FORBIDDEN', message: 'You can only remove photos you captured.' },
+    ],
+    [
+      'a role that cannot remove photos',
+      () => {
+        s.user = { id: 'x1', role: 'GM', username: 'x1' };
+      },
+      { code: 'FORBIDDEN', message: 'Your role cannot remove photos.' },
+    ],
+    ['no such photo at all', () => db.attachment.findFirst.mockResolvedValue(null), { code: 'NOT_FOUND', message: 'Attachment not found.' }],
+  ])('%s: that refusal, not PHOTO_GONE', async (_n, arrange, refusal) => {
+    db.attachment.findFirst.mockResolvedValue(gone());
+    arrange();
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: false, ...refusal });
+    expect(wrote()).toBe(0);
+  });
+
+  it('a live photo whose scope check fails is NOT_FOUND, not PHOTO_GONE: the server kept it', async () => {
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1 }));
+    db.customer.findFirst.mockResolvedValue(customer({ branches: [{ routeId: 'r9', regionId: 'g1', deletedAt: null }] }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: false, code: 'NOT_FOUND', message: 'Customer not found.' });
+    expect(wrote()).toBe(0);
   });
 });
 

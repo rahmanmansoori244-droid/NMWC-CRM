@@ -22,6 +22,8 @@ import {
   ALREADY_ATTACHED_MESSAGE,
   PHOTO_CHANGED_MESSAGE,
   PHOTO_CONFLICT_MESSAGE,
+  PHOTO_GONE_MESSAGE,
+  PHOTO_TARGET_CHANGED_MESSAGE,
   UNWIRED_LIVE,
 } from '@/lib/photo-attach';
 import { lockCustomerRow } from '@/lib/locks';
@@ -147,6 +149,10 @@ const detachSchema = z.object({ attachmentId: z.string().cuid() });
  *   • Those checks read the photo before any lock, so the transaction first
  *     claims it with a guarded write (claimWhere, N06) and writes nothing else
  *     unless that claim took exactly the one row.
+ *   • They read the target before any lock too, so under the lock and before
+ *     the claim the transaction reads it again and refuses (PHOTO_CHANGED) a
+ *     customer removed or merged away since, or a branch removed or moved to
+ *     another customer since (the mirror of Remove's X-PHOTO-1).
  */
 /**
  * SafeAction-wrapped public entry. Photo attach errors (slot/kind mismatch,
@@ -257,6 +263,16 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     const env = await getAuditEnvelope(session.user.id);
     const claimed = await prisma.$transaction(async (tx) => {
       await lockCustomer(tx, c.id);
+      // The customer as it stands under the lock, not as read before it (post-
+      // merge review, 2026-09-29). A Steward's merge holding this lock while the
+      // attach waited has tombstoned it and moved its branches and photos to the
+      // winner by the time the lock is ours; claimed here, the photo landed on the
+      // tombstone, out of every salesman's reach, and was answered ok. Refused
+      // before the claim, as Remove refuses a photo that moved (X-PHOTO-1).
+      const customerNow = await tx.customer.findUnique({ where: { id: c.id }, select: { deletedAt: true } });
+      if (!customerNow || customerNow.deletedAt) {
+        throw new ConflictError('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE);
+      }
       // N06: claim first. Refused, the previous photo and the slot are untouched.
       const claim = await tx.attachment.updateMany({
         where: claimWhere(att.id, data, isAdmin ? null : session.user.id),
@@ -344,6 +360,27 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     const env = await getAuditEnvelope(session.user.id);
     const claimed = await prisma.$transaction(async (tx) => {
       await lockCustomer(tx, b.customerId);
+      // The branch and its customer as they stand under the lock, as on the CR
+      // path. A merge waited on here has moved the branch to the winner, whose
+      // lock this transaction does not hold, and whose score it would leave
+      // stale while rescoring the tombstone; an archive has removed both.
+      const branchNow = await tx.branch.findUnique({
+        where: { id: b.id },
+        select: { customerId: true, deletedAt: true },
+      });
+      const customerNow = await tx.customer.findUnique({
+        where: { id: b.customerId },
+        select: { deletedAt: true },
+      });
+      if (
+        !branchNow ||
+        branchNow.deletedAt ||
+        branchNow.customerId !== b.customerId ||
+        !customerNow ||
+        customerNow.deletedAt
+      ) {
+        throw new ConflictError('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE);
+      }
       // N06: claim first, as on the CR path. An extra (FREE) photo is wired by
       // its own columns alone, so for it the claim is the whole attach.
       const claim = await tx.attachment.updateMany({
@@ -447,8 +484,11 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   if (!parsed.success) {
     throw new ValidationError({ attachmentId: 'A valid photo id is required.' });
   }
+  // Read removed or not: a photo already removed is answered PHOTO_GONE, and
+  // only after every check below, so "not found" stays the scope's answer and
+  // tells no one who could not remove it that the id exists.
   const att = await prisma.attachment.findFirst({
-    where: { id: parsed.data.attachmentId, deletedAt: null },
+    where: { id: parsed.data.attachmentId },
   });
   if (!att) throw new NotFoundError('Attachment not found.');
 
@@ -470,6 +510,12 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   if (session.user.role === Role.SALESMAN && att.capturedById !== session.user.id) {
     throw new ForbiddenError('You can only remove photos you captured.');
   }
+  // Post-merge review (2026-09-29): the photo slot cleared on NOT_FOUND, taking
+  // it to mean "removed already" — but the scope check above answers NOT_FOUND
+  // too, for a customer archived or a route reassigned while the form was open,
+  // and then the slot showed a photo removed that the server kept. Removed
+  // already has its own code now, and the slot clears on that one alone.
+  if (att.deletedAt) throw new ConflictError('PHOTO_GONE', PHOTO_GONE_MESSAGE);
 
   // NEW-PHOTO-002: only blank the slot on the customer/branch that this
   // attachment is *currently* attached to (not "every customer that ever
@@ -499,11 +545,12 @@ async function detachPhotoCore(input: { attachmentId: string }) {
     branchExtraId: att.branchExtraId,
     editId: att.editId,
   };
-  const removed = await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     if (ownerId) await lockCustomer(tx, ownerId);
     const now = await tx.attachment.findFirst({ where: { id: att.id, deletedAt: null } });
-    // Removed already, by another Remove or replaced on its slot: nothing to do.
-    if (!now) return false;
+    // Removed since the read above, by another Remove or replaced on its slot:
+    // nothing to do, and the slot is told so — the answer it clears on.
+    if (!now) throw new ConflictError('PHOTO_GONE', PHOTO_GONE_MESSAGE);
     // The owner found as ownerId was, now: a merge moves a branch, not its photos.
     const ownerNow =
       now.customerId ??
@@ -575,8 +622,7 @@ async function detachPhotoCore(input: { attachmentId: string }) {
       entityId: att.id,
       reason: 'photo removed (soft-delete)',
     });
-    return true;
   });
-  logger.info({ attachmentId: att.id, by: session.user.id }, removed ? 'photo.detach' : 'photo.detach.already_gone');
+  logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.detach');
   return { ok: true as const };
 }

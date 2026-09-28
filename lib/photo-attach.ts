@@ -36,6 +36,25 @@ export const PHOTO_CONFLICT_MESSAGE = 'This photo was just removed or used elsew
 export const PHOTO_CHANGED_MESSAGE = 'This photo changed while it was being removed. Reload the page and try again.';
 
 /**
+ * The attach refusal, under the same code as the Remove one above
+ * (`PHOTO_CHANGED`), when the customer or branch the photo was sent to changed
+ * after the attach checked it and before it took the customer's lock: removed,
+ * merged into another customer, or its branch moved to another customer. The
+ * checks passed on a target that is no longer there, so nothing is written.
+ */
+export const PHOTO_TARGET_CHANGED_MESSAGE =
+  'This customer or branch changed while the photo was being attached. Reload the page and try again.';
+
+/**
+ * The Remove answer for a photo that is already removed — by another Remove, or
+ * replaced on its slot — given only to a caller who passed every check a Remove
+ * of it makes, so it says nothing to anyone else (code `PHOTO_GONE`). The one
+ * refusal on which the photo slot clears: every other one, "not found" from the
+ * scope check included, means the server kept the photo.
+ */
+export const PHOTO_GONE_MESSAGE = 'This photo was already removed.';
+
+/**
  * Presign and finalize's refusal of a role that cannot attach a photo, or of a
  * GUARANTEE document from anyone but a salesman (ENH-3; lib/permissions.ts
  * canUploadPhoto). No screen offers a photo slot to those roles or that kind,

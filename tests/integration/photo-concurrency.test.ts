@@ -16,8 +16,12 @@
  *
  * Each case holds one action in exactly that gap — at its audit envelope, which
  * both build after the checks and before the transaction — runs the other to
- * the end, then lets the first go on. The last case fires attach and Remove
- * together with no hold and checks the invariant whatever order they took.
+ * the end, then lets the first go on. The same hold lets a merge or an archive
+ * land under a waiting attach (its target is read again under the lock), and a
+ * second Remove land under a waiting one (PHOTO_GONE, the answer the photo slot
+ * clears on — not NOT_FOUND, which the scope check gives for a photo it keeps).
+ * The last case fires attach and Remove together with no hold and checks the
+ * invariant whatever order they took.
  *
  * GATED; any disposable database; ZZPH rows cleaned per test.
  *   RUN_PHOTO_CONCURRENCY=1 node scripts/qa/run-with-env.mjs vitest run \
@@ -67,6 +71,8 @@ describe.skipIf(!ENABLED)('photo attach and Remove on real Postgres (N06, X-PHOT
   let prisma: import('@prisma/client').PrismaClient;
   let photos: typeof import('@/services/photos');
   let UNWIRED_LIVE: typeof import('@/lib/photo-attach').UNWIRED_LIVE;
+  let PHOTO_TARGET_CHANGED_MESSAGE: string;
+  let PHOTO_GONE_MESSAGE: string;
   const tag = randomUUID().slice(0, 8);
   const ids = { region: '', route: '', sales: `ZZPH-sales-${tag}`, cust: '', b1: '', b2: '' };
 
@@ -74,7 +80,7 @@ describe.skipIf(!ENABLED)('photo attach and Remove on real Postgres (N06, X-PHOT
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     photos = await import('@/services/photos');
-    ({ UNWIRED_LIVE } = await import('@/lib/photo-attach'));
+    ({ UNWIRED_LIVE, PHOTO_TARGET_CHANGED_MESSAGE, PHOTO_GONE_MESSAGE } = await import('@/lib/photo-attach'));
     const region = await prisma.region.create({ data: { name: `ZZPH Region ${tag}`, code: `ZZPH-${tag}` } });
     ids.region = region.id;
     const route = await prisma.route.create({
@@ -263,6 +269,95 @@ describe.skipIf(!ENABLED)('photo attach and Remove on real Postgres (N06, X-PHOT
       where: { actorId: ids.sales, entityType: 'Branch', entityId: ids.b1, reason: 'photo attached' },
     });
     expect(audited).toBe(1);
+  });
+
+  // Post-merge review (2026-09-29): attach read its target before any lock and
+  // never again. A merge or an archive landing in the gap left the photo claimed
+  // onto a tombstoned customer and answered ok, or rescored the tombstone instead
+  // of the branch's new owner. The target is read again under the lock now.
+  it('the customer is removed (a merge or an archive) while a CR attach waits — refused, nothing written', async () => {
+    const att = await photo('CR');
+
+    const hold = holdInGap();
+    const attaching = photos.attachPhotoAction({ attachmentId: att, customerId: ids.cust, slot: 'CR' });
+    await hold.inGap;
+    await prisma.customer.update({ where: { id: ids.cust }, data: { deletedAt: new Date() } });
+    hold.release();
+
+    expect(await attaching).toEqual({ ok: false, code: 'PHOTO_CHANGED', message: PHOTO_TARGET_CHANGED_MESSAGE });
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: ids.cust } })).crPhotoId).toBeNull();
+    expect(await prisma.attachment.findUniqueOrThrow({ where: { id: att } })).toMatchObject({
+      customerId: null,
+      branchId: null,
+      deletedAt: null,
+    });
+    expect(await prisma.auditLog.count({ where: { actorId: ids.sales, entityType: 'Customer', entityId: ids.cust } })).toBe(0);
+  });
+
+  it('the branch moves to another customer (a merge) while a shop attach waits — refused, nothing written', async () => {
+    const winner = await prisma.customer.create({
+      data: { nmwcCode: `ZZPH-W-${tag}-${randomUUID().slice(0, 6)}`, legalName: 'ZZ Photo Winner', paymentTerms: 'CASH', createdById: ids.sales },
+    });
+    try {
+      const att = await photo();
+
+      const hold = holdInGap();
+      const attaching = attachShop(att, ids.b1);
+      await hold.inGap;
+      await prisma.branch.update({ where: { id: ids.b1 }, data: { customerId: winner.id } });
+      hold.release();
+
+      expect(await attaching).toEqual({ ok: false, code: 'PHOTO_CHANGED', message: PHOTO_TARGET_CHANGED_MESSAGE });
+      expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.b1 } })).shopPhotoId).toBeNull();
+      expect((await prisma.attachment.findUniqueOrThrow({ where: { id: att } })).branchId).toBeNull();
+    } finally {
+      await prisma.branch.update({ where: { id: ids.b1 }, data: { customerId: ids.cust } });
+      await prisma.customer.delete({ where: { id: winner.id } });
+    }
+  });
+
+  it('the branch is removed while a shop attach waits — refused, nothing written', async () => {
+    const att = await photo();
+
+    const hold = holdInGap();
+    const attaching = attachShop(att, ids.b1);
+    await hold.inGap;
+    await prisma.branch.update({ where: { id: ids.b1 }, data: { deletedAt: new Date() } });
+    hold.release();
+
+    expect(await attaching).toMatchObject({ ok: false, code: 'PHOTO_CHANGED' });
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.b1 } })).shopPhotoId).toBeNull();
+    expect((await prisma.attachment.findUniqueOrThrow({ where: { id: att } })).branchId).toBeNull();
+  });
+
+  // Post-merge review (2026-09-29): the photo slot cleared on NOT_FOUND as if the
+  // photo were removed already, and the scope check answers NOT_FOUND too.
+  it('two Removes of one photo: the one that waited, and any sent after, are told PHOTO_GONE; one removal is written', async () => {
+    const att = await photo();
+    expect(await attachShop(att, ids.b1)).toMatchObject({ ok: true });
+
+    const hold = holdInGap();
+    const first = photos.detachPhotoAction({ attachmentId: att });
+    await hold.inGap;
+    expect(await photos.detachPhotoAction({ attachmentId: att })).toEqual({ ok: true });
+    hold.release();
+
+    expect(await first).toEqual({ ok: false, code: 'PHOTO_GONE', message: PHOTO_GONE_MESSAGE });
+    expect(await photos.detachPhotoAction({ attachmentId: att })).toEqual({ ok: false, code: 'PHOTO_GONE', message: PHOTO_GONE_MESSAGE });
+    expect(await prisma.auditLog.count({ where: { actorId: ids.sales, entityType: 'Attachment', entityId: att } })).toBe(1);
+  });
+
+  it('a Remove after his route was reassigned is NOT_FOUND from the scope check, and the photo stays on its slot', async () => {
+    const att = await photo();
+    expect(await attachShop(att, ids.b1)).toMatchObject({ ok: true });
+    await prisma.user.update({ where: { id: ids.sales }, data: { ownedRouteId: null } });
+    try {
+      expect(await photos.detachPhotoAction({ attachmentId: att })).toMatchObject({ ok: false, code: 'NOT_FOUND' });
+    } finally {
+      await prisma.user.update({ where: { id: ids.sales }, data: { ownedRouteId: ids.route } });
+    }
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.b1 } })).shopPhotoId).toBe(att);
+    expect((await prisma.attachment.findUniqueOrThrow({ where: { id: att } })).deletedAt).toBeNull();
   });
 
   it('attach and Remove fired together, no hold: whatever the order, no slot names a deleted photo', async () => {

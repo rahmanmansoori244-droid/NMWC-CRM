@@ -7,8 +7,11 @@
  *  - attach claims the photo with ONE guarded write straight after the
  *    customer's lock, before the previous slot photo is soft-deleted and before
  *    any slot, score or audit write — never with an unconditional update by id;
+ *  - attach reads its target (the customer, or the branch and its customer)
+ *    again after the lock and refuses a changed one before that claim;
  *  - Remove reads the photo again inside its transaction before any write, and
- *    soft-deletes only through a write guarded on the wiring it read;
+ *    soft-deletes only through a write guarded on the wiring it read; a photo
+ *    removed already is PHOTO_GONE, and only after every check;
  *  - the three claims of a photo (attach, a new-customer request's claim, and
  *    its bind at the final approval) share one "live and on no slot" fragment;
  *  - presign and finalize refuse a role after the sign-in check and before the
@@ -75,6 +78,38 @@ function assertClaimFirst(tx: string) {
   }
 }
 
+/**
+ * Post-merge review (2026-09-29), the mirror of X-PHOTO-1 and X-STATUS-1 on
+ * attach: the target read before any lock is read again after it, and a changed
+ * one is refused, before the claim. `reads` are those reads; `conditions` the
+ * parts the refusal's condition must hold: the customer live for the CR slot;
+ * the branch live, still under the customer that was locked, and that customer
+ * live for a branch slot.
+ */
+function assertTargetReadAgain(tx: string, reads: RegExp[], conditions: string[]) {
+  const lock = at(tx, /await lockCustomer\(tx, /);
+  const claim = at(tx, /await tx\.attachment\.updateMany\(\{\s*where: claimWhere\(/);
+  const refuse = at(tx, /throw new ConflictError\('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE\)/);
+  expect(lock, 'the lock').toBeGreaterThan(-1);
+  for (const read of reads) {
+    const r = at(tx, read);
+    expect(r, String(read)).toBeGreaterThan(lock);
+    expect(refuse, `the refusal after ${String(read)}`).toBeGreaterThan(r);
+  }
+  expect(claim, 'the claim after the refusal').toBeGreaterThan(refuse);
+  const cond = /if \(([^{]*)\)\s*\{\s*throw new ConflictError\('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE\)/.exec(tx)?.[1] ?? '';
+  const flat = cond.replace(/\s+/g, ' ');
+  for (const part of conditions) expect(flat, part).toContain(part);
+}
+
+const CR_READ = [/const customerNow = await tx\.customer\.findUnique\(\{ where: \{ id: c\.id \}, select: \{ deletedAt: true \} \}\)/];
+const CR_COND = ['!customerNow', 'customerNow.deletedAt'];
+const BRANCH_READ = [
+  /const branchNow = await tx\.branch\.findUnique\(\{\s*where: \{ id: b\.id \},\s*select: \{ customerId: true, deletedAt: true \},?\s*\}\)/,
+  /const customerNow = await tx\.customer\.findUnique\(\{\s*where: \{ id: b\.customerId \},\s*select: \{ deletedAt: true \},?\s*\}\)/,
+];
+const BRANCH_COND = ['!branchNow', 'branchNow.deletedAt', 'branchNow.customerId !== b.customerId', '!customerNow', 'customerNow.deletedAt'];
+
 describe('N06: attach claims the photo first, guarded', () => {
   const photos = src('services/photos.ts');
   const attach = fn(photos, 'attachPhotoCore');
@@ -83,6 +118,32 @@ describe('N06: attach claims the photo first, guarded', () => {
   it('both attach transactions (the CR slot, a branch slot) claim before anything else', () => {
     expect(txs).toHaveLength(2);
     for (const tx of txs) assertClaimFirst(tx);
+  });
+
+  it('both read their target again under the lock and refuse a changed one before the claim', () => {
+    const [cr, branch] = txs as [string, string];
+    expect(cr).toMatch(/await lockCustomer\(tx, c\.id\)/);
+    expect(branch).toMatch(/await lockCustomer\(tx, b\.customerId\)/);
+    assertTargetReadAgain(cr, CR_READ, CR_COND);
+    assertTargetReadAgain(branch, BRANCH_READ, BRANCH_COND);
+  });
+
+  it('the re-read guard fails on a re-read above the lock, a claim above the refusal, or a condition left out', () => {
+    const tx = (body: string) => `$transaction(async (tx) => {
+      ${body}
+    })`;
+    const READ = `const customerNow = await tx.customer.findUnique({ where: { id: c.id }, select: { deletedAt: true } });`;
+    const LOCK = `await lockCustomer(tx, c.id);`;
+    const REFUSE = `if (!customerNow || customerNow.deletedAt) {
+        throw new ConflictError('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE);
+      }`;
+    const CLAIM = `const claim = await tx.attachment.updateMany({ where: claimWhere(att.id, data, null), data: {} });`;
+    expect(() => assertTargetReadAgain(tx([LOCK, READ, REFUSE, CLAIM].join('\n')), CR_READ, CR_COND)).not.toThrow();
+    expect(() => assertTargetReadAgain(tx([READ, LOCK, REFUSE, CLAIM].join('\n')), CR_READ, CR_COND)).toThrow();
+    expect(() => assertTargetReadAgain(tx([LOCK, READ, CLAIM, REFUSE].join('\n')), CR_READ, CR_COND)).toThrow();
+    expect(() => assertTargetReadAgain(tx([LOCK, CLAIM].join('\n')), CR_READ, CR_COND)).toThrow();
+    const noTombstone = REFUSE.replace(' || customerNow.deletedAt', '');
+    expect(() => assertTargetReadAgain(tx([LOCK, READ, noTombstone, CLAIM].join('\n')), CR_READ, CR_COND)).toThrow();
   });
 
   it('never wires the photo with an unconditional update by id', () => {
@@ -142,6 +203,34 @@ describe('X-PHOTO-1: Remove reads again under the lock and soft-deletes only gua
       const w = at(tx, write);
       expect(w, String(write)).toBeGreaterThan(refuse);
     }
+  });
+
+  // Post-merge review (2026-09-29): removed already is PHOTO_GONE, the one answer
+  // the photo slot clears on. Before the transaction it is given only after the
+  // scope, role and uploader checks, so NOT_FOUND stays the scope's answer and
+  // says nothing about whether the id exists; under the lock, the re-read that
+  // finds no live photo gives it before any write.
+  it('removed already is PHOTO_GONE: after every check before the transaction, and first under the lock', () => {
+    expect(detach).toMatch(/const att = await prisma\.attachment\.findFirst\(\{\s*where: \{ id: parsed\.data\.attachmentId \},?\s*\}\);/);
+    const gone = at(detach, /if \(att\.deletedAt\) throw new ConflictError\('PHOTO_GONE', PHOTO_GONE_MESSAGE\);/);
+    expect(gone, 'the PHOTO_GONE answer before the transaction').toBeGreaterThan(-1);
+    for (const check of [
+      /await assertCanAccessAttachment\(sessionUser, att, scope\);/,
+      /if \(!PHOTO_WRITER_ROLES\.includes\(session\.user\.role\)\) \{/,
+      /throw new ForbiddenError\('You can only remove photos you captured\.'\);/,
+    ]) {
+      const c = at(detach, check);
+      expect(c, String(check)).toBeGreaterThan(-1);
+      expect(gone, `PHOTO_GONE after ${String(check)}`).toBeGreaterThan(c);
+    }
+    expect(gone).toBeLessThan(at(detach, /\$transaction\(/));
+    const tx = txs[0];
+    const reread = at(tx, /await tx\.attachment\.findFirst\(\{ where: \{ id: att\.id, deletedAt: null \} \}\)/);
+    const goneNow = at(tx, /if \(!now\) throw new ConflictError\('PHOTO_GONE', PHOTO_GONE_MESSAGE\);/);
+    expect(goneNow).toBeGreaterThan(reread);
+    expect(goneNow).toBeLessThan(at(tx, /if \(moved\) throw new ConflictError\('PHOTO_CHANGED'/));
+    // Only these two say it; NotFoundError is never "gone".
+    expect(detach.match(/'PHOTO_GONE'/g)).toHaveLength(2);
   });
 
   it('the soft-delete is guarded on the wiring it read, and must take one row', () => {

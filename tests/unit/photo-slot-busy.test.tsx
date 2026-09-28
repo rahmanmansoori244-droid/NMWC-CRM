@@ -32,7 +32,7 @@ import {
   postBodyDeadlineMs,
   type AttachTarget,
 } from '@/components/nmwc/PhotoCaptureSlot';
-import { ALREADY_ATTACHED_MESSAGE, PHOTO_CHANGED_MESSAGE, PRESIGN_EXPIRES_S } from '@/lib/photo-attach';
+import { ALREADY_ATTACHED_MESSAGE, PHOTO_CHANGED_MESSAGE, PHOTO_GONE_MESSAGE, PRESIGN_EXPIRES_S } from '@/lib/photo-attach';
 import { PasswordChangeRequiredError } from '@/lib/errors';
 
 let decode: 'never' | 'fail' | 'load' | 'held' = 'never';
@@ -843,6 +843,11 @@ describe('Remove', () => {
     ['the database did not answer', { ok: false, code: 'DB_UNAVAILABLE', message: 'Nothing was saved.' }, 'Nothing was saved.'],
     ['a password to change first (the route, 403)', MUST_CHANGE, PASSWORD_CHANGE_MESSAGE],
     ['signed out (the route, 401)', SIGNED_OUT, SIGNED_OUT_MESSAGE],
+    // Post-merge review (2026-09-29): the scope check's "not found" — his route
+    // reassigned, the branch moved off it, the customer archived, all while the
+    // form was open. The server kept the photo; the slot cleared it, silently.
+    ['out of his scope now (the scope check)', { ok: false, code: 'NOT_FOUND', message: 'Customer not found.' }, 'Customer not found.'],
+    ['its customer archived (the scope check)', { ok: false, code: 'NOT_FOUND', message: 'Attachment not found.' }, 'Attachment not found.'],
   ];
   it.each(refusals)('a Remove refused — %s — keeps the photo on the slot and says why', async (_, answer, shown) => {
     detachPlan = [answer, { ok: true }];
@@ -861,14 +866,18 @@ describe('Remove', () => {
     expect(requests(DETACH)).toHaveLength(2);
   });
 
-  it('"not found" is the refusal that means it is gone already: the slot is cleared', async () => {
-    detachPlan = [{ ok: false, code: 'NOT_FOUND', message: 'Attachment not found.' }];
+  // "Not found" was taken to mean this, and the scope check says it too (above).
+  it('PHOTO_GONE is the one refusal that means it is removed already: the slot is cleared', async () => {
+    detachPlan = [{ ok: false, code: 'PHOTO_GONE', message: PHOTO_GONE_MESSAGE }];
     const onChange = vi.fn();
     render(<PhotoCaptureSlot kind="SHOP" initial={photo} attachTo={shopOfB1} onChange={onChange} />);
     remove();
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(null));
-    expect(screen.queryByText('Attachment not found.')).toBeNull();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(PHOTO_GONE_MESSAGE)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByLabelText('Capture photo')).toBeTruthy();
+    expect(requests(DETACH)).toHaveLength(1);
   });
 
   it('a Remove refused while a retake has failed says so on its own line, not as the upload failure', async () => {
