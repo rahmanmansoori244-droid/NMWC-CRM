@@ -71,7 +71,7 @@ This is the one point in the project where Q1 is cheap to answer.
 | Control | Where | Proven by |
 |---|---|---|
 | Every database column classified by subject | `lib/compliance/pii-classification.ts` | `tests/unit/pii-classification.test.ts` (CI) |
-| Telemetry scrubbed of phone numbers and e-mail in all three runtimes | `lib/scrub.ts`, `lib/sentry-scrub.ts` | `tests/unit/sentry-scrub.test.ts` (CI) |
+| Telemetry scrubbed of phone numbers and e-mail in all three runtimes | `lib/scrub.ts`, `lib/sentry-scrub.ts` | `tests/unit/sentry-scrub.test.ts` (the rules), `tests/unit/sentry-envelope.test.ts` and `sentry-envelope-browser.test.ts` (what the real SDK sends), `tests/unit/sentry-scrub-guard.test.ts` (all three runtimes wired) (CI) |
 | Audit ledger tamper-proof against the application credential | migrations `20260914150000`, `20260914160000` | `tests/integration/audit-immutability.test.ts` (CI) |
 | Exports attributable — "who exported the master" answerable | `services/exports.ts`, `services/customer-export.ts` | `AuditLog` action `EXPORT` |
 | Retention enforced by a job, not a document | `app/api/cron/retention-sweep/route.ts` | `DATA-RETENTION-SCHEDULE.md` |

@@ -354,18 +354,103 @@ describe('the alert webhook URL never reaches Sentry', () => {
   });
 });
 
-describe('every runtime wires both hooks', () => {
-  it.each(['sentry.server.config.ts', 'sentry.edge.config.ts', 'instrumentation-client.ts'])(
-    '%s sets beforeSend AND beforeSendTransaction',
-    async (file) => {
-      // The defect was one hook missing in all three runtimes at once, which no
-      // behavioural test can see. Only wiring can.
-      const { readFileSync } = await import('node:fs');
-      const src = readFileSync(file, 'utf8');
-      expect(src).toMatch(/beforeSend:\s*scrubEvent/);
-      expect(src).toMatch(/beforeSendTransaction:\s*scrubEvent/);
-    }
-  );
+// "Every runtime wires both hooks" lived here as a regex over the raw file, which a
+// comment quoting `beforeSend: scrubEvent` satisfied. It is now
+// tests/unit/sentry-scrub-guard.test.ts: comments stripped, the init call parsed,
+// sendDefaultPii and a fourth init site checked too.
+
+/**
+ * N07 / X-OPS-2 (auditor recheck, 2026-09-27). The whole-envelope proof is
+ * tests/unit/sentry-envelope.test.ts; these pin the rules one at a time.
+ */
+describe('request headers are an allowlist', () => {
+  const withHeaders = (headers: Record<string, string>) =>
+    scrubEvent({ request: { headers } } as unknown as ErrorEvent).request!.headers!;
+
+  it('drops the Referer, Vercel geolocation, the OIDC token and anything unknown', () => {
+    const out = withHeaders({
+      referer: 'https://nmwc-cm.vercel.app/customers?q=Ali+Said',
+      'x-vercel-ip-city': 'Muscat',
+      'x-vercel-ip-latitude': '23.5880',
+      'x-vercel-ip-longitude': '58.3829',
+      'x-vercel-ip-country': 'OM',
+      'x-vercel-oidc-token': 'eyJhbGciOi.jwt.value',
+      'next-url': '/customers?q=Ali+Said',
+      'x-some-header-added-next-year': 'anything',
+      authorization: 'Bearer secret',
+      cookie: 'session=abc',
+    });
+    expect(out).toEqual({});
+  });
+
+  it('keeps what debugging uses, whatever the case of the name', () => {
+    const out = withHeaders({
+      'User-Agent': 'Mozilla/5.0 (Android 14)',
+      Accept: 'text/x-component',
+      'content-type': 'text/plain;charset=UTF-8',
+      rsc: '1',
+      'next-action': '7f3a9c0d1e2b',
+      'next-router-prefetch': '1',
+      'x-vercel-id': 'iad1::abcde-1695849871234-f00',
+      Referer: 'https://nmwc-cm.vercel.app/customers?q=Ali',
+    });
+    expect(Object.keys(out).sort()).toEqual(
+      ['Accept', 'User-Agent', 'content-type', 'next-action', 'next-router-prefetch', 'rsc', 'x-vercel-id'].sort()
+    );
+    expect(out['User-Agent']).toBe('Mozilla/5.0 (Android 14)');
+  });
+});
+
+describe('every context is scrubbed, not only trace.data', () => {
+  it('replaces the raw request path Next files under contexts.nextjs with the route template', () => {
+    const e = scrubEvent({
+      contexts: {
+        nextjs: { request_path: '/customers?q=Ali+Said', router_path: '/customers', router_kind: 'App Router', route_type: 'render' },
+      },
+    } as unknown as ErrorEvent);
+    expect(e.contexts?.nextjs).toEqual({ request_path: '/customers', router_path: '/customers', router_kind: 'App Router', route_type: 'render' });
+  });
+
+  it('without a route template, keeps the path and drops the query and fragment', () => {
+    const e = scrubEvent({ contexts: { nextjs: { request_path: '/customers/abc?q=Ali#top' } } } as unknown as ErrorEvent);
+    expect(e.contexts?.nextjs?.request_path).toBe('/customers/abc');
+  });
+
+  it('scrubs strings at any depth in any context, and leaves numbers and booleans alone', () => {
+    const e = scrubEvent({
+      contexts: {
+        state: { lastSearch: '/customers?q=Ali+Said', nested: { list: ['call 91234567', 'ali@example.com'] }, count: 3, ok: true },
+      },
+    } as unknown as ErrorEvent);
+    expect(e.contexts?.state).toEqual({
+      lastSearch: '/customers?q=[redacted]',
+      nested: { list: ['call [phone]', '[email]'] },
+      count: 3,
+      ok: true,
+    });
+  });
+
+  it('never rewrites the trace ids Sentry joins events on', () => {
+    // The country-code arm of the phone pattern has no word boundary, so `968`
+    // plus eight digits inside a hex id would otherwise become "[phone]".
+    const ids = { trace_id: 'ab96812345678cdef0123456789abcde', span_id: '9681234567812345', parent_span_id: 'f96812345678aaaa' };
+    const e = scrubEvent({ contexts: { trace: { ...ids, data: { 'http.target': '/customers?q=Ali' } } } } as unknown as SentryEvent);
+    expect(e.contexts?.trace).toMatchObject(ids);
+    expect(e.contexts?.trace?.data?.['http.target']).toBe('/customers?q=[redacted]');
+  });
+});
+
+describe('the sampling context the envelope header is built from', () => {
+  it('has its transaction name scrubbed, its ids kept, and the shared original left alone', () => {
+    const dsc = { trace_id: 'ab96812345678cdef0123456789abcde', public_key: 'k', transaction: 'lookup /customers?q=Ali+Said' };
+    const e = scrubEvent({ sdkProcessingMetadata: { dynamicSamplingContext: dsc, other: 1 } } as unknown as SentryEvent);
+    expect(e.sdkProcessingMetadata).toEqual({
+      dynamicSamplingContext: { trace_id: 'ab96812345678cdef0123456789abcde', public_key: 'k', transaction: 'lookup /customers?q=[redacted]' },
+      other: 1,
+    });
+    // The span that produced it may hand the same object to the next event.
+    expect(dsc.transaction).toBe('lookup /customers?q=Ali+Said');
+  });
 });
 
 describe('item 10: the Reference on the error screen is searchable in Sentry', () => {

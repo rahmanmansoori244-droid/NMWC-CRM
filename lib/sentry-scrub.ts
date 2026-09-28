@@ -118,6 +118,100 @@ function scrubUrl(rawUrl: string): string {
 }
 
 /**
+ * N07 / X-OPS-2 (auditor recheck, 2026-09-27): request headers are an ALLOWLIST.
+ *
+ * This removed `authorization` and `cookie` and sent every other header. Two of
+ * the rest were personal data on every server error: `referer`, which carries the
+ * page the request came from (`/customers?q=<a customer's name>` — the
+ * Referrer-Policy sends the full URL to our own origin, and the browser SDK adds
+ * `document.referrer` to client events), and Vercel's `x-vercel-ip-city`,
+ * `-latitude`, `-longitude` and `-country`, the salesman's approximate location.
+ * `x-vercel-oidc-token` went too. A denylist has to know every header that will
+ * ever exist; this list only has to know what debugging uses. Compared without
+ * case: the browser SDK writes `User-Agent`, Node writes `user-agent`.
+ */
+const KEPT_HEADERS = new Set([
+  'user-agent',
+  'accept',
+  'content-type',
+  'rsc',
+  'next-action',
+  'next-router-prefetch',
+  'x-vercel-id',
+]);
+
+function keepAllowedHeaders(headers: Record<string, unknown>): Record<string, string> {
+  const kept: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (typeof value === 'string' && KEPT_HEADERS.has(name.toLowerCase())) kept[name] = scrubText(value);
+  }
+  return kept;
+}
+
+/**
+ * The ids Sentry joins an event to its trace with. Random hex, so nothing personal,
+ * and pattern-scrubbing one could break the join: the country-code arm of the phone
+ * pattern has no word boundary, and `968` followed by eight decimal digits can occur
+ * inside a 32-character hex id.
+ */
+const TRACE_IDS = new Set(['trace_id', 'span_id', 'parent_span_id']);
+/** Sentry normalises an event to depth 3 before this runs; this is only a backstop. */
+const MAX_DEPTH = 8;
+
+/** Scrub every string under `value`, in place, whatever the nesting. */
+function scrubDeep(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return scrubText(value);
+  if (!value || typeof value !== 'object') return value;
+  // Past the backstop the value is dropped rather than sent unread.
+  if (depth >= MAX_DEPTH) return '[Object]';
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = scrubDeep(value[i], depth + 1);
+    return value;
+  }
+  const obj = value as Record<string, unknown>;
+  for (const [k, v] of Object.entries(obj)) {
+    if (!TRACE_IDS.has(k)) obj[k] = scrubDeep(v, depth + 1);
+  }
+  return obj;
+}
+
+/**
+ * N07: `captureRequestError` (instrumentation.ts → @sentry/nextjs) files the raw
+ * request path as `contexts.nextjs.request_path`, query string and all — so a
+ * failed render of `/customers?q=<name>` sent the name. The route template is what
+ * the report needs and what instrumentation.ts already logs; it sits beside it as
+ * `router_path`. Without one, the path loses its query and fragment.
+ */
+function templateNextjsPath(nextjs: Record<string, unknown>): void {
+  if (!('request_path' in nextjs)) return;
+  const route = nextjs.router_path;
+  const path = nextjs.request_path;
+  nextjs.request_path =
+    typeof route === 'string' && route ? route : typeof path === 'string' ? path.split(/[?#]/)[0] : undefined;
+}
+
+/**
+ * N07, found by the envelope test (2026-09-28): the root span's name travels a
+ * second time, OUTSIDE the event, in the envelope header's `trace.transaction`.
+ * The SDK builds that header after this hook returns, from the event's
+ * `sdkProcessingMetadata.dynamicSamplingContext` — so scrubbing
+ * `event.transaction` alone left a span named `/customers?q=<name>` readable in
+ * the header of the very envelope whose body had been cleaned. (The SDK leaves the
+ * name out when it knows it to be a raw URL, which is why the server's request
+ * spans never showed it; a span named any other way does.) Replaced with a copy,
+ * never edited in place: the object can be shared with the span it came from.
+ */
+function scrubSamplingContext(event: Event): void {
+  const meta = event.sdkProcessingMetadata;
+  const dsc = meta?.dynamicSamplingContext as Record<string, unknown> | undefined;
+  if (!dsc || typeof dsc !== 'object' || typeof dsc.transaction !== 'string') return;
+  event.sdkProcessingMetadata = {
+    ...meta,
+    dynamicSamplingContext: { ...dsc, transaction: scrubText(dsc.transaction) },
+  };
+}
+
+/**
  * Strip credentials and redact personal data from an event, in place.
  *
  * Generic, and that is the point of this revision. It was typed to `ErrorEvent`
@@ -134,9 +228,8 @@ function scrubUrl(rawUrl: string): string {
  * that lands.
  */
 export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
-  if (event.request?.headers) {
-    delete event.request.headers['authorization'];
-    delete event.request.headers['cookie'];
+  if (event.request?.headers && typeof event.request.headers === 'object') {
+    event.request.headers = keepAllowedHeaders(event.request.headers);
   }
   if (event.request?.cookies) delete event.request.cookies;
   if (typeof event.request?.url === 'string') event.request.url = scrubUrl(event.request.url);
@@ -144,6 +237,7 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
   // Transaction events carry the route in `transaction` and the query string in
   // `request.query_string`, neither of which the error path ever populated.
   if (typeof event.transaction === 'string') event.transaction = scrubText(event.transaction);
+  scrubSamplingContext(event);
   const qs = event.request?.query_string;
   if (typeof qs === 'string') {
     event.request!.query_string = scrubQueryPairs(redactWebhook(qs));
@@ -158,11 +252,13 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
       }
     }
   }
-  const traceData = event.contexts?.trace?.data as Record<string, unknown> | undefined;
-  if (traceData) {
-    for (const [k, v] of Object.entries(traceData)) {
-      if (typeof v === 'string') traceData[k] = scrubText(v);
-    }
+  // N07: EVERY context, not only `trace.data`. `nextjs.request_path` carried the
+  // search term on every server error, and any context the SDK or a later
+  // `setContext` adds is covered without anyone remembering to list it.
+  if (event.contexts && typeof event.contexts === 'object') {
+    const nextjs = event.contexts.nextjs;
+    if (nextjs && typeof nextjs === 'object') templateNextjsPath(nextjs as Record<string, unknown>);
+    scrubDeep(event.contexts);
   }
   if (Array.isArray(event.spans)) {
     for (const span of event.spans) {
