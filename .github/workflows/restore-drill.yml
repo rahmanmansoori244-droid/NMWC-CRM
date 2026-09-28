@@ -19,8 +19,10 @@ name: Restore drill
 # This drill therefore:
 #   1. creates a Neon branch, then EMPTIES it (drop and recreate `public`) and
 #      asserts it really is empty before loading anything;
-#   2. restores the most recent encrypted dump with ON_ERROR_STOP and keeps the
-#      restore log as an artifact;
+#   2. restores the most recent encrypted dump with ON_ERROR_STOP through
+#      scripts/ops/restore-load.sh, which prints only a sanitised summary and
+#      keeps the full log ENCRYPTED (N08: this repository is public, and a failed
+#      COPY quotes the customer row it failed on);
 #   3. runs scripts/ops/restore-verify.ts, which checks schema completeness, the
 #      migration ledger, the extensions, every trigger — including the
 #      append-only audit triggers, which pg_dump writes AFTER the data and a
@@ -68,6 +70,10 @@ jobs:
       # EVERY backup is unrecoverable — which is precisely what this drill exists
       # to discover while it is still fixable.
       BACKUP_AGE_IDENTITY: ${{ secrets.BACKUP_AGE_IDENTITY }}
+      # The PUBLIC keys the nightly dump is encrypted to. Here they seal the full
+      # restore log, which can quote customer rows and may only be uploaded
+      # encrypted: the Actions logs and artifacts of this repository are public.
+      BACKUP_AGE_RECIPIENTS: ${{ vars.BACKUP_AGE_RECIPIENTS }}
       PROD_DB_HOST_MARKER: ${{ vars.PROD_DB_HOST_MARKER }}
     steps:
       - name: Check the drill can run at all
@@ -271,16 +277,14 @@ jobs:
         run: |
           set -euo pipefail
           T0=$(date -u +%s)
-          # No -q: warnings and errors are evidence. ON_ERROR_STOP makes the
-          # first failure fatal instead of leaving a half-loaded database.
-          gunzip -c ./dump.sql.gz | psql "$DRILL_URL" -v ON_ERROR_STOP=1 --echo-errors > restore.log 2>&1 || {
-            echo "::error::restore failed — see the restore.log artifact"; tail -40 restore.log; exit 1; }
-          ERRORS=$(grep -c '^psql:.*ERROR' restore.log || true)
-          echo "restore finished with ${ERRORS} error line(s)"
-          if [ "${ERRORS}" != "0" ]; then
-            grep '^psql:.*ERROR' restore.log | head -20
-            echo "::error::the restore reported errors — DDL or data was skipped"; exit 1
-          fi
+          # N08: NEVER print, grep or upload the raw psql log. A failed COPY or
+          # constraint quotes the customer row it failed on, and this repository's
+          # Actions logs and artifacts are public. The load script prints phase,
+          # dump line, SQLSTATE and table only (`restore finished with N error
+          # line(s)` is its last line), seals the full log to BACKUP_AGE_RECIPIENTS
+          # as restore.log.age, shreds the plaintext, and fails on any error.
+          # ci.yml's restore-chain runs the same script on every push.
+          RESTORE_TARGET_URL="$DRILL_URL" RESTORE_DUMP=./dump.sql.gz bash scripts/ops/restore-load.sh
           echo "T_RESTORE=$(( $(date -u +%s) - T0 ))" >> "$GITHUB_ENV"
 
       - name: Verify the restored database
@@ -346,8 +350,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: restore-drill-${{ github.run_id }}
+          # restore.log.age, never restore.log: the plaintext can quote customer
+          # rows and anyone signed in to GitHub can download a public repository's
+          # artifacts (N08). tests/unit/restore-drill-guard.test.ts pins this list.
           path: |
-            restore.log
+            restore.log.age
             restore-verify.json
             manifest.json
           retention-days: 90

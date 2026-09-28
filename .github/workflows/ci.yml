@@ -383,10 +383,15 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nmwc_restored'
           N=$(psql "$RESTORED_URL" -At -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
           [ "$N" = "0" ] || { echo "target not empty ($N tables) — this would not be testing a restore"; exit 1; }
-          gunzip -c dump.sql.gz | psql "$RESTORED_URL" -v ON_ERROR_STOP=1 --echo-errors > restore.log 2>&1 || {
-            tail -40 restore.log; exit 1; }
-          ERRORS=$(grep -c '^psql:.*ERROR' restore.log || true)
-          [ "$ERRORS" = "0" ] || { grep '^psql:.*ERROR' restore.log | head -20; exit 1; }
+          # N08: the drill's own load script, so what the drill does to a failed
+          # restore's log — summary only, full log sealed, plaintext shredded — runs
+          # on every push. The recipient is throw-away and its private half is
+          # deleted at once: this synthetic log is not worth keeping, the sealing is
+          # worth running.
+          age-keygen -o ci-log.key 2>ci-log.pub
+          LOG_RECIPIENT=$(grep -o 'age1[0-9a-z]*' ci-log.pub | head -1)
+          rm -f ci-log.key ci-log.pub
+          RESTORE_TARGET_URL="$RESTORED_URL" BACKUP_AGE_RECIPIENTS="$LOG_RECIPIENT" bash scripts/ops/restore-load.sh
           echo "restored with 0 errors"
 
       - name: Verify the restore
@@ -406,14 +411,52 @@ jobs:
           DIRECT_URL="$RESTORED_URL" npx tsx scripts/ops/app-role.ts verify
           npx tsx scripts/ops/restore-verify.ts --url "$RESTORED_URL" --expect-app-role
 
+      # N08: a restore that FAILS on a row, through the same script, must print and
+      # leave behind nothing of that row except inside the sealed log. PostgreSQL
+      # really quotes it — in DETAIL and in the COPY context — which the last check
+      # below proves, so this cannot pass by the failure quoting nothing.
+      - name: A failed restore publishes nothing of the row it failed on
+        run: |
+          set -euo pipefail
+          MARK=ZQXRESTORECANARY
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nmwc_broken'
+          mkdir broken
+          # A plain dump in pg_dump's own shape, whose one row breaks its CHECK and
+          # carries a name, a +968 phone, an address and a hash-shaped string.
+          {
+            echo 'CREATE TABLE public."Customer" (id text PRIMARY KEY, "legalName" text NOT NULL CHECK (length("legalName") < 20));'
+            echo 'COPY public."Customer" (id, "legalName") FROM stdin;'
+            printf 'ci-broken-1\t%s Trading LLC +968 9123 4567 Way 1234 Al Khuwair $2b$10$%sHASH\n' "$MARK" "$MARK"
+            printf '%s\n' '\.'
+          } | gzip > broken/dump.sql.gz
+          age-keygen -o broken.key 2>broken.pub
+          RECIPIENT=$(grep -o 'age1[0-9a-z]*' broken.pub | head -1)
+          CODE=0
+          # A summary file of its own, so this deliberate failure's table does not
+          # land in the run's real step summary.
+          (cd broken && RESTORE_TARGET_URL=postgresql://ci:ci@localhost:5432/nmwc_broken BACKUP_AGE_RECIPIENTS="$RECIPIENT" GITHUB_STEP_SUMMARY="$PWD/summary.md" bash ../scripts/ops/restore-load.sh) > broken/out.txt 2>&1 || CODE=$?
+          if grep -q "$MARK" broken/out.txt broken/summary.md; then echo "::error::the row reached the step output or summary"; exit 1; fi
+          cat broken/out.txt
+          [ "$CODE" = "1" ] || { echo "::error::the load script exited ${CODE} on a failed restore, not 1"; exit 1; }
+          grep -q 'SQLSTATE 23514' broken/out.txt || { echo "::error::the summary lost the SQLSTATE"; exit 1; }
+          grep -q 'public.Customer' broken/out.txt || { echo "::error::the summary lost the table"; exit 1; }
+          [ ! -e broken/restore.log ] || { echo "::error::the plaintext log was left behind"; exit 1; }
+          # Counted, never printed; -c rather than -q, which would stop reading at the
+          # first match and fail the pipe under pipefail.
+          SEALED_ROWS=$(age -d -i broken.key broken/restore.log.age | grep -c "$MARK" || true)
+          [ "$SEALED_ROWS" -gt 0 ] || { echo "::error::the sealed log does not quote the row, so this proved nothing"; exit 1; }
+          rm -rf broken broken.key broken.pub
+          echo "a failed restore printed its SQLSTATE and table, and the row only inside the sealed log"
+
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: restore-chain-${{ github.run_id }}
+          # No restore log in any form: the plaintext is shredded by the load
+          # script, and the sealed copy's key was thrown away (N08).
           path: |
             manifest.json
-            restore.log
             restore-verify.json
           retention-days: 14
           if-no-files-found: warn

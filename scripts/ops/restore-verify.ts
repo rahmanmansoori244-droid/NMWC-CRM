@@ -36,6 +36,7 @@
 import { PrismaClient } from '@prisma/client';
 import { readFileSync, readdirSync, writeFileSync } from 'fs';
 import { parsePrismaSchema, implicitJoinTables } from '../../lib/compliance/prisma-schema';
+import { describeError } from './describe-error';
 
 const PROD_MARKER = 'ep-sweet-haze';
 
@@ -67,6 +68,12 @@ function record(id: string, title: string, status: Status, detail: string, means
   console.log(`  ${mark} ${id} ${title}${detail ? ` — ${detail}` : ''}`);
 }
 
+/**
+ * N08: the script's own errors. Their text is written here and is safe to print;
+ * anything else is described by describeError(), never by its message.
+ */
+class VerifyError extends Error {}
+
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   return i === -1 ? undefined : process.argv[i + 1];
@@ -83,9 +90,9 @@ type Manifest = {
 
 async function main() {
   const url = arg('url') ?? process.env.RESTORE_VERIFY_URL ?? process.env.DATABASE_URL;
-  if (!url) throw new Error('no database URL: pass --url or set RESTORE_VERIFY_URL');
+  if (!url) throw new VerifyError('no database URL: pass --url or set RESTORE_VERIFY_URL');
   if (url.includes(PROD_MARKER) && process.env.ALLOW_PRODUCTION !== '1') {
-    throw new Error('Refusing to run against production without ALLOW_PRODUCTION=1');
+    throw new VerifyError('Refusing to run against production without ALLOW_PRODUCTION=1');
   }
   const expectAppRole = process.argv.includes('--expect-app-role');
   const manifestPath = arg('manifest');
@@ -115,7 +122,7 @@ async function main() {
     (t) => !(EXPECTED_TRIGGERS as readonly string[]).includes(t)
   );
   if (unknownTriggers.length) {
-    throw new Error(
+    throw new VerifyError(
       `migrations create trigger(s) this verifier does not know about: ${unknownTriggers.join(', ')} — add them to EXPECTED_TRIGGERS in scripts/ops/restore-verify.ts`
     );
   }
@@ -438,7 +445,12 @@ async function main() {
       } catch (err) {
         const msg = (err as Error).message;
         auditRefused = /append-only|insufficient_privilege|permission denied/i.test(msg);
-        auditDetail = auditRefused ? 'UPDATE refused by the trigger' : `NOT refused: ${msg.slice(0, 120)}`;
+        // N08: never the message — it can quote the audit row it touched.
+        auditDetail = auditRefused
+          ? 'UPDATE refused by the trigger'
+          : msg === 'NOT_REFUSED'
+            ? 'NOT refused: the UPDATE went through (and was rolled back)'
+            : `NOT refused: it failed with ${describeError(err)} instead`;
       }
     }
     record(
@@ -474,7 +486,11 @@ async function main() {
     } catch (err) {
       const msg = (err as Error).message;
       regionRefused = /B-19|region/i.test(msg) && !msg.includes('NOT_REFUSED');
-      regionDetail = regionRefused ? 'mismatched branch region refused' : `NOT refused: ${msg.slice(0, 120)}`;
+      regionDetail = regionRefused
+        ? 'mismatched branch region refused'
+        : msg.includes('NOT_REFUSED')
+          ? 'NOT refused: the mismatched branch was accepted (and rolled back)'
+          : `NOT refused: it failed with ${describeError(err)} instead`;
     }
     record(
       'F-02',
@@ -601,6 +617,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('restore-verify failed:', (err as Error).message);
+  // N08: a database error's message can quote a row; ours are safe to print.
+  console.error('restore-verify failed:', err instanceof VerifyError ? err.message : describeError(err));
   process.exit(1);
 });

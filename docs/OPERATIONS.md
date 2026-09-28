@@ -362,12 +362,12 @@ Use when the damage predates the PITR window, or PITR cannot reach a good state.
 
 1. Steps 1 from Runbook A.
 2. Create a Neon branch. **It arrives as a copy of production** — Neon has no empty-branch primitive — so empty it first: `psql "$URL" -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'` and confirm `0` tables before loading anything. (Check twice that the URL is the branch, not production.)
-3. Fetch the newest dump and its manifest from `nmwc-backups`, decrypt with the age identity, and load with `psql -v ON_ERROR_STOP=1 --echo-errors`, keeping the log.
+3. Fetch the newest dump and its manifest from `nmwc-backups`, decrypt with the age identity, and load it with `RESTORE_TARGET_URL='<branch owner URL>' RESTORE_DUMP=./dump.sql.gz bash scripts/ops/restore-load.sh` from the repository root (it needs `psql`, `age` and `shred`). It runs `psql -v ON_ERROR_STOP=1 -v VERBOSITY=verbose --echo-errors`, prints a summary of phase, dump line, SQLSTATE and table, keeps the full log only as `restore.log.age` encrypted to `BACKUP_AGE_RECIPIENTS`, and shreds the plaintext. **The full log can quote customer rows** — a failed COPY or constraint prints the row it failed on — so decrypt it (`age -d -i <identity> restore.log.age`) only on your own machine, and never paste it into an issue, a chat, a CI log or anything else in this public repository.
 4. Re-create the runtime role (Runbook A step 4).
 5. `npx tsx scripts/ops/restore-verify.ts --url '<branch owner URL>' --manifest manifest.json --expect-app-role`. This is the step that catches the dangerous failure: pg_dump writes triggers **after** the data, so a truncated restore comes back with every customer row present and the append-only audit triggers missing.
 6. Steps 6–8 from Runbook A.
 
-The monthly drill (`.github/workflows/restore-drill.yml`) performs exactly steps 2–5 against a throw-away branch and publishes the timings. Run it on demand before you ever need it for real: **Actions → Restore drill → Run workflow**.
+The monthly drill (`.github/workflows/restore-drill.yml`) performs exactly steps 2–5 against a throw-away branch, with the same load script, and publishes the timings. Run it on demand before you ever need it for real: **Actions → Restore drill → Run workflow**.
 
 ### 6.6 Runbook C — total provider loss
 
@@ -426,6 +426,7 @@ Each run writes to its own timestamped key, so a second run on the same day adds
 | Claim | Proven by | When |
 |---|---|---|
 | The dump/encrypt/restore/verify chain works | `restore-chain` job in CI | every push |
+| A failed restore prints and uploads nothing of the row it failed on | the `restore-chain` job's failed-restore step (a real PostgreSQL COPY failure through `scripts/ops/restore-load.sh`), and `tests/unit/restore-drill-guard.test.ts` | every push |
 | The real production dump restores and is complete | `.github/workflows/restore-drill.yml` | monthly + on demand |
 | A restored database refuses audit tampering | `restore-verify.ts` assertion F-01 | both of the above |
 | A backup actually happened last night | `db-backup` heartbeat on bearer `/api/health` | continuously |
@@ -467,6 +468,8 @@ Two things are true about that and only one of them is a fault. The schedule is 
 | Delete the drill branch | `delete branch … → HTTP 200` | A Neon branch holding a full live copy of customer personal data is still there. Delete it by hand, now. |
 
 Then: download the `restore-drill-<run id>` artifact and grep `restore-verify.json` for `"status": "fail"` — there must be none — and check the Neon console's Branches list is free of `restore-drill-*`. Finally put the run's **Measured recovery time** into the RTO column of §6.2, replacing the estimate, and note the date.
+
+**What the drill publishes, and what it does not** (N08, 2026-09-28). This repository is public: anyone can read its Actions logs and any signed-in GitHub user can download its artifacts. A restore that fails on a row makes PostgreSQL quote that row — `DETAIL: Failing row contains (…)`, the COPY line itself, `Key (…)=(…) is duplicated` — and the drill used to print the last 40 lines of that log and upload all of it for 90 days. It now prints only the load script's summary (severity, dump line, SQLSTATE, phase, statement kind and a table from the schema), adds the same table to the run summary, and uploads the full log only as `restore.log.age`, encrypted to `BACKUP_AGE_RECIPIENTS`; the plaintext is shredded on the runner. To read it, download the artifact and `age -d -i <identity> restore.log.age` **on your own machine**. If `BACKUP_AGE_RECIPIENTS` is not set the full log is discarded and the run warns; the summary is still there. `restore-verify.ts` likewise names a database error by its class and SQLSTATE, never by its message.
 
 **What a false pass would look like**, so you can recognise one: `M-01` reported as `skip`, or the "0 tables" line missing. Neither fails the run on its own.
 

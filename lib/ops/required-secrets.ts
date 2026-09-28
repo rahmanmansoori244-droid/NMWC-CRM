@@ -238,7 +238,9 @@ export const REQUIRED_SECRETS: RequiredSecret[] = [
     name: 'BACKUP_AGE_RECIPIENTS',
     kind: 'variable',
     required: true,
-    workflows: ['db-backup.yml'],
+    // restore-drill.yml seals its full restore log to the same keys (N08): the log
+    // can quote customer rows, and without a recipient it is discarded.
+    workflows: ['db-backup.yml', 'restore-drill.yml'],
     description:
       'Age PUBLIC key(s), comma separated, that the nightly dump is encrypted to. Two is the right number: one working key and one escrowed.',
     source: 'Generate with `age-keygen`. Escrow the private half OFF this machine.',
