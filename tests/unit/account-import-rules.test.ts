@@ -360,7 +360,7 @@ describe('accountImportInterruptedMessage (X-IMPORTS-3)', () => {
     });
     expect(msg).toMatch(/^5 row\(s\) were applied and are saved, but this upload's report could not be saved \(P2000\)/);
     expect(msg).toMatch(/2 row\(s\) that were not applied are not listed anywhere/);
-    expect(msg).toMatch(/has been reported/);
+    expect(msg).toMatch(/has been logged for the administrator/);
     expect(msg).toMatch(/reset_password/);
     expect(msg).not.toMatch(/stopped answering|once the CRM responds/);
   });

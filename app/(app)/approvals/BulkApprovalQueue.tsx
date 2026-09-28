@@ -447,8 +447,9 @@ function RejectModal({
           Reject {count} edit{count === 1 ? '' : 's'}?
         </h3>
         <p className="mt-1 text-xs text-slate-600">
-          The same category and reason will be sent to every salesman whose edit
-          is rejected.
+          The same category and reason go with every request rejected. Each one
+          goes back one step: to the salesman from the first step, to the
+          previous approver from any later one.
         </p>
         <label className="mt-4 block text-xs font-medium text-slate-700">
           Category

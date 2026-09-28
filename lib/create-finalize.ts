@@ -191,13 +191,13 @@ export async function finalizeCreateInTx(
   if (liveReferenced.length !== referencedIds.length) {
     throw new ConflictError(
       'NEEDS_REUPLOAD',
-      'A required photo on this request was removed after submission. Reject the request so the salesman can re-capture it.'
+      'A required photo on this request was removed after submission. Reject it: it goes back down the chain to the salesman, who can capture the photo again.'
     );
   }
   if (isCredit && guarantees.length === 0) {
     throw new ConflictError(
       'NEEDS_REUPLOAD',
-      'The guarantee document was removed after submission. Reject the request so the salesman can re-attach it.'
+      'The guarantee document was removed after submission. Reject it: it goes back down the chain to the salesman, who can attach it again.'
     );
   }
 
@@ -289,7 +289,7 @@ export async function finalizeCreateInTx(
     if (bound.count !== 1) {
       throw new ConflictError(
         'NEEDS_REUPLOAD',
-        'A required photo on this request was removed while it was being approved. Reject the request so the salesman can re-capture it.'
+        'A required photo on this request was removed while it was being approved. Reject it: it goes back down the chain to the salesman, who can capture the photo again.'
       );
     }
   };

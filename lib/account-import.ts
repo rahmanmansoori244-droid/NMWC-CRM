@@ -268,7 +268,7 @@ export function accountImportInterruptedMessage(p: {
     return `The database stopped answering, so the import stopped part-way. ${applied}${uncertain}. The ${p.notApplied} row(s) that were not applied are listed on this upload's batch page. ${rerun}`;
   }
   if (p.reportFault) {
-    return `${applied}${uncertain}, but this upload's report could not be saved (${p.reportFault}), so the ${p.notApplied} row(s) that were not applied are not listed anywhere. The fault is in the CRM, not in the file, and it has been reported. If the file is uploaded again: ${again}`;
+    return `${applied}${uncertain}, but this upload's report could not be saved (${p.reportFault}), so the ${p.notApplied} row(s) that were not applied are not listed anywhere. The fault is in the CRM, not in the file, and it has been logged for the administrator. If the file is uploaded again: ${again}`;
   }
   return `${applied}${uncertain}, but the database stopped answering before this upload's report could be saved, so the ${p.notApplied} row(s) that were not applied are not listed anywhere. ${rerun}`;
 }

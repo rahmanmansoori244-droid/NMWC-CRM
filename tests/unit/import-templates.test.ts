@@ -19,6 +19,9 @@ describe('go-live import templates match the importer contract', () => {
     if (!existsSync(ACCT)) throw new Error('run: npx tsx scripts/build-import-templates.ts');
     const sheets = await parseWorkbook(readFileSync(ACCT));
     const byName = Object.fromEntries(sheets.map((s) => [s.name, s]));
+    // The parser no longer throws on a repeated heading; it records it and the
+    // import refuses a sheet it reads that has one (N05). The templates have none.
+    for (const s of ['Regions', 'Routes', 'Users']) expect(byName[s].duplicateHeadings, s).toEqual([]);
     // parser looks these up case-insensitively by name (services/imports.ts).
     expect(byName['Regions'].headers).toEqual(['code', 'name']);
     expect(byName['Routes'].headers).toEqual(['code', 'name', 'region_code']);
