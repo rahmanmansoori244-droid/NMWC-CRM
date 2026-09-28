@@ -653,6 +653,17 @@ describe('beforeBreadcrumb: a breadcrumb is scrubbed as it is recorded', () => {
     const nav: Breadcrumb = { category: 'navigation', data: { from: '/customers', to: '/customers?q=ZQX+Khalid' } };
     expect(scrubBreadcrumb(nav).data).toEqual({ from: '/customers', to: '/customers?q=[redacted]' });
   });
+
+  it("never rewrites the SDK's live data object, and keeps a fetch breadcrumb's span id", () => {
+    // At record time a fetch breadcrumb's data IS the SDK's handlerData.fetchData;
+    // the tracing handler reads __span from it afterwards to end the fetch span.
+    const live = { method: 'GET', url: '/customers?q=ZQX+Khalid', __span: 'a968123456789abc' };
+    const b: Breadcrumb = { category: 'fetch', data: live };
+    const out = scrubBreadcrumb(b);
+    expect(live).toEqual({ method: 'GET', url: '/customers?q=ZQX+Khalid', __span: 'a968123456789abc' });
+    expect(out.data).not.toBe(live);
+    expect(out.data).toEqual({ method: 'GET', url: '/customers?q=[redacted]', __span: 'a968123456789abc' });
+  });
 });
 
 describe('beforeSendSpan: a span is scrubbed on its own, without its transaction', () => {

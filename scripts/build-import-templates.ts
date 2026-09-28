@@ -153,9 +153,9 @@ const usersCols: Col[] = [
   {
     key: 'supervisor_username',
     required: 'Required for SALESMAN',
-    format: 'a username from this sheet',
+    format: 'the username of an ACTIVE SUPERVISOR or MANAGER',
     notes:
-      "The salesman's supervisor. Blank on a re-import = keep the existing supervisor (does not unlink).",
+      "The salesman's supervisor, on this sheet or already in the CRM. Anyone else (a salesman, viewer, approver or deactivated account) holds the row back, unless it is already this person's supervisor. Blank on a re-import = keep the existing supervisor (does not unlink).",
   },
   {
     key: 'route_code',
@@ -182,14 +182,14 @@ const usersCols: Col[] = [
     required: 'Optional',
     format: 'yes / blank',
     notes:
-      'Set to "yes" to rotate an EXISTING user\'s password (also logs them out). Must also fill "password".',
+      'Set to "yes" to rotate an EXISTING user\'s password (also logs them out). Must also fill "password". It may not be their current password or one of their last five, and your own password cannot be reset here.',
   },
   {
     key: 'change_role',
     required: 'Optional',
     format: 'yes / blank',
     notes:
-      'Set to "yes" to change an EXISTING user\'s role. (Cannot promote to/from MANAGER or STEWARD — use /users.)',
+      'Set to "yes" to change an EXISTING user\'s role. (Cannot promote to/from MANAGER or STEWARD — use /users.) A SUPERVISOR with people reporting to them keeps the role until they are reassigned.',
   },
   {
     key: 'must_change_password',

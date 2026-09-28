@@ -575,13 +575,17 @@ async function uploadAccountMasterCore(
 
         // AUTH-06, as the Users UI applies it: an active SUPERVISOR or MANAGER, on
         // a new account and an existing one alike (both use supervisorId below).
+        // Like the UI, it judges a supervisor being SET: a cell naming the one the
+        // account already has changes nothing, so a manager deactivated since the
+        // sheet was built does not hold back every row that still names him.
         let supervisorId: string | null = null;
         if (supUsername) {
           const sup = await prisma.user.findUnique({
             where: { username: supUsername },
             select: { id: true, role: true, isActive: true },
           });
-          const badSupervisor = supervisorIssue({ supervisorUsername: supUsername, supervisor: sup });
+          const unchanged = !!sup && !!existing && existing.supervisorId === sup.id;
+          const badSupervisor = unchanged ? null : supervisorIssue({ supervisorUsername: supUsername, supervisor: sup });
           if (badSupervisor) {
             issues.push({ sheet: 'Users', row: sheetRow, message: badSupervisor });
             continue;

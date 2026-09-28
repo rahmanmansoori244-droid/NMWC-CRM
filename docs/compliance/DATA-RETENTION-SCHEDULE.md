@@ -19,7 +19,7 @@ Two columns matter more than the periods themselves: **Enforced by** and **Prove
 | Notifications, unread | 180 days | `app/api/cron/retention-sweep/route.ts` | — |
 | Login rate-limit rows (username, source IP) | 1 day | `app/api/cron/retention-sweep/route.ts` | — |
 | Scheduled-run history (`CronRun`: job, start, outcome, durations, which scheduler — no error text, no personal data) | 90 days: three of the 30-day windows the service levels are measured over (item 9) | `app/api/cron/retention-sweep/route.ts` (daily). `nmwc_app` is given DELETE on this table by `app-role.ts grant`, which must be re-run once after this table's migration (OPERATIONS.md §5h) | `tests/integration/retention-sweep.test.ts` (CI) |
-| Previous password hashes | Last 5 per user | `lib/password-policy.ts` (`rotatePasswordHistory`, called by an admin reset in `services/users.ts` and a user's own change in `services/password.ts`) | — |
+| Previous password hashes | Last 5 per user | `lib/password-policy.ts` (`rotatePasswordHistory`, called by an admin reset in `services/users.ts`, an account-import reset in `services/imports.ts` and a user's own change in `services/password.ts`) | — |
 | Employee accounts | Never deleted; disabled only. Seven `ON DELETE RESTRICT` foreign keys make deletion impossible while the ledger exists | — | — |
 | Database dumps (`nmwc-backups`, prefix `db/`) | 30 days | R2 lifecycle rule, **now set and checkable from code** | `npx tsx scripts/ops/r2-backups-lifecycle.ts --check` |
 | Neon point-in-time recovery | 7 days | Neon plan setting | — |

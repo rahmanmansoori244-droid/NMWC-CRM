@@ -1053,6 +1053,26 @@ describe('AUTH-06: supervisor_username names an active SUPERVISOR or MANAGER, as
     expect(find('mct-01')!.supervisorId).toBe('m1');
     expect(find('mct-02')!.supervisorId).toBe('sup');
   });
+
+  it('a row naming the supervisor the account already has is not judged again, even once he is deactivated', async () => {
+    // Re-importing the go-live sheet after a manager left: the cell changes
+    // nothing, so it must not hold back the row's other changes. Naming him for
+    // a NEW account is still refused (the it.each above).
+    addUser({ id: 'm1', username: 'manager.x', role: 'MANAGER', isActive: false });
+    addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1', supervisorId: 'm1' });
+    const { res, messages } = await upload(
+      usersSheet({
+        username: 'mct-01',
+        full_name: 'Renamed',
+        role: 'SALESMAN',
+        route_code: 'MCT-01',
+        supervisor_username: 'manager.x',
+      })
+    );
+    expect(messages).toEqual([]);
+    expect(okData(res).clean).toBe(1);
+    expect(find('mct-01')).toMatchObject({ supervisorId: 'm1', fullName: 'Renamed' });
+  });
 });
 
 describe('a Supervisor with reports keeps the role until they are reassigned, as in the Users UI', () => {

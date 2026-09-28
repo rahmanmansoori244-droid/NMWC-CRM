@@ -186,6 +186,9 @@ describe('every Sentry runtime is initialised with the scrubber on both hooks', 
     const p = props.find((q) => q.name && ts.isIdentifier(q.name) && q.name.text === 'integrations');
     const list = p && ts.isPropertyAssignment(p) ? p.initializer : undefined;
     expect(list && ts.isArrayLiteralExpression(list), 'integrations is an array literal this guard can read').toBe(true);
+    // Exactly one entry: a second tracing instance later in the list (a named
+    // import, say) would replace this one by name and bring INP back.
+    expect((list as ts.ArrayLiteralExpression).elements, 'integrations holds only the tracing integration').toHaveLength(1);
     const tracing = (list as ts.ArrayLiteralExpression).elements.filter(
       (e): e is ts.CallExpression =>
         ts.isCallExpression(e) &&
@@ -208,17 +211,31 @@ describe('every Sentry runtime is initialised with the scrubber on both hooks', 
 
   it('nothing else adds a tracing or web-vitals integration, or turns a standalone web vital on', () => {
     // An integration added after init, or a second tracing instance, would start
-    // what the options above turned off.
+    // what the options above turned off. Span streaming (traceLifecycle 'stream'
+    // or spanStreamingIntegration) sends LCP/CLS spans named after elements
+    // without the plain beforeSendSpan. Counted per occurrence, so a second
+    // tracing call in the client config fails too.
     const roots = readdirSync('.').filter((n) => /\.(ts|tsx)$/.test(n) && !/\.d\.ts$/.test(n));
     const files = [...roots, ...['app', 'components', 'lib', 'services'].flatMap(tsFiles)];
+    const words = [
+      'browserTracingIntegration',
+      'webVitalsIntegration',
+      'addIntegration',
+      'lazyLoadIntegration',
+      'enableStandalone',
+      'enableInteractions',
+      'traceLifecycle',
+      'spanStreamingIntegration',
+    ];
     const hits: string[] = [];
     for (const f of files) {
       const src = stripped(f);
-      for (const word of ['browserTracingIntegration', 'webVitalsIntegration', 'addIntegration', 'lazyLoadIntegration', 'enableStandalone', 'enableInteractions']) {
-        if (src.includes(word)) hits.push(`${f.replace(/\\/g, '/')}: ${word}`);
+      for (const word of words) {
+        const n = src.split(word).length - 1;
+        if (n) hits.push(`${f.replace(/\\/g, '/')}: ${word} x${n}`);
       }
     }
-    expect(hits).toEqual(['instrumentation-client.ts: browserTracingIntegration']);
+    expect(hits).toEqual(['instrumentation-client.ts: browserTracingIntegration x1']);
   });
 });
 

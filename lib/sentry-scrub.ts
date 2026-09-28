@@ -9,10 +9,12 @@
  * personal data reaches it, the smaller the transfer we have to justify in
  * `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
  *
- * Keep the patterns in step with `lib/logger.ts` — they are deliberately the
- * same two: Omani mobile numbers (and any bare 8–12 digit run, which also
- * catches commercial-registration numbers and customer codes) and e-mail
- * addresses.
+ * Keep the patterns in step with `lib/logger.ts` — the personal-data patterns
+ * are deliberately the same two: Omani mobile numbers (and any bare 8–12 digit
+ * run, which also catches commercial-registration numbers and customer codes)
+ * and e-mail addresses. On top of them this file removes what only telemetry
+ * carries: the search term in a query string, and the values of the on-screen
+ * labels (aria-label, title, alt) the browser SDK copies into click selectors.
  */
 import type { Breadcrumb, Event, EventHint, spanToJSON } from '@sentry/nextjs';
 import { digestHash, isErrorDigest, scrubString } from './scrub';
@@ -190,9 +192,10 @@ function keepAllowedHeaders(headers: Record<string, unknown>): Record<string, st
  * The ids Sentry joins an event to its trace with. Random hex, so nothing personal,
  * and pattern-scrubbing one could break the join: the country-code arm of the phone
  * pattern has no word boundary, and `968` followed by eight decimal digits can occur
- * inside a 32-character hex id.
+ * inside a 32-character hex id. `__span` is the id a fetch breadcrumb carries for
+ * the tracing handler to find its span by.
  */
-const TRACE_IDS = new Set(['trace_id', 'span_id', 'parent_span_id']);
+const TRACE_IDS = new Set(['trace_id', 'span_id', 'parent_span_id', '__span']);
 /** Sentry normalises an event to depth 3 before this runs; this is only a backstop. */
 const MAX_DEPTH = 8;
 
@@ -354,12 +357,18 @@ export function scrubBreadcrumb(b: Breadcrumb): Breadcrumb {
   // `?q=<customer name>` on 100% of error events. The pattern scrub alone
   // never touched them, because a name is not a digit run.
   if (b.data && typeof b.data === 'object') {
+    // A COPY, never in place: at record time a fetch breadcrumb's `data` is the
+    // SDK's live `handlerData.fetchData`, and the tracing handler that runs after
+    // this reads its `__span` to end the fetch span. Rewriting that id in place
+    // (a span id holding 968 and eight digits reads as a phone) left the span open
+    // until the navigation timed out.
+    const data = scrubDeep(b.data, 0, true) as Record<string, unknown>;
     // A console breadcrumb keeps the call's raw arguments in `data.arguments`:
     // after a server error Next calls console.error(' ⨯', err), and the SDK
     // stores the Error's message and stack there unscrubbed. `message` already
     // holds the formatted text, scrubbed above, so the raw copy goes.
-    if (b.category === 'console') delete (b.data as Record<string, unknown>).arguments;
-    scrubDeep(b.data);
+    if (b.category === 'console') delete data.arguments;
+    b.data = data;
   }
   return b;
 }
