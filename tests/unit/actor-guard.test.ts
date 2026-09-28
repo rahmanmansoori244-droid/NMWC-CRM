@@ -35,6 +35,9 @@ import {
 const ROOT = process.cwd();
 const rel = (abs: string) => path.relative(ROOT, abs).split(path.sep).join('/');
 const src = (file: string) => stripComments(readFileSync(file, 'utf8'), file);
+// The cases that read and comment-strip whole trees took over 4 s each under a
+// parallel run on Windows, close to the 5 s default, so they get their own budget.
+const TIMEOUT = 30_000;
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -108,14 +111,14 @@ describe('no action, route handler or service reads the session except through l
   it('nothing in services/, app/api/, app/actions/ or lib/ calls or imports auth() itself', () => {
     const offenders = SCOPE.filter((f) => !OWNERS.has(f) && f !== LOGOUT).filter((f) => readsSessionDirectly(f, src(f)));
     expect(offenders, 'use requireActor() / checkActor() from lib/session.ts').toEqual([]);
-  });
+  }, TIMEOUT);
 
   it('the per-module guards now come from lib/session.ts — every services/ module that acts for a user imports it', () => {
     const missing = walk('services')
       .filter(isServerModule)
       .filter((f) => !/\b(requireActor|checkActor|requireExportUser)\s*\(/.test(src(f)));
     expect(missing).toEqual([]);
-  });
+  }, TIMEOUT);
 
   it('sign-out reads auth() exactly once, inside logoutAction, and never through requireActor', () => {
     const s = src(LOGOUT);
@@ -135,7 +138,7 @@ describe('no action, route handler or service reads the session except through l
     const pages = walk('app').filter((f) => /\/(page|layout)\.tsx$/.test(f));
     expect(pages.length).toBeGreaterThan(20);
     expect(pages.filter((f) => /\b(requireActor|checkActor)\s*\(/.test(src(f)))).toEqual([]);
-  });
+  }, TIMEOUT);
 });
 
 describe('only the password change itself may pass a flagged session', () => {
@@ -151,7 +154,7 @@ describe('only the password change itself may pass a flagged session', () => {
     const use = s.indexOf('requireActor({ allowPasswordChange: true })');
     expect(core).toBeGreaterThan(-1);
     expect(use).toBeGreaterThan(core);
-  });
+  }, TIMEOUT);
 
   it('lib/session.ts refuses the flag unless that option is set', () => {
     const s = src('lib/session.ts');

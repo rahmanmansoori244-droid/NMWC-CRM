@@ -17,7 +17,7 @@
  * route handler that acts for a user. The password change and sign-out still
  * work. tests/unit/actor-guard.test.ts pins the structure that keeps it so.
  */
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { NextRequest } from 'next/server';
@@ -161,6 +161,16 @@ async function exportedActions(): Promise<Array<[string, (...a: unknown[]) => Pr
   return out;
 }
 
+/**
+ * The first import of a module loads its whole import graph (every services/
+ * module; the photo presign route brings the S3 SDK). Under a full parallel run
+ * on Windows that alone took 3.6 s for the services and 6.5 s for the presign
+ * route, and the presign case failed as a 5 s timeout. That is load time, not the
+ * refusal under test, so it is paid in a beforeAll with its own budget and each
+ * case below times only the calls it makes.
+ */
+const LOAD_TIMEOUT = 120_000;
+
 /** Call it the way a hand-crafted POST would, and return the answer or what it threw. */
 async function outcome(fn: (...a: unknown[]) => Promise<unknown>): Promise<unknown> {
   const fd = new FormData();
@@ -174,9 +184,14 @@ async function outcome(fn: (...a: unknown[]) => Promise<unknown>): Promise<unkno
 }
 
 describe('every server action refuses a session that must change its password', () => {
+  let actions: Awaited<ReturnType<typeof exportedActions>> = [];
+  beforeAll(async () => {
+    actions = await exportedActions();
+  }, LOAD_TIMEOUT);
+
   it('found the modules and the actions to check — the sweep cannot pass on nothing', async () => {
     expect(serverModules).toEqual(expect.arrayContaining(['users.ts', 'routes.ts', 'edits.ts', 'password.ts']));
-    const names = (await exportedActions()).map(([n]) => n);
+    const names = actions.map(([n]) => n);
     expect(names.length).toBeGreaterThan(40);
     // The four the change-password worker used to carry.
     for (const a of ['createUserAction', 'toggleUserActiveAction', 'resetPasswordAction', 'updateUserRoleAction']) {
@@ -189,7 +204,7 @@ describe('every server action refuses a session that must change its password', 
     'a flagged %s gets PASSWORD_CHANGE_REQUIRED from every action, and nothing reaches the database',
     async (role) => {
       const checked: string[] = [];
-      for (const [name, fn] of await exportedActions()) {
+      for (const [name, fn] of actions) {
         if (EXEMPT.has(name.split(':')[1]!)) continue;
         h.session = flagged(role);
         h.calls = [];
@@ -309,6 +324,20 @@ describe('every route handler that acts for a user refuses a flagged session wit
     ['GET /api/exports/changes', async () => (await import('@/app/api/exports/changes/route')).GET(req('/api/exports/changes'))],
     ['GET /api/perf-probe', async () => (await import('@/app/api/perf-probe/route')).GET()],
   ];
+
+  beforeAll(async () => {
+    await Promise.all([
+      import('@/app/api/forms/[form]/route'),
+      import('@/app/api/photos/attach/route'),
+      import('@/app/api/photos/detach/route'),
+      import('@/app/api/photos/presign/route'),
+      import('@/app/api/photos/finalize/route'),
+      import('@/app/api/photos/[id]/route'),
+      import('@/app/api/exports/customers/route'),
+      import('@/app/api/exports/changes/route'),
+      import('@/app/api/perf-probe/route'),
+    ]);
+  }, LOAD_TIMEOUT);
 
   it.each(ROUTES)('%s', async (_name, call) => {
     h.session = flagged('STEWARD');

@@ -131,8 +131,8 @@ export const authConfig = {
       // not.
       //
       // Nothing is exposed by that: app/(app)/layout.tsx calls auth() and
-      // redirects, every page and route handler re-checks, and server actions
-      // call requireSession(). This line is defence in depth that is not
+      // redirects, every page re-checks, and server actions and route handlers
+      // call requireActor() / checkActor() (lib/session.ts). This line is defence in depth that is not
       // currently in depth.
       //
       // The obvious repair — return Response.redirect('/login') — would also

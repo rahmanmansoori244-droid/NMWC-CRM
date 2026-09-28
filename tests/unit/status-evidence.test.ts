@@ -98,6 +98,7 @@ vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: 
 
 import { approveReactivationAction, rejectReactivationAction } from '@/services/reactivations';
 import { approveEditAction } from '@/services/edits';
+import { decisionTokenFor } from '@/lib/decision-token';
 
 /** The mocked transaction client, as the helper's parameter type. */
 const txc = tx as unknown as Parameters<typeof assertStatusEvidence>[0];
@@ -162,6 +163,9 @@ function closeRequest(over: Record<string, unknown> = {}) {
     approvalChain: null,
     currentStepIndex: 0,
     cycle: 1,
+    // A real row carries these columns, null on an UPDATE request (N01 binds them).
+    requestedCreditLimit: null,
+    requestedPaymentTermDays: null,
     submittedAt: sentAt,
     stageEnteredAt: sentAt,
     slaDueAt: null,
@@ -354,14 +358,23 @@ describe('approving a reactivation (F10 + X-STATUS-1)', () => {
 });
 
 describe('approving a close request (F10)', () => {
+  // Approve the way the review page does: with the decision token of the row it
+  // rendered (N01). The token is taken from the very row the mock returns.
+  let shown = closeRequest();
+  const serve = (row: ReturnType<typeof closeRequest>) => {
+    shown = row;
+    db.customerEdit.findUnique.mockResolvedValue(row);
+  };
+  const approve = () => approveEditAction(form({ editId: 'e-c', decisionToken: decisionTokenFor(shown as never) }));
+
   beforeEach(() => {
     h.user = { id: SUP, role: 'SUPERVISOR', username: 'sup' };
     h.scope = { ownedRouteId: null, teamRouteIds: ['r1'], managedRegionIds: [] };
-    db.customerEdit.findUnique.mockResolvedValue(closeRequest());
+    serve(closeRequest());
   });
 
   it('with its photo intact — taken three days ago — the branch closes, with its APPROVE row', async () => {
-    expect(await approveEditAction(form({ editId: 'e-c' }))).toEqual({ ok: true, data: undefined });
+    expect(await approve()).toEqual({ ok: true, data: undefined });
     expect(tx.branch.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: B1, version: 0 }, data: expect.objectContaining({ status: 'CLOSED' }) })
     );
@@ -378,7 +391,7 @@ describe('approving a close request (F10)', () => {
     ['on a sibling branch', [photo({ branchId: B2, branchExtraId: B2 })]],
   ])('photo %s: EVIDENCE_GONE, rolled back — the branch stays open, no APPROVE row', async (_n, rows) => {
     tx.attachment.findMany.mockResolvedValue(rows);
-    const res = await approveEditAction(form({ editId: 'e-c' }));
+    const res = await approve();
     expect(res).toMatchObject({ ok: false, code: 'EVIDENCE_GONE', message: EVIDENCE_REMOVED_MESSAGE });
     expect(h.rolledBack).toBe(true);
     expect(decisionWrites()).toBe(0);
@@ -387,8 +400,8 @@ describe('approving a close request (F10)', () => {
   it('a status-only request with no evidence entry is refused, whoever sent it', async () => {
     for (const role of ['SALESMAN', 'SUPERVISOR']) {
       db.user.findUnique.mockResolvedValue({ role });
-      db.customerEdit.findUnique.mockResolvedValue(closeRequest({ attachmentChanges: [] }));
-      const res = await approveEditAction(form({ editId: 'e-c' }));
+      serve(closeRequest({ attachmentChanges: [] }));
+      const res = await approve();
       expect(res, role).toMatchObject({ ok: false, code: 'EVIDENCE_GONE', message: EVIDENCE_NONE_MESSAGE });
     }
     expect(decisionWrites()).toBe(0);
@@ -397,7 +410,7 @@ describe('approving a close request (F10)', () => {
   it('an enrichment edit (no status change, no evidence) is not asked for any', async () => {
     // A non-salesman submitter keeps EL-04 out of this test; it is not what it is about.
     db.user.findUnique.mockResolvedValue({ role: 'STEWARD' });
-    db.customerEdit.findUnique.mockResolvedValue(
+    serve(
       closeRequest({
         target: 'CUSTOMER',
         branchId: null,
@@ -407,7 +420,7 @@ describe('approving a close request (F10)', () => {
     );
     tx.customer.findUniqueOrThrow.mockResolvedValue({ id: CUST, version: 3, branches: [{ id: B1 }] });
     tx.customer.updateMany.mockResolvedValue({ count: 1 });
-    expect(await approveEditAction(form({ editId: 'e-c' }))).toEqual({ ok: true, data: undefined });
+    expect(await approve()).toEqual({ ok: true, data: undefined });
     expect(tx.attachment.findMany).not.toHaveBeenCalled();
   });
 });

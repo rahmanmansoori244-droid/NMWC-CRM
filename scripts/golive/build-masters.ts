@@ -151,7 +151,7 @@ const ACTIVE_WINDOW_DAYS = 56;
 // load-bearing in the code too: services/imports.ts accepts an initial value shorter
 // than 12 characters ONLY when the flag is set, and auth.config.ts pins the account to
 // /profile/change-password until the person chooses a 12+ character password of their
-// own (passwordRule, services/users.ts).
+// own (passwordRule, lib/password-policy.ts).
 const INITIAL_PASSWORD = '12345';
 const issueInitialPassword = (): string => INITIAL_PASSWORD;
 

@@ -25,6 +25,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { freshDecisionToken } from '../support/decision-token';
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 90_000 });
 const ENABLED = process.env.RUN_STATUS_EVIDENCE === '1' && !!process.env.DATABASE_URL;
@@ -177,9 +178,11 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
     expect(res.ok, JSON.stringify(res)).toBe(true);
   }
 
-  const approveClose = (editId: string) => {
+  // N01: a decision carries the token of the request as the page rendered it.
+  const approveClose = async (editId: string) => {
     as(ids.sup, 'SUPERVISOR');
-    return edits.approveEditAction(form({ editId })) as Promise<Result>;
+    const decisionToken = await freshDecisionToken(prisma, editId);
+    return edits.approveEditAction(form({ editId, decisionToken })) as Promise<Result>;
   };
   const approveReactivation = (editId: string) => {
     as(ids.mgr, 'MANAGER');
@@ -202,8 +205,9 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
       expect(await prisma.auditLog.count({ where: { action: 'APPROVE', entityId: editId } })).toBe(0);
 
       as(ids.sup, 'SUPERVISOR');
+      const decisionToken = await freshDecisionToken(prisma, editId);
       const rejected = (await edits.rejectEditAction(
-        form({ editId, reason: 'Photo removed — send it again.', category: 'other' })
+        form({ editId, reason: 'Photo removed — send it again.', category: 'other', decisionToken })
       )) as Result;
       expect(rejected.ok, JSON.stringify(rejected)).toBe(true);
       expect(await editState(editId)).toBe('NEEDS_CORRECTION');
