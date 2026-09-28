@@ -112,6 +112,20 @@ describe('uploadAccountMasterCore keeps every write with its audit row', () => {
   it('makes every database call a row needs inside a try, so a fault costs the row and not the upload', () => {
     expect(inspect(CORE).readsOutsideTry).toEqual([]);
   });
+
+  // Post-merge review (2026-09-29): the reset's two password-history steps were a
+  // correct helper nothing in the import called.
+  it('checks a reset password for reuse before the write, and rotates the history inside the row transaction', () => {
+    const txRanges = ranges(CORE, '$transaction(', '(', ')');
+    const tryRanges = ranges(CORE, 'try {', '{', '}');
+    const reuse = positions(CORE, /\bassertPasswordNotReused\(/g);
+    const rotate = positions(CORE, /\brotatePasswordHistory\(tx,/g);
+    expect(reuse).toHaveLength(1);
+    expect(within(reuse[0].at, tryRanges)).toBeTruthy();
+    expect(within(reuse[0].at, txRanges)).toBeUndefined();
+    expect(rotate).toHaveLength(1);
+    expect(within(rotate[0].at, txRanges)).toBeTruthy();
+  });
 });
 
 describe('the guard fires on the shapes it exists to stop', () => {

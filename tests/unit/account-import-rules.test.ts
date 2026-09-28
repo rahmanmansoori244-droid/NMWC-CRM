@@ -13,8 +13,12 @@ import {
   accountUpdateAudit,
   errorLogFields,
   inactiveRouteIssue,
+  OWN_PASSWORD_RESET_ISSUE,
+  passwordReusedIssue,
   reportableError,
   roleMismatchIssue,
+  supervisorIssue,
+  supervisorReportsIssue,
   type AccountState,
 } from '@/lib/account-import';
 
@@ -89,6 +93,67 @@ describe('inactiveRouteIssue (X-IMPORTS-2)', () => {
     });
     expect(msg).toMatch(/"mct-01" is deactivated, so route MCT-01 is not handed to it/);
     expect(msg).toMatch(/Nothing was written/);
+  });
+});
+
+describe('supervisorIssue (AUTH-06, as the Users UI applies it)', () => {
+  it.each(['SUPERVISOR', 'MANAGER'] as const)('accepts an active %s', (role) => {
+    expect(supervisorIssue({ supervisorUsername: 'x', supervisor: { role, isActive: true } })).toBeNull();
+  });
+
+  it('keeps the old wording for a username that does not exist', () => {
+    expect(supervisorIssue({ supervisorUsername: 'nobody', supervisor: null })).toBe(
+      'supervisor "nobody" not found'
+    );
+  });
+
+  it('refuses a deactivated supervisor or manager', () => {
+    const msg = supervisorIssue({
+      supervisorUsername: 'manager.old',
+      supervisor: { role: 'MANAGER', isActive: false },
+    });
+    expect(msg).toMatch(/^supervisor "manager\.old" is deactivated\. Nothing was written\./);
+    expect(msg).toMatch(/Name an active SUPERVISOR or MANAGER in supervisor_username/);
+  });
+
+  it.each(['SALESMAN', 'VIEWER', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'STEWARD'] as const)(
+    'refuses an active %s, naming the role',
+    (role) => {
+      const msg = supervisorIssue({ supervisorUsername: 'x', supervisor: { role, isActive: true } });
+      expect(msg).toBe(
+        `supervisor "x" is ${role}, and only a SUPERVISOR or MANAGER can supervise. Nothing was written. Name an active SUPERVISOR or MANAGER in supervisor_username.`
+      );
+    }
+  );
+});
+
+describe('supervisorReportsIssue (the Users UI rule for a Supervisor with reports)', () => {
+  const base = { username: 'sup.a', storedRole: 'SUPERVISOR', reports: 3 } as const;
+
+  it('holds back a Supervisor with reports moving to any other role, and says how many', () => {
+    const msg = supervisorReportsIssue({ ...base, newRole: 'SALESMAN' });
+    expect(msg).toBe(
+      `"sup.a" is a SUPERVISOR with 3 report(s). Nothing was written. Reassign the 3 salesman/supervisor report(s) before changing this Supervisor's role.`
+    );
+  });
+
+  it('lets through a Supervisor who stays one, one with no reports, and anyone who was not a Supervisor', () => {
+    expect(supervisorReportsIssue({ ...base, newRole: 'SUPERVISOR' })).toBeNull();
+    expect(supervisorReportsIssue({ ...base, reports: 0, newRole: 'VIEWER' })).toBeNull();
+    expect(supervisorReportsIssue({ ...base, storedRole: 'VIEWER', newRole: 'GM' })).toBeNull();
+  });
+});
+
+describe('password reset refusals (B-15 and canMutateUser, as the Users UI applies them)', () => {
+  it('a reused password is refused without its value, and says nothing was written', () => {
+    const msg = passwordReusedIssue('mct-01');
+    expect(msg).toMatch(/"mct-01" is its current password or one of its last five/);
+    expect(msg).toMatch(/Nothing was written/);
+  });
+
+  it("one's own reset points at /profile, as the Users UI's refusal does", () => {
+    expect(OWN_PASSWORD_RESET_ISSUE).toMatch(/cannot reset your own password via import/);
+    expect(OWN_PASSWORD_RESET_ISSUE).toMatch(/\/profile/);
   });
 });
 
@@ -334,7 +399,9 @@ describe('accountImportInterruptedMessage (X-IMPORTS-3)', () => {
     expect(msg).toMatch(/12 row\(s\) were applied and are saved/);
     expect(msg).toMatch(/30 row\(s\) that were not applied are listed on this upload's batch page/);
     expect(msg).not.toMatch(/nothing was saved/i);
-    expect(msg).toMatch(/reset_password/);
+    // An applied reset is refused the second time as reused, not issued again.
+    expect(msg).toMatch(/reset_password set to yes is held back the second time as a reused password/);
+    expect(msg).not.toMatch(/issues its password again/);
   });
 
   it('when the batch could not be recorded, says the rows are listed nowhere', () => {

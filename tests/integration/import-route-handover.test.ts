@@ -210,7 +210,7 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
         entityId: ownerRow.id,
         reason: `route ${routeCode} reassigned to ${fresh} via import`,
         before: { ownedRouteCode: routeCode },
-        after: { ownedRouteCode: null },
+        after: { ownedRouteCode: null, batchId: res.batchId },
       },
     ]);
   });
@@ -319,13 +319,18 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
     });
     expect(audits).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ action: 'REASSIGN', entityId: holderId, reason: `route ${routeCode} reassigned to ${viewer} via import` }),
+        expect.objectContaining({
+          action: 'REASSIGN',
+          entityId: holderId,
+          reason: `route ${routeCode} reassigned to ${viewer} via import`,
+          after: { ownedRouteCode: null, batchId: res.batchId },
+        }),
         expect.objectContaining({
           action: 'UPDATE',
           entityId: viewerId,
           reason: 'role_change_via_import',
           before: { role: 'VIEWER' },
-          after: { role: 'SALESMAN' },
+          after: { role: 'SALESMAN', batchId: res.batchId },
         }),
         expect.objectContaining({
           action: 'UPDATE',

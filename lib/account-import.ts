@@ -56,6 +56,71 @@ export function inactiveRouteIssue(p: {
   return `"${p.username}" is deactivated, so route ${p.routeCode} is not handed to it. Nothing was written. Reactivate the account in Users first, or remove this row.`;
 }
 
+/** The roles an account may report to: the Users UI's AUTH-06 (services/users.ts). */
+const SUPERVISING_ROLES: readonly Role[] = ['SUPERVISOR', 'MANAGER'];
+
+/**
+ * AUTH-06, as the Users UI applies it: `supervisor_username` names an ACTIVE
+ * SUPERVISOR or MANAGER. Null when the row may go ahead. The caller holds the row
+ * back otherwise, on a new account and an existing one alike.
+ *
+ * The import used to accept any account at all. A hand-edited sheet naming a
+ * salesman, a viewer, an accountant or a deactivated manager reported a clean
+ * row, and from then on every Supervisor-step notification for that salesman's
+ * requests went to an account that can neither open nor act on them, while the
+ * region Manager who could was told nothing until the SLA sweep escalated.
+ */
+export function supervisorIssue(p: {
+  supervisorUsername: string;
+  supervisor: { role: Role; isActive: boolean } | null;
+}): string | null {
+  const s = p.supervisor;
+  if (!s) return `supervisor "${p.supervisorUsername}" not found`;
+  const fix = 'Nothing was written. Name an active SUPERVISOR or MANAGER in supervisor_username.';
+  if (!s.isActive) return `supervisor "${p.supervisorUsername}" is deactivated. ${fix}`;
+  if (!SUPERVISING_ROLES.includes(s.role)) {
+    return `supervisor "${p.supervisorUsername}" is ${s.role}, and only a SUPERVISOR or MANAGER can supervise. ${fix}`;
+  }
+  return null;
+}
+
+/**
+ * The Users UI's rule for a role change (services/users.ts updateUserRoleCore): a
+ * SUPERVISOR keeps the role while anyone still reports to them. Null when the row
+ * may go ahead.
+ *
+ * Applied anyway, the reports kept a supervisor who is now a salesman, a viewer or
+ * an approver, and their Supervisor-step notifications went to someone who cannot
+ * act on them.
+ */
+export function supervisorReportsIssue(p: {
+  username: string;
+  storedRole: Role;
+  newRole: Role;
+  reports: number;
+}): string | null {
+  if (p.storedRole !== 'SUPERVISOR' || p.newRole === 'SUPERVISOR' || p.reports === 0) return null;
+  return `"${p.username}" is a SUPERVISOR with ${p.reports} report(s). Nothing was written. Reassign the ${p.reports} salesman/supervisor report(s) before changing this Supervisor's role.`;
+}
+
+/**
+ * The Steward's own row with reset_password set to yes. The Users UI refuses a
+ * reset of one's own account (lib/permissions.ts canMutateUser), and the import
+ * refuses it the same way: one's own password is changed at /profile, where the
+ * current one has to be given.
+ */
+export const OWN_PASSWORD_RESET_ISSUE =
+  'cannot reset your own password via import — use /profile to change your own account';
+
+/**
+ * B-15, as the Users UI's reset applies it: the new password is not the account's
+ * current one nor one of its last five (lib/password-policy.ts). The message never
+ * carries the password.
+ */
+export function passwordReusedIssue(username: string): string {
+  return `the new password for "${username}" is its current password or one of its last five, so it was not issued. Nothing was written. Choose a different password.`;
+}
+
 /**
  * What the import compares about an account, before and after a row. Never the
  * password or its hash; below, only some of it is copied into the ledger.
@@ -261,8 +326,11 @@ export function accountImportInterruptedMessage(p: {
     p.uncertain > 0
       ? `; ${p.uncertain} may or may not have been, because the connection dropped while they were being saved`
       : '';
+  // A reset row that was applied is refused the second time: its password is now
+  // one the account has used (passwordReusedIssue). Harmless, but it would be
+  // listed as held back, which reads as the reset having failed.
   const again =
-    'A row that was already applied changes nothing the second time, except that a row with reset_password set to yes issues its password again, so take those rows out first.';
+    'A row that was already applied changes nothing the second time, except that a row with reset_password set to yes is held back the second time as a reused password, so take those rows out first.';
   const rerun = `Upload the same file again once the CRM responds. ${again}`;
   if (p.recorded) {
     return `The database stopped answering, so the import stopped part-way. ${applied}${uncertain}. The ${p.notApplied} row(s) that were not applied are listed on this upload's batch page. ${rerun}`;

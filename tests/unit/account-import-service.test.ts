@@ -20,9 +20,19 @@
  * through the real parser (uploadWorkbook) — Excel row numbers after blank lines
  * and repeated headings refused only on the sheets the import reads (N05).
  *
+ * And the Users UI's rules the import did not apply (post-merge review,
+ * 2026-09-29): an active SUPERVISOR or MANAGER as supervisor (AUTH-06), no role
+ * change for a Supervisor with reports, and a reset that refuses a reused password
+ * and rotates the old hash into PasswordHistory (B-15) — with a fake bcrypt whose
+ * hash of p is "hashed:p" — and the batch id on every row the import's account
+ * write owes.
+ *
  * tests/integration/import-route-handover.test.ts proves F07's rollback, F08,
  * X-IMPORTS-1, -2 and -4 and ENH-6 against Postgres in CI (RUN_IMPORT_TESTS).
  */
+// The fake takes Prisma's argument objects as they come, the shapes of a dozen
+// calls; typing each one would restate Prisma's types for no assertion's sake.
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type U = {
@@ -51,10 +61,13 @@ type Audit = {
   reason?: string;
   viaTx: boolean;
 };
+/** PasswordHistory: `at` orders the rows as createdAt does. */
+type History = { id: string; userId: string; hash: string; at: number };
 type Store = {
   users: U[];
   regions: Region[];
   routes: RouteRow[];
+  history: History[];
   audits: Audit[];
   batches: Array<Record<string, unknown> & { id: string }>;
   importRows: Array<{
@@ -101,7 +114,12 @@ vi.mock('@/lib/excel', async (importOriginal) => {
     parseWorkbook: async (buf: Uint8Array) => h.sheets ?? real.parseWorkbook(buf),
   };
 });
-vi.mock('bcryptjs', () => ({ default: { hash: async (p: string) => `hashed:${p}` } }));
+vi.mock('bcryptjs', () => ({
+  default: {
+    hash: async (p: string) => `hashed:${p}`,
+    compare: async (p: string, hash: string) => hash === `hashed:${p}`,
+  },
+}));
 
 // ── The fake database ────────────────────────────────────────────────────────
 function prismaError(code: string, meta?: unknown) {
@@ -141,6 +159,10 @@ function makeClient(isTx: boolean): any {
       out.managedRegions = regionIds.map((rid) => ({
         code: st().regions.find((r) => r.id === rid)!.code,
       }));
+    if (args.include?.reports)
+      out.reports = st()
+        .users.filter((o) => o.supervisorId === u.id)
+        .map((o) => ({ id: o.id }));
     return out;
   };
   const applyUser = (u: U, input: Record<string, any>) => {
@@ -263,6 +285,33 @@ function makeClient(isTx: boolean): any {
         return { ...r };
       },
     },
+    // What lib/password-policy.ts asks of it: the newest five of a user's rows,
+    // one more, and the rest pruned.
+    passwordHistory: {
+      findMany: async (args: any) => {
+        gate('passwordHistory', 'findMany', args, false);
+        return st()
+          .history.filter((r) => r.userId === args.where.userId)
+          .sort((a, b) => b.at - a.at)
+          .slice(0, args.take)
+          .map((r) => Object.fromEntries(Object.keys(args.select).map((k) => [k, (r as any)[k]])));
+      },
+      create: async (args: any) => {
+        gate('passwordHistory', 'create', args, true);
+        const r = { id: id('ph'), at: ++h.seq, ...args.data };
+        st().history.push(r);
+        return { ...r };
+      },
+      deleteMany: async (args: any) => {
+        gate('passwordHistory', 'deleteMany', args, true);
+        const keep = new Set<string>(args.where.id.notIn);
+        const before = st().history.length;
+        st().history = st().history.filter(
+          (r) => r.userId !== args.where.userId || keep.has(r.id)
+        );
+        return { count: before - st().history.length };
+      },
+    },
     auditLog: {
       create: async (args: any) => {
         gate('auditLog', 'create', args, true);
@@ -332,6 +381,7 @@ vi.mock('@/lib/audit', () => ({
 import { uploadAccountMasterAction } from '@/services/imports';
 import { loadExcelJS } from '@/lib/excel';
 import { logger } from '@/lib/logger';
+import { assertPasswordNotReused } from '@/lib/password-policy';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 const user = (over: Partial<U> & { id: string; username: string; role: string }): U => ({
@@ -365,6 +415,7 @@ beforeEach(() => {
       { id: 'rt-1', code: 'MCT-01', name: 'Muscat 1', regionId: 'rg-mct' },
       { id: 'rt-2', code: 'MCT-02', name: 'Muscat 2', regionId: 'rg-mct' },
     ],
+    history: [],
     audits: [],
     batches: [],
     importRows: [],
@@ -471,6 +522,8 @@ describe('F07: an account row and its audit rows stand or fall together', () => 
     expect(u.sessionsRevokedAt).toBeNull();
     expect(u.fullName).toBe('Name mct-01');
     expect(rowAudits()).toEqual([]);
+    // The old hash went into PasswordHistory in that transaction, and out with it.
+    expect(h.store.history).toEqual([]);
   });
 
   it('a failed audit on a region-scoped row leaves the regions as they were', async () => {
@@ -498,6 +551,7 @@ describe('F07: an account row and its audit rows stand or fall together', () => 
     expect(u.role).toBe('SALESMAN');
     expect(u.ownedRouteId).toBe('rt-2');
     expect(u.passwordHash).toBe('hashed:a-new-password-1');
+    expect(h.store.history.map((r) => [r.userId, r.hash])).toEqual([['acc', 'old-hash']]);
     expect(rowAudits().map((a) => [a.reason, a.viaTx])).toEqual([
       ['password_reset_via_import', true],
       ['role_change_via_import', true],
@@ -599,6 +653,13 @@ describe('F08: without change_role the row must name the stored role', () => {
       ['REASSIGN', 's1', 'route MCT-01 reassigned to viewer.a via import'],
       ['UPDATE', 'v1', 'role_change_via_import'],
       ['UPDATE', 'v1', 'account_import'],
+    ]);
+    // Each names the batch that did it.
+    const batchId = h.store.batches[0].id;
+    expect(rowAudits().map((a) => [a.before, a.after])).toEqual([
+      [{ ownedRouteCode: 'MCT-01' }, { ownedRouteCode: null, batchId }],
+      [{ role: 'VIEWER' }, { role: 'SALESMAN', batchId }],
+      [{ route: null }, { username: 'viewer.a', route: 'MCT-01', changed: ['fullName'], batchId }],
     ]);
   });
 
@@ -860,6 +921,307 @@ describe('X-IMPORTS-1 / X-AUTH-3: every account, route and region the import cha
       `Routes 2: nothing was written for route "MCT-02": it could not be saved (Error).`,
     ]);
     expect(h.store.routes.find((r) => r.code === 'MCT-02')!.regionId).toBe('rg-mct');
+  });
+});
+
+describe('X-IMPORTS-1: a bare password reset and a bare role change still name their batch', () => {
+  it('each writes one row, and it carries the batch id', async () => {
+    addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1' });
+    addUser({ id: 'v1', username: 'viewer.a', role: 'VIEWER' });
+    // Nothing else about either account changes, so neither gets an account_import row.
+    const { res, batch } = await upload(
+      usersSheet(
+        {
+          username: 'mct-01',
+          full_name: 'Name mct-01',
+          role: 'SALESMAN',
+          route_code: 'MCT-01',
+          password: 'A-new-password-1',
+          reset_password: 'yes',
+        },
+        { username: 'viewer.a', full_name: 'Name viewer.a', role: 'GM', change_role: 'yes' }
+      )
+    );
+    expect(okData(res).clean).toBe(2);
+    // GM is not in the Users sheet's sort order, so its row is taken first.
+    expect(rowAudits()).toEqual([
+      {
+        action: 'UPDATE',
+        entityType: 'User',
+        entityId: 'v1',
+        before: { role: 'VIEWER' },
+        after: { role: 'GM', batchId: batch!.id },
+        reason: 'role_change_via_import',
+        viaTx: true,
+      },
+      {
+        action: 'UPDATE',
+        entityType: 'User',
+        entityId: 's1',
+        after: { batchId: batch!.id },
+        reason: 'password_reset_via_import',
+        viaTx: true,
+      },
+    ]);
+  });
+});
+
+// ── the Users UI's rules, applied to the import (post-merge review) ──────────
+describe('AUTH-06: supervisor_username names an active SUPERVISOR or MANAGER, as in the Users UI', () => {
+  const newSalesman = (supervisor: string) => ({
+    username: 'mct-02',
+    full_name: 'New',
+    role: 'SALESMAN',
+    route_code: 'MCT-02',
+    supervisor_username: supervisor,
+    password: '123456789012',
+  });
+
+  it.each<[string, Partial<U>, string]>([
+    [
+      'a salesman',
+      { role: 'SALESMAN', ownedRouteId: 'rt-1' },
+      'is SALESMAN, and only a SUPERVISOR or MANAGER can supervise.',
+    ],
+    ['a viewer', { role: 'VIEWER' }, 'is VIEWER, and only a SUPERVISOR or MANAGER can supervise.'],
+    [
+      'an accountant',
+      { role: 'ACCOUNTANT', regionIds: ['rg-mct'] },
+      'is ACCOUNTANT, and only a SUPERVISOR or MANAGER can supervise.',
+    ],
+    ['a deactivated manager', { role: 'MANAGER', isActive: false }, 'is deactivated.'],
+  ])('a new account naming %s is held back, and nothing is written', async (_, over, why) => {
+    addUser({ id: 'x1', username: 'someone', role: 'SALESMAN', ...over });
+    const { res, messages } = await upload(usersSheet(newSalesman('someone')));
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      `Users 2: supervisor "someone" ${why} Nothing was written. Name an active SUPERVISOR or MANAGER in supervisor_username.`,
+    ]);
+    expect(find('mct-02')).toBeUndefined();
+    expect(routeOwner('rt-2')).toBeNull();
+    expect(rowAudits()).toEqual([]);
+  });
+
+  it('an existing account naming a viewer is held back, and keeps its supervisor and everything else', async () => {
+    addUser({ id: 'sup', username: 'sup.a', role: 'SUPERVISOR' });
+    addUser({ id: 'v1', username: 'viewer.a', role: 'VIEWER' });
+    addUser({
+      id: 's1',
+      username: 'mct-01',
+      role: 'SALESMAN',
+      ownedRouteId: 'rt-1',
+      supervisorId: 'sup',
+    });
+    const { res, messages } = await upload(
+      usersSheet({
+        username: 'mct-01',
+        full_name: 'Renamed',
+        role: 'SALESMAN',
+        route_code: 'MCT-01',
+        supervisor_username: 'viewer.a',
+      })
+    );
+    expect(okData(res).clean).toBe(0);
+    expect(messages[0]).toMatch(/^Users 2: supervisor "viewer\.a" is VIEWER, .*Nothing was written/);
+    expect(find('mct-01')).toMatchObject({ supervisorId: 'sup', fullName: 'Name mct-01' });
+    expect(rowAudits()).toEqual([]);
+  });
+
+  it('an active SUPERVISOR or MANAGER is accepted, on a new account and an existing one', async () => {
+    addUser({ id: 'sup', username: 'sup.a', role: 'SUPERVISOR' });
+    addUser({ id: 'm1', username: 'manager.x', role: 'MANAGER', regionIds: ['rg-mct'] });
+    addUser({
+      id: 's1',
+      username: 'mct-01',
+      role: 'SALESMAN',
+      ownedRouteId: 'rt-1',
+      supervisorId: 'sup',
+    });
+    const { res } = await upload(
+      usersSheet(
+        {
+          username: 'mct-01',
+          full_name: 'Name mct-01',
+          role: 'SALESMAN',
+          route_code: 'MCT-01',
+          supervisor_username: 'manager.x',
+        },
+        newSalesman('sup.a')
+      )
+    );
+    expect(okData(res).clean).toBe(2);
+    expect(find('mct-01')!.supervisorId).toBe('m1');
+    expect(find('mct-02')!.supervisorId).toBe('sup');
+  });
+});
+
+describe('a Supervisor with reports keeps the role until they are reassigned, as in the Users UI', () => {
+  it('holds the role change back, says how many reports, and writes nothing', async () => {
+    const earlier = new Date(Date.UTC(2026, 0, 1));
+    addUser({ id: 'sup', username: 'sup.a', role: 'SUPERVISOR', sessionsRevokedAt: earlier });
+    addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1', supervisorId: 'sup' });
+    addUser({ id: 's2', username: 'mct-02', role: 'SALESMAN', ownedRouteId: 'rt-2', supervisorId: 'sup' });
+    const { res, messages } = await upload(
+      usersSheet({ username: 'sup.a', full_name: 'Renamed', role: 'VIEWER', change_role: 'yes' })
+    );
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      `Users 2: "sup.a" is a SUPERVISOR with 2 report(s). Nothing was written. Reassign the 2 salesman/supervisor report(s) before changing this Supervisor's role.`,
+    ]);
+    expect(find('sup.a')).toMatchObject({
+      role: 'SUPERVISOR',
+      fullName: 'Name sup.a',
+      sessionsRevokedAt: earlier,
+    });
+    expect(find('mct-01')!.supervisorId).toBe('sup');
+    expect(rowAudits()).toEqual([]);
+  });
+
+  it('a Supervisor with no reports changes role; one with reports can still be re-imported as a Supervisor', async () => {
+    addUser({ id: 'sup', username: 'sup.a', role: 'SUPERVISOR' });
+    addUser({ id: 'sup2', username: 'sup.b', role: 'SUPERVISOR' });
+    addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1', supervisorId: 'sup' });
+    const { res } = await upload(
+      usersSheet(
+        { username: 'sup.a', full_name: 'Renamed', role: 'SUPERVISOR', change_role: 'yes' },
+        { username: 'sup.b', full_name: 'Name sup.b', role: 'VIEWER', change_role: 'yes' }
+      )
+    );
+    expect(okData(res).clean).toBe(2);
+    expect(find('sup.a')).toMatchObject({ role: 'SUPERVISOR', fullName: 'Renamed' });
+    expect(find('sup.b')!.role).toBe('VIEWER');
+  });
+});
+
+describe('B-15: an import reset refuses a reused password and keeps the history, as the Users UI reset does', () => {
+  const salesman = () =>
+    addUser({
+      id: 's1',
+      username: 'mct-01',
+      role: 'SALESMAN',
+      ownedRouteId: 'rt-1',
+      passwordHash: 'hashed:Current-pass-1',
+    });
+  const resetRow = (password: string) => ({
+    username: 'mct-01',
+    full_name: 'Name mct-01',
+    role: 'SALESMAN',
+    route_code: 'MCT-01',
+    password,
+    reset_password: 'yes',
+    must_change_password: 'yes',
+  });
+
+  it('the old hash joins the history in the row transaction, so the forced change cannot go back to it', async () => {
+    salesman();
+    const { res, batch } = await upload(usersSheet(resetRow('Temp1234')));
+    expect(okData(res).clean).toBe(1);
+    const u = find('mct-01')!;
+    expect(u).toMatchObject({ passwordHash: 'hashed:Temp1234', mustChangePassword: true });
+    expect(h.store.history.map((r) => [r.userId, r.hash])).toEqual([['s1', 'hashed:Current-pass-1']]);
+    // The finding's last step: at the forced change, the pre-reset password is refused.
+    await expect(assertPasswordNotReused(u.id, u.passwordHash, 'Current-pass-1')).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      fields: { newPassword: 'You cannot reuse one of your last 5 passwords.' },
+    });
+    expect(rowAudits()).toEqual([
+      {
+        action: 'UPDATE',
+        entityType: 'User',
+        entityId: 's1',
+        after: { batchId: batch!.id },
+        reason: 'password_reset_via_import',
+        viaTx: true,
+      },
+      {
+        action: 'UPDATE',
+        entityType: 'User',
+        entityId: 's1',
+        before: { mustChangePassword: false },
+        after: { username: 'mct-01', mustChangePassword: true, batchId: batch!.id },
+        reason: 'account_import',
+        viaTx: true,
+      },
+    ]);
+  });
+
+  it.each<[string, string, History[]]>([
+    ['its current password', 'Current-pass-1', []],
+    [
+      'one of its last five',
+      'Older-pass-12',
+      [{ id: 'ph-old', userId: 's1', hash: 'hashed:Older-pass-12', at: 0 }],
+    ],
+  ])('a reset to %s is held back, nothing is written, and the password is nowhere', async (_, pw, history) => {
+    salesman();
+    h.store.history.push(...history);
+    const { res, messages } = await upload(usersSheet(resetRow(pw)));
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      'Users 2: the new password for "mct-01" is its current password or one of its last five, so it was not issued. Nothing was written. Choose a different password.',
+    ]);
+    expect(find('mct-01')).toMatchObject({
+      passwordHash: 'hashed:Current-pass-1',
+      sessionsRevokedAt: null,
+      mustChangePassword: false,
+    });
+    expect(h.store.history).toEqual(history);
+    expect(rowAudits()).toEqual([]);
+    const said = JSON.stringify([
+      h.store.importRows,
+      h.store.audits,
+      vi.mocked(logger.info).mock.calls,
+      vi.mocked(logger.warn).mock.calls,
+      vi.mocked(logger.error).mock.calls,
+      h.capture.mock.calls,
+    ]);
+    expect(said).not.toContain(pw);
+  });
+
+  it('the same reset uploaded again is held back as reused, not issued again (what IMPORT_INTERRUPTED tells the Steward)', async () => {
+    salesman();
+    expect(okData((await upload(usersSheet(resetRow('Temp1234')))).res).clean).toBe(1);
+    const first = { ...find('mct-01')! };
+    h.store.audits = [];
+    const again = await upload(usersSheet(resetRow('Temp1234')));
+    expect(okData(again.res).clean).toBe(0);
+    expect(again.messages).toEqual([
+      expect.stringMatching(/^Users 2: the new password for "mct-01" is its current password/),
+    ]);
+    expect(find('mct-01')).toEqual(first);
+    expect(h.store.history).toHaveLength(1);
+    expect(rowAudits()).toEqual([]);
+  });
+
+  it("the Steward's own row is refused, as the Users UI refuses a reset of one's own account", async () => {
+    const { res, messages } = await upload(
+      usersSheet({
+        username: 'steward.x',
+        full_name: 'Name steward.x',
+        role: 'STEWARD',
+        password: 'A-new-password-1',
+        reset_password: 'yes',
+      })
+    );
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      'Users 2: cannot reset your own password via import — use /profile to change your own account',
+    ]);
+    expect(find('steward.x')).toMatchObject({ passwordHash: 'old-hash', sessionsRevokedAt: null });
+    expect(h.store.history).toEqual([]);
+    expect(rowAudits()).toEqual([]);
+  });
+
+  it('a database fault in the reuse check costs the row as a fault, not as a reused password', async () => {
+    salesman();
+    h.failOn = (model, op) =>
+      model === 'passwordHistory' && op === 'findMany' ? prismaError('P2024') : undefined;
+    const { res, messages } = await upload(usersSheet(resetRow('Temp1234')));
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      'Users 2: the database did not answer (P2024), so nothing was written for "mct-01". Import this row again.',
+    ]);
+    expect(find('mct-01')!.passwordHash).toBe('hashed:Current-pass-1');
   });
 });
 

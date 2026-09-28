@@ -134,6 +134,35 @@ async function assertManagerScopeOverTarget(
   if (!verdict.ok) throw new ForbiddenError(verdict.reason);
 }
 
+/**
+ * The form field a unique clash on create belongs to, from the P2002's
+ * `meta.target` (the column names, or on some engines the constraint's name, such
+ * as User_email_key). Three User columns are unique:
+ *   - username: another admin's create raced this one past the pre-check;
+ *   - email: nothing pre-checks it, and the users listing hides e-mails, so the
+ *     Email field is the only place the admin can learn which value to change;
+ *   - ownedRouteId: two creates raced for one route past its pre-check.
+ * Every clash used to be reported as "Username already taken.", under a username
+ * nobody held, and every other username then failed the same way.
+ *
+ * Not a server action: this module's exports are, so it is not exported.
+ */
+function createClashFields(err: unknown): Record<string, string> {
+  const target = (err as { meta?: { target?: unknown } }).meta?.target;
+  const names = (Array.isArray(target) ? target : [target]).filter(
+    (t): t is string => typeof t === 'string'
+  );
+  const hit = (column: string) => names.some((n) => n === column || n.includes(`_${column}_`));
+  if (hit('email')) return { email: 'That e-mail is already used by another account.' };
+  if (hit('ownedRouteId')) {
+    return { ownedRouteId: 'That route is already assigned to another salesman.' };
+  }
+  if (hit('username')) return { username: 'Username already taken.' };
+  return {
+    _form: 'Another account already has this username, e-mail or route. Change it and try again.',
+  };
+}
+
 async function createUserCore(formData: FormData) {
   const me = await requireUserAdmin();
   const parsed = createUserSchema.safeParse({
@@ -279,12 +308,10 @@ async function createUserCore(formData: FormData) {
       return created;
     });
   } catch (err) {
-    // Race fallback: another Manager beat us to the username. Mapped outside
-    // the transaction: a P2002 aborts it, and it rolls back before we get here.
+    // A unique value another account already holds. Mapped outside the
+    // transaction: a P2002 aborts it, and it rolls back before we get here.
     const code = (err as { code?: string })?.code;
-    if (code === 'P2002') {
-      throw new ValidationError({ username: 'Username already taken.' });
-    }
+    if (code === 'P2002') throw new ValidationError(createClashFields(err));
     throw err;
   }
   logger.info({ actorId: me.id, userId: user.id, role: user.role }, 'user.create');

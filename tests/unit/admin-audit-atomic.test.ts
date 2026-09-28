@@ -33,6 +33,10 @@ const h = vi.hoisted(() => ({
   session: null as null | { user: Record<string, unknown> },
   /** A username another admin's insert takes just after this action's pre-check reads it. */
   raceUsername: null as null | string,
+  /** The same for a route: another create takes it just after the route pre-check. */
+  raceRouteId: null as null | string,
+  /** When set, the next User insert throws a P2002 with this meta (or none). */
+  clashMeta: undefined as undefined | { meta?: unknown },
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => h.session }));
@@ -46,7 +50,12 @@ vi.mock('bcryptjs', () => {
   return { default: { hash, compare }, hash, compare };
 });
 vi.mock('@/lib/db', () => {
-  const uniqueError = (target: string) => Object.assign(new Error(`Unique constraint failed on ${target}`), { code: 'P2002' });
+  // As Prisma raises it on Postgres: meta.target names the column(s).
+  const uniqueError = (name: string, key: string) =>
+    Object.assign(new Error(`Unique constraint failed on ${name}.${key}`), {
+      code: 'P2002',
+      meta: { modelName: name, target: [key] },
+    });
   const matches = (row: Row, where: Record<string, unknown>) =>
     Object.entries(where).every(([k, v]) =>
       v && typeof v === 'object' && 'not' in (v as object) ? row[k] !== (v as { not: unknown }).not : row[k] === v
@@ -56,6 +65,15 @@ vi.mock('@/lib/db', () => {
       if (name === 'user' && h.raceUsername && where.username === h.raceUsername) {
         tables().user.set('ckracewinner000000000001', { id: 'ckracewinner000000000001', username: h.raceUsername });
         h.raceUsername = null;
+        return null;
+      }
+      if (name === 'user' && h.raceRouteId && where.ownedRouteId === h.raceRouteId) {
+        tables().user.set('ckracewinner000000000002', {
+          id: 'ckracewinner000000000002',
+          username: 'route.winner',
+          ownedRouteId: h.raceRouteId,
+        });
+        h.raceRouteId = null;
         return null;
       }
       const row = [...tables()[name].values()].find((r) => matches(r, where));
@@ -73,8 +91,16 @@ vi.mock('@/lib/db', () => {
         h.failAudit = null;
         throw e;
       }
-      for (const key of name === 'user' ? ['username'] : name === 'auditLog' ? [] : ['code']) {
-        if ([...tables()[name].values()].some((r) => r[key] === data[key])) throw uniqueError(`${name}.${key}`);
+      if (name === 'user' && h.clashMeta) {
+        const { meta } = h.clashMeta;
+        h.clashMeta = undefined;
+        throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta });
+      }
+      // User's three unique columns, as in the schema; an absent value clashes with nothing.
+      const unique = name === 'user' ? ['username', 'email', 'ownedRouteId'] : name === 'auditLog' ? [] : ['code'];
+      for (const key of unique) {
+        if (data[key] == null) continue;
+        if ([...tables()[name].values()].some((r) => r[key] === data[key])) throw uniqueError(name, key);
       }
       h.seq += 1;
       const row = { isActive: true, ...data, id: `ck${name.toLowerCase()}${String(h.seq).padStart(20, '0')}` };
@@ -151,6 +177,8 @@ beforeEach(() => {
   h.failAudit = null;
   h.autocommit = [];
   h.raceUsername = null;
+  h.raceRouteId = null;
+  h.clashMeta = undefined;
   h.session = { user: { id: STEWARD, role: 'STEWARD', username: 'steward.one', mustChangePassword: false } };
   h.tables = {
     user: new Map([
@@ -288,6 +316,78 @@ describe('the unique-code answers survive the move into a transaction', () => {
       message: 'Validation failed',
       fields: { username: 'Username already taken.' },
     });
+    expect(h.tables.auditLog.size).toBe(0);
+  });
+
+  // Post-merge review (2026-09-29): every clash on create used to come back as
+  // "Username already taken." under a username nobody held.
+  const failed = (fields: Record<string, string>) => ({
+    ok: false,
+    code: 'VALIDATION_FAILED',
+    message: 'Validation failed',
+    fields,
+  });
+
+  it('an e-mail another account already holds is reported under Email, not Username', async () => {
+    h.tables.user.set('ckaccountantholder000001', {
+      id: 'ckaccountantholder000001',
+      username: 'acct.mct',
+      role: 'ACCOUNTANT',
+      email: 'finance@x.invalid',
+    });
+    const before = snapshot();
+    const res = await createUserAction(
+      form({
+        username: 'new.viewer',
+        fullName: 'New Viewer',
+        role: 'VIEWER',
+        email: 'finance@x.invalid',
+        password: 'A-long-password-1',
+      })
+    );
+    expect(res).toEqual(failed({ email: 'That e-mail is already used by another account.' }));
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('a route another create took between the pre-check and the insert is reported under the route field', async () => {
+    h.raceRouteId = ROUTE;
+    const res = await createUserAction(
+      form({
+        username: 'new.salesman',
+        fullName: 'New Salesman',
+        role: 'SALESMAN',
+        ownedRouteId: ROUTE,
+        password: 'A-long-password-1',
+      })
+    );
+    // `ownedRouteId` is the key the create form (CreateUserForm.tsx) shows under Route.
+    expect(res).toEqual(failed({ ownedRouteId: 'That route is already assigned to another salesman.' }));
+    expect([...h.tables.user.values()].some((u) => u.username === 'new.salesman')).toBe(false);
+    expect(h.tables.auditLog.size).toBe(0);
+  });
+
+  it.each([
+    ['User_email_key', { email: 'That e-mail is already used by another account.' }],
+    ['User_ownedRouteId_key', { ownedRouteId: 'That route is already assigned to another salesman.' }],
+    ['User_username_key', { username: 'Username already taken.' }],
+  ])('a target given as the constraint name %s maps to its field', async (target, fields) => {
+    h.clashMeta = { meta: { target } };
+    const res = await createUserAction(
+      form({ username: 'new.sup', fullName: 'New Supervisor', role: 'SUPERVISOR', password: 'A-long-password-1' })
+    );
+    expect(res).toEqual(failed(fields));
+  });
+
+  it('a clash that names no column is not blamed on the username', async () => {
+    h.clashMeta = {};
+    const res = await createUserAction(
+      form({ username: 'new.sup', fullName: 'New Supervisor', role: 'SUPERVISOR', password: 'A-long-password-1' })
+    );
+    expect(res).toEqual(
+      failed({
+        _form: 'Another account already has this username, e-mail or route. Change it and try again.',
+      })
+    );
     expect(h.tables.auditLog.size).toBe(0);
   });
 

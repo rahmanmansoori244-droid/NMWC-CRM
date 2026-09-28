@@ -40,10 +40,15 @@ import {
   accountUpdateAudit,
   errorLogFields,
   inactiveRouteIssue,
+  OWN_PASSWORD_RESET_ISSUE,
+  passwordReusedIssue,
   reportableError,
   roleMismatchIssue,
+  supervisorIssue,
+  supervisorReportsIssue,
   type AccountState,
 } from '@/lib/account-import';
+import { assertPasswordNotReused, rotatePasswordHistory } from '@/lib/password-policy';
 import {
   checkCustomerRow,
   fileCollisions,
@@ -487,6 +492,8 @@ async function uploadAccountMasterCore(
             supervisor: { select: { username: true } },
             ownedRoute: { select: { code: true } },
             managedRegions: { select: { code: true } },
+            // For the Users UI's rule that a Supervisor with reports keeps the role.
+            reports: { select: { id: true } },
           },
         });
         answered();
@@ -498,6 +505,13 @@ async function uploadAccountMasterCore(
             row: sheetRow,
             message: 'cannot change your own role via import',
           });
+          continue;
+        }
+        // The Users UI's reset refuses one's own account (canMutateUser), so the
+        // import does too: without it the Steward's own password changed here with
+        // no current password given and no reuse check.
+        if (isSelf && wantsReset) {
+          issues.push({ sheet: 'Users', row: sheetRow, message: OWN_PASSWORD_RESET_ISSUE });
           continue;
         }
         // (b) New MANAGER / STEWARD via import — refuse outright. Forces the
@@ -544,22 +558,35 @@ async function uploadAccountMasterCore(
           continue;
         }
         const roleChanged = !!existing && existing.role !== role;
+        // A Supervisor keeps the role while anyone still reports to them, as in
+        // the Users UI (services/users.ts updateUserRoleCore).
+        const withReports = existing
+          ? supervisorReportsIssue({
+              username,
+              storedRole: existing.role,
+              newRole: role,
+              reports: existing.reports.length,
+            })
+          : null;
+        if (withReports) {
+          issues.push({ sheet: 'Users', row: sheetRow, message: withReports });
+          continue;
+        }
 
+        // AUTH-06, as the Users UI applies it: an active SUPERVISOR or MANAGER, on
+        // a new account and an existing one alike (both use supervisorId below).
         let supervisorId: string | null = null;
         if (supUsername) {
           const sup = await prisma.user.findUnique({
             where: { username: supUsername },
-            select: { id: true },
+            select: { id: true, role: true, isActive: true },
           });
-          if (!sup) {
-            issues.push({
-              sheet: 'Users',
-              row: sheetRow,
-              message: `supervisor "${supUsername}" not found`,
-            });
+          const badSupervisor = supervisorIssue({ supervisorUsername: supUsername, supervisor: sup });
+          if (badSupervisor) {
+            issues.push({ sheet: 'Users', row: sheetRow, message: badSupervisor });
             continue;
           }
-          supervisorId = sup.id;
+          supervisorId = sup!.id; // supervisorIssue refuses a missing one
         }
 
         let ownedRouteId: string | null = null;
@@ -609,6 +636,18 @@ async function uploadAccountMasterCore(
                 row: sheetRow,
                 message: 'reset_password=yes but no password provided',
               });
+              continue;
+            }
+            // B-15, as resetPasswordCore applies it: not the current password nor
+            // one of the last five. Without it, and without the history rotation in
+            // the transaction below, the person could choose the pre-reset password
+            // again at the forced change — the one the reset was meant to retire.
+            // A database fault is not a refusal: it goes to the row's catch.
+            try {
+              await assertPasswordNotReused(existing.id, existing.passwordHash, passwordRaw);
+            } catch (e) {
+              if (!(e instanceof ValidationError)) throw e;
+              issues.push({ sheet: 'Users', row: sheetRow, message: passwordReusedIssue(username) });
               continue;
             }
             passwordHash = await bcrypt.hash(passwordRaw, 12);
@@ -802,6 +841,10 @@ async function uploadAccountMasterCore(
         // had committed, so a failed insert quarantined a row whose new hash, role
         // and route were already live — and a re-run, finding the role already
         // changed, never wrote the role audit at all.
+        //
+        // Each of those rows names the batch, as the account_import rows do: a
+        // reset or a role change that alters nothing else writes no account_import
+        // row, and the batch's IMPORT summary holds counts only.
         await prisma.$transaction(
           async (tx) => {
             if (ownedRouteId) {
@@ -824,7 +867,10 @@ async function uploadAccountMasterCore(
                     entityType: 'User',
                     entityId: u.id,
                     before: { ownedRouteCode } as unknown as Prisma.InputJsonValue,
-                    after: { ownedRouteCode: null } as unknown as Prisma.InputJsonValue,
+                    after: {
+                      ownedRouteCode: null,
+                      batchId: batch.id,
+                    } as unknown as Prisma.InputJsonValue,
                     reason: `route ${ownedRouteCode} reassigned to ${username} via import`,
                   });
                 }
@@ -845,11 +891,15 @@ async function uploadAccountMasterCore(
               });
               return;
             }
-            if (wantsReset) {
+            if (wantsReset && existing) {
+              // B-15, as resetPasswordCore does: the OLD hash into PasswordHistory,
+              // pruned to five, in the same transaction as the new one.
+              await rotatePasswordHistory(tx, user.id, existing.passwordHash);
               await writeAudit(tx, env, {
                 action: 'UPDATE',
                 entityType: 'User',
                 entityId: user.id,
+                after: { batchId: batch.id } as unknown as Prisma.InputJsonValue,
                 reason: 'password_reset_via_import',
               });
             }
@@ -859,7 +909,7 @@ async function uploadAccountMasterCore(
                 entityType: 'User',
                 entityId: user.id,
                 before: { role: before.role } as unknown as Prisma.InputJsonValue,
-                after: { role } as unknown as Prisma.InputJsonValue,
+                after: { role, batchId: batch.id } as unknown as Prisma.InputJsonValue,
                 reason: 'role_change_via_import',
               });
             }
@@ -946,9 +996,10 @@ async function uploadAccountMasterCore(
   // the only record — ImportBatch above already carries status PROMOTED and the
   // three counters, and the quarantined rows are persisted as ImportRow. It also
   // runs after everything has committed, so throwing would tell the Steward a
-  // fully-successful import failed; the natural re-run would re-hash passwords,
-  // re-stamp sessionsRevokedAt and re-displace route owners. But it no longer
-  // swallows SILENTLY — a lost summary is now visible in the logs.
+  // fully-successful import failed; the natural re-run would hold back every
+  // password reset in the file as a reused password, which reads as the resets
+  // having failed. But it no longer swallows SILENTLY — a lost summary is now
+  // visible in the logs.
   //
   // Not attempted when the batch itself could not be recorded: the database has
   // just refused a write, and every applied row that changed anything already
