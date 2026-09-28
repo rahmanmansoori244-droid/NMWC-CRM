@@ -32,13 +32,15 @@ import { submissionIdSchema } from '../submission';
 import {
   BRANCH_EDIT_FIELDS,
   CUSTOMER_EDIT_FIELDS,
+  EDIT_PAYLOAD_VERSION,
   GPS_COMPANIONS,
   type BaseValue,
   type BranchEditField,
 } from '../edit-values';
 import { clearablePhone, clearableText, requiredPhone, requiredText, stripHtml } from './fields';
 
-export const EDIT_PAYLOAD_VERSION = 2 as const;
+// Defined beside the field lists so the browser can take it without zod.
+export { EDIT_PAYLOAD_VERSION };
 
 /** Before zod: a body without the current `v` is from a page opened before an app update. */
 export function isCurrentEditPayload(raw: unknown): boolean {

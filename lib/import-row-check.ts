@@ -60,7 +60,7 @@ export type RowCheckOptions = {
 
 /**
  * F-05 / QA-029 — strip HTML tags before persisting any user-supplied text
- * field. Mirrors the same helper used on the edit form (lib/validation/edit).
+ * field. Mirrors the helper the edit and create payloads use (lib/validation/fields.ts).
  * Without this, an import row carrying `legalName="<script>…</script>"` lands
  * in the master verbatim, then propagates back through Excel exports and JSON
  * audit-log views.

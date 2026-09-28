@@ -8,13 +8,18 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { stripComments } from '../support/strip-comments';
+import type { Prisma } from '@prisma/client';
+import { EDIT_PAYLOAD_VERSION as SCHEMA_PAYLOAD_VERSION } from '@/lib/validation/edit';
 import {
   BRANCH_EDIT_FIELDS,
+  BRANCH_EDIT_SELECT,
   BRANCH_FIELD_LABEL,
   CLEARABLE_BRANCH_FIELDS,
   CLEARABLE_CUSTOMER_FIELDS,
   CUSTOMER_EDIT_FIELDS,
+  CUSTOMER_EDIT_SELECT,
   CUSTOMER_FIELD_LABEL,
+  EDIT_PAYLOAD_VERSION,
   GPS_COMPANIONS,
   classifyAgainstLive,
   classifyChanges,
@@ -38,6 +43,20 @@ describe('the field lists', () => {
     // every field has a label a person can read
     for (const f of CUSTOMER_EDIT_FIELDS) expect(CUSTOMER_FIELD_LABEL[f]).toBeTruthy();
     for (const f of BRANCH_EDIT_FIELDS) expect(BRANCH_FIELD_LABEL[f]).toBeTruthy();
+  });
+
+  it('the selects are Prisma selects of exactly those fields (a live snapshot to compare with)', () => {
+    // Typed assignments: typecheck fails if a listed field is not a column.
+    const customer: Prisma.CustomerSelect = CUSTOMER_EDIT_SELECT;
+    const branch: Prisma.BranchSelect = BRANCH_EDIT_SELECT;
+    expect(Object.keys(customer)).toEqual([...CUSTOMER_EDIT_FIELDS]);
+    expect(Object.keys(branch)).toEqual([...BRANCH_EDIT_FIELDS]);
+    expect(Object.values(branch).every((v) => v === true)).toBe(true);
+  });
+
+  it('one payload version, the same from the browser-safe module and from the schema', () => {
+    expect(EDIT_PAYLOAD_VERSION).toBe(2);
+    expect(SCHEMA_PAYLOAD_VERSION).toBe(EDIT_PAYLOAD_VERSION);
   });
 
   it('clearable: the owner-decided sets, CR number in and day of visit out (2026-09-29)', () => {

@@ -62,6 +62,20 @@ export const BRANCH_EDIT_FIELDS = [
 export type CustomerEditField = (typeof CUSTOMER_EDIT_FIELDS)[number];
 export type BranchEditField = (typeof BRANCH_EDIT_FIELDS)[number];
 
+/**
+ * The patch format this build's form sends as `v` (lib/validation/edit.ts). A body
+ * without it came from a page opened before the app changed, and is refused
+ * with FORM_OUTDATED rather than read field by field.
+ */
+export const EDIT_PAYLOAD_VERSION = 2 as const;
+
+function selectOf<F extends string>(fields: readonly F[]) {
+  return Object.fromEntries(fields.map((f) => [f, true])) as { readonly [K in F]: true };
+}
+/** Prisma `select` for exactly the edit fields: a live snapshot that compares like the patch. */
+export const CUSTOMER_EDIT_SELECT = selectOf(CUSTOMER_EDIT_FIELDS);
+export const BRANCH_EDIT_SELECT = selectOf(BRANCH_EDIT_FIELDS);
+
 /** A value as the form loaded it, or as fieldChanges stores it: a Date is its ISO string, absent is null. */
 export type BaseValue = string | number | boolean | null;
 
