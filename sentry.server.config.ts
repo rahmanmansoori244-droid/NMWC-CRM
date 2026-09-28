@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/nextjs';
-import { scrubEvent } from '@/lib/sentry-scrub';
+import { scrubEvent, scrubSpan } from '@/lib/sentry-scrub';
 import { sentryEnvironment, sentryRelease } from '@/lib/sentry-env';
 import { serverIntegrations } from '@/lib/sentry-server-integrations';
 
@@ -29,4 +29,7 @@ Sentry.init({
   // ~1 request in 10 shipped its full URL — the customer search term included —
   // to Sentry with no redaction at all.
   beforeSendTransaction: scrubEvent,
+  // Post-merge review (2026-09-29): every span, before the transaction hook, and
+  // the only hook a span sent on its own ever reaches.
+  beforeSendSpan: scrubSpan,
 });

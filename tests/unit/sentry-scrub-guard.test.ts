@@ -22,8 +22,19 @@ import { stripComments } from '../support/strip-comments';
 
 const INIT_SITES = ['sentry.server.config.ts', 'sentry.edge.config.ts', 'instrumentation-client.ts'];
 
+/** Comment-stripped source, read once: two tests below walk every app file. */
+const strippedCache = new Map<string, string>();
+function stripped(file: string): string {
+  let src = strippedCache.get(file);
+  if (src === undefined) {
+    src = stripComments(readFileSync(file, 'utf8'), file);
+    strippedCache.set(file, src);
+  }
+  return src;
+}
+
 function parse(file: string): ts.SourceFile {
-  const src = stripComments(readFileSync(file, 'utf8'), file);
+  const src = stripped(file);
   return ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
 }
 
@@ -53,6 +64,37 @@ function sentryInitCalls(sf: ts.SourceFile): ts.CallExpression[] {
   return calls;
 }
 
+/** The object literal passed to the file's one init call. */
+function initOptions(file: string): { sf: ts.SourceFile; props: ts.NodeArray<ts.ObjectLiteralElementLike> } {
+  const sf = parse(file);
+  const arg = sentryInitCalls(sf)[0]?.arguments[0];
+  if (!arg || !ts.isObjectLiteralExpression(arg)) throw new Error(`${file}: init takes no object literal`);
+  return { sf, props: arg.properties };
+}
+
+/** The source text of `key`'s value in an options literal, or undefined when absent. */
+function optionText(sf: ts.SourceFile, props: ts.NodeArray<ts.ObjectLiteralElementLike>, key: string): string | undefined {
+  const p = props.find((q) => q.name && ts.isIdentifier(q.name) && q.name.text === key);
+  if (!p) return undefined;
+  if (ts.isShorthandPropertyAssignment(p)) return p.name.text;
+  return ts.isPropertyAssignment(p) ? p.initializer.getText(sf) : '<not a plain property>';
+}
+
+/** Which module each of `names` is imported from, as a named import. */
+function importedFrom(sf: ts.SourceFile, names: string[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const name of names) {
+    out[name] = sf.statements
+      .filter(ts.isImportDeclaration)
+      .filter((d) => {
+        const b = d.importClause?.namedBindings;
+        return b && ts.isNamedImports(b) && b.elements.some((e) => e.name.text === name && !e.propertyName);
+      })
+      .map((d) => (d.moduleSpecifier as ts.StringLiteral).text);
+  }
+  return out;
+}
+
 function tsFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((n) => {
     const p = join(dir, n);
@@ -71,7 +113,7 @@ describe('every Sentry runtime is initialised with the scrubber on both hooks', 
     expect(sites.sort()).toEqual([...INIT_SITES].sort());
   });
 
-  it.each(INIT_SITES)('%s passes scrubEvent to beforeSend AND beforeSendTransaction, and never sendDefaultPii', (file) => {
+  it.each(INIT_SITES)('%s passes scrubEvent to beforeSend AND beforeSendTransaction, scrubSpan to beforeSendSpan, and never sendDefaultPii', (file) => {
     const sf = parse(file);
     const calls = sentryInitCalls(sf);
     expect(calls, 'exactly one init').toHaveLength(1);
@@ -88,6 +130,11 @@ describe('every Sentry runtime is initialised with the scrubber on both hooks', 
     };
     expect(value('beforeSend')).toBe('scrubEvent');
     expect(value('beforeSendTransaction')).toBe('scrubEvent');
+    // Post-merge review (2026-09-29): a span sent on its own (the browser's INP
+    // web vital) reaches neither hook above. This is the only one it reaches, and
+    // inside a transaction it runs on every span before the transaction hook.
+    expect(value('beforeSendSpan')).toBe('scrubSpan');
+    expect(importedFrom(sf, ['scrubSpan'])).toEqual({ scrubSpan: ['@/lib/sentry-scrub'] });
     // Off by default; `true` makes the SDK attach IP addresses, cookies and the
     // user — the very things the scrubber is removing.
     expect(['false', undefined]).toContain(value('sendDefaultPii'));
@@ -114,6 +161,64 @@ describe('every Sentry runtime is initialised with the scrubber on both hooks', 
       return b && ts.isNamedImports(b) && b.elements.some((e) => e.name.text === 'serverIntegrations' && !e.propertyName);
     });
     expect(from.map((d) => (d.moduleSpecifier as ts.StringLiteral).text)).toEqual(['@/lib/sentry-server-integrations']);
+  });
+
+  it('the browser scrubs each breadcrumb as it is recorded, and sends no INP span', () => {
+    // Post-merge review (2026-09-29). A click's breadcrumb and the INP span are
+    // both named after the clicked element, aria-label included ("Select edit for
+    // <legal name>"). The INP span goes out on its own, and when it starts its own
+    // trace the SDK writes its name into the envelope HEADER before beforeSendSpan
+    // runs, so no hook can clean it: it has to be off. Replacing the default
+    // tracing integration by name is how the SDK takes an option for it.
+    const file = 'instrumentation-client.ts';
+    const { sf, props } = initOptions(file);
+    expect(optionText(sf, props, 'beforeBreadcrumb')).toBe('scrubBreadcrumb');
+    expect(importedFrom(sf, ['scrubBreadcrumb'])).toEqual({ scrubBreadcrumb: ['@/lib/sentry-scrub'] });
+
+    const nextjs = new Set(
+      sf.statements
+        .filter(ts.isImportDeclaration)
+        .filter((d) => (d.moduleSpecifier as ts.StringLiteral).text === '@sentry/nextjs')
+        .map((d) => d.importClause?.namedBindings)
+        .filter((b): b is ts.NamespaceImport => !!b && ts.isNamespaceImport(b))
+        .map((b) => b.name.text)
+    );
+    const p = props.find((q) => q.name && ts.isIdentifier(q.name) && q.name.text === 'integrations');
+    const list = p && ts.isPropertyAssignment(p) ? p.initializer : undefined;
+    expect(list && ts.isArrayLiteralExpression(list), 'integrations is an array literal this guard can read').toBe(true);
+    const tracing = (list as ts.ArrayLiteralExpression).elements.filter(
+      (e): e is ts.CallExpression =>
+        ts.isCallExpression(e) &&
+        ts.isPropertyAccessExpression(e.expression) &&
+        e.expression.name.text === 'browserTracingIntegration' &&
+        ts.isIdentifier(e.expression.expression) &&
+        // @sentry/nextjs's own, which adds the App Router instrumentation.
+        nextjs.has(e.expression.expression.text)
+    );
+    expect(tracing, 'one browserTracingIntegration from @sentry/nextjs').toHaveLength(1);
+    const opts = tracing[0]!.arguments[0];
+    expect(opts && ts.isObjectLiteralExpression(opts), 'its options are an object literal').toBe(true);
+    const optProps = (opts as ts.ObjectLiteralExpression).properties;
+    expect(optProps.some((q) => ts.isSpreadAssignment(q)), 'no spread in its options').toBe(false);
+    expect(optionText(sf, optProps, 'enableInp')).toBe('false');
+    // CLS and LCP are sent on their own only through these experiments, off by
+    // default in @sentry/browser 10.x; turning one on would bring the leak back.
+    expect(optionText(sf, optProps, '_experiments')).toBeUndefined();
+  });
+
+  it('nothing else adds a tracing or web-vitals integration, or turns a standalone web vital on', () => {
+    // An integration added after init, or a second tracing instance, would start
+    // what the options above turned off.
+    const roots = readdirSync('.').filter((n) => /\.(ts|tsx)$/.test(n) && !/\.d\.ts$/.test(n));
+    const files = [...roots, ...['app', 'components', 'lib', 'services'].flatMap(tsFiles)];
+    const hits: string[] = [];
+    for (const f of files) {
+      const src = stripped(f);
+      for (const word of ['browserTracingIntegration', 'webVitalsIntegration', 'addIntegration', 'lazyLoadIntegration', 'enableStandalone', 'enableInteractions']) {
+        if (src.includes(word)) hits.push(`${f.replace(/\\/g, '/')}: ${word}`);
+      }
+    }
+    expect(hits).toEqual(['instrumentation-client.ts: browserTracingIntegration']);
   });
 });
 

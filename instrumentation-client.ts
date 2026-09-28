@@ -17,7 +17,7 @@
  * traces here are minified.
  */
 import * as Sentry from '@sentry/nextjs';
-import { scrubEvent } from '@/lib/sentry-scrub';
+import { scrubBreadcrumb, scrubEvent, scrubSpan } from '@/lib/sentry-scrub';
 import { sentryEnvironment, sentryRelease } from '@/lib/sentry-env';
 
 Sentry.init({
@@ -29,11 +29,24 @@ Sentry.init({
   replaysSessionSampleRate: 0,
   environment: sentryEnvironment(),
   release: sentryRelease(),
+  // Post-merge review (2026-09-29): the same tracing the SDK adds by default, less
+  // the INP span. That span is named after the element the user clicked (the
+  // approvals checkbox's label is "Select edit for <legal name>") and is sent on
+  // its own. beforeSendSpan cleans its body, but when it starts its own trace the
+  // SDK also copies the name into the envelope HEADER, before any hook runs.
+  // CLS and LCP standalone spans are off by default in this SDK and stay so.
+  // Replaces the default instance: the SDK keeps one integration per name.
+  integrations: [Sentry.browserTracingIntegration({ enableInp: false })],
   beforeSend: scrubEvent,
   // SEC-14d: performance transactions go to a DIFFERENT hook. Without this,
   // ~1 request in 10 shipped its full URL — the customer search term included —
   // to Sentry with no redaction at all.
   beforeSendTransaction: scrubEvent,
+  // A span sent on its own reaches neither hook above; this is the only one it does.
+  beforeSendSpan: scrubSpan,
+  // Scrubbed as recorded: a click's breadcrumb carries the element's aria-label
+  // and title, and it waits in memory for whatever event is sent next.
+  beforeBreadcrumb: scrubBreadcrumb,
 });
 
 // Next 15 reports client-side navigation timing through this hook when it is

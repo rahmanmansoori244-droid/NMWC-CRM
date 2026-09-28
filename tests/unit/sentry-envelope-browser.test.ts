@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /**
  * N07, the browser half of tests/unit/sentry-envelope.test.ts: the real browser
- * SDK, its default integrations, the app's `scrubEvent` on both hooks, and the
- * whole serialized envelope searched for planted values.
+ * SDK, its default integrations, the app's scrubber on every hook
+ * instrumentation-client.ts sets, and the whole serialized envelope searched for
+ * planted values.
  *
  * The browser's own carriers are different from the server's. The SDK's
  * HttpContext integration copies `location.href` into `request.url` and
@@ -14,7 +15,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as Sentry from '@sentry/browser';
-import { scrubEvent } from '@/lib/sentry-scrub';
+import { scrubBreadcrumb, scrubEvent, scrubSpan } from '@/lib/sentry-scrub';
 
 const PLANTED = {
   pageUrl: 'ZQXPAGEURLNAME',
@@ -24,6 +25,9 @@ const PLANTED = {
   spanName: 'ZQXBROWSERSPAN',
   spanAttr: 'ZQXBROWSERATTR',
   consoleArg: 'ZQXBROWSERCONSOLE',
+  clickLabel: 'ZQXCLICKLEGALNAME',
+  clickTitle: 'ZQXCLICKSEARCHTERM',
+  standaloneAttr: 'ZQXSTANDALONEATTR',
 } as const;
 
 const envelopes: string[] = [];
@@ -55,6 +59,9 @@ beforeAll(() => {
     tracesSampleRate: 1,
     beforeSend: scrubEvent,
     beforeSendTransaction: scrubEvent,
+    // The other two hooks instrumentation-client.ts sets, wired the same way.
+    beforeSendSpan: scrubSpan,
+    beforeBreadcrumb: scrubBreadcrumb,
     transport: (options) =>
       Sentry.createTransport(options, async (request) => {
         envelopes.push(typeof request.body === 'string' ? request.body : decoder.decode(request.body));
@@ -135,5 +142,82 @@ describe('a console call in the browser', () => {
     // Not vacuous: the console breadcrumb is there, without its raw arguments.
     const logged = errorEvents[0]!.breadcrumbs?.find((b) => b.category === 'console' && b.message?.startsWith('customer save failed'));
     expect(logged?.data).toEqual({ logger: 'console' });
+  });
+});
+
+/**
+ * Post-merge review (2026-09-29): the SDK's own click breadcrumb names the
+ * element with its aria-label and title VALUES. The approvals checkbox's label
+ * is "Select edit for <legal name>", and a saved view's title is its query.
+ */
+describe('a click on a control labelled with a customer name', () => {
+  type Crumb = { category?: string; message?: string };
+  const clicks = (list: Crumb[] | undefined) => (list ?? []).filter((b) => b.category === 'ui.click').map((b) => b.message);
+
+  it('is recorded without the label, and reaches the transport without it', async () => {
+    envelopes.length = 0;
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'mt-1 h-5 w-5 rounded border-slate-300';
+    box.setAttribute('aria-label', `Select edit for ${PLANTED.clickLabel} LLC`);
+    const view = document.createElement('button');
+    view.type = 'button';
+    view.title = `q=${PLANTED.clickTitle}&status=ACTIVE`;
+    view.textContent = 'My shops';
+    document.body.append(box, view);
+    box.click();
+    view.click();
+
+    // Scrubbed as recorded (beforeBreadcrumb): the scope holds no label, so no
+    // later event, whichever hook it goes through, can be the first to carry one.
+    const held = clicks(Sentry.getIsolationScope().getScopeData().breadcrumbs);
+    // Not vacuous: the SDK really recorded both clicks.
+    expect(held).toHaveLength(2);
+    expect(held.join('\n')).not.toContain('ZQX');
+
+    Sentry.captureException(new Error('bulk approve failed'));
+    await Sentry.flush(3000);
+
+    const errorEvents = payloads().filter((p) => p.exception) as Array<{ breadcrumbs?: Crumb[] }>;
+    expect(errorEvents).toHaveLength(1);
+    expect(leaked()).toEqual([]);
+    // What survives is which control it was.
+    const sent = clicks(errorEvents[0]!.breadcrumbs);
+    expect(sent[0]).toBe('input.mt-1.h-5.w-5.rounded.border-slate-300[aria-label][type="checkbox"]');
+    expect(sent[1]).toMatch(/button\[type="button"\]\[title\]$/);
+  });
+});
+
+describe('a span sent on its own, as the INP web vital is', () => {
+  it('has its name and attributes cleaned by beforeSendSpan, but its envelope header is out of reach', async () => {
+    envelopes.length = 0;
+    // The name the SDK gives an INP span: the clicked element, label and all.
+    // A name the scrubber changes and nothing else plants, so the header check
+    // below is about THIS span and not an earlier one.
+    const name = `input.h-5[aria-label="Select edit for ${PLANTED.clickLabel} Standalone"][type="checkbox"]`;
+    Sentry.startInactiveSpan({
+      name,
+      attributes: { 'lcp.element': `a.block[aria-label="${PLANTED.standaloneAttr} · NMWC-018702"]` },
+      experimental: { standalone: true },
+    }).end();
+    await Sentry.flush(3000);
+
+    const spanEnvelopes = envelopes.filter((e) => e.includes('"type":"span"'));
+    expect(spanEnvelopes).toHaveLength(1);
+    const [header, ...rest] = spanEnvelopes[0]!.split('\n').filter((l) => l.startsWith('{'));
+    const spans = rest.map((l) => JSON.parse(l) as Record<string, unknown>).filter((p) => 'span_id' in p) as Array<{
+      description?: string;
+      data?: Record<string, unknown>;
+    }>;
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.description).toBe('input.h-5[aria-label][type="checkbox"]');
+    expect(spans[0]!.data?.['lcp.element']).toBe('a.block[aria-label]');
+    expect(JSON.stringify(spans)).not.toContain('ZQX');
+
+    // The SDK builds the header's trace.transaction from the span's name BEFORE
+    // beforeSendSpan runs. This is why instrumentation-client.ts turns the INP span
+    // off (enableInp: false) instead of relying on the hook. If this assertion ever
+    // fails, the SDK has changed and that decision can be looked at again.
+    expect((JSON.parse(header!) as { trace?: { transaction?: string } }).trace?.transaction).toBe(name);
   });
 });

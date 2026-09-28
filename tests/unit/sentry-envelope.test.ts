@@ -25,7 +25,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as Sentry from '@sentry/nextjs';
 import { SpanKind, trace } from '@opentelemetry/api';
-import { scrubEvent } from '@/lib/sentry-scrub';
+import { scrubEvent, scrubSpan } from '@/lib/sentry-scrub';
 import { serverIntegrations } from '@/lib/sentry-server-integrations';
 
 /**
@@ -80,7 +80,7 @@ beforeAll(() => {
   // The options the three runtime configs pass, minus the DSN's real value and
   // plus a transport that keeps the envelope instead of sending it. The guard in
   // tests/unit/sentry-scrub-guard.test.ts pins that the real configs wire exactly
-  // this function to exactly these two hooks.
+  // these functions to exactly these hooks.
   Sentry.init({
     dsn: 'https://public@o0.ingest.sentry.io/0',
     tracesSampleRate: 1,
@@ -88,6 +88,9 @@ beforeAll(() => {
     integrations: serverIntegrations(),
     beforeSend: scrubEvent,
     beforeSendTransaction: scrubEvent,
+    // Post-merge review (2026-09-29): runs on every span of a transaction before
+    // the transaction hook, so the cases below also prove it breaks nothing there.
+    beforeSendSpan: scrubSpan,
     transport: (options: Parameters<typeof Sentry.createTransport>[0]) =>
       Sentry.createTransport(options, async (request) => {
         envelopes.push(typeof request.body === 'string' ? request.body : decoder.decode(request.body));

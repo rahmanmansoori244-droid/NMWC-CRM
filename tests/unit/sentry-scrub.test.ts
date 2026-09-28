@@ -5,8 +5,8 @@
  * exactly the kind of drift a single tested implementation prevents.
  */
 import { describe, it, expect } from 'vitest';
-import { scrub, scrubEvent } from '@/lib/sentry-scrub';
-import type { ErrorEvent, Event as SentryEvent } from '@sentry/nextjs';
+import { scrub, scrubBreadcrumb, scrubEvent, scrubSpan } from '@/lib/sentry-scrub';
+import type { Breadcrumb, ErrorEvent, Event as SentryEvent, spanToJSON } from '@sentry/nextjs';
 
 describe('scrub', () => {
   it('redacts Omani phone numbers in every written form', () => {
@@ -530,5 +530,183 @@ describe('item 10: the Reference on the error screen is searchable in Sentry', (
     for (const bad of ['ali.said@example.com', 'has space', 'x'.repeat(65), 42]) {
       expect(scrubEvent({} as ErrorEvent, { originalException: withDigest(bad) }).tags?.digest).toBeUndefined();
     }
+  });
+});
+
+/**
+ * Post-merge review (2026-09-29): the browser SDK names a clicked element with
+ * `htmlTreeAsString`, which copies its aria-label, title and alt VALUES into the
+ * string. These are the four elements the review found carrying a customer's
+ * name, code or search term, written exactly as the SDK writes them.
+ */
+describe('the words on screen that the SDK copies into a selector', () => {
+  const LEAKS = [
+    {
+      what: 'the approvals checkbox, a legal name (BulkApprovalQueue)',
+      raw: 'input.mt-1.h-5.w-5.rounded.border-slate-300.text-brand-600.focus:ring-brand-500[aria-label="Select edit for ZQX Al Noor Trading LLC"][type="checkbox"]',
+      clean: 'input.mt-1.h-5.w-5.rounded.border-slate-300.text-brand-600.focus:ring-brand-500[aria-label][type="checkbox"]',
+    },
+    {
+      what: 'the Search filter chip, the search term (CustomerFiltersClient)',
+      raw: 'button.rounded-full.p-0.5.text-brand-500.hover:bg-brand-200[aria-label="Remove filter Search: ZQX Khalid Shop"][type="button"]',
+      clean: 'button.rounded-full.p-0.5.text-brand-500.hover:bg-brand-200[aria-label][type="button"]',
+    },
+    {
+      what: 'the customer card, a legal name and a code (CustomerCard)',
+      raw: 'a.block.rounded-lg[aria-label="ZQX Al Maha Foodstuff · NMWC-018702"]',
+      clean: 'a.block.rounded-lg[aria-label]',
+    },
+    {
+      what: 'a saved view, the whole query in its title (CustomerFiltersClient)',
+      raw: 'button.flex-1.truncate.text-left.text-sm[type="button"][title="q=ZQX+Khalid+Shop&status=ACTIVE"]',
+      clean: 'button.flex-1.truncate.text-left.text-sm[type="button"][title]',
+    },
+  ];
+  const planted = /ZQX|018702|Khalid|Noor|Maha/;
+
+  it.each(LEAKS)('a click breadcrumb on $what keeps the element and loses the words', ({ raw, clean }) => {
+    const e = scrubEvent({ breadcrumbs: [{ category: 'ui.click', message: raw }] } as unknown as ErrorEvent);
+    expect(e.breadcrumbs?.[0]?.message).toBe(clean);
+  });
+
+  it('reaches the same string in every carrier scrubText runs on, at any depth', () => {
+    const [a, b, c, d] = LEAKS.map((l) => l.raw);
+    const e = scrubEvent({
+      type: 'transaction',
+      transaction: a,
+      breadcrumbs: [{ category: 'ui.input', message: b, data: { nested: { list: [c] } } }],
+      spans: [{ description: c, data: { 'lcp.element': d, 'cls.source.1': [a] } }],
+      contexts: { trace: { data: { 'lcp.element': b } }, custom: { deep: { deeper: { el: d } } } },
+      extra: { lastClick: a },
+      sdkProcessingMetadata: { dynamicSamplingContext: { trace_id: 't', public_key: 'k', transaction: b } },
+    } as unknown as SentryEvent);
+    expect(JSON.stringify(e)).not.toMatch(planted);
+    expect(e.transaction).toBe(LEAKS[0]!.clean);
+    expect((e.sdkProcessingMetadata?.dynamicSamplingContext as { transaction?: string }).transaction).toBe(LEAKS[1]!.clean);
+  });
+
+  it('strips a label on an ancestor too, and keeps the elements around it', () => {
+    const e = scrubEvent({
+      breadcrumbs: [{ category: 'ui.click', message: 'li.row[aria-label="ZQX Al Noor"] > button.x[type="button"][title="ZQX Noor"] > svg' }],
+    } as unknown as ErrorEvent);
+    expect(e.breadcrumbs?.[0]?.message).toBe('li.row[aria-label] > button.x[type="button"][title] > svg');
+  });
+
+  it('strips alt, and a label the SDK wrote with a quote or a bracket inside it', () => {
+    // The SDK does not escape a value, so a legal name with quotes in it must not
+    // end the match early and leave the rest of the name behind.
+    const e = scrubEvent({
+      breadcrumbs: [
+        { category: 'ui.click', message: 'img.logo[alt="ZQX Noor logo"]' },
+        { category: 'ui.click', message: 'input.c[aria-label="Select edit for ZQX "Noor"] Trading"][type="checkbox"]' },
+        { category: 'ui.click', message: 'div[aria-label="ZQX Noor"] > input[aria-label="ZQX "Maha" LLC"]' },
+      ],
+    } as unknown as ErrorEvent);
+    expect(e.breadcrumbs?.map((x) => x.message)).toEqual([
+      'img.logo[alt]',
+      'input.c[aria-label][type="checkbox"]',
+      'div[aria-label] > input[aria-label]',
+    ]);
+  });
+
+  it('removes to the end a value that never closes, rather than leave any of it', () => {
+    const e = scrubEvent({ breadcrumbs: [{ message: 'button[aria-label="Remove filter Search: ZQX Kha' }] } as unknown as ErrorEvent);
+    expect(e.breadcrumbs?.[0]?.message).toBe('button[aria-label]');
+  });
+
+  it('leaves type, name, ids, classes and ordinary text alone', () => {
+    // The over-redaction guard: a selector that loses everything stops telling
+    // anyone which control failed.
+    const line = 'form#customer-form > input.w-full[type="search"][name="q"]';
+    expect(scrubEvent({ breadcrumbs: [{ category: 'ui.input', message: line }] } as unknown as ErrorEvent).breadcrumbs?.[0]?.message).toBe(line);
+    const prose = 'Warning: <div title="x"> received a title of 3 [not an attribute]';
+    expect(scrubEvent({ breadcrumbs: [{ message: prose }] } as unknown as ErrorEvent).breadcrumbs?.[0]?.message).toBe(prose);
+  });
+
+  it('redacts q after a quote as well, and still after ? and & (the old query-pair rule)', () => {
+    const e = scrubEvent({
+      breadcrumbs: [
+        { message: 'chose view "q=ZQX+Khalid&status=ACTIVE"' },
+        { message: "chose view 'q=ZQX+Khalid'" },
+        { category: 'navigation', data: { to: '/customers?status=ACTIVE&q=ZQX+Khalid' } },
+      ],
+    } as unknown as ErrorEvent);
+    expect(e.breadcrumbs?.map((x) => x.message ?? x.data?.to)).toEqual([
+      'chose view "q=[redacted]&status=ACTIVE"',
+      "chose view 'q=[redacted]'",
+      '/customers?status=ACTIVE&q=[redacted]',
+    ]);
+  });
+});
+
+describe('beforeBreadcrumb: a breadcrumb is scrubbed as it is recorded', () => {
+  it('cleans a click selector in place and returns the same breadcrumb', () => {
+    const b: Breadcrumb = { category: 'ui.click', message: 'a.block[aria-label="ZQX Al Maha · NMWC-018702"]', data: { 'ui.component_name': 'CustomerCard' } };
+    const out = scrubBreadcrumb(b);
+    expect(out).toBe(b);
+    expect(out).toEqual({ category: 'ui.click', message: 'a.block[aria-label]', data: { 'ui.component_name': 'CustomerCard' } });
+  });
+
+  it('applies the same rules scrubEvent applies to a breadcrumb it carries', () => {
+    const b: Breadcrumb = { category: 'console', message: 'failed for 91234567', data: { arguments: ['failed for', 91234567], logger: 'console' } };
+    expect(scrubBreadcrumb(b)).toEqual({ category: 'console', message: 'failed for [phone]', data: { logger: 'console' } });
+    const nav: Breadcrumb = { category: 'navigation', data: { from: '/customers', to: '/customers?q=ZQX+Khalid' } };
+    expect(scrubBreadcrumb(nav).data).toEqual({ from: '/customers', to: '/customers?q=[redacted]' });
+  });
+});
+
+describe('beforeSendSpan: a span is scrubbed on its own, without its transaction', () => {
+  type SpanJSON = ReturnType<typeof spanToJSON>;
+  const span = (): SpanJSON => ({
+    span_id: '9681234567812345',
+    trace_id: 'ab96812345678cdef0123456789abcde',
+    parent_span_id: 'f96812345678aaaa',
+    start_timestamp: 1,
+    timestamp: 2,
+    op: 'ui.interaction.click',
+    origin: 'auto.http.browser.inp',
+    description: 'input.h-5[aria-label="Select edit for ZQX Al Noor Trading LLC"][type="checkbox"]',
+    data: {
+      'sentry.op': 'ui.interaction.click',
+      transaction: '/customers?q=ZQX+Khalid',
+      'lcp.element': 'a.block[aria-label="ZQX Al Maha · NMWC-018702"]',
+      'browser.script.source_url': ['https://nmwc-cm.vercel.app/customers?q=ZQX+Khalid'],
+      'inp.value': 312,
+    },
+    links: [{ trace_id: 'ab96812345678cdef0123456789abcde', span_id: '9681234567812345', attributes: { note: 'call 91234567' } }],
+  });
+
+  it('scrubs the name, every attribute at any depth, and the links', () => {
+    const out = scrubSpan(span());
+    expect(JSON.stringify(out)).not.toMatch(/ZQX|018702|Khalid|91234567/);
+    expect(out.description).toBe('input.h-5[aria-label][type="checkbox"]');
+    expect(out.data).toEqual({
+      'sentry.op': 'ui.interaction.click',
+      transaction: '/customers?q=[redacted]',
+      'lcp.element': 'a.block[aria-label]',
+      'browser.script.source_url': ['https://nmwc-cm.vercel.app/customers?q=[redacted]'],
+      'inp.value': 312,
+    });
+    expect(out.links?.[0]?.attributes).toEqual({ note: 'call [phone]' });
+  });
+
+  it('keeps the ids, timing and op, which join the span to its trace', () => {
+    const out = scrubSpan(span());
+    const scrubbed = { description: undefined, data: undefined, links: undefined };
+    expect({ ...out, ...scrubbed }).toEqual({ ...span(), ...scrubbed });
+    expect(out.links?.[0]).toMatchObject({ trace_id: 'ab96812345678cdef0123456789abcde', span_id: '9681234567812345' });
+  });
+
+  it('returns a copy: the SDK hands over the live span attribute object, which must not change', () => {
+    const input = span();
+    const snapshot = JSON.parse(JSON.stringify(input)) as SpanJSON;
+    const out = scrubSpan(input);
+    expect(input).toEqual(snapshot);
+    expect(out.data).not.toBe(input.data);
+  });
+
+  it('survives a span with no description, no data and no links', () => {
+    const bare = { span_id: 's', trace_id: 't', start_timestamp: 0 } as unknown as SpanJSON;
+    expect(scrubSpan(bare)).toEqual({ span_id: 's', trace_id: 't', start_timestamp: 0, data: {} });
   });
 });

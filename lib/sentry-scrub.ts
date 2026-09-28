@@ -14,8 +14,11 @@
  * catches commercial-registration numbers and customer codes) and e-mail
  * addresses.
  */
-import type { Event, EventHint } from '@sentry/nextjs';
+import type { Breadcrumb, Event, EventHint, spanToJSON } from '@sentry/nextjs';
 import { digestHash, isErrorDigest, scrubString } from './scrub';
+
+/** What `beforeSendSpan` receives. @sentry/nextjs exports the function, not the type. */
+type SpanJSON = ReturnType<typeof spanToJSON>;
 
 /**
  * Query-string keys whose VALUE is replaced wholesale rather than pattern-scrubbed.
@@ -38,8 +41,14 @@ export const scrub = scrubString;
  * that actually leaked the search term are not: a navigation breadcrumb's
  * `data.to` is a bare path, a transaction name is `GET /customers`, and a span
  * description is free text. This runs over the raw string instead.
+ *
+ * A quote opens a pair too (post-merge review, 2026-09-29): a saved view's button
+ * carries `title="q=<term>&status=ACTIVE"`, and in the click breadcrumb the `q=`
+ * follows a double quote, where this used to see no pair at all. The selector rule
+ * below removes that title outright; this is the second line for any other string
+ * that quotes a query.
  */
-const QUERY_PAIR = /([?&;]|^)([A-Za-z0-9_.%-]{1,40})=([^&#\s"']*)/g;
+const QUERY_PAIR = /([?&;"']|^)([A-Za-z0-9_.%-]{1,40})=([^&#\s"']*)/g;
 
 function scrubQueryPairs(s: string): string {
   return s.replace(QUERY_PAIR, (m, pre: string, key: string) =>
@@ -101,8 +110,37 @@ function redactWebhook(s: string): string {
   return out;
 }
 
-/** Webhook, then query-pair redaction, then the pattern scrub. Use for any free text. */
-const scrubText = (s: string): string => scrub(scrubQueryPairs(redactWebhook(s)));
+/**
+ * Post-merge review (2026-09-29): the words on the screen, as the browser SDK
+ * copies them into a CSS-like selector.
+ *
+ * The SDK names a clicked element with `htmlTreeAsString`, which writes the
+ * element's `aria-label`, `title` and `alt` VALUES into the string:
+ * `input.h-5[aria-label="Select edit for <legal name>"][type="checkbox"]`. That
+ * string is the message of every `ui.click` / `ui.input` breadcrumb, the name of
+ * the INP web-vital span, and the `lcp.element` / `cls.source.N` attributes of a
+ * pageload. In this app those attributes hold customer legal names and codes
+ * (the approvals checkbox, the customer card), the search term (the Search
+ * filter chip) and a saved view's whole query (its `title`). A legal name is not
+ * a digit run or an address, so none of the patterns below could see it.
+ *
+ * The value goes and the attribute name stays, so `[aria-label]` still says what
+ * kind of control it was. `type` and `name` are kept: this code base sets them to
+ * constants. The SDK does not escape a quote inside a value, so the value ends at
+ * the first `"]` that is followed by what the SDK writes next (another
+ * attribute, the ` > ` between elements, or the end); with no such ending, the
+ * rest of the string goes with it, which errs towards removing too much.
+ */
+const SELECTOR_ATTR_VALUE = /\[(aria-label|title|alt)="[\s\S]*?(?:"\](?=\[[a-z-]+="|\s>\s|$)|$)/g;
+
+const stripSelectorValues = (s: string): string =>
+  s.includes('="') ? s.replace(SELECTOR_ATTR_VALUE, '[$1]') : s;
+
+/**
+ * Webhook, then selector values, then query-pair redaction, then the pattern
+ * scrub. Use for any free text.
+ */
+const scrubText = (s: string): string => scrub(scrubQueryPairs(stripSelectorValues(redactWebhook(s))));
 
 function scrubUrl(rawUrl: string): string {
   const url = redactWebhook(rawUrl);
@@ -158,21 +196,28 @@ const TRACE_IDS = new Set(['trace_id', 'span_id', 'parent_span_id']);
 /** Sentry normalises an event to depth 3 before this runs; this is only a backstop. */
 const MAX_DEPTH = 8;
 
-/** Scrub every string under `value`, in place, whatever the nesting. */
-function scrubDeep(value: unknown, depth = 0): unknown {
+/**
+ * Scrub every string under `value`, whatever the nesting: in place, or with
+ * `copy` into new arrays and objects, leaving `value` untouched. A span's JSON
+ * hands over the span's own live attribute object, so span data is copied.
+ */
+function scrubDeep(value: unknown, depth = 0, copy = false): unknown {
   if (typeof value === 'string') return scrubText(value);
   if (!value || typeof value !== 'object') return value;
   // Past the backstop the value is dropped rather than sent unread.
   if (depth >= MAX_DEPTH) return '[Object]';
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) value[i] = scrubDeep(value[i], depth + 1);
-    return value;
+    const out: unknown[] = copy ? new Array<unknown>(value.length) : value;
+    for (let i = 0; i < value.length; i++) out[i] = scrubDeep(value[i], depth + 1, copy);
+    return out;
   }
   const obj = value as Record<string, unknown>;
+  const out: Record<string, unknown> = copy ? {} : obj;
   for (const [k, v] of Object.entries(obj)) {
-    if (!TRACE_IDS.has(k)) obj[k] = scrubDeep(v, depth + 1);
+    if (!TRACE_IDS.has(k)) out[k] = scrubDeep(v, depth + 1, copy);
+    else if (copy) out[k] = v;
   }
-  return obj;
+  return out;
 }
 
 /**
@@ -224,8 +269,9 @@ function scrubSamplingContext(event: Event): void {
  * about.
  *
  * NOTE for anyone enabling streaming traces: `traceLifecycle: 'stream'` bypasses
- * `beforeSendTransaction` entirely, so span coverage must be re-verified before
- * that lands.
+ * `beforeSendTransaction` entirely, and it IGNORES a plain `beforeSendSpan` such
+ * as `scrubSpan` (@sentry/core wants one wrapped in `withStreamedSpan`, with a
+ * different span shape), so span coverage must be re-verified before that lands.
  */
 export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
   if (event.request?.headers && typeof event.request.headers === 'object') {
@@ -284,26 +330,64 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
     }
   }
   if (event.breadcrumbs) {
-    for (const b of event.breadcrumbs) {
-      if (typeof b.message === 'string') b.message = scrubText(b.message);
-      // scrubText, not scrub: a navigation breadcrumb's `data.to` is a bare path
-      // and a fetch breadcrumb's `data.url` an absolute one, and both carry
-      // `?q=<customer name>` on 100% of error events. The pattern scrub alone
-      // never touched them, because a name is not a digit run.
-      if (b.data && typeof b.data === 'object') {
-        // A console breadcrumb keeps the call's raw arguments in `data.arguments`:
-        // after a server error Next calls console.error(' ⨯', err), and the SDK
-        // stores the Error's message and stack there unscrubbed. `message` already
-        // holds the formatted text, scrubbed above, so the raw copy goes.
-        if (b.category === 'console') delete (b.data as Record<string, unknown>).arguments;
-        scrubDeep(b.data);
-      }
-    }
+    for (const b of event.breadcrumbs) scrubBreadcrumb(b);
   }
   // An IP address is personal data and we have no use for it.
   if (event.user) delete event.user.ip_address;
   tagDigest(event, hint);
   return event;
+}
+
+/**
+ * Scrub one breadcrumb, in place, and return it.
+ *
+ * `scrubEvent` runs this over every breadcrumb an event carries. The browser
+ * also passes it as `beforeBreadcrumb` (post-merge review, 2026-09-29), so a
+ * click's selector is cleaned when it is recorded rather than only when an event
+ * happens to carry it: up to 100 breadcrumbs sit in the page's memory for the
+ * whole session, and whatever sends them next must not be the first to scrub.
+ */
+export function scrubBreadcrumb(b: Breadcrumb): Breadcrumb {
+  if (typeof b.message === 'string') b.message = scrubText(b.message);
+  // scrubText, not scrub: a navigation breadcrumb's `data.to` is a bare path
+  // and a fetch breadcrumb's `data.url` an absolute one, and both carry
+  // `?q=<customer name>` on 100% of error events. The pattern scrub alone
+  // never touched them, because a name is not a digit run.
+  if (b.data && typeof b.data === 'object') {
+    // A console breadcrumb keeps the call's raw arguments in `data.arguments`:
+    // after a server error Next calls console.error(' ⨯', err), and the SDK
+    // stores the Error's message and stack there unscrubbed. `message` already
+    // holds the formatted text, scrubbed above, so the raw copy goes.
+    if (b.category === 'console') delete (b.data as Record<string, unknown>).arguments;
+    scrubDeep(b.data);
+  }
+  return b;
+}
+
+/**
+ * Post-merge review (2026-09-29): `beforeSendSpan`, on every runtime.
+ *
+ * `scrubEvent` sees a span only inside a transaction event. A STANDALONE span
+ * (the browser's INP web vital, named after the element the user clicked) goes
+ * to the transport on its own, and on that path the SDK runs only this hook
+ * (@sentry/core `createSpanEnvelope`). Inside a transaction the SDK runs it on
+ * the root span and every child before `beforeSendTransaction`, so there it is
+ * a first pass and `scrubEvent` the second.
+ *
+ * It cannot reach the envelope HEADER of a standalone span: when the span starts
+ * its own trace, the SDK builds that header's `trace.transaction` from the span's
+ * name before this runs. That is why instrumentation-client.ts turns the INP span
+ * off rather than trusting this.
+ *
+ * Returns a copy. The JSON the SDK passes shares its `data` with the live span.
+ */
+export function scrubSpan(span: SpanJSON): SpanJSON {
+  return {
+    ...span,
+    ...(typeof span.description === 'string' && { description: scrubText(span.description) }),
+    data: scrubDeep(span.data ?? {}, 0, true) as SpanJSON['data'],
+    ...(Array.isArray(span.links) && { links: scrubDeep(span.links, 0, true) as SpanJSON['links'] }),
+  };
 }
 
 /**
