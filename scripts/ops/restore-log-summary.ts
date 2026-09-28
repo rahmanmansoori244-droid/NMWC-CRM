@@ -18,7 +18,9 @@
  *     PostgreSQL defines (psql is run with `-v VERBOSITY=verbose` so every
  *     server message carries one);
  *   - the dump line psql was reading (`psql:<stdin>:N`) and the row number inside
- *     a failing COPY — both integers;
+ *     a failing COPY — both integers. psql writes that locus only when it reads
+ *     the dump as a script (`-f -`, which restore-load.sh passes); a bare pipe
+ *     gets `ERROR:` with no line and a client error with no `psql:` at all;
  *   - the kind of statement (a fixed list) and the table it named, printed ONLY
  *     when that name is one of the tables prisma/schema.prisma declares.
  * No message text, DETAIL, CONTEXT, HINT, LINE or data line is ever copied, so no
@@ -270,6 +272,11 @@ function describe(e: RestoreLogEntry): string {
   return parts.join('  ');
 }
 
+/** psql failed, and the log holds no failure line this could read. */
+function failedUnread(s: RestoreLogSummary, psqlExit: number): boolean {
+  return psqlExit !== 0 && s.errors === 0;
+}
+
 /** The lines printed into the job log. Built from the summary's fields only. */
 export function formatSummary(s: RestoreLogSummary, psqlExit = 0): string {
   const out = [
@@ -281,8 +288,14 @@ export function formatSummary(s: RestoreLogSummary, psqlExit = 0): string {
   if (s.laterFailureLines > 0) {
     out.push(`  ${s.laterFailureLines} failure-shaped line(s) after the first: part of its own message, not itemised`);
   }
-  if (psqlExit !== 0 && s.errors === 0) out.push(`  psql exited ${psqlExit} without a server error in the log`);
-  out.push(`restore finished with ${s.errors} error line(s)`);
+  if (failedUnread(s, psqlExit)) {
+    // Never the runbook's "0 error line(s)": psql failing on something this could
+    // not read is still a failed restore.
+    out.push(`  psql exited ${psqlExit} without a server error in the log`);
+    out.push(`restore FAILED (psql exit ${psqlExit})`);
+  } else {
+    out.push(`restore finished with ${s.errors} error line(s)`);
+  }
   return out.join('\n');
 }
 
@@ -297,6 +310,7 @@ export function formatMarkdown(s: RestoreLogSummary, psqlExit = 0): string {
   return [
     '### Restore log (sanitised)',
     '',
+    ...(failedUnread(s, psqlExit) ? [`**restore FAILED (psql exit ${psqlExit})**, with no error line in the log this summary could read.`, ''] : []),
     `${s.copyBlocks} COPY block(s) loaded completely (${s.copyRows} rows); ${s.errors} error(s), ${s.warnings} warning(s); psql exit ${psqlExit}.`,
     '',
     ...(rows.length

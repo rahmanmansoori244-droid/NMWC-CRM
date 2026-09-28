@@ -440,13 +440,28 @@ jobs:
           [ "$CODE" = "1" ] || { echo "::error::the load script exited ${CODE} on a failed restore, not 1"; exit 1; }
           grep -q 'SQLSTATE 23514' broken/out.txt || { echo "::error::the summary lost the SQLSTATE"; exit 1; }
           grep -q 'public.Customer' broken/out.txt || { echo "::error::the summary lost the table"; exit 1; }
+          # Real psql, not a fixture: it numbers the dump's lines only when it reads
+          # the dump as a script (`-f -`), so this is what pins that it does.
+          grep -q 'dump line [0-9]' broken/out.txt || { echo "::error::the summary lost the dump line"; exit 1; }
           [ ! -e broken/restore.log ] || { echo "::error::the plaintext log was left behind"; exit 1; }
           # Counted, never printed; -c rather than -q, which would stop reading at the
           # first match and fail the pipe under pipefail.
           SEALED_ROWS=$(age -d -i broken.key broken/restore.log.age | grep -c "$MARK" || true)
           [ "$SEALED_ROWS" -gt 0 ] || { echo "::error::the sealed log does not quote the row, so this proved nothing"; exit 1; }
-          rm -rf broken broken.key broken.pub
-          echo "a failed restore printed its SQLSTATE and table, and the row only inside the sealed log"
+          # A failure psql raises itself rather than the server (an older psql
+          # refusing the \restrict line a newer pg_dump writes is the real case) is
+          # itemised with its dump line, and never ends on the good-restore line.
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nmwc_client_error'
+          mkdir client-error
+          printf '%s\n' 'SET client_min_messages = warning;' '\zqxnotacommand' | gzip > client-error/dump.sql.gz
+          CODE=0
+          (cd client-error && RESTORE_TARGET_URL=postgresql://ci:ci@localhost:5432/nmwc_client_error BACKUP_AGE_RECIPIENTS="$RECIPIENT" GITHUB_STEP_SUMMARY="$PWD/summary.md" bash ../scripts/ops/restore-load.sh) > client-error/out.txt 2>&1 || CODE=$?
+          cat client-error/out.txt
+          [ "$CODE" = "1" ] || { echo "::error::the load script exited ${CODE} on a psql client error, not 1"; exit 1; }
+          grep -q 'psql client error  dump line 2 ' client-error/out.txt || { echo "::error::the summary did not itemise the client error at dump line 2"; exit 1; }
+          if grep -q 'restore finished with 0 error line' client-error/out.txt; then echo "::error::a failed load ended on the good-restore line"; exit 1; fi
+          rm -rf broken broken.key broken.pub client-error
+          echo "a failed restore printed its SQLSTATE, table and dump line, and the row only inside the sealed log; a psql client error was itemised too"
 
       - name: Upload evidence
         if: always()

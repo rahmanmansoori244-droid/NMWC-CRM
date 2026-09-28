@@ -3,8 +3,9 @@
  * N08 (auditor recheck, 2026-09-27): what a failed restore may print in a PUBLIC
  * repository's Actions log.
  *
- * Each log below is shaped the way psql writes it under `-v VERBOSITY=verbose
- * --echo-errors` from a script on stdin: the server's message with its SQLSTATE,
+ * Each log below is shaped the way psql writes it under `-f - -v VERBOSITY=verbose
+ * --echo-errors` (the dump on stdin, read as a script, which is what makes psql
+ * write the `psql:<stdin>:N:` locus): the server's message with its SQLSTATE,
  * then DETAIL / CONTEXT / LOCATION lines, then psql's echo of the failed
  * statement. The rows in them carry a shop's name, +968 phones, an address and a
  * bcrypt-shaped hash — what PostgreSQL really quotes when a COPY, a CHECK or a
@@ -230,8 +231,35 @@ describe('a clean restore', () => {
     expect(text.split('\n').at(-1)).toBe('restore finished with 0 error line(s)');
   });
 
-  it('says so when psql failed without a server error', () => {
-    const { text } = both('SET\n', 2);
+  it('says FAILED, not the runbook line, when psql failed without a server error', () => {
+    const { text, md } = both('SET\n', 2);
     expect(text).toContain('psql exited 2 without a server error in the log');
+    expect(text.split('\n').at(-1)).toBe('restore FAILED (psql exit 2)');
+    expect(text).not.toContain('restore finished with 0 error line(s)');
+    expect(md).toContain('**restore FAILED (psql exit 2)**');
+  });
+});
+
+describe('a failure psql raises itself, not the server', () => {
+  // pg_dump 17.6+ writes `\restrict <key>` at the top of a plain dump, and a psql
+  // older than 17.6 / 16.10 refuses it. Read through `-f -`, psql says where.
+  it('is itemised as a client error at its dump line', () => {
+    const log = ['SET', 'psql:<stdin>:2: error: invalid command \\restrict', ''].join('\n');
+    const s = summariseRestoreLog(log, KNOWN);
+    expect(s.entries).toEqual([
+      { severity: 'CLIENT', sqlstate: null, dumpLine: 2, phase: 'pre-data', statement: null, table: null, copyRow: null },
+    ]);
+    const { text, md } = both(log, 3);
+    expect(text).toContain('psql client error  dump line 2  SQLSTATE ?  phase pre-data');
+    expect(text.split('\n').at(-1)).toBe('restore finished with 1 error line(s)');
+    expect(md).toContain('| psql client error | 2 | ? | pre-data |');
+  });
+
+  it('fed a bare pipe (no locus, terse) it cannot be itemised, and the summary still says FAILED', () => {
+    // What psql writes WITHOUT `-f -`: nothing names it as psql's, so it is not
+    // listed. The exit status is what keeps it from reading as a good restore.
+    const { text } = both(['SET', 'invalid command \\restrict', ''].join('\n'), 3);
+    expect(text).not.toContain('restore finished with 0 error line(s)');
+    expect(text.split('\n').at(-1)).toBe('restore FAILED (psql exit 3)');
   });
 });

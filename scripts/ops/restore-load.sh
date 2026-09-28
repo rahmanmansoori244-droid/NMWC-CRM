@@ -51,9 +51,13 @@ rm -f "$LOG" "$SEALED"
 # ON_ERROR_STOP: the first failure is fatal, not a half-loaded database, and it is
 # the last thing psql reports — which is what lets the summary itemise it alone.
 # VERBOSITY=verbose puts the SQLSTATE on every server message. --echo-errors adds
-# the failed statement, from which the summary takes the table.
+# the failed statement, from which the summary takes the table. `-f -` reads the
+# same stdin, but as a script file: only then does psql put `psql:<stdin>:<line>:`
+# in front of what it reports, server errors and its own alike. Fed a bare pipe it
+# writes `ERROR:  …` and `invalid command \x` with no locus, so the summary had no
+# dump line to print and could not recognise a psql client error at all.
 LOAD_EXIT=0
-gunzip -c "$DUMP" | psql "$RESTORE_TARGET_URL" -X -v ON_ERROR_STOP=1 -v VERBOSITY=verbose --echo-errors > "$LOG" 2>&1 || LOAD_EXIT=$?
+gunzip -c "$DUMP" | psql "$RESTORE_TARGET_URL" -X -f - -v ON_ERROR_STOP=1 -v VERBOSITY=verbose --echo-errors > "$LOG" 2>&1 || LOAD_EXIT=$?
 
 SUMMARY_EXIT=0
 SUMMARY_ARGS=("$LOG" --psql-exit "$LOAD_EXIT")

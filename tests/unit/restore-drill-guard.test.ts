@@ -117,6 +117,11 @@ describe('the workflows never read, print or upload the plaintext restore log', 
     // or the step proves nothing.
     expect(lines.some((l) => /^if grep -q "\$MARK" broken\/out\.txt broken\/summary\.md; then .*exit 1; fi$/.test(l))).toBe(true);
     expect(lines.some((l) => /age -d -i broken\.key broken\/restore\.log\.age \| grep -c "\$MARK"/.test(l))).toBe(true);
+    // Real psql pins the format the stubs below assume: the dump line survives,
+    // and a client error is itemised at its line, never as a good restore.
+    expect(lines).toContain(`grep -q 'dump line [0-9]' broken/out.txt || { echo "::error::the summary lost the dump line"; exit 1; }`);
+    expect(lines.some((l) => /^grep -q 'psql client error {2}dump line 2 ' client-error\/out\.txt \|\| \{ echo "::error::[^"]*"; exit 1; \}$/.test(l))).toBe(true);
+    expect(lines.some((l) => /^if grep -q 'restore finished with 0 error line' client-error\/out\.txt; then .*exit 1; fi$/.test(l))).toBe(true);
     // And it runs before the upload, so a failure here is not skipped by it.
     const names = chainSteps.map((s) => s.name);
     expect(names.indexOf(proof?.name)).toBeLessThan(names.indexOf('Upload evidence'));
@@ -130,10 +135,12 @@ describe('the load script, read', () => {
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith('#'));
 
-  it('sends everything psql says to the log file and nowhere else', () => {
+  it('sends everything psql says to the log file and nowhere else, read as a script so every line is numbered', () => {
     const psql = code.filter((l) => /(^|\|\s*)psql\s/.test(l));
     expect(psql).toHaveLength(1);
-    expect(psql[0]).toMatch(/-v ON_ERROR_STOP=1 -v VERBOSITY=verbose --echo-errors > "\$LOG" 2>&1 \|\| LOAD_EXIT=\$\?$/);
+    // `-f -`: without it psql prefixes nothing with `psql:<stdin>:N:`, and the
+    // summary has no dump line and no way to recognise a client error.
+    expect(psql[0]).toMatch(/\| psql "\$RESTORE_TARGET_URL" -X -f - -v ON_ERROR_STOP=1 -v VERBOSITY=verbose --echo-errors > "\$LOG" 2>&1 \|\| LOAD_EXIT=\$\?$/);
   });
 
   it('lets only the sanitiser and age read the log, and shreds it on every exit', () => {
@@ -151,10 +158,35 @@ describe('the load script, read', () => {
  * the script's own bash inherits; the sanitiser is the real one, through tsx.
  * The stub age is rot13, so the test can tell the sealed copy holds the row
  * without the row appearing in it as plain text.
+ *
+ * The stub psql writes PSQL_OUT, which is in the shape real psql gives a script
+ * read through `-f -`. Called WITHOUT `-f -` it does what real psql does to a
+ * bare pipe (terse logging, no input file): drops the `psql:<stdin>:N: ` locus
+ * and a client error's `error: ` level. It drains stdin first, as psql does, so
+ * the gunzip stub never writes into a closed pipe. (An ordinary template, not
+ * String.raw, because the shell's `\${…}` must be escaped from JavaScript.)
  */
+const PSQL_STUB = `
+psql() {
+  local as_script='' line
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = -f ] && [ "$#" -ge 2 ] && [ "$2" = - ]; then as_script=1; fi
+    shift
+  done
+  while IFS= read -r line; do :; done
+  if [ -n "$as_script" ]; then printf '%s' "$PSQL_OUT"; return "$PSQL_RC"; fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      'psql:<stdin>:'*) line="\${line#psql:<stdin>:*: }"; line="\${line#error: }" ;;
+    esac
+    printf '%s\\n' "$line"
+  done <<< "$PSQL_OUT"
+  return "$PSQL_RC"
+}
+`;
 const STUBS = String.raw`
 # Builtins only: on Windows every process Git Bash starts costs up to seconds.
-psql() { printf '%s' "$PSQL_OUT"; return "$PSQL_RC"; }
+${PSQL_STUB}
 gunzip() { printf 'COPY public."Customer" (id) FROM stdin;\n'; }
 age() {
   local out='' in=''
@@ -261,6 +293,21 @@ describe('the load script, executed', () => {
       expect(r.printed).toContain('restore finished with 0 error line(s)');
       expect(r.plaintext).toBe('gone');
       expect(r.sealed).toBe('yes');
+    },
+    STEP_TEST_TIMEOUT_MS
+  );
+
+  it(
+    'a failure psql raises itself is itemised at its dump line and never ends on the good-restore line',
+    () => {
+      // What psql 16.9 or older writes, reading through `-f -`, for the \restrict
+      // line pg_dump 17.6+ puts at the top of a plain dump.
+      const r = load_(['SET', 'psql:<stdin>:2: error: invalid command \\restrict', ''].join('\n'), { PSQL_RC: '3' });
+      expect(r.code).toBe('1');
+      expect(r.printed).toContain('psql client error  dump line 2  SQLSTATE ?  phase pre-data');
+      expect(r.printed).not.toContain('restore finished with 0 error line(s)');
+      expect(r.summary).toContain('| psql client error | 2 | ? | pre-data |');
+      expect(r.plaintext).toBe('gone');
     },
     STEP_TEST_TIMEOUT_MS
   );
