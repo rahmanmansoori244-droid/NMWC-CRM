@@ -23,7 +23,8 @@ import { duplicateHeadingIssue, parseWorkbook } from '@/lib/excel';
 import { normalizeCR } from '@/lib/cr';
 import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
 import { checkLimit } from '@/lib/rate-limit';
-import { scoreCustomer } from '@/lib/completeness';
+import { rescoreCustomerTx } from '@/lib/rescore';
+import { subChannelClearedByChannelChange } from '@/lib/channel-pair';
 import bcrypt from 'bcryptjs';
 import { logger } from '@/lib/logger';
 import { notifyUsers } from '@/lib/notifications';
@@ -1222,6 +1223,33 @@ type LaneBranch = {
 };
 
 /**
+ * What a row would change on the stored branch: the cells it gives (a blank
+ * cell gives nothing, item 20) that the branch does not already hold. The
+ * refresh lane names them when it does not apply them; the full lane leaves a
+ * branch they are empty for unwritten, so its version and updatedAt stay as
+ * they were (F21, auditor recheck 2026-09-27). Region follows the route (the
+ * B-19 trigger), so the route stands for both.
+ */
+function differingBranchCells(
+  r: LaneBranch,
+  stored: {
+    branchName: string;
+    routeId: string;
+    address: string;
+    dayOfVisit: string | null;
+    status: string;
+  }
+): string[] {
+  const differs: string[] = [];
+  if (r.nameGiven && r.branchName !== stored.branchName) differs.push('branch name');
+  if (r.sheetAddress && r.sheetAddress !== stored.address) differs.push('address');
+  if (r.routeResolved && r.routeId !== stored.routeId) differs.push('route');
+  if (r.dayOfVisit && r.dayOfVisit !== stored.dayOfVisit) differs.push('visit day');
+  if (r.status && r.status !== stored.status) differs.push('status');
+  return differs;
+}
+
+/**
  * The branch half of a Temix refresh group — owner decision 2026-09-25,
  * "branch only". The refresh itself writes the Temix-owned customer fields and
  * nothing else about the customer. A row the Data Steward FIXED IN THE APP
@@ -1343,12 +1371,7 @@ async function refreshLaneBranches(
       skip(`branch ${r.branchCode} was archived and was not revived`);
       continue;
     }
-    const differs: string[] = [];
-    if (r.nameGiven && r.branchName !== found.branchName) differs.push('branch name');
-    if (r.sheetAddress && r.sheetAddress !== found.address) differs.push('address');
-    if (r.routeResolved && r.routeId !== found.routeId) differs.push('route');
-    if (r.dayOfVisit && r.dayOfVisit !== found.dayOfVisit) differs.push('visit day');
-    if (r.status && r.status !== found.status) differs.push('status');
+    const differs = differingBranchCells(r, found);
     if (differs.length === 0) {
       skip(null);
       continue;
@@ -1370,6 +1393,8 @@ async function refreshLaneBranches(
         status: (r.status as CustomerStatus | null) ?? undefined,
         lastStatusChangeAt: r.status && r.status !== found.status ? new Date() : undefined,
         lastEditedById: me,
+        // B-05 / F21: an edit form open on this branch must see it changed.
+        version: { increment: 1 },
       },
     });
     notes.push(null);
@@ -1385,7 +1410,9 @@ async function refreshLaneBranches(
 }
 
 /**
- * Put each refresh row's branch note on the row as a '_lane' issue. The
+ * Put each refresh row's branch note on the row as a '_lane' issue — and a
+ * row's `extra`: what a fixed row did not write, or the sub-channel a full-lane
+ * channel change cleared (F16, on the lead row). The
  * group's route/region warnings go only on rows whose branch was actually
  * written — on a row left as it was they would say something false.
  * Advisory: the caller ignores a failure here, as it does for the ordinary
@@ -1889,6 +1916,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // Per row: what happened to its branch, when that is worth telling the
         // Steward. Written after the transaction commits.
         let rowNotes: RowNote[] = [];
+        // F16: the full lane cleared the customer's sub-channel (logged once
+        // the group has committed, never for a rolled-back one).
+        let clearedSubChannelOf: string | null = null;
         // final-hunt #32, extended to promote: this interactive transaction makes
         // ~9 sequential round trips (customer read + upsert, per-branch ownership
         // check + upsert, row state, completeness). Prisma's DEFAULT 5s ceiling is
@@ -1898,6 +1928,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         await prisma.$transaction(
           async (tx) => {
             rowNotes = g.rowIds.map(() => ({ note: null, written: false }));
+            clearedSubChannelOf = null;
             // N03: the customer's row lock FIRST, then the read, on every lane —
             // lib/locks.ts order, customer before branch. The read used to come
             // unlocked, so an archive committing after it was not seen and the
@@ -1917,6 +1948,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     crNumberNorm: true,
                     contactPerson: true,
                     channel: { select: { key: true } },
+                    // F16: whether a channel change leaves the stored
+                    // sub-channel under another channel (read under the lock).
+                    channelId: true,
+                    subChannelId: true,
+                    subChannel: { select: { channelId: true } },
                   },
                 })
               : null;
@@ -2246,6 +2282,33 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   'CROSSWALK:payment_terms is CREDIT but the row carries no temix_code — credit terms and limits come from Temix or from the credit approval chain, not from an ordinary import; steward review'
                 );
               }
+              // F16 (auditor recheck 2026-09-27; owner decision 1, 2026-09-29): a
+              // row that moves the customer to another channel used to leave the
+              // old channel's sub-channel beside it — a pair CREATE refuses and
+              // both reports and Temix read. It is cleared in the same write. A
+              // sub-channel of the new channel is kept, and a blank channel cell
+              // writes no channel, so it clears nothing. The sheet has no
+              // sub-channel column, so the new one is picked on the customer page;
+              // the lead row says so. Known costs (docs/OPERATIONS.md): -10
+              // completeness, no Temix requeue on this lane, and under the FULL
+              // gate a pending edit then fails approval asking for a sub-channel.
+              const clearSub =
+                !!existing &&
+                subChannelClearedByChannelChange(
+                  {
+                    channelId: existing.channelId,
+                    subChannelId: existing.subChannelId,
+                    subChannelChannelId: existing.subChannel?.channelId ?? null,
+                  },
+                  groupChannelId
+                );
+              if (clearSub) {
+                clearedSubChannelOf = existing!.id;
+                rowNotes[plainIdx[0]] = {
+                  ...rowNotes[plainIdx[0]],
+                  extra: `the channel in this row (${lead.channelKey?.toUpperCase()}) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page`,
+                };
+              }
               const customer = await tx.customer.upsert({
                 where: { nmwcCode: custCode },
                 update: {
@@ -2273,6 +2336,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   crNumber: lead.crNumber ?? undefined,
                   crNumberNorm: lead.crNumber ? normalizeCR(lead.crNumber) : undefined,
                   channelId: groupChannelId ?? undefined,
+                  subChannelId: clearSub ? null : undefined,
                   // A status other than ACTIVE is settled after the branches are
                   // written, from every live branch (below).
                   status: statedStatus === 'ACTIVE' ? 'ACTIVE' : undefined,
@@ -2327,7 +2391,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // window is not reachable through this action.)
                 const branchOwner = await tx.branch.findUnique({
                   where: { branchCode: r.branchCode },
-                  select: { customerId: true, customer: { select: { nmwcCode: true } } },
+                  select: {
+                    customerId: true,
+                    customer: { select: { nmwcCode: true } },
+                    // What the row would change (differingBranchCells).
+                    branchName: true,
+                    routeId: true,
+                    address: true,
+                    dayOfVisit: true,
+                    status: true,
+                  },
                 });
                 if (branchOwner && branchOwner.customerId !== customerId) {
                   throw new Error(
@@ -2349,6 +2422,13 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     );
                   }
                 }
+                // F21 (auditor recheck 2026-09-27): a branch this row would not
+                // change is not written. The upsert rewrote every branch of the
+                // file whether or not a cell differed, so Prisma moved updatedAt
+                // (the master export's "updated since" filter) on branches the
+                // load had not changed; and it never bumped version on one it had
+                // changed, as an approved edit does (B-05).
+                if (branchOwner && differingBranchCells(r, branchOwner).length === 0) continue;
                 await tx.branch.upsert({
                   where: { branchCode: r.branchCode },
                   // Item 20 (owner decision): a blank cell keeps the stored value.
@@ -2363,9 +2443,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     customerId,
                     dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
                     status: (r.status as CustomerStatus | null) ?? undefined,
-                    // EL-11: a status set by the load is a real status change.
-                    lastStatusChangeAt: r.status ? new Date() : undefined,
+                    // EL-11: a status the load changes is a real status change —
+                    // and one it only restates is not (services/edits.ts and the
+                    // refresh lane stamp the same way). Now that an unchanged
+                    // branch is not written at all, a restated status stamping
+                    // here would have depended on some other cell changing.
+                    lastStatusChangeAt:
+                      r.status && r.status !== branchOwner?.status ? new Date() : undefined,
                     lastEditedById: me.id,
+                    // B-05 / F21: an edit form open on this branch must see it changed.
+                    version: { increment: 1 },
                   },
                   create: {
                     branchCode: r.branchCode,
@@ -2382,7 +2469,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   },
                 });
               }
-              for (const i of fullIdx) rowNotes[i] = { note: null, written: true };
+              // Merged, not replaced: the lead row may already carry the
+              // sub-channel note (F16), which this used to wipe.
+              for (const i of fullIdx) rowNotes[i] = { ...rowNotes[i], note: null, written: true };
             }
             if (laneIdx.length > 0) {
               const out = await refreshLaneBranches(tx, {
@@ -2495,30 +2584,37 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // Compute completenessScore for the promoted customer. Without this,
             // every imported customer/branch stayed at 0, hiding them from
             // completeness-filtered worklists and skewing dashboard averages.
-            const scored = await tx.customer.findUnique({
-              where: { id: customerId },
-              include: { branches: { where: { deletedAt: null } } },
-            });
-            if (scored) {
-              await tx.customer.update({
-                where: { id: customerId },
-                data: { completenessScore: scoreCustomer(scored, scored.branches) },
-              });
-            }
+            // F21 (auditor recheck 2026-09-27): and every live branch's, in
+            // every lane, under the lock held since the top. Only the customer
+            // was rescored, so a branch the import created stayed at 0 and one
+            // it changed kept its old score — the leaderboards read those.
+            // lib/rescore.ts writes only the scores that differ, in raw SQL, so
+            // a branch this group did not change keeps its updatedAt and version.
+            await rescoreCustomerTx(tx, [customerId]);
           },
           // Bounded deliberately: the worst case a slice can produce is its budget
           // plus ONE long transaction, which still lands well inside maxDuration=60.
           { timeout: 20_000, maxWait: 10_000 }
         );
         promoted += g.rowIds.length;
-        if (refreshedRow) {
+        if (clearedSubChannelOf) {
+          // Ids only: no name, phone or channel value.
+          logger.info({ customerId: clearedSubChannelOf, batchId }, 'import.promote.subchannel_cleared');
+        }
+        // A full-lane row carries a note only when its customer's sub-channel
+        // was cleared (F16, on the lead row).
+        const noted = refreshedRow || rowNotes.some((n) => !!n?.extra);
+        if (noted) {
           // The branch outcome of each row: a branch left as it was, and why, or
           // what a fixed row did not write. It used to be invisible — the row
           // read PROMOTED and the counts balanced while the branch it described
           // was never written.
           await writeLaneNotes(g.rowIds, rowNotes, groupResolveErrors).catch(() => undefined);
         }
-        if (groupResolveErrors.length > 0 && !refreshedRow) {
+        // Not when the notes were written: writeLaneNotes puts these same
+        // warnings on every row whose branch was written, which on the full
+        // lane is every row, and this would overwrite the note.
+        if (groupResolveErrors.length > 0 && !noted) {
           // F-17: surface the phantom-region warning in the row's issues so the
           // Steward can fix the reference data and re-run the import. Row stays
           // PROMOTED (the customer landed) but with a visible warning.

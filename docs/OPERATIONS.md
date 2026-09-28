@@ -563,7 +563,8 @@ The rotation is audit-logged.
      acknowledgement. A row with a *different* non-blank `temix_code` is rejected.
    - **Every other file row takes the full lane — including a row with a blank `temix_code` for a
      customer that has one.** It overwrites the legal name, and the phone, CR, contact, channel and
-     status wherever the row gives them, and the branch cells it gives; it adds no warning, and it
+     status wherever the row gives them, and the branch cells it gives; it adds no warning (but for
+     the sub-channel note below), and it
      does **not** queue the customer for Temix, so the ERP keeps the old values. For a customer
      that has a Temix code, always fill `temix_code` with its stored code (it is on the customer
      page). The /export workbook and template rows with a blank `temix_code` take this lane.
@@ -576,6 +577,28 @@ The rotation is audit-logged.
      UNASSIGNED route); and once a customer has branches, a row with no `branch_code` is rejected
      — it would be numbered by its position in the file and could overwrite a sibling. **Always
      include `branch_code`.**
+   - **A full-lane row that moves a customer to another channel clears its sub-channel when the
+     stored one belongs to the old channel** (owner decision 2026-09-29, auditor recheck F16): the
+     pair would otherwise be one that creating a customer refuses, and reports and Temix read it.
+     The sheet has no sub-channel column, so the new one is picked on the customer page; the
+     customer's first row in the file says so under **Loaded with a warning** (the batch page
+     labels every lane note "Branch not updated", this one included), and the log gets
+     `import.promote.subchannel_cleared` with the customer's id. A sub-channel of the new channel
+     is kept; a row that restates the channel, or leaves `channel` blank, clears nothing — even
+     when the pair on file is already mismatched. **Known costs:** the customer loses the channel
+     pair's 10 completeness points until someone picks a sub-channel; the cleared sub-channel
+     does not reach Temix until the customer's next queued change (this lane queues nothing, as
+     above); and under the FULL submit gate (`SALESMAN_SUBMIT_GATE=FULL`) a salesman's edit
+     already waiting on that customer is refused at approval with "Sub-channel is required", so
+     the approver rejects it and he resubmits with one (the default CORE gate does not ask).
+   - Every lane rescores the customer **and each of its live branches** when its rows land
+     (auditor recheck F21; before, only the customer was, so a branch the import created sat at
+     completeness 0 on the dashboard's leaderboards). Only a score that changes is written, and
+     that write moves neither `updatedAt` nor `version`. A branch the row would not change is not
+     written at all — its `updatedAt`, which the export's "updated since" filter reads, stays put
+     — and one it does change gets `version + 1`, as an approved edit does. A status the row only
+     restates is no status change: `lastStatusChangeAt` (reactivation evidence is dated against
+     it) moves only when the status does.
 4. Problem rows are fixed on the batch page, not with scripts: **Correct…** (only the cells the
    problem names; never payment terms, credit or the Temix code; only changed cells are
    recorded), **Release shared phone…** (with a reason; audited as FORCE_OVERRIDE),
@@ -678,6 +701,26 @@ npm run smoke && npm run verify:load
 A quarantined row is never promoted, so its branch never receives the journey plan's `dayOfVisit`. This writes that day onto the branch that already exists — exactly what the promote would have written. It does **not** merge customers, clear the quarantine or resolve the duplicate; those stay in `/duplicates` for a Steward, because merging two customer records needs a human to say which one survives.
 
 It applies a row only when the customer has exactly one live branch of that name and that branch has no day recorded. Anything ambiguous is skipped and reported — writing the wrong branch's visit day sends a salesman to the wrong shop on the wrong morning.
+
+It takes no customer lock and recomputes no completeness score, although a visit day is worth 5 points: the branches it wrote keep the score from before, until `ops:rescore-completeness` (below) repairs them. **Never run the two at the same time** — the rescore's safety under load is the customer lock, which this script does not take.
+
+### Rescore completeness after the import fix (one-off, auditor recheck F21, 2026-09-29)
+
+Until this fix the promote rescored only the customer: every branch the go-live load created sat at `completenessScore` 0, and a branch whose address, visit day, status or route an import changed kept its old score — unless a later edit, photo or reactivation happened to rescore that customer. `Branch.completenessScore` is what the dashboard's region and route leaderboards and the branch ring read, so they are understated. The fixed promote keeps the scores right from now on; this repairs what the earlier loads, and `ops:visit-days`, left behind. Run it **after** the fix is deployed, so nothing written behind it is stale again.
+
+```bash
+npm run smoke                       # before — the standing rule for any production change
+DIRECT_URL='<owner connection>' npm run ops:rescore-completeness -- --expect-host ep-sweet-haze
+# read the counts to the owner, then, on the owner's go-ahead:
+DIRECT_URL='<owner connection>' npm run ops:rescore-completeness -- --expect-host ep-sweet-haze --apply --actor <steward username>
+DIRECT_URL='<owner connection>' npm run ops:rescore-completeness -- --expect-host ep-sweet-haze   # again: expect "Nothing to do"
+npm run smoke                       # and after
+```
+
+- **Tell the owner before `--apply` that the leaderboards will rise visibly**: the dry run prints how many customer and branch scores move, up and down, by how many points in total, and how many branch scores are stored as 0 today. It prints counts only — never a name, code, phone or id — and writes nothing, not even a ledger row. `--expect-host` is required for the dry run too.
+- It is a production write. The standing production-write permission of 2026-09-27 may cover it; confirm it is still in force when it runs.
+- `--apply` requires `--actor`, an active Steward not on the demo denylist; a dry run given `--actor` checks it too. It writes `Customer.completenessScore` and `Branch.completenessScore` on live customers and their live branches and nothing else, in raw SQL and only where the score differs — `updatedAt` (the export's "updated since" filter) and `version` (open edit forms) do not move, nothing is queued for Temix. Two `AuditLog` rows (`entityType = CompletenessRescore`, one `entityId`): STARTING before the first page, COMPLETED after the last, counts only.
+- Each page of customers (`--chunk`, default 200) is one transaction that first takes their row locks in the one order `lib/locks.ts` gives, so an edit approval, a photo, a reactivation or an import on the same customer is waited for, not skipped, and what it commits is what gets scored. **`ops:visit-days` takes no customer lock — never run it at the same time.** A page that fails (a lock timeout, a deadlock with a Manager's direct edit) stops the run with the pages before it committed; re-run it. It is idempotent: a second run reports nothing to do.
 
 ### Spot a duplicate in the live master
 1. Sign in as Steward.

@@ -12,16 +12,32 @@
  *  - F11: the crosswalk guard also refuses a temix_code that is the customer
  *    code of an archived customer with no Temix code whose deactivation Temix
  *    gets under that code (queued, in a batch, or sent).
+ *  - F16 (owner decision 1, 2026-09-29): a row that changes the customer's
+ *    channel clears a stored sub-channel of the old channel in the same write,
+ *    and the lead row says so — a note the full lane's row reset used to wipe.
+ *  - F21: a branch the row would not change is not written; one it changes is
+ *    written with version + 1, on both branch paths; and the group transaction
+ *    rescores the customer and every live branch, writing only the scores that
+ *    differ (lib/rescore.ts).
  *
  * The same paths against Postgres, and an archive racing the promote on two
- * connections, are in tests/integration/import-archived-parent.test.ts.
+ * connections, are in tests/integration/import-archived-parent.test.ts and
+ * tests/integration/import-multibranch.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Prisma } from '@prisma/client';
+import {
+  scoreBranch,
+  scoreCustomer,
+  type BranchForScore,
+  type CustomerForScore,
+} from '@/lib/completeness';
 
 type Fn = ReturnType<typeof vi.fn>;
 
 const h = vi.hoisted(() => ({
   db: {} as Record<string, unknown>,
+  info: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -36,7 +52,7 @@ vi.mock('@/lib/rate-limit', () => ({ checkLimit: async () => ({ ok: true }) }));
 vi.mock('@/lib/alert', () => ({ sendAlert: async () => {} }));
 vi.mock('@/lib/notifications', () => ({ notifyUsers: async () => {} }));
 vi.mock('@/lib/logger', () => ({
-  logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+  logger: { info: h.info, warn: () => {}, error: () => {}, debug: () => {} },
 }));
 vi.mock('@/lib/import-master-lookup', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/import-master-lookup')>()),
@@ -189,13 +205,39 @@ const STORED = {
   primaryPhoneNorm: '+96899999999',
   crNumberNorm: null,
   contactPerson: 'Stored Contact',
-  channel: null,
+  channel: null as { key: string } | null,
+  channelId: null as string | null,
+  subChannelId: null as string | null,
+  subChannel: null as { channelId: string } | null,
+};
+
+/** A branch as the promote's reads return it (the full lane's owner read, the refresh lane's). */
+type StoredBranch = {
+  id: string;
+  customerId: string;
+  deletedAt: Date | null;
+  customer: { nmwcCode: string };
+  branchName: string;
+  routeId: string;
+  address: string;
+  dayOfVisit: string | null;
+  status: string;
+};
+
+type SetupOptions = {
+  /** Stored branches by branchCode. */
+  branches?: Record<string, StoredBranch>;
+  /** What the rescore's read returns (lib/rescore.ts RESCORE_CUSTOMER_SELECT). */
+  scored?: unknown[];
+  channels?: Array<{ id: string; key: string }>;
 };
 
 let order: string[];
 let lockSql: string[];
 let tx: Record<string, Record<string, Fn> | Fn>;
 let rejected: Array<{ where: unknown; data: { state: string; issues: Array<{ message: string }> } }>;
+/** The rescore's raw UPDATEs: the table, and the (id, score) pairs it was given. */
+let rescoreWrites: Array<{ table: string; sql: string; rows: Array<[unknown, unknown]> }>;
 
 /** Other customers in the master, as the crosswalk guard's findFirst reads them. */
 type Other = {
@@ -209,11 +251,14 @@ type Other = {
 function setup(
   stored: (typeof STORED & { deletedAt: Date | null }) | null,
   rows: Parsed[],
-  others: Other[] = []
+  others: Other[] = [],
+  opts: SetupOptions = {}
 ) {
   order = [];
   lockSql = [];
   rejected = [];
+  rescoreWrites = [];
+  h.info.mockClear();
   const w = (name: string, value: unknown = {}) =>
     vi.fn(async () => {
       order.push(name);
@@ -225,10 +270,23 @@ function setup(
       lockSql.push(strings.join('?'));
       return stored ? [{ id: stored.id }] : [];
     }),
+    $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const q = Prisma.sql(strings, ...values);
+      const table = /^UPDATE "(\w+)"/.exec(q.sql)?.[1] ?? '?';
+      order.push(`rescore.${table}`);
+      const rows: Array<[unknown, unknown]> = [];
+      for (let i = 0; i < q.values.length; i += 2) rows.push([q.values[i], q.values[i + 1]]);
+      rescoreWrites.push({ table, sql: q.sql, rows });
+      return rows.length;
+    }),
     customer: {
-      findUnique: vi.fn(async (args: { include?: unknown }) => {
-        order.push(args.include ? 'customer.score-read' : 'customer.read');
+      findUnique: vi.fn(async () => {
+        order.push('customer.read');
         return stored ? { ...stored, branches: [] } : null;
+      }),
+      findMany: vi.fn(async () => {
+        order.push('customer.score-read');
+        return opts.scored ?? [];
       }),
       findFirst: vi.fn(
         async ({ where }: { where: Record<string, unknown> }) =>
@@ -239,7 +297,9 @@ function setup(
       updateMany: w('customer.updateMany', { count: 1 }),
     },
     branch: {
-      findUnique: vi.fn(async () => null),
+      findUnique: vi.fn(
+        async ({ where }: { where: { branchCode: string } }) => opts.branches?.[where.branchCode] ?? null
+      ),
       count: vi.fn(async () => 0),
       upsert: w('branch.upsert'),
       create: w('branch.create'),
@@ -256,7 +316,7 @@ function setup(
     },
     region: { findMany: vi.fn(async () => [{ id: 'rgU', code: 'UNASSIGNED' }]) },
     route: { findMany: vi.fn(async () => [{ id: 'rtU', code: 'UNASSIGNED', regionId: 'rgU' }]) },
-    channel: { findMany: vi.fn(async () => []) },
+    channel: { findMany: vi.fn(async () => opts.channels ?? []) },
     importRow: {
       findMany: vi.fn(async () =>
         rows.map((p, i) => ({ id: `row-${i}`, parsed: p, corrections: null, rowNumber: i + 2, createdAt: now }))
@@ -289,6 +349,8 @@ const WRITES = [
   'branch.create',
   'branch.update',
   'importRow.promoted',
+  'rescore.Branch',
+  'rescore.Customer',
 ];
 
 describe('promoteCustomerBatchAction — N03: an archived customer is refused before any lane', () => {
@@ -413,5 +475,295 @@ describe('promoteCustomerBatchAction — F11: a temix_code an archived, uncoded 
     expect(rejected[0].data.issues[0].message).toBe(
       'temix_code already recorded on OLD1 (archived — its Temix deactivation may be in flight) — steward review'
     );
+  });
+});
+
+// ── F16: the import's channel change and the stored sub-channel ─────────────
+
+const CHANNELS = [
+  { id: 'ch-retail', key: 'RETAIL' },
+  { id: 'ch-horeca', key: 'HORECA' },
+];
+const live = (over: Partial<typeof STORED> = {}) => ({ ...STORED, deletedAt: null, ...over });
+const upsertArgs = () =>
+  (tx.customer as Record<string, Fn>).upsert.mock.calls[0][0] as {
+    update: Record<string, unknown>;
+  };
+/** The row notes writeLaneNotes put on each row, by row id. */
+const notesWritten = () =>
+  Object.fromEntries(
+    ((h.db.importRow as Record<string, Fn>).update.mock.calls as Array<
+      [{ where: { id: string }; data: { issues: Array<{ field: string; message: string }> } }]
+    >).map(([a]) => [a.where.id, a.data.issues])
+  );
+/** The F-17 warnings written to every row of the group at once. */
+const groupWarnings = () =>
+  ((h.db.importRow as Record<string, Fn>).updateMany.mock.calls as Array<[{ data: Record<string, unknown> }]>)
+    .map(([a]) => a.data)
+    .filter((d) => 'issues' in d && !('state' in d));
+
+describe('promoteCustomerBatchAction — F16: a channel change clears a sub-channel of the old channel', () => {
+  const retailSub = { channelId: 'ch-retail', subChannelId: 'sub-retail', subChannel: { channelId: 'ch-retail' } };
+
+  it('clears it in the same upsert, and the note lands on the LEAD row and survives the row reset', async () => {
+    setup(
+      live(retailSub),
+      [parsed({ channelKey: 'HORECA' }), parsed({ channelKey: 'HORECA', branchCode: 'ARC1-03', address: 'Way 10, Muscat' })],
+      [],
+      { channels: CHANNELS }
+    );
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 2, failed: 0 });
+    expect(upsertArgs().update).toMatchObject({ channelId: 'ch-horeca', subChannelId: null });
+
+    // Ruling 3: the full lane resets every row's note after its branch loop; the
+    // lead row's note must be merged through it, not replaced.
+    const notes = notesWritten();
+    expect(Object.keys(notes)).toEqual(['row-0']);
+    expect(notes['row-0']).toEqual([
+      {
+        field: '_lane',
+        message:
+          "the channel in this row (HORECA) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page",
+      },
+    ]);
+
+    // Logged once the group has committed: ids only.
+    const logged = h.info.mock.calls.filter(([, msg]) => msg === 'import.promote.subchannel_cleared');
+    expect(logged).toEqual([[{ customerId: 'cust-1', batchId: 'batch-9' }, 'import.promote.subchannel_cleared']]);
+  });
+
+  it('with route warnings too: the lead row gets both, every row its warning, and no group write overwrites them', async () => {
+    setup(
+      live(retailSub),
+      [parsed({ channelKey: 'HORECA', routeCode: 'NOPE' }), parsed({ channelKey: 'HORECA', branchCode: 'ARC1-03' })],
+      [],
+      { channels: CHANNELS }
+    );
+    await promote();
+    const warning = {
+      field: '_resolve',
+      message: 'route "NOPE" not found — a new branch is parked in UNASSIGNED, an existing one keeps its route',
+    };
+    const notes = notesWritten();
+    expect(notes['row-0']).toEqual([expect.objectContaining({ field: '_lane' }), warning]);
+    expect(notes['row-1']).toEqual([warning]);
+    expect(groupWarnings()).toEqual([]);
+  });
+
+  it.each([
+    ['the stored sub-channel belongs to the new channel', live({ channelId: 'ch-retail', subChannelId: 'sub-h', subChannel: { channelId: 'ch-horeca' } }), 'HORECA'],
+    ['the channel does not change (a mismatch already on file is left alone)', live({ channelId: 'ch-horeca', subChannelId: 'sub-retail', subChannel: { channelId: 'ch-retail' } }), 'HORECA'],
+    ['the channel cell is blank', live(retailSub), null],
+    ['the customer has no sub-channel', live({ channelId: 'ch-retail' }), 'HORECA'],
+  ])('keeps it when %s: nothing cleared, no note, no log line', async (_label, stored, channelKey) => {
+    setup(stored, [parsed({ channelKey })], [], { channels: CHANNELS });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(upsertArgs().update.subChannelId).toBeUndefined();
+    expect(notesWritten()).toEqual({});
+    expect(h.info.mock.calls.filter(([, msg]) => msg === 'import.promote.subchannel_cleared')).toEqual([]);
+  });
+
+  it('without a clear, the route warnings still go to every row in one group write, as before', async () => {
+    setup(live(), [parsed({ routeCode: 'NOPE' })], [], { channels: CHANNELS });
+    await promote();
+    expect(notesWritten()).toEqual({});
+    expect(groupWarnings()).toEqual([
+      {
+        issues: [
+          {
+            field: '_resolve',
+            message: 'route "NOPE" not found — a new branch is parked in UNASSIGNED, an existing one keeps its route',
+          },
+        ],
+      },
+    ]);
+  });
+});
+
+// ── F21: which branches the import writes, and their version ───────────────
+
+const storedBranch = (over: Partial<StoredBranch> = {}): StoredBranch => ({
+  id: 'b-02',
+  customerId: 'cust-1',
+  deletedAt: null,
+  customer: { nmwcCode: 'ARC1' },
+  // What parsed() gives, so a row of it changes nothing.
+  branchName: 'New shop',
+  routeId: 'rtU',
+  address: 'Way 9, Muscat',
+  dayOfVisit: null,
+  status: 'ACTIVE',
+  ...over,
+});
+const branchUpserts = () =>
+  ((tx.branch as Record<string, Fn>).upsert.mock.calls as Array<
+    [{ where: { branchCode: string }; update: Record<string, unknown>; create: Record<string, unknown> }]
+  >).map(([a]) => a);
+
+describe('promoteCustomerBatchAction — F21: an import writes a branch only when it changes it, and bumps its version', () => {
+  it('full lane: an unchanged branch is not written at all; a changed one is, with version + 1', async () => {
+    setup(
+      live(),
+      [parsed(), parsed({ branchCode: 'ARC1-03', address: 'Way 10, Muscat' })],
+      [],
+      { branches: { 'ARC1-02': storedBranch(), 'ARC1-03': storedBranch({ id: 'b-03', address: 'Old address, Muscat' }) } }
+    );
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 2, failed: 0 });
+    const ups = branchUpserts();
+    expect(ups.map((u) => u.where.branchCode)).toEqual(['ARC1-03']);
+    expect(ups[0].update).toMatchObject({ address: 'Way 10, Muscat', version: { increment: 1 } });
+    // The status is only restated, so it is no status change (EL-11).
+    expect(ups[0].update.lastStatusChangeAt).toBeUndefined();
+  });
+
+  it.each([
+    ['branch name', {}, { branchName: 'Old name' }],
+    ['visit day', { dayOfVisit: 'MON' }, { dayOfVisit: 'SUN' }],
+    ['visit day, where none was stored', { dayOfVisit: 'MON' }, {}],
+  ])('full lane: a different %s is a change', async (_label, row, stored) => {
+    setup(live(), [parsed(row)], [], { branches: { 'ARC1-02': storedBranch(stored) } });
+    await promote();
+    expect(branchUpserts()).toHaveLength(1);
+    expect(branchUpserts()[0].update.version).toEqual({ increment: 1 });
+  });
+
+  it('full lane: a blank cell is no change, whatever the branch holds (item 20)', async () => {
+    setup(live(), [parsed({ customerStatus: null, branchName: null })], [], {
+      branches: { 'ARC1-02': storedBranch({ status: 'CLOSED', branchName: 'Stored name' }) },
+    });
+    await promote();
+    expect(branchUpserts()).toEqual([]);
+  });
+
+  it('full lane: a status the row changes stamps lastStatusChangeAt', async () => {
+    setup(live(), [parsed()], [], { branches: { 'ARC1-02': storedBranch({ status: 'CLOSED' }) } });
+    await promote();
+    const [u] = branchUpserts();
+    expect(u.update).toMatchObject({ status: 'ACTIVE', version: { increment: 1 } });
+    expect(u.update.lastStatusChangeAt).toBeInstanceOf(Date);
+  });
+
+  it('full lane: a branch no one holds is written, and a create leaves version at its default', async () => {
+    setup(live(), [parsed()], []);
+    await promote();
+    const [u] = branchUpserts();
+    expect(u.where.branchCode).toBe('ARC1-02');
+    expect(u.create).not.toHaveProperty('version');
+    // The update half runs only when a concurrent insert beat the read: a change.
+    expect(u.update.version).toEqual({ increment: 1 });
+  });
+
+  it('a row fixed in the app: the branch it changes is updated with version + 1; one it does not change is left', async () => {
+    const linked = live({ temixCode: 'ARC1' });
+    setup(linked, [parsed({ fixedInApp: true, address: 'Way 10, Muscat' })], [], {
+      branches: { 'ARC1-02': storedBranch() },
+    });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    const updates = (tx.branch as Record<string, Fn>).update.mock.calls as Array<[{ data: Record<string, unknown> }]>;
+    expect(updates).toHaveLength(1);
+    expect(updates[0][0].data).toMatchObject({ address: 'Way 10, Muscat', version: { increment: 1 } });
+
+    setup(linked, [parsed({ fixedInApp: true })], [], { branches: { 'ARC1-02': storedBranch() } });
+    await promote();
+    expect((tx.branch as Record<string, Fn>).update).not.toHaveBeenCalled();
+  });
+});
+
+// ── F21: the promote rescores the customer and every live branch ───────────
+
+const scoringCustomer: CustomerForScore & { id: string } = {
+  id: 'cust-1',
+  channelId: null,
+  subChannelId: null,
+  primaryPhone: '+96899999999',
+  contactPerson: 'Stored Contact',
+  crNumber: null,
+  crPhotoId: null,
+  paymentTerms: 'CASH',
+  notes: null,
+};
+const scoringBranch = (
+  id: string,
+  over: Partial<BranchForScore> = {}
+): BranchForScore & { id: string; deletedAt: null } => ({
+  id,
+  deletedAt: null,
+  gpsLat: null,
+  gpsLng: null,
+  address: 'Way 9, Muscat',
+  shopPhotoId: null,
+  signboardPhotoId: null,
+  dayOfVisit: 'MON',
+  coolersCount: 0,
+  standsCount: 0,
+  emptyBottlesCount: 0,
+  equipmentConfirmed: false,
+  openingHours: null,
+  deliveryWindow: null,
+  status: 'ACTIVE',
+  ...over,
+});
+
+describe('promoteCustomerBatchAction — F21: the group transaction rescores every live branch, not only the customer', () => {
+  it('writes the branch scores that differ and the customer score, in raw SQL on the transaction, after the rows are promoted', async () => {
+    const created = scoringBranch('b-new'); // created by this import: stored at the default 0
+    const same = scoringBranch('b-same', { gpsLat: 23.6, gpsLng: 58.4 });
+    const branches = [
+      { ...created, completenessScore: 0 },
+      { ...same, completenessScore: scoreBranch(same) },
+    ];
+    setup(live(), [parsed()], [], {
+      scored: [{ ...scoringCustomer, completenessScore: 7, branches }],
+    });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+
+    expect(rescoreWrites.map((w) => [w.table, w.rows])).toEqual([
+      ['Branch', [['b-new', scoreBranch(created)]]],
+      ['Customer', [['cust-1', scoreCustomer(scoringCustomer, [created, same])]]],
+    ]);
+    // Only a score that still differs is written; nothing else is set.
+    for (const w of rescoreWrites) {
+      expect(w.sql).toMatch(/SET "completenessScore" = v\.score FROM \(VALUES/);
+      expect(w.sql).toMatch(/"completenessScore" <> v\.score$/);
+      expect(w.sql).not.toMatch(/version|updatedAt/);
+    }
+    const i = (name: string) => order.indexOf(name);
+    expect(i('importRow.promoted')).toBeLessThan(i('customer.score-read'));
+    expect(i('customer.score-read')).toBeLessThan(i('rescore.Branch'));
+    // The old customer-only write is gone.
+    expect(order).not.toContain('customer.update');
+    // On the transaction, not the pooled client.
+    expect(h.db.$executeRaw).toBeUndefined();
+  });
+
+  it('writes nothing when every stored score is already right', async () => {
+    const b = scoringBranch('b-1');
+    setup(live(), [parsed()], [], {
+      scored: [
+        {
+          ...scoringCustomer,
+          completenessScore: scoreCustomer(scoringCustomer, [b]),
+          branches: [{ ...b, completenessScore: scoreBranch(b) }],
+        },
+      ],
+    });
+    await promote();
+    expect(order).toContain('customer.score-read');
+    expect(rescoreWrites).toEqual([]);
+  });
+
+  it('rescores on the branch-only lane too (every row fixed in the app)', async () => {
+    const b = scoringBranch('b-02');
+    setup(live({ temixCode: 'ARC1' }), [parsed({ fixedInApp: true, address: 'Way 10, Muscat' })], [], {
+      branches: { 'ARC1-02': storedBranch() },
+      scored: [{ ...scoringCustomer, completenessScore: 0, branches: [{ ...b, completenessScore: 0 }] }],
+    });
+    await promote();
+    expect(rescoreWrites.map((w) => w.table)).toEqual(['Branch', 'Customer']);
   });
 });

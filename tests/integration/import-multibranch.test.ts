@@ -11,6 +11,17 @@
  * multi-branch customer was flagged "duplicate phone/CR in this file" against
  * its own branches. This test reproduces that in the small and pins the fix.
  *
+ * Also, through upload AND promote, the import half of the auditor recheck of
+ * 2026-09-27 (tests/unit/customer-import-service.test.ts proves each on a fake):
+ *   - F21: a branch the load creates is scored (it stayed at 0: only the
+ *     customer was rescored), and a re-import bumps version and moves updatedAt
+ *     only on the branch it changes, while a stale score on a branch it does not
+ *     change is fixed without touching either (lib/rescore.ts, raw SQL);
+ *   - F16 (owner decision 1): a row that moves the customer to another channel
+ *     clears a sub-channel of the old one and says so on the lead row; a
+ *     sub-channel of the new channel, or any sub-channel when the channel does
+ *     not change, is kept.
+ *
  *   RUN_IMPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/import-multibranch.test.ts
  */
@@ -19,6 +30,9 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
+import { purgeAuditLog } from '../support/audit';
+import { promoteFully } from '../support/promote';
+import { scoreBranch, scoreCustomer } from '@/lib/completeness';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 const ENABLED = process.env.RUN_IMPORT_TESTS === '1' && !!process.env.DATABASE_URL;
@@ -168,5 +182,205 @@ describe.skipIf(!ENABLED)('F-UAT-7: multi-branch customer must not self-quaranti
     // The fix's contract: no legitimate multi-branch customer is flagged against
     // its own branches. Pre-fix this was ~324.
     expect(inFileDup).toBe(0);
+  });
+});
+
+describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch customer', () => {
+  let prisma: import('@prisma/client').PrismaClient;
+  let imports: typeof import('@/services/imports');
+  const tag = randomUUID().slice(0, 8).toUpperCase();
+  const code = `ZZMBS-${tag}`;
+  const REGION = `ZZMBS${tag}R`;
+  const ROUTE = `ZZMBS${tag}-RT`;
+  const stewardId = `ZZ-MBS-${tag}`;
+  const batchIds: string[] = [];
+  let regionId = '';
+  let routeId = '';
+  const horeca = { id: '', subId: '' };
+  const general = { id: '', subId: '' };
+
+  const at = (over: Record<string, string | number>) =>
+    row({ cust_code: code, sales_region: REGION, route: ROUTE, channel: 'HORECA', ...over });
+  const two = (over: Record<string, string | number> = {}) => [
+    at({ branch_code: `${code}-01`, address: 'Way 1, Muscat', ...over }),
+    at({ branch_code: `${code}-02`, address: 'Way 2, Muscat', ...over }),
+  ];
+  /** Upload and promote; every row must land. */
+  const load = async (rows: Array<Record<string, string | number>>) => {
+    await prisma.rateLimit.deleteMany({ where: { key: { contains: stewardId } } });
+    const fd = new FormData();
+    fd.set(
+      'file',
+      new File([await buildXlsx(rows)], `${code}.xlsx`, {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      })
+    );
+    const res = await imports.uploadCustomerMasterAction(fd);
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    const id = (res as { ok: true; data: { batchId: string } }).data.batchId;
+    batchIds.push(id);
+    expect(await promoteFully(imports, id)).toMatchObject({ promoted: rows.length, failed: 0 });
+    return id;
+  };
+  const SCORED = {
+    gpsLat: true,
+    gpsLng: true,
+    address: true,
+    shopPhotoId: true,
+    signboardPhotoId: true,
+    dayOfVisit: true,
+    coolersCount: true,
+    standsCount: true,
+    emptyBottlesCount: true,
+    equipmentConfirmed: true,
+    openingHours: true,
+    deliveryWindow: true,
+    status: true,
+  } as const;
+  const branchesOf = () =>
+    prisma.branch.findMany({
+      where: { customer: { nmwcCode: code }, deletedAt: null },
+      orderBy: { branchCode: 'asc' },
+      select: { id: true, completenessScore: true, version: true, updatedAt: true, ...SCORED },
+    });
+  const customerOf = () =>
+    prisma.customer.findUniqueOrThrow({
+      where: { nmwcCode: code },
+      select: {
+        completenessScore: true,
+        channelId: true,
+        subChannelId: true,
+        primaryPhone: true,
+        contactPerson: true,
+        crNumber: true,
+        crPhotoId: true,
+        paymentTerms: true,
+        notes: true,
+      },
+    });
+  const laneNotes = async (batchId: string) =>
+    (await prisma.importRow.findMany({ where: { batchId }, orderBy: { rowNumber: 'asc' }, select: { issues: true } })).map(
+      (r) => ((r.issues as Array<{ field: string; message: string }> | null) ?? []).filter((i) => i.field === '_lane')
+    );
+
+  beforeAll(async () => {
+    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    ({ prisma } = await import('@/lib/db'));
+    imports = await import('@/services/imports');
+    regionId = (await prisma.region.create({ data: { code: REGION, name: `ZZ MBS ${tag}` } })).id;
+    routeId = (await prisma.route.create({ data: { code: ROUTE, name: `ZZ MBS ${tag}`, regionId } })).id;
+    await prisma.user.create({
+      data: { id: stewardId, username: stewardId, passwordHash: 'x', fullName: 'ZZ MBS Steward', role: 'STEWARD' },
+    });
+    current = { id: stewardId, role: 'STEWARD', username: stewardId };
+    // The seed's channels, which the import maps its channel cell to.
+    for (const [key, into] of [
+      ['HORECA', horeca],
+      ['GENERAL_TRADE', general],
+    ] as const) {
+      const ch = await prisma.channel.findUniqueOrThrow({
+        where: { key },
+        include: { subChannels: { where: { isActive: true }, take: 1 } },
+      });
+      into.id = ch.id;
+      into.subId = ch.subChannels[0]!.id;
+    }
+  });
+
+  afterAll(async () => {
+    if (!prisma) return;
+    try {
+      const custs = await prisma.customer.findMany({ where: { nmwcCode: code }, select: { id: true } });
+      const ids = custs.map((c) => c.id);
+      await purgeAuditLog(prisma, { where: { actorId: stewardId } });
+      await prisma.notification.deleteMany({ where: { userId: stewardId } });
+      await prisma.branch.deleteMany({ where: { customerId: { in: ids } } });
+      await prisma.customer.deleteMany({ where: { id: { in: ids } } });
+      await prisma.importRow.deleteMany({ where: { batchId: { in: batchIds } } });
+      await prisma.importBatch.deleteMany({ where: { id: { in: batchIds } } });
+      await prisma.rateLimit.deleteMany({ where: { key: { contains: stewardId } } });
+      await prisma.route.deleteMany({ where: { id: routeId } });
+      await prisma.region.deleteMany({ where: { id: regionId } });
+      await prisma.user.deleteMany({ where: { id: stewardId } });
+    } catch (e) {
+      console.error('cleanup', e);
+    }
+    await prisma.$disconnect();
+  });
+
+  it('F21: a first load scores every branch it creates, and the customer from them', async () => {
+    await load(two());
+    const bs = await branchesOf();
+    expect(bs).toHaveLength(2);
+    for (const b of bs) {
+      expect(b.completenessScore).toBeGreaterThan(0);
+      expect(b.completenessScore).toBe(scoreBranch(b));
+    }
+    const c = await customerOf();
+    expect(c.completenessScore).toBe(scoreCustomer(c, bs));
+  });
+
+  it('F21: a re-import bumps only the branch it changes; a stale score elsewhere is fixed without touching that row', async () => {
+    const [b1, b2] = await branchesOf();
+    // A stale score as the go-live load left one, written behind Prisma's back
+    // so that updatedAt stays put.
+    await prisma.$executeRaw`UPDATE "Branch" SET "completenessScore" = 0 WHERE "id" = ${b2.id}`;
+
+    await load([
+      at({ branch_code: `${code}-01`, address: 'Way 1b, Muscat' }),
+      at({ branch_code: `${code}-02`, address: 'Way 2, Muscat' }),
+    ]);
+    const [a1, a2] = await branchesOf();
+    expect(a1.address).toBe('Way 1b, Muscat');
+    expect(a1.version).toBe(b1.version + 1);
+    expect(a1.updatedAt.getTime()).toBeGreaterThan(b1.updatedAt.getTime());
+    expect(a1.completenessScore).toBe(scoreBranch(a1));
+
+    expect(a2.version).toBe(b2.version);
+    expect(a2.updatedAt.getTime()).toBe(b2.updatedAt.getTime());
+    expect(a2.completenessScore).toBe(scoreBranch(a2));
+    expect(a2.completenessScore).toBe(b2.completenessScore);
+  });
+
+  it('F16: a row moving the customer to another channel clears the old channel sub-channel, and the lead row says so', async () => {
+    await prisma.customer.update({ where: { nmwcCode: code }, data: { subChannelId: horeca.subId } });
+    const before = await customerOf();
+    expect(before.channelId).toBe(horeca.id);
+
+    const batchId = await load(two({ channel: 'GENERAL_TRADE' }));
+    const c = await customerOf();
+    expect(c.channelId).toBe(general.id);
+    expect(c.subChannelId).toBeNull();
+    // The clear costs the channel pair's 10 points; the stored score is rescored from it.
+    const bs = await branchesOf();
+    expect(c.completenessScore).toBe(scoreCustomer(c, bs));
+    expect(scoreCustomer({ ...c, channelId: horeca.id, subChannelId: horeca.subId }, bs)).toBe(
+      c.completenessScore + 10
+    );
+
+    const notes = await laneNotes(batchId);
+    expect(notes[0]).toEqual([
+      {
+        field: '_lane',
+        message:
+          "the channel in this row (GENERAL_TRADE) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page",
+      },
+    ]);
+    expect(notes[1]).toEqual([]);
+  });
+
+  it('F16: the same channel keeps its sub-channel, and a sub-channel of the new channel is kept', async () => {
+    await prisma.customer.update({ where: { nmwcCode: code }, data: { subChannelId: general.subId } });
+    const same = await load(two({ channel: 'GENERAL_TRADE' }));
+    expect(await customerOf()).toMatchObject({ channelId: general.id, subChannelId: general.subId });
+    expect(await laneNotes(same)).toEqual([[], []]);
+
+    // A mismatch already on file (the old import left it): the channel then
+    // moves to the channel that sub-channel belongs to.
+    await prisma.customer.update({ where: { nmwcCode: code }, data: { subChannelId: horeca.subId } });
+    const back = await load(two({ channel: 'HORECA' }));
+    expect(await customerOf()).toMatchObject({ channelId: horeca.id, subChannelId: horeca.subId });
+    expect(await laneNotes(back)).toEqual([[], []]);
   });
 });
