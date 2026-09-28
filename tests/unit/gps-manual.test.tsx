@@ -226,6 +226,8 @@ describe('41 — the marker', () => {
 describe('41 — the approval queue flags it before a bulk approve', () => {
   const item = (manualGps: boolean) => ({
     id: 'q1',
+    decisionToken: '{}',
+    credit: null,
     ageHours: 2,
     changesCount: 3,
     sla: null,

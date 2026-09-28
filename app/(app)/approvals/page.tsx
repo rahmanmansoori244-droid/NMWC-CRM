@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/nmwc/EmptyState';
 import { loadScope } from '@/lib/access';
 import { formatSlaStatus } from '@/lib/working-hours';
 import { countFieldChanges, hasManualGps } from '@/lib/gps-manual';
+import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
 import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
 
 export const metadata = { title: 'Approvals · NMWC' };
@@ -103,6 +104,14 @@ export default async function ApprovalsPage() {
       submittedAt: true,
       slaDueAt: true,
       escalationLevel: true,
+      // N01: each card's decision token — the request as this card shows it.
+      cycle: true,
+      currentStepIndex: true,
+      stageEnteredAt: true,
+      // X-APPR-1: a credit application's figures are on its card, and bound
+      // into its token, so a bulk decision is made on the numbers shown.
+      requestedCreditLimit: true,
+      requestedPaymentTermDays: true,
       submittedBy: { select: { fullName: true, username: true } },
       customer: {
         select: {
@@ -135,15 +144,25 @@ export default async function ApprovalsPage() {
     const isCreate = e.process === 'CREATE';
     // Working-hours SLA pill, computed server-side (client clocks drift).
     const sla = e.slaDueAt ? formatSlaStatus(e.slaDueAt) : null;
+    const paymentTerms = isCreate ? (e.customerDraft?.paymentTerms ?? null) : null;
     return {
       sla,
       escalationLevel: e.escalationLevel,
       id: e.id,
+      decisionToken: decisionTokenFor(e),
       ageHours,
       changesCount,
       manualGps: hasManualGps(e.fieldChanges),
       isCreate,
-      paymentTerms: isCreate ? (e.customerDraft?.paymentTerms ?? null) : null,
+      paymentTerms,
+      // The same formatter the token uses: the figures bound are the figures shown.
+      credit:
+        paymentTerms === 'CREDIT'
+          ? {
+              limit: formatRequestedLimit(e.requestedCreditLimit),
+              termDays: e.requestedPaymentTermDays,
+            }
+          : null,
       customer: e.customer
         ? {
             legalName: e.customer.legalName,

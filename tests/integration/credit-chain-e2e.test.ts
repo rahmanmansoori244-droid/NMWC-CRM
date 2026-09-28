@@ -8,17 +8,25 @@
  *        the customer must NOT exist yet (no Customer row, edit still SUBMITTED).
  *        Only the ACCOUNTANT (final) step creates the customer.
  *   R17  FM/GM/ACC cannot amend the credit figures. The approve action accepts
- *        only an editId — no amount field — so the materialized customer's
- *        creditLimit / paymentTermDays equal the salesman's ORIGINAL request.
+ *        only an editId and the decision token — no amount field; the token
+ *        binds the figures on screen but cannot change them — so the
+ *        materialized customer's creditLimit / paymentTermDays equal the
+ *        salesman's ORIGINAL request.
  *   R26  Concurrency: two approvals of the SAME final step race — exactly one
  *        succeeds (atomic claim), the other is refused NOT_PENDING. No double
  *        materialization.
+ *   N01  A decision is bound to the request as the reviewer's page showed it
+ *        (lib/decision-token.ts). A page kept open across a step-back or a
+ *        correction round is refused STALE_VIEW — approve, reject and bulk,
+ *        mid-chain and at the final step — and writes nothing.
  *
  *   RUN_CREDIT_CHAIN=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/credit-chain-e2e.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { freshDecisionToken } from '../support/decision-token';
+import { parseDecisionToken } from '@/lib/decision-token';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 90_000 });
@@ -41,6 +49,10 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     fm: `ZZCC-fm-${tag}`, gm: `ZZCC-gm-${tag}`, acc: `ZZCC-acc-${tag}`,
   };
   const legalName = `ZZ-SYN Credit Chain ${tag}`;
+  // N01's two requests: A (CREDIT, corrected mid-chain) and B (CASH).
+  const nameA = `ZZ-SYN Credit Chain N01-A ${tag}`;
+  const nameB = `ZZ-SYN Credit Chain N01-B ${tag}`;
+  const allNames = [legalName, nameA, nameB];
   const REQUESTED_LIMIT = 7777;
   const REQUESTED_DAYS = 45;
   let channelId = '', subChannelId = '';
@@ -87,7 +99,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   afterAll(async () => {
     if (!prisma) return;
     try {
-      const eds = await prisma.customerEdit.findMany({ where: { OR: [{ submittedById: ids.salesman }, { customerDraft: { legalName } }] }, select: { id: true, customerId: true } });
+      const eds = await prisma.customerEdit.findMany({ where: { OR: [{ submittedById: ids.salesman }, { customerDraft: { legalName: { in: allNames } } }] }, select: { id: true, customerId: true } });
       const edIds = eds.map((e) => e.id);
       const custIds = eds.map((e) => e.customerId).filter((x): x is string => !!x);
       if (edIds.length) {
@@ -96,7 +108,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         await prisma.editCustomerDraft.deleteMany({ where: { editId: { in: edIds } } });
         await purgeCustomerEdits(prisma, { where: { id: { in: edIds } } });
       }
-      const allCust = [...custIds, ...(await prisma.customer.findMany({ where: { legalName }, select: { id: true } })).map((c) => c.id)];
+      const allCust = [...custIds, ...(await prisma.customer.findMany({ where: { legalName: { in: allNames } }, select: { id: true } })).map((c) => c.id)];
       if (allCust.length) {
         await prisma.branch.deleteMany({ where: { customerId: { in: allCust } } });
         await prisma.customer.deleteMany({ where: { id: { in: allCust } } });
@@ -111,9 +123,11 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     await prisma.$disconnect();
   });
 
+  /** Approve from a freshly opened review page: its decision token is the row now (N01). */
   async function approve(editId: string) {
     const fd = new FormData();
     fd.set('editId', editId);
+    fd.set('decisionToken', await freshDecisionToken(prisma, editId));
     return edits.approveEditAction(fd);
   }
   const editState = () => prisma.customerEdit.findUniqueOrThrow({ where: { id: editId }, select: { state: true, currentStepIndex: true, pendingRole: true, customerId: true, stageEnteredAt: true, slaDueAt: true } });
@@ -236,5 +250,207 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     for (let i = 1; i < steps.length; i++) {
       expect(steps[i]!.stageEnteredAt!.getTime()).toBeGreaterThan(steps[i - 1]!.stageEnteredAt!.getTime());
     }
+  });
+
+  // ── N01 (auditor recheck, 2026-09-27) ──────────────────────────────────────
+  // Approve and reject used to send only the id; the server reloaded the row and
+  // claimed on what it found, so a tab opened on cycle 1 approved a corrected
+  // cycle 2 it had never shown. A (CREDIT) goes through a step-back and a
+  // correction round while tokens taken earlier are kept, the way an open tab
+  // keeps them; B (CASH) shares A's bulk call at the final step.
+  describe('N01: every decision is bound to the request as the reviewer saw it', () => {
+    let editA = '';
+    let editB = '';
+    const attA = { cr: '', guarantee: '', shop: '', signboard: '' };
+    // Pages kept open while the request changed underneath them.
+    const kept = { supCycle1: '', fmVisit1: '', fmCycle1Visit2: '', accVisit1: '' };
+    const digits = (salt: number) => String(100000 + ((parseInt(tag, 16) + salt) % 900000));
+
+    const submitA = (credit: { requestedCreditLimit: number; requestedPaymentTermDays: number }) =>
+      creates.submitCreateAction({
+        ...(editA ? { editId: editA } : {}),
+        isDraft: false,
+        customer: {
+          legalName: nameA, paymentTerms: 'CREDIT', channelId, subChannelId,
+          primaryPhone: `+96891${digits(11)}`, contactPerson: `ZZ Contact A ${tag}`,
+          crNumber: `97${digits(12)}`, crPhotoAttachmentId: attA.cr,
+        },
+        credit,
+        guaranteeAttachmentIds: [attA.guarantee],
+        branches: [{
+          branchName: `ZZ Branch A ${tag}`, address: `ZZ Way 2, ${tag}`, gpsLat: 23.61, gpsLng: 58.41,
+          dayOfVisit: 'MON', coolersCount: 1, standsCount: 1, emptyBottlesCount: 5,
+          shopPhotoAttachmentId: attA.shop, signboardPhotoAttachmentId: attA.signboard,
+        }],
+      });
+
+    const decide = (kind: 'approve' | 'reject', id: string, token: string) => {
+      const fd = new FormData();
+      fd.set('editId', id);
+      fd.set('decisionToken', token);
+      if (kind === 'reject') {
+        fd.set('reason', 'Please re-check the credit figures with the shop.');
+        fd.set('category', 'wrong_info');
+      }
+      return kind === 'approve' ? edits.approveEditAction(fd) : edits.rejectEditAction(fd);
+    };
+    const fresh = (id: string) => freshDecisionToken(prisma, id);
+
+    /** Everything a decision writes: if none of it moved, the decision wrote nothing. */
+    const footprint = async (id: string, name: string) => ({
+      row: await prisma.customerEdit.findUniqueOrThrow({
+        where: { id },
+        select: { state: true, cycle: true, currentStepIndex: true, pendingRole: true, stageEnteredAt: true, slaDueAt: true, reviewedAt: true },
+      }),
+      decisions: await prisma.editApproval.count({ where: { editId: id } }),
+      audits: await prisma.auditLog.count({ where: { entityId: id } }),
+      notifications: await prisma.notification.count({ where: { editId: id } }),
+      customers: await prisma.customer.count({ where: { legalName: name } }),
+    });
+    const expectStale = (res: { ok: boolean }) => {
+      expect(res.ok, JSON.stringify(res)).toBe(false);
+      expect((res as { ok: false; code: string }).code).toBe('STALE_VIEW');
+    };
+
+    it('A is submitted at OMR 400 / 30 days, B as a CASH request; both wait on the Supervisor', async () => {
+      asUser(ids.salesman, 'SALESMAN');
+      attA.cr = await mkAtt('CR');
+      attA.guarantee = await mkAtt('GUARANTEE');
+      attA.shop = await mkAtt('SHOP');
+      attA.signboard = await mkAtt('SIGNBOARD');
+      const a = await submitA({ requestedCreditLimit: 400, requestedPaymentTermDays: 30 });
+      if (!a.ok) console.error('N01 SUBMIT A FAILED', JSON.stringify(a));
+      expect(a.ok).toBe(true);
+      editA = (a as { ok: true; data: { editId: string } }).data.editId;
+
+      const b = await creates.submitCreateAction({
+        isDraft: false,
+        customer: {
+          legalName: nameB, paymentTerms: 'CASH', channelId, subChannelId,
+          primaryPhone: `+96892${digits(21)}`, contactPerson: `ZZ Contact B ${tag}`,
+          crNumber: `96${digits(22)}`, crPhotoAttachmentId: await mkAtt('CR'),
+        },
+        branches: [{
+          branchName: `ZZ Branch B ${tag}`, address: `ZZ Way 3, ${tag}`, gpsLat: 23.62, gpsLng: 58.42,
+          dayOfVisit: 'TUE', coolersCount: 1, standsCount: 1, emptyBottlesCount: 5,
+          shopPhotoAttachmentId: await mkAtt('SHOP'), signboardPhotoAttachmentId: await mkAtt('SIGNBOARD'),
+        }],
+      });
+      if (!b.ok) console.error('N01 SUBMIT B FAILED', JSON.stringify(b));
+      expect(b.ok).toBe(true);
+      editB = (b as { ok: true; data: { editId: string } }).data.editId;
+
+      kept.supCycle1 = await fresh(editA);
+      expect(parseDecisionToken(kept.supCycle1)).toMatchObject({ cycle: 1, stepIndex: 0, creditLimit: '400.000', paymentTermDays: 30 });
+    });
+
+    it('the Supervisor sends A on; the Finance Manager opens it (visit 1) and steps it back', async () => {
+      asUser(ids.supervisor, 'SUPERVISOR');
+      expect((await decide('approve', editA, await fresh(editA))).ok).toBe(true);
+      asUser(ids.fm, 'FINANCE_MANAGER');
+      kept.fmVisit1 = await fresh(editA);
+      expect(parseDecisionToken(kept.fmVisit1)).toMatchObject({ cycle: 1, stepIndex: 1 });
+      // The Finance Manager's first send-back in a cycle returns it one step.
+      expect((await decide('reject', editA, kept.fmVisit1)).ok).toBe(true);
+      const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editA } });
+      expect([st.state, st.cycle, st.currentStepIndex]).toEqual(['SUBMITTED', 1, 0]);
+    });
+
+    it('same cycle, same step, a later visit: the visit-1 page cannot approve, and nothing is written', async () => {
+      asUser(ids.supervisor, 'SUPERVISOR');
+      expect((await decide('approve', editA, await fresh(editA))).ok).toBe(true);
+      asUser(ids.fm, 'FINANCE_MANAGER');
+      const before = await footprint(editA, nameA);
+      expect([before.row.cycle, before.row.currentStepIndex]).toEqual([1, 1]); // FM again, visit 2
+      expectStale(await decide('approve', editA, kept.fmVisit1));
+      expect(await footprint(editA, nameA)).toEqual(before);
+      kept.fmCycle1Visit2 = await fresh(editA);
+    });
+
+    it('correction round: the second send-back goes to the salesman, who corrects A to OMR 10,000 / 90 days', async () => {
+      asUser(ids.fm, 'FINANCE_MANAGER');
+      // A second send-back from the same step in one cycle goes to the salesman.
+      expect((await decide('reject', editA, await fresh(editA))).ok).toBe(true);
+      expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editA } })).state).toBe('NEEDS_CORRECTION');
+      asUser(ids.salesman, 'SALESMAN');
+      const res = await submitA({ requestedCreditLimit: 10_000, requestedPaymentTermDays: 90 });
+      if (!res.ok) console.error('N01 RESUBMIT A FAILED', JSON.stringify(res));
+      expect(res.ok).toBe(true);
+      const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editA } });
+      expect([st.state, st.cycle, st.currentStepIndex]).toEqual(['SUBMITTED', 2, 0]);
+      expect(Number(st.requestedCreditLimit)).toBe(10_000);
+    });
+
+    it('a Supervisor page from cycle 1 cannot reject cycle 2 — not even the decision row that precedes the claim is written', async () => {
+      asUser(ids.supervisor, 'SUPERVISOR');
+      const before = await footprint(editA, nameA);
+      expectStale(await decide('reject', editA, kept.supCycle1));
+      expect(await footprint(editA, nameA)).toEqual(before);
+      // From a fresh page the Supervisor sends cycle 2 on.
+      expect((await decide('approve', editA, await fresh(editA))).ok).toBe(true);
+    });
+
+    it("the auditor's case: the Finance Manager's cycle-1 page (OMR 400 / 30) cannot approve cycle 2 (OMR 10,000 / 90)", async () => {
+      asUser(ids.fm, 'FINANCE_MANAGER');
+      const before = await footprint(editA, nameA);
+      expect([before.row.cycle, before.row.currentStepIndex]).toEqual([2, 1]);
+      expectStale(await decide('approve', editA, kept.fmCycle1Visit2));
+      expect(await footprint(editA, nameA)).toEqual(before);
+      // The same approval from a page showing cycle 2 goes through.
+      const token = await fresh(editA);
+      expect(parseDecisionToken(token)).toMatchObject({ cycle: 2, stepIndex: 1, creditLimit: '10000.000', paymentTermDays: 90 });
+      const ok = await decide('approve', editA, token);
+      expect(ok.ok, JSON.stringify(ok)).toBe(true);
+      const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editA } });
+      expect([st.cycle, st.currentStepIndex, st.pendingRole]).toEqual([2, 2, 'GM']);
+      expect(await prisma.editApproval.count({ where: { editId: editA, cycle: 2, stepIndex: 1, decision: 'APPROVED' } })).toBe(1);
+    });
+
+    it('A reaches the Accountant, is stepped back to the GM and re-advanced; B is sent on to the Accountant', async () => {
+      asUser(ids.gm, 'GM');
+      expect((await decide('approve', editA, await fresh(editA))).ok).toBe(true);
+      asUser(ids.acc, 'ACCOUNTANT');
+      kept.accVisit1 = await fresh(editA);
+      expect(parseDecisionToken(kept.accVisit1)).toMatchObject({ cycle: 2, stepIndex: 3 });
+      expect((await decide('reject', editA, kept.accVisit1)).ok).toBe(true);
+      asUser(ids.gm, 'GM');
+      expect((await decide('approve', editA, await fresh(editA))).ok).toBe(true);
+      const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editA } });
+      expect([st.state, st.cycle, st.currentStepIndex]).toEqual(['SUBMITTED', 2, 3]);
+
+      asUser(ids.supervisor, 'SUPERVISOR');
+      expect((await decide('approve', editB, await fresh(editB))).ok).toBe(true);
+      expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editB } })).pendingRole).toBe('ACCOUNTANT');
+    });
+
+    it('bulk at the final step: B on a current card is created; A on its visit-1 card fails alone and creates no customer', async () => {
+      asUser(ids.acc, 'ACCOUNTANT');
+      const before = await footprint(editA, nameA);
+      const fd = new FormData();
+      fd.set('decisions', JSON.stringify([
+        { editId: editA, decisionToken: kept.accVisit1 },
+        { editId: editB, decisionToken: await fresh(editB) },
+      ]));
+      const res = await edits.bulkApproveEditsAction(fd);
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      if (!res.ok) return;
+      expect(res.data.successes).toEqual([editB]);
+      expect(res.data.failures.map((f) => [f.editId, f.code])).toEqual([[editA, 'STALE_VIEW']]);
+      expect(await prisma.customer.count({ where: { legalName: nameB } })).toBe(1);
+      expect(await footprint(editA, nameA)).toEqual(before);
+      expect(before.customers).toBe(0);
+    });
+
+    it('from a fresh page the Accountant creates A, with the figures that page showed', async () => {
+      asUser(ids.acc, 'ACCOUNTANT');
+      const ok = await decide('approve', editA, await fresh(editA));
+      expect(ok.ok, JSON.stringify(ok)).toBe(true);
+      const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editA } });
+      expect(st.state).toBe('APPROVED');
+      const cust = await prisma.customer.findUniqueOrThrow({ where: { id: st.customerId! }, select: { legalName: true, creditLimit: true, paymentTermDays: true } });
+      expect(cust.legalName).toBe(nameA);
+      expect(Number(cust.creditLimit)).toBe(10_000);
+      expect(cust.paymentTermDays).toBe(90);
+    });
   });
 });

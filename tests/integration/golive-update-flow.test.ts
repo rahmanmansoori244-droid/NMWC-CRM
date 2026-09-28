@@ -17,6 +17,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { freshDecisionToken } from '../support/decision-token';
 import { randomUUID, createHash } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 // Static, not the dynamic import used further down: the constant below is
@@ -551,6 +552,9 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
   it('the other-region manager cannot approve it; the region manager can, and the changes go live', async () => {
     const fd = new FormData();
     fd.set('editId', approvedEditId);
+    // N01: the token a freshly opened review page carries; the refusals below
+    // are the authorization gate's, which runs before the token is compared.
+    fd.set('decisionToken', await freshDecisionToken(prisma, approvedEditId));
     asOtherManager();
     const denied = await edits.approveEditAction(fd);
     expect(denied.ok).toBe(false);
@@ -620,6 +624,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asManager();
     const fd = new FormData();
     fd.set('editId', editId);
+    fd.set('decisionToken', await freshDecisionToken(prisma, editId));
     fd.set('reason', 'Contact role looks wrong — please confirm with the shop.');
     fd.set('category', 'wrong_info');
     const rej = await edits.rejectEditAction(fd);
@@ -653,6 +658,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asManager();
     const fd2 = new FormData();
     fd2.set('editId', res2.data.editId);
+    fd2.set('decisionToken', await freshDecisionToken(prisma, res2.data.editId));
     expect((await edits.approveEditAction(fd2)).ok).toBe(true);
     const final = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
     expect(final.contactRole).toBe('Owner / Partner');
@@ -811,6 +817,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asManager();
     const fdQuiet = new FormData();
     fdQuiet.set('editId', quiet.data.editId);
+    fdQuiet.set('decisionToken', await freshDecisionToken(prisma, quiet.data.editId));
     expect((await edits.approveEditAction(fdQuiet)).ok).toBe(true);
 
     // A reason too short to say anything is refused — in the GPS slot the form shows.
@@ -853,6 +860,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asManager();
     const fd = new FormData();
     fd.set('editId', res.data.editId);
+    fd.set('decisionToken', await freshDecisionToken(prisma, res.data.editId));
     const ok = await edits.approveEditAction(fd);
     expect(ok.ok, JSON.stringify(ok)).toBe(true);
     const b = await prisma.branch.findUniqueOrThrow({ where: { id: branchId } });
@@ -1170,6 +1178,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asManager();
     const fd = new FormData();
     fd.set('editId', first.data.editId);
+    fd.set('decisionToken', await freshDecisionToken(prisma, first.data.editId));
     fd.set('reason', 'Please confirm the contact with the shop.');
     fd.set('category', 'wrong_info');
     expect((await edits.rejectEditAction(fd)).ok).toBe(true);

@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { freshDecisionToken } from '../support/decision-token';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 60_000 });
@@ -87,6 +88,7 @@ describe.skipIf(!ENABLED)('imported customer branch can be closed (final-hunt #1
     current = { id: ids.sup, role: 'SUPERVISOR', username: ids.sup };
     const appFd = new FormData();
     appFd.set('editId', editId);
+    appFd.set('decisionToken', await freshDecisionToken(prisma, editId));
     const app = await edits.approveEditAction(appFd);
     if (!app.ok) console.error('CLOSE APPROVE FAILED', JSON.stringify(app));
     expect(app.ok).toBe(true);

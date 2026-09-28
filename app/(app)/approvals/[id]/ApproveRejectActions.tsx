@@ -47,7 +47,65 @@ const REJECT_TEMPLATES: Record<string, string[]> = {
   ],
 };
 
-export function ApproveRejectActions({ editId }: { editId: string }) {
+/**
+ * What approving THIS step does (X-APPR-2). The modal said "Changes will go live
+ * on the customer immediately" to every approver, but a mid-chain step only
+ * sends the request on, and the final step of a new-customer request creates a
+ * customer rather than changing one.
+ */
+export type ApproveOutcome =
+  | { kind: 'ADVANCE'; nextRole: string }
+  | { kind: 'CREATE' }
+  | { kind: 'APPLY' };
+
+const STEP_LABEL: Record<string, string> = {
+  SUPERVISOR: 'Supervisor',
+  MANAGER: 'Manager',
+  ACCOUNTANT: 'Accountant',
+  FINANCE_MANAGER: 'Finance Manager',
+  GM: 'GM',
+};
+
+export function approveConfirmCopy(outcome: ApproveOutcome): {
+  title: string;
+  message: string;
+  confirmLabel: string;
+} {
+  switch (outcome.kind) {
+    case 'ADVANCE': {
+      const next = STEP_LABEL[outcome.nextRole] ?? outcome.nextRole.replace(/_/g, ' ');
+      return {
+        title: `Send on to ${next}?`,
+        message: `You approve this step and the request moves to the ${next} step. Nothing is written to the customer master until the final step approves it.`,
+        confirmLabel: 'Approve and send on',
+      };
+    }
+    case 'CREATE':
+      return {
+        title: 'Create this customer?',
+        message:
+          'This is the final approval: the new customer is created in the customer master now, as shown on this page. This cannot be undone.',
+        confirmLabel: 'Approve and create',
+      };
+    case 'APPLY':
+      return {
+        title: 'Approve this edit?',
+        message: 'Changes will go live on the customer immediately. This cannot be undone.',
+        confirmLabel: 'Approve',
+      };
+  }
+}
+
+export function ApproveRejectActions({
+  editId,
+  decisionToken,
+  outcome,
+}: {
+  editId: string;
+  /** N01: the request as this page rendered it (lib/decision-token.ts). Sent with every decision. */
+  decisionToken: string;
+  outcome: ApproveOutcome;
+}) {
   const [pending, start] = useTransition();
   const [showReject, setShowReject] = useState(false);
   const [reason, setReason] = useState('');
@@ -61,6 +119,7 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
     setErrors({});
     const fd = new FormData();
     fd.set('editId', editId);
+    fd.set('decisionToken', decisionToken);
     start(async () => {
       // PROD-006: server actions return `{ ok, code, message, fields? }` —
       // they no longer throw AppError across the SC boundary. See
@@ -71,10 +130,9 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
         // response already carries the fresh /approvals payload — ONE round trip.
         // The promise then resolves with no value; only error results return.
         const res = await approveEditAndGoAction(fd);
-        if (res && !res.ok) {
-          if (res.fields) setErrors(res.fields);
-          else setErrors({ _form: res.message });
-        }
+        // Approve has no input to put a field error beside (a missing decision
+        // token is one): the message goes at the top. STALE_VIEW lands there too.
+        if (res && !res.ok) setErrors({ _form: res.message });
       } catch (err) {
         setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
       }
@@ -86,11 +144,14 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
     setErrors({});
     const fd = new FormData(e.currentTarget);
     fd.set('editId', editId);
+    fd.set('decisionToken', decisionToken);
     start(async () => {
       try {
         const res = await rejectEditAndGoAction(fd);
         if (res && !res.ok) {
-          if (res.fields) setErrors(res.fields);
+          // The reason is the only field this form shows; any other field error
+          // (the decision token) must still be seen, so it goes at the top.
+          if (res.fields?.reason) setErrors(res.fields);
           else setErrors({ _form: res.message });
         }
       } catch (err) {
@@ -100,6 +161,7 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
   }
 
   const templates = REJECT_TEMPLATES[category] ?? [];
+  const confirm = approveConfirmCopy(outcome);
 
   return (
     <div>
@@ -200,12 +262,13 @@ export function ApproveRejectActions({ editId }: { editId: string }) {
         </form>
       )}
 
-      {/* B-14: replace window.confirm() with an accessible modal. */}
+      {/* B-14: replace window.confirm() with an accessible modal. X-APPR-2: its
+          words say what approving this step actually does. */}
       <ConfirmModal
         open={confirmingApprove}
-        title="Approve this edit?"
-        message="Changes will go live on the customer immediately. This cannot be undone."
-        confirmLabel="Approve"
+        title={confirm.title}
+        message={confirm.message}
+        confirmLabel={confirm.confirmLabel}
         confirmTone="primary"
         onConfirm={approve}
         onCancel={() => setConfirmingApprove(false)}

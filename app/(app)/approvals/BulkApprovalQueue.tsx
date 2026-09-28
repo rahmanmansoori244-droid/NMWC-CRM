@@ -21,6 +21,12 @@ import {
 
 export type ApprovalQueueItem = {
   id: string;
+  /**
+   * N01: the request as this card shows it (lib/decision-token.ts). A bulk
+   * decision sends each card's own token, and an item whose request has changed
+   * since the page loaded fails on its own with STALE_VIEW.
+   */
+  decisionToken: string;
   ageHours: number;
   changesCount: number;
   /** Item 41: a branch point in this request was typed in by hand, not a GPS fix. */
@@ -31,6 +37,12 @@ export type ApprovalQueueItem = {
   /** Phase 1: net-new customer CREATE request (no customer row yet). */
   isCreate: boolean;
   paymentTerms: 'CASH' | 'CREDIT' | null;
+  /**
+   * X-APPR-1: a new CREDIT customer's requested figures, shown on the card so a
+   * finance approver deciding in bulk sees what they approve; the same values
+   * are in decisionToken. Null for every other request.
+   */
+  credit: { limit: string | null; termDays: number | null } | null;
   customer: {
     legalName: string;
     nmwcCode: string;
@@ -83,13 +95,21 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
     }
   }
 
+  // N01: each selected card's own view of its request. Built from the cards on
+  // screen, so a selection whose card has gone is not decided.
+  function selectedDecisions() {
+    return items
+      .filter((i) => selected.has(i.id))
+      .map((i) => ({ editId: i.id, decisionToken: i.decisionToken }));
+  }
+
   function handleBulkApprove() {
-    const ids = [...selected];
+    const decisions = selectedDecisions();
     setShowApprove(false);
     setOutcome(null);
     start(async () => {
       const fd = new FormData();
-      fd.set('editIds', JSON.stringify(ids));
+      fd.set('decisions', JSON.stringify(decisions));
       const res = await bulkApproveEditsAction(fd);
       if (res.ok) {
         setOutcome({
@@ -107,12 +127,12 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
 
   function handleBulkReject() {
     if (rejectReason.length < 5) return;
-    const ids = [...selected];
+    const decisions = selectedDecisions();
     setShowReject(false);
     setOutcome(null);
     start(async () => {
       const fd = new FormData();
-      fd.set('editIds', JSON.stringify(ids));
+      fd.set('decisions', JSON.stringify(decisions));
       fd.set('reason', rejectReason);
       fd.set('category', rejectCategory);
       const res = await bulkRejectEditsAction(fd);
@@ -223,6 +243,15 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                       ? `New ${e.paymentTerms ?? ''} customer request`.replace('  ', ' ')
                       : `${e.customer?.nmwcCode} · ${e.changesCount} change${e.changesCount === 1 ? '' : 's'}`}
                   </p>
+                  {/* X-APPR-1: the figures a credit approval approves, on the card
+                      itself — Select all then Approve used to decide them unseen. */}
+                  {e.credit && (
+                    <p className="mt-0.5 text-xs font-semibold text-slate-800">
+                      Requested credit:{' '}
+                      {e.credit.limit != null ? `OMR ${e.credit.limit}` : 'no limit given'} ·{' '}
+                      {e.credit.termDays != null ? `${e.credit.termDays} days` : 'no term given'}
+                    </p>
+                  )}
                   <p className="mt-1 text-xs text-slate-600">
                     Submitted by {e.submittedByFullName}
                   </p>

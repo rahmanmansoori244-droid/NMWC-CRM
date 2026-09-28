@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { NextResponse, type NextRequest } from 'next/server';
 
 const db = vi.hoisted(() => ({
@@ -140,21 +141,70 @@ describe('the approval engine snapshots the stage on every decision it records',
     expect(sites).toBe(4);
   });
 
-  it('every decision claim pins the visit to the stage, so a stale decision cannot land on a later visit', () => {
-    // A step-back then a re-advance returns to the same step in the same cycle;
-    // without stageEnteredAt in the claim, a decision loaded before them passed.
+  it('every decision claim is built from the reviewer’s decision token, so a stale decision cannot land', () => {
+    // A step-back then a re-advance returns to the same step in the same cycle, so
+    // the claim pins the visit (stageEnteredAt), not just the step. N01: it used to
+    // take those values from the row reloaded a moment before, which guarded only
+    // the reload-to-write window — a tab opened before a correction round approved
+    // figures it had never shown. Every value now comes from the token the page
+    // rendered (lib/decision-token.ts), so the check and the claim are one statement.
     const src = stripComments(readFileSync('services/edits.ts', 'utf8'), 'edits.ts');
-    const claims = callArguments(src, /\btx\.customerEdit\.updateMany\b/).filter((a) =>
-      /currentStepIndex:\s*(stepIndex|rejectStepIndex)\b/.test(a)
-    );
+    // A claim: moves a SUBMITTED request off its current step.
+    const claims = callArguments(src, /\btx\.customerEdit\.updateMany\b/).filter((a) => {
+      const where = objectAfter(a, /\bwhere\s*:/);
+      return !!where && /\bstate:\s*EditState\.SUBMITTED\b/.test(topLevel(where)) && /\bcurrentStepIndex\s*:/.test(where);
+    });
+    // Advance, CREATE final, UPDATE final, reject.
     expect(claims).toHaveLength(4);
+    const fromToken: Array<[column: string, field: string]> = [
+      ['cycle', 'cycle'],
+      ['currentStepIndex', 'stepIndex'],
+      ['stageEnteredAt', 'stageEnteredAt'],
+      ['requestedCreditLimit', 'creditLimit'],
+      ['requestedPaymentTermDays', 'paymentTermDays'],
+    ];
     for (const c of claims) {
       // In the WHERE, where it guards the claim — not in the data it writes.
       const where = objectAfter(c, /\bwhere\s*:/);
       expect(where, 'a claim without a where').not.toBeNull();
       // At the top level of the where — not tucked inside an OR, where it would
-      // not constrain the claim.
-      expect(topLevel(where!)).toMatch(/stageEnteredAt:\s*edit\.stageEnteredAt/);
+      // not constrain the claim — and the token's value itself, not edit.* and
+      // not an expression built on it.
+      const top = topLevel(where!);
+      for (const [column, field] of fromToken) {
+        expect(top, `${column} in a claim`).toMatch(new RegExp(`\\b${column}:\\s*expected\\.${field}\\s*(,|$)`));
+      }
+    }
+  });
+
+  it('every decision entry point reads the token, and compares it after the authorization gate', () => {
+    const src = stripComments(readFileSync('services/edits.ts', 'utf8'), 'edits.ts');
+    const sf = ts.createSourceFile('edits.ts', src, ts.ScriptTarget.Latest, true);
+    const body = (name: string): string => {
+      const fn = sf.statements.find(
+        (n): n is ts.FunctionDeclaration => ts.isFunctionDeclaration(n) && n.name?.text === name
+      );
+      expect(fn?.body, `${name} not found`).toBeDefined();
+      return fn!.body!.getText(sf);
+    };
+    for (const core of ['approveEditCore', 'rejectEditCore']) {
+      const b = body(core);
+      expect(b.match(/\bconst expected = readDecisionToken\(formData\);/g), core).toHaveLength(1);
+      const gate = b.search(/!canActOnStep\(/);
+      const check = b.search(/\bassertDecisionView\(expected, edit\);/);
+      const firstWrite = b.search(/\bprisma\.\$transaction\(/);
+      expect(gate, `${core}: the authorization gate`).toBeGreaterThan(-1);
+      // After the gate: before it, a caller with no right to the request could
+      // tell STALE_VIEW from FORBIDDEN and test guesses of its credit figures.
+      expect(check, `${core}: compared after the gate`).toBeGreaterThan(gate);
+      expect(firstWrite, `${core}: a write`).toBeGreaterThan(-1);
+      expect(check, `${core}: compared before anything is written`).toBeLessThan(firstWrite);
+    }
+    for (const bulk of ['bulkApproveEditsAction', 'bulkRejectEditsAction']) {
+      const b = body(bulk);
+      expect(b, bulk).toMatch(/\bconst \{ editIds, tokenOf \} = readBulkDecisions\(formData\);/);
+      // Each item is decided against its own card's token.
+      expect(b, bulk).toMatch(/\bfd\.set\('decisionToken', tokenOf\.get\(editId\)!\);/);
     }
   });
 

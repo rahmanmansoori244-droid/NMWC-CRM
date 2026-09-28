@@ -20,6 +20,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { freshDecisionToken } from '../support/decision-token';
 import { randomUUID } from 'node:crypto';
 
 // The QA DB is a remote Neon branch (~230ms/round-trip); each test does many
@@ -117,7 +118,9 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
   it('C11: Supervisor CANNOT approve a reactivation via the generic engine (WRONG_LANE)', async () => {
     const editId = await newReactivation();
     current = { id: ids.supervisor, role: 'SUPERVISOR', username: ids.supervisor };
-    const fd = new FormData(); fd.set('editId', editId);
+    // A current decision token (N01), so the refusal below is the lane guard's
+    // and not a missing token's.
+    const fd = new FormData(); fd.set('editId', editId); fd.set('decisionToken', await freshDecisionToken(prisma, editId));
     const res = await edits.approveEditAction(fd);
     expect(res.ok).toBe(false);
     expect((res as { ok: false; code: string }).code).toBe('WRONG_LANE');
@@ -128,8 +131,10 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
   it('C11: Supervisor CANNOT reject a reactivation via the generic engine', async () => {
     const editId = await newReactivation();
     current = { id: ids.supervisor, role: 'SUPERVISOR', username: ids.supervisor };
-    // reason must be >=5 chars so we reach the lane guard, not input validation
+    // reason must be >=5 chars, and the decision token current (N01), so we reach
+    // the lane guard, not input validation
     const fd = new FormData(); fd.set('editId', editId); fd.set('reason', 'not allowed here'); fd.set('category', 'other');
+    fd.set('decisionToken', await freshDecisionToken(prisma, editId));
     const res = await edits.rejectEditAction(fd);
     expect(res.ok).toBe(false);
     expect((res as { ok: false; code: string }).code).toBe('WRONG_LANE');

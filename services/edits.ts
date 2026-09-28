@@ -36,6 +36,7 @@ import {
   resolveRejectTarget,
 } from '@/lib/approval-chains';
 import { stageSnapshot } from '@/lib/working-hours';
+import { MISSING_TOKEN_MESSAGE, assertDecisionView, readDecisionToken } from '@/lib/decision-token';
 import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/notifications';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
@@ -844,6 +845,9 @@ async function approveEditCore(formData: FormData) {
   const session = await requireUser();
   const editId = String(formData.get('editId') ?? '');
   if (!editId) throw new ValidationError({ editId: 'required' });
+  // N01: the request as the approver's page showed it. Compared with the row
+  // after the authorization gate, and the claims below are built from it.
+  const expected = readDecisionToken(formData);
 
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
@@ -914,6 +918,9 @@ async function approveEditCore(formData: FormData) {
   ) {
     throw new ForbiddenError('You are not authorized to act on this step.');
   }
+  // N01: a page opened before a correction round, a step-back or another
+  // reviewer's decision shows a request that no longer exists. Nothing is written.
+  assertDecisionView(expected, edit);
 
   // DG-06: one audit envelope for the whole action, captured here — after the
   // authorization gate and outside every transaction below. `session.id` (from
@@ -938,12 +945,15 @@ async function approveEditCore(formData: FormData) {
           where: {
             id: editId,
             state: EditState.SUBMITTED,
-            currentStepIndex: stepIndex,
-            cycle: edit.cycle,
-            // The same visit to this stage, not just the same step: a step-back and a
-            // re-advance return to this index in the same cycle, and a decision loaded
-            // before them must not land on the new visit (review, 2026-09-27).
-            stageEnteredAt: edit.stageEnteredAt,
+            // N01: the view the approver decided on, not the row reloaded above —
+            // the check and the claim are one statement. stageEnteredAt is the
+            // visit: a step-back and a re-advance return to this index in the
+            // same cycle (review, 2026-09-27).
+            currentStepIndex: expected.stepIndex,
+            cycle: expected.cycle,
+            stageEnteredAt: expected.stageEnteredAt,
+            requestedCreditLimit: expected.creditLimit,
+            requestedPaymentTermDays: expected.paymentTermDays,
           },
           data: {
             currentStepIndex: stepIndex + 1,
@@ -1039,12 +1049,12 @@ async function approveEditCore(formData: FormData) {
           where: {
             id: editId,
             state: EditState.SUBMITTED,
-            currentStepIndex: stepIndex,
-            cycle: edit.cycle,
-            // The same visit to this stage, not just the same step: a step-back and a
-            // re-advance return to this index in the same cycle, and a decision loaded
-            // before them must not land on the new visit (review, 2026-09-27).
-            stageEnteredAt: edit.stageEnteredAt,
+            // N01: the view the approver decided on (see the advance claim above).
+            currentStepIndex: expected.stepIndex,
+            cycle: expected.cycle,
+            stageEnteredAt: expected.stageEnteredAt,
+            requestedCreditLimit: expected.creditLimit,
+            requestedPaymentTermDays: expected.paymentTermDays,
           },
           data: {
             state: EditState.APPROVED,
@@ -1257,12 +1267,12 @@ async function approveEditCore(formData: FormData) {
         where: {
           id: editId,
           state: EditState.SUBMITTED,
-          currentStepIndex: stepIndex,
-          cycle: edit.cycle,
-          // The same visit to this stage, not just the same step: a step-back and a
-          // re-advance return to this index in the same cycle, and a decision loaded
-          // before them must not land on the new visit (review, 2026-09-27).
-          stageEnteredAt: edit.stageEnteredAt,
+          // N01: the view the approver decided on (see the advance claim above).
+          currentStepIndex: expected.stepIndex,
+          cycle: expected.cycle,
+          stageEnteredAt: expected.stageEnteredAt,
+          requestedCreditLimit: expected.creditLimit,
+          requestedPaymentTermDays: expected.paymentTermDays,
         },
         data: {
           state: EditState.APPROVED,
@@ -1374,6 +1384,52 @@ async function approveEditCore(formData: FormData) {
 }
 
 /**
+ * N01: a bulk decision is a list of `{ editId, decisionToken }` — each card's own
+ * view of its request — and every item is decided against its own token. An id
+ * list alone (the old payload) is refused: it binds nothing.
+ */
+function readBulkDecisions(formData: FormData): { editIds: string[]; tokenOf: Map<string, string> } {
+  const raw = formData.get('decisions');
+  if (typeof raw !== 'string') {
+    throw new ValidationError({ decisions: MISSING_TOKEN_MESSAGE }, MISSING_TOKEN_MESSAGE);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = null;
+  }
+  const items = Array.isArray(parsed) ? parsed : null;
+  if (
+    !items ||
+    !items.every(
+      (x) =>
+        !!x &&
+        typeof x === 'object' &&
+        typeof (x as { editId?: unknown }).editId === 'string' &&
+        typeof (x as { decisionToken?: unknown }).decisionToken === 'string'
+    )
+  ) {
+    throw new ValidationError({
+      decisions: 'decisions must be a JSON array of { editId, decisionToken }.',
+    });
+  }
+  const list = items as { editId: string; decisionToken: string }[];
+  if (list.length === 0) {
+    throw new ValidationError({ decisions: 'Pick at least one edit.' });
+  }
+  if (list.length > 50) {
+    throw new ValidationError({ decisions: 'Bulk limit is 50 edits per call.' });
+  }
+  const tokenOf = new Map(list.map((d) => [d.editId, d.decisionToken]));
+  // One token per request: a repeated id with two views of it has no answer.
+  if (tokenOf.size !== list.length) {
+    throw new ValidationError({ decisions: 'Each request can be picked only once.' });
+  }
+  return { editIds: list.map((d) => d.editId), tokenOf };
+}
+
+/**
  * B-11 (Senior-audit 2026-05-10): Bulk approve. Reviewer multi-selects edits
  * in the queue and approves them in one round trip. Each edit goes through
  * `approveEditAction` in its own transaction, so partial failures (a single
@@ -1387,21 +1443,7 @@ async function approveEditCore(formData: FormData) {
 export async function bulkApproveEditsAction(formData: FormData): SafeAction<BulkOutcome> {
   return runAction(async () => {
     await requireUser();
-    const raw = String(formData.get('editIds') ?? '[]');
-    let editIds: string[];
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) throw new Error('not an array');
-      editIds = parsed.map((x) => String(x));
-    } catch {
-      throw new ValidationError({ editIds: 'editIds must be a JSON array of strings.' });
-    }
-    if (editIds.length === 0) {
-      throw new ValidationError({ editIds: 'Pick at least one edit.' });
-    }
-    if (editIds.length > 50) {
-      throw new ValidationError({ editIds: 'Bulk limit is 50 edits per call.' });
-    }
+    const { editIds, tokenOf } = readBulkDecisions(formData);
     // REL-04: each item commits on its own, so a throw escaping this loop
     // would leave approvals committed and the approver told nothing at all.
     const out = await runBulk(
@@ -1409,6 +1451,7 @@ export async function bulkApproveEditsAction(formData: FormData): SafeAction<Bul
       (editId) => {
         const fd = new FormData();
         fd.set('editId', editId);
+        fd.set('decisionToken', tokenOf.get(editId)!);
         return approveEditAction(fd);
       },
       {
@@ -1438,31 +1481,18 @@ export async function bulkApproveEditsAction(formData: FormData): SafeAction<Bul
 export async function bulkRejectEditsAction(formData: FormData): SafeAction<BulkOutcome> {
   return runAction(async () => {
     await requireUser();
-    const raw = String(formData.get('editIds') ?? '[]');
     const reason = String(formData.get('reason') ?? '').trim();
     const category = String(formData.get('category') ?? 'other').trim();
     if (reason.length < 5 || reason.length > 1000) {
       throw new ValidationError({ reason: 'Reason must be 5–1000 characters.' });
     }
-    let editIds: string[];
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) throw new Error('not an array');
-      editIds = parsed.map((x) => String(x));
-    } catch {
-      throw new ValidationError({ editIds: 'editIds must be a JSON array of strings.' });
-    }
-    if (editIds.length === 0) {
-      throw new ValidationError({ editIds: 'Pick at least one edit.' });
-    }
-    if (editIds.length > 50) {
-      throw new ValidationError({ editIds: 'Bulk limit is 50 edits per call.' });
-    }
+    const { editIds, tokenOf } = readBulkDecisions(formData);
     const out = await runBulk(
       editIds,
       (editId) => {
         const fd = new FormData();
         fd.set('editId', editId);
+        fd.set('decisionToken', tokenOf.get(editId)!);
         fd.set('reason', reason);
         fd.set('category', category);
         return rejectEditAction(fd);
@@ -1504,6 +1534,8 @@ async function rejectEditCore(formData: FormData) {
   if (reason.length < 5 || reason.length > 1000) {
     throw new ValidationError({ reason: 'Reason must be 5–1000 characters.' });
   }
+  // N01: a rejection is bound to the request as the reviewer saw it, like an approval.
+  const expected = readDecisionToken(formData);
 
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
@@ -1569,6 +1601,8 @@ async function rejectEditCore(formData: FormData) {
   ) {
     throw new ForbiddenError('You are not authorized to act on this step.');
   }
+  // N01: after the gate, before anything is written (see approveEditCore).
+  assertDecisionView(expected, edit);
 
   // Owner-confirmed step-back cascade: a rejection returns the request to the
   // previous approver (step N-1); a rejection at the first step returns it to the
@@ -1627,16 +1661,19 @@ async function rejectEditCore(formData: FormData) {
             reviewedById: session.id,
             reviewedAt: rejectedAt,
           };
+    // The EditApproval row above is inserted before this claim, in the same
+    // transaction: a missed claim throws and rolls it back.
     const claim = await tx.customerEdit.updateMany({
       where: {
         id: editId,
         state: EditState.SUBMITTED,
-        currentStepIndex: rejectStepIndex,
-        cycle: edit.cycle,
-        // The same visit to this stage, not just the same step: a step-back and a
-        // re-advance return to this index in the same cycle, and a decision loaded
-        // before them must not land on the new visit (review, 2026-09-27).
-        stageEnteredAt: edit.stageEnteredAt,
+        // N01: the view the reviewer rejected (see the advance claim in
+        // approveEditCore); stageEnteredAt is the visit to the stage.
+        currentStepIndex: expected.stepIndex,
+        cycle: expected.cycle,
+        stageEnteredAt: expected.stageEnteredAt,
+        requestedCreditLimit: expected.creditLimit,
+        requestedPaymentTermDays: expected.paymentTermDays,
       },
       data,
     });

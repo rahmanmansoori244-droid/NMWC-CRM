@@ -5,11 +5,12 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
-import { parseChain } from '@/lib/approval-chains';
+import { isFinalStep, parseChain } from '@/lib/approval-chains';
+import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
 import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-manual';
 import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
 import { AlertTriangle } from 'lucide-react';
-import { ApproveRejectActions } from './ApproveRejectActions';
+import { ApproveRejectActions, type ApproveOutcome } from './ApproveRejectActions';
 
 export const metadata = { title: 'Approval · NMWC' };
 
@@ -129,6 +130,13 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
 
   const chain = parseChain(edit.approvalChain);
   const isPending = edit.state === 'SUBMITTED';
+  // X-APPR-2: what approving the current step does, for the confirmation's words.
+  // Read off the same frozen chain approveEditCore advances along.
+  const approveOutcome: ApproveOutcome = !isFinalStep(chain, edit.currentStepIndex)
+    ? { kind: 'ADVANCE', nextRole: chain[edit.currentStepIndex + 1]!.role }
+    : isCreate
+      ? { kind: 'CREATE' }
+      : { kind: 'APPLY' };
   const displayName = isCreate
     ? (edit.customerDraft?.legalName ?? '—')
     : (edit.customer?.legalName ?? '—');
@@ -363,7 +371,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                   label="Credit limit"
                   value={
                     edit.requestedCreditLimit != null
-                      ? `OMR ${Number(edit.requestedCreditLimit).toFixed(3)}`
+                      ? `OMR ${formatRequestedLimit(edit.requestedCreditLimit)}`
                       : null
                   }
                 />
@@ -571,7 +579,13 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
         // padding to cancel, so `-mx-4 sm:-mx-6` made it wider than the screen — a
         // sideways scroll on every phone and a 24px scrollbar on desktop (item 37).
         <div className="sticky bottom-0 mt-4 border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:p-6">
-          <ApproveRejectActions editId={edit.id} />
+          {/* N01: the token is made from the row this page just rendered, so a
+              decision is refused if the request has changed since. */}
+          <ApproveRejectActions
+            editId={edit.id}
+            decisionToken={decisionTokenFor(edit)}
+            outcome={approveOutcome}
+          />
         </div>
       )}
     </main>
