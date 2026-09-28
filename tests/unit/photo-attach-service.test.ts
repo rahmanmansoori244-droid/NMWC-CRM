@@ -27,7 +27,7 @@ const s = vi.hoisted(() => ({
   },
 }));
 const db = vi.hoisted(() => ({
-  attachment: { findUnique: vi.fn(), findFirst: vi.fn(), update: vi.fn() },
+  attachment: { findUnique: vi.fn(), findFirst: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   customer: {
     findFirst: vi.fn(),
     findUnique: vi.fn(),
@@ -61,7 +61,8 @@ vi.mock('@/lib/access', async (importOriginal) => ({
 
 import { POST as attachPOST } from '@/app/api/photos/attach/route';
 import { POST as detachPOST } from '@/app/api/photos/detach/route';
-import { ALREADY_ATTACHED_MESSAGE } from '@/lib/photo-attach';
+import { ALREADY_ATTACHED_MESSAGE, PHOTO_CHANGED_MESSAGE, PHOTO_CONFLICT_MESSAGE } from '@/lib/photo-attach';
+import { PHOTO_WRITER_ROLES } from '@/lib/permissions';
 
 const HOST = 'nmwc.example';
 async function call(handler: (req: NextRequest) => Promise<Response>, name: string, body: unknown) {
@@ -119,6 +120,7 @@ const customer = (over: Record<string, unknown> = {}) => ({
 const wrote = () =>
   db.$transaction.mock.calls.length +
   db.attachment.update.mock.calls.length +
+  db.attachment.updateMany.mock.calls.length +
   db.branch.update.mock.calls.length +
   db.customer.update.mock.calls.length +
   audit.writeAudit.mock.calls.length;
@@ -134,6 +136,8 @@ beforeEach(() => {
   audit.writeAudit.mockReset();
   audit.getAuditEnvelope.mockReset().mockResolvedValue({});
   db.user.findUniqueOrThrow.mockResolvedValue({ ownedRouteId: 'r1' });
+  // The guarded claim (attach) and soft-delete (Remove) take their one row.
+  db.attachment.updateMany.mockResolvedValue({ count: 1 });
   db.branch.findFirst.mockResolvedValue(branch());
   db.branch.findUniqueOrThrow.mockResolvedValue(branch());
   db.customer.findFirst.mockResolvedValue(customer());
@@ -203,10 +207,11 @@ describe('attach, through the route: every check still refuses before a write', 
     db.attachment.findUnique.mockResolvedValue(photo());
     expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toEqual({ ok: true });
     expect(db.$transaction).toHaveBeenCalledTimes(1);
-    expect(db.attachment.update).toHaveBeenCalledWith({
-      where: { id: ATT },
+    expect(db.attachment.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: ATT }),
       data: { branchId: B1, kind: 'SHOP' },
     });
+    expect(db.attachment.update).not.toHaveBeenCalled();
     expect(audit.writeAudit).toHaveBeenCalledTimes(1);
   });
 
@@ -224,7 +229,7 @@ describe('attach, through the route: every check still refuses before a write', 
     expect(sql.join('?')).toMatch(/FROM "Customer" WHERE "id" = \? FOR UPDATE/);
     expect(id).toBe(CUST);
     const lockedAt = db.$queryRaw.mock.invocationCallOrder[0];
-    for (const f of [db.attachment.update, db.branch.update, db.customer.update, db.customer.findUniqueOrThrow, db.branch.findUniqueOrThrow]) {
+    for (const f of [db.attachment.update, db.attachment.updateMany, db.branch.update, db.customer.update, db.customer.findUniqueOrThrow, db.branch.findUniqueOrThrow]) {
       for (const order of f.mock.invocationCallOrder) expect(order).toBeGreaterThan(lockedAt);
     }
   });
@@ -355,17 +360,233 @@ describe('detach, through the route', () => {
     db.customer.findUnique.mockResolvedValue(customer());
     expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
     expect(db.attachment.findFirst).toHaveBeenCalledWith({ where: { id: ATT, deletedAt: null } });
-    expect(db.attachment.update).toHaveBeenCalledWith({
-      where: { id: ATT },
+    // X-PHOTO-1: removed only where the checks found it — guarded on its wiring.
+    expect(db.attachment.updateMany).toHaveBeenCalledWith({
+      where: { id: ATT, deletedAt: null, customerId: null, branchId: B1, branchExtraId: null, editId: null },
       data: { deletedAt: expect.any(Date), hash: null },
     });
+    expect(db.attachment.update).not.toHaveBeenCalled();
     expect(audit.writeAudit).toHaveBeenCalledTimes(1);
     // The branch's customer is locked first, as on attach.
     const [, id] = db.$queryRaw.mock.calls[0] as [TemplateStringsArray, string];
     expect(id).toBe(CUST);
-    for (const order of db.attachment.update.mock.invocationCallOrder) {
+    for (const order of db.attachment.updateMany.mock.invocationCallOrder) {
       expect(order).toBeGreaterThan(db.$queryRaw.mock.invocationCallOrder[0]);
     }
+  });
+});
+
+// N06: the checks above read the photo before any lock. In the gap a Remove
+// could soft-delete it, a new-customer request claim it, or another attach wire
+// it elsewhere, and an unconditional update then put a deleted photo on a live
+// slot, or one photo on two. The transaction now claims it with a guarded write
+// first, and writes nothing else unless that took exactly the one row.
+describe('N06: attach claims the photo under the lock, before anything else is written', () => {
+  const PREV = 'ckprevious0000000000000001';
+  const EDIT = 'ckedit00000000000000000001';
+  const TARGETS = [
+    ['the shop slot', () => photo(), { branchId: B1, slot: 'SHOP' }],
+    ['the signboard slot', () => photo({ kind: 'SIGNBOARD' }), { branchId: B1, slot: 'SIGNBOARD' }],
+    ['the CR slot', () => photo({ kind: 'CR' }), { customerId: CUST, slot: 'CR' }],
+    ['the extra photos', () => photo(), { branchId: B1, slot: 'FREE' }],
+  ] as const;
+
+  beforeEach(() => {
+    // Every slot already holds an earlier photo: a refused claim that still
+    // replaced it would show as a soft-delete of PREV.
+    db.branch.findUniqueOrThrow.mockResolvedValue(branch({ shopPhotoId: PREV, signboardPhotoId: PREV }));
+    db.customer.findUniqueOrThrow.mockResolvedValue(customer({ crPhotoId: PREV }));
+  });
+
+  const nothingElseWritten = () => {
+    expect(db.attachment.updateMany).toHaveBeenCalledTimes(1);
+    expect(db.attachment.update).not.toHaveBeenCalled();
+    expect(db.branch.update).not.toHaveBeenCalled();
+    expect(db.customer.update).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  };
+
+  it.each(TARGETS)(
+    '%s: the claim re-asserts live, on no slot, unclaimed, his own capture and the kind — after the lock, before any other write',
+    async (_n, att, target) => {
+      db.attachment.findUnique.mockResolvedValue(att());
+      expect(await attach({ attachmentId: ATT, ...target })).toEqual({ ok: true });
+      expect(db.attachment.updateMany).toHaveBeenCalledTimes(1);
+      const [{ where }] = db.attachment.updateMany.mock.calls[0] as [{ where: unknown }];
+      expect(where).toEqual({
+        id: ATT,
+        deletedAt: null,
+        customerId: null,
+        branchId: null,
+        branchExtraId: null,
+        editId: null,
+        capturedById: 'u1',
+        ...(target.slot === 'FREE' ? {} : { kind: target.slot }),
+      });
+      const claimAt = db.attachment.updateMany.mock.invocationCallOrder[0];
+      expect(claimAt).toBeGreaterThan(db.$queryRaw.mock.invocationCallOrder[0]);
+      for (const f of [db.attachment.update, db.branch.update, db.customer.update, audit.writeAudit]) {
+        for (const order of f.mock.invocationCallOrder) expect(order).toBeGreaterThan(claimAt);
+      }
+      if (target.slot !== 'FREE') {
+        // The photo it replaces is still soft-deleted — after the claim.
+        expect(db.attachment.update).toHaveBeenCalledWith({
+          where: { id: PREV },
+          data: { deletedAt: expect.any(Date), hash: null },
+        });
+      }
+    }
+  );
+
+  it("a Steward's claim takes anyone's capture, and is still audited as FORCE_OVERRIDE", async () => {
+    s.user = { id: 'st1', role: 'STEWARD', username: 'st1' };
+    db.attachment.findUnique.mockResolvedValue(photo({ capturedById: 'u1' }));
+    expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toEqual({ ok: true });
+    const [{ where }] = db.attachment.updateMany.mock.calls[0] as [{ where: Record<string, unknown> }];
+    expect(where).not.toHaveProperty('capturedById');
+    expect(where).toMatchObject({ id: ATT, deletedAt: null, branchId: null, editId: null, kind: 'SHOP' });
+    expect(audit.writeAudit.mock.calls[0][2]).toMatchObject({ action: 'FORCE_OVERRIDE' });
+  });
+
+  describe.each([
+    ['removed by a Remove in the gap', (p: ReturnType<typeof photo>) => ({ ...p, deletedAt: new Date() })],
+    ['put on another branch in the gap', (p: ReturnType<typeof photo>) => ({ ...p, branchId: B2 })],
+    ['claimed by a new-customer request in the gap', (p: ReturnType<typeof photo>) => ({ ...p, editId: EDIT })],
+    ['gone altogether', () => null],
+  ])('%s', (_label, after) => {
+    it.each(TARGETS)('%s: refused — the earlier photo, the slot and the score untouched, no audit row', async (_n, att, target) => {
+      db.attachment.findUnique.mockResolvedValueOnce(att()).mockResolvedValueOnce(after(att()));
+      db.attachment.updateMany.mockResolvedValue({ count: 0 });
+      const res = await attach({ attachmentId: ATT, ...target });
+      expect(res).toEqual({ ok: false, code: 'PHOTO_CONFLICT', message: PHOTO_CONFLICT_MESSAGE });
+      nothingElseWritten();
+    });
+  });
+
+  it.each([
+    [
+      'the shop slot',
+      () => photo(),
+      () => photo({ branchId: B1 }),
+      { branchId: B1, slot: 'SHOP' },
+      () => db.branch.findUnique.mockResolvedValue({ shopPhotoId: ATT, signboardPhotoId: null }),
+    ],
+    [
+      'the signboard slot',
+      () => photo({ kind: 'SIGNBOARD' }),
+      () => photo({ kind: 'SIGNBOARD', branchId: B1 }),
+      { branchId: B1, slot: 'SIGNBOARD' },
+      () => db.branch.findUnique.mockResolvedValue({ shopPhotoId: null, signboardPhotoId: ATT }),
+    ],
+    [
+      'the CR slot',
+      () => photo({ kind: 'CR' }),
+      () => photo({ kind: 'CR', customerId: CUST }),
+      { customerId: CUST, slot: 'CR' },
+      () => db.customer.findUnique.mockResolvedValue({ crPhotoId: ATT }),
+    ],
+    [
+      'the extra photos',
+      () => photo(),
+      () => photo({ kind: 'FREE', branchId: B1, branchExtraId: B1 }),
+      { branchId: B1, slot: 'FREE' },
+      () => {},
+    ],
+  ] as const)(
+    '%s: an earlier send of this attach landed while it waited for the lock — ok, and nothing else written',
+    async (_n, before, now, target, slotHoldsIt) => {
+      db.attachment.findUnique.mockResolvedValueOnce(before()).mockResolvedValueOnce(now());
+      db.attachment.updateMany.mockResolvedValue({ count: 0 });
+      slotHoldsIt();
+      expect(await attach({ attachmentId: ATT, ...target })).toEqual({ ok: true });
+      nothingElseWritten();
+    }
+  );
+
+  it('its own columns name this slot, but the slot holds another photo: refused', async () => {
+    db.attachment.findUnique.mockResolvedValueOnce(photo()).mockResolvedValueOnce(photo({ branchId: B1 }));
+    db.attachment.updateMany.mockResolvedValue({ count: 0 });
+    db.branch.findUnique.mockResolvedValue({ shopPhotoId: PREV, signboardPhotoId: null });
+    expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toMatchObject({ code: 'PHOTO_CONFLICT' });
+    nothingElseWritten();
+  });
+});
+
+// X-PHOTO-1: the mirror of N06 on Remove. The checks, the owner and the slots to
+// clear came from a read taken before any lock (and for a photo on no slot, no
+// lock at all): an attach landing in the gap left its slot on the photo removed
+// here. The photo is read again inside the transaction and removed only if it
+// still sits where that read put it; otherwise nothing is written.
+describe('X-PHOTO-1: Remove reads the photo again under the lock', () => {
+  const EDIT = 'ckedit00000000000000000001';
+  const WINNER = 'ckcustomer0000000000000009';
+  beforeEach(() => {
+    db.branch.findUnique.mockResolvedValue(branch());
+    db.customer.findFirst.mockResolvedValue(customer());
+    db.customer.findUnique.mockResolvedValue(customer());
+  });
+  const nothingWritten = () => {
+    expect(db.attachment.update).not.toHaveBeenCalled();
+    expect(db.branch.updateMany).not.toHaveBeenCalled();
+    expect(db.customer.updateMany).not.toHaveBeenCalled();
+    expect(db.branch.update).not.toHaveBeenCalled();
+    expect(db.customer.update).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  };
+
+  it.each([
+    ['wired to a shop slot', photo({ branchId: B1 })],
+    ['wired as an extra photo', photo({ kind: 'FREE', branchId: B1, branchExtraId: B1 })],
+    ['claimed by a new-customer request', photo({ editId: EDIT })],
+  ])('on no slot when read, %s by the time it is removed: refused, nothing written', async (_n, now) => {
+    db.attachment.findFirst.mockResolvedValueOnce(photo()).mockResolvedValueOnce(now);
+    const res = await detach({ attachmentId: ATT });
+    expect(res).toEqual({ ok: false, code: 'PHOTO_CHANGED', message: PHOTO_CHANGED_MESSAGE });
+    expect(db.attachment.updateMany).not.toHaveBeenCalled();
+    nothingWritten();
+  });
+
+  it('its branch moved to another customer (a merge) in between: refused, nothing written', async () => {
+    s.user = { id: 'st1', role: 'STEWARD', username: 'st1' };
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1 }));
+    // Read before the lock, then under it.
+    db.branch.findUnique.mockResolvedValueOnce(branch()).mockResolvedValueOnce(branch({ customerId: WINNER }));
+    const res = await detach({ attachmentId: ATT });
+    expect(res).toMatchObject({ ok: false, code: 'PHOTO_CHANGED' });
+    expect(db.attachment.updateMany).not.toHaveBeenCalled();
+    nothingWritten();
+  });
+
+  it('already removed by the time it is read again: ok, and nothing written', async () => {
+    db.attachment.findFirst.mockResolvedValueOnce(photo({ branchId: B1 })).mockResolvedValueOnce(null);
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    expect(db.attachment.updateMany).not.toHaveBeenCalled();
+    nothingWritten();
+  });
+
+  it('claimed after the read under the lock (no lock covers a photo on no slot): the guarded soft-delete misses, refused', async () => {
+    db.attachment.findFirst.mockResolvedValue(photo());
+    db.attachment.updateMany.mockResolvedValue({ count: 0 });
+    const res = await detach({ attachmentId: ATT });
+    expect(res).toMatchObject({ ok: false, code: 'PHOTO_CHANGED' });
+    expect(db.attachment.updateMany).toHaveBeenCalledWith({
+      where: { id: ATT, deletedAt: null, customerId: null, branchId: null, branchExtraId: null, editId: null },
+      data: { deletedAt: expect.any(Date), hash: null },
+    });
+    nothingWritten();
+  });
+
+  it('the second read is inside the transaction, after the lock, and before every write', async () => {
+    db.attachment.findFirst.mockResolvedValue(photo({ kind: 'CR', customerId: CUST }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    expect(db.attachment.findFirst).toHaveBeenCalledTimes(2);
+    const reread = db.attachment.findFirst.mock.invocationCallOrder[1];
+    expect(reread).toBeGreaterThan(db.$queryRaw.mock.invocationCallOrder[0]);
+    for (const f of [db.attachment.updateMany, db.customer.updateMany, db.customer.update, audit.writeAudit]) {
+      expect(f).toHaveBeenCalled();
+      for (const order of f.mock.invocationCallOrder) expect(order).toBeGreaterThan(reread);
+    }
+    expect(db.customer.updateMany).toHaveBeenCalledWith({ where: { id: CUST, crPhotoId: ATT }, data: { crPhotoId: null } });
   });
 });
 
@@ -376,11 +597,22 @@ describe('detach, through the route', () => {
 describe('who edits, attaches and removes: one set of roles', () => {
   const src = (f: string) => stripComments(readFileSync(f, 'utf8'), f);
   const THREE = /role !== Role\.SALESMAN &&\s*session\.user\.role !== Role\.STEWARD &&\s*session\.user\.role !== Role\.MANAGER/;
-  it('the detach refusal, the edit page redirect and the Enrich button agree', () => {
+  // ENH-3: attach and detach (and presign and finalize, photo-upload-roles.test.ts)
+  // read one constant; the pages still spell the same three roles out.
+  const GATE = /if \(!PHOTO_WRITER_ROLES\.includes\(session\.user\.role\)\) \{\s*throw new ForbiddenError\(/;
+  it('the one constant is those three roles', () => {
+    expect([...PHOTO_WRITER_ROLES].sort()).toEqual(['MANAGER', 'SALESMAN', 'STEWARD']);
+  });
+  it('the attach and detach refusals, the edit page redirect and the Enrich button agree', () => {
     const photos = src('services/photos.ts');
-    const detach = photos.slice(photos.indexOf('async function detachPhotoCore'));
-    expect(detach).toMatch(THREE);
+    const detachAt = photos.indexOf('async function detachPhotoCore');
+    const attachCore = photos.slice(photos.indexOf('async function attachPhotoCore'), detachAt);
+    const detach = photos.slice(detachAt);
+    expect(attachCore).toMatch(GATE);
+    expect(attachCore).toMatch(/Your role cannot attach photos\./);
+    expect(detach).toMatch(GATE);
     expect(detach).toMatch(/Your role cannot remove photos\./);
+    expect(photos).not.toMatch(/role !== Role\.(SALESMAN|STEWARD|MANAGER)/);
     expect(src('app/(app)/customers/[id]/edit/page.tsx')).toMatch(THREE);
     expect(src('app/(app)/customers/[id]/page.tsx')).toMatch(
       /const canEdit =\s*session\.user\.role === Role\.SALESMAN \|\|\s*session\.user\.role === Role\.STEWARD \|\|\s*session\.user\.role === Role\.MANAGER;/

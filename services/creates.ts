@@ -61,6 +61,7 @@ import { lockCreateIdentity, assertNoExactCreateDuplicate } from '@/lib/create-g
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { answerIfLanded, findReceipt, shownTime } from '@/lib/submission-replay';
 import { omanWhen, submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
+import { UNWIRED_LIVE } from '@/lib/photo-attach';
 
 async function requireUser() {
   const session = await auth();
@@ -472,11 +473,8 @@ async function submitCreateOnce(
       const claimed = await tx.attachment.updateMany({
         where: {
           id: { in: attachmentIds },
-          deletedAt: null,
+          ...UNWIRED_LIVE,
           capturedById: session.id,
-          customerId: null,
-          branchId: null,
-          branchExtraId: null,
           OR: [{ editId: null }, { editId: editRow.id }],
         },
         data: { editId: editRow.id },

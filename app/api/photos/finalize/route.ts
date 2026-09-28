@@ -6,6 +6,8 @@ import { HeadObjectCommand } from '@aws-sdk/client-s3';
 import { prisma } from '@/lib/db';
 import { AttachmentKind } from '@prisma/client';
 import { logger } from '@/lib/logger';
+import { canUploadPhoto } from '@/lib/permissions';
+import { PHOTO_ROLE_REFUSED_MESSAGE } from '@/lib/photo-attach';
 
 /**
  * Build the expected key prefix that this user's presign would have issued.
@@ -46,6 +48,9 @@ const MAX_FINALIZE_BYTES = 3 * 1024 * 1024;
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const refuseRole = () =>
+  NextResponse.json({ error: 'FORBIDDEN_ROLE', message: PHOTO_ROLE_REFUSED_MESSAGE }, { status: 403 });
+
 const finalizeSchema = z.object({
   key: z.string().min(1).max(500),
   kind: z.nativeEnum(AttachmentKind),
@@ -62,6 +67,9 @@ export async function POST(req: NextRequest) {
   if (!session?.user) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
+  // ENH-3: the same gate as presign, checked again — this is a request of its
+  // own, and it is the one that writes the row.
+  if (!canUploadPhoto(session.user.role)) return refuseRole();
   let body: unknown;
   try {
     body = await req.json();
@@ -80,6 +88,7 @@ export async function POST(req: NextRequest) {
   // "fresh photo" gate is trivially bypassed by retroactively stamping an old
   // photo. We pull the time from R2's HeadObject (LastModified) below.
   const { key, kind, hash, width, height, capturedLat, capturedLng } = parsed.data;
+  if (!canUploadPhoto(session.user.role, kind)) return refuseRole();
 
   // QA-005 fix: bind the key to the calling user's presign prefix.
   const allowed = expectedPrefixes(session.user.id);

@@ -138,6 +138,7 @@ jobs:
           RUN_CREDIT_CHAIN: '1'
           RUN_REACTIVATION_TESTS: '1'
           RUN_CLOSE_SHOP: '1'
+          RUN_PHOTO_CONCURRENCY: '1'
           RUN_REGION_WEDGE: '1'
           RUN_MERGE_TESTS: '1'
           RUN_MERGE_OPEN: '1'

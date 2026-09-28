@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { auth } from '@/lib/auth';
 import { Role, AttachmentKind, type Attachment, type Prisma } from '@prisma/client';
 import {
+  ConflictError,
   ForbiddenError,
   ValidationError,
   NotFoundError,
@@ -16,7 +17,13 @@ import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { loadScope, assertCanAccessAttachment, assertCanEditCustomer } from '@/lib/access';
-import { ALREADY_ATTACHED_MESSAGE } from '@/lib/photo-attach';
+import { PHOTO_WRITER_ROLES } from '@/lib/permissions';
+import {
+  ALREADY_ATTACHED_MESSAGE,
+  PHOTO_CHANGED_MESSAGE,
+  PHOTO_CONFLICT_MESSAGE,
+  UNWIRED_LIVE,
+} from '@/lib/photo-attach';
 import { lockCustomerRow } from '@/lib/locks';
 
 const customerAttach = z.object({
@@ -65,15 +72,68 @@ function wiredTo(
   return att.kind === AttachmentKind[data.slot] && !att.branchExtraId;
 }
 
+/**
+ * N06: the attach's claim, re-asserting at the moment it writes what the checks
+ * in attachPhotoCore read before any lock — live and on no slot, claimed by no
+ * new-customer request, the caller's own capture (a Steward or Manager may
+ * attach anyone's) and the slot's kind (FREE takes any). In the gap a Remove
+ * could soft-delete the photo, a new-customer request claim it, or another
+ * attach wire it elsewhere; the unconditional update that stood here then put a
+ * deleted photo on a live slot, or one photo on two.
+ */
+function claimWhere(
+  id: string,
+  data: z.output<typeof attachSchema>,
+  capturedById: string | null
+): Prisma.AttachmentWhereInput {
+  return {
+    id,
+    ...UNWIRED_LIVE,
+    editId: null,
+    ...(capturedById ? { capturedById } : {}),
+    ...(data.slot === 'FREE' ? {} : { kind: AttachmentKind[data.slot] }),
+  };
+}
+
+/**
+ * A claim that changed no row: read again, under the customer's lock. The photo
+ * already on exactly the slot asked for — an earlier send of this attach landed
+ * while this one waited for the lock — is ok with nothing written, the photo
+ * slot's re-send contract; anything else is refused before a write.
+ */
+async function assertOnRequestedSlot(
+  tx: Prisma.TransactionClient,
+  id: string,
+  data: z.output<typeof attachSchema>
+): Promise<void> {
+  const now = await tx.attachment.findUnique({ where: { id } });
+  let holds = false;
+  if (now && !now.deletedAt && wiredTo(now, data)) {
+    if ('customerId' in data) {
+      const c = await tx.customer.findUnique({ where: { id: data.customerId }, select: { crPhotoId: true } });
+      holds = c?.crPhotoId === id;
+    } else if (data.slot === 'FREE') {
+      holds = true;
+    } else {
+      const b = await tx.branch.findUnique({
+        where: { id: data.branchId },
+        select: { shopPhotoId: true, signboardPhotoId: true },
+      });
+      holds = (data.slot === 'SHOP' ? b?.shopPhotoId : b?.signboardPhotoId) === id;
+    }
+  }
+  if (!holds) throw new ConflictError('PHOTO_CONFLICT', PHOTO_CONFLICT_MESSAGE);
+}
+
 const detachSchema = z.object({ attachmentId: z.string().cuid() });
 
 /**
  * Wire a freshly-uploaded Attachment to a customer or branch slot.
  *
  * Trust-boundary checks layered here (RBAC-05-011, NEW-PHOTO-001/002/003):
- *   • Only SALESMAN and STEWARD may attach photos. SUPERVISOR / VIEWER never;
- *     PRD §4 says they don't capture photos. MANAGER goes through the
- *     dedicated rewire path with `forceOverrideAction` (out of scope here).
+ *   • Only PHOTO_WRITER_ROLES (SALESMAN, STEWARD, MANAGER) may attach photos,
+ *     the same roles presign and finalize admit (ENH-3). MANAGER is
+ *     region-scoped (SEC-H1, below).
  *   • Attachment must not be soft-deleted (`deletedAt`).
  *   • Attachment must be a fresh upload (no customerId/branchId/branchExtraId/
  *     editId) — or already on exactly the slot asked for, which is answered ok
@@ -84,6 +144,9 @@ const detachSchema = z.object({ attachmentId: z.string().cuid() });
  *     CR slot to fool a supervisor's review).
  *   • Replacing an existing slot soft-deletes the previous Attachment so it
  *     no longer dedupes against future uploads and is eligible for R2 GC.
+ *   • Those checks read the photo before any lock, so the transaction first
+ *     claims it with a guarded write (claimWhere, N06) and writes nothing else
+ *     unless that claim took exactly the one row.
  */
 /**
  * SafeAction-wrapped public entry. Photo attach errors (slot/kind mismatch,
@@ -117,11 +180,7 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
   // had a silent, UNSCOPED bypass that let a Manager attach to (and destroy the
   // existing photo of) any customer nationwide. In-scope Manager attaches of a
   // photo they did not capture are logged as FORCE_OVERRIDE on both paths.
-  if (
-    session.user.role !== Role.SALESMAN &&
-    session.user.role !== Role.STEWARD &&
-    session.user.role !== Role.MANAGER
-  ) {
+  if (!PHOTO_WRITER_ROLES.includes(session.user.role)) {
     throw new ForbiddenError('Your role cannot attach photos.');
   }
 
@@ -197,8 +256,17 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     }
     // DG-06: capture the request envelope before opening the transaction.
     const env = await getAuditEnvelope(session.user.id);
-    await prisma.$transaction(async (tx) => {
+    const claimed = await prisma.$transaction(async (tx) => {
       await lockCustomer(tx, c.id);
+      // N06: claim first. Refused, the previous photo and the slot are untouched.
+      const claim = await tx.attachment.updateMany({
+        where: claimWhere(att.id, data, isAdmin ? null : session.user.id),
+        data: { customerId: c.id, kind: AttachmentKind.CR },
+      });
+      if (claim.count !== 1) {
+        await assertOnRequestedSlot(tx, att.id, data);
+        return false;
+      }
       // NEW-PHOTO-003: soft-delete the prior CR photo on replacement so it no
       // longer dedupes against future uploads, no longer counts in storage,
       // and the R2 GC cron has a clean signal to remove the object. Read under
@@ -211,10 +279,6 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
           data: { deletedAt: new Date(), hash: null },
         });
       }
-      await tx.attachment.update({
-        where: { id: att.id },
-        data: { customerId: c.id, kind: AttachmentKind.CR },
-      });
       await tx.customer.update({
         where: { id: c.id },
         data: { crPhotoId: att.id, lastEditedById: session.user.id },
@@ -234,7 +298,12 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         after: { crPhotoId: att.id } as unknown as Prisma.InputJsonValue,
         reason: 'CR photo attached',
       });
+      return true;
     });
+    if (!claimed) {
+      logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.attach.already_on_slot');
+      return { ok: true as const };
+    }
   } else {
     const b = await prisma.branch.findFirst({
       where: { id: data.branchId, deletedAt: null },
@@ -274,8 +343,21 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
 
     // DG-06: same as the CR branch — envelope before the transaction.
     const env = await getAuditEnvelope(session.user.id);
-    await prisma.$transaction(async (tx) => {
+    const claimed = await prisma.$transaction(async (tx) => {
       await lockCustomer(tx, b.customerId);
+      // N06: claim first, as on the CR path. An extra (FREE) photo is wired by
+      // its own columns alone, so for it the claim is the whole attach.
+      const claim = await tx.attachment.updateMany({
+        where: claimWhere(att.id, data, isAdmin ? null : session.user.id),
+        data:
+          data.slot === 'FREE'
+            ? { branchExtraId: b.id, branchId: b.id, kind: AttachmentKind.FREE }
+            : { branchId: b.id, kind: AttachmentKind[data.slot] },
+      });
+      if (claim.count !== 1) {
+        await assertOnRequestedSlot(tx, att.id, data);
+        return false;
+      }
       // The slots as they stand under the lock, not as read before it.
       const now = await tx.branch.findUniqueOrThrow({
         where: { id: b.id },
@@ -291,10 +373,6 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
             data: { deletedAt: new Date(), hash: null },
           });
         }
-        await tx.attachment.update({
-          where: { id: att.id },
-          data: { branchId: b.id, kind: AttachmentKind.SHOP },
-        });
         updateBranch.shopPhoto = { connect: { id: att.id } };
         await tx.branch.update({ where: { id: b.id }, data: updateBranch });
       } else if (data.slot === 'SIGNBOARD') {
@@ -304,17 +382,8 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
             data: { deletedAt: new Date(), hash: null },
           });
         }
-        await tx.attachment.update({
-          where: { id: att.id },
-          data: { branchId: b.id, kind: AttachmentKind.SIGNBOARD },
-        });
         updateBranch.signboardPhoto = { connect: { id: att.id } };
         await tx.branch.update({ where: { id: b.id }, data: updateBranch });
-      } else {
-        await tx.attachment.update({
-          where: { id: att.id },
-          data: { branchExtraId: b.id, branchId: b.id, kind: AttachmentKind.FREE },
-        });
       }
 
       const refreshed = await tx.branch.findUniqueOrThrow({ where: { id: b.id } });
@@ -340,7 +409,12 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         after: { slot: data.slot, attachmentId: att.id } as unknown as Prisma.InputJsonValue,
         reason: 'photo attached',
       });
+      return true;
     });
+    if (!claimed) {
+      logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.attach.already_on_slot');
+      return { ok: true as const };
+    }
   }
 
   logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.attach');
@@ -392,11 +466,7 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   // remove one. This refused VIEWER alone, so a Supervisor, Accountant, Finance
   // Manager or GM could remove any photo they could see — though none of them
   // can attach one or submit an edit (pre-merge review).
-  if (
-    session.user.role !== Role.SALESMAN &&
-    session.user.role !== Role.STEWARD &&
-    session.user.role !== Role.MANAGER
-  ) {
+  if (!PHOTO_WRITER_ROLES.includes(session.user.role)) {
     throw new ForbiddenError('Your role cannot remove photos.');
   }
   if (session.user.role === Role.SALESMAN && att.capturedById !== session.user.id) {
@@ -415,8 +485,50 @@ async function detachPhotoCore(input: { attachmentId: string }) {
       ? ((await prisma.branch.findUnique({ where: { id: att.branchId }, select: { customerId: true } }))
           ?.customerId ?? null)
       : null);
-  await prisma.$transaction(async (tx) => {
+  // X-PHOTO-1: everything above — the checks, the owner, the slots to clear —
+  // rests on a read taken before any lock, and for a photo on no slot no lock is
+  // taken at all. An attach landing in the gap (the slot's stalled attach, then
+  // Remove) left its slot on a photo removed here, which photo-gc later blanks
+  // with no rescore and no audit row; a merge moving the photo or its branch to
+  // another customer left that customer's slot and score unguarded. So the
+  // photo is read again inside the transaction, and removed only if it still
+  // sits where that read put it. Refused rather than followed: the checks
+  // passed on the old wiring, and a lock taken on a second customer here could
+  // deadlock. Nothing is written before the refusal.
+  const wiring = {
+    customerId: att.customerId,
+    branchId: att.branchId,
+    branchExtraId: att.branchExtraId,
+    editId: att.editId,
+  };
+  const removed = await prisma.$transaction(async (tx) => {
     if (ownerId) await lockCustomer(tx, ownerId);
+    const now = await tx.attachment.findFirst({ where: { id: att.id, deletedAt: null } });
+    // Removed already, by another Remove or replaced on its slot: nothing to do.
+    if (!now) return false;
+    // The owner found as ownerId was, now: a merge moves a branch, not its photos.
+    const ownerNow =
+      now.customerId ??
+      (now.branchId
+        ? ((await tx.branch.findUnique({ where: { id: now.branchId }, select: { customerId: true } }))
+            ?.customerId ?? null)
+        : null);
+    const moved =
+      now.customerId !== wiring.customerId ||
+      now.branchId !== wiring.branchId ||
+      now.branchExtraId !== wiring.branchExtraId ||
+      now.editId !== wiring.editId ||
+      ownerNow !== ownerId;
+    if (moved) throw new ConflictError('PHOTO_CHANGED', PHOTO_CHANGED_MESSAGE);
+    // UXI-008: real soft-delete column. Keep the r2Key as-is for the GC job
+    // to find the object; clear the hash so dedup queries miss the row. Guarded
+    // on the same wiring: without a lock (a photo on no slot) an attach or a
+    // new-customer request can still claim it between the read and here.
+    const gone = await tx.attachment.updateMany({
+      where: { id: att.id, deletedAt: null, ...wiring },
+      data: { deletedAt: new Date(), hash: null },
+    });
+    if (gone.count !== 1) throw new ConflictError('PHOTO_CHANGED', PHOTO_CHANGED_MESSAGE);
     if (att.customerId) {
       await tx.customer.updateMany({
         where: { id: att.customerId, crPhotoId: att.id },
@@ -433,12 +545,6 @@ async function detachPhotoCore(input: { attachmentId: string }) {
         data: { signboardPhotoId: null },
       });
     }
-    // UXI-008: real soft-delete column. Keep the r2Key as-is for the GC job
-    // to find the object; clear the hash so dedup queries miss the row.
-    await tx.attachment.update({
-      where: { id: att.id },
-      data: { deletedAt: new Date(), hash: null },
-    });
     // Rollup parity with attachPhoto (final-hunt #10/#20): removing a photo lowers
     // completeness, so recompute the affected branch + customer scores. Without
     // this, detach left the completenessScore stale-HIGH — a customer that lost its
@@ -471,7 +577,8 @@ async function detachPhotoCore(input: { attachmentId: string }) {
       entityId: att.id,
       reason: 'photo removed (soft-delete)',
     });
+    return true;
   });
-  logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.detach');
+  logger.info({ attachmentId: att.id, by: session.user.id }, removed ? 'photo.detach' : 'photo.detach.already_gone');
   return { ok: true as const };
 }

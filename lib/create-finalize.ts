@@ -36,6 +36,7 @@ import { omanYear } from './tz';
 import { scoreBranch, scoreCustomer } from './completeness';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from './create-guards';
 import { writeAudit, type AuditEnvelope } from './audit';
+import { UNWIRED_LIVE } from './photo-attach';
 
 type Tx = Prisma.TransactionClient;
 
@@ -280,11 +281,8 @@ export async function finalizeCreateInTx(
     const bound = await tx.attachment.updateMany({
       where: {
         id: attachmentId,
-        deletedAt: null,
+        ...UNWIRED_LIVE,
         editId: edit.id,
-        customerId: null,
-        branchId: null,
-        branchExtraId: null,
       },
       data,
     });

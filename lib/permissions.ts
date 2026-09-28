@@ -3,7 +3,7 @@
  * of these as its first step. Pure functions, no DB access — caller passes the
  * pre-fetched user + entity.
  */
-import { Role, type User, type Customer, type Branch } from '@prisma/client';
+import { Role, AttachmentKind, type User, type Customer, type Branch } from '@prisma/client';
 import { ForbiddenError } from './errors';
 import type { StepScope } from './approval-chains';
 
@@ -55,6 +55,25 @@ export function canApproveEdit(user: SessionUser): boolean {
 
 export function canManageReactivation(user: SessionUser): boolean {
   return user.role === Role.MANAGER;
+}
+
+/**
+ * The roles that attach and remove a photo (services/photos.ts) — the same
+ * three that edit a customer (owner decision 2026-09-27) — and so the only
+ * roles that may upload one (app/api/photos/presign and finalize, ENH-3). Any
+ * other role's upload could never reach a slot: it only filled storage, which
+ * nothing sweeps for a photo that was never attached.
+ */
+export const PHOTO_WRITER_ROLES: readonly Role[] = [Role.SALESMAN, Role.STEWARD, Role.MANAGER];
+
+/**
+ * Whether this role may upload a photo, and — once the kind is known — one of
+ * this kind. A GUARANTEE document belongs only to a new-customer (CREATE)
+ * request, which only a salesman starts (services/creates.ts).
+ */
+export function canUploadPhoto(role: Role, kind?: AttachmentKind): boolean {
+  if (!PHOTO_WRITER_ROLES.includes(role)) return false;
+  return kind !== AttachmentKind.GUARANTEE || role === Role.SALESMAN;
 }
 
 /**

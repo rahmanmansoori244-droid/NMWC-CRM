@@ -6,10 +6,14 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { logger } from '@/lib/logger';
 import { checkLimit, PHOTO_LIMIT } from '@/lib/rate-limit';
-import { PRESIGN_EXPIRES_S } from '@/lib/photo-attach';
+import { PRESIGN_EXPIRES_S, PHOTO_ROLE_REFUSED_MESSAGE } from '@/lib/photo-attach';
+import { canUploadPhoto } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+const refuseRole = () =>
+  NextResponse.json({ error: 'FORBIDDEN_ROLE', message: PHOTO_ROLE_REFUSED_MESSAGE }, { status: 403 });
 
 // SEC-14e: this list is NOT a security boundary for the upload. The S3 request
 // presigner marks `content-type` unsignable, so it never reaches SignedHeaders and
@@ -38,6 +42,10 @@ export async function POST(req: NextRequest) {
   if (!session?.user) {
     return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   }
+  // ENH-3: only a role that can attach a photo may upload one. Here, not only
+  // at finalize: a presigned PUT that is never finalized leaves an object in R2
+  // with no row at all. Before the bucket, so a refused role spends none of it.
+  if (!canUploadPhoto(session.user.role)) return refuseRole();
   const lim = await checkLimit(`photo:${session.user.id}`, PHOTO_LIMIT);
   if (!lim.ok) {
     return NextResponse.json(
@@ -60,6 +68,7 @@ export async function POST(req: NextRequest) {
   }
 
   const { kind, mimeType, bytes } = parsed.data;
+  if (!canUploadPhoto(session.user.role, kind)) return refuseRole();
 
   // Build a unique key — date-prefixed for cheap R2 list operations
   const ext = mimeType === 'image/png' ? 'png' : mimeType === 'image/webp' ? 'webp' : 'jpg';
