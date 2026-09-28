@@ -23,6 +23,7 @@ import { normalizePhone } from '@/lib/phone';
 import { markManualGps, takeManualGpsReason, type FieldChange } from '@/lib/gps-manual';
 import { normalizeCR } from '@/lib/cr';
 import { lockCustomerRow } from '@/lib/locks';
+import { assertStatusEvidence, evidenceIds } from '@/lib/status-evidence';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { checkLimit, FORM_LIMIT } from '@/lib/rate-limit';
 import { answerIfLanded, findReceipt, ownOpenRequestMessage } from '@/lib/submission-replay';
@@ -1293,6 +1294,18 @@ async function approveEditCore(formData: FormData) {
       // branch (pre-merge review). It also makes the EL-04 read below truly
       // serialized against a concurrent Remove.
       await lockCustomerRow(tx, edit.customerId!);
+      // F10: a close request is approved on the photo it was sent with, so that
+      // photo must still stand now: live, the submitter's, on that branch. Read
+      // under the lock Remove also takes; the 24-hour age rule is not re-applied
+      // (lib/status-evidence.ts). A status-only request is a close request, and
+      // one without evidence is refused, not waved through.
+      if (isStatusOnlyEdit || evidenceIds(edit.attachmentChanges).length > 0) {
+        await assertStatusEvidence(tx, {
+          branchId: edit.branchId,
+          submittedById: edit.submittedById,
+          attachmentChanges: edit.attachmentChanges,
+        });
+      }
       // EL-04 (Critical): re-run the mandatory-field gate at approve time. The
       // submit-time gate enforces "salesman cannot submit a half-empty record", but
       // photos and other slot data live OUTSIDE `fieldChanges` and can be detached

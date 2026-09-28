@@ -7,6 +7,7 @@ import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { parseChain } from '@/lib/approval-chains';
 import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-manual';
+import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
 import { AlertTriangle } from 'lucide-react';
 import { ApproveRejectActions } from './ApproveRejectActions';
 
@@ -198,6 +199,33 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
         orderBy: { createdAt: 'asc' },
       })
     : [];
+
+  // X-STATUS-2: a close request is decided on the photo it was sent with. It
+  // used to appear only among the branch's "Other photos", beside older ones
+  // that may predate the closure, and vanished silently once removed. Shown on
+  // its own now, with a removed photo said as such (the approval refuses it:
+  // lib/status-evidence.ts). Only for a branch inside the reviewer's scope,
+  // like every other photo on this page.
+  const evidenceSent = isCreate ? [] : evidenceIds(edit.attachmentChanges);
+  const isStatusOnly =
+    changes.length > 0 &&
+    changes.every((c) => c.field.startsWith('branch.') && c.field.endsWith('.status'));
+  const showEvidence = evidenceSent.length > 0 || (isPending && isStatusOnly);
+  const evidenceInScope = !!edit.branchId && liveBranches.some((b) => b.id === edit.branchId);
+  const evidenceRows =
+    evidenceInScope && evidenceSent.length > 0
+      ? await prisma.attachment.findMany({
+          where: { id: { in: evidenceSent } },
+          select: EVIDENCE_SELECT,
+        })
+      : [];
+  const evidenceStanding = evidenceSent.filter((id) =>
+    standsAsEvidence(
+      evidenceRows.find((r) => r.id === id),
+      { branchId: edit.branchId, submittedById: edit.submittedById }
+    )
+  );
+  const evidenceRemoved = evidenceSent.length - evidenceStanding.length;
 
   const draft = edit.customerDraft;
   const isCredit = isCreate && draft?.paymentTerms === 'CREDIT';
@@ -444,6 +472,37 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               </DiffSection>
             );
           })}
+
+        {!isCreate && showEvidence && (
+          <DetailSection title="Evidence sent with this request">
+            {evidenceSent.length === 0 ? (
+              <div className={ROW}>
+                <div className="font-medium text-slate-600">Photo</div>
+                <div className="font-medium text-red-700">
+                  No photo was sent with this request. It cannot be approved — reject it.
+                </div>
+              </div>
+            ) : !evidenceInScope ? (
+              <div className={ROW}>
+                <div className="font-medium text-slate-600">Photo</div>
+                <div className="text-slate-500">Not shown: the branch is outside your scope.</div>
+              </div>
+            ) : (
+              <>
+                <PhotoRow label="Photo" ids={evidenceStanding} />
+                {evidenceRemoved > 0 && (
+                  <div className={ROW}>
+                    <div className="font-medium text-slate-600">Photo</div>
+                    <div className="font-medium text-red-700">
+                      Removed since the request was sent
+                      {isPending ? ' — it cannot be approved; reject this request.' : '.'}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </DetailSection>
+        )}
 
         {/* Live evidence: what the customer looks like RIGHT NOW. Photos are
             wired at capture time (not inside the edit), so this is what an

@@ -15,6 +15,7 @@ import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { lockCustomerRow } from '@/lib/locks';
+import { assertStatusEvidence } from '@/lib/status-evidence';
 import { stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from '@/lib/working-hours';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
@@ -382,6 +383,41 @@ async function approveReactivationCore(formData: FormData) {
     // attach and Remove take it first too, and the opposite order deadlocked
     // on the same branch (pre-merge review).
     await lockCustomerRow(tx, edit.customerId!);
+    // X-STATUS-1: the branch and customer as they stand now, not as loaded
+    // before the transaction. An archive or an import can land while the
+    // request waits, and the write below is by id: it would reopen a
+    // removed branch, one now under another customer, or one no longer closed
+    // — and with no live branch left, `every` below is true on an empty list
+    // and a tombstoned customer came back ACTIVE.
+    const branchNow = await tx.branch.findUnique({
+      where: { id: edit.branchId! },
+      select: { customerId: true, status: true, deletedAt: true },
+    });
+    const customerNow = await tx.customer.findUnique({
+      where: { id: edit.customerId! },
+      select: { deletedAt: true },
+    });
+    if (
+      !branchNow ||
+      branchNow.deletedAt ||
+      branchNow.customerId !== edit.customerId ||
+      branchNow.status !== 'CLOSED' ||
+      !customerNow ||
+      customerNow.deletedAt
+    ) {
+      throw new ConflictError(
+        'STATE_CHANGED',
+        'This branch changed since the request was sent (removed, moved to another customer, or no longer closed). Reject this request.'
+      );
+    }
+    // F10: the photo the request was sent with must still stand — live, the
+    // submitter's, on this branch. Read under the lock Remove also takes; the
+    // 24-hour age rule is not re-applied (lib/status-evidence.ts).
+    await assertStatusEvidence(tx, {
+      branchId: edit.branchId,
+      submittedById: edit.submittedById,
+      attachmentChanges: edit.attachmentChanges,
+    });
     await tx.branch.update({
       where: { id: edit.branchId! },
       data: {
@@ -469,29 +505,37 @@ async function rejectReactivationCore(formData: FormData) {
     throw new ForbiddenError('Cannot reject your own request.');
   }
 
-  // QA-C13: atomic claim (PROD-001) so a reject racing a concurrent approve/reject
-  // can't double-decide — the loser aborts before writing an audit row.
-  const claim = await prisma.customerEdit.updateMany({
-    where: { id: editId, state: EditState.SUBMITTED, isReactivation: true },
-    data: {
-      state: EditState.NEEDS_CORRECTION,
-      pendingRole: null,
-      reviewedById: me.id,
-      reviewedAt: new Date(),
-      decisionReason: reason,
-    },
-  });
-  if (claim.count === 0) {
-    throw new ConflictError(
-      'NOT_PENDING',
-      'This reactivation was just decided by another reviewer. Refresh to see the current state.'
-    );
-  }
-  await writeAudit(null, await getAuditEnvelope(me.id), {
-    action: 'REJECT',
-    entityType: 'CustomerEdit',
-    entityId: editId,
-    reason,
+  // F13: the decision and its audit row commit together or not at all. They
+  // were two autocommit statements, so an audit insert that failed after the
+  // claim had committed was answered "Nothing was saved" while the request was
+  // already rejected, with no REJECT row in the audit ledger. The envelope is
+  // built before the transaction opens (DG-06).
+  const env = await getAuditEnvelope(me.id);
+  await prisma.$transaction(async (tx) => {
+    // QA-C13: atomic claim (PROD-001) so a reject racing a concurrent approve/reject
+    // can't double-decide — the loser aborts before writing an audit row.
+    const claim = await tx.customerEdit.updateMany({
+      where: { id: editId, state: EditState.SUBMITTED, isReactivation: true },
+      data: {
+        state: EditState.NEEDS_CORRECTION,
+        pendingRole: null,
+        reviewedById: me.id,
+        reviewedAt: new Date(),
+        decisionReason: reason,
+      },
+    });
+    if (claim.count === 0) {
+      throw new ConflictError(
+        'NOT_PENDING',
+        'This reactivation was just decided by another reviewer. Refresh to see the current state.'
+      );
+    }
+    await writeAudit(tx, env, {
+      action: 'REJECT',
+      entityType: 'CustomerEdit',
+      entityId: editId,
+      reason,
+    });
   });
   revalidatePath('/reactivations');
 }

@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { ReactivationDecisionForm } from './ReactivationDecisionForm';
 import { loadScope } from '@/lib/access';
+import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
 
 export const metadata = { title: 'Reactivations · NMWC' };
 
@@ -44,6 +45,17 @@ export default async function ReactivationsPage() {
     },
     orderBy: { submittedAt: 'asc' },
   });
+
+  // F10 / X-STATUS-2: which evidence photos still stand, in one read for the
+  // whole queue. A removed one used to render as a broken image (the photo
+  // route 404s it); it is said as removed now, and approval refuses it.
+  const sentIds = [...new Set(items.flatMap((e) => evidenceIds(e.attachmentChanges)))];
+  const evidenceById = new Map(
+    (sentIds.length > 0
+      ? await prisma.attachment.findMany({ where: { id: { in: sentIds } }, select: EVIDENCE_SELECT })
+      : []
+    ).map((r) => [r.id, r])
+  );
 
   return (
     <main>
@@ -84,30 +96,42 @@ export default async function ReactivationsPage() {
                         not the branch's stale on-file slot photos — those predate the
                         closure and prove nothing about the reopening. */}
                     {(() => {
-                      const evidence =
-                        (e.attachmentChanges as { attachmentId?: string; action?: string }[] | null)?.filter(
-                          (a) => a.action === 'EVIDENCE' && a.attachmentId
-                        ) ?? [];
+                      const sent = evidenceIds(e.attachmentChanges);
+                      const subject = { branchId: e.branchId, submittedById: e.submittedById };
+                      const evidence = sent.filter((id) => standsAsEvidence(evidenceById.get(id), subject));
+                      const removed = sent.length - evidence.length;
                       return (
                         <div className="mt-2 space-y-2">
                           <div>
                             <p className="text-xs font-medium text-emerald-700">
                               Fresh evidence (captured for this request)
                             </p>
-                            {evidence.length === 0 ? (
-                              <p className="text-xs text-slate-400">No evidence photo attached.</p>
+                            {sent.length === 0 ? (
+                              <p className="text-xs font-medium text-red-700">
+                                No evidence photo attached — it cannot be approved; reject it.
+                              </p>
                             ) : (
-                              <div className="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                                {evidence.map((a) => (
-                                  // eslint-disable-next-line @next/next/no-img-element
-                                  <img
-                                    key={a.attachmentId}
-                                    src={`/api/photos/${a.attachmentId}`}
-                                    alt="Reactivation evidence"
-                                    className="h-24 w-full rounded-md object-cover ring-2 ring-emerald-300"
-                                  />
-                                ))}
-                              </div>
+                              <>
+                                {evidence.length > 0 && (
+                                  <div className="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                    {evidence.map((id) => (
+                                      // eslint-disable-next-line @next/next/no-img-element
+                                      <img
+                                        key={id}
+                                        src={`/api/photos/${id}`}
+                                        alt="Reactivation evidence"
+                                        className="h-24 w-full rounded-md object-cover ring-2 ring-emerald-300"
+                                      />
+                                    ))}
+                                  </div>
+                                )}
+                                {removed > 0 && (
+                                  <p className="mt-1 text-xs font-medium text-red-700">
+                                    Evidence photo removed since the request was sent — it cannot be
+                                    approved; reject it.
+                                  </p>
+                                )}
+                              </>
                             )}
                           </div>
                           {(e.branch?.shopPhotoId || e.branch?.signboardPhotoId) && (
