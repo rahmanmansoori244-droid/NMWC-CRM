@@ -8,9 +8,10 @@
 -- today), so a route handover or a branch imported after submit cannot change
 -- the answer. It is written once, on a salesman's SUBMITTED row, and never
 -- updated. NULL means not gated (draft, Steward/Manager direct write, close or
--- reactivation request) or written before this column; for those rows the
--- approval falls back to the branches the request names plus the submitter's
--- current route (lib/edit-scope.ts gateBranchesForApproval).
+-- reactivation request) or written before this column. A salesman's request
+-- written before it (or one whose value cannot be read) is re-checked on the
+-- branches the request names plus the submitter's current route; any other
+-- NULL row is not gated, as before (lib/edit-scope.ts gateBranchesForApproval).
 --
 -- F21: the equipment counts were confirmed at the shop, so a zero is a real
 -- zero and earns the equipment points (PRD section 10, UXI-007). FALSE on every

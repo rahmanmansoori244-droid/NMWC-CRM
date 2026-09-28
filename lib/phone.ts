@@ -27,8 +27,8 @@ export const INVALID_PHONE_MESSAGE = 'Enter a valid Oman number (8 digits, or +9
 
 // Each range is written as escapes, as in lib/cr.ts: two blocks of look-alike
 // digits are easier to review as code points than as glyphs.
-const ARABIC_INDIC_DIGIT = /[٠-٩]/g;
-const PERSIAN_DIGIT = /[۰-۹]/g;
+const ARABIC_INDIC_DIGIT = /[\u0660-\u0669]/g;
+const PERSIAN_DIGIT = /[\u06F0-\u06F9]/g;
 
 function asciifyDigits(s: string): string {
   return s

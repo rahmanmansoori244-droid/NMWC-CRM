@@ -25,6 +25,7 @@ import {
   classifyChanges,
   fieldLabel,
   fieldSlotKey,
+  liveSnapshotOf,
   liveValueAt,
   parseFieldPath,
   sameEditValue,
@@ -329,6 +330,24 @@ describe('classifyChanges', () => {
       const r = classifyChanges(changes, live());
       expect(r.converged).toEqual([`branch.${B1}.gpsAccuracy`]);
     });
+  });
+
+  it('liveSnapshotOf takes rows as Prisma returns them; a branch not passed is dropped', () => {
+    const customerRow = { id: 'ckcustomer00000000000001', contactPerson: 'Manager', notes: null };
+    const b1Row = { id: B1, address: 'Way 1', gpsCapturedAt: new Date('2026-09-20T08:00:00.000Z') };
+    const snap = liveSnapshotOf(customerRow, [b1Row]);
+    expect(snap.customer).toBe(customerRow);
+    expect(snap.branches.get(B1)).toBe(b1Row);
+    const r = classifyChanges(
+      [
+        ch('customer.notes', null, 'x'),
+        ch(`branch.${B1}.address`, 'Way 1', 'Way 2'),
+        ch(`branch.${B2}.address`, 'a', 'b'),
+      ],
+      snap
+    );
+    expect(r.apply.map((c) => c.field)).toEqual(['customer.notes', `branch.${B1}.address`]);
+    expect(r.droppedBranchIds).toEqual([B2]);
   });
 
   it('liveValueAt reads the snapshot, and is null for a branch that is not live', () => {

@@ -307,6 +307,22 @@ export type LiveSnapshot = {
 };
 
 /**
+ * A LiveSnapshot from rows as Prisma returns them (CUSTOMER_EDIT_SELECT /
+ * BRANCH_EDIT_SELECT, or whole rows). `liveBranches` must already be the
+ * customer's LIVE branches (deletedAt null): a branch missing from it is a
+ * dropped branch to classifyChanges.
+ */
+export function liveSnapshotOf(
+  customer: object,
+  liveBranches: ReadonlyArray<{ readonly id: string }>
+): LiveSnapshot {
+  return {
+    customer: customer as Readonly<Record<string, unknown>>,
+    branches: new Map(liveBranches.map((b) => [b.id, b as Readonly<Record<string, unknown>>])),
+  };
+}
+
+/**
  * The live value at a stored path. Null when the path names no edit field, or a
  * branch that is not live on this customer (archived, or moved to another one).
  */

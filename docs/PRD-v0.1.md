@@ -326,7 +326,7 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 | `password` | string | min 12 chars, 1 uppercase + 1 digit | client + server |
 | `nmwc_code` | string | unique; format `[A-Z]{2,4}\d{3,6}` (legacy) or `NMWC-YYYY-NNNNNN` (system) | server |
 | `legal_name` | string | 2–200 chars, counted after HTML is stripped and the value trimmed (N02); not editable by a Salesman | server |
-| `cr_number` | string | optional; if present, 5–50 chars, alphanumeric + `-`; auto-normalized (uppercase, strip spaces; since item 16 also Arabic-Indic digits to ASCII and invisible characters removed); not editable on Credit by Salesman | server |
+| `cr_number` | string | optional; if present, 5–50 chars, alphanumeric + `-`; auto-normalized (uppercase, strip spaces; since item 16 also Arabic-Indic digits to ASCII and invisible characters removed); not editable on Credit by Salesman; can be cleared from the edit form (F20, owner decision 2026-09-29), which a Salesman's submit refuses under the FULL gate | server |
 | `primary_phone` | string | required; must be an Oman number (`lib/phone.ts` isValidPhoneFormat: 8 digits, or `968` / `00968` + 8; Arabic-Indic and Persian digits accepted); stored normalized as `+968XXXXXXXX`; an invalid number is refused, never dropped (F19) | server |
 | `alt_phone` | string | optional; same rule; can be cleared from the edit form (F20) | server |
 | `contact_person` | string | 2–200 chars, counted after HTML is stripped (N02) | server |
@@ -335,7 +335,7 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 | `gps_lat` | float | -90 ≤ x ≤ 90; required at submit (not draft) | server |
 | `gps_lng` | float | -180 ≤ x ≤ 180; required at submit | server |
 | `gps_accuracy` | float | auto-captured by browser geolocation API | client |
-| `day_of_visit` | enum | SAT/SUN/MON/TUE/WED/THU/FRI | server |
+| `day_of_visit` | enum | SAT/SUN/MON/TUE/WED/THU/FRI; once set, the edit form cannot clear it (F20, owner decision 2026-09-29) | server |
 | `opening_hours` | string | optional; max 100 chars | server |
 | `delivery_window` | string | optional; max 100 chars | server |
 | `channel_id` | uuid | must reference an active Channel | server |

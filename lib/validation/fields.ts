@@ -106,4 +106,7 @@ export const clearablePhone = z
  * services/creates.ts normalizes it and stores both, so what CREATE writes does
  * not change. Blank is "not given" there (optionalStr), never reaching this.
  */
-export const createPhone = z.string().max(40).refine(isValidPhoneFormat, INVALID_PHONE_MESSAGE);
+export const createPhone = z
+  .string()
+  .max(40, INVALID_PHONE_MESSAGE)
+  .refine(isValidPhoneFormat, INVALID_PHONE_MESSAGE);
