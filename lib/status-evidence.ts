@@ -69,10 +69,33 @@ export function standsAsEvidence(
 }
 
 export const EVIDENCE_GONE = 'EVIDENCE_GONE';
+/** A close request, on the approval page: its reject button is "✗ Reject". */
 export const EVIDENCE_REMOVED_MESSAGE =
   'The photo sent with this request has been removed. Reject it so the salesman can send it again with a new photo.';
 export const EVIDENCE_NONE_MESSAGE =
   'This request carries no photo evidence. Reject it so the salesman can send it again with a new photo.';
+/**
+ * A reactivation, on the Reactivations queue. It has no button called Reject:
+ * its reject is "Keep closed" (ReactivationDecisionForm), so the refusal names
+ * that button, as the queue's own warnings and the Manager guide do.
+ */
+export const REACTIVATION_EVIDENCE_REMOVED_MESSAGE =
+  'The photo sent with this request has been removed. Use Keep closed to reject it, so the salesman can send it again with a new photo.';
+export const REACTIVATION_EVIDENCE_NONE_MESSAGE =
+  'This request carries no photo evidence. Use Keep closed to reject it, so the salesman can send it again with a new photo.';
+/** X-STATUS-1's refusal (services/reactivations.ts), worded for the same button. */
+export const REACTIVATION_STATE_CHANGED_MESSAGE =
+  'This branch changed since the request was sent (removed, moved to another customer, or no longer closed). Use Keep closed to reject this request.';
+
+/** Which queue decides the request: each names its own reject button. */
+export type EvidenceQueue = 'approvals' | 'reactivations';
+const REFUSAL: Record<EvidenceQueue, { removed: string; none: string }> = {
+  approvals: { removed: EVIDENCE_REMOVED_MESSAGE, none: EVIDENCE_NONE_MESSAGE },
+  reactivations: {
+    removed: REACTIVATION_EVIDENCE_REMOVED_MESSAGE,
+    none: REACTIVATION_EVIDENCE_NONE_MESSAGE,
+  },
+};
 
 /**
  * Refuse the decision unless every EVIDENCE photo the request was sent with
@@ -83,14 +106,17 @@ export const EVIDENCE_NONE_MESSAGE =
  * A request with no EVIDENCE entry at all is refused too: every close and
  * reactivation request is sent with one, so a row without one did not come
  * from those actions.
+ *
+ * `queue` picks the refusal's words: it tells the reviewer which button rejects.
  */
 export async function assertStatusEvidence(
   tx: Pick<Prisma.TransactionClient, 'attachment'>,
-  input: EvidenceSubject & { attachmentChanges: unknown }
+  input: EvidenceSubject & { attachmentChanges: unknown; queue: EvidenceQueue }
 ): Promise<void> {
+  const refusal = REFUSAL[input.queue];
   const ids = evidenceIds(input.attachmentChanges);
   if (ids.length === 0 || !input.branchId) {
-    throw new ConflictError(EVIDENCE_GONE, EVIDENCE_NONE_MESSAGE);
+    throw new ConflictError(EVIDENCE_GONE, refusal.none);
   }
   const rows = await tx.attachment.findMany({
     where: { id: { in: ids } },
@@ -98,6 +124,6 @@ export async function assertStatusEvidence(
   });
   const byId = new Map(rows.map((r) => [r.id, r]));
   if (!ids.every((id) => standsAsEvidence(byId.get(id), input))) {
-    throw new ConflictError(EVIDENCE_GONE, EVIDENCE_REMOVED_MESSAGE);
+    throw new ConflictError(EVIDENCE_GONE, refusal.removed);
   }
 }

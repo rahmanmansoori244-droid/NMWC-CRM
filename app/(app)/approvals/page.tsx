@@ -131,6 +131,21 @@ export default async function ApprovalsPage() {
     take: 200,
   });
 
+  // N01: a new-customer request's token also binds its live guarantee documents
+  // (lib/decision-token.ts), so a card is decided on the request as it stood when
+  // this page was rendered. One read for the whole page.
+  const createIds = items.filter((e) => e.process === 'CREATE').map((e) => e.id);
+  const guaranteeIdsOf = new Map<string, string[]>();
+  if (createIds.length > 0) {
+    const guarantees = await prisma.attachment.findMany({
+      where: { editId: { in: createIds }, kind: 'GUARANTEE', deletedAt: null },
+      select: { id: true, editId: true },
+    });
+    for (const g of guarantees) {
+      guaranteeIdsOf.set(g.editId!, [...(guaranteeIdsOf.get(g.editId!) ?? []), g.id]);
+    }
+  }
+
   // B-11 (Senior-audit 2026-05-10): pre-shape items for the bulk-approval client
   // component and let it own the multi-select + bulk action UI. The per-row
   // link still goes to /approvals/[id] for nuanced reviews.
@@ -149,7 +164,7 @@ export default async function ApprovalsPage() {
       sla,
       escalationLevel: e.escalationLevel,
       id: e.id,
-      decisionToken: decisionTokenFor(e),
+      decisionToken: decisionTokenFor(e, guaranteeIdsOf.get(e.id) ?? []),
       ageHours,
       changesCount,
       manualGps: hasManualGps(e.fieldChanges),

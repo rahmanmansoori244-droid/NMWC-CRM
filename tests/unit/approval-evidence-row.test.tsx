@@ -243,7 +243,10 @@ describe('the reactivation queue says when the evidence is gone', () => {
     expect(within(ok!).getAllByRole('img').map((i) => i.getAttribute('src'))).toEqual(['/api/photos/ok-photo']);
     expect(ok!.textContent).not.toMatch(/removed/);
     expect(within(gone!).queryAllByRole('img')).toEqual([]);
-    expect(gone!.textContent).toMatch(/Evidence photo removed since the request was sent — it cannot be\s+approved; reject it\./);
+    // This queue's reject button is "Keep closed"; the warning names it.
+    expect(gone!.textContent).toMatch(
+      /Evidence photo removed since the request was sent — it cannot be\s+approved; use Keep closed to reject it\./
+    );
     expect(h.attachmentQueries).toHaveLength(1);
   });
 });

@@ -96,15 +96,45 @@ export function approveConfirmCopy(outcome: ApproveOutcome): {
   }
 }
 
+/**
+ * Where rejecting THIS step sends the request (lib/approval-chains.ts
+ * resolveRejectTarget). The form told every approver the request went back to
+ * the salesman, but a rejection at a later step, the first time in a round,
+ * only steps it back to the previous approver.
+ */
+export type RejectOutcome = { kind: 'STEP_BACK'; toRole: string } | { kind: 'TO_SALESMAN' };
+
+export function rejectFormCopy(outcome: RejectOutcome): {
+  reasonLabel: string;
+  placeholder: string;
+  submitLabel: string;
+} {
+  if (outcome.kind === 'STEP_BACK') {
+    const back = STEP_LABEL[outcome.toRole] ?? outcome.toRole.replace(/_/g, ' ');
+    return {
+      reasonLabel: `Reason for the ${back} *`,
+      placeholder: `Be specific so the ${back} knows what to re-check. It goes back to the ${back} step, not to the salesman.`,
+      submitLabel: `✗ Send back to ${back}`,
+    };
+  }
+  return {
+    reasonLabel: 'Reason for the salesman *',
+    placeholder: 'Be specific so the salesman knows what to fix.',
+    submitLabel: '✗ Send back to salesman',
+  };
+}
+
 export function ApproveRejectActions({
   editId,
   decisionToken,
   outcome,
+  rejectOutcome,
 }: {
   editId: string;
   /** N01: the request as this page rendered it (lib/decision-token.ts). Sent with every decision. */
   decisionToken: string;
   outcome: ApproveOutcome;
+  rejectOutcome: RejectOutcome;
 }) {
   const [pending, start] = useTransition();
   const [showReject, setShowReject] = useState(false);
@@ -162,6 +192,7 @@ export function ApproveRejectActions({
 
   const templates = REJECT_TEMPLATES[category] ?? [];
   const confirm = approveConfirmCopy(outcome);
+  const rejectCopy = rejectFormCopy(rejectOutcome);
 
   return (
     <div>
@@ -228,7 +259,7 @@ export function ApproveRejectActions({
           )}
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-700">
-              Reason for the salesman *
+              {rejectCopy.reasonLabel}
             </label>
             <textarea
               name="reason"
@@ -238,7 +269,7 @@ export function ApproveRejectActions({
               minLength={5}
               maxLength={1000}
               required
-              placeholder="Be specific so the salesman knows what to fix."
+              placeholder={rejectCopy.placeholder}
               className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
             />
             {errors.reason && <p className="mt-0.5 text-xs text-red-600">{errors.reason}</p>}
@@ -256,7 +287,7 @@ export function ApproveRejectActions({
               disabled={pending || reason.length < 5}
               className="rounded-md bg-red-600 px-5 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:bg-slate-300"
             >
-              {pending ? 'Rejecting…' : '✗ Send back to salesman'}
+              {pending ? 'Rejecting…' : rejectCopy.submitLabel}
             </button>
           </div>
         </form>

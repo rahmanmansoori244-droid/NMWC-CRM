@@ -208,6 +208,53 @@ describe('the approval engine snapshots the stage on every decision it records',
     }
   });
 
+  it('every decision transaction re-reads the guarantee documents straight after its claim', () => {
+    // N01, guarantees: they are attachments, not columns, so the claim cannot
+    // compare them. Each decision reads them again on its transaction, right after
+    // the claim (which holds the request's row lock) and before its first write
+    // after it — so a Remove is either seen or waits (lib/decision-token.ts), and
+    // a refusal rolls the claim back. The defect it guards is "nobody called it".
+    const problems = (src: string) => {
+      const sf = ts.createSourceFile('edits.ts', stripComments(src, 'edits.ts'), ts.ScriptTarget.Latest, true);
+      const out: string[] = [];
+      let claims = 0;
+      const visit = (n: ts.Node): void => {
+        if (ts.isBlock(n)) {
+          n.statements.forEach((s, i) => {
+            if (!/^const claim = await tx\.customerEdit\.updateMany\(/.test(s.getText(sf))) return;
+            claims += 1;
+            const countCheck = n.statements[i + 1]?.getText(sf) ?? '';
+            const next = n.statements[i + 2]?.getText(sf) ?? '';
+            if (!/^if \(claim\.count === 0\)/.test(countCheck)) out.push(`claim ${claims}: no count check after it`);
+            if (next !== 'await assertGuaranteesAsViewed(tx, edit, expected);') {
+              out.push(`claim ${claims}: next is ${next.split('\n')[0]}`);
+            }
+          });
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(sf);
+      return { claims, out };
+    };
+    const src = readFileSync('services/edits.ts', 'utf8');
+    // Advance, CREATE final, UPDATE final, reject.
+    expect(problems(src)).toEqual({ claims: 4, out: [] });
+
+    // A guard that cannot fail is not a guard: the check dropped from one
+    // transaction, read on the pooled client, or moved below the first write.
+    const CALL = 'await assertGuaranteesAsViewed(tx, edit, expected);';
+    expect(src.split(CALL)).toHaveLength(5);
+    expect(problems(src.replace(CALL, '')).out).toHaveLength(1);
+    expect(problems(src.replace(CALL, `// ${CALL}`)).out).toHaveLength(1);
+    expect(problems(src.replace(CALL, 'await assertGuaranteesAsViewed(prisma, edit, expected);')).out).toHaveLength(1);
+    const moved = src.replace(
+      /(await assertGuaranteesAsViewed\(tx, edit, expected\);)(\s*)(await tx\.editApproval\.create\(\{[\s\S]*?\n {8}\}\);)/,
+      '$3$2$1'
+    );
+    expect(moved).not.toBe(src);
+    expect(problems(moved).out).toHaveLength(1);
+  });
+
   it('nothing inserts into EditApproval any other way', () => {
     // Every relation that points at EditApproval, read from the schema, so a new
     // one is covered the day it is added (CustomerEdit's steps, User's decisions).

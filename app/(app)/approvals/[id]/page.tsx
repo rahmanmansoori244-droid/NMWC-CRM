@@ -5,12 +5,16 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
-import { isFinalStep, parseChain } from '@/lib/approval-chains';
+import { isFinalStep, parseChain, resolveRejectTarget } from '@/lib/approval-chains';
 import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
 import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-manual';
 import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
 import { AlertTriangle } from 'lucide-react';
-import { ApproveRejectActions, type ApproveOutcome } from './ApproveRejectActions';
+import {
+  ApproveRejectActions,
+  type ApproveOutcome,
+  type RejectOutcome,
+} from './ApproveRejectActions';
 
 export const metadata = { title: 'Approval · NMWC' };
 
@@ -137,6 +141,20 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     : isCreate
       ? { kind: 'CREATE' }
       : { kind: 'APPLY' };
+  // Where rejecting the current step sends the request, for the reject form's
+  // words: the same rule and the same count rejectEditCore uses (this step's
+  // earlier rejections in this cycle), read off the decision history loaded above.
+  const rejectTarget = resolveRejectTarget(
+    edit.currentStepIndex,
+    edit.steps.filter(
+      (s) =>
+        s.cycle === edit.cycle && s.stepIndex === edit.currentStepIndex && s.decision === 'REJECTED'
+    ).length
+  );
+  const rejectOutcome: RejectOutcome =
+    rejectTarget.kind === 'STEP_BACK'
+      ? { kind: 'STEP_BACK', toRole: chain[rejectTarget.toStepIndex]!.role }
+      : { kind: 'TO_SALESMAN' };
   const displayName = isCreate
     ? (edit.customerDraft?.legalName ?? '—')
     : (edit.customer?.legalName ?? '—');
@@ -200,6 +218,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   };
 
   // Guarantee documents (CREATE-CREDIT): edit-claimed GUARANTEE attachments.
+  // N01: their ids are bound into the decision token below, so a decision is
+  // refused if one is removed while this page is open.
   const guaranteeDocs = isCreate
     ? await prisma.attachment.findMany({
         where: { editId: edit.id, kind: 'GUARANTEE', deletedAt: null },
@@ -579,12 +599,17 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
         // padding to cancel, so `-mx-4 sm:-mx-6` made it wider than the screen — a
         // sideways scroll on every phone and a 24px scrollbar on desktop (item 37).
         <div className="sticky bottom-0 mt-4 border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:p-6">
-          {/* N01: the token is made from the row this page just rendered, so a
-              decision is refused if the request has changed since. */}
+          {/* N01: the token is made from the row this page just rendered and the
+              guarantee documents it listed, so a decision is refused if the
+              request has changed since. */}
           <ApproveRejectActions
             editId={edit.id}
-            decisionToken={decisionTokenFor(edit)}
+            decisionToken={decisionTokenFor(
+              edit,
+              guaranteeDocs.map((g) => g.id)
+            )}
             outcome={approveOutcome}
+            rejectOutcome={rejectOutcome}
           />
         </div>
       )}

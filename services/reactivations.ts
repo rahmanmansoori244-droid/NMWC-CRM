@@ -15,7 +15,7 @@ import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { lockCustomerRow } from '@/lib/locks';
-import { assertStatusEvidence } from '@/lib/status-evidence';
+import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/status-evidence';
 import { stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from '@/lib/working-hours';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
@@ -404,10 +404,8 @@ async function approveReactivationCore(formData: FormData) {
       !customerNow ||
       customerNow.deletedAt
     ) {
-      throw new ConflictError(
-        'STATE_CHANGED',
-        'This branch changed since the request was sent (removed, moved to another customer, or no longer closed). Reject this request.'
-      );
+      // The Reactivations queue's reject button is "Keep closed"; the message names it.
+      throw new ConflictError('STATE_CHANGED', REACTIVATION_STATE_CHANGED_MESSAGE);
     }
     // F10: the photo the request was sent with must still stand — live, the
     // submitter's, on this branch. Read under the lock Remove also takes; the
@@ -416,6 +414,7 @@ async function approveReactivationCore(formData: FormData) {
       branchId: edit.branchId,
       submittedById: edit.submittedById,
       attachmentChanges: edit.attachmentChanges,
+      queue: 'reactivations',
     });
     await tx.branch.update({
       where: { id: edit.branchId! },

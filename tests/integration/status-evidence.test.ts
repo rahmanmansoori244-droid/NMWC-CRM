@@ -178,11 +178,11 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
     expect(res.ok, JSON.stringify(res)).toBe(true);
   }
 
-  // N01: a decision carries the token of the request as the page rendered it.
+  /** From a freshly loaded review page: every approval sends its decision token (N01). */
   const approveClose = async (editId: string) => {
     as(ids.sup, 'SUPERVISOR');
     const decisionToken = await freshDecisionToken(prisma, editId);
-    return edits.approveEditAction(form({ editId, decisionToken })) as Promise<Result>;
+    return (await edits.approveEditAction(form({ editId, decisionToken }))) as Result;
   };
   const approveReactivation = (editId: string) => {
     as(ids.mgr, 'MANAGER');
@@ -205,9 +205,13 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
       expect(await prisma.auditLog.count({ where: { action: 'APPROVE', entityId: editId } })).toBe(0);
 
       as(ids.sup, 'SUPERVISOR');
-      const decisionToken = await freshDecisionToken(prisma, editId);
       const rejected = (await edits.rejectEditAction(
-        form({ editId, reason: 'Photo removed — send it again.', category: 'other', decisionToken })
+        form({
+          editId,
+          reason: 'Photo removed — send it again.',
+          category: 'other',
+          decisionToken: await freshDecisionToken(prisma, editId),
+        })
       )) as Result;
       expect(rejected.ok, JSON.stringify(rejected)).toBe(true);
       expect(await editState(editId)).toBe('NEEDS_CORRECTION');

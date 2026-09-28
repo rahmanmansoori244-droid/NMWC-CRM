@@ -18,7 +18,9 @@
  *   N01  A decision is bound to the request as the reviewer's page showed it
  *        (lib/decision-token.ts). A page kept open across a step-back or a
  *        correction round is refused STALE_VIEW — approve, reject and bulk,
- *        mid-chain and at the final step — and writes nothing.
+ *        mid-chain and at the final step — and writes nothing. So is one kept
+ *        open while the salesman removed a guarantee document, including a
+ *        removal still in flight when the decision reads them (FOR SHARE).
  *
  *   RUN_CREDIT_CHAIN=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/credit-chain-e2e.test.ts
@@ -26,7 +28,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
-import { parseDecisionToken } from '@/lib/decision-token';
+import { guaranteeDigest, parseDecisionToken } from '@/lib/decision-token';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 90_000 });
@@ -41,6 +43,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   let prisma: import('@prisma/client').PrismaClient;
   let creates: typeof import('@/services/creates');
   let edits: typeof import('@/services/edits');
+  let photos: typeof import('@/services/photos');
 
   const tag = randomUUID().slice(0, 8);
   const ids = {
@@ -52,7 +55,9 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   // N01's two requests: A (CREDIT, corrected mid-chain) and B (CASH).
   const nameA = `ZZ-SYN Credit Chain N01-A ${tag}`;
   const nameB = `ZZ-SYN Credit Chain N01-B ${tag}`;
-  const allNames = [legalName, nameA, nameB];
+  // And D (CREDIT, two guarantee documents), whose salesman removes them while pages are open.
+  const nameD = `ZZ-SYN Credit Chain N01-D ${tag}`;
+  const allNames = [legalName, nameA, nameB, nameD];
   const REQUESTED_LIMIT = 7777;
   const REQUESTED_DAYS = 45;
   let channelId = '', subChannelId = '';
@@ -76,6 +81,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     ({ prisma } = await import('@/lib/db'));
     creates = await import('@/services/creates');
     edits = await import('@/services/edits');
+    photos = await import('@/services/photos');
 
     const region = await prisma.region.create({ data: { name: `ZZCC Region ${tag}`, code: `ZZCC-${tag}` } });
     ids.region = region.id;
@@ -451,6 +457,90 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect(cust.legalName).toBe(nameA);
       expect(Number(cust.creditLimit)).toBe(10_000);
       expect(cust.paymentTermDays).toBe(90);
+    });
+
+    // Guarantee documents are attachments, not columns: the salesman can Remove
+    // one while the request is SUBMITTED, and neither the cycle nor the row moves.
+    let editD = '';
+    const gD = { one: '', two: '' };
+
+    it('D is submitted with two guarantee documents; a page opened now binds both', async () => {
+      asUser(ids.salesman, 'SALESMAN');
+      gD.one = await mkAtt('GUARANTEE');
+      gD.two = await mkAtt('GUARANTEE');
+      const res = await creates.submitCreateAction({
+        isDraft: false,
+        customer: {
+          legalName: nameD, paymentTerms: 'CREDIT', channelId, subChannelId,
+          primaryPhone: `+96893${digits(31)}`, contactPerson: `ZZ Contact D ${tag}`,
+          crNumber: `95${digits(32)}`, crPhotoAttachmentId: await mkAtt('CR'),
+        },
+        credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
+        guaranteeAttachmentIds: [gD.one, gD.two],
+        branches: [{
+          branchName: `ZZ Branch D ${tag}`, address: `ZZ Way 4, ${tag}`, gpsLat: 23.63, gpsLng: 58.43,
+          dayOfVisit: 'WED', coolersCount: 1, standsCount: 1, emptyBottlesCount: 5,
+          shopPhotoAttachmentId: await mkAtt('SHOP'), signboardPhotoAttachmentId: await mkAtt('SIGNBOARD'),
+        }],
+      });
+      if (!res.ok) console.error('N01 SUBMIT D FAILED', JSON.stringify(res));
+      expect(res.ok).toBe(true);
+      editD = (res as { ok: true; data: { editId: string } }).data.editId;
+      expect(parseDecisionToken(await fresh(editD))!.guarantees).toBe(guaranteeDigest([gD.one, gD.two]));
+    });
+
+    it('the salesman removes one while the Supervisor’s page is open: that page can neither approve nor reject, and nothing is written', async () => {
+      asUser(ids.supervisor, 'SUPERVISOR');
+      const page = await fresh(editD);
+      asUser(ids.salesman, 'SALESMAN');
+      const removed = await photos.detachPhotoAction({ attachmentId: gD.two });
+      expect(removed.ok, JSON.stringify(removed)).toBe(true);
+
+      asUser(ids.supervisor, 'SUPERVISOR');
+      const before = await footprint(editD, nameD);
+      expectStale(await decide('approve', editD, page));
+      expectStale(await decide('reject', editD, page));
+      expect(await footprint(editD, nameD)).toEqual(before);
+      // A page loaded now lists the one left, and approves.
+      const ok = await decide('approve', editD, await fresh(editD));
+      expect(ok.ok, JSON.stringify(ok)).toBe(true);
+    });
+
+    it('a Remove still in flight when the decision reads the guarantees is waited for, then seen', async () => {
+      asUser(ids.fm, 'FINANCE_MANAGER');
+      const page = await fresh(editD); // lists gD.one
+      let locked!: () => void;
+      const isLocked = new Promise<void>((r) => (locked = r));
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      // Connection A: a Remove's soft-delete of gD.one, written and not yet committed.
+      const holder = prisma.$transaction(
+        async (t) => {
+          await t.$executeRaw`UPDATE "Attachment" SET "deletedAt" = now(), "hash" = NULL WHERE "id" = ${gD.one}`;
+          locked();
+          await gate;
+        },
+        { timeout: 60_000, maxWait: 10_000 }
+      );
+      await isLocked;
+      const before = await footprint(editD, nameD);
+      // Connection B: the Finance Manager's approval, from the page that lists gD.one.
+      // A plain read would see gD.one still live and approve; FOR SHARE must wait.
+      const deciding = decide('approve', editD, page);
+      let waited = false;
+      for (let i = 0; i < 200 && !waited; i++) {
+        const rows = await prisma.$queryRaw<Array<{ n: number }>>`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted`;
+        waited = (rows[0]?.n ?? 0) > 0;
+        if (!waited) await new Promise((r) => setTimeout(r, 50));
+      }
+      release();
+      await holder;
+      const res = await deciding;
+
+      expect(waited, 'the decision queued behind the removal').toBe(true);
+      expectStale(res);
+      // Rolled back whole: the claim, the decision row, the audit row, the notifications.
+      expect(await footprint(editD, nameD)).toEqual(before);
     });
   });
 });

@@ -9,6 +9,8 @@
  *            card, where Select all → Approve used to decide them unseen.
  *   X-APPR-2 the approve confirmation says what approving this step does: send
  *            it on, create the customer, or change a live one.
+ *   Reject   the reject form says where rejecting this step sends the request:
+ *            back one step to the previous approver, or to the salesman.
  *
  * The pages that render the tokens are in approval-decision-pages.test.tsx; the
  * services that check them are in decision-token.test.ts.
@@ -44,6 +46,7 @@ import {
   ApproveRejectActions,
   approveConfirmCopy,
   type ApproveOutcome,
+  type RejectOutcome,
 } from '@/app/(app)/approvals/[id]/ApproveRejectActions';
 import { BulkApprovalQueue, type ApprovalQueueItem } from '@/app/(app)/approvals/BulkApprovalQueue';
 
@@ -58,8 +61,13 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-function renderActions(outcome: ApproveOutcome = { kind: 'APPLY' }) {
-  return render(<ApproveRejectActions editId="e1" decisionToken={TOKEN} outcome={outcome} />);
+function renderActions(
+  outcome: ApproveOutcome = { kind: 'APPLY' },
+  rejectOutcome: RejectOutcome = { kind: 'TO_SALESMAN' }
+) {
+  return render(
+    <ApproveRejectActions editId="e1" decisionToken={TOKEN} outcome={outcome} rejectOutcome={rejectOutcome} />
+  );
 }
 async function approveThroughModal() {
   fireEvent.click(screen.getByRole('button', { name: '✓ Approve' }));
@@ -155,6 +163,53 @@ describe('X-APPR-2 — the approve confirmation says what this step does', () =>
       const copy = approveConfirmCopy(outcome);
       expect(/go live/i.test(`${copy.title} ${copy.message}`), JSON.stringify(outcome)).toBe(outcome.kind === 'APPLY');
     }
+  });
+});
+
+describe('the reject form says where rejecting this step sends the request', () => {
+  /** Open the reject form and read its words: the reason label, the placeholder, the send button. */
+  function openReject(rejectOutcome: RejectOutcome) {
+    renderActions({ kind: 'APPLY' }, rejectOutcome);
+    fireEvent.click(screen.getByRole('button', { name: '✗ Reject' }));
+    const form = screen.getByRole('textbox').closest('form')!;
+    return {
+      form,
+      label: form.querySelector('textarea')!.parentElement!.querySelector('label')!.textContent,
+      placeholder: screen.getByRole('textbox').getAttribute('placeholder'),
+      send: within(form).getByRole('button', { name: /^✗ Send back to/ }),
+    };
+  }
+
+  it.each([
+    ['SUPERVISOR', 'Supervisor'],
+    ['FINANCE_MANAGER', 'Finance Manager'],
+    ['GM', 'GM'],
+  ])('a step back to %s names that role, and not the salesman, as who gets it', (toRole, name) => {
+    const f = openReject({ kind: 'STEP_BACK', toRole });
+    expect(f.send.textContent).toBe(`✗ Send back to ${name}`);
+    expect(f.label).toBe(`Reason for the ${name} *`);
+    expect(f.placeholder).toMatch(new RegExp(`^Be specific so the ${name} knows what to re-check\\.`));
+    expect(f.placeholder).toContain('not to the salesman');
+    expect(within(f.form).queryByRole('button', { name: /salesman/i })).toBeNull();
+    expect(f.label).not.toMatch(/salesman/i);
+  });
+
+  it('a rejection that goes to the salesman keeps the salesman wording', () => {
+    const f = openReject({ kind: 'TO_SALESMAN' });
+    expect(f.send.textContent).toBe('✗ Send back to salesman');
+    expect(f.label).toBe('Reason for the salesman *');
+    expect(f.placeholder).toBe('Be specific so the salesman knows what to fix.');
+  });
+
+  it('a step back still sends the same decision', async () => {
+    renderActions({ kind: 'ADVANCE', nextRole: 'GM' }, { kind: 'STEP_BACK', toRole: 'SUPERVISOR' });
+    await rejectWithReason();
+    expect(formOf(h.reject)).toEqual({
+      editId: 'e1',
+      decisionToken: TOKEN,
+      category: 'other',
+      reason: 'Credit figures need rework.',
+    });
   });
 });
 

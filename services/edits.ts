@@ -36,7 +36,12 @@ import {
   resolveRejectTarget,
 } from '@/lib/approval-chains';
 import { stageSnapshot } from '@/lib/working-hours';
-import { MISSING_TOKEN_MESSAGE, assertDecisionView, readDecisionToken } from '@/lib/decision-token';
+import {
+  MISSING_TOKEN_MESSAGE,
+  assertDecisionView,
+  assertGuaranteesAsViewed,
+  readDecisionToken,
+} from '@/lib/decision-token';
 import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/notifications';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
@@ -972,6 +977,9 @@ async function approveEditCore(formData: FormData) {
             'This step was just decided by another reviewer. Refresh to see the current state.'
           );
         }
+        // N01: the guarantee documents the page rendered, still exactly the live
+        // ones — under the claim's lock, and locked themselves until commit.
+        await assertGuaranteesAsViewed(tx, edit, expected);
         await tx.editApproval.create({
           data: {
             editId,
@@ -1067,6 +1075,8 @@ async function approveEditCore(formData: FormData) {
             'This request was just decided by another reviewer. Refresh to see the current state.'
           );
         }
+        // N01: before finalize binds them (see the advance claim above).
+        await assertGuaranteesAsViewed(tx, edit, expected);
         await tx.editApproval.create({
           data: {
             editId,
@@ -1285,6 +1295,8 @@ async function approveEditCore(formData: FormData) {
           'This edit was just decided by another reviewer. Refresh to see the current state.'
         );
       }
+      // N01: an UPDATE has no guarantees to read; this refuses a token that states some.
+      await assertGuaranteesAsViewed(tx, edit, expected);
       await tx.editApproval.create({
         data: {
           editId,
@@ -1312,6 +1324,7 @@ async function approveEditCore(formData: FormData) {
           branchId: edit.branchId,
           submittedById: edit.submittedById,
           attachmentChanges: edit.attachmentChanges,
+          queue: 'approvals',
         });
       }
       // EL-04 (Critical): re-run the mandatory-field gate at approve time. The
@@ -1681,6 +1694,9 @@ async function rejectEditCore(formData: FormData) {
         'This edit was just decided by another reviewer. Refresh to see the current state.'
       );
     }
+    // N01: a rejection is bound to the guarantees shown too; a refusal rolls
+    // back the decision row above with the claim.
+    await assertGuaranteesAsViewed(tx, edit, expected);
     await writeAudit(tx, env, {
       action: 'REJECT',
       entityType: 'CustomerEdit',

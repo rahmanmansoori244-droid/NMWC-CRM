@@ -106,9 +106,12 @@ export default async function ReactivationsPage() {
                             <p className="text-xs font-medium text-emerald-700">
                               Fresh evidence (captured for this request)
                             </p>
+                            {/* This queue's reject button is "Keep closed": the
+                                warnings name it, as the approval refusals do. */}
                             {sent.length === 0 ? (
                               <p className="text-xs font-medium text-red-700">
-                                No evidence photo attached — it cannot be approved; reject it.
+                                No evidence photo attached — it cannot be approved; use Keep closed
+                                to reject it.
                               </p>
                             ) : (
                               <>
@@ -128,7 +131,7 @@ export default async function ReactivationsPage() {
                                 {removed > 0 && (
                                   <p className="mt-1 text-xs font-medium text-red-700">
                                     Evidence photo removed since the request was sent — it cannot be
-                                    approved; reject it.
+                                    approved; use Keep closed to reject it.
                                   </p>
                                 )}
                               </>
