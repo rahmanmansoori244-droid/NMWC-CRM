@@ -73,9 +73,11 @@ describe('scrubEvent', () => {
     expect(url).toContain('q=%5Bredacted%5D');
   });
 
-  it('scrubs the request body, the exception message and breadcrumbs', () => {
+  it('drops the request body, and scrubs the exception message and breadcrumbs', () => {
     const e = scrubEvent(event());
-    expect(e.request?.data).not.toContain('96891234567');
+    // Dropped, not pattern-scrubbed (review of the recheck fixes, 2026-09-28): the
+    // patterns cannot recognise a password.
+    expect(e.request).not.toHaveProperty('data');
     // the leading "+" is consumed by the pattern, so nothing of the number survives
     expect(e.exception?.values?.[0]?.value).toBe(
       'Unique constraint failed: primaryPhoneNorm=[phone]'
@@ -83,6 +85,40 @@ describe('scrubEvent', () => {
     expect(e.breadcrumbs?.[0]?.message).toBe('submitted [phone]');
     expect(e.breadcrumbs?.[0]?.data?.email).toBe('[email]');
     expect(e.breadcrumbs?.[0]?.data?.route).toBe('C4');
+  });
+
+  it('drops a request body whatever its shape, a password in it included', () => {
+    const bodies: unknown[] = [
+      'username=ali&password=Opensesame2026',
+      { username: 'ali', password: 'Opensesame2026' },
+      [['password', 'Opensesame2026']],
+    ];
+    for (const data of bodies) {
+      const e = scrubEvent({ request: { method: 'POST', url: 'https://nmwc-cm.vercel.app/login', data } } as unknown as ErrorEvent);
+      expect(e.request).not.toHaveProperty('data');
+      expect(e.request?.method).toBe('POST');
+    }
+  });
+
+  it('drops the raw arguments of a console breadcrumb and walks every breadcrumb, span and extra deeply', () => {
+    const err = { message: 'failed for +96891234567', name: 'Error', stack: 'Error: failed for +96891234567\n    at x' };
+    const e = scrubEvent({
+      breadcrumbs: [
+        { category: 'console', level: 'error', message: ' ⨯ Error: failed for +96891234567', data: { arguments: [' ⨯', err], logger: 'console' } },
+        { category: 'app', data: { last: { href: '/customers?q=Ali+Said', emails: ['ali@example.com'] } } },
+      ],
+      spans: [{ description: 'lookup', data: { 'app.paths': ['/customers?q=Ali+Said'], nested: { phone: '91234567' } } }],
+      extra: { lastSearch: { href: '/customers?q=Ali+Said' }, note: 'call 91234567' },
+    } as unknown as SentryEvent);
+    expect(e.breadcrumbs?.[0]).toEqual({
+      category: 'console',
+      level: 'error',
+      message: ' ⨯ Error: failed for [phone]',
+      data: { logger: 'console' },
+    });
+    expect(e.breadcrumbs?.[1]?.data).toEqual({ last: { href: '/customers?q=[redacted]', emails: ['[email]'] } });
+    expect(e.spans?.[0]?.data).toEqual({ 'app.paths': ['/customers?q=[redacted]'], nested: { phone: '[phone]' } });
+    expect(e.extra).toEqual({ lastSearch: { href: '/customers?q=[redacted]' }, note: 'call [phone]' });
   });
 
   it('drops the IP address but keeps the user id', () => {

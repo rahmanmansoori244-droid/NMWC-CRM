@@ -23,6 +23,7 @@ const PLANTED = {
   context: 'ZQXBROWSERCONTEXT',
   spanName: 'ZQXBROWSERSPAN',
   spanAttr: 'ZQXBROWSERATTR',
+  consoleArg: 'ZQXBROWSERCONSOLE',
 } as const;
 
 const envelopes: string[] = [];
@@ -114,5 +115,25 @@ describe('a browser transaction', () => {
     const tx = transactions[0]!;
     expect(tx.contexts?.trace?.data?.['url.full']).toBe(`${window.location.origin}/customers?q=[redacted]`);
     expect(Object.keys(tx.request?.headers ?? {}).map((h) => h.toLowerCase())).not.toContain('referer');
+  });
+});
+
+describe('a console call in the browser', () => {
+  it('leaves the raw arguments of its breadcrumb out of the envelope', async () => {
+    envelopes.length = 0;
+    // The breadcrumb's message is "customer save failed [object Object]"; the
+    // object's fields exist only in the raw `data.arguments` the SDK keeps.
+    console.error('customer save failed', { legalName: PLANTED.consoleArg });
+    Sentry.captureException(new Error('client save failed'));
+    await Sentry.flush(3000);
+
+    const errorEvents = payloads().filter((p) => p.exception) as Array<{
+      breadcrumbs?: Array<{ category?: string; message?: string; data?: Record<string, unknown> }>;
+    }>;
+    expect(errorEvents).toHaveLength(1);
+    expect(leaked()).toEqual([]);
+    // Not vacuous: the console breadcrumb is there, without its raw arguments.
+    const logged = errorEvents[0]!.breadcrumbs?.find((b) => b.category === 'console' && b.message?.startsWith('customer save failed'));
+    expect(logged?.data).toEqual({ logger: 'console' });
   });
 });

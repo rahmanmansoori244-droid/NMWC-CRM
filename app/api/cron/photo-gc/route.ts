@@ -27,11 +27,30 @@ const BATCH_SIZE = 200;
  * oldest first, until this budget is spent. It read one unordered page of 200,
  * and a row whose storage or database step fails stays a candidate — so 200 rows
  * that kept failing could fill every page, every night, and nothing newer was
- * ever reached. The route's limit is 60 s (vercel.json); the budget leaves room
- * for the call in flight and the heartbeat write, so a long night stops cleanly,
- * is recorded, and the next run carries on.
+ * ever reached. The route's limit is 60 s (vercel.json). No candidate is started
+ * after this budget, so a long night stops cleanly, is recorded, and the next run
+ * carries on.
  */
 const TIME_BUDGET_MS = 40_000;
+/**
+ * Review of the recheck fixes (2026-09-28): the budget above decides when the last
+ * tag call STARTS, not when it ends, and the call in flight had no deadline of its
+ * own. R2 can accept a request and never answer it. The client's request timeout
+ * only logged a warning until the same review (lib/r2.ts), so one such call held
+ * the run until Vercel killed it at 60 s; and now that it throws, two attempts of
+ * up to 13 s each still outlast what is left after a call started near the budget.
+ * Killed, the run recorded nothing through withHeartbeat — no heartbeat, no run
+ * row, no alert — and the degraded night the r2Errors count exists to report
+ * stayed invisible until the 72-hour staleness warning.
+ *
+ * So every R2 call is aborted at this deadline, counted from the same start as the
+ * budget. The 15 s left before the limit hold the cold start before the clock
+ * starts, the one row delete after the last call, the heartbeat's two writes and
+ * the failure alert (lib/alert.ts stops that at 5 s). A call started just inside
+ * the budget still has 5 s, where a tag takes well under one; a call cut off here
+ * is a slow R2 and counts as an R2 error, so the run goes red and alerts.
+ */
+const R2_DEADLINE_MS = 45_000;
 
 type Candidate = { id: string; r2Key: string; deletedAt: Date | null };
 
@@ -86,6 +105,8 @@ async function handle(req: NextRequest) {
       // ORPHANS the object — no DB reference AND no expiry tag, so it lives in R2
       // forever. On a transient failure, leave the row for the next GC run.
       let safeToDelete = false;
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(), Math.max(0, R2_DEADLINE_MS - (Date.now() - started)));
       try {
         // B-02 (audit 2026-05-10): tagged for R2 lifecycle expiry instead of hard-delete so accidents are recoverable for 7 days.
         await r2().send(
@@ -98,7 +119,8 @@ async function handle(req: NextRequest) {
                 { Key: 'gc-marked-at', Value: markedAt },
               ],
             },
-          })
+          }),
+          { abortSignal: deadline.signal }
         );
         safeToDelete = true;
       } catch (err) {
@@ -112,6 +134,8 @@ async function handle(req: NextRequest) {
           r2Errors++;
           logger.warn({ key: c.r2Key, err: msg.slice(0, 80) }, 'gc.r2_tag_failed');
         }
+      } finally {
+        clearTimeout(timer);
       }
       if (!safeToDelete) {
         skipped++;

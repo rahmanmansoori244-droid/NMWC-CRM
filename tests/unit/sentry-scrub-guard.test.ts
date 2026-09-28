@@ -98,6 +98,23 @@ describe('every Sentry runtime is initialised with the scrubber on both hooks', 
     });
     expect(imports.map((d) => (d.moduleSpecifier as ts.StringLiteral).text)).toEqual(['@/lib/sentry-scrub']);
   });
+
+  it('the server passes serverIntegrations(), which the envelope test proves records no request body', () => {
+    // Review of the recheck fixes (2026-09-28): the SDK's default HTTP integration
+    // kept every incoming body. tests/unit/sentry-envelope.test.ts posts a password
+    // through a real server with serverIntegrations(); this pins that production
+    // initialises with that same function and nothing else in its place.
+    const file = 'sentry.server.config.ts';
+    const sf = parse(file);
+    const arg = sentryInitCalls(sf)[0]!.arguments[0] as ts.ObjectLiteralExpression;
+    const p = arg.properties.find((q) => q.name && ts.isIdentifier(q.name) && q.name.text === 'integrations');
+    expect(p && ts.isPropertyAssignment(p) ? p.initializer.getText(sf) : undefined).toBe('serverIntegrations()');
+    const from = sf.statements.filter(ts.isImportDeclaration).filter((d) => {
+      const b = d.importClause?.namedBindings;
+      return b && ts.isNamedImports(b) && b.elements.some((e) => e.name.text === 'serverIntegrations' && !e.propertyName);
+    });
+    expect(from.map((d) => (d.moduleSpecifier as ts.StringLiteral).text)).toEqual(['@/lib/sentry-server-integrations']);
+  });
 });
 
 describe('the scrubber runs in the browser and on the Edge', () => {

@@ -233,7 +233,13 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
   }
   if (event.request?.cookies) delete event.request.cookies;
   if (typeof event.request?.url === 'string') event.request.url = scrubUrl(event.request.url);
-  if (typeof event.request?.data === 'string') event.request.data = scrubText(event.request.data);
+  // Review of the recheck fixes (2026-09-28): a request body is DROPPED, whatever its
+  // type. It was pattern-scrubbed when it was a string and sent whole otherwise, and
+  // the patterns cannot recognise a password: the server SDK recorded server-action
+  // bodies, so a sign-in that failed after `signIn()` could send the username and
+  // the password. lib/sentry-server-integrations.ts stops the server recording bodies;
+  // this is the second line, on every runtime. Nothing a report needs is in a body.
+  if (event.request && 'data' in event.request) delete event.request.data;
   // Transaction events carry the route in `transaction` and the query string in
   // `request.query_string`, neither of which the error path ever populated.
   if (typeof event.transaction === 'string') event.transaction = scrubText(event.transaction);
@@ -260,17 +266,18 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
     if (nextjs && typeof nextjs === 'object') templateNextjsPath(nextjs as Record<string, unknown>);
     scrubDeep(event.contexts);
   }
+  // Review of the recheck fixes (2026-09-28): span data, breadcrumb data and extras
+  // are walked like the contexts. Span and breadcrumb data had only their top-level
+  // strings scrubbed and extras nothing at all, so an array attribute, a nested
+  // breadcrumb field or a `setExtra` value went out as it was.
   if (Array.isArray(event.spans)) {
     for (const span of event.spans) {
       const s = span as { description?: unknown; data?: Record<string, unknown> };
       if (typeof s.description === 'string') s.description = scrubText(s.description);
-      if (s.data && typeof s.data === 'object') {
-        for (const [k, v] of Object.entries(s.data)) {
-          if (typeof v === 'string') s.data[k] = scrubText(v);
-        }
-      }
+      if (s.data && typeof s.data === 'object') scrubDeep(s.data);
     }
   }
+  if (event.extra && typeof event.extra === 'object') scrubDeep(event.extra);
   if (event.exception?.values) {
     for (const v of event.exception.values) {
       if (typeof v.value === 'string') v.value = scrub(redactWebhook(v.value));
@@ -284,9 +291,12 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
       // `?q=<customer name>` on 100% of error events. The pattern scrub alone
       // never touched them, because a name is not a digit run.
       if (b.data && typeof b.data === 'object') {
-        for (const [k, val] of Object.entries(b.data)) {
-          if (typeof val === 'string') (b.data as Record<string, unknown>)[k] = scrubText(val);
-        }
+        // A console breadcrumb keeps the call's raw arguments in `data.arguments`:
+        // after a server error Next calls console.error(' ⨯', err), and the SDK
+        // stores the Error's message and stack there unscrubbed. `message` already
+        // holds the formatted text, scrubbed above, so the raw copy goes.
+        if (b.category === 'console') delete (b.data as Record<string, unknown>).arguments;
+        scrubDeep(b.data);
       }
     }
   }

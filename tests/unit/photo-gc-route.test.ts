@@ -229,3 +229,49 @@ describe('X-OPS-3: rows that keep failing cannot starve the rest', () => {
     expect(h.rows).toHaveLength(0);
   });
 });
+
+describe('a tag call that R2 accepts and never answers (review of the recheck fixes, 2026-09-28)', () => {
+  it('started 1 ms inside the budget, it is cut off at 45 s: the run returns, records a red heartbeat and alerts', async () => {
+    // The route's own abort timer has to run on the faked clock too. (A second
+    // useFakeTimers while beforeEach's is installed changes nothing: reinstall.)
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(NOW);
+    h.rows = [row(1), row(2), row(3)];
+    let reached!: () => void;
+    const hanging = new Promise<void>((resolve) => (reached = resolve));
+    h.send.mockImplementation(async (cmd: { input: { Key: string } }, opts?: { abortSignal?: AbortSignal }) => {
+      if (cmd.input.Key === row(1).r2Key) {
+        // The night so far: the first call ends 1 ms before the budget runs out.
+        vi.setSystemTime(NOW.getTime() + 39_999);
+        return {};
+      }
+      // The next one is never answered. Only the abort signal ends it, as it ends
+      // a real request in @smithy/node-http-handler; without one it hangs until
+      // Vercel kills the function, and this test times out.
+      reached();
+      return new Promise((_resolve, reject) => {
+        opts?.abortSignal?.addEventListener(
+          'abort',
+          () => reject(Object.assign(new Error('Request aborted'), { name: 'AbortError' })),
+          { once: true }
+        );
+      });
+    });
+
+    const done = run();
+    await hanging;
+    await vi.advanceTimersByTimeAsync(5_001);
+    const { status, body } = await done;
+
+    expect(status).toBe(200);
+    // Cut off 45 s after the start, which leaves the limit's last 15 s for the
+    // heartbeat and the alert, instead of running into Vercel's 60 s.
+    expect(Date.now() - NOW.getTime()).toBe(45_000);
+    expect(body).toMatchObject({ deleted: 1, r2Errors: 1, skipped: 1, scanned: 2, behind: true });
+    expect(recordedOk()).toBe(false);
+    expect(h.alert).toHaveBeenCalledTimes(1);
+    // The row whose tag was cut off stays for the next night, and so does the one never reached.
+    expect(h.rows.map((r) => r.id)).toEqual(['att0002', 'att0003']);
+  });
+});

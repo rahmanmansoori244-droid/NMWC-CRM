@@ -21,9 +21,12 @@
  * The browser half is tests/unit/sentry-envelope-browser.test.ts (jsdom).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import * as Sentry from '@sentry/nextjs';
 import { SpanKind, trace } from '@opentelemetry/api';
 import { scrubEvent } from '@/lib/sentry-scrub';
+import { serverIntegrations } from '@/lib/sentry-server-integrations';
 
 /**
  * Planted values. Letters only, so no transport encoding (percent, plus, JSON
@@ -50,6 +53,24 @@ const PLANTED = {
   childQuery: 'ZQXCHILDQUERY',
   context: 'ZQXCUSTOMCONTEXT',
   customSpan: 'ZQXCUSTOMSPAN',
+  postedPassword: 'ZQXPOSTEDPASSWORD',
+  scopedPassword: 'ZQXSCOPEDPASSWORD',
+  consoleObject: 'ZQXCONSOLEOBJECT',
+  crumbNested: 'ZQXCRUMBNESTED',
+  extra: 'ZQXEXTRAVALUE',
+  spanArray: 'ZQXSPANARRAY',
+} as const;
+
+/**
+ * Personal data the scrubber has to RECOGNISE, which the letters above are built
+ * not to be: a phone number and an e-mail address, the way a Prisma
+ * unique-constraint message quotes them. Only the digits of the number are
+ * searched for, so no separator the scrubber leaves behind can hide a leak.
+ */
+const PERSONAL = {
+  phone: '+96897531864',
+  phoneDigits: '97531864',
+  email: 'zqx.console@example.test',
 } as const;
 
 const envelopes: string[] = [];
@@ -63,6 +84,8 @@ beforeAll(() => {
   Sentry.init({
     dsn: 'https://public@o0.ingest.sentry.io/0',
     tracesSampleRate: 1,
+    // The very function sentry.server.config.ts passes (pinned by the guard).
+    integrations: serverIntegrations(),
     beforeSend: scrubEvent,
     beforeSendTransaction: scrubEvent,
     transport: (options: Parameters<typeof Sentry.createTransport>[0]) =>
@@ -97,7 +120,7 @@ function items(): Array<Record<string, unknown>> {
 
 function leaked(): string[] {
   const all = envelopes.join('\n');
-  return Object.entries(PLANTED)
+  return Object.entries({ ...PLANTED, phone: PERSONAL.phoneDigits, email: PERSONAL.email })
     .filter(([, v]) => all.includes(v))
     .map(([k]) => k);
 }
@@ -220,5 +243,132 @@ describe('a span named by hand', () => {
     expect(headers).toHaveLength(2);
     for (const h of headers) expect(h.trace?.transaction).toBe('lookup /customers?q=[redacted]');
     expect(leaked()).toEqual([]);
+  });
+});
+
+/** A server action's body as the browser posts it: multipart, one part per field. */
+function multipartBody(password: string): string {
+  const part = (name: string, value: string) =>
+    `------zqxboundary\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+  return `${part('1_username', 'salesman.envelope')}${part('1_password', password)}------zqxboundary--\r\n`;
+}
+
+describe('a request body', () => {
+  it('is never recorded: a password posted to the server is not kept on the scope and not in the envelope', async () => {
+    // A real HTTP server, so the SDK's own server instrumentation sees the request.
+    // The body is read through a 'data' listener, the one the SDK patches to
+    // record bodies, which is how Next's stream pipeline reads a server action.
+    const seen: { body?: string; request?: { method?: string; data?: unknown } } = {};
+    const server = http.createServer((req, res) => {
+      void (async () => {
+        seen.body = await new Promise<string>((resolve) => {
+          const chunks: Buffer[] = [];
+          req.on('data', (c: Buffer) => chunks.push(c));
+          req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        });
+        seen.request = Sentry.getIsolationScope().getScopeData().sdkProcessingMetadata.normalizedRequest as typeof seen.request;
+        // loginAction's unguarded lookup after signIn(), timing out.
+        Sentry.captureException(new Error('sign-in lookup failed'));
+        res.end('done');
+      })();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const body = multipartBody(PLANTED.postedPassword);
+      await new Promise<void>((resolve, reject) => {
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port,
+            method: 'POST',
+            path: '/login',
+            headers: { 'content-type': 'multipart/form-data; boundary=----zqxboundary', 'next-action': 'envelope-test' },
+          },
+          (res) => {
+            res.resume();
+            res.on('end', resolve);
+          }
+        );
+        req.on('error', reject);
+        req.end(body);
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    await Sentry.flush(3000);
+
+    // Not vacuous: the server received the password, and the SDK handled the request.
+    expect(seen.body).toContain(PLANTED.postedPassword);
+    expect(seen.request?.method).toBe('POST');
+    // The first line: the SDK never kept the body.
+    expect(seen.request?.data).toBeUndefined();
+    const events = items().filter((i) => (i as { exception?: unknown }).exception) as Array<{ request?: Record<string, unknown> }>;
+    expect(events).toHaveLength(1);
+    expect(events[0]!.request?.method).toBe('POST');
+    expect(events[0]!.request).not.toHaveProperty('data');
+    expect(leaked()).toEqual([]);
+  });
+
+  it('a body that reaches an event some other way is dropped outright, not pattern-scrubbed', async () => {
+    // The second line: whatever put it on the scope, the scrubber removes it. A
+    // password is not a phone number or an e-mail address, so a scrubber that only
+    // redacts those sent it on.
+    Sentry.withIsolationScope((scope) => {
+      scope.setSDKProcessingMetadata({
+        normalizedRequest: {
+          method: 'POST',
+          url: 'https://nmwc-cm.vercel.app/login',
+          headers: { 'content-type': 'multipart/form-data; boundary=----zqxboundary' },
+          data: multipartBody(PLANTED.scopedPassword),
+        },
+      });
+      Sentry.captureException(new Error('sign-in lookup failed'));
+    });
+    await Sentry.flush(3000);
+
+    const events = items().filter((i) => (i as { exception?: unknown }).exception) as Array<{ request?: Record<string, unknown> }>;
+    expect(events).toHaveLength(1);
+    // Not vacuous: the request data reached this event, and only the body is gone.
+    expect(events[0]!.request?.method).toBe('POST');
+    expect(events[0]!.request).not.toHaveProperty('data');
+    expect(leaked()).toEqual([]);
+  });
+});
+
+describe('console breadcrumbs, breadcrumb data, span data and extras', () => {
+  it('reach the transport with no raw console arguments and every nested string scrubbed', async () => {
+    Sentry.withIsolationScope(() => {
+      // What Next does with a server error once it has reported it:
+      // console.error(' ⨯', err). The SDK records the call as a breadcrumb whose
+      // `data.arguments` holds the raw Error, message and stack, while its
+      // `message` is the formatted text.
+      console.error(' ⨯', new Error(`Unique constraint failed: primaryPhoneNorm=${PERSONAL.phone} email=${PERSONAL.email}`));
+      // An object argument formats as "[object Object]": its fields exist only in `data.arguments`.
+      console.warn('customer lookup', { legalName: PLANTED.consoleObject });
+      Sentry.addBreadcrumb({ category: 'app.search', message: 'searched', data: { last: { href: `/customers?q=${PLANTED.crumbNested}` } } });
+      Sentry.setExtra('lastSearch', { href: `/customers?q=${PLANTED.extra}` });
+      Sentry.startSpan({ name: 'render customers' }, () => {
+        Sentry.startSpan({ name: 'lookup', attributes: { 'app.paths': [`/customers?q=${PLANTED.spanArray}`] } }, () => undefined);
+        Sentry.captureException(new Error('render failed'));
+      });
+    });
+    await Sentry.flush(3000);
+
+    expect(leaked()).toEqual([]);
+    const error = items().find((i) => (i as { exception?: unknown }).exception) as {
+      breadcrumbs?: Array<{ category?: string; level?: string; message?: string; data?: Record<string, unknown> }>;
+      extra?: Record<string, unknown>;
+    };
+    const tx = items().find((i) => i.type === 'transaction') as { spans?: Array<{ description?: string; data?: Record<string, unknown> }> };
+    // Not vacuous: each carrier is in the envelope, only its personal data is not.
+    const crumbs = error.breadcrumbs ?? [];
+    const logged = crumbs.find((b) => b.category === 'console' && b.level === 'error');
+    expect(logged?.message).toContain('Unique constraint failed: primaryPhoneNorm=[phone] email=[email]');
+    expect(logged?.data).toEqual({ logger: 'console' });
+    expect(crumbs.find((b) => b.category === 'console' && b.level === 'warning')?.data).toEqual({ logger: 'console' });
+    expect(crumbs.find((b) => b.category === 'app.search')?.data).toEqual({ last: { href: '/customers?q=[redacted]' } });
+    expect(error.extra).toEqual({ lastSearch: { href: '/customers?q=[redacted]' } });
+    expect(tx.spans?.find((s) => s.description === 'lookup')?.data?.['app.paths']).toEqual(['/customers?q=[redacted]']);
   });
 });

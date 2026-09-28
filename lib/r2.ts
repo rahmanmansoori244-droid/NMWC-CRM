@@ -56,10 +56,18 @@ export function r2(): S3Client {
     //
     // 3s to open a socket and 10s for a response is generous for an object
     // store, and two attempts rather than three keeps the worst case
-    // (2 × 13s) well inside the function budget.
+    // (2 × 13s) inside the function budget.
+    //
+    // Review of the recheck fixes (2026-09-28): that 10 s was a warning, not a
+    // limit. @smithy/node-http-handler only LOGS when requestTimeout passes unless
+    // throwOnRequestTimeout is set, so a request R2 accepted and never answered
+    // hung until the function was killed, and the 2 × 13 s above never held.
+    // (The timeout runs until the response headers arrive; a photo body streaming
+    // to a slow browser afterwards is not cut off by it.)
     requestHandler: new NodeHttpHandler({
       connectionTimeout: 3_000,
       requestTimeout: 10_000,
+      throwOnRequestTimeout: true,
     }),
     maxAttempts: 2,
   });
