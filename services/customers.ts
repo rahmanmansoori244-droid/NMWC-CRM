@@ -6,11 +6,12 @@
  * archiveCustomerAction is the owner-confirmed soft-delete (Blueprint C8):
  * the CRM never hard-deletes a customer; archiving tombstones it
  * (deletedAt) and queues the Temix deactivation (DEACTIVATE_PENDING) when the
- * ERP has heard of the customer. AuditAction.SOFT_DELETE carries actor +
- * reason — no extra columns needed.
+ * ERP has heard of the customer and no other live customer still holds its
+ * Temix code (F11). AuditAction.SOFT_DELETE carries actor + reason — no extra
+ * columns needed.
  */
 import { prisma } from '@/lib/db';
-import { EditState, Role, type Prisma } from '@prisma/client';
+import { EditState, Role, TemixSyncState, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
   ConflictError,
@@ -24,7 +25,8 @@ import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { loadScope, assertCanEditCustomer } from '@/lib/access';
-import { resolveArchiveTemixState } from '@/lib/temix';
+import { liveTemixCodeHolders, resolveArchiveTemixState } from '@/lib/temix';
+import { lockCustomersAndTemixCodeHolders } from '@/lib/locks';
 
 export async function archiveCustomerAction(formData: FormData): SafeAction<void> {
   return runAction(() => archiveCustomerCore(formData));
@@ -84,6 +86,11 @@ async function archiveCustomerCore(formData: FormData) {
         'A submitted request is still in review for this customer. Approve or reject it before archiving.'
       );
     }
+    // F11: the customer and every other live customer holding its Temix code,
+    // locked in one order before anything is read (lib/locks.ts), so two
+    // customers sharing a code cannot both be archived each thinking the other
+    // still holds it.
+    await lockCustomersAndTemixCodeHolders(tx, [customerId], customer.temixCode);
     // Decide the Temix state from a FRESH in-tx read and pin the claim on the
     // observed state — a batch generation committing between a stale read and
     // the write would otherwise get its UPLOADED clobbered and the
@@ -95,7 +102,21 @@ async function archiveCustomerCore(formData: FormData) {
     if (fresh.deletedAt) {
       throw new ConflictError('ALREADY_ARCHIVED', 'This customer was just archived.');
     }
-    const nextState = resolveArchiveTemixState(fresh);
+    if (fresh.temixCode !== customer.temixCode) {
+      // The lock above covered the holders of the code read before the
+      // transaction; a code that moved since needs a fresh start.
+      throw new ConflictError(
+        'STATE_CHANGED',
+        "This customer's Temix code just changed. Refresh and try again."
+      );
+    }
+    // F11: a Temix code another live customer still holds is not deactivated —
+    // that would take the ERP identity away from the customer the CRM keeps —
+    // so this customer just leaves the queue, and the SOFT_DELETE row says so.
+    // The last live holder archived is the one that deactivates the code.
+    const sharedWith = await liveTemixCodeHolders(tx, fresh.temixCode, customerId);
+    const nextState =
+      sharedWith.length > 0 ? TemixSyncState.SYNCED : resolveArchiveTemixState(fresh);
     const claim = await tx.customer.updateMany({
       where: { id: customerId, deletedAt: null, temixSyncState: fresh.temixSyncState },
       data: {
@@ -130,7 +151,12 @@ async function archiveCustomerCore(formData: FormData) {
         legalName: customer.legalName,
         temixSyncState: customer.temixSyncState,
       } as unknown as Prisma.InputJsonValue,
-      after: { temixSyncState: nextState } as unknown as Prisma.InputJsonValue,
+      after: {
+        temixSyncState: nextState,
+        ...(sharedWith.length > 0
+          ? { temixDeactivation: 'skipped-shared-code', temixCodeHeldBy: sharedWith }
+          : {}),
+      } as unknown as Prisma.InputJsonValue,
     });
     return nextState;
   });

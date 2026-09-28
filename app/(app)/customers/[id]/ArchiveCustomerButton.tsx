@@ -61,8 +61,8 @@ export function ArchiveCustomerButton({
             </h3>
             <p className="mt-1 text-xs text-slate-600">
               The customer disappears from all lists and, if Temix knows it, is queued for ERP
-              deactivation in the next Temix batch. This can only be undone by a database
-              administrator.
+              deactivation in the next Temix batch — unless another customer still carries its
+              Temix code. This can only be undone by a database administrator.
             </p>
             <label className="mt-4 block text-xs font-medium text-slate-700">
               Reason (kept in the audit log) *

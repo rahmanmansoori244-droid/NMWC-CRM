@@ -8,10 +8,12 @@
  * deactivation as done.
  *
  * Now the two identities, read under the merge's row locks, are compared first
- * (lib/temix.ts mergeTemixClash): a shared code parks the loser SYNCED and the
- * MERGE audit says the deactivation was skipped; a crossed pair is refused
- * before anything is written. The database mocked here; the real merge against
- * Postgres is tests/integration/merge-temix-shared-code.test.ts.
+ * (lib/temix.ts mergeTemixClash): a crossed pair is refused before anything is
+ * written. A loser code that another live customer still holds — the winner or
+ * a third customer, locked with the pair — parks the loser SYNCED and the MERGE
+ * audit says the deactivation was skipped and who holds the code. The database
+ * mocked here; the real merge against Postgres is
+ * tests/integration/merge-temix-shared-code.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -21,6 +23,11 @@ type Ident = { nmwcCode: string; temixCode: string | null };
 
 const h = vi.hoisted(() => ({
   ids: {} as Record<string, { nmwcCode: string; temixCode: string | null }>,
+  // Live customers other than the pair, holding a Temix code.
+  others: {} as Record<string, { nmwcCode: string; temixCode: string | null }>,
+  // What the transaction reads for the loser's code, when it moved after the pre-read.
+  loserCodeInTx: undefined as string | null | undefined,
+  locks: [] as Array<{ sql: string; values: unknown[] }>,
   writes: [] as Array<{ op: string; args: Record<string, unknown> }>,
   writeAudit: vi.fn(),
 }));
@@ -49,11 +56,21 @@ vi.mock('@/lib/db', () => {
     crPhotoId: null,
     branches: [{ id: `br-${id}`, regionId: 'R1', routeId: 'RT1' }],
   });
+  const inTx = (id: string) =>
+    id === 'L' && h.loserCodeInTx !== undefined ? { ...customer(id), temixCode: h.loserCodeInTx } : customer(id);
   const tx = {
-    $queryRaw: async () => [],
+    $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      h.locks.push({ sql: strings.join('?'), values });
+      return [];
+    },
     customer: {
-      findUnique: async ({ where }: { where: { id: string } }) => customer(where.id),
-      findUniqueOrThrow: async ({ where }: { where: { id: string } }) => customer(where.id),
+      findUnique: async ({ where }: { where: { id: string } }) => inTx(where.id),
+      findUniqueOrThrow: async ({ where }: { where: { id: string } }) => inTx(where.id),
+      findMany: async ({ where }: { where: { temixCode: string; id: { not: string } } }) =>
+        Object.entries({ ...h.ids, ...h.others })
+          .filter(([id, c]) => c.temixCode === where.temixCode && id !== where.id.not)
+          .map(([, c]) => ({ nmwcCode: c.nmwcCode }))
+          .sort((a, b) => a.nmwcCode.localeCompare(b.nmwcCode)),
       update: rec('customer.update', {}),
       updateMany: rec('customer.updateMany', { count: 1 }),
     },
@@ -89,6 +106,9 @@ const loserClaim = () =>
 beforeEach(() => {
   vi.clearAllMocks();
   h.writes = [];
+  h.locks = [];
+  h.others = {};
+  h.loserCodeInTx = undefined;
   h.writeAudit.mockResolvedValue(undefined);
 });
 
@@ -107,10 +127,38 @@ describe('mergeCustomersAction — F11', () => {
       )
     ).toBe(true);
     expect(h.writeAudit).toHaveBeenCalledTimes(1);
-    expect(h.writeAudit.mock.calls[0][2]).toMatchObject({
-      action: 'MERGE',
-      after: { temixDeactivation: 'skipped-shared-code' },
+    expect(h.writeAudit.mock.calls[0][2]).toMatchObject({ action: 'MERGE' });
+    expect(h.writeAudit.mock.calls[0][2].after).toEqual({
+      temixDeactivation: 'skipped-shared-code',
+      temixCodeHeldBy: ['N1'],
     });
+  });
+
+  it("a third live customer holds the loser's code: the loser is parked too, and the audit names the holder", async () => {
+    h.others = { C3: { nmwcCode: 'N3', temixCode: 'T1' } };
+    const res = await merge({ nmwcCode: 'N1', temixCode: 'T9' }, { nmwcCode: 'N2', temixCode: 'T1' });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'SYNCED', temixSyncPendingSince: null });
+    expect(h.writeAudit.mock.calls[0][2].after).toEqual({
+      temixDeactivation: 'skipped-shared-code',
+      temixCodeHeldBy: ['N3'],
+    });
+  });
+
+  it("locks the pair together with the loser code's live holders, in one id order", async () => {
+    await merge({ nmwcCode: 'N1', temixCode: 'T9' }, { nmwcCode: 'N2', temixCode: 'T1' });
+    expect(h.locks).toHaveLength(1);
+    expect(h.locks[0].sql).toMatch(/"temixCode" = \? AND "deletedAt" IS NULL\) ORDER BY "id" COLLATE "C" FOR UPDATE/);
+    expect(h.locks[0].values).toContain('T1');
+  });
+
+  it("the loser's Temix code moved after the pre-read (so the lock covered the wrong holders): refused, nothing written", async () => {
+    h.loserCodeInTx = 'T1';
+    const res = await merge({ nmwcCode: 'N1', temixCode: 'T1' }, { nmwcCode: 'N2', temixCode: null });
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.fields?._form).toMatch(/Temix code just changed/);
+    expect(h.writes).toEqual([]);
+    expect(h.writeAudit).not.toHaveBeenCalled();
   });
 
   it('under the migrated convention too (nmwcCode == temixCode on the winner)', async () => {
@@ -138,20 +186,16 @@ describe('mergeCustomersAction — F11', () => {
   });
 });
 
+// Every resolveArchiveTemixState caller asking who else holds the code is pinned
+// across the codebase in tests/unit/temix-deactivation-guard.test.ts.
 describe('structural: the loser is never resolved without the winner-identity comparison', () => {
   const code = stripComments(readFileSync('services/duplicates.ts', 'utf8'), 'services/duplicates.ts');
   const merge = code.slice(code.indexOf('async function mergeCustomersCore'), code.indexOf('export async function dismissDuplicateAction'));
 
-  it('every resolveArchiveTemixState call in services/duplicates.ts sits behind the shared-code check', () => {
-    const calls = code.match(/resolveArchiveTemixState\(/g) ?? [];
-    const guarded =
-      code.match(/temixClash === 'SHARED_CODE' \? TemixSyncState\.SYNCED : resolveArchiveTemixState\(/g) ?? [];
-    expect(calls.length).toBeGreaterThan(0);
-    expect(guarded.length).toBe(calls.length);
-  });
-
   it('compares the identities read under the locks, and refuses a crossed pair before the first write', () => {
-    const lock = merge.search(/FOR UPDATE/);
+    const lock = merge.search(
+      /await lockCustomersAndTemixCodeHolders\(tx, \[winner\.id, loser\.id\], loser\.temixCode\);/
+    );
     const read = merge.search(/select: identity/);
     const clash = merge.search(/const temixClash = mergeTemixClash\(loserLive, winnerLive\);/);
     const refuse = merge.search(/if \(temixClash === 'CROSSED'\)/);

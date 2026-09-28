@@ -157,6 +157,9 @@ export function buildTemixRows(
  * migrated/refreshed row (SYNCED). A never-uploaded CRM-born customer
  * (PENDING_UPLOAD, no code, never batched) simply leaves the queue — Temix
  * has nothing to deactivate — so it parks as SYNCED (nothing to do).
+ *
+ * It does not know whether another live customer holds the same Temix code, so
+ * no caller asks it alone: archive and merge ask liveTemixCodeHolders first (F11).
  */
 export function resolveArchiveTemixState(customer: {
   temixCode: string | null;
@@ -180,7 +183,8 @@ export function resolveArchiveTemixState(customer: {
  * the nmwcCode sort.
  *  - 'SHARED_CODE': the loser's code IS the winner's. Nothing is to be
  *    deactivated — the identity survives in the winner — so the loser leaves
- *    the queue (SYNCED) instead.
+ *    the queue (SYNCED) instead. The merge acts on this through
+ *    liveTemixCodeHolders, which also finds a third live customer holding it.
  *  - 'CROSSED': one side's Temix code is the other side's customer code. A blank
  *    or deactivated code may be keyed on cust_code in Temix, so the merge could
  *    still reach the winner's identity: refused for Steward review.
@@ -200,6 +204,30 @@ export function mergeTemixClash(
     return 'CROSSED';
   }
   return null;
+}
+
+/**
+ * F11, for every path that takes a customer out of the master (archive, merge):
+ * the customer codes of the OTHER live customers that still hold `temixCode`.
+ * Deactivating that code would take the ERP identity away from them, so a
+ * customer leaving while this is non-empty is parked SYNCED instead of queued
+ * for deactivation, and its audit row says so ('skipped-shared-code'). The last
+ * live holder to leave is the one that deactivates the code. Read through the
+ * caller's transaction, after lib/locks.ts lockCustomersAndTemixCodeHolders.
+ */
+export async function liveTemixCodeHolders(
+  tx: Prisma.TransactionClient,
+  temixCode: string | null,
+  exceptId: string
+): Promise<string[]> {
+  if (!temixCode) return [];
+  const rows = await tx.customer.findMany({
+    where: { temixCode, deletedAt: null, id: { not: exceptId } },
+    select: { nmwcCode: true },
+    orderBy: { nmwcCode: 'asc' },
+    take: 10,
+  });
+  return rows.map((r) => r.nmwcCode);
 }
 
 /**

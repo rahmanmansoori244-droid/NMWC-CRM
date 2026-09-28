@@ -133,7 +133,7 @@ describe.skipIf(!ENABLED)('F11: a same-code merge keeps the surviving Temix iden
       where: { actorId: steward, action: 'MERGE', entityId: W.id },
       orderBy: { at: 'desc' },
     });
-    expect(audit.after).toEqual({ temixDeactivation: 'skipped-shared-code' });
+    expect(audit.after).toEqual({ temixDeactivation: 'skipped-shared-code', temixCodeHeldBy: [W.nmwcCode] });
   });
 
   it("crossed identities (the loser's Temix code is the winner's customer code): refused, nothing moved", async () => {
