@@ -280,9 +280,10 @@ jobs:
           # N08: NEVER print, grep or upload the raw psql log. A failed COPY or
           # constraint quotes the customer row it failed on, and this repository's
           # Actions logs and artifacts are public. The load script prints phase,
-          # dump line, SQLSTATE and table only (`restore finished with N error
-          # line(s)` is its last line), seals the full log to BACKUP_AGE_RECIPIENTS
-          # as restore.log.age, shreds the plaintext, and fails on any error.
+          # dump line, SQLSTATE and table only, ending its summary with the
+          # `restore finished with N error line(s)` line OPERATIONS.md §6.12 looks
+          # for; it seals the full log to BACKUP_AGE_RECIPIENTS as restore.log.age,
+          # shreds the plaintext, and fails on any error.
           # ci.yml's restore-chain runs the same script on every push.
           RESTORE_TARGET_URL="$DRILL_URL" RESTORE_DUMP=./dump.sql.gz bash scripts/ops/restore-load.sh
           echo "T_RESTORE=$(( $(date -u +%s) - T0 ))" >> "$GITHUB_ENV"
