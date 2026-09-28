@@ -12,7 +12,7 @@ Two Excel files to fill and hand back. They are generated to match **exactly** t
 2. **Import the Account master** (regions → routes → people; the app auto-orders supervisors before salesmen).
 3. **Import the Customer master** → review the staged rows → **Promote**.
 
-Re-importing is safe (idempotent): existing users keep their password/role/supervisor unless you explicitly say otherwise.
+Re-importing is safe (idempotent): existing users keep their password/role/supervisor unless you explicitly say otherwise, and a blank `email`, `phone` or `region_codes` cell keeps what is on record. A row whose `role` differs from the account's current role is held back unless `change_role` is `yes` (see below), so re-importing an old sheet after someone's role was changed in `/users` lists that row instead of undoing half the change. Each account, region and route the import creates or changes is recorded in the audit log, with the batch; an unchanged row records nothing.
 
 ### What Promote looks like on a full-size master
 A real master (thousands of rows) is **far too big to load in one request**, so Promote works through it in passes and shows live progress — *"Promoting… 1,200 done, 2,100 left"*. Leave the tab open; it drives the passes for you.
@@ -45,11 +45,11 @@ Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instruct
 | `role` | ✅ | one of `SALESMAN`, `SUPERVISOR`, `ACCOUNTANT`, `FINANCE_MANAGER`, `GM`, `VIEWER`. (MANAGER/STEWARD → create in `/users`.) |
 | `password` | ✅ for **new** users | 12+ chars. Blank for existing users = keep current. |
 | `supervisor_username` | ✅ for SALESMAN | another `username` on this sheet. Blank on re-import = keep existing. |
-| `route_code` | ✅ for SALESMAN | a Routes `code`. One salesman per route. |
+| `route_code` | ✅ for SALESMAN | a Routes `code`. One salesman per route: the row takes the route from whoever owns it now (recorded in the audit log). A route is never handed to a **deactivated** account — that row is held back; reactivate the account in `/users` first. |
 | `region_codes` | ✅ for ACCOUNTANT (and MANAGER) | comma-separated Region codes, e.g. `MCT,BAT`. Without it the accountant sees no approvals and the credit chain stalls. For a MANAGER the row must refer to an account that **already exists** (created in `/users`); the import then assigns their regions — it never creates a manager. |
-| `email`, `phone` | optional | |
+| `email`, `phone` | optional | Blank on re-import = keep what is on record. The import can set or replace a value but never clears one (the app has no screen that clears them either). |
 | `reset_password` | optional | `yes` to rotate an existing user's password (also fill `password`). |
-| `change_role` | optional | `yes` to change an existing user's role. |
+| `change_role` | optional | `yes` to change an existing user's role; the change also signs that person out, as a role change in `/users` does. Without `yes`, the `role` cell must name the role the account already has: a row that names another role is held back and **nothing** is written for it (its route and regions were meant for the other role). MANAGER and STEWARD roles are changed only in `/users`. |
 | `must_change_password` | optional | `yes` forces the person to choose a new password at first login. Only then is a short initial password (4+) accepted — the one they choose must be 12+. |
 
 ---

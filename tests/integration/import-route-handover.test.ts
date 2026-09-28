@@ -12,6 +12,17 @@
  * created. Re-importing the account master is how routes get handed over, so
  * this is the path the Steward uses.
  *
+ * Also, on Postgres, the account-import findings of the 2026-09-27 recheck
+ * (tests/unit/account-import-service.test.ts proves each against a fake):
+ *   - F07: an audit row the account write owes is written in its transaction, so
+ *     when it fails the route handover, the role change, the session revocation
+ *     and the REASSIGN row all roll back with it;
+ *   - F08: without change_role, a row naming a different role is held back;
+ *   - X-IMPORTS-2: a deactivated account is never handed a route;
+ *   - X-IMPORTS-4: a blank email cell keeps the stored email;
+ *   - X-IMPORTS-1 / ENH-6: a created account has a CREATE row, and a role change
+ *     stamps sessionsRevokedAt.
+ *
  *   RUN_IMPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/import-route-handover.test.ts
  */
@@ -29,6 +40,21 @@ type MockUser = { id: string; role: string; username: string } | null;
 let current: MockUser = null;
 vi.mock('@/lib/auth', () => ({ auth: async () => (current ? { user: current } : null) }));
 vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {} }));
+
+/** F07: set to an audit reason to make that one audit insert throw. */
+let failAuditReason: string | null = null;
+vi.mock('@/lib/audit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/audit')>();
+  return {
+    ...actual,
+    writeAudit: async (...args: Parameters<typeof actual.writeAudit>) => {
+      if (failAuditReason !== null && args[2].reason === failAuditReason) {
+        throw new Error('injected audit failure');
+      }
+      return actual.writeAudit(...args);
+    },
+  };
+});
 
 const USERS_HEADERS = [
   'username',
@@ -65,6 +91,8 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
   const owner = `zz.rho.owner.${tag}`;
   const takenEmail = `zz.rho.${tag}@example.invalid`;
   const emailHolder = `zz.rho.mail.${tag}`;
+  const viewer = `zz.rho.viewer.${tag}`;
+  const gone = `zz.rho.gone.${tag}`;
   const newcomers: string[] = [];
   const batchIds: string[] = [];
   let regionId = '';
@@ -117,6 +145,12 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
     await prisma.user.create({
       data: { username: emailHolder, passwordHash: 'x', fullName: 'ZZ Mail', role: 'VIEWER', email: takenEmail },
     });
+    await prisma.user.create({
+      data: { username: viewer, passwordHash: 'x', fullName: 'ZZ Viewer', role: 'VIEWER' },
+    });
+    await prisma.user.create({
+      data: { username: gone, passwordHash: 'x', fullName: 'ZZ Gone', role: 'SALESMAN', isActive: false },
+    });
     current = { id: stewardId, role: 'STEWARD', username: stewardId };
   });
 
@@ -129,7 +163,9 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
         await prisma.importBatch.deleteMany({ where: { id } });
       }
       await prisma.rateLimit.deleteMany({ where: { key: { contains: stewardId } } });
-      await prisma.user.deleteMany({ where: { username: { in: [owner, emailHolder, ...newcomers] } } });
+      await prisma.user.deleteMany({
+        where: { username: { in: [owner, emailHolder, viewer, gone, ...newcomers] } },
+      });
       await prisma.user.deleteMany({ where: { id: stewardId } });
       await prisma.route.deleteMany({ where: { id: routeId } });
       await prisma.region.deleteMany({ where: { id: regionId } });
@@ -177,5 +213,128 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
         after: { ownedRouteCode: null },
       },
     ]);
+  });
+
+  it('X-IMPORTS-1: the account that row created has one CREATE row, with no password, hash or name', async () => {
+    const fresh = await prisma.user.findUniqueOrThrow({ where: { username: `zz.rho.new.${tag}` } });
+    const rows = await prisma.auditLog.findMany({
+      where: { actorId: stewardId, entityType: 'User', entityId: fresh.id },
+      select: { action: true, reason: true, after: true },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      action: 'CREATE',
+      reason: 'account_import',
+      after: { username: fresh.username, role: 'SALESMAN', route: routeCode, mustChangePassword: true },
+    });
+    const after = rows[0].after as Record<string, unknown>;
+    expect(Object.keys(after)).not.toContain('passwordHash');
+    expect(Object.keys(after)).not.toContain('fullName');
+    expect(Object.values(after)).not.toContain('12345');
+    expect(JSON.stringify(after)).not.toContain(`ZZ ${fresh.username}`);
+  });
+
+  it('F08: without change_role, a row naming a different role is held back and nothing moves', async () => {
+    const holder = await routeOwner();
+    expect(holder).not.toBeNull();
+    const reassignedBefore = (await reassignRows()).length;
+    // Case A: the route's salesman on a VIEWER row. He used to lose the route and stay SALESMAN.
+    // Case B: a VIEWER on a SALESMAN row. It used to take the route without becoming a salesman.
+    const res = await upload([
+      { username: holder!, full_name: 'ZZ Holder', role: 'VIEWER' },
+      salesman(viewer, { password: '' }),
+    ]);
+    expect(res.clean).toBe(0);
+    expect(res.messages.join(' | ')).toMatch(/is SALESMAN in the CRM but VIEWER in this row\. Nothing was written/);
+    expect(res.messages.join(' | ')).toMatch(/is VIEWER in the CRM but SALESMAN in this row\. Nothing was written/);
+    expect(await routeOwner()).toBe(holder);
+    const [h, v] = await Promise.all([
+      prisma.user.findUniqueOrThrow({ where: { username: holder! }, select: { role: true, fullName: true } }),
+      prisma.user.findUniqueOrThrow({ where: { username: viewer }, select: { role: true } }),
+    ]);
+    expect(h.role).toBe('SALESMAN');
+    expect(h.fullName).not.toBe('ZZ Holder');
+    expect(v.role).toBe('VIEWER');
+    expect((await reassignRows()).length).toBe(reassignedBefore);
+  });
+
+  it('X-IMPORTS-2: a deactivated account is not handed the route', async () => {
+    const holder = await routeOwner();
+    const reassignedBefore = (await reassignRows()).length;
+    const res = await upload([salesman(gone, { password: '' })]);
+    expect(res.clean).toBe(0);
+    expect(res.messages.join(' ')).toMatch(/is deactivated, so route .* is not handed to it/);
+    expect(await routeOwner()).toBe(holder);
+    expect((await reassignRows()).length).toBe(reassignedBefore);
+  });
+
+  it('X-IMPORTS-4: a blank email cell keeps the stored email', async () => {
+    const res = await upload([{ username: emailHolder, full_name: 'ZZ Mail', role: 'VIEWER', email: '', phone: '' }]);
+    expect(res.clean).toBe(1);
+    const u = await prisma.user.findUniqueOrThrow({ where: { username: emailHolder }, select: { email: true } });
+    expect(u.email).toBe(takenEmail);
+  });
+
+  it('F07: when an audit row the write owes fails, Postgres rolls back the handover, the role and the sessions', async () => {
+    const holder = await routeOwner();
+    const holderId = (await prisma.user.findUniqueOrThrow({ where: { username: holder! } })).id;
+    const viewerId = (await prisma.user.findUniqueOrThrow({ where: { username: viewer } })).id;
+    const reassignedBefore = (await reassignRows()).length;
+    const row = salesman(viewer, { password: '', change_role: 'yes', must_change_password: '' });
+
+    // The last audit the row writes, after the REASSIGN, the upsert and the role change.
+    failAuditReason = 'account_import';
+    try {
+      const res = await upload([row]);
+      expect(res.clean).toBe(0);
+      expect(res.messages).toEqual([`nothing was written for "${viewer}": it could not be saved (Error).`]);
+    } finally {
+      failAuditReason = null;
+    }
+    expect(await routeOwner()).toBe(holder);
+    const rolledBack = await prisma.user.findUniqueOrThrow({
+      where: { id: viewerId },
+      select: { role: true, ownedRouteId: true, sessionsRevokedAt: true },
+    });
+    expect(rolledBack).toEqual({ role: 'VIEWER', ownedRouteId: null, sessionsRevokedAt: null });
+    expect((await reassignRows()).length).toBe(reassignedBefore);
+    expect(
+      await prisma.auditLog.count({ where: { actorId: stewardId, entityId: viewerId, entityType: 'User' } })
+    ).toBe(0);
+
+    // The same row, with nothing failing, lands whole — and ENH-6: the role change ends the sessions.
+    const t0 = Date.now();
+    const res = await upload([row]);
+    expect(res.clean).toBe(1);
+    expect(await routeOwner()).toBe(viewer);
+    const landed = await prisma.user.findUniqueOrThrow({
+      where: { id: viewerId },
+      select: { role: true, sessionsRevokedAt: true },
+    });
+    expect(landed.role).toBe('SALESMAN');
+    expect(landed.sessionsRevokedAt!.getTime()).toBeGreaterThanOrEqual(t0);
+    const audits = await prisma.auditLog.findMany({
+      where: { actorId: stewardId, entityType: 'User', entityId: { in: [viewerId, holderId] } },
+      select: { action: true, entityId: true, reason: true, before: true, after: true },
+    });
+    expect(audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: 'REASSIGN', entityId: holderId, reason: `route ${routeCode} reassigned to ${viewer} via import` }),
+        expect.objectContaining({
+          action: 'UPDATE',
+          entityId: viewerId,
+          reason: 'role_change_via_import',
+          before: { role: 'VIEWER' },
+          after: { role: 'SALESMAN' },
+        }),
+        expect.objectContaining({
+          action: 'UPDATE',
+          entityId: viewerId,
+          reason: 'account_import',
+          before: { route: null },
+          after: expect.objectContaining({ route: routeCode }),
+        }),
+      ])
+    );
   });
 });

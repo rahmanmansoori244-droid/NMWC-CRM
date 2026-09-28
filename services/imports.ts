@@ -11,6 +11,7 @@ import {
 } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
+  AppError,
   ForbiddenError,
   ValidationError,
   RateLimitError,
@@ -30,6 +31,17 @@ import { sendAlert } from '@/lib/alert';
 import { importRejectionAlert } from '@/lib/import-rejection-alert';
 import { randomUUID } from 'node:crypto';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import {
+  ACCOUNT_IMPORT_STOP_AFTER_DB_FAILURES,
+  ACCOUNT_ROW_NOT_PROCESSED,
+  accountCreateAudit,
+  accountImportInterruptedMessage,
+  accountRowFailure,
+  accountUpdateAudit,
+  inactiveRouteIssue,
+  roleMismatchIssue,
+  type AccountState,
+} from '@/lib/account-import';
 import {
   checkCustomerRow,
   fileCollisions,
@@ -172,10 +184,38 @@ async function uploadAccountMasterCore(
   const issues: { sheet: string; row: number; message: string }[] = [];
   let cleanCount = 0;
 
+  // X-IMPORTS-3: every read and write a row makes happens inside that row's try,
+  // so a database fault costs that row, not the upload. The reads used to sit
+  // outside it: a pool timeout on the third user's lookup escaped this function
+  // after every Region, Route and earlier User had committed, runAction answered
+  // "Nothing was saved", and the batch was left PARSING with no issue rows.
+  let uncertain = 0;
+  let dbFailuresInARow = 0;
+  let stopped = false;
+  const applied = () => {
+    cleanCount++;
+    dbFailuresInARow = 0;
+  };
+  const failed = (sheet: string, row: number, err: unknown, subject: string) => {
+    const f = accountRowFailure(err, subject);
+    issues.push({ sheet, row, message: f.message });
+    logger.warn(
+      { sheet, row, code: (err as { code?: unknown })?.code, batchId: batch.id },
+      'import.account.row_failed'
+    );
+    if (f.mayHaveCommitted) uncertain++;
+    dbFailuresInARow = f.transient ? dbFailuresInARow + 1 : 0;
+    if (dbFailuresInARow >= ACCOUNT_IMPORT_STOP_AFTER_DB_FAILURES) stopped = true;
+  };
+
   // 1) Regions
   const regionsSheet = sheets.find((s) => s.name.toLowerCase() === 'regions');
   if (regionsSheet) {
     for (const [i, row] of regionsSheet.rows.entries()) {
+      if (stopped) {
+        issues.push({ sheet: 'Regions', row: i + 2, message: ACCOUNT_ROW_NOT_PROCESSED });
+        continue;
+      }
       const code = uc(row.code ?? row.Code);
       const name = String(row.name ?? row.Name ?? '').trim();
       if (!code || !name) {
@@ -183,14 +223,35 @@ async function uploadAccountMasterCore(
         continue;
       }
       try {
-        await prisma.region.upsert({
-          where: { code },
-          update: { name },
-          create: { code, name },
+        // X-AUTH-3 / X-IMPORTS-1: a new or renamed region is audited in the same
+        // transaction as the write, so the two stand or fall together. An
+        // unchanged row writes nothing, so a re-import does not flood the ledger.
+        await prisma.$transaction(async (tx) => {
+          const before = await tx.region.findUnique({ where: { code } });
+          if (!before) {
+            const created = await tx.region.create({ data: { code, name } });
+            await writeAudit(tx, env, {
+              action: 'CREATE',
+              entityType: 'Region',
+              entityId: created.id,
+              after: { code, name, batchId: batch.id },
+              reason: 'account_import',
+            });
+          } else if (before.name !== name) {
+            await tx.region.update({ where: { id: before.id }, data: { name } });
+            await writeAudit(tx, env, {
+              action: 'UPDATE',
+              entityType: 'Region',
+              entityId: before.id,
+              before: { name: before.name },
+              after: { name, batchId: batch.id },
+              reason: 'account_import',
+            });
+          }
         });
-        cleanCount++;
+        applied();
       } catch (err) {
-        issues.push({ sheet: 'Regions', row: i + 2, message: (err as Error).message });
+        failed('Regions', i + 2, err, `region "${code}"`);
       }
     }
   }
@@ -199,6 +260,10 @@ async function uploadAccountMasterCore(
   const routesSheet = sheets.find((s) => s.name.toLowerCase() === 'routes');
   if (routesSheet) {
     for (const [i, row] of routesSheet.rows.entries()) {
+      if (stopped) {
+        issues.push({ sheet: 'Routes', row: i + 2, message: ACCOUNT_ROW_NOT_PROCESSED });
+        continue;
+      }
       const code = uc(row.code ?? row.Code);
       const name = String(row.name ?? row.Name ?? '').trim();
       const regionCode = uc(row.region_code ?? row.regionCode ?? row.region);
@@ -210,20 +275,53 @@ async function uploadAccountMasterCore(
         });
         continue;
       }
-      const region = await prisma.region.findUnique({ where: { code: regionCode } });
-      if (!region) {
-        issues.push({ sheet: 'Routes', row: i + 2, message: `region "${regionCode}" not found` });
-        continue;
-      }
       try {
-        await prisma.route.upsert({
-          where: { code },
-          update: { name, regionId: region.id },
-          create: { code, name, regionId: region.id },
+        const region = await prisma.region.findUnique({ where: { code: regionCode } });
+        if (!region) {
+          issues.push({ sheet: 'Routes', row: i + 2, message: `region "${regionCode}" not found` });
+          continue;
+        }
+        // X-AUTH-3 / X-IMPORTS-1: as for regions. A route moved to another region
+        // records both region codes.
+        await prisma.$transaction(async (tx) => {
+          const before = await tx.route.findUnique({
+            where: { code },
+            include: { region: { select: { code: true } } },
+          });
+          if (!before) {
+            const created = await tx.route.create({ data: { code, name, regionId: region.id } });
+            await writeAudit(tx, env, {
+              action: 'CREATE',
+              entityType: 'Route',
+              entityId: created.id,
+              after: { code, name, regionCode: region.code, batchId: batch.id },
+              reason: 'account_import',
+            });
+          } else if (before.name !== name || before.regionId !== region.id) {
+            await tx.route.update({ where: { id: before.id }, data: { name, regionId: region.id } });
+            const was: Record<string, string> = {};
+            const now: Record<string, string> = {};
+            if (before.name !== name) {
+              was.name = before.name;
+              now.name = name;
+            }
+            if (before.regionId !== region.id) {
+              was.regionCode = before.region.code;
+              now.regionCode = region.code;
+            }
+            await writeAudit(tx, env, {
+              action: 'UPDATE',
+              entityType: 'Route',
+              entityId: before.id,
+              before: was,
+              after: { ...now, batchId: batch.id },
+              reason: 'account_import',
+            });
+          }
         });
-        cleanCount++;
+        applied();
       } catch (err) {
-        issues.push({ sheet: 'Routes', row: i + 2, message: (err as Error).message });
+        failed('Routes', i + 2, err, `route "${code}"`);
       }
     }
   }
@@ -241,6 +339,10 @@ async function uploadAccountMasterCore(
         return order.indexOf(uc(a.row.role)) - order.indexOf(uc(b.row.role));
       });
     for (const { row, sheetRow } of sortedRows) {
+      if (stopped) {
+        issues.push({ sheet: 'Users', row: sheetRow, message: ACCOUNT_ROW_NOT_PROCESSED });
+        continue;
+      }
       const username = lc(row.username);
       const fullName = String(row.full_name ?? row.fullName ?? row.name ?? '').trim();
       const roleStr = uc(row.role);
@@ -298,251 +400,330 @@ async function uploadAccountMasterCore(
 
       const role = roleStr as Role;
 
-      // F-02 (Critical) — close THREE bypasses of QA-011:
-      //
-      // (a) Self-promotion guarded by id (not username). The previous string-
-      //     compare on `username === me.username` failed when the calling
-      //     Steward's username had different casing in DB or when the import
-      //     row used a renamed username; both let the Steward escalate.
-      //
-      // (b) Steward cannot mint or upgrade a user to MANAGER or STEWARD by
-      //     ANY path (new user OR existing). Promotion into the admin tier
-      //     must go through the in-app `/users` UI run by an existing
-      //     Manager. This blocks the "rogue Steward → rogue Manager →
-      //     rubber-stamp every region's edits" CHAIN-01.
-      //
-      // (c) Steward cannot demote a peer Manager or Steward via import.
-      //
-      // We compare the incoming row's username case-insensitively against
-      // the existing User.id's username so case differences don't bypass.
-      const targetExisting = await prisma.user.findUnique({
-        where: { username },
-        select: { id: true, role: true, isActive: true },
-      });
-      const isSelf = targetExisting?.id === me.id;
+      try {
+        // F-02 (Critical) — close THREE bypasses of QA-011:
+        //
+        // (a) Self-promotion guarded by id (not username). The previous string-
+        //     compare on `username === me.username` failed when the calling
+        //     Steward's username had different casing in DB or when the import
+        //     row used a renamed username; both let the Steward escalate.
+        //
+        // (b) Steward cannot mint or upgrade a user to MANAGER or STEWARD by
+        //     ANY path (new user OR existing). Promotion into the admin tier
+        //     must go through the in-app `/users` UI run by an existing
+        //     Manager. This blocks the "rogue Steward → rogue Manager →
+        //     rubber-stamp every region's edits" CHAIN-01.
+        //
+        // (c) Steward cannot demote a peer Manager or Steward via import.
+        //
+        // We compare the incoming row's username case-insensitively against
+        // the existing User.id's username so case differences don't bypass.
+        //
+        // One read of the stored account serves every check below and the audit
+        // row's `before` (it used to be read twice, and its regions a third time).
+        const existing = await prisma.user.findUnique({
+          where: { username },
+          include: {
+            supervisor: { select: { username: true } },
+            ownedRoute: { select: { code: true } },
+            managedRegions: { select: { code: true } },
+          },
+        });
+        const isSelf = existing?.id === me.id;
 
-      if (isSelf && wantsRoleChange && role !== me.role) {
-        issues.push({
-          sheet: 'Users',
-          row: sheetRow,
-          message: 'cannot change your own role via import',
-        });
-        continue;
-      }
-      // (b) New MANAGER / STEWARD via import — refuse outright. Forces the
-      // Manager-driven /users UI for any admin-tier creation.
-      if (!targetExisting && (role === Role.MANAGER || role === Role.STEWARD)) {
-        issues.push({
-          sheet: 'Users',
-          row: sheetRow,
-          message: 'creating MANAGER or STEWARD via import is not permitted — use the Users UI',
-        });
-        continue;
-      }
-      // (b)/(c) Promote-to or mutate an existing admin via import — refuse.
-      if (
-        targetExisting &&
-        wantsRoleChange &&
-        (role === Role.MANAGER ||
-          role === Role.STEWARD ||
-          targetExisting.role === Role.MANAGER ||
-          targetExisting.role === Role.STEWARD) &&
-        targetExisting.role !== role
-      ) {
-        issues.push({
-          sheet: 'Users',
-          row: sheetRow,
-          message:
-            'promoting/demoting MANAGER or STEWARD via import is not permitted — use the Users UI',
-        });
-        continue;
-      }
-      let supervisorId: string | null = null;
-      if (supUsername) {
-        const sup = await prisma.user.findUnique({ where: { username: supUsername } });
-        if (!sup) {
+        if (isSelf && wantsRoleChange && role !== me.role) {
           issues.push({
             sheet: 'Users',
             row: sheetRow,
-            message: `supervisor "${supUsername}" not found`,
+            message: 'cannot change your own role via import',
           });
           continue;
         }
-        supervisorId = sup.id;
-      }
-
-      let ownedRouteId: string | null = null;
-      let ownedRouteCode: string | null = null;
-      if (role === Role.SALESMAN) {
-        if (!routeCode) {
-          issues.push({ sheet: 'Users', row: sheetRow, message: 'salesman needs route_code' });
-          continue;
-        }
-        const route = await prisma.route.findUnique({ where: { code: routeCode } });
-        if (!route) {
+        // (b) New MANAGER / STEWARD via import — refuse outright. Forces the
+        // Manager-driven /users UI for any admin-tier creation.
+        if (!existing && (role === Role.MANAGER || role === Role.STEWARD)) {
           issues.push({
             sheet: 'Users',
             row: sheetRow,
-            message: `route "${routeCode}" not found`,
+            message: 'creating MANAGER or STEWARD via import is not permitted — use the Users UI',
           });
           continue;
         }
-        ownedRouteId = route.id;
-        ownedRouteCode = routeCode;
-      }
+        // (b)/(c) Promote-to or mutate an existing admin via import — refuse.
+        if (
+          existing &&
+          wantsRoleChange &&
+          (role === Role.MANAGER ||
+            role === Role.STEWARD ||
+            existing.role === Role.MANAGER ||
+            existing.role === Role.STEWARD) &&
+          existing.role !== role
+        ) {
+          issues.push({
+            sheet: 'Users',
+            row: sheetRow,
+            message:
+              'promoting/demoting MANAGER or STEWARD via import is not permitted — use the Users UI',
+          });
+          continue;
+        }
+        // F08: without change_role=yes the row must name the role the account
+        // already has. Every route and region effect below keys on `role`, so past
+        // this point `role` is the role the account will have after the write.
+        const mismatch = existing
+          ? roleMismatchIssue({
+              username,
+              storedRole: existing.role,
+              incomingRole: role,
+              wantsRoleChange,
+            })
+          : null;
+        if (mismatch) {
+          issues.push({ sheet: 'Users', row: sheetRow, message: mismatch });
+          continue;
+        }
+        const roleChanged = !!existing && existing.role !== role;
 
-      // QA-010 / QA-011: only set passwordHash + role on INSERT or when
-      // explicitly requested. On a normal re-import, existing users keep
-      // their existing password and role.
-      const existing = targetExisting
-        ? await prisma.user.findUnique({ where: { username } })
-        : null;
-      let passwordHash: string;
-      if (existing) {
-        if (wantsReset) {
+        let supervisorId: string | null = null;
+        if (supUsername) {
+          const sup = await prisma.user.findUnique({
+            where: { username: supUsername },
+            select: { id: true },
+          });
+          if (!sup) {
+            issues.push({
+              sheet: 'Users',
+              row: sheetRow,
+              message: `supervisor "${supUsername}" not found`,
+            });
+            continue;
+          }
+          supervisorId = sup.id;
+        }
+
+        let ownedRouteId: string | null = null;
+        let ownedRouteCode: string | null = null;
+        if (role === Role.SALESMAN) {
+          if (!routeCode) {
+            issues.push({ sheet: 'Users', row: sheetRow, message: 'salesman needs route_code' });
+            continue;
+          }
+          const route = await prisma.route.findUnique({ where: { code: routeCode } });
+          if (!route) {
+            issues.push({
+              sheet: 'Users',
+              row: sheetRow,
+              message: `route "${routeCode}" not found`,
+            });
+            continue;
+          }
+          ownedRouteId = route.id;
+          ownedRouteCode = routeCode;
+        }
+        // X-IMPORTS-2: never take a route from its salesman to park it on an
+        // account that cannot sign in.
+        const inactive = existing
+          ? inactiveRouteIssue({
+              username,
+              isActive: existing.isActive,
+              currentRouteId: existing.ownedRouteId,
+              incomingRouteId: ownedRouteId,
+              routeCode: ownedRouteCode,
+            })
+          : null;
+        if (inactive) {
+          issues.push({ sheet: 'Users', row: sheetRow, message: inactive });
+          continue;
+        }
+
+        // QA-010 / QA-011: only set passwordHash + role on INSERT or when
+        // explicitly requested. On a normal re-import, existing users keep
+        // their existing password and role.
+        let passwordHash: string;
+        if (existing) {
+          if (wantsReset) {
+            if (!passwordRaw) {
+              issues.push({
+                sheet: 'Users',
+                row: sheetRow,
+                message: 'reset_password=yes but no password provided',
+              });
+              continue;
+            }
+            passwordHash = await bcrypt.hash(passwordRaw, 12);
+          } else {
+            passwordHash = existing.passwordHash;
+          }
+        } else {
           if (!passwordRaw) {
             issues.push({
               sheet: 'Users',
               row: sheetRow,
-              message: 'reset_password=yes but no password provided',
+              message: 'new user needs a password',
             });
             continue;
           }
           passwordHash = await bcrypt.hash(passwordRaw, 12);
-        } else {
-          passwordHash = existing.passwordHash;
         }
-      } else {
-        if (!passwordRaw) {
-          issues.push({
-            sheet: 'Users',
-            row: sheetRow,
-            message: 'new user needs a password',
-          });
-          continue;
+
+        const update: Prisma.UserUpdateInput = {
+          fullName,
+          // X-IMPORTS-4: a blank email or phone cell keeps the stored value, the
+          // rule the password, supervisor and region cells already follow. The
+          // go-live builder writes both cells blank on every row, so a re-import
+          // used to wipe contact details set when the account was created in the
+          // Users UI. The import can set a new value but never clears one.
+          email: email ?? undefined,
+          phone: phone ?? undefined,
+          // ownedRoute: a SALESMAN row always carries a resolved route (rows without
+          // one continue'd above); a non-SALESMAN owns no route, so clear it (this
+          // also correctly drops the route when a salesman is promoted).
+          ownedRoute: ownedRouteId ? { connect: { id: ownedRouteId } } : { disconnect: true },
+        };
+        // A BLANK supervisor_username on a re-import means "keep the existing
+        // supervisor" (mirrors the QA-010 password rule) — NOT unlink. A blank
+        // column silently detaching a salesman's supervisor was a data-loss
+        // footgun. supUsername present ⇒ supervisorId already resolved above.
+        if (supUsername) update.supervisor = { connect: { id: supervisorId! } };
+        // Only rotate password / role when explicitly authorised. A password reset
+        // MUST also revoke live sessions (sessionsRevokedAt) so the old credential
+        // cannot keep a session alive — same as services/users.ts resetPasswordCore.
+        if (wantsReset) {
+          update.passwordHash = passwordHash;
+          update.sessionsRevokedAt = new Date();
         }
-        passwordHash = await bcrypt.hash(passwordRaw, 12);
-      }
+        // Gated the same way the password is, and for the same reason. Every row the
+        // go-live builder writes carries must_change_password: yes, so a re-import —
+        // which the runbook invites, to add a route or fix a name — used to re-arm
+        // the forced change on everyone in the sheet, INCLUDING people who had long
+        // since chosen their own password. Their next request bounces them to the
+        // change-password screen and holds them there, and assertPasswordNotReused
+        // refuses the last five hashes, so they cannot re-enter the password they
+        // are already using: a field salesman is locked out mid-round by an
+        // administrative re-import that changed nothing about them.
+        //
+        // Re-arm it only when this import is actually issuing a new password.
+        if (mustChange && (!existing || wantsReset)) update.mustChangePassword = true;
+        if (!existing || wantsRoleChange) update.role = role;
+        // ENH-6: a role change ends the person's open sessions, as the Users UI's
+        // does (services/users.ts updateUserRoleCore). Only a real change: a
+        // re-import naming the role the account already has signs nobody out.
+        if (roleChanged) update.sessionsRevokedAt = new Date();
 
-      const update: Prisma.UserUpdateInput = {
-        fullName,
-        email,
-        phone,
-        // ownedRoute: a SALESMAN row always carries a resolved route (rows without
-        // one continue'd above); a non-SALESMAN owns no route, so clear it (this
-        // also correctly drops the route when a salesman is promoted).
-        ownedRoute: ownedRouteId ? { connect: { id: ownedRouteId } } : { disconnect: true },
-      };
-      // A BLANK supervisor_username on a re-import means "keep the existing
-      // supervisor" (mirrors the QA-010 password rule) — NOT unlink. A blank
-      // column silently detaching a salesman's supervisor was a data-loss
-      // footgun. supUsername present ⇒ supervisorId already resolved above.
-      if (supUsername) update.supervisor = { connect: { id: supervisorId! } };
-      // Only rotate password / role when explicitly authorised. A password reset
-      // MUST also revoke live sessions (sessionsRevokedAt) so the old credential
-      // cannot keep a session alive — same as services/users.ts resetPasswordCore.
-      if (wantsReset) {
-        update.passwordHash = passwordHash;
-        update.sessionsRevokedAt = new Date();
-      }
-      // Gated the same way the password is, and for the same reason. Every row the
-      // go-live builder writes carries must_change_password: yes, so a re-import —
-      // which the runbook invites, to add a route or fix a name — used to re-arm
-      // the forced change on everyone in the sheet, INCLUDING people who had long
-      // since chosen their own password. Their next request bounces them to the
-      // change-password screen and holds them there, and assertPasswordNotReused
-      // refuses the last five hashes, so they cannot re-enter the password they
-      // are already using: a field salesman is locked out mid-round by an
-      // administrative re-import that changed nothing about them.
-      //
-      // Re-arm it only when this import is actually issuing a new password.
-      if (mustChange && (!existing || wantsReset)) update.mustChangePassword = true;
-      if (!existing || wantsRoleChange) update.role = role;
-
-      // Regions are resolved BEFORE anything is written.
-      //
-      // They used to be applied after the upsert, so a row with a bad code was
-      // quarantined AFTER the account had been created — leaving a live, signable
-      // account managing nothing while the report called the row an issue. An
-      // empty managedRegions is fail-closed in every reader (lib/access.ts,
-      // lib/permissions.ts, lib/customer-filters.ts, the approvals page), so that
-      // account signs in and sees an empty queue for good.
-      //
-      // `regionIds === null` means "leave the regions this user already has",
-      // which is what a blank cell means for an existing user — the same rule the
-      // password and supervisor columns follow.
-      const regionScoped = role === Role.MANAGER || role === Role.ACCOUNTANT;
-      let regionIds: string[] | null = null;
-      if (regionScoped) {
-        const codes = regionCodesRaw
-          .split(',')
-          .map((c) => c.trim().toUpperCase())
-          .filter(Boolean);
-        if (codes.length > 0) {
-          const regions = await prisma.region.findMany({ where: { code: { in: codes } } });
-          const found = new Set(regions.map((r) => r.code));
-          const unknown = codes.filter((c) => !found.has(c));
-          if (unknown.length > 0) {
-            // Quarantine rather than write what did resolve: `set:` REPLACES the
-            // relation, so applying the good half would silently shrink the
-            // account's coverage. The Routes sheet quarantines the same mistake.
+        // Regions are resolved BEFORE anything is written.
+        //
+        // They used to be applied after the upsert, so a row with a bad code was
+        // quarantined AFTER the account had been created — leaving a live, signable
+        // account managing nothing while the report called the row an issue. An
+        // empty managedRegions is fail-closed in every reader (lib/access.ts,
+        // lib/permissions.ts, lib/customer-filters.ts, the approvals page), so that
+        // account signs in and sees an empty queue for good.
+        //
+        // `regionIds === null` means "leave the regions this user already has",
+        // which is what a blank cell means for an existing user — the same rule the
+        // password and supervisor columns follow.
+        const regionScoped = role === Role.MANAGER || role === Role.ACCOUNTANT;
+        let regionIds: string[] | null = null;
+        let regionCodes: string[] | null = null;
+        if (regionScoped) {
+          const codes = regionCodesRaw
+            .split(',')
+            .map((c) => c.trim().toUpperCase())
+            .filter(Boolean);
+          if (codes.length > 0) {
+            const regions = await prisma.region.findMany({ where: { code: { in: codes } } });
+            const found = new Set(regions.map((r) => r.code));
+            const unknown = codes.filter((c) => !found.has(c));
+            if (unknown.length > 0) {
+              // Quarantine rather than write what did resolve: `set:` REPLACES the
+              // relation, so applying the good half would silently shrink the
+              // account's coverage. The Routes sheet quarantines the same mistake.
+              issues.push({
+                sheet: 'Users',
+                row: sheetRow,
+                message: `region code(s) not found: ${unknown.join(', ')} — nothing was written for "${username}". Import the Regions sheet first, or correct the code.`,
+              });
+              continue;
+            }
+            regionIds = regions.map((r) => r.id);
+            regionCodes = regions.map((r) => r.code).sort();
+          } else if (regionCodesRaw) {
+            // The cell is not empty and yet yields no region code — "," or ", ,".
+            // It used to be truthy enough to reach `set: []` and wipe the account.
+            //
+            // Do not fold this into "blank means keep what you had": the operator
+            // wrote something and meant it to take effect. Accepting it silently
+            // because the account happens to already have regions would report a
+            // clean row for an instruction that did nothing.
             issues.push({
               sheet: 'Users',
               row: sheetRow,
-              message: `region code(s) not found: ${unknown.join(', ')} — nothing was written for "${username}". Import the Regions sheet first, or correct the code.`,
+              message: `region_codes for "${username}" was "${regionCodesRaw}", which contains no region code. Nothing was written — correct the cell, or leave it empty to keep the regions this account already has.`,
             });
             continue;
-          }
-          regionIds = regions.map((r) => r.id);
-        } else if (regionCodesRaw) {
-          // The cell is not empty and yet yields no region code — "," or ", ,".
-          // It used to be truthy enough to reach `set: []` and wipe the account.
-          //
-          // Do not fold this into "blank means keep what you had": the operator
-          // wrote something and meant it to take effect. Accepting it silently
-          // because the account happens to already have regions would report a
-          // clean row for an instruction that did nothing.
-          issues.push({
-            sheet: 'Users',
-            row: sheetRow,
-            message: `region_codes for "${username}" was "${regionCodesRaw}", which contains no region code. Nothing was written — correct the cell, or leave it empty to keep the regions this account already has.`,
-          });
-          continue;
-        } else {
-          // Genuinely blank. That means "keep what you had", the same rule the
-          // password and supervisor columns follow — but it may only mean that
-          // when there IS something to keep. Decided on the account's real state
-          // rather than on whether this import created it, so a re-import cannot
-          // keep waving through an account that is already blind.
-          const alreadyScoped = existing
-            ? await prisma.user.count({
-                where: { id: existing.id, managedRegions: { some: {} } },
-              })
-            : 0;
-          if (alreadyScoped === 0) {
-            issues.push({
-              sheet: 'Users',
-              row: sheetRow,
-              message: `${role} "${username}" manages no region, so it can see nothing and clear no approval step. Set region_codes and re-import. Nothing was written.`,
-            });
-            continue;
+          } else {
+            // Genuinely blank. That means "keep what you had", the same rule the
+            // password and supervisor columns follow — but it may only mean that
+            // when there IS something to keep. Decided on the account's real state
+            // rather than on whether this import created it, so a re-import cannot
+            // keep waving through an account that is already blind.
+            if (!existing || existing.managedRegions.length === 0) {
+              issues.push({
+                sheet: 'Users',
+                row: sheetRow,
+                message: `${role} "${username}" manages no region, so it can see nothing and clear no approval step. Set region_codes and re-import. Nothing was written.`,
+              });
+              continue;
+            }
           }
         }
-      }
 
-      const data: Prisma.UserCreateInput = {
-        username,
-        passwordHash,
-        fullName,
-        role,
-        email,
-        phone,
-        mustChangePassword: mustChange,
-      };
-      if (supervisorId) data.supervisor = { connect: { id: supervisorId } };
-      if (ownedRouteId) data.ownedRoute = { connect: { id: ownedRouteId } };
+        const data: Prisma.UserCreateInput = {
+          username,
+          passwordHash,
+          fullName,
+          role,
+          email,
+          phone,
+          mustChangePassword: mustChange,
+        };
+        if (supervisorId) data.supervisor = { connect: { id: supervisorId } };
+        if (ownedRouteId) data.ownedRoute = { connect: { id: ownedRouteId } };
+        // F07: the regions go in with the account write itself. They used to be a
+        // separate update after the transaction had committed, so a failure there
+        // quarantined a row whose account, role and route had already changed.
+        if (regionIds) {
+          update.managedRegions = { set: regionIds.map((id) => ({ id })) };
+          data.managedRegions = { connect: regionIds.map((id) => ({ id })) };
+        }
 
-      try {
+        // X-IMPORTS-1: the account before and after this row, for its audit row
+        // (lib/account-import.ts decides which of it the ledger may hold).
+        const before: AccountState | null = existing
+          ? {
+              fullName: existing.fullName,
+              role: existing.role,
+              supervisor: existing.supervisor?.username ?? null,
+              route: existing.ownedRoute?.code ?? null,
+              regions: existing.managedRegions.map((r) => r.code).sort(),
+              mustChangePassword: existing.mustChangePassword,
+              email: existing.email,
+              phone: existing.phone,
+            }
+          : null;
+        const after: AccountState = {
+          fullName,
+          role,
+          supervisor: supUsername || (before?.supervisor ?? null),
+          route: ownedRouteCode,
+          regions: regionCodes ?? before?.regions ?? [],
+          mustChangePassword: before
+            ? before.mustChangePassword || update.mustChangePassword === true
+            : mustChange,
+          email: before ? (email ?? before.email) : email,
+          phone: before ? (phone ?? before.phone) : phone,
+        };
+
         // F-18: a salesman row takes its route from whoever owns it now, and the
         // move is audited so the Manager can see "salesman.X used to own this
         // route, salesman.Y owns it now".
@@ -554,96 +735,129 @@ async function uploadAccountMasterCore(
         // its owner and written an audit row naming a user that was never
         // created: the route was left with no salesman at all. In one
         // transaction the two stand or fall together.
-        const user = await prisma.$transaction(async (tx) => {
-          if (ownedRouteId) {
-            const displacedOwners = await tx.user.findMany({
-              where: { ownedRouteId, NOT: { username } },
-              select: { id: true },
-            });
-            if (displacedOwners.length > 0) {
-              await tx.user.updateMany({
+        //
+        // F07 / X-IMPORTS-1: and so does every audit row the account write owes.
+        // The password and role audits used to be written after this transaction
+        // had committed, so a failed insert quarantined a row whose new hash, role
+        // and route were already live — and a re-run, finding the role already
+        // changed, never wrote the role audit at all.
+        await prisma.$transaction(
+          async (tx) => {
+            if (ownedRouteId) {
+              const displacedOwners = await tx.user.findMany({
                 where: { ownedRouteId, NOT: { username } },
-                data: { ownedRouteId: null },
+                select: { id: true },
               });
-              // A loop, not createMany: writeAudit is the only writer of ip and
-              // userAgent and it writes one row at a time. That costs nothing
-              // here — User.ownedRouteId is @unique, so at most ONE user can own
-              // a route and this list is 0 or 1 rows by construction.
-              for (const u of displacedOwners) {
-                await writeAudit(tx, env, {
-                  action: 'REASSIGN',
-                  entityType: 'User',
-                  entityId: u.id,
-                  before: { ownedRouteCode } as unknown as Prisma.InputJsonValue,
-                  after: { ownedRouteCode: null } as unknown as Prisma.InputJsonValue,
-                  reason: `route ${ownedRouteCode} reassigned to ${username} via import`,
+              if (displacedOwners.length > 0) {
+                await tx.user.updateMany({
+                  where: { ownedRouteId, NOT: { username } },
+                  data: { ownedRouteId: null },
                 });
+                // A loop, not createMany: writeAudit is the only writer of ip and
+                // userAgent and it writes one row at a time. That costs nothing
+                // here — User.ownedRouteId is @unique, so at most ONE user can own
+                // a route and this list is 0 or 1 rows by construction.
+                for (const u of displacedOwners) {
+                  await writeAudit(tx, env, {
+                    action: 'REASSIGN',
+                    entityType: 'User',
+                    entityId: u.id,
+                    before: { ownedRouteCode } as unknown as Prisma.InputJsonValue,
+                    after: { ownedRouteCode: null } as unknown as Prisma.InputJsonValue,
+                    reason: `route ${ownedRouteCode} reassigned to ${username} via import`,
+                  });
+                }
               }
             }
-          }
-          return tx.user.upsert({
-            where: { username },
-            update,
-            create: data,
-          });
-        });
-        // Audit any sensitive change. Not swallowed, and deliberately so: these
-        // sit inside the per-row try/catch, so a failed insert becomes a
-        // quarantined row the Steward sees rather than a silent gap in the
-        // credential-change trail.
-        if (existing && wantsReset) {
-          await writeAudit(null, env, {
-            action: 'UPDATE',
-            entityType: 'User',
-            entityId: user.id,
-            reason: 'password_reset_via_import',
-          });
-        }
-        if (existing && wantsRoleChange && existing.role !== role) {
-          await writeAudit(null, env, {
-            action: 'UPDATE',
-            entityType: 'User',
-            entityId: user.id,
-            before: { role: existing.role } as unknown as Prisma.InputJsonValue,
-            after: { role } as unknown as Prisma.InputJsonValue,
-            reason: 'role_change_via_import',
-          });
-        }
-
-        if (regionIds) {
-          await prisma.user.update({
-            where: { id: user.id },
-            data: { managedRegions: { set: regionIds.map((id) => ({ id })) } },
-          });
-        }
-        cleanCount++;
+            const user = await tx.user.upsert({
+              where: { username },
+              update,
+              create: data,
+            });
+            if (!before) {
+              await writeAudit(tx, env, {
+                action: 'CREATE',
+                entityType: 'User',
+                entityId: user.id,
+                after: accountCreateAudit(username, after, batch.id),
+                reason: 'account_import',
+              });
+              return;
+            }
+            if (wantsReset) {
+              await writeAudit(tx, env, {
+                action: 'UPDATE',
+                entityType: 'User',
+                entityId: user.id,
+                reason: 'password_reset_via_import',
+              });
+            }
+            if (roleChanged) {
+              await writeAudit(tx, env, {
+                action: 'UPDATE',
+                entityType: 'User',
+                entityId: user.id,
+                before: { role: before.role } as unknown as Prisma.InputJsonValue,
+                after: { role } as unknown as Prisma.InputJsonValue,
+                reason: 'role_change_via_import',
+              });
+            }
+            const change = accountUpdateAudit(username, before, after, batch.id);
+            if (change) {
+              await writeAudit(tx, env, {
+                action: 'UPDATE',
+                entityType: 'User',
+                entityId: user.id,
+                before: change.before,
+                after: change.after,
+                reason: 'account_import',
+              });
+            }
+          },
+          { timeout: 20_000, maxWait: 10_000 }
+        );
+        applied();
       } catch (err) {
-        issues.push({ sheet: 'Users', row: sheetRow, message: (err as Error).message });
+        failed('Users', sheetRow, err, `"${username}"`);
       }
     }
   }
 
-  await prisma.importBatch.update({
-    where: { id: batch.id },
-    data: {
-      status: 'PROMOTED',
-      cleanRows: cleanCount,
-      quarantinedRows: issues.length,
-      promotedRows: cleanCount,
-    },
-  });
+  // X-IMPORTS-3: the batch's counts and its issue rows land together. Every row
+  // counted as applied has committed by now, so a failure here must not reach
+  // runAction, whose answer to a database fault is "Nothing was saved".
+  let recorded = true;
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.importBatch.update({
+        where: { id: batch.id },
+        data: {
+          status: 'PROMOTED',
+          cleanRows: cleanCount,
+          quarantinedRows: issues.length,
+          promotedRows: cleanCount,
+        },
+      });
 
-  // Persist issues as ImportRow rows for review
-  if (issues.length > 0) {
-    await prisma.importRow.createMany({
-      data: issues.map((iss, idx) => ({
-        batchId: batch.id,
-        rowNumber: idx + 1,
-        raw: iss as unknown as Prisma.InputJsonValue,
-        state: ImportRowState.QUARANTINED,
-        issues: [{ message: iss.message, sheet: iss.sheet, row: iss.row }] as Prisma.InputJsonValue,
-      })),
+      // Persist issues as ImportRow rows for review
+      if (issues.length > 0) {
+        await tx.importRow.createMany({
+          data: issues.map((iss, idx) => ({
+            batchId: batch.id,
+            rowNumber: idx + 1,
+            raw: iss as unknown as Prisma.InputJsonValue,
+            state: ImportRowState.QUARANTINED,
+            issues: [{ message: iss.message, sheet: iss.sheet, row: iss.row }] as Prisma.InputJsonValue,
+          })),
+        });
+      }
     });
+  } catch (err) {
+    recorded = false;
+    logger.error(
+      { code: (err as { code?: unknown })?.code, batchId: batch.id, clean: cleanCount, issues: issues.length },
+      'import.account.not_recorded'
+    );
   }
 
   // F-19: per-batch audit summary for the Account master too.
@@ -655,25 +869,44 @@ async function uploadAccountMasterCore(
   // fully-successful import failed; the natural re-run would re-hash passwords,
   // re-stamp sessionsRevokedAt and re-displace route owners. But it no longer
   // swallows SILENTLY — a lost summary is now visible in the logs.
-  await writeAudit(null, env, {
-    action: 'IMPORT',
-    entityType: 'ImportBatch',
-    entityId: batch.id,
-    after: {
-      kind: 'ACCOUNT',
-      clean: cleanCount,
-      issues: issues.length,
-    } as unknown as Prisma.InputJsonValue,
-    reason: 'account_master_upload',
-  }).catch((e) => {
-    logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
-  });
+  //
+  // Not attempted when the batch itself could not be recorded: the database has
+  // just refused a write, and every applied row that changed anything already
+  // carries its own audit row, written with it.
+  if (recorded) {
+    await writeAudit(null, env, {
+      action: 'IMPORT',
+      entityType: 'ImportBatch',
+      entityId: batch.id,
+      after: {
+        kind: 'ACCOUNT',
+        clean: cleanCount,
+        issues: issues.length,
+        ...(stopped ? { stopped: true } : {}),
+      } as unknown as Prisma.InputJsonValue,
+      reason: 'account_master_upload',
+    }).catch((e) => {
+      logger.warn({ err: (e as Error).message?.slice(0, 80) }, 'import.audit_failed');
+    });
+  }
 
   logger.info(
-    { batchId: batch.id, clean: cleanCount, issues: issues.length },
+    { batchId: batch.id, clean: cleanCount, issues: issues.length, stopped, recorded },
     'import.account.complete'
   );
   revalidatePath('/import');
+  if (stopped || !recorded) {
+    throw new AppError(
+      'IMPORT_INTERRUPTED',
+      accountImportInterruptedMessage({
+        applied: cleanCount,
+        uncertain,
+        notApplied: issues.length - uncertain,
+        recorded,
+      }),
+      503
+    );
+  }
   return { batchId: batch.id, clean: cleanCount, issues: issues.length };
 }
 
