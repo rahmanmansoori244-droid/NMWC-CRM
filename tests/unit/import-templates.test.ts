@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { parseWorkbook } from '@/lib/excel';
+import { duplicateHeadingIssue, loadExcelJS, parseWorkbook } from '@/lib/excel';
 
 /**
  * Guards the go-live import templates (docs/import-templates/*.xlsx) against the
@@ -19,9 +19,15 @@ describe('go-live import templates match the importer contract', () => {
     if (!existsSync(ACCT)) throw new Error('run: npx tsx scripts/build-import-templates.ts');
     const sheets = await parseWorkbook(readFileSync(ACCT));
     const byName = Object.fromEntries(sheets.map((s) => [s.name, s]));
-    // The parser no longer throws on a repeated heading; it records it and the
-    // import refuses a sheet it reads that has one (N05). The templates have none.
-    for (const s of ['Regions', 'Routes', 'Users']) expect(byName[s].duplicateHeadings, s).toEqual([]);
+    // The parser no longer throws on a repeated heading; it records it, leaves the
+    // repeat out of `headers`, and the import refuses a sheet it reads that has
+    // one (N05). So `headers` cannot catch a repeat: each sheet the account import
+    // reads, found as it finds them, must pass its exact refusal.
+    for (const name of ['regions', 'routes', 'users']) {
+      const sheet = sheets.find((s) => s.name.toLowerCase() === name);
+      expect(sheet, name).toBeDefined();
+      expect(duplicateHeadingIssue(sheet!), name).toBeNull();
+    }
     // parser looks these up case-insensitively by name (services/imports.ts).
     expect(byName['Regions'].headers).toEqual(['code', 'name']);
     expect(byName['Routes'].headers).toEqual(['code', 'name', 'region_code']);
@@ -54,6 +60,9 @@ describe('go-live import templates match the importer contract', () => {
     const sheets = await parseWorkbook(readFileSync(CUST));
     // CRITICAL: the customer importer reads sheets[0]. Instructions must come after.
     expect(sheets[0].name).toBe('Customers');
+    // The refusal the upload applies to the sheet it reads (N05): a repeated
+    // heading is not in `headers`, so the list below would pass with one.
+    expect(duplicateHeadingIssue(sheets[0])).toBeNull();
     expect(sheets[0].headers).toEqual([
       'cust_code',
       'cust_name',
@@ -79,5 +88,20 @@ describe('go-live import templates match the importer contract', () => {
     expect(codes.filter((c) => c === 'C-10001').length).toBe(2);
     // payment_terms only ever CASH/CREDIT in the examples.
     for (const r of sheets[0].rows) expect(['CASH', 'CREDIT']).toContain(String(r.payment_terms));
+  });
+
+  it('a repeated heading in the shipped Customers sheet: the headers list still passes, the refusal does not', async () => {
+    if (!existsSync(CUST)) throw new Error('run: npx tsx scripts/build-import-templates.ts');
+    const clean = await parseWorkbook(readFileSync(CUST));
+    const ExcelJS = await loadExcelJS();
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(new Uint8Array(readFileSync(CUST)) as never);
+    // A second `phone` column after the last one, as an edited builder would write it.
+    wb.worksheets[0]!.getRow(1).getCell(clean[0].headers.length + 1).value = 'Phone';
+    const sheets = await parseWorkbook(new Uint8Array(await wb.xlsx.writeBuffer()));
+    expect(sheets[0].headers).toEqual(clean[0].headers);
+    expect(duplicateHeadingIssue(sheets[0])).toMatch(
+      /^Sheet "Customers": the heading "Phone" is in more than one column \(H and R\)/
+    );
   });
 });

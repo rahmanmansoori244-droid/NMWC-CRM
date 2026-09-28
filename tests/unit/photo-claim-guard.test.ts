@@ -11,8 +11,8 @@
  *    soft-deletes only through a write guarded on the wiring it read;
  *  - the three claims of a photo (attach, a new-customer request's claim, and
  *    its bind at the final approval) share one "live and on no slot" fragment;
- *  - presign and finalize refuse a role before the rate-limit bucket, R2 and the
- *    database.
+ *  - presign and finalize refuse a role after the sign-in check and before the
+ *    rate-limit bucket, R2 and the database.
  *
  * Comments are stripped first (tests/support/strip-comments.ts), so a comment
  * quoting what is asserted can neither satisfy nor trip a guard.
@@ -173,12 +173,27 @@ describe('one "live and on no slot" fragment for every claim of a photo', () => 
 describe('ENH-3: presign and finalize refuse a role before any cost', () => {
   const ROLE = /if \(!canUploadPhoto\(session\.user\.role\)\) return refuseRole\(\);/;
   const KIND = /if \(!canUploadPhoto\(session\.user\.role, kind\)\) return refuseRole\(\);/;
+  // The sign-in check (F15: signed out, or a password to change first), and the
+  // session the role is read from, taken from it. The anchor must be found:
+  // compared against a check that was no longer there (-1), "after the sign-in
+  // check" held for a role gate anywhere, even one ahead of checkActor.
+  const SIGNED_IN = /const who = await checkActor\(\);\s*if \(!who\.ok\)/;
+  const SESSION = /const session = \{ user: who\.user \};/;
+
+  /** The role gate comes after the sign-in check, on the session it passed. */
+  function roleAfterSignIn(code: string, role: number) {
+    const signedIn = at(code, SIGNED_IN);
+    expect(signedIn, 'the sign-in check').toBeGreaterThan(-1);
+    const session = at(code, SESSION);
+    expect(session, 'the session from the sign-in check').toBeGreaterThan(signedIn);
+    expect(role).toBeGreaterThan(session);
+  }
 
   it('presign: the role before the rate-limit bucket, the kind before a URL is signed', () => {
     const p = src('app/api/photos/presign/route.ts');
     const role = at(p, ROLE);
     const kind = at(p, KIND);
-    expect(role).toBeGreaterThan(at(p, /if \(!session\?\.user\)/));
+    roleAfterSignIn(p, role);
     expect(at(p, /await checkLimit\(/)).toBeGreaterThan(role);
     expect(kind).toBeGreaterThan(role);
     expect(at(p, /await getSignedUrl\(/)).toBeGreaterThan(kind);
@@ -188,7 +203,7 @@ describe('ENH-3: presign and finalize refuse a role before any cost', () => {
     const f = src('app/api/photos/finalize/route.ts');
     const role = at(f, ROLE);
     const kind = at(f, KIND);
-    expect(role).toBeGreaterThan(at(f, /if \(!session\?\.user\)/));
+    roleAfterSignIn(f, role);
     expect(at(f, /await req\.json\(\)/)).toBeGreaterThan(role);
     expect(kind).toBeGreaterThan(role);
     for (const after of [/new HeadObjectCommand\(/, /prisma\.attachment\.findFirst\(/, /prisma\.attachment\.create\(/]) {

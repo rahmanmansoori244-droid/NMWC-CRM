@@ -10,7 +10,8 @@
  *   X-APPR-2 the approve confirmation says what approving this step does: send
  *            it on, create the customer, or change a live one.
  *   Reject   the reject form says where rejecting this step sends the request:
- *            back one step to the previous approver, or to the salesman.
+ *            back one step to the previous approver, or to the salesman; the
+ *            bulk dialog, deciding many at once, words both rules.
  *
  * The pages that render the tokens are in approval-decision-pages.test.tsx; the
  * services that check them are in decision-token.test.ts.
@@ -49,6 +50,7 @@ import {
   type RejectOutcome,
 } from '@/app/(app)/approvals/[id]/ApproveRejectActions';
 import { BulkApprovalQueue, type ApprovalQueueItem } from '@/app/(app)/approvals/BulkApprovalQueue';
+import { resolveRejectTarget } from '@/lib/approval-chains';
 
 const TOKEN = '{"v":1,"cycle":2,"step":1,"stage":1758618900789,"limit":"10000.000","days":90}';
 const formOf = (fn: ReturnType<typeof vi.fn>) => Object.fromEntries((fn.mock.calls[0]![0] as FormData).entries());
@@ -274,6 +276,30 @@ describe('the bulk queue', () => {
     expect(fd.get('editIds')).toBeNull();
     expect(JSON.parse(String(fd.get('decisions')))).toEqual([{ editId: 'c2', decisionToken: 'token-of-c2' }]);
     expect(fd.get('reason')).toBe('Photos are blurry, retake.');
+  });
+
+  it('the reject dialog words both rules rejecting follows — the step back and the loop guard — and names nobody for the reason', () => {
+    // The rules the words describe (rejectEditCore): the first step goes to the
+    // salesman, a later one steps back, and a step that already rejected the
+    // request once this round sends it to the salesman.
+    expect(resolveRejectTarget(0, 0)).toEqual({ kind: 'TO_SALESMAN' });
+    expect(resolveRejectTarget(2, 0)).toEqual({ kind: 'STEP_BACK', toStepIndex: 1 });
+    expect(resolveRejectTarget(2, 1)).toEqual({ kind: 'TO_SALESMAN' });
+
+    render(<BulkApprovalQueue items={ITEMS} />);
+    fireEvent.click(screen.getByLabelText('Select all on page'));
+    fireEvent.click(screen.getByRole('button', { name: '✗ Reject 3' }));
+    const dialog = screen.getByRole('dialog');
+    const words = dialog.textContent!.replace(/\s+/g, ' ');
+    expect(words).toMatch(/goes back to the previous approver/);
+    expect(words).toMatch(/to the salesman when it is at the first step/);
+    // The loop guard: it said "previous approver" for a step's second rejection,
+    // and the server sent that request to the salesman.
+    expect(words).toMatch(/when this step has already rejected it once since the salesman last sent it/);
+    // The reason goes to whoever gets the request back, not always a salesman.
+    const reason = within(dialog).getByRole('textbox');
+    expect(reason.closest('label')!.textContent).not.toMatch(/salesm[ae]n/i);
+    expect(reason.getAttribute('placeholder')).not.toMatch(/salesm[ae]n/i);
   });
 
   it('a card refused as stale is reported with its message', async () => {

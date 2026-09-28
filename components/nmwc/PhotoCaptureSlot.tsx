@@ -168,6 +168,34 @@ class HttpError extends Error {
   }
 }
 
+/**
+ * A 4xx whose body is the action shape `{ ok: false, code, message }` — a route
+ * turning the request away before the service ran (lib/fetch-route.ts refuse):
+ * signed out (401), a session that must change its password first (403
+ * PASSWORD_CHANGE_REQUIRED), a body it would not read. An answer, with a message
+ * to show; nothing about the photo was read or changed. As a bare HttpError the
+ * attach called it "got no answer", and every Retry said the same.
+ */
+class RefusedError extends HttpError {
+  code: string;
+  constructor(status: number, code: string, message: string) {
+    super(status, message);
+    this.code = code;
+  }
+}
+
+/** The action-shaped refusal in a 4xx reply's body, or null for any other body. */
+async function readRefusal(res: Response): Promise<{ code: string; message: string } | null> {
+  try {
+    const body = (await res.json()) as { ok?: unknown; code?: unknown; message?: unknown } | null;
+    return body?.ok === false && typeof body.code === 'string' && typeof body.message === 'string'
+      ? { code: body.code, message: body.message }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function isRetryable(err: unknown): boolean {
   if (err instanceof HttpError) return err.status >= 500;
   // `fetch` throws a TypeError for network failures and CORS issues.
@@ -291,7 +319,11 @@ async function postJson<T>(url: string, body: unknown, failMessage: string): Pro
       body: JSON.stringify(body),
       signal: abort.signal,
     });
-    if (!res.ok) throw new HttpError(res.status, failMessage);
+    if (!res.ok) {
+      const refusal = res.status < 500 ? await readRefusal(res) : null;
+      if (refusal) throw new RefusedError(res.status, refusal.code, refusal.message);
+      throw new HttpError(res.status, failMessage);
+    }
     return (await res.json()) as T;
   } catch (err) {
     if (abort.signal.aborted) throw networkError();
@@ -307,9 +339,10 @@ async function postJson<T>(url: string, body: unknown, failMessage: string): Pro
  * server action cannot be aborted, and Next runs them one at a time, so after
  * an attach with no answer, Retry's re-send — and every other slot's attach,
  * and every Remove — queued behind the stalled one and never left the phone
- * (post-merge review of 30ec23a). Anything but a reply of that shape throws,
- * as no answer: postJson's abort at PHOTO_STEP_TIMEOUT_MS, a dropped
- * connection, a server fault, a page that is not JSON.
+ * (post-merge review of 30ec23a). The route's own refusal, a 4xx in that shape,
+ * throws a RefusedError carrying its message. Anything else throws as no
+ * answer: postJson's abort at PHOTO_STEP_TIMEOUT_MS, a dropped connection, a
+ * server fault, a page that is not JSON.
  */
 async function postAction(url: string, body: unknown): Promise<ActionResult<unknown>> {
   const reply = await postJson<ActionResult<unknown> | null>(url, body, ATTACH_NO_ANSWER);
@@ -372,8 +405,8 @@ export function PhotoCaptureSlot({
   const [retainedBlob, setRetainedBlob] = useState<Blob | null>(null);
   const [retainedHash, setRetainedHash] = useState<string | null>(null);
   // The retained photo is up and finalized, but its attach got no answer (or
-  // "the database dropped / did not respond", which is none either): this is
-  // its attachment. Retry then sends only the attach again, not the photo over
+  // "the database dropped / did not respond", or the route's own refusal before
+  // the attach was read, which are none either): this is its attachment. Retry then sends only the attach again, not the photo over
   // the same weak signal. That is safe because services/photos.ts answers an
   // attach of a photo to the slot it is already on with ok and writes nothing,
   // and refuses one on any other slot — so the re-send's answer is the truth
@@ -436,10 +469,18 @@ export function PhotoCaptureSlot({
         try {
           attachRes = await postAction('/api/photos/attach', { attachmentId, ...target });
         } catch (e) {
-          // No answer — given up and aborted, or it failed on its way back.
+          // No answer — given up and aborted, or it failed on its way back — or
+          // turned away by the route before the attach was read (a RefusedError:
+          // signed out, a password to change first). Either way nothing is
+          // known about the attach, so Retry re-sends only it; the route's
+          // refusal is shown as what it is, not as no answer.
           unanswered.current = attachmentId;
           throw new Error(
-            e instanceof HttpError && e.status === 401 ? ATTACH_SIGNED_OUT : ATTACH_NO_ANSWER
+            e instanceof HttpError && e.status === 401
+              ? ATTACH_SIGNED_OUT
+              : e instanceof RefusedError
+                ? e.message
+                : ATTACH_NO_ANSWER
           );
         }
         // "May or may not have been saved" (lib/db-errors mayHaveCommitted) is
@@ -537,15 +578,27 @@ export function PhotoCaptureSlot({
     if (disabled || removing) return;
     if (photo?.attachmentId && attachTo) {
       setRemoving(true);
+      let refused: string | null = null;
       try {
-        // Over fetch, given up after PHOTO_STEP_TIMEOUT_MS. The slot is cleared
-        // whatever the answer (network, 404, a refusal) — best effort, as
-        // before; the form's stale state reconciles on the next load.
-        await postAction('/api/photos/detach', { attachmentId: photo.attachmentId });
-      } catch {
-        /* still clear locally */
+        // Over fetch, given up after PHOTO_STEP_TIMEOUT_MS. A refusal means the
+        // server kept the photo — moved by a merge (PHOTO_CHANGED), not yours,
+        // the database did not answer, a password to change first — so the
+        // slot keeps it too and says why; clearing it told the form the photo
+        // was gone. "Not found" is the refusal that means it is gone already.
+        const reply = await postAction('/api/photos/detach', { attachmentId: photo.attachmentId });
+        if (!reply.ok && reply.code !== 'NOT_FOUND') {
+          refused = reply.fields ? Object.values(reply.fields).join(' ') : reply.message;
+        }
+      } catch (e) {
+        if (e instanceof RefusedError) refused = e.message;
+        /* otherwise no answer: still clear locally, best effort as before */
       } finally {
         setRemoving(false);
+      }
+      if (refused !== null) {
+        setError(refused);
+        setConfirmingDelete(false);
+        return;
       }
     }
     if (photo?.previewUrl) URL.revokeObjectURL(photo.previewUrl);

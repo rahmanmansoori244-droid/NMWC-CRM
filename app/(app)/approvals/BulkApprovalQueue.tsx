@@ -446,10 +446,15 @@ function RejectModal({
         <h3 id="reject-modal-title" className="text-base font-semibold text-slate-900">
           Reject {count} edit{count === 1 ? '' : 's'}?
         </h3>
+        {/* Both rules resolveRejectTarget applies (rejectEditCore): the step
+            back, and the loop guard — a step's second rejection in one round
+            goes to the salesman. The detail page names the one for its request. */}
         <p className="mt-1 text-xs text-slate-600">
           The same category and reason go with every request rejected. Each one
-          goes back one step: to the salesman from the first step, to the
-          previous approver from any later one.
+          goes back to the previous approver, except that it goes to the
+          salesman when it is at the first step, or when this step has already
+          rejected it once since the salesman last sent it. A request&apos;s own
+          page says which.
         </p>
         <label className="mt-4 block text-xs font-medium text-slate-700">
           Category
@@ -466,7 +471,7 @@ function RejectModal({
           </select>
         </label>
         <label className="mt-3 block text-xs font-medium text-slate-700">
-          Reason for the salesmen *
+          Reason *
           <textarea
             ref={reasonRef}
             value={reason}
@@ -475,7 +480,7 @@ function RejectModal({
             minLength={5}
             maxLength={1000}
             required
-            placeholder="Be specific so the salesmen know what to fix."
+            placeholder="Be specific so whoever gets it back knows what to fix or re-check."
             className="mt-1 block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
           />
         </label>

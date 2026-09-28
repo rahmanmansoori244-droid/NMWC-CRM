@@ -32,7 +32,8 @@ import {
   postBodyDeadlineMs,
   type AttachTarget,
 } from '@/components/nmwc/PhotoCaptureSlot';
-import { ALREADY_ATTACHED_MESSAGE, PRESIGN_EXPIRES_S } from '@/lib/photo-attach';
+import { ALREADY_ATTACHED_MESSAGE, PHOTO_CHANGED_MESSAGE, PRESIGN_EXPIRES_S } from '@/lib/photo-attach';
+import { PasswordChangeRequiredError } from '@/lib/errors';
 
 let decode: 'never' | 'fail' | 'load' | 'held' = 'never';
 let held: FakeImage[] = [];
@@ -92,14 +93,17 @@ class FakeXHR {
  *
  * Attach and detach (app/api/photos/attach|detach) answer with the service's
  * `{ ok, … }` from their own plans — ok when the plan is empty — or stall, or
- * fail with a 500. The requests are kept, bodies and signals included.
+ * fail with a 500, or are turned away by the route itself: a 4xx in the same
+ * shape (lib/fetch-route.ts refuse). The requests are kept, bodies and signals
+ * included.
  */
 type Step = 'answer' | 'stall' | 'stallBody' | 'refuse';
 type Reply = { ok: boolean; code?: string; message?: string; fields?: Record<string, string> };
+type RouteRefusal = { status: number; refusal: { ok: false; code: string; message: string } };
 let presignPlan: Step[] = [];
 let finalizePlan: Step[] = [];
-let attachPlan: Array<Reply | 'stall' | 'fault'> = [];
-let detachPlan: Array<Reply | 'stall'> = [];
+let attachPlan: Array<Reply | RouteRefusal | 'stall' | 'fault'> = [];
+let detachPlan: Array<Reply | RouteRefusal | 'stall'> = [];
 let seen: string[] = [];
 let signals: Array<AbortSignal | null | undefined> = [];
 let sent: Array<{ url: string; body: unknown; signal: AbortSignal | null | undefined }> = [];
@@ -122,6 +126,9 @@ const serveChain = () =>
       const next = (url === ATTACH ? attachPlan : detachPlan).shift() ?? { ok: true };
       if (next === 'stall') return stall();
       if (next === 'fault') return new Response('Internal Server Error', { status: 500 });
+      if ('refusal' in next) {
+        return new Response(JSON.stringify(next.refusal), { status: next.status, headers: JSON_HEADERS });
+      }
       return new Response(JSON.stringify(next), { status: 200, headers: JSON_HEADERS });
     }
     const isPresign = url === '/api/photos/presign';
@@ -206,6 +213,17 @@ const pick = (container: HTMLElement) => {
 };
 const retryButton = () => screen.queryByRole('button', { name: /Retry upload/ });
 const shopOfB1: AttachTarget = { kind: 'branch', branchId: 'b1', slot: 'SHOP' };
+/** The attach and detach routes' own refusals (F15), before the service runs. */
+const SIGNED_OUT_MESSAGE = 'You are signed out, so nothing was sent.';
+const SIGNED_OUT: RouteRefusal = {
+  status: 401,
+  refusal: { ok: false, code: 'SIGNED_OUT', message: SIGNED_OUT_MESSAGE },
+};
+const PASSWORD_CHANGE_MESSAGE = new PasswordChangeRequiredError().message;
+const MUST_CHANGE: RouteRefusal = {
+  status: 403,
+  refusal: { ok: false, code: 'PASSWORD_CHANGE_REQUIRED', message: PASSWORD_CHANGE_MESSAGE },
+};
 
 /** Under fake timers, where waitFor cannot poll: let the chain's continuations run. */
 const settleUntil = async (done: () => boolean) => {
@@ -736,6 +754,43 @@ describe('a stalled step ends in Retry upload, so it cannot hold Submit', () => 
     }));
 });
 
+describe("the attach route's own refusal is an answer, shown as that refusal", () => {
+  // A password reset revokes the session: the open page's attach gets 401 and
+  // the slot says to sign in in another tab. That sign-in carries
+  // mustChangePassword, so the Retry gets 403 PASSWORD_CHANGE_REQUIRED — which
+  // the slot showed as "got no answer. Tap Retry upload.", on every Retry, and
+  // nothing said a password had to be changed first.
+  it('401 says sign in again; 403 PASSWORD_CHANGE_REQUIRED says to change the password, not "no answer"; after it, Retry sends only the attach', async () => {
+    uploadable();
+    attachPlan = [SIGNED_OUT, MUST_CHANGE, { ok: true }];
+    const onChange = vi.fn();
+    const view = render(<PhotoCaptureSlot kind="SHOP" attachTo={shopOfB1} onChange={onChange} />);
+    pick(view.container);
+    await waitFor(() => expect(xhrs).toHaveLength(1));
+    act(() => xhrs[0]!.answer());
+    expect(await screen.findByText(/sign in in another tab/)).toBeTruthy();
+
+    fireEvent.click(retryButton()!);
+    expect(await screen.findByText(PASSWORD_CHANGE_MESSAGE)).toBeTruthy();
+    expect(screen.queryByText(ATTACH_NO_ANSWER)).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+
+    // The password changed in another tab: the photo is up, so only the attach goes again.
+    fireEvent.click(retryButton()!);
+    await waitFor(() =>
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: 'att-1' }))
+    );
+    expect(requests(ATTACH).map((r) => r.body)).toEqual([
+      { attachmentId: 'att-1', branchId: 'b1', slot: 'SHOP' },
+      { attachmentId: 'att-1', branchId: 'b1', slot: 'SHOP' },
+      { attachmentId: 'att-1', branchId: 'b1', slot: 'SHOP' },
+    ]);
+    expect(count('/api/photos/presign')).toBe(1);
+    expect(xhrs).toHaveLength(1);
+    expect(retryButton()).toBeNull();
+  });
+});
+
 describe('Remove', () => {
   const photo = { attachmentId: 'att-9', remoteUrl: '/api/photos/att-9' };
   const remove = () => {
@@ -773,6 +828,47 @@ describe('Remove', () => {
     remove();
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(null));
     expect(requests(DETACH)).toHaveLength(1);
+  });
+
+  // X-PHOTO-1 made detach refuse a photo that moved under it (a merge moving its
+  // branch to another customer): nothing removed. The slot cleared anyway and
+  // told the form the photo was gone, and "reload and try again" never showed.
+  const refusals: Array<[string, Reply | RouteRefusal, string]> = [
+    ['moved by a merge', { ok: false, code: 'PHOTO_CHANGED', message: PHOTO_CHANGED_MESSAGE }, PHOTO_CHANGED_MESSAGE],
+    [
+      'not yours',
+      { ok: false, code: 'FORBIDDEN', message: 'You can only remove photos you captured.' },
+      'You can only remove photos you captured.',
+    ],
+    ['the database did not answer', { ok: false, code: 'DB_UNAVAILABLE', message: 'Nothing was saved.' }, 'Nothing was saved.'],
+    ['a password to change first (the route, 403)', MUST_CHANGE, PASSWORD_CHANGE_MESSAGE],
+    ['signed out (the route, 401)', SIGNED_OUT, SIGNED_OUT_MESSAGE],
+  ];
+  it.each(refusals)('a Remove refused — %s — keeps the photo on the slot and says why', async (_, answer, shown) => {
+    detachPlan = [answer, { ok: true }];
+    const onChange = vi.fn();
+    render(<PhotoCaptureSlot kind="SHOP" initial={photo} attachTo={shopOfB1} onChange={onChange} />);
+    remove();
+    expect(await screen.findByText(shown)).toBeTruthy();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByAltText('Shop front')).toBeTruthy();
+    expect(screen.getByLabelText('Retake photo')).toBeTruthy();
+    // Removed when the server says so, the message with it.
+    remove();
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(null));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(shown)).toBeNull();
+    expect(requests(DETACH)).toHaveLength(2);
+  });
+
+  it('"not found" is the refusal that means it is gone already: the slot is cleared', async () => {
+    detachPlan = [{ ok: false, code: 'NOT_FOUND', message: 'Attachment not found.' }];
+    const onChange = vi.fn();
+    render(<PhotoCaptureSlot kind="SHOP" initial={photo} attachTo={shopOfB1} onChange={onChange} />);
+    remove();
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(null));
+    expect(screen.queryByText('Attachment not found.')).toBeNull();
+    expect(screen.getByLabelText('Capture photo')).toBeTruthy();
   });
 
   it('a photo on no slot (the new-customer form) is removed without a detach', async () => {
