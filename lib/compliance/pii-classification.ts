@@ -209,7 +209,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'CustomerEdit.fieldChanges': {
     subject: 'customer',
     kind: 'snapshot',
-    note: 'before/after values of the customer and branch fields above — a second copy of the same personal data; plus, for a GPS point typed in by hand, the salesman’s own free-text reason (item 41), which the UPDATE APPROVE audit row also copies',
+    note: 'before/after values of the customer and branch fields above, and for a field kept over a value changed after the form opened, that newer value (overrodeLive, F06) — a second copy of the same personal data; plus, for a GPS point typed in by hand, the salesman’s own free-text reason (item 41), which the UPDATE APPROVE audit row also copies',
   },
   'CustomerEdit.attachmentChanges': { subject: 'none', kind: 'image reference' },
   'CustomerEdit.isReactivation': { subject: 'none' },

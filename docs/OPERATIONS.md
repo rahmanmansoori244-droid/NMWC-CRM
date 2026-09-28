@@ -599,6 +599,11 @@ The rotation is audit-logged.
      — and one it does change gets `version + 1`, as an approved edit does. A status the row only
      restates is no status change: `lastStatusChangeAt` (reactivation evidence is dated against
      it) moves only when the status does.
+   - A salesman's edit already waiting on a customer is refused at approval, whole, when the
+     import has since changed a field the edit changes, to anything but the edit's own value ("Changed on the customer after this
+     request was sent: …", auditor recheck F06 — a sub-channel the import cleared counts): the
+     approver rejects it and he sends it again from a fresh form. An edit that changes none of
+     the fields the import changed approves as before.
 4. Problem rows are fixed on the batch page, not with scripts: **Correct…** (only the cells the
    problem names; never payment terms, credit or the Temix code; only changed cells are
    recorded), **Release shared phone…** (with a reason; audited as FORCE_OVERRIDE),
@@ -720,7 +725,7 @@ npm run smoke                       # and after
 - **Tell the owner before `--apply` that the leaderboards will rise visibly**: the dry run prints how many customer and branch scores move, up and down, by how many points in total, and how many branch scores are stored as 0 today. It prints counts only — never a name, code, phone or id — and writes nothing, not even a ledger row. `--expect-host` is required for the dry run too.
 - It is a production write. The standing production-write permission of 2026-09-27 may cover it; confirm it is still in force when it runs.
 - `--apply` requires `--actor`, an active Steward not on the demo denylist; a dry run given `--actor` checks it too. It writes `Customer.completenessScore` and `Branch.completenessScore` on live customers and their live branches and nothing else, in raw SQL and only where the score differs — `updatedAt` (the export's "updated since" filter) and `version` (open edit forms) do not move, nothing is queued for Temix. Two `AuditLog` rows (`entityType = CompletenessRescore`, one `entityId`): STARTING before the first page, COMPLETED after the last, counts only.
-- Each page of customers (`--chunk`, default 200) is one transaction that first takes their row locks in the one order `lib/locks.ts` gives, so an edit approval, a photo, a reactivation or an import on the same customer is waited for, not skipped, and what it commits is what gets scored. **`ops:visit-days` takes no customer lock — never run it at the same time.** A page that fails (a lock timeout, a deadlock with a Manager's direct edit) stops the run with the pages before it committed; re-run it. It is idempotent: a second run reports nothing to do.
+- Each page of customers (`--chunk`, default 200) is one transaction that first takes their row locks in the one order `lib/locks.ts` gives, so an edit approval, a Steward's or Manager's direct edit, a photo, a reactivation or an import on the same customer is waited for, not skipped, and what it commits is what gets scored. **`ops:visit-days` takes no customer lock — never run it at the same time.** A page that fails (a lock timeout behind a long import group, say) stops the run with the pages before it committed; re-run it. It is idempotent: a second run reports nothing to do.
 
 ### Spot a duplicate in the live master
 1. Sign in as Steward.

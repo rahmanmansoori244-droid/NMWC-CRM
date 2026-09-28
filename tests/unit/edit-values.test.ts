@@ -29,7 +29,6 @@ import {
   fieldLabel,
   fieldSlotKey,
   liveSnapshotOf,
-  liveValueAt,
   parseFieldPath,
   sameEditValue,
   slotFields,
@@ -373,13 +372,5 @@ describe('classifyChanges', () => {
     );
     expect(r.apply.map((c) => c.field)).toEqual(['customer.notes', `branch.${B1}.address`]);
     expect(r.droppedBranchIds).toEqual([B2]);
-  });
-
-  it('liveValueAt reads the snapshot, and is null for a branch that is not live', () => {
-    const snap = live();
-    expect(liveValueAt('customer.contactPerson', snap)).toEqual({ value: 'Manager' });
-    expect(liveValueAt(`branch.${B1}.address`, snap)).toEqual({ value: 'Way 1' });
-    expect(liveValueAt(`branch.${B2}.address`, snap)).toBeNull();
-    expect(liveValueAt('draft.0.gps', snap)).toBeNull();
   });
 });

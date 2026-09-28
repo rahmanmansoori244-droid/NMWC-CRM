@@ -16,8 +16,8 @@
  *
  * The same rule runs on a stored request at approval, where the base is the
  * `before` recorded at submit. Values, not versions: photo attach and
- * reactivation never bump `version`, the import bumps it on every promote, and
- * a version conflict cannot say which field moved.
+ * reactivation never bump `version`, the import bumps the customer's on every
+ * promote, and a version conflict cannot say which field moved.
  *
  * Pure and client-safe — no zod, no Prisma runtime import. The form's patch
  * builder, the UPDATE schema, the submit and direct write, the approval and the
@@ -163,7 +163,6 @@ export function isBranchEditField(f: string): f is BranchEditField {
   return BRANCH_SET.has(f);
 }
 
-export const customerPath = (field: CustomerEditField) => `customer.${field}`;
 export const branchPath = (branchId: string, field: BranchEditField) =>
   `branch.${branchId}.${field}`;
 
@@ -350,18 +349,6 @@ export function liveSnapshotOf(
     customer: customer as Readonly<Record<string, unknown>>,
     branches: new Map(liveBranches.map((b) => [b.id, b as Readonly<Record<string, unknown>>])),
   };
-}
-
-/**
- * The live value at a stored path. Null when the path names no edit field, or a
- * branch that is not live on this customer (archived, or moved to another one).
- */
-export function liveValueAt(path: string, live: LiveSnapshot): { value: unknown } | null {
-  const p = parseFieldPath(path);
-  if (!p) return null;
-  if (p.scope === 'customer') return { value: live.customer[p.field] };
-  const branch = live.branches.get(p.branchId);
-  return branch ? { value: branch[p.field] } : null;
 }
 
 type Change = Pick<FieldChange, 'field' | 'before' | 'after'>;

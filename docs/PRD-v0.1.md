@@ -341,7 +341,7 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 | `opening_hours` | string | optional; max 100 chars; can be cleared from the edit form (F20) | server |
 | `delivery_window` | string | optional; max 100 chars; can be cleared from the edit form (F20) | server |
 | `channel_id` | uuid | must reference an active Channel | server |
-| `sub_channel_id` | uuid | must reference an active SubChannel **whose `channel_id = customer.channel_id`**, checked whenever the channel or the sub-channel changes — at create, at an edit's submit and again at its approval (`lib/channel-pair.ts`, F16); an edit that moves the customer to another channel clears a sub-channel of the old one; can be cleared from the edit form (F20) | server |
+| `sub_channel_id` | uuid | must reference an active SubChannel **whose `channel_id = customer.channel_id`**, checked whenever the channel or the sub-channel changes — at create, at an edit's submit and again at its approval (`lib/channel-pair.ts`, F16); an edit that moves the customer to another channel clears a sub-channel of the old one, and so does a customer import's full lane (owner decision 2026-09-29; a sub-channel of the new channel is kept, even an inactive one); can be cleared from the edit form (F20) | server |
 | `coolers_count` / `stands_count` / `empty_bottles_count` | int | 0 ≤ x ≤ 100 | server |
 | `equipment_confirmed` | bool | "Counted at the shop" on the edit form: ticked by hand, or by entering a count; a Salesman can only set it, a Data Steward or Manager can also clear it (F21, owner decision 2026-09-29) | client + server |
 | `notes` | text | optional; max 5000 chars; HTML stripped; can be cleared from the edit form (F20) | server |

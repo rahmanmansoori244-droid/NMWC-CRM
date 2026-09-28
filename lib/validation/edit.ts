@@ -264,10 +264,6 @@ export const submitEditSchema = z
 
 export type SubmitEditInput = z.input<typeof submitEditSchema>;
 export type ParsedSubmitEdit = z.output<typeof submitEditSchema>;
-export type CustomerPatchInput = z.input<typeof customerPatchSchema>;
-export type BranchPatchInput = z.input<typeof branchPatchSchema>;
-export type CustomerPatch = ParsedSubmitEdit['customer'];
-export type BranchPatch = ParsedSubmitEdit['branches'][number];
 
 /** Keys of a branch patch that are not fields, or are fields that carry no base. */
 const BRANCH_NO_BASE: ReadonlySet<string> = new Set([
