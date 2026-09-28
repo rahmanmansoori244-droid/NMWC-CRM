@@ -8,12 +8,16 @@
  * was a caller that did not ask, so this guard is structural: EVERY call of
  * resolveArchiveTemixState in app/, lib/, services/ and scripts/ must
  *  - be the fallback of `<holders>.length > 0 ? TemixSyncState.SYNCED : …`,
- *  - where `<holders>` is `await liveTemixCodeHolders(tx, <x>.temixCode, …)` in
- *    the same function,
- *  - read after `await lockCustomersAndTemixCodeHolders(tx, …)`, which also comes
- *    before the function's first in-transaction customer read, with the
- *    moved-code refusal (`… .temixCode !== … .temixCode`) between the lock and
- *    the holders read.
+ *  - where `<holders>` is `await liveTemixCodeHolders(tx,
+ *    archiveDeactivationCode(<x>), …)` in the same function, `<x>` read under
+ *    the lock: the code the customer's deactivation would take, its customer code
+ *    when it has no Temix code. Asked about `<x>.temixCode` alone, an uncoded
+ *    customer known to Temix was queued for a deactivation Generate holds back
+ *    for good (review of 8cb2509);
+ *  - read after `await lockCustomersAndTemixCodeHolders(tx, …, deactivationCode(…))`,
+ *    which also comes before the function's first in-transaction customer read,
+ *    with the moved-code refusal (`… .temixCode !== … .temixCode`) between the
+ *    lock and the holders read.
  * Asserted on comment-stripped source parsed by TypeScript, so a comment quoting
  * any of these can neither satisfy nor break it.
  */
@@ -74,16 +78,24 @@ describe('every resolveArchiveTemixState caller asks who else holds the Temix co
       expect(m, ce.condition.getText(sf)).not.toBeNull();
       const holders = m![1];
 
-      // 2. <holders> is the live-holder read, in the same function, before the call.
+      // 2. <holders> is the live-holder read of the code the deactivation would
+      //    take, in the same function, before the call.
       const body = text.slice(fn.getStart(sf), call.getStart(sf));
-      const read = body.search(
-        new RegExp(`const ${holders} = await liveTemixCodeHolders\\(tx, \\w+\\.temixCode, [\\w.]+\\);`)
+      const readRe = new RegExp(
+        `const ${holders} = await liveTemixCodeHolders\\(tx, archiveDeactivationCode\\((\\w+)\\), [\\w.]+\\);`
       );
-      expect(read, `${holders} is not read by liveTemixCodeHolders`).toBeGreaterThan(-1);
+      const read = body.search(readRe);
+      expect(read, `${holders} is not read by liveTemixCodeHolders(tx, archiveDeactivationCode(…))`).toBeGreaterThan(-1);
+      const asked = readRe.exec(body)![1];
 
       // 3. The holders lock comes first — before the in-transaction customer
-      //    read and the holders read — with the moved-code refusal in between.
-      const lock = body.search(/await lockCustomersAndTemixCodeHolders\(tx, \[[^\]]+\], \w+\.temixCode\);/);
+      //    read and the holders read — with the moved-code refusal in between,
+      //    and the customer asked about is one read under that lock.
+      const lock = body.search(/await lockCustomersAndTemixCodeHolders\(tx, \[[^\]]+\], deactivationCode\(\w+\)\);/);
+      const askedRead = body
+        .slice(Math.max(lock, 0))
+        .search(new RegExp(`const (${asked}|\\[[^\\]]*\\b${asked}\\b[^\\]]*\\]) = await `));
+      expect(askedRead, `${asked} is not read after the holders lock`).toBeGreaterThan(-1);
       const firstRead = body.search(/await tx\.customer\.findUnique(OrThrow)?\(/);
       const moved = body.search(/if \(\w+\.temixCode !== \w+\.temixCode\)/);
       expect(lock).toBeGreaterThan(-1);

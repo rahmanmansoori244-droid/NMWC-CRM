@@ -149,6 +149,21 @@ export function buildTemixRows(
   return rows;
 }
 
+type ArchiveTemixFacts = {
+  temixCode: string | null;
+  lastTemixUploadAt: Date | null;
+  temixSyncState: TemixSyncState;
+};
+
+function knownToTemix(customer: ArchiveTemixFacts): boolean {
+  return (
+    customer.temixCode != null ||
+    customer.lastTemixUploadAt != null ||
+    customer.temixSyncState === TemixSyncState.SYNCED ||
+    customer.temixSyncState === TemixSyncState.UPLOADED
+  );
+}
+
 /**
  * Temix state for a customer being archived (C8 soft-delete) or merged away.
  *
@@ -161,17 +176,24 @@ export function buildTemixRows(
  * It does not know whether another live customer holds the same Temix code, so
  * no caller asks it alone: archive and merge ask liveTemixCodeHolders first (F11).
  */
-export function resolveArchiveTemixState(customer: {
-  temixCode: string | null;
-  lastTemixUploadAt: Date | null;
-  temixSyncState: TemixSyncState;
-}): TemixSyncState {
-  const knownToTemix =
-    customer.temixCode != null ||
-    customer.lastTemixUploadAt != null ||
-    customer.temixSyncState === TemixSyncState.SYNCED ||
-    customer.temixSyncState === TemixSyncState.UPLOADED;
-  return knownToTemix ? TemixSyncState.DEACTIVATE_PENDING : TemixSyncState.SYNCED;
+export function resolveArchiveTemixState(customer: ArchiveTemixFacts): TemixSyncState {
+  return knownToTemix(customer) ? TemixSyncState.DEACTIVATE_PENDING : TemixSyncState.SYNCED;
+}
+
+/**
+ * F11: the code that archiving or merging `customer` away would deactivate in
+ * Temix (deactivationCode: its customer code when it has no Temix code, the code
+ * Generate holds such a row back against), or null when it deactivates nothing
+ * because Temix never heard of it. Archive and merge ask liveTemixCodeHolders
+ * about this code. Asked about the Temix code alone, an uncoded customer known to
+ * Temix whose customer code a live customer holds as its Temix code was queued
+ * for a deactivation that Generate then held back, and named, on every run for
+ * good (review of 8cb2509).
+ */
+export function archiveDeactivationCode(
+  customer: ArchiveTemixFacts & { nmwcCode: string }
+): string | null {
+  return knownToTemix(customer) ? deactivationCode(customer) : null;
 }
 
 /**
@@ -208,12 +230,14 @@ export function mergeTemixClash(
 
 /**
  * F11, for every path that takes a customer out of the master (archive, merge):
- * the customer codes of the OTHER live customers that still hold `temixCode`.
- * Deactivating that code would take the ERP identity away from them, so a
- * customer leaving while this is non-empty is parked SYNCED instead of queued
- * for deactivation, and its audit row says so ('skipped-shared-code'). The last
- * live holder to leave is the one that deactivates the code. Read through the
- * caller's transaction, after lib/locks.ts lockCustomersAndTemixCodeHolders.
+ * the customer codes of the OTHER live customers that still hold `temixCode` as
+ * their Temix code; both pass archiveDeactivationCode, the code leaving would
+ * deactivate. Deactivating that code would take the ERP identity away from them,
+ * so a customer leaving while this is non-empty is parked SYNCED instead of
+ * queued for deactivation, and its audit row says so ('skipped-shared-code').
+ * The last live holder to leave is the one that deactivates the code. Read
+ * through the caller's transaction, after lib/locks.ts
+ * lockCustomersAndTemixCodeHolders.
  */
 export async function liveTemixCodeHolders(
   tx: Prisma.TransactionClient,

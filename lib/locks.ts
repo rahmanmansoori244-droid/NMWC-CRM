@@ -38,8 +38,10 @@ export async function lockCustomerRowByCode(
  * each believing the other still holds it — which would drop the deactivation
  * for good — and a holder archived meanwhile is seen as archived. A holder that
  * was archived while this waited drops out of the lock, as it should.
- * `temixCode` is what the caller read before its transaction: the caller re-reads
- * the customer under this lock and refuses if the code has moved since.
+ * `temixCode` is the code the customer leaving would deactivate, from what the
+ * caller read before its transaction (lib/temix.ts deactivationCode: its customer
+ * code when it has no Temix code): the caller re-reads the customer under this
+ * lock and refuses if its Temix code has moved since.
  */
 export async function lockCustomersAndTemixCodeHolders(
   tx: Prisma.TransactionClient,

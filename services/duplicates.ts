@@ -13,7 +13,13 @@ import {
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer } from '@/lib/completeness';
-import { liveTemixCodeHolders, mergeTemixClash, resolveArchiveTemixState } from '@/lib/temix';
+import {
+  archiveDeactivationCode,
+  deactivationCode,
+  liveTemixCodeHolders,
+  mergeTemixClash,
+  resolveArchiveTemixState,
+} from '@/lib/temix';
 import { lockCustomersAndTemixCodeHolders } from '@/lib/locks';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import {
@@ -201,11 +207,19 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
       // under deleted parents — silent data loss. Sorted `FOR UPDATE` serializes
       // the pair (identical lock order ⇒ no deadlock); the loser of the race
       // re-reads here and finds a party already archived, and aborts cleanly.
-      // F11: every other live customer holding the loser's Temix code is locked
-      // with them, in the same id order (lib/locks.ts), so an archive or merge
-      // of one of those cannot interleave with the Temix decision below.
-      await lockCustomersAndTemixCodeHolders(tx, [winner.id, loser.id], loser.temixCode);
-      const identity = { deletedAt: true, nmwcCode: true, temixCode: true } as const;
+      // F11: every other live customer holding, as its Temix code, the code the
+      // loser's deactivation would take (its customer code when it has no Temix
+      // code) is locked with them, in the same id order (lib/locks.ts), so an
+      // archive or merge of one of those cannot interleave with the Temix
+      // decision below.
+      await lockCustomersAndTemixCodeHolders(tx, [winner.id, loser.id], deactivationCode(loser));
+      const identity = {
+        deletedAt: true,
+        nmwcCode: true,
+        temixCode: true,
+        lastTemixUploadAt: true,
+        temixSyncState: true,
+      } as const;
       const [winnerLive, loserLive] = await Promise.all([
         tx.customer.findUnique({ where: { id: winner.id }, select: identity }),
         tx.customer.findUnique({ where: { id: loser.id }, select: identity }),
@@ -240,7 +254,9 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
             "One customer's Temix code is the other's customer code, so merging them could deactivate the surviving customer in Temix. The Temix codes need a Steward review before this merge.",
         });
       }
-      const sharedWith = await liveTemixCodeHolders(tx, loserLive.temixCode, loser.id);
+      // An uncoded loser Temix knows is asked about its customer code, which its
+      // deactivation goes out keyed on (lib/temix.ts archiveDeactivationCode).
+      const sharedWith = await liveTemixCodeHolders(tx, archiveDeactivationCode(loserLive), loser.id);
 
       // Move branches
       await tx.branch.updateMany({

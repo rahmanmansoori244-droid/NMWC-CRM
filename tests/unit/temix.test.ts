@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { PaymentTerms, TemixSyncState, Prisma } from '@prisma/client';
 import {
+  archiveDeactivationCode,
   buildTemixRows,
   deactivationCode,
   deactivationsOfLiveCodes,
@@ -153,6 +154,37 @@ describe('resolveArchiveTemixState', () => {
         temixSyncState: TemixSyncState.PENDING_UPLOAD,
       })
     ).toBe(TemixSyncState.SYNCED);
+  });
+});
+
+describe('F11: archiveDeactivationCode (what archive and merge ask liveTemixCodeHolders about)', () => {
+  const facts = (temixCode: string | null, lastTemixUploadAt: Date | null, temixSyncState: TemixSyncState) => ({
+    nmwcCode: 'N2',
+    temixCode,
+    lastTemixUploadAt,
+    temixSyncState,
+  });
+
+  it('a coded customer: its Temix code', () => {
+    expect(archiveDeactivationCode(facts('T2', null, TemixSyncState.PENDING_UPLOAD))).toBe('T2');
+  });
+
+  it('an uncoded customer Temix knows: its customer code, the key Generate holds its deactivation back on', () => {
+    for (const c of [
+      facts(null, new Date('2026-09-01'), TemixSyncState.SYNCED),
+      facts(null, new Date('2026-09-01'), TemixSyncState.UPLOADED),
+      facts(null, null, TemixSyncState.SYNCED),
+    ]) {
+      expect(archiveDeactivationCode(c)).toBe('N2');
+      expect(archiveDeactivationCode(c)).toBe(deactivationCode(c));
+      expect(resolveArchiveTemixState(c)).toBe(TemixSyncState.DEACTIVATE_PENDING);
+    }
+  });
+
+  it('an uncoded customer Temix never heard of: null, since archiving it deactivates nothing', () => {
+    const c = facts(null, null, TemixSyncState.PENDING_UPLOAD);
+    expect(archiveDeactivationCode(c)).toBeNull();
+    expect(resolveArchiveTemixState(c)).toBe(TemixSyncState.SYNCED);
   });
 });
 

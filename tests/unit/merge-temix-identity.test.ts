@@ -19,15 +19,22 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { stripComments } from '../support/strip-comments';
 
-type Ident = { nmwcCode: string; temixCode: string | null };
+type Ident = {
+  nmwcCode: string;
+  temixCode: string | null;
+  temixSyncState?: string;
+  lastTemixUploadAt?: Date | null;
+};
 
 const h = vi.hoisted(() => ({
-  ids: {} as Record<string, { nmwcCode: string; temixCode: string | null }>,
+  ids: {} as Record<string, Ident>,
   // Live customers other than the pair, holding a Temix code.
   others: {} as Record<string, { nmwcCode: string; temixCode: string | null }>,
   // What the transaction reads for the loser's code, when it moved after the pre-read.
   loserCodeInTx: undefined as string | null | undefined,
   locks: [] as Array<{ sql: string; values: unknown[] }>,
+  // The codes liveTemixCodeHolders asked about.
+  holderAsks: [] as unknown[],
   writes: [] as Array<{ op: string; args: Record<string, unknown> }>,
   writeAudit: vi.fn(),
 }));
@@ -48,13 +55,13 @@ vi.mock('@/lib/db', () => {
   };
   const customer = (id: string) => ({
     id,
-    ...h.ids[id],
     legalName: `Shop ${id}`,
     deletedAt: null,
     temixSyncState: 'SYNCED',
     lastTemixUploadAt: null,
     crPhotoId: null,
     branches: [{ id: `br-${id}`, regionId: 'R1', routeId: 'RT1' }],
+    ...h.ids[id],
   });
   const inTx = (id: string) =>
     id === 'L' && h.loserCodeInTx !== undefined ? { ...customer(id), temixCode: h.loserCodeInTx } : customer(id);
@@ -66,11 +73,13 @@ vi.mock('@/lib/db', () => {
     customer: {
       findUnique: async ({ where }: { where: { id: string } }) => inTx(where.id),
       findUniqueOrThrow: async ({ where }: { where: { id: string } }) => inTx(where.id),
-      findMany: async ({ where }: { where: { temixCode: string; id: { not: string } } }) =>
-        Object.entries({ ...h.ids, ...h.others })
+      findMany: async ({ where }: { where: { temixCode: string; id: { not: string } } }) => {
+        h.holderAsks.push(where.temixCode);
+        return Object.entries({ ...h.ids, ...h.others })
           .filter(([id, c]) => c.temixCode === where.temixCode && id !== where.id.not)
           .map(([, c]) => ({ nmwcCode: c.nmwcCode }))
-          .sort((a, b) => a.nmwcCode.localeCompare(b.nmwcCode)),
+          .sort((a, b) => a.nmwcCode.localeCompare(b.nmwcCode));
+      },
       update: rec('customer.update', {}),
       updateMany: rec('customer.updateMany', { count: 1 }),
     },
@@ -107,6 +116,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.writes = [];
   h.locks = [];
+  h.holderAsks = [];
   h.others = {};
   h.loserCodeInTx = undefined;
   h.writeAudit.mockResolvedValue(undefined);
@@ -184,6 +194,47 @@ describe('mergeCustomersAction — F11', () => {
     expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING' });
     expect(h.writeAudit.mock.calls[0][2].after).toBeUndefined();
   });
+
+  // Review of 8cb2509: an uncoded row's deactivation goes out keyed on its
+  // customer code, and Generate holds it back while a live customer holds that
+  // code as its Temix code. The merge asked only about the Temix code, so it
+  // queued such a loser for a deactivation held back on every run, for good.
+  it("an uncoded loser Temix knows, whose customer code a third live customer holds as its Temix code: parked, and the audit names the holder", async () => {
+    h.others = { C3: { nmwcCode: 'N3', temixCode: 'N2' } };
+    const res = await merge(
+      { nmwcCode: 'N1', temixCode: 'T9' },
+      { nmwcCode: 'N2', temixCode: null, temixSyncState: 'SYNCED', lastTemixUploadAt: new Date('2026-09-01') }
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'SYNCED', temixSyncPendingSince: null });
+    expect(h.writeAudit.mock.calls[0][2].after).toEqual({
+      temixDeactivation: 'skipped-shared-code',
+      temixCodeHeldBy: ['N3'],
+    });
+    // Its customer code's holders are locked with the pair, and asked about.
+    expect(h.locks[0].sql).toMatch(/"temixCode" = \? AND "deletedAt" IS NULL/);
+    expect(h.locks[0].values).toContain('N2');
+    expect(h.holderAsks).toEqual(['N2']);
+  });
+
+  it('an uncoded loser Temix knows, whose customer code nobody holds: queued for deactivation as before', async () => {
+    const res = await merge({ nmwcCode: 'N1', temixCode: 'T9' }, { nmwcCode: 'N2', temixCode: null });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING' });
+    expect(h.writeAudit.mock.calls[0][2].after).toBeUndefined();
+  });
+
+  it('an uncoded loser Temix never heard of: leaves the queue as before, holders not asked, no skip noted', async () => {
+    h.others = { C3: { nmwcCode: 'N3', temixCode: 'N2' } };
+    const res = await merge(
+      { nmwcCode: 'N1', temixCode: 'T9' },
+      { nmwcCode: 'N2', temixCode: null, temixSyncState: 'PENDING_UPLOAD', lastTemixUploadAt: null }
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'SYNCED', temixSyncPendingSince: null });
+    expect(h.holderAsks).toEqual([]);
+    expect(h.writeAudit.mock.calls[0][2].after).toBeUndefined();
+  });
 });
 
 // Every resolveArchiveTemixState caller asking who else holds the code is pinned
@@ -194,13 +245,15 @@ describe('structural: the loser is never resolved without the winner-identity co
 
   it('compares the identities read under the locks, and refuses a crossed pair before the first write', () => {
     const lock = merge.search(
-      /await lockCustomersAndTemixCodeHolders\(tx, \[winner\.id, loser\.id\], loser\.temixCode\);/
+      /await lockCustomersAndTemixCodeHolders\(tx, \[winner\.id, loser\.id\], deactivationCode\(loser\)\);/
     );
     const read = merge.search(/select: identity/);
     const clash = merge.search(/const temixClash = mergeTemixClash\(loserLive, winnerLive\);/);
     const refuse = merge.search(/if \(temixClash === 'CROSSED'\)/);
     const firstWrite = merge.search(/await tx\.branch\.updateMany\(/);
-    expect(merge).toMatch(/const identity = \{ deletedAt: true, nmwcCode: true, temixCode: true \} as const;/);
+    expect(merge).toMatch(
+      /const identity = \{\s*deletedAt: true,\s*nmwcCode: true,\s*temixCode: true,\s*lastTemixUploadAt: true,\s*temixSyncState: true,\s*\} as const;/
+    );
     for (const i of [lock, read, clash, refuse, firstWrite]) expect(i).toBeGreaterThan(-1);
     expect(lock).toBeLessThan(read);
     expect(read).toBeLessThan(clash);

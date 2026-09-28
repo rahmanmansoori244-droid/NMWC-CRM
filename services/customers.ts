@@ -6,9 +6,10 @@
  * archiveCustomerAction is the owner-confirmed soft-delete (Blueprint C8):
  * the CRM never hard-deletes a customer; archiving tombstones it
  * (deletedAt) and queues the Temix deactivation (DEACTIVATE_PENDING) when the
- * ERP has heard of the customer and no other live customer still holds its
- * Temix code (F11). AuditAction.SOFT_DELETE carries actor + reason — no extra
- * columns needed.
+ * ERP has heard of the customer and no other live customer still holds, as its
+ * Temix code, the code that deactivation would take (F11: the customer's Temix
+ * code, or its customer code when it has none). AuditAction.SOFT_DELETE carries
+ * actor + reason — no extra columns needed.
  */
 import { prisma } from '@/lib/db';
 import { EditState, Role, TemixSyncState, type Prisma } from '@prisma/client';
@@ -25,7 +26,12 @@ import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { loadScope, assertCanEditCustomer } from '@/lib/access';
-import { liveTemixCodeHolders, resolveArchiveTemixState } from '@/lib/temix';
+import {
+  archiveDeactivationCode,
+  deactivationCode,
+  liveTemixCodeHolders,
+  resolveArchiveTemixState,
+} from '@/lib/temix';
 import { lockCustomersAndTemixCodeHolders } from '@/lib/locks';
 
 export async function archiveCustomerAction(formData: FormData): SafeAction<void> {
@@ -86,18 +92,25 @@ async function archiveCustomerCore(formData: FormData) {
         'A submitted request is still in review for this customer. Approve or reject it before archiving.'
       );
     }
-    // F11: the customer and every other live customer holding its Temix code,
-    // locked in one order before anything is read (lib/locks.ts), so two
-    // customers sharing a code cannot both be archived each thinking the other
-    // still holds it.
-    await lockCustomersAndTemixCodeHolders(tx, [customerId], customer.temixCode);
+    // F11: the customer and every other live customer holding, as its Temix
+    // code, the code this archive would deactivate (its customer code when it
+    // has no Temix code), locked in one order before anything is read
+    // (lib/locks.ts), so two customers sharing a code cannot both be archived
+    // each thinking the other still holds it.
+    await lockCustomersAndTemixCodeHolders(tx, [customerId], deactivationCode(customer));
     // Decide the Temix state from a FRESH in-tx read and pin the claim on the
     // observed state — a batch generation committing between a stale read and
     // the write would otherwise get its UPLOADED clobbered and the
     // deactivation lost forever (adversarial-review finding).
     const fresh = await tx.customer.findUniqueOrThrow({
       where: { id: customerId },
-      select: { temixCode: true, lastTemixUploadAt: true, temixSyncState: true, deletedAt: true },
+      select: {
+        nmwcCode: true,
+        temixCode: true,
+        lastTemixUploadAt: true,
+        temixSyncState: true,
+        deletedAt: true,
+      },
     });
     if (fresh.deletedAt) {
       throw new ConflictError('ALREADY_ARCHIVED', 'This customer was just archived.');
@@ -113,8 +126,10 @@ async function archiveCustomerCore(formData: FormData) {
     // F11: a Temix code another live customer still holds is not deactivated —
     // that would take the ERP identity away from the customer the CRM keeps —
     // so this customer just leaves the queue, and the SOFT_DELETE row says so.
-    // The last live holder archived is the one that deactivates the code.
-    const sharedWith = await liveTemixCodeHolders(tx, fresh.temixCode, customerId);
+    // The last live holder archived is the one that deactivates the code. An
+    // uncoded customer Temix knows is asked about its customer code: its
+    // deactivation goes out keyed on it, and Generate holds it back against it.
+    const sharedWith = await liveTemixCodeHolders(tx, archiveDeactivationCode(fresh), customerId);
     const nextState =
       sharedWith.length > 0 ? TemixSyncState.SYNCED : resolveArchiveTemixState(fresh);
     const claim = await tx.customer.updateMany({

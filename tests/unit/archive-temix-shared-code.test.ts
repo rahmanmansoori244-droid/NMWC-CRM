@@ -168,19 +168,51 @@ describe('archiveCustomerAction — F11', () => {
     expect(h.writeAudit).not.toHaveBeenCalled();
   });
 
-  it('no Temix code: no holder query, and resolveArchiveTemixState decides as before', async () => {
-    h.rows = { C3: live('N3', null, 'SYNCED'), C4: live('N4', null, 'PENDING_UPLOAD') };
+  // Review of 8cb2509: an uncoded row's deactivation goes out keyed on its
+  // customer code (cust_code), and Generate holds it back, and names it, while a
+  // live customer holds that code as its Temix code. The archive asked only about
+  // the Temix code, so it queued such a row for a deactivation that nothing in the
+  // app could ever release: an archived row's code cannot change, and there is no
+  // restore.
+  it("no Temix code, known to Temix, and a live customer holds its customer code as its Temix code: parked SYNCED, and the SOFT_DELETE row names the holder", async () => {
+    h.rows = {
+      C0100: live('C0100', 'C0900'),
+      C0900: { ...live('C0900', null, 'SYNCED'), lastTemixUploadAt: new Date('2026-09-01') },
+    };
+    const res = await archive('C0900');
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(claim().args.data).toMatchObject({ temixSyncState: 'SYNCED', temixSyncPendingSince: null });
+    expect(h.writeAudit.mock.calls[0][2].after).toEqual({
+      temixSyncState: 'SYNCED',
+      temixDeactivation: 'skipped-shared-code',
+      temixCodeHeldBy: ['C0100'],
+    });
+    // The holders of its customer code are locked first, then asked about.
+    const lock = h.calls.find((c) => c.op === '$queryRaw') as { args: { sql: string; values: unknown[] } };
+    expect(lock.args.sql).toMatch(/"temixCode" = \? AND "deletedAt" IS NULL/);
+    expect(lock.args.values).toContain('C0900');
+    const holders = h.calls.find((c) => c.op === 'customer.findMany') as { args: { where: unknown } };
+    expect(holders.args.where).toEqual({ temixCode: 'C0900', deletedAt: null, id: { not: 'C0900' } });
+    expect(at('$queryRaw')).toBeLessThan(at('customer.findUniqueOrThrow'));
+    expect(at('customer.findUniqueOrThrow')).toBeLessThan(at('customer.findMany'));
+  });
+
+  it('no Temix code, known to Temix, and nobody holds its customer code: queued for deactivation as before, no skip noted', async () => {
+    h.rows = { C1: live('N1', 'T1'), C3: live('N3', null, 'SYNCED') };
     expect((await archive('C3')).ok).toBe(true);
     // A migrated (SYNCED) row is known to Temix even without a code.
     expect(claim().args.data).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING' });
-    const lock = h.calls.find((c) => c.op === '$queryRaw') as { args: { sql: string } };
-    expect(lock.args.sql).not.toMatch(/temixCode/);
-    expect(at('customer.findMany')).toBe(-1);
+    expect(h.writeAudit.mock.calls[0][2].after).toEqual({ temixSyncState: 'DEACTIVATE_PENDING' });
+    const holders = h.calls.find((c) => c.op === 'customer.findMany') as { args: { where: unknown } };
+    expect(holders.args.where).toEqual({ temixCode: 'N3', deletedAt: null, id: { not: 'C3' } });
+  });
 
-    h.calls = [];
+  it('no Temix code and never uploaded: leaves the queue as before, holders not asked, no skip noted, whoever holds its customer code', async () => {
+    h.rows = { C1: live('N1', 'N4'), C4: live('N4', null, 'PENDING_UPLOAD') };
     expect((await archive('C4')).ok).toBe(true);
     // Never uploaded, no code: nothing for Temix to deactivate.
     expect(claim().args.data).toMatchObject({ temixSyncState: 'SYNCED' });
-    expect(h.writeAudit.mock.calls[1][2].after).toEqual({ temixSyncState: 'SYNCED' });
+    expect(h.writeAudit.mock.calls[0][2].after).toEqual({ temixSyncState: 'SYNCED' });
+    expect(at('customer.findMany')).toBe(-1);
   });
 });
