@@ -871,6 +871,24 @@ describe('Remove', () => {
     expect(screen.getByLabelText('Capture photo')).toBeTruthy();
   });
 
+  it('a Remove refused while a retake has failed says so on its own line, not as the upload failure', async () => {
+    // In the failed-upload state the upload error owns the retry overlay; the
+    // refusal was shown there as if the upload had failed, or not at all.
+    uploadable();
+    presignPlan = ['refuse'];
+    detachPlan = [{ ok: false, code: 'PHOTO_CHANGED', message: PHOTO_CHANGED_MESSAGE }];
+    const onChange = vi.fn();
+    const view = render(<PhotoCaptureSlot kind="SHOP" initial={photo} attachTo={shopOfB1} onChange={onChange} />);
+    pick(view.container);
+    await screen.findByRole('button', { name: /Retry upload/ });
+    remove();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe(PHOTO_CHANGED_MESSAGE);
+    // The upload failure is still where it was, and nothing told the form the photo went.
+    expect(screen.getByText('Could not get upload URL.')).toBeTruthy();
+    expect(onChange).not.toHaveBeenCalledWith(null);
+  });
+
   it('a photo on no slot (the new-customer form) is removed without a detach', async () => {
     const onChange = vi.fn();
     render(<PhotoCaptureSlot kind="SHOP" initial={photo} onChange={onChange} />);

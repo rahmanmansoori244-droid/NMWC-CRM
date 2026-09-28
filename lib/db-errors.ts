@@ -41,7 +41,9 @@ export function isDbConflict(err: unknown, code: string): boolean {
     if (sqlState === '40P01' || sqlState === '40001') return true;
     return /Code: `(40P01|40001)`/.test(msg);
   }
-  return code === '' && /deadlock detected|could not serialize access/i.test(msg);
+  // No Prisma code at all — whatever placeholder the caller passed for it ('',
+  // 'UNKNOWN' in the customer promote) — leaves only Postgres's own words.
+  return !/^P\d{4}$/.test(code) && /deadlock detected|could not serialize access/i.test(msg);
 }
 
 export function isTransientDbError(err: unknown, code: string): boolean {

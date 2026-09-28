@@ -119,6 +119,17 @@ describe('runAction maps transient faults to a retryable answer', () => {
       expect(isTransientDbError(err, code)).toBe(true);
     });
 
+    it('a codeless deadlock is one whatever placeholder the caller passes for the code', () => {
+      // The customer promote passes 'UNKNOWN' for an error with no code
+      // (services/imports.ts); with only '' recognised, such a deadlock rejected
+      // the row for good instead of retrying it (review of the phase-1 fixes).
+      const err = new Error('Error occurred during query execution: PostgresError { code: "40P01", message: "deadlock detected" }');
+      for (const placeholder of ['', 'UNKNOWN']) {
+        expect(isDbConflict(err, placeholder), placeholder).toBe(true);
+        expect(isTransientDbError(err, placeholder), placeholder).toBe(true);
+      }
+    });
+
     it('a raw query refused for its data is not one: it still re-throws', async () => {
       const check = Object.assign(new Error('Raw query failed.'), {
         code: 'P2010',

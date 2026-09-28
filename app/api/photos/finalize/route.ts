@@ -111,7 +111,15 @@ export async function POST(req: NextRequest) {
     head = await r2().send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: key }));
   } catch (err) {
     logger.warn({ err: (err as Error).message, key }, 'r2.finalize.head_fail');
-    return NextResponse.json({ error: 'OBJECT_NOT_FOUND' }, { status: 404 });
+    // Only R2's own "no such object" is a 404. A timeout or a dropped connection
+    // (lib/r2.ts throws on requestTimeout since the phase-1 review) is R2 not
+    // answering: a 503, which the phone treats as no answer and retries, not as
+    // a photo that was never uploaded.
+    const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+    if (e?.name === 'NotFound' || e?.$metadata?.httpStatusCode === 404) {
+      return NextResponse.json({ error: 'OBJECT_NOT_FOUND' }, { status: 404 });
+    }
+    return NextResponse.json({ error: 'STORAGE_UNAVAILABLE' }, { status: 503 });
   }
 
   const bytes = head.ContentLength ?? 0;

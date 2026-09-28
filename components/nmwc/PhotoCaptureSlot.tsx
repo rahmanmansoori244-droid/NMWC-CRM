@@ -398,6 +398,10 @@ export function PhotoCaptureSlot({
   );
   const [uploadPct, setUploadPct] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // A Remove the server refused. Its own line: in the failed-upload state the
+  // upload error owns `error`, and a refusal shown there read as an upload
+  // failure, or not at all (review of the phase-1 fixes).
+  const [removeRefused, setRemoveRefused] = useState<string | null>(null);
   // B-08: retain the compressed blob in component state separate from the
   // <input file> element. e.currentTarget.value = '' kills the input but the
   // blob lives here so "Retry upload" can re-run the chain without forcing
@@ -416,6 +420,7 @@ export function PhotoCaptureSlot({
   async function uploadChain(blob: Blob, hash: string) {
     const resend = unanswered.current;
     setError(null);
+    setRemoveRefused(null);
     setProgress('uploading');
     setUploadPct(resend ? 100 : 0);
     try {
@@ -520,6 +525,7 @@ export function PhotoCaptureSlot({
 
   async function onPicked(file: File) {
     setError(null);
+    setRemoveRefused(null);
     if (!file.type.startsWith('image/')) {
       setError('That file is not an image.');
       return;
@@ -596,7 +602,7 @@ export function PhotoCaptureSlot({
         setRemoving(false);
       }
       if (refused !== null) {
-        setError(refused);
+        setRemoveRefused(refused);
         setConfirmingDelete(false);
         return;
       }
@@ -605,6 +611,7 @@ export function PhotoCaptureSlot({
     setPhoto(null);
     setProgress('idle');
     setError(null);
+    setRemoveRefused(null);
     setUploadPct(0);
     setRetainedBlob(null);
     setRetainedHash(null);
@@ -696,6 +703,11 @@ export function PhotoCaptureSlot({
         )}
         {error && progress !== 'error' && (
           <span className="text-[11px] font-medium">{error}</span>
+        )}
+        {removeRefused && (
+          <span role="alert" className="text-[11px] font-medium text-red-700">
+            {removeRefused}
+          </span>
         )}
       </div>
       <input

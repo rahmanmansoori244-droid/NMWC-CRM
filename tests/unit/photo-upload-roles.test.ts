@@ -150,3 +150,24 @@ describe('finalize', () => {
     }
   });
 });
+
+describe('finalize tells a missing object from R2 not answering', () => {
+  // lib/r2.ts throws on requestTimeout since the phase-1 review. Before this, any
+  // HeadObject failure answered 404 OBJECT_NOT_FOUND, which the phone does not
+  // retry, so a slow R2 read as a photo that was never uploaded.
+  it('R2 says there is no such object: 404, not retried', async () => {
+    h.send.mockReset().mockRejectedValue(Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } }));
+    const res = await finalize(mintedKey(h.user.id, 'SHOP'), 'SHOP');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'OBJECT_NOT_FOUND' });
+    expect(h.create).not.toHaveBeenCalled();
+  });
+
+  it('R2 times out or drops the connection: 503, which the phone retries', async () => {
+    h.send.mockReset().mockRejectedValue(Object.assign(new Error('socket hang up'), { name: 'TimeoutError' }));
+    const res = await finalize(mintedKey(h.user.id, 'SHOP'), 'SHOP');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'STORAGE_UNAVAILABLE' });
+    expect(h.create).not.toHaveBeenCalled();
+  });
+});

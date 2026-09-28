@@ -56,5 +56,7 @@ describe('the R2 client', () => {
       for (const s of sockets) s.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-  });
+    // The first import of lib/r2 loads the AWS SDK, which took over 5 s on a cold
+    // Windows run: that is load time, not the timeout under test.
+  }, 60_000);
 });
