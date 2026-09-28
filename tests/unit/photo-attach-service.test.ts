@@ -641,10 +641,18 @@ describe('one lock order: the customer row before its branches', () => {
     const r = src('services/reactivations.ts');
     before(r, /await lockCustomerRow\(tx, edit\.customerId!\)/, /await tx\.branch\.update\(\{\s*where: \{ id: edit\.branchId! \}/);
   });
-  it('a branch-only import locks the customer before refreshLaneBranches', () => {
+  // N03: every lane of the promote now takes it, by the customer's code, before
+  // it even reads the customer — so before any customer or branch write too.
+  it('the import promote locks the customer before it reads it and before every write', () => {
     const i = src('services/imports.ts');
     const promote = i.slice(i.indexOf('async function promoteCustomerBatchCore'));
-    before(promote, /if \(!refreshLane && !fullLane && existing\) await lockCustomerRow\(tx, existing\.id\)/, /await refreshLaneBranches\(tx,/);
+    const lock = /const lockedId = await lockCustomerRowByCode\(tx, custCode\);/;
+    expect(promote.match(new RegExp(lock, 'g'))).toHaveLength(1);
+    before(promote, lock, /const existing = lockedId\s*\?\s*await tx\.customer\.findUnique\(\{\s*where: \{ id: lockedId \}/);
+    before(promote, lock, /await refreshLaneBranches\(tx,/);
+    before(promote, lock, /await tx\.customer\.upsert\(/);
+    before(promote, lock, /await tx\.branch\.upsert\(/);
+    expect(src('lib/locks.ts')).toMatch(/WHERE "nmwcCode" = \$\{nmwcCode\} FOR UPDATE/);
   });
   it('photo attach and Remove take it first', () => {
     const photos = src('services/photos.ts');

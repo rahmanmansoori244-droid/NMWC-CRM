@@ -14,6 +14,7 @@ import { buildWorkbook } from '@/lib/excel';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import {
   applyCustomerFilters,
+  customerBranchPredicate,
   customerListBranchScope,
   parseCustomerFilters,
   type CustomerFilterParams,
@@ -25,7 +26,8 @@ import {
  * Re-runs the same Prisma where the page composes (role scope + URL filters)
  * with no pagination, then builds an xlsx mirroring the customer-card view:
  * one row per customer, one branch's address/route/region per row (the
- * caller-scoped primary branch — same logic as the page).
+ * oldest branch in the caller's scope that also matches the region/route
+ * filters — same logic as the page, F17).
  *
  * Hard-capped at EXPORT_ROW_CAP rows. Anything bigger should narrow the
  * filter set rather than ship a multi-megabyte buffer through a server
@@ -112,7 +114,6 @@ async function exportFilteredCustomersCore(
     NonNullable<Prisma.CustomerWhereInput['branches']>['some']
   >;
   let branchSomeBase: BranchSomeWhere | undefined;
-  let scopedBranchWhere: Prisma.BranchWhereInput = { deletedAt: null };
 
   // SR-EXP-01 / SR-M2 (P1): fail-closed role scope from the SAME shared helper as
   // the /customers list (the query twin of lib/access.canSeeCustomer). Previously
@@ -128,14 +129,10 @@ async function exportFilteredCustomersCore(
   });
   if (listScope.forceEmpty) {
     baseWhere.id = '__none__';
-    scopedBranchWhere = { id: '__none__' };
   } else if (listScope.branchSome) {
     branchSomeBase = listScope.branchSome;
-    scopedBranchWhere = listScope.branchSome;
-  } else {
-    // org-wide (STEWARD / VIEWER / FINANCE_MANAGER / GM) — no branch scope
-    scopedBranchWhere = { deletedAt: null };
   }
+  // else org-wide (STEWARD / VIEWER / FINANCE_MANAGER / GM) — no branch scope
 
   // Resolve supervisor / salesman filter to route-ids if set.
   let routeIdsForSupervisor: string[] = [];
@@ -164,6 +161,12 @@ async function exportFilteredCustomersCore(
     routeIdsForSupervisor,
     routeIdForSalesman
   );
+  // F17: the branch a row shows is one the filters match, from the same
+  // predicate as `where` — not merely one in the role's scope, which exported
+  // a route-A branch for a customer the route-B filter matched on another.
+  const shownBranchWhere: Prisma.BranchWhereInput = listScope.forceEmpty
+    ? { id: '__none__' }
+    : customerBranchPredicate(branchSomeBase, filters, routeIdsForSupervisor, routeIdForSalesman);
 
   const total = await prisma.customer.count({ where });
   if (total > EXPORT_ROW_CAP) {
@@ -183,7 +186,7 @@ async function exportFilteredCustomersCore(
       channel: { select: { label: true } },
       subChannel: { select: { label: true } },
       branches: {
-        where: scopedBranchWhere,
+        where: shownBranchWhere,
         take: 1,
         orderBy: { createdAt: 'asc' },
         include: {

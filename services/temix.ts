@@ -9,9 +9,11 @@
  *     the rows to UPLOADED in the same transaction, and hand the Steward an
  *     xlsx (base64 — same transport as the filtered customer export).
  *  2. downloadTemixBatchAction — regenerate any batch's workbook from its
- *     customerIds snapshot (no state changes). At-least-once-with-dedup:
+ *     customerIds snapshot (no sync-state changes). At-least-once-with-dedup:
  *     Temix upserts on the code, so a regenerated row that has since changed
- *     is fine, and re-sending an unchanged row is a no-op.
+ *     is fine, and re-sending an unchanged row is a no-op. It is still an
+ *     export of personal data: rate-limited, and an EXPORT audit row is
+ *     written before the file is returned (X-TEMIX-2).
  *  3. markTemixBatchLoadedAction — records the Steward's "loaded into Temix"
  *     confirmation (markedLoadedAt) and settles the batch's DEACTIVATE-lane
  *     rows to SYNCED: Temix never echoes deactivated customers back in a
@@ -34,7 +36,12 @@ import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { checkLimit } from '@/lib/rate-limit';
 import { buildWorkbook } from '@/lib/excel';
-import { buildTemixRows, TEMIX_QUEUE_WHERE, type TemixExportCustomer } from '@/lib/temix';
+import {
+  buildTemixRows,
+  deactivationsOfLiveCodes,
+  TEMIX_QUEUE_WHERE,
+  type TemixExportCustomer,
+} from '@/lib/temix';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 const BATCH_ROW_CAP = 5000;
@@ -118,7 +125,29 @@ export type TemixBatchResult = {
   filename: string;
   rowCount: number;
   customerCount: number;
+  /**
+   * F11: customer codes left queued, not in this file, because a deactivation
+   * among them carries a Temix code a live customer still holds.
+   */
+  heldBack?: string[];
 };
+
+/** F11: of `codes`, the Temix codes a LIVE customer still holds. */
+async function codesHeldLive(tx: Prisma.TransactionClient, codes: string[]): Promise<Set<string>> {
+  const unique = [...new Set(codes)];
+  if (unique.length === 0) return new Set();
+  const live = await tx.customer.findMany({
+    where: { deletedAt: null, temixCode: { in: unique } },
+    select: { temixCode: true },
+  });
+  return new Set(live.map((c) => c.temixCode).filter((c): c is string => !!c));
+}
+
+/** "N-1, N-2 and 3 more" — never an unbounded list in a message. */
+function heldBackText(codes: string[]): string {
+  const shown = codes.slice(0, 5).join(', ');
+  return codes.length > 5 ? `${shown} and ${codes.length - 5} more` : shown;
+}
 
 export async function generateTemixBatchAction(): SafeAction<TemixBatchResult> {
   return runAction(() => generateTemixBatchCore());
@@ -156,7 +185,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
   // `requeue-untracked.ts --limit` can drain the backlog in tranches and each
   // batch generates well inside the budget. Pinned by
   // tests/unit/temix-requeue-guard.test.ts, which asserts both bounds.
-  const { batch, customers } = await prisma.$transaction(async (tx) => {
+  const { batch, customers, heldBack } = await prisma.$transaction(async (tx) => {
     // Soft cap pre-check (updateMany cannot `take`; a handful of rows racing
     // in over the cap between count and flip is harmless).
     const pending = await tx.customer.count({ where: TEMIX_QUEUE_WHERE });
@@ -168,6 +197,26 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
         _form: `Queue exceeds ${BATCH_ROW_CAP} customers — contact support to split the batch.`,
       });
     }
+    // F11: a deactivation must never go out for a Temix code a live customer
+    // still holds. Checked over the WHOLE queue, before the flip, and the rows
+    // involved are held back — left queued, named to the Steward — rather than
+    // refusing the batch, which would stop every other customer's upload.
+    const deactivating = await tx.customer.findMany({
+      where: { temixSyncState: TemixSyncState.DEACTIVATE_PENDING, temixCode: { not: null } },
+      select: { temixCode: true, deletedAt: true },
+    });
+    const clash = deactivationsOfLiveCodes(
+      deactivating,
+      await codesHeldLive(tx, deactivating.map((c) => c.temixCode!))
+    );
+    const held = clash.length
+      ? await tx.customer.findMany({
+          where: { AND: [TEMIX_QUEUE_WHERE, { temixCode: { in: clash } }] },
+          select: { id: true, nmwcCode: true },
+          orderBy: { nmwcCode: 'asc' },
+        })
+      : [];
+    const heldBack = held.map((c) => c.nmwcCode);
     const now = new Date();
     const b = await tx.temixSyncBatch.create({
       data: {
@@ -189,7 +238,9 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     // batch. No window loses a correction. A concurrent second generate
     // finds the queue empty (flip count 0) and rolls back its batch row.
     const flipped = await tx.customer.updateMany({
-      where: TEMIX_QUEUE_WHERE,
+      where: held.length
+        ? { AND: [TEMIX_QUEUE_WHERE, { id: { notIn: held.map((c) => c.id) } }] }
+        : TEMIX_QUEUE_WHERE,
       data: {
         temixSyncState: TemixSyncState.UPLOADED,
         lastTemixUploadAt: now,
@@ -197,6 +248,11 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
       },
     });
     if (flipped.count === 0) {
+      if (heldBack.length) {
+        // The text is the message too: the Generate button shows the message.
+        const why = `Nothing can go to Temix yet. Held back for review: ${heldBackText(heldBack)}.`;
+        throw new ValidationError({ _form: why }, why);
+      }
       throw new ValidationError({ _form: 'Nothing is pending for Temix upload.' });
     }
     const queued = await tx.customer.findMany({
@@ -204,6 +260,18 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
       select: CUSTOMER_SELECT,
       orderBy: { nmwcCode: 'asc' },
     });
+    // F11, the same invariant on what was actually claimed: an archive that
+    // committed between the check above and the flip can bring a clashing
+    // deactivation in. Rare — so roll the whole batch back and let the next
+    // Generate hold it back — never send it.
+    const lateClash = deactivationsOfLiveCodes(
+      queued,
+      await codesHeldLive(tx, queued.filter((c) => c.deletedAt && c.temixCode).map((c) => c.temixCode!))
+    );
+    if (lateClash.length) {
+      const why = 'The Temix queue changed while this batch was being built. Generate it again.';
+      throw new ValidationError({ _form: why }, why);
+    }
     const ids = queued.map((c) => c.id);
     await tx.temixSyncBatch.update({
       where: { id: b.id },
@@ -224,9 +292,10 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
       after: {
         customers: ids.length,
         deactivations: queued.filter((c) => c.deletedAt).length,
+        ...(heldBack.length ? { heldBack: heldBack.slice(0, 100) } : {}),
       } as unknown as Prisma.InputJsonValue,
     });
-    return { batch: b, customers: queued };
+    return { batch: b, customers: queued, heldBack };
   }, { timeout: 30_000, maxWait: 5_000 });
 
   const enriched = await withGuaranteeCounts(customers);
@@ -240,6 +309,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     batchId: batch.id,
     ...wb,
     customerCount: customers.length,
+    ...(heldBack.length ? { heldBack } : {}),
   };
 }
 
@@ -248,6 +318,11 @@ export async function downloadTemixBatchAction(
 ): SafeAction<TemixBatchResult> {
   return runAction(async () => {
     const me = await requireSteward();
+    // X-TEMIX-2: a re-download is a full export of names, phones, CR numbers,
+    // addresses and credit limits, so it is rate-limited like Generate — in its
+    // own bucket, so fetching a batch again never costs the next Generate.
+    const lim = await checkLimit(`temix-download:${me.id}`, { capacity: 3, refillPerSec: 0.05 });
+    if (!lim.ok) throw new RateLimitError(`Wait ${lim.retryAfterSec}s before downloading again.`);
     const batchId = String(formData.get('batchId') ?? '');
     if (!batchId) throw new ValidationError({ batchId: 'required' });
     const batch = await prisma.temixSyncBatch.findUnique({ where: { id: batchId } });
@@ -262,6 +337,16 @@ export async function downloadTemixBatchAction(
     });
     const enriched = await withGuaranteeCounts(customers);
     const wb = await buildBatchWorkbook(enriched, batch.id);
+    // X-TEMIX-2: the ledger row is the only record that this copy left the
+    // building (Generate writes its own; a re-download wrote none). Written
+    // before the bytes are returned and not swallowed, as every other export
+    // does (services/exports.ts): no ledger row, no file.
+    await writeAudit(null, await getAuditEnvelope(me.id), {
+      action: 'EXPORT',
+      entityType: 'TemixSyncBatch',
+      entityId: batch.id,
+      reason: `redownload ${wb.rowCount} rows / ${customers.length} customers`,
+    });
     logger.info({ batchId, by: me.id }, 'temix.batch.redownload');
     return { batchId: batch.id, ...wb, customerCount: customers.length };
   });

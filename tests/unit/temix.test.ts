@@ -5,6 +5,8 @@ import { describe, it, expect } from 'vitest';
 import { PaymentTerms, TemixSyncState, Prisma } from '@prisma/client';
 import {
   buildTemixRows,
+  deactivationsOfLiveCodes,
+  mergeTemixClash,
   resolveArchiveTemixState,
   TEMIX_QUEUE_WHERE,
   type TemixExportCustomer,
@@ -150,5 +152,71 @@ describe('resolveArchiveTemixState', () => {
         temixSyncState: TemixSyncState.PENDING_UPLOAD,
       })
     ).toBe(TemixSyncState.SYNCED);
+  });
+});
+
+describe('F11: mergeTemixClash', () => {
+  const id = (nmwcCode: string, temixCode: string | null) => ({ nmwcCode, temixCode });
+
+  it('the same Temix code on both sides is SHARED_CODE — the loser must not be deactivated', () => {
+    expect(mergeTemixClash(id('N2', 'T1'), id('N1', 'T1'))).toBe('SHARED_CODE');
+    // Under the migrated convention (nmwcCode == temixCode) too.
+    expect(mergeTemixClash(id('N2', 'N1'), id('N1', 'N1'))).toBe('SHARED_CODE');
+  });
+
+  it("one side's Temix code being the other's customer code is CROSSED", () => {
+    expect(mergeTemixClash(id('N2', 'N1'), id('N1', null))).toBe('CROSSED');
+    expect(mergeTemixClash(id('N2', null), id('N1', 'N2'))).toBe('CROSSED');
+    expect(mergeTemixClash(id('N2', 'T9'), id('N1', 'N2'))).toBe('CROSSED');
+  });
+
+  it('nothing shared is null — resolveArchiveTemixState decides as before', () => {
+    expect(mergeTemixClash(id('N2', 'T2'), id('N1', 'T1'))).toBeNull();
+    expect(mergeTemixClash(id('N2', null), id('N1', null))).toBeNull();
+    expect(mergeTemixClash(id('N2', 'T2'), id('N1', null))).toBeNull();
+    // Two uncoded rows never "share" a null code.
+    expect(mergeTemixClash(id('N2', null), id('N1', 'T1'))).toBeNull();
+  });
+});
+
+describe('F11: deactivationsOfLiveCodes — the batch invariant', () => {
+  const at = new Date('2026-09-20T08:00:00Z');
+
+  it('the reported case: UPSERT T1 and DEACTIVATE T1 in one batch is caught', () => {
+    const winner = customer({ id: 'w', nmwcCode: 'N1', temixCode: 'T1' });
+    const loser = customer({ id: 'l', nmwcCode: 'N2', temixCode: 'T1', deletedAt: at });
+    // What the batch would have said without the invariant.
+    expect(buildTemixRows([winner, loser], 'b').map((r) => `${r.sync_action}:${r.temix_code}`)).toEqual([
+      'UPSERT:T1',
+      'DEACTIVATE:T1',
+    ]);
+    expect(deactivationsOfLiveCodes([winner, loser], new Set(['T1']))).toEqual(['T1']);
+  });
+
+  it('a deactivation of a code a live customer outside the batch still holds is caught too', () => {
+    const loser = customer({ nmwcCode: 'N2', temixCode: 'T1', deletedAt: at });
+    expect(deactivationsOfLiveCodes([loser], new Set(['T1']))).toEqual(['T1']);
+  });
+
+  it('different codes pass, and so does a deactivation nobody live holds', () => {
+    const winner = customer({ id: 'w', nmwcCode: 'N1', temixCode: 'T1' });
+    const loser = customer({ id: 'l', nmwcCode: 'N2', temixCode: 'T2', deletedAt: at });
+    expect(deactivationsOfLiveCodes([winner, loser], new Set(['T1']))).toEqual([]);
+    expect(deactivationsOfLiveCodes([loser], new Set())).toEqual([]);
+  });
+
+  it('a live row is never a deactivation, and an uncoded archive has no code to clash', () => {
+    const live = customer({ temixCode: 'T1' });
+    const uncoded = customer({ temixCode: null, deletedAt: at });
+    expect(deactivationsOfLiveCodes([live, uncoded], new Set(['T1']))).toEqual([]);
+  });
+
+  it('each clashing code once, sorted', () => {
+    const rows = [
+      customer({ id: 'a', temixCode: 'T3', deletedAt: at }),
+      customer({ id: 'b', temixCode: 'T1', deletedAt: at }),
+      customer({ id: 'c', temixCode: 'T3', deletedAt: at }),
+    ];
+    expect(deactivationsOfLiveCodes(rows, new Set(['T1', 'T3']))).toEqual(['T1', 'T3']);
   });
 });

@@ -14,6 +14,8 @@ Two Excel files to fill and hand back. They are generated to match **exactly** t
 
 Re-importing is safe (idempotent): existing users keep their password/role/supervisor unless you explicitly say otherwise, and a blank `email`, `phone` or `region_codes` cell keeps what is on record. A row whose `role` differs from the account's current role is held back unless `change_role` is `yes` (see below), so re-importing an old sheet after someone's role was changed in `/users` lists that row instead of undoing half the change. Each account, region and route the import creates or changes is recorded in the audit log, with the batch; an unchanged row records nothing.
 
+**Column headings.** The importer finds each column by its heading in row 1, wherever the column sits. A column with no heading is ignored. The same heading in two columns — in any letter case, e.g. `phone` and `PHONE` — refuses the whole file, naming the sheet and both columns: keep one, or rename the other. Customer-master rows are numbered as Excel shows them, blank lines included.
+
 ### What Promote looks like on a full-size master
 A real master (thousands of rows) is **far too big to load in one request**, so Promote works through it in passes and shows live progress — *"Promoting… 1,200 done, 2,100 left"*. Leave the tab open; it drives the passes for you.
 
@@ -95,6 +97,11 @@ One sheet named **Customers** (must stay the first sheet) + an Instructions tab.
 | `channel` | optional | the CRM channel **code**: `HORECA`, `MODERN_TRADE`, `GENERAL_TRADE`, `CONVENIENCE_AND_GAS`, `ECOMMERCE`, `HOME_OFFICE_DELIVERY`, `INSTITUTIONS`. Anything else → held for review. |
 | `day_of_visit` | optional | the journey-plan visit day for this branch: `SAT` `SUN` `MON` `TUE` `WED` `THU` `FRI`. Drives the salesman's **Today** list. |
 | `customer_status` | optional | `ACTIVE` (default) or `CLOSED`. A customer with any ACTIVE branch stays ACTIVE. |
+
+> **An archived customer is not brought back by an import.** A row whose `cust_code`
+> belongs to a customer archived in the CRM is rejected at Promote — with or without
+> `temix_code`, with or without `branch_code` — and nothing about that customer or its
+> branches changes. There is no restore in the app; exclude the row.
 
 ### Not in this file (captured later, in the app, by the salesman)
 GPS, sub-channel, cooler / stand / bottle counts, photos, alternate phone, contact role. Don't add columns for these — they're ignored on import.

@@ -155,6 +155,7 @@ jobs:
           RUN_PROMOTE_TESTS: '1'
           RUN_PROMOTE_RELEASE: '1'
           RUN_GOLIVE_FLOW: '1'
+          RUN_EXPORT_TESTS: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

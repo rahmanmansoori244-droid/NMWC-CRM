@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { Role } from '@prisma/client';
 import {
   applyCustomerFilters,
+  customerBranchPredicate,
   customerListBranchScope,
   parseCustomerFilters,
 } from '@/lib/customer-filters';
@@ -89,5 +90,52 @@ describe('SR-EXP-01: a URL filter cannot widen an empty (fail-closed) branch sco
     const where = applyCustomerFilters({ deletedAt: null }, base, filters, [], null);
     const routeId = (where.branches as { some: { routeId?: { in?: string[] } } }).some.routeId;
     expect(routeId?.in).toEqual(['r2']); // intersection kept
+  });
+});
+
+describe('F17: the branch shown is one the filters match', () => {
+  // A Manager of region R1 filtering to route B. The customer matched through a
+  // route-B branch; the card and the export showed its OLDER route-A branch,
+  // because the branch shown was picked by the role scope alone.
+  const managerScope = customerListBranchScope(Role.MANAGER, {
+    ownedRouteId: null,
+    teamRouteIds: [],
+    managedRegionIds: ['R1'],
+  });
+  const base = managerScope.forceEmpty ? undefined : managerScope.branchSome;
+
+  it('is the very predicate the customer is matched on', () => {
+    const filters = parseCustomerFilters({ route: 'ROUTE_B' });
+    const predicate = customerBranchPredicate(base, filters, [], null);
+    expect(predicate).toEqual({ regionId: { in: ['R1'] }, routeId: { in: ['ROUTE_B'] }, deletedAt: null });
+    const where = applyCustomerFilters({ deletedAt: null }, base, filters, [], null);
+    expect((where.branches as { some: unknown }).some).toEqual(predicate);
+  });
+
+  it('carries the region, supervisor and salesman filters the same way', () => {
+    const filters = parseCustomerFilters({ region: 'R1', supervisor: 'sup-1', salesman: 'sm-1' });
+    const predicate = customerBranchPredicate(base, filters, ['RT1', 'RT2'], 'RT2');
+    expect(predicate).toEqual({ regionId: { in: ['R1'] }, routeId: { in: ['RT2'] }, deletedAt: null });
+    const where = applyCustomerFilters({ deletedAt: null }, base, filters, ['RT1', 'RT2'], 'RT2');
+    expect((where.branches as { some: unknown }).some).toEqual(predicate);
+  });
+
+  it('leaves the search box out: a customer found by its name still shows a branch', () => {
+    const filters = parseCustomerFilters({ q: 'Lulu', route: 'ROUTE_B' });
+    const predicate = customerBranchPredicate(base, filters, [], null);
+    expect(JSON.stringify(predicate)).not.toContain('Lulu');
+    expect(predicate).toEqual({ regionId: { in: ['R1'] }, routeId: { in: ['ROUTE_B'] }, deletedAt: null });
+  });
+
+  it('org-wide with no branch filter: every live branch, as before', () => {
+    expect(customerBranchPredicate(undefined, parseCustomerFilters({}), [], null)).toEqual({
+      deletedAt: null,
+    });
+  });
+
+  it('never widens a fail-closed scope', () => {
+    const empty = { routeId: { in: [] as string[] }, deletedAt: null };
+    const predicate = customerBranchPredicate(empty, parseCustomerFilters({ route: 'victim' }), [], null);
+    expect(predicate.routeId).toEqual({ in: ['__none__'] });
   });
 });

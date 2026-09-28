@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, EditState, type Prisma } from '@prisma/client';
+import { Role, EditState, TemixSyncState, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
@@ -13,7 +13,7 @@ import {
 import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer } from '@/lib/completeness';
-import { resolveArchiveTemixState } from '@/lib/temix';
+import { mergeTemixClash, resolveArchiveTemixState } from '@/lib/temix';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import {
   pairCandidates,
@@ -203,9 +203,10 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
       for (const id of [winner.id, loser.id].sort()) {
         await tx.$queryRaw`SELECT id FROM "Customer" WHERE id = ${id} FOR UPDATE`;
       }
+      const identity = { deletedAt: true, nmwcCode: true, temixCode: true } as const;
       const [winnerLive, loserLive] = await Promise.all([
-        tx.customer.findUnique({ where: { id: winner.id }, select: { deletedAt: true } }),
-        tx.customer.findUnique({ where: { id: loser.id }, select: { deletedAt: true } }),
+        tx.customer.findUnique({ where: { id: winner.id }, select: identity }),
+        tx.customer.findUnique({ where: { id: loser.id }, select: identity }),
       ]);
       if (!winnerLive || winnerLive.deletedAt) {
         throw new ValidationError({
@@ -217,6 +218,17 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
         throw new ValidationError({
           _form:
             'The losing customer was just merged or archived by another action. Refresh and retry the merge.',
+        });
+      }
+      // F11: compare the two Temix identities, read under the locks, before
+      // anything is written (lib/temix.ts mergeTemixClash). The same code on
+      // both parks the loser instead of deactivating it — below; a crossed
+      // pair is refused here.
+      const temixClash = mergeTemixClash(loserLive, winnerLive);
+      if (temixClash === 'CROSSED') {
+        throw new ValidationError({
+          _form:
+            "One customer's Temix code is the other's customer code, so merging them could deactivate the surviving customer in Temix. The Temix codes need a Steward review before this merge.",
         });
       }
 
@@ -322,7 +334,11 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
         where: { id: loser.id },
         select: { temixCode: true, lastTemixUploadAt: true, temixSyncState: true },
       });
-      const loserTemixState = resolveArchiveTemixState(loserFresh);
+      // F11: a loser carrying the winner's own Temix code is not deactivated —
+      // the identity survives in the winner, which is re-queued below — so it
+      // just leaves the queue, and the MERGE audit row says so.
+      const loserTemixState =
+        temixClash === 'SHARED_CODE' ? TemixSyncState.SYNCED : resolveArchiveTemixState(loserFresh);
       const loserClaim = await tx.customer.updateMany({
         where: { id: loser.id, deletedAt: null, temixSyncState: loserFresh.temixSyncState },
         data: {
@@ -365,6 +381,9 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
           winner: { id: winner.id, nmwcCode: winner.nmwcCode },
           crossRegion: isCrossRegion,
         } as unknown as Prisma.InputJsonValue,
+        ...(temixClash === 'SHARED_CODE'
+          ? { after: { temixDeactivation: 'skipped-shared-code' } as Prisma.InputJsonValue }
+          : {}),
         reason: isCrossRegion
           ? `Cross-region merge: ${loser.nmwcCode} -> ${winner.nmwcCode}. ${reason}`
           : `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,

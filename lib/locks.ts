@@ -13,3 +13,16 @@ import type { Prisma } from '@prisma/client';
 export async function lockCustomerRow(tx: Prisma.TransactionClient, customerId: string): Promise<void> {
   await tx.$queryRaw`SELECT "id" FROM "Customer" WHERE "id" = ${customerId} FOR UPDATE`;
 }
+
+/**
+ * The same lock, for a caller that knows the customer by its code (the import
+ * promote). Returns the locked customer's id, or null when no customer has the
+ * code. Archived customers are locked too: the caller has to see them.
+ */
+export async function lockCustomerRowByCode(
+  tx: Prisma.TransactionClient,
+  nmwcCode: string
+): Promise<string | null> {
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Customer" WHERE "nmwcCode" = ${nmwcCode} FOR UPDATE`;
+  return rows[0]?.id ?? null;
+}

@@ -26,10 +26,34 @@ export type ParsedRow = Record<string, string | number | null>;
 
 export type ParsedSheet = {
   name: string;
+  /** The headings read, in column order. Blank headings are not in it. */
   headers: string[];
   rows: ParsedRow[];
+  /**
+   * N05: the Excel row number of each entry in `rows` (same index). Rows that are
+   * completely empty are not in `rows`, so "index + 2" is the wrong row after the
+   * first blank line; report this number instead.
+   */
+  rowNumbers: number[];
 };
 
+/**
+ * N05: a heading is read from its OWN column. The parser used to collect the
+ * non-empty headings into a dense list and then read cell (position in that
+ * list + 1), so a sheet with a blank heading in B read C's value as B's field:
+ * a helper value became the customer name and the real address was dropped,
+ * and the row still staged clean. Now:
+ *  - every heading keeps its physical column number, and its cells are read
+ *    from that column;
+ *  - a column with a blank heading is ignored — it has no field to go to — and
+ *    so is every cell of a merged heading after the first (exceljs repeats the
+ *    merged text in each of them);
+ *  - the heading text is the cell's displayed text, so a rich-text or formula
+ *    heading is read as its words, not as "[object Object]";
+ *  - the same heading in two columns (compared without case: the importers read
+ *    `code ?? Code`) refuses the workbook, naming the sheet and both columns —
+ *    the later column used to overwrite the earlier one, blank or not.
+ */
 export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<ParsedSheet[]> {
   const ExcelJS = await loadExcelJS();
   const wb = new ExcelJS.Workbook();
@@ -40,16 +64,28 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
   const sheets: ParsedSheet[] = [];
   let totalRows = 0;
   wb.eachSheet((ws) => {
-    const headers: string[] = [];
-    ws.getRow(1).eachCell({ includeEmpty: false }, (cell) => {
-      headers.push(String(cell.value ?? '').trim());
+    const columns: Array<{ col: number; name: string; letter: string }> = [];
+    ws.getRow(1).eachCell({ includeEmpty: false }, (cell, col) => {
+      if (cell.type === ExcelJS.ValueType.Merge) return;
+      const name = cell.text.trim();
+      if (!name) return;
+      const letter = cell.address.replace(/\d+$/, '');
+      const same = columns.find((c) => c.name.toLowerCase() === name.toLowerCase());
+      if (same) {
+        throw new Error(
+          `Sheet "${ws.name}": the heading "${name}" is in more than one column (${same.letter} and ${letter}). Keep one, or rename the other.`
+        );
+      }
+      columns.push({ col, name, letter });
     });
+    const headers = columns.map((c) => c.name);
     const rows: ParsedRow[] = [];
+    const rowNumbers: number[] = [];
     ws.eachRow({ includeEmpty: false }, (row, rowNum) => {
       if (rowNum === 1) return;
       const obj: ParsedRow = {};
-      headers.forEach((h, i) => {
-        const v = row.getCell(i + 1).value;
+      columns.forEach(({ col, name: h }) => {
+        const v = row.getCell(col).value;
         if (v == null || v === '') {
           obj[h] = null;
         } else if (typeof v === 'number' || typeof v === 'string') {
@@ -82,6 +118,7 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
         }
       });
       rows.push(obj);
+      rowNumbers.push(rowNum);
     });
     totalRows += rows.length;
     if (totalRows > MAX_TOTAL_ROWS) {
@@ -89,7 +126,7 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
         `Workbook has too many rows (>${MAX_TOTAL_ROWS.toLocaleString()}). Split the file into smaller batches.`
       );
     }
-    sheets.push({ name: ws.name, headers, rows });
+    sheets.push({ name: ws.name, headers, rows, rowNumbers });
   });
   return sheets;
 }

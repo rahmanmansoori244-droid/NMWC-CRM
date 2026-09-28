@@ -11,6 +11,7 @@ import { Prisma, Role } from '@prisma/client';
 import { CustomerFiltersClient } from './CustomerFiltersClient';
 import {
   applyCustomerFilters,
+  customerBranchPredicate,
   customerListBranchScope,
   parseCustomerFilters,
   type CustomerFilterParams,
@@ -75,11 +76,6 @@ export default async function CustomersPage({
     NonNullable<Prisma.CustomerWhereInput['branches']>['some']
   >;
   let branchSomeBase: BranchSomeWhere | undefined;
-  // Scope-aware "primary branch" predicate (shown in CustomerCard subtitle).
-  const branchInclude: Prisma.Customer$branchesArgs = {
-    take: 1,
-    orderBy: { createdAt: 'asc' },
-  };
 
   // SR-M2 (P1): fail-closed role scope from the single shared helper (the query
   // twin of lib/access.canSeeCustomer). Previously this was hand-rolled here and
@@ -92,14 +88,10 @@ export default async function CustomersPage({
   });
   if (listScope.forceEmpty) {
     baseWhere.id = '__none__';
-    branchInclude.where = { id: '__none__' };
   } else if (listScope.branchSome) {
     branchSomeBase = listScope.branchSome;
-    branchInclude.where = listScope.branchSome;
-  } else {
-    // org-wide (STEWARD / VIEWER / FINANCE_MANAGER / GM)
-    branchInclude.where = { deletedAt: null };
   }
+  // else org-wide (STEWARD / VIEWER / FINANCE_MANAGER / GM)
 
   // Resolve supervisor / salesman filter to route ids (fetched in the parallel
   // wave above).
@@ -115,6 +107,16 @@ export default async function CustomersPage({
     routeIdsForSupervisor,
     routeIdForSalesman
   );
+  // The "primary branch" shown on the card (subtitle, Call and Directions): the
+  // oldest branch in scope that the region/route filters also match — F17, the
+  // same predicate as `where`, so a route-B filter never shows the route-A branch.
+  const branchInclude: Prisma.Customer$branchesArgs = {
+    where: listScope.forceEmpty
+      ? { id: '__none__' }
+      : customerBranchPredicate(branchSomeBase, filters, routeIdsForSupervisor, routeIdForSalesman),
+    take: 1,
+    orderBy: { createdAt: 'asc' },
+  };
 
   // Filter-bar reference data. Pulled per-page; small lookup tables.
   // Visibility per spec:

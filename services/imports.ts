@@ -48,7 +48,7 @@ import {
   type SheetRow,
 } from '@/lib/import-row-check';
 import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
-import { lockCustomerRow } from '@/lib/locks';
+import { lockCustomerRowByCode } from '@/lib/locks';
 import {
   branchOnlyNote,
   composeBranchCode,
@@ -978,7 +978,9 @@ async function uploadCustomerMasterCore(
   // F-04: collision maps inside the file (lib/import-row-check.ts fileCollisions)
   // and against the live master below, so the parse step queues duplicates for
   // review instead of silently P2002-failing on promote.
-  const sheetRows = sheet.rows.map((row, i) => ({ row: row as SheetRow, rowNumber: i + 2 }));
+  // N05: the Excel row number the parser read the row from — not index + 2, which
+  // is wrong for every row after the first blank line (lib/excel.ts).
+  const sheetRows = sheet.rows.map((row, i) => ({ row: row as SheetRow, rowNumber: sheet.rowNumbers[i] }));
   const { phonesInFile, crsInFile } = fileCollisions(sheetRows);
   // Accepted `channel` codes — the Channel table's keys, read once per upload.
   const channelKeys = new Set(
@@ -998,7 +1000,7 @@ async function uploadCustomerMasterCore(
 
     importRows.push({
       batchId: batch.id,
-      rowNumber: i + 2,
+      rowNumber: sheet.rowNumbers[i],
       raw: row as unknown as Prisma.InputJsonValue,
       parsed: parsed as unknown as Prisma.InputJsonValue,
       issues: issues.length > 0 ? (issues as unknown as Prisma.InputJsonValue) : undefined,
@@ -1757,21 +1759,45 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         await prisma.$transaction(
           async (tx) => {
             rowNotes = g.rowIds.map(() => ({ note: null, written: false }));
-            const existing = await tx.customer.findUnique({
-              where: { nmwcCode: custCode },
-              select: {
-                id: true,
-                temixCode: true,
-                paymentTerms: true,
-                deletedAt: true,
-                createdById: true,
-                legalName: true,
-                primaryPhoneNorm: true,
-                crNumberNorm: true,
-                contactPerson: true,
-                channel: { select: { key: true } },
-              },
-            });
+            // N03: the customer's row lock FIRST, then the read, on every lane —
+            // lib/locks.ts order, customer before branch. The read used to come
+            // unlocked, so an archive committing after it was not seen and the
+            // upsert below wrote over the archived customer anyway.
+            const lockedId = await lockCustomerRowByCode(tx, custCode);
+            const existing = lockedId
+              ? await tx.customer.findUnique({
+                  where: { id: lockedId },
+                  select: {
+                    id: true,
+                    temixCode: true,
+                    paymentTerms: true,
+                    deletedAt: true,
+                    createdById: true,
+                    legalName: true,
+                    primaryPhoneNorm: true,
+                    crNumberNorm: true,
+                    contactPerson: true,
+                    channel: { select: { key: true } },
+                  },
+                })
+              : null;
+            // N03: an archived customer is refused before any lane is chosen,
+            // whatever the rows carry. This check sat inside `if (lead.temixCode)`,
+            // so a row with a blank temix_code took the full lane: the upsert
+            // found the archived customer by its code and rewrote its name,
+            // phone, CR and status, and a new branch_code was created LIVE under
+            // it — on the salesman's Today list, while the customer page could
+            // not open it. There is no restore in the app; the row can only be
+            // excluded. The message names neither a branch code nor Temix, so the
+            // batch page offers Re-check and Exclude and no cell to correct
+            // (lib/import-row-fix.ts editableColumns).
+            if (existing?.deletedAt) {
+              throw new Error(
+                first.temixCode
+                  ? 'CROSSWALK:customer is archived in the CRM — resolve its Temix deactivation before refreshing'
+                  : 'CROSSWALK:customer is archived in the CRM, and an import does not bring an archived customer back — exclude the row; steward review'
+              );
+            }
             // Owner decision 2026-09-25, "branch only" — decided PER ROW. For a
             // customer linked to Temix, a row the Steward fixed in the app writes
             // its own branch and nothing else about the customer, whatever its
@@ -1817,14 +1843,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   'CROSSWALK:temix_code conflicts with the code already recorded for this customer — steward review'
                 );
               }
-              // An archived customer must not be mutated (or its in-flight
-              // deactivation settled) by a stale Temix extract that still lists
-              // it — resolve the deactivation first.
-              if (existing?.deletedAt) {
-                throw new Error(
-                  'CROSSWALK:customer is archived in the CRM — resolve its Temix deactivation before refreshing'
-                );
-              }
+              // An archived customer (whose in-flight deactivation a stale Temix
+              // extract must not settle) was already refused above, before
+              // any lane — N03.
             }
 
             // A refresh is an inbound update from the ERP for a customer the CRM
@@ -1933,11 +1954,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               }
             }
             // Every row fixed in the app: branch writes come first, the
-            // customer's own row after (the phone fill, the score). Take the
-            // customer's row lock first, as photo attach and Remove do
-            // (lib/locks.ts), or the two orders deadlock on the same branch
-            // (pre-merge review). The other lanes write the customer first.
-            if (!refreshLane && !fullLane && existing) await lockCustomerRow(tx, existing.id);
+            // customer's own row after (the phone fill, the score). That lane
+            // needs the customer's row lock before its branch writes, as photo
+            // attach and Remove do (lib/locks.ts), or the two orders deadlock on
+            // the same branch (pre-merge review) — every lane now holds it from
+            // the top of this transaction (N03).
             let customerId: string;
             if (refreshLane) {
               // ── Temix REFRESH row (existing live customer + temix_code) ──

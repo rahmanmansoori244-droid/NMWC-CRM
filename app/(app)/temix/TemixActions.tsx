@@ -29,10 +29,12 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
   const [pending, start] = useTransition();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [held, setHeld] = useState<string[]>([]);
 
   function generate() {
     setConfirming(false);
     setError(null);
+    setHeld([]);
     start(async () => {
       const res = await generateTemixBatchAction();
       if (!res.ok) {
@@ -40,6 +42,7 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
         return;
       }
       triggerDownload(res.data);
+      setHeld(res.data.heldBack ?? []);
       router.refresh();
     });
   }
@@ -56,6 +59,13 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
         {pending ? 'Generating…' : '⬇ Generate upload file'}
       </button>
       {error && <p className="text-xs font-medium text-red-600">{error}</p>}
+      {held.length > 0 && (
+        <p className="max-w-md text-right text-xs font-medium text-amber-700">
+          Not in this file, still queued: {held.slice(0, 10).join(', ')}
+          {held.length > 10 ? ` and ${held.length - 10} more` : ''}. A customer being deactivated
+          carries the same Temix code as a live customer; the codes need correcting first.
+        </p>
+      )}
       <ConfirmModal
         open={confirming}
         title="Generate Temix upload batch?"

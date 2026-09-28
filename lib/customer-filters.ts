@@ -168,10 +168,12 @@ export function applyCustomerFilters(
   routeIdForSalesman: string | null
 ): Prisma.CustomerWhereInput {
   const where: Prisma.CustomerWhereInput = { ...base };
-  const branchSome: BranchSomeWhere = { ...(branchSomeBase ?? {}) };
-  // Always restrict to live branches; role-scope code already passes
-  // `deletedAt: null`, but be defensive.
-  branchSome.deletedAt = branchSome.deletedAt ?? null;
+  const branchSome = customerBranchPredicate(
+    branchSomeBase,
+    filters,
+    routeIdsForSupervisor,
+    routeIdForSalesman
+  );
 
   if (filters.q) {
     // Perf (2026-05-11): phone search now uses primaryPhoneNorm so the
@@ -225,6 +227,40 @@ export function applyCustomerFilters(
     };
   }
 
+  // Only attach the branch predicate if any branch-side filter was set OR
+  // the caller's role-scoped predicate already required it.
+  if (branchSomeBase || hasAnyBranchFilter(branchSome)) {
+    where.branches = { some: branchSome };
+  }
+  return where;
+}
+
+/**
+ * The branch predicate a customer has to match: the caller's role scope (live
+ * branches only) intersected with the region, route, supervisor and salesman
+ * filters — every one on the SAME branch row. applyCustomerFilters puts it in
+ * `branches.some`.
+ *
+ * F17: it is also the `where` of the branch the list card and the filtered
+ * export SHOW. They used the role scope alone, so a customer matched on route
+ * B through its newer branch showed (and exported) its older route-A branch:
+ * Region, Route, Address, GPS and Day of visit of a branch the filter excludes.
+ * Built by one function so the match and the branch shown cannot drift apart
+ * again (the SR-M2 history). The search box is deliberately not in it: a
+ * customer found by its name, not by a branch, must still show a branch — the
+ * oldest one that matches everything else.
+ */
+export function customerBranchPredicate(
+  branchSomeBase: BranchSomeWhere | undefined,
+  filters: ParsedCustomerFilters,
+  routeIdsForSupervisor: string[],
+  routeIdForSalesman: string | null
+): BranchSomeWhere {
+  const branchSome: BranchSomeWhere = { ...(branchSomeBase ?? {}) };
+  // Always restrict to live branches; role-scope code already passes
+  // `deletedAt: null`, but be defensive.
+  branchSome.deletedAt = branchSome.deletedAt ?? null;
+
   // Branch-side intersections.
   if (filters.regionIds.length) {
     branchSome.regionId = mergeStringIn(branchSome.regionId, filters.regionIds);
@@ -258,13 +294,7 @@ export function applyCustomerFilters(
       intersected.length > 0 ? intersected : ['__none__']
     );
   }
-
-  // Only attach the branch predicate if any branch-side filter was set OR
-  // the caller's role-scoped predicate already required it.
-  if (branchSomeBase || hasAnyBranchFilter(branchSome)) {
-    where.branches = { some: branchSome };
-  }
-  return where;
+  return branchSome;
 }
 
 function hasAnyBranchFilter(b: BranchSomeWhere): boolean {

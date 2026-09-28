@@ -170,3 +170,54 @@ export function resolveArchiveTemixState(customer: {
     customer.temixSyncState === TemixSyncState.UPLOADED;
   return knownToTemix ? TemixSyncState.DEACTIVATE_PENDING : TemixSyncState.SYNCED;
 }
+
+/**
+ * F11: what a merge must do about the loser's Temix identity, given the winner's.
+ * Customer.temixCode is not unique, so two CRM rows for one ERP customer can
+ * carry the same code, and resolveArchiveTemixState alone queued the loser for
+ * deactivation — the next batch then held `UPSERT T1` for the winner and
+ * `DEACTIVATE T1` for the loser, and which one Temix applied last depended on
+ * the nmwcCode sort.
+ *  - 'SHARED_CODE': the loser's code IS the winner's. Nothing is to be
+ *    deactivated — the identity survives in the winner — so the loser leaves
+ *    the queue (SYNCED) instead.
+ *  - 'CROSSED': one side's Temix code is the other side's customer code. A blank
+ *    or deactivated code may be keyed on cust_code in Temix, so the merge could
+ *    still reach the winner's identity: refused for Steward review.
+ *  - null: nothing shared; resolveArchiveTemixState decides as before.
+ */
+export type MergeTemixIdentity = { nmwcCode: string; temixCode: string | null };
+
+export function mergeTemixClash(
+  loser: MergeTemixIdentity,
+  winner: MergeTemixIdentity
+): 'SHARED_CODE' | 'CROSSED' | null {
+  if (loser.temixCode && loser.temixCode === winner.temixCode) return 'SHARED_CODE';
+  if (
+    (loser.temixCode && loser.temixCode === winner.nmwcCode) ||
+    (winner.temixCode && winner.temixCode === loser.nmwcCode)
+  ) {
+    return 'CROSSED';
+  }
+  return null;
+}
+
+/**
+ * F11, the batch-level invariant, for any writer and any data already stored:
+ * the Temix codes that the DEACTIVATE lane of `customers` (archived rows, as
+ * buildTemixRows decides the lane) would send while a live customer still holds
+ * the same code (`liveCodes`). Deactivating one of them would take the ERP
+ * identity away from a customer the CRM keeps. The batch holds such rows back
+ * — the archived row and any queued live row with the same code — rather than
+ * refusing the whole batch, which would stop every other customer's upload.
+ */
+export function deactivationsOfLiveCodes(
+  customers: ReadonlyArray<{ temixCode: string | null; deletedAt: Date | null }>,
+  liveCodes: ReadonlySet<string>
+): string[] {
+  const out = new Set<string>();
+  for (const c of customers) {
+    if (c.deletedAt && c.temixCode && liveCodes.has(c.temixCode)) out.add(c.temixCode);
+  }
+  return [...out].sort();
+}
