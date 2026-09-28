@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
   ValidationError,
@@ -24,9 +24,7 @@ import { logger } from '@/lib/logger';
  */
 
 async function requireUser() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  return session.user;
+  return requireActor(); // F15: refuses a session that must change its password
 }
 
 const NAME_MIN = 2;

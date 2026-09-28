@@ -3,9 +3,8 @@
 import { auth, signIn, signOut } from '@/lib/auth';
 import { AuthError } from 'next-auth';
 import { z } from 'zod';
-import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
-import { checkLimit, LOGIN_LIMIT } from '@/lib/rate-limit';
+import { loginFailureMessage } from '@/lib/login-throttle';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/db';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
@@ -37,30 +36,12 @@ export async function loginAction(formData: FormData): Promise<LoginResult | voi
   // case variants of the same account.
   const username = parsed.data.username.toLowerCase();
 
-  // Rate-limit by username (auth-stuffing guard) and by IP if available.
-  // AUTH-19: distinguish per-user vs per-IP exhaustion in the message — a
-  // legitimate user whose account is being targeted from elsewhere should
-  // see "account locked", not "too many attempts" (which they didn't make).
-  const hdrs = await headers();
-  const ip =
-    hdrs.get('x-forwarded-for')?.split(',')[0]?.trim() ?? hdrs.get('x-real-ip') ?? 'unknown';
-  const userLim = await checkLimit(`login:user:${username}`, LOGIN_LIMIT);
-  if (!userLim.ok) {
-    logger.warn({ scope: 'user', retryAfterSec: userLim.retryAfterSec }, 'rate-limit.login');
-    return {
-      ok: false,
-      error: 'Account temporarily locked due to repeated attempts. Try again in a minute.',
-    };
-  }
-  const ipLim = await checkLimit(`login:ip:${ip}`, LOGIN_LIMIT);
-  if (!ipLim.ok) {
-    logger.warn({ scope: 'ip', retryAfterSec: ipLim.retryAfterSec }, 'rate-limit.login');
-    return {
-      ok: false,
-      error: `Too many attempts from your network. Try again in ${ipLim.retryAfterSec}s.`,
-    };
-  }
-
+  // F22: the per-username and per-IP login buckets are charged ONCE, inside
+  // authorize() (lib/auth.ts), which every sign-in passes through. Charging them
+  // here as well cost each form login two tokens per bucket. A throttled attempt
+  // comes back as a CredentialsSignin whose code names the bucket, and
+  // loginFailureMessage turns it into the "locked" / "too many attempts" text
+  // (AUTH-19) instead of "Invalid username or password".
   try {
     await signIn('credentials', {
       username,
@@ -69,7 +50,7 @@ export async function loginAction(formData: FormData): Promise<LoginResult | voi
     });
   } catch (error) {
     if (error instanceof AuthError) {
-      return { ok: false, error: 'Invalid username or password.' };
+      return { ok: false, error: loginFailureMessage(error) };
     }
     throw error;
   }
@@ -94,6 +75,8 @@ export async function logoutAction() {
   // cookie cannot be replayed after logout. The JWT freshness loop in
   // lib/auth.ts compares each token's iat against this marker and rejects
   // anything older. The cookie clear is best-effort UX.
+  // F15: a bare auth(), not requireActor() — sign-out must work for a session
+  // that still has to change its password, and for one that has already ended.
   try {
     const session = await auth();
     if (session?.user) {

@@ -11,6 +11,7 @@ import { authConfig } from '../auth.config';
 import { checkLimit, LOGIN_LIMIT } from '@/lib/rate-limit';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isDemoAccount } from '@/lib/demo-accounts';
+import { LoginThrottledError } from '@/lib/login-throttle';
 
 // QA-023 / AUTH-17: assert AUTH_SECRET is present, of sufficient length, AND
 // not trivially low-entropy. Length alone (≥32) is a poor proxy — `aaaa…`
@@ -305,25 +306,34 @@ const {
         const username = parsed.data.username.toLowerCase();
         const password = parsed.data.password;
 
-        // QA-006: rate limit BOTH the Server Action path (already wrapped) and
-        // the Auth.js direct callback path, by gating the authorize() callback.
+        // QA-006 / F22: the ONE place the login buckets are charged. Every
+        // sign-in reaches it — the login form's action through signIn(), and
+        // /api/auth/callback/credentials directly — so the form's action does
+        // not charge them again (it did, and a form login cost two tokens per
+        // bucket: a correct password on the third quick try was refused).
         const ip = await clientIp();
-        for (const key of [`login:user:${username}`, `login:ip:${ip}`]) {
+        const buckets = [
+          ['user', `login:user:${username}`],
+          ['ip', `login:ip:${ip}`],
+        ] as const;
+        for (const [bucket, key] of buckets) {
           const lim = await checkLimit(key, LOGIN_LIMIT);
           if (!lim.ok) {
             logger.warn(
               { key, retryAfterSec: lim.retryAfterSec },
               'rate-limit.login.authorize'
             );
-            // Returning null forces the same UX as a wrong password.
-            // We deliberately do NOT throw or include retry-after here, to
-            // avoid leaking which usernames are real.
             // Still pay equalized bcrypt cost so timing doesn't out the limit.
             await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
             // B-04: surface rate-limit hits in the audit trail with a
             // sentinel entityId so forensics can spot pattern attacks.
             await writeLoginFail(`unknown:${username.slice(0, 50)}`, 'rate_limited');
-            return null;
+            // Thrown, not `return null`, so the form can say "locked" or "too
+            // many attempts" instead of "Invalid username or password" to a
+            // user whose password is right (lib/login-throttle.ts). The code
+            // names the bucket, and both buckets are keyed on what was typed,
+            // so it reveals nothing about which usernames exist.
+            throw new LoginThrottledError(bucket, lim.retryAfterSec);
           }
         }
 

@@ -6,14 +6,12 @@
  * another user's inbox can never be marked or read across accounts.
  */
 import { prisma } from '@/lib/db';
-import { auth } from '@/lib/auth';
-import { ForbiddenError, ValidationError, runAction, type SafeAction } from '@/lib/errors';
+import { requireActor } from '@/lib/session';
+import { ValidationError, runAction, type SafeAction } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 
 async function requireUser() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  return session.user;
+  return requireActor(); // F15: refuses a session that must change its password
 }
 
 export async function markNotificationReadAction(formData: FormData): SafeAction<void> {

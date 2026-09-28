@@ -12,18 +12,17 @@
  */
 import { Role, type Prisma } from '@prisma/client';
 import { prisma } from './db';
-import { auth } from './auth';
+import { requireActor } from './session';
 import { ForbiddenError } from './errors';
 
 export const EXPORT_ROLES: Role[] = [Role.MANAGER, Role.STEWARD, Role.VIEWER, Role.SUPERVISOR];
 
 export async function requireExportUser() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (!EXPORT_ROLES.includes(session.user.role)) {
+  const user = await requireActor(); // F15: refuses a session that must change its password
+  if (!EXPORT_ROLES.includes(user.role)) {
     throw new ForbiddenError('Your role cannot export.');
   }
-  return session.user;
+  return user;
 }
 
 export type ExportScope = {

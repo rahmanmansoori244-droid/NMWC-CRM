@@ -10,7 +10,7 @@ import {
   runAction,
   type SafeAction,
 } from '@/lib/errors';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { loadScope } from '@/lib/access';
@@ -26,12 +26,11 @@ import { loadScope } from '@/lib/access';
  * region is, by definition, outside every Manager's scope.
  */
 async function requireRouteAdmin() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (session.user.role !== Role.MANAGER && session.user.role !== Role.STEWARD) {
+  const user = await requireActor(); // F15: refuses a session that must change its password
+  if (user.role !== Role.MANAGER && user.role !== Role.STEWARD) {
     throw new ForbiddenError('Only Managers and the Steward can manage routes.');
   }
-  return session.user;
+  return user;
 }
 
 /** Managed-region ids for a MANAGER (fail-closed), `null` for the org-wide STEWARD. */
@@ -72,6 +71,11 @@ const routeSchema = z.object({
  * Each mutating action now also writes a single AuditLog row via the
  * shared `writeAudit` helper, capturing actor + IP + UA. Previously
  * route/region mutations were silent in the audit trail.
+ *
+ * F13: the change and its audit row are one transaction, so a failed audit
+ * insert rolls the change back and runAction's "Nothing was saved" is true.
+ * The envelope is read before the transaction opens. A duplicate code's P2002
+ * aborts the transaction and still reaches runAction as a P2002.
  */
 
 export async function createRegionAction(formData: FormData): SafeAction<void> {
@@ -92,12 +96,15 @@ async function createRegionCore(formData: FormData) {
       Object.fromEntries(parsed.error.issues.map((i) => [i.path.join('.'), i.message]))
     );
   }
-  const region = await prisma.region.create({ data: parsed.data });
-  await writeAudit(null, await getAuditEnvelope(me.id), {
-    action: 'CREATE',
-    entityType: 'Region',
-    entityId: region.id,
-    after: { code: region.code, name: region.name },
+  const env = await getAuditEnvelope(me.id);
+  await prisma.$transaction(async (tx) => {
+    const region = await tx.region.create({ data: parsed.data });
+    await writeAudit(tx, env, {
+      action: 'CREATE',
+      entityType: 'Region',
+      entityId: region.id,
+      after: { code: region.code, name: region.name },
+    });
   });
   revalidatePath('/routes');
   revalidateTag('ref:regions'); // final-hunt #25: bust the 5-min unstable_cache dropdowns
@@ -120,12 +127,15 @@ async function createRouteCore(formData: FormData) {
     );
   }
   assertRegionInScope(await regionScopeOf(me), parsed.data.regionId);
-  const route = await prisma.route.create({ data: parsed.data });
-  await writeAudit(null, await getAuditEnvelope(me.id), {
-    action: 'CREATE',
-    entityType: 'Route',
-    entityId: route.id,
-    after: { code: route.code, name: route.name, regionId: route.regionId },
+  const env = await getAuditEnvelope(me.id);
+  await prisma.$transaction(async (tx) => {
+    const route = await tx.route.create({ data: parsed.data });
+    await writeAudit(tx, env, {
+      action: 'CREATE',
+      entityType: 'Route',
+      entityId: route.id,
+      after: { code: route.code, name: route.name, regionId: route.regionId },
+    });
   });
   revalidatePath('/routes');
   revalidateTag('ref:routes'); // final-hunt #25
@@ -142,17 +152,20 @@ async function toggleRegionActiveCore(formData: FormData) {
   const r = await prisma.region.findUnique({ where: { id } });
   if (!r) throw new NotFoundError('Region not found.');
   assertRegionInScope(await regionScopeOf(me), r.id);
-  const updated = await prisma.region.update({
-    where: { id },
-    data: { isActive: !r.isActive },
-  });
-  await writeAudit(null, await getAuditEnvelope(me.id), {
-    action: 'UPDATE',
-    entityType: 'Region',
-    entityId: id,
-    before: { isActive: r.isActive },
-    after: { isActive: updated.isActive },
-    reason: updated.isActive ? 'enabled' : 'disabled',
+  const env = await getAuditEnvelope(me.id);
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.region.update({
+      where: { id },
+      data: { isActive: !r.isActive },
+    });
+    await writeAudit(tx, env, {
+      action: 'UPDATE',
+      entityType: 'Region',
+      entityId: id,
+      before: { isActive: r.isActive },
+      after: { isActive: updated.isActive },
+      reason: updated.isActive ? 'enabled' : 'disabled',
+    });
   });
   revalidatePath('/routes');
   revalidateTag('ref:regions'); // final-hunt #25: getAllActiveRegions filters on isActive
@@ -169,17 +182,20 @@ async function toggleRouteActiveCore(formData: FormData) {
   const r = await prisma.route.findUnique({ where: { id } });
   if (!r) throw new NotFoundError('Route not found.');
   assertRegionInScope(await regionScopeOf(me), r.regionId);
-  const updated = await prisma.route.update({
-    where: { id },
-    data: { isActive: !r.isActive },
-  });
-  await writeAudit(null, await getAuditEnvelope(me.id), {
-    action: 'UPDATE',
-    entityType: 'Route',
-    entityId: id,
-    before: { isActive: r.isActive },
-    after: { isActive: updated.isActive },
-    reason: updated.isActive ? 'enabled' : 'disabled',
+  const env = await getAuditEnvelope(me.id);
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.route.update({
+      where: { id },
+      data: { isActive: !r.isActive },
+    });
+    await writeAudit(tx, env, {
+      action: 'UPDATE',
+      entityType: 'Route',
+      entityId: id,
+      before: { isActive: r.isActive },
+      after: { isActive: updated.isActive },
+      reason: updated.isActive ? 'enabled' : 'disabled',
+    });
   });
   revalidatePath('/routes');
   revalidateTag('ref:routes'); // final-hunt #25

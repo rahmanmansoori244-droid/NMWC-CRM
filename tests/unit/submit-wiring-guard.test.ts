@@ -136,7 +136,9 @@ describe('the photo slot attaches and removes over fetch, not a server action', 
     const s = src(path);
     expect(s).toMatch(new RegExp(`import \\{ ${fn} \\} from '@/services/photos'`));
     const crossSite = s.indexOf('refuseCrossSite(req)');
-    const signedIn = s.indexOf('await auth()');
+    // F15: the sign-in check is checkActor(), which also refuses a session that
+    // must still change its password.
+    const signedIn = s.indexOf('await checkActor()');
     const read = s.indexOf('readJsonObject(req)');
     const call = s.indexOf(`await ${fn}(`);
     expect([crossSite, signedIn, read, call].every((i) => i > -1)).toBe(true);

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth } from '@/lib/auth';
+import { checkActor } from '@/lib/session';
 import { buildCustomerExport, type ExportFilters } from '@/services/exports';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
@@ -22,9 +22,13 @@ export async function GET(req: NextRequest) {
   // F-21: auth FIRST. Previously the Zod parse ran before the session check, so
   // an unauthenticated attacker could probe the schema (`?minCompleteness=999`)
   // and read the validation error structure for free.
-  const session = await auth();
-  if (!session?.user) {
-    return NextResponse.json({ error: 'Not signed in' }, { status: 401 });
+  // F15: a session that must change its password gets 403.
+  const who = await checkActor();
+  if (!who.ok) {
+    return NextResponse.json(
+      { error: who.status === 401 ? 'Not signed in' : who.message },
+      { status: who.status }
+    );
   }
 
   let filters: ExportFilters;

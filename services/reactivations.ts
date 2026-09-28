@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/db';
 import { Role, EditState, EditTarget, EditProcess, type Prisma } from '@prisma/client';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
   ValidationError,
@@ -29,12 +29,11 @@ import {
 import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 
 async function require(role?: Role[]) {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (role && !role.includes(session.user.role)) {
-    throw new ForbiddenError(`Role ${session.user.role} not allowed.`);
+  const user = await requireActor(); // F15: refuses a session that must change its password
+  if (role && !role.includes(user.role)) {
+    throw new ForbiddenError(`Role ${user.role} not allowed.`);
   }
-  return session.user;
+  return user;
 }
 
 /**

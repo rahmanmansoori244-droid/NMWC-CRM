@@ -12,7 +12,7 @@
  * second call's reference-data timings should be near zero.
  */
 import { NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { checkActor } from '@/lib/session';
 import { prisma } from '@/lib/db';
 import { customerCountFast } from '@/lib/customer-count';
 import {
@@ -42,9 +42,11 @@ async function timed<T>(name: string, fn: () => Promise<T>): Promise<{ name: str
 }
 
 export async function GET() {
-  const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
-  if (session.user.role !== Role.STEWARD && session.user.role !== Role.MANAGER) {
+  const who = await checkActor(); // F15: a session that must change its password gets 403
+  if (!who.ok) {
+    return NextResponse.json({ error: who.status === 401 ? 'UNAUTHORIZED' : who.code }, { status: who.status });
+  }
+  if (who.user.role !== Role.STEWARD && who.user.role !== Role.MANAGER) {
     return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
   }
 

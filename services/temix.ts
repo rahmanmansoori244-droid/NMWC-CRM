@@ -21,7 +21,7 @@
  */
 import { prisma } from '@/lib/db';
 import { Role, TemixSyncState, type Prisma } from '@prisma/client';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
   NotFoundError,
@@ -40,12 +40,11 @@ import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 const BATCH_ROW_CAP = 5000;
 
 async function requireSteward() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (session.user.role !== Role.STEWARD) {
+  const user = await requireActor(); // F15: refuses a session that must change its password
+  if (user.role !== Role.STEWARD) {
     throw new ForbiddenError('Only the Steward manages Temix sync.');
   }
-  return session.user;
+  return user;
 }
 
 const CUSTOMER_SELECT = {

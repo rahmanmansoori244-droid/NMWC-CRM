@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth } from '@/lib/auth';
+import { checkActor } from '@/lib/session';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { HeadObjectCommand } from '@aws-sdk/client-s3';
 import { prisma } from '@/lib/db';
@@ -63,10 +63,11 @@ const finalizeSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user) {
-    return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+  const who = await checkActor(); // F15: a session that must change its password gets 403
+  if (!who.ok) {
+    return NextResponse.json({ error: who.status === 401 ? 'UNAUTHORIZED' : who.code }, { status: who.status });
   }
+  const session = { user: who.user };
   // ENH-3: the same gate as presign, checked again — this is a request of its
   // own, and it is the one that writes the row.
   if (!canUploadPhoto(session.user.role)) return refuseRole();

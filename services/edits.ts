@@ -3,7 +3,7 @@
 import { prisma } from '@/lib/db';
 import { runBulk, type BulkOutcome } from '@/lib/bulk-run';
 import { Role, EditState, EditTarget, EditProcess, type Prisma } from '@prisma/client';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
   ValidationError,
@@ -42,9 +42,7 @@ import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
 
 async function requireUser() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  return session.user;
+  return requireActor(); // F15: refuses a session that must change its password
 }
 
 /**

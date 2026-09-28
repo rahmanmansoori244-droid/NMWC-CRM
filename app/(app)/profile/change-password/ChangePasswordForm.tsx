@@ -2,7 +2,10 @@
 
 import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { changeOwnPasswordAction } from '@/services/users';
+// X-AUTH-1: a module holding this ONE action. Next gives this page every action
+// of each 'use server' module it imports, and a session that must change its
+// password can reach this page — so never import a multi-action module here.
+import { changeOwnPasswordAction } from '@/services/password';
 
 const OWN_PATH = '/profile/change-password';
 

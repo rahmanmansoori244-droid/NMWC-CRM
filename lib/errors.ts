@@ -26,6 +26,20 @@ export class ForbiddenError extends AppError {
   }
 }
 
+/**
+ * F15: a real session whose password must be changed first (AUTH-09). Thrown by
+ * requireActor() in lib/session.ts for every server action and route handler
+ * except the password change itself. A ForbiddenError, so every existing
+ * `instanceof ForbiddenError` answers it with a 403; its own code lets a form
+ * tell it from a role refusal.
+ */
+export class PasswordChangeRequiredError extends ForbiddenError {
+  override readonly code = 'PASSWORD_CHANGE_REQUIRED';
+  constructor() {
+    super('You must change your password before continuing.');
+  }
+}
+
 export class NotFoundError extends AppError {
   constructor(message = 'Not found') {
     super('NOT_FOUND', message, 404);

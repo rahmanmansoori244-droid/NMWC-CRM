@@ -43,6 +43,14 @@ jobs:
           DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
           DIRECT_URL: postgresql://ci:ci@localhost:5432/ci
           NEXT_TELEMETRY_DISABLED: '1'
+      # X-AUTH-1: /profile/change-password is the one page a session that must
+      # still change its password can reach, and Next runs any server action that
+      # page's worker holds when its id is POSTed there. The worker is built from
+      # the page's whole import graph, layouts included, so only the build's own
+      # manifest shows it: it must hold the change itself and sign-in/out, nothing
+      # else (the May 2026 build also held four user-admin actions).
+      - name: Change-password page carries no other server action
+        run: npx tsx scripts/ci/check-action-workers.ts
       # ADVISORY ONLY (for now): the production-dependency audit is printed on
       # every run but cannot fail the job — four critical advisories are open
       # SEC-05: a REAL gate, set at the level the project actually holds today.

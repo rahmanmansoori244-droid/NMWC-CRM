@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/db';
 import { Role, EditState, type Prisma } from '@prisma/client';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
   ValidationError,
@@ -29,12 +29,11 @@ import {
 // also accepted MANAGER which conflated master-data ops with people-ops
 // privileges. Tightened to STEWARD only.
 async function requireSteward() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (session.user.role !== Role.STEWARD) {
+  const user = await requireActor(); // F15: refuses a session that must change its password
+  if (user.role !== Role.STEWARD) {
     throw new ForbiddenError('Only the Data Steward can merge customers.');
   }
-  return session.user;
+  return user;
 }
 
 /**

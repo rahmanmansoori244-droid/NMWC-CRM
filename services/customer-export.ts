@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/db';
 import { Role, type Prisma } from '@prisma/client';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
   ValidationError,
@@ -35,20 +35,19 @@ import {
 const EXPORT_ROW_CAP = 5000;
 
 async function requireExportRole() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
+  const user = await requireActor(); // F15: refuses a session that must change its password
   // Same role-set as the existing /api/exports/customers endpoint:
   // SALESMAN cannot export. The role-scope filter still applies on top so
   // each role only sees their own slice.
   if (
-    session.user.role !== Role.MANAGER &&
-    session.user.role !== Role.STEWARD &&
-    session.user.role !== Role.VIEWER &&
-    session.user.role !== Role.SUPERVISOR
+    user.role !== Role.MANAGER &&
+    user.role !== Role.STEWARD &&
+    user.role !== Role.VIEWER &&
+    user.role !== Role.SUPERVISOR
   ) {
     throw new ForbiddenError('Your role cannot export.');
   }
-  return session.user;
+  return user;
 }
 
 export type FilteredExportResult = {

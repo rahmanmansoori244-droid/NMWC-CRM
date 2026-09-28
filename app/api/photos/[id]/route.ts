@@ -6,7 +6,7 @@
  * everywhere else.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { checkActor } from '@/lib/session';
 import { prisma } from '@/lib/db';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
@@ -20,8 +20,11 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+  const who = await checkActor(); // F15: a session that must change its password gets 403
+  if (!who.ok) {
+    return NextResponse.json({ error: who.status === 401 ? 'UNAUTHORIZED' : who.code }, { status: who.status });
+  }
+  const session = { user: who.user };
   const { id } = await ctx.params;
 
   // NEW-PHOTO-010: rate-limit per-user photo fetches. Bursts of ~30 are

@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/db';
 import { Role, type Prisma } from '@prisma/client';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { buildWorkbookStreamed } from '@/lib/excel';
@@ -10,17 +10,16 @@ import { CUSTOMER_MASTER_COLUMNS, customerMasterRows } from '@/lib/customer-mast
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 async function requireExport() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
+  const user = await requireActor(); // F15: refuses a session that must change its password
   if (
-    session.user.role !== Role.MANAGER &&
-    session.user.role !== Role.STEWARD &&
-    session.user.role !== Role.VIEWER &&
-    session.user.role !== Role.SUPERVISOR
+    user.role !== Role.MANAGER &&
+    user.role !== Role.STEWARD &&
+    user.role !== Role.VIEWER &&
+    user.role !== Role.SUPERVISOR
   ) {
     throw new ForbiddenError('Your role cannot export.');
   }
-  return session.user;
+  return user;
 }
 
 /** Item 28: the largest export one file may hold — see the count check in buildCustomerExport. */

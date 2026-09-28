@@ -31,7 +31,7 @@ import {
   Role,
   type Prisma,
 } from '@prisma/client';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import {
   ConflictError,
   ForbiddenError,
@@ -64,9 +64,7 @@ import { omanWhen, submissionIdSchema, type SubmitReceipt } from '@/lib/submissi
 import { UNWIRED_LIVE } from '@/lib/photo-attach';
 
 async function requireUser() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  return session.user;
+  return requireActor(); // F15: refuses a session that must change its password
 }
 
 /** Map Zod issues to the create form's error keys (`customer.x`, `branch.<i>.x`, `credit.x`). */

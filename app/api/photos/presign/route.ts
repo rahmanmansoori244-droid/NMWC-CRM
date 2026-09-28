@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { auth } from '@/lib/auth';
+import { checkActor } from '@/lib/session';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -38,10 +38,11 @@ const presignSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user) {
-    return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
+  const who = await checkActor(); // F15: a session that must change its password gets 403
+  if (!who.ok) {
+    return NextResponse.json({ error: who.status === 401 ? 'UNAUTHORIZED' : who.code }, { status: who.status });
   }
+  const session = { user: who.user };
   // ENH-3: only a role that can attach a photo may upload one. Here, not only
   // at finalize: a presigned PUT that is never finalized leaves an object in R2
   // with no row at all. Before the bucket, so a refused role spends none of it.

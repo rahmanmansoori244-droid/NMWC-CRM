@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { checkActor } from '@/lib/session';
 import { attachPhotoAction } from '@/services/photos';
 import { readJsonObject, refuse, refuseCrossSite } from '@/lib/fetch-route';
 
@@ -22,9 +22,13 @@ export const runtime = 'nodejs';
 export async function POST(req: NextRequest) {
   const crossSite = refuseCrossSite(req);
   if (crossSite) return crossSite;
-  // The middleware does not stop a signed-out request (auth.config.ts).
-  if (!(await auth())?.user) {
-    return refuse(401, 'SIGNED_OUT', 'You are signed out, so nothing was sent.');
+  // The middleware does not stop a signed-out request (auth.config.ts). F15: a
+  // session that must change its password is refused as an answer (403).
+  const who = await checkActor();
+  if (!who.ok) {
+    return who.status === 401
+      ? refuse(401, 'SIGNED_OUT', 'You are signed out, so nothing was sent.')
+      : refuse(who.status, who.code, who.message);
   }
   const read = await readJsonObject(req);
   if ('refused' in read) return read.refused;

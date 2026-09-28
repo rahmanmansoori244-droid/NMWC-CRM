@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth';
+import { checkActor } from '@/lib/session';
 import { EditProcess } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { findReceipt } from '@/lib/submission-replay';
@@ -56,9 +56,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ form: stri
   // Try again — nothing was sent" from an answer. The sign-in gate in the
   // middleware does NOT stop this request (auth.config.ts: its `false` is
   // discarded), so without this the action's "Not signed in." came back as a
-  // final answer, with no Try again (post-review fix).
-  if (!(await auth())?.user) {
-    return refuse(401, 'SIGNED_OUT', 'You are signed out, so nothing was sent.');
+  // final answer, with no Try again (post-review fix). F15: a session that must
+  // change its password is refused too, as an answer (403 in the action shape).
+  const who = await checkActor();
+  if (!who.ok) {
+    return who.status === 401
+      ? refuse(401, 'SIGNED_OUT', 'You are signed out, so nothing was sent.')
+      : refuse(who.status, who.code, who.message);
   }
   const read = await readJsonObject(req);
   if ('refused' in read) return read.refused;
@@ -77,12 +81,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ form: stri
 export async function GET(req: NextRequest, ctx: { params: Promise<{ form: string }> }) {
   const { form } = await ctx.params;
   if (form !== 'customer-create') return refuse(404, 'NOT_FOUND', 'Unknown form.');
-  const session = await auth();
-  if (!session?.user) return refuse(401, 'SIGNED_OUT', 'You are signed out.');
+  const who = await checkActor();
+  if (!who.ok) {
+    return who.status === 401
+      ? refuse(401, 'SIGNED_OUT', 'You are signed out.')
+      : refuse(who.status, who.code, who.message);
+  }
   const submissionId = submissionIdSchema.safeParse(req.nextUrl.searchParams.get('submissionId')).data;
   if (!submissionId) return refuse(400, 'INVALID_ID', 'A submission id is required.');
   try {
-    const receipt = await findReceipt(prisma, session.user.id, submissionId, {
+    const receipt = await findReceipt(prisma, who.user.id, submissionId, {
       process: EditProcess.CREATE,
     });
     return NextResponse.json({ ok: true, data: receipt });

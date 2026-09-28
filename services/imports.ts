@@ -9,7 +9,7 @@ import {
   type DayOfWeek,
   type CustomerStatus,
 } from '@prisma/client';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
   ValidationError,
@@ -54,12 +54,11 @@ import {
 // STEWARD only; an emergency Manager-driven import can still happen via a
 // Steward-aided session.
 async function requireSteward() {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
-  if (session.user.role !== Role.STEWARD) {
+  const user = await requireActor(); // F15: refuses a session that must change its password
+  if (user.role !== Role.STEWARD) {
     throw new ForbiddenError('Only the Data Steward can run imports.');
   }
-  return session.user;
+  return user;
 }
 
 // ── Account master import (regions, routes, users) ────────────────────────

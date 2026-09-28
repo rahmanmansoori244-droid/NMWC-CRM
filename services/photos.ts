@@ -2,7 +2,7 @@
 
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import { Role, AttachmentKind, type Attachment, type Prisma } from '@prisma/client';
 import {
   ConflictError,
@@ -164,8 +164,7 @@ export async function attachPhotoAction(
 }
 
 async function attachPhotoCore(input: z.input<typeof attachSchema>) {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
+  const session = { user: await requireActor() }; // F15: refuses a session that must change its password
   const parsed = attachSchema.safeParse(input);
   if (!parsed.success) {
     throw new ValidationError(
@@ -441,8 +440,7 @@ export async function detachPhotoAction(
 }
 
 async function detachPhotoCore(input: { attachmentId: string }) {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
+  const session = { user: await requireActor() }; // F15: refuses a session that must change its password
   // The id goes into a `where`: unchecked, an object there is a filter (and a
   // missing one no filter at all), acting on a photo the caller did not name.
   const parsed = detachSchema.safeParse(input);

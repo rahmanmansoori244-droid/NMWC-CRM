@@ -11,7 +11,7 @@
  */
 import { prisma } from '@/lib/db';
 import { EditState, Role, type Prisma } from '@prisma/client';
-import { auth } from '@/lib/auth';
+import { requireActor } from '@/lib/session';
 import {
   ConflictError,
   ForbiddenError,
@@ -31,8 +31,7 @@ export async function archiveCustomerAction(formData: FormData): SafeAction<void
 }
 
 async function archiveCustomerCore(formData: FormData) {
-  const session = await auth();
-  if (!session?.user) throw new ForbiddenError('Not signed in.');
+  const session = { user: await requireActor() }; // F15: refuses a session that must change its password
   // Steward (data-ops, org-wide) or Manager (region-scoped, fail-closed via
   // assertCanEditCustomer) — the same pair with direct-write authority.
   if (session.user.role !== Role.STEWARD && session.user.role !== Role.MANAGER) {
