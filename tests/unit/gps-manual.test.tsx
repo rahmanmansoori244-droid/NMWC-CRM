@@ -82,9 +82,14 @@ describe('41 — the reason, as stored', () => {
   });
 
   it('both forms send it, and only for a point marked as typed', () => {
-    for (const f of ['app/(app)/customers/[id]/edit/EnrichmentForm.tsx', 'app/(app)/customers/new/CreateCustomerForm.tsx']) {
-      expect(read(f), f).toMatch(/gpsManualReason:\s*s\.gps\?\.isManual\s*\?\s*s\.gps\.manualReason\s*:\s*undefined/);
-    }
+    expect(read('app/(app)/customers/new/CreateCustomerForm.tsx')).toMatch(
+      /gpsManualReason:\s*s\.gps\?\.isManual\s*\?\s*s\.gps\.manualReason\s*:\s*undefined/
+    );
+    // Phase 2: the edit form's body is built by lib/enrichment-patch.ts
+    // (behaviour pinned in enrichment-patch.test.ts).
+    expect(read('lib/enrichment-patch.ts')).toMatch(
+      /if \(g\.isManual && typeof g\.manualReason === 'string'\) patch\.gpsManualReason = g\.manualReason;/
+    );
   });
 });
 
@@ -146,7 +151,11 @@ describe('41 — the enrichment form shows every error the server returns', () =
 
   it('the form uses them, and shows the gps error beside the GPS button', () => {
     const src = read('app/(app)/customers/[id]/edit/EnrichmentForm.tsx');
-    expect(src).toMatch(/setErrors\(surfaceUnrenderedErrors\(result\.fields, enrichmentFormRendersError\)\)/);
+    // Phase 2: for the branches the page shows, with a conflict counted as shown
+    // (it has its own list) — lib/form-errors.ts and form-errors.test.ts.
+    expect(src).toMatch(
+      /setErrors\(\s*surfaceUnrenderedErrors\(\s*fields,\s*\(k\) => enrichmentFormRendersError\(k, shownBranchIds\) \|\| !!stale\?\.\[k\]\s*\)\s*\)/
+    );
     expect(src).toMatch(/<GpsCaptureButton[\s\S]{0,300}?\/>\s*\{errors\[`branch\.\$\{b\.id\}\.gps`\] && \(/);
   });
 });

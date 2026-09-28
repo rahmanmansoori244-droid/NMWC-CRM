@@ -69,6 +69,10 @@ vi.mock('@/lib/db', () => ({
     },
     channel: { findMany: async () => [] },
     subChannel: { findMany: async () => [] },
+    // Phase 2, ruling 8: the page's stale-field check reads the live customer
+    // and the submitter's role; none here, so no banner.
+    customer: { findUnique: async () => null },
+    user: { findUnique: async () => null },
   },
 }));
 vi.mock('@/app/(app)/approvals/[id]/ApproveRejectActions', () => ({

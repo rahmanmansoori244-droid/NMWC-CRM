@@ -18,7 +18,7 @@
  * the same submit again with the same submission id: the server answers
  * "Already received" if the first one landed, and writes nothing twice.
  */
-import type { ActionResult } from '@/lib/errors';
+import { STALE_FIELDS_MESSAGE, type ActionResult } from '@/lib/errors';
 import {
   alreadyReceivedMessage,
   FIX_FIELDS_MESSAGE,
@@ -208,6 +208,9 @@ export function noticeFor(
     case 'answered': {
       const r = outcome.result;
       if (!r.ok) {
+        // Phase 2 (F06): details changed after the form was opened. Nothing to
+        // fix and nothing to retry: he chooses per field, then submits again.
+        if (r.code === 'STALE_FIELDS') return { tone: 'failed', text: STALE_FIELDS_MESSAGE, retry: false };
         // Fields to fix: say so here, the fields say what. A form-level refusal
         // alone ("No changes to submit.") has nothing marked red: say it itself.
         const perField = Object.keys(r.fields ?? {}).some((k) => k !== '_form');

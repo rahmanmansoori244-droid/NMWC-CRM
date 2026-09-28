@@ -29,6 +29,12 @@ import {
   UNCONFIRMED_MESSAGE,
   type SubmitReceipt,
 } from '@/lib/submission';
+import {
+  FORM_OUTDATED_MESSAGE,
+  FormOutdatedError,
+  STALE_FIELDS_MESSAGE,
+  StaleFieldsError,
+} from '@/lib/errors';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -321,6 +327,8 @@ describe('the words beside the button', () => {
       SIGNED_OUT_MESSAGE,
       MAINTENANCE_MESSAGE,
       FIX_FIELDS_MESSAGE,
+      STALE_FIELDS_MESSAGE,
+      FORM_OUTDATED_MESSAGE,
     ]) {
       expect(m.length, m).toBeLessThanOrEqual(160);
     }
@@ -376,6 +384,25 @@ describe('the words beside the button', () => {
     expect(
       noticeFor({ kind: 'answered', result: { ok: false, code: 'VALIDATION_FAILED', message: 'x', fields: { a: 'b' } } })
     ).toEqual({ tone: 'failed', text: FIX_FIELDS_MESSAGE, retry: false });
+  });
+
+  // Phase 2 (F06, ruling 1): the fields marked have nothing to fix — they wait
+  // for "Keep mine" or "Use this value" — and a retry would only be refused again.
+  it('STALE_FIELDS: says details changed after the form opened, without Try again', () => {
+    const stale = new StaleFieldsError({ 'customer.contactPerson': 'x' }, { 'customer.contactPerson': 'Omar' });
+    expect(
+      noticeFor({
+        kind: 'answered',
+        result: { ok: false, code: stale.code, message: stale.message, fields: stale.fields, current: stale.current },
+      })
+    ).toEqual({ tone: 'failed', text: STALE_FIELDS_MESSAGE, retry: false });
+  });
+
+  it('FORM_OUTDATED: says to reload, without Try again — the same body would be refused again', () => {
+    const outdated = new FormOutdatedError();
+    expect(
+      noticeFor({ kind: 'answered', result: { ok: false, code: outdated.code, message: outdated.message, fields: outdated.fields } })
+    ).toEqual({ tone: 'failed', text: FORM_OUTDATED_MESSAGE, retry: false });
   });
 
   it('an answered error with no field is shown beside the button, without Try again', () => {

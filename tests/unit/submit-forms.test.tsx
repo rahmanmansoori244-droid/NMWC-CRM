@@ -8,8 +8,8 @@
  * Submit; these can.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
-import { startTransition, useEffect } from 'react';
+import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react';
+import { startTransition, useEffect, type ComponentProps } from 'react';
 
 const router = vi.hoisted(() => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
@@ -58,6 +58,9 @@ import {
   PHOTO_UPLOADING_MESSAGE,
   submissionIdSchema,
 } from '@/lib/submission';
+import { FORM_OUTDATED_MESSAGE, STALE_FIELDS_MESSAGE } from '@/lib/errors';
+import { STALE_FIELD_MESSAGE } from '@/lib/edit-values';
+import { RELOAD_FOR_BRANCH_HINT } from '@/lib/form-errors';
 
 /** A real v4 id: a comparison of two missing ids (undefined === undefined) proves nothing. */
 const isSubmissionId = (v: unknown) => submissionIdSchema.safeParse(v).success;
@@ -199,6 +202,7 @@ describe('the customer update form', () => {
         coolersCount: 0,
         standsCount: 0,
         emptyBottlesCount: 0,
+        equipmentConfirmed: false,
         status: 'ACTIVE' as const,
         shopPhotoId: 'att-shop',
         signboardPhotoId: null,
@@ -599,6 +603,297 @@ describe('the customer update form', () => {
     } finally {
       await release();
     }
+  });
+
+  /* ── Phase 2 (F06, F20, F21, rulings 1 and 11): what the form sends ── */
+
+  const saved = (state = 'APPROVED') =>
+    answer({ ok: true, data: { editId: 'e1', state, submittedAt: null, replayed: false } });
+  const submitBtn = () => screen.getByRole('button', { name: 'Submit for approval ▶' });
+  const renderAs = (role: 'SALESMAN' | 'MANAGER', c: ComponentProps<typeof EnrichmentForm>['customer'] = customer) =>
+    render(
+      <EnrichmentForm
+        customer={c}
+        channels={[]}
+        lockName
+        lockCr={false}
+        userRole={role}
+        canSubmit
+        sessionUserId="u1"
+        gate="CORE"
+      />
+    );
+
+  it('phase 2: the notes alone post patch v2 — that field, the value the page loaded, no branch', async () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
+    replies.push(saved());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(1));
+    const { submissionId, ...body } = sent[0]!.body;
+    expect(isSubmissionId(submissionId)).toBe(true);
+    expect(body).toEqual({
+      v: 2,
+      customerId: 'cust1',
+      isDraft: false,
+      customer: { notes: 'Closed Fridays' },
+      customerBase: { notes: null },
+      branches: [],
+    });
+  });
+
+  it('phase 2 (F20): emptying the alt phone posts it as null — a clear the old form could not send', async () => {
+    renderAs('MANAGER', { ...customer, altPhone: '+96899887766' });
+    fireEvent.change(screen.getByLabelText('Alt phone'), { target: { value: '' } });
+    replies.push(saved());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.body.customer).toEqual({ altPhone: null });
+    expect(sent[0]!.body.customerBase).toEqual({ altPhone: '+96899887766' });
+  });
+
+  it('phase 2: a restored draft sends only what differs from the page — never a branch the page does not show', async () => {
+    const b1 = {
+      address: 'Way 1, Ruwi',
+      areaDescription: '',
+      gps: { lat: 23.5, lng: 58.3, accuracy: 5, capturedAt: '2026-09-24T08:00:00.000Z' },
+      dayOfVisit: 'SUN',
+      openingHours: '',
+      deliveryWindow: '',
+      coolers: 0,
+      stands: 0,
+      bottles: 0,
+    };
+    window.localStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        legalName: 'Al Noor',
+        crNumber: '',
+        channelId: '',
+        subChannelId: '',
+        primaryPhone: '+96891234567',
+        altPhone: '',
+        contactPerson: 'Said (typed offline)',
+        contactRole: '',
+        notes: '',
+        // Written before a route handover: b-gone is no longer this salesman's.
+        branchStates: { b1, 'b-gone': { ...b1, address: 'Another route now' } },
+        savedAt: 1,
+        base: enrichmentBase(customer),
+      })
+    );
+    renderForm();
+    expect(screen.getByDisplayValue('Said (typed offline)')).toBeTruthy();
+    replies.push(saved());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.body).toMatchObject({
+      customer: { contactPerson: 'Said (typed offline)' },
+      customerBase: { contactPerson: 'Said' },
+      branches: [],
+    });
+    expect(Object.keys(sent[0]!.body.customer as object)).toEqual(['contactPerson']);
+  });
+
+  it('phase 2: a draft saved before item 22, with no starting values, is dropped with the reason', () => {
+    window.localStorage.setItem(draftKey, JSON.stringify({ contactPerson: 'Said (typed offline)', savedAt: Date.now() }));
+    renderForm();
+    expect(screen.queryByDisplayValue('Said (typed offline)')).toBeNull();
+    expect(screen.getByText(/older than the latest server changes/)).toBeTruthy();
+  });
+
+  const staleContact = () =>
+    answer({
+      ok: false,
+      code: 'STALE_FIELDS',
+      message: STALE_FIELDS_MESSAGE,
+      fields: { 'customer.contactPerson': STALE_FIELD_MESSAGE },
+      current: { 'customer.contactPerson': 'Omar' },
+    });
+  const conflictList = () => screen.queryByRole('region', { name: 'Changed after you opened this form' });
+
+  it('ruling 1: STALE_FIELDS keeps his typing, shows the value saved now, and holds Submit until he chooses', async () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText('Contact person *'), { target: { value: 'Said Al Harthy' } });
+    replies.push(staleContact());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(conflictList()).not.toBeNull());
+    const list = conflictList()!;
+    expect(within(list).getByText('Contact person')).toBeTruthy();
+    expect(within(list).getByText('Now: Omar')).toBeTruthy();
+    expect(screen.getByDisplayValue('Said Al Harthy')).toBeTruthy();
+    expect(screen.getByText(STALE_FIELD_MESSAGE)).toBeTruthy(); // beside the field
+    expect(screen.getByRole('alert').textContent).toBe(STALE_FIELDS_MESSAGE);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(submitBtn()).toBeDisabled();
+    // Nothing moved by itself: a Save draft still carries the base the page loaded.
+    replies.push(answer({ ok: true, data: { editId: 'd1', state: 'DRAFT', submittedAt: null, replayed: false } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]!.body).toMatchObject({ isDraft: true, customerBase: { contactPerson: 'Said' } });
+    expect(sent[1]!.body).not.toHaveProperty('customerOverrides');
+    expect(conflictList()).not.toBeNull();
+    expect(submitBtn()).toBeDisabled();
+  });
+
+  it('ruling 1: "Keep mine" sends his value over the one saved now, knowingly — a new id, and the phone copy moves its base', async () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText('Contact person *'), { target: { value: 'Said Al Harthy' } });
+    replies.push(staleContact());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(conflictList()).not.toBeNull());
+    fireEvent.click(within(conflictList()!).getByRole('button', { name: 'Keep mine' }));
+    expect(conflictList()).toBeNull();
+    expect(screen.queryByText(STALE_FIELD_MESSAGE)).toBeNull();
+    expect(submitBtn()).toBeEnabled();
+    // The phone copy now starts from the value he saw, so a reload restores it
+    // while that value is still the saved one.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    const copy = JSON.parse(window.localStorage.getItem(draftKey)!);
+    expect(copy.base).toBe(enrichmentBase({ ...customer, contactPerson: 'Omar' }));
+    expect(copy.kept).toEqual({ customer: ['contactPerson'], branches: {} });
+
+    replies.push(saved('SUBMITTED'));
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]!.body).toMatchObject({
+      v: 2,
+      customer: { contactPerson: 'Said Al Harthy' },
+      customerBase: { contactPerson: 'Omar' },
+      customerOverrides: ['contactPerson'],
+    });
+    expect(sent[1]!.body.submissionId).not.toBe(sent[0]!.body.submissionId);
+  });
+
+  it('ruling 1: after "Keep mine", a reload restores the draft while that value is still saved — and still says it replaces it', async () => {
+    const first = renderForm();
+    fireEvent.change(screen.getByLabelText('Contact person *'), { target: { value: 'Said Al Harthy' } });
+    replies.push(staleContact());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(conflictList()).not.toBeNull());
+    fireEvent.click(within(conflictList()!).getByRole('button', { name: 'Keep mine' }));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+    first.unmount();
+    // The page reloads with the value saved now.
+    renderAs('MANAGER', { ...customer, contactPerson: 'Omar' });
+    expect(screen.getByText('Restored a local draft from your last visit.')).toBeTruthy();
+    expect(screen.getByDisplayValue('Said Al Harthy')).toBeTruthy();
+    replies.push(saved());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]!.body).toMatchObject({
+      customer: { contactPerson: 'Said Al Harthy' },
+      customerBase: { contactPerson: 'Omar' },
+      customerOverrides: ['contactPerson'],
+    });
+  });
+
+  it('ruling 1: "Use this value" takes the value saved now into the box, and the field is no longer sent', async () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText('Contact person *'), { target: { value: 'Said Al Harthy' } });
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
+    replies.push(staleContact());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(conflictList()).not.toBeNull());
+    fireEvent.click(within(conflictList()!).getByRole('button', { name: 'Use this value' }));
+    expect(screen.getByDisplayValue('Omar')).toBeTruthy();
+    replies.push(saved());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]!.body).toMatchObject({ customer: { notes: 'Closed Fridays' }, customerBase: { notes: null } });
+    expect(sent[1]!.body.customer).not.toHaveProperty('contactPerson');
+  });
+
+  it('ruling 1: a conflicting field typed back to what the page loaded is no longer in conflict', async () => {
+    renderForm();
+    fireEvent.change(screen.getByLabelText('Contact person *'), { target: { value: 'Said Al Harthy' } });
+    replies.push(staleContact());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(conflictList()).not.toBeNull());
+    fireEvent.change(screen.getByLabelText('Contact person *'), { target: { value: 'Said' } });
+    expect(conflictList()).toBeNull();
+    expect(submitBtn()).toBeEnabled();
+  });
+
+  it('FORM_OUTDATED: says to reload, at the top and beside the button, with no Try again', async () => {
+    renderForm();
+    replies.push(
+      answer({ ok: false, code: 'FORM_OUTDATED', message: FORM_OUTDATED_MESSAGE, fields: { _form: FORM_OUTDATED_MESSAGE } })
+    );
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(FORM_OUTDATED_MESSAGE));
+    expect(screen.getAllByText(FORM_OUTDATED_MESSAGE)).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('phase 2: an error with no line of its own is said at the top; one with a line, beside it; an unseen branch says reload', async () => {
+    renderForm();
+    replies.push(
+      answer({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: 'x',
+        fields: {
+          'customer.notes': 'Notes are too long.',
+          'customer.contactPerson': 'Contact person must be at least 2 characters.',
+          'branch.b9.gps': 'Branch MCT-0012: GPS coordinates are required.',
+        },
+      })
+    );
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(screen.getByText('Contact person must be at least 2 characters.')).toBeTruthy());
+    expect(screen.getByText(/^Notes are too long\./).textContent).toBe(
+      `Notes are too long. · Branch MCT-0012: GPS coordinates are required. ${RELOAD_FOR_BRANCH_HINT}`
+    );
+  });
+
+  const COUNTED = 'Counted at the shop (tick even if there is none)';
+
+  it('F21: entering a count ticks "Counted", which a count then holds on; the submit sends both', async () => {
+    renderForm();
+    const tick = screen.getByRole('checkbox', { name: COUNTED });
+    expect(tick).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Coolers' }));
+    expect(tick).toBeChecked();
+    expect(tick).toBeDisabled();
+    replies.push(saved());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.body.branches).toEqual([
+      { branchId: 'b1', coolersCount: 1, equipmentConfirmed: true, base: { coolersCount: 0, equipmentConfirmed: false } },
+    ]);
+  });
+
+  it('F21: a salesman ticks "Counted" with nothing there to count; once it is on file he sees it said, with nothing to untick', async () => {
+    renderAs('SALESMAN');
+    fireEvent.click(screen.getByRole('checkbox', { name: COUNTED }));
+    replies.push(answer({ ok: true, data: { editId: 'd1', state: 'DRAFT', submittedAt: null, replayed: false } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.body.branches).toEqual([
+      { branchId: 'b1', equipmentConfirmed: true, base: { equipmentConfirmed: false } },
+    ]);
+    cleanup();
+    renderAs('SALESMAN', { ...customer, branches: [{ ...customer.branches[0]!, equipmentConfirmed: true }] });
+    expect(screen.getByText('✓ Equipment counted')).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: COUNTED })).toBeNull();
+  });
+
+  it('F21, owner decision 3: a Manager can take "Counted" back', async () => {
+    renderAs('MANAGER', { ...customer, branches: [{ ...customer.branches[0]!, equipmentConfirmed: true }] });
+    const tick = screen.getByRole('checkbox', { name: COUNTED });
+    expect(tick).toBeChecked();
+    fireEvent.click(tick);
+    replies.push(saved());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.body.branches).toEqual([
+      { branchId: 'b1', equipmentConfirmed: false, base: { equipmentConfirmed: true } },
+    ]);
   });
 });
 

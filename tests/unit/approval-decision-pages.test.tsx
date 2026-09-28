@@ -27,6 +27,9 @@ const h = vi.hoisted(() => ({
   actionProps: [] as Array<Record<string, unknown>>,
   queueItems: [] as Array<Record<string, unknown>>,
   attachments: [] as Array<{ id: string; editId: string; kind: string; deletedAt: Date | null }>,
+  /** Phase 2: the live customer and the submitter as the stale-field check reads them. */
+  live: null as unknown,
+  submitter: null as unknown,
 }));
 
 /** The attachment table, for a `where` of { editId | editId.in, kind, deletedAt: null }. */
@@ -84,6 +87,8 @@ vi.mock('@/lib/db', () => ({
     branch: { findMany: async () => [] },
     channel: { findMany: async () => [] },
     subChannel: { findMany: async () => [] },
+    customer: { findUnique: async () => h.live },
+    user: { findUnique: async () => h.submitter },
   },
 }));
 vi.mock('@/app/(app)/approvals/[id]/ApproveRejectActions', () => ({
@@ -104,6 +109,8 @@ beforeEach(() => {
   h.actionProps = [];
   h.queueItems = [];
   h.attachments = [];
+  h.live = null;
+  h.submitter = null;
 });
 
 const guarantee = (id: string, editId = 'e1', deletedAt: Date | null = null): Att => ({
@@ -279,6 +286,124 @@ describe('the review page', () => {
     expect(props.rejectOutcome).toEqual({ kind: 'TO_SALESMAN' });
     // A row older than the stage columns: the token carries its null stage.
     expect(parseDecisionToken(props.decisionToken)).toMatchObject({ cycle: 2, stepIndex: 0, stageEnteredAt: null, creditLimit: null });
+  });
+});
+
+describe('the review page of a customer update — phase 2 (F06, F20, F21, rulings 1, 2 and 8)', () => {
+  const liveCustomer = (over: Record<string, unknown> = {}) => ({
+    legalName: 'Muscat Pearl',
+    paymentTerms: 'CASH',
+    crNumber: '1234567',
+    channelId: null,
+    subChannelId: null,
+    primaryPhone: '+96891234567',
+    altPhone: null,
+    contactPerson: 'Omar',
+    contactRole: null,
+    status: 'ACTIVE',
+    notes: 'old note',
+    deletedAt: null,
+    branches: [{ id: 'b1', equipmentConfirmed: false, address: 'Ruwi', status: 'ACTIVE' }],
+    ...over,
+  });
+  const update = (over: Record<string, unknown> = {}) =>
+    createRow('CASH', 0, {
+      process: 'UPDATE',
+      target: 'CUSTOMER',
+      isReactivation: false,
+      customerId: 'c1',
+      submittedById: 's1',
+      submitGate: { v: 1, branchIds: ['b1'] },
+      customer: { id: 'c1', legalName: 'Muscat Pearl', nmwcCode: 'NMWC-000123', crPhotoId: null, branches: [] },
+      approvalChain: resolveChain(EditProcess.UPDATE, PaymentTerms.CASH),
+      customerDraft: null,
+      submittedBy: { id: 's1', fullName: 'Salesman One', username: 'salesman.one', supervisorId: 'sup1', role: 'SALESMAN' },
+      ...over,
+    });
+  const STALE_BANNER = /^Changed on the customer since this request was sent:/;
+
+  beforeEach(() => {
+    h.role = 'GM';
+    h.submitter = { role: 'SALESMAN' };
+  });
+
+  it('ruling 8: a stored change whose field moved since is named in one banner — labels only, and Approve stays on', async () => {
+    h.live = liveCustomer();
+    const props = await renderDetail(
+      update({
+        fieldChanges: [
+          { field: 'customer.contactPerson', before: 'Said', after: 'Ali' },
+          { field: 'customer.notes', before: 'old note', after: 'new note' },
+        ],
+      })
+    );
+    const banner = screen.getByText(STALE_BANNER);
+    expect(banner.textContent).toBe('Changed on the customer since this request was sent: Contact person.');
+    // The value it holds now is not on the page (the approver may not see every branch).
+    expect(banner.parentElement!.textContent).not.toMatch(/Omar/);
+    expect(banner.parentElement!.textContent).toMatch(/it will be refused — reject it/);
+    expect(Object.keys(props).sort()).toEqual(['decisionToken', 'editId', 'outcome', 'rejectOutcome']);
+  });
+
+  it('ruling 8: judged after the QA-013 re-check, as the approval judges it — a CR number it would drop does not warn', async () => {
+    h.live = liveCustomer({ paymentTerms: 'CREDIT', crNumber: 'CR-NOW' });
+    await renderDetail(update({ fieldChanges: [{ field: 'customer.crNumber', before: 'CR-THEN', after: 'CR-MINE' }] }));
+    expect(screen.queryByText(STALE_BANNER)).toBeNull();
+    // A Manager's request keeps the field, so the same change warns.
+    cleanup();
+    h.actionProps = [];
+    h.submitter = { role: 'MANAGER' };
+    await renderDetail(update({ fieldChanges: [{ field: 'customer.crNumber', before: 'CR-THEN', after: 'CR-MINE' }] }));
+    expect(screen.getByText(STALE_BANNER).textContent).toMatch(/CR number\.$/);
+  });
+
+  it('ruling 8: nothing moved since, no banner', async () => {
+    h.live = liveCustomer({ contactPerson: 'Said' });
+    await renderDetail(update({ fieldChanges: [{ field: 'customer.contactPerson', before: 'Said', after: 'Ali' }] }));
+    expect(screen.queryByText(STALE_BANNER)).toBeNull();
+  });
+
+  it("ruling 2: a salesman's pending request stored with no gated branches came from the previous form, and says so", async () => {
+    h.live = liveCustomer({ contactPerson: 'Said' });
+    const OLD = /^Sent by the previous version of the form, which sent every field/;
+    const changes = [{ field: 'customer.contactPerson', before: 'Said', after: 'Ali' }];
+    await renderDetail(update({ submitGate: null, fieldChanges: changes }));
+    expect(screen.getByText(OLD)).toBeTruthy();
+    for (const over of [
+      { submitGate: { v: 1, branchIds: ['b1'] } },
+      { submitGate: null, submittedBy: { id: 's1', fullName: 'Manager One', supervisorId: null, role: 'MANAGER' } },
+      { submitGate: null, state: 'APPROVED' },
+    ]) {
+      cleanup();
+      h.actionProps = [];
+      h.edit = update({ fieldChanges: changes, ...over });
+      const { default: Page } = await import('@/app/(app)/approvals/[id]/page');
+      render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+      expect(screen.queryByText(OLD), JSON.stringify(over)).toBeNull();
+    }
+  });
+
+  it('the rows: a clear reads "Cleared", Counted reads Yes / No, and a "Keep mine" says what it replaces', async () => {
+    h.live = liveCustomer({ notes: 'old note', contactPerson: 'Omar' });
+    await renderDetail(
+      update({
+        fieldChanges: [
+          { field: 'customer.notes', before: 'old note', after: null },
+          { field: 'customer.altPhone', before: null, after: '+96899887766' },
+          { field: 'customer.contactPerson', before: 'Omar', after: 'Ali', overrodeLive: 'Omar' },
+          { field: 'branch.b1.equipmentConfirmed', before: false, after: true },
+        ],
+      })
+    );
+    const row = (label: string) => screen.getByText(label, { selector: 'div' }).parentElement!;
+    expect(within(row('notes')).getByText('Cleared').tagName).toBe('EM');
+    // An empty before is not a clear: "—" still means it was empty.
+    expect(within(row('altPhone')).queryByText('Cleared')).toBeNull();
+    expect(within(row('altPhone')).getByText('—')).toBeTruthy();
+    expect(within(row('equipmentConfirmed')).getByText('No')).toBeTruthy();
+    expect(within(row('equipmentConfirmed')).getByText('Yes')).toBeTruthy();
+    expect(within(row('contactPerson')).getByText('Replaces a value changed after the form was opened.')).toBeTruthy();
+    expect(screen.getAllByText('Replaces a value changed after the form was opened.')).toHaveLength(1);
   });
 });
 

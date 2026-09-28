@@ -43,8 +43,6 @@ export default async function EditCustomerPage({
       contactRole: true,
       status: true,
       notes: true,
-      // UXI-003 — surfaced to the form to detect stale localStorage drafts.
-      updatedAt: true,
       branches: {
         where: { deletedAt: null },
         orderBy: { createdAt: 'asc' },
@@ -63,6 +61,8 @@ export default async function EditCustomerPage({
           coolersCount: true,
           standsCount: true,
           emptyBottlesCount: true,
+          // F21: whether the counts were confirmed at the shop ("Counted").
+          equipmentConfirmed: true,
           status: true,
           shopPhotoId: true,
           signboardPhotoId: true,

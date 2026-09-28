@@ -62,6 +62,74 @@ describe('enrichmentBase', () => {
   it('does not depend on the order the branches arrive in', () => {
     expect(enrichmentBase(customer({}, [branch('b2'), branch('b1')]))).toBe(enrichmentBase(customer()));
   });
+
+  // Phase 2: a changed output would silently drop every draft on every phone at
+  // the deploy. The literal was captured from the function before phase 2, with
+  // the phase-2 fields (equipmentConfirmed, the GPS companions, status) present
+  // in the input — they must stay out of it.
+  it('its output is unchanged since before phase 2, byte for byte', () => {
+    const fixture = {
+      legalName: 'Al Noor Trading <LLC>',
+      crNumber: '1234567',
+      channelId: 'ckchannel00000000000000001',
+      subChannelId: null,
+      primaryPhone: '+96891234567',
+      altPhone: null,
+      contactPerson: 'سعيد',
+      contactRole: '',
+      status: 'ACTIVE',
+      notes: 'Closed Fridays, back door',
+      crPhotoId: 'att-cr',
+      updatedAt: new Date('2026-09-25T06:00:00.000Z'),
+      branches: [
+        {
+          id: 'b2',
+          address: 'Way 2, Seeb',
+          areaDescription: null,
+          gpsLat: null,
+          gpsLng: null,
+          gpsAccuracy: null,
+          gpsCapturedAt: null,
+          dayOfVisit: null,
+          openingHours: '08:00 – 22:00',
+          deliveryWindow: null,
+          coolersCount: 0,
+          standsCount: 0,
+          emptyBottlesCount: 0,
+          equipmentConfirmed: true,
+          status: 'ACTIVE',
+          shopPhotoId: null,
+        },
+        {
+          id: 'b1',
+          address: 'Way 1, Ruwi',
+          areaDescription: 'Opposite the bakery',
+          gpsLat: 23.588123,
+          gpsLng: 58.3829,
+          gpsAccuracy: 7.5,
+          gpsCapturedAt: new Date('2026-09-24T08:00:00.000Z'),
+          dayOfVisit: 'SUN',
+          openingHours: null,
+          deliveryWindow: '10:00 – 14:00',
+          coolersCount: 2,
+          standsCount: 1,
+          emptyBottlesCount: 40,
+          equipmentConfirmed: false,
+          status: 'CLOSED',
+          shopPhotoId: 'att-shop',
+        },
+      ],
+    };
+    expect(enrichmentBase(fixture)).toBe(
+      '["Al Noor Trading <LLC>","1234567","ckchannel00000000000000001",null,"+96891234567",null,"سعيد","","ACTIVE","Closed Fridays, back door",[["b1","Way 1, Ruwi","Opposite the bakery",23.588123,58.3829,"SUN",null,"10:00 – 14:00",2,1,40],["b2","Way 2, Seeb",null,null,null,null,"08:00 – 22:00",null,0,0,0]]]'
+    );
+    // "Counted" and the GPS companions changing on the server do not drop a draft.
+    const moved = {
+      ...fixture,
+      branches: fixture.branches.map((b) => ({ ...b, equipmentConfirmed: !b.equipmentConfirmed, gpsAccuracy: 99 })),
+    };
+    expect(enrichmentBase(moved)).toBe(enrichmentBase(fixture));
+  });
 });
 
 describe('draftIsStale', () => {
@@ -70,17 +138,19 @@ describe('draftIsStale', () => {
 
   it('a draft typed BEFORE a photo was taken is restored (the item-22 loss)', () => {
     const savedBeforePhoto = updatedAt - 60_000;
-    expect(draftIsStale({ base, savedAt: savedBeforePhoto }, base, updatedAt)).toBe(false);
+    expect(draftIsStale({ base, savedAt: savedBeforePhoto }, base)).toBe(false);
   });
 
   it('a draft whose server values changed since is stale, whatever the clocks say', () => {
     const changed = enrichmentBase(customer({ contactPerson: 'Mr Said' }));
-    expect(draftIsStale({ base, savedAt: updatedAt + 60_000 }, changed, updatedAt)).toBe(true);
+    expect(draftIsStale({ base, savedAt: updatedAt + 60_000 }, changed)).toBe(true);
   });
 
-  it('a draft written before item 22 keeps the old clock rule', () => {
-    expect(draftIsStale({ savedAt: updatedAt - 1 }, base, updatedAt)).toBe(true);
-    expect(draftIsStale({ savedAt: updatedAt + 1 }, base, updatedAt)).toBe(false);
-    expect(draftIsStale({}, base, updatedAt)).toBe(false);
+  // Phase 2 replaced the old clock rule: nothing in a draft with no base says
+  // which values were typed, and every value that differs is now sent as a change.
+  it('a draft without a base (saved before item 22) is stale, however recent', () => {
+    expect(draftIsStale({ savedAt: updatedAt + 60_000 }, base)).toBe(true);
+    expect(draftIsStale({}, base)).toBe(true);
+    expect(draftIsStale({ base: 42 }, base)).toBe(true);
   });
 });

@@ -180,6 +180,7 @@ ImportBatch ──> ImportRow ──> Customer (lineage tracking)
 - `coolers_count` (int, default 0)
 - `stands_count` (int, default 0)
 - `empty_bottles_count` (int, default 0)
+- `equipment_confirmed` (bool, default false) — the counts were confirmed at the shop, so a 0 is a real 0 (F21)
 - `shop_photo_id`, `signboard_photo_id` (FK → Attachment, required)
 - `extra_photo_ids[]` (up to 2)
 - `status` (enum: ACTIVE / CLOSED / SUSPENDED)
@@ -302,7 +303,8 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 
 ### 7.1 Supervisor approval queue
 - Sorted by: oldest pending first, then by salesman.
-- Per-submission view: side-by-side BEFORE / AFTER diff per changed field.
+- Per-submission view: side-by-side BEFORE / AFTER diff per changed field. An emptied field reads "Cleared"; "Equipment counted" reads Yes / No; a field the salesman kept over a value changed after his form opened ("Keep mine") says it replaces that value (2026-09-29).
+- Before an update's approval, the view names the fields that have changed on the customer since the request was sent (labels only): approving it will be refused, and rejecting sends it back to the salesman. A salesman's request sent by the form before 2026-09-29, which sent every field, says so, so each row is checked against the customer.
 - Photo viewer: tap to enlarge; salesman cannot replace, supervisor can only Approve or Reject.
 - Approve: changes applied atomically to Customer/Branch; AuditLog written; salesman notified.
 - Reject: mandatory reason (free text + optional category dropdown: bad photo / wrong GPS / missing field / wrong info / other). Salesman notified.
@@ -331,17 +333,18 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 | `alt_phone` | string | optional; same rule; can be cleared from the edit form (F20) | server |
 | `contact_person` | string | 2–200 chars, counted after HTML is stripped (N02) | server |
 | `address` | text | 3–500 chars, counted after HTML is stripped (N02) | server |
-| `area_description` | text | optional; max 500 chars | server |
+| `area_description` | text | optional; max 500 chars; can be cleared from the edit form (F20) | server |
 | `gps_lat` | float | -90 ≤ x ≤ 90; required at submit (not draft) | server |
 | `gps_lng` | float | -180 ≤ x ≤ 180; required at submit | server |
 | `gps_accuracy` | float | auto-captured by browser geolocation API | client |
 | `day_of_visit` | enum | SAT/SUN/MON/TUE/WED/THU/FRI; once set, the edit form cannot clear it (F20, owner decision 2026-09-29) | server |
-| `opening_hours` | string | optional; max 100 chars | server |
-| `delivery_window` | string | optional; max 100 chars | server |
+| `opening_hours` | string | optional; max 100 chars; can be cleared from the edit form (F20) | server |
+| `delivery_window` | string | optional; max 100 chars; can be cleared from the edit form (F20) | server |
 | `channel_id` | uuid | must reference an active Channel | server |
 | `sub_channel_id` | uuid | must reference an active SubChannel **whose `channel_id = customer.channel_id`**, checked whenever the channel or the sub-channel changes — at create, at an edit's submit and again at its approval (`lib/channel-pair.ts`, F16); an edit that moves the customer to another channel clears a sub-channel of the old one; can be cleared from the edit form (F20) | server |
 | `coolers_count` / `stands_count` / `empty_bottles_count` | int | 0 ≤ x ≤ 100 | server |
-| `notes` | text | optional; max 5000 chars; HTML stripped | server |
+| `equipment_confirmed` | bool | "Counted at the shop" on the edit form: ticked by hand, or by entering a count; a Salesman can only set it, a Data Steward or Manager can also clear it (F21, owner decision 2026-09-29) | client + server |
+| `notes` | text | optional; max 5000 chars; HTML stripped; can be cleared from the edit form (F20) | server |
 | `payment_terms` | enum | CASH / CREDIT; only Steward sets at import | server |
 | `status` | enum | ACTIVE / CLOSED / SUSPENDED; Closed requires photo evidence | server |
 | Photo (any) | file | image/jpeg, image/png, image/webp; max 10 MB raw; auto-compressed to ≤2 MB; min 800×600; EXIF stripped except GPS | server |

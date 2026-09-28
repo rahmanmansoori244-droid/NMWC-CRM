@@ -3,7 +3,11 @@
 import { useCallback, useId, useState, useEffect, useRef } from 'react';
 import { Role, type CustomerStatus, type DayOfWeek, type PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
-import { surfaceUnrenderedErrors, enrichmentFormRendersError } from '@/lib/form-errors';
+import {
+  surfaceUnrenderedErrors,
+  enrichmentFormRendersError,
+  withReloadHintForUnshownBranches,
+} from '@/lib/form-errors';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
@@ -14,48 +18,79 @@ import { hardReplace } from '@/lib/navigate';
 import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
 import { isRequired, type SubmitGate } from '@/lib/submit-gate';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
+import { EDIT_PAYLOAD_VERSION, fieldLabel, type BaseValue } from '@/lib/edit-values';
+import {
+  buildEnrichmentPatch,
+  conflictsFrom,
+  countedNow,
+  countsMoved,
+  loadedFormState,
+  NO_KEPT_FIELDS,
+  openConflicts,
+  resolveConflict,
+  restoreBranchStates,
+  restoreKept,
+  type Conflicts,
+  type FormBranch,
+  type FormCustomer,
+  type FormGps,
+  type KeptFields,
+  type LoadedBranch,
+  type LoadedCustomer,
+} from '@/lib/enrichment-patch';
 
-type CustomerWithBranches = {
+type CustomerWithBranches = Omit<LoadedCustomer, 'branches'> & {
   id: string;
   nmwcCode: string;
-  legalName: string;
   paymentTerms: PaymentTerms;
-  crNumber: string | null;
-  channelId: string | null;
-  subChannelId: string | null;
-  primaryPhone: string | null;
-  altPhone: string | null;
-  contactPerson: string | null;
-  contactRole: string | null;
-  status: CustomerStatus;
-  notes: string | null;
   crPhotoId: string | null;
-  // UXI-003: server-side updatedAt is the freshness anchor for the
-  // localStorage draft restore. If the customer has been touched server-side
-  // since the draft was saved we warn the user before overwriting the form.
-  updatedAt: Date;
-  branches: Array<{
-    id: string;
-    branchName: string;
-    address: string;
-    areaDescription: string | null;
-    gpsLat: number | null;
-    gpsLng: number | null;
-    gpsAccuracy: number | null;
-    gpsCapturedAt: Date | null;
-    dayOfVisit: DayOfWeek | null;
-    openingHours: string | null;
-    deliveryWindow: string | null;
-    coolersCount: number;
-    standsCount: number;
-    emptyBottlesCount: number;
-    status: CustomerStatus;
-    shopPhotoId: string | null;
-    signboardPhotoId: string | null;
-    region: { name: string };
-    route: { code: string };
-  }>;
+  branches: Array<
+    LoadedBranch & {
+      branchName: string;
+      status: CustomerStatus;
+      shopPhotoId: string | null;
+      signboardPhotoId: string | null;
+      region: { name: string };
+      route: { code: string };
+    }
+  >;
 };
+
+/** The customer text boxes a phone draft holds (lib/enrichment-draft.ts). */
+const DRAFT_TEXT_FIELDS = [
+  'legalName',
+  'crNumber',
+  'channelId',
+  'subChannelId',
+  'primaryPhone',
+  'altPhone',
+  'contactPerson',
+  'contactRole',
+  'notes',
+] as const;
+
+/** Why Submit waits after a STALE_FIELDS answer (ruling 1). */
+const UNRESOLVED_TITLE =
+  'Some details changed after you opened this form. Choose “Keep mine” or “Use this value” for each one above, then submit.';
+
+/** The GPS button takes a Date; a restored draft or a live value carries an ISO string. */
+const gpsForButton = (g: FormGps | null): Gps | null =>
+  g
+    ? {
+        lat: g.lat,
+        lng: g.lng,
+        accuracy: g.accuracy ?? undefined,
+        capturedAt: new Date(g.capturedAt),
+        isManual: g.isManual,
+        manualReason: g.manualReason,
+      }
+    : null;
+
+function without<T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> {
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
 
 type ChannelWithSubs = {
   id: string;
@@ -128,56 +163,35 @@ export function EnrichmentForm({
   // only when these change on the server — not when a photo bumps updatedAt.
   const baseRef = useRef<string | null>(null);
   if (baseRef.current === null) baseRef.current = enrichmentBase(customer);
+  // Phase 2 (F06): the same values, field by field — every field sent carries
+  // its value from here as its base (lib/enrichment-patch.ts). The page's
+  // values, never the phone draft's; moved only by "Keep mine" / "Use this value".
+  const loadedRef = useRef<LoadedCustomer>(customer);
 
-  // Customer-level state
-  const [legalName, setLegalName] = useState(customer.legalName);
-  const [crNumber, setCrNumber] = useState(customer.crNumber ?? '');
-  const [channelId, setChannelId] = useState(customer.channelId ?? '');
-  const [subChannelId, setSubChannelId] = useState(customer.subChannelId ?? '');
-  const [primaryPhone, setPrimaryPhone] = useState(customer.primaryPhone ?? '');
-  const [altPhone, setAltPhone] = useState(customer.altPhone ?? '');
-  const [contactPerson, setContactPerson] = useState(customer.contactPerson ?? '');
-  const [contactRole, setContactRole] = useState(customer.contactRole ?? '');
-  const [status, setStatus] = useState<CustomerStatus>(customer.status);
-  const [notes, setNotes] = useState(customer.notes ?? '');
+  // The boxes: the customer's, and each branch's by id.
+  const [values, setValues] = useState<FormCustomer>(() => loadedFormState(customer).customer);
+  const [branchStates, setBranchStates] = useState<Record<string, FormBranch>>(
+    () => loadedFormState(customer).branches
+  );
+  const setValue = (key: keyof FormCustomer) => (v: string) => setValues((c) => ({ ...c, [key]: v }));
+  const { legalName, crNumber, channelId, subChannelId, primaryPhone, contactPerson } = values;
 
-  // Branch-level state — keyed by branch id
-  type BState = {
-    address: string;
-    areaDescription: string;
-    gps: Gps | null;
-    dayOfVisit: DayOfWeek | '';
-    openingHours: string;
-    deliveryWindow: string;
-    coolers: number;
-    stands: number;
-    bottles: number;
-  };
-  const [branchStates, setBranchStates] = useState<Record<string, BState>>(() => {
-    const out: Record<string, BState> = {};
-    for (const b of customer.branches) {
-      out[b.id] = {
-        address: b.address,
-        areaDescription: b.areaDescription ?? '',
-        gps:
-          b.gpsLat != null && b.gpsLng != null
-            ? {
-                lat: b.gpsLat,
-                lng: b.gpsLng,
-                accuracy: b.gpsAccuracy ?? undefined,
-                capturedAt: b.gpsCapturedAt ?? new Date(),
-              }
-            : null,
-        dayOfVisit: b.dayOfVisit ?? '',
-        openingHours: b.openingHours ?? '',
-        deliveryWindow: b.deliveryWindow ?? '',
-        coolers: b.coolersCount,
-        stands: b.standsCount,
-        bottles: b.emptyBottlesCount,
-      };
-    }
-    return out;
-  });
+  // Ruling 1 (phase 2): the fields a STALE_FIELDS answer named, with the value
+  // found live — until he chooses "Keep mine" or "Use this value" for each —
+  // and the fields he kept, which the next submit says it knowingly replaces.
+  const [conflicts, setConflicts] = useState<Conflicts>({});
+  const [kept, setKept] = useState<KeptFields>(NO_KEPT_FIELDS);
+  // Bumped by each choice: the phone copy then carries the moved base.
+  const [rebaseGen, setRebaseGen] = useState(0);
+  const patchOptions = { role: userRole, lockName, lockCr };
+  const patch = buildEnrichmentPatch(
+    loadedRef.current,
+    { customer: values, branches: branchStates },
+    { ...patchOptions, kept }
+  );
+  // A conflict on a field no longer sent is moot; one still sent would be refused again.
+  const unresolved = openConflicts(conflicts, patch);
+  const shownBranchIds = new Set(customer.branches.map((b) => b.id));
 
   // Available sub-channels for chosen channel
   const subChannels = channels.find((c) => c.id === channelId)?.subChannels ?? [];
@@ -244,29 +258,30 @@ export function EnrichmentForm({
     !canSubmit ||
     arrived ||
     uploading > 0 ||
+    unresolved.length > 0 ||
     (userRole === Role.SALESMAN && missingMandatory.length > 0);
   const submitTitle = !canSubmit
     ? 'Pending edit already in review'
     : uploading > 0
       ? PHOTO_UPLOADING_MESSAGE
-      : missingMandatory.length > 0
-        ? `Missing: ${missingMandatory.join(', ')}`
-        : '';
+      : unresolved.length > 0
+        ? UNRESOLVED_TITLE
+        : missingMandatory.length > 0
+          ? `Missing: ${missingMandatory.join(', ')}`
+          : '';
 
   // ── Local draft auto-save (IndexedDB-lite via localStorage for v1) ───────
-  // UXI-002: scope by user. UXI-003: scope by customer.updatedAt as well —
-  // when the customer has been edited server-side since the draft was
-  // written, the next mount uses a fresh key (so old draft is ignored) and
-  // we warn the user that there are newer server changes.
-  const customerUpdatedAtMs = new Date(customer.updatedAt).getTime();
+  // UXI-002: scope by user. Whether a saved draft may be restored is decided
+  // by the server values it started from (item 22, lib/enrichment-draft.ts).
   const draftKey = `nmwc:draft:${sessionUserId}:${customer.id}`;
   // GpsCaptureButton reads its `initial` only when it mounts. A restore replaces
   // the branch GPS after that, so the chip kept showing the old point while the
   // form submitted the restored one — including a typed point and its reason
-  // (item 41) the salesman could not see. Bumped on restore to remount them.
+  // (item 41) the salesman could not see. Bumped on restore to remount them,
+  // and when "Use this value" takes the live point into the box.
   const [restoreGeneration, setRestoreGeneration] = useState(0);
-  // Restore runs ONCE per draft key, on mount. customerUpdatedAtMs also changes
-  // mid-session — the salesman's own CR photo attach revalidates this page — and a
+  // Restore runs ONCE per draft key, on mount. The page's props also change
+  // mid-session — the salesman's own CR photo attach revalidates it — and a
   // re-run then re-applied the draft over live typing, remounted the GPS buttons
   // (losing an open manual entry or an in-flight capture), or told the salesman
   // their own draft was stale. A ref, so a StrictMode double run also counts once.
@@ -281,8 +296,9 @@ export function EnrichmentForm({
       // UXI-003: stale-draft guard. If the server values the draft started from
       // have changed since, prefer server data and tell the user. Item 22: by
       // the values, not updatedAt — a photo taken after typing bumps updatedAt,
-      // and every such draft used to be thrown away here.
-      if (draftIsStale(d, baseRef.current!, customerUpdatedAtMs)) {
+      // and every such draft used to be thrown away here. Phase 2: a draft with
+      // no starting values at all is dropped too (lib/enrichment-draft.ts).
+      if (draftIsStale(d, baseRef.current!)) {
         setInfo(
           'Your offline draft is older than the latest server changes. The form has been refreshed — re-enter anything you still need.'
         );
@@ -293,24 +309,23 @@ export function EnrichmentForm({
         }
         return;
       }
-      if (typeof d.legalName === 'string') setLegalName(d.legalName);
-      if (typeof d.crNumber === 'string') setCrNumber(d.crNumber);
-      if (typeof d.channelId === 'string') setChannelId(d.channelId);
-      if (typeof d.subChannelId === 'string') setSubChannelId(d.subChannelId);
-      if (typeof d.primaryPhone === 'string') setPrimaryPhone(d.primaryPhone);
-      if (typeof d.altPhone === 'string') setAltPhone(d.altPhone);
-      if (typeof d.contactPerson === 'string') setContactPerson(d.contactPerson);
-      if (typeof d.contactRole === 'string') setContactRole(d.contactRole);
-      if (typeof d.notes === 'string') setNotes(d.notes);
+      setValues((c) => {
+        const next = { ...c };
+        for (const k of DRAFT_TEXT_FIELDS) if (typeof d[k] === 'string') next[k] = d[k];
+        return next;
+      });
+      // Phase 2: per branch the page shows, never a branch handed to another
+      // route since (it used to be sent, and refused).
       if (d.branchStates) {
-        setBranchStates((prev) => ({ ...prev, ...d.branchStates }));
+        setBranchStates((prev) => restoreBranchStates(prev, d.branchStates, customer.branches));
         setRestoreGeneration((g) => g + 1);
       }
+      if (d.kept) setKept(restoreKept(d.kept, customer.branches));
       setInfo('Restored a local draft from your last visit.');
     } catch {
       /* ignore */
     }
-  }, [draftKey, customerUpdatedAtMs]);
+  }, [draftKey, customer.branches]);
 
   // Set when a submit arrived and the page is leaving: from then on nothing
   // writes the phone copy — not a keystroke's autosave already due, which fired
@@ -327,18 +342,21 @@ export function EnrichmentForm({
       window.localStorage.setItem(
         draftKey,
         JSON.stringify({
-          legalName,
-          crNumber,
-          channelId,
-          subChannelId,
-          primaryPhone,
-          altPhone,
-          contactPerson,
-          contactRole,
-          notes,
+          legalName: values.legalName,
+          crNumber: values.crNumber,
+          channelId: values.channelId,
+          subChannelId: values.subChannelId,
+          primaryPhone: values.primaryPhone,
+          altPhone: values.altPhone,
+          contactPerson: values.contactPerson,
+          contactRole: values.contactRole,
+          notes: values.notes,
           branchStates,
           savedAt: Date.now(),
           base: baseRef.current,
+          // Ruling 1: a "Keep mine" survives a reload with the draft, so the
+          // approver is still told what it replaces.
+          ...(kept.customer.length > 0 || Object.keys(kept.branches).length > 0 ? { kept } : {}),
         })
       );
     }, 500);
@@ -346,22 +364,38 @@ export function EnrichmentForm({
     // Item 22: a green "saved" no longer describes the form once it changes.
     setNotice((n) => (n?.tone === 'received' ? null : n));
     return () => clearTimeout(handle);
-  }, [
-    draftKey,
-    legalName,
-    crNumber,
-    channelId,
-    subChannelId,
-    primaryPhone,
-    altPhone,
-    contactPerson,
-    contactRole,
-    notes,
-    branchStates,
-  ]);
+  }, [draftKey, values, branchStates, kept, rebaseGen]);
 
-  function setBranch(id: string, patch: Partial<BState>) {
-    setBranchStates((s) => ({ ...s, [id]: { ...s[id], ...patch } }));
+  function setBranch(id: string, change: Partial<FormBranch>) {
+    setBranchStates((s) => ({ ...s, [id]: { ...s[id]!, ...change } }));
+  }
+
+  /**
+   * Ruling 1: his answer to one field a STALE_FIELDS reply named. Nothing
+   * moves until he answers, field by field; lib/enrichment-patch.ts
+   * resolveConflict says what each answer does.
+   */
+  function choose(slot: string, choice: 'mine' | 'theirs') {
+    const live = conflicts[slot];
+    if (!live) return;
+    const next = resolveConflict(
+      choice,
+      live,
+      loadedRef.current,
+      { customer: values, branches: branchStates },
+      kept,
+      patchOptions
+    );
+    loadedRef.current = next.loaded;
+    // The phone copy now starts from these values (the autosave runs on rebaseGen).
+    baseRef.current = enrichmentBase(next.loaded);
+    setValues(next.state.customer);
+    setBranchStates(next.state.branches);
+    setKept(next.kept);
+    setConflicts((c) => without(c, slot));
+    setErrors((e) => without(e, slot));
+    if (choice === 'theirs' && slot.endsWith('.gps')) setRestoreGeneration((g) => g + 1);
+    setRebaseGen((g) => g + 1);
   }
 
   async function submit(isDraft: boolean) {
@@ -369,6 +403,9 @@ export function EnrichmentForm({
     // while a photo is going up; a success here would leave and abort it. The
     // line beside the button says why nothing happens.
     if (!isDraft && uploading > 0) return;
+    // Ruling 1: a field still in conflict would only be refused again. A draft
+    // is never checked for it — nothing is written from one.
+    if (!isDraft && unresolved.length > 0) return;
     // UXI-004: synchronous lock so a fast double-tap on the Submit button
     // can't fire two parallel requests before `sending` renders.
     if (submitLockRef.current) return;
@@ -380,44 +417,9 @@ export function EnrichmentForm({
     // "Trying…" under the thumb — and each outcome below replaces it.
     lastWasDraftRef.current = isDraft;
 
-    // EL-01 mirror: salesmen cannot SUBMIT a customer-level status flip via
-    // the regular edit form. Drop the status field from the payload entirely
-    // for SALESMAN — the server-side guard rejects it anyway, but stripping
-    // here gives a cleaner UX (no "Use the close action" error if the user
-    // never touched the field).
-    const submittedStatus = userRole === Role.SALESMAN ? customer.status : status;
-
-    const customerPayload = {
-      legalName: lockName ? undefined : legalName.trim() || undefined,
-      crNumber: lockCr ? undefined : crNumber.trim() || undefined,
-      channelId: channelId || undefined,
-      subChannelId: subChannelId || undefined,
-      primaryPhone: primaryPhone.trim() || undefined,
-      altPhone: altPhone.trim() || undefined,
-      contactPerson: contactPerson.trim() || undefined,
-      contactRole: contactRole.trim() || undefined,
-      status: submittedStatus,
-      notes: notes.trim() || undefined,
-    };
-    const branches = Object.entries(branchStates).map(([branchId, s]) => ({
-      branchId,
-      address: s.address.trim() || undefined,
-      areaDescription: s.areaDescription.trim() || undefined,
-      gpsLat: s.gps?.lat,
-      gpsLng: s.gps?.lng,
-      gpsAccuracy: s.gps?.accuracy,
-      gpsCapturedAt: s.gps?.capturedAt,
-      // Item 41: a typed-in point says so, with the reason the salesman gave.
-      gpsManualReason: s.gps?.isManual ? s.gps.manualReason : undefined,
-      dayOfVisit: s.dayOfVisit || undefined,
-      openingHours: s.openingHours.trim() || undefined,
-      deliveryWindow: s.deliveryWindow.trim() || undefined,
-      coolersCount: s.coolers,
-      standsCount: s.stands,
-      emptyBottlesCount: s.bottles,
-    }));
-
-    const body = { customerId: customer.id, isDraft, customer: customerPayload, branches };
+    // Phase 2 (F06, F20): only what was touched, each with the value the page
+    // loaded; an emptied box is null. EL-01: a salesman's never has a status.
+    const body = { v: EDIT_PAYLOAD_VERSION, customerId: customer.id, isDraft, ...patch };
     idsRef.current ??= new SubmissionIds();
     // The same payload after no answer keeps its id, so a retry is never written twice.
     const submissionId = idsRef.current.idFor(body);
@@ -436,9 +438,24 @@ export function EnrichmentForm({
       if (outcome.kind !== 'answered') return;
       const result = outcome.result;
       if (!result.ok) {
+        // Ruling 1: fields changed after the page opened, with the values now
+        // saved. His typing stays; each waits for his choice.
+        const stale =
+          result.code === 'STALE_FIELDS' && result.fields && result.current
+            ? conflictsFrom(result.fields, result.current)
+            : null;
+        if (stale) setConflicts(stale);
         if (result.fields) {
-          // A key with no slot on this form still surfaces, at the top.
-          setErrors(surfaceUnrenderedErrors(result.fields, enrichmentFormRendersError));
+          // A key with no slot on this form still surfaces, at the top — with
+          // "reload" when it names a branch this page does not show (ruling 11).
+          // A conflict is shown in the list of them.
+          const fields = withReloadHintForUnshownBranches(result.fields, shownBranchIds);
+          setErrors(
+            surfaceUnrenderedErrors(
+              fields,
+              (k) => enrichmentFormRendersError(k, shownBranchIds) || !!stale?.[k]
+            )
+          );
         }
         return;
       }
@@ -508,6 +525,15 @@ export function EnrichmentForm({
           {errors._form}
         </div>
       )}
+      {unresolved.length > 0 && (
+        <ConflictList
+          slots={unresolved}
+          conflicts={conflicts}
+          branches={customer.branches}
+          channels={channels}
+          onChoose={choose}
+        />
+      )}
 
       <FormSection
         title="Identity"
@@ -526,14 +552,14 @@ export function EnrichmentForm({
             label="Legal name *"
             error={errors['customer.legalName']}
             value={legalName}
-            onChange={setLegalName}
+            onChange={setValue('legalName')}
             disabled={lockName}
           />
           <Field
             label="CR number"
             error={errors['customer.crNumber']}
             value={crNumber}
-            onChange={setCrNumber}
+            onChange={setValue('crNumber')}
             disabled={lockCr}
           />
           <Field label="NMWC code" value={customer.nmwcCode} onChange={() => {}} disabled mono />
@@ -561,8 +587,8 @@ export function EnrichmentForm({
             <label htmlFor={`${uid}-notes`} className="mb-1 block text-sm font-medium text-slate-700">Notes</label>
             <textarea
               id={`${uid}-notes`}
-              value={notes}
-              onChange={(e) => setNotes(e.currentTarget.value)}
+              value={values.notes}
+              onChange={(e) => setValue('notes')(e.currentTarget.value)}
               maxLength={5000}
               className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
               rows={3}
@@ -579,8 +605,10 @@ export function EnrichmentForm({
               id={`${uid}-channel`}
               value={channelId}
               onChange={(e) => {
-                setChannelId(e.currentTarget.value);
-                setSubChannelId('');
+                // A new channel empties the sub-channel, and the submit sends that
+                // (null) unless one of the new channel's is picked (F16).
+                const next = e.currentTarget.value;
+                setValues((c) => ({ ...c, channelId: next, subChannelId: '' }));
               }}
               className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm"
             >
@@ -599,7 +627,7 @@ export function EnrichmentForm({
             <select
               id={`${uid}-subchannel`}
               value={subChannelId}
-              onChange={(e) => setSubChannelId(e.currentTarget.value)}
+              onChange={(e) => setValue('subChannelId')(e.currentTarget.value)}
               disabled={!channelId}
               className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm disabled:bg-slate-100"
             >
@@ -619,8 +647,8 @@ export function EnrichmentForm({
               <label htmlFor={`${uid}-status`} className="mb-1 block text-sm font-medium text-slate-700">Status</label>
               <select
                 id={`${uid}-status`}
-                value={status}
-                onChange={(e) => setStatus(e.currentTarget.value as CustomerStatus)}
+                value={values.status}
+                onChange={(e) => setValue('status')(e.currentTarget.value as CustomerStatus)}
                 className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm"
               >
                 <option value="ACTIVE">Active</option>
@@ -640,7 +668,7 @@ export function EnrichmentForm({
             autoComplete="off"
             placeholder="+968 9XXX XXXX"
             value={primaryPhone}
-            onChange={setPrimaryPhone}
+            onChange={setValue('primaryPhone')}
             error={errors['customer.primaryPhone']}
           />
           <Field
@@ -648,23 +676,25 @@ export function EnrichmentForm({
             type="tel"
             autoComplete="off"
             placeholder="+968 …"
-            value={altPhone}
-            onChange={setAltPhone}
+            value={values.altPhone}
+            onChange={setValue('altPhone')}
             error={errors['customer.altPhone']}
           />
           <Field
             label="Contact person *"
             value={contactPerson}
-            onChange={setContactPerson}
+            onChange={setValue('contactPerson')}
             error={errors['customer.contactPerson']}
           />
-          <Field label="Contact role" value={contactRole} onChange={setContactRole} />
+          <Field label="Contact role" value={values.contactRole} onChange={setValue('contactRole')} />
         </div>
       </FormSection>
 
       {customer.branches.map((b, idx) => {
         const s = branchStates[b.id];
         if (!s) return null;
+        // What the page loaded for it (moved by a conflict choice): decides the "Counted" box.
+        const lb = loadedRef.current.branches.find((x) => x.id === b.id) ?? b;
         return (
           <FormSection
             key={b.id}
@@ -693,7 +723,7 @@ export function EnrichmentForm({
                 </label>
                 <GpsCaptureButton
                   key={restoreGeneration}
-                  initial={s.gps}
+                  initial={gpsForButton(s.gps)}
                   onCapture={(g) => setBranch(b.id, { gps: g })}
                   required
                 />
@@ -746,22 +776,41 @@ export function EnrichmentForm({
                     name={`coolers-${b.id}`}
                     label="Coolers"
                     value={s.coolers}
-                    onChange={(n) => setBranch(b.id, { coolers: n })}
+                    onChange={(n) => setBranch(b.id, { coolers: n, confirmed: true })}
                   />
                   <StepperInput
                     name={`stands-${b.id}`}
                     label="Stands"
                     value={s.stands}
-                    onChange={(n) => setBranch(b.id, { stands: n })}
+                    onChange={(n) => setBranch(b.id, { stands: n, confirmed: true })}
                   />
                   <StepperInput
                     name={`bottles-${b.id}`}
                     label="Empty bottles"
                     value={s.bottles}
-                    onChange={(n) => setBranch(b.id, { bottles: n })}
+                    onChange={(n) => setBranch(b.id, { bottles: n, confirmed: true })}
                     max={1000}
                   />
                 </div>
+                {/* F21: a stored 0 is also the column's default, so a real zero is
+                    said by this tick (Branch.equipmentConfirmed); entering a count
+                    is counting, so each stepper ticks it too. Owner decision 3: a
+                    salesman only ever sets it; once it is on file, he sees it said. */}
+                {userRole === Role.SALESMAN && lb.equipmentConfirmed ? (
+                  <p className="mt-2 text-sm font-medium text-emerald-700">✓ Equipment counted</p>
+                ) : (
+                  <label className="mt-2 flex min-h-11 items-center gap-3 text-base text-slate-700">
+                    <input
+                      type="checkbox"
+                      className="h-5 w-5 shrink-0 rounded border-slate-300 disabled:opacity-60"
+                      checked={countedNow(lb, s)}
+                      // A count that moved says it was counted: unticking would not hold.
+                      disabled={countsMoved(lb, s)}
+                      onChange={(e) => setBranch(b.id, { confirmed: e.currentTarget.checked })}
+                    />
+                    Counted at the shop (tick even if there is none)
+                  </label>
+                )}
               </div>
 
               <div>
@@ -848,6 +897,9 @@ export function EnrichmentForm({
         {canSubmit && !arrived && uploading > 0 && (
           <p className="mb-2 text-sm font-medium text-slate-600">{PHOTO_UPLOADING_MESSAGE}</p>
         )}
+        {canSubmit && !arrived && unresolved.length > 0 && (
+          <p className="mb-2 text-sm font-medium text-amber-800">{UNRESOLVED_TITLE}</p>
+        )}
         <div className="flex items-center justify-start gap-3">
           <button
             type="button"
@@ -880,4 +932,103 @@ export function EnrichmentForm({
       )}
     </div>
   );
+}
+
+/**
+ * Ruling 1 (phase 2): the fields a STALE_FIELDS answer named, each with the
+ * value saved now and the two choices. One list at the top, for every field —
+ * the form gives most fields no error line of their own (the phase-2 cut: no
+ * new error slots); a field that has one also shows the server's words there.
+ * The value shown is only ever one of the sender's own fields, on a branch he
+ * may edit (services/edits.ts staleFieldsError).
+ */
+function ConflictList({
+  slots,
+  conflicts,
+  branches,
+  channels,
+  onChoose,
+}: {
+  slots: readonly string[];
+  conflicts: Conflicts;
+  branches: ReadonlyArray<{ id: string }>;
+  channels: ChannelWithSubs[];
+  onChoose: (slot: string, choice: 'mine' | 'theirs') => void;
+}) {
+  return (
+    <section
+      aria-label="Changed after you opened this form"
+      className="rounded-md bg-amber-50 px-3 py-3 text-amber-900 ring-1 ring-amber-200"
+    >
+      <h2 className="text-base font-semibold">Changed after you opened this form</h2>
+      <p className="mt-0.5 text-sm">
+        Nothing was sent. For each one: keep what you entered, or use the value saved now.
+      </p>
+      <ul className="mt-2 divide-y divide-amber-200">
+        {slots.map((slot) => (
+          <li key={slot} className="py-2">
+            <p className="text-sm font-semibold">{conflictLabel(slot, branches)}</p>
+            <p className="text-sm [overflow-wrap:anywhere]">
+              Now: {nowText(slot, conflicts[slot] ?? {}, channels)}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onChoose(slot, 'mine')}
+                className="min-h-11 rounded-md border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100"
+              >
+                Keep mine
+              </button>
+              <button
+                type="button"
+                onClick={() => onChoose(slot, 'theirs')}
+                className="min-h-11 rounded-md border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100"
+              >
+                Use this value
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** 'Contact person', or 'Branch 2: Location'. */
+function conflictLabel(slot: string, branches: ReadonlyArray<{ id: string }>): string {
+  const m = /^branch\.([^.]+)\.(.+)$/.exec(slot);
+  if (!m) return fieldLabel(slot);
+  const n = branches.findIndex((b) => b.id === m[1]) + 1;
+  const what = m[2] === 'gps' ? 'Location' : m[2] === 'equipment' ? 'Equipment' : fieldLabel(slot);
+  return `Branch ${n}: ${what}`;
+}
+
+/** The value saved now, as a person reads it. */
+function nowText(slot: string, live: Readonly<Record<string, BaseValue>>, channels: ChannelWithSubs[]): string {
+  const prefix = slot.slice(0, slot.lastIndexOf('.') + 1);
+  const at = (f: string) => live[`${prefix}${f}`] ?? null;
+  if (slot.startsWith('branch.') && slot.endsWith('.gps')) {
+    const lat = at('gpsLat');
+    const lng = at('gpsLng');
+    if (typeof lat !== 'number' || typeof lng !== 'number') return 'empty';
+    const acc = at('gpsAccuracy');
+    return `${lat.toFixed(5)}, ${lng.toFixed(5)}${typeof acc === 'number' ? ` (±${Math.round(acc)}m)` : ''}`;
+  }
+  if (slot.startsWith('branch.') && slot.endsWith('.equipment')) {
+    const n = (f: string) => (typeof at(f) === 'number' ? at(f) : 0);
+    return `${n('coolersCount')} coolers · ${n('standsCount')} stands · ${n('emptyBottlesCount')} empty bottles · ${
+      at('equipmentConfirmed') === true ? 'counted' : 'not counted'
+    }`;
+  }
+  const v = live[slot] ?? null;
+  if (v === null || v === '') return 'empty';
+  if (slot === 'customer.channelId') {
+    return channels.find((c) => c.id === v)?.label ?? 'a channel no longer offered';
+  }
+  if (slot === 'customer.subChannelId') {
+    return (
+      channels.flatMap((c) => c.subChannels).find((s) => s.id === v)?.label ?? 'a sub-channel no longer offered'
+    );
+  }
+  return String(v);
 }

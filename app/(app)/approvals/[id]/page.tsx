@@ -7,6 +7,7 @@ import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { isFinalStep, parseChain, resolveRejectTarget } from '@/lib/approval-chains';
 import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
+import { sentByPreviousForm, staleLabelsForPendingEdit } from '@/lib/edit-approval';
 import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-manual';
 import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
 import { AlertTriangle } from 'lucide-react';
@@ -18,7 +19,8 @@ import {
 
 export const metadata = { title: 'Approval · NMWC' };
 
-type FieldChange = { field: string; before: unknown; after: unknown };
+/** lib/gps-manual.ts FieldChange, as this page reads it. */
+type FieldChange = { field: string; before: unknown; after: unknown; overrodeLive?: unknown };
 
 const APPROVER_ROLES: Role[] = [
   Role.SUPERVISOR,
@@ -68,7 +70,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           },
         },
       },
-      submittedBy: { select: { id: true, fullName: true, supervisorId: true } },
+      // role: ruling 2's banner is for a salesman's request (sentByPreviousForm).
+      submittedBy: { select: { id: true, fullName: true, supervisorId: true, role: true } },
       reviewedBy: { select: { fullName: true } },
       // Phase 1 creation flow: the CREATE payload lives in typed drafts.
       customerDraft: {
@@ -155,6 +158,17 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     rejectTarget.kind === 'STEP_BACK'
       ? { kind: 'STEP_BACK', toRole: chain[rejectTarget.toStepIndex]!.role }
       : { kind: 'TO_SALESMAN' };
+  // Phase 2, ruling 8: the stored changes whose field has changed on the
+  // customer since the request was sent — judged the way the final approval of
+  // an update judges them (lib/edit-approval.ts, the same QA-013 re-check
+  // first). Labels only: the server's STALE_BEFORE refusal stays the authority,
+  // so Approve stays on, and a clean page can still be refused at the click.
+  const staleLabels =
+    isPending && !isCreate && !edit.isReactivation && isFinalStep(chain, edit.currentStepIndex)
+      ? await staleLabelsForPendingEdit(prisma, edit)
+      : [];
+  // Ruling 2: sent by the form before patch v2, which sent every field it had loaded.
+  const fromPreviousForm = isPending && sentByPreviousForm(edit, edit.submittedBy.role);
   const displayName = isCreate
     ? (edit.customerDraft?.legalName ?? '—')
     : (edit.customer?.legalName ?? '—');
@@ -454,6 +468,22 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           </>
         )}
 
+        {staleLabels.length > 0 && (
+          <Warning>
+            <span className="font-semibold">
+              Changed on the customer since this request was sent: {staleLabels.join(', ')}.
+            </span>{' '}
+            Approving would overwrite the newer values, so it will be refused — reject it so the
+            salesman can check and send it again.
+          </Warning>
+        )}
+        {fromPreviousForm && (
+          <Warning>
+            Sent by the previous version of the form, which sent every field — check each row
+            against the customer.
+          </Warning>
+        )}
+
         {/* ── UPDATE edit: before/after diff of the live customer ── */}
         {!isCreate && customerChanges.length > 0 && (
           <DiffSection title="Customer">
@@ -464,6 +494,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                 before={display(c.field, c.before)}
                 after={display(c.field, c.after)}
                 phone={c.field === 'customer.primaryPhone' || c.field === 'customer.altPhone'}
+                replacesNewer={overrodeLive(c)}
               />
             ))}
           </DiffSection>
@@ -485,6 +516,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     label={c.field}
                     before={display(c.field, c.before)}
                     after={display(c.field, c.after)}
+                    replacesNewer={overrodeLive(c)}
                   />
                 ))}
                 {gps && (
@@ -721,17 +753,41 @@ function DiffSection({ title, children }: { title: string; children: React.React
   );
 }
 
+/** Phase 2: a note above the diff, in the amber of the typed-GPS note. */
+function Warning({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-1.5 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-amber-200 [overflow-wrap:anywhere]">
+      <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+      <p>{children}</p>
+    </div>
+  );
+}
+
+/**
+ * Ruling 1: the submitter was told this field had changed after his form
+ * opened and chose "Keep mine" — the stored change carries the value he
+ * replaced, which may itself be null, so the key is what counts.
+ */
+function overrodeLive(c: FieldChange): boolean {
+  return Object.prototype.hasOwnProperty.call(c, 'overrodeLive');
+}
+
+const isEmpty = (v: unknown) => v == null || v === '';
+
 function DiffRow({
   label,
   before,
   after,
   phone,
+  replacesNewer,
 }: {
   label: string;
   before: unknown;
   after: unknown;
   /** The values are phone numbers: render them tap-to-call (item 40). */
   phone?: boolean;
+  /** Ruling 1: "Keep mine" — this replaces a value changed after the form was opened. */
+  replacesNewer?: boolean;
 }) {
   const show = (v: unknown) =>
     phone && typeof v === 'string' && v ? <PhoneLink phone={v} /> : formatValue(v);
@@ -746,8 +802,16 @@ function DiffRow({
       </div>
       <div className="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700 ring-1 ring-emerald-200">
         <div className="text-[10px] font-semibold uppercase tracking-wide opacity-70">After</div>
-        <div className="break-words">{show(after)}</div>
+        {/* F20: an emptied field reads as such; "—" keeps meaning it was empty. */}
+        <div className="break-words">
+          {isEmpty(after) && !isEmpty(before) ? <em>Cleared</em> : show(after)}
+        </div>
       </div>
+      {replacesNewer && (
+        <p className="col-span-2 text-xs font-medium text-amber-800 sm:col-span-3">
+          Replaces a value changed after the form was opened.
+        </p>
+      )}
     </div>
   );
 }
@@ -756,7 +820,8 @@ function formatValue(v: unknown): string {
   if (v == null) return '—';
   if (typeof v === 'string') return v;
   if (typeof v === 'number') return String(v);
-  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  // The only yes/no field an edit carries: F21's "Equipment counted".
+  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
   if (v instanceof Date) return v.toLocaleString('en-GB');
   return JSON.stringify(v);
 }

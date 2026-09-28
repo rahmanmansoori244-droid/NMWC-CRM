@@ -182,3 +182,41 @@ describe('phase 2 — the server takes the path its tests prove', () => {
     expect(src).toMatch(/import \{[^}]*\bsubmitEditSchema\b[^}]*\} from '@\/lib\/validation\/edit'/);
   });
 });
+
+const FORM_PATH = 'app/(app)/customers/[id]/edit/EnrichmentForm.tsx';
+const FORM = readFileSync(FORM_PATH, 'utf8');
+
+/**
+ * F06 in the client: the form's body is patch v2 — the builder's output from
+ * the values the PAGE loaded (loadedRef, never the phone draft), under `v` —
+ * and never the whole state, which is what sent every field, and every branch
+ * a restored draft carried.
+ */
+function formProblems(src: string): string[] {
+  const s = stripComments(src, FORM_PATH);
+  const out: string[] = [];
+  if (!/\bbuildEnrichmentPatch\(\s*loadedRef\.current,/.test(s)) out.push('the patch is not built from loadedRef');
+  if (!/const body = \{ v: EDIT_PAYLOAD_VERSION, customerId: customer\.id, isDraft, \.\.\.patch \};/.test(s)) {
+    out.push('the body is not v + the patch');
+  }
+  if (!/postForm<SubmitReceipt>\('customer-edit', \{ \.\.\.body, submissionId \}\)/.test(s)) out.push('the body is not what is sent');
+  if (/Object\.entries\(branchStates\)/.test(s)) out.push('branches taken from the whole state');
+  if (!/if \(!isDraft && unresolved\.length > 0\) return;/.test(s)) out.push('a submit with a conflict open is sent');
+  return out;
+}
+
+describe('phase 2 — the form sends what its tests prove', () => {
+  it('patch v2 from the loaded values, never the whole state, and never over an open conflict', () => {
+    expect(formProblems(FORM)).toEqual([]);
+    const everything = FORM.replace(
+      'const body = { v: EDIT_PAYLOAD_VERSION, customerId: customer.id, isDraft, ...patch };',
+      'const branches = Object.entries(branchStates).map(([branchId, s]) => ({ branchId, ...s }));\n    const body = { customerId: customer.id, isDraft, customer: values, branches };'
+    );
+    expect(everything).not.toBe(FORM);
+    expect(formProblems(everything)).toEqual(['the body is not v + the patch', 'branches taken from the whole state']);
+    const fromDraft = FORM.replace(/buildEnrichmentPatch\(\s*loadedRef\.current,/, 'buildEnrichmentPatch(\n    draftValues,');
+    expect(formProblems(fromDraft)).toEqual(['the patch is not built from loadedRef']);
+    const unguarded = FORM.replace('if (!isDraft && unresolved.length > 0) return;', '');
+    expect(formProblems(unguarded)).toEqual(['a submit with a conflict open is sent']);
+  });
+});
