@@ -26,6 +26,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { stripComments } from '../support/strip-comments';
+import { TEMIX_QUEUE_WHERE } from '@/lib/temix';
 
 function sourceFiles(dir: string): string[] {
   return (readdirSync(dir, { recursive: true }) as string[])
@@ -117,5 +118,50 @@ describe('the holders lock', () => {
       /WHERE "id" IN \(\$\{ids\}\) OR \("temixCode" = \$\{temixCode\} AND "deletedAt" IS NULL\) ORDER BY "id" COLLATE "C" FOR UPDATE/
     );
     expect(fn).toMatch(/WHERE "id" IN \(\$\{ids\}\) ORDER BY "id" COLLATE "C" FOR UPDATE/);
+  });
+});
+
+/**
+ * Generate against archive and merge (review of 023173c): Generate's claim is one
+ * UPDATE, which locks the queue in scan order, while archive and merge lock a
+ * customer and the live holders of its code in id order — each could hold one of
+ * a pair and wait for the other. Generate now locks the queue in the same order
+ * first and claims only what it locked. The lock is raw SQL, so its predicate is
+ * pinned to TEMIX_QUEUE_WHERE here: the unit fakes cannot read SQL.
+ */
+describe('Generate takes the queue locks in the holders lock order, before it writes', () => {
+  const locks = stripComments(readFileSync('lib/locks.ts', 'utf8'), 'lib/locks.ts');
+  const lockFn = locks.slice(locks.indexOf('export async function lockTemixQueue'));
+  const temix = stripComments(readFileSync('services/temix.ts', 'utf8'), 'services/temix.ts');
+  const generate = temix.slice(
+    temix.indexOf('async function generateTemixBatchCore'),
+    temix.indexOf('export async function downloadTemixBatchAction')
+  );
+
+  it('locks exactly the queue, in byte id order, in one statement', () => {
+    const sql = /\$queryRaw<[^`]*>`([^`]*)`/.exec(lockFn)?.[1] ?? '';
+    expect(sql).toBe(
+      `SELECT "id" FROM "Customer" WHERE ("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING' ORDER BY "id" COLLATE "C" FOR UPDATE`
+    );
+    // The same two lanes as the queue predicate: change one, change both.
+    expect(TEMIX_QUEUE_WHERE).toEqual({
+      OR: [{ temixSyncState: 'PENDING_UPLOAD', deletedAt: null }, { temixSyncState: 'DEACTIVATE_PENDING' }],
+    });
+  });
+
+  it('is Generate’s first lock, and its flip claims only the rows it locked', () => {
+    const lock = generate.search(/const (\w+) = await lockTemixQueue\(tx\);/);
+    const locked = /const (\w+) = await lockTemixQueue\(tx\);/.exec(generate)?.[1];
+    expect(lock, 'Generate does not call lockTemixQueue(tx)').toBeGreaterThan(-1);
+    for (const write of ['tx.temixSyncBatch.create(', 'tx.customer.updateMany(']) {
+      expect(generate.indexOf(write), write).toBeGreaterThan(lock);
+    }
+    expect(generate.indexOf('$queryRaw')).toBe(-1);
+    const claim = /const (\w+) = (\w+)\.filter\(/.exec(generate.slice(lock));
+    expect(claim?.[2]).toBe(locked);
+    const flip = generate.slice(generate.indexOf('tx.customer.updateMany('));
+    expect(flip.slice(0, 200)).toMatch(
+      new RegExp(`where: \\{ AND: \\[TEMIX_QUEUE_WHERE, \\{ id: \\{ in: ${claim?.[1]} \\} \\}\\] \\}`)
+    );
   });
 });

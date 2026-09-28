@@ -25,8 +25,30 @@ export const TRANSIENT_DB_CODES = new Set([
   'P2028',
 ]);
 
+/**
+ * Postgres aborted the transaction to break a deadlock (40P01) or a serialization
+ * failure (40001). Prisma reports it as P2034 from a model query, and as P2010
+ * carrying the SQLSTATE from a raw one (the row locks in lib/locks.ts are raw);
+ * an engine error it does not map has no code, only Postgres's own words.
+ * The aborted transaction rolled back whole and the same request run again
+ * normally succeeds: not the data's fault, and not a programmer error.
+ */
+export function isDbConflict(err: unknown, code: string): boolean {
+  if (code === 'P2034') return true;
+  const msg = err instanceof Error ? err.message : '';
+  if (code === 'P2010') {
+    const sqlState = (err as { meta?: { code?: unknown } } | null)?.meta?.code;
+    if (sqlState === '40P01' || sqlState === '40001') return true;
+    return /Code: `(40P01|40001)`/.test(msg);
+  }
+  return code === '' && /deadlock detected|could not serialize access/i.test(msg);
+}
+
 export function isTransientDbError(err: unknown, code: string): boolean {
   if (TRANSIENT_DB_CODES.has(code)) return true;
+  // A deadlock or serialization abort is not bad data either: an import row it
+  // hits is retried, not rejected for good.
+  if (isDbConflict(err, code)) return true;
   // Engine-level faults arrive as plain Errors with no Prisma code at all — the
   // empty-response one is what a killed or restarted query engine produces.
   const msg = err instanceof Error ? err.message : '';

@@ -51,6 +51,7 @@ import {
 } from '@/lib/import-row-check';
 import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
 import { lockCustomerRowByCode } from '@/lib/locks';
+import { archivedUncodedDeactivationWhere } from '@/lib/temix';
 import {
   branchOnlyNote,
   composeBranchCode,
@@ -1909,13 +1910,27 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // ARCHIVED customer holding this code has a DEACTIVATE for it
               // queued/in-flight — re-attaching the code to a live customer
               // would let that DEACTIVATE kill the live record in Temix.
+              // F11: so does an archived customer with no Temix code whose
+              // customer code this is — its deactivation goes out keyed on it
+              // (lib/temix.ts deactivationCode). Not asked when this customer
+              // already holds the code: the row gives it to nobody new.
               const codeOwner = await tx.customer.findFirst({
                 where: {
-                  temixCode: lead.temixCode,
                   nmwcCode: { not: custCode },
+                  OR: [
+                    { temixCode: lead.temixCode },
+                    ...(existing?.temixCode === lead.temixCode
+                      ? []
+                      : [archivedUncodedDeactivationWhere(lead.temixCode)]),
+                  ],
                 },
-                select: { nmwcCode: true, deletedAt: true },
+                select: { nmwcCode: true, temixCode: true, deletedAt: true },
               });
+              if (codeOwner && codeOwner.temixCode !== lead.temixCode) {
+                throw new Error(
+                  `CROSSWALK:temix_code is the customer code of archived ${codeOwner.nmwcCode}, which has no Temix code — its Temix deactivation goes out under that code — steward review`
+                );
+              }
               if (codeOwner) {
                 throw new Error(
                   `CROSSWALK:temix_code already recorded on ${codeOwner.nmwcCode}${codeOwner.deletedAt ? ' (archived — its Temix deactivation may be in flight)' : ''} — steward review`

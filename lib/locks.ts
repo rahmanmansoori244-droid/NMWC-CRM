@@ -55,3 +55,19 @@ export async function lockCustomersAndTemixCodeHolders(
     await tx.$queryRaw`SELECT "id" FROM "Customer" WHERE "id" IN (${ids}) ORDER BY "id" COLLATE "C" FOR UPDATE`;
   }
 }
+
+/**
+ * The Temix queue (lib/temix.ts TEMIX_QUEUE_WHERE, the same two lanes), locked in
+ * the id order lockCustomersAndTemixCodeHolders uses, before Generate claims it.
+ * Generate's claim is one UPDATE, which locks rows in whatever order its scan
+ * meets them: an archive or merge locking a customer and a queued live holder of
+ * its code could then hold one of the pair while waiting for the other, and
+ * Postgres aborts one side as a deadlock (review of 023173c). Returns the ids
+ * locked; Generate claims only those, so no customer lock of its own is taken out
+ * of this order, and a customer that joins the queue after this statement waits
+ * for the next batch.
+ */
+export async function lockTemixQueue(tx: Prisma.TransactionClient): Promise<string[]> {
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Customer" WHERE ("temixSyncState" = 'PENDING_UPLOAD' AND "deletedAt" IS NULL) OR "temixSyncState" = 'DEACTIVATE_PENDING' ORDER BY "id" COLLATE "C" FOR UPDATE`;
+  return rows.map((r) => r.id);
+}

@@ -8,7 +8,12 @@
  *    under its customer code — is HELD BACK: that archived row stays queued and
  *    is named, while every other customer, the live holder included, goes out.
  *    A whole batch is never refused over one pair; one that races in after the
- *    check rolls the batch back instead of going out.
+ *    check rolls the batch back instead of going out. A re-download applies the
+ *    same rule to the batch's customers as they are now: one merged or archived
+ *    since, parked with a code a live customer holds, is left out and named.
+ *  - Generate locks the queue first, in id order (lib/locks.ts lockTemixQueue),
+ *    and claims only the rows it locked, so it cannot deadlock with an archive or
+ *    merge locking a customer and the holders of its code in that order.
  *  - X-TEMIX-2: re-downloading a batch is rate-limited and writes one EXPORT
  *    audit row before the file is returned; when that write fails, no file.
  */
@@ -46,7 +51,14 @@ vi.mock('@/lib/audit', () => ({
 const model = vi.hoisted(() => {
   type Where = Record<string, unknown> | undefined;
   type Row = Record<string, unknown>;
-  const state = { rows: [] as Row[], beforeFlip: null as null | (() => void) };
+  const state = {
+    rows: [] as Row[],
+    beforeFlip: null as null | (() => void),
+    /** The statements that lock or write, in the order they ran. */
+    log: [] as string[],
+    lockSql: [] as string[],
+    flipWhere: undefined as Where,
+  };
   /** The where shapes services/temix.ts uses, and nothing else (an unknown key fails loudly). */
   function matches(c: Row, where: Where): boolean {
     if (!where) return true;
@@ -72,6 +84,10 @@ const model = vi.hoisted(() => {
       return out;
     },
     updateMany: async ({ where, data }: { where: Where; data: Row }) => {
+      if (data.temixSyncState === 'UPLOADED') {
+        state.log.push('flip');
+        state.flipWhere = where;
+      }
       if (data.temixSyncState === 'UPLOADED' && state.beforeFlip) {
         state.beforeFlip();
         state.beforeFlip = null;
@@ -81,15 +97,29 @@ const model = vi.hoisted(() => {
       return { count: hit.length };
     },
   };
-  return { state, customer };
+  return { state, customer, matches };
 });
 
 vi.mock('@/lib/db', () => {
   const customerModel = model.customer;
   const tx = {
     customer: customerModel,
+    // lib/locks.ts lockTemixQueue: the rows the queue predicate selects, by id.
+    // Its SQL is pinned against TEMIX_QUEUE_WHERE by temix-deactivation-guard.test.ts.
+    $queryRaw: async (strings: TemplateStringsArray) => {
+      const { TEMIX_QUEUE_WHERE } = await import('@/lib/temix');
+      model.state.log.push('lock');
+      model.state.lockSql.push(strings.join('?'));
+      return model.state.rows
+        .filter((c) => model.matches(c, TEMIX_QUEUE_WHERE as Record<string, unknown>))
+        .map((c) => ({ id: String(c.id) }))
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    },
     temixSyncBatch: {
-      create: async () => ({ id: 'batch-new' }),
+      create: async () => {
+        model.state.log.push('batch.create');
+        return { id: 'batch-new' };
+      },
       update: async () => ({}),
     },
   };
@@ -136,6 +166,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   model.state.rows = [];
   model.state.beforeFlip = null;
+  model.state.log = [];
+  model.state.lockSql = [];
+  model.state.flipWhere = undefined;
   h.checkLimit.mockResolvedValue({ ok: true });
   h.writeAudit.mockResolvedValue(undefined);
 });
@@ -184,19 +217,53 @@ describe('generateTemixBatchAction — F11: a shared code is held back, not the 
     expect(row('N2').temixSyncState).toBe('DEACTIVATE_PENDING');
   });
 
-  it('an uncoded deactivation racing in after the check rolls the batch back too', async () => {
+  it('an uncoded deactivation archived after the queue lock is not claimed: the next Generate holds it back', async () => {
     model.state.rows = [
       cust({ nmwcCode: 'N1', temixCode: 'N5' }), // live, SYNCED, holds N5's customer code
       cust({ nmwcCode: 'N5', temixCode: null, lastTemixUploadAt: at }),
       cust({ nmwcCode: 'N3', temixCode: 'T3', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
     ];
+    // An archive commits after the lock: N5 was not queued, so not locked.
     model.state.beforeFlip = () =>
       Object.assign(row('N5'), { deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING });
     const res = await generateTemixBatchAction();
-    expect(res.ok).toBe(false);
-    expect(!res.ok && res.message).toBe(
-      'The Temix queue changed while this batch was being built. Generate it again.'
-    );
+    expect(res.ok).toBe(true);
+    expect(res.ok && (await sheetCodes(res.data.base64))).toEqual(['UPSERT:N3']);
+    expect(row('N5')).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING', lastTemixUploadBatchId: null });
+    // The next Generate sees it, and holds it back.
+    const next = await generateTemixBatchAction();
+    expect(!next.ok && next.message).toBe('Nothing can go to Temix yet. Held back for review: N5.');
+  });
+
+  it('a customer that joins the queue after the lock waits for the next batch', async () => {
+    model.state.rows = [
+      cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+      cust({ nmwcCode: 'N9', temixCode: 'T9' }), // live, SYNCED
+    ];
+    // An edit approval re-queues N9 after the lock.
+    model.state.beforeFlip = () => Object.assign(row('N9'), { temixSyncState: TemixSyncState.PENDING_UPLOAD });
+    const res = await generateTemixBatchAction();
+    expect(res.ok && (await sheetCodes(res.data.base64))).toEqual(['UPSERT:N1']);
+    expect(row('N9')).toMatchObject({ temixSyncState: 'PENDING_UPLOAD', lastTemixUploadBatchId: null });
+  });
+
+  it('locks the queue first, in id order, and claims only the rows it locked, less those held back', async () => {
+    model.state.rows = [
+      // Ids out of customer-code order.
+      cust({ id: 'b', nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+      cust({ id: 'B', nmwcCode: 'N2', temixCode: 'T1', deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
+      cust({ id: 'a', nmwcCode: 'N3', temixCode: 'T3', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+      cust({ id: 'c', nmwcCode: 'N4', temixCode: 'T4' }), // live, SYNCED, not queued
+    ];
+    const res = await generateTemixBatchAction();
+    expect(res.ok && res.data.heldBack).toEqual(['N2']);
+    // One lock statement, before the batch row and the flip, and nothing locks after it.
+    expect(model.state.log).toEqual(['lock', 'batch.create', 'flip']);
+    expect(model.state.lockSql).toHaveLength(1);
+    expect(model.state.lockSql[0]).toMatch(/ORDER BY "id" COLLATE "C" FOR UPDATE$/);
+    // The flip is bounded by the locked ids: N2 held back, N4 never queued.
+    const { TEMIX_QUEUE_WHERE } = await import('@/lib/temix');
+    expect(model.state.flipWhere).toEqual({ AND: [TEMIX_QUEUE_WHERE, { id: { in: ['a', 'b'] } }] });
   });
 
   it('a deactivation of a code held by a live customer OUTSIDE the queue is held back too', async () => {
@@ -224,22 +291,26 @@ describe('generateTemixBatchAction — F11: a shared code is held back, not the 
     expect(h.writeAudit).not.toHaveBeenCalled();
   });
 
-  it('a clash that races in after the check rolls the batch back instead of going out', async () => {
-    model.state.rows = [
-      cust({ nmwcCode: 'N1', temixCode: 'T7' }), // live, SYNCED
-      cust({ nmwcCode: 'N5', temixCode: 'T7' }), // live duplicate code, archived below
-      cust({ nmwcCode: 'N3', temixCode: 'T3', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
-    ];
-    // An archive commits between the check and the flip.
-    model.state.beforeFlip = () =>
-      Object.assign(row('N5'), { deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING });
-    const res = await generateTemixBatchAction();
-    expect(res.ok).toBe(false);
-    expect(!res.ok && res.message).toBe(
-      'The Temix queue changed while this batch was being built. Generate it again.'
-    );
-    expect(h.writeAudit).not.toHaveBeenCalled();
-  });
+  it.each([
+    ['its Temix code', 'T7', 'T7'],
+    ['its customer code, having no Temix code', null, 'N5'],
+  ])(
+    'a live customer taking a claimed deactivation’s code (%s) after the check rolls the batch back instead of going out',
+    async (_label, temixCode, heldCode) => {
+      model.state.rows = [
+        cust({ nmwcCode: 'N5', temixCode, deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
+        cust({ nmwcCode: 'N3', temixCode: 'T3', temixSyncState: TemixSyncState.PENDING_UPLOAD }),
+      ];
+      // The lock holds the queue, not the holders: a live holder commits between the check and the flip.
+      model.state.beforeFlip = () => model.state.rows.push(cust({ nmwcCode: 'N1', temixCode: heldCode }));
+      const res = await generateTemixBatchAction();
+      expect(res.ok).toBe(false);
+      expect(!res.ok && res.message).toBe(
+        'The Temix queue changed while this batch was being built. Generate it again.'
+      );
+      expect(h.writeAudit).not.toHaveBeenCalled();
+    }
+  );
 
   it('with nothing shared, the batch is what it always was', async () => {
     model.state.rows = [
@@ -291,6 +362,71 @@ describe('downloadTemixBatchAction — X-TEMIX-2', () => {
     }
     expect(JSON.stringify(out ?? null)).not.toMatch(/"base64"/);
     expect(out && typeof out === 'object' && 'ok' in out && (out as { ok: boolean }).ok).toBeFalsy();
+  });
+
+  describe('F11: a customer parked since the batch with a code a live customer holds is left out and named', () => {
+    const old = { temixSyncState: TemixSyncState.UPLOADED, lastTemixUploadAt: at, lastTemixUploadBatchId: 'batch-old' };
+    const snapshot = (...codes: string[]) =>
+      h.batchFind.mockResolvedValue({ id: 'batch-old', customerIds: codes.map((c) => `id-${c}`) });
+
+    it('after a same-code merge: the loser goes out as nothing, the winner and the rest as before', async () => {
+      // B1 carried W (N1) and L (N2), both UPSERT T5000. L was then merged into W:
+      // archived, parked SYNCED (skipped-shared-code), keeping T5000.
+      model.state.rows = [
+        cust({ nmwcCode: 'N1', temixCode: 'T5000', ...old }),
+        cust({ nmwcCode: 'N2', temixCode: 'T5000', ...old, deletedAt: at, temixSyncState: TemixSyncState.SYNCED }),
+        cust({ nmwcCode: 'N3', temixCode: 'T3', ...old }),
+      ];
+      snapshot('N1', 'N2', 'N3');
+      const res = await downloadTemixBatchAction(fd());
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(await sheetCodes(res.data.base64)).toEqual(['UPSERT:N1', 'UPSERT:N3']);
+      expect(res.data.heldBack).toEqual(['N2']);
+      expect(res.data.customerCount).toBe(2);
+      expect(h.writeAudit.mock.calls[0][2]).toEqual({
+        action: 'EXPORT',
+        entityType: 'TemixSyncBatch',
+        entityId: 'batch-old',
+        reason: 'redownload 2 rows / 2 customers',
+        after: { heldBack: ['N2'] },
+      });
+    });
+
+    it('the uncoded variant: a parked customer whose customer code a live customer holds as its Temix code', async () => {
+      model.state.rows = [
+        cust({ nmwcCode: 'N1', temixCode: 'N2', ...old }),
+        cust({ nmwcCode: 'N2', temixCode: null, ...old, deletedAt: at, temixSyncState: TemixSyncState.SYNCED }),
+      ];
+      snapshot('N1', 'N2');
+      const res = await downloadTemixBatchAction(fd());
+      expect(res.ok && (await sheetCodes(res.data.base64))).toEqual(['UPSERT:N1']);
+      expect(res.ok && res.data.heldBack).toEqual(['N2']);
+    });
+
+    it('a deactivation whose code no live customer holds still goes out', async () => {
+      model.state.rows = [
+        cust({ nmwcCode: 'N1', temixCode: 'T1', ...old }),
+        cust({ nmwcCode: 'N4', temixCode: 'T4', ...old, deletedAt: at }),
+        cust({ nmwcCode: 'N6', temixCode: null, ...old, deletedAt: at, temixSyncState: TemixSyncState.DEACTIVATE_PENDING }),
+      ];
+      snapshot('N1', 'N4', 'N6');
+      const res = await downloadTemixBatchAction(fd());
+      expect(res.ok && (await sheetCodes(res.data.base64))).toEqual(['UPSERT:N1', 'DEACTIVATE:N4', 'DEACTIVATE:N6']);
+      expect(res.ok && res.data.heldBack).toBeUndefined();
+    });
+
+    it('when every customer in the batch is held back, it says which, and returns no file', async () => {
+      model.state.rows = [
+        cust({ nmwcCode: 'N1', temixCode: 'T1' }), // live, SYNCED, not in the batch
+        cust({ nmwcCode: 'N2', temixCode: 'T1', ...old, deletedAt: at, temixSyncState: TemixSyncState.SYNCED }),
+      ];
+      snapshot('N2');
+      const res = await downloadTemixBatchAction(fd());
+      expect(res.ok).toBe(false);
+      expect(!res.ok && res.message).toBe('Nothing in this batch can go to Temix now. Held back for review: N2.');
+      expect(h.writeAudit).not.toHaveBeenCalled();
+    });
   });
 
   it('is rate-limited in its own bucket, before anything is read', async () => {

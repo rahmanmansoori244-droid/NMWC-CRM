@@ -197,6 +197,29 @@ export function archiveDeactivationCode(
 }
 
 /**
+ * F11: the archived customers with no Temix code whose deactivation goes out, or
+ * went out, keyed on `code` as their customer code (deactivationCode). Temix
+ * knows them: the deactivation is queued (DEACTIVATE_PENDING) or in a batch
+ * (UPLOADED), or they were in an upload batch. knownToTemix is not asked: after
+ * the archive, a seeded customer that was never uploaded is DEACTIVATE_PENDING,
+ * and SYNCED means one parked because a live customer held the code, or one
+ * Temix never heard of. The customer import refuses to give a live customer
+ * such a code as its Temix code (services/imports.ts), as it refuses one another
+ * customer holds as its Temix code.
+ */
+export function archivedUncodedDeactivationWhere(code: string): Prisma.CustomerWhereInput {
+  return {
+    nmwcCode: code,
+    temixCode: null,
+    deletedAt: { not: null },
+    OR: [
+      { temixSyncState: { in: [TemixSyncState.DEACTIVATE_PENDING, TemixSyncState.UPLOADED] } },
+      { lastTemixUploadAt: { not: null } },
+    ],
+  };
+}
+
+/**
  * F11: what a merge must do about the loser's Temix identity, given the winner's.
  * Customer.temixCode is not unique, so two CRM rows for one ERP customer can
  * carry the same code, and resolveArchiveTemixState alone queued the loser for

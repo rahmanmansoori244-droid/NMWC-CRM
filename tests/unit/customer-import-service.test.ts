@@ -9,6 +9,9 @@
  *    lock, and refuses an archived customer before any lane is chosen — a blank
  *    temix_code, no branch_code and a row fixed in the app included — writing
  *    nothing about it.
+ *  - F11: the crosswalk guard also refuses a temix_code that is the customer
+ *    code of an archived customer with no Temix code whose deactivation Temix
+ *    gets under that code (queued, in a batch, or sent).
  *
  * The same paths against Postgres, and an archive racing the promote on two
  * connections, are in tests/integration/import-archived-parent.test.ts.
@@ -42,6 +45,7 @@ vi.mock('@/lib/import-master-lookup', async (importOriginal) => ({
 }));
 vi.mock('@/lib/db', () => ({ prisma: h.db }));
 
+import { matchesWhere } from '../support/where-eval';
 import { loadExcelJS } from '@/lib/excel';
 import {
   uploadCustomerMasterAction,
@@ -193,7 +197,20 @@ let lockSql: string[];
 let tx: Record<string, Record<string, Fn> | Fn>;
 let rejected: Array<{ where: unknown; data: { state: string; issues: Array<{ message: string }> } }>;
 
-function setup(stored: (typeof STORED & { deletedAt: Date | null }) | null, rows: Parsed[]) {
+/** Other customers in the master, as the crosswalk guard's findFirst reads them. */
+type Other = {
+  nmwcCode: string;
+  temixCode: string | null;
+  deletedAt: Date | null;
+  temixSyncState: string;
+  lastTemixUploadAt: Date | null;
+};
+
+function setup(
+  stored: (typeof STORED & { deletedAt: Date | null }) | null,
+  rows: Parsed[],
+  others: Other[] = []
+) {
   order = [];
   lockSql = [];
   rejected = [];
@@ -213,7 +230,10 @@ function setup(stored: (typeof STORED & { deletedAt: Date | null }) | null, rows
         order.push(args.include ? 'customer.score-read' : 'customer.read');
         return stored ? { ...stored, branches: [] } : null;
       }),
-      findFirst: vi.fn(async () => null),
+      findFirst: vi.fn(
+        async ({ where }: { where: Record<string, unknown> }) =>
+          others.find((o) => matchesWhere(o, where)) ?? null
+      ),
       upsert: w('customer.upsert', { id: stored?.id ?? 'new-cust' }),
       update: w('customer.update'),
       updateMany: w('customer.updateMany', { count: 1 }),
@@ -338,5 +358,60 @@ describe('promoteCustomerBatchAction — the lock on the lanes that do write (N0
     expect(order[0]).toBe('lock');
     expect(order).not.toContain('customer.read');
     expect(order).toContain('customer.upsert');
+  });
+});
+
+describe('promoteCustomerBatchAction — F11: a temix_code an archived, uncoded customer is deactivated under', () => {
+  // X has no Temix code, so its deactivation goes out keyed on its customer code
+  // C0900 (lib/temix.ts deactivationCode). A new live customer given C0900 as its
+  // Temix code would either hold X back from every Generate for good, or lose its
+  // Temix identity when the batch carrying X's deactivation is loaded.
+  const archivedAt = new Date('2026-09-01T08:00:00Z');
+  const X = (temixSyncState: string, lastTemixUploadAt: Date | null): Other => ({
+    nmwcCode: 'C0900',
+    temixCode: null,
+    deletedAt: archivedAt,
+    temixSyncState,
+    lastTemixUploadAt,
+  });
+  const newRow = parsed({ custCode: 'NEW1', branchCode: 'NEW1-01', temixCode: 'C0900' });
+
+  it.each([
+    ['queued (DEACTIVATE_PENDING), never uploaded — a seeded customer', X('DEACTIVATE_PENDING', null)],
+    ['in a batch not yet loaded (UPLOADED)', X('UPLOADED', archivedAt)],
+    ['settled after it went out in a batch', X('SYNCED', archivedAt)],
+  ])('its deactivation %s: REJECTED, and nothing is written', async (_label, x) => {
+    setup(null, [newRow], [x]);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 0, failed: 1 });
+    expect(order.filter((o) => WRITES.includes(o))).toEqual([]);
+    expect(rejected[0].data.issues[0].message).toBe(
+      'temix_code is the customer code of archived C0900, which has no Temix code — its Temix deactivation goes out under that code — steward review'
+    );
+  });
+
+  it('one Temix never heard of (archived before any upload, parked SYNCED) refuses nothing', async () => {
+    setup(null, [newRow], [X('SYNCED', null)]);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(order).toContain('customer.upsert');
+  });
+
+  it('a customer that already holds the code is not refused over it: the row gives it to nobody new', async () => {
+    setup({ ...STORED, temixCode: 'C0900', deletedAt: null }, [parsed({ temixCode: 'C0900' })], [
+      X('DEACTIVATE_PENDING', null),
+    ]);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(rejected).toEqual([]);
+  });
+
+  it('a customer holding the code as its Temix code is refused as before, in its own words', async () => {
+    setup(null, [newRow], [{ ...X('SYNCED', archivedAt), nmwcCode: 'OLD1', temixCode: 'C0900' }]);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 0, failed: 1 });
+    expect(rejected[0].data.issues[0].message).toBe(
+      'temix_code already recorded on OLD1 (archived — its Temix deactivation may be in flight) — steward review'
+    );
   });
 });

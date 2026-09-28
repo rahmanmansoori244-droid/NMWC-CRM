@@ -85,9 +85,11 @@ export function BatchRowActions({ batchId, loaded }: { batchId: string; loaded: 
   const [pending, start] = useTransition();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [held, setHeld] = useState<string[]>([]);
 
   function download() {
     setError(null);
+    setHeld([]);
     start(async () => {
       const fd = new FormData();
       fd.set('batchId', batchId);
@@ -97,6 +99,7 @@ export function BatchRowActions({ batchId, loaded }: { batchId: string; loaded: 
         return;
       }
       triggerDownload(res.data);
+      setHeld(res.data.heldBack ?? []);
     });
   }
 
@@ -118,6 +121,13 @@ export function BatchRowActions({ batchId, loaded }: { batchId: string; loaded: 
   return (
     <div className="flex items-center justify-end gap-2">
       {error && <span className="text-xs font-medium text-red-600">{error}</span>}
+      {held.length > 0 && (
+        <span className="max-w-xs text-right text-xs font-medium text-amber-700">
+          Left out of this file: {held.slice(0, 10).join(', ')}
+          {held.length > 10 ? ` and ${held.length - 10} more` : ''}. Deactivating these archived
+          customers now would take away a Temix code a live customer holds.
+        </span>
+      )}
       <button
         type="button"
         disabled={pending}

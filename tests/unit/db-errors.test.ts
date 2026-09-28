@@ -7,7 +7,7 @@
  * now decides what a server action tells the user, so it is tested on its own.
  */
 import { describe, it, expect } from 'vitest';
-import { isTransientDbError, TRANSIENT_DB_CODES } from '@/lib/db-errors';
+import { isDbConflict, isTransientDbError, TRANSIENT_DB_CODES } from '@/lib/db-errors';
 import { runAction } from '@/lib/errors';
 
 describe('isTransientDbError', () => {
@@ -87,6 +87,52 @@ describe('runAction maps transient faults to a retryable answer', () => {
       expect(res.code, m).toBe('DB_UNAVAILABLE');
       expect(res.message, m).toMatch(/nothing was saved/i);
     }
+  });
+
+  describe('a deadlock or serialization abort (review of 023173c: Generate against archive and merge)', () => {
+    const deadlocks: Array<[string, unknown]> = [
+      // A model query: Prisma's own code.
+      ['P2034 from a model query', Object.assign(new Error('Transaction failed due to a write conflict or a deadlock. Please retry your transaction'), { code: 'P2034' })],
+      // A raw one (lib/locks.ts): P2010 with the SQLSTATE in meta, or only in the message.
+      ['P2010 carrying 40P01', Object.assign(new Error('Raw query failed.'), { code: 'P2010', meta: { code: '40P01', message: 'deadlock detected' } })],
+      ['P2010 carrying 40001', Object.assign(new Error('Raw query failed.'), { code: 'P2010', meta: { code: '40001', message: 'could not serialize access' } })],
+      ['P2010 naming 40P01 in its message', Object.assign(new Error('Raw query failed. Code: `40P01`. Message: `deadlock detected`'), { code: 'P2010' })],
+      // An engine error Prisma does not map: no code, Postgres's words.
+      ['an unmapped engine error, no code', new Error('Error occurred during query execution: PostgresError { code: "40P01", message: "deadlock detected" }')],
+    ];
+
+    it.each(deadlocks)('%s: a retryable answer that says nothing was saved', async (_label, err) => {
+      const res = await runAction(async () => {
+        throw err;
+      });
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      // The code the field forms already retry (lib/submit-client.ts).
+      expect(res.code).toBe('DB_UNAVAILABLE');
+      expect(res.message).toMatch(/nothing was saved/i);
+      expect(res.message).toMatch(/try again/i);
+      // The database did answer: it stopped this change for another one.
+      expect(res.message).not.toMatch(/did not respond/i);
+      const code = (err as { code?: string }).code ?? '';
+      expect(isDbConflict(err, code)).toBe(true);
+      // And an import row it hits is retried, not rejected for good.
+      expect(isTransientDbError(err, code)).toBe(true);
+    });
+
+    it('a raw query refused for its data is not one: it still re-throws', async () => {
+      const check = Object.assign(new Error('Raw query failed.'), {
+        code: 'P2010',
+        meta: { code: '23514', message: 'violates check constraint' },
+      });
+      expect(isDbConflict(check, 'P2010')).toBe(false);
+      // Nor is a coded error that merely mentions the words.
+      expect(isDbConflict(new Error('deadlock detected'), 'P2002')).toBe(false);
+      await expect(
+        runAction(async () => {
+          throw check;
+        })
+      ).rejects.toBe(check);
+    });
   });
 
   it('still re-throws a genuine programmer error', async () => {

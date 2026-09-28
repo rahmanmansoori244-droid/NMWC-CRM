@@ -29,6 +29,8 @@ export function matchesWhere(row: Record<string, unknown>, where: Where): boolea
           return value <= x;
         case 'in':
           return (arg as unknown[]).includes(value);
+        case 'not':
+          return arg === null ? value !== null : value !== x;
         default:
           throw new Error(`where-eval: operator "${op}" is not modelled`);
       }

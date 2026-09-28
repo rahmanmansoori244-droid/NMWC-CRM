@@ -1,4 +1,4 @@
-import { isTransientDbError, mayHaveCommitted } from './db-errors';
+import { isDbConflict, isTransientDbError, mayHaveCommitted } from './db-errors';
 
 export class AppError extends Error {
   readonly code: string;
@@ -159,6 +159,19 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
         code: 'UNIQUE_CONSTRAINT',
         message:
           'This value conflicts with an existing record. Refresh and try again.',
+      };
+    }
+    // A deadlock or serialization failure (lib/db-errors.ts isDbConflict):
+    // Postgres rolled the transaction back whole, so nothing was saved, and
+    // running it again normally succeeds. The same code as an unanswered
+    // database, so the field forms retry it the same way; its own words, because
+    // the database did answer.
+    if (isDbConflict(err, code ?? '')) {
+      return {
+        ok: false,
+        code: 'DB_UNAVAILABLE',
+        message:
+          'Another change to the same records was being saved at the same moment, so this one was stopped. Nothing was saved — please try again.',
       };
     }
     // REL-06: a transient database fault is not a programmer error and it is
