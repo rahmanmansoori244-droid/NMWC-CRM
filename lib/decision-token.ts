@@ -18,7 +18,8 @@
  *   cycle            A CREATE request's drafts and credit figures are rewritten
  *                    only while it is NOT submitted (services/creates.ts refuses
  *                    a SUBMITTED row), and every return to SUBMITTED bumps the
- *                    cycle (resolveCycleOnSubmit). An UPDATE row's fieldChanges
+ *                    cycle (resolveCycleOnSubmit). An UPDATE row's fieldChanges,
+ *                    and the branches its submit was gated on (submitGate, F05),
  *                    never change once submitted. So the cycle is the payload
  *                    revision.
  *   stepIndex +      The visit to the step: a step-back and a re-advance return

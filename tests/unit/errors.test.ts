@@ -6,6 +6,10 @@ import {
   NotFoundError,
   ConflictError,
   RateLimitError,
+  StaleFieldsError,
+  FormOutdatedError,
+  STALE_FIELDS_MESSAGE,
+  FORM_OUTDATED_MESSAGE,
   runAction,
 } from '@/lib/errors';
 
@@ -165,6 +169,41 @@ describe('runAction — server-action error contract (PROD-006)', () => {
     expect(res.code).toBe('NEEDS_REUPLOAD');
     expect(res.message).toContain('Required fields are now missing');
   });
+
+  it('STALE_FIELDS carries the live values as `current`, beside the slot messages (phase 2, F06)', async () => {
+    // The edit form offers "Keep mine" / "Use this value" per field, so it needs
+    // the value now saved — by raw path — as well as the message in the slot.
+    const res = await runAction(async () => {
+      throw new StaleFieldsError(
+        { 'customer.contactPerson': 'Changed.', 'branch.b1.gps': 'Moved.' },
+        { 'customer.contactPerson': 'Hamad', 'branch.b1.gpsLat': 23.6, 'branch.b1.gpsAccuracy': null }
+      );
+    });
+    expect(res).toEqual({
+      ok: false,
+      code: 'STALE_FIELDS',
+      message: STALE_FIELDS_MESSAGE,
+      fields: { 'customer.contactPerson': 'Changed.', 'branch.b1.gps': 'Moved.' },
+      current: { 'customer.contactPerson': 'Hamad', 'branch.b1.gpsLat': 23.6, 'branch.b1.gpsAccuracy': null },
+    });
+    // Only STALE_FIELDS carries it.
+    const other = await runAction(async () => {
+      throw new ValidationError({ a: 'b' });
+    });
+    expect(other).not.toHaveProperty('current');
+  });
+
+  it('FORM_OUTDATED says it at the top of the form, where the old bundle shows any form error', async () => {
+    const res = await runAction(async () => {
+      throw new FormOutdatedError();
+    });
+    expect(res).toEqual({
+      ok: false,
+      code: 'FORM_OUTDATED',
+      message: FORM_OUTDATED_MESSAGE,
+      fields: { _form: FORM_OUTDATED_MESSAGE },
+    });
+  });
 });
 
 describe('AppError subclasses — code + httpStatus invariants', () => {
@@ -175,6 +214,8 @@ describe('AppError subclasses — code + httpStatus invariants', () => {
       [new NotFoundError(), 'NOT_FOUND', 404],
       [new ConflictError('STATUS_BYPASS', 'hi'), 'STATUS_BYPASS', 409],
       [new RateLimitError(), 'RATE_LIMITED', 429],
+      [new StaleFieldsError({}, {}), 'STALE_FIELDS', 409],
+      [new FormOutdatedError(), 'FORM_OUTDATED', 409],
     ];
     for (const [err, code, status] of cases) {
       expect(err.code).toBe(code);

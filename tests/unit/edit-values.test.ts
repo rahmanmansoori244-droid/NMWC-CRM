@@ -21,6 +21,9 @@ import {
   CUSTOMER_FIELD_LABEL,
   EDIT_PAYLOAD_VERSION,
   GPS_COMPANIONS,
+  STALE_EQUIPMENT_MESSAGE,
+  STALE_FIELD_MESSAGE,
+  STALE_LOCATION_MESSAGE,
   classifyAgainstLive,
   classifyChanges,
   fieldLabel,
@@ -29,6 +32,8 @@ import {
   liveValueAt,
   parseFieldPath,
   sameEditValue,
+  slotFields,
+  staleSlotMessage,
   toBaseValue,
   type LiveSnapshot,
 } from '@/lib/edit-values';
@@ -205,6 +210,26 @@ describe('fieldSlotKey', () => {
     expect(fieldSlotKey('customer.primaryPhone')).toBe('customer.primaryPhone');
     expect(fieldSlotKey('_form')).toBe('_form');
     expect(fieldSlotKey('branchId')).toBe('branchId');
+  });
+  it('a slot’s columns are the ones a conflict hands back, and its STALE_FIELDS words', () => {
+    // Every column of a group sits in that group's slot, so "Use this value"
+    // on the slot takes back exactly what the conflict carried.
+    for (const f of BRANCH_EDIT_FIELDS) {
+      for (const g of slotFields(f)) {
+        expect(fieldSlotKey(`branch.${B1}.${g}`), `${f} → ${g}`).toBe(fieldSlotKey(`branch.${B1}.${f}`));
+      }
+    }
+    expect(slotFields('gpsCapturedAt')).toEqual(['gpsLat', 'gpsLng', 'gpsAccuracy', 'gpsCapturedAt']);
+    expect(slotFields('coolersCount')).toEqual(['coolersCount', 'standsCount', 'emptyBottlesCount', 'equipmentConfirmed']);
+    expect(slotFields('address')).toEqual(['address']);
+    expect(staleSlotMessage(`branch.${B1}.gps`)).toBe(STALE_LOCATION_MESSAGE);
+    expect(staleSlotMessage(`branch.${B1}.equipment`)).toBe(STALE_EQUIPMENT_MESSAGE);
+    expect(staleSlotMessage('customer.notes')).toBe(STALE_FIELD_MESSAGE);
+    // Ruling 14: the earlier write may have been the sender's own.
+    for (const m of [STALE_FIELD_MESSAGE, STALE_LOCATION_MESSAGE, STALE_EQUIPMENT_MESSAGE]) {
+      expect(m).toMatch(/after you opened this form/);
+      expect(m).not.toMatch(/someone/i);
+    }
   });
 });
 

@@ -18,11 +18,14 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
+import { editPayload } from '../support/edit-payload';
 import { randomUUID, createHash } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 // Static, not the dynamic import used further down: the constant below is
-// evaluated at module load and fullPayload() is synchronous.
+// evaluated at module load.
 import { omanDayOfWeek } from '@/lib/tz';
+import { INVALID_PHONE_MESSAGE } from '@/lib/phone';
+import { scoreBranch } from '@/lib/completeness';
 
 /**
  * The day of visit the salesman's edit PROPOSES. Derived, never a literal.
@@ -317,35 +320,41 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     return att.id;
   }
 
-  const fullPayload = (customerId: string, branchId: string, overrides: Record<string, unknown> = {}) => ({
-    customerId,
-    isDraft: false,
-    customer: {
-      channelId,
-      subChannelId,
-      primaryPhone: '+968 9876 5432',
-      contactPerson: 'Abdullah (owner)',
-      contactRole: 'Owner',
-      crNumber: '1234567',
-      ...(overrides.customer as object),
-    },
-    branches: [
-      {
-        branchId,
-        address: 'Way 4412, Al Khuwair, Muscat — next to the mosque',
-        gpsLat: 23.5880,
-        gpsLng: 58.3829,
-        gpsAccuracy: 8,
-        // fixed: a re-submit must not diff on the capture timestamp alone
-        gpsCapturedAt: new Date('2026-09-10T08:00:00.000Z'),
-        dayOfVisit: PROPOSED_DAY,
-        coolersCount: 2,
-        standsCount: 1,
-        emptyBottlesCount: 12,
-        ...(overrides.branch as object),
+  /**
+   * Every field the go-live form fills, as a patch v2 body (tests/support/edit-payload.ts):
+   * each carries what is live now as its base, so a value already live is left out
+   * and only a real change is recorded — what the old full-form diff did too.
+   */
+  const fullPayload = (customerId: string, branchId: string, overrides: Record<string, unknown> = {}) =>
+    editPayload(prisma, {
+      customerId,
+      isDraft: false,
+      customer: {
+        channelId,
+        subChannelId,
+        primaryPhone: '+968 9876 5432',
+        contactPerson: 'Abdullah (owner)',
+        contactRole: 'Owner',
+        crNumber: '1234567',
+        ...(overrides.customer as object),
       },
-    ],
-  });
+      branches: [
+        {
+          branchId,
+          address: 'Way 4412, Al Khuwair, Muscat — next to the mosque',
+          gpsLat: 23.5880,
+          gpsLng: 58.3829,
+          gpsAccuracy: 8,
+          // fixed: a re-submit must not diff on the capture timestamp alone
+          gpsCapturedAt: new Date('2026-09-10T08:00:00.000Z'),
+          dayOfVisit: PROPOSED_DAY,
+          coolersCount: 2,
+          standsCount: 1,
+          emptyBottlesCount: 12,
+          ...(overrides.branch as object),
+        },
+      ],
+    });
 
   // ── 1. scope + search ─────────────────────────────────────────────────────
   it('salesman sees exactly the customers on their route, and can search them', async () => {
@@ -394,12 +403,14 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asSalesman();
     const customerId = ids.customerIds[1]!; // the individual: no phone, no contact, no CR
     const branchId = ids.branchIds[`${sfx}002`]!;
-    const res = await edits.submitEditAction({
-      customerId,
-      isDraft: false,
-      customer: { primaryPhone: '+968 9111 2222' },
-      branches: [{ branchId }],
-    });
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, {
+        customerId,
+        isDraft: false,
+        customer: { primaryPhone: '+968 9111 2222' },
+        branches: [{ branchId }],
+      })
+    );
     expect(res.ok).toBe(false);
     if (res.ok) return;
     const missing = Object.keys(res.fields ?? {});
@@ -420,12 +431,14 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
       expect(missing, `${notBlocking} must not block under CORE`).not.toContain(notBlocking);
     }
     // A draft is always allowed — the salesman can save partial work.
-    const draft = await edits.submitEditAction({
-      customerId,
-      isDraft: true,
-      customer: { primaryPhone: '+968 9111 2222' },
-      branches: [{ branchId }],
-    });
+    const draft = await edits.submitEditAction(
+      await editPayload(prisma, {
+        customerId,
+        isDraft: true,
+        customer: { primaryPhone: '+968 9111 2222' },
+        branches: [{ branchId }],
+      })
+    );
     expect(draft.ok).toBe(true);
   });
 
@@ -484,7 +497,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const customerId = ids.customerIds[0]!;
     const branchId = ids.branchIds[`${sfx}001`]!;
     const res = await edits.submitEditAction(
-      fullPayload(customerId, branchId, { branch: { gpsLat: 10.0, gpsLng: 58.0 } })
+      await fullPayload(customerId, branchId, { branch: { gpsLat: 10.0, gpsLng: 58.0 } })
     );
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.fields?.[`branch.${branchId}.gps`]).toMatch(/Oman/);
@@ -496,7 +509,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asSalesman();
     const customerId = ids.customerIds[0]!;
     const branchId = ids.branchIds[`${sfx}001`]!;
-    const res = await edits.submitEditAction(fullPayload(customerId, branchId));
+    const res = await edits.submitEditAction(await fullPayload(customerId, branchId));
     expect(res.ok, JSON.stringify(res)).toBe(true);
     if (!res.ok) return;
     expect(res.data.state).toBe('SUBMITTED');
@@ -511,7 +524,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
 
     // One open edit per customer.
     const again = await edits.submitEditAction(
-      fullPayload(customerId, branchId, { customer: { contactRole: 'Manager' } })
+      await fullPayload(customerId, branchId, { customer: { contactRole: 'Manager' } })
     );
     expect(again.ok).toBe(false);
     if (!again.ok) expect(again.code).toBe('EDIT_LOCKED');
@@ -611,7 +624,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const customerId = ids.customerIds[0]!;
     const branchId = ids.branchIds[`${sfx}001`]!;
     const res = await edits.submitEditAction(
-      fullPayload(customerId, branchId, { customer: { contactRole: 'Partner' } })
+      await fullPayload(customerId, branchId, { customer: { contactRole: 'Partner' } })
     );
     expect(res.ok, JSON.stringify(res)).toBe(true);
     if (!res.ok) return;
@@ -651,7 +664,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     // Resubmit (a new edit) and approve.
     asSalesman();
     const res2 = await edits.submitEditAction(
-      fullPayload(customerId, branchId, { customer: { contactRole: 'Owner / Partner' } })
+      await fullPayload(customerId, branchId, { customer: { contactRole: 'Owner / Partner' } })
     );
     expect(res2.ok, JSON.stringify(res2)).toBe(true);
     if (!res2.ok) return;
@@ -667,7 +680,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
   it('a salesman from another route cannot edit the customer at all', async () => {
     asOtherSalesman();
     const res = await edits.submitEditAction(
-      fullPayload(ids.customerIds[0]!, ids.branchIds[`${sfx}001`]!)
+      await fullPayload(ids.customerIds[0]!, ids.branchIds[`${sfx}001`]!)
     );
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.code).toBe('FORBIDDEN');
@@ -686,7 +699,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     await photos.attachPhotoAction({ attachmentId: shop3, branchId: b3, slot: 'SHOP' });
     await photos.attachPhotoAction({ attachmentId: sign3, branchId: b3, slot: 'SIGNBOARD' });
     const pending = await edits.submitEditAction(
-      fullPayload(c3, b3, { customer: { crNumber: undefined, primaryPhone: '+968 2444 5555' } })
+      await fullPayload(c3, b3, { customer: { crNumber: undefined, primaryPhone: '+968 2444 5555' } })
     );
     expect(pending.ok, JSON.stringify(pending)).toBe(true);
 
@@ -804,9 +817,9 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
 
     // A reason with the point unchanged marks nothing: there is nothing to mark.
     const quiet = await edits.submitEditAction(
-      fullPayload(customerId, branchId, {
+      await fullPayload(customerId, branchId, {
         customer: { contactRole: 'Owner' },
-        branch: { gpsAccuracy: undefined, gpsManualReason: reason },
+        branch: { gpsAccuracy: null, gpsManualReason: reason },
       })
     );
     expect(quiet.ok, JSON.stringify(quiet)).toBe(true);
@@ -823,19 +836,19 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     // A reason too short to say anything is refused — in the GPS slot the form shows.
     asSalesman();
     const short = await edits.submitEditAction(
-      fullPayload(customerId, branchId, { branch: { gpsLat: 23.6012, gpsLng: 58.4021, gpsManualReason: 'gps' } })
+      await fullPayload(customerId, branchId, { branch: { gpsLat: 23.6012, gpsLng: 58.4021, gpsManualReason: 'gps' } })
     );
     expect(short.ok).toBe(false);
     if (!short.ok) expect(Object.keys(short.fields ?? {})).toEqual([`branch.${branchId}.gps`]);
 
     // The typed point itself. The reason arrives with HTML in it and is stored without.
     const res = await edits.submitEditAction(
-      fullPayload(customerId, branchId, {
+      await fullPayload(customerId, branchId, {
         customer: { contactRole: 'Owner' },
         branch: {
           gpsLat: 23.6012,
           gpsLng: 58.4021,
-          gpsAccuracy: undefined,
+          gpsAccuracy: null,
           gpsCapturedAt: new Date('2026-09-12T08:00:00.000Z'),
           gpsManualReason: '<b>' + reason + '</b>',
         },
@@ -894,16 +907,18 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     });
     const reason = 'Inside a concrete arcade, no satellite fix; used the landlord pin.';
     asManager();
-    const res = await edits.submitEditAction({
-      customerId,
-      isDraft: false,
-      customer: {},
-      branches: [
-        // Branch 1: a device fix. Branch 2: typed in by hand.
-        { branchId: b1, gpsLat: 23.62, gpsLng: 58.42, gpsAccuracy: 5, gpsCapturedAt: new Date('2026-09-13T08:00:00.000Z') },
-        { branchId: second.id, gpsLat: 23.5555, gpsLng: 58.3555, gpsCapturedAt: new Date('2026-09-13T08:00:00.000Z'), gpsManualReason: reason },
-      ],
-    });
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, {
+        customerId,
+        isDraft: false,
+        customer: {},
+        branches: [
+          // Branch 1: a device fix. Branch 2: typed in by hand (no accuracy).
+          { branchId: b1, gpsLat: 23.62, gpsLng: 58.42, gpsAccuracy: 5, gpsCapturedAt: new Date('2026-09-13T08:00:00.000Z') },
+          { branchId: second.id, gpsLat: 23.5555, gpsLng: 58.3555, gpsAccuracy: null, gpsCapturedAt: new Date('2026-09-13T08:00:00.000Z'), gpsManualReason: reason },
+        ],
+      })
+    );
     expect(res.ok, JSON.stringify(res)).toBe(true);
     if (!res.ok) return;
     expect(res.data.state).toBe('APPROVED'); // Manager: direct write, no queue
@@ -1134,8 +1149,8 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const { customerId, branchId } = await lostReplyCustomer(`${sfx}012`);
     await withShopPhoto(branchId);
     const sid = randomUUID();
-    const send = (id = sid, overrides: Record<string, unknown> = {}) =>
-      edits.submitEditAction({ ...fullPayload(customerId, branchId, overrides), submissionId: id });
+    const send = async (id = sid, overrides: Record<string, unknown> = {}) =>
+      edits.submitEditAction({ ...(await fullPayload(customerId, branchId, overrides)), submissionId: id });
 
     const first = await send();
     expect(first.ok, JSON.stringify(first)).toBe(true);
@@ -1167,7 +1182,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
 
     // The same id for a different customer is refused, not answered with this receipt.
     const reused = await edits.submitEditAction({
-      ...fullPayload(ids.customerIds[1]!, ids.branchIds[`${sfx}002`]!),
+      ...(await fullPayload(ids.customerIds[1]!, ids.branchIds[`${sfx}002`]!)),
       submissionId: sid,
     });
     expect(reused.ok).toBe(false);
@@ -1196,7 +1211,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asSalesman();
     const { customerId, branchId } = await lostReplyCustomer(`${sfx}013`);
     await withShopPhoto(branchId);
-    const body = { ...fullPayload(customerId, branchId), submissionId: randomUUID() };
+    const body = { ...(await fullPayload(customerId, branchId)), submissionId: randomUUID() };
     const [a, b] = await Promise.all([edits.submitEditAction(body), edits.submitEditAction(body)]);
     expect(a.ok, JSON.stringify(a)).toBe(true);
     expect(b.ok, JSON.stringify(b)).toBe(true);
@@ -1211,13 +1226,12 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const { customerId } = await lostReplyCustomer(`${sfx}014`);
     // Minimal, as section 8: a direct write applies to the live customer, and the
     // full payload's phone is already live on customer 001 (unique while active).
-    const body = {
+    const body = await editPayload(prisma, {
       customerId,
       isDraft: false,
       customer: { contactPerson: 'Direct write once' },
-      branches: [],
       submissionId: randomUUID(),
-    };
+    });
     // Overlapping, then once more after both finished.
     const [a, b] = await Promise.all([edits.submitEditAction(body), edits.submitEditAction(body)]);
     const c = await edits.submitEditAction(body);
@@ -1310,7 +1324,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     // A DIFFERENT request of his is refused by the pending close. It must not be
     // told "your changes arrived" — it was not sent (post-review fix).
     const update = await edits.submitEditAction({
-      ...fullPayload(customerId, branchId),
+      ...(await fullPayload(customerId, branchId)),
       submissionId: randomUUID(),
     });
     expect(update.ok).toBe(false);
@@ -1396,5 +1410,246 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(await prisma.customerEdit.count({ where: { customerId } })).toBe(1);
     const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: first.data.editId } });
     expect(row).toMatchObject({ isReactivation: true, submissionId: sid, branchId });
+  });
+
+  // ── 13. patch v2: only what was touched, judged against what is live (phase 2) ──
+  /**
+   * A customer on the salesman's route that already passes the CORE gate —
+   * channel and sub-channel, phone, contact, and a branch with its address, point
+   * and shop photo — so each case below sends only the fields it is about.
+   */
+  async function readyCustomer(code: string) {
+    asSalesman();
+    const { customerId, branchId } = await lostReplyCustomer(code);
+    await prisma.customer.update({
+      where: { id: customerId },
+      data: {
+        subChannelId,
+        primaryPhone: '+96892220000',
+        primaryPhoneNorm: '+96892220000',
+        altPhone: '+96892221111',
+        contactPerson: 'Mr Salim',
+        notes: 'Opens at 7',
+      },
+    });
+    await prisma.branch.update({ where: { id: branchId }, data: { gpsLat: 23.59, gpsLng: 58.39 } });
+    await withShopPhoto(branchId);
+    return { customerId, branchId };
+  }
+  /** Approve as the region's manager, from a freshly opened review page. */
+  async function approveAsManager(editId: string) {
+    asManager();
+    const fd = new FormData();
+    fd.set('editId', editId);
+    fd.set('decisionToken', await freshDecisionToken(prisma, editId));
+    return edits.approveEditAction(fd);
+  }
+
+  it('F20: a salesman clears the notes and the alt phone; approved, both are empty, and the audit row says so', async () => {
+    const { customerId } = await readyCustomer(`${sfx}021`);
+    asSalesman();
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { notes: null, altPhone: '' } })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const ok = await approveAsManager(res.data.editId);
+    expect(ok.ok, JSON.stringify(ok)).toBe(true);
+    const c = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
+    expect(c.notes).toBeNull();
+    expect(c.altPhone).toBeNull();
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: 'APPROVE', entityId: res.data.editId } });
+    expect((audit.after as { fieldChanges: unknown[] }).fieldChanges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'customer.notes', before: 'Opens at 7', after: null }),
+        expect.objectContaining({ field: 'customer.altPhone', before: '+96892221111', after: null }),
+      ])
+    );
+  });
+
+  it('F19: Persian digits are stored as the Oman number they are; a number that is not one is refused', async () => {
+    const { customerId } = await readyCustomer(`${sfx}022`);
+    asSalesman();
+    const bad = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { primaryPhone: '1234567' } })
+    );
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.fields?.['customer.primaryPhone']).toBe(INVALID_PHONE_MESSAGE);
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { primaryPhone: '۹۲۲۲ ۳۳۳۳' } })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    expect((await approveAsManager(res.data.editId)).ok).toBe(true);
+    const c = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
+    expect(c.primaryPhone).toBe('+96892223333');
+    expect(c.primaryPhoneNorm).toBe('+96892223333');
+  });
+
+  it('F16: moving the customer to another channel clears the old channel’s sub-channel', async () => {
+    const other = await prisma.channel.findFirstOrThrow({ where: { isActive: true, id: { not: channelId } } });
+    const { customerId } = await readyCustomer(`${sfx}023`);
+    asSalesman();
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { channelId: other.id } })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: res.data.editId } });
+    expect(row.fieldChanges).toEqual([
+      { field: 'customer.channelId', before: channelId, after: other.id },
+      { field: 'customer.subChannelId', before: subChannelId, after: null },
+    ]);
+    expect((await approveAsManager(res.data.editId)).ok).toBe(true);
+    const c = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
+    expect(c.channelId).toBe(other.id);
+    expect(c.subChannelId).toBeNull();
+  });
+
+  it('F21: counted at the shop with nothing there — once approved, the zero earns the equipment points', async () => {
+    const { customerId, branchId } = await readyCustomer(`${sfx}024`);
+    asSalesman();
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, branches: [{ branchId, equipmentConfirmed: true }] })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    expect((await approveAsManager(res.data.editId)).ok).toBe(true);
+    const b = await prisma.branch.findUniqueOrThrow({ where: { id: branchId } });
+    expect(b.equipmentConfirmed).toBe(true);
+    expect(b.coolersCount + b.standsCount + b.emptyBottlesCount).toBe(0);
+    expect(b.completenessScore).toBe(scoreBranch(b));
+    expect(scoreBranch(b) - scoreBranch({ ...b, equipmentConfirmed: false })).toBe(5);
+  });
+
+  it('F05: another route’s incomplete branch blocks neither his submit nor its approval, nor does one opened since', async () => {
+    const { customerId, branchId } = await readyCustomer(`${sfx}025`);
+    // On the other salesman's route: no point, no photos.
+    await prisma.branch.create({
+      data: {
+        customerId,
+        branchCode: `${sfx}025-02`,
+        branchName: 'Other route shop',
+        regionId: ids.regionId,
+        routeId: ids.otherRouteId,
+        address: 'Way 9, Ruwi',
+      },
+    });
+    asSalesman();
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { notes: 'Closed on Fridays' } })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: res.data.editId } });
+    expect(row.submitGate).toEqual({ v: 1, branchIds: [branchId] });
+    // Put on his route after he sent it, still incomplete: not in the set it was sent with.
+    await prisma.branch.create({
+      data: {
+        customerId,
+        branchCode: `${sfx}025-03`,
+        branchName: 'Opened since',
+        regionId: ids.regionId,
+        routeId: ids.routeId,
+        address: 'Way 10, Ruwi',
+      },
+    });
+    const ok = await approveAsManager(res.data.editId);
+    expect(ok.ok, JSON.stringify(ok)).toBe(true);
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: customerId } })).notes).toBe('Closed on Fridays');
+  });
+
+  it('F06: an import that changed the contact after he sent his edit refuses its approval; Reject still sends it back', async () => {
+    const { customerId } = await readyCustomer(`${sfx}026`);
+    asSalesman();
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { contactPerson: 'Mr Khalid' } })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const editId = res.data.editId;
+    const sent = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    // What the import's full lane does to the contact (services/imports.ts), without the import.
+    await prisma.customer.update({
+      where: { id: customerId },
+      data: { contactPerson: 'Mr Nasser (import)', version: { increment: 1 } },
+    });
+    const refused = await approveAsManager(editId);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(refused.code).toBe('STALE_BEFORE');
+      expect(refused.message).toContain('contact person');
+      expect(refused.message).not.toContain('Nasser');
+    }
+    // Nothing of the approval survived: still pending, on the same stage, no decision, no audit row.
+    const still = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(still.state).toBe('SUBMITTED');
+    expect(still.stageEnteredAt).toEqual(sent.stageEnteredAt);
+    expect(await prisma.editApproval.count({ where: { editId } })).toBe(0);
+    expect(await prisma.auditLog.count({ where: { action: 'APPROVE', entityId: editId } })).toBe(0);
+    const c = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
+    expect(c.contactPerson).toBe('Mr Nasser (import)');
+    const fd = new FormData();
+    fd.set('editId', editId);
+    fd.set('decisionToken', await freshDecisionToken(prisma, editId));
+    fd.set('reason', 'The contact changed since you sent this — check it with the shop.');
+    fd.set('category', 'wrong_info');
+    expect((await edits.rejectEditAction(fd)).ok).toBe(true);
+    expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).state).toBe('NEEDS_CORRECTION');
+  });
+
+  it('F06: a manager’s form opened before the contact changed is told so; "Keep mine" then replaces it knowingly', async () => {
+    const { customerId } = await readyCustomer(`${sfx}027`);
+    asManager();
+    const opened = await editPayload(prisma, { customerId, isDraft: false, customer: { contactPerson: 'Mr Faisal' } });
+    await prisma.customer.update({ where: { id: customerId }, data: { contactPerson: 'Mr Hamed (meanwhile)' } });
+    const refused = await edits.submitEditAction(opened);
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.code).toBe('STALE_FIELDS');
+    expect(refused.current).toEqual({ 'customer.contactPerson': 'Mr Hamed (meanwhile)' });
+    expect(Object.keys(refused.fields ?? {})).toEqual(['customer.contactPerson']);
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: customerId } })).contactPerson).toBe(
+      'Mr Hamed (meanwhile)'
+    );
+    // "Keep mine": the base is now the value he was shown, and the request says so.
+    const kept = await edits.submitEditAction(
+      await editPayload(prisma, {
+        customerId,
+        isDraft: false,
+        customer: { contactPerson: 'Mr Faisal' },
+        customerOverrides: ['contactPerson'],
+      })
+    );
+    expect(kept.ok, JSON.stringify(kept)).toBe(true);
+    if (!kept.ok) return;
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: kept.data.editId } });
+    expect(row.fieldChanges).toEqual([
+      {
+        field: 'customer.contactPerson',
+        before: 'Mr Hamed (meanwhile)',
+        after: 'Mr Faisal',
+        overrodeLive: 'Mr Hamed (meanwhile)',
+      },
+    ]);
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: customerId } })).contactPerson).toBe('Mr Faisal');
+  });
+
+  it('ruling 5: a request whose every change is already live is approved and writes nothing to the customer', async () => {
+    const { customerId } = await readyCustomer(`${sfx}028`);
+    asSalesman();
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { notes: 'Closed on Fridays' } })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    await prisma.customer.update({ where: { id: customerId }, data: { notes: 'Closed on Fridays' } });
+    const before = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
+    const ok = await approveAsManager(res.data.editId);
+    expect(ok.ok, JSON.stringify(ok)).toBe(true);
+    const after = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
+    expect(after.version).toBe(before.version);
+    expect(after.updatedAt).toEqual(before.updatedAt);
+    expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: res.data.editId } })).state).toBe('APPROVED');
   });
 });

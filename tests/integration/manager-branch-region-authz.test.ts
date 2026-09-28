@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { editPayload } from '../support/edit-payload';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -66,10 +67,10 @@ describe.skipIf(!ENABLED)('Manager can only edit branches in a region they manag
   });
 
   it('REJECTS a Manager editing a branch in a region they do NOT manage', async () => {
-    const res = await edits.submitEditAction({
+    const res = await edits.submitEditAction(await editPayload(prisma, {
       customerId: ids.cust, isDraft: false, customer: {},
       branches: [{ branchId: ids.branchB, openingHours: '08:00-20:00' }],
-    });
+    }));
     expect(res.ok).toBe(false);
     // the fix throws ForbiddenError → runAction maps to a FORBIDDEN-ish message
     const branch = await prisma.branch.findUniqueOrThrow({ where: { id: ids.branchB }, select: { openingHours: true } });
@@ -77,10 +78,10 @@ describe.skipIf(!ENABLED)('Manager can only edit branches in a region they manag
   });
 
   it('ALLOWS a Manager editing a branch in a region they manage', async () => {
-    const res = await edits.submitEditAction({
+    const res = await edits.submitEditAction(await editPayload(prisma, {
       customerId: ids.cust, isDraft: false, customer: {},
       branches: [{ branchId: ids.branchA, openingHours: '09:00-21:00' }],
-    });
+    }));
     if (!res.ok) console.error('managed-region edit failed', JSON.stringify(res));
     expect(res.ok).toBe(true);
     const branch = await prisma.branch.findUniqueOrThrow({ where: { id: ids.branchA }, select: { openingHours: true } });

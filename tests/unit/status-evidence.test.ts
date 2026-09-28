@@ -390,6 +390,16 @@ describe('approving a close request (F10)', () => {
     h.user = { id: SUP, role: 'SUPERVISOR', username: 'sup' };
     h.scope = { ownedRouteId: null, teamRouteIds: ['r1'], managedRegionIds: [] };
     db.customerEdit.findUnique.mockResolvedValue(closeRequest());
+    // Phase 2 (F06): the approval reads the customer under the lock and decides
+    // each change against it — the branch is still ACTIVE, the notes still empty.
+    tx.customer.findUnique.mockResolvedValue({
+      id: CUST,
+      deletedAt: null,
+      status: 'ACTIVE',
+      paymentTerms: 'CASH',
+      notes: null,
+      branches: [{ id: B1, routeId: 'r1', regionId: 'g1', status: 'ACTIVE', deletedAt: null }],
+    });
   });
 
   /**

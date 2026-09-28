@@ -58,6 +58,45 @@ export class RateLimitError extends AppError {
   }
 }
 
+/** A value as the customer edit form loaded it (lib/edit-values.ts BaseValue). */
+type LiveValue = string | number | boolean | null;
+
+export const STALE_FIELDS_MESSAGE =
+  'Some details you changed were changed after you opened this form, so nothing was sent. Check the marked fields, then submit again.';
+
+/**
+ * Phase 2, F06: a customer edit named a field whose value changed after the
+ * form was opened (services/edits.ts). Nothing was written. `fields` is keyed by
+ * the form's slot (lib/edit-values.ts fieldSlotKey); `current` holds the value
+ * live now for each such field, by its raw path ('customer.contactPerson',
+ * 'branch.<id>.gpsLat'), so the form can offer "Keep mine" and "Use this value"
+ * (ruling 1). Only fields the sender put in his own patch, on branches he may
+ * edit, are ever in it. Worded neutrally (ruling 14): the earlier write may
+ * have been his own.
+ */
+export class StaleFieldsError extends AppError {
+  readonly current: Record<string, LiveValue>;
+  constructor(fields: Record<string, string>, current: Record<string, LiveValue>) {
+    super('STALE_FIELDS', STALE_FIELDS_MESSAGE, 409, fields);
+    this.current = current;
+  }
+}
+
+export const FORM_OUTDATED_MESSAGE =
+  'This page was opened before an app update, so nothing was sent. Reload the page and submit again.';
+
+/**
+ * Phase 2: a customer edit body not in this build's format — a tab still running
+ * the previous bundle, which sent every field it had loaded. Refused whole,
+ * before its fields are read; the message is also the form-level error, so the
+ * old form shows it where it shows any other.
+ */
+export class FormOutdatedError extends AppError {
+  constructor() {
+    super('FORM_OUTDATED', FORM_OUTDATED_MESSAGE, 409, { _form: FORM_OUTDATED_MESSAGE });
+  }
+}
+
 // ── Server Action error contract ──────────────────────────────────────────
 //
 // PROD-006 / SC-RENDER-OMITTED: when an `AppError` (ConflictError /
@@ -100,6 +139,8 @@ export type ActionResult<T = void> =
       message: string;
       /** Field-level errors when code === 'VALIDATION_FAILED'. */
       fields?: Record<string, string>;
+      /** STALE_FIELDS only: the value live now, by raw field path (StaleFieldsError). */
+      current?: Record<string, LiveValue>;
     };
 
 /**
@@ -147,6 +188,7 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
         code: err.code,
         message: err.message,
         ...(err.fields ? { fields: err.fields } : {}),
+        ...(err instanceof StaleFieldsError ? { current: err.current } : {}),
       };
     }
     // Special-case Prisma P2002 unique-constraint as a generic conflict so

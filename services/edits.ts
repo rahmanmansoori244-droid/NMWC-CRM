@@ -10,6 +10,8 @@ import {
   ConflictError,
   NotFoundError,
   RateLimitError,
+  FormOutdatedError,
+  StaleFieldsError,
   runAction,
   type SafeAction,
 } from '@/lib/errors';
@@ -18,12 +20,41 @@ import { redirect } from 'next/navigation';
 import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isFieldLocked, canActOnStep } from '@/lib/permissions';
-// Phase 2 foundation: still the pre-v2 payload until this file moves to patch v2.
 import {
-  legacySubmitEditSchema as submitEditSchema,
-  type LegacySubmitEditInput as SubmitEditInput,
+  EQUIPMENT_UNCONFIRM_MESSAGE,
+  isCurrentEditPayload,
+  keysWithoutBase,
+  submitEditSchema,
+  type SubmitEditInput,
 } from '@/lib/validation/edit';
-import { normalizePhone } from '@/lib/phone';
+import {
+  BRANCH_EDIT_FIELDS,
+  CUSTOMER_EDIT_FIELDS,
+  EQUIPMENT_FIELDS,
+  GPS_COMPANIONS,
+  GPS_POINT_FIELDS,
+  branchPath,
+  classifyAgainstLive,
+  classifyChanges,
+  fieldSlotKey,
+  liveSnapshotOf,
+  parseFieldPath,
+  sameEditValue,
+  slotFields,
+  staleSlotMessage,
+  toBaseValue,
+  type BaseValue,
+  type BranchEditField,
+} from '@/lib/edit-values';
+import { gateBranchesForApproval, salesmanBranches, submitGateRecord } from '@/lib/edit-scope';
+import {
+  CHANNEL_PAIR_INVALID_MESSAGE,
+  planApproval,
+  staleBeforeMessage,
+  staleFieldLabels,
+  storedFieldChanges,
+} from '@/lib/edit-approval';
+import { resolveChannelPair } from '@/lib/channel-pair';
 import { markManualGps, takeManualGpsReason, type FieldChange } from '@/lib/gps-manual';
 import { normalizeCR } from '@/lib/cr';
 import { lockCustomerRow } from '@/lib/locks';
@@ -54,62 +85,75 @@ async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
 }
 
-/**
- * Convert a partial branch payload into a list of {field, before, after} diff entries.
- * Drops fields that are unchanged or `undefined`.
- */
-// FieldChange comes from lib/gps-manual: it carries item 41's optional marker.
+// FieldChange comes from lib/gps-manual: it carries item 41's optional marker,
+// and phase 2's overrodeLive ("Keep mine", ruling 1).
 
-function diffFields(
-  previous: Record<string, unknown>,
-  proposed: Record<string, unknown>,
-  fields: readonly string[]
-): FieldChange[] {
-  const out: FieldChange[] = [];
-  for (const f of fields) {
-    if (!(f in proposed) || proposed[f] === undefined) continue;
-    if (previous[f] === proposed[f]) continue;
-    if (
-      previous[f] instanceof Date &&
-      proposed[f] instanceof Date &&
-      (previous[f] as Date).getTime() === (proposed[f] as Date).getTime()
-    )
+/** A branch's fields keyed by name, as applyEditChanges writes them. */
+type BranchWrite = { branchId: string } & Record<string, unknown>;
+
+/**
+ * Stored (or planned) changes as the write takes them: the customer's fields,
+ * and each branch's by id. `after: null` is a clear and is written as null; an
+ * entry that names no edit field is ignored, as the write always ignored it.
+ */
+function payloadFromFieldChanges(changes: readonly FieldChange[]) {
+  const customer: Record<string, unknown> = {};
+  const byBranch = new Map<string, Record<string, unknown>>();
+  for (const c of changes) {
+    const p = parseFieldPath(c.field);
+    if (!p) continue;
+    if (p.scope === 'customer') {
+      customer[p.field] = c.after;
       continue;
-    out.push({ field: f, before: previous[f] ?? null, after: proposed[f] ?? null });
+    }
+    const fields = byBranch.get(p.branchId) ?? {};
+    fields[p.field] = c.after;
+    byBranch.set(p.branchId, fields);
   }
-  return out;
+  const branches: BranchWrite[] = [...byBranch].map(([branchId, fields]) => ({
+    branchId,
+    ...fields,
+  }));
+  return { customer, byBranch, branches };
 }
 
-const CUSTOMER_FIELDS = [
-  'legalName',
-  'paymentTerms',
-  'crNumber',
-  'channelId',
-  'subChannelId',
-  'primaryPhone',
-  'altPhone',
-  'contactPerson',
-  'contactRole',
-  'status',
-  'notes',
-] as const;
+/** The channel pair a set of changes writes: absent keys are kept (lib/channel-pair.ts). */
+function channelPairOf(customer: Record<string, unknown>) {
+  return {
+    channelId: customer.channelId as string | null | undefined,
+    subChannelId: customer.subChannelId as string | null | undefined,
+  };
+}
 
-const BRANCH_FIELDS = [
-  'branchName',
-  'address',
-  'areaDescription',
-  'gpsLat',
-  'gpsLng',
-  'gpsAccuracy',
-  'gpsCapturedAt',
-  'dayOfVisit',
-  'openingHours',
-  'deliveryWindow',
-  'coolersCount',
-  'standsCount',
-  'emptyBottlesCount',
-  'status',
-] as const;
+/**
+ * F06: the fields a submit named whose value changed after the form was opened.
+ * Refused whole, before anything is written, with the value live now for each —
+ * for a location or an equipment block, the whole group's, because the form
+ * takes the group back as one ("Use this value", ruling 1).
+ */
+function staleFieldsError(
+  paths: readonly string[],
+  liveCustomer: Readonly<Record<string, unknown>>,
+  liveBranches: ReadonlyMap<string, Readonly<Record<string, unknown>>>
+): StaleFieldsError {
+  const fields: Record<string, string> = {};
+  const current: Record<string, BaseValue> = {};
+  for (const path of paths) {
+    const slot = fieldSlotKey(path);
+    fields[slot] = staleSlotMessage(slot);
+    const p = parseFieldPath(path);
+    if (!p) continue;
+    if (p.scope === 'customer') {
+      current[path] = toBaseValue(liveCustomer[p.field]);
+      continue;
+    }
+    const branch = liveBranches.get(p.branchId);
+    for (const f of slotFields(p.field)) {
+      current[branchPath(p.branchId, f)] = toBaseValue(branch?.[f]);
+    }
+  }
+  return new StaleFieldsError(fields, current);
+}
 
 /**
  * Validate that the would-be customer state (existing record + proposed
@@ -121,6 +165,13 @@ const BRANCH_FIELDS = [
  *            crNumber, crPhotoId
  *  Branch:   address (≥3 chars), gpsLat, gpsLng, dayOfVisit, shopPhotoId,
  *            signboardPhotoId
+ *
+ * F05 (auditor recheck 2026-09-27): the branch checks run on `gateBranches`
+ * only — a salesman's own route's branches at submit (lib/edit-scope.ts
+ * salesmanBranches), the set frozen on the request at approval
+ * (gateBranchesForApproval) — never on every branch of the customer: another
+ * route's missing GPS blocked a salesman who could neither see nor edit it.
+ * A proposed null (a clear) merges as missing.
  */
 function collectMissingMandatory(
   customer: {
@@ -132,17 +183,17 @@ function collectMissingMandatory(
     contactPerson: string | null;
     crNumber: string | null;
     crPhotoId: string | null;
-    branches: Array<{
-      id: string;
-      branchCode: string;
-      address: string | null;
-      gpsLat: number | null;
-      gpsLng: number | null;
-      dayOfVisit: string | null;
-      shopPhotoId: string | null;
-      signboardPhotoId: string | null;
-    }>;
   },
+  gateBranches: ReadonlyArray<{
+    id: string;
+    branchCode: string;
+    address: string | null;
+    gpsLat: number | null;
+    gpsLng: number | null;
+    dayOfVisit: string | null;
+    shopPhotoId: string | null;
+    signboardPhotoId: string | null;
+  }>,
   customerProposed: Record<string, unknown>,
   branchProposedById: Map<string, Record<string, unknown>>,
   /**
@@ -190,7 +241,7 @@ function collectMissingMandatory(
     errors['customer.crPhoto'] = 'CR document photo is required.';
   }
 
-  for (const b of customer.branches) {
+  for (const b of gateBranches) {
     const bp = branchProposedById.get(b.id) ?? {};
     const bMerged = (k: string, fallback: unknown) => (bp[k] !== undefined ? bp[k] : fallback);
     const tag = b.branchCode || b.id;
@@ -221,10 +272,17 @@ function collectMissingMandatory(
  * the supervisor reviews it as one decision.
  *
  * Concurrency: if there is already a SUBMITTED edit for this customer, block.
+ *
+ * Patch v2 (auditor recheck 2026-09-27, phase 2; lib/validation/edit.ts): the
+ * form sends only the fields that were touched, each with the value it loaded.
+ * Each is judged against the customer as it is now (lib/edit-values.ts): one
+ * already holding the new value is left out, one whose loaded value no longer
+ * matches is refused with STALE_FIELDS (F06) — so an untouched or stale value
+ * can no longer put back something newer. null clears a clearable field (F20).
  */
 /**
  * SafeAction-wrapped public entry. The form receives `{ ok, data?, code?,
- * message?, fields? }` — see lib/errors.ts. Throws are reserved for
+ * message?, fields?, current? }` — see lib/errors.ts. Throws are reserved for
  * programmer errors / framework signals (NEXT_REDIRECT).
  */
 export async function submitEditAction(input: SubmitEditInput): SafeAction<SubmitReceipt> {
@@ -263,6 +321,12 @@ async function submitEditOnce(
   if (!lim.ok) {
     throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
   }
+  // Phase 2: a body without this build's `v` came from a tab opened before the
+  // update, whose form sent every field it had loaded — exactly the overwrite
+  // F06 removes. Refused whole, before its fields are read one by one. The
+  // replay lookup (submitEditCore) has already run, so a retry of a submit that
+  // landed before the update is still answered "already received".
+  if (!isCurrentEditPayload(input)) throw new FormOutdatedError();
   const parsed = submitEditSchema.safeParse(input);
   if (!parsed.success) {
     // EL-02: map Zod issue paths to the form's `customer.<f>` / `branch.<id>.<f>`
@@ -275,13 +339,14 @@ async function submitEditOnce(
       const p = issue.path;
       if (p[0] === 'branches' && typeof p[1] === 'number') {
         const idx = p[1] as number;
-        const branchId = (input as { branches?: Array<{ branchId?: string }> }).branches?.[idx]
+        const branchId = (input as { branches?: Array<{ branchId?: unknown }> }).branches?.[idx]
           ?.branchId;
-        if (branchId) {
+        if (typeof branchId === 'string' && branchId) {
           const sub = p.slice(2).join('.');
-          // gpsLat/gpsLng (and a typed point's reason) render under one `gps` slot.
-          const key = sub === 'gpsLat' || sub === 'gpsLng' || sub === 'gpsManualReason' ? 'gps' : sub;
-          fields[`branch.${branchId}.${key}`] = issue.message;
+          const path = sub ? `branch.${branchId}.${sub}` : `branch.${branchId}`;
+          // The location's columns (and a typed point's reason) render under one
+          // `gps` slot, the equipment block's under one `equipment` slot.
+          fields[fieldSlotKey(path)] = issue.message;
           continue;
         }
       }
@@ -293,7 +358,17 @@ async function submitEditOnce(
     }
     throw new ValidationError(fields);
   }
-  const { customerId, isDraft, customer: cInput, branches: bInputs } = parsed.data;
+  // Every key sent must say what it was changed from. One that does not was not
+  // built by this build's form: it cannot be told from a stale value.
+  if (keysWithoutBase(parsed.data).length > 0) throw new FormOutdatedError();
+  const {
+    customerId,
+    isDraft,
+    customer: cInput,
+    customerBase,
+    customerOverrides,
+    branches: bInputs,
+  } = parsed.data;
 
   // Fetch with branches and verify access
   const customer = await prisma.customer.findUnique({
@@ -389,16 +464,9 @@ async function submitEditOnce(
     });
   }
 
-  // Normalize phone, CR
-  if (typeof customerProposed.primaryPhone === 'string') {
-    customerProposed.primaryPhone = normalizePhone(customerProposed.primaryPhone) ?? undefined;
-  }
-  if (typeof customerProposed.altPhone === 'string') {
-    customerProposed.altPhone = normalizePhone(customerProposed.altPhone) ?? undefined;
-  }
-  if (typeof customerProposed.crNumber === 'string') {
-    customerProposed.crNumber = customerProposed.crNumber.trim() || undefined;
-  }
+  // F19: phones and the CR number arrive from the schema already checked and
+  // normalized (lib/validation/fields.ts). An invalid phone is refused there,
+  // for every role — it used to be dropped here without a word.
 
   // P1.3 (2026-05-10): phone duplicates are now ALLOWED across customers.
   // NMWC's real-world data has many shops sharing one owner-phone; the prior
@@ -419,37 +487,50 @@ async function submitEditOnce(
     }
   }
 
-  // Build customer-level diff
-  const customerBefore: Record<string, unknown> = {};
-  for (const f of CUSTOMER_FIELDS) customerBefore[f] = (customer as Record<string, unknown>)[f];
-  const fieldChanges: FieldChange[] = diffFields(
-    customerBefore,
-    customerProposed,
-    CUSTOMER_FIELDS
-  ).map((c) => ({ ...c, field: `customer.${c.field}` }));
+  // F06: each sent field against the customer as read above
+  // (lib/edit-values.ts classifyAgainstLive). The value the form loaded still
+  // live: a change, recorded with the live value as `before`. The new value
+  // already live: nothing to do. Anything else changed after the form was
+  // opened, and the whole submit is refused below, before anything is written.
+  // A draft skips that refusal and records what was typed (ruling 1): UPDATE
+  // drafts are never read back, so nothing can be written from one.
+  const stalePaths: string[] = [];
+  const plan = (
+    path: string,
+    loaded: unknown,
+    proposed: unknown,
+    live: unknown,
+    keptMine: boolean
+  ): FieldChange | null => {
+    const verdict = classifyAgainstLive(path, loaded, proposed, live);
+    if (verdict === 'CONVERGED') return null;
+    if (verdict === 'STALE' && !isDraft) {
+      stalePaths.push(path);
+      return null;
+    }
+    return {
+      field: path,
+      before: live ?? null,
+      after: proposed,
+      // Ruling 1, "Keep mine": the sender was shown this value, changed after
+      // his form opened, and chose to replace it. The approval page says so.
+      ...(keptMine ? { overrodeLive: toBaseValue(live) } : {}),
+    };
+  };
 
-  // Credit status (CASH ↔ CREDIT) is decided at CREATE through the owner-locked
-  // SUP→FM→GM→ACC credit chain and is thereafter owned by Temix (the authoritative
-  // credit source). It must NEVER ride the single-Supervisor UPDATE chain: the
-  // chain is resolved from the customer's CURRENT terms (resolveChain below), so a
-  // CASH→CREDIT flip on an enrichment edit would grant CREDIT status — a credit
-  // limit/terms and the outbound Temix credit push — with NO finance approval
-  // (final-hunt #3). Reject the change here; terms move via a Temix refresh or a
-  // fresh credit application, never the enrichment edit. (Mirrors the branch-status
-  // guard below: significant lifecycle changes have dedicated lanes.)
-  if (fieldChanges.some((c) => c.field === 'customer.paymentTerms')) {
-    throw new ValidationError({
-      'customer.paymentTerms':
-        'Payment terms (CASH/CREDIT) cannot be changed from the customer edit — a credit change requires finance approval and comes from Temix or a new credit application.',
-    });
+  const fieldChanges: FieldChange[] = [];
+  const customerLoaded = customerBase as Record<string, unknown>;
+  const customerKept = new Set<string>(customerOverrides ?? []);
+  for (const f of CUSTOMER_EDIT_FIELDS) {
+    if (customerProposed[f] === undefined) continue;
+    const kept = customerKept.has(f);
+    const c = plan(`customer.${f}`, customerLoaded[f], customerProposed[f], customer[f], kept);
+    if (c) fieldChanges.push(c);
   }
 
-  // Branch-level diffs
+  // Branch-level changes. Planned after each branch's authorization, so a
+  // STALE_FIELDS answer never carries a value of a branch the sender may not edit.
   const branchById = new Map(customer.branches.map((b) => [b.id, b] as const));
-  // What the direct-write lane applies: the same cleaned values the diff below is
-  // built from, not the raw input — otherwise a typed point (item 41) would be
-  // recorded with its accuracy cleared while the live branch kept the old one.
-  const appliedBranches: Array<Record<string, unknown>> = [];
   for (const bp of bInputs) {
     const branch = branchById.get(bp.branchId);
     if (!branch) {
@@ -468,14 +549,9 @@ async function submitEditOnce(
     ) {
       throw new ForbiddenError('You can only edit branches in a region you manage.');
     }
-    const branchBefore: Record<string, unknown> = {};
-    for (const f of BRANCH_FIELDS) branchBefore[f] = (branch as Record<string, unknown>)[f];
 
-    // Coerce date if string
+    // The fields sent; the schema has already made gpsCapturedAt a Date.
     const bpClean: Record<string, unknown> = { ...bp };
-    if (typeof bpClean.gpsCapturedAt === 'string') {
-      bpClean.gpsCapturedAt = new Date(bpClean.gpsCapturedAt);
-    }
 
     // QA-009 fix: status flips between CLOSED/SUSPENDED and ACTIVE must go
     // through the dedicated reactivation flow (Manager-only review with photo
@@ -497,18 +573,87 @@ async function submitEditOnce(
       }
     }
 
+    // F21, owner decision 3 (2026-09-29): a salesman only ever marks the
+    // equipment counted; taking that back is a Steward's or a Manager's call.
+    if (bpClean.equipmentConfirmed === false && me.role === Role.SALESMAN) {
+      throw new ValidationError({ [`branch.${branch.id}.equipment`]: EQUIPMENT_UNCONFIRM_MESSAGE });
+    }
+
     // Item 41 (owner: option A): a point the salesman TYPED IN keeps that fact,
     // and the reason, on this branch's gps entries — only when the point moves,
     // and with the old accuracy cleared (lib/gps-manual.ts, takeManualGpsReason).
     const manualReason = takeManualGpsReason(branch, bpClean);
 
-    const branchChanges = diffFields(branchBefore, bpClean, BRANCH_FIELDS).map((c) => ({
-      ...c,
-      field: `branch.${branch.id}.${c.field}`,
-    }));
+    const live = branch as unknown as Record<string, unknown>;
+    const loaded = bp.base as Record<string, unknown>;
+    const kept = new Set<string>(bp.overrides ?? []);
+    const branchChanges: FieldChange[] = [];
+    for (const f of BRANCH_EDIT_FIELDS) {
+      if (GPS_COMPANIONS.has(f) || bpClean[f] === undefined) continue;
+      const c = plan(branchPath(branch.id, f), loaded[f], bpClean[f], live[f], kept.has(f));
+      if (c) branchChanges.push(c);
+    }
+    const planned = (f: BranchEditField) =>
+      branchChanges.some((c) => c.field === branchPath(branch.id, f));
+    // Ruling 7: the capture time and accuracy describe the point, so they are
+    // recorded only with a point that is itself recorded — never beside
+    // coordinates that stay as they are.
+    if ([...GPS_POINT_FIELDS].some(planned)) {
+      for (const f of GPS_COMPANIONS) {
+        if (bpClean[f] === undefined || sameEditValue(f, bpClean[f], live[f])) continue;
+        const path = branchPath(branch.id, f);
+        branchChanges.push({ field: path, before: live[f] ?? null, after: bpClean[f] });
+      }
+    }
+    // F21: entering a count is counting — so a zero beside it is a real zero,
+    // worth the score's equipment points. Recorded for any sender who did not
+    // say otherwise himself; a hand-made payload gets the same.
+    const counts = [...EQUIPMENT_FIELDS].filter((f) => f !== 'equipmentConfirmed');
+    const counted =
+      counts.some(planned) && !branch.equipmentConfirmed && bpClean.equipmentConfirmed === undefined;
+    if (counted) {
+      const path = branchPath(branch.id, 'equipmentConfirmed');
+      branchChanges.push({ field: path, before: false, after: true });
+    }
     if (manualReason) markManualGps(branchChanges, manualReason);
     fieldChanges.push(...branchChanges);
-    appliedBranches.push(bpClean);
+  }
+
+  if (stalePaths.length > 0) throw staleFieldsError(stalePaths, customer, branchById);
+
+  // F16: the channel pair the customer would carry must fit — CREATE's rule
+  // (lib/channel-pair.ts), checked only when the channel or the sub-channel
+  // changes, so a pair already mismatched on file never blocks an unrelated edit.
+  // A channel change that leaves a sub-channel of the old channel clears it, as
+  // a change of its own that the approver sees ("Cleared").
+  const pair = await resolveChannelPair(prisma, customer, channelPairOf(customerProposed), {
+    requireActiveChannel: true,
+    clearMisfitSubChannel: true,
+  });
+  if (!pair.ok) throw new ValidationError({ [pair.field]: pair.message });
+  if (pair.changed && pair.clearsSubChannel) {
+    customerProposed.subChannelId = null;
+    fieldChanges.push({
+      field: 'customer.subChannelId',
+      before: customer.subChannelId,
+      after: null,
+    });
+  }
+
+  // Credit status (CASH ↔ CREDIT) is decided at CREATE through the owner-locked
+  // SUP→FM→GM→ACC credit chain and is thereafter owned by Temix (the authoritative
+  // credit source). It must NEVER ride the single-Supervisor UPDATE chain: the
+  // chain is resolved from the customer's CURRENT terms (resolveChain below), so a
+  // CASH→CREDIT flip on an enrichment edit would grant CREDIT status — a credit
+  // limit/terms and the outbound Temix credit push — with NO finance approval
+  // (final-hunt #3). Reject the change here; terms move via a Temix refresh or a
+  // fresh credit application, never the enrichment edit. (Mirrors the branch-status
+  // guard above: significant lifecycle changes have dedicated lanes.)
+  if (fieldChanges.some((c) => c.field === 'customer.paymentTerms')) {
+    throw new ValidationError({
+      'customer.paymentTerms':
+        'Payment terms (CASH/CREDIT) cannot be changed from the customer edit — a credit change requires finance approval and comes from Temix or a new credit application.',
+    });
   }
 
   if (fieldChanges.length === 0 && !isDraft) {
@@ -520,11 +665,19 @@ async function submitEditOnce(
   // save partial work as a DRAFT (isDraft=true) and come back to it. Stewards
   // and Managers (direct-write) bypass this — they may legitimately patch a
   // single field on an incomplete legacy record.
+  // F05: on the salesman's own branches only — the ones his page shows him,
+  // read here and never taken from the payload — and that set is frozen on the
+  // request (CustomerEdit.submitGate) for the approval's re-check. A branch put
+  // on his route after his page loaded is gated too; its error has no slot on
+  // that page and shows at the top.
+  let submitGate: Prisma.InputJsonValue | undefined;
   if (!isDraft && me.role === Role.SALESMAN) {
+    const gateBranches = salesmanBranches(customer.branches, me.ownedRouteId);
     const branchProposedById = new Map<string, Record<string, unknown>>();
     for (const bp of bInputs) branchProposedById.set(bp.branchId, bp as Record<string, unknown>);
     const missing = collectMissingMandatory(
       customer,
+      gateBranches,
       customerProposed,
       branchProposedById,
       /* actorIsSalesman */ true
@@ -532,6 +685,7 @@ async function submitEditOnce(
     if (Object.keys(missing).length > 0) {
       throw new ValidationError(missing);
     }
+    submitGate = submitGateRecord(gateBranches.map((b) => b.id));
   }
 
   const editState: EditState = isDraft ? EditState.DRAFT : EditState.SUBMITTED;
@@ -571,55 +725,92 @@ async function submitEditOnce(
   const isDirectWrite = !isDraft && (me.role === Role.STEWARD || me.role === Role.MANAGER);
 
   let edit;
+  let recorded = fieldChanges.length;
   if (isDirectWrite) {
     // DG-06: audit rows now carry ip/userAgent. Take the request envelope once,
     // outside the transaction, so nothing extra runs while it is open
     // (services/users.ts does the same).
     const env = await getAuditEnvelope(me.id);
-    edit = await prisma.$transaction(async (tx) => {
-      const e = await tx.customerEdit.create({
-        data: {
-          target: EditTarget.CUSTOMER,
-          customerId: customer.id,
-          state: EditState.APPROVED,
-          submittedById: me.id,
-          submittedAt: new Date(),
-          reviewedById: me.id,
-          reviewedAt: new Date(),
-          fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
-          attachmentChanges: [] as unknown as Prisma.InputJsonValue,
-          // Item 22: an overlapping retry of this write is refused on the id
-          // (the database holds it until this commits), so the master is never
-          // written twice — before, it was: two APPROVED edits, two audit rows.
-          submissionId,
-          ...chainFields,
-        },
-      });
-      await applyEditChanges(
-        tx,
-        customer.id,
-        customerProposed,
-        appliedBranches as unknown as SubmitEditInput['branches'],
-        me.id
-      );
-      await writeAudit(tx, env, {
-        action: 'UPDATE',
-        entityType: 'Customer',
-        entityId: customer.id,
-        // SEC-03/09 (3): name the path. (UPDATE, Customer) is written by no other
-        // code path in the app -- an approved change writes (APPROVE, CustomerEdit)
-        // at finalize -- so these rows were already isolable by query. What was
-        // missing is human-readable: a Manager reading /audit saw an empty reason
-        // cell and no hint that no approver had ever seen this change, while every
-        // other deliberate override in this codebase carries one. me.role is the
-        // role held AT THE TIME of the write, which a later join to User cannot
-        // recover. The prefix is a stable `reason LIKE 'direct-write:%'` anchor.
-        reason: `direct-write: applied by ${me.role} with no approval chain`,
-        before: customerBefore as unknown as Prisma.InputJsonValue,
-        after: customerProposed as unknown as Prisma.InputJsonValue,
-      });
-      return e;
-    });
+    edit = await prisma.$transaction(
+      async (tx) => {
+        // F06: a direct write has no approver to catch a value that moved, so the
+        // plan is judged again under the customer's row lock, against the row as
+        // it is now — the same classifyChanges the approval uses. A writer that
+        // landed between the read above and this lock (an import, another direct
+        // write, an approval) either already set the same value (left out) or
+        // makes this a STALE_FIELDS answer. The lock comes first (lib/locks.ts),
+        // so a branch-only write no longer takes a branch before its customer.
+        await lockCustomerRow(tx, customer.id);
+        const now = await tx.customer.findUnique({
+          where: { id: customer.id },
+          include: { branches: { where: { deletedAt: null } } },
+        });
+        if (!now || now.deletedAt) throw new NotFoundError('Customer not found.');
+        const nowBranches = new Map(now.branches.map((b) => [b.id, b] as const));
+        const { apply, stale, droppedBranchIds } = classifyChanges(
+          fieldChanges,
+          liveSnapshotOf(now, now.branches)
+        );
+        if (stale.length > 0) throw staleFieldsError(stale.map((s) => s.field), now, nowBranches);
+        if (droppedBranchIds.length > 0) {
+          throw new ConflictError(
+            'VERSION_CONFLICT',
+            'A branch was modified by someone else while your changes were processing. Refresh and try again.'
+          );
+        }
+        // An overlapping retry of a write that has just landed finds all of it
+        // already live; answerIfLanded answers it with the first one's receipt.
+        if (apply.length === 0) throw new ValidationError({ _form: 'No changes to submit.' });
+        const write = payloadFromFieldChanges(apply);
+        const pairNow = await resolveChannelPair(tx, now, channelPairOf(write.customer), {
+          requireActiveChannel: true,
+          clearMisfitSubChannel: false,
+        });
+        if (!pairNow.ok) throw new ValidationError({ [pairNow.field]: pairNow.message });
+        recorded = apply.length;
+        const e = await tx.customerEdit.create({
+          data: {
+            target: EditTarget.CUSTOMER,
+            customerId: customer.id,
+            state: EditState.APPROVED,
+            submittedById: me.id,
+            submittedAt: new Date(),
+            reviewedById: me.id,
+            reviewedAt: new Date(),
+            fieldChanges: apply as unknown as Prisma.InputJsonValue,
+            attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+            // Item 22: an overlapping retry of this write is refused on the id
+            // (the database holds it until this commits), so the master is never
+            // written twice — before, it was: two APPROVED edits, two audit rows.
+            submissionId,
+            ...chainFields,
+          },
+        });
+        await applyEditChanges(tx, customer.id, write.customer, write.branches, me.id);
+        const customerBefore = Object.fromEntries(
+          CUSTOMER_EDIT_FIELDS.map((f) => [f, toBaseValue(now[f])])
+        );
+        await writeAudit(tx, env, {
+          action: 'UPDATE',
+          entityType: 'Customer',
+          entityId: customer.id,
+          // SEC-03/09 (3): name the path. (UPDATE, Customer) is written by no other
+          // code path in the app -- an approved change writes (APPROVE, CustomerEdit)
+          // at finalize -- so these rows were already isolable by query. What was
+          // missing is human-readable: a Manager reading /audit saw an empty reason
+          // cell and no hint that no approver had ever seen this change, while every
+          // other deliberate override in this codebase carries one. me.role is the
+          // role held AT THE TIME of the write, which a later join to User cannot
+          // recover. The prefix is a stable `reason LIKE 'direct-write:%'` anchor.
+          reason: `direct-write: applied by ${me.role} with no approval chain`,
+          before: customerBefore as unknown as Prisma.InputJsonValue,
+          after: write.customer as unknown as Prisma.InputJsonValue,
+        });
+        return e;
+      },
+      // The lock can wait behind a photo attach or an import on this customer.
+      { timeout: 30_000, maxWait: 10_000 }
+    );
   } else {
     try {
       edit = await prisma.customerEdit.create({
@@ -632,6 +823,8 @@ async function submitEditOnce(
           fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
           attachmentChanges: [] as unknown as Prisma.InputJsonValue,
           submissionId,
+          // F05: a salesman's SUBMITTED request carries the branches it was gated on.
+          ...(submitGate ? { submitGate } : {}),
           ...chainFields,
           ...pendingFields,
         },
@@ -686,7 +879,7 @@ async function submitEditOnce(
       customerId: customer.id,
       by: me.id,
       state: editState,
-      changes: fieldChanges.length,
+      changes: recorded,
     },
     'edit.submit'
   );
@@ -707,7 +900,7 @@ async function applyEditChanges(
   tx: Prisma.TransactionClient,
   customerId: string,
   customerProposed: Record<string, unknown>,
-  branches: SubmitEditInput['branches'],
+  branches: readonly BranchWrite[],
   actorId: string
 ) {
   // B-05 (Senior-audit 2026-05-10): Optimistic locking on Customer + Branch.
@@ -725,7 +918,7 @@ async function applyEditChanges(
   // Build customer update payload
   let appliedAnything = false;
   const updateCustomer: Record<string, unknown> = {};
-  for (const f of CUSTOMER_FIELDS) {
+  for (const f of CUSTOMER_EDIT_FIELDS) {
     if (customerProposed[f] !== undefined) {
       updateCustomer[f] = customerProposed[f];
       if (f === 'primaryPhone') updateCustomer.primaryPhoneNorm = customerProposed[f];
@@ -758,8 +951,8 @@ async function applyEditChanges(
   // Branches — same versioned-updateMany pattern per branch.
   for (const bp of branches) {
     const branchUpdate: Record<string, unknown> = {};
-    for (const f of BRANCH_FIELDS) {
-      const v = (bp as unknown as Record<string, unknown>)[f];
+    for (const f of BRANCH_EDIT_FIELDS) {
+      const v = bp[f];
       if (v === undefined) continue;
       branchUpdate[f] = v;
     }
@@ -1146,32 +1339,17 @@ async function approveEditCore(formData: FormData) {
   // the top of this function.)
   const liveCustomer = edit.customer!;
 
-  // Reconstruct payloads from fieldChanges array
-  const fieldChanges = edit.fieldChanges as unknown as FieldChange[];
-  const customerProposed: Record<string, unknown> = {};
-  const branchProposedById = new Map<string, Record<string, unknown>>();
-  for (const c of fieldChanges) {
-    if (c.field.startsWith('customer.')) {
-      customerProposed[c.field.slice('customer.'.length)] = c.after;
-    } else if (c.field.startsWith('branch.')) {
-      const rest = c.field.slice('branch.'.length);
-      const dot = rest.indexOf('.');
-      if (dot < 0) continue;
-      const branchId = rest.slice(0, dot);
-      const fieldName = rest.slice(dot + 1);
-      const obj = branchProposedById.get(branchId) ?? {};
-      obj[fieldName] = c.after;
-      branchProposedById.set(branchId, obj);
-    }
-  }
+  // The stored changes, as written at submit (JSON, read defensively).
+  const fieldChanges = storedFieldChanges(edit.fieldChanges);
+  const stored = payloadFromFieldChanges(fieldChanges);
 
   // A close-shop / branch-status request (markBranchClosedAction) is a salesman-
   // submitted UPDATE whose ONLY change is a branch status flip, gated by its OWN
   // fresh-photo evidence — NOT an enrichment edit. The EL-04 mandatory-field
   // re-check below must therefore skip it: otherwise an imported/legacy customer
   // (no field-captured CR/shop/signboard photos) could never have a branch closed,
-  // because collectMissingMandatory scans the WHOLE customer and always fails
-  // (final-hunt #1). Any non-status field change keeps the full EL-04 gate.
+  // because collectMissingMandatory always fails there (final-hunt #1). Any
+  // non-status field change keeps the full EL-04 gate.
   const isStatusOnlyEdit =
     fieldChanges.length > 0 &&
     fieldChanges.every((c) => c.field.startsWith('branch.') && c.field.endsWith('.status'));
@@ -1184,13 +1362,14 @@ async function approveEditCore(formData: FormData) {
   // in a SUBMITTED edit anyway (DB tampering, future bug, internal abuse),
   // the approve path used to apply it without question. Reject at approve
   // time too so the close-and-reactivate workflow is the only path.
+  const proposedStatus = stored.customer.status;
   if (
-    typeof customerProposed.status === 'string' &&
-    customerProposed.status !== liveCustomer.status &&
+    typeof proposedStatus === 'string' &&
+    proposedStatus !== liveCustomer.status &&
     (liveCustomer.status === 'CLOSED' ||
       liveCustomer.status === 'SUSPENDED' ||
-      customerProposed.status === 'CLOSED' ||
-      customerProposed.status === 'SUSPENDED')
+      proposedStatus === 'CLOSED' ||
+      proposedStatus === 'SUSPENDED')
   ) {
     throw new ConflictError(
       'STATUS_BYPASS',
@@ -1198,9 +1377,15 @@ async function approveEditCore(formData: FormData) {
     );
   }
 
-  // QA-013: re-evaluate field locks against the CURRENT customer state. If
-  // payment terms changed CASH→CREDIT between submit and approve, the locked
-  // fields should now be dropped.
+  // QA-013: field locks are re-evaluated against the CURRENT customer state —
+  // under the lock, on the row the approval decides with (lib/edit-approval.ts
+  // planApproval, lib/edit-scope.ts withoutSubmitterLockedFields). If payment
+  // terms changed CASH→CREDIT between submit and approve, the CR number is
+  // dropped; a salesman's legal name always is. Go-live flow test (2026-09-10):
+  // the two locks are INDEPENDENT (2026-05-11 — legalName always locked for a
+  // salesman, crNumber only on CREDIT); a CR number a salesman collected on a
+  // CASH customer is kept. F05: the submitter's route is read too, for a request
+  // sent before its gated branches were stored.
   const submitter = edit.submittedBy as {
     id: string;
     supervisorId: string | null;
@@ -1208,28 +1393,13 @@ async function approveEditCore(formData: FormData) {
   };
   const submitterUser = await prisma.user.findUnique({
     where: { id: submitter.id },
-    select: { role: true },
+    select: { role: true, ownedRouteId: true },
   });
-  // Go-live flow test (2026-09-10): the two locks are INDEPENDENT (2026-05-11 —
-  // legalName always locked for a salesman, crNumber only on CREDIT). This block
-  // still dropped BOTH whenever legalName was locked, i.e. for EVERY salesman
-  // edit — so the CR number a salesman collected on a CASH customer was
-  // discarded at approval, and the EL-04 re-check below then failed the
-  // approval with "CR number is required". Evaluate each lock on its own.
-  if (submitterUser?.role === Role.SALESMAN) {
-    const submitterShape = { id: submitter.id, role: Role.SALESMAN, username: '' };
-    if (isFieldLocked('legalName', submitterShape, liveCustomer)) {
-      delete customerProposed.legalName;
-    }
-    if (isFieldLocked('crNumber', submitterShape, liveCustomer)) {
-      delete customerProposed.crNumber;
-    }
-  }
 
   // P1.3 (2026-05-10): phone duplicates are now ALLOWED. Log a soft note
   // for the steward queue but do not block the approval.
-  if (typeof customerProposed.primaryPhone === 'string') {
-    const norm = customerProposed.primaryPhone;
+  if (typeof stored.customer.primaryPhone === 'string') {
+    const norm = stored.customer.primaryPhone;
     const collision = await prisma.customer.findFirst({
       where: { primaryPhoneNorm: norm, id: { not: edit.customerId! }, deletedAt: null },
       select: { id: true, nmwcCode: true },
@@ -1241,28 +1411,6 @@ async function approveEditCore(formData: FormData) {
       );
     }
   }
-
-  // QA-039 + EL-10: drop branches that have been deleted OR reassigned to a
-  // different customer since submission. The submitter's scope on those
-  // branches at submit time may no longer hold; rather than write data without
-  // a paper trail, we drop them and log the discrepancy.
-  const liveBranches = await prisma.branch.findMany({
-    where: { id: { in: [...branchProposedById.keys()] }, deletedAt: null },
-    select: { id: true, customerId: true, routeId: true },
-  });
-  const liveBranchIds = new Set(
-    liveBranches.filter((b) => b.customerId === edit.customerId).map((b) => b.id)
-  );
-  const droppedBranchIds = [...branchProposedById.keys()].filter((id) => !liveBranchIds.has(id));
-  if (droppedBranchIds.length > 0) {
-    logger.warn(
-      { editId, customerId: edit.customerId, droppedBranchIds },
-      'edit.approve.branches_dropped'
-    );
-  }
-  const branchesPayload = Array.from(branchProposedById.entries())
-    .filter(([id]) => liveBranchIds.has(id))
-    .map(([branchId, obj]) => ({ branchId, ...obj })) as SubmitEditInput['branches'];
 
   // EL-04 runs INSIDE the apply transaction (below) — see the note there. final-hunt
   // #22: reading the live customer's photo slots outside the tx was a TOCTOU — a
@@ -1331,6 +1479,58 @@ async function approveEditCore(formData: FormData) {
           queue: 'approvals',
         });
       }
+      // Phase 2 (F06): the customer as it is NOW, read once under the lock; every
+      // check below and the write itself decide with this row. The check before
+      // the transaction cannot see an archive or merge that commits later.
+      const now = await tx.customer.findUnique({
+        where: { id: edit.customerId! },
+        include: { branches: { where: { deletedAt: null } } },
+      });
+      if (!now || now.deletedAt) {
+        throw new NotFoundError('Customer no longer exists (may have been merged or deleted).');
+      }
+      // Each stored change against that row (lib/edit-approval.ts). One whose
+      // field has changed since it was sent — to anything but its own new value
+      // — refuses the whole approval: writing it would put an older value back
+      // over a newer one (an import, a Manager's direct write). The throw rolls
+      // back the claim and the decision row above, so the request stays
+      // SUBMITTED on the same stage and Reject still works.
+      const { considered, classified } = planApproval({
+        fieldChanges,
+        submitterRole: submitterUser?.role,
+        customer: now,
+        liveBranches: now.branches,
+      });
+      if (classified.stale.length > 0) {
+        logger.info(
+          { editId, fields: classified.stale.map((s) => s.field) },
+          'edit.approve.stale_before'
+        );
+        throw new ConflictError(
+          'STALE_BEFORE',
+          staleBeforeMessage(staleFieldLabels(classified.stale))
+        );
+      }
+      // QA-039 + EL-10: changes to a branch deleted, or moved to another
+      // customer, since submission are dropped and the discrepancy logged — the
+      // submitter's scope on that branch may no longer hold.
+      const droppedBranchIds = classified.droppedBranchIds;
+      if (droppedBranchIds.length > 0) {
+        logger.warn(
+          { editId, customerId: edit.customerId, droppedBranchIds },
+          'edit.approve.branches_dropped'
+        );
+      }
+      const write = payloadFromFieldChanges(classified.apply);
+      // F16: the channel pair this leaves on the customer must still fit —
+      // a sub-channel retired, or moved to another channel, since submit.
+      if (write.customer.channelId !== undefined || write.customer.subChannelId !== undefined) {
+        const pair = await resolveChannelPair(tx, now, channelPairOf(write.customer), {
+          requireActiveChannel: false,
+          clearMisfitSubChannel: false,
+        });
+        if (!pair.ok) throw new ConflictError('CHANNEL_PAIR_INVALID', CHANNEL_PAIR_INVALID_MESSAGE);
+      }
       // EL-04 (Critical): re-run the mandatory-field gate at approve time. The
       // submit-time gate enforces "salesman cannot submit a half-empty record", but
       // photos and other slot data live OUTSIDE `fieldChanges` and can be detached
@@ -1338,17 +1538,26 @@ async function approveEditCore(formData: FormData) {
       // photo because the salesman tapped the trash icon between submit and approve.
       // final-hunt #22: read the live customer via `tx` (not the global client) so the
       // check and the apply are in ONE transaction — a concurrent detach can no longer
-      // slip between them. Skip for non-salesman submitters (Steward/Manager
-      // direct-write) and for status-only close requests (they enrich nothing).
-      if (submitterUser?.role === Role.SALESMAN && !isStatusOnlyEdit) {
-        const liveCustomer = await tx.customer.findUniqueOrThrow({
-          where: { id: edit.customerId! },
-          include: { branches: { where: { deletedAt: null } } },
-        });
+      // slip between them. Not for a request that is not gated (a Steward's or
+      // Manager's) nor for status-only close requests (they enrich nothing).
+      // F05: on the branches the request was gated on at submit, frozen on the row
+      // (lib/edit-scope.ts gateBranchesForApproval) — never the customer's whole
+      // branch list, so another route's branch, one created after submit, or a
+      // route handover cannot fail it.
+      const { gateBranches, unreadable } = gateBranchesForApproval({
+        submitGate: edit.submitGate,
+        liveBranches: now.branches,
+        fieldChanges,
+        submitter: { role: submitterUser?.role, ownedRouteId: submitterUser?.ownedRouteId },
+      });
+      if (unreadable) logger.warn({ editId }, 'edit.approve.submit_gate_unreadable');
+      if (gateBranches && !isStatusOnlyEdit) {
+        const proposal = payloadFromFieldChanges(considered);
         const missing = collectMissingMandatory(
-          liveCustomer,
-          customerProposed,
-          branchProposedById,
+          now,
+          gateBranches,
+          proposal.customer,
+          proposal.byBranch,
           /* actorIsSalesman */ true
         );
         if (Object.keys(missing).length > 0) {
@@ -1362,7 +1571,12 @@ async function approveEditCore(formData: FormData) {
           );
         }
       }
-      await applyEditChanges(tx, edit.customerId!, customerProposed, branchesPayload, session.id);
+      // Ruling 5: a request whose every change is already live writes nothing to
+      // the customer — no version bump, no rescore, no Temix requeue. It is still
+      // approved, audited and notified.
+      if (classified.apply.length > 0) {
+        await applyEditChanges(tx, edit.customerId!, write.customer, write.branches, session.id);
+      }
       // EL-05: persist the actual diff in the audit log, not just a count, so a
       // forensic Manager can answer "what did Supervisor X approve last week"
       // from `/audit` alone without joining CustomerEdit.fieldChanges manually.

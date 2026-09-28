@@ -128,16 +128,14 @@ describe('N02 — strip, then validate', () => {
   it('no field in the v2 schema or its helpers checks a length before it strips (structural)', () => {
     const read = (f: string) => stripComments(readFileSync(f, 'utf8'), f);
     const edit = read('lib/validation/edit.ts');
-    // The pre-v2 schema (min before strip, z.coerce) sits at the end of the file
-    // until services/edits.ts stops parsing it; once it is deleted, the whole file
-    // is held to the rule.
-    const legacyAt = edit.indexOf('legacyCustomerEditSchema');
-    const v2 = legacyAt < 0 ? edit : edit.slice(0, legacyAt);
-    expect(v2).toMatch(/export const submitEditSchema\b/);
+    // The pre-v2 schema (min before strip, z.coerce) is gone with the service
+    // that parsed it; the whole file is held to the rule.
+    expect(edit).not.toMatch(/legacyCustomerEditSchema|legacySubmitEditSchema/);
+    expect(edit).toMatch(/export const submitEditSchema\b/);
     const fields = read('lib/validation/fields.ts');
     expect(fields).toMatch(/\.transform\(stripHtml\)\s*\.pipe\(/);
     for (const [name, src] of [
-      ['edit.ts (v2 part)', v2],
+      ['edit.ts', edit],
       ['fields.ts', fields],
     ] as const) {
       expect(src, name).not.toMatch(/\.min\([^)]*\)[^,;]*\.transform\(stripHtml/);

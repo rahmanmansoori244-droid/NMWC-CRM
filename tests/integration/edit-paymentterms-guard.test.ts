@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { editPayload } from '../support/edit-payload';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -53,7 +54,7 @@ describe.skipIf(!ENABLED)('customer edit cannot flip CASH↔CREDIT (final-hunt #
   });
 
   it('rejects CASH → CREDIT via the edit; customer stays CASH', async () => {
-    const res = await edits.submitEditAction({ customerId: cashId, isDraft: false, customer: { paymentTerms: 'CREDIT' }, branches: [] });
+    const res = await edits.submitEditAction(await editPayload(prisma, { customerId: cashId, isDraft: false, customer: { paymentTerms: 'CREDIT' } }));
     expect(res.ok).toBe(false);
     expect((res as { ok: false; fields?: Record<string, string> }).fields?.['customer.paymentTerms']).toBeTruthy();
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: cashId } });
@@ -61,7 +62,7 @@ describe.skipIf(!ENABLED)('customer edit cannot flip CASH↔CREDIT (final-hunt #
   });
 
   it('rejects CREDIT → CASH via the edit; customer stays CREDIT', async () => {
-    const res = await edits.submitEditAction({ customerId: creditId, isDraft: false, customer: { paymentTerms: 'CASH' }, branches: [] });
+    const res = await edits.submitEditAction(await editPayload(prisma, { customerId: creditId, isDraft: false, customer: { paymentTerms: 'CASH' } }));
     expect(res.ok).toBe(false);
     expect((res as { ok: false; fields?: Record<string, string> }).fields?.['customer.paymentTerms']).toBeTruthy();
     const after = await prisma.customer.findUniqueOrThrow({ where: { id: creditId } });
@@ -69,7 +70,7 @@ describe.skipIf(!ENABLED)('customer edit cannot flip CASH↔CREDIT (final-hunt #
   });
 
   it('allows an ordinary non-terms edit on the same customer (guard is narrow)', async () => {
-    const res = await edits.submitEditAction({ customerId: cashId, isDraft: false, customer: { contactPerson: 'ZZ New Contact' }, branches: [] });
+    const res = await edits.submitEditAction(await editPayload(prisma, { customerId: cashId, isDraft: false, customer: { contactPerson: 'ZZ New Contact' } }));
     // A contact-only edit is a legitimate enrichment — must NOT be blocked by the
     // paymentTerms guard (it may still route through the normal chain).
     if (!res.ok) {

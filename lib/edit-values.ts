@@ -297,6 +297,36 @@ export function fieldSlotKey(path: string): string {
 }
 
 /**
+ * The columns one form control edits together: the location's four, the
+ * equipment block's four, or the field alone. A conflict on any of them hands
+ * the form the whole group's live values, because "Use this value" takes the
+ * group back as one (services/edits.ts STALE_FIELDS).
+ */
+export function slotFields(field: BranchEditField): readonly BranchEditField[] {
+  if (GPS_POINT_FIELDS.has(field) || GPS_COMPANIONS.has(field)) {
+    return ['gpsLat', 'gpsLng', 'gpsAccuracy', 'gpsCapturedAt'];
+  }
+  if (EQUIPMENT_FIELDS.has(field)) return [...EQUIPMENT_FIELDS];
+  return [field];
+}
+
+// STALE_FIELDS, per slot. Neutral about who changed it (ruling 14): after a lost
+// reply the newer value may be the sender's own earlier write.
+export const STALE_FIELD_MESSAGE =
+  'This was changed after you opened this form. Choose “Keep mine” or “Use this value”.';
+export const STALE_LOCATION_MESSAGE =
+  'The location was changed after you opened this form. Choose “Keep mine” or “Use this value”.';
+export const STALE_EQUIPMENT_MESSAGE =
+  'The equipment counts were changed after you opened this form. Choose “Keep mine” or “Use this value”.';
+
+/** The STALE_FIELDS message for a slot key (fieldSlotKey). */
+export function staleSlotMessage(slot: string): string {
+  if (slot.startsWith('branch.') && slot.endsWith('.gps')) return STALE_LOCATION_MESSAGE;
+  if (slot.startsWith('branch.') && slot.endsWith('.equipment')) return STALE_EQUIPMENT_MESSAGE;
+  return STALE_FIELD_MESSAGE;
+}
+
+/**
  * The master as it is now: the customer's columns, and its LIVE branches by id
  * (deletedAt null, this customer only). Read under the customer's row lock by
  * every writer that decides with it.

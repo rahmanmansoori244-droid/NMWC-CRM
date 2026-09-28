@@ -339,7 +339,7 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 | `opening_hours` | string | optional; max 100 chars | server |
 | `delivery_window` | string | optional; max 100 chars | server |
 | `channel_id` | uuid | must reference an active Channel | server |
-| `sub_channel_id` | uuid | must reference an active SubChannel **whose `channel_id = customer.channel_id`** (Zod superRefine cross-validation) | server |
+| `sub_channel_id` | uuid | must reference an active SubChannel **whose `channel_id = customer.channel_id`**, checked whenever the channel or the sub-channel changes — at create, at an edit's submit and again at its approval (`lib/channel-pair.ts`, F16); an edit that moves the customer to another channel clears a sub-channel of the old one; can be cleared from the edit form (F20) | server |
 | `coolers_count` / `stands_count` / `empty_bottles_count` | int | 0 ≤ x ≤ 100 | server |
 | `notes` | text | optional; max 5000 chars; HTML stripped | server |
 | `payment_terms` | enum | CASH / CREDIT; only Steward sets at import | server |
@@ -348,7 +348,8 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 | `decision_reason` | text | required if rejecting; 5–1000 chars | server |
 
 ### 8.1 Cross-field rules
-- Submission to "complete" requires every field marked **mandatory** in §5.2 to be filled.
+- Submission to "complete" requires every field marked **mandatory** in §5.2 to be filled. For a salesman's edit, the branch fields are checked on the branches of his own route only — the ones his page shows — and that set is stored on the request, so its approval re-checks the same branches (F05, 2026-09-29).
+- An edit sends only the fields that were changed, each with the value the form loaded; a field left out keeps its value. A field whose value changed after the form was opened is refused at submit (the form offers "Keep mine" or "Use this value"), and a field that changed after the request was sent refuses its approval, which the approver then rejects (F06, 2026-09-29).
 - Status = CLOSED → at least one photo with kind ∈ {SHOP, SIGNBOARD, FREE} captured within the last 7 days.
 - Phone uniqueness: hard-blocked across different *parent customers*; allowed across branches of the same parent. Enforced by partial unique constraint and pre-save check.
 

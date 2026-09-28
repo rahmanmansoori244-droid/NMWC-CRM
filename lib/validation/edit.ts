@@ -37,7 +37,7 @@ import {
   type BaseValue,
   type BranchEditField,
 } from '../edit-values';
-import { clearablePhone, clearableText, requiredPhone, requiredText, stripHtml } from './fields';
+import { clearablePhone, clearableText, requiredPhone, requiredText } from './fields';
 
 // Defined beside the field lists so the browser can take it without zod.
 export { EDIT_PAYLOAD_VERSION };
@@ -302,98 +302,3 @@ export function keysWithoutBase(input: ParsedSubmitEdit): string[] {
   }
   return out;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// The payload before patch v2 — every field, '' meaning "leave it".
-//
-// @deprecated Only services/edits.ts still parses this, until it moves to
-// submitEditSchema above (phase 2, the server part). Delete it then: nothing
-// else may take it up, because it is exactly the shape F06 and F20 are about.
-// Kept verbatim from before patch v2; its stripHtml is the one in ./fields,
-// which is the same function.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const phoneRegex = /^[\d\s\-+()]{7,20}$/;
-
-const legacyCustomerEditSchema = z.object({
-  // Identity (locked for Salesman on Credit customers — checked server-side)
-  legalName: z.string().min(2).max(200).transform(stripHtml).optional(),
-  paymentTerms: z.nativeEnum(PaymentTerms).optional(),
-  crNumber: z
-    .string()
-    .max(50)
-    .transform((v) => v.trim())
-    .optional()
-    .or(z.literal('').transform(() => undefined)),
-
-  // Channel
-  channelId: z.string().cuid().optional().or(z.literal('').transform(() => undefined)),
-  subChannelId: z.string().cuid().optional().or(z.literal('').transform(() => undefined)),
-
-  // Contact
-  primaryPhone: z
-    .string()
-    .regex(phoneRegex, 'Phone must be 7-20 chars: digits, +, -, ( ), spaces')
-    .optional()
-    .or(z.literal('').transform(() => undefined)),
-  altPhone: z
-    .string()
-    .regex(phoneRegex)
-    .optional()
-    .or(z.literal('').transform(() => undefined)),
-  contactPerson: z.string().min(2).max(200).transform(stripHtml).optional().or(z.literal('').transform(() => undefined)),
-  contactRole: z.string().max(200).transform(stripHtml).optional().or(z.literal('').transform(() => undefined)),
-
-  // Status (mark closed/reactivate)
-  status: z.nativeEnum(CustomerStatus).optional(),
-  notes: z.string().max(5000).transform(stripHtml).optional().or(z.literal('').transform(() => undefined)),
-});
-
-const legacyBranchEditSchema = z.object({
-  branchId: z.string().cuid(),
-  branchName: z.string().min(1).max(200).transform(stripHtml).optional(),
-  address: z.string().min(3).max(500).transform(stripHtml).optional(),
-  areaDescription: z.string().max(500).transform(stripHtml).optional().or(z.literal('').transform(() => undefined)),
-
-  // PROD-005: bound to Oman's actual envelope so a faulty device or a
-  // copy/paste error can't land coordinates in the Indian Ocean. Oman spans
-  // roughly 16°N–27°N and 51°E–60°E; we add ~1° of slack on each edge.
-  gpsLat: z
-    .number()
-    .min(16, 'Latitude must be inside Oman (≥16°N).')
-    .max(27, 'Latitude must be inside Oman (≤27°N).')
-    .optional(),
-  gpsLng: z
-    .number()
-    .min(51, 'Longitude must be inside Oman (≥51°E).')
-    .max(61, 'Longitude must be inside Oman (≤61°E).')
-    .optional(),
-  gpsAccuracy: z.number().min(0).max(10000).optional(),
-  gpsCapturedAt: z.coerce.date().optional(),
-  // Item 41: present only when the salesman TYPED the point in. Not a Branch
-  // column — services/edits.ts turns it into a marker on the gps entries.
-  gpsManualReason: gpsManualReasonSchema.optional(),
-
-  dayOfVisit: z.nativeEnum(DayOfWeek).optional(),
-  openingHours: z.string().max(100).transform(stripHtml).optional().or(z.literal('').transform(() => undefined)),
-  deliveryWindow: z.string().max(100).transform(stripHtml).optional().or(z.literal('').transform(() => undefined)),
-
-  coolersCount: z.coerce.number().int().min(0).max(100).optional(),
-  standsCount: z.coerce.number().int().min(0).max(100).optional(),
-  emptyBottlesCount: z.coerce.number().int().min(0).max(1000).optional(),
-
-  status: z.nativeEnum(CustomerStatus).optional(),
-});
-
-/** @deprecated See the note above: services/edits.ts only, until it parses submitEditSchema. */
-export const legacySubmitEditSchema = z.object({
-  customerId: z.string().cuid(),
-  isDraft: z.boolean().default(false),
-  customer: legacyCustomerEditSchema,
-  branches: z.array(legacyBranchEditSchema).min(0),
-  /** Item 22: the phone's id for this payload, so a retry is never written twice. */
-  submissionId: submissionIdSchema.optional(),
-});
-
-/** @deprecated See legacySubmitEditSchema. */
-export type LegacySubmitEditInput = z.infer<typeof legacySubmitEditSchema>;
