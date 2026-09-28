@@ -12,6 +12,7 @@ import {
   type ParsedSubmitCreate,
 } from '@/lib/validation/create';
 import { resolveStepAudience } from '@/lib/notifications';
+import { INVALID_PHONE_MESSAGE } from '@/lib/phone';
 
 const CUID = 'ckzzzzzzzz0000zzzzzzzzzzzz';
 const CUID2 = 'ckzzzzzzzz0001zzzzzzzzzzzz';
@@ -128,6 +129,55 @@ describe('submitCreateSchema', () => {
       })
     );
     expect(r.success).toBe(true);
+  });
+
+  // F19: the schema applies lib/phone.ts's own rule instead of a regex of its own,
+  // which refused Persian digits and let through strings nothing could normalize.
+  const withPhone = (primaryPhone: string, altPhone?: string) =>
+    submitCreateSchema.safeParse(
+      completeCashInput({ customer: { ...completeCashInput().customer, primaryPhone, altPhone } })
+    );
+
+  it('accepts Persian digits, and keeps the value as typed (services/creates.ts normalizes it)', () => {
+    const r = withPhone('۹۱۲۳۴۵۶۷', '٩١٢٣ ۴۵۶۷');
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.customer.primaryPhone).toBe('۹۱۲۳۴۵۶۷');
+      expect(r.data.customer.altPhone).toBe('٩١٢٣ ۴۵۶۷');
+    }
+  });
+
+  it("still reads '' as 'not given'", () => {
+    const r = withPhone('', '');
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.customer.primaryPhone).toBeUndefined();
+      expect(r.data.customer.altPhone).toBeUndefined();
+    }
+  });
+
+  it('refuses a number that is not an Oman phone, with the words the service used', () => {
+    for (const bad of ['1234567', '12345678901234', 'call 91234567']) {
+      const r = withPhone(bad);
+      expect(r.success, bad).toBe(false);
+      if (!r.success) {
+        expect(r.error.issues.find((i) => i.path.join('.') === 'customer.primaryPhone')?.message).toBe(
+          INVALID_PHONE_MESSAGE
+        );
+      }
+    }
+    const alt = withPhone('91234567', '123');
+    expect(alt.success).toBe(false);
+  });
+
+  it("still refuses '<shop>' as a legal name — the strip helper moved, the rule did not", () => {
+    const r = submitCreateSchema.safeParse(
+      completeCashInput({ customer: { ...completeCashInput().customer, legalName: '<shop>' } })
+    );
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues[0]?.message).toBe('Legal name must be at least 2 characters.');
+    }
   });
 });
 

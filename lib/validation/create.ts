@@ -17,25 +17,15 @@ import { z } from 'zod';
 import { submissionIdSchema } from '../submission';
 import { DayOfWeek, PaymentTerms } from '@prisma/client';
 import { gpsManualReasonSchema } from '../gps-manual';
+// stripHtml / strippedStr moved to ./fields so the UPDATE payload strips before it
+// validates too (N02). Phones: UXI-006 accepted Arabic-Indic digits here with a
+// regex of its own, which refused the Persian digits lib/phone.ts now folds and
+// let through strings it could not normalize; createPhone applies isValidPhoneFormat
+// itself (F19). The value stays as typed — services/creates.ts normalizes it.
+import { createPhone, stripHtml, strippedStr } from './fields';
 
-// UXI-006: accept Arabic-Indic digits (٠-٩) — the server normalizes them via
-// normalizePhone; rejecting them at the schema would fail perfectly valid
-// Arabic-keyboard input.
-const phoneRegex = /^[\d٠-٩\s\-+()]{7,20}$/;
-const stripHtml = (s: string) => s.replace(/<[^>]+>/g, '').trim();
 const optionalStr = <T extends z.ZodTypeAny>(schema: T) =>
   schema.optional().or(z.literal('').transform(() => undefined));
-/**
- * Strip HTML FIRST, then enforce length on what actually gets stored —
- * `min` before `transform` would let '<Shop>' (6 raw chars, empty after
- * strip) reach the DB as an empty legal name.
- */
-const strippedStr = (min: number, max: number, msg?: string) =>
-  z
-    .string()
-    .max(max * 2)
-    .transform(stripHtml)
-    .pipe(z.string().min(min, msg).max(max));
 
 export const createCustomerDraftSchema = z.object({
   legalName: strippedStr(2, 200, 'Legal name must be at least 2 characters.'),
@@ -44,10 +34,8 @@ export const createCustomerDraftSchema = z.object({
   crNumber: optionalStr(z.string().max(50).transform((v) => v.trim())),
   channelId: optionalStr(z.string().cuid()),
   subChannelId: optionalStr(z.string().cuid()),
-  primaryPhone: optionalStr(
-    z.string().regex(phoneRegex, 'Phone must be 7-20 chars: digits, +, -, ( ), spaces')
-  ),
-  altPhone: optionalStr(z.string().regex(phoneRegex)),
+  primaryPhone: optionalStr(createPhone),
+  altPhone: optionalStr(createPhone),
   contactPerson: optionalStr(strippedStr(2, 200, 'Contact person must be at least 2 characters.')),
   contactRole: optionalStr(z.string().max(200).transform(stripHtml)),
   notes: optionalStr(z.string().max(5000).transform(stripHtml)),

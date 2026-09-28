@@ -36,6 +36,12 @@ export type FieldChange = {
   after: unknown;
   gpsSource?: typeof GPS_SOURCE_MANUAL;
   gpsManualReason?: string;
+  /**
+   * Phase 2, ruling 1: present when the submitter chose "Keep mine" after being
+   * told this field had changed since his form opened — the value he knowingly
+   * replaced (it equals `before`). The approval page says so on the row.
+   */
+  overrodeLive?: unknown;
 };
 
 const stripHtml = (s: string) => s.replace(/<[^>]+>/g, '').trim();

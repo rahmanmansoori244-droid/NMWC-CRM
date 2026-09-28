@@ -18,6 +18,7 @@ import { cache } from 'react';
 import { prisma } from './db';
 import { NotFoundError, ForbiddenError } from './errors';
 import type { SessionUser } from './permissions';
+import { salesmanBranches } from './edit-scope';
 
 type CustomerWithBranches = Customer & {
   branches: Pick<Branch, 'routeId' | 'regionId' | 'deletedAt'>[];
@@ -106,6 +107,10 @@ export function canSeeCustomer(
  * sees the customer (one branch on his route) used to see all the *other*
  * branches' addresses, GPS, photos. Call this after `canSeeCustomer` and
  * before rendering or shipping branches to the client.
+ *
+ * F05: a salesman's branches are lib/edit-scope.ts salesmanBranches — the same
+ * function his edit submit is gated on, so the branches his page shows and the
+ * branches the server checks cannot disagree.
  */
 export function filterBranchesByScope<B extends Pick<Branch, 'routeId' | 'regionId' | 'deletedAt'>>(
   user: SessionUser,
@@ -120,8 +125,7 @@ export function filterBranchesByScope<B extends Pick<Branch, 'routeId' | 'region
     case Role.GM:
       return live;
     case Role.SALESMAN:
-      if (!scope.ownedRouteId) return [];
-      return live.filter((b) => b.routeId === scope.ownedRouteId);
+      return salesmanBranches(live, scope.ownedRouteId);
     case Role.SUPERVISOR:
       return live.filter((b) => scope.teamRouteIds.includes(b.routeId));
     case Role.MANAGER:

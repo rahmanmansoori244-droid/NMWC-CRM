@@ -18,7 +18,11 @@ import { redirect } from 'next/navigation';
 import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isFieldLocked, canActOnStep } from '@/lib/permissions';
-import { submitEditSchema, type SubmitEditInput } from '@/lib/validation/edit';
+// Phase 2 foundation: still the pre-v2 payload until this file moves to patch v2.
+import {
+  legacySubmitEditSchema as submitEditSchema,
+  type LegacySubmitEditInput as SubmitEditInput,
+} from '@/lib/validation/edit';
 import { normalizePhone } from '@/lib/phone';
 import { markManualGps, takeManualGpsReason, type FieldChange } from '@/lib/gps-manual';
 import { normalizeCR } from '@/lib/cr';

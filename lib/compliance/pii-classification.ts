@@ -181,6 +181,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'Branch.coolersCount': { subject: 'none' },
   'Branch.standsCount': { subject: 'none' },
   'Branch.emptyBottlesCount': { subject: 'none' },
+  'Branch.equipmentConfirmed': { subject: 'none', note: 'the counts were confirmed at the shop (F21)' },
   'Branch.shopPhotoId': { subject: 'none', kind: 'image reference', note: 'reference; the image itself is in R2' },
   'Branch.signboardPhotoId': { subject: 'none', kind: 'image reference' },
   'Branch.status': { subject: 'business-or-person' },
@@ -217,6 +218,10 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'CustomerEdit.submissionId': {
     subject: 'none',
     note: 'a random id the phone mints for each submit, so a retry is never written twice (item 22); identifies the request, not a person or a device',
+  },
+  'CustomerEdit.submitGate': {
+    subject: 'none',
+    note: 'the ids of the branches a salesman submit was checked against (F05); structural',
   },
   'CustomerEdit.process': { subject: 'none' },
   'CustomerEdit.paymentTermsAtSubmit': { subject: 'business-or-person', kind: 'financial' },

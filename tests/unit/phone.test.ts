@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizePhone, isValidPhoneFormat } from '@/lib/phone';
+import { normalizePhone, isValidPhoneFormat, INVALID_PHONE_MESSAGE } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
 
 describe('lib/phone — Oman phone normalization', () => {
@@ -44,6 +44,51 @@ describe('lib/phone — format validator', () => {
     expect(isValidPhoneFormat('not-a-phone')).toBe(false);
     expect(isValidPhoneFormat('123')).toBe(false);
     expect(isValidPhoneFormat('1234567890123456789012345')).toBe(false);
+  });
+});
+
+// F19 (auditor recheck 2026-09-27): Persian digits, which some Arabic keyboards
+// type, fold like the Arabic-Indic ones — lib/cr.ts has folded both since item 16.
+describe('lib/phone — Persian digits (F19)', () => {
+  const PERSIAN = '۹۱۲۳۴۵۶۷'; // 91234567
+  const ARABIC = '٩١٢٣٤٥٦٧'; // 91234567
+
+  it('Arabic-Indic and Persian digits both give the canonical form', () => {
+    expect(normalizePhone(ARABIC)).toBe('+96891234567');
+    expect(normalizePhone(PERSIAN)).toBe('+96891234567');
+    // both ends of each block
+    expect(normalizePhone('۰۰۹۶۸۹۰۰۰۰۰۰۹')).toBe(
+      '+96890000009'
+    );
+    expect(normalizePhone('٠٠٩٦٨٩٠٠٠٠٠٠٩')).toBe(
+      '+96890000009'
+    );
+  });
+
+  it('mixed blocks, a country code and separators normalize', () => {
+    expect(normalizePhone('+۹۶۸ ٩١٢٣ ۴۵۶۷')).toBe('+96891234567');
+    expect(normalizePhone('00968' + PERSIAN)).toBe('+96891234567');
+    expect(normalizePhone('۹۱۲۳-4567')).toBe('+96891234567');
+  });
+
+  it('seven and fourteen digits are still refused, in any script', () => {
+    expect(normalizePhone(PERSIAN.slice(0, 7))).toBeNull();
+    expect(normalizePhone('1234567')).toBeNull();
+    expect(normalizePhone(PERSIAN + '۱۲۳۴۵۶')).toBeNull();
+    expect(normalizePhone('12345678901234')).toBeNull();
+  });
+
+  it('isValidPhoneFormat accepts Persian digits and still refuses words around a number', () => {
+    expect(isValidPhoneFormat(PERSIAN)).toBe(true);
+    expect(isValidPhoneFormat('+۹۶۸ ' + PERSIAN)).toBe(true);
+    // normalizePhone alone would accept this — it strips the letters.
+    expect(normalizePhone('call 91234567')).toBe('+96891234567');
+    expect(isValidPhoneFormat('call 91234567')).toBe(false);
+    expect(isValidPhoneFormat('۱۲۳۴۵۶۷')).toBe(false);
+  });
+
+  it('the message every form shows for a refused phone', () => {
+    expect(INVALID_PHONE_MESSAGE).toBe('Enter a valid Oman number (8 digits, or +968 XXXXXXXX).');
   });
 });
 

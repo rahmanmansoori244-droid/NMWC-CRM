@@ -8,22 +8,32 @@
  * - Convert Arabic-Indic digits (٠..٩) to ASCII digits — Arabic keyboards on
  *   Omani Android phones are common and JS `\d` is ASCII-only by default
  *   (UXI-006). Without this, perfectly typed `٩١٢٣٤٥٦٧` returned null.
+ * - F19 (auditor recheck 2026-09-27): Extended Arabic-Indic / Persian digits
+ *   (۰..۹, U+06F0–U+06F9) too. Some Arabic keyboards type those, and lib/cr.ts
+ *   has folded them in CR numbers since item 16; a phone typed on the same
+ *   keyboard was refused while its CR was accepted.
  * - Strip everything else that is not a digit or '+'.
  * - Accept 8 local digits, or 11 digits with country prefix `968`, or `00968`.
  * - Reject anything that doesn't match those — previous code returned a
  *   "best-effort" 12-digit junk string, which the partial unique index later
  *   collided on. Better to reject loudly so the user can fix the source.
+ *
+ * lib/scrub.ts PHONE_PATTERN must redact every form accepted here: a digit
+ * class added to this file is added there in the same change.
  */
 
-const ARABIC_INDIC_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+/** What every form says about a phone this file refuses (CREATE, UPDATE). */
+export const INVALID_PHONE_MESSAGE = 'Enter a valid Oman number (8 digits, or +968 XXXXXXXX).';
+
+// Each range is written as escapes, as in lib/cr.ts: two blocks of look-alike
+// digits are easier to review as code points than as glyphs.
+const ARABIC_INDIC_DIGIT = /[٠-٩]/g;
+const PERSIAN_DIGIT = /[۰-۹]/g;
 
 function asciifyDigits(s: string): string {
-  let out = '';
-  for (const ch of s) {
-    const idx = ARABIC_INDIC_DIGITS.indexOf(ch);
-    out += idx >= 0 ? String(idx) : ch;
-  }
-  return out;
+  return s
+    .replace(ARABIC_INDIC_DIGIT, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(PERSIAN_DIGIT, (d) => String(d.charCodeAt(0) - 0x06f0));
 }
 
 export function normalizePhone(input: string | null | undefined): string | null {
@@ -53,8 +63,14 @@ export function normalizePhone(input: string | null | undefined): string | null 
   return null;
 }
 
-const PHONE_REGEX = /^[\d\s\-+()٠-٩]{7,20}$/;
+// Tested on the ASCII-folded input, so ASCII digits are all it needs.
+const PHONE_REGEX = /^[\d\s\-+()]{7,20}$/;
 
+/**
+ * The one rule for "is this a phone": the CREATE and UPDATE schemas
+ * (lib/validation/fields.ts) and the import row check call it. normalizePhone
+ * alone is not a validator — it strips letters, so 'call 91234567' normalizes.
+ */
 export function isValidPhoneFormat(input: string | null | undefined): boolean {
   if (!input) return false;
   // Validate AFTER asciifying so an Arabic-keyboard input doesn't fail the

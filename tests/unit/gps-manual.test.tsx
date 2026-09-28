@@ -53,10 +53,24 @@ describe('41 — the reason, as stored', () => {
   });
 
   it('survives both submit schemas — zod strips an undeclared key without a word', () => {
+    // Patch v2 (phase 2): the point travels with its capture time and accuracy,
+    // and carries the coordinates the form loaded; the reason carries no base.
     const edit = submitEditSchema.parse({
+      v: 2,
       customerId: 'ckabcdefghijklmnopqrstuvw',
       customer: {},
-      branches: [{ branchId: 'ckabcdefghijklmnopqrstuvw', gpsLat: 23.6, gpsLng: 58.4, gpsManualReason: REASON }],
+      customerBase: {},
+      branches: [
+        {
+          branchId: 'ckabcdefghijklmnopqrstuvw',
+          gpsLat: 23.6,
+          gpsLng: 58.4,
+          gpsAccuracy: null,
+          gpsCapturedAt: '2026-09-25T08:00:00.000Z',
+          gpsManualReason: REASON,
+          base: { gpsLat: null, gpsLng: null },
+        },
+      ],
     });
     expect(edit.branches[0]!.gpsManualReason).toBe(REASON);
     const create = submitCreateSchema.parse({

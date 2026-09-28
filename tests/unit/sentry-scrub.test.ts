@@ -154,9 +154,23 @@ describe('the written forms a salesman actually types', () => {
     ['+968 (9123) 4567', 'parenthesised'],
     ['\u0669\u0661\u0662\u0663\u0664\u0665\u0666\u0667', 'Arabic-Indic, contiguous'],
     ['\u0669\u0661\u0662\u0663 \u0664\u0665\u0666\u0667', 'Arabic-Indic, four plus four'],
+    // F19 (2026-09-29): lib/phone.ts accepts Persian digits too, so they are redacted too.
+    ['\u06f9\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7', 'Persian, contiguous'],
+    ['\u06f9\u06f1\u06f2\u06f3 \u06f4\u06f5\u06f6\u06f7', 'Persian, four plus four'],
+    ['\u06f9\u06f1\u06f2\u06f3-\u06f4\u06f5\u06f6\u06f7', 'Persian, dashed'],
+    ['\u0669\u0661\u0662\u0663\u06f4\u06f5\u06f6\u06f7', 'Arabic-Indic and Persian, mixed'],
+    ['\u0669\u0661\u0662\u0663 \u06f4\u06f5\u06f6\u06f7', 'mixed, four plus four'],
+    ['+968 \u06f9\u06f1\u06f2\u06f3 \u06f4\u06f5\u06f6\u06f7', 'country code, Persian digits'],
+    ['+968 9123 \u06f4\u06f5\u06f6\u06f7', 'country code, ASCII and Persian'],
   ])('redacts %s (%s)', (input) => {
-    expect(scrub(input)).not.toMatch(/[0-9\u0660-\u0669]{4}/);
+    expect(scrub(input)).not.toMatch(/[0-9\u0660-\u0669\u06f0-\u06f9]{4}/);
     expect(scrub(input)).toContain('[phone]');
+  });
+
+  it('redacts a Persian-digit number inside free text, as it would sit in a note', () => {
+    expect(scrub('owner mobile \u06f9\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7 after 5pm')).toBe(
+      'owner mobile [phone] after 5pm'
+    );
   });
 
   it('redacts a seven-digit CR number, the length the go-live fixtures use', () => {

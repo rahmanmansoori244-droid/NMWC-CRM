@@ -325,12 +325,12 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 | `username` | string | 3–50 chars, alphanumeric + `._-` | client + server |
 | `password` | string | min 12 chars, 1 uppercase + 1 digit | client + server |
 | `nmwc_code` | string | unique; format `[A-Z]{2,4}\d{3,6}` (legacy) or `NMWC-YYYY-NNNNNN` (system) | server |
-| `legal_name` | string | 2–200 chars; HTML stripped; trimmed; not editable on Credit by Salesman | server |
+| `legal_name` | string | 2–200 chars, counted after HTML is stripped and the value trimmed (N02); not editable by a Salesman | server |
 | `cr_number` | string | optional; if present, 5–50 chars, alphanumeric + `-`; auto-normalized (uppercase, strip spaces; since item 16 also Arabic-Indic digits to ASCII and invisible characters removed); not editable on Credit by Salesman | server |
-| `primary_phone` | string | required; regex `^[\d\s\-\+\(\)]{7,20}$`; normalized to `+968 XXXXXXXX` for Oman numbers when possible | server |
-| `alt_phone` | string | optional; same regex | server |
-| `contact_person` | string | 2–200 chars; HTML stripped | server |
-| `address` | text | 3–500 chars; HTML stripped | server |
+| `primary_phone` | string | required; must be an Oman number (`lib/phone.ts` isValidPhoneFormat: 8 digits, or `968` / `00968` + 8; Arabic-Indic and Persian digits accepted); stored normalized as `+968XXXXXXXX`; an invalid number is refused, never dropped (F19) | server |
+| `alt_phone` | string | optional; same rule; can be cleared from the edit form (F20) | server |
+| `contact_person` | string | 2–200 chars, counted after HTML is stripped (N02) | server |
+| `address` | text | 3–500 chars, counted after HTML is stripped (N02) | server |
 | `area_description` | text | optional; max 500 chars | server |
 | `gps_lat` | float | -90 ≤ x ≤ 90; required at submit (not draft) | server |
 | `gps_lng` | float | -180 ≤ x ≤ 180; required at submit | server |
@@ -397,7 +397,7 @@ A weighted score, 0–100, computed at write time and stored on `Customer` and `
 - Shop photo: 10
 - Signboard photo: 10
 - Day of visit: 5
-- Equipment counts entered (any of 3 ≥ 0): 5
+- Equipment counts entered (any of 3 ≥ 0): 5 — implemented (F21, 2026-09-29) as "the counts were confirmed at the shop (`Branch.equipmentConfirmed`), or any count > 0", because a stored 0 is also the column default and cannot say it was counted
 - Opening hours OR delivery window: 5
 - Status = ACTIVE confirmed: 5
 

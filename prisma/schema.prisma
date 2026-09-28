@@ -371,6 +371,10 @@ model Branch {
   coolersCount      Int @default(0)
   standsCount       Int @default(0)
   emptyBottlesCount Int @default(0)
+  // F21: the counts above were confirmed at the shop, so a zero is a real zero
+  // and earns the equipment points (lib/completeness.ts). False on every branch
+  // that existed before the column: a stored 0 cannot be told from "never counted".
+  equipmentConfirmed Boolean @default(false)
 
   shopPhotoId      String? @unique
   signboardPhotoId String? @unique
@@ -429,6 +433,14 @@ model CustomerEdit {
   // submitter already sent is answered with this row's receipt, never written
   // twice (lib/submission-replay.ts). Null for rows no field form wrote.
   submissionId      String?
+
+  // F05: which of the submitter's branches a SALESMAN's UPDATE submit was gated
+  // on — the ones his edit page showed him — as {"v":1,"branchIds":[...]}
+  // (lib/edit-scope.ts). The approval re-checks the mandatory fields on exactly
+  // that set, so a route handover or a branch imported after submit cannot
+  // change the answer. Written once, on his SUBMITTED row; null for drafts,
+  // direct writes, close/reactivation requests and rows written before it.
+  submitGate        Json?
 
   // Phase 1: net-new CREATE support (customerId is null for a CREATE request;
   // the proposed payload lives in EditCustomerDraft + EditBranchDraft[]).

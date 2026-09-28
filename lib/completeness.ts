@@ -9,7 +9,7 @@
  */
 import type { Customer, Branch } from '@prisma/client';
 
-type CustomerForScore = Pick<
+export type CustomerForScore = Pick<
   Customer,
   | 'channelId'
   | 'subChannelId'
@@ -21,7 +21,7 @@ type CustomerForScore = Pick<
   | 'notes'
 >;
 
-type BranchForScore = Pick<
+export type BranchForScore = Pick<
   Branch,
   | 'gpsLat'
   | 'gpsLng'
@@ -32,6 +32,8 @@ type BranchForScore = Pick<
   | 'coolersCount'
   | 'standsCount'
   | 'emptyBottlesCount'
+  // F21: required, so typecheck names every caller that builds this by hand.
+  | 'equipmentConfirmed'
   | 'openingHours'
   | 'deliveryWindow'
   | 'status'
@@ -58,16 +60,12 @@ export function scoreBranch(b: BranchForScore): number {
   if (b.shopPhotoId) s += 10;
   if (b.signboardPhotoId) s += 10;
   if (b.dayOfVisit) s += 5;
-  if (
-    (b.coolersCount ?? 0) >= 0 &&
-    (b.standsCount ?? 0) >= 0 &&
-    (b.emptyBottlesCount ?? 0) >= 0 &&
-    // Require at least one to be set explicitly via UI; default 0 alone shouldn't earn the point.
-    ((b.coolersCount ?? 0) + (b.standsCount ?? 0) + (b.emptyBottlesCount ?? 0)) >= 0
-  ) {
-    // Equipment points: granted if at least one count > 0 OR salesman explicitly confirmed (we'll handle the explicit case in UI later)
-    if ((b.coolersCount ?? 0) + (b.standsCount ?? 0) + (b.emptyBottlesCount ?? 0) > 0) s += 5;
-  }
+  // Equipment (F21, PRD §10 / UXI-007): the counts were confirmed at the shop, or
+  // at least one is above zero. A stored 0 alone cannot be told from "never
+  // counted" (0 is the column default), so an unconfirmed zero earns nothing —
+  // and a shop that really has none earned nothing either until the flag existed.
+  const counted = (b.coolersCount ?? 0) + (b.standsCount ?? 0) + (b.emptyBottlesCount ?? 0) > 0;
+  if (b.equipmentConfirmed || counted) s += 5;
   if (b.openingHours || b.deliveryWindow) s += 5;
   if (b.status === 'ACTIVE') s += 5;
   return s; // out of 60

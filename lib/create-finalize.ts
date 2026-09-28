@@ -335,6 +335,9 @@ export async function finalizeCreateInTx(
     coolersCount: b.coolersCount,
     standsCount: b.standsCount,
     emptyBottlesCount: b.emptyBottlesCount,
+    // F21: CREATE captures no "counted" flag (left out on purpose), so a new
+    // branch keeps the >0 rule and earns the point on its first edit.
+    equipmentConfirmed: false,
     openingHours: b.openingHours,
     deliveryWindow: b.deliveryWindow,
     status: CustomerStatus.ACTIVE,

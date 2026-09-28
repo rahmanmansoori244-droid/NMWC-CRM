@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**295 stored columns across 24 tables** — Customer contact: 26 · Employee: 67 · Customer entity (personal if a sole establishment): 36 · Not personal data: 166.
+**297 stored columns across 24 tables** — Customer contact: 26 · Employee: 67 · Customer entity (personal if a sole establishment): 36 · Not personal data: 168.
 
 ## Columns holding personal data
 
@@ -288,6 +288,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | Branch | `coolersCount` | Int | structural / operational value |
 | Branch | `standsCount` | Int | structural / operational value |
 | Branch | `emptyBottlesCount` | Int | structural / operational value |
+| Branch | `equipmentConfirmed` | Boolean | the counts were confirmed at the shop (F21) |
 | Branch | `shopPhotoId` | String | reference; the image itself is in R2 |
 | Branch | `signboardPhotoId` | String | structural / operational value |
 | Branch | `completenessScore` | Int | derived |
@@ -307,6 +308,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | CustomerEdit | `isWrongRoute` | Boolean | structural / operational value |
 | CustomerEdit | `newRouteId` | String | foreign key / structural value |
 | CustomerEdit | `submissionId` | String | a random id the phone mints for each submit, so a retry is never written twice (item 22); identifies the request, not a person or a device |
+| CustomerEdit | `submitGate` | Json | the ids of the branches a salesman submit was checked against (F05); structural |
 | CustomerEdit | `process` | EditProcess | structural / operational value |
 | CustomerEdit | `currentStepIndex` | Int | structural / operational value |
 | CustomerEdit | `pendingRole` | Role | structural / operational value |

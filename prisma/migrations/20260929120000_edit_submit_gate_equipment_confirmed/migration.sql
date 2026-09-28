@@ -1,0 +1,34 @@
+-- Auditor recheck 2026-09-27, phase 2.
+--
+-- F05: which of a salesman's branches his UPDATE submit was gated on - the ones
+-- on his route, which are the ones his edit page showed him. JSON:
+-- {"v":1,"branchIds":["..."]} (lib/edit-scope.ts). Only the branch SET is
+-- frozen, not the rule: the approval re-checks the mandatory fields on exactly
+-- these branches under the gate in force at approval (SALESMAN_SUBMIT_GATE, as
+-- today), so a route handover or a branch imported after submit cannot change
+-- the answer. It is written once, on a salesman's SUBMITTED row, and never
+-- updated. NULL means not gated (draft, Steward/Manager direct write, close or
+-- reactivation request) or written before this column; for those rows the
+-- approval falls back to the branches the request names plus the submitter's
+-- current route (lib/edit-scope.ts gateBranchesForApproval).
+--
+-- F21: the equipment counts were confirmed at the shop, so a zero is a real
+-- zero and earns the equipment points (PRD section 10, UXI-007). FALSE on every
+-- existing branch: a stored 0 cannot be told from "never counted", so none is
+-- assumed counted. No backfill (owner decision 2026-09-29). Existing scores are
+-- unchanged, because the rule becomes "confirmed OR any count > 0".
+--
+-- Additive, and safe to apply before the build that uses it:
+--   - one nullable column, and one column with a constant default, which is a
+--     catalogue-only change in PostgreSQL 11+ (no table rewrite, only a brief lock);
+--   - no constraint, trigger or index, so no existing row can make
+--     `prisma migrate deploy` fail before `next build`;
+--   - the running build's Prisma client selects and inserts explicit columns, so
+--     it never reads either column, and its inserts get NULL / false;
+--   - scripts/ops/restore-verify.ts inserts Branch with an explicit column list,
+--     so the default covers it.
+-- If `next build` fails after the migrate, production keeps serving the old build
+-- beside two unused columns. Grants are table-level (scripts/ops/app-role.ts), so the
+-- runtime role can already read and write both.
+ALTER TABLE "CustomerEdit" ADD COLUMN "submitGate" JSONB;
+ALTER TABLE "Branch" ADD COLUMN "equipmentConfirmed" BOOLEAN NOT NULL DEFAULT false;
