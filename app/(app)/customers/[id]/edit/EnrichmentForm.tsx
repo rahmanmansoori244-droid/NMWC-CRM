@@ -181,9 +181,10 @@ export function EnrichmentForm({
   // found live — until he chooses "Keep mine" or "Use this value" for each —
   // and the fields he kept, which the next submit says it knowingly replaces.
   const [conflicts, setConflicts] = useState<Conflicts>({});
-  // Every live value of the last STALE_FIELDS answer, answered or not: the
-  // channel's "Use this value" takes the sub-channel found with it even when
-  // that conflict was answered first (review finding 6).
+  // Every live value of the last STALE_FIELDS answer, answered or not, and
+  // those of fields it did not name: the channel's answer takes the sub-channel
+  // found with it even when that conflict was answered first (review finding
+  // 6), or when it was no conflict at all (post-merge finding 2).
   const staleLiveRef = useRef<Record<string, BaseValue>>({});
   const [kept, setKept] = useState<KeptFields>(NO_KEPT_FIELDS);
   // Bumped by each choice: the phone copy then carries the moved base.
@@ -288,7 +289,9 @@ export function EnrichmentForm({
   // branch's box: that button alone remounts. Remounting every branch's lost a
   // capture in flight on another branch (its chip kept the old point while the
   // form sent the new one) and a manual entry typed there but not yet saved
-  // (review finding 7).
+  // (review finding 7). A capture still in flight on the answered branch itself
+  // is dropped: the button it belonged to is gone (GpsCaptureButton), and the
+  // point he chose stays in the box and on the chip (post-merge finding 1).
   const [gpsGeneration, setGpsGeneration] = useState<Record<string, number>>({});
   // Restore runs ONCE per draft key, on mount. The page's props also change
   // mid-session — the salesman's own CR photo attach revalidates it — and a
@@ -397,10 +400,20 @@ export function EnrichmentForm({
     // the ref, not `conflicts`: a sub-channel conflict answered first has left
     // it, and without its live value the box would empty and send null over
     // the live sub-channel that answer had just taken as its base — a clear.
+    // "Keep mine" on the channel takes the saved sub-channel too, as its base
+    // only (resolveConflict): without it a sub-channel then picked for his
+    // channel went against the one the page loaded and was refused as stale a
+    // second time (post-merge finding 2). Not while the sub-channel waits for
+    // its own answer, which moves its base itself — and a "Keep mine" there
+    // must still find the saved value moved, to tell the approver.
     const pairSub = 'customer.subChannelId';
-    if (choice === 'theirs' && slot === 'customer.channelId' && pairSub in staleLiveRef.current) {
-      live[pairSub] = staleLiveRef.current[pairSub];
-      answered.push(pairSub);
+    if (slot === 'customer.channelId' && pairSub in staleLiveRef.current) {
+      if (choice === 'theirs') {
+        live[pairSub] = staleLiveRef.current[pairSub];
+        answered.push(pairSub);
+      } else if (!conflicts[pairSub]) {
+        live[pairSub] = staleLiveRef.current[pairSub];
+      }
     }
     const next = resolveConflict(
       choice,
@@ -473,8 +486,10 @@ export function EnrichmentForm({
             : null;
         if (stale) {
           setConflicts(stale);
-          staleLiveRef.current = {};
-          for (const slotLive of Object.values(stale)) Object.assign(staleLiveRef.current, slotLive);
+          // All of `current`, not only the slots it named: beside a stale
+          // channel the server sends the sub-channel saved now, which is no
+          // conflict of its own (services/edits.ts staleFieldsError).
+          staleLiveRef.current = { ...result.current };
         }
         if (result.fields) {
           // A key with no slot on this form still surfaces, at the top — with

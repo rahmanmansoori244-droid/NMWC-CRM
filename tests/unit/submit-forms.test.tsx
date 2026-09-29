@@ -59,7 +59,7 @@ import {
   submissionIdSchema,
 } from '@/lib/submission';
 import { FORM_OUTDATED_MESSAGE, STALE_FIELDS_MESSAGE } from '@/lib/errors';
-import { STALE_FIELD_MESSAGE } from '@/lib/edit-values';
+import { STALE_FIELD_MESSAGE, classifyAgainstLive } from '@/lib/edit-values';
 import { RELOAD_FOR_BRANCH_HINT } from '@/lib/form-errors';
 
 /** A real v4 id: a comparison of two missing ids (undefined === undefined) proves nothing. */
@@ -874,6 +874,112 @@ describe('the customer update form', () => {
       expect(sent[1]!.body).not.toHaveProperty('customerOverrides');
     });
   }
+
+  // Post-merge review of phase 2, finding 2. Loaded A / A1; an import moved the
+  // customer to B and cleared the sub-channel; he picks C, which empties the
+  // sub-channel box. His null equals the saved one, so only the channel is
+  // stale — and the answer carries the saved sub-channel beside it.
+  const threeChannels = ['A', 'B', 'C'].map((k) => ({
+    id: `ch${k}`,
+    key: k,
+    label: `Channel ${k}`,
+    subChannels: [{ id: `sub${k}`, key: `${k}1`, label: `Sub ${k}1` }],
+  }));
+  const renderOnA = () =>
+    render(
+      <EnrichmentForm
+        customer={{ ...customer, channelId: 'chA', subChannelId: 'subA' }}
+        channels={threeChannels}
+        lockName
+        lockCr={false}
+        userRole="MANAGER"
+        canSubmit
+        sessionUserId="u1"
+        gate="CORE"
+      />
+    );
+  const conflictItem = (label: string) => within(within(conflictList()!).getByText(label).closest('li')!);
+
+  for (const [choice, channelAfter, picked, expected] of [
+    [
+      'Use this value',
+      'chB',
+      'subB',
+      { customer: { subChannelId: 'subB' }, customerBase: { subChannelId: null } },
+    ],
+    [
+      'Keep mine',
+      'chC',
+      'subC',
+      {
+        customer: { channelId: 'chC', subChannelId: 'subC' },
+        customerBase: { channelId: 'chB', subChannelId: null },
+        customerOverrides: ['channelId'],
+      },
+    ],
+  ] as const) {
+    it(`post-merge finding 2: after "${choice}" on a channel that alone was stale, a sub-channel picked next goes against the one saved — no second conflict`, async () => {
+      renderOnA();
+      fireEvent.change(screen.getByLabelText('Channel *'), { target: { value: 'chC' } });
+      replies.push(
+        answer({
+          ok: false,
+          code: 'STALE_FIELDS',
+          message: STALE_FIELDS_MESSAGE,
+          fields: { 'customer.channelId': STALE_FIELD_MESSAGE },
+          current: { 'customer.channelId': 'chB', 'customer.subChannelId': null },
+        })
+      );
+      fireEvent.click(submitBtn());
+      await waitFor(() => expect(conflictList()).not.toBeNull());
+      // The sub-channel is no conflict: nothing asks him about it.
+      expect(within(conflictList()!).queryByText('Sub-channel')).toBeNull();
+      fireEvent.click(conflictItem('Channel').getByRole('button', { name: choice }));
+      expect(conflictList()).toBeNull();
+      expect(screen.getByLabelText('Channel *')).toHaveValue(channelAfter);
+      expect(screen.getByLabelText('Sub-channel')).toHaveValue('');
+      fireEvent.change(screen.getByLabelText('Sub-channel'), { target: { value: picked } });
+      replies.push(saved());
+      fireEvent.click(submitBtn());
+      await waitFor(() => expect(sent).toHaveLength(2));
+      expect(sent[1]!.body).toMatchObject(expected);
+      expect(Object.keys(sent[1]!.body.customer as object)).toEqual(Object.keys(expected.customer));
+      if (!('customerOverrides' in expected)) expect(sent[1]!.body).not.toHaveProperty('customerOverrides');
+      // As the server judges it against the saved null: a change, not stale again.
+      const base = (sent[1]!.body.customerBase as Record<string, string | null>).subChannelId;
+      expect(classifyAgainstLive('customer.subChannelId', base, picked, null)).toBe('CHANGE');
+    });
+  }
+
+  it('post-merge finding 2: "Keep mine" on the channel leaves a sub-channel conflict beside it to its own answer, which still says what it replaces', async () => {
+    renderOnA();
+    fireEvent.change(screen.getByLabelText('Channel *'), { target: { value: 'chC' } });
+    fireEvent.change(screen.getByLabelText('Sub-channel'), { target: { value: 'subC' } });
+    replies.push(
+      answer({
+        ok: false,
+        code: 'STALE_FIELDS',
+        message: STALE_FIELDS_MESSAGE,
+        fields: { 'customer.channelId': STALE_FIELD_MESSAGE, 'customer.subChannelId': STALE_FIELD_MESSAGE },
+        current: { 'customer.channelId': 'chB', 'customer.subChannelId': 'subB' },
+      })
+    );
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(conflictList()).not.toBeNull());
+    fireEvent.click(conflictItem('Channel').getByRole('button', { name: 'Keep mine' }));
+    expect(within(conflictList()!).queryByText('Channel')).toBeNull();
+    expect(submitBtn()).toBeDisabled();
+    fireEvent.click(conflictItem('Sub-channel').getByRole('button', { name: 'Keep mine' }));
+    expect(conflictList()).toBeNull();
+    replies.push(saved());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]!.body).toMatchObject({
+      customer: { channelId: 'chC', subChannelId: 'subC' },
+      customerBase: { channelId: 'chB', subChannelId: 'subB' },
+      customerOverrides: ['channelId', 'subChannelId'],
+    });
+  });
 
   it('FORM_OUTDATED: says to reload, at the top and beside the button, with no Try again', async () => {
     renderForm();

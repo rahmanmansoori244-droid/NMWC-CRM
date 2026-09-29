@@ -90,6 +90,7 @@ const B1 = 'ckbranch000000000000000001'; // on the salesman's route r1
 const B2 = 'ckbranch000000000000000002'; // on another salesman's route r2
 const CH_A = 'ckchannel00000000000000001';
 const CH_B = 'ckchannel00000000000000002';
+const CH_C = 'ckchannel00000000000000003';
 const SUB_A = 'cksubchannel0000000000001';
 const SUB_B = 'cksubchannel0000000000002';
 const CAPTURED = new Date('2026-09-20T08:00:00.000Z');
@@ -583,6 +584,48 @@ describe('F16 — the channel pair', () => {
     expect((await submit({ customer: { notes: 'New note' } })).ok).toBe(true);
     expect(db.channel.findUnique).not.toHaveBeenCalled();
     expect(db.subChannel.findUnique).not.toHaveBeenCalled();
+  });
+
+  // Post-merge review of phase 2, finding 2: loaded A / SUB_A, an import moved
+  // the customer to B and cleared the sub-channel, and he picked C, which
+  // empties the sub-channel box.
+  const pickedC = () =>
+    body({
+      customer: { channelId: CH_C, subChannelId: null },
+      customerBase: { channelId: CH_A, subChannelId: SUB_A },
+    });
+
+  it('a stale channel hands back the sub-channel saved with it, without naming it when it converged', async () => {
+    const b = await pickedC();
+    live = customerRow({ channelId: CH_B, subChannelId: null });
+    const res = failed(await submitEditAction(b));
+    expect(res.code).toBe('STALE_FIELDS');
+    expect(res.fields).toEqual({ 'customer.channelId': STALE_FIELD_MESSAGE });
+    expect(res.current).toEqual({ 'customer.channelId': CH_B, 'customer.subChannelId': null });
+    nothingWritten();
+  });
+
+  it('a stale channel beside a stale sub-channel: both named, the saved pair handed back', async () => {
+    const b = await pickedC();
+    live = customerRow({ channelId: CH_B, subChannelId: SUB_B });
+    const res = failed(await submitEditAction(b));
+    expect(res.fields).toEqual({
+      'customer.channelId': STALE_FIELD_MESSAGE,
+      'customer.subChannelId': STALE_FIELD_MESSAGE,
+    });
+    expect(res.current).toEqual({ 'customer.channelId': CH_B, 'customer.subChannelId': SUB_B });
+  });
+
+  it('the direct write’s re-check under the lock hands back the saved sub-channel beside a stale channel too', async () => {
+    asStaff('MANAGER');
+    // Read: A / SUB_A, so B with no sub-channel is a change of both. Under the
+    // lock: C with none — the channel moved, the sub-channel already empty.
+    locked = customerRow({ channelId: CH_C, subChannelId: null });
+    const res = failed(await submit({ customer: { channelId: CH_B, subChannelId: null } }));
+    expect(res.fields).toEqual({ 'customer.channelId': STALE_FIELD_MESSAGE });
+    expect(res.current).toEqual({ 'customer.channelId': CH_C, 'customer.subChannelId': null });
+    expect(h.rolledBack).toBe(true);
+    nothingWritten();
   });
 });
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MapPin, Check, RotateCcw, AlertTriangle, PencilLine } from 'lucide-react';
 
 export type Gps = {
@@ -45,6 +45,19 @@ export function GpsCaptureButton({
   );
   const [manualReason, setManualReason] = useState<string>(initial?.manualReason ?? '');
   const [manualErr, setManualErr] = useState<string | null>(null);
+  // A fix asked for by a button that has since unmounted is dropped. The edit
+  // form remounts a branch's button when "Use this value" takes the saved point
+  // into that branch: a capture still in flight then landed in the form over
+  // the point he had just chosen, while the new chip kept showing the saved one
+  // (post-merge review of phase 2, finding 1). On the new-customer form the
+  // button unmounts only with its branch, and that fix has nowhere to go.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   function capture() {
     if (!('geolocation' in navigator)) {
@@ -56,6 +69,7 @@ export function GpsCaptureButton({
     setError(null);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        if (!mountedRef.current) return;
         const next: Gps = {
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
@@ -68,6 +82,7 @@ export function GpsCaptureButton({
         setShowManual(false);
       },
       (err) => {
+        if (!mountedRef.current) return;
         // B-07: any of timeout / denied / unavailable opens the manual fallback.
         const reason =
           err.code === err.PERMISSION_DENIED

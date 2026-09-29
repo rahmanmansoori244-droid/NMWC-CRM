@@ -131,7 +131,13 @@ function channelPairOf(customer: Record<string, unknown>) {
  * F06: the fields a submit named whose value changed after the form was opened.
  * Refused whole, before anything is written, with the value live now for each —
  * for a location or an equipment block, the whole group's, because the form
- * takes the group back as one ("Use this value", ruling 1).
+ * takes the group back as one ("Use this value", ruling 1). A stale channel
+ * also hands back the sub-channel saved with it, without naming it: the form's
+ * answer on the channel takes it as the sub-channel's base. A sub-channel sent
+ * as the value already saved was left out above and is no conflict — but
+ * without its saved value the form kept the one the page loaded as its base,
+ * and a sub-channel then picked for the new channel was refused as stale a
+ * second time (post-merge review of phase 2, finding 2).
  */
 function staleFieldsError(
   paths: readonly string[],
@@ -147,6 +153,9 @@ function staleFieldsError(
     if (!p) continue;
     if (p.scope === 'customer') {
       current[path] = toBaseValue(liveCustomer[p.field]);
+      if (p.field === 'channelId') {
+        current['customer.subChannelId'] = toBaseValue(liveCustomer.subChannelId);
+      }
       continue;
     }
     const branch = liveBranches.get(p.branchId);

@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { submitEditSchema, keysWithoutBase } from '@/lib/validation/edit';
+import { classifyAgainstLive } from '@/lib/edit-values';
 import {
   buildEnrichmentPatch,
   conflictsFrom,
@@ -535,29 +536,82 @@ describe('ruling 1 — a conflict, and his choice', () => {
     ]);
   });
 
+  // Loaded A / SUB_A; an import moved it to B and emptied the sub-channel; he
+  // picked C (the select empties the sub-channel). Only the channel is stale:
+  // his empty sub-channel already equals the live one, so the server names the
+  // channel alone and sends the sub-channel saved now beside it.
+  const onlyChannelStale = () => stateOf(loaded(), { channelId: CH_C, subChannelId: '' });
+  const channelAnswer = { 'customer.channelId': CH_B, 'customer.subChannelId': null };
+
   it('F16, review finding 6: "Use this value" on the channel never puts back the sub-channel the page loaded for another channel', () => {
-    // Loaded A / SUB_A; an import moved it to B and emptied the sub-channel; he
-    // picked C (the select empties the sub-channel). Only the channel is stale:
-    // his empty sub-channel already equals the live one.
-    const s = stateOf(loaded(), { channelId: CH_C, subChannelId: '' });
     const r = resolveConflict(
       'theirs',
       { 'customer.channelId': CH_B },
       loaded(),
-      s,
+      onlyChannelStale(),
       { customer: [], branches: {} },
       MANAGER
     );
     expect(r.state.customer).toMatchObject({ channelId: CH_B, subChannelId: '' });
-    // The base stays what the page loaded: nothing says what the live one is.
+    // An answer that does not carry the sub-channel leaves its base as loaded.
     expect(r.loaded).toMatchObject({ channelId: CH_B, subChannelId: SUB_A });
-    // So the empty box goes as null against it — converged against an empty
-    // live one, a new conflict (showing it) against any other.
-    expect(build(r.loaded, r.state, MANAGER, r.kept)).toEqual({
-      customer: { subChannelId: null },
-      customerBase: { subChannelId: SUB_A },
+  });
+
+  it('post-merge finding 2: "Use this value" on the channel takes the saved sub-channel as the base, so one picked for the saved channel is a plain change', () => {
+    const r = resolveConflict(
+      'theirs',
+      channelAnswer,
+      loaded(),
+      onlyChannelStale(),
+      { customer: [], branches: {} },
+      MANAGER
+    );
+    expect(r.state.customer).toMatchObject({ channelId: CH_B, subChannelId: '' });
+    expect(r.loaded).toMatchObject({ channelId: CH_B, subChannelId: null });
+    expect(sentPaths(build(r.loaded, r.state, MANAGER, r.kept))).toEqual([]);
+    const picked = { ...r.state, customer: { ...r.state.customer, subChannelId: SUB_B } };
+    const patch = build(r.loaded, picked, MANAGER, r.kept);
+    expect(patch).toEqual({ customer: { subChannelId: SUB_B }, customerBase: { subChannelId: null }, branches: [] });
+    // Judged as the server judges it against the saved null: a change, not stale.
+    expect(classifyAgainstLive('customer.subChannelId', patch.customerBase.subChannelId, SUB_B, null)).toBe(
+      'CHANGE'
+    );
+  });
+
+  it('post-merge finding 2: "Keep mine" on the channel takes the saved sub-channel as its base only — his box stays, and it is not named as replacing anything', () => {
+    const r = resolveConflict(
+      'mine',
+      channelAnswer,
+      loaded(),
+      onlyChannelStale(),
+      { customer: [], branches: {} },
+      MANAGER
+    );
+    expect(r.state.customer).toMatchObject({ channelId: CH_C, subChannelId: '' });
+    expect(r.loaded).toMatchObject({ channelId: CH_B, subChannelId: null });
+    expect(r.kept.customer).toEqual(['channelId']);
+    // He picks a sub-channel of his channel: it goes against the saved null.
+    const picked = { ...r.state, customer: { ...r.state.customer, subChannelId: SUB_C } };
+    const patch = build(r.loaded, picked, MANAGER, r.kept);
+    expect(patch).toEqual({
+      customer: { channelId: CH_C, subChannelId: SUB_C },
+      customerBase: { channelId: CH_B, subChannelId: null },
+      customerOverrides: ['channelId'],
       branches: [],
     });
+    expect(classifyAgainstLive('customer.subChannelId', patch.customerBase.subChannelId, SUB_C, null)).toBe(
+      'CHANGE'
+    );
+    // A sub-channel keep from an earlier round stays.
+    const earlier = resolveConflict(
+      'mine',
+      channelAnswer,
+      loaded(),
+      onlyChannelStale(),
+      { customer: ['subChannelId'], branches: {} },
+      MANAGER
+    );
+    expect(earlier.kept.customer).toEqual(['subChannelId', 'channelId']);
   });
 
   it('F16, review finding 6: with a sub-channel conflict beside it, "Use this value" on the channel takes the live pair', () => {

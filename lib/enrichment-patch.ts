@@ -402,12 +402,19 @@ function boxValue(field: CustomerEditField | BranchEditField, live: BaseValue): 
  *     stale one: the server hands back the whole block) stays an ordinary change
  *     of his, and the approver is not told it replaces anything. A field of the
  *     slot he did not change takes the live value into its box too — it was
- *     never his.
+ *     never his. On the channel, a sub-channel passed beside it (the form passes
+ *     the one saved now when it waits for no answer of its own) becomes the
+ *     sub-channel's loaded value and nothing else: his box stays, and it is not
+ *     named in `kept` — he was not shown it, and his channel replaces the saved
+ *     one, so the sub-channel saved with it only serves as the base. Without it
+ *     a sub-channel picked for his channel went against the one the page loaded
+ *     and was refused as stale again (post-merge finding 2).
  *   - 'theirs' ("Use this value"): every field of the slot takes the live value,
  *     loaded and in its box, so it is no longer sent. On the channel the
  *     sub-channel follows: the live one when the answer carries it (the form
- *     passes the sub-channel found live in the same STALE_FIELDS answer), else
- *     none — the one the page loaded belongs to the channel being replaced.
+ *     passes the sub-channel found live in the same STALE_FIELDS answer, which
+ *     the server sends beside every stale channel), else none — the one the page
+ *     loaded belongs to the channel being replaced.
  * Returns new objects; the form puts them in its ref and state.
  */
 export function resolveConflict(
@@ -447,6 +454,8 @@ export function resolveConflict(
     if (p.scope === 'customer') {
       const moved = !sameEditValue(p.field, valueOf(nextLoaded, p.field), value);
       (nextLoaded as Record<string, unknown>)[p.field] = value;
+      // "Keep mine" on the channel: the sub-channel beside it is only its base.
+      if (choice === 'mine' && p.field === 'subChannelId' && 'customer.channelId' in live) continue;
       if (his) {
         if (moved) keptCustomer.add(p.field);
         continue;
@@ -459,9 +468,11 @@ export function resolveConflict(
       // when this answer carries it, else none — never the one the page loaded,
       // which belongs to another channel (a channel is stale only when the one
       // loaded is not the live one). Put back, it read "— Pick a sub-channel —"
-      // yet passed the FULL gate (review finding 6). An empty box is sent as
-      // null against the base loaded: converged when the live one is empty too,
-      // else a new conflict that shows it.
+      // yet passed the FULL gate (review finding 6). The server sends it beside
+      // every stale channel (post-merge finding 2); an answer without it leaves
+      // the sub-channel's base as loaded, and the empty box is sent as null
+      // against that: converged when the live one is empty too, else a new
+      // conflict that shows it.
       if (p.field === 'channelId') {
         const sub = live['customer.subChannelId'];
         nextCustomer.subChannelId = sub === undefined ? '' : String(boxValue('subChannelId', sub));

@@ -70,12 +70,16 @@ export const STALE_FIELDS_MESSAGE =
  * the form's slot (lib/edit-values.ts fieldSlotKey); `current` holds the value
  * live now, by raw path ('customer.contactPerson', 'branch.<id>.gpsLat'), so the
  * form can offer "Keep mine" and "Use this value" (ruling 1). It holds each
- * conflicting field of the sender's own patch, with two additions he did not
- * send himself:
+ * conflicting field of the sender's own patch, with additions he did not send
+ * himself:
  *   - for a location or an equipment conflict, every column of that slot on the
  *     same branch (lib/edit-values.ts slotFields), because "Use this value" takes
  *     the group back as one — so a patch that changed only the coolers gets the
  *     stands, the bottles and "Counted" back too;
+ *   - for a channel conflict, the sub-channel saved now, which the form's answer
+ *     on the channel takes as the sub-channel's base. It is in `current` only:
+ *     `fields` does not name it unless it is in conflict itself (post-merge
+ *     review of phase 2, finding 2);
  *   - on a Steward's or Manager's direct write, the sub-channel the server clears
  *     itself when a channel change leaves one of the old channel.
  * All of it comes from the customer he may edit and from branches that passed
