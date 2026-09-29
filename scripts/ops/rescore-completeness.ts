@@ -24,8 +24,8 @@
  * the page waited is left alone — through lib/rescore.ts, the same code the
  * promote runs: raw SQL that writes a row only when its score differs, so
  * updatedAt stays as it was (the master export's "updated since" filter reads the
- * customer's) and `version` is never bumped (a derived column must not fail an
- * edit form open on the customer). No Temix requeue, no lastEditedById.
+ * customer's) and `version` is never bumped (a derived column must not make a
+ * concurrent edit's versioned write fail). No Temix requeue, no lastEditedById.
  *
  * UNDER LOAD. Each page of customers is one transaction that first takes their
  * row locks in the one order lib/locks.ts gives (lockCustomersAndTemixCodeHolders,

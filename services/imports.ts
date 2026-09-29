@@ -1395,7 +1395,8 @@ async function refreshLaneBranches(
         status: (r.status as CustomerStatus | null) ?? undefined,
         lastStatusChangeAt: r.status && r.status !== found.status ? new Date() : undefined,
         lastEditedById: me,
-        // B-05 / F21: an edit form open on this branch must see it changed.
+        // B-05 / F21: a writer that read this branch before the import committed
+        // (applyEditChanges' versioned updateMany) fails instead of writing over it.
         version: { increment: 1 },
       },
     });
@@ -2472,7 +2473,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     lastStatusChangeAt:
                       r.status && r.status !== branchOwner?.status ? new Date() : undefined,
                     lastEditedById: me.id,
-                    // B-05 / F21: an edit form open on this branch must see it changed.
+                    // B-05 / F21: a writer that read this branch before the import
+                    // committed (a versioned updateMany) fails instead of writing over it.
                     version: { increment: 1 },
                   },
                   create: {
@@ -2570,7 +2572,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                       primaryPhone: fill,
                       primaryPhoneNorm: fill,
                       lastEditedById: me.id,
-                      // B-05: an edit form open on this customer must see it changed.
+                      // B-05: a writer that read this customer before the import
+                      // committed (a versioned updateMany) fails instead of writing over it.
                       version: { increment: 1 },
                     },
                   });
