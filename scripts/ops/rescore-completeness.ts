@@ -43,9 +43,17 @@
  * connection is refused when its host does not contain the marker. --apply
  * requires --actor, a real active Steward, and a dry run given --actor resolves
  * it too, so the rehearsal meets the refusal --apply would. The ledger gets a
- * STARTING row before the first page and a COMPLETED row after the last; each
- * page commits on its own, so an interrupted run is re-run, and a second run
- * reports nothing to do.
+ * STARTING row before the first page and a COMPLETED row, with the counts
+ * written, as soon as the last page commits; each page commits on its own, so
+ * an interrupted run is re-run, and a second run reports nothing to do.
+ *
+ * THE CHECK. After COMPLETED it reads and scores every live customer again, as
+ * the dry run does, and prints how many stored scores still differ; it is not
+ * recorded, so a failure of the check cannot lose the ledger row or the counts.
+ * --apply exits 0 when the check finds none; 1 when some differ again (most
+ * likely something wrote a scored field without rescoring while this ran:
+ * --apply again); 2 when the check failed (the scores are written: run the dry
+ * run) or the run itself did.
  */
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { lockCustomersAndTemixCodeHolders } from '../../lib/locks';
@@ -331,9 +339,14 @@ export async function run(
     pageAfter = ids[ids.length - 1];
   }
 
-  const after = await survey(prisma, opts.chunk);
-  const remaining = scoresToChange(after);
-
+  // COMPLETED as soon as the last page has committed, with the counts it
+  // wrote, and BEFORE the check below re-reads every live customer (tens of
+  // seconds over the WAN). Written after that check, a failure there lost the
+  // row and the counts with it, and a re-run, finding nothing to do, writes no
+  // ledger row at all, so the ledger showed the run as interrupted for good
+  // (post-merge review of phase 2, finding 7). requeue-untracked.ts and
+  // zero-credit-limits.ts write theirs first too. What the check finds is
+  // printed for the go-live log, not recorded.
   await prisma.auditLog.create({
     data: {
       actorId: actor.id,
@@ -342,15 +355,16 @@ export async function run(
       entityId: at.toISOString(),
       reason:
         `operator script scripts/ops/rescore-completeness.ts on ${host}: COMPLETED — ` +
-        `${written.customers} customer score(s) and ${written.branches} branch score(s) rewritten; ` +
-        `${remaining} still differ (expected 0). Pairs with the STARTING row of the same ` +
-        'entityId. Run outside any session, so ip and userAgent are null by construction.',
+        `${written.customers} customer score(s) and ${written.branches} branch score(s) rewritten ` +
+        `in ${pages} page(s). Written before the script re-reads every score to check, so a ` +
+        'failure of that check cannot lose this row; the check is printed for the go-live log. ' +
+        'Pairs with the STARTING row of the same entityId. Run outside any session, so ip and ' +
+        'userAgent are null by construction.',
       after: {
         phase: 'completed',
         customersWritten: written.customers,
         branchesWritten: written.branches,
         pages,
-        remaining,
       } as unknown as Prisma.InputJsonValue,
     },
   });
@@ -358,7 +372,25 @@ export async function run(
   log('='.repeat(76));
   log(
     `Wrote ${written.customers} customer score(s) and ${written.branches} branch score(s) ` +
-      `in ${pages} page(s); ${remaining} still differ (expected 0).`
+      `in ${pages} page(s); the COMPLETED ledger row is written.`
+  );
+  log('Checking every stored score again ...');
+
+  // The check: every live customer read and scored again, as the dry run does.
+  // null when it failed — the scores the pages wrote stay written either way.
+  let remaining: number | null = null;
+  try {
+    remaining = scoresToChange(await survey(prisma, opts.chunk));
+  } catch (e) {
+    log(`The check after the last page FAILED: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  log('='.repeat(76));
+  log(
+    remaining === null
+      ? 'Not checked: the scores above are written and the ledger has its COMPLETED row, but the ' +
+          'check that re-reads them failed.'
+      : `Checked: ${remaining} stored score(s) still differ (expected 0).`
   );
   log('');
   log('For the record — paste this into the go-live log:');
@@ -368,13 +400,29 @@ export async function run(
   log(`  run as          ${actor.username}`);
   log(`  customers       ${written.customers} score(s) rewritten`);
   log(`  branches        ${written.branches} score(s) rewritten`);
-  log(`  still differ    ${remaining}`);
+  log(`  still differ    ${remaining === null ? 'not checked (the check failed)' : remaining}`);
   log(
     `  audit rows      AuditLog entityType=CompletenessRescore entityId=${at.toISOString()} (STARTING + COMPLETED)`
   );
   log('');
+  if (remaining === null) {
+    log('Next: a dry run (expect "Nothing to do"; if it finds scores to change, --apply again),');
+    log('then npm run smoke.\n');
+    return 2;
+  }
+  if (remaining > 0) {
+    log(
+      `${remaining} score(s) differ again after their page was written: most likely ` +
+        'something changed a scored field without rescoring while this ran — ops:visit-days, ' +
+        'which must never run beside it, is one such writer.'
+    );
+    log('Next: --apply again (it rewrites only what differs), then a dry run: "Nothing to do".');
+    log('If a second --apply still leaves some, stop and find that writer before a third.');
+    log('Then npm run smoke.\n');
+    return 1;
+  }
   log('Next: a dry run again (expect "Nothing to do"), then npm run smoke.\n');
-  return remaining === 0 ? 0 : 1;
+  return 0;
 }
 
 async function main(): Promise<number> {

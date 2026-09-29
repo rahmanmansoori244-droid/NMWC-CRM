@@ -51,7 +51,7 @@ import {
 } from '@/lib/edit-values';
 import { gateBranchesForApproval, salesmanBranches, submitGateRecord } from '@/lib/edit-scope';
 import {
-  CHANNEL_PAIR_INVALID_MESSAGE,
+  channelPairInvalidMessage,
   planApproval,
   staleBeforeMessage,
   staleFieldLabels,
@@ -1574,13 +1574,21 @@ async function approveEditCore(formData: FormData) {
       }
       const write = payloadFromFieldChanges(classified.apply);
       // F16: the channel pair this leaves on the customer must still fit —
-      // a sub-channel retired, or moved to another channel, since submit.
+      // a sub-channel retired, or moved to another channel, since submit; or,
+      // for a request the old form sent, a channel change beside the
+      // customer's sub-channel of the old channel, which that form never
+      // cleared. The message says which (lib/edit-approval.ts).
       if (write.customer.channelId !== undefined || write.customer.subChannelId !== undefined) {
         const pair = await resolveChannelPair(tx, now, channelPairOf(write.customer), {
           requireActiveChannel: false,
           clearMisfitSubChannel: false,
         });
-        if (!pair.ok) throw new ConflictError('CHANNEL_PAIR_INVALID', CHANNEL_PAIR_INVALID_MESSAGE);
+        if (!pair.ok) {
+          throw new ConflictError(
+            'CHANNEL_PAIR_INVALID',
+            channelPairInvalidMessage(pair.field, considered)
+          );
+        }
       }
       // EL-04 (Critical): re-run the mandatory-field gate at approve time. The
       // submit-time gate enforces "salesman cannot submit a half-empty record", but

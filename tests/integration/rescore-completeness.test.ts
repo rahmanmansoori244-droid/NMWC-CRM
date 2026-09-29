@@ -245,7 +245,15 @@ describe.skipIf(!ENABLED)('ops:rescore-completeness against Postgres', () => {
       ['UPDATE', 'completed'],
     ]);
     expect(rows[0].entityId).toBe(rows[1].entityId);
-    expect(rows[1].after).toMatchObject({ remaining: 0 });
+    // The counts written; the check after the last page is printed, not
+    // recorded (post-merge review of phase 2, finding 7).
+    expect(rows[1].after).toMatchObject({
+      phase: 'completed',
+      customersWritten: expect.any(Number),
+      branchesWritten: expect.any(Number),
+    });
+    expect(rows[1].after).not.toHaveProperty('remaining');
+    expect(out.join('\n')).toContain('Checked: 0 stored score(s) still differ (expected 0).');
     const recorded = JSON.stringify(rows);
     for (const secret of [ids.a, ids.b, `${P}-A`, 'ZZ Rescore A', '+96890000001']) {
       expect(recorded).not.toContain(secret);

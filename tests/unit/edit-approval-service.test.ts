@@ -12,14 +12,18 @@
  *         request that is all live writes nothing to the customer (ruling 5).
  *   F05 — the mandatory-field re-check runs on the branches frozen at submit,
  *         whatever happened to the routes since.
- *   F16 — a sub-channel retired since submit is CHANNEL_PAIR_INVALID.
+ *   F16 — a sub-channel retired since submit is CHANNEL_PAIR_INVALID; a
+ *         channel change stored with no sub-channel (the old form's shape)
+ *         is refused in words that name the customer's current sub-channel.
  * Also the approval page's helper (ruling 8), which decides with the same plan.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import { decisionTokenFor, type DecisionRow } from '@/lib/decision-token';
 import {
+  CHANNEL_ONLY_PAIR_INVALID_MESSAGE,
   CHANNEL_PAIR_INVALID_MESSAGE,
+  channelPairInvalidMessage,
   planApproval,
   sentByPreviousForm,
   staleBeforeMessage,
@@ -505,6 +509,53 @@ describe('F16 — the channel pair at approval', () => {
     tx.subChannel.findUnique.mockResolvedValue({ channelId: CH_A, isActive: false });
     expect(failed(await approve())).toMatchObject({ code: 'CHANNEL_PAIR_INVALID', message: CHANNEL_PAIR_INVALID_MESSAGE });
     expect(masterWrites()).toBe(0);
+  });
+
+  describe('the refusal says which case it is (post-merge review, finding 3)', () => {
+    const CH_B = 'ch-b';
+    const SUB_B = 'sub-b';
+    const channelOnly: Change[] = [{ field: 'customer.channelId', before: CH_A, after: CH_B }];
+
+    it('a channel change with no sub-channel, as the old form stored it: the customer’s current sub-channel is named, not the request’s', async () => {
+      // The form before patch v2 emptied the sub-channel select on a channel
+      // change and sent nothing for it; SUB_A, of the old channel, stays live.
+      db.customerEdit.findUnique.mockResolvedValue(request(channelOnly, { submitGate: null }));
+      const res = failed(await approve());
+      expect(res).toMatchObject({ code: 'CHANNEL_PAIR_INVALID', message: CHANNEL_ONLY_PAIR_INVALID_MESSAGE });
+      expect(res.message).not.toContain('in this request no longer fits');
+      expect(h.rolledBack).toBe(true);
+      expect(masterWrites()).toBe(0);
+      expect(audit.writeAudit).not.toHaveBeenCalled();
+
+      // The same change as this build stores it — the clear recorded beside it — approves.
+      db.customerEdit.findUnique.mockResolvedValue(
+        request([...channelOnly, { field: 'customer.subChannelId', before: SUB_A, after: null }])
+      );
+      expect((await approve()).ok).toBe(true);
+      expect(tx.customer.updateMany.mock.calls[0]![0].data).toMatchObject({ channelId: CH_B, subChannelId: null });
+    });
+
+    it('a request that names a sub-channel keeps the first message, even when that change is already live', async () => {
+      // Channel A→B with SUB_B; a Steward already set SUB_B, which has since been
+      // retired. The sub-channel change is left out of the write as already
+      // live, but it is the request's own sub-channel that no longer fits.
+      db.customerEdit.findUnique.mockResolvedValue(
+        request([...channelOnly, { field: 'customer.subChannelId', before: SUB_A, after: SUB_B }])
+      );
+      now = customerRow({ subChannelId: SUB_B });
+      tx.subChannel.findUnique.mockResolvedValue({ channelId: CH_B, isActive: false });
+      expect(failed(await approve())).toMatchObject({ code: 'CHANNEL_PAIR_INVALID', message: CHANNEL_PAIR_INVALID_MESSAGE });
+      expect(masterWrites()).toBe(0);
+    });
+
+    it('channelPairInvalidMessage: the channel-only wording only for a refused sub-channel the request does not name', () => {
+      const sub = [{ field: 'customer.subChannelId' }];
+      const ch = [{ field: 'customer.channelId' }];
+      expect(channelPairInvalidMessage('customer.subChannelId', ch)).toBe(CHANNEL_ONLY_PAIR_INVALID_MESSAGE);
+      expect(channelPairInvalidMessage('customer.subChannelId', [...ch, ...sub])).toBe(CHANNEL_PAIR_INVALID_MESSAGE);
+      expect(channelPairInvalidMessage('customer.subChannelId', sub)).toBe(CHANNEL_PAIR_INVALID_MESSAGE);
+      expect(channelPairInvalidMessage('customer.channelId', ch)).toBe(CHANNEL_PAIR_INVALID_MESSAGE);
+    });
   });
 
   it('a request that does not touch the pair never reads it', async () => {

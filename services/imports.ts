@@ -1227,14 +1227,27 @@ type LaneBranch = {
  * cell gives nothing, item 20) that the branch does not already hold. The
  * refresh lane names them when it does not apply them; the full lane leaves a
  * branch they are empty for unwritten, so its version and updatedAt stay as
- * they were (F21, auditor recheck 2026-09-27). Region follows the route (the
- * B-19 trigger), so the route stands for both.
+ * they were (F21, auditor recheck 2026-09-27).
+ *
+ * The region is not a cell: the row's region is its resolved route's region
+ * now. The B-19 trigger refuses a Branch write whose region is not its route's,
+ * but nothing fires when the ACCOUNT import moves a route to another region, so
+ * the branches on that route keep the old one until something writes their
+ * route again. The full lane passes the stored region, so a branch whose
+ * region is not its route's is written, which puts it back in line — as the
+ * unconditional upsert did on every re-import before F21 skipped unchanged
+ * branches (post-merge review of phase 2, finding 6). The ~3,300 pilot-seeded
+ * customers carry no Temix code and always take that lane. The refresh lane
+ * passes none: a plain row there changes no branch, and its note lists only
+ * what the row itself states.
  */
 function differingBranchCells(
   r: LaneBranch,
   stored: {
     branchName: string;
     routeId: string;
+    /** The full lane's owner read only; see above. */
+    regionId?: string;
     address: string;
     dayOfVisit: string | null;
     status: string;
@@ -1244,6 +1257,9 @@ function differingBranchCells(
   if (r.nameGiven && r.branchName !== stored.branchName) differs.push('branch name');
   if (r.sheetAddress && r.sheetAddress !== stored.address) differs.push('address');
   if (r.routeResolved && r.routeId !== stored.routeId) differs.push('route');
+  if (r.routeResolved && stored.regionId !== undefined && r.regionId !== stored.regionId) {
+    differs.push('region');
+  }
   if (r.dayOfVisit && r.dayOfVisit !== stored.dayOfVisit) differs.push('visit day');
   if (r.status && r.status !== stored.status) differs.push('status');
   return differs;
@@ -2413,9 +2429,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   select: {
                     customerId: true,
                     customer: { select: { nmwcCode: true } },
-                    // What the row would change (differingBranchCells).
+                    // What the row would change (differingBranchCells) — the
+                    // region too, which a route moved by the account import
+                    // leaves behind on its branches.
                     branchName: true,
                     routeId: true,
+                    regionId: true,
                     address: true,
                     dayOfVisit: true,
                     status: true,
@@ -2449,7 +2468,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // version on one it had changed, as an approved edit does (B-05).
                 // The export's "updated since" filter reads the CUSTOMER's
                 // updatedAt (services/exports.ts), which the upsert above moves
-                // on every full-lane group whatever its branches do.
+                // on every full-lane group whatever its branches do. A branch
+                // left in the old region of a route the account import moved
+                // is a change, and the write below repairs it.
                 if (branchOwner && differingBranchCells(r, branchOwner).length === 0) continue;
                 await tx.branch.upsert({
                   where: { branchCode: r.branchCode },

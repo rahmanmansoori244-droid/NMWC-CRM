@@ -91,6 +91,33 @@ export function staleBeforeMessage(labels: readonly string[]): string {
 export const CHANNEL_PAIR_INVALID_MESSAGE =
   "The sub-channel in this request no longer fits the customer's channel, or is no longer offered. Nothing was approved. Reject it so the salesman can pick again.";
 
+/** F16 at approval, a request that changes the channel and names no sub-channel. */
+export const CHANNEL_ONLY_PAIR_INVALID_MESSAGE =
+  "This request changes the channel but leaves the customer's current sub-channel, which belongs to the old channel. Nothing was approved. Reject it so the salesman can pick a sub-channel.";
+
+/**
+ * Which F16 refusal the approval gives (post-merge review of phase 2, finding 3).
+ * A request that changes the channel and carries no sub-channel change — the
+ * form before patch v2 emptied the sub-channel select on a channel change and
+ * sent nothing for it, and nothing recorded a clear — fails on the customer's
+ * CURRENT sub-channel, which is not in the request, so "the sub-channel in this
+ * request" would be untrue. `failedField` is the field lib/channel-pair.ts
+ * refused; `requested` the changes the approval acts on (before the ones
+ * already live are left out: a sub-channel change already live is still one the
+ * request made). A refusal on the sub-channel with none requested can only be
+ * that case: with no sub-channel sent, the pair is checked only when the channel
+ * changes.
+ */
+export function channelPairInvalidMessage(
+  failedField: 'customer.channelId' | 'customer.subChannelId',
+  requested: ReadonlyArray<{ field: string }>
+): string {
+  return failedField === 'customer.subChannelId' &&
+    !requested.some((c) => c.field === 'customer.subChannelId')
+    ? CHANNEL_ONLY_PAIR_INVALID_MESSAGE
+    : CHANNEL_PAIR_INVALID_MESSAGE;
+}
+
 /**
  * Ruling 2: a pending enrichment request sent by the form before patch v2 carried
  * every field the form had loaded, not only what the salesman changed — so a row

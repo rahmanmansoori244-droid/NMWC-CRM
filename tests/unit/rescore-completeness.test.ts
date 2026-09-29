@@ -10,6 +10,9 @@
  * STARTING and a COMPLETED row — that it prints and records counts only, and,
  * against an in-memory database, that --apply locks each page before it reads
  * it, leaves updatedAt and version alone, and that a second run finds nothing.
+ * The COMPLETED row, with the counts written, comes before the check that
+ * re-reads every score, so a failure of the check loses neither (post-merge
+ * review of phase 2, finding 7).
  * The same run against Postgres: tests/integration/rescore-completeness.test.ts.
  */
 import { describe, it, expect, vi } from 'vitest';
@@ -402,11 +405,15 @@ describe('run: --apply', () => {
       ['u-stew', 'CompletenessRescore', 'UPDATE', 'completed'],
     ]);
     expect(db.ledger[0].entityId).toBe(db.ledger[1].entityId);
-    expect(db.ledger[1].after).toMatchObject({
+    // The counts written; the check after it is printed, not recorded.
+    expect(db.ledger[1].after).toEqual({
+      phase: 'completed',
       customersWritten: 4,
       branchesWritten: 4,
-      remaining: 0,
+      pages: 3,
     });
+    expect(out.join('\n')).toContain('Checked: 0 stored score(s) still differ (expected 0).');
+    expect(out).toContain('  still differ    0');
     const recorded = JSON.stringify(db.ledger) + out.join('\n');
     for (const c of customers) {
       for (const secret of [
@@ -462,7 +469,99 @@ describe('run: --apply', () => {
     expect(writtenIds).not.toContain('c-2');
     // The ledger counts the rows written: c-1, c-3, c-4 and c-5 — as when c-2
     // was right and live (above) — not the archived c-2 as a fifth.
-    expect(db.ledger[1].after).toMatchObject({ customersWritten: 4, remaining: 0 });
+    expect(db.ledger[1].after).toMatchObject({ customersWritten: 4 });
+  });
+
+  /**
+   * The check after the last page: the whole live table read and scored again,
+   * on the plain client. `onCheck` runs before its first read.
+   */
+  function checkAfterPages(db: ReturnType<typeof fakeDb>, onCheck: () => void) {
+    const read = db.raw.customer.findMany.getMockImplementation()!;
+    let checking = false;
+    db.raw.customer.findMany.mockImplementation(async (args: Parameters<typeof read>[0]) => {
+      if ('branches' in args.select && db.events.includes('commit')) {
+        if (!checking) {
+          checking = true;
+          db.events.push('check');
+          onCheck();
+        }
+      }
+      return read(args);
+    });
+  }
+
+  it('the check failing after every page has committed loses neither the COMPLETED row nor the counts; exit 2, and it says so', async () => {
+    const customers = world();
+    const db = fakeDb(customers);
+    checkAfterPages(db, () => {
+      throw new Error('Connection terminated unexpectedly');
+    });
+    const { out, log } = lines();
+    const code = await run({ apply: true, actor: 'data.steward', chunk: 2 }, db.prisma, 'h', log);
+    expect(code).toBe(2);
+
+    // COMPLETED, with what the pages wrote, before the check was attempted.
+    expect(db.ledger.map((r) => (r.after as { phase: string }).phase)).toEqual([
+      'started',
+      'completed',
+    ]);
+    expect(db.ledger[1].after).toEqual({
+      phase: 'completed',
+      customersWritten: 4,
+      branchesWritten: 4,
+      pages: 3,
+    });
+    const tail = db.events.slice(db.events.lastIndexOf('commit'));
+    expect(tail).toEqual(['commit', 'ledger', 'check']);
+
+    // The scores the pages wrote stay written.
+    for (const c of customers.filter((x) => x.deletedAt === null)) {
+      expect(c.completenessScore).toBe(
+        scoreCustomer(
+          c,
+          c.branches.filter((b) => b.deletedAt === null)
+        )
+      );
+    }
+
+    const text = out.join('\n');
+    expect(text).toContain(
+      'The check after the last page FAILED: Connection terminated unexpectedly'
+    );
+    expect(text).toContain('the ledger has its COMPLETED row');
+    // The go-live block still carries the counts.
+    expect(out).toContain('  customers       4 score(s) rewritten');
+    expect(out).toContain('  branches        4 score(s) rewritten');
+    expect(out).toContain('  still differ    not checked (the check failed)');
+    expect(text).toContain('Next: a dry run (expect "Nothing to do"');
+
+    // And the dry run it asks for finds nothing to do.
+    const again = lines();
+    expect(
+      await run({ apply: false, actor: '', chunk: 2 }, fakeDb(customers).prisma, 'h', again.log)
+    ).toBe(0);
+    expect(again.out.join('\n')).toContain('Nothing to do');
+  });
+
+  it('a score gone stale again after its page was written: exit 1, and it says to --apply again', async () => {
+    const customers = world();
+    const db = fakeDb(customers);
+    // A writer with no rescore and no customer lock — ops:visit-days is one —
+    // changes a scored field of c-1's branch after its page committed (here,
+    // its visit day is cleared).
+    checkAfterPages(db, () => {
+      customers[0].branches[0].dayOfVisit = null;
+    });
+    const { out, log } = lines();
+    const code = await run({ apply: true, actor: 'data.steward', chunk: 2 }, db.prisma, 'h', log);
+    expect(code).toBe(1);
+    expect(db.ledger[1].after).toMatchObject({ phase: 'completed', customersWritten: 4 });
+
+    const text = out.join('\n');
+    expect(text).toMatch(/Checked: [1-9]\d* stored score\(s\) still differ \(expected 0\)\./);
+    expect(text).toContain('differ again after their page was written');
+    expect(text).toContain('Next: --apply again');
   });
 });
 

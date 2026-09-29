@@ -16,9 +16,10 @@
  *    channel clears a stored sub-channel of the old channel in the same write,
  *    and the lead row says so — a note the full lane's row reset used to wipe.
  *  - F21: a branch the row would not change is not written; one it changes is
- *    written with version + 1, on both branch paths; and the group transaction
- *    rescores the customer and every live branch, writing only the scores that
- *    differ (lib/rescore.ts).
+ *    written with version + 1, on both branch paths (on the full lane, one
+ *    left in the old region of a route since moved counts as changed); and
+ *    the group transaction rescores the customer and every live branch,
+ *    writing only the scores that differ (lib/rescore.ts).
  *
  * The same paths against Postgres, and an archive racing the promote on two
  * connections, are in tests/integration/import-archived-parent.test.ts and
@@ -219,14 +220,17 @@ type StoredBranch = {
   customer: { nmwcCode: string };
   branchName: string;
   routeId: string;
+  regionId: string;
   address: string;
   dayOfVisit: string | null;
   status: string;
 };
 
 type SetupOptions = {
-  /** Stored branches by branchCode. */
+  /** Stored branches by branchCode, read back with only the keys each read selects. */
   branches?: Record<string, StoredBranch>;
+  /** Routes besides UNASSIGNED (rtU, in rgU), as the promote's reference read returns them. */
+  routes?: Array<{ id: string; code: string; regionId: string }>;
   /** What the rescore's read returns (lib/rescore.ts RESCORE_CUSTOMER_SELECT). */
   scored?: unknown[];
   channels?: Array<{ id: string; key: string }>;
@@ -297,8 +301,15 @@ function setup(
       updateMany: w('customer.updateMany', { count: 1 }),
     },
     branch: {
+      // Only the selected keys, as Prisma returns them: the full lane's owner
+      // read selects the region and the refresh lane's does not, and what each
+      // compares follows from that (post-merge review of phase 2, finding 6).
       findUnique: vi.fn(
-        async ({ where }: { where: { branchCode: string } }) => opts.branches?.[where.branchCode] ?? null
+        async ({ where, select }: { where: { branchCode: string }; select?: Record<string, unknown> }) => {
+          const b = opts.branches?.[where.branchCode];
+          if (!b) return null;
+          return select ? Object.fromEntries(Object.entries(b).filter(([k]) => k in select)) : b;
+        }
       ),
       count: vi.fn(async () => 0),
       upsert: w('branch.upsert'),
@@ -315,7 +326,9 @@ function setup(
       findFirst: vi.fn(async () => null),
     },
     region: { findMany: vi.fn(async () => [{ id: 'rgU', code: 'UNASSIGNED' }]) },
-    route: { findMany: vi.fn(async () => [{ id: 'rtU', code: 'UNASSIGNED', regionId: 'rgU' }]) },
+    route: {
+      findMany: vi.fn(async () => [{ id: 'rtU', code: 'UNASSIGNED', regionId: 'rgU' }, ...(opts.routes ?? [])]),
+    },
     channel: { findMany: vi.fn(async () => opts.channels ?? []) },
     importRow: {
       findMany: vi.fn(async () =>
@@ -594,6 +607,7 @@ const storedBranch = (over: Partial<StoredBranch> = {}): StoredBranch => ({
   // What parsed() gives, so a row of it changes nothing.
   branchName: 'New shop',
   routeId: 'rtU',
+  regionId: 'rgU',
   address: 'Way 9, Muscat',
   dayOfVisit: null,
   status: 'ACTIVE',
@@ -656,6 +670,49 @@ describe('promoteCustomerBatchAction — F21: an import writes a branch only whe
     expect(u.create).not.toHaveProperty('version');
     // The update half runs only when a concurrent insert beat the read: a change.
     expect(u.update.version).toEqual({ increment: 1 });
+  });
+
+  describe('a branch left in the old region of a route the account import moved (post-merge review, finding 6)', () => {
+    // The account import moved route R1 from region rgA to rgB and wrote the
+    // route alone: nothing fires on Route, so its branches still say rgA. Every
+    // cell of the row matches the stored branch.
+    const routes = [{ id: 'rt1', code: 'R1', regionId: 'rgB' }];
+    const onR1 = (regionId: string) => ({ 'ARC1-02': storedBranch({ routeId: 'rt1', regionId }) });
+
+    it('full lane: written into its route’s region, with version + 1, though no cell differs', async () => {
+      setup(live(), [parsed({ routeCode: 'R1' })], [], { routes, branches: onR1('rgA') });
+      const out = await promote();
+      expect(out).toMatchObject({ promoted: 1, failed: 0 });
+      const ups = branchUpserts();
+      expect(ups).toHaveLength(1);
+      expect(ups[0].where.branchCode).toBe('ARC1-02');
+      expect(ups[0].update).toMatchObject({ regionId: 'rgB', routeId: 'rt1', version: { increment: 1 } });
+      expect(ups[0].update.lastStatusChangeAt).toBeUndefined();
+    });
+
+    it('full lane: a branch already in its route’s region is not written', async () => {
+      setup(live(), [parsed({ routeCode: 'R1' })], [], { routes, branches: onR1('rgB') });
+      await promote();
+      expect(branchUpserts()).toEqual([]);
+    });
+
+    it('full lane: a blank route cell compares no region, as it writes none (item 20)', async () => {
+      setup(live(), [parsed()], [], { routes, branches: onR1('rgA') });
+      await promote();
+      expect(branchUpserts()).toEqual([]);
+    });
+
+    it('the refresh lane does not compare the region: a plain row writes nothing and names nothing', async () => {
+      setup(live({ temixCode: 'ARC1' }), [parsed({ routeCode: 'R1', temixCode: 'ARC1' })], [], {
+        routes,
+        branches: onR1('rgA'),
+      });
+      const out = await promote();
+      expect(out).toMatchObject({ promoted: 1, failed: 0 });
+      expect((tx.branch as Record<string, Fn>).update).not.toHaveBeenCalled();
+      expect(branchUpserts()).toEqual([]);
+      expect(notesWritten()).toEqual({});
+    });
   });
 
   it('a row fixed in the app: the branch it changes is updated with version + 1; one it does not change is left', async () => {

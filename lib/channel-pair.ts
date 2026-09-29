@@ -35,7 +35,8 @@ export type ChannelPairOptions = {
    * sub-channel that does not fit the new channel is cleared, and the caller
    * records that clear as a change of its own. false (approval): the submit
    * already recorded any clear, so a live sub-channel that does not fit is a
-   * failure.
+   * failure. A request stored before patch v2 recorded no clear, and fails
+   * here too; lib/edit-approval.ts channelPairInvalidMessage says why.
    */
   clearMisfitSubChannel: boolean;
 };
