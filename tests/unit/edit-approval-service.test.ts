@@ -184,7 +184,16 @@ const masterWrites = () =>
   tx.customer.update.mock.calls.length +
   tx.branch.updateMany.mock.calls.length +
   tx.branch.update.mock.calls.length;
-const order = (f: { mock: { invocationCallOrder: number[] } }) => f.mock.invocationCallOrder[0] ?? -1;
+/**
+ * When a mock was first called. A mock never called throws: with a -1 fallback,
+ * "the lock before the read" passed with the lock removed (phase-2 review,
+ * finding 16), so every order assertion here also proves the call happened.
+ */
+const order = (f: { mock: { invocationCallOrder: number[] } }) => {
+  const n = f.mock.invocationCallOrder[0];
+  if (n === undefined) throw new Error('order(): this mock was never called');
+  return n;
+};
 
 beforeEach(() => {
   h.rolledBack = false;
@@ -248,6 +257,11 @@ describe('F06 — STALE_BEFORE: a field changed since the request was sent refus
       request([{ field: 'customer.notes', before: 'Old note', after: 'Closed Fridays' }])
     );
     expect((await approve()).ok).toBe(true);
+    // The first raw statement is the customer's row lock (lib/locks.ts) — on
+    // this customer, not merely some statement that happened to run first.
+    const [sql, id] = tx.$queryRaw.mock.calls[0] as [TemplateStringsArray, string];
+    expect(sql.join('?')).toMatch(/FROM "Customer" WHERE "id" = \? FOR UPDATE/);
+    expect(id).toBe(CUST);
     expect(order(tx.$queryRaw)).toBeLessThan(order(tx.customer.findUnique));
     expect(order(tx.customer.findUnique)).toBeLessThan(order(tx.customer.updateMany));
     expect(tx.customer.updateMany.mock.calls[0]![0]).toMatchObject({
@@ -352,6 +366,53 @@ describe('F06 — STALE_BEFORE: a field changed since the request was sent refus
       ok: true,
       data: { successes: [], failures: [{ editId: 'e1', code: 'STALE_BEFORE' }] },
     });
+  });
+});
+
+describe('the point is one value at approval (phase-2 review, finding 2)', () => {
+  const at = '2026-09-28T08:00:00.000Z';
+  /** A typed latitude-only correction as the submit records it: the longitude beside it, unmoved. */
+  const latitudeOnly: Change[] = [
+    { field: `branch.${B1}.gpsLat`, before: 23.6, after: 23.7 },
+    { field: `branch.${B1}.gpsLng`, before: 58.4, after: 58.4 },
+    { field: `branch.${B1}.gpsAccuracy`, before: 8, after: null },
+    { field: `branch.${B1}.gpsCapturedAt`, before: '2026-09-20T08:00:00.000Z', after: at },
+  ];
+
+  it('the ordinary one-coordinate correction approves, and the whole point is written with its capture time', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(request(latitudeOnly));
+    expect((await approve()).ok).toBe(true);
+    expect(tx.branch.updateMany).toHaveBeenCalledTimes(1);
+    expect(tx.branch.updateMany.mock.calls[0]![0].data).toMatchObject({
+      gpsLat: 23.7,
+      gpsLng: 58.4,
+      gpsAccuracy: null,
+      gpsCapturedAt: at,
+    });
+  });
+
+  it('a direct write that corrected the other coordinate while it was pending: STALE_BEFORE, never a mixed point', async () => {
+    // A Steward's longitude-only correction passed its open-request check just
+    // before this request was inserted, and committed after it.
+    db.customerEdit.findUnique.mockResolvedValue(request(latitudeOnly));
+    now = customerRow({}, [branchRow({ gpsLng: 58.5, gpsAccuracy: 5 }), foreignBranch()]);
+    const res = failed(await approve());
+    expect(res).toMatchObject({ code: 'STALE_BEFORE', message: staleBeforeMessage(['Location']) });
+    expect(h.rolledBack).toBe(true);
+    expect(masterWrites()).toBe(0);
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+    // The approval page warns about the same row before anyone clicks (ruling 8).
+    const page = {
+      customer: { findUnique: vi.fn(async () => now) },
+      user: { findUnique: vi.fn(async () => ({ role: 'SALESMAN' })) },
+    };
+    expect(
+      await staleLabelsForPendingEdit(page as unknown as PrismaClient, {
+        customerId: CUST,
+        submittedById: SALES,
+        fieldChanges: latitudeOnly,
+      })
+    ).toEqual(['Location']);
   });
 });
 

@@ -34,6 +34,7 @@ import { resolveExportScope, scopedBranchWhere } from './export-scope';
 import { ForbiddenError } from './errors';
 import { logger } from './logger';
 import { mapPinHref } from './contact-links';
+import { isUnmovedCoordinate } from './edit-values';
 import { keysetPages } from './keyset';
 
 export type ChangeReportFilters = {
@@ -438,6 +439,9 @@ export async function buildChangeReport(
     }
     const cust = customerNameById.get(e.customerId!) ?? { code: '', name: '' };
     for (const c of changes) {
+      // A point change records its unmoved coordinate too, so the point is
+      // judged whole (lib/edit-values.ts); it changed nothing, so it is no row.
+      if (isUnmovedCoordinate(c)) continue;
       let col: string | undefined;
       let branchCode = '';
       let fieldLabel = c.field;

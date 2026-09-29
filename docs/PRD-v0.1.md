@@ -351,7 +351,7 @@ Each item has a clear primary action ("Review", "Fix", "Approve") and a one-line
 | `decision_reason` | text | required if rejecting; 5–1000 chars | server |
 
 ### 8.1 Cross-field rules
-- Submission to "complete" requires every field marked **mandatory** in §5.2 to be filled. For a salesman's edit, the branch fields are checked on the branches of his own route only — the ones his page shows — and that set is stored on the request, so its approval re-checks the same branches (F05, 2026-09-29).
+- Submission to "complete" requires every field marked **mandatory** in §5.2 to be filled. For a salesman's edit, the branch fields are checked on the branches of his own route only — the branches on his route at submit (the same rule his page uses; a branch added to his route after the page loaded is included, and its error asks him to reload) — and that set is stored on the request, so its approval re-checks the same branches (F05, 2026-09-29).
 - An edit sends only the fields that were changed, each with the value the form loaded; a field left out keeps its value. A field whose value changed after the form was opened is refused at submit (the form offers "Keep mine" or "Use this value"), and a field that changed after the request was sent refuses its approval, which the approver then rejects (F06, 2026-09-29).
 - Status = CLOSED → at least one photo with kind ∈ {SHOP, SIGNBOARD, FREE} captured within the last 7 days.
 - Phone uniqueness: hard-blocked across different *parent customers*; allowed across branches of the same parent. Enforced by partial unique constraint and pre-save check.

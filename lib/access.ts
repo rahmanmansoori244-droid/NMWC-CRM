@@ -109,8 +109,12 @@ export function canSeeCustomer(
  * before rendering or shipping branches to the client.
  *
  * F05: a salesman's branches are lib/edit-scope.ts salesmanBranches — the same
- * function his edit submit is gated on, so the branches his page shows and the
- * branches the server checks cannot disagree.
+ * rule his edit submit is gated on. The page applies it when it loads and the
+ * submit applies it again to his route as it is then, so the two sets can differ
+ * (ruling 11): a branch put on his route after the page loaded is gated too, and
+ * its error tells him to reload (lib/form-errors.ts
+ * withReloadHintForUnshownBranches); one taken off his route since stays on his
+ * page but is not gated.
  */
 export function filterBranchesByScope<B extends Pick<Branch, 'routeId' | 'regionId' | 'deletedAt'>>(
   user: SessionUser,

@@ -619,8 +619,13 @@ describe('ruling 7 — the capture time and accuracy travel with the point', () 
     const at = '2026-09-28T08:00:00.000Z';
     expect((await submit({ branches: [{ branchId: B1, gpsLat: 23.7, gpsLng: 58.4, gpsAccuracy: 4, gpsCapturedAt: at }] })).ok).toBe(true);
     const stored = storedChanges();
-    expect(stored.map((c) => c.field)).toEqual([`branch.${B1}.gpsLat`, `branch.${B1}.gpsAccuracy`, `branch.${B1}.gpsCapturedAt`]);
-    expect(stored[2]!.after).toEqual(new Date(at));
+    expect(stored.map((c) => c.field)).toEqual([
+      `branch.${B1}.gpsLat`,
+      `branch.${B1}.gpsLng`,
+      `branch.${B1}.gpsAccuracy`,
+      `branch.${B1}.gpsCapturedAt`,
+    ]);
+    expect(stored[3]!.after).toEqual(new Date(at));
   });
 
   it('the same point with a new capture time is no change at all', async () => {
@@ -628,5 +633,78 @@ describe('ruling 7 — the capture time and accuracy travel with the point', () 
       await submit({ branches: [{ branchId: B1, gpsLat: 23.6, gpsLng: 58.4, gpsAccuracy: 3, gpsCapturedAt: '2026-09-28T08:00:00.000Z' }] })
     );
     expect(res.fields).toEqual({ _form: 'No changes to submit.' });
+  });
+});
+
+describe('the point is one value (phase-2 review, finding 2)', () => {
+  const at = '2026-09-28T08:00:00.000Z';
+  const lat = `branch.${B1}.gpsLat`;
+  const lng = `branch.${B1}.gpsLng`;
+  /** The branch holds (23.6, 58.4); each of these corrects one coordinate of it. */
+  const fix = { branchId: B1, gpsAccuracy: 4, gpsCapturedAt: at };
+  const latitudeOnly = { ...fix, gpsLat: 23.7, gpsLng: 58.4 };
+  const longitudeOnly = { ...fix, gpsLat: 23.6, gpsLng: 58.5 };
+
+  it('a salesman’s one-coordinate correction records the whole point, so its approval can judge it whole', async () => {
+    expect((await submit({ branches: [latitudeOnly] })).ok).toBe(true);
+    expect(storedChanges().slice(0, 2)).toEqual([
+      { field: lat, before: 23.6, after: 23.7 },
+      { field: lng, before: 58.4, after: 58.4 },
+    ]);
+  });
+
+  it('the ordinary direct-write correction still lands: the whole point, with its accuracy and capture time', async () => {
+    asStaff('MANAGER');
+    const res = await submit({ branches: [latitudeOnly] });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(tx.branch.updateMany.mock.calls[0]![0].data).toMatchObject({
+      gpsLat: 23.7,
+      gpsLng: 58.4,
+      gpsAccuracy: 4,
+      gpsCapturedAt: new Date(at),
+    });
+    expect(tx.customerEdit.create.mock.calls[0]![0].data.fieldChanges).toEqual([
+      { field: lat, before: 23.6, after: 23.7 },
+      { field: lng, before: 58.4, after: 58.4 },
+      { field: `branch.${B1}.gpsAccuracy`, before: 8, after: 4 },
+      { field: `branch.${B1}.gpsCapturedAt`, before: CAPTURED, after: new Date(at) },
+    ]);
+  });
+
+  it('two direct writes on complementary coordinates: the second is STALE_FIELDS, never a point mixing the two', async () => {
+    asStaff('MANAGER');
+    // Another Manager's latitude-only correction commits between this write's
+    // read and its lock.
+    locked = customerRow({}, [branchRow({ gpsLat: 23.7, gpsAccuracy: 3 })]);
+    const res = failed(await submit({ branches: [longitudeOnly] }));
+    expect(res).toMatchObject({
+      code: 'STALE_FIELDS',
+      fields: { [`branch.${B1}.gps`]: STALE_LOCATION_MESSAGE },
+      current: { [lat]: 23.7, [lng]: 58.4, [`branch.${B1}.gpsAccuracy`]: 3 },
+    });
+    expect(h.rolledBack).toBe(true);
+    nothingWritten();
+  });
+
+  it('an approval of the other coordinate landing between a direct write’s read and its lock: STALE_FIELDS too', async () => {
+    asStaff('STEWARD');
+    // A salesman's approved longitude-only correction, with its own capture time.
+    const approved = { gpsLng: 58.5, gpsAccuracy: null, gpsCapturedAt: new Date(at) };
+    locked = customerRow({}, [branchRow(approved)]);
+    const res = failed(await submit({ branches: [latitudeOnly] }));
+    expect(res).toMatchObject({ code: 'STALE_FIELDS', current: { [lat]: 23.6, [lng]: 58.5 } });
+    expect(h.rolledBack).toBe(true);
+    nothingWritten();
+  });
+
+  it('at submit, the other coordinate already moved is STALE_FIELDS on the location, as before', async () => {
+    const b = await body({ branches: [latitudeOnly] }); // loaded (23.6, 58.4)
+    live = customerRow({}, [branchRow({ gpsLng: 58.5 })]);
+    const res = failed(await submitEditAction(b));
+    expect(res).toMatchObject({
+      code: 'STALE_FIELDS',
+      fields: { [`branch.${B1}.gps`]: STALE_LOCATION_MESSAGE },
+    });
+    nothingWritten();
   });
 });

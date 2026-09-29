@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ count: vi.fn(), findMany: vi.fn() }));
+const h = vi.hoisted(() => ({ count: vi.fn(), findMany: vi.fn(), edits: [] as unknown[] }));
 // lib/export-scope imports the session helper; the report is called with its user.
 vi.mock('@/lib/auth', () => ({ auth: async () => null }));
 vi.mock('@/lib/db', () => ({
@@ -19,7 +19,7 @@ vi.mock('@/lib/db', () => ({
     subChannel: { findMany: async () => [] },
     user: { findMany: async () => [] },
     attachment: { findMany: async () => [] },
-    customerEdit: { findMany: async () => [] },
+    customerEdit: { findMany: async () => h.edits },
   },
 }));
 
@@ -88,52 +88,52 @@ describe('buildChangeReport — ceiling', () => {
   });
 });
 
-describe('buildChangeReport — reads a page at a time', () => {
-  /** A branch as the report's page query returns it (customer, region, route included). */
-  const reportBranch = (branchCode: string, route: string) => ({
-    id: `b-${branchCode}`,
-    customerId: `c-${branchCode}`,
-    branchCode,
-    branchName: `Branch ${branchCode}`,
-    routeId: `r-${route}`,
-    address: 'Way 1',
-    areaDescription: null,
-    gpsLat: null,
-    gpsLng: null,
-    gpsAccuracy: null,
-    gpsCapturedAt: null,
-    dayOfVisit: 'SUN',
-    openingHours: null,
-    deliveryWindow: null,
-    coolersCount: 0,
-    standsCount: 0,
-    emptyBottlesCount: 0,
+/** A branch as the report's page query returns it (customer, region, route included). */
+const reportBranch = (branchCode: string, route: string) => ({
+  id: `b-${branchCode}`,
+  customerId: `c-${branchCode}`,
+  branchCode,
+  branchName: `Branch ${branchCode}`,
+  routeId: `r-${route}`,
+  address: 'Way 1',
+  areaDescription: null,
+  gpsLat: null,
+  gpsLng: null,
+  gpsAccuracy: null,
+  gpsCapturedAt: null,
+  dayOfVisit: 'SUN',
+  openingHours: null,
+  deliveryWindow: null,
+  coolersCount: 0,
+  standsCount: 0,
+  emptyBottlesCount: 0,
+  status: 'ACTIVE',
+  shopPhotoId: null,
+  signboardPhotoId: null,
+  shopPhoto: null,
+  signboardPhoto: null,
+  region: { name: 'Muscat', code: 'MCT' },
+  route: { id: `r-${route}`, code: route },
+  customer: {
+    nmwcCode: `C-${branchCode}`,
+    legalName: 'Shop',
+    paymentTerms: 'CASH',
     status: 'ACTIVE',
-    shopPhotoId: null,
-    signboardPhotoId: null,
-    shopPhoto: null,
-    signboardPhoto: null,
-    region: { name: 'Muscat', code: 'MCT' },
-    route: { id: `r-${route}`, code: route },
-    customer: {
-      nmwcCode: `C-${branchCode}`,
-      legalName: 'Shop',
-      paymentTerms: 'CASH',
-      status: 'ACTIVE',
-      channel: null,
-      subChannel: null,
-      primaryPhone: null,
-      altPhone: null,
-      contactPerson: null,
-      contactRole: null,
-      crNumber: null,
-      crPhotoId: null,
-      crPhoto: null,
-      notes: null,
-      completenessScore: 50,
-    },
-  });
+    channel: null,
+    subChannel: null,
+    primaryPhone: null,
+    altPhone: null,
+    contactPerson: null,
+    contactRole: null,
+    crNumber: null,
+    crPhotoId: null,
+    crPhoto: null,
+    notes: null,
+    completenessScore: 50,
+  },
+});
 
+describe('buildChangeReport — reads a page at a time', () => {
   it('pages by branch code with the scope on every page, then orders by route', async () => {
     // Codes interleave the routes, as customer numbers do.
     const table = [
@@ -179,5 +179,41 @@ describe('buildChangeReport — reads a page at a time', () => {
       'C5 0001-01',
       'C5 0003-01',
     ]);
+  });
+});
+
+describe('buildChangeReport — a point change (phase-2 review, finding 2)', () => {
+  it('the unmoved coordinate recorded beside the moved one is no row and no field changed', async () => {
+    const branch = { ...reportBranch('0001-01', 'C5'), gpsLat: 23.7, gpsLng: 58.4 };
+    h.findMany.mockReset().mockResolvedValueOnce([branch]).mockResolvedValue([]);
+    h.count.mockResolvedValueOnce(1);
+    const at = new Date('2026-09-28T08:00:00.000Z');
+    h.edits = [
+      {
+        id: 'e1',
+        customerId: branch.customerId,
+        state: 'APPROVED',
+        fieldChanges: [
+          { field: `branch.${branch.id}.gpsLat`, before: 23.6, after: 23.7 },
+          { field: `branch.${branch.id}.gpsLng`, before: 58.4, after: 58.4 },
+        ],
+        submittedAt: at,
+        reviewedAt: at,
+        submittedBy: { id: 'u1', username: 'salesman.one', fullName: 'Salesman One' },
+        reviewedBy: { username: 'sup.one', fullName: 'Supervisor One' },
+      },
+    ];
+    try {
+      const out = await buildChangeReport(steward, {});
+      const sheets = await parseWorkbook(out.bytes);
+      const changes = sheets.find((s) => s.name === 'Changes')!;
+      expect(changes.rows.map((r) => r.field)).toEqual(['gps_lat']);
+      const bySalesman = sheets.find((s) => s.name === 'By salesman')!;
+      expect(bySalesman.rows).toHaveLength(1);
+      expect(Number(bySalesman.rows[0]!.fields_changed)).toBe(1);
+      expect(Number(bySalesman.rows[0]!.gps_captured)).toBe(1);
+    } finally {
+      h.edits = [];
+    }
   });
 });

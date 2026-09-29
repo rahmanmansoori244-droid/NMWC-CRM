@@ -97,7 +97,11 @@ export const CLEARABLE_BRANCH_FIELDS: ReadonlySet<BranchEditField> = new Set<Bra
   'gpsAccuracy',
 ]);
 
-/** The point itself. Sent together or not at all. */
+/**
+ * The point itself. Sent together or not at all, and one value everywhere after
+ * that: judged as a pair (classifyPointAgainstLive), and recorded and written as
+ * a pair — so no path can store a point that mixes two writers' coordinates.
+ */
 export const GPS_POINT_FIELDS: ReadonlySet<BranchEditField> = new Set<BranchEditField>([
   'gpsLat',
   'gpsLng',
@@ -268,6 +272,53 @@ export function classifyAgainstLive(
   return 'STALE';
 }
 
+/** A branch's location as one value: its two coordinates. */
+export type GpsPoint = { readonly gpsLat: unknown; readonly gpsLng: unknown };
+
+const samePoint = (a: GpsPoint, b: GpsPoint) =>
+  sameEditValue('gpsLat', a.gpsLat, b.gpsLat) && sameEditValue('gpsLng', a.gpsLng, b.gpsLng);
+
+/**
+ * classifyAgainstLive for the point, which is ONE value. Judged a coordinate at
+ * a time (phase-2 review, finding 2), a correction of only the longitude and
+ * another writer's correction of only the latitude each found "their" coordinate
+ * untouched, and both landed: a point neither of them entered, with one writer's
+ * capture time and accuracy beside it. As a pair:
+ *   - the live point already is the new one               → CONVERGED;
+ *   - the live point is still the one it was made against → CHANGE;
+ *   - anything else: the point moved since                → STALE.
+ */
+export function classifyPointAgainstLive(
+  expected: GpsPoint,
+  target: GpsPoint,
+  live: GpsPoint
+): LiveVerdict {
+  if (samePoint(target, live)) return 'CONVERGED';
+  if (samePoint(expected, live)) return 'CHANGE';
+  return 'STALE';
+}
+
+/**
+ * A coordinate recorded at the value it already had: the partner of the one that
+ * moved, which a point change records so the point is judged and written whole.
+ * It changes nothing, so a list of changes — the approval page's rows, the
+ * change report, a request's change count — leaves it out. Takes a stored path
+ * (`branch.<id>.gpsLng`) or a bare field name. A proposed coordinate is always a
+ * number (lib/validation/edit.ts), so an entry without one is not such a partner.
+ */
+export function isUnmovedCoordinate(c: {
+  field: string;
+  before?: unknown;
+  after?: unknown;
+}): boolean {
+  const f = lastSegment(c.field);
+  return (
+    GPS_POINT_FIELDS.has(f as BranchEditField) &&
+    typeof c.after === 'number' &&
+    sameEditValue(f, c.before, c.after)
+  );
+}
+
 const GPS_SLOT_FIELDS = new Set([
   'gpsLat',
   'gpsLng',
@@ -373,8 +424,15 @@ export type ClassifiedChanges<C extends Change> = {
  * drops (the branch is reported once); an entry that names no edit field is
  * ignored, as the apply step always ignored it.
  *
+ * The point is one value (classifyPointAgainstLive): a branch's gpsLat and gpsLng
+ * entries share one verdict, so both are applied, both left out, or both STALE —
+ * a point is never half this request's and half another writer's. A coordinate
+ * the request did not record stands at its live value: it neither moves nor is
+ * checked. (Only a request sent before patch v2 records one coordinate alone;
+ * the submit records both whenever the point moves.)
+ *
  * GPS companions follow the point (ruling 7): gpsAccuracy and gpsCapturedAt are
- * applied only when that branch's gpsLat or gpsLng is applied, and are otherwise
+ * applied only when that branch's point is applied, and are otherwise
  * CONVERGED. A point another writer set is never given this request's accuracy
  * and capture time.
  */
@@ -384,12 +442,18 @@ export function classifyChanges<C extends Change>(
 ): ClassifiedChanges<C> {
   type Decided =
     | { c: C; kind: 'skip' }
-    | { c: C; kind: 'companion'; branchId: string; liveValue: unknown }
+    | { c: C; kind: 'point' | 'companion'; branchId: string; liveValue: unknown }
     | { c: C; kind: LiveVerdict; liveValue: unknown };
+  type RecordedPoint = {
+    branch: Readonly<Record<string, unknown>>;
+    gpsLat?: C;
+    gpsLng?: C;
+  };
   const dropped = new Set<string>();
-  const pointApplied = new Set<string>();
+  const points = new Map<string, RecordedPoint>();
 
-  // First pass: every entry but the companions, which wait for their point.
+  // First pass: every entry but the point and its companions, which are
+  // decided per branch once all of the request's coordinates are known.
   const decided = changes.map((c): Decided => {
     const p = parseFieldPath(c.field);
     if (!p) return { c, kind: 'skip' };
@@ -403,12 +467,38 @@ export function classifyChanges<C extends Change>(
       return { c, kind: 'skip' };
     }
     const liveValue = branch[p.field];
+    if (p.field === 'gpsLat' || p.field === 'gpsLng') {
+      const recorded = points.get(p.branchId) ?? { branch };
+      recorded[p.field] = c;
+      points.set(p.branchId, recorded);
+      return { c, kind: 'point', branchId: p.branchId, liveValue };
+    }
     if (GPS_COMPANIONS.has(p.field))
       return { c, kind: 'companion', branchId: p.branchId, liveValue };
-    const kind = classifyAgainstLive(c.field, c.before, c.after, liveValue);
-    if (kind === 'CHANGE' && GPS_POINT_FIELDS.has(p.field)) pointApplied.add(p.branchId);
-    return { c, kind, liveValue };
+    return { c, kind: classifyAgainstLive(c.field, c.before, c.after, liveValue), liveValue };
   });
+
+  // Each branch's point, as one value.
+  const pointVerdict = new Map<string, LiveVerdict>();
+  for (const [branchId, { branch, gpsLat, gpsLng }] of points) {
+    const side = (key: 'before' | 'after'): GpsPoint => ({
+      gpsLat: gpsLat ? gpsLat[key] : branch.gpsLat,
+      gpsLng: gpsLng ? gpsLng[key] : branch.gpsLng,
+    });
+    const livePoint = { gpsLat: branch.gpsLat, gpsLng: branch.gpsLng };
+    pointVerdict.set(branchId, classifyPointAgainstLive(side('before'), side('after'), livePoint));
+  }
+
+  const verdictOf = (d: Exclude<Decided, { kind: 'skip' }>): LiveVerdict => {
+    if (d.kind === 'point') return pointVerdict.get(d.branchId) ?? 'CONVERGED';
+    if (d.kind === 'companion') {
+      const pointApplied = pointVerdict.get(d.branchId) === 'CHANGE';
+      return pointApplied && !sameEditValue(d.c.field, d.c.after, d.liveValue)
+        ? 'CHANGE'
+        : 'CONVERGED';
+    }
+    return d.kind;
+  };
 
   // Second pass, in the request's own order.
   const apply: C[] = [];
@@ -416,12 +506,7 @@ export function classifyChanges<C extends Change>(
   const stale: Array<{ field: string; live: BaseValue }> = [];
   for (const d of decided) {
     if (d.kind === 'skip') continue;
-    const verdict: LiveVerdict =
-      d.kind !== 'companion'
-        ? d.kind
-        : pointApplied.has(d.branchId) && !sameEditValue(d.c.field, d.c.after, d.liveValue)
-          ? 'CHANGE'
-          : 'CONVERGED';
+    const verdict = verdictOf(d);
     if (verdict === 'CHANGE') apply.push(d.c);
     else if (verdict === 'CONVERGED') converged.push(d.c.field);
     else stale.push({ field: d.c.field, live: toBaseValue(d.liveValue) });

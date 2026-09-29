@@ -8,6 +8,7 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { isFinalStep, parseChain, resolveRejectTarget } from '@/lib/approval-chains';
 import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
 import { sentByPreviousForm, staleLabelsForPendingEdit } from '@/lib/edit-approval';
+import { isUnmovedCoordinate } from '@/lib/edit-values';
 import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-manual';
 import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
 import { AlertTriangle } from 'lucide-react';
@@ -504,13 +505,16 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           [...branchChangesByBranch.entries()].map(([branchId, list]) => {
             const b = branchMap.get(branchId);
             const gps = proposedGps(list);
+            // The point is recorded whole; the coordinate that did not move is
+            // no row of its own, though `gps` above still reads it for the map link.
+            const rows = list.filter((c) => !isUnmovedCoordinate(c));
             const manualReason = manualGpsReasonForBranch(edit.fieldChanges, branchId);
             return (
               <DiffSection
                 key={branchId}
                 title={`Branch: ${b?.branchName ?? branchId} (${b?.route.code ?? ''})`}
               >
-                {list.map((c) => (
+                {rows.map((c) => (
                   <DiffRow
                     key={c.field}
                     label={c.field}

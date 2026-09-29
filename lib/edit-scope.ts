@@ -10,9 +10,11 @@
  * could ever submit until both had finished, and the approval re-check had the
  * same blind spot.
  *
- * Now the submit gates the branches on the salesman's own route — salesmanBranches,
- * the same function that decides what his page shows — and freezes their ids on
- * the request (CustomerEdit.submitGate = { v: 1, branchIds }). The approval
+ * Now the submit gates the branches on the salesman's own route as it is at
+ * submit — salesmanBranches, the same function that decided what his page shows,
+ * applied again, so a branch put on his route after the page loaded is gated too
+ * (ruling 11) — and freezes their ids on the request
+ * (CustomerEdit.submitGate = { v: 1, branchIds }). The approval
  * re-checks exactly that set under the gate rule in force at approval
  * (lib/submit-gate.ts, unchanged), so a route handover, or a branch created or
  * imported after submit, cannot change the answer. The branch ids come from the
@@ -29,8 +31,13 @@ import type { FieldChange } from './gps-manual';
 
 /**
  * The branches a SALESMAN works: the live ones on his route. What his edit page
- * shows him, what he may write, and what his submit is gated on are all this.
- * No route, no branches. Callers pass live branches (deletedAt null) only.
+ * shows him, what he may write, and what his submit is gated on all follow this
+ * rule — applied when the page loads and again, to his route as it is then, at
+ * submit. So the page's set and the gated set can differ (ruling 11): a branch
+ * put on his route after the page loaded is gated, and its error tells him to
+ * reload (lib/form-errors.ts withReloadHintForUnshownBranches); one taken off his
+ * route since is shown but not gated. No route, no branches. Callers pass live
+ * branches (deletedAt null) only.
  */
 export function salesmanBranches<B extends { routeId: string }>(
   liveBranches: readonly B[],

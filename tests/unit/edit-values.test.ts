@@ -26,8 +26,10 @@ import {
   STALE_LOCATION_MESSAGE,
   classifyAgainstLive,
   classifyChanges,
+  classifyPointAgainstLive,
   fieldLabel,
   fieldSlotKey,
+  isUnmovedCoordinate,
   liveSnapshotOf,
   parseFieldPath,
   sameEditValue,
@@ -313,14 +315,16 @@ describe('classifyChanges', () => {
       ]);
     });
 
-    it('one coordinate moving is enough to carry them', () => {
+    it('one coordinate moving is enough to carry them — and the point is written whole', () => {
+      // The submit records the unmoved longitude beside the moved latitude.
       const r = classifyChanges(point(23.6, 58.4), live());
       expect(r.apply.map((c) => c.field.split('.')[2])).toEqual([
         'gpsLat',
+        'gpsLng',
         'gpsAccuracy',
         'gpsCapturedAt',
       ]);
-      expect(r.converged).toEqual([`branch.${B1}.gpsLng`]);
+      expect(r.converged).toEqual([]);
     });
 
     it('when the point already is the new one, they are not written beside it', () => {
@@ -353,6 +357,82 @@ describe('classifyChanges', () => {
       changes[2] = ch(`branch.${B1}.gpsAccuracy`, 12, 12);
       const r = classifyChanges(changes, live());
       expect(r.converged).toEqual([`branch.${B1}.gpsAccuracy`]);
+    });
+  });
+
+  describe('the point is one value (phase-2 review, finding 2)', () => {
+    const lat = `branch.${B1}.gpsLat`;
+    const lng = `branch.${B1}.gpsLng`;
+    const acc = `branch.${B1}.gpsAccuracy`;
+    const cap = `branch.${B1}.gpsCapturedAt`;
+    /** A latitude-only correction as the submit records it: the longitude beside it, unmoved. */
+    const latitudeOnly = () => [
+      ch(lat, 23.5, 23.6),
+      ch(lng, 58.4, 58.4),
+      ch(acc, 12, null),
+      ch(cap, '2026-09-20T08:00:00.000Z', '2026-09-28T09:00:00.000Z'),
+    ];
+    const moved = (over: Record<string, unknown>) => {
+      const snap = live();
+      Object.assign(snap.branches.get(B1) as Record<string, unknown>, over);
+      return snap;
+    };
+
+    it('another writer’s longitude-only correction since makes it STALE — never a point mixing the two', () => {
+      const r = classifyChanges(latitudeOnly(), moved({ gpsLng: 58.5, gpsAccuracy: 5 }));
+      expect(r.stale).toEqual([
+        { field: lat, live: 23.5 },
+        { field: lng, live: 58.5 },
+      ]);
+      expect(r.apply).toEqual([]);
+      expect(r.converged).toEqual([acc, cap]);
+    });
+
+    it('a point another writer moved only partly toward this one is STALE, not half-converged', () => {
+      // Both coordinates moved in the request; another writer has since set the
+      // same latitude but not the same longitude.
+      const r = classifyChanges(
+        [ch(lat, 23.5, 23.6), ch(lng, 58.4, 58.5)],
+        moved({ gpsLat: 23.6 })
+      );
+      expect(r.stale.map((s) => s.field)).toEqual([lat, lng]);
+      expect(r.apply).toEqual([]);
+    });
+
+    it('the whole point already live is CONVERGED, companions and all', () => {
+      const r = classifyChanges(latitudeOnly(), moved({ gpsLat: 23.6 }));
+      expect(r.apply).toEqual([]);
+      expect(r.converged).toEqual([lat, lng, acc, cap]);
+      expect(r.stale).toEqual([]);
+    });
+
+    it('a request sent before patch v2, which recorded one coordinate alone, is judged on that one', () => {
+      // Nothing was recorded about the longitude, so nothing can be checked about it.
+      const r = classifyChanges([ch(lat, 23.5, 23.6)], moved({ gpsLng: 58.9 }));
+      expect(r.apply.map((c) => c.field)).toEqual([lat]);
+      expect(r.stale).toEqual([]);
+    });
+
+    it('classifyPointAgainstLive: the classifyAgainstLive rule, on the pair', () => {
+      const p = (gpsLat: unknown, gpsLng: unknown) => ({ gpsLat, gpsLng });
+      const was = p(23.5, 58.4);
+      expect(classifyPointAgainstLive(was, p(23.6, 58.4), p(23.6, 58.4))).toBe('CONVERGED');
+      expect(classifyPointAgainstLive(was, p(23.6, 58.4), p(23.5, 58.4))).toBe('CHANGE');
+      expect(classifyPointAgainstLive(was, p(23.6, 58.4), p(23.5, 58.5))).toBe('STALE');
+      expect(classifyPointAgainstLive(was, p(23.6, 58.5), p(23.6, 58.4))).toBe('STALE');
+      // A branch with no point yet: null on both sides is the same point.
+      expect(classifyPointAgainstLive(p(null, null), p(23.6, 58.4), p(null, null))).toBe('CHANGE');
+    });
+
+    it('isUnmovedCoordinate: only the partner coordinate at the value it had, by path or by name', () => {
+      expect(isUnmovedCoordinate(ch(lng, 58.4, 58.4))).toBe(true);
+      expect(isUnmovedCoordinate(ch('gpsLat', 23.5, 23.5))).toBe(true);
+      expect(isUnmovedCoordinate(ch(lat, 23.5, 23.6))).toBe(false);
+      expect(isUnmovedCoordinate(ch(acc, 12, 12))).toBe(false);
+      expect(isUnmovedCoordinate(ch('customer.notes', 'x', 'x'))).toBe(false);
+      // Not a coordinate a submit proposed: no number after it.
+      expect(isUnmovedCoordinate({ field: lat })).toBe(false);
+      expect(isUnmovedCoordinate(ch(lat, null, null))).toBe(false);
     });
   });
 

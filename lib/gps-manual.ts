@@ -25,6 +25,7 @@
  * never marked, so absence is not proof of a device fix.
  */
 import { z } from 'zod';
+import { isUnmovedCoordinate } from './edit-values';
 
 export const GPS_SOURCE_MANUAL = 'MANUAL' as const;
 const CREATE_MARKER = /^draft\.\d+\.gps$/;
@@ -148,7 +149,11 @@ export function hasManualGps(changes: unknown): boolean {
   return manualEntries(changes).length > 0;
 }
 
-/** Entries that are real field changes — what "N change(s)" should count. */
+/**
+ * Entries that are real field changes — what "N change(s)" should count. Not the
+ * unmoved partner coordinate a point change records so the point is judged whole
+ * (lib/edit-values.ts isUnmovedCoordinate): it changes nothing.
+ */
 export function countFieldChanges(changes: unknown): number {
   if (!Array.isArray(changes)) return 0;
   return changes.filter(
@@ -156,6 +161,7 @@ export function countFieldChanges(changes: unknown): number {
       typeof c === 'object' &&
       c !== null &&
       typeof (c as { field?: unknown }).field === 'string' &&
-      /^(customer|branch)\./.test((c as { field: string }).field)
+      /^(customer|branch)\./.test((c as { field: string }).field) &&
+      !isUnmovedCoordinate(c as { field: string; before?: unknown; after?: unknown })
   ).length;
 }

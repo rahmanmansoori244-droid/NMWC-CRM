@@ -68,11 +68,19 @@ export const STALE_FIELDS_MESSAGE =
  * Phase 2, F06: a customer edit named a field whose value changed after the
  * form was opened (services/edits.ts). Nothing was written. `fields` is keyed by
  * the form's slot (lib/edit-values.ts fieldSlotKey); `current` holds the value
- * live now for each such field, by its raw path ('customer.contactPerson',
- * 'branch.<id>.gpsLat'), so the form can offer "Keep mine" and "Use this value"
- * (ruling 1). Only fields the sender put in his own patch, on branches he may
- * edit, are ever in it. Worded neutrally (ruling 14): the earlier write may
- * have been his own.
+ * live now, by raw path ('customer.contactPerson', 'branch.<id>.gpsLat'), so the
+ * form can offer "Keep mine" and "Use this value" (ruling 1). It holds each
+ * conflicting field of the sender's own patch, with two additions he did not
+ * send himself:
+ *   - for a location or an equipment conflict, every column of that slot on the
+ *     same branch (lib/edit-values.ts slotFields), because "Use this value" takes
+ *     the group back as one — so a patch that changed only the coolers gets the
+ *     stands, the bottles and "Counted" back too;
+ *   - on a Steward's or Manager's direct write, the sub-channel the server clears
+ *     itself when a channel change leaves one of the old channel.
+ * All of it comes from the customer he may edit and from branches that passed
+ * the route and region checks before planning. Worded neutrally (ruling 14): the
+ * earlier write may have been his own.
  */
 export class StaleFieldsError extends AppError {
   readonly current: Record<string, LiveValue>;

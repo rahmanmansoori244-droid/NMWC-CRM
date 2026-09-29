@@ -36,6 +36,7 @@ import {
   branchPath,
   classifyAgainstLive,
   classifyChanges,
+  classifyPointAgainstLive,
   fieldSlotKey,
   liveSnapshotOf,
   parseFieldPath,
@@ -45,6 +46,7 @@ import {
   toBaseValue,
   type BaseValue,
   type BranchEditField,
+  type LiveVerdict,
 } from '@/lib/edit-values';
 import { gateBranchesForApproval, salesmanBranches, submitGateRecord } from '@/lib/edit-scope';
 import {
@@ -500,9 +502,10 @@ async function submitEditOnce(
     loaded: unknown,
     proposed: unknown,
     live: unknown,
-    keptMine: boolean
+    keptMine: boolean,
+    // A coordinate takes its point's verdict (classifyPointAgainstLive, below).
+    verdict: LiveVerdict = classifyAgainstLive(path, loaded, proposed, live)
   ): FieldChange | null => {
-    const verdict = classifyAgainstLive(path, loaded, proposed, live);
     if (verdict === 'CONVERGED') return null;
     if (verdict === 'STALE' && !isDraft) {
       stalePaths.push(path);
@@ -589,9 +592,33 @@ async function submitEditOnce(
     const kept = new Set<string>(bp.overrides ?? []);
     const branchChanges: FieldChange[] = [];
     for (const f of BRANCH_EDIT_FIELDS) {
-      if (GPS_COMPANIONS.has(f) || bpClean[f] === undefined) continue;
+      // The point and what describes it are planned below, as one.
+      if (GPS_POINT_FIELDS.has(f) || GPS_COMPANIONS.has(f) || bpClean[f] === undefined) continue;
       const c = plan(branchPath(branch.id, f), loaded[f], bpClean[f], live[f], kept.has(f));
       if (c) branchChanges.push(c);
+    }
+    // The point is one value (phase-2 review, finding 2). Judged a coordinate at
+    // a time, a correction of only the longitude and another writer's correction
+    // of only the latitude could both land — a point neither of them entered. So
+    // the pair is judged together, and when it moves BOTH coordinates are
+    // recorded, the unmoved one at the value it has: the approval and the direct
+    // write's re-check under the lock then judge the whole point
+    // (lib/edit-values.ts classifyChanges). The schema sends the two together; a
+    // coordinate not sent would stand at its live value.
+    if ([...GPS_POINT_FIELDS].some((f) => bpClean[f] !== undefined)) {
+      const coordinate = (f: BranchEditField, from: Record<string, unknown>) =>
+        bpClean[f] === undefined ? live[f] : from[f];
+      const pointVerdict = classifyPointAgainstLive(
+        { gpsLat: coordinate('gpsLat', loaded), gpsLng: coordinate('gpsLng', loaded) },
+        { gpsLat: coordinate('gpsLat', bpClean), gpsLng: coordinate('gpsLng', bpClean) },
+        { gpsLat: live.gpsLat, gpsLng: live.gpsLng }
+      );
+      for (const f of GPS_POINT_FIELDS) {
+        const path = branchPath(branch.id, f);
+        const proposed = coordinate(f, bpClean);
+        const c = plan(path, coordinate(f, loaded), proposed, live[f], kept.has(f), pointVerdict);
+        if (c) branchChanges.push(c);
+      }
     }
     const planned = (f: BranchEditField) =>
       branchChanges.some((c) => c.field === branchPath(branch.id, f));
@@ -665,11 +692,15 @@ async function submitEditOnce(
   // save partial work as a DRAFT (isDraft=true) and come back to it. Stewards
   // and Managers (direct-write) bypass this — they may legitimately patch a
   // single field on an incomplete legacy record.
-  // F05: on the salesman's own branches only — the ones his page shows him,
-  // read here and never taken from the payload — and that set is frozen on the
-  // request (CustomerEdit.submitGate) for the approval's re-check. A branch put
-  // on his route after his page loaded is gated too; its error has no slot on
-  // that page and shows at the top.
+  // F05: on the salesman's own branches only — the live branches on his route
+  // as read here, never taken from the payload — and that set is frozen on the
+  // request (CustomerEdit.submitGate) for the approval's re-check. It is the
+  // rule his page applied when it loaded (salesmanBranches), applied again now,
+  // so the two sets can differ (ruling 11): a branch put on his route after his
+  // page loaded is gated too, and its error has no slot on that page, shows at
+  // the top and tells him to reload (lib/form-errors.ts
+  // withReloadHintForUnshownBranches); one taken off his route since is shown
+  // but not gated.
   let submitGate: Prisma.InputJsonValue | undefined;
   if (!isDraft && me.role === Role.SALESMAN) {
     const gateBranches = salesmanBranches(customer.branches, me.ownedRouteId);

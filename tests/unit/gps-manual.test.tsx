@@ -247,6 +247,15 @@ describe('41 — the marker', () => {
     expect(countFieldChanges(junk)).toBe(1);
     expect(countFieldChanges(undefined)).toBe(0);
   });
+
+  it('the unmoved coordinate a point change records beside the moved one is not a change (finding 2)', () => {
+    const list: FieldChange[] = [
+      { field: 'branch.b1.gpsLat', before: 23.5, after: 23.6 },
+      { field: 'branch.b1.gpsLng', before: 58.4, after: 58.4 },
+      { field: 'branch.b1.gpsAccuracy', before: 8, after: null },
+    ];
+    expect(countFieldChanges(list)).toBe(2);
+  });
 });
 
 describe('41 — the approval queue flags it before a bulk approve', () => {

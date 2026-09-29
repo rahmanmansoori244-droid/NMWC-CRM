@@ -1,7 +1,8 @@
 -- Auditor recheck 2026-09-27, phase 2.
 --
--- F05: which of a salesman's branches his UPDATE submit was gated on - the ones
--- on his route, which are the ones his edit page showed him. JSON:
+-- F05: which of a salesman's branches his UPDATE submit was gated on - the live
+-- branches on his route when he submitted, which can include one added after his
+-- edit page loaded. JSON:
 -- {"v":1,"branchIds":["..."]} (lib/edit-scope.ts). Only the branch SET is
 -- frozen, not the rule: the approval re-checks the mandatory fields on exactly
 -- these branches under the gate in force at approval (SALESMAN_SUBMIT_GATE, as

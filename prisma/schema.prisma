@@ -435,7 +435,8 @@ model CustomerEdit {
   submissionId      String?
 
   // F05: which of the submitter's branches a SALESMAN's UPDATE submit was gated
-  // on — the ones his edit page showed him — as {"v":1,"branchIds":[...]}
+  // on — the live branches on his route when he submitted, which can include one
+  // added after his edit page loaded — as {"v":1,"branchIds":[...]}
   // (lib/edit-scope.ts). The approval re-checks the mandatory fields on exactly
   // that set, so a route handover or a branch imported after submit cannot
   // change the answer. Written once, on his SUBMITTED row; null for drafts,

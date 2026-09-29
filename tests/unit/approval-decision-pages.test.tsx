@@ -405,6 +405,22 @@ describe('the review page of a customer update — phase 2 (F06, F20, F21, rulin
     expect(within(row('contactPerson')).getByText('Replaces a value changed after the form was opened.')).toBeTruthy();
     expect(screen.getAllByText('Replaces a value changed after the form was opened.')).toHaveLength(1);
   });
+
+  it('finding 2: the unmoved coordinate a point change records is no row, but still places the map link', async () => {
+    const b1 = { id: 'b1', status: 'ACTIVE', gpsLat: 23.6, gpsLng: 58.4 };
+    h.live = liveCustomer({ branches: [b1] });
+    await renderDetail(
+      update({
+        fieldChanges: [
+          { field: 'branch.b1.gpsLat', before: 23.6, after: 23.7 },
+          { field: 'branch.b1.gpsLng', before: 58.4, after: 58.4 },
+        ],
+      })
+    );
+    expect(screen.getByText('gpsLat', { selector: 'div' })).toBeTruthy();
+    expect(screen.queryByText('gpsLng', { selector: 'div' })).toBeNull();
+    expect(screen.getByText('View proposed location on map')).toBeTruthy();
+  });
 });
 
 describe('the approval queue', () => {
