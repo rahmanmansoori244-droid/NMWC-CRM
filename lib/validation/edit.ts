@@ -64,6 +64,18 @@ export const EQUIPMENT_UNCONFIRM_MESSAGE =
 
 const CAPTURED_AT_MESSAGE = 'Send the time the location was captured.';
 
+/**
+ * Adversarial pass after phase 2, finding 4: `branches` had no bound, so one
+ * body could carry thousands of branch patches, each with its text fields run
+ * through the HTML strip. The form sends only the branches with a touched
+ * field, production's largest customer has 138 live branches, and CREATE takes
+ * at most 10. zod 3 still parses every element of an array longer than its
+ * .max(), so the cost of the parse itself is bounded by the request body and
+ * by stripHtml being linear (lib/validation/fields.ts), not by this.
+ */
+export const MAX_BRANCHES_PER_EDIT = 500;
+export const TOO_MANY_BRANCHES_MESSAGE = `One submit can change at most ${MAX_BRANCHES_PER_EDIT} branches.`;
+
 /** A required cuid (channel): null or '' is an attempt to remove it. */
 const requiredId = (clearMsg: string) =>
   z.string({ invalid_type_error: clearMsg, required_error: clearMsg }).min(1, clearMsg).cuid();
@@ -248,7 +260,7 @@ export const submitEditSchema = z
     /** Ruling 1: as a branch's `overrides`, for the customer's own fields. */
     customerOverrides: z.array(z.enum(CUSTOMER_EDIT_FIELDS)).max(CUSTOMER_EDIT_FIELDS.length).optional(),
     /** Only branches with at least one touched field. */
-    branches: z.array(branchPatchSchema),
+    branches: z.array(branchPatchSchema).max(MAX_BRANCHES_PER_EDIT, TOO_MANY_BRANCHES_MESSAGE),
   })
   .strict()
   .superRefine((input, ctx) => {

@@ -17,6 +17,8 @@ import {
   GPS_COMPANIONS_NEED_POINT_MESSAGE,
   GPS_PAIR_MESSAGE,
   GPS_POINT_NEEDS_COMPANIONS_MESSAGE,
+  MAX_BRANCHES_PER_EDIT,
+  TOO_MANY_BRANCHES_MESSAGE,
   branchPatchSchema,
   customerPatchSchema,
   isCurrentEditPayload,
@@ -31,6 +33,7 @@ import {
   CUSTOMER_EDIT_FIELDS,
 } from '@/lib/edit-values';
 import { INVALID_PHONE_MESSAGE } from '@/lib/phone';
+import { enrichmentFormRendersError, surfaceUnrenderedErrors } from '@/lib/form-errors';
 
 const CUSTOMER_ID = 'ckcustomer00000000000001';
 const B1 = 'ckbranch0000000000000001';
@@ -467,6 +470,33 @@ describe('the envelope', () => {
     }
     const two = { ...b, branches: [b.branches[0]!, { ...b.branches[0]!, branchId: B2 }] };
     expect(submitEditSchema.safeParse(two).success).toBe(true);
+  });
+
+  it('at most 500 branches in one submit, refused on the form (adversarial pass after phase 2, finding 4)', () => {
+    // The form sends only the branches with a touched field; the largest
+    // customer in production has 138 live branches.
+    const many = (n: number) => ({
+      ...body(),
+      branches: Array.from({ length: n }, (_, i) => ({
+        branchId: 'ckbranch' + String(i).padStart(16, '0'),
+        address: 'Way 1',
+        base: { address: null },
+      })),
+    });
+    expect(MAX_BRANCHES_PER_EDIT).toBe(500);
+    expect(submitEditSchema.safeParse(many(MAX_BRANCHES_PER_EDIT)).success).toBe(true);
+    const r = submitEditSchema.safeParse(many(MAX_BRANCHES_PER_EDIT + 1));
+    expect(r.success).toBe(false);
+    if (r.success) return;
+    expect(r.error.issues).toEqual([
+      expect.objectContaining({ path: ['branches'], message: TOO_MANY_BRANCHES_MESSAGE }),
+    ]);
+    // services/edits.ts keys it 'branches' (no branch id to put it under); the
+    // form has no slot for that key, so it is shown at the top.
+    const shown = surfaceUnrenderedErrors({ branches: TOO_MANY_BRANCHES_MESSAGE }, (k) =>
+      enrichmentFormRendersError(k)
+    );
+    expect(shown._form).toBe(TOO_MANY_BRANCHES_MESSAGE);
   });
 });
 

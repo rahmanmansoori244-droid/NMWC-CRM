@@ -80,7 +80,28 @@
  */
 export const PHONE_PATTERN =
   /(?:\+|[0\u0660\u06F0]{2})?[ \t\u00A0\u2009\u202F\-]?[9\u0669\u06F9][6\u0666\u06F6][8\u0668\u06F8](?:[ \t\u00A0\u2009\u202F()\-]{0,2}[0-9\u0660-\u0669\u06F0-\u06F9]){8}|\b[79][0-9\u0660-\u0669\u06F0-\u06F9]{3}[ \t\u00A0\u2009\u202F\-][0-9\u0660-\u0669\u06F0-\u06F9]{4}\b|\b\d{7,12}\b|[\u0660-\u0669\u06F0-\u06F9]{4}[ \t\u00A0\u2009\u202F\-][\u0660-\u0669\u06F0-\u06F9]{4}|[\u0660-\u0669\u06F0-\u06F9]{7,}/g;
-export const EMAIL_PATTERN = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
+
+/**
+ * E-mail addresses. The pattern was `/[\w.+-]+@[\w-]+\.[\w.-]+/g`, which took
+ * quadratic time on a long run of those characters with no address in it: it
+ * tried a match from every position of the run, read to the end of the run
+ * each time, and gave all of it back. A URL reaches here through the Sentry
+ * scrubber (lib/sentry-scrub.ts) without signing in, and 14 KB of query string
+ * cost about a second of CPU (adversarial pass after phase 2, finding 5).
+ *
+ * Now each run is matched once, with the domain optional, and kept as it is
+ * unless the domain is there. The run is never given back, because the optional
+ * part can always be empty. What is redacted is exactly what the old pattern
+ * redacted: tests/unit/sentry-scrub.test.ts holds it to the old pattern on a
+ * seeded random corpus.
+ */
+const EMAIL_SCAN = /[\w.+-]+(@[\w-]+\.[\w.-]+)?/g;
+
+export function scrubEmails(s: string): string {
+  return s.replace(EMAIL_SCAN, (run: string, domain: string | undefined) =>
+    domain ? '[email]' : run
+  );
+}
 
 /**
  * Replace phone numbers and e-mail addresses with placeholders.
@@ -134,10 +155,8 @@ export function scrubString(s: string): string {
     parked.push(m);
     return ` ${parked.length - 1} `;
   });
-  return masked
-    .replace(PHONE_PATTERN, '[phone]')
-    .replace(EMAIL_PATTERN, '[email]')
-    .replace(/ (\d+) /g, (_m, i: string) => parked[Number(i)] ?? '');
+  const scrubbed = scrubEmails(masked.replace(PHONE_PATTERN, '[phone]'));
+  return scrubbed.replace(/ (\d+) /g, (_m, i: string) => parked[Number(i)] ?? '');
 }
 
 /**

@@ -12,6 +12,7 @@
  */
 import { normalizePhone, isValidPhoneFormat } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
+import { stripHtml as stripTags } from '@/lib/validation/fields';
 
 export type SheetRow = Record<string, unknown>;
 export type RowIssue = { field: string; message: string };
@@ -64,11 +65,13 @@ export type RowCheckOptions = {
  * Without this, an import row carrying `legalName="<script>…</script>"` lands
  * in the master verbatim, then propagates back through Excel exports and JSON
  * audit-log views.
+ *
+ * The strip itself is lib/validation/fields.ts's: this copy of its regex ran in
+ * quadratic time on a run of '<' with no '>' after it, and a spreadsheet cell
+ * holds 32,767 characters (adversarial pass after phase 2, finding 4).
  */
 export function stripHtml(s: unknown): string {
-  return String(s ?? '')
-    .replace(/<[^>]+>/g, '')
-    .trim();
+  return stripTags(String(s ?? ''));
 }
 
 /**

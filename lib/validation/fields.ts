@@ -24,7 +24,23 @@
 import { z } from 'zod';
 import { INVALID_PHONE_MESSAGE, isValidPhoneFormat, normalizePhone } from '../phone';
 
-export const stripHtml = (s: string) => s.replace(/<[^>]+>/g, '').trim();
+/**
+ * Every `<…>` tag removed, then trimmed: exactly what `s.replace(/<[^>]+>/g, '')
+ * .trim()` returns. That expression took quadratic time on a run of '<' with no
+ * '>' after it — from each '<' the regex read to the end of the string looking
+ * for one — so 20,000 of them took 0.4 to 1.5 s of CPU in local runs, and the
+ * edit payload ran it over every text field of every branch, in any number of
+ * branches (adversarial pass after phase 2, finding 4). A tag needs a '>' to
+ * close it, so none can start after the last '>': the regex runs only up to
+ * it, and the rest is kept as it is. tests/unit/strip-html.test.ts holds the
+ * output to the old expression on a seeded random corpus.
+ *
+ * The only copy: lib/gps-manual.ts and lib/import-row-check.ts call this one.
+ */
+export const stripHtml = (s: string): string => {
+  const end = s.lastIndexOf('>') + 1;
+  return (s.slice(0, end).replace(/<[^>]+>/g, '') + s.slice(end)).trim();
+};
 
 /**
  * Strip HTML FIRST, then enforce length on what actually gets stored —

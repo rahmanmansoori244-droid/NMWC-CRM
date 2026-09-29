@@ -26,6 +26,7 @@
  */
 import { z } from 'zod';
 import { isUnmovedCoordinate } from './edit-values';
+import { stripHtml } from './validation/fields';
 
 export const GPS_SOURCE_MANUAL = 'MANUAL' as const;
 const CREATE_MARKER = /^draft\.\d+\.gps$/;
@@ -44,8 +45,6 @@ export type FieldChange = {
    */
   overrodeLive?: unknown;
 };
-
-const stripHtml = (s: string) => s.replace(/<[^>]+>/g, '').trim();
 
 /**
  * The reason, as it will be stored — and copied into an audit row that is never

@@ -7,6 +7,8 @@
 import { describe, it, expect } from 'vitest';
 import { scrub, scrubBreadcrumb, scrubEvent, scrubSpan } from '@/lib/sentry-scrub';
 import { isValidPhoneFormat } from '@/lib/phone';
+import { scrubEmails, scrubString } from '@/lib/scrub';
+import { fastestMs, seededStrings } from '../support/seeded-strings';
 import type { Breadcrumb, ErrorEvent, Event as SentryEvent, spanToJSON } from '@sentry/nextjs';
 
 describe('scrub', () => {
@@ -827,5 +829,57 @@ describe('beforeSendSpan: a span is scrubbed on its own, without its transaction
   it('survives a span with no description, no data and no links', () => {
     const bare = { span_id: 's', trace_id: 't', start_timestamp: 0 } as unknown as SpanJSON;
     expect(scrubSpan(bare)).toEqual({ span_id: 's', trace_id: 't', start_timestamp: 0, data: {} });
+  });
+});
+
+describe('the e-mail scrub is linear and redacts what it always did (adversarial pass after phase 2, finding 5)', () => {
+  // The pattern lib/scrub.ts used before: the output the linear scan must keep.
+  const OLD_EMAIL = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
+  const before = (s: string) => s.replace(OLD_EMAIL, '[email]');
+
+  it('same output as the old pattern on a seeded random corpus of 100,000 strings', () => {
+    // Single characters, and pieces that make addresses and near misses likely.
+    const PIECES = [...'ab1_.+-@@ /?=%[]', '\u00e9', '\0', 'x@y.z', '@b.', '.c'];
+    const wrong: string[] = [];
+    let redacted = 0;
+    let twoOrMore = 0;
+    for (const s of seededStrings(5, 100_000, PIECES, 16)) {
+      const want = before(s);
+      if (want !== s) redacted++;
+      if (want.split('[email]').length > 2) twoOrMore++;
+      if (scrubEmails(s) !== want) wrong.push(s);
+    }
+    expect(wrong.slice(0, 5)).toEqual([]);
+    // Not vacuous: a third of the corpus holds an address (33,606 with this
+    // seed), and 6,330 strings hold two or more.
+    expect(redacted).toBeGreaterThan(25_000);
+    expect(twoOrMore).toBeGreaterThan(4_000);
+  });
+
+  it('keeps what the narrower rewrite first proposed would have let through', () => {
+    // (?<![\w.+-])[\w.+-]{1,64}@… missed a local part over 64 characters, and
+    // a second address glued on after a '+'.
+    expect(scrubEmails('x'.repeat(80) + '@example.com')).toBe('[email]');
+    expect(scrubEmails('a@b.c+d@e.f')).toBe(before('a@b.c+d@e.f'));
+    expect(scrubEmails('a@b.c+d@e.f')).not.toContain('@');
+    expect(scrubString('mail ali.said@example.com, not a@b or @x.y')).toBe(
+      'mail [email], not a@b or @x.y'
+    );
+  });
+
+  // Each took 0.8 to 1.4 s through the old pattern in local runs (Node 24);
+  // through the scan each takes well under a millisecond, so 50 ms leaves room
+  // for a slow CI runner and still fails the quadratic version by an order of
+  // magnitude.
+  const HOSTILE: Array<[string, string]> = [
+    ['20,000 word characters', 'a'.repeat(20_000)],
+    ['20,000 word characters, then @', 'a'.repeat(20_000) + '@'],
+    ['a. to 20,000 characters', 'a.'.repeat(10_000)],
+    ['a+ to 20,000 characters, then @b', 'a+'.repeat(10_000) + '@b'],
+    ['a@ then 20,000 domain characters and no dot', 'a@' + 'b'.repeat(20_000)],
+  ];
+  it.each(HOSTILE)('%s scrubs in under 50 ms', (_name, s) => {
+    expect(fastestMs(() => scrubEmails(s))).toBeLessThan(50);
+    expect(fastestMs(() => scrubString(s))).toBeLessThan(50);
   });
 });
