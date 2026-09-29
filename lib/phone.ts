@@ -20,10 +20,11 @@
  *
  * lib/scrub.ts PHONE_PATTERN keeps up with the digits folded here: a digit
  * class added to this file is added, in the same change, to every arm there
- * that takes Arabic-Indic digits, the country code 968 included. It does NOT
- * redact every notation isValidPhoneFormat accepts — a bare number grouped
- * other than 4+4, a bare landline, a space character other than the ones it
- * lists. Those gaps are the NOT-covered list in lib/scrub.ts, and
+ * that takes Arabic-Indic digits, the country code 968 and the 00 before it
+ * included. It does NOT redact every notation isValidPhoneFormat accepts — a
+ * bare number grouped other than 4+4, a bare ASCII landline, a bare number in
+ * two scripts, a space character other than the ones it lists. Those gaps are
+ * the NOT-covered list in lib/scrub.ts, and
  * tests/unit/sentry-scrub.test.ts holds each one to this file.
  */
 

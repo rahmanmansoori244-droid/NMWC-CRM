@@ -175,6 +175,13 @@ describe('the written forms a salesman actually types', () => {
     ['+968\u20099123\u20094567', 'thin spaces'],
     ['9123\u20094567', 'a bare mobile, thin space'],
     ['\u0669\u0661\u0662\u0663\u202f\u0664\u0665\u0666\u0667', 'Arabic-Indic, four plus four, narrow no-break space'],
+    // Review of phase 2, second pass: the 00 typed on the same keyboard. Matched in
+    // ASCII only, it let arm 5 start inside it and the last four digits survived.
+    ['\u0660\u0660\u0669\u0666\u0668 \u0669\u0661\u0662\u0663 \u0664\u0665\u0666\u0667', '00 and country code in Arabic-Indic digits, four plus four'],
+    ['\u06f0\u06f0\u06f9\u06f6\u06f8 \u06f9\u06f1\u06f2\u06f3 \u06f4\u06f5\u06f6\u06f7', '00 and country code in Persian digits, four plus four'],
+    ['\u0660\u0660\u0669\u0666\u0668\u0669\u0661\u0662\u0663 \u0664\u0665\u0666\u0667', 'Arabic-Indic, the first half run on from the country code'],
+    ['\u06f0\u06f0\u06f9\u06f6\u06f8 \u06f9\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7', 'Persian, the number contiguous after a space'],
+    ['0\u06f0\u0669\u06f6\u0668 9123 4567', 'the 00 and the 968 each in two scripts'],
   ])('redacts %s (%s)', (input) => {
     expect(scrub(input)).not.toMatch(/[0-9\u0660-\u0669\u06f0-\u06f9]{4}/);
     expect(scrub(input)).toContain('[phone]');
@@ -183,6 +190,17 @@ describe('the written forms a salesman actually types', () => {
   it('redacts a Persian-digit number inside free text, as it would sit in a note', () => {
     expect(scrub('owner mobile \u06f9\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7 after 5pm')).toBe(
       'owner mobile [phone] after 5pm'
+    );
+  });
+
+  it('redacts the whole number when the 00 is typed in Arabic-Indic or Persian digits', () => {
+    // It came out as 'note \u0660[phone] \u0664\u0665\u0666\u0667 end': arm 5 took the
+    // second 0, the 968 and the first half, and nothing took the rest.
+    expect(scrub('note \u0660\u0660\u0669\u0666\u0668 \u0669\u0661\u0662\u0663 \u0664\u0665\u0666\u0667 end')).toBe(
+      'note [phone] end'
+    );
+    expect(scrub('note \u06f0\u06f0\u06f9\u06f6\u06f8 \u06f9\u06f1\u06f2\u06f3 \u06f4\u06f5\u06f6\u06f7 end')).toBe(
+      'note [phone] end'
     );
   });
 
@@ -266,6 +284,11 @@ describe('every notation lib/phone.ts accepts is redacted, or is a gap lib/scrub
     '+\u06f9\u06f6\u06f8 \u06f9\u06f1 \u06f2\u06f3 \u06f4\u06f5 \u06f6\u06f7',
     '+968\u202f9123\u202f4567',
     '9123\u20094567',
+    '\u0660\u0660\u0669\u0666\u0668 \u0669\u0661\u0662\u0663 \u0664\u0665\u0666\u0667',
+    '\u06f0\u06f0\u06f9\u06f6\u06f8 \u06f9\u06f1\u06f2\u06f3 \u06f4\u06f5\u06f6\u06f7',
+    '0\u06f0\u0669\u06f6\u0668 9123 4567',
+    // A landline is a gap in ASCII digits only: arm 5 takes any Arabic 4+4.
+    '\u0662\u0664\u0664\u0664 \u0665\u0665\u0665\u0665',
   ])('redacted: %s', (input) => {
     expect(isValidPhoneFormat(input)).toBe(true);
     expect(scrub(input)).toBe('[phone]');
@@ -279,13 +302,22 @@ describe('every notation lib/phone.ts accepts is redacted, or is a gap lib/scrub
     ['9123  4567', 'two separators between the halves of a bare number'],
     ['(9123) 4567', 'the first half of a bare number in brackets'],
     ['9-1-2-3-4-5-6-7', 'a separator between every digit'],
-    ['2444 5555', 'a bare landline'],
-    ['9123 \u06f4\u06f5\u06f6\u06f7', 'a bare 4+4 mobile in two scripts'],
+    ['2444 5555', 'a bare landline in ASCII digits'],
+    ['9123 \u06f4\u06f5\u06f6\u06f7', 'a bare 4+4 mobile, one half in each script'],
+    ['9123\u0664\u0665\u0666\u0667', 'a bare contiguous mobile in two scripts'],
     ['+968\u20029123\u20024567', 'another Unicode space (an en space)'],
     ['+968 - 9123 - 4567', 'more than two separators between two digits'],
   ])('a listed gap, left as typed: %s (%s)', (input) => {
     expect(isValidPhoneFormat(input)).toBe(true);
     expect(scrub(input)).toBe(input);
+  });
+
+  it.each([
+    ['tel91234567', '91234567'],
+    ['id_9123 4567', '9123 4567'],
+  ])('a listed gap, left as typed: a bare ASCII number glued to a letter or an underscore (%s)', (line, number) => {
+    expect(isValidPhoneFormat(number)).toBe(true);
+    expect(scrub(line)).toBe(line);
   });
 });
 
