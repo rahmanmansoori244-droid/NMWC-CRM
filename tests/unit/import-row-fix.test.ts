@@ -56,7 +56,13 @@ describe('editableColumns — only the cells the problem names', () => {
   });
 
   it('warnings on a loaded row, and junk, name nothing', () => {
-    expect(editableColumns([{ field: '_resolve', message: 'x' }, { field: '_lane', message: 'y' }])).toEqual([]);
+    expect(
+      editableColumns([
+        { field: '_resolve', message: 'x' },
+        { field: '_lane', message: 'y' },
+        { field: '_subchannel', message: 'z' },
+      ])
+    ).toEqual([]);
     expect(editableColumns(null)).toEqual([]);
     expect(editableColumns('nonsense')).toEqual([]);
   });

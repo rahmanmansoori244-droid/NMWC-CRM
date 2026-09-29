@@ -260,7 +260,10 @@ describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch 
     });
   const laneNotes = async (batchId: string) =>
     (await prisma.importRow.findMany({ where: { batchId }, orderBy: { rowNumber: 'asc' }, select: { issues: true } })).map(
-      (r) => ((r.issues as Array<{ field: string; message: string }> | null) ?? []).filter((i) => i.field === '_lane')
+      (r) =>
+        ((r.issues as Array<{ field: string; message: string }> | null) ?? []).filter(
+          (i) => i.field === '_lane' || i.field === '_subchannel'
+        )
     );
 
   beforeAll(async () => {
@@ -360,9 +363,11 @@ describe.skipIf(!ENABLED)('F21 / F16: what the promote writes on a multi-branch 
     );
 
     const notes = await laneNotes(batchId);
+    // Its own key: the batch page labels it "Sub-channel cleared", not "Branch
+    // not updated" — this row's branch was written.
     expect(notes[0]).toEqual([
       {
-        field: '_lane',
+        field: '_subchannel',
         message:
           "the channel in this row (GENERAL_TRADE) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page",
       },

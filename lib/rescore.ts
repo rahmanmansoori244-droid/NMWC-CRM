@@ -7,17 +7,25 @@
  * the column default of 0, and one whose address, visit day, status or route it
  * changed kept the score from before — and Branch.completenessScore is what the
  * dashboard's region and route leaderboards average. Rescoring with one Prisma
- * update per branch would have fixed the numbers and broken two other things:
- * a round trip per branch inside the promote's 20-second transaction, and
- * Prisma's client-side @updatedAt moving on sibling branches the import never
- * touched, which the master export's "updated since" filter reads.
+ * update per row would have fixed the numbers and cost two other things: a
+ * round trip per row inside the promote's 20-second transaction (and per
+ * customer and branch across the whole master in the operator script), and
+ * Prisma's client-side @updatedAt moving on every row it rescored, although
+ * nothing anyone entered had changed. A branch's updatedAt is what the master
+ * export prints as last_edited_at; a customer's is what the export's "updated
+ * since" filter and the customer list's "edited after" filter read
+ * (services/exports.ts, lib/customer-filters.ts) — the operator rescore would
+ * have made every customer it corrected look edited that day.
  *
  * So the scores are written in raw SQL, one statement per table:
  *   UPDATE … FROM (VALUES (id, score), …) WHERE "completenessScore" <> v.score
  * Only a row whose score actually changes is written; updatedAt is set by the
  * Prisma client, never by the database, so it stays as it was, and `version` is
- * never bumped — a derived column must not fail an edit form that is open on the
- * customer (the B-05 optimistic lock).
+ * never bumped — a derived column is not a change to the customer (the B-05
+ * optimistic lock counts those). The flip side: a caller that DID change a
+ * branch without writing its customer through Prisma moves the customer's
+ * updatedAt itself, or the "updated since" export misses that branch — the
+ * import's branch-only lane does (services/imports.ts refreshLaneBranches).
  *
  * The caller holds the customers' row locks (lib/locks.ts) inside its own
  * transaction: the promote takes it at the top of the group, the operator script

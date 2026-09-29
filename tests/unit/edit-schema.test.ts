@@ -141,6 +141,33 @@ describe('N02 — strip, then validate', () => {
       expect(src, name).not.toMatch(/\.min\([^)]*\)[^,;]*\.transform\(stripHtml/);
       expect(src, name).not.toMatch(/z\.coerce/);
     }
+    // Every stripHtml in fields.ts is followed by the pipe that checks what is
+    // stored: no helper there strips after its only length check.
+    const strips = fields.match(/\.transform\(stripHtml\)\s*\.?\w*/g) ?? [];
+    expect(strips.length).toBeGreaterThan(0);
+    for (const s of strips) expect(s).toMatch(/\.pipe$/);
+  });
+
+  it('CREATE strips its free text only through those helpers (review of phase 2)', () => {
+    // fields.ts's header says every free-text field on both payloads strips,
+    // then validates. CREATE's optional text fields used to check the raw length
+    // with a local z.string().max(N).transform(stripHtml) — make that impossible
+    // to reintroduce without this failing.
+    const create = stripComments(readFileSync('lib/validation/create.ts', 'utf8'), 'create.ts');
+    expect(create).not.toMatch(/stripHtml/);
+    for (const f of [
+      'contactRole',
+      'notes',
+      'address',
+      'areaDescription',
+      'openingHours',
+      'deliveryWindow',
+    ]) {
+      expect(create, f).toMatch(new RegExp(`\\b${f}: optionalText\\(\\d+\\),`));
+    }
+    for (const f of ['legalName', 'contactPerson', 'branchName']) {
+      expect(create, f).toMatch(new RegExp(`\\b${f}: (optionalStr\\()?strippedStr\\(`));
+    }
   });
 });
 

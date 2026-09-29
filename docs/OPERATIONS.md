@@ -581,8 +581,9 @@ The rotation is audit-logged.
      stored one belongs to the old channel** (owner decision 2026-09-29, auditor recheck F16): the
      pair would otherwise be one that creating a customer refuses, and reports and Temix read it.
      The sheet has no sub-channel column, so the new one is picked on the customer page; the
-     customer's first row in the file says so under **Loaded with a warning** (the batch page
-     labels every lane note "Branch not updated", this one included), and the log gets
+     customer's first row in the file says so under **Loaded with a warning**, labelled
+     "Sub-channel cleared" (the rest of the row, its branch included, loaded as usual — it is not
+     a "Branch not updated" note), and the log gets
      `import.promote.subchannel_cleared` with the customer's id. A sub-channel of the new channel
      is kept; a row that restates the channel, or leaves `channel` blank, clears nothing — even
      when the pair on file is already mismatched. **Known costs:** the customer loses the channel
@@ -595,10 +596,16 @@ The rotation is audit-logged.
      (auditor recheck F21; before, only the customer was, so a branch the import created sat at
      completeness 0 on the dashboard's leaderboards). Only a score that changes is written, and
      that write moves neither `updatedAt` nor `version`. A branch the row would not change is not
-     written at all — its `updatedAt`, which the export's "updated since" filter reads, stays put
-     — and one it does change gets `version + 1`, as an approved edit does. A status the row only
+     written at all — its `updatedAt`, which the export prints as `last_edited_at`, stays put —
+     and one it does change gets `version + 1`, as an approved edit does. A status the row only
      restates is no status change: `lastStatusChangeAt` (reactivation evidence is dated against
      it) moves only when the status does.
+   - The export's **Updated since** filter is per customer: it reads the *customer's* `updatedAt`,
+     and a customer it matches comes out with all its live branches. A full-lane or refresh-lane
+     row writes the customer, so a re-import moves it for every customer whose rows load, changed
+     or not — an "updated since" export taken after a full re-import returns the whole file. A group
+     of rows fixed in the app (branch only) moves it only when it writes a branch or fills the
+     customer's empty phone.
    - A salesman's edit already waiting on a customer is refused at approval, whole, when the
      import has since changed a field the edit changes, to anything but the edit's own value ("Changed on the customer after this
      request was sent: …", auditor recheck F06 — a sub-channel the import cleared counts): the
@@ -724,7 +731,7 @@ npm run smoke                       # and after
 
 - **Tell the owner before `--apply` that the leaderboards will rise visibly**: the dry run prints how many customer and branch scores move, up and down, by how many points in total, and how many branch scores are stored as 0 today. It prints counts only — never a name, code, phone or id — and writes nothing, not even a ledger row. `--expect-host` is required for the dry run too.
 - It is a production write. The standing production-write permission of 2026-09-27 may cover it; confirm it is still in force when it runs.
-- `--apply` requires `--actor`, an active Steward not on the demo denylist; a dry run given `--actor` checks it too. It writes `Customer.completenessScore` and `Branch.completenessScore` on live customers and their live branches and nothing else, in raw SQL and only where the score differs — `updatedAt` (the export's "updated since" filter) and `version` (open edit forms) do not move, nothing is queued for Temix. Two `AuditLog` rows (`entityType = CompletenessRescore`, one `entityId`): STARTING before the first page, COMPLETED after the last, counts only.
+- `--apply` requires `--actor`, an active Steward not on the demo denylist; a dry run given `--actor` checks it too. It writes `Customer.completenessScore` and `Branch.completenessScore` on live customers and their live branches and nothing else — a customer archived or merged away while its page waited for the lock is dropped from the page once the lock is held — in raw SQL and only where the score differs — `updatedAt` (a customer's is what the export's "updated since" filter reads, a branch's is its `last_edited_at`) and `version` (open edit forms) do not move, nothing is queued for Temix. Two `AuditLog` rows (`entityType = CompletenessRescore`, one `entityId`): STARTING before the first page, COMPLETED after the last, counts only.
 - Each page of customers (`--chunk`, default 200) is one transaction that first takes their row locks in the one order `lib/locks.ts` gives, so an edit approval, a Steward's or Manager's direct edit, a photo, a reactivation or an import on the same customer is waited for, not skipped, and what it commits is what gets scored. **`ops:visit-days` takes no customer lock — never run it at the same time.** A page that fails (a lock timeout behind a long import group, say) stops the run with the pages before it committed; re-run it. It is idempotent: a second run reports nothing to do.
 
 ### Spot a duplicate in the live master

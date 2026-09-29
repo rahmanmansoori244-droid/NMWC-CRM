@@ -1269,6 +1269,10 @@ const STEWARD_EN: Guide = {
             'The customer is linked to Temix, so a file row carrying its temix_code refreshes its Temix fields only and leaves its branches alone. Change the branch values on the customer’s page. A branch that was held back is added by fixing its held-back row on the batch page, not by uploading it again.',
           ],
           [
+            '"Sub-channel cleared" on a row that loaded',
+            'The row moved the customer to another channel, and the customer’s sub-channel belonged to the old one, so the import cleared it. Everything else in the row loaded as usual, its branch included — there is nothing to redo on the batch page. Open the customer’s page and pick a sub-channel of the new channel.',
+          ],
+          [
             '"phone already exists in master on customer X"',
             'Open customer X. If it is the same shop, exclude the held-back row. If it is a different shop sharing the owner’s phone, use Release shared phone… on the row, with the reason, then promote the batch. For a customer linked to Temix the release lets the row’s branch load, and the phone becomes the customer’s phone only if the customer has none — otherwise change it on the customer’s page.',
           ],

@@ -142,7 +142,9 @@ const fakeCustomer = (
 
 function fakeDb(
   customers: FakeCustomer[],
-  users = [{ id: 'u-stew', username: 'data.steward', role: 'STEWARD', isActive: true }]
+  users = [{ id: 'u-stew', username: 'data.steward', role: 'STEWARD', isActive: true }],
+  /** What commits while a page waits for its locks (the ids it asked for). */
+  whileLocking: (ids: unknown[]) => void = () => {}
 ) {
   const events: string[] = [];
   const ledger: Array<Record<string, unknown>> = [];
@@ -170,6 +172,7 @@ function fakeDb(
       const q = Prisma.sql(strings, ...values);
       events.push(`lock ${q.values.join(',')}`);
       expect(q.sql).toMatch(/ORDER BY "id" COLLATE "C" FOR UPDATE$/);
+      whileLocking(q.values);
       return [];
     }),
     $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -191,7 +194,8 @@ function fakeDb(
     }),
     customer: {
       findMany: vi.fn(async (args: Parameters<typeof read>[0]) => {
-        events.push('tx read');
+        // The live-ids check under the lock reads ids only; the rescore reads branches.
+        events.push('branches' in args.select ? 'tx read' : 'tx live ids');
         return read(args);
       }),
     },
@@ -342,23 +346,27 @@ describe('run: --apply', () => {
     );
     expect(code).toBe(0);
 
-    // Pages of two live customers, each locked (sorted) before it is read.
+    // Pages of two live customers, each locked (sorted) before it is read, and
+    // checked live again under the lock.
     const tx = db.events.filter((e) => e !== 'ledger');
     expect(tx).toEqual([
       'begin',
       'lock c-1,c-2',
+      'tx live ids',
       'tx read',
       'write Branch',
       'write Customer',
       'commit',
       'begin',
       'lock c-3,c-4',
+      'tx live ids',
       'tx read',
       'write Branch',
       'write Customer',
       'commit',
       'begin',
       'lock c-5',
+      'tx live ids',
       'tx read',
       'write Branch',
       'write Customer',
@@ -416,6 +424,46 @@ describe('run: --apply', () => {
     expect(await run({ apply: false, actor: '', chunk: 2 }, again.prisma, 'h', second.log)).toBe(0);
     expect(second.out.join('\n')).toContain('Nothing to do');
   });
+
+  it('a customer archived while its page waits for the lock is not rescored, nor counted; paging carries on', async () => {
+    // livePage reads c-1 and c-2 as live; before the page's FOR UPDATE gets c-2,
+    // a Steward archives it (or merges it away): deletedAt set, its branches
+    // tombstoned, its score left as it was. The lock matches on id, so it still
+    // locks c-2 — and lib/rescore.ts, which does not filter archived customers,
+    // used to score it with no live branches and write that on the archived row.
+    const customers = world();
+    const [c1, c2] = customers;
+    const kept = c2.completenessScore;
+    // What the old code wrote: the customer-only part, with no live branch left.
+    expect(scoreCustomer(c2, [])).not.toBe(kept);
+    const c2BranchScore = c2.branches[0].completenessScore;
+    const archivedAt = new Date('2026-09-29T09:00:00Z');
+    const db = fakeDb(customers, undefined, (ids) => {
+      if (!ids.includes('c-2') || c2.deletedAt) return;
+      c2.deletedAt = archivedAt;
+      for (const b of c2.branches) b.deletedAt = archivedAt;
+    });
+    const { log } = lines();
+    const code = await run({ apply: true, actor: 'data.steward', chunk: 2 }, db.prisma, 'h', log);
+    expect(code).toBe(0);
+
+    // The archived row keeps what it had; the live one beside it is rescored.
+    expect(c2.completenessScore).toBe(kept);
+    expect(c2.branches[0].completenessScore).toBe(c2BranchScore);
+    expect(c1.completenessScore).toBe(scoreCustomer(c1, c1.branches));
+    // The cursor stayed on the ids as read: every later page still ran.
+    const locks = db.events.filter((e) => e.startsWith('lock'));
+    expect(locks).toEqual(['lock c-1,c-2', 'lock c-3,c-4', 'lock c-5']);
+    // The ids each raw UPDATE was given: c-1 and the later pages, never c-2.
+    const writtenIds = (
+      db.tx.$executeRaw.mock.calls as unknown as Array<[TemplateStringsArray, ...unknown[]]>
+    ).flatMap(([s, ...v]) => Prisma.sql(s, ...v).values.filter((_, i) => i % 2 === 0));
+    expect(writtenIds).toContain('c-1');
+    expect(writtenIds).not.toContain('c-2');
+    // The ledger counts the rows written: c-1, c-3, c-4 and c-5 — as when c-2
+    // was right and live (above) — not the archived c-2 as a fifth.
+    expect(db.ledger[1].after).toMatchObject({ customersWritten: 4, remaining: 0 });
+  });
 });
 
 describe('the report', () => {
@@ -470,12 +518,18 @@ describe('the script keeps the operator conventions (comment-stripped source)', 
     }
   });
 
-  it('each page is locked in lib/locks.ts order before it is rescored, inside one bounded transaction', () => {
+  it('each page is locked in lib/locks.ts order, then narrowed to the ids still live, before it is rescored, inside one bounded transaction', () => {
     const t = runBody.slice(runBody.indexOf('prisma.$transaction('));
-    expect(t.indexOf('lockCustomersAndTemixCodeHolders(tx, ids, null)')).toBeGreaterThan(-1);
-    expect(t.indexOf('lockCustomersAndTemixCodeHolders(tx, ids, null)')).toBeLessThan(
-      t.indexOf('rescoreCustomerTx(tx, ids)')
+    const lock = t.indexOf('lockCustomersAndTemixCodeHolders(tx, ids, null)');
+    const liveRead = t.search(
+      /tx\.customer\.findMany\(\{\s*where: \{ id: \{ in: ids \}, deletedAt: null \}/
     );
+    const rescore = t.indexOf('rescoreCustomerTx(tx, live)');
+    expect(lock).toBeGreaterThan(-1);
+    expect(liveRead).toBeGreaterThan(lock);
+    expect(rescore).toBeGreaterThan(liveRead);
+    // The page's own ids are never rescored unfiltered.
+    expect(t).not.toMatch(/rescoreCustomerTx\(tx, ids\)/);
     expect(t).toMatch(/\{ timeout: 20_000, maxWait: 10_000 \}/);
   });
 

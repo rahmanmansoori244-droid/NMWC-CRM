@@ -109,6 +109,16 @@ describe('a row, in words', () => {
     ]);
   });
 
+  it('the sub-channel an import cleared has its own label, not "Branch not updated" (F16)', () => {
+    // Its row's branch WAS written; the old label sent the Steward to re-check
+    // branch values that were fine, and the guide's entry for it said so too.
+    const message =
+      "the channel in this row (HORECA) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page";
+    expect(issueLines([{ field: '_subchannel', message }])).toEqual([
+      { label: 'Sub-channel cleared', message },
+    ]);
+  });
+
   it('account-master issues name the sheet and row; anything else is shown, not dropped', () => {
     expect(issueLines([{ sheet: 'Users', row: 5, message: 'new user needs a password' }])).toEqual([
       { label: 'Users sheet, row 5', message: 'new user needs a password' },

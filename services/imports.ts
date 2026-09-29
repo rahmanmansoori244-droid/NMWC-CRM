@@ -1275,7 +1275,9 @@ function differingBranchCells(
  *
  * Returns, per row, a note for the Steward (or null) and whether its branch
  * was written. A branch written here changes what Temix holds, so the customer
- * is queued for the next batch, as an approved edit or a merge queues it.
+ * is queued for the next batch, as an approved edit or a merge queues it. And
+ * the customer's updatedAt moves, because the master export's "updated since"
+ * filter reads the CUSTOMER's updatedAt (services/exports.ts), not the branch's.
  */
 type LaneOutcome = { notes: Array<string | null>; written: boolean[] };
 
@@ -1405,20 +1407,35 @@ async function refreshLaneBranches(
       where: { id: customerId, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
       data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },
     });
+    // The requeue above matches nothing on a customer already PENDING_UPLOAD,
+    // and on the branch-only lane nothing else writes the customer through
+    // Prisma (the rescore is raw SQL), so its updatedAt stayed put and an
+    // "updated since" export left out the branch written here (review of
+    // phase 2). updatedAt only — not `version` nor lastEditedById: none of the
+    // customer's own fields changed, and lastEditedById would change who the
+    // customer reads as last edited by.
+    await tx.customer.update({ where: { id: customerId }, data: { updatedAt: new Date() } });
   }
   return { notes, written };
 }
 
 /**
  * Put each refresh row's branch note on the row as a '_lane' issue — and a
- * row's `extra`: what a fixed row did not write, or the sub-channel a full-lane
- * channel change cleared (F16, on the lead row). The
+ * row's `extra` (what a fixed row did not write) the same way. The sub-channel
+ * a full-lane channel change cleared (F16, on the lead row) is a
+ * '_subchannel' issue of its own: that row's branch WAS written, and the batch
+ * page labels '_lane' "Branch not updated" (lib/import-rows-view.ts). The
  * group's route/region warnings go only on rows whose branch was actually
  * written — on a row left as it was they would say something false.
  * Advisory: the caller ignores a failure here, as it does for the ordinary
  * lane's '_resolve' warnings.
  */
-type RowNote = { note: string | null; written: boolean; extra?: string | null };
+type RowNote = {
+  note: string | null;
+  written: boolean;
+  extra?: string | null;
+  subChannel?: string | null;
+};
 
 async function writeLaneNotes(
   rowIds: string[],
@@ -1430,6 +1447,7 @@ async function writeLaneNotes(
     const issues = [
       ...(n?.note ? [{ field: '_lane', message: n.note }] : []),
       ...(n?.extra ? [{ field: '_lane', message: n.extra }] : []),
+      ...(n?.subChannel ? [{ field: '_subchannel', message: n.subChannel }] : []),
       ...(n?.written && !n.note ? resolveErrors.map((m) => ({ field: '_resolve', message: m })) : []),
     ];
     if (issues.length === 0) continue;
@@ -2306,7 +2324,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 clearedSubChannelOf = existing!.id;
                 rowNotes[plainIdx[0]] = {
                   ...rowNotes[plainIdx[0]],
-                  extra: `the channel in this row (${lead.channelKey?.toUpperCase()}) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page`,
+                  subChannel: `the channel in this row (${lead.channelKey?.toUpperCase()}) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page`,
                 };
               }
               const customer = await tx.customer.upsert({
@@ -2425,9 +2443,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // F21 (auditor recheck 2026-09-27): a branch this row would not
                 // change is not written. The upsert rewrote every branch of the
                 // file whether or not a cell differed, so Prisma moved updatedAt
-                // (the master export's "updated since" filter) on branches the
-                // load had not changed; and it never bumped version on one it had
-                // changed, as an approved edit does (B-05).
+                // — what the master export prints as the branch's last_edited_at
+                // — on branches the load had not changed; and it never bumped
+                // version on one it had changed, as an approved edit does (B-05).
+                // The export's "updated since" filter reads the CUSTOMER's
+                // updatedAt (services/exports.ts), which the upsert above moves
+                // on every full-lane group whatever its branches do.
                 if (branchOwner && differingBranchCells(r, branchOwner).length === 0) continue;
                 await tx.branch.upsert({
                   where: { branchCode: r.branchCode },
@@ -2603,7 +2624,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         }
         // A full-lane row carries a note only when its customer's sub-channel
         // was cleared (F16, on the lead row).
-        const noted = refreshedRow || rowNotes.some((n) => !!n?.extra);
+        const noted = refreshedRow || rowNotes.some((n) => !!n?.extra || !!n?.subChannel);
         if (noted) {
           // The branch outcome of each row: a branch left as it was, and why, or
           // what a fixed row did not write. It used to be invisible — the row

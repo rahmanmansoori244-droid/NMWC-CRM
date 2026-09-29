@@ -19,12 +19,13 @@
  * no rescore, and its branches are among the stale ones this repairs.
  *
  * WHAT IT WRITES. Customer.completenessScore and Branch.completenessScore, on
- * live customers and their live branches, and nothing else — through
- * lib/rescore.ts, the same code the promote runs: raw SQL that writes a row only
- * when its score differs, so updatedAt stays as it was (the master export's
- * "updated since" filter reads it) and `version` is never bumped (a derived
- * column must not fail an edit form open on the customer). No Temix requeue, no
- * lastEditedById.
+ * live customers and their live branches, and nothing else — "live" as it stands
+ * once the page's locks are held, so a customer archived or merged away while
+ * the page waited is left alone — through lib/rescore.ts, the same code the
+ * promote runs: raw SQL that writes a row only when its score differs, so
+ * updatedAt stays as it was (the master export's "updated since" filter reads the
+ * customer's) and `version` is never bumped (a derived column must not fail an
+ * edit form open on the customer). No Temix requeue, no lastEditedById.
  *
  * UNDER LOAD. Each page of customers is one transaction that first takes their
  * row locks in the one order lib/locks.ts gives (lockCustomersAndTemixCodeHolders,
@@ -305,7 +306,18 @@ export async function run(
     const res = await prisma.$transaction(
       async (tx) => {
         await lockCustomersAndTemixCodeHolders(tx, ids, null);
-        return rescoreCustomerTx(tx, ids);
+        // The page was read before the lock. A customer archived, or merged
+        // away, while the page waited for it is locked all the same (the lock
+        // matches on id), and lib/rescore.ts does not filter archived ones —
+        // it would have scored it with no live branches and written that onto
+        // the archived row (review of phase 2). Only the ids still live now.
+        const live = (
+          await tx.customer.findMany({
+            where: { id: { in: ids }, deletedAt: null },
+            select: { id: true },
+          })
+        ).map((r) => r.id);
+        return rescoreCustomerTx(tx, live);
       },
       { timeout: 20_000, maxWait: 10_000 }
     );
@@ -313,6 +325,8 @@ export async function run(
     written.branches += res.written.branches;
     pages += 1;
     if (pages % 10 === 0) log(`  pages ${String(pages).padStart(5)} done`);
+    // Paged on the ids as read, not the live ones: the cursor does not move
+    // because a customer of this page was archived meanwhile.
     if (ids.length < opts.chunk) break;
     pageAfter = ids[ids.length - 1];
   }

@@ -18,8 +18,13 @@
  *   "best-effort" 12-digit junk string, which the partial unique index later
  *   collided on. Better to reject loudly so the user can fix the source.
  *
- * lib/scrub.ts PHONE_PATTERN must redact every form accepted here: a digit
- * class added to this file is added there in the same change.
+ * lib/scrub.ts PHONE_PATTERN keeps up with the digits folded here: a digit
+ * class added to this file is added, in the same change, to every arm there
+ * that takes Arabic-Indic digits, the country code 968 included. It does NOT
+ * redact every notation isValidPhoneFormat accepts — a bare number grouped
+ * other than 4+4, a bare landline, a space character other than the ones it
+ * lists. Those gaps are the NOT-covered list in lib/scrub.ts, and
+ * tests/unit/sentry-scrub.test.ts holds each one to this file.
  */
 
 /** What every form says about a phone this file refuses (CREATE, UPDATE). */

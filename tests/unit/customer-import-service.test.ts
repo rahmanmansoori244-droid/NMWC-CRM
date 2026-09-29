@@ -517,12 +517,14 @@ describe('promoteCustomerBatchAction — F16: a channel change clears a sub-chan
     expect(upsertArgs().update).toMatchObject({ channelId: 'ch-horeca', subChannelId: null });
 
     // Ruling 3: the full lane resets every row's note after its branch loop; the
-    // lead row's note must be merged through it, not replaced.
+    // lead row's note must be merged through it, not replaced. Its own key, not
+    // '_lane': the batch page labels that "Branch not updated", and this row's
+    // branch was written (review of phase 2).
     const notes = notesWritten();
     expect(Object.keys(notes)).toEqual(['row-0']);
     expect(notes['row-0']).toEqual([
       {
-        field: '_lane',
+        field: '_subchannel',
         message:
           "the channel in this row (HORECA) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page",
       },
@@ -546,7 +548,7 @@ describe('promoteCustomerBatchAction — F16: a channel change clears a sub-chan
       message: 'route "NOPE" not found — a new branch is parked in UNASSIGNED, an existing one keeps its route',
     };
     const notes = notesWritten();
-    expect(notes['row-0']).toEqual([expect.objectContaining({ field: '_lane' }), warning]);
+    expect(notes['row-0']).toEqual([expect.objectContaining({ field: '_subchannel' }), warning]);
     expect(notes['row-1']).toEqual([warning]);
     expect(groupWarnings()).toEqual([]);
   });
@@ -765,5 +767,71 @@ describe('promoteCustomerBatchAction — F21: the group transaction rescores eve
     });
     await promote();
     expect(rescoreWrites.map((w) => w.table)).toEqual(['Branch', 'Customer']);
+  });
+});
+
+// ── The branch-only lane and the export's "updated since" filter ────────────
+
+describe("promoteCustomerBatchAction — branch only: a branch it writes moves the customer's updatedAt", () => {
+  // services/exports.ts filters "updated since" on the CUSTOMER's updatedAt. On
+  // this lane the requeue matches nothing on a customer already PENDING_UPLOAD
+  // and the rescore is raw SQL, so nothing else moves it (review of phase 2).
+  const pending = { ...live({ temixCode: 'ARC1' }), temixSyncState: 'PENDING_UPLOAD' };
+  const customerUpdates = () =>
+    (
+      (tx.customer as Record<string, Fn>).update.mock.calls as Array<
+        [{ where: unknown; data: Record<string, unknown> }]
+      >
+    ).map(([a]) => a);
+  /** The customer updateManys, each evaluated against the PENDING_UPLOAD row. */
+  let matched: number[];
+  const pendingCustomer = () => {
+    matched = [];
+    (tx.customer as Record<string, Fn>).updateMany = vi.fn(
+      async ({ where }: { where: Record<string, unknown> }) => {
+        order.push('customer.updateMany');
+        const count = matchesWhere(pending, where) ? 1 : 0;
+        matched.push(count);
+        return { count };
+      }
+    );
+  };
+
+  it.each([
+    ['changes', { address: 'Way 10, Muscat' }, 'branch.update', {}],
+    ['creates', { branchCode: 'ARC1-07' }, 'branch.create', {}],
+  ] as const)(
+    'a row that %s a branch: its customer is touched in the transaction — updatedAt only',
+    async (_label, row, write, branches) => {
+      setup(pending, [parsed({ fixedInApp: true, ...row })], [], {
+        branches: { 'ARC1-02': storedBranch(), ...branches },
+      });
+      pendingCustomer();
+      const before = Date.now();
+      const out = await promote();
+      expect(out).toMatchObject({ promoted: 1, failed: 0 });
+      // The requeue matched nothing: the customer was already PENDING_UPLOAD.
+      expect(matched).toEqual([0]);
+      const touched = customerUpdates();
+      expect(touched).toEqual([{ where: { id: 'cust-1' }, data: { updatedAt: expect.any(Date) } }]);
+      expect((touched[0].data.updatedAt as Date).getTime()).toBeGreaterThanOrEqual(before);
+      // Not version, not lastEditedById: nothing of the customer's own changed.
+      expect(Object.keys(touched[0].data)).toEqual(['updatedAt']);
+      const i = (name: string) => order.indexOf(name);
+      expect(i(write)).toBeGreaterThan(-1);
+      expect(i('customer.update')).toBeGreaterThan(i(write));
+      expect(i('customer.update')).toBeLessThan(i('importRow.promoted'));
+    }
+  );
+
+  it('a row that leaves its branch as it was touches nothing of the customer', async () => {
+    setup(pending, [parsed({ fixedInApp: true })], [], { branches: { 'ARC1-02': storedBranch() } });
+    pendingCustomer();
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect((tx.branch as Record<string, Fn>).update).not.toHaveBeenCalled();
+    expect((tx.branch as Record<string, Fn>).create).not.toHaveBeenCalled();
+    expect(customerUpdates()).toEqual([]);
+    expect(matched).toEqual([]);
   });
 });

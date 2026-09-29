@@ -6,8 +6,15 @@
  * N02 (auditor recheck 2026-09-27): the UPDATE schema checked length BEFORE it
  * stripped HTML, so '<shop>' (6 characters raw, nothing once stripped) reached
  * the master as an empty legal name — on the Steward/Manager direct write too.
- * CREATE had already been fixed with strippedStr; every text field on both
- * payloads now goes through the same strip-then-validate helpers below.
+ * CREATE had already been fixed with strippedStr for its names, while its
+ * optional text fields still checked the raw length and stripped after (review
+ * of phase 2: '<b></b>' was stored as '', and 5,000 characters of notes wrapped
+ * in a tag were refused). Every free-text field on both payloads now goes
+ * through the strip-then-validate helpers below: strippedStr / requiredText for
+ * the names and the UPDATE address, clearableText for UPDATE's optional text,
+ * optionalText for CREATE's. The typed-in GPS reason strips first in its own
+ * schema (lib/gps-manual.ts). The CR number, the phones and the ids are not free
+ * text — trimmed or checked, never stripped.
  *
  * F19: a phone is checked with isValidPhoneFormat (lib/phone.ts, which folds
  * Arabic-Indic and Persian digits first) and the UPDATE schema outputs its
@@ -59,6 +66,24 @@ export const clearableText = (max: number) =>
     .pipe(z.string().max(max))
     .nullable()
     .transform((v) => (v === '' ? null : v));
+
+/**
+ * CREATE, an optional text field (contact role, notes, address, landmark,
+ * hours, delivery window): clearableText's strip-then-validate, but CREATE has
+ * nothing to clear, so a value that is nothing once stripped ('', '  ',
+ * '<b></b>') is "not given", as an absent one is — services/creates.ts stores
+ * either as null, and the address as its '(address pending)' placeholder. The
+ * address is still required on submit: the submit gate asks for it
+ * (collectMissingForCreate), so a draft can leave it out.
+ */
+export const optionalText = (max: number) =>
+  z
+    .string()
+    .max(max * 2)
+    .transform(stripHtml)
+    .pipe(z.string().max(max))
+    .optional()
+    .transform((v) => (v === '' ? undefined : v));
 
 /**
  * The UPDATE phone rule: null when blank (the caller decides what blank means),

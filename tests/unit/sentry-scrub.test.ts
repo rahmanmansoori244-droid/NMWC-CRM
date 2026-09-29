@@ -6,10 +6,13 @@
  */
 import { describe, it, expect } from 'vitest';
 import { scrub, scrubBreadcrumb, scrubEvent, scrubSpan } from '@/lib/sentry-scrub';
+import { isValidPhoneFormat } from '@/lib/phone';
 import type { Breadcrumb, ErrorEvent, Event as SentryEvent, spanToJSON } from '@sentry/nextjs';
 
 describe('scrub', () => {
-  it('redacts Omani phone numbers in every written form', () => {
+  // Not "every written form": lib/scrub.ts lists the ones it misses, and the
+  // table further down holds that list to lib/phone.ts.
+  it('redacts Omani phone numbers, contiguous and with the country code', () => {
     expect(scrub('called +96891234567 twice')).toBe('called [phone] twice');
     expect(scrub('96891234567')).toBe('[phone]');
     expect(scrub('91234567')).toBe('[phone]');
@@ -162,6 +165,16 @@ describe('the written forms a salesman actually types', () => {
     ['\u0669\u0661\u0662\u0663 \u06f4\u06f5\u06f6\u06f7', 'mixed, four plus four'],
     ['+968 \u06f9\u06f1\u06f2\u06f3 \u06f4\u06f5\u06f6\u06f7', 'country code, Persian digits'],
     ['+968 9123 \u06f4\u06f5\u06f6\u06f7', 'country code, ASCII and Persian'],
+    // Review of phase 2: the country code in Arabic-Indic or Persian digits, and the
+    // thin and narrow no-break spaces a paste from a phone or a PDF can carry.
+    ['+\u0669\u0666\u0668 \u0669\u0661 \u0662\u0663 \u0664\u0665 \u0666\u0667', 'country code and number in Arabic-Indic digits, in twos'],
+    ['+\u06f9\u06f6\u06f8 \u06f9\u06f1 \u06f2\u06f3 \u06f4\u06f5 \u06f6\u06f7', 'country code and number in Persian digits, in twos'],
+    ['\u06f9\u06f6\u06f8-\u06f9\u06f1\u06f2-\u06f3\u06f4\u06f5\u06f6\u06f7', 'Persian, dashed, country code without the plus'],
+    ['+\u0669\u0666\u0668 9123 4567', 'Arabic-Indic country code, ASCII number'],
+    ['+968\u202f9123\u202f4567', 'narrow no-break spaces'],
+    ['+968\u20099123\u20094567', 'thin spaces'],
+    ['9123\u20094567', 'a bare mobile, thin space'],
+    ['\u0669\u0661\u0662\u0663\u202f\u0664\u0665\u0666\u0667', 'Arabic-Indic, four plus four, narrow no-break space'],
   ])('redacts %s (%s)', (input) => {
     expect(scrub(input)).not.toMatch(/[0-9\u0660-\u0669\u06f0-\u06f9]{4}/);
     expect(scrub(input)).toContain('[phone]');
@@ -224,6 +237,55 @@ describe('the written forms a salesman actually types', () => {
     // that string is the ONLY diagnostic an operator gets for a job that failed
     // overnight. A pattern that reduces it to "[phone]" costs a recovery.
     expect(scrub(line)).toBe(line);
+  });
+});
+
+/**
+ * Review of phase 2: lib/phone.ts said every form it accepts is redacted here, and
+ * several were not. Each notation below is one isValidPhoneFormat accepts; it is
+ * either redacted, or one of the gaps lib/scrub.ts lists as NOT covered. A gap
+ * that closes fails here until it moves to the redacted half and leaves that list;
+ * a redacted form that starts leaking fails here too. A notation found later that
+ * is in neither half goes into one of them, and into that list if it leaks.
+ */
+describe('every notation lib/phone.ts accepts is redacted, or is a gap lib/scrub.ts names', () => {
+  it.each([
+    '+96891234567',
+    '0096891234567',
+    '+968 9123 4567',
+    '968-9123-4567',
+    '+968 (9123) 4567',
+    '968 91 23 45 67',
+    '+968 2444 5555',
+    '91234567',
+    '9123 4567',
+    '7123-4567',
+    '\u0669\u0661\u0662\u0663\u0664\u0665\u0666\u0667',
+    '\u06f9\u06f1\u06f2\u06f3 \u06f4\u06f5\u06f6\u06f7',
+    '+\u0669\u0666\u0668 \u0669\u0661 \u0662\u0663 \u0664\u0665 \u0666\u0667',
+    '+\u06f9\u06f6\u06f8 \u06f9\u06f1 \u06f2\u06f3 \u06f4\u06f5 \u06f6\u06f7',
+    '+968\u202f9123\u202f4567',
+    '9123\u20094567',
+  ])('redacted: %s', (input) => {
+    expect(isValidPhoneFormat(input)).toBe(true);
+    expect(scrub(input)).toBe('[phone]');
+  });
+
+  it.each([
+    ['91 23 45 67', 'a bare number grouped 2-2-2-2'],
+    ['\u0669\u0661 \u0662\u0663 \u0664\u0665 \u0666\u0667', 'a bare number grouped 2-2-2-2, Arabic-Indic'],
+    ['912 345 67', 'a bare number grouped 3-3-2'],
+    ['9123 45 67', 'a bare number grouped 4-2-2'],
+    ['9123  4567', 'two separators between the halves of a bare number'],
+    ['(9123) 4567', 'the first half of a bare number in brackets'],
+    ['9-1-2-3-4-5-6-7', 'a separator between every digit'],
+    ['2444 5555', 'a bare landline'],
+    ['9123 \u06f4\u06f5\u06f6\u06f7', 'a bare 4+4 mobile in two scripts'],
+    ['+968\u20029123\u20024567', 'another Unicode space (an en space)'],
+    ['+968 - 9123 - 4567', 'more than two separators between two digits'],
+  ])('a listed gap, left as typed: %s (%s)', (input) => {
+    expect(isValidPhoneFormat(input)).toBe(true);
+    expect(scrub(input)).toBe(input);
   });
 });
 

@@ -69,7 +69,10 @@ export function parsePage(value: string | undefined): number {
  * the Steward has not accepted as excluded; "Rejected" and "Quarantined" list
  * all of them, excluded or not, so the reconciliation still adds up. "Loaded
  * with a warning" is a PROMOTED row that carries issues: the customer landed,
- * but a route or region was substituted, or its branch was left as it was.
+ * but a route or region was substituted, its branch was left as it was, a
+ * customer-level cell of a row fixed in the app was not written, or — on the
+ * customer's first row, with its branch written — the row's channel change
+ * cleared the customer's sub-channel (F16).
  */
 export function rowViewWhere(batchId: string, view: RowView): Prisma.ImportRowWhereInput {
   switch (view) {
@@ -135,6 +138,9 @@ const FIELD_LABEL: Record<string, string> = {
   _promote: 'Not loaded',
   _resolve: 'Route or region',
   _lane: 'Branch not updated',
+  // F16: not a '_lane' note — that row's branch WAS written; only the
+  // sub-channel needs picking again (services/imports.ts writeLaneNotes).
+  _subchannel: 'Sub-channel cleared',
   cust_code: 'Customer code',
   cust_name: 'Name',
   phone: 'Phone',

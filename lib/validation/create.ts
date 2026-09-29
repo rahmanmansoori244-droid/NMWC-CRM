@@ -18,11 +18,13 @@ import { submissionIdSchema } from '../submission';
 import { DayOfWeek, PaymentTerms } from '@prisma/client';
 import { gpsManualReasonSchema } from '../gps-manual';
 // stripHtml / strippedStr moved to ./fields so the UPDATE payload strips before it
-// validates too (N02). Phones: UXI-006 accepted Arabic-Indic digits here with a
+// validates too (N02); the optional text fields below moved to optionalText there
+// (review of phase 2), because they checked the raw length and stripped after.
+// Phones: UXI-006 accepted Arabic-Indic digits here with a
 // regex of its own, which refused the Persian digits lib/phone.ts now folds and
 // let through strings it could not normalize; createPhone applies isValidPhoneFormat
 // itself (F19). The value stays as typed — services/creates.ts normalizes it.
-import { createPhone, stripHtml, strippedStr } from './fields';
+import { createPhone, optionalText, strippedStr } from './fields';
 
 const optionalStr = <T extends z.ZodTypeAny>(schema: T) =>
   schema.optional().or(z.literal('').transform(() => undefined));
@@ -37,15 +39,15 @@ export const createCustomerDraftSchema = z.object({
   primaryPhone: optionalStr(createPhone),
   altPhone: optionalStr(createPhone),
   contactPerson: optionalStr(strippedStr(2, 200, 'Contact person must be at least 2 characters.')),
-  contactRole: optionalStr(z.string().max(200).transform(stripHtml)),
-  notes: optionalStr(z.string().max(5000).transform(stripHtml)),
+  contactRole: optionalText(200),
+  notes: optionalText(5000),
   crPhotoAttachmentId: optionalStr(z.string().cuid()),
 });
 
 export const createBranchDraftSchema = z.object({
   branchName: strippedStr(1, 200, 'Branch name is required.'),
-  address: optionalStr(z.string().max(500).transform(stripHtml)),
-  areaDescription: optionalStr(z.string().max(500).transform(stripHtml)),
+  address: optionalText(500),
+  areaDescription: optionalText(500),
   // PROD-005 Oman envelope — same bounds as branchEditSchema.
   gpsLat: z
     .number()
@@ -63,8 +65,8 @@ export const createBranchDraftSchema = z.object({
   // column — services/creates.ts stores it as a marker in fieldChanges.
   gpsManualReason: gpsManualReasonSchema.optional(),
   dayOfVisit: z.nativeEnum(DayOfWeek).optional(),
-  openingHours: optionalStr(z.string().max(100).transform(stripHtml)),
-  deliveryWindow: optionalStr(z.string().max(100).transform(stripHtml)),
+  openingHours: optionalText(100),
+  deliveryWindow: optionalText(100),
   coolersCount: z.coerce.number().int().min(0).max(100).default(0),
   standsCount: z.coerce.number().int().min(0).max(100).default(0),
   emptyBottlesCount: z.coerce.number().int().min(0).max(1000).default(0),

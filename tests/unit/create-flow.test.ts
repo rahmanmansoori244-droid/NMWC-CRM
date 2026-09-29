@@ -181,6 +181,84 @@ describe('submitCreateSchema', () => {
   });
 });
 
+// Review of phase 2 (N02's claim, made true): CREATE's optional text fields
+// checked the raw length and stripped after, so '<b></b>' was stored as '' and a
+// long note wrapped in a tag was refused. They now strip, then validate.
+describe('submitCreateSchema — optional text strips, then validates', () => {
+  const withCustomer = (field: string, value: unknown) =>
+    submitCreateSchema.safeParse(
+      completeCashInput({ customer: { ...completeCashInput().customer, [field]: value } })
+    );
+  const withBranch = (field: string, value: unknown) =>
+    submitCreateSchema.safeParse(
+      completeCashInput({ branches: [{ ...completeCashInput().branches[0], [field]: value }] })
+    );
+  const CUSTOMER_TEXT = [
+    ['contactRole', 200],
+    ['notes', 5000],
+  ] as const;
+  const BRANCH_TEXT = [
+    ['address', 500],
+    ['areaDescription', 500],
+    ['openingHours', 100],
+    ['deliveryWindow', 100],
+  ] as const;
+
+  it.each(CUSTOMER_TEXT)(
+    "customer.%s: tag-only and whitespace-only are 'not given', not ''",
+    (field) => {
+      for (const blank of ['<b></b>', '   ', '<p> </p>', '']) {
+        const r = withCustomer(field, blank);
+        expect(r.success, JSON.stringify(blank)).toBe(true);
+        if (r.success) expect(r.data.customer[field], JSON.stringify(blank)).toBeUndefined();
+      }
+    }
+  );
+
+  it.each(BRANCH_TEXT)(
+    "branch.%s: tag-only and whitespace-only are 'not given', not ''",
+    (field) => {
+      for (const blank of ['<b></b>', '   ', '<p> </p>', '']) {
+        const r = withBranch(field, blank);
+        expect(r.success, JSON.stringify(blank)).toBe(true);
+        if (r.success) expect(r.data.branches[0][field], JSON.stringify(blank)).toBeUndefined();
+      }
+    }
+  );
+
+  it.each([...CUSTOMER_TEXT, ...BRANCH_TEXT])(
+    '%s: the length is judged on what is stored, not on the markup',
+    (field, max) => {
+      const parse = CUSTOMER_TEXT.some(([f]) => f === field) ? withCustomer : withBranch;
+      const pick = (r: ReturnType<typeof parse>) =>
+        r.success
+          ? ((r.data.customer as Record<string, unknown>)[field] ??
+            (r.data.branches[0] as Record<string, unknown>)[field])
+          : undefined;
+      // max characters wrapped in a tag fit, stripped.
+      const wrapped = parse(field, `<p>${'x'.repeat(max)}</p>`);
+      expect(wrapped.success).toBe(true);
+      expect(pick(wrapped)).toBe('x'.repeat(max));
+      // One more than max, once stripped, is refused — on the field's own key.
+      const over = parse(field, `<p>${'x'.repeat(max + 1)}</p>`);
+      expect(over.success).toBe(false);
+      if (!over.success) expect(over.error.issues[0]?.path.at(-1)).toBe(field);
+      // Ordinary text is kept, stripped and trimmed.
+      expect(pick(parse(field, '  Owner <i>Ali</i> '))).toBe('Owner Ali');
+    }
+  );
+
+  it('a tag-only address is simply missing, and the submit gate asks for it', () => {
+    const r = withBranch('address', '<b></b>');
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(collectMissingForCreate(r.data)['branch.0.address']).toBe(
+        'Branch 1: address is required.'
+      );
+    }
+  });
+});
+
 describe('collectMissingForCreate', () => {
   const parse = (input: unknown): ParsedSubmitCreate => {
     const r = submitCreateSchema.safeParse(input);
