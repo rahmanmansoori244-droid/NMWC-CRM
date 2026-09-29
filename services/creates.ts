@@ -56,6 +56,7 @@ import {
   type SubmitCreateInput,
   type ParsedSubmitCreate,
 } from '@/lib/validation/create';
+import { reportedIssues } from '@/lib/validation/fields';
 import { resolveStepAudience, notifyUsers } from '@/lib/notifications';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from '@/lib/create-guards';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
@@ -67,10 +68,13 @@ async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
 }
 
-/** Map Zod issues to the create form's error keys (`customer.x`, `branch.<i>.x`, `credit.x`). */
+/**
+ * Map Zod issues to the create form's error keys (`customer.x`, `branch.<i>.x`,
+ * `credit.x`). Only the first ones, their messages clipped (reportedIssues).
+ */
 function zodIssuesToFields(issues: ZodIssue[]): Record<string, string> {
   const fields: Record<string, string> = {};
-  for (const issue of issues) {
+  for (const issue of reportedIssues(issues)) {
     const p = issue.path;
     if (p[0] === 'branches' && typeof p[1] === 'number') {
       const sub = p.slice(2).join('.');

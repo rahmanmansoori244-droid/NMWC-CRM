@@ -37,7 +37,7 @@ import {
   type BaseValue,
   type BranchEditField,
 } from '../edit-values';
-import { clearablePhone, clearableText, requiredPhone, requiredText } from './fields';
+import { cappedArray, clearablePhone, clearableText, requiredPhone, requiredText } from './fields';
 
 // Defined beside the field lists so the browser can take it without zod.
 export { EDIT_PAYLOAD_VERSION };
@@ -69,12 +69,15 @@ const CAPTURED_AT_MESSAGE = 'Send the time the location was captured.';
  * body could carry thousands of branch patches, each with its text fields run
  * through the HTML strip. The form sends only the branches with a touched
  * field, production's largest customer has 138 live branches, and CREATE takes
- * at most 10. zod 3 still parses every element of an array longer than its
- * .max(), so the cost of the parse itself is bounded by the request body and
- * by stripHtml being linear (lib/validation/fields.ts), not by this.
+ * at most 10. The length is checked before any branch is read (cappedArray,
+ * lib/validation/fields.ts): zod's own .max() parsed every element of a longer
+ * array first, so the cap alone refused such a body only after reading all of
+ * it (review of the fix).
  */
 export const MAX_BRANCHES_PER_EDIT = 500;
 export const TOO_MANY_BRANCHES_MESSAGE = `One submit can change at most ${MAX_BRANCHES_PER_EDIT} branches.`;
+/** `overrides` / `customerOverrides` naming more fields than there are: never sent by the form. */
+export const TOO_MANY_OVERRIDES_MESSAGE = 'More fields are marked to keep than the form has.';
 
 /** A required cuid (channel): null or '' is an attempt to remove it. */
 const requiredId = (clearMsg: string) =>
@@ -217,7 +220,11 @@ export const branchPatchSchema = z
      * after the form was opened. The stored change then carries `overrodeLive`.
      * Names not sent in this patch mean nothing.
      */
-    overrides: z.array(z.enum(BRANCH_EDIT_FIELDS)).max(BRANCH_EDIT_FIELDS.length).optional(),
+    overrides: cappedArray(
+      z.array(z.enum(BRANCH_EDIT_FIELDS)),
+      BRANCH_EDIT_FIELDS.length,
+      TOO_MANY_OVERRIDES_MESSAGE
+    ).optional(),
   })
   .strict()
   .superRefine((b, ctx) => {
@@ -258,9 +265,17 @@ export const submitEditSchema = z
     /** What the form loaded for every key sent in `customer`. */
     customerBase: customerBaseSchema,
     /** Ruling 1: as a branch's `overrides`, for the customer's own fields. */
-    customerOverrides: z.array(z.enum(CUSTOMER_EDIT_FIELDS)).max(CUSTOMER_EDIT_FIELDS.length).optional(),
+    customerOverrides: cappedArray(
+      z.array(z.enum(CUSTOMER_EDIT_FIELDS)),
+      CUSTOMER_EDIT_FIELDS.length,
+      TOO_MANY_OVERRIDES_MESSAGE
+    ).optional(),
     /** Only branches with at least one touched field. */
-    branches: z.array(branchPatchSchema).max(MAX_BRANCHES_PER_EDIT, TOO_MANY_BRANCHES_MESSAGE),
+    branches: cappedArray(
+      z.array(branchPatchSchema),
+      MAX_BRANCHES_PER_EDIT,
+      TOO_MANY_BRANCHES_MESSAGE
+    ),
   })
   .strict()
   .superRefine((input, ctx) => {

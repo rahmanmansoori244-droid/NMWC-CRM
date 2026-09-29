@@ -43,6 +43,43 @@ export const stripHtml = (s: string): string => {
 };
 
 /**
+ * An array whose length is checked BEFORE any element is read. zod 3's
+ * `z.array(x).max(n)` reports the length and then parses every element anyway,
+ * raising an issue for each bad one: by the reviewer's measurement an edit body
+ * of 4.5 MB holding 1.5 million `{}` branches took 52 s to parse into 3 million
+ * issues, and 16 s more to turn them into the error (review of the fix for the
+ * adversarial pass after phase 2, finding 4). Here a longer array is refused
+ * with `message` alone, and none of its elements is parsed: the gate's issue is
+ * fatal, and a pipeline whose first stage fails never runs its second. A value
+ * that is not an array passes the gate, and `array` refuses it as before. Every
+ * array in the CREATE and UPDATE payloads goes through this;
+ * tests/unit/submit-body-bounds.test.ts holds them to it.
+ */
+export function cappedArray<A extends z.ZodTypeAny>(array: A, max: number, message: string) {
+  return z.custom<z.input<A>>((v) => !Array.isArray(v) || v.length <= max, { message }).pipe(array);
+}
+
+/**
+ * How much of a failed parse a submit's error carries. A form shows one message
+ * per field, and a body that fails on more fields than this was not built by
+ * one. The messages are clipped too, because zod's own repeat what was sent —
+ * every unknown key of an object, the whole of a value outside an enum — and
+ * without the clip the answer grew with the body. services/edits.ts and
+ * services/creates.ts map only what this returns.
+ */
+export const MAX_REPORTED_ISSUES = 200;
+export const MAX_REPORTED_MESSAGE = 500;
+export function reportedIssues(issues: readonly z.ZodIssue[]): z.ZodIssue[] {
+  return issues
+    .slice(0, MAX_REPORTED_ISSUES)
+    .map((i) =>
+      i.message.length > MAX_REPORTED_MESSAGE
+        ? { ...i, message: `${i.message.slice(0, MAX_REPORTED_MESSAGE - 1)}…` }
+        : i
+    );
+}
+
+/**
  * Strip HTML FIRST, then enforce length on what actually gets stored —
  * `min` before `transform` would let '<Shop>' (6 raw chars, empty after
  * strip) reach the DB as an empty legal name. The raw bound (twice the stored

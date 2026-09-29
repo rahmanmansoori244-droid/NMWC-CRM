@@ -27,6 +27,7 @@ import {
   submitEditSchema,
   type SubmitEditInput,
 } from '@/lib/validation/edit';
+import { reportedIssues } from '@/lib/validation/fields';
 import {
   BRANCH_EDIT_FIELDS,
   CUSTOMER_EDIT_FIELDS,
@@ -323,6 +324,9 @@ async function submitEditCore(input: SubmitEditInput): Promise<SubmitReceipt> {
   return answerIfLanded(() => submitEditOnce(input, session, submissionId), receipt);
 }
 
+/** The longest branch id an error key is built from (submitEditOnce). */
+const MAX_KEYED_BRANCH_ID = 64;
+
 async function submitEditOnce(
   input: SubmitEditInput,
   session: Awaited<ReturnType<typeof requireUser>>,
@@ -344,15 +348,22 @@ async function submitEditOnce(
     // keying so the EnrichmentForm can render the error inline next to the
     // offending field. Without this, salesmen on UAE-edge routes (Buraimi /
     // Khasab) would see a silent submit failure when their GPS captured outside
-    // the bounding box.
+    // the bounding box. Only the first issues, their messages clipped
+    // (reportedIssues, lib/validation/fields.ts): a body failing on more fields
+    // than that was not built by the form, and every issue used to become a key
+    // of the answer.
     const fields: Record<string, string> = {};
-    for (const issue of parsed.error.issues) {
+    for (const issue of reportedIssues(parsed.error.issues)) {
       const p = issue.path;
       if (p[0] === 'branches' && typeof p[1] === 'number') {
         const idx = p[1] as number;
         const branchId = (input as { branches?: Array<{ branchId?: unknown }> }).branches?.[idx]
           ?.branchId;
-        if (typeof branchId === 'string' && branchId) {
+        // The id names the key only when it can be a real one (a cuid is 25
+        // characters): z.string().cuid() takes any length, and a megabyte-long
+        // id was repeated in the key of every field of its branch that failed.
+        // Any other is keyed by its place, `branches.<i>.<f>`, as a missing id is.
+        if (typeof branchId === 'string' && branchId && branchId.length <= MAX_KEYED_BRANCH_ID) {
           const sub = p.slice(2).join('.');
           const path = sub ? `branch.${branchId}.${sub}` : `branch.${branchId}`;
           // The location's columns (and a typed point's reason) render under one

@@ -24,7 +24,22 @@ import { gpsManualReasonSchema } from '../gps-manual';
 // regex of its own, which refused the Persian digits lib/phone.ts now folds and
 // let through strings it could not normalize; createPhone applies isValidPhoneFormat
 // itself (F19). The value stays as typed — services/creates.ts normalizes it.
-import { createPhone, optionalText, strippedStr } from './fields';
+import { cappedArray, createPhone, optionalText, strippedStr } from './fields';
+
+/**
+ * The limits a create request always had: 10 branches, and 10 attachments in
+ * each list (the form offers 10 branches, 10 guarantee documents and two extra
+ * photos a branch). Each array's length is now checked before any element is
+ * read (cappedArray): zod's own .max(10) parsed every element of a longer array
+ * first, and 300,000 empty branches (a 0.9 MB body) took 14 s to be refused in
+ * a local run (review of the fix for the adversarial pass after phase 2,
+ * finding 4).
+ */
+export const MAX_CREATE_BRANCHES = 10;
+export const MAX_CREATE_ATTACHMENTS = 10;
+export const TOO_MANY_CREATE_BRANCHES_MESSAGE = `One request can add at most ${MAX_CREATE_BRANCHES} branches.`;
+export const TOO_MANY_EXTRA_PHOTOS_MESSAGE = `A branch can have at most ${MAX_CREATE_ATTACHMENTS} extra photos.`;
+export const TOO_MANY_GUARANTEES_MESSAGE = `A request can have at most ${MAX_CREATE_ATTACHMENTS} guarantee documents.`;
 
 const optionalStr = <T extends z.ZodTypeAny>(schema: T) =>
   schema.optional().or(z.literal('').transform(() => undefined));
@@ -72,7 +87,11 @@ export const createBranchDraftSchema = z.object({
   emptyBottlesCount: z.coerce.number().int().min(0).max(1000).default(0),
   shopPhotoAttachmentId: optionalStr(z.string().cuid()),
   signboardPhotoAttachmentId: optionalStr(z.string().cuid()),
-  extraPhotoAttachmentIds: z.array(z.string().cuid()).max(10).default([]),
+  extraPhotoAttachmentIds: cappedArray(
+    z.array(z.string().cuid()),
+    MAX_CREATE_ATTACHMENTS,
+    TOO_MANY_EXTRA_PHOTOS_MESSAGE
+  ).default([]),
 });
 
 export const submitCreateSchema = z.object({
@@ -106,8 +125,16 @@ export const submitCreateSchema = z.object({
     })
     .optional(),
   /** Guarantee / security documents (CREDIT): unbound GUARANTEE attachments. */
-  guaranteeAttachmentIds: z.array(z.string().cuid()).max(10).default([]),
-  branches: z.array(createBranchDraftSchema).min(1, 'At least one branch is required.').max(10),
+  guaranteeAttachmentIds: cappedArray(
+    z.array(z.string().cuid()),
+    MAX_CREATE_ATTACHMENTS,
+    TOO_MANY_GUARANTEES_MESSAGE
+  ).default([]),
+  branches: cappedArray(
+    z.array(createBranchDraftSchema).min(1, 'At least one branch is required.'),
+    MAX_CREATE_BRANCHES,
+    TOO_MANY_CREATE_BRANCHES_MESSAGE
+  ),
 });
 
 export type SubmitCreateInput = z.input<typeof submitCreateSchema>;
