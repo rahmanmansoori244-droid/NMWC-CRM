@@ -30,6 +30,7 @@ import type { SubmitEditInput } from './validation/edit';
 import {
   fieldSlotKey,
   parseFieldPath,
+  sameEditValue,
   toBaseValue,
   type BaseValue,
   type BranchEditField,
@@ -393,13 +394,20 @@ function boxValue(field: CustomerEditField | BranchEditField, live: BaseValue): 
 
 /**
  * Ruling 1: the person's answer to one conflict (a slot of a STALE_FIELDS answer).
- *   - 'mine' ("Keep mine"): each field of the slot that he changed gets the live
- *     value as its loaded value and is named in `kept`, so the next submit
- *     replaces it knowingly and the stored change says so (overrodeLive). A field
- *     of the slot he did not change (a count beside the one he did) takes the
- *     live value into its box too — it was never his.
+ *   - 'mine' ("Keep mine"): each field of the slot that he changed keeps his
+ *     value in its box and gets the live value as its loaded value. It is named
+ *     in `kept` — so the next submit replaces it knowingly and the stored change
+ *     says so (overrodeLive) — only when that live value differs from the one it
+ *     had loaded. A field he changed that nobody else did (a count beside the
+ *     stale one: the server hands back the whole block) stays an ordinary change
+ *     of his, and the approver is not told it replaces anything. A field of the
+ *     slot he did not change takes the live value into its box too — it was
+ *     never his.
  *   - 'theirs' ("Use this value"): every field of the slot takes the live value,
- *     loaded and in its box, so it is no longer sent.
+ *     loaded and in its box, so it is no longer sent. On the channel the
+ *     sub-channel follows: the live one when the answer carries it (the form
+ *     passes the sub-channel found live in the same STALE_FIELDS answer), else
+ *     none — the one the page loaded belongs to the channel being replaced.
  * Returns new objects; the form puts them in its ref and state.
  */
 export function resolveConflict(
@@ -433,24 +441,36 @@ export function resolveConflict(
   for (const [path, value] of Object.entries(live)) {
     const p = parseFieldPath(path);
     if (!p) continue;
-    const mine = choice === 'mine' && changed.has(path);
+    // His: a field he changed, which "Keep mine" leaves in his box. Kept (named
+    // in the overrides) only when the live value moved from the one it loaded.
+    const his = choice === 'mine' && changed.has(path);
     if (p.scope === 'customer') {
+      const moved = !sameEditValue(p.field, valueOf(nextLoaded, p.field), value);
       (nextLoaded as Record<string, unknown>)[p.field] = value;
-      if (mine) {
-        keptCustomer.add(p.field);
+      if (his) {
+        if (moved) keptCustomer.add(p.field);
         continue;
       }
       keptCustomer.delete(p.field);
       if (p.field !== 'paymentTerms') {
         (nextCustomer as Record<string, unknown>)[p.field] = boxValue(p.field, value);
       }
-      // "Use this value" on the channel undoes the select's own reset of the
-      // sub-channel: it goes back to what the page loaded, and is not sent.
-      if (p.field === 'channelId') nextCustomer.subChannelId = nextLoaded.subChannelId ?? '';
+      // The channel's live value takes its sub-channel with it: the live one
+      // when this answer carries it, else none — never the one the page loaded,
+      // which belongs to another channel (a channel is stale only when the one
+      // loaded is not the live one). Put back, it read "— Pick a sub-channel —"
+      // yet passed the FULL gate (review finding 6). An empty box is sent as
+      // null against the base loaded: converged when the live one is empty too,
+      // else a new conflict that shows it.
+      if (p.field === 'channelId') {
+        const sub = live['customer.subChannelId'];
+        nextCustomer.subChannelId = sub === undefined ? '' : String(boxValue('subChannelId', sub));
+      }
       continue;
     }
     const lb = nextLoaded.branches.find((b) => b.id === p.branchId);
     if (!lb || !nextBranches[p.branchId]) continue;
+    const was = valueOf(lb, p.field);
     (lb as Record<string, unknown>)[p.field] = value;
     if (
       p.field === 'gpsLat' ||
@@ -462,9 +482,11 @@ export function resolveConflict(
       points.set(p.branchId, choice === 'mine' && changed.has(`branch.${p.branchId}.gpsLat`));
       continue;
     }
-    keepBranch(p.branchId, p.field, mine);
+    // A keep made in an earlier round stays when this one finds the value unmoved.
+    if (!his) keepBranch(p.branchId, p.field, false);
+    else if (!sameEditValue(p.field, was, value)) keepBranch(p.branchId, p.field, true);
     const key = BRANCH_BOX[p.field];
-    if (!mine && key) {
+    if (!his && key) {
       nextBranches[p.branchId] = { ...nextBranches[p.branchId]!, [key]: boxValue(p.field, value) };
     }
   }
@@ -489,14 +511,48 @@ export function resolveConflict(
   };
 }
 
+/** A branch as the phone draft keeps it: its boxes, and the "counted" value loaded when it was written. */
+export type DraftBranch = FormBranch & { confirmedLoaded?: boolean };
+
+/**
+ * The branch boxes as the autosave writes them to the phone. Each carries
+ * `confirmedLoaded`, the "counted" value the form had loaded (loadedRef: the
+ * page's, moved only by a conflict choice) when it was written, because the
+ * draft's starting values (enrichmentBase) leave "counted" out and must stay as
+ * they are. Without it a restore cannot tell a tick or an untick the person
+ * made from the loaded value the autosave merely carried along
+ * (restoreBranchStates).
+ */
+export function draftBranchStates(
+  states: Readonly<Record<string, FormBranch>>,
+  loaded: LoadedCustomer
+): Record<string, DraftBranch> {
+  const out: Record<string, DraftBranch> = {};
+  for (const [id, s] of Object.entries(states)) {
+    const lb = loaded.branches.find((b) => b.id === id);
+    out[id] = lb ? { ...s, confirmedLoaded: lb.equipmentConfirmed } : { ...s };
+  }
+  return out;
+}
+
 /**
  * The branch boxes a phone draft restores (lib/enrichment-draft.ts decides
  * whether it may). Only branches the page shows — one handed to another route
  * since is ignored, where it used to be sent and refused ("You can only edit
  * branches on your route."). Only values of the right type; a key the draft
- * does not have keeps what the page loaded. A tick is restored, never an
- * untick: the draft's starting values leave out "counted", so a false saved
- * before someone confirmed it cannot take that back.
+ * does not have keeps what the page loaded.
+ *
+ * "Counted" is outside the draft's starting values, so a draft can outlive a
+ * change to it: its saved value comes back only when the value loaded then
+ * (`confirmedLoaded`, draftBranchStates) is the value loaded now. So:
+ *   - a tick made against a loaded false comes back while it is still false;
+ *   - a Steward's or Manager's untick made against a loaded true comes back
+ *     while it is still true (the tab reloading before submit lost it);
+ *   - an untouched true the autosave carried along does not come back over an
+ *     untick made since — it would be sent as his tick, re-counting a branch a
+ *     Steward or Manager had just taken back (review findings 1 and 4);
+ *   - an untouched false does not take back a tick made since.
+ * A draft without `confirmedLoaded` (before it existed) keeps what the page loaded.
  */
 export function restoreBranchStates(
   prev: Readonly<Record<string, FormBranch>>,
@@ -539,7 +595,12 @@ export function restoreBranchStates(
       coolers: num('coolers'),
       stands: num('stands'),
       bottles: num('bottles'),
-      confirmed: was.confirmed === true || r.confirmed === true,
+      confirmed:
+        typeof r.confirmed === 'boolean' &&
+        typeof r.confirmedLoaded === 'boolean' &&
+        r.confirmedLoaded === was.confirmed
+          ? r.confirmed
+          : was.confirmed,
     };
   }
   return next;

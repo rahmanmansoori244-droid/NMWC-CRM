@@ -163,7 +163,10 @@ describe('41 — the enrichment form shows every error the server returns', () =
 describe('41 — what the salesman sees is what is submitted', () => {
   it('a restored local draft remounts the GPS buttons, once per draft', () => {
     const src = read('app/(app)/customers/[id]/edit/EnrichmentForm.tsx');
-    expect(src).toMatch(/<GpsCaptureButton\s+key=\{restoreGeneration\}/);
+    // Every branch's on a restore; one branch's alone when "Use this value" takes
+    // the live point into it (review finding 7, enrichment-gps-conflict.test.tsx).
+    expect(src).toMatch(/<GpsCaptureButton\s+key=\{`\$\{restoreGeneration\}:\$\{gpsGeneration\[b\.id\] \?\? 0\}`\}/);
+    expect(src.match(/\bsetRestoreGeneration\(/g)).toHaveLength(1);
     expect(src).toMatch(/if \(d\.branchStates\) \{\s*setBranchStates\([^;]*;\s*setRestoreGeneration\(\(g\) => g \+ 1\);/);
     // Once per draft key: a mid-session re-render must not re-restore and remount.
     expect(src).toMatch(/if \(restoredForKeyRef\.current === draftKey\) return;\s*restoredForKeyRef\.current = draftKey;/);

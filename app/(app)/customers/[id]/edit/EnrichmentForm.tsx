@@ -24,6 +24,7 @@ import {
   conflictsFrom,
   countedNow,
   countsMoved,
+  draftBranchStates,
   loadedFormState,
   NO_KEPT_FIELDS,
   openConflicts,
@@ -180,6 +181,10 @@ export function EnrichmentForm({
   // found live — until he chooses "Keep mine" or "Use this value" for each —
   // and the fields he kept, which the next submit says it knowingly replaces.
   const [conflicts, setConflicts] = useState<Conflicts>({});
+  // Every live value of the last STALE_FIELDS answer, answered or not: the
+  // channel's "Use this value" takes the sub-channel found with it even when
+  // that conflict was answered first (review finding 6).
+  const staleLiveRef = useRef<Record<string, BaseValue>>({});
   const [kept, setKept] = useState<KeptFields>(NO_KEPT_FIELDS);
   // Bumped by each choice: the phone copy then carries the moved base.
   const [rebaseGen, setRebaseGen] = useState(0);
@@ -277,9 +282,14 @@ export function EnrichmentForm({
   // GpsCaptureButton reads its `initial` only when it mounts. A restore replaces
   // the branch GPS after that, so the chip kept showing the old point while the
   // form submitted the restored one — including a typed point and its reason
-  // (item 41) the salesman could not see. Bumped on restore to remount them,
-  // and when "Use this value" takes the live point into the box.
+  // (item 41) the salesman could not see. Bumped on restore to remount them all.
   const [restoreGeneration, setRestoreGeneration] = useState(0);
+  // …and per branch, when "Use this value" takes the live point into that
+  // branch's box: that button alone remounts. Remounting every branch's lost a
+  // capture in flight on another branch (its chip kept the old point while the
+  // form sent the new one) and a manual entry typed there but not yet saved
+  // (review finding 7).
+  const [gpsGeneration, setGpsGeneration] = useState<Record<string, number>>({});
   // Restore runs ONCE per draft key, on mount. The page's props also change
   // mid-session — the salesman's own CR photo attach revalidates it — and a
   // re-run then re-applied the draft over live typing, remounted the GPS buttons
@@ -351,7 +361,9 @@ export function EnrichmentForm({
           contactPerson: values.contactPerson,
           contactRole: values.contactRole,
           notes: values.notes,
-          branchStates,
+          // With the "counted" value loaded now, beside each branch's boxes: a
+          // restore takes his tick or untick back only while that still holds.
+          branchStates: draftBranchStates(branchStates, loadedRef.current),
           savedAt: Date.now(),
           base: baseRef.current,
           // Ruling 1: a "Keep mine" survives a reload with the draft, so the
@@ -376,8 +388,20 @@ export function EnrichmentForm({
    * resolveConflict says what each answer does.
    */
   function choose(slot: string, choice: 'mine' | 'theirs') {
-    const live = conflicts[slot];
-    if (!live) return;
+    if (!conflicts[slot]) return;
+    const live: Record<string, BaseValue> = { ...conflicts[slot] };
+    const answered = [slot];
+    // "Use this value" on the channel takes the channel and sub-channel saved
+    // now as one pair (review finding 6): the sub-channel found live in the
+    // same answer, whose own conflict, if still open, this answers too. From
+    // the ref, not `conflicts`: a sub-channel conflict answered first has left
+    // it, and without its live value the box would empty and send null over
+    // the live sub-channel that answer had just taken as its base — a clear.
+    const pairSub = 'customer.subChannelId';
+    if (choice === 'theirs' && slot === 'customer.channelId' && pairSub in staleLiveRef.current) {
+      live[pairSub] = staleLiveRef.current[pairSub];
+      answered.push(pairSub);
+    }
     const next = resolveConflict(
       choice,
       live,
@@ -392,9 +416,12 @@ export function EnrichmentForm({
     setValues(next.state.customer);
     setBranchStates(next.state.branches);
     setKept(next.kept);
-    setConflicts((c) => without(c, slot));
-    setErrors((e) => without(e, slot));
-    if (choice === 'theirs' && slot.endsWith('.gps')) setRestoreGeneration((g) => g + 1);
+    setConflicts((c) => answered.reduce((acc, s) => without(acc, s), c));
+    setErrors((e) => answered.reduce((acc, s) => without(acc, s), e));
+    if (choice === 'theirs' && slot.startsWith('branch.') && slot.endsWith('.gps')) {
+      const id = slot.slice('branch.'.length, -'.gps'.length);
+      setGpsGeneration((g) => ({ ...g, [id]: (g[id] ?? 0) + 1 }));
+    }
     setRebaseGen((g) => g + 1);
   }
 
@@ -444,7 +471,11 @@ export function EnrichmentForm({
           result.code === 'STALE_FIELDS' && result.fields && result.current
             ? conflictsFrom(result.fields, result.current)
             : null;
-        if (stale) setConflicts(stale);
+        if (stale) {
+          setConflicts(stale);
+          staleLiveRef.current = {};
+          for (const slotLive of Object.values(stale)) Object.assign(staleLiveRef.current, slotLive);
+        }
         if (result.fields) {
           // A key with no slot on this form still surfaces, at the top — with
           // "reload" when it names a branch this page does not show (ruling 11).
@@ -722,7 +753,7 @@ export function EnrichmentForm({
                   Location * (required to submit)
                 </label>
                 <GpsCaptureButton
-                  key={restoreGeneration}
+                  key={`${restoreGeneration}:${gpsGeneration[b.id] ?? 0}`}
                   initial={gpsForButton(s.gps)}
                   onCapture={(g) => setBranch(b.id, { gps: g })}
                   required

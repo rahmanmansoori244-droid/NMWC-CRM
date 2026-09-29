@@ -819,6 +819,62 @@ describe('the customer update form', () => {
     expect(submitBtn()).toBeEnabled();
   });
 
+  // Review finding 6. Whichever the sub-channel's own answer was, and whether
+  // it came first: the page-load sub-channel of another channel never returns,
+  // and nothing clears the live one.
+  for (const subFirst of [null, 'Use this value', 'Keep mine'] as const) {
+    it(`"Use this value" on the channel takes the channel and sub-channel saved now as one pair${
+      subFirst ? ` — after "${subFirst}" on the sub-channel` : ''
+    }`, async () => {
+      const channels = ['A', 'B', 'C'].map((k) => ({
+        id: `ch${k}`,
+        key: k,
+        label: `Channel ${k}`,
+        subChannels: [{ id: `sub${k}`, key: `${k}1`, label: `Sub ${k}1` }],
+      }));
+      render(
+        <EnrichmentForm
+          customer={{ ...customer, channelId: 'chA', subChannelId: 'subA' }}
+          channels={channels}
+          lockName
+          lockCr={false}
+          userRole="MANAGER"
+          canSubmit
+          sessionUserId="u1"
+          gate="CORE"
+        />
+      );
+      fireEvent.change(screen.getByLabelText('Channel *'), { target: { value: 'chC' } });
+      fireEvent.change(screen.getByLabelText('Sub-channel'), { target: { value: 'subC' } });
+      fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
+      // Meanwhile a Steward moved it to B / B1: both fields come back stale.
+      replies.push(
+        answer({
+          ok: false,
+          code: 'STALE_FIELDS',
+          message: STALE_FIELDS_MESSAGE,
+          fields: { 'customer.channelId': STALE_FIELD_MESSAGE, 'customer.subChannelId': STALE_FIELD_MESSAGE },
+          current: { 'customer.channelId': 'chB', 'customer.subChannelId': 'subB' },
+        })
+      );
+      fireEvent.click(submitBtn());
+      await waitFor(() => expect(conflictList()).not.toBeNull());
+      const item = (label: string) => within(within(conflictList()!).getByText(label).closest('li')!);
+      if (subFirst) fireEvent.click(item('Sub-channel').getByRole('button', { name: subFirst }));
+      fireEvent.click(item('Channel').getByRole('button', { name: 'Use this value' }));
+      // One answer for the pair: no sub-channel conflict left to answer on its own.
+      expect(conflictList()).toBeNull();
+      expect(screen.getByLabelText('Channel *')).toHaveValue('chB');
+      expect(screen.getByLabelText('Sub-channel')).toHaveValue('subB');
+      replies.push(saved());
+      fireEvent.click(submitBtn());
+      await waitFor(() => expect(sent).toHaveLength(2));
+      expect(sent[1]!.body).toMatchObject({ customer: { notes: 'Closed Fridays' }, customerBase: { notes: null } });
+      expect(Object.keys(sent[1]!.body.customer as object)).toEqual(['notes']);
+      expect(sent[1]!.body).not.toHaveProperty('customerOverrides');
+    });
+  }
+
   it('FORM_OUTDATED: says to reload, at the top and beside the button, with no Try again', async () => {
     renderForm();
     replies.push(
@@ -888,6 +944,57 @@ describe('the customer update form', () => {
     const tick = screen.getByRole('checkbox', { name: COUNTED });
     expect(tick).toBeChecked();
     fireEvent.click(tick);
+    replies.push(saved());
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.body.branches).toEqual([
+      { branchId: 'b1', equipmentConfirmed: false, base: { equipmentConfirmed: true } },
+    ]);
+  });
+
+  // Review findings 1 and 4: "Counted" is outside the draft's starting values,
+  // so a Steward's untick does not make the phone copy stale.
+  type Loaded = ComponentProps<typeof EnrichmentForm>['customer'];
+  const counted = (c: Loaded): Loaded => ({
+    ...c,
+    branches: [{ ...c.branches[0]!, equipmentConfirmed: true }],
+  });
+  const autosaved = () =>
+    act(async () => {
+      await new Promise((r) => setTimeout(r, 600));
+    });
+
+  it('an untouched "Counted" carried in the phone copy does not come back over an untick made since', async () => {
+    // A salesman's form needs a channel to submit under CORE.
+    const onFile: Loaded = { ...customer, channelId: 'ch1' };
+    const visit = renderAs('SALESMAN', counted(onFile));
+    expect(screen.getByText('✓ Equipment counted')).toBeTruthy();
+    // He leaves without touching anything; the mount-time autosave wrote the copy.
+    await autosaved();
+    expect(JSON.parse(window.localStorage.getItem(draftKey)!).branchStates.b1).toMatchObject({
+      confirmed: true,
+      confirmedLoaded: true,
+    });
+    visit.unmount();
+    // A Steward takes "Counted" back, and he opens the form again.
+    renderAs('SALESMAN', onFile);
+    expect(screen.getByText('Restored a local draft from your last visit.')).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: COUNTED })).not.toBeChecked();
+    fireEvent.change(screen.getByLabelText('Notes'), { target: { value: 'Closed Fridays' } });
+    replies.push(saved('SUBMITTED'));
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.body).toMatchObject({ customer: { notes: 'Closed Fridays' }, branches: [] });
+  });
+
+  it("a Manager's untick survives a reload before the submit", async () => {
+    const visit = renderAs('MANAGER', counted(customer));
+    fireEvent.click(screen.getByRole('checkbox', { name: COUNTED }));
+    await autosaved();
+    visit.unmount();
+    renderAs('MANAGER', counted(customer));
+    expect(screen.getByText('Restored a local draft from your last visit.')).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: COUNTED })).not.toBeChecked();
     replies.push(saved());
     fireEvent.click(submitBtn());
     await waitFor(() => expect(sent).toHaveLength(1));

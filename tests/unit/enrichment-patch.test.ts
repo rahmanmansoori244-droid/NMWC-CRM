@@ -13,6 +13,7 @@ import {
   buildEnrichmentPatch,
   conflictsFrom,
   countedNow,
+  draftBranchStates,
   loadedFormState,
   openConflicts,
   resolveConflict,
@@ -33,8 +34,10 @@ const B1 = 'ckbranchoneaaaaaaaaaaaaaa';
 const B2 = 'ckbranchtwoaaaaaaaaaaaaaa';
 const CH_A = 'ckchannelaaaaaaaaaaaaaaaa';
 const CH_B = 'ckchannelbbbbbbbbbbbbbbbb';
+const CH_C = 'ckchannelcccccccccccccccc';
 const SUB_A = 'cksubchannelaaaaaaaaaaaaa';
 const SUB_B = 'cksubchannelbbbbbbbbbbbbb';
+const SUB_C = 'cksubchannelccccccccccccc';
 const CAPTURED = '2026-09-24T08:00:00.000Z';
 
 const SALESMAN: PatchOptions = { role: 'SALESMAN', lockName: true, lockCr: false };
@@ -500,8 +503,43 @@ describe('ruling 1 — a conflict, and his choice', () => {
     expect(build(theirs.loaded, theirs.state, SALESMAN, theirs.kept).branches).toEqual([]);
   });
 
-  it('"Use this value" on the channel puts back the sub-channel the channel select had emptied', () => {
-    const s = stateOf(loaded(), { channelId: CH_B, subChannelId: '' });
+  it('equipment: "Keep mine" names only the count that changed after the form opened — not one beside it that nobody else touched', () => {
+    // He counted 3 coolers and 4 stands; meanwhile an edit saved 5 coolers
+    // (counted, as the form always marks it). Stands is still the 2 he loaded,
+    // yet the server hands back the whole block.
+    const s = stateOf(loaded(), {}, { [B1]: { coolers: 3, stands: 4, confirmed: true } });
+    const first = build(loaded(), s, SALESMAN);
+    expect(branchOf(first, B1)).toMatchObject({ coolersCount: 3, standsCount: 4, equipmentConfirmed: true });
+    const eqLive = {
+      [`branch.${B1}.coolersCount`]: 5,
+      [`branch.${B1}.standsCount`]: 2,
+      [`branch.${B1}.emptyBottlesCount`]: 0,
+      [`branch.${B1}.equipmentConfirmed`]: true,
+    };
+    const mine = resolveConflict('mine', eqLive, loaded(), s, { customer: [], branches: {} }, SALESMAN);
+    expect(mine.state.branches[B1]).toMatchObject({ coolers: 3, stands: 4, bottles: 0 });
+    expect(mine.kept.branches[B1]).not.toContain('standsCount');
+    // Stands stays his, as an ordinary change; Counted is no longer sent — the
+    // live value already says it.
+    expect(branchOf(build(mine.loaded, mine.state, SALESMAN, mine.kept), B1)).toEqual({
+      branchId: B1,
+      coolersCount: 3,
+      standsCount: 4,
+      base: { coolersCount: 5, standsCount: 2 },
+      overrides: ['coolersCount'],
+    });
+    // A keep from an earlier round stays when this round finds that value unmoved.
+    const again = resolveConflict('mine', eqLive, mine.loaded, mine.state, mine.kept, SALESMAN);
+    expect(branchOf(build(again.loaded, again.state, SALESMAN, again.kept), B1)!.overrides).toEqual([
+      'coolersCount',
+    ]);
+  });
+
+  it('F16, review finding 6: "Use this value" on the channel never puts back the sub-channel the page loaded for another channel', () => {
+    // Loaded A / SUB_A; an import moved it to B and emptied the sub-channel; he
+    // picked C (the select empties the sub-channel). Only the channel is stale:
+    // his empty sub-channel already equals the live one.
+    const s = stateOf(loaded(), { channelId: CH_C, subChannelId: '' });
     const r = resolveConflict(
       'theirs',
       { 'customer.channelId': CH_B },
@@ -510,8 +548,36 @@ describe('ruling 1 — a conflict, and his choice', () => {
       { customer: [], branches: {} },
       MANAGER
     );
-    expect(r.state.customer).toMatchObject({ channelId: CH_B, subChannelId: SUB_A });
-    expect(sentPaths(build(r.loaded, r.state, MANAGER, r.kept))).toEqual([]);
+    expect(r.state.customer).toMatchObject({ channelId: CH_B, subChannelId: '' });
+    // The base stays what the page loaded: nothing says what the live one is.
+    expect(r.loaded).toMatchObject({ channelId: CH_B, subChannelId: SUB_A });
+    // So the empty box goes as null against it — converged against an empty
+    // live one, a new conflict (showing it) against any other.
+    expect(build(r.loaded, r.state, MANAGER, r.kept)).toEqual({
+      customer: { subChannelId: null },
+      customerBase: { subChannelId: SUB_A },
+      branches: [],
+    });
+  });
+
+  it('F16, review finding 6: with a sub-channel conflict beside it, "Use this value" on the channel takes the live pair', () => {
+    const s = stateOf(loaded(), { channelId: CH_C, subChannelId: SUB_C });
+    for (const [liveSub, box] of [
+      [SUB_B, SUB_B],
+      [null, ''],
+    ] as const) {
+      const r = resolveConflict(
+        'theirs',
+        { 'customer.channelId': CH_B, 'customer.subChannelId': liveSub },
+        loaded(),
+        s,
+        { customer: [], branches: {} },
+        MANAGER
+      );
+      expect(r.state.customer).toMatchObject({ channelId: CH_B, subChannelId: box });
+      expect(r.loaded).toMatchObject({ channelId: CH_B, subChannelId: liveSub });
+      expect(sentPaths(build(r.loaded, r.state, MANAGER, r.kept))).toEqual([]);
+    }
   });
 });
 
@@ -559,16 +625,59 @@ describe('a phone draft, restored', () => {
     });
   });
 
-  it('a tick is restored, never an untick: "counted" is not in the draft\'s starting values', () => {
-    const counted = loadedFormState(
-      loaded({ branches: [branch(B1, { equipmentConfirmed: true })] })
-    ).branches;
-    expect(
-      restoreBranchStates(counted, { [B1]: { confirmed: false } }, [{ id: B1 }])[B1]!.confirmed
-    ).toBe(true);
-    expect(
-      restoreBranchStates(prev(), { [B1]: { confirmed: true } }, [{ id: B1 }])[B1]!.confirmed
-    ).toBe(true);
+  describe('"counted" — outside the draft\'s starting values, so the draft says what it was loaded as (review findings 1, 4)', () => {
+    const at = (confirmed: boolean) => loaded({ branches: [branch(B1, { equipmentConfirmed: confirmed })] });
+    /** What the autosave writes on a visit that loaded `was` and left the box at `box`. */
+    const draftOf = (was: boolean, box: boolean) =>
+      JSON.parse(
+        JSON.stringify(draftBranchStates({ [B1]: { ...stateOf(at(was)).branches[B1]!, confirmed: box } }, at(was)))
+      ) as Record<string, unknown>;
+    /** The next visit, which loads `now`: the box restored, and what a notes-only submit sends. */
+    const restoreAt = (now: boolean, saved: Record<string, unknown>, opts: PatchOptions) => {
+      const l = at(now);
+      const branches = restoreBranchStates(loadedFormState(l).branches, saved, [{ id: B1 }]);
+      const s: FormState = { customer: { ...loadedFormState(l).customer, notes: 'x' }, branches };
+      return { confirmed: branches[B1]!.confirmed, sent: build(l, s, opts).branches };
+    };
+
+    it('the autosave writes the value loaded beside the box', () => {
+      expect(draftOf(true, true)[B1]).toMatchObject({ confirmed: true, confirmedLoaded: true });
+      expect(draftOf(false, true)[B1]).toMatchObject({ confirmed: true, confirmedLoaded: false });
+    });
+
+    it('an untouched tick carried along does not come back over an untick made since — and nothing is sent', () => {
+      for (const opts of [SALESMAN, MANAGER]) {
+        expect(restoreAt(false, draftOf(true, true), opts)).toEqual({ confirmed: false, sent: [] });
+      }
+    });
+
+    it("a Steward's or Manager's untick survives a reload while the value loaded is still true", () => {
+      const r = restoreAt(true, draftOf(true, false), { ...MANAGER, role: 'STEWARD' });
+      expect(r.confirmed).toBe(false);
+      expect(r.sent).toEqual([{ branchId: B1, equipmentConfirmed: false, base: { equipmentConfirmed: true } }]);
+    });
+
+    it('a tick he made against a loaded false is restored', () => {
+      const r = restoreAt(false, draftOf(false, true), SALESMAN);
+      expect(r.confirmed).toBe(true);
+      expect(r.sent).toEqual([{ branchId: B1, equipmentConfirmed: true, base: { equipmentConfirmed: false } }]);
+    });
+
+    it('an untouched false saved before someone ticked it does not take the tick back', () => {
+      expect(restoreAt(true, draftOf(false, false), MANAGER)).toEqual({ confirmed: true, sent: [] });
+    });
+
+    it('a draft without the value it was loaded as keeps what the page loads, either way', () => {
+      for (const now of [true, false]) {
+        for (const confirmed of [true, false]) {
+          expect(restoreAt(now, { [B1]: { confirmed } }, MANAGER), `${now}/${confirmed}`).toEqual({
+            confirmed: now,
+            sent: [],
+          });
+        }
+      }
+      expect(restoreAt(true, { [B1]: { confirmed: false, confirmedLoaded: 'true' } }, MANAGER).confirmed).toBe(true);
+    });
   });
 
   it('"Keep mine" choices come back for fields and branches this page knows only', () => {

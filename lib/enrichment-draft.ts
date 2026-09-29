@@ -15,8 +15,10 @@
  * Photos are not in the base: a photo is saved the moment it is taken.
  *
  * The draft holds the form's boxes: the customer's text fields, `branchStates`
- * by branch id (since phase 2 with an optional `confirmed`), `savedAt`, `base`
- * and, after a "Keep mine" (phase 2, ruling 1), `kept`.
+ * by branch id (since phase 2 with an optional `confirmed`, and the value it
+ * was loaded as, `confirmedLoaded` — lib/enrichment-patch.ts
+ * restoreBranchStates), `savedAt`, `base` and, after a "Keep mine" (phase 2,
+ * ruling 1), `kept`.
  */
 type BranchValues = {
   id: string;
