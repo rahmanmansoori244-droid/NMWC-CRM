@@ -59,7 +59,7 @@ services/*.ts        16 'use server' modules exporting 47 async functions (serve
 prisma/              schema.prisma, 21 migrations, seeds, ad-hoc test scripts (§2)
 scripts/             ops/ (smoke, app-role, restore-verify, cron-scheduler, R2 checks), qa/, golive/,
                      compliance/, plus ~16 historical scripts at the root (§2)
-tests/unit           135 files, 2,572 tests (vitest + jsdom); one runs only where golive-data/ exists
+tests/unit           137 files, 2,585 tests (vitest + jsdom); one runs only where golive-data/ exists
 tests/integration    37 DB-backed suites gated by RUN_* flags; 34 run in CI
 tests/e2e            2 Playwright specs; only login.spec.ts runs in CI
 tests/support        strip-comments (TypeScript-parser based), jsx-ast, where-eval, workflow-step,
@@ -351,7 +351,7 @@ Trust the code. Known stale or contradictory documents:
 npm ci
 npm run typecheck        # next typegen + tsc --noEmit
 npm run lint
-npm test                 # 2,572 unit tests (one skips without golive-data/); integration files collect and skip
+npm test                 # 2,585 unit tests (one skips without golive-data/); integration files collect and skip
 npx next build           # no migrate; needs AUTH_SECRET >= 32 varied chars and placeholder DATABASE_URL/DIRECT_URL
 ```
 
@@ -397,6 +397,8 @@ The `RUN_*` flag of each suite is in its `describe.skipIf`; the CI set is in `ci
 - No sweep for **never-attached** uploads or for photos claimed by abandoned new-customer drafts (photo-gc only processes soft-deleted rows). An unmerged July attempt lives on branch `claude/nervous-saha-580313` (two commits labelled GAP-03/Q4 — the May label, not re-benchmark item 3).
 - The PRD's wrong-route flag and add-branch sub-flows are not built.
 - The remaining items of the 2026-09-24 re-benchmark (Appendix A).
+
+**CR-recompute ledger follow-up (2026-09-30):** `scripts/ops/recompute-cr-norm.ts` now records COMPLETED, with written/skipped and carried-dismissal counts, immediately after its writes and before the verification read. A failed check preserves that row and prints "not checked" with dry-run guidance (exit 2); a successful check returns 0 when nothing differs, or 1 when mismatches remain. Write failures still stop the run before completion. This is a code fix only: the production recompute remains pending the owner's go-ahead.
 
 ## 19. Glossary
 

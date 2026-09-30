@@ -64,7 +64,10 @@
  * whose guards it imports: --expect-host is required for the dry run too, the
  * dry run resolves the audit actor so it rehearses every refusal --apply has,
  * and the ledger gets a STARTING row before the first write and a COMPLETED row
- * after the last.
+ * after the last, before the verification read. After --apply, exit 0 means
+ * verified clean and 1 means some norms still differ; a successful dry run
+ * returns 0 without writing. Exit 2 means a failure (including a failed
+ * verification after writes that the COMPLETED row still records).
  */
 import { PrismaClient, EditProcess, EditState, type Prisma } from '@prisma/client';
 import { normalizeCR } from '../../lib/cr';
@@ -169,7 +172,7 @@ export function dismissalsToCarry(
 const OPEN_STATES: EditState[] = [EditState.DRAFT, EditState.SUBMITTED, EditState.NEEDS_CORRECTION];
 const HAS_CR = { OR: [{ crNumber: { not: null } }, { crNumberNorm: { not: null } }] };
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   // DIRECT_URL, like every other operator script: DATABASE_URL is the pooled
   // least-privilege role, and maintenance runs as the owner. One resolution,
   // used for both the connection and the banner.
@@ -385,8 +388,9 @@ async function main(): Promise<number> {
       else draftSkipped += 1;
     }
 
-    const now = await read();
-
+    // Record the committed writes before checking them. A failed re-read must
+    // not leave this run looking interrupted: a retry that finds nothing to do
+    // returns above without writing a ledger row (as in rescore-completeness.ts).
     await prisma.auditLog.create({
       data: {
         actorId: actor.id,
@@ -397,7 +401,8 @@ async function main(): Promise<number> {
           `operator script scripts/ops/recompute-cr-norm.ts on ${host}: COMPLETED — ` +
           `${custWritten} customer(s) and ${draftWritten} new-customer draft(s) now store the ` +
           `normalized CR that lib/cr.ts computes; ${custSkipped + draftSkipped} row(s) changed ` +
-          'while the run was reading and were left to that change. Pairs with the STARTING row ' +
+          'while the run was reading and were left to that change. Written before the ' +
+          'verification read, so a failed check cannot lose these counts. Pairs with the STARTING row ' +
           'of the same entityId. Run outside any session, so ip and userAgent are null by ' +
           'construction.',
         after: {
@@ -411,11 +416,27 @@ async function main(): Promise<number> {
       },
     });
 
-    const remaining = planCrNormFixes(now.customers).length + planCrNormFixes(now.drafts).length;
     console.log('='.repeat(76));
     console.log(
       `Wrote ${custWritten} customer(s) and ${draftWritten} draft(s); ` +
-        `${custSkipped + draftSkipped} skipped; ${remaining} still differ (expected 0).`
+        `${custSkipped + draftSkipped} skipped; the COMPLETED ledger row is written.`
+    );
+    console.log('Checking every stored norm again ...');
+
+    let remaining: number | null = null;
+    try {
+      const now = await read();
+      remaining = planCrNormFixes(now.customers).length + planCrNormFixes(now.drafts).length;
+    } catch {
+      // Database errors can include row values or connection details. The
+      // operator needs the outcome here, never the raw error.
+      console.log('The verification read FAILED; its error details are not printed.');
+    }
+    console.log(
+      remaining === null
+        ? 'Not checked: the norms above are written and the ledger has its COMPLETED row, ' +
+            'but the check that re-reads them failed.'
+        : `Checked: ${remaining} stored norm(s) still differ (expected 0).`
     );
     console.log('');
     console.log('For the record — paste this into the go-live log:');
@@ -425,12 +446,17 @@ async function main(): Promise<number> {
     console.log(`  run as          ${actor.username}`);
     console.log(`  customers       ${custWritten} written, ${custSkipped} skipped`);
     console.log(`  drafts          ${draftWritten} written, ${draftSkipped} skipped`);
+    console.log(`  still differ    ${remaining === null ? 'not checked (the check failed)' : remaining}`);
     console.log(`  CR pairs        ${pairsBefore} -> ${pairsAfter} on /duplicates`);
     console.log(`  marked distinct ${carry.length} pair(s) kept marked`);
     console.log(
       `  audit rows      AuditLog entityType=CrNormRecompute entityId=${at.toISOString()} (STARTING + COMPLETED)`
     );
     console.log('');
+    if (remaining === null) {
+      console.log('Next: a dry run to verify the stored norms; expect "Nothing to do".');
+      return 2;
+    }
     return remaining === 0 ? 0 : 1;
   } finally {
     await prisma.$disconnect();
@@ -439,7 +465,8 @@ async function main(): Promise<number> {
 
 /**
  * Run only when invoked as a command: tests/unit/recompute-cr-norm.test.ts
- * imports this module for its pure helpers, and a top-level main() would have
+ * imports this module for its helpers; recompute-cr-norm-run.test.ts calls main
+ * with a mocked client. A top-level main() would have
  * `npm test` open a database connection — against whatever .env holds.
  */
 if (/recompute-cr-norm\.ts$/.test(process.argv[1] ?? '')) {

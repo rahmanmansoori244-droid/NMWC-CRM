@@ -262,7 +262,8 @@ re-benchmark that the owner parked.
   "Decisions" in `docs/OWNER-ACTIONS-NOW.md`.
 - The CR-number recompute on production (item 16): the script is ready and falls under
   Claude's standing permission, but `AUDITOR-BRIEF.md` §18 still says "go-ahead pending" —
-  confirm with the owner, and fix its ledger loose end (§6.3) first.
+  confirm with the owner. Its verification-read ledger defect is corrected in code (§6.3);
+  the production run remains pending.
 - Two edit requests left pending since the May pilot: an approver should reject them (one
   flips a customer-level status, which approval refuses).
 - Credential rotation.
@@ -285,9 +286,14 @@ triage.
 Loose ends the reviews recorded: `/api/forms` has no body-size cap of its own (the server
 actions' 8 MB cap is above Vercel's 4.5 MB request limit, which is the bound that applies to
 both); the two export routes accept unbounded filter lists; the Temix-linked (refresh)
-import lane does not repair a branch's region; the CHANGELOG has not been kept since July;
-`scripts/ops/recompute-cr-norm.ts` reads before it writes its COMPLETED row, as the rescore
-did before `95c8a63`.
+import lane does not repair a branch's region; the CHANGELOG has not been kept since July.
+
+The CR-recompute ledger loose end is corrected (2026-09-30):
+`scripts/ops/recompute-cr-norm.ts` records COMPLETED and its written/skipped/dismissal counts
+before the verification read, as the rescore does. If that check fails, the script keeps
+the completion row, reports "not checked" without raw database errors, and exits 2 with
+dry-run guidance. Write failures still stop the run before completion. This code fix does
+not run the production recompute or supply its required owner permission (§6.2).
 
 Rough size with the review loop in §2 (Claude's estimate, 2026-09-29): the decision items
 ~2 days once decided; item 14 and the CI suites ~1 day; the data tools ~2 days; offline and
