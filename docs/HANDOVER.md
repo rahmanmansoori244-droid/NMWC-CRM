@@ -265,8 +265,10 @@ re-benchmark that the owner parked.
   confirm with the owner; the production run remains pending. The code safeguards are
   complete: CR-recompute and completeness rescore print committed counts before their
   COMPLETED insert and record completion before verification. Both the verification-read
-  catch and each script's CLI catch print only a Prisma error code or error class, never
-  its message. A failed check keeps COMPLETED, reports "not checked" and exits 2: run a dry
+  catch and each script's CLI catch show safe argument/configuration instructions marked
+  `OperatorRefusal`; other errors print only a Prisma error code or error class, never
+  their message. Refusals containing database row values remain ordinary errors and are
+  redacted. A failed check keeps COMPLETED, reports "not checked" and exits 2: run a dry
   run and, if it finds work, re-run `--apply`, then verify with another dry run. Remaining
   mismatches exit 1 with the next step printed; a second apply that still leaves work calls
   for investigation before a third. CR-normalization calculation errors after a successful

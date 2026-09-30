@@ -22,8 +22,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { TemixSyncState } from '@prisma/client';
-import { REQUEUE_WHERE, wouldRequeue } from '@/scripts/ops/requeue-untracked';
+import { Role, TemixSyncState, type PrismaClient } from '@prisma/client';
+import { REQUEUE_WHERE, assertUsableActor, resolveActor, wouldRequeue } from '@/scripts/ops/requeue-untracked';
+import { OperatorRefusal, operatorErrorLabel } from '@/scripts/ops/error-label';
 
 const SCRIPT = 'scripts/ops/requeue-untracked.ts';
 const SERVICE = 'services/temix.ts';
@@ -46,6 +47,44 @@ const target = {
   temixCode: null,
   temixSyncState: TemixSyncState.SYNCED,
 };
+
+describe('actor refusals preserve instructions without exposing database row values', () => {
+  it('keeps an unknown actor argument as an explicit refusal', async () => {
+    const prisma = { user: { findUnique: async () => null } } as unknown as PrismaClient;
+    const failure = await resolveActor(prisma, 'operator-supplied-name').catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(OperatorRefusal);
+    expect(operatorErrorLabel(failure)).toContain('--actor "operator-supplied-name" is not an account');
+  });
+
+  it('keeps the static no-Steward instruction as an explicit refusal', async () => {
+    const prisma = { user: { findMany: async () => [] } } as unknown as PrismaClient;
+    const failure = await resolveActor(prisma, '').catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(OperatorRefusal);
+    expect(operatorErrorLabel(failure)).toContain('pass --actor <username>');
+  });
+
+  it.each([
+    { username: 'private-row-user', role: Role.STEWARD, isActive: false },
+    { username: 'private-row-user', role: Role.SALESMAN, isActive: true },
+    { username: 'steward', role: Role.STEWARD, isActive: true },
+  ])('keeps the row-based account refusal private: $username / $role / $isActive', (actor) => {
+    let failure: unknown;
+    try { assertUsableActor(actor); } catch (e) { failure = e; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(OperatorRefusal);
+    expect(operatorErrorLabel(failure)).toBe('Error');
+  });
+
+  it('keeps the database-derived list of ambiguous Stewards private', async () => {
+    const prisma = { user: { findMany: async () => [
+      { username: 'private-steward-a' }, { username: 'private-steward-b' },
+    ] } } as unknown as PrismaClient;
+    const failure = await resolveActor(prisma, '').catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(OperatorRefusal);
+    expect(operatorErrorLabel(failure)).toBe('Error');
+  });
+});
 
 describe('the requeue predicate selects only the seeded, untracked, live rows', () => {
   it('selects the row the defect is about', () => {

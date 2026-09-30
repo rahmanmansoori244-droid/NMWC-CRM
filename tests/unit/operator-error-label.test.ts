@@ -3,11 +3,20 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
-import { operatorErrorLabel } from '../../scripts/ops/error-label';
+import { OperatorRefusal, operatorErrorLabel } from '../../scripts/ops/error-label';
 
 const PRIVATE_DETAIL = 'synthetic-private-row-and-connection-detail';
 
 describe('operatorErrorLabel', () => {
+  it('preserves deliberately marked operator instructions', () => {
+    const refusal = new OperatorRefusal('--apply needs --actor <steward username>');
+    expect(refusal.name).toBe('OperatorRefusal');
+    expect(refusal).toBeInstanceOf(Error);
+    expect(operatorErrorLabel(refusal)).toBe(refusal.message);
+    // A mutable name alone cannot opt an ordinary error into revealing its message.
+    expect(operatorErrorLabel(Object.assign(new Error(PRIVATE_DETAIL), { name: 'OperatorRefusal' }))).toBe('Error');
+  });
+
   it('keeps only Prisma codes, including initialization errorCode', () => {
     expect(operatorErrorLabel(Object.assign(new Error(PRIVATE_DETAIL), { code: 'P1001' }))).toBe('P1001');
     expect(operatorErrorLabel(Object.assign(new Error(PRIVATE_DETAIL), { errorCode: 'P1017' }))).toBe('P1017');
@@ -27,7 +36,7 @@ describe('operatorErrorLabel', () => {
     expect(operatorErrorLabel(error)).toBe('Error');
   });
 
-  it('never reads message, stack or name', () => {
+  it('never reads message, stack or name on an unmarked error', () => {
     const error = new Error();
     for (const key of ['message', 'stack', 'name']) {
       Object.defineProperty(error, key, { get: () => { throw new Error(PRIVATE_DETAIL); } });
@@ -42,40 +51,95 @@ describe('operatorErrorLabel', () => {
   });
 });
 
-describe.each(['recompute-cr-norm', 'rescore-completeness'])('%s CLI catch', (script) => {
-  it('logs only the shared error label across all console methods, then exits 2', () => {
-    // Execute the real CLI callback in isolation; never invoke main or create a client.
-    const file = `scripts/ops/${script}.ts`;
-    const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
-    const callbacks: ts.Expression[] = [];
-    const visit = (node: ts.Node) => {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.name.text === 'catch') callbacks.push(node.arguments[0]);
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-    expect(callbacks).toHaveLength(1);
-    const callback = callbacks[0].getText(source);
-    expect(callback).toContain('operatorErrorLabel(e)');
-    const js = ts.transpileModule(`(${callback})`, {
-      compilerOptions: { target: ts.ScriptTarget.ES2022 },
-    }).outputText;
-    for (const [error, label] of [
-      [new TypeError(PRIVATE_DETAIL), 'TypeError'],
-      [Object.assign(new Error(PRIVATE_DETAIL), { code: 'P1001' }), 'P1001'],
-    ] as const) {
-      const output = { log: vi.fn(), error: vi.fn(), warn: vi.fn() };
-      const exit = vi.fn();
-      const report = runInNewContext(js, { console: output, process: { exit }, operatorErrorLabel });
-      report(error);
-      expect(exit).toHaveBeenCalledOnce();
-      expect(exit).toHaveBeenCalledWith(2);
-      expect(output.error).toHaveBeenCalledOnce();
-      expect(output.error.mock.calls[0]).toEqual([expect.stringMatching(new RegExp(`FAILED: ${label}\\s*$`))]);
-      expect(output.log).not.toHaveBeenCalled();
-      expect(output.warn).not.toHaveBeenCalled();
-      const recorded = JSON.stringify(Object.values(output).flatMap((spy) => spy.mock.calls));
-      expect(recorded).not.toContain(PRIVATE_DETAIL);
-    }
+type Script = 'recompute-cr-norm' | 'rescore-completeness';
+const SCRIPT_NAMES: Script[] = ['recompute-cr-norm', 'rescore-completeness'];
+const compiled = new Map(
+  [...SCRIPT_NAMES, 'requeue-untracked'].map((script) => [script, ts.transpileModule(
+    readFileSync(`scripts/ops/${script}.ts`, 'utf8'),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }
+  ).outputText])
+);
+
+/** Run the actual CLI entry point, with no real client, process environment or file access. */
+async function runCli(script: Script, args: string[], guardError?: Error) {
+  const output = { log: vi.fn(), error: vi.fn(), warn: vi.fn() };
+  let finish!: (code: number) => void;
+  const finished = new Promise<number>((resolve) => { finish = resolve; });
+  const exit = vi.fn((code: number) => finish(code));
+  const client = vi.fn(() => { throw new Error('The refusal must precede Prisma construction'); });
+  const readEnv = vi.fn(() => { throw new Error('This CLI refusal must not read .env'); });
+  const modules: Record<string, unknown> = {
+    '@prisma/client': {
+      PrismaClient: client,
+      Role: { STEWARD: 'STEWARD' },
+      TemixSyncState: { SYNCED: 'SYNCED' },
+      EditState: { DRAFT: 'DRAFT', SUBMITTED: 'SUBMITTED', NEEDS_CORRECTION: 'NEEDS_CORRECTION' },
+    },
+    'node:fs': { readFileSync: readEnv },
+    '../../lib/temix': {},
+    '../../lib/demo-accounts': {},
+    '../../lib/cr': {},
+    '../../lib/duplicate-pairing': {},
+    '../../lib/locks': {},
+    '../../lib/rescore': {},
+    './error-label': { OperatorRefusal, operatorErrorLabel },
+  };
+  const processStub = {
+    argv: ['node', `scripts/ops/${script}.ts`, ...args],
+    env: { DIRECT_URL: 'postgresql://synthetic:unused@uat.invalid/test' },
+    exit,
+  };
+  const load = (name: string) => {
+    const exports: Record<string, unknown> = {};
+    runInNewContext(compiled.get(name)!, {
+      exports,
+      require: (id: string) => {
+        if (!Object.hasOwn(modules, id)) throw new Error(`Unexpected test import: ${id}`);
+        return modules[id];
+      },
+      process: processStub,
+      console: output,
+    });
+    return exports;
+  };
+  const guards = load('requeue-untracked');
+  const requireExpectedHost = vi.fn(guards.requireExpectedHost as (...values: unknown[]) => void);
+  if (guardError) requireExpectedHost.mockImplementation(() => { throw guardError; });
+  modules['./requeue-untracked'] = { ...guards, requireExpectedHost };
+  load(script);
+  expect(await finished).toBe(2);
+  expect(exit).toHaveBeenCalledOnce();
+  expect(requireExpectedHost).toHaveBeenCalledOnce();
+  expect(client).not.toHaveBeenCalled();
+  expect(readEnv).not.toHaveBeenCalled();
+  expect(output.error).toHaveBeenCalledOnce();
+  expect(output.log).not.toHaveBeenCalled();
+  expect(output.warn).not.toHaveBeenCalled();
+  const recorded = JSON.stringify(Object.values(output).flatMap((spy) => spy.mock.calls));
+  expect(recorded).not.toContain(PRIVATE_DETAIL);
+  expect(recorded).not.toContain(processStub.env.DIRECT_URL);
+  return output.error.mock.calls[0][0] as string;
+}
+
+describe.each(SCRIPT_NAMES)('%s CLI entry point', (script) => {
+  it('prints the actual missing --expect-host refusal and exits 2 before opening a client', async () => {
+    const message = await runCli(script, []);
+    expect(message).toContain('FAILED: refusing to run without --expect-host.');
+    expect(message).toContain('Name the database you intend');
+    expect(message).toContain('This connects to uat.invalid.');
   });
+
+  it.each([
+    [Object.assign(new Error(PRIVATE_DETAIL), { code: 'P1001' }), 'P1001'],
+    [new TypeError(PRIVATE_DETAIL), 'TypeError'],
+  ] as const)('redacts a non-refusal thrown at the same guard stage (%s)', async (error, label) => {
+    const message = await runCli(script, [], error);
+    expect(message).toMatch(new RegExp(`FAILED: ${label}\\s*$`));
+  });
+});
+
+it('prints rescore --apply without --actor guidance and exits 2 before opening a client', async () => {
+  const message = await runCli('rescore-completeness', ['--expect-host', 'uat.invalid', '--apply']);
+  expect(message).toContain('FAILED: --apply needs --actor <steward username>');
+  expect(message).toContain('accountable for the change');
 });

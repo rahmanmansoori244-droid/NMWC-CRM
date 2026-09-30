@@ -64,7 +64,7 @@ import {
   type RescorePlan,
 } from '../../lib/rescore';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
-import { operatorErrorLabel } from './error-label';
+import { OperatorRefusal, operatorErrorLabel } from './error-label';
 
 /** Customers per page: one read of them and their branches, one transaction each. */
 export const DEFAULT_CHUNK = 200;
@@ -78,10 +78,10 @@ export function parseRescoreArgs(args: readonly string[]): RescoreOptions {
   const actorIdx = args.indexOf('--actor');
   const actor = actorIdx >= 0 ? (args[actorIdx + 1] ?? '') : '';
   if (actorIdx >= 0 && (!actor || actor.startsWith('--'))) {
-    throw new Error('--actor was passed without a username');
+    throw new OperatorRefusal('--actor was passed without a username');
   }
   if (apply && !actor) {
-    throw new Error(
+    throw new OperatorRefusal(
       '--apply needs --actor <steward username>: the ledger rows name the Steward\n' +
         '  accountable for the change, and there is no system user to default to.'
     );
@@ -91,7 +91,7 @@ export function parseRescoreArgs(args: readonly string[]): RescoreOptions {
   if (chunkIdx >= 0) {
     const raw = args[chunkIdx + 1] ?? '';
     if (!/^[1-9]\d*$/.test(raw) || Number(raw) > MAX_CHUNK) {
-      throw new Error(`--chunk needs a whole number from 1 to ${MAX_CHUNK}, e.g. --chunk 200`);
+      throw new OperatorRefusal(`--chunk needs a whole number from 1 to ${MAX_CHUNK}, e.g. --chunk 200`);
     }
     chunk = Number(raw);
   }
@@ -109,7 +109,7 @@ export function prepare(
   env: Record<string, string | undefined>
 ): { url: string; host: string; opts: RescoreOptions } {
   const url = env.DIRECT_URL ?? env.DATABASE_URL ?? '';
-  if (!url) throw new Error('set DIRECT_URL (preferred) or DATABASE_URL');
+  if (!url) throw new OperatorRefusal('set DIRECT_URL (preferred) or DATABASE_URL');
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
   requireExpectedHost([...args], url, host);
   return { url, host, opts: parseRescoreArgs(args) };

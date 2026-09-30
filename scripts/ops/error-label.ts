@@ -1,6 +1,15 @@
-/** Operator failures reveal only a Prisma code or an error class, never row/connection details. */
+/** Safe instructions built from arguments/configuration, never database row values or raw errors. */
+export class OperatorRefusal extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OperatorRefusal';
+  }
+}
+
+/** Preserve explicit safe refusals; other failures reveal only a Prisma code or error class. */
 export function operatorErrorLabel(error: unknown): string {
   try {
+    if (error instanceof OperatorRefusal) return error.message;
     if (typeof error === 'object' && error !== null) {
       const value = error as { code?: unknown; errorCode?: unknown };
       for (const key of ['code', 'errorCode'] as const) {

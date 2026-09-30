@@ -80,7 +80,7 @@ import {
   type SignalRow,
 } from '../../lib/duplicate-pairing';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
-import { operatorErrorLabel } from './error-label';
+import { OperatorRefusal, operatorErrorLabel } from './error-label';
 
 export type NormRow = { id: string; crNumber: string | null; crNumberNorm: string | null };
 
@@ -178,7 +178,7 @@ export async function main(): Promise<number> {
   // least-privilege role, and maintenance runs as the owner. One resolution,
   // used for both the connection and the banner.
   const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
-  if (!url) throw new Error('set DIRECT_URL (preferred) or DATABASE_URL');
+  if (!url) throw new OperatorRefusal('set DIRECT_URL (preferred) or DATABASE_URL');
   const args = process.argv.slice(2);
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
   requireExpectedHost(args, url, host);
@@ -187,7 +187,7 @@ export async function main(): Promise<number> {
   const actorIdx = args.indexOf('--actor');
   const actorArg = actorIdx >= 0 ? (args[actorIdx + 1] ?? '') : '';
   if (actorIdx >= 0 && (!actorArg || actorArg.startsWith('--'))) {
-    throw new Error('--actor was passed without a username');
+    throw new OperatorRefusal('--actor was passed without a username');
   }
 
   const prisma = new PrismaClient({ datasourceUrl: url });

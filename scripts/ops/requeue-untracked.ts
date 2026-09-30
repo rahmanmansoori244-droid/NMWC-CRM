@@ -44,6 +44,7 @@ import { PrismaClient, Role, TemixSyncState, type Prisma } from '@prisma/client'
 import { readFileSync } from 'node:fs';
 import { TEMIX_QUEUE_WHERE } from '../../lib/temix';
 import { isDemoAccount } from '../../lib/demo-accounts';
+import { OperatorRefusal } from './error-label';
 
 /**
  * The rows to correct, and the whole of the safety argument, in one object.
@@ -176,7 +177,7 @@ export function requireExpectedHost(args: string[], url: string, host: string): 
   const expectIdx = args.indexOf('--expect-host');
   const expectHost = expectIdx >= 0 ? (args[expectIdx + 1] ?? '') : '';
   if (!expectHost || expectHost.startsWith('--')) {
-    throw new Error(
+    throw new OperatorRefusal(
       'refusing to run without --expect-host.\n' +
         `  This connects to ${host}.\n` +
         '  Name the database you intend, so a variable that did not take cannot\n' +
@@ -206,7 +207,7 @@ export function requireExpectedHost(args: string[], url: string, host: string): 
   } catch {
     /* no .env here; nothing to attribute */
   }
-  throw new Error(
+  throw new OperatorRefusal(
     `refusing: you asked for "${expectHost}" but this connection points at ${host}.\n` +
       (viaDotenv
         ? '  That URL is the one in this repository .env — so your variable never\n' +
@@ -230,6 +231,7 @@ export function requireExpectedHost(args: string[], url: string, host: string): 
  * fix is to rename the account, which is the standing rule.
  */
 export function assertUsableActor(u: { username: string; role: Role; isActive: boolean }): void {
+  // These messages contain database row values; keep them as ordinary errors.
   if (!u.isActive) {
     throw new Error(
       `--actor "${u.username}" is deactivated. The ledger row for this change has to\n` +
@@ -270,7 +272,7 @@ export async function resolveActor(
       where: { username: username.toLowerCase().trim() },
       select: { id: true, username: true, role: true, isActive: true },
     });
-    if (!u) throw new Error(`--actor "${username}" is not an account on this database`);
+    if (!u) throw new OperatorRefusal(`--actor "${username}" is not an account on this database`);
     assertUsableActor(u);
     return { id: u.id, username: u.username };
   }
@@ -286,7 +288,7 @@ export async function resolveActor(
     return { id: stewards[0]!.id, username: stewards[0]!.username };
   }
   if (stewards.length === 0) {
-    throw new Error(
+    throw new OperatorRefusal(
       'no active Steward to attribute this to — pass --actor <username>.\n' +
         '  (AuditLog.actorId is a required foreign key; there is no system user.)'
     );
@@ -306,7 +308,7 @@ async function main(): Promise<number> {
   // DATABASE_URL is the pooled least-privilege role, and maintenance runs as the
   // owner.
   const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
-  if (!url) throw new Error('set DIRECT_URL (preferred) or DATABASE_URL');
+  if (!url) throw new OperatorRefusal('set DIRECT_URL (preferred) or DATABASE_URL');
   const args = process.argv.slice(2);
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
   requireExpectedHost(args, url, host);
@@ -315,7 +317,7 @@ async function main(): Promise<number> {
   const actorIdx = args.indexOf('--actor');
   const actorArg = actorIdx >= 0 ? (args[actorIdx + 1] ?? '') : '';
   if (actorIdx >= 0 && (!actorArg || actorArg.startsWith('--'))) {
-    throw new Error('--actor was passed without a username');
+    throw new OperatorRefusal('--actor was passed without a username');
   }
 
   // --limit <n> — requeue at most n customers, so the queue can be drained in
@@ -338,7 +340,7 @@ async function main(): Promise<number> {
   if (limitIdx >= 0) {
     const raw = args[limitIdx + 1] ?? '';
     if (!/^[1-9]\d*$/.test(raw)) {
-      throw new Error('--limit needs a positive whole number, e.g. --limit 1000');
+      throw new OperatorRefusal('--limit needs a positive whole number, e.g. --limit 1000');
     }
     limit = Number(raw);
   }
