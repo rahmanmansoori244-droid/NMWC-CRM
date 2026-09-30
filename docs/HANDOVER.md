@@ -341,7 +341,13 @@ re-benchmark that the owner parked.
   flips a customer-level status, which approval refuses).
 - Credential rotation.
 
-### 6.3 Engineering not started
+### 6.3 Engineering follow-ups
+
+Completed in code: form POSTs under `/api/forms/[form]` have a 4 MiB raw-byte cap,
+enforced while reading and before JSON parsing. An overflow cancels the stream and
+returns a 413 refusal in the action-result shape, which the phone displays as an answer.
+The cap is independent of `Content-Length` and field validation; sign-in and Origin
+checks still run first, and the shared reader's photo callers are unchanged.
 
 From the 41-item benchmark list (2026-09-24): **32** three integration suites
 (`build-chain-data`, `golive-rehearsal`, `uat-load`) never run in CI; **10** and **13**
@@ -356,10 +362,9 @@ in §6.2.
 From the auditor's recheck: ENH-4 and enhancements 1, 2, 7, 8, 9; the dependency-audit
 triage.
 
-Loose ends the reviews recorded: `/api/forms` has no body-size cap of its own (the server
-actions' 8 MB cap is above Vercel's 4.5 MB request limit, which is the bound that applies to
-both); the two export routes accept unbounded filter lists; the Temix-linked (refresh)
-import lane does not repair a branch's region; the CHANGELOG has not been kept since July.
+Loose ends the reviews recorded: the two export routes accept unbounded filter lists;
+the Temix-linked (refresh) import lane does not repair a branch's region; the CHANGELOG
+has not been kept since July.
 
 CR-recompute and completeness rescore use the same verification-failure policy; their
 completed safeguards and the pending production CR run are recorded in §6.2.

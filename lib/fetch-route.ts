@@ -37,13 +37,40 @@ export function refuseCrossSite(req: NextRequest): NextResponse | null {
   return null;
 }
 
-/** The body as a JSON object, or the 400 that refuses it. */
+/** The body as a JSON object; an optional byte cap is enforced before parsing. */
 export async function readJsonObject(
-  req: NextRequest
+  req: NextRequest,
+  maxBytes?: number
 ): Promise<{ body: Record<string, unknown> } | { refused: NextResponse }> {
   let body: unknown;
   try {
-    body = await req.json();
+    if (maxBytes === undefined) {
+      body = await req.json();
+    } else {
+      const reader = req.body?.getReader();
+      let text = '';
+      if (reader) {
+        const decoder = new TextDecoder();
+        let bytes = 0;
+        try {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            bytes += value.byteLength;
+            if (bytes > maxBytes) {
+              // Do not await a client's cancellation or expose its error text.
+              void reader.cancel().catch(() => {});
+              return { refused: refuse(413, 'BODY_TOO_LARGE', 'The form is too large to send. Reduce it and try again.') };
+            }
+            text += decoder.decode(value, { stream: true });
+          }
+          text += decoder.decode();
+        } finally {
+          reader.releaseLock();
+        }
+      }
+      body = JSON.parse(text);
+    }
   } catch {
     return { refused: refuse(400, 'INVALID_JSON', 'The request was not valid JSON.') };
   }

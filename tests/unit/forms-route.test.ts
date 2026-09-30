@@ -28,6 +28,7 @@ vi.mock('@/services/reactivations', () => ({
 }));
 
 import { GET, POST } from '@/app/api/forms/[form]/route';
+import { submitEditSchema } from '@/lib/validation/edit';
 
 const HOST = 'nmwc.example';
 function post(form: string, body: unknown, headers: Record<string, string> = {}) {
@@ -116,6 +117,65 @@ describe('POST /api/forms/[form]', () => {
     expect((await post('customer-edit', '{not json')).status).toBe(400);
     expect((await post('customer-edit', '[1,2]')).status).toBe(400);
     expect(h.edit).not.toHaveBeenCalled();
+  });
+
+  it('accepts exactly 4 MiB before delegating to the action for field validation', async () => {
+    const raw = `{"p":"${'x'.repeat(4 * 1024 * 1024 - 8)}"}`;
+    const res = await post('customer-edit', raw);
+    expect(res.status).toBe(200);
+    expect(h.edit).toHaveBeenCalledOnce();
+  });
+
+  it.each(['customer-edit', 'customer-create', 'branch-close', 'branch-reactivate'])(
+    'refuses a body above 4 MiB before calling any action for %s', async (form) => {
+      const res = await post(form, `{"p":"${'x'.repeat(4 * 1024 * 1024 - 7)}"}`);
+      expect(res.status).toBe(413);
+      expect(await res.json()).toEqual({
+        ok: false, code: 'BODY_TOO_LARGE',
+        message: 'The form is too large to send. Reduce it and try again.',
+      });
+      for (const action of ACTIONS) expect(action).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    { form: 'missing', signedIn: true, origin: `https://${HOST}`, contentType: 'application/json', status: 404 },
+    { form: 'customer-edit', signedIn: false, origin: `https://${HOST}`, contentType: 'application/json', status: 401 },
+    { form: 'customer-edit', signedIn: true, origin: 'https://other.example', contentType: 'application/json', status: 403 },
+    { form: 'customer-edit', signedIn: true, origin: `https://${HOST}`, contentType: 'text/plain', status: 415 },
+  ])('returns $status without reading the body', async ({ form, signedIn, origin, contentType, status }) => {
+    h.signedIn = signedIn;
+    const pull = vi.fn();
+    const req = new NextRequest(`https://${HOST}/api/forms/${form}`, {
+      method: 'POST',
+      headers: { host: HOST, origin, 'content-type': contentType },
+      body: new ReadableStream({ pull }, { highWaterMark: 0 }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ form }) });
+    expect(res.status).toBe(status);
+    expect(pull).not.toHaveBeenCalled();
+    expect(req.bodyUsed).toBe(false);
+    for (const action of ACTIONS) expect(action).not.toHaveBeenCalled();
+  });
+
+  it('allows 500 Arabic-heavy branch patches with before/after values under the cap', async () => {
+    const fields = (letter: string) => ({
+      branchName: letter.repeat(200), address: letter.repeat(500), areaDescription: letter.repeat(500),
+      openingHours: letter.repeat(100), deliveryWindow: letter.repeat(100),
+    });
+    const body = {
+      v: 2, customerId: 'c0000000000000000000000000', customer: {}, customerBase: {},
+      branches: Array.from({ length: 500 }, (_, index) => ({
+        branchId: `c${index.toString(36).padStart(24, '0')}`, ...fields('ع'),
+        gpsLat: 23, gpsLng: 58, gpsAccuracy: 3, gpsCapturedAt: '2026-09-30T08:00:00.000Z',
+        gpsManualReason: 'ع'.repeat(500), base: { ...fields('م'), gpsLat: 22, gpsLng: 57 },
+      })),
+    };
+    expect(submitEditSchema.safeParse(body).success).toBe(true);
+    const raw = JSON.stringify(body);
+    expect(Buffer.byteLength(raw)).toBeLessThan(4 * 1024 * 1024);
+    expect((await post('customer-edit', raw)).status).toBe(200);
+    expect(h.edit).toHaveBeenCalledWith(body);
   });
 
   it('lets a programmer error propagate (500, reported) instead of answering', async () => {

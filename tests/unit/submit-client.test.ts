@@ -75,6 +75,14 @@ describe('postForm — what is known after a submit', () => {
     expect(await postForm('customer-edit', {})).toEqual({ kind: 'answered', result: body });
   });
 
+  it('shows the route body-size refusal as an answer, without inviting an unchanged retry', async () => {
+    const body = { ok: false, code: 'BODY_TOO_LARGE', message: 'The form is too large to send. Reduce it and try again.' };
+    vi.stubGlobal('fetch', async () => json(body, 413));
+    const out = await postForm('customer-edit', {});
+    expect(out).toEqual({ kind: 'answered', result: body });
+    expect(noticeFor(out)).toEqual({ tone: 'failed', text: body.message, retry: false });
+  });
+
   it('no network at all: the send fails at once, and nothing left the phone', async () => {
     online = false;
     const fetchMock = vi.fn(async () => {

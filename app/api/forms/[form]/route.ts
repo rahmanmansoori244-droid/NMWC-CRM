@@ -20,9 +20,9 @@ export const runtime = 'nodejs';
  * action queues behind it). Each form calls the SAME function its server action
  * was, so the checks, the audit and the submission-id replay are one code path.
  *
- * The reply is always the action's own `{ ok, … }` shape with status 200 — ok or
- * not, the server read the request and answered. Anything else the client treats
- * as "no answer": a 500 here is a programmer error thrown by runAction, left to
+ * Action results use their own `{ ok, … }` shape with status 200; route refusals
+ * use that shape with a 4xx status. Both are answers (apart from a signed-out
+ * 401). A 500 is "no answer": a programmer error thrown by runAction is left to
  * propagate so it reaches the error reporting.
  */
 type Json = Record<string, unknown>;
@@ -64,7 +64,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ form: stri
       ? refuse(401, 'SIGNED_OUT', 'You are signed out, so nothing was sent.')
       : refuse(who.status, who.code, who.message);
   }
-  const read = await readJsonObject(req);
+  // Bound bytes before JSON parsing, including requests with no Content-Length.
+  // 4 MiB allows large multi-branch edits while staying below the hosting limit.
+  const read = await readJsonObject(req, 4 * 1024 * 1024);
   if ('refused' in read) return read.refused;
   return NextResponse.json(await run(read.body));
 }
