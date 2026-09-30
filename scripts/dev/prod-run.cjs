@@ -60,7 +60,19 @@ try {
 } catch {
   /* keep the raw form */
 }
-const secrets = [url, parsed.password, decodedPassword, parsed.username, parsed.host, parsed.hostname]
+// The endpoint ID (the host's first label, with and without "-pooler") appears on its
+// own in some Neon errors.
+const endpoint = parsed.hostname.split('.')[0];
+const secrets = [
+  url,
+  parsed.password,
+  decodedPassword,
+  parsed.username,
+  parsed.host,
+  parsed.hostname,
+  endpoint,
+  endpoint.replace(/-pooler$/, ''),
+]
   .filter((s) => s && s.length >= 4)
   .sort((a, b) => b.length - a.length);
 const mask = (s) => {

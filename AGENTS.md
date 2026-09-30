@@ -22,9 +22,11 @@ chat.
    your branch (docs/HANDOVER.md §2).
 4. **Never work in the owner's main checkout: its `.env` points at PRODUCTION.** Work in
    your own clone or worktree whose `.env` names the **UAT** database. Before anything that
-   loads `.env` (tests, `scripts/qa/run-with-env.mjs`, Prisma), confirm — with a check
-   that prints only yes or no, never the value — that neither `DATABASE_URL` nor
-   `DIRECT_URL` contains `ep-sweet-haze`. Some integration suites and `prisma/seed.ts`
+   loads `.env` (tests, `scripts/qa/run-with-env.mjs`, Prisma), run
+   `node scripts/dev/env-check.cjs`: it prints only "production" or "not production" for
+   `DATABASE_URL` and `DIRECT_URL` (in the file and the environment), never a value, and
+   exits 1 on production. Never check with `grep` or `Select-String` on `.env`: they
+   print the whole line, password included. Some integration suites and `prisma/seed.ts`
    do not refuse production. If you have no UAT access, do not look for credentials: say so
    when you hand the work back.
 5. Never run `npm run build` locally (it runs `prisma migrate deploy` against whatever

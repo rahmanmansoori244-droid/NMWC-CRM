@@ -26,7 +26,8 @@ Read in this order:
 
 - **`main` = `95c8a63`**, deployed to production and verified: the build serves that
   commit, `npm run smoke` passes 14/14, and the post-deploy smoke in CI passes 16/16
-  with no scheduled job alarming. This handover package itself is merged after that.
+  with no scheduled job alarming. If `origin/main` has no `AGENTS.md`, this handover
+  package has not reached `main` yet: stop and ask the owner.
 - **Rollout status** (who is using the system, and whether accounts have been handed
   out): ask the owner. It is deliberately not recorded in this public file.
 - The data is loaded: seven regions; 18,703 live customers and 20,682 live branches on
@@ -56,7 +57,7 @@ Read in this order:
   (`apply-quarantined-visit-days.ts`).
 - **2026-09-27** — the `nmwc_app` role's grants corrected (`scripts/ops/app-role.ts grant`).
 - **2026-09-29 06:00 UTC — completeness rescore** (`npm run ops:rescore-completeness`, as
-  `data.steward`): 550 customer and 18,890 branch scores rewritten; a second dry run found
+  the Data Steward): 550 customer and 18,890 branch scores rewritten; a second dry run found
   nothing to do. Ledger: `AuditLog` rows with `entityType = CompletenessRescore`.
 - **2026-09-29 — one customer's sub-channel cleared**: it belonged to another channel than
   the customer's (F16). One audited `UPDATE` as the Data Steward, no Temix requeue.
@@ -126,7 +127,7 @@ this project has found real defects, including ones that would have reached prod
 |---|---|---|
 | Code, migrations, tests, CI, docs | GitHub (this repository, public) | — |
 | Production and UAT connection strings, R2 keys, Sentry DSN, cron secrets | Vercel environment variables, GitHub Actions secrets, and the owner's local `.env` files | Never print, log or commit one. **The `.env` in the owner's main checkout points at PRODUCTION**: never work in that checkout. Give a coding agent a UAT `.env` only. |
-| `golive-data/` — the go-live masters: customer data and generated passwords | Gitignored. On the owner's machine the only copy is inside the Claude worktree `.claude/worktrees/nmwc-crm-consolidation-e10c1e/`, not the main checkout; **no backup is confirmed** | Never committed, never read into a chat or a log. Scripts may read it; people and agents may not. Never delete that worktree until the owner has backed the folder up privately. |
+| `golive-data/` — the go-live masters: customer data and generated passwords | Gitignored; on the owner's machine only (ask the owner where) | Never committed, never read into a chat or a log. Scripts may read it; people and agents may not. Never delete any worktree under `.claude/worktrees/` without asking the owner. |
 | The go-live source files (RoutePro, Timix extracts, journey plans, the sales dashboard database) | The owner's Desktop, outside the repo | Read-only. `scripts/golive/build-masters.ts` names each one. |
 | Helper scripts for the merge loop and production reads | `scripts/dev/` | See §2 and §5. |
 | Design notes for phase 2 | `docs/design/phase2-edit-semantics/` | The spec, the critic's attack and the lead's rulings. Where they differ from the code, the code and `AUDITOR-BRIEF.md` win. |
@@ -208,7 +209,9 @@ Manager's Service status view counts only the Supervisor step on requests in his
   `--apply` to write (with `--actor <steward username>`, required by some scripts and needed
   wherever more than one Steward exists), a ledger row before and after, counts-only output,
   and a second dry run that reports nothing left. See `rescore-completeness.ts` and
-  `recompute-cr-norm.ts`.
+  `recompute-cr-norm.ts`. Run it through `prod-run.cjs` like a read (the runner passes its
+  arguments through, e.g. `--expect-host ep-sweet-haze --apply --actor <steward>`); never put
+  `DIRECT_URL=…` on a command line, even though the scripts' own headers show that form.
 - The app still connects as the database owner; switching it to `nmwc_app` is open (§6.2).
 
 ---
@@ -262,7 +265,6 @@ re-benchmark that the owner parked.
   confirm with the owner, and fix its ledger loose end (§6.3) first.
 - Two edit requests left pending since the May pilot: an approver should reject them (one
   flips a customer-level status, which approval refuses).
-- Back up `golive-data/` privately (§3).
 - Credential rotation.
 
 ### 6.3 Engineering not started
@@ -295,10 +297,8 @@ X-AUTH-2, photo removal) matter most.
 
 ### 6.4 Housekeeping
 
-- Old agent worktrees under `.claude/worktrees/` on the owner's machine. Three
-  (`agent-a23260c…`, `agent-a216ac…`, `agent-a708694595f3de6d1`) hold copies of the UAT
-  `.env`; remove them when no branch needs them. **Never remove
-  `nmwc-crm-consolidation-e10c1e`**: it holds the only copy of `golive-data/`.
+- Old agent worktrees under `.claude/worktrees/` on the owner's machine: remove one only
+  with the owner's go-ahead.
 - The main checkout on the owner's machine can sit on an old commit: `git pull` first, and
   remember its `.env` is production.
 
@@ -329,8 +329,10 @@ X-AUTH-2, photo removal) matter most.
 - Integration suites against UAT: `RUN_<FLAG>=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/<file>.test.ts`
   (PowerShell: `$env:RUN_<FLAG>='1'; node scripts/qa/run-with-env.mjs vitest run …`). The
   flag is named inside the suite (`grep -n RUN_ tests/integration/<file>.test.ts`). The
-  runner loads `.env` with no host check, and some suites do not refuse production — confirm
-  first that your `.env` is UAT. A spaced `-t "pattern"` passed through the runner becomes
+  runner loads `.env` with no host check, and some suites do not refuse production — run
+  `node scripts/dev/env-check.cjs` first (it prints only "production" / "not production",
+  never a value, and exits 1 on production). Never check with `grep` or `Select-String` on
+  `.env`: they print the whole line, password included. A spaced `-t "pattern"` passed through the runner becomes
   file filters; use a pattern without spaces.
 - In PowerShell use `npm.cmd` (the execution policy blocks `npm.ps1`).
 - The UAT database link from this machine is flaky ("can't reach database server"); rerun.
