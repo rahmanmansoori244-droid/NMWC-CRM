@@ -1,6 +1,7 @@
 // Print the Next build ID the live production alias is serving (read from /login).
-// Used by the merge procedure (docs/HANDOVER.md §2): record it before the push, and
-// deploy-watch.sh waits for it to change.
+// Owner/Claude production diagnostic only (docs/HANDOVER.md §5), not for Codex.
+// deploy-watch.sh can wait for this ID to change after an owner-approved deployment.
+// The owner merges in GitHub; Codex checks GitHub CI results as described in §2.
 //   node scripts/dev/build-id.cjs [url]
 // On success: the ID alone on stdout, exit 0. On any failure: nothing on stdout, the
 // reason on stderr, exit 1 — so a network error can never read as a new build.

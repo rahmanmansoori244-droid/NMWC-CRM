@@ -6,10 +6,15 @@ below the line "The rules (verbatim from CLAUDE.md)" is a copy of `CLAUDE.md`, a
 `tests/unit/agents-md-guard.test.ts` fails if the two drift. Change them together.
 
 **Owner working agreement, 2026-09-30:** the preface below and `docs/HANDOVER.md` §2
-record the current workflow. They supersede older workflow or permission text in the
-unchanged common rules: the owner merges; Claude reviews only Tier B changes, in batches;
-Codex has no production access, including reads. Keep `CLAUDE.md` and its verbatim copy
-unchanged when updating this preface.
+record the current workflow. They replace only the older instructions about **who merges
+and how** (the owner uses GitHub Rebase and merge, replacing Claude's fast-forward push),
+**review by tier** (Claude reviews Tier B changes in batches, not every change), and
+**other agents' production access** (Codex has none, including reads; Claude's permission
+does not transfer). Everything else in the verbatim rules still applies, including safety,
+the CI exit-code gate for the exact commit, smoke before and after production changes,
+and the adversarial pass after a substantial merge. The owner coordinates production
+checks with Claude; Codex checks their CI results through GitHub. Keep `CLAUDE.md` and its
+verbatim copy unchanged when updating this preface.
 
 Two words in those rules come from Claude Code. A **scratchpad** is a directory outside
 this repository (for example `%TEMP%\nmwc-scratch`) — never inside the repository and
@@ -58,9 +63,11 @@ chat.
 
 ### PR review tiers
 
-**Tier A — low risk, no Claude review:** documentation and wording, tests only, UI layout
-and copy, `scripts/dev/` tooling, and small loose ends. A Tier A PR must not touch any Tier B
-path. The owner merges it once CI is green and the branch is up to date.
+**Tier A — low risk, no Claude review:** documentation and wording, adding or strengthening
+tests, UI layout and copy, `scripts/dev/` tooling except the three safety tools listed
+below, and small loose ends. A Tier A PR must not touch any Tier B path. Deleting or
+loosening a `*-guard` test is **Tier B**, not "tests only". The owner merges Tier A once CI
+is green and the branch is up to date.
 
 **Tier B — Claude review required before merge:** any change touching the following paths
 or areas, including a documentation or wording change inside them. Prefix the PR title
@@ -68,15 +75,17 @@ with **`[needs Claude]`**. Review these PRs with Claude in batches.
 
 | Area | Paths |
 |---|---|
-| Approvals and credit | `services/edits.ts`, `services/creates.ts`, `lib/decision-token.ts`, `lib/approval-chains.ts`, `app/(app)/approvals/**` |
-| Permissions and scope | `lib/access.ts`, `lib/permissions.ts`, `lib/edit-scope.ts`, `lib/submit-gate.ts` |
-| Imports | `services/imports.ts`, `lib/account-import.ts`, `lib/excel.ts`, `services/import-fixes.ts` |
-| Database schema and migrations | `prisma/` |
-| Sign-in and sessions | `lib/session.ts`, `lib/auth.ts`, `auth.config.ts`, `app/actions/auth.ts`, `services/password.ts`, `lib/login-throttle.ts`, `middleware.ts`, `lib/csp.ts` |
-| Privacy | `lib/scrub.ts`, `lib/sentry-scrub.ts`, the Sentry configs, `lib/logger.ts`, `services/exports.ts`, `services/customer-export.ts` |
-| Offline and drafts | `lib/enrichment-draft.ts`, `lib/enrichment-patch.ts`, the edit and create forms |
-| Photos and storage | `services/photos.ts`, `app/api/photos/**`, `lib/r2.ts`, `app/api/cron/**` |
-| Scripts that can write to a database | `scripts/ops/**`, `prisma/*.ts`, and any other database-writing script |
+| Approvals and credit | `services/edits.ts`, `services/creates.ts`, `lib/decision-token.ts`, `lib/approval-chains.ts`, `lib/edit-approval.ts`, `lib/create-*.ts`, `app/(app)/approvals/**` |
+| Permissions and scope | `lib/access.ts`, `lib/permissions.ts`, `lib/edit-scope.ts`, `lib/submit-gate.ts`, `lib/export-scope.ts` |
+| Imports | `services/imports.ts`, `lib/account-import.ts`, `lib/excel.ts`, `services/import-fixes.ts`, `lib/import-*.ts` |
+| Database, audit and migrations | `prisma/`, `lib/db.ts`, `lib/audit.ts` |
+| Sign-in, sessions and user administration | `lib/session.ts`, `lib/auth.ts`, `auth.config.ts`, `app/actions/auth.ts`, `app/api/auth/**`, `services/password.ts`, `services/users.ts`, `lib/login-throttle.ts`, `lib/demo-accounts.ts`, `lib/auth-handlers.ts`, `lib/password-policy.ts`, `lib/rate-limit.ts`, `middleware.ts`, `lib/csp.ts` |
+| Privacy and exports | `lib/scrub.ts`, `sentry.*.config.ts`, `instrumentation*.ts`, `lib/sentry-*.ts`, `lib/logger.ts`, `services/exports.ts`, `services/customer-export.ts`, `app/api/exports/**` |
+| Forms, submissions, offline and drafts | `app/api/forms/**`, `lib/fetch-route.ts`, `lib/submission*.ts`, `lib/submit-client.ts`, `lib/enrichment-draft.ts`, `lib/enrichment-patch.ts`, `app/(app)/customers/[id]/edit/EnrichmentForm.tsx`, `app/(app)/customers/new/CreateCustomerForm.tsx` |
+| Photos, storage and cron authentication | `services/photos.ts`, `app/api/photos/**`, `lib/r2.ts`, `lib/photo-*.ts`, `app/api/cron/**`, `lib/cron-auth.ts` |
+| CI, dependencies and deployment | `.github/workflows/**`, `package.json`, `package-lock.json`, `next.config.ts`, `vercel.json` |
+| Operational safety tools | `scripts/dev/prod-run.cjs`, `scripts/dev/env-check.cjs`, `scripts/dev/leak-check.cjs` |
+| Go-live, credentials and database-writing scripts | `scripts/golive/**`, `scripts/bulk-reset-credentials.ts`, `scripts/ops/**`, `prisma/*.ts`, and any other database-writing script |
 
 Nothing with a migration merges without Claude's review. The PR recording this working
 agreement is also **Tier B**, as the owner requested, because it changes the rulebook.
@@ -96,14 +105,28 @@ agreement is also **Tier B**, as the owner requested, because it changes the rul
   their results, dependencies if any, and what you did **not** do.
 - If the change alters something `AUDITOR-BRIEF.md` states, update the brief in the same
   change. Run `node scripts/dev/leak-check.cjs` before committing and marking the PR ready.
-- The owner uses **Rebase and merge** only when GitHub shows the branch is up to date
-  with `main` (no **Update branch** button). If it is behind, fetch, rebase the review
-  branch onto current `origin/main`, push that branch with `--force-with-lease`, and wait
-  for green CI on the new latest commit. Tier B additionally needs Claude to say it is
-  ready before the owner merges.
+- Before the owner uses **Rebase and merge**, substitute the PR's latest full head SHA
+  in the command below. It must succeed and print **0**:
+
+  ```sh
+  gh api repos/rahmanmansoori244-droid/NMWC-CRM/compare/main...<PR head sha> --jq .behind_by
+  ```
+
+  The repository's **Always suggest updating pull request branches** setting is off
+  (`allow_update_branch=false`), so an absent **Update branch** button proves nothing.
+  If behind, fetch, rebase the review branch onto current `origin/main`, push that branch
+  with `--force-with-lease`, and wait for green CI on the new latest commit. Tier B also
+  needs Claude to say it is ready before the owner merges.
 - After the owner merges, check `main`'s CI run for the resulting commit through GitHub,
-  including **post-deploy-smoke**, and report anything red. The rebased commit may have a
-  different SHA from the PR head. Do not access production to perform this check.
+  including **post-deploy-smoke**. GitHub's **Rebase and merge always creates new commits**,
+  so `main`'s CI runs on a new commit, not the reviewed PR head. Do not access production
+  to perform this check.
+- **If `main`'s CI or post-deploy smoke goes red after a merge, Codex reports the failing
+  job and commit and pushes nothing.** The owner has Claude check the live build, smoke
+  and migration state. Recovery is Vercel's instant rollback or a revert PR, selected by
+  the owner with Claude; never revert a migration without Claude. A deployment rollback
+  does not undo database migrations. Resume branch pushes only after the owner and Claude
+  have resolved the incident and `main`'s checks are verified green.
 
 ---
 

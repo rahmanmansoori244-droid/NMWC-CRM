@@ -12,8 +12,9 @@ anything of that kind; it is handed over privately, not written here.
 
 Read in this order:
 
-1. `AGENTS.md` (or `CLAUDE.md` — the same rules): the standing rules, each with the
-   incident that made it a rule.
+1. The `AGENTS.md` preface and §2 below for the current working agreement, then the
+   shared standing rules in `CLAUDE.md` and the verbatim part of `AGENTS.md`, each with
+   the incident that made it a rule.
 2. This file.
 3. `AUDITOR-BRIEF.md`: how the system works, what is fixed, and what is known to be
    wrong (Appendix B lists the external auditor's findings one by one; §12 lists the
@@ -67,9 +68,14 @@ Read in this order:
 ## 2. How a change is made, verified and merged here
 
 **Owner working agreement, 2026-09-30.** Codex continues independently; Claude reviews
-only risky changes, in batches. This section and the `AGENTS.md` preface supersede the
-older workflow and permission text in the unchanged `CLAUDE.md` rules and their verbatim
-copy in `AGENTS.md`. **The owner merges; Codex never merges or pushes to `main`.**
+only risky changes, in batches. This section and the `AGENTS.md` preface replace only
+these older rules: who merges and how (the owner uses GitHub's Rebase and merge, rather
+than Claude merging after "merge it" or pushing `main`), review of every change by Claude
+(now review by tier), and production access for other coding agents (none, even with the
+older task-permission wording). Everything else in `CLAUDE.md` and its unchanged verbatim
+copy in `AGENTS.md` still applies, including safety, the CI exit-code gate, smoke before
+and after production changes, and the adversarial pass after every substantial merge.
+**The owner merges; neither Codex nor Claude merges or pushes to `main`.**
 
 **Codex has no production access, for reads or writes.** Work in a separate clone or
 worktree with **UAT only**, never the owner's main checkout (§3). If work needs production,
@@ -81,24 +87,30 @@ copy `golive-data/`, print secrets, or reformat existing files.
 
 Put the tier and its reason in every PR description. **If unsure, use Tier B.**
 
-**Tier A — low risk, no Claude review:** documentation and wording, tests only, UI layout
-and copy, `scripts/dev/` tooling, and small loose ends. It must not touch any Tier B path.
-The owner merges once CI is green and GitHub shows the branch is up to date with `main`.
+**Tier A — low risk, no Claude review:** documentation and wording, adding or strengthening
+tests, UI layout and copy, `scripts/dev/` tooling except the three safety tools below, and
+small loose ends. It must not touch any Tier B path. Deleting or loosening a `*-guard` test
+is Tier B. The owner merges once CI is green and the compare API confirms the branch is
+up to date with `main` (step 6).
 
 **Tier B — Claude review before merge:** anything touching these paths or areas. Prefix
 the title **`[needs Claude]`**. Batch these PRs for Claude's review.
 
 | Area | Paths |
 |---|---|
-| Approvals and credit | `services/edits.ts`, `services/creates.ts`, `lib/decision-token.ts`, `lib/approval-chains.ts`, `app/(app)/approvals/**` |
+| Approvals and credit | `services/edits.ts`, `services/creates.ts`, `lib/decision-token.ts`, `lib/approval-chains.ts`, `lib/edit-approval.ts`, `app/(app)/approvals/**` |
 | Permissions and scope | `lib/access.ts`, `lib/permissions.ts`, `lib/edit-scope.ts`, `lib/submit-gate.ts` |
-| Imports | `services/imports.ts`, `lib/account-import.ts`, `lib/excel.ts`, `services/import-fixes.ts` |
+| Imports | `services/imports.ts`, `lib/account-import.ts`, `lib/excel.ts`, `services/import-fixes.ts`, `lib/import-*.ts` |
 | Database schema and migrations | `prisma/` |
-| Sign-in and sessions | `lib/session.ts`, `lib/auth.ts`, `auth.config.ts`, `app/actions/auth.ts`, `services/password.ts`, `lib/login-throttle.ts`, `middleware.ts`, `lib/csp.ts` |
-| Privacy | `lib/scrub.ts`, `lib/sentry-scrub.ts`, the Sentry configs, `lib/logger.ts`, `services/exports.ts`, `services/customer-export.ts` |
-| Offline and drafts | `lib/enrichment-draft.ts`, `lib/enrichment-patch.ts`, the edit and create forms |
-| Photos and storage | `services/photos.ts`, `app/api/photos/**`, `lib/r2.ts`, `app/api/cron/**` |
-| Scripts that can write to a database | `scripts/ops/**`, `prisma/*.ts`, and any other database-writing script |
+| Sign-in, sessions and users | `lib/session.ts`, `lib/auth.ts`, `auth.config.ts`, `app/actions/auth.ts`, `services/password.ts`, `lib/login-throttle.ts`, `middleware.ts`, `lib/csp.ts`, `lib/demo-accounts.ts`, `lib/auth-handlers.ts`, `lib/password-policy.ts`, `lib/rate-limit.ts`, `app/api/auth/**`, `services/users.ts` |
+| Privacy and exports | `lib/scrub.ts`, `lib/sentry-scrub.ts`, `sentry.*.config.ts`, `instrumentation*.ts`, `lib/sentry-*.ts`, `lib/logger.ts`, `services/exports.ts`, `services/customer-export.ts`, `app/api/exports/**`, `lib/export-scope.ts` |
+| Forms, submissions, offline and drafts | `lib/enrichment-draft.ts`, `lib/enrichment-patch.ts`, `app/(app)/customers/[id]/edit/EnrichmentForm.tsx`, `app/(app)/customers/new/CreateCustomerForm.tsx`, `app/api/forms/**`, `lib/fetch-route.ts`, `lib/submission*.ts`, `lib/submit-client.ts`, `lib/create-*.ts` |
+| Photos, storage and scheduled jobs | `services/photos.ts`, `app/api/photos/**`, `lib/r2.ts`, `app/api/cron/**`, `lib/cron-auth.ts`, `lib/photo-*.ts` |
+| Audit and database access | `lib/audit.ts`, `lib/db.ts` |
+| Build, deployment, CI and dependencies | `.github/workflows/**`, `package.json`, `package-lock.json`, `next.config.ts`, `vercel.json` |
+| Safety tooling | `scripts/dev/prod-run.cjs`, `scripts/dev/env-check.cjs`, `scripts/dev/leak-check.cjs` |
+| Scripts that can write to a database | `scripts/ops/**`, `prisma/*.ts`, `scripts/golive/**`, `scripts/bulk-reset-credentials.ts`, and any other database-writing script |
+| Guard tests | Deleting or loosening any `*-guard` test |
 
 Nothing with a migration merges without Claude's review. The PR recording this agreement
 is also **Tier B**, as requested by the owner, because it changes the rulebook.
@@ -138,18 +150,28 @@ is also **Tier B**, as requested by the owner, because it changes the rulebook.
    CI. The standing rule to run an adversarial pass after a substantial merge still
    applies; it does not require Claude to review every Tier A change.
 6. **The owner merges in GitHub using Rebase and merge.** For either tier, CI must be
-   green on the latest commit and GitHub must show the branch up to date with `main`
-   (no **Update branch** button). If behind, Codex fetches, rebases the review branch onto
-   current `origin/main`, pushes that branch with `--force-with-lease`, and waits for fresh
-   green CI on the new latest commit. Tier B additionally needs Claude's readiness verdict
-   for the changes being merged. Neither Codex nor Claude performs the merge. Production
-   smoke checks remain required before and after production changes; the owner coordinates
-   those with Claude, not Codex (§5).
+   green on the latest commit and the branch must be up to date with `main`. Run
+   `gh api repos/rahmanmansoori244-droid/NMWC-CRM/compare/main...<PR head sha> --jq .behind_by`
+   using the current full PR head SHA: it must succeed and print **0**. The repository has
+   `allow_update_branch=false` (GitHub's **Always suggest updating pull request branches**
+   setting is off), so the absence of an **Update branch** button proves nothing. If behind,
+   Codex fetches, rebases the review branch onto current `origin/main`, pushes that branch
+   with `--force-with-lease`, and waits for fresh green CI on the new latest commit. Tier B
+   additionally needs Claude's readiness verdict for the changes being merged. Neither
+   Codex nor Claude performs the merge. Production smoke checks remain required before and
+   after production changes; the owner coordinates those with Claude, not Codex (§5).
 7. **After the owner's merge, check the resulting `main` commit through GitHub.** Rebase
-   and merge may give it a different SHA from the PR head. Wait for that exact commit's
-   CI, including **post-deploy-smoke**, and tell the owner if anything is red. A missing or
-   skipped smoke job is not a pass. This is a review of CI results, with no production
+   and merge always creates new commits, so `main`'s CI runs on a new commit, not the PR
+   head. Wait for that exact resulting `main` commit's CI, including **post-deploy-smoke**,
+   and tell the owner if anything is red. A missing or skipped smoke job is not a pass.
+   This is a review of CI results, with no production
    requests from Codex.
+8. **If `main`'s CI or post-deploy smoke goes red, Codex reports the job and exact commit
+   and pushes nothing.** The owner has Claude check the live build, smoke and migration
+   state. Recovery uses Vercel's instant rollback or a revert PR; never revert a migration
+   without Claude. An application rollback does not undo an applied database migration.
+   Resume branch refreshes only after the owner and Claude have resolved the incident and
+   the current `main` commit's required CI and post-deploy smoke are green.
 
 ---
 
@@ -161,7 +183,7 @@ is also **Tier B**, as requested by the owner, because it changes the rulebook.
 | Production and UAT connection strings, R2 keys, Sentry DSN, cron secrets | Vercel environment variables, GitHub Actions secrets, and the owner's local `.env` files | Never print, log or commit one. **The `.env` in the owner's main checkout points at PRODUCTION**: never work in that checkout. Give a coding agent a UAT `.env` only. |
 | `golive-data/` — the go-live masters: customer data and generated passwords | Gitignored; on the owner's machine only (ask the owner where) | Never committed, never read into a chat or a log. Scripts may read it; people and agents may not. Never delete any worktree under `.claude/worktrees/` without asking the owner. |
 | The go-live source files (RoutePro, Timix extracts, journey plans, the sales dashboard database) | The owner's Desktop, outside the repo | Read-only. `scripts/golive/build-masters.ts` names each one. |
-| Helper scripts for the merge loop and production reads | `scripts/dev/` | See §2 and §5. |
+| Helper scripts for review checks and owner/Claude production diagnostics | `scripts/dev/` | Codex uses the review checks in §2; production helpers are for the owner and Claude only (§5). |
 | Design notes for phase 2 | `docs/design/phase2-edit-semantics/` | The spec, the critic's attack and the lead's rulings. Where they differ from the code, the code and `AUDITOR-BRIEF.md` win. |
 
 ---
@@ -233,6 +255,11 @@ Codex writes up any production work for the owner and checks post-merge CI throu
 as described in §2.
 
 - `npm run smoke` before and after any production change.
+- `node scripts/dev/build-id.cjs [url]` reads the live build ID; `deploy-watch.sh` can
+  watch for it to change. These are owner/Claude diagnostics, not a Codex merge or
+  production-check procedure. The owner merges through GitHub (§2); Codex checks only
+  GitHub's CI results. If CI or post-deploy smoke is red, follow §2's recovery step and
+  inspect the deployed build and migration state before choosing a rollback.
 - **Read-only questions**: a small script that opens a `SET TRANSACTION READ ONLY`
   transaction, builds its client as `new PrismaClient({ datasourceUrl: process.env.DIRECT_URL })`,
   and prints counts only (never a name, code, phone or id), run with
@@ -337,10 +364,10 @@ import lane does not repair a branch's region; the CHANGELOG has not been kept s
 CR-recompute and completeness rescore use the same verification-failure policy; their
 completed safeguards and the pending production CR run are recorded in §6.2.
 
-Rough size with the review loop in §2 (Claude's estimate, 2026-09-29): the decision items
-~2 days once decided; item 14 and the CI suites ~1 day; the data tools ~2 days; offline and
-field features ~3 days; Arabic and notifications ~2–3 days; the platform items ~2 days. Of
-these, §6.2, item 14 and the decision items that affect daily use (F04, X-APPR-1(a),
+Historical rough size (Claude's estimate, 2026-09-29, before the tiered review agreement):
+the decision items ~2 days once decided; item 14 and the CI suites ~1 day; the data tools
+~2 days; offline and field features ~3 days; Arabic and notifications ~2–3 days; the platform
+items ~2 days. Of these, §6.2, item 14 and the decision items that affect daily use (F04, X-APPR-1(a),
 X-AUTH-2, photo removal) matter most.
 
 ### 6.4 Housekeeping

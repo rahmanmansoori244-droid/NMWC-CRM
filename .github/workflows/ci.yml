@@ -4,8 +4,9 @@ name: CI
 # 74-commit go-live branch had never been built or tested by CI before it was
 # due to be merged. Every branch is checked on push now (a PR from a branch of
 # this repo is covered by the push run — no separate pull_request trigger, so a
-# PR push does not run the DB job twice), and a merge to `main` is expected to
-# be a fast-forward of a green branch.
+# PR push does not run the DB job twice). The owner uses Rebase and merge only
+# after the current PR head is green and up to date; GitHub creates new commits,
+# so the resulting `main` commit needs its own CI and post-deploy smoke check.
 on:
   push:
 
