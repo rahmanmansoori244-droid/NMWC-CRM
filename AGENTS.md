@@ -1,9 +1,15 @@
 # Instructions for coding agents (Codex and others)
 
 This repository is worked on by more than one AI coding agent. Claude Code reads
-`CLAUDE.md`; other agents read this file. **The rules are the same rules**: everything
+`CLAUDE.md`; other agents read this file. **The common rules are the same rules**: everything
 below the line "The rules (verbatim from CLAUDE.md)" is a copy of `CLAUDE.md`, and
 `tests/unit/agents-md-guard.test.ts` fails if the two drift. Change them together.
+
+**Owner working agreement, 2026-09-30:** the preface below and `docs/HANDOVER.md` §2
+record the current workflow. They supersede older workflow or permission text in the
+unchanged common rules: the owner merges; Claude reviews only Tier B changes, in batches;
+Codex has no production access, including reads. Keep `CLAUDE.md` and its verbatim copy
+unchanged when updating this preface.
 
 Two words in those rules come from Claude Code. A **scratchpad** is a directory outside
 this repository (for example `%TEMP%\nmwc-scratch`) — never inside the repository and
@@ -16,10 +22,11 @@ chat.
    what is open, and how a change is verified and merged here — then `AUDITOR-BRIEF.md`,
    which describes how the system works and what is known to be wrong.
 2. `git fetch`. A new task branches from `origin/main`, on a branch named
-   `codex/<topic>`; a fix for findings on your earlier branch continues that branch.
-3. **Never push to `main` and never merge.** Merging deploys to production. Claude runs
-   the merge only after the owner's explicit "merge it", normally once Claude has verified
-   your branch (docs/HANDOVER.md §2).
+   `codex/<topic>`; keep each PR independent. A fix for findings on your earlier branch
+   continues that branch. State any dependency on another PR in the description.
+3. **Never push to `main` and never merge.** Merging deploys to production. The owner
+   uses GitHub's **Rebase and merge** only after the checks and review below. Claude
+   reviews Tier B PRs; Claude no longer reviews every change or performs the merge.
 4. **Never work in the owner's main checkout: its `.env` points at PRODUCTION.** Work in
    your own clone or worktree whose `.env` names the **UAT** database. Before anything that
    loads `.env` (tests, `scripts/qa/run-with-env.mjs`, Prisma), run
@@ -35,29 +42,68 @@ chat.
    are the build checks. Every branch push builds a Vercel preview that applies the
    branch's migrations to UAT: push a migration only when it is final, and never edit or
    rename one once pushed.
-6. Production access of any kind — reads as well as writes — needs the owner's permission
-   for that task, and then only through the safeguards in docs/HANDOVER.md §5. A standing
-   permission the owner gave Claude does not extend to you.
+6. **Codex has no production access, for reads or writes.** If a task needs production,
+   write up the operation for the owner to have Claude run with the safeguards in
+   `docs/HANDOVER.md` §5. Do not run production probes or smoke checks yourself; inspect
+   CI results through GitHub. Claude's standing permission does not extend to you.
 7. Never open, list or copy `golive-data/`. Never print a secret.
 8. Never run `npm run format`, `prettier --write` or `eslint --fix` over existing
    files: the tree is not prettier-clean. Format only the lines you add, by hand.
 9. The owner's recorded decisions are in docs/HANDOVER.md §4 and `AUDITOR-BRIEF.md` §12.
    Do not re-ask them and do not build against them. Where a record says something is the
-   owner's to decide, ask.
+   owner's to decide, wait for the owner's answer before implementing it. Continue
+   independently with the engineering items in `docs/HANDOVER.md` §6; each gets its own PR.
+10. **Classify every PR** using the tiers below, and state the tier and why in its
+    description. If unsure, use Tier B.
+
+### PR review tiers
+
+**Tier A — low risk, no Claude review:** documentation and wording, tests only, UI layout
+and copy, `scripts/dev/` tooling, and small loose ends. A Tier A PR must not touch any Tier B
+path. The owner merges it once CI is green and the branch is up to date.
+
+**Tier B — Claude review required before merge:** any change touching the following paths
+or areas, including a documentation or wording change inside them. Prefix the PR title
+with **`[needs Claude]`**. Review these PRs with Claude in batches.
+
+| Area | Paths |
+|---|---|
+| Approvals and credit | `services/edits.ts`, `services/creates.ts`, `lib/decision-token.ts`, `lib/approval-chains.ts`, `app/(app)/approvals/**` |
+| Permissions and scope | `lib/access.ts`, `lib/permissions.ts`, `lib/edit-scope.ts`, `lib/submit-gate.ts` |
+| Imports | `services/imports.ts`, `lib/account-import.ts`, `lib/excel.ts`, `services/import-fixes.ts` |
+| Database schema and migrations | `prisma/` |
+| Sign-in and sessions | `lib/session.ts`, `lib/auth.ts`, `auth.config.ts`, `app/actions/auth.ts`, `services/password.ts`, `lib/login-throttle.ts`, `middleware.ts`, `lib/csp.ts` |
+| Privacy | `lib/scrub.ts`, `lib/sentry-scrub.ts`, the Sentry configs, `lib/logger.ts`, `services/exports.ts`, `services/customer-export.ts` |
+| Offline and drafts | `lib/enrichment-draft.ts`, `lib/enrichment-patch.ts`, the edit and create forms |
+| Photos and storage | `services/photos.ts`, `app/api/photos/**`, `lib/r2.ts`, `app/api/cron/**` |
+| Scripts that can write to a database | `scripts/ops/**`, `prisma/*.ts`, and any other database-writing script |
+
+Nothing with a migration merges without Claude's review. The PR recording this working
+agreement is also **Tier B**, as the owner requested, because it changes the rulebook.
 
 ## When you finish a task
 
-- Run `npm run typecheck`, `npm run lint` and `npm test`, and the integration suites
-  you touched against UAT:
+- Before marking a PR ready, run `node scripts/dev/env-check.cjs` and confirm it says
+  "not production", then `npm run typecheck`, `npm run lint` and `npm test`, and the
+  integration suites you touched against UAT:
   `RUN_<FLAG>=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/<file>.test.ts`
   (PowerShell: `$env:RUN_<FLAG>='1'; node scripts/qa/run-with-env.mjs vitest run …`; the
   flag is named inside the suite). On Windows some tests time out under load and pass when
   rerun alone (docs/HANDOVER.md §8).
-- Push the branch. In the last commit message (or the PR description) state what changed,
-  which findings or items it addresses, the checks you ran with their results, and what you
-  did **not** do.
+- Push only the review branch, then wait until CI is green on the PR's **latest commit**.
+  Match the run's full `headSha`; never trust `gh run list --limit 1` alone. The PR
+  description must state its tier and why, findings or items addressed, checks run with
+  their results, dependencies if any, and what you did **not** do.
 - If the change alters something `AUDITOR-BRIEF.md` states, update the brief in the same
-  change and run `node scripts/dev/leak-check.cjs` before committing.
+  change. Run `node scripts/dev/leak-check.cjs` before committing and marking the PR ready.
+- The owner uses **Rebase and merge** only when GitHub shows the branch is up to date
+  with `main` (no **Update branch** button). If it is behind, fetch, rebase the review
+  branch onto current `origin/main`, push that branch with `--force-with-lease`, and wait
+  for green CI on the new latest commit. Tier B additionally needs Claude to say it is
+  ready before the owner merges.
+- After the owner merges, check `main`'s CI run for the resulting commit through GitHub,
+  including **post-deploy-smoke**, and report anything red. The rebased commit may have a
+  different SHA from the PR head. Do not access production to perform this check.
 
 ---
 

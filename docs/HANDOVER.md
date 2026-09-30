@@ -66,58 +66,90 @@ Read in this order:
 
 ## 2. How a change is made, verified and merged here
 
-This is the loop every change has followed. It is slow on purpose: every review round on
-this project has found real defects, including ones that would have reached production.
+**Owner working agreement, 2026-09-30.** Codex continues independently; Claude reviews
+only risky changes, in batches. This section and the `AGENTS.md` preface supersede the
+older workflow and permission text in the unchanged `CLAUDE.md` rules and their verbatim
+copy in `AGENTS.md`. **The owner merges; Codex never merges or pushes to `main`.**
 
-1. **Branch** from `origin/main`; never work on `main`. A fix for findings on a branch
-   continues that branch.
-2. **Local checks before any push**: `npm run typecheck` (it runs `next typegen` first —
-   bare `tsc` misses route types), `npm run lint`, `npm test`. Never `npm run format`,
-   `prettier --write` or `eslint --fix` over existing files: the tree is not prettier-clean,
-   and it turns a small change into hundreds of reformatted lines. On Windows some tests
-   time out under load and pass when rerun alone (§8) — rerun before investigating.
-   Never run `npm run build` locally: it runs `prisma migrate deploy` against whatever
-   `.env` names before `next build` (CI runs the build without migrating).
-3. **Push**, knowing that every branch push builds a Vercel preview which applies the
-   branch's migrations to the **UAT** database: push a migration only when it is final, and
-   never edit or rename a migration once pushed. Then wait for CI on the exact commit:
-   `bash scripts/dev/ci-watch-sha.sh <commit> [branch]` resolves the commit to its full SHA,
-   finds the CI run for exactly that commit, waits, prints each job, and exits 0 only if the
-   run succeeded. (`gh run list --limit 1` races a fresh push.) CI runs lint, unit,
-   `next build`, Playwright on a production build, the secrets scan, the
-   backup → encrypt → restore → verify chain, and 35 of the 38 Postgres integration suites
-   against a fresh database with every migration applied.
-4. **Review.** A substantial change gets an independent adversarial review before merge; a
-   substantial merge that was not already reviewed that way gets one after (CLAUDE.md,
-   "Process"). Small follow-ups get tests, CI and a careful self-review (the owner's rule,
-   2026-09-27).
-5. **The owner says "merge it"** — for that commit or batch. Nothing else moves `main`:
-   merging deploys to production. **Claude runs the merge procedure; the agent that wrote a
-   change never pushes to `main`.**
-6. **Merge procedure** (each step checked before the next — never chained with `&&`):
-   1. `HEAD` equals the pushed branch; `origin/main` is an ancestor of `HEAD`.
-   2. CI is green on exactly `HEAD` (step 3).
-   3. `node scripts/dev/build-id.cjs` (the build production serves now; it exits 1 and
-      prints nothing on stdout if it cannot tell) and `npm run smoke` (14 checks, no
-      credentials).
-   4. `git push origin <full sha>:refs/heads/main` (a fast-forward; no merge commits).
-   5. `bash scripts/dev/deploy-watch.sh <commit> <build id from 3>`: waits for a new build
-      ID, runs `npm run smoke`, then waits for `main`'s CI and prints its post-deploy smoke
-      ("production is running the commit you think it is running"). It exits 0 only if the
-      build changed, smoke passed and CI succeeded.
-   6. If the change has a migration, confirm it applied (read-only; §5).
-7. **Update `AUDITOR-BRIEF.md`** in the same change whenever it states something the change
-   alters, and run `node scripts/dev/leak-check.cjs` before committing it or this file.
+**Codex has no production access, for reads or writes.** Work in a separate clone or
+worktree with **UAT only**, never the owner's main checkout (§3). If work needs production,
+write it up for the owner to have Claude run with §5's safeguards. Do not run production
+probes or smoke checks from Codex; inspect CI results through GitHub. Never open, list or
+copy `golive-data/`, print secrets, or reformat existing files.
 
-### Handover between agents (Codex builds, Claude verifies)
+### Classify every PR
 
-- Codex works on `codex/<topic>` in its own clone or worktree whose `.env` names **UAT**
-  (§3), pushes, and states in the last commit message or PR: the findings or items
-  addressed, what changed, the checks run with their results, and what it did **not** do.
-- Claude then reads the diff and the files it touches, reruns the checks, runs an
-  adversarial pass over the range, and reports findings with concrete scenarios.
-- Findings are fixed on the same branch. The owner says "merge it"; Claude runs the merge
-  procedure.
+Put the tier and its reason in every PR description. **If unsure, use Tier B.**
+
+**Tier A — low risk, no Claude review:** documentation and wording, tests only, UI layout
+and copy, `scripts/dev/` tooling, and small loose ends. It must not touch any Tier B path.
+The owner merges once CI is green and GitHub shows the branch is up to date with `main`.
+
+**Tier B — Claude review before merge:** anything touching these paths or areas. Prefix
+the title **`[needs Claude]`**. Batch these PRs for Claude's review.
+
+| Area | Paths |
+|---|---|
+| Approvals and credit | `services/edits.ts`, `services/creates.ts`, `lib/decision-token.ts`, `lib/approval-chains.ts`, `app/(app)/approvals/**` |
+| Permissions and scope | `lib/access.ts`, `lib/permissions.ts`, `lib/edit-scope.ts`, `lib/submit-gate.ts` |
+| Imports | `services/imports.ts`, `lib/account-import.ts`, `lib/excel.ts`, `services/import-fixes.ts` |
+| Database schema and migrations | `prisma/` |
+| Sign-in and sessions | `lib/session.ts`, `lib/auth.ts`, `auth.config.ts`, `app/actions/auth.ts`, `services/password.ts`, `lib/login-throttle.ts`, `middleware.ts`, `lib/csp.ts` |
+| Privacy | `lib/scrub.ts`, `lib/sentry-scrub.ts`, the Sentry configs, `lib/logger.ts`, `services/exports.ts`, `services/customer-export.ts` |
+| Offline and drafts | `lib/enrichment-draft.ts`, `lib/enrichment-patch.ts`, the edit and create forms |
+| Photos and storage | `services/photos.ts`, `app/api/photos/**`, `lib/r2.ts`, `app/api/cron/**` |
+| Scripts that can write to a database | `scripts/ops/**`, `prisma/*.ts`, and any other database-writing script |
+
+Nothing with a migration merges without Claude's review. The PR recording this agreement
+is also **Tier B**, as requested by the owner, because it changes the rulebook.
+
+### Build, verify, review and merge
+
+1. **Keep each PR independent.** Fetch and branch from current `origin/main` as
+   `codex/<topic>`. A fix for findings on an earlier branch continues that branch. State
+   any dependency on another PR in its description. Work from §6: implement owner-decision
+   items only after the owner answers; otherwise continue with engineering items, each in
+   its own PR.
+2. **Local checks before any push or marking a PR ready:** run
+   `node scripts/dev/env-check.cjs` and confirm "not production" before anything that loads
+   `.env`. Then run `npm run typecheck` (includes `next typegen`; bare `tsc` misses route
+   types), `npm run lint`, `npm test`, and any integration suites touched against UAT
+   using their `RUN_*` flag and `scripts/qa/run-with-env.mjs` (§8). If UAT access is absent,
+   do not look for credentials; record that limitation. Never run `npm run build` locally,
+   any `npm run db:*`, `prisma migrate` or `prisma db` command. Never run `npm run format`,
+   `prettier --write` or `eslint --fix` over existing files. On Windows, rerun a timeout
+   alone before investigating (§8).
+3. **Update the record.** Update `AUDITOR-BRIEF.md` in the same change whenever it states
+   something the change alters. Run `node scripts/dev/leak-check.cjs` before committing
+   and marking the PR ready. The PR description must state the tier and why, findings or
+   items addressed, checks run with their results, dependencies if any, and what was
+   **not** done.
+4. **Push the review branch and wait for green CI on its latest commit.** Match the full
+   `headSha`, not `gh run list --limit 1`. `bash scripts/dev/ci-watch-sha.sh <commit> [branch]`
+   finds and waits for the exact commit's run, prints each job, and exits 0 only on
+   success. Every branch push builds a Vercel preview that applies its migrations to UAT:
+   push a migration only when final, and never edit or rename one once pushed. CI runs
+   lint, unit, `next build`, Playwright on a production build, the secrets scan, the
+   backup → encrypt → restore → verify chain, and 35 of 38 Postgres integration suites
+   against a fresh database with all migrations applied.
+5. **Review by tier.** Tier A needs no Claude review. Tier B waits for Claude to read the
+   diff and touched files, verify the checks and review adversarially, then say it is
+   ready. Fix findings on the same branch and repeat the affected checks and exact-commit
+   CI. The standing rule to run an adversarial pass after a substantial merge still
+   applies; it does not require Claude to review every Tier A change.
+6. **The owner merges in GitHub using Rebase and merge.** For either tier, CI must be
+   green on the latest commit and GitHub must show the branch up to date with `main`
+   (no **Update branch** button). If behind, Codex fetches, rebases the review branch onto
+   current `origin/main`, pushes that branch with `--force-with-lease`, and waits for fresh
+   green CI on the new latest commit. Tier B additionally needs Claude's readiness verdict
+   for the changes being merged. Neither Codex nor Claude performs the merge. Production
+   smoke checks remain required before and after production changes; the owner coordinates
+   those with Claude, not Codex (§5).
+7. **After the owner's merge, check the resulting `main` commit through GitHub.** Rebase
+   and merge may give it a different SHA from the PR head. Wait for that exact commit's
+   CI, including **post-deploy-smoke**, and tell the owner if anything is red. A missing or
+   skipped smoke job is not a pass. This is a review of CI results, with no production
+   requests from Codex.
 
 ---
 
@@ -182,8 +214,9 @@ the server, items 40b and 41).
 - Vercel Pro (2026-09-27). Credential rotation is the owner's.
 - On 2026-09-27 the owner gave **Claude** standing permission to write to production
   through operator scripts, with the safeguards in §5, until the owner says the product is
-  "done". It covers no merge, no credential rotation, and no other agent: any other agent
-  needs the owner's permission for each task, for reads as well as writes.
+  "done". It covers no merge, no credential rotation, and no other agent. The 2026-09-30
+  working agreement (§2) gives Codex **no production access, including reads**; production
+  work is written up for the owner to have Claude run.
 
 **Kept unchanged without asking the owner** (defaults, not decisions — changing either is a
 product rule, so ask): the visit day cannot be cleared once set; a salesman's own CLOSED or
@@ -194,6 +227,10 @@ Manager's Service status view counts only the Supervisor step on requests in his
 ---
 
 ## 5. Production: how to read and write safely
+
+**For the owner and Claude only.** These safeguards grant Codex no production access.
+Codex writes up any production work for the owner and checks post-merge CI through GitHub
+as described in §2.
 
 - `npm run smoke` before and after any production change.
 - **Read-only questions**: a small script that opens a `SET TRANSACTION READ ONLY`
