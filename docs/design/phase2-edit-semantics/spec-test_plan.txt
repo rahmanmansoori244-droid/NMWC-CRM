@@ -1,0 +1,216 @@
+RULES FOR EVERY NEW TEST
+- Structural guards assert against comment-stripped source (tests/support/strip-comments.ts).
+- No fixture that reads the clock is asserted against a literal.
+- Every DB suite refuses ep-sweet-haze and is gated on its env flag.
+
+UNIT (vitest)
+
+1. tests/unit/phone.test.ts (extend)
+- '٩١٢٣٤٥٦٧' and '۹۱۲۳۴۵۶۷' give '+96891234567'.
+- Mixed '+۹۶۸ ٩١٢٣ ۴۵۶۷' and '00968…' normalise.
+- 7 and 14 digits give null.
+- isValidPhoneFormat accepts Persian and refuses 'call 91234567'.
+
+2. tests/unit/edit-values.test.ts (new)
+- sameEditValue table: '' / null / undefined; a Date against an ISO string by ms; floats through JSON; booleans; exact strings.
+- classifyAgainstLive: CONVERGED, CHANGE, STALE; companions are never STALE.
+- fieldSlotKey: gps and equipment groups.
+- classifyChanges: dropped branch, converged, stale, apply.
+
+3. tests/unit/edit-schema.test.ts (new)
+- N02: '<shop>', '  ' and '<b></b>' are refused for legalName, contactPerson, branchName and address with their messages. 'Al Noor Trading' and an Arabic name pass unchanged. notes '<b></b>' gives null.
+- F19: '1234567' and a 14-digit number give a customer.primaryPhone issue. Arabic and Persian parse to '+96891234567'. altPhone '' gives null.
+- F20: null and '' map to null on every clearable field. null is refused with its message on every required field.
+- Coercions: gpsCapturedAt null is refused (not 1970). Counts null are refused (not 0).
+- F21: equipmentConfirmed accepts only true.
+- GPS group: lat without lng is refused; accuracy, capturedAt or reason without a point is refused.
+- A duplicate branchId is refused. An unknown key is refused (.strict).
+- v and the base records (ISO, number, boolean, null) parse.
+
+4. tests/unit/create-flow.test.ts (extend)
+- CREATE accepts Persian digits and still outputs the raw input.
+- '' still means 'not given'.
+- '1234567' is refused with INVALID_PHONE_MESSAGE.
+- '<shop>' is still refused.
+
+5. tests/unit/enrichment-patch.test.ts (new; pure builder)
+- An untouched form gives an empty patch.
+- Notes only gives { notes } plus its base.
+- Emptying loaded notes gives notes: null; an empty field that was null is absent.
+- A phone re-typed as '9123 4567' against a stored '+96891234567' is absent.
+- A channel change gives channelId plus subChannelId: null.
+- GPS:
+  - a re-capture gives the 4 columns, base lat/lng only, accuracy null when the fix has none;
+  - an invented capturedAt alone is no touch;
+  - a restored string capturedAt passes through.
+- A count change gives the number plus its base. Ticking 'counted' gives equipmentConfirmed: true with base false.
+- lockName and lockCr omit their fields. A SALESMAN never sends status.
+- Branch ids missing from customer.branches are ignored.
+- An old BState without confirmed does not crash.
+- Rebased loaded values become the bases.
+
+6. tests/unit/enrichment-draft.test.ts
+- enrichmentBase(fixture) equals a golden literal captured from the pre-change function, including with equipmentConfirmed present in the input.
+- A draft without a base is stale. This replaces 'keeps the old clock rule'.
+
+7. tests/unit/submit-forms.test.tsx ('the customer update form'; replies are mocked)
+- Changing only notes posts { v:2, customer:{notes}, customerBase:{notes:null}, branches:[] }.
+- A restored item-22 draft posts only its differing fields. A draft carrying an out-of-scope branch does not send it.
+- Clearing alt phone posts altPhone:null.
+- A STALE_FIELDS answer:
+  - shows the inline message plus 'Now: …' and keeps the typed value;
+  - 'Use this value' removes the field from the next body;
+  - a resubmit carries the rebased base and a new submissionId;
+  - the autosaved base equals enrichmentBase(rebased).
+- Every allowlisted key renders in its slot; every other key renders at the top.
+- The equipment checkbox: a stepper change ticks it.
+- A FORM_OUTDATED answer shows at the top.
+
+8. tests/unit/edit-service.test.ts (new; mocked prisma, pattern of photo-attach-service.test.ts)
+- F05:
+  - (a) own branch complete and foreign-route branch incomplete: a notes-only submit succeeds and stores submitGate {v:1, gate:'CORE', branchIds:[own]};
+  - (b) own branch incomplete blocks with its own key;
+  - (c) a missing customer-level field still blocks.
+- F06:
+  - (d) v2 notes-only while contactPerson changed on the server: the write holds notes only;
+  - (e) a stale base on contactPerson gives STALE_FIELDS with fields['customer.contactPerson'] and current = the live value; no customerEdit.create, no $transaction;
+  - (f) stale base but proposed == live: converged, 'No changes to submit.';
+  - (g) a sent key without a base gives FORM_OUTDATED; a body without v gives FORM_OUTDATED;
+  - (h) a direct write whose in-transaction snapshot differs from the pre-read gives STALE_FIELDS; the callback throws before customerEdit.create; no updateMany, no writeAudit;
+  - (i) the direct write calls lockCustomerRow first and passes the snapshot versions to the updateMany WHERE; count 0 gives VERSION_CONFLICT;
+  - (j) an overlapping retry whose snapshot already holds the values gives 'No changes to submit.' and is answered with the receipt through answerIfLanded;
+  - (k) a gps conflict's current carries all four gps columns and is keyed branch.<id>.gps.
+- F20:
+  - notes:null writes null and records {before:'old', after:null};
+  - altPhone:null clears;
+  - crNumber:null clears crNumber and crNumberNorm;
+  - a MANAGER's primaryPhone:null is refused;
+  - DB '' against proposed null gives 'No changes'.
+- F16:
+  - a channel change without a sub-channel records subChannelId → null;
+  - a compatible active live sub is kept;
+  - an explicit foreign sub, an inactive sub or an inactive new channel gives a field error and no write;
+  - an untouched legacy mismatch does not block a notes edit.
+- F19: a MANAGER's '1234567' plus notes gives VALIDATION_FAILED and nothing written; Persian digits are stored normalised.
+- N02: a STEWARD's legalName '<shop>' gives VALIDATION_FAILED and no updateMany.
+- F21:
+  - a count change adds equipmentConfirmed false → true;
+  - an explicit tick with unchanged counts is recorded;
+  - a live true is not re-added.
+
+9. tests/unit/edit-approval-service.test.ts (new; mocked, $transaction runs the callback)
+- (a) live contactPerson differs from both before and after: STALE_BEFORE, the callback rejects, and there is no customer.updateMany, no writeAudit and no notify; the edit's state is untouched.
+- (b) live == after: approved, that field is not written, and convergedFields is in the audit.
+- (c) a companion-only difference approves.
+- (d) a close request on a branch already CLOSED approves; one on a third status gives STALE_BEFORE.
+- (e) F05 with submitGate [own]:
+  - an incomplete foreign branch approves;
+  - an incomplete branch created after submit approves;
+  - an own shop photo detached gives NEEDS_REUPLOAD;
+  - a changed submitter ownedRouteId gives the same answers;
+  - gate 'CORE' stored with the env at FULL is judged by CORE.
+- (f) submitGate null uses the fallback set; a malformed value logs and falls back.
+- (g) a sub-channel deactivated after submit gives CHANNEL_PAIR_INVALID.
+- (h) after:null is applied as null.
+- (i) applyEditChanges receives the snapshot versions.
+- (j) an archived customer at snapshot time gives NotFoundError.
+
+10. tests/unit/approval-decision-pages.test.tsx (extend)
+- A stale customer row renders 'Now: …', the banner and a disabled Approve.
+- An out-of-scope stale branch shows 'Changed since this was sent' without the value.
+- after:null renders 'Cleared'.
+
+11. tests/unit/completeness.test.ts
+- Replace the pinned zero case: otherwise complete with zero counts, unconfirmed = 55; zero confirmed = 60; one cooler unconfirmed = 60.
+- The empty branch stays 5.
+
+12. tests/unit/rescore.test.ts (new)
+- planRescore returns only rows whose score differs, and ignores deleted branches.
+- rescoreCustomer writes only changed rows and never version.
+
+13. tests/unit/rescore-completeness.test.ts (new)
+- --expect-host is required.
+- --apply without --actor is refused.
+- The output formatter prints counts only (no id, name or code).
+
+14. tests/unit/customer-import-service.test.ts (extend)
+- A channel change clears an old-channel sub-channel in the upsert update and sets the lead row's extra.
+- A compatible sub-channel is kept. A blank channel cell changes nothing.
+- Both branch write paths carry version increment.
+- rescoreCustomer is called in the group transaction.
+
+15. tests/unit/edit-phase2-guard.test.ts (new, structural)
+- No collectMissingMandatory( call passes a `.branches` member expression as its second argument.
+- services/edits.ts contains no normalizePhone(.
+- lib/validation/edit.ts has no .min( before .transform(stripHtml in one chain, and no z.coerce.
+- In approveEditCore's UPDATE block: lockCustomerRow( precedes classifyChanges(, which precedes collectMissingMandatory(, which precedes applyEditChanges(.
+- The direct-write transaction calls lockCustomerRow( and classifyChanges( before customerEdit.create(.
+- Every applyEditChanges( call passes an expected argument.
+- services/imports.ts: every tx.branch.update( and branch upsert update block carries version: { increment: 1 }, and the promote transaction calls rescoreCustomer(tx,.
+- EnrichmentForm builds its body with buildEnrichmentPatch( and v: 2, and never with Object.entries(branchStates).
+
+16. tests/unit/forms-route.test.ts: a v1 body answers 200 {ok:false, code:'FORM_OUTDATED', fields:{_form}}, and a replayed receipt is still answered before that.
+
+17. tests/unit/submit-wiring-guard.test.ts: the v check sits after the replay lookup.
+
+18. tests/unit/errors.test.ts: runAction carries current for StaleFieldsError and fields._form for FormOutdatedError.
+
+19. tests/unit/submit-client.test.ts: noticeFor gives STALE_FIELDS_MESSAGE for STALE_FIELDS and the _form text for FORM_OUTDATED.
+
+20. tests/unit/gps-manual.test.tsx: the posted bodies are in v2 shape.
+
+21. tests/unit/pii-classification.test.ts: both columns are classified and the inventory is regenerated.
+
+INTEGRATION (Postgres)
+
+tests/support/edit-payload.ts (new): editPayload(prisma, customerId, patch) reads the live row to fill the bases, like freshDecisionToken.
+
+1. tests/integration/golive-update-flow.test.ts (RUN_GOLIVE_FLOW)
+- Convert every submitEditAction call (fullPayload and the direct-write cases) to v2 through the helper. The existing assertions are unchanged.
+- Add:
+  - F20: clear notes and alt phone, approve, reload: both null, and the APPROVE audit holds after:null;
+  - F19: Persian digits are stored normalised; '1234567' is refused;
+  - F16: channel A→B without a sub-channel gives a null sub-channel after approval;
+  - F21: a 'counted' tick with zero counts, approved, gives a branch score that includes +5.
+
+2. tests/integration/edit-paymentterms-guard.test.ts (RUN_EDIT_GUARD) and manager-branch-region-authz.test.ts (RUN_MGR_AUTHZ): v2 bodies; assertions unchanged.
+
+3. tests/integration/edit-gate-scope.test.ts (new; RUN_EDIT_PATCH). A two-route customer: branch A on R1 for salesman S1, branch B on R2 for S2, each missing GPS and photo on the other side.
+- S1 completes A and submits; the row stores [A]; it is approved. Then S2 does the same for B.
+- A moved to R3 between S1's submit and approval: same outcome.
+- A branch imported after submit: the approval succeeds.
+- S1's own shop photo detached: NEEDS_REUPLOAD.
+- The gate switched CORE→FULL between submit and approval: judged by CORE.
+- A row with submitGate NULL takes the fallback.
+
+4. tests/integration/edit-patch-concurrency.test.ts (new; RUN_EDIT_PATCH; two connections and barriers as in photo-concurrency)
+- (a) A Manager direct-writes contact while the salesman's form, loaded earlier, is open. The salesman submits notes only. After approval the Manager's contact is intact.
+- (b) A salesman's contact edit is SUBMITTED, then a promoted import changes contact:
+  - approve gives STALE_BEFORE;
+  - the edit is still SUBMITTED on the same stageEnteredAt;
+  - 0 new EditApproval rows and 0 APPROVE audit rows;
+  - the master keeps the import value;
+  - Reject then gives NEEDS_CORRECTION.
+- (c) A Manager's v2 with a stale base gives STALE_FIELDS with current. A resubmit with the rebased base applies.
+- (d) Two direct writes of one field from the same base: exactly one applies; the other gets STALE_FIELDS, or converges when equal.
+- (e) An overlapping direct-write retry with the same submissionId: one APPROVED edit, one audit row; the second is answered replayed.
+- (f) A direct write and an approval on the same customer serialise with no deadlock. So do a direct write and a photo attach.
+
+5. tests/integration/import-multibranch.test.ts (RUN_IMPORT_TESTS; extend)
+- A created branch gets completenessScore == scoreBranch(branch), and the customer score == scoreCustomer.
+- A re-import that changes the address bumps Branch.version by 1 and rescores.
+- A channel change clears an old-channel sub-channel and writes the lead row's _lane note.
+- The same channel, or a compatible sub-channel, keeps the sub-channel.
+
+6. tests/integration/rescore-completeness.test.ts (new; RUN_RESCORE)
+- Seeded stale scores (0 and wrong): the dry run writes nothing, not even ledger rows.
+- --apply fixes them, with STARTING and COMPLETED ledger rows; updatedAt and version are unchanged.
+- A second run changes 0.
+- A customer locked by another transaction is waited on, not skipped.
+
+CI AND GATES
+- Add RUN_EDIT_PATCH: '1' and RUN_RESCORE: '1' to the 'DB-backed integration suites' env in .github/workflows/ci.yml. Without them the new suites skip silently.
+- Before any push: npm run typecheck, npm run lint and the unit suite (not bare tsc). Then CI's next build and integration job on the branch.
+- Run the adversarial pass after the merge (CLAUDE.md).
+- Update the AUDITOR-BRIEF.md rows for F05, F06, F16, F19, F20, F21 and N02, the test counts, and the CHANGELOG.
+- The Playwright golive-update-flow.spec.ts (skipped in CI) drives the form and needs no payload change.

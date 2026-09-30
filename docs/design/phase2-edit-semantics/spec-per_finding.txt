@@ -1,0 +1,144 @@
+[
+ {
+  "id": "F05",
+  "design": "DECISION: PERSIST, as a new column CustomerEdit.submitGate = {v:1, gate, branchIds}. Do not derive it.\n\nWhy not derive it:\n- From the submitter's current route: a route handover (F14's surface) would change the answer, which the requirement forbids.\n- From the branch ids in fieldChanges: the touched-only patch leaves out his complete, untouched own branches. EL-04 must still catch a shop photo detached from one of those after submit.\n- Why not a fieldChanges marker: lib/change-report.ts:439-467 turns every entry into a change row and a tally.\n\nWhy the gate is frozen too: the approval should re-check exactly what the submit checked. Today, switching SALESMAN_SUBMIT_GATE fails every pending request with NEEDS_REUPLOAD (owner decision 4; one line to revert).\n\n1. lib/access.ts\n- Export salesmanBranches<B>(liveBranches: B[], ownedRouteId: string | null): B[]. It returns [] when there is no route, otherwise the live branches with routeId === ownedRouteId.\n- filterBranchesByScope's SALESMAN case (:122-124) returns salesmanBranches(live, scope.ownedRouteId).\n- The branches the page shows and the branches the server gates are then one function.\n\n2. lib/edit-scope.ts (new, pure)\n- SubmitGateRecord and parseSubmitGate.\n- gateForApproval({ record, liveBranches, fieldChanges, submitter: { role, ownedRouteId }, envGate }) returns { gate, branches } or null:\n  - record present: { gate: record.gate, branches: the live branches of THIS customer whose id is in record.branchIds }. A branch archived or moved to another customer drops out. A branch created or imported after submit is not in the set. A route handover changes nothing. The record is used whatever the submitter's current role.\n  - record null and submitter currently a SALESMAN (legacy rows): { gate: envGate, branches: the live branches named in fieldChanges, plus the live branches on his current ownedRouteId }. This is never stricter than the all-branches check those rows passed at submit.\n  - otherwise null (not gated).\n\n3. services/edits.ts collectMissingMandatory (:121-212)\n- New signature: (customer: customer-level fields only, gateBranches: Array<{id, branchCode, address, gpsLat, gpsLng, dayOfVisit, shopPhotoId, signboardPhotoId}>, customerProposed, branchProposedById, actorIsSalesman: boolean, gate: SubmitGate).\n- The loop at :189 becomes `for (const b of gateBranches)`.\n- Customer-level checks, the lock-aware skips and CORE_OPTIONAL are unchanged.\n- A null proposed value merges as missing, so clearing a field that is required under FULL is caught.\n\n4. submitEditOnce, SALESMAN, non-draft (:519-531)\n- gateBranches = salesmanBranches(customer.branches, me.ownedRouteId), derived on the server and never read from the payload.\n- gate = salesmanSubmitGate().\n- Run collectMissingMandatory on those branches only.\n- Add submitGate: {v:1, gate, branchIds: gateBranches.map(b => b.id)} to the customerEdit.create at :621-634.\n- Drafts and direct writes store null.\n- The foreign-branch refusal at :454-456 stays.\n\n5. approveEditCore\n- The submitterUser select (:1205-1208) adds ownedRouteId.\n- EL-04 (:1339-1360) runs on the snapshot read under the lock (see approval_behaviour): g = gateForApproval(...); if g is set and the edit is not a status-only close, collectMissingMandatory(snapshot, g.branches, customerProposed, branchProposedById, true, g.gate), which throws NEEDS_REUPLOAD (text unchanged).\n- An unparsable submitGate logs 'edit.approve.submit_gate_unreadable' {editId} and takes the legacy fallback.\n\n6. No client change: EnrichmentForm's gate (:228-240) already iterates the filtered branches.\n\n7. lib/decision-token.ts: docstring only. 'An UPDATE row's fieldChanges and submitGate never change once submitted', so the cycle is still the payload revision.\n\nUnchanged on purpose:\n- The CORE/FULL field lists, which are the owner's (lib/submit-gate.ts).\n- The salesman's own CLOSED/SUSPENDED branches are still checked (owner decision 3).\n- Status-only close requests still skip EL-04.",
+  "files": [
+   "lib/access.ts",
+   "lib/edit-scope.ts (new)",
+   "services/edits.ts",
+   "lib/decision-token.ts (docstring only)",
+   "prisma/schema.prisma",
+   "prisma/migrations/20260929120000_edit_submit_gate_equipment_confirmed/migration.sql",
+   "lib/compliance/pii-classification.ts",
+   "docs/compliance/PII-INVENTORY.md (regenerated)",
+   "tests/unit/edit-scope.test.ts (new)",
+   "tests/unit/edit-service.test.ts (new)",
+   "tests/unit/edit-approval-service.test.ts (new)",
+   "tests/unit/edit-phase2-guard.test.ts (new)",
+   "tests/integration/edit-gate-scope.test.ts (new)"
+  ]
+ },
+ {
+  "id": "F06",
+  "design": "VALUES, NOT VERSIONS.\n- photos.ts and reactivations.ts never bump version.\n- The import bumps Customer.version on every full-lane promote.\n- A version conflict cannot name a field.\nVersions stay only as the in-transaction backstop.\n\nCLIENT\n1. lib/enrichment-patch.ts buildEnrichmentPatch(loaded, state, opts)\n- loaded = loadedRef.current: the customer prop at mount (server values), rebased per field after STALE_FIELDS, never the draft.\n- A field is touched when its canonical state differs from its canonical loaded value:\n  - text (legalName, crNumber, contactPerson, contactRole, notes, address, areaDescription, openingHours, deliveryWindow): raw string compare, '' ≡ null. The sent value is the raw string; empty or whitespace is sent as null.\n  - phones: canonical = normalizePhone(state) ?? state.trim(). A reformatted same number is untouched. An invalid entry is touched and draws the server's field error.\n  - selects (channelId, subChannelId, dayOfVisit, status): '' ≡ null.\n  - counts: number ===.\n  - GPS: touched ONLY when lat or lng differs from loaded (or loaded had none). The capture time alone never counts. A touched point sends gpsLat, gpsLng, gpsAccuracy (?? null), gpsCapturedAt (Date to ISO; a restored string passes as is) and gpsManualReason (typed point only), with base = {gpsLat, gpsLng} loaded.\n  - equipmentConfirmed: sent as true only when the state is true and loaded is false.\n- Never sent:\n  - legalName when lockName; crNumber when lockCr;\n  - status for a SALESMAN;\n  - untouched fields;\n  - branch ids not in customer.branches.\n- base[key] = toBaseValue(loaded value).\n\n2. EnrichmentForm.submit (:367-420): body = { v: 2, customerId, isDraft, ...buildEnrichmentPatch(loadedRef.current, state, {role, lockName, lockCr}) }. idsRef.idFor(body) and postForm are unchanged.\n\n3. On { ok:false, code:'STALE_FIELDS' }:\n- Each raw path in result.current is written into loadedRef.current. The typed state is kept.\n- staleNow = result.current.\n- errors = surfaceUnrenderedErrors(fields, enrichmentFormRendersError).\n- baseRef = enrichmentBase(loadedRef.current).\n- setRebaseGen(g+1), which is in the autosave deps, so the phone copy carries the new base.\n- Each marked slot shows the message, 'Now: <value>' (channel ids as labels from the channels prop; null as 'empty') and a 'Use this value' button. The button sets the state to the live value (gps and equipment as a group), so the field becomes untouched.\n- The next Submit sends base = the live value, so it replaces that value deliberately. The body changed, so it gets a new submissionId.\n\n4. lib/form-errors.ts: enrichmentFormRendersError becomes an explicit allowlist:\n- customer.{legalName, crNumber, channelId, subChannelId, primaryPhone, altPhone, contactPerson, contactRole, status, notes}\n- branch.<id>.{gps, equipment, address, areaDescription, dayOfVisit, openingHours, deliveryWindow}\nEvery key in the list gets a real slot. New slots: contact role, notes, the channel, sub-channel and status selects, branch address, landmark, day, hours, window, and one line under the equipment block. Every other key surfaces at the top: customer.crPhoto and customer.paymentTerms (today they are silently claimed), branch.<id>.shopPhoto/signboardPhoto/status/branchName, branchId.\n\n5. lib/submission.ts gains STALE_FIELDS_MESSAGE. lib/submit-client.ts noticeFor returns it for code STALE_FIELDS (tone failed, retry false).\n\nSCHEMA (lib/validation/edit.ts)\n- submitEditSchema v2 as in payload_contract.\n- submitEditOnce checks input.v === 2 BEFORE zod (else FormOutdatedError), then parses, then checks that every checked key has a base entry (else FormOutdatedError).\n- The EL-02 issue-path mapping (:269-290) uses fieldSlotKey.\n\nSERVER submitEditOnce\n- diffFields (:59-77) becomes planFields(live, proposed, base, fields, prefix), returning { changes, conflicts } via classifyAgainstLive:\n  - CONVERGED (proposed equals live): skipped.\n  - STALE (base differs from live and proposed differs from live; GPS companions never STALE): a conflict { rawPath, live }.\n  - CHANGE: { field, before: live, after: proposed }.\n- Customer keys are planned after the lock deletions (:357-364). Branch keys are planned inside the loop, after the route/region authorization (:449-466), so `current` never carries a value the actor may not edit.\n- All conflicts are collected, then StaleFieldsError(fields keyed by fieldSlotKey, current keyed by raw path) is thrown BEFORE any write. For a gps conflict, current carries all four gps columns. This applies to salesmen, drafts and direct writes.\n- DIRECT WRITE (Manager/Steward, replacing :570-618), one prisma.$transaction:\n  1. lockCustomerRow.\n  2. snapshot = tx.customer.findUniqueOrThrow({ include live branches }). An archived customer throws NotFoundError.\n  3. classifyChanges(fieldChanges, snapshot). Any STALE throws StaleFieldsError with current from the snapshot.\n  4. CONVERGED entries are removed. If none are left, ValidationError({_form:'No changes to submit.'}).\n  5. customerEdit.create (APPROVED, the remaining fieldChanges, submissionId).\n  6. applyEditChanges(tx, id, payloadFromFieldChanges(remaining), me.id, expected from the snapshot).\n  7. writeAudit: before = snapshot CUSTOMER_EDIT_FIELDS, after = the applied customer fields. Same tx.\n  Taking the lock first also gives branch-only direct writes the customer-then-branch order (lib/locks.ts).\n- applyEditChanges(tx, customerId, customerProposed, branches, actorId, expected: { customerVersion: number; branches: Map<string, { version: number; status: CustomerStatus }> }) (required):\n  - The in-function version re-reads (:735-738, :765-768) are removed; the WHERE uses expected, and lastStatusChangeAt uses expected status.\n  - count 0, or a branch missing from expected, gives VERSION_CONFLICT (text unchanged).\n  - The rescore and Temix requeue are unchanged.\n- payloadFromFieldChanges(changes) is extracted from approveEditCore :1146-1162 and used by both the direct write and the approval.\n\nAPPROVAL: STALE_BEFORE inside the transaction, whole request refused and rolled back. See approval_behaviour.\n\nAPPROVAL PAGE (approvals/[id]/page.tsx)\n- Selects the live CUSTOMER_EDIT_FIELDS and the live branch BRANCH_EDIT_FIELDS, and runs classifyChanges.\n- Stale rows show 'Now: <live>' (customer and in-scope branches only; out-of-scope branches read 'Changed since this was sent' with no value, so F04 does not widen).\n- A banner, and ApproveRejectActions gets a new prop approveBlockedReason (Approve disabled; Reject enabled).\n- One reject template is added under wrong_info.",
+  "files": [
+   "lib/edit-values.ts (new)",
+   "lib/enrichment-patch.ts (new)",
+   "lib/validation/edit.ts",
+   "lib/errors.ts",
+   "lib/form-errors.ts",
+   "lib/submission.ts",
+   "lib/submit-client.ts",
+   "lib/enrichment-draft.ts",
+   "services/edits.ts",
+   "app/(app)/customers/[id]/edit/EnrichmentForm.tsx",
+   "app/(app)/customers/[id]/edit/page.tsx",
+   "app/(app)/approvals/[id]/page.tsx",
+   "app/(app)/approvals/[id]/ApproveRejectActions.tsx",
+   "tests/support/edit-payload.ts (new)",
+   "tests/unit/edit-values.test.ts (new)",
+   "tests/unit/enrichment-patch.test.ts (new)",
+   "tests/unit/edit-service.test.ts (new)",
+   "tests/unit/edit-approval-service.test.ts (new)",
+   "tests/unit/submit-forms.test.tsx",
+   "tests/unit/submit-client.test.ts",
+   "tests/unit/errors.test.ts",
+   "tests/unit/forms-route.test.ts",
+   "tests/unit/approval-decision-pages.test.tsx",
+   "tests/integration/edit-patch-concurrency.test.ts (new)",
+   "tests/integration/golive-update-flow.test.ts",
+   "tests/integration/edit-paymentterms-guard.test.ts",
+   "tests/integration/manager-branch-region-authz.test.ts"
+  ]
+ },
+ {
+  "id": "F20",
+  "design": "CONTRACT: omitted = keep, null = clear, value = set. It holds in the form, the zod schema, planFields, the stored fieldChanges, the approval page and applyEditChanges.\n\nCLEARABLE (optional under the CORE gate). One place, lib/edit-values.ts:\n- customer: crNumber (owner decision 1), subChannelId, altPhone, contactRole, notes;\n- branch: areaDescription, openingHours, deliveryWindow;\n- gpsAccuracy, only as a GPS companion.\n\nNOT CLEARABLE. null is refused for every role, including Manager/Steward direct writes, where no gate runs today:\n- customer: legalName, paymentTerms, channelId, primaryPhone, contactPerson, status;\n- branch: branchName, address, gpsLat, gpsLng, gpsCapturedAt, dayOfVisit (owner decision 2), coolersCount, standsCount, emptyBottlesCount (0 already means none), equipmentConfirmed (accepts only true), status.\n\nSCHEMA (via lib/validation/fields.ts)\n- Clearable text: clearableText(max), i.e. strip, then max, then an empty result becomes null (.nullable()).\n- Clearable ids: z.string().cuid().nullable(), with '' mapped to null.\n- Clearable phone: clearablePhone.\n- Required fields: z.string / z.nativeEnum with invalid_type_error set to the field's 'cannot be removed' message.\n- Counts drop z.coerce (Number(null) = 0). gpsCapturedAt drops z.coerce.date (new Date(null) = 1970).\n\nCLIENT (buildEnrichmentPatch)\n- A field whose loaded value was non-empty and is now empty is sent as null. An empty field that was already empty is absent.\n- Emptying a required field sends null and gets the server's inline message.\n- The day-of-visit select hides '—' once the loaded branch has a day.\n\nSERVICE\n- Delete the crNumber `.trim() || undefined` at :395-397; the schema trims and maps '' to null.\n- planFields records {before:'old', after:null}.\n- '' in the database against a proposed null is CONVERGED, so the answer is 'No changes to submit.'.\n- applyEditChanges already writes null (it skips only undefined, :725 and :759). crNumber null gives crNumberNorm null (normalizeCR('') = null, :728-729).\n- The approval rebuild (:1149-1161) already carries after:null.\n- EL-04 merges null as missing. Under FULL, a salesman's clear of subChannelId or crNumber is therefore refused ('Sub-channel is required.' / 'CR number is required.').\n\nDISPLAY\n- Approval page DiffRow: the After cell shows 'Cleared' (italic) when after is null and before is non-empty. '—' keeps meaning 'was empty'.\n- display() maps equipmentConfirmed to 'Yes'/'No'.\n- The change report is unchanged: a clear is an empty cell.\n\nNOT TOUCHED: the import rule 'a blank cell keeps the stored value' (item 20, owner).",
+  "files": [
+   "lib/edit-values.ts (new)",
+   "lib/validation/fields.ts (new)",
+   "lib/validation/edit.ts",
+   "lib/enrichment-patch.ts (new)",
+   "app/(app)/customers/[id]/edit/EnrichmentForm.tsx",
+   "services/edits.ts",
+   "app/(app)/approvals/[id]/page.tsx",
+   "tests/unit/edit-schema.test.ts (new)",
+   "tests/unit/enrichment-patch.test.ts (new)",
+   "tests/unit/edit-service.test.ts (new)",
+   "tests/integration/golive-update-flow.test.ts"
+  ]
+ },
+ {
+  "id": "F16",
+  "design": "New resolveChannelPair(db, live, customerProposed, changes) in services/edits.ts. It is called at submit (after the conflict check, before the paymentTerms refusal) and at approval (with tx). It runs only when the patch CHANGES channelId or subChannelId (compared with sameEditValue), so a legacy mismatch nobody touches never blocks an edit.\n\nSUBMIT RULES\n(a) Channel changes: the new channel must exist and be isActive. Otherwise field error on customer.channelId.\n(b) Channel changes and subChannelId is not sent: the live sub-channel is kept only if it exists, is active and belongs to the new channel. Otherwise the server adds the implicit change {field:'customer.subChannelId', before: live, after: null} and sets customerProposed.subChannelId = null. The approver sees it as an ordinary 'Cleared' row. The v2 form already sends subChannelId: null on a channel change, because the select resets (EnrichmentForm.tsx:581-584); rule (b) covers hand-made payloads.\n(c) subChannelId sent non-null, or kept across a channel change: it must exist, be isActive and have channelId === the effective channel (proposed ?? live). Otherwise field error on customer.subChannelId. This is CREATE's rule (services/creates.ts:193-204), plus the channel isActive check CREATE lacks.\nThese are ValidationErrors: nothing is written, for every role. Under FULL, the clear in (b) makes the salesman's gate ask for a sub-channel.\n\nAPPROVAL\n- When the APPLY set touches customer.channelId or customer.subChannelId, re-validate the effective pair from the snapshot: the sub-channel exists, is active and belongs; a changed channel exists and is active.\n- On failure: ConflictError('CHANNEL_PAIR_INVALID') and rollback.\n- STALE_BEFORE catches most cases, including an import channel change (which now also clears the sub-channel). This check is for a channel or sub-channel deactivated after submit.\n\nIMPORT (full lane only; the refresh lane and the fixed rows never write channel)\n- The locked `existing` read (imports.ts:1851-1866) adds channelId, subChannelId and subChannel: { select: { channelId: true } }.\n- clearSub = existing && groupChannelId && groupChannelId !== existing.channelId && existing.subChannelId && existing.subChannel?.channelId !== groupChannelId.\n- The customer upsert's update (:2196-2228) writes subChannelId: clearSub ? null : undefined, in the same statement, under the lock the group already holds.\n- When clearSub:\n  - logger.info({customerId, batchId}, 'import.promote.subchannel_cleared');\n  - rowNotes[plainIdx[0]].extra = the note.\n- After the transaction:\n  - noted = refreshedRow || rowNotes.some(n => n?.extra);\n  - writeLaneNotes runs when noted;\n  - the F-17 block (:2466-2481) runs only when !noted, because writeLaneNotes already writes the same _resolve issues for written rows (:1351).\n- No Temix requeue is added. The full lane does not requeue a channel change today, and F12 is the owner's.\n\nEXISTING MISMATCHED ROWS: a read-only count after deploy (SQL in prod_rescore). Cleanup only on the owner's go-ahead (owner decision 7). No trigger in this change.",
+  "files": [
+   "services/edits.ts",
+   "services/imports.ts",
+   "lib/validation/edit.ts",
+   "app/(app)/customers/[id]/edit/EnrichmentForm.tsx",
+   "app/(app)/approvals/[id]/page.tsx",
+   "tests/unit/edit-service.test.ts (new)",
+   "tests/unit/edit-approval-service.test.ts (new)",
+   "tests/unit/customer-import-service.test.ts",
+   "tests/integration/golive-update-flow.test.ts",
+   "tests/integration/import-multibranch.test.ts"
+  ]
+ },
+ {
+  "id": "F19",
+  "design": "1. lib/phone.ts\n- asciifyDigits (:18-27) folds U+0660–U+0669 AND U+06F0–U+06F9. Write the classes as escapes, as lib/cr.ts does.\n- Export INVALID_PHONE_MESSAGE = 'Enter a valid Oman number (8 digits, or +968 XXXXXXXX).', the same words as services/creates.ts:176/185, which may import it.\n- isValidPhoneFormat stays the single rule: asciify, then the charset/length check, then normalizePhone !== null. It now accepts Persian digits, so every caller agrees with no change of its own: CREATE, UPDATE, the import row check (lib/import-row-check.ts:179), the in-file and master collision maps (:114), the customer search (lib/customer-filters.ts:183) and contact links.\n\n2. lib/validation/fields.ts (lib/phone.ts stays zod-free)\n- phone core: trim; '' is blank; otherwise isValidPhoneFormat must pass (else a field issue with INVALID_PHONE_MESSAGE); output normalizePhone(v) = '+968XXXXXXXX'.\n- requiredPhone(clearMsg): null or blank gets clearMsg.\n- clearablePhone: null or blank gives null.\nNormalise first, then validate. No regex of its own.\n\n3. lib/validation/edit.ts\n- primaryPhone = requiredPhone('Primary phone cannot be removed — enter the correct number.').\n- altPhone = clearablePhone.\n- The ASCII-only phoneRegex (:14) goes.\n- An invalid non-blank phone is a field error on customer.primaryPhone or customer.altPhone for every role, drafts included.\n\n4. services/edits.ts: delete :388-394 (`normalizePhone(x) ?? undefined`, the silent drop). The phone-collision log (:404-416) keeps reading the now schema-normalised value. A guard pins that services/edits.ts calls normalizePhone nowhere.\n\n5. lib/validation/create.ts\n- primaryPhone/altPhone = optionalStr(z.string().max(40).refine(isValidPhoneFormat, INVALID_PHONE_MESSAGE)).\n- The local phoneRegex (:21-24) goes.\n- The output stays the raw input, and services/creates.ts:168-189 still normalises, so what CREATE stores does not change.\n- Only two things change in CREATE: Persian digits pass, and an invalid phone is refused at the schema with the same words.\n\nNo data migration: stored phones are already ASCII '+968XXXXXXXX'.",
+  "files": [
+   "lib/phone.ts",
+   "lib/validation/fields.ts (new)",
+   "lib/validation/edit.ts",
+   "lib/validation/create.ts",
+   "services/edits.ts",
+   "services/creates.ts (message constant only)",
+   "tests/unit/phone.test.ts",
+   "tests/unit/edit-schema.test.ts (new)",
+   "tests/unit/create-flow.test.ts",
+   "tests/unit/edit-phase2-guard.test.ts (new)"
+  ]
+ },
+ {
+  "id": "N02",
+  "design": "1. Move stripHtml and strippedStr from lib/validation/create.ts (:25, :33-38) into lib/validation/fields.ts. create.ts imports them, and its behaviour is identical.\n\n2. Add two helpers there:\n- requiredText(min, max, minMsg, clearMsg) = z.string({ invalid_type_error: clearMsg }).max(2*max).transform(stripHtml).pipe(z.string().min(min, minMsg).max(max)).\n- clearableText(max) = z.string().max(2*max).transform(stripHtml).pipe(z.string().max(max)).nullable().transform(v => v === '' ? null : v).\nBoth use .nullable() on the pipeline, not z.union, so length errors keep their own message instead of 'Invalid input'.\n\n3. lib/validation/edit.ts:\n- legalName = requiredText(2, 200, 'Legal name must be at least 2 characters.', 'Legal name cannot be removed.')\n- contactPerson = requiredText(2, 200, 'Contact person must be at least 2 characters.', 'Contact person cannot be removed.')\n- branchName = requiredText(1, 200, 'Branch name is required.', 'Branch name cannot be removed.')\n- address = requiredText(3, 500, 'Address must be at least 3 characters.', 'Address cannot be removed — correct it instead.')\n- contactRole = clearableText(200), notes = clearableText(5000), areaDescription = clearableText(500), openingHours = clearableText(100), deliveryWindow = clearableText(100).\n\nEffect:\n- '<shop>', '  ' and '<b></b>' now fail at parse for every role, including the Steward/Manager direct write the verdict reached.\n- An optional field reduced to nothing by the strip becomes a clear.\n- Legitimate names containing '<…>' are still stripped, as before.\n- gpsManualReasonSchema already strips first and is untouched.\n\nNo DB CHECK backstop in this change (owner decision 7).",
+  "files": [
+   "lib/validation/fields.ts (new)",
+   "lib/validation/edit.ts",
+   "lib/validation/create.ts",
+   "tests/unit/edit-schema.test.ts (new)",
+   "tests/unit/create-flow.test.ts",
+   "tests/unit/edit-service.test.ts (new)",
+   "tests/unit/edit-phase2-guard.test.ts (new)"
+  ]
+ },
+ {
+  "id": "F21",
+  "design": "PART 1: VERIFIED ZERO.\nSchema change: Branch.equipmentConfirmed BOOLEAN NOT NULL DEFAULT false. This is exactly the 'Equipment confirmed' toggle stored on Branch that UXI-007 prescribes (docs/audit/06-ux-data-integrity.md:128-144).\n\nAlternatives rejected:\n- Nullable counts: that retypes three columns read by the forms, the CREATE drafts, the exports and the synthetic data.\n- A timestamp column: a server-clock after-value needs STALE exemptions and a 'later date wins' rule when applied.\n\n1. lib/completeness.ts scoreBranch\n- Replace the dead block at :61-70 with `if (b.equipmentConfirmed || coolers + stands + bottles > 0) s += 5`.\n- BranchForScore adds 'equipmentConfirmed' as a REQUIRED key, so typecheck names every caller that builds the object by hand. lib/create-finalize.ts:328-342 passes false; the services and prisma/synthetic.ts pass full rows.\n- Every existing row is false and the >0 rule stays, so no stored score changes at deploy.\n\n2. Form\n- Per branch, while the loaded value is false, a checkbox 'Counted at the shop (tick even if there is none)'. Any stepper change ticks it. When the loaded value is true, the block reads 'Equipment counted'.\n- BState gains confirmed. Old drafts lack it and keep the loaded value.\n- The builder sends equipmentConfirmed: true with base false only on a false→true change.\n- page.tsx selects equipmentConfirmed.\n\n3. Schema and service\n- equipmentConfirmed = z.literal(true).optional().\n- BRANCH_FIELDS (services/edits.ts:93-108) gains it, so planning, applying, STALE_BEFORE and the audit treat it like any other field.\n- In the branch loop: when any count is a CHANGE, live equipmentConfirmed is false and none was sent, push {field:'branch.<id>.equipmentConfirmed', before:false, after:true}. Entering counts means counting, and this covers hand-made payloads too.\n\n4. CREATE is unchanged: it keeps the >0 rule and its drafts carry no flag (left out).\n\nPART 2: IMPORT SCORES AND VERSIONS.\n1. lib/rescore.ts (new; imports only lib/completeness and Prisma types, so operator scripts can use it)\n- planRescore(customer, liveBranches) is pure and returns the rows whose stored score differs.\n- rescoreCustomer(tx, customerId) reads the customer and its live branches and writes only the changed scores (tx.branch.update / tx.customer.update). It never bumps version.\n\n2. services/imports.ts\n- Replace the customer-only block (:2437-2452) with `await rescoreCustomer(tx, customerId)`. It runs in every lane, inside the same 20 s group transaction, under the customer lock.\n- Add `version: { increment: 1 }` to the full-lane branch.upsert update (:2303-2314) and to refreshLaneBranches' tx.branch.update (:1307-1319). Creates keep version 0.\n- Why the versions matter: F06 judges staleness by value, but applyEditChanges' expected-version backstop has to see import branch writes too. The B-05 comments already claim it does.\n\n3. The other rescoring writers (edits, photos, reactivations, create-finalize, duplicates) keep their own blocks. N04/F12 will rewrite those lines; consolidating them now would be a refactor for its own sake.\n\n4. One-off production rescore: see prod_rescore.",
+  "files": [
+   "prisma/schema.prisma",
+   "prisma/migrations/20260929120000_edit_submit_gate_equipment_confirmed/migration.sql",
+   "lib/completeness.ts",
+   "lib/create-finalize.ts",
+   "lib/rescore.ts (new)",
+   "services/imports.ts",
+   "services/edits.ts",
+   "lib/validation/edit.ts",
+   "lib/enrichment-patch.ts (new)",
+   "app/(app)/customers/[id]/edit/EnrichmentForm.tsx",
+   "app/(app)/customers/[id]/edit/page.tsx",
+   "app/(app)/approvals/[id]/page.tsx",
+   "scripts/ops/rescore-completeness.ts (new)",
+   "package.json (ops:rescore-completeness)",
+   "lib/compliance/pii-classification.ts",
+   "docs/compliance/PII-INVENTORY.md (regenerated)",
+   "tests/unit/completeness.test.ts",
+   "tests/unit/rescore.test.ts (new)",
+   "tests/unit/rescore-completeness.test.ts (new)",
+   "tests/unit/customer-import-service.test.ts",
+   "tests/integration/import-multibranch.test.ts",
+   "tests/integration/rescore-completeness.test.ts (new)"
+  ]
+ }
+]

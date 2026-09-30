@@ -288,7 +288,7 @@ Do not report these as defects without new evidence; you may of course challenge
 
 ## 13. How the team verifies changes — and what the tests exercise
 
-- Before any push: `npm run typecheck` (runs `next typegen` first — bare `tsc` misses route types), `npm run lint`, `npm test`. Integration suites run locally against the UAT branch by practice (`scripts/qa/run-with-env.mjs` just loads `.env`); CI runs 34 of them.
+- Before any push: `npm run typecheck` (runs `next typegen` first — bare `tsc` misses route types), `npm run lint`, `npm test`. Integration suites run locally against the UAT branch by practice (`scripts/qa/run-with-env.mjs` just loads `.env`); CI runs 35 of them.
 - **Structural guards** assert on source or configuration where the historical defect was "a correct helper nobody called": `submit-wiring-guard`, `audit-guard` and `branch-address-guard` read comment-stripped source; `ci-gates-guard` executes the workflow's shell steps under `bash -e` with stubs; `typed-routes-guard` compiles probe files; `pii-classification` parses the schema. 11 test files still strip comments with a naive regex that `tests/support/strip-comments.ts` documents as wrong.
 - **Mutation testing by hand**, recorded in commit messages (e.g. `efe3729` 11/11 unit mutants; `ab5867f` 20/20; `2d1e702` 11/11). No Stryker config.
 - **Adversarial review after merges**: three to six lenses, each finding put to one or two independent skeptics; confirmed findings are fixed in a follow-up commit whose message lists them.

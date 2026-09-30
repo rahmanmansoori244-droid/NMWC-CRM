@@ -1,0 +1,61 @@
+SCOPE. approveEditCore, FINAL step of an UPDATE (services/edits.ts:1140-1395).
+- Untouched: CREATE finalize, mid-chain steps and approveReactivationCore. The reactivation lane already re-checks that the branch is still CLOSED under lockCustomerRow.
+
+BEFORE THE TRANSACTION (unchanged):
+- the authorization gate;
+- N01 assertDecisionView;
+- EL-01 STATUS_BYPASS;
+- the QA-013 lock re-evaluation (legalName/crNumber are dropped for a salesman submitter);
+- the phone-collision log.
+Changes here:
+- The submitterUser select (:1205-1208) adds ownedRouteId.
+- The unlocked QA-039 lookup (:1245-1261) is removed. Dropped branches are computed from the snapshot in step 6.
+
+INSIDE THE ONE TRANSACTION (timeout 30 s), IN THIS ORDER
+1. Claim, with the N01 token in the WHERE (unchanged). A lost claim gives NOT_PENDING.
+2. assertGuaranteesAsViewed (unchanged).
+3. editApproval.create (unchanged).
+4. lockCustomerRow (unchanged).
+5. F10 status evidence (unchanged).
+6. NEW snapshot. One read, reused by steps 7-10: tx.customer.findUniqueOrThrow({ where: { id }, include: { branches: { where: { deletedAt: null } } } }). If deletedAt is set: NotFoundError('Customer no longer exists (may have been merged or deleted).'). The pre-transaction check at :890 cannot see an archive that commits later.
+7. NEW classifyChanges. Input: the customer.* entries whose key is still in customerProposed after QA-013, plus all branch.* entries. Each entry is classified against the snapshot:
+   - DROPPED: the branch is not live on this customer. Logged 'edit.approve.branches_dropped' and audited as droppedBranchIds, as today.
+   - CONVERGED: the live value already equals after. Not written; the field names go into the audit as convergedFields.
+   - STALE: the live value differs from both before and after. GPS companions (gpsAccuracy, gpsCapturedAt) are never STALE; they are applied as recorded while their branch is live.
+   - APPLY: everything else.
+   If any entry is STALE:
+   - logger.info({ editId, fields: [raw paths] }, 'edit.approve.stale_before');
+   - throw ConflictError('STALE_BEFORE', message naming field labels only, never values).
+   The throw rolls back the claim, the EditApproval row, and the apply, audit and notification that were never written.
+   The edit stays SUBMITTED on the same step with the same stageEnteredAt, so the page's decision token is still valid and Reject works. Reject sends it to the salesman (NEEDS_CORRECTION), who resubmits from a form loaded with the current values.
+   There is no partial apply. That is the existing all-or-nothing approval and the verdict's engineering default. To change it later, the token would have to bind the conflict set the page showed (a token v3).
+   - Bulk approve: that item fails with the message; runBulk carries on with the others.
+   - Rows in flight at deploy are covered at once: every row already stores its before.
+   - Close requests (branch.<id>.status only): a branch that is already CLOSED converges and approves. One that moved to a third status is STALE.
+8. NEW F16 re-check. If APPLY touches customer.channelId or customer.subChannelId, run resolveChannelPair(tx, snapshot, applied customer values). If a changed channel is inactive, or the effective sub-channel is missing, inactive or of another channel: ConflictError('CHANNEL_PAIR_INVALID'), rollback.
+9. EL-04 (F05), not for a status-only close:
+   - g = gateForApproval(parseSubmitGate(edit.submitGate), snapshot.branches, fieldChanges, submitter, salesmanSubmitGate());
+   - if g is set: collectMissingMandatory(snapshot, g.branches, customerProposed, branchProposedById, true, g.gate). Missing fields give NEEDS_REUPLOAD (text unchanged).
+   - It merges the full stored proposal; converged values equal live anyway.
+   - A shop photo on the salesman's own branch detached after submit still fails.
+   - A foreign-route branch, a branch created after submit, or a route handover does not.
+10. applyEditChanges(tx, customerId, payloadFromFieldChanges(APPLY), session.id, expected = versions and statuses from the snapshot).
+   - A version-bumping write by a writer that skips the customer lock, landing between steps 6 and 10, gives VERSION_CONFLICT and a rollback.
+   - If APPLY is empty, nothing is written: no version bump, no rescore churn, no Temix requeue (appliedAnything stays false).
+11. writeAudit APPROVE, same transaction. after = { customerId, changes: fieldChanges.length, fieldChanges exactly as submitted (after:null included), droppedBranchIds?, convergedFields? }.
+12. Notify the submitter (unchanged).
+
+DECISION TOKEN: unchanged (v2, no new field).
+- fieldChanges and submitGate are immutable once SUBMITTED, so 'cycle = payload revision' still holds. The docstring in lib/decision-token.ts gains submitGate.
+- STALE_BEFORE compares live data with the stored before, not with what the page rendered. So a change landing after render is still refused, and a change and change-back (A→B→A) is not.
+
+APPROVAL PAGE (pending UPDATE)
+- The query adds the live CUSTOMER_EDIT_FIELDS and, per branch, the BRANCH_EDIT_FIELDS columns. classifyChanges then runs on them.
+- A STALE row shows an amber line 'Now: <live value>' under Before. Channel ids are resolved to labels with the existing refIds lookup, extended to the live ids.
+- Values are shown only for customer rows and for branches in the reviewer's scope (filterBranchesByScope). An out-of-scope branch reads 'Changed since this was sent' with no value, so F04's exposure does not grow.
+- A banner appears above the diff.
+- ApproveRejectActions receives approveBlockedReason: Approve is disabled with that reason as its title and a line of text. Reject stays enabled. One reject template is added under wrong_info.
+- A clear (after null, before non-empty) renders 'Cleared'.
+- The server stays the authority: a page rendered clean is still refused if the data moves before the click.
+
+DIRECT-WRITE EQUIVALENT (Steward/Manager): the same classifyChanges, under lockCustomerRow, before the APPROVED row is created. It answers STALE_FIELDS (a field-level submit refusal), not STALE_BEFORE (see F06).

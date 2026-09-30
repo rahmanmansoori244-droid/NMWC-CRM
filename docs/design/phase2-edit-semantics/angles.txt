@@ -1,0 +1,145 @@
+[
+ {
+  "angle": "minimal",
+  "summary": "Phase 2 is one change. It adds a v2 edit payload: only the fields the user touched, each with the value the form loaded (\"base\"). It adds one additive migration with two columns: CustomerEdit.gateBranchIds (JSONB, nullable) and Branch.equipmentConfirmed (BOOLEAN NOT NULL DEFAULT false). The N01 decision token does not change.\n\nSubmit (services/edits.ts submitEditOnce):\n- Text fields are stripped first and length-checked second, reusing CREATE's strippedStr (N02).\n- Phones are normalised first and validated second. Arabic-Indic and Persian digits are folded in lib/phone.ts. An invalid non-blank phone is a field error (F19).\n- Omitted means keep, null means clear, a value means set. null is accepted only for an explicit clearable list; required fields refuse null for every role (F20).\n- For each sent field, the base must still equal the live value. Otherwise the answer is STALE_FIELDS: field-keyed, carrying the live value, so the form can rebase and a second Submit replaces the newer value on purpose. Untouched fields are never sent (F06).\n- The effective channel/sub-channel pair is validated when either changes, including isActive. A channel change clears a sub-channel the new channel does not own, and the clear is recorded in the diff (F16).\n- A salesman is gated only on the branches his edit page shows, derived on the server. That set is stored on the row (F05).\n- Direct writes apply using the versions from the same read the base check used.\n\nApproval (UPDATE final step, inside the existing transaction, after the customer lock):\n- Each stored before must equal the live value, unless the live value already equals the after value. Otherwise the answer is STALE_BEFORE and the whole approval rolls back (F06).\n- The channel pair is re-checked (F16).\n- EL-04 runs on the stored branch set (F05).\n- The apply uses the versions read under the lock.\n\nImport:\n- Rescores every live branch of the group's customer.\n- Bumps Branch.version on every branch it writes (F21 part 2).\n- On a channel change, clears a sub-channel that belongs to the old channel and says so in a row note (F16).\n\nCompleteness: the equipment +5 is earned when any count is above 0 or equipmentConfirmed is true (F21 part 1). A dry-run-first scripts/ops/rescore-completeness.ts corrects production scores once.\n\nThe server still accepts the old full-form payload from salesmen during a transition, and logs it. It refuses the old payload for Manager/Steward direct writes: there is no reviewer on that lane, and that is the silent overwrite F06 is about.\n\nNothing was edited, committed or merged. This run was design-only and had no code to merge; branch head already equals main (2060423).",
+  "owner_decisions": [
+   {
+    "question": "May a CR number be cleared from the edit form? A salesman could do it on CASH customers through approval; a Steward or Manager directly.",
+    "recommended_default": "Yes: crNumber is in CLEARABLE_CUSTOMER_FIELDS; the clear sets crNumber and crNumberNorm to null.",
+    "why": "CR is optional under the CORE gate and a wrong CR must be removable, but clearing one removes a duplicate-detection signal and a Temix value. The verdict flagged it as the one clear worth confirming. To change it, remove 'crNumber' from the set in lib/edit-values.ts."
+   },
+   {
+    "question": "May a branch's day of visit be cleared once it is set?",
+    "recommended_default": "No: null is refused, and the form hides '—' when a day exists. The day can still be changed to another day.",
+    "why": "A branch with no day drops off every Today list, which changes route planning, not just data. To change it, add 'dayOfVisit' to CLEARABLE_BRANCH_FIELDS."
+   },
+   {
+    "question": "Should a salesman's own CLOSED or SUSPENDED branches still block his submit when they lack GPS, a shop photo or an address?",
+    "recommended_default": "Unchanged: they are still checked. F05 changes only WHICH branches are checked (his own), not their status.",
+    "why": "Loosening the gate further is a product choice on top of the owner's CORE decision of 2026-09-10. To change it, filter status === 'ACTIVE' inside salesmanEditableBranches' gate use only."
+   },
+   {
+    "question": "When the customer import changes a customer's channel and the stored sub-channel belongs to the old channel, should it clear the sub-channel or hold the row for Steward review?",
+    "recommended_default": "Clear it, with a _lane note on the row and a PII-free log line.",
+    "why": "The import's channel is master data, and the old sub-channel is wrong under the new one. Holding would block loads with no in-app fix, because imports carry no sub-channel column. The cost is -10 completeness and a lost enrichment value, and the change is not pushed to Temix until the customer's next queued change (F12 is the owner's)."
+   },
+   {
+    "question": "Branches that already store zero equipment: treat them as counted?",
+    "recommended_default": "No: they stay unconfirmed and earn no point, with no backfill, until someone ticks 'Counted' or enters a count.",
+    "why": "A stored 0 cannot be told from 'never counted'. A backfill would invent data. This default leaves every existing score unchanged."
+   },
+   {
+    "question": "Production data cleanups and database backstops: existing channel/sub-channel mismatches; '' stored in optional text columns; any empty legal or branch names (N02); and the CHECK constraint or trigger backstops.",
+    "recommended_default": "After deploy, run read-only counts only. Write nothing and add no constraint without a separate go-ahead, each as a dry-run-first script.",
+    "why": "Each is a production write. A constraint added while bad rows exist makes prisma migrate deploy fail before next build and leaves production migrated but undeployed."
+   },
+   {
+    "question": "Run the one-off completeness rescore on production?",
+    "recommended_default": "Yes: dry run first and share the counts, then --apply, with npm run smoke before and after.",
+    "why": "It is a production write, and it moves the dashboard figures. The standing 2026-09-27 permission may cover it, but it should be confirmed when the run happens."
+   }
+  ]
+ },
+ {
+  "angle": "correctness",
+  "summary": "This is one change built on one contract, edit patch v2. It covers F05, F06, F20, F16, F19, N02 and F21 (both parts). It is a design only: I did not edit, commit or merge anything. Line numbers below refer to 2060423.\n\n1. The form sends only the fields the user touched. Each one carries the value the form loaded (`before`). A missing key means \"keep\", `null` means \"clear\" (allowed only on a fixed CLEARABLE set), and a value means \"set\".\n2. The server normalises before it validates. This covers phones (Arabic-Indic and Persian digits), HTML stripping and turning '' into null. It then diffs the patch against the live values.\n   - If the live value already equals the new value, the field is skipped as a no-op.\n   - If `before` no longer equals the live value, that field is refused with STALE_FIELDS. The response includes the live value, so the form can show it in place.\n3. I chose before-values over versions as the staleness signal. Photos and reactivations do not bump `version`, and imports bump it on every promote even when nothing relevant changed. A value comparison catches exactly the lost update, with no false conflicts on fields the user did not touch.\n4. Every staleness check that guards a master write happens in the same transaction as the write:\n   - Manager/Steward direct writes now take `lockCustomerRow` first. They re-read the customer and branches under the lock, re-plan, then write. This also removes the branch-then-customer lock-order inversion the auditor flagged.\n   - Every UPDATE statement is a compare-and-set on id, version, deletedAt and the live value of each changed field. This holds even against writers that skip the lock or the version bump.\n5. A salesman's submit writes only the request row, so its staleness check is early feedback only. The real check is at approval:\n   - The approval takes the customer lock and reads a single snapshot.\n   - It refuses the whole approval with STALE_BEFORE if any stored `before` no longer matches the live value. Fields where the live value already equals the new value are skipped.\n   - It re-checks the channel/sub-channel pair and runs EL-04 (the approval-time mandatory-field re-check) on the persisted branch scope.\n   - It then applies the change with the same compare-and-set.\n6. F05: a new `CustomerEdit.mandatoryScope` column (JSONB, nullable) stores the branch ids and the submit gate a salesman's request was checked against. Route reassignment, newly imported branches and a change to SALESMAN_SUBMIT_GATE therefore cannot change the answer at approval. The approval decision token needs no change: `fieldChanges` and `mandatoryScope` never change after submit, so `cycle` still identifies the payload.\n7. F21:\n   - Part 1 adds `Branch.equipmentCountedAt` and `EditBranchDraft.equipmentCountedAt`, set by a \"Counted\" checkbox or any count change. A shop confirmed to have zero equipment then earns the 5 points.\n   - Part 2 adds `lib/rescore.ts rescoreCustomer`, called in every import promote transaction, and bumps `Branch.version` on import branch writes.\n   - A one-off rescore script with a dry-run default fixes production branch scores; it needs the owner's go-ahead to apply.\n8. The migration only adds three nullable columns, so it is safe to deploy before the code, and nothing needs backfilling.\n9. Phone tabs opened before the deploy get FORM_OUTDATED. Their saved drafts survive: `enrichmentBase` must stay byte-identical, which a golden test pins.",
+  "owner_decisions": [
+   {
+    "question": "May a CR number be cleared from the edit form, and by whom?",
+    "recommended_default": "Yes, by any role that may edit it today. A salesman on a CASH customer clears through approval, where the diff shows 'Cleared'. A Manager or Steward clears by direct write. Under the FULL gate, a salesman's clear is refused ('CR number is required.').",
+    "why": "The CR is a legal identifier that feeds duplicate detection and the Temix cr_no column, and the verdict flagged it for confirmation. To change the rule, remove 'crNumber' from CLEARABLE.customer, or add a role check next to it in lib/validation/edit.ts."
+   },
+   {
+    "question": "May the day of visit be cleared from the edit form?",
+    "recommended_default": "No. A wrong day is fixed by picking the right one. The '—' option stays only for a branch that has no day yet.",
+    "why": "It is a routing field: clearing it drops the shop from day-based lists, and it is mandatory under the FULL gate. To change it, add 'dayOfVisit' to CLEARABLE.branch."
+   },
+   {
+    "question": "Existing zero equipment counts: backfill as confirmed, or leave them unconfirmed?",
+    "recommended_default": "No backfill. A shop earns the equipment points only once someone ticks 'Counted' or enters a count. Legacy shops with counts above zero keep their points.",
+    "why": "A stored 0 cannot be told apart from 'never counted', and the PRD and UXI-007 ask for an explicit confirmation. The critic's default was 'unconfirmed; tell the owner'."
+   },
+   {
+    "question": "If SALESMAN_SUBMIT_GATE changes while requests are pending, which gate judges them at approval?",
+    "recommended_default": "The gate in force when the request was submitted, which is now stored in mandatoryScope.gate.",
+    "why": "Today an in-flight request is judged by whatever the gate is at approval time, so flipping CORE to FULL fails every pending request with NEEDS_REUPLOAD. To keep today's behaviour instead, it is one line in approveEditCore: use salesmanSubmitGate() in place of scope.gate."
+   },
+   {
+    "question": "At approval, when some stored before-values no longer match the live record: refuse the whole request, or apply the rest?",
+    "recommended_default": "Refuse the whole request (STALE_BEFORE). The approver rejects it, and the salesman redoes it on the current data. Fields that already hold the proposed value are skipped, not counted as conflicts.",
+    "why": "Approvals are all-or-nothing today, and a partial apply would record an approval of a subset the approver may not have meant on its own. The verdict treats this as the engineering default; I list it for confirmation."
+   },
+   {
+    "question": "Should the salesman's own CLOSED or SUSPENDED branches still count toward his mandatory fields?",
+    "recommended_default": "Yes, no change. They are his branches and he can fill them.",
+    "why": "The F05 verdict raised this as optional and not needed for the fix. To exempt them, add a status filter in lib/edit-scope.ts salesmanScopeBranchIds."
+   },
+   {
+    "question": "Clean up existing bad data: customers whose sub-channel belongs to another channel or is withdrawn, and '' stored in optional text columns?",
+    "recommended_default": "Take the read-only counts now (SQL in prod_rescore). Clean up only with the owner's go-ahead, using a dry-run-first operator script.",
+    "why": "Cleaning is a production write. The new code already treats '' as empty, and it refuses new mismatched pairs."
+   },
+   {
+    "question": "Run the one-off completeness rescore on production after the deploy?",
+    "recommended_default": "Yes: dry run first, the owner reviews the counts, then --apply with a named Steward as the actor, then a dry run again showing 0, with npm run smoke before and after.",
+    "why": "Branches the import created sit at 0 and the ones it updated are stale, so the dashboard leaderboards are understated. Applying is a production write, and the leaderboards will visibly rise."
+   },
+   {
+    "question": "When the customer import changes a customer's channel and the stored sub-channel belongs to the old channel: clear it, hold the row for review, or keep the old channel?",
+    "recommended_default": "Clear the sub-channel in the same write, and say so in a note on the import row. A compatible sub-channel is kept.",
+    "why": "This is the same rule UPDATE now applies. Holding the row would block the Steward's load over a field the sheet does not even carry."
+   },
+   {
+    "question": "Add database CHECK constraints for non-empty legal name and branch name (the N02 backstop)?",
+    "recommended_default": "Not in this change. Count the offending rows first, and add the constraints in a later migration only once there are none, or after a cleanup the owner approves.",
+    "why": "A CHECK added while bad rows exist fails `prisma migrate deploy`, which runs before `next build`, and leaves production migrated but on the old build."
+   }
+  ]
+ },
+ {
+  "angle": "operator",
+  "summary": "Design only. Nothing in the repo was changed and nothing was merged. The relayed \"merge it\" was not acted on: this task is read-only, and moving main deploys production.\n\nThe six findings share one contract, \"edit patch v2\":\n- **Form (F06/F20):** EnrichmentForm sends only the fields the user touched, and for each one the value the page showed him (`seen`). Omitted means keep, null means clear (optional fields only), a value means set.\n- **Server validation (F19/N02):** the server normalises first and then validates, through one shared helper file (lib/validation/fields.ts):\n  - text fields: HTML is stripped before the length check (CREATE's `strippedStr`, moved there);\n  - phones: `normalizePhone`, now also folding Persian digits, and an invalid value is a field error.\n- **Conflict at submit (F06):** a field whose seen value no longer matches the live value is refused per field with the new code STALE_FIELDS. The reply carries the current value, so the phone can show it and rebase in place without losing what was typed. For Manager/Steward direct writes the same check is repeated inside the transaction under `lockCustomerRow`.\n- **Channel pair (F16):** the effective (channel, sub-channel) pair is checked the way CREATE checks it. A channel change clears an incompatible stored sub-channel explicitly; the stored change is marked `cause: 'CHANNEL_CHANGED'`.\n- **Gate scope (F05):** a salesman is gated only on the live branches of his own route, using the same `filterBranchesByScope` the edit page uses. The rule (CORE/FULL) and the branch ids are frozen on the request in a new nullable `CustomerEdit.submitGate` JSON column.\n- **Approval:** in one transaction under the customer lock, in this order:\n  1. every stored `before` must still equal the live value. If not, STALE_CHANGES refuses the whole approval and the claim rolls back. A live value that already equals the requested one counts as already applied.\n  2. the channel pair is re-checked.\n  3. EL-04 re-runs over the frozen branch set.\n- **Decision token:** unchanged. fieldChanges and `submitGate` are written only at submit, so \"cycle = payload revision\" still holds.\n- **F21:** new nullable `Branch.equipmentCountedAt` plus an \"I counted the equipment\" checkbox. A branch scores the equipment points if it was counted or any count is above 0.\n- **Import (F21/F16):** it rescores every branch through a new `lib/rescore.ts`, bumps `Branch.version`, and clears a sub-channel that belongs to the old channel.\n\nOne additive migration (two nullable columns), no backfill. A payload from a pre-deploy page is refused as FORM_OUTDATED and nothing is written; the offline draft stays on the phone. A one-off, dry-run-first rescore script fixes branch scores that are already stale in production.\n\nNot decided here — the owner's calls:\n- approval conflict policy;\n- whether CR number and day of visit can be cleared;\n- the salesman's own closed branches in the gate;\n- cleaning existing mismatched channel/sub-channel pairs;\n- running the production rescore;\n- dropping phone drafts saved before item 22;\n- whether blank cells clear values in Temix.",
+  "owner_decisions": [
+   {
+    "question": "When a stored before-value no longer matches the live value at approval (typically an import changed the field after the salesman submitted), should the approval be refused whole, or should the non-conflicting fields be applied and the conflicting ones skipped?",
+    "recommended_default": "Refuse the whole approval (STALE_CHANGES). The approver rejects it with a prefilled reason, and the salesman re-checks and resends.",
+    "why": "It keeps the existing all-or-nothing approval, and the N01 decision token (v2) needs no change. Applying the rest would mean the approver approves a set that differs from what was sent, and the page's conflict set would have to be bound into a token v3. The cost of the default: the salesman re-enters his changes, and GPS may need recapturing. The policy sits in one branch after staleChanges() in approveEditCore, so switching later is contained."
+   },
+   {
+    "question": "May the CR number be cleared from the edit form (set to empty), or only replaced?",
+    "recommended_default": "Clearable by anyone allowed to edit it; locked as today for a salesman on CREDIT. A salesman's clear goes through approval and shows as \"Cleared\". Under the FULL gate a salesman can't clear it, because it is required there.",
+    "why": "CR is optional under the owner's CORE gate, and a wrong CR must be removable. But CR is identity data used by duplicate detection and sent to Temix. The clearable set is one constant in lib/edit-patch.ts, so the choice is easy to reverse."
+   },
+   {
+    "question": "May a branch's day of visit be cleared, or only changed to another day?",
+    "recommended_default": "Only changed, not cleared. The \"—\" option appears only while no day is set.",
+    "why": "Clearing it drops the shop from the day's route list and exports a blank day_of_visit to Temix. A wrong day is fixed by picking the right one. Adding it to the clearable set later is a one-line change."
+   },
+   {
+    "question": "Should a salesman's own CLOSED/SUSPENDED branches still count in his submit gate (address, GPS and shop photo required)?",
+    "recommended_default": "Yes — unchanged. The gate covers every live branch on his route that the edit page shows.",
+    "why": "The F05 fix only narrows the gate to branches he can see and edit. Exempting closed branches would be a new product rule."
+   },
+   {
+    "question": "Clean up existing customers whose sub-channel belongs to a different channel in production?",
+    "recommended_default": "Take the count from the rescore dry run (read-only). If it is non-zero, clear those sub-channels with a dry-run-first --apply operator script, only after the owner's go-ahead.",
+    "why": "It is a production write that lowers those customers' completeness by 10 and changes their next Temix export. New mismatches can't arise after this change."
+   },
+   {
+    "question": "Run the one-off production completeness rescore after deploy?",
+    "recommended_default": "Yes: dry run, share the counts, the owner's OK, --apply, then re-run the dry run to show 0.",
+    "why": "Import-created branches sit at score 0, and the leaderboards read them. It is a production write, and the dashboard figures will visibly rise."
+   },
+   {
+    "question": "Phone drafts saved before item 22 (with no recorded base values) — drop them after this deploy?",
+    "recommended_default": "Drop them, with the existing \"older than the latest server changes\" message.",
+    "why": "Under clock skew between phone and server, such a draft can hold values older than the server's. The new form would send those as deliberate edits. The drafts are at least three days old, and item 22's rule already dropped any draft older than the last server change."
+   },
+   {
+    "question": "Does a blank cell in the Temix upload clear that value in Temix (for example a cleared alt phone or sub-channel)?",
+    "recommended_default": "Ship CRM clears now, and confirm with the Temix side (Q-temix-headers is still open). Until confirmed, reconciliation treats a CRM clear as \"Temix may still hold the old value\".",
+    "why": "The CRM exports a clear as ''. Whether Temix treats a blank as \"keep\" or \"clear\" decides whether a clear reaches the ERP."
+   }
+  ]
+ }
+]

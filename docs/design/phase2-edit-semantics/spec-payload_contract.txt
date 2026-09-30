@@ -1,0 +1,137 @@
+// ───────── lib/edit-values.ts (NEW) — pure, client-safe: no zod, no Prisma runtime import.
+// Used by lib/enrichment-patch.ts (browser), lib/validation/edit.ts, services/edits.ts (submit,
+// direct write, approval) and app/(app)/approvals/[id]/page.tsx, so all four compare values alike.
+export const CUSTOMER_EDIT_FIELDS = ['legalName','paymentTerms','crNumber','channelId','subChannelId',
+  'primaryPhone','altPhone','contactPerson','contactRole','status','notes'] as const;
+export const BRANCH_EDIT_FIELDS = ['branchName','address','areaDescription','gpsLat','gpsLng','gpsAccuracy',
+  'gpsCapturedAt','dayOfVisit','openingHours','deliveryWindow','coolersCount','standsCount',
+  'emptyBottlesCount','equipmentConfirmed','status'] as const;   // services/edits.ts CUSTOMER_FIELDS/BRANCH_FIELDS become these
+export type CustomerEditField = (typeof CUSTOMER_EDIT_FIELDS)[number];
+export type BranchEditField = (typeof BRANCH_EDIT_FIELDS)[number];
+
+/** A value as the form loaded it, or as fieldChanges stores it: Date -> ISO string, absent -> null. */
+export type BaseValue = string | number | boolean | null;
+
+/** null (= clear) is accepted ONLY for these, for every role. The owner's answers are one-line edits here. */
+export const CLEARABLE_CUSTOMER_FIELDS: ReadonlySet<CustomerEditField> =
+  new Set(['crNumber', 'subChannelId', 'altPhone', 'contactRole', 'notes']);
+export const CLEARABLE_BRANCH_FIELDS: ReadonlySet<BranchEditField> =
+  new Set(['areaDescription', 'openingHours', 'deliveryWindow', 'gpsAccuracy']);
+/** Describe the point: sent only with gpsLat+gpsLng, carry no base, never compared with live. */
+export const GPS_COMPANIONS: ReadonlySet<BranchEditField> = new Set(['gpsAccuracy', 'gpsCapturedAt']);
+
+export const FIELD_LABEL: Record<CustomerEditField | BranchEditField, string>;
+// 'Legal name','Payment terms','CR number','Channel','Sub-channel','Primary phone','Alt phone',
+// 'Contact person','Contact role','Status','Notes','Branch name','Address','Landmark / area',
+// 'Location' (all four gps*),'Day of visit','Opening hours','Delivery window','Coolers','Stands',
+// 'Empty bottles','Equipment counted','Branch status'
+
+export function toBaseValue(v: unknown): BaseValue;            // Date -> toISOString(); undefined -> null
+/** '' ≡ null ≡ undefined; gpsCapturedAt compared as epoch ms (Date or ISO string); otherwise ===. */
+export function sameEditValue(field: string, a: unknown, b: unknown): boolean;
+export type LiveVerdict = 'CHANGE' | 'CONVERGED' | 'STALE';
+/** same(target, live) -> CONVERGED; else companion || same(expected, live) -> CHANGE; else STALE. */
+export function classifyAgainstLive(field: string, expected: unknown, target: unknown, live: unknown): LiveVerdict;
+/** Error-slot key: branch.<id>.gps{Lat,Lng,Accuracy,CapturedAt}|gpsManualReason -> branch.<id>.gps;
+ *  branch.<id>.{coolersCount,standsCount,emptyBottlesCount,equipmentConfirmed} -> branch.<id>.equipment. */
+export function fieldSlotKey(path: string): string;
+/** Stored changes vs a live snapshot (submit direct write, approval, approval page). */
+export function classifyChanges(
+  changes: FieldChange[],
+  live: { customer: Record<string, unknown>; branches: Map<string, Record<string, unknown>> },
+): { apply: FieldChange[]; converged: string[]; stale: Array<{ field: string; live: BaseValue }>; droppedBranchIds: string[] };
+
+// ───────── Submit body: POST /api/forms/customer-edit -> submitEditAction (lib/validation/edit.ts)
+export const EDIT_PAYLOAD_VERSION = 2 as const;
+export type CustomerPatchInput = {        // z.object(...).strict(); key present = touched, absent = keep
+  legalName?: string;                     // required: strip HTML, then 2..200; null -> 'Legal name cannot be removed.'
+  paymentTerms?: PaymentTerms;            // accepted only to refuse a change (unchanged rule, edits.ts:436-441)
+  crNumber?: string | null;               // clearable (owner decision 1); trim, <=50, '' -> null
+  channelId?: string;                     // required; cuid
+  subChannelId?: string | null;           // clearable; cuid; '' -> null
+  primaryPhone?: string;                  // required; Arabic-Indic/Persian folded, validated, output '+968XXXXXXXX'
+  altPhone?: string | null;               // clearable; same rule; '' -> null
+  contactPerson?: string;                 // required; strip, 2..200
+  contactRole?: string | null;            // clearable; strip, <=200; stripped '' -> null
+  status?: CustomerStatus;                // required; never sent by the SALESMAN form (EL-01 guard unchanged)
+  notes?: string | null;                  // clearable; strip, <=5000; stripped '' -> null
+};
+export type BranchPatchInput = {          // z.object(...).strict().superRefine(gps group rules)
+  branchId: string;                       // cuid; unique in the array
+  branchName?: string;                    // required; strip, 1..200 (API only; not on the form)
+  address?: string;                       // required; strip, 3..500
+  areaDescription?: string | null;        // clearable; strip, <=500
+  gpsLat?: number; gpsLng?: number;       // required pair, both or neither; Oman envelope unchanged; z.number (no coerce)
+  gpsAccuracy?: number | null;            // companion; only with the pair; null = the new point has none
+  gpsCapturedAt?: string | Date;          // companion; only with the pair; ISO-8601 (Z or offset) -> Date. Not z.coerce.date
+  gpsManualReason?: string;               // item 41; only with the pair; not a column (unchanged schema)
+  dayOfVisit?: DayOfWeek;                 // required once set (owner decision 2)
+  openingHours?: string | null;           // clearable; strip, <=100
+  deliveryWindow?: string | null;         // clearable; strip, <=100
+  coolersCount?: number;                  // z.number().int().min(0).max(100); null refused (no coerce: Number(null) = 0)
+  standsCount?: number;                   // 0..100, same
+  emptyBottlesCount?: number;             // 0..1000, same
+  equipmentConfirmed?: true;              // F21: only ever set, never unset
+  status?: CustomerStatus;                // Steward/Manager only (QA-009 rules unchanged)
+  /** The value the form LOADED for every key sent above except branchId, gpsManualReason and the GPS companions. */
+  base: Partial<Record<BranchEditField, BaseValue>>;
+};
+export type SubmitEditInput = {
+  v: typeof EDIT_PAYLOAD_VERSION;         // absent or other -> FORM_OUTDATED (checked before zod)
+  customerId: string;
+  isDraft?: boolean;                      // default false
+  submissionId?: string;                  // item 22, unchanged; client id = SubmissionIds.idFor(body)
+  customer: CustomerPatchInput;           // {} allowed
+  /** The value the form LOADED for every key present in `customer`. */
+  customerBase: Partial<Record<CustomerEditField, BaseValue>>;
+  branches: BranchPatchInput[];           // only branches with >= 1 touched key
+};
+export type ParsedSubmitEdit = z.output<typeof submitEditSchema>;
+// A sent key (other than the exemptions) with no base entry -> FORM_OUTDATED. Extra base keys are ignored.
+
+// Example: a salesman clears alt phone, writes notes and ticks 'counted' on one branch.
+// { "v":2, "customerId":"ck…", "isDraft":false, "submissionId":"…",
+//   "customer": { "notes":"Closed Fridays", "altPhone":null },
+//   "customerBase": { "notes":null, "altPhone":"+96891234567" },
+//   "branches": [ { "branchId":"ck…", "equipmentConfirmed":true, "base":{ "equipmentConfirmed":false } } ] }
+
+// ───────── lib/enrichment-patch.ts (NEW, pure, client-safe)
+export type LoadedCustomer = /* the edit page's customer prop, plus branches[].equipmentConfirmed: boolean */;
+export function buildEnrichmentPatch(
+  loaded: LoadedCustomer,                 // loadedRef.current: the server values at mount, rebased after STALE_FIELDS
+  state: EnrichmentFormState,             // the form's strings + branchStates (BState gains confirmed: boolean)
+  opts: { role: Role; lockName: boolean; lockCr: boolean },
+): Pick<SubmitEditInput, 'customer' | 'customerBase' | 'branches'>;
+
+// ───────── lib/errors.ts
+export type ActionResult<T = void> =
+  | { ok: true; data: T }
+  | { ok: false; code: string; message: string; fields?: Record<string, string>;
+      /** STALE_FIELDS only: live value per raw path ('customer.contactPerson', 'branch.<id>.gpsLat'). */
+      current?: Record<string, BaseValue> };
+export class StaleFieldsError extends AppError {        // code 'STALE_FIELDS', http 409
+  constructor(fields: Record<string, string>,           // keyed by fieldSlotKey
+              readonly current: Record<string, BaseValue>); // only fields in the actor's own patch
+}
+export class FormOutdatedError extends AppError {       // code 'FORM_OUTDATED', http 409, fields { _form: message }
+  constructor();
+}
+// runAction adds `current` for StaleFieldsError; fields as today.
+// New ConflictError codes at approval: 'STALE_BEFORE', 'CHANNEL_PAIR_INVALID'.
+
+// ───────── Stored: CustomerEdit.fieldChanges (type stays FieldChange in lib/gps-manual.ts; shape unchanged)
+type StoredFieldChange = {
+  field: `customer.${CustomerEditField}` | `branch.${string}.${BranchEditField}` | `draft.${number}.gps`;
+  before: BaseValue;        // LIVE value when planned (Date -> ISO through JSON)
+  after: BaseValue;         // NEW: null = explicit clear (a CLEARABLE field, or the implicit sub-channel clear)
+  gpsSource?: 'MANUAL'; gpsManualReason?: string;       // item 41, unchanged
+};
+// No marker entries: every existing reader (change report, queue count, approval page, audit) keeps working.
+
+// ───────── Stored: new columns
+// lib/edit-scope.ts
+export type SubmitGateRecord = { v: 1; gate: 'CORE' | 'FULL'; branchIds: string[] };
+// CustomerEdit.submitGate Json?  written once on a SALESMAN's SUBMITTED UPDATE row, never updated;
+//   null = not gated (draft, Steward/Manager direct write, close/reactivation request) or written before this build.
+export function parseSubmitGate(raw: unknown): SubmitGateRecord | null;   // zod; malformed -> null (+ caller logs)
+// Branch.equipmentConfirmed Boolean @default(false)

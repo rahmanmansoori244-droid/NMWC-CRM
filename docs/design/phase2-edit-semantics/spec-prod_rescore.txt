@@ -1,0 +1,56 @@
+NEEDED: YES, ONCE. It is for Part 2 only.
+- Part 1 changes no stored score. equipmentConfirmed is false everywhere and the rule becomes 'confirmed OR any count > 0'.
+- Branches created by the import are still at completenessScore 0. The go-live promote rescored only the Customer (imports.ts:2437-2452).
+- Branches the import updated (address, visit day, status, route) keep stale scores unless a later edit, photo or reactivation rescored that customer.
+- Branch.completenessScore feeds the dashboard region and route leaderboards (app/(app)/dashboard/page.tsx:110-152) and the branch ring.
+- The repo cannot size this. The dry run prints the counts.
+- Run it AFTER the deploy, so the fixed import keeps the scores right behind it.
+
+SCRIPT: scripts/ops/rescore-completeness.ts, npm script 'ops:rescore-completeness'. It follows recompute-cr-norm.ts.
+
+Usage:
+  DIRECT_URL='<owner url>' npm run ops:rescore-completeness -- --expect-host <marker> [--apply --actor <steward username>] [--chunk 200]
+
+Safety model:
+- Its own PrismaClient on DIRECT_URL. It imports connectWaking, requireExpectedHost and resolveActor from ./requeue-untracked.
+- --expect-host is required for the dry run too.
+- The dry run resolves the actor, so it rehearses every refusal --apply has. --apply requires --actor.
+- It imports only lib/rescore.ts (and through it lib/completeness.ts) and lib/locks.ts. It never imports lib/audit or lib/db.
+- It exports run(args, prisma) so the tests can drive it.
+
+DRY RUN (the default) writes nothing. It pages over live customers by id (keyset, --chunk per page) with their live branches: the scoring columns, completenessScore and equipmentConfirmed. planRescore (pure; the same scoreBranch/scoreCustomer the app uses) gives the counts. It prints COUNTS ONLY:
+- customers scanned; customer scores to change (up / down);
+- live branches scanned; branch scores to change (up / down), and how many of those are stored as 0;
+- total points moved.
+It also prints read-only counts for the owner decisions:
+- F16 mismatched pairs:
+  SELECT count(*) FILTER (WHERE s."channelId" IS DISTINCT FROM c."channelId") AS foreign_sub, count(*) FILTER (WHERE NOT s."isActive") AS inactive_sub FROM "Customer" c JOIN "SubChannel" s ON s.id = c."subChannelId" WHERE c."deletedAt" IS NULL;
+- F05 sizing, customers whose live branches span more than one route:
+  SELECT count(*) FROM (SELECT "customerId" FROM "Branch" WHERE "deletedAt" IS NULL GROUP BY "customerId" HAVING count(DISTINCT "routeId") > 1) x;
+- N02 empty names:
+  SELECT (SELECT count(*) FROM "Customer" WHERE "deletedAt" IS NULL AND btrim("legalName") = '') AS empty_legal, (SELECT count(*) FROM "Branch" WHERE "deletedAt" IS NULL AND btrim("branchName") = '') AS empty_branch;
+It never prints a name, code, phone or id.
+
+--apply:
+1. Writes a STARTING ledger row: prisma.auditLog.create, entityType 'CompletenessRescore', counts, host marker and actor. Operator scripts sit outside the writeAudit rule (CLAUDE.md).
+2. For each page, one $transaction (timeout 20 s):
+   - lockCustomersAndTemixCodeHolders(tx, ids, null): a sorted FOR UPDATE in the lib/locks.ts order, the same one merge and archive use;
+   - re-read the same customers and their live branches through tx;
+   - planRescore;
+   - one tx.$executeRaw UPDATE "Branch" AS b SET "completenessScore" = v.score FROM (VALUES (id::text, score::int), …) AS v(id, score) WHERE b.id = v.id AND b."completenessScore" <> v.score;
+   - the same for "Customer".
+   Raw SQL is used on purpose. Prisma's @updatedAt is set by the client, so updatedAt stays unchanged: the master export's 'updated since' filter reads it. version is never bumped, because a derived column must not fail open edit forms. There is no Temix requeue and no lastEditedById.
+3. Writes a COMPLETED ledger row with the written counts.
+
+Correctness under load:
+- Every writer of a scored field holds the customer lock (edits, imports N03, photos, reactivations, and now direct writes). A score recomputed under the lock therefore cannot be overwritten by one computed from stale inputs, and it waits rather than skips.
+- Idempotent: a second run reports 0. A partial run can be re-run.
+
+RUNBOOK
+1. The branch is CI-green (typecheck, lint, unit, next build, integration). main moves only on the owner's explicit 'merge it' for that commit. npm run smoke before and after the deploy.
+2. Dry run against production (--expect-host <production marker>). Read the counts to the owner, and warn that the leaderboards will visibly rise.
+3. --apply --actor <steward username> only on the owner's go-ahead. The standing 2026-09-27 production-write permission may cover it; confirm it is still in force when it runs.
+4. Dry run again, expecting 0.
+5. npm run smoke.
+
+Tests: tests/unit/rescore.test.ts, tests/unit/rescore-completeness.test.ts, and tests/integration/rescore-completeness.test.ts, which refuses ep-sweet-haze.

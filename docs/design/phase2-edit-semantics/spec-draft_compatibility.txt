@@ -1,0 +1,51 @@
+WHAT PHONES HOLD TODAY. localStorage key nmwc:draft:<user>:<customer>. It holds: legalName, crNumber, channelId, subChannelId, primaryPhone, altPhone, contactPerson, contactRole, notes, branchStates{id: {address, areaDescription, gps, dayOfVisit, openingHours, deliveryWindow, coolers, stands, bottles}}, savedAt, and base (every draft since item 22).
+
+1. Format. Unchanged. The new client writes the same keys plus an optional branchStates[id].confirmed. Nothing is renamed.
+
+2. enrichmentBase (lib/enrichment-draft.ts:46-74) keeps a byte-identical output.
+- equipmentConfirmed, gpsAccuracy and gpsCapturedAt stay out of it.
+- A changed base would silently discard every draft saved before the deploy.
+- A new unit test pins its output for a fixture as a literal string captured from the current function.
+
+3. draftIsStale.
+- Base-carrying drafts: they restore only when base equals today's base (unchanged).
+- Drafts without a base (saved before item 22, 2026-09-25/26, so at least three days old): now dropped, with the existing 'Your offline draft is older than the latest server changes…' message.
+- Why: the clock rule cannot show which of the values were typed. Under the patch contract, an untouched old value would be sent as a deliberate edit. The draft constraint requires 'no unintended overwrite'.
+- The signature drops customerUpdatedAtMs. This replaces the test 'a draft written before item 22 keeps the old clock rule'.
+
+4. The patch base is always the page-load server value (loadedRef), never the draft.
+- A draft restores only when its starting values equal the current ones. So 'restored value differs from loaded value' means exactly what the salesman typed.
+- Untouched fields are never sent, so a restored draft cannot overwrite a newer value it never saw.
+- Old draft '' against a server null: equal, so no clear.
+- Old draft '' against a stored value: a clear the salesman made. The old UI silently ignored it; it is now sent as null and shown to the approver as 'Cleared'.
+- An old draft where the channel changed carries subChannelId '', which is sent as null. That is correct.
+
+5. Restore merges per branch the page shows:
+   for (const b of customer.branches) if (d.branchStates?.[b.id]) next[b.id] = { ...prev[b.id], ...d.branchStates[b.id] }
+- Unknown ids, e.g. after a route handover, are ignored. Today they are spread into state and sent, which draws 'You can only edit branches on your route.'.
+- A missing key (confirmed) keeps the loaded value.
+- gps.capturedAt restored as a string is sent as that ISO string.
+- GPS counts as touched only through lat/lng.
+- No code calls a method on a possibly-missing value, so an old draft cannot crash the form.
+
+6. After a refusal.
+- A refusal never removes the phone copy (unchanged).
+- After STALE_FIELDS, only the named fields are rebased in loadedRef, and baseRef = enrichmentBase(loadedRef.current).
+- The autosave deps gain rebaseGen, so the phone copy carries the new base.
+- A reload then restores it while the server still holds those values. If anything else changed on the server, the base differs and the draft is dropped: the conservative side, never an overwrite.
+
+7. An old JS bundle (a tab open across the deploy).
+- It posts a body without v. The server answers FORM_OUTDATED with fields {_form} and writes nothing.
+- The old client shows the message at the top (errors._form) and beside the button (noticeFor reads fields._form), with no retry.
+- It keeps the phone copy, which is removed only on ok.
+- After a reload, the new form restores the copy under rule 3.
+
+8. Item 22.
+- The replay lookup still runs first (submitEditCore :235-246), before the v check. A retry of a pre-deploy submit that landed is answered 'Already received'.
+- Ids are SubmissionIds.idFor(body) over the v2 body. A rebase changes the body and so gets a new id. That is correct: the refused attempt did not land.
+- An overlapping direct-write retry waits at the customer lock and finds every entry CONVERGED, so it is refused 'No changes to submit.'. answerIfLanded then answers it with the first attempt's receipt.
+
+9. Server rows.
+- UPDATE DRAFT rows are write-only (only CREATE drafts resume, app/(app)/work/page.tsx:64), so nothing needs migrating.
+- SUBMITTED rows in flight at deploy keep their fieldChanges, before included, so STALE_BEFORE applies to them at once.
+- Their submitGate is NULL, so EL-04 uses the fallback: branches named in fieldChanges, plus the submitter's current route. That also ends today's foreign-branch deadlock for them.

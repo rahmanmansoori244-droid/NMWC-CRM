@@ -1,0 +1,43 @@
+RISKS
+- More refusals where there was silent success. This is the intent. It covers invalid phones, tag-only names, cleared required fields, STALE_FIELDS and STALE_BEFORE. Watch the 'edit.approve.stale_before' log count and the refusal codes in the first week.
+- An import that changes phone, contact, CR or channel while a salesman's edit waits now sends that edit back instead of silently reverting the import.
+  - The salesman re-enters his changes; GPS may need recapturing.
+  - Approvers need the banner explained once.
+  - Bulk approve reports it per item.
+- False conflicts from how values are represented.
+  - Mitigation: one sameEditValue is used by the builder, the submit, the direct write, the approval and the page. '' ≡ null ≡ undefined; dates compare by ms; the GPS companions are never compared; bases are the loaded raw values, so stored phones and CRs compare as stored.
+  - Residual: a writer that only reformats a value (e.g. re-normalising it) makes open forms conflict once. That is the safe side.
+- STALE_FIELDS lets a second Submit replace the newer value on purpose. A user who ignores the message can still overwrite, but now knowingly. For a salesman, the approver also sees before = the newer value.
+- Every page open at the deploy gets FORM_OUTDATED once. Deploy outside field hours. Phone copies survive under the unchanged base rule. Drafts from before item 22 (no base) are dropped with the existing message: at least three days old, and not provably safe to restore.
+- A salesman's Save draft with an emptied required field is now refused ('… cannot be removed'). Before, it was silently kept.
+- Direct writes now hold the customer row lock, so they wait briefly behind a photo attach or import on the same customer. The lock order is lib/locks.ts's, so no new deadlock pair. It also fixes the branch-before-customer order the auditor flagged for branch-only direct writes.
+- STALE_FIELDS returns live values only for fields in the actor's own patch, on branches he may edit. The approval page shows 'Now' values only in the reviewer's scope, so F04's exposure does not grow.
+- Folding Persian digits makes more phones valid and matchable in imports. A re-run may hold back, as a shared phone, a row that loaded before. This is the right outcome.
+- Clears and the import's sub-channel clear export to Temix as blanks. Whether Temix reads a blank as 'clear' or 'keep' is the open Q-temix-headers under F12 (owner's). The full-lane import does not requeue a channel change today, and this change does not add a requeue.
+- The import sub-channel clear lowers that customer's completeness by 10.
+- The one-off rescore visibly raises dashboard figures.
+- The promote transaction writes a little more (one update per branch whose score changes), inside the 20 s budget. Large chains on their first post-deploy import are the worst case.
+- Test churn: every submitEditAction fixture (about 24 calls in 3 integration files) moves to v2 in the same commit. Payload-pinning unit tests change too. enrichmentFormRendersError becomes an allowlist.
+- On the approval page and in the change report, equipmentConfirmed rows show under the raw field name. The approval page maps the value to Yes/No; the change report prints 'true'/'false'.
+
+DELIBERATELY LEFT OUT
+- Owner items, untouched: F04 photo and branch scope (the existing out-of-scope branch diff on the approval page stays as it is), F09 shared phones, F12 Temix lifecycle (no new requeue), F14 route moves, N04 status precedence.
+- CREATE capture of 'counted'. It would need an EditBranchDraft column, form work and finalize wiring; CREATE keeps the >0 rule, and new customers earn the point on their first edit.
+- DB backstops (N02 non-empty CHECKs, a channel/sub-channel trigger) and all production cleanups: counts first, then owner decision 7.
+- Partial approval of the non-conflicting fields. It would need a token v3 binding the conflict set the page showed.
+- A 'changed since sent' pill on the approvals queue cards, and an import advisory naming pending edits it made stale.
+- Invisible bidi marks (U+200E etc.) in pasted phones. isValidPhoneFormat still refuses them, as CREATE does today. Same class as the CR fold; a follow-up.
+- Client-side phone pre-validation and a 'will be saved as' preview. The server's field error is immediate.
+- Folding the other rescoring writers (edits, photos, reactivations, create-finalize, duplicates) into rescoreCustomer. That would be a refactor; N04/F12 will rewrite those lines.
+- Per-field draft restore. One changed server value still drops the whole phone draft (UXI-003 behaviour).
+- A master-export column or change-report label for equipmentConfirmed.
+- The reactivation lane. It already re-checks CLOSED under the lock.
+- Arabic UI strings: there is no i18n mechanism.
+
+NOT DONE IN THIS RUN
+- No repository file was edited, created, staged or committed. No database was touched. golive-data/ was not opened. No scratch notes were written.
+- The relayed 'merge it' was not acted on as a git operation:
+  - this run is design-only, and there is no phase-2 code;
+  - HEAD 2060423 already equals origin/main;
+  - moving main deploys production and needs the owner's explicit yes for a specific CI-green commit.
+- Implementation, CI, the production dry run and the rescore --apply are all still to do. Each production step waits for the owner as listed.

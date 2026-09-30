@@ -1,0 +1,62 @@
+(Design only: nothing was edited, committed or merged and no database was touched while writing this. Line numbers are at 2060423.)
+
+SHAPE OF THE CHANGE. One coherent change, 'edit patch v2', has four parts.
+
+1. Client payload. The form sends only the fields the user touched. Each one carries the value the form loaded (its 'base'). Omitted means keep, null means clear (only on a fixed CLEARABLE set), and a value means set.
+
+2. Submit (services/edits.ts), in this order:
+- normalise, then validate: HTML strip before length (N02); phone fold and normalise before validate (F19);
+- compare each sent field with the live value: equal to the new value means converged (skipped); base different from live means a STALE_FIELDS field error that carries the live value;
+- check the effective channel/sub-channel pair (F16);
+- gate a salesman only on the branches his page shows, and freeze that set and the gate on the row (F05).
+Manager/Steward direct writes then take the customer row lock, re-check under it and write, all in one transaction.
+
+3. Approval. Under the customer lock, every stored 'before' must still equal the live value, unless the live value already equals the 'after'. Otherwise STALE_BEFORE refuses the whole approval and it rolls back. The channel pair and EL-04 (on the frozen branch set) are re-checked, then the change is applied with the versions from the same locked read.
+
+4. Schema and scoring. One additive migration adds CustomerEdit.submitGate (JSONB NULL) and Branch.equipmentConfirmed (BOOLEAN NOT NULL DEFAULT false). The import rescores every branch it touches and bumps Branch.version. A dry-run-first operator script fixes the production scores once.
+
+The N01 decision token does not change.
+
+BASE AND GRAFTS. Base: the 'minimal' design (a boolean flag, no token change, no marker entries). Grafted from the other two:
+- Direct writes take the lock and re-check under it (operator and correctness designs).
+- Legacy payloads are refused with FORM_OUTDATED; there is no transition lane.
+- Phone drafts that carry no base are dropped.
+- The GPS companions carry no base and are never compared.
+- BranchForScore.equipmentConfirmed is required.
+- After a conflict the typed value is kept, with a 'Use this value' button.
+- Approve is disabled on stale rows.
+- The rescore script runs in chunks under locks.
+- The gate (CORE/FULL) is frozen alongside the branch set.
+
+DISAGREEMENTS RESOLVED
+(1) F05 storage.
+- Chosen: a column, CustomerEdit.submitGate = {v:1, gate, branchIds}, written only on SUBMITTED salesman rows.
+- Rejected: a fieldChanges marker, because lib/change-report.ts:439-467 counts every entry and would add a bogus change row. Also rejected: minimal's ids-only column, and writing it on UPDATE drafts, which nothing ever reads.
+(2) Legacy full-form payloads.
+- Chosen: refuse them all with FORM_OUTDATED. Minimal's option was to accept them from salesmen during a transition.
+- Why: those payloads are exactly the stale-form overwrite F06 removes. The old client keeps its phone copy, so one reload loses nothing, and there is only one code path.
+(3) Direct-write atomicity. Chosen: lockCustomerRow, then a fresh read, the same classifier the approval uses, and a write with the versions from that read.
+- Minimal's idea (versions from the unlocked read) gives a VERSION_CONFLICT that names no field, and misses writers that do not bump version (reactivation approval).
+- The correctness design's per-field compare-and-set in the WHERE is redundant under the lock.
+(4) After STALE_FIELDS the form keeps the typed value, rebases the base and offers 'Use this value' (operator). Rejected: taking the live value and losing the typing.
+(5) Approve is disabled with a reason on stale rows; the server stays the authority.
+(6) The approval code is STALE_BEFORE (the verdict's and minimal's name), not STALE_CHANGES.
+(7) Fields that already hold the new value at approval are left out of the write and recorded in the audit, so nothing is churned for Temix.
+(8) gpsAccuracy and gpsCapturedAt are GPS companions: no base, never STALE, and they travel only with lat/lng. The form invents capturedAt = new Date() for a point that has none (EnrichmentForm.tsx:168).
+(9) F21 uses a boolean (the toggle UXI-007 prescribes), not equipmentCountedAt. A server-clock after-value would need STALE exemptions and a 'later date wins' rule when applied.
+(10) CREATE gets no 'counted' flag.
+(11) Phones are checked with isValidPhoneFormat and then normalised, the rule imports already use. The operator design's normalizePhone-only check accepts 'call 91234567'.
+(12) The import clears the sub-channel in the same upsert, using the existing locked read. Minimal used a separate updateMany with a relation filter.
+(13) The rescore takes sorted row locks per chunk and writes with raw UPDATE ... FROM VALUES. Minimal's unlocked per-row compare-and-set, and one transaction per customer (too slow over the WAN for the production size), were rejected.
+(14) Owner decisions. Dropped: 'refuse whole vs partial' (the verdict calls it the engineering default), 'Temix blank' (already the open F12/Q-temix-headers) and 'drop pre-item-22 drafts' (the draft constraint requires it). Added: freezing the gate.
+
+CLAIMS CHECKED AGAINST THE CODE
+- Photos and reactivations never bump version. The import bumps Customer.version on every full-lane promote (imports.ts:2227) and never bumps Branch.version (:2297-2314, :1307-1319). Staleness is therefore judged by values, not versions.
+- lib/form-errors.ts:18-20 claims every customer.* key renders, yet contactRole, notes, the channel/sub-channel/status selects, customer.crPhoto and branch address have no error slot, so those errors vanish today.
+- z.coerce.date(null) gives 1970-01-01 and z.coerce.number(null) gives 0.
+- normalizeCR(String(null ?? '')) is null, so clearing a CR also nulls crNumberNorm with no change to the apply code.
+- approveReactivationCore already re-checks that the branch is still CLOSED under the lock, so it is out of scope.
+- UPDATE DRAFT rows are never read back (app/(app)/work/page.tsx:64 reads CREATE only).
+- Only golive-update-flow, edit-paymentterms-guard and manager-branch-region-authz call submitEditAction. The correctness design's list of suites to convert was wrong.
+- CI runs 'npx vitest run tests/integration' with one env flag per suite (.github/workflows/ci.yml:134-158), so new suites need their flag added there.
+- There is no i18n (app/layout.tsx sets lang="en" and there are no catalogs).

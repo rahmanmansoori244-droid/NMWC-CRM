@@ -1,0 +1,76 @@
+LANGUAGE. English only. The repo has no i18n mechanism: app/layout.tsx sets lang="en" and there are no message catalogs. The only Arabic is the static maintenance page (lib/maintenance.ts). Arabic-Indic and Persian digits are accepted as input everywhere.
+Messages carry field LABELS, never values. Live values travel only in STALE_FIELDS `current`, and only for fields in the actor's own patch, on branches he may edit.
+
+SUBMIT (POST /api/forms/customer-edit → submitEditAction; the route always answers HTTP 200 with the action's shape)
+
+FORM_OUTDATED (FormOutdatedError, 409, fields { _form })
+- Sent when: v is not 2, or a checked key was sent without a base entry.
+- Text: 'This page was opened before an app update, so nothing was sent. Reload the page and submit again.'
+
+STALE_FIELDS (StaleFieldsError, 409; fields keyed by slot; current keyed by raw path)
+- message: 'Some details you changed were changed by someone else after you opened this form. Nothing was sent.'
+- field slot: 'Changed by someone else after you opened this form. Submit again to replace it with yours, or tap “Use this value”.'
+- branch.<id>.gps: 'The location was changed by someone else after you opened this form. Submit again to replace it with yours, or tap “Use this value”.'
+- branch.<id>.equipment: 'The equipment counts were changed by someone else after you opened this form. Submit again to replace them with yours, or tap “Use this value”.'
+- the form adds 'Now: <value>' ('Now: empty' for null) and a 'Use this value' button.
+- beside the button, STALE_FIELDS_MESSAGE (new, lib/submission.ts; noticeFor case, tone failed, no retry): 'Not sent — someone else changed some of the details you edited. Check the marked fields, then submit again.'
+
+VALIDATION_FAILED, field-keyed as today (EL-02 mapping through fieldSlotKey)
+- Phones (F19), customer.primaryPhone / customer.altPhone: 'Enter a valid Oman number (8 digits, or +968 XXXXXXXX).'
+- Required field sent as null (F20), for every role:
+  - 'Legal name cannot be removed.'
+  - 'Channel cannot be removed — pick one.'
+  - 'Primary phone cannot be removed — enter the correct number.'
+  - 'Contact person cannot be removed.'
+  - 'Status cannot be removed.'
+  - 'Branch name cannot be removed.'
+  - 'Address cannot be removed — correct it instead.'
+  - 'The location cannot be removed.'
+  - 'Day of visit cannot be removed once set — pick the right day.'
+  - 'Coolers cannot be empty — enter 0.' (and the same for Stands and Empty bottles)
+- Stripped text too short (N02):
+  - 'Legal name must be at least 2 characters.'
+  - 'Contact person must be at least 2 characters.'
+  - 'Branch name is required.'
+  - 'Address must be at least 3 characters.'
+- Channel pair (F16):
+  - customer.channelId: 'This channel is no longer offered — pick another.'
+  - customer.subChannelId: 'Sub-channel does not belong to the chosen channel.' (CREATE's words) or 'This sub-channel is no longer offered — pick another.'
+- GPS group, branch.<id>.gps: 'Send the latitude and longitude together.'
+- Duplicate branch entry, _form: 'The same branch is listed twice.'
+- Unchanged: 'No changes to submit.', EDIT_LOCKED, the paymentTerms and status refusals, the gate's '… is required.', and VERSION_CONFLICT ('This customer was modified by someone else while your changes were processing. Refresh and try again.').
+
+APPROVAL (approveEditAction, approveEditAndGoAction, bulk)
+
+STALE_BEFORE (ConflictError, 409)
+- Text: 'Changed on the customer after this request was sent: <labels>. Approving would overwrite the newer values, so nothing was approved. Reject it so the salesman can check and send it again.'
+- At most 3 labels, then ' …'. A label is FIELD_LABEL lower-cased; branch labels are prefixed 'branch <branchCode> '. Example: 'contact person, branch MCT-0012 address'.
+
+CHANNEL_PAIR_INVALID (ConflictError, 409)
+- Text: 'The sub-channel in this request no longer fits the customer's channel, or is no longer offered. Nothing was approved. Reject it so the salesman can pick again.'
+
+Also:
+- NotFoundError 'Customer no longer exists (may have been merged or deleted).' is now also raised inside the transaction.
+- Unchanged: NEEDS_REUPLOAD, NOT_PENDING, STALE_VIEW, STATUS_BYPASS, WRONG_LANE, VERSION_CONFLICT.
+
+APPROVAL PAGE
+- Banner: 'Changed on the customer since this request was sent (rows marked “Now”). Approving would overwrite the newer values, so Approve is off — reject it so the salesman can check and send it again.'
+- Approve title (approveBlockedReason): 'Details changed since this request was sent — reject it instead.'
+- Row: 'Now: <value>'. Out-of-scope branch: 'Changed since this was sent'.
+- Clear: 'Cleared'. Equipment: 'Yes' / 'No'.
+- Reject template added under wrong_info: 'Some of these details changed on the customer after you sent this request — open the customer, check the current values and send your changes again.'
+
+FORM COPY (client-only)
+- Equipment checkbox: 'Counted at the shop (tick even if there is none)'.
+- Equipment once counted: 'Equipment counted'.
+- Button: 'Use this value'.
+
+IMPORT (advisory _lane row issue, PII-free)
+- 'sub-channel cleared: it belonged to the channel this row replaced — pick a new one on the customer page'
+
+LOGS (PII-free)
+- 'import.promote.subchannel_cleared' { customerId, batchId }
+- 'edit.approve.stale_before' { editId, fields: raw paths }
+- 'edit.approve.submit_gate_unreadable' { editId }
+
+OPS SCRIPT: counts only, both on screen and in the ledger.

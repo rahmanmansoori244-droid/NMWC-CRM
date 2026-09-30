@@ -1,0 +1,81 @@
+1. The automatic rebase after STALE_FIELDS turns the conflict into a one-tap overwrite that the approver cannot see (F06).
+   - Scenario: a Manager's form loads contact = O. An import then sets Z. The Manager types Y and taps Submit, and gets STALE_FIELDS. The client writes Z into loadedRef and baseRef. He taps Submit again: base Z equals live, so Y overwrites Z. A Manager's write has no approver. A salesman on a slow link who thinks the first tap failed does the same thing.
+   - For a salesman, the stored entry is {before: Z, after: Y}. The approval page shows it as an ordinary edit, so the approver never learns it replaces a value that changed after the form was opened.
+   - The same happens after a Save draft, because isDraft runs the check and triggers the rebase. The rebased base also goes into the phone copy, so a draft restored days later sends Y over Z with no second warning.
+   - Correction: do not rebase on refusal. Rebase a field only when the user picks for that field: "Keep mine" sets base to live, "Use this value" sets state to live. A resubmit with a conflict still unresolved is refused again.
+   - Store the override on the fieldChange (e.g. `overrodeLive: <value at conflict>`) and show "replaces a value changed after the form was opened" on the approval page.
+   - For isDraft: skip the stale check, since UPDATE DRAFT rows are write-only, or at least never rebase.
+   - If the owner wants the one-tap flow, list it under owner_decisions.
+
+2. The spec says rows in flight at deploy are "covered at once". They are not, for F06's first window.
+   - Scenario: an old-client form opens at 09:00 with contact Y. A Manager sets contact Z at 10:00. At 10:30 the salesman changes only notes and submits. The old full-form payload stores contact {before: Z, after: Y} plus notes. Deploy at 11:00. Approval at 12:00: live Z equals before, so the change is applied and Y replaces Z.
+   - STALE_BEFORE only catches changes made after submit. This reversal is already inside the row, with a correct before.
+   - Correction: state it under risks. Before deploy, take a read-only count of SUBMITTED UPDATE rows and let them drain. Or, on the approval page, flag rows where submitGate IS NULL and the submitter is a salesman: "sent by the old form, which sent every field — check each row".
+
+3. The import's sub-channel `_lane` note will be silently erased if it is built as written.
+   - services/imports.ts:2330 sets `rowNotes[i] = { note: null, written: true }` for every full-lane row after the branch loop. clearSub is decided at the customer upsert (:2194), before that line.
+   - So an `extra` set on `rowNotes[plainIdx[0]]` there is overwritten, `noted` ends up false, writeLaneNotes never runs, and the only trace left is the log line.
+   - Correction: compute clearSub before the upsert, but assign `extra` after :2330, or make :2330 merge (`{ ...rowNotes[i], note: null, written: true }`). The import-multibranch test must assert the note is on the lead row.
+
+4. The import's `rescoreCustomer` uses one Prisma update per branch. That risks the transaction budget and bumps `updatedAt`, contradicting the spec's own reasoning.
+   - On the first import after deploy of a chain whose branches the go-live left at score 0, every branch is one round trip inside the 20 s promote transaction. A timeout (P2028) defers the group, and the stall guard can then stop the run.
+   - Prisma's `@updatedAt` also bumps `updatedAt` on sibling branches the import never touched. The spec avoids exactly that in the ops script because of the master export's "updated since" filter.
+   - Correction: `rescoreCustomer` should write with the same `UPDATE … FROM (VALUES …) WHERE "completenessScore" <> v.score` statement, one per table. Share it between the import and the ops script.
+
+5. The spec is wrong that an empty apply set means "no rescore churn".
+   - applyEditChanges recomputes and writes the customer's and every live branch's score unconditionally (services/edits.ts:787-797). Only the Temix requeue is gated on `appliedAnything`.
+   - Correction: return early when nothing was applied, or drop the claim. As written, any unit test asserting "no writes" on an all-converged approval fails.
+
+6. Structural guard 15 fails on the spec's own approval call.
+   - The guard says no `collectMissingMandatory(` call may pass a `.branches` member expression as its second argument. The approval call is `collectMissingMandatory(snapshot, g.branches, …)`. Either the guard fails on correct code, or someone loosens it.
+   - Correction: have gateForApproval return `{ gate, gateBranches }`, and pin that the second argument is an identifier named `gateBranches` or a `salesmanBranches(` call. Strip comments first.
+
+7. The GPS companions are applied without their coordinates.
+   - At approval and in the direct write, gpsAccuracy and gpsCapturedAt are applied "as recorded while the branch is live", even when gpsLat and gpsLng are both CONVERGED and not written. The other writer's point then gets this request's accuracy and capture time.
+   - The schema also lets a hand-made lat/lng pair arrive without companions. That leaves the previous fix's accuracy and time beside new coordinates, which is the item-41 concern.
+   - Correction: companions follow the pair. Apply them only if gpsLat or gpsLng is being applied; otherwise treat them as CONVERGED. Require gpsCapturedAt, and gpsAccuracy (null allowed), whenever the pair is sent.
+
+8. The approval page will disable Approve on requests the server would approve.
+   - The page classifies every stored `customer.*` entry. The server first drops crNumber/legalName under the QA-013 lock re-check (edits.ts:1215-1223), for example after CASH→CREDIT. A stale crNumber the server would drop still disables Approve on the page.
+   - Correction: run the same lock re-check (one shared helper) before classifyChanges on the page, or drop the disabled Approve.
+
+9. Accepting Persian digits breaks the PII scrubber's contract.
+   - lib/scrub.ts PHONE_PATTERN (:44, used by lib/sentry-scrub.ts) covers ASCII and U+0660-0669 only. Its comment claims it covers every form lib/phone.ts accepts. After F19 that is false for U+06F0-06F9 in free text: notes, messages, paths. (Search `q` is redacted by key, so search is not the leak.)
+   - Correction: add the Persian range to pattern arms 4 and 5, with a test, in the same change.
+
+10. "Every writer of a scored field holds the customer lock" is false.
+    - scripts/ops/apply-quarantined-visit-days.ts:235 writes Branch.dayOfVisit (worth +5) with no customer lock, no rescore and no version bump.
+    - Its earlier writes are among the stale scores; the one-off rescore fixes those, which the spec should say. It must not run at the same time as the rescore.
+    - Correction: fix the claim and add both points to the runbook.
+
+11. F05: the server's branch set can differ from what the page showed.
+    - salesmanBranches is recomputed at submit. A branch imported onto his route, or moved onto it, after he opened the form is gated although the page never showed it.
+    - The key `branch.<newId>.gps` has no slot, so the error surfaces at the top and names a branch he cannot see until he reloads. Acceptable, but say it, and word the message "reload the page". Do not trust ids from the client instead.
+
+12. lib/edit-scope.ts will not be pure.
+    - gateForApproval's legacy fallback needs salesmanBranches, which the spec puts in lib/access.ts. That module imports prisma and React `cache`.
+    - Correction: define salesmanBranches in lib/edit-scope.ts and have lib/access.ts import it.
+
+13. equipmentConfirmed can never be unset, by anyone.
+    - Any stepper change ticks it, the schema accepts only `true`, and no role can clear it. A mistaken tick keeps the +5 forever.
+    - Correction: add an owner decision (recommended: Steward/Manager may set it false, a salesman only true), or state the gap.
+
+14. The STALE wording is wrong when the "someone else" is the actor.
+    - A Manager's direct write lands but the answer is lost. He changes the same field again, which gets a new id. His base (page load) no longer equals live (his own write), so he is told the field was "changed by someone else". Safe, but wrong.
+    - Correction: neutral wording, e.g. "changed after you opened this form".
+
+15. Under FULL, the import's sub-channel clear makes an unrelated pending edit fail approval.
+    - A pending salesman edit that never touched the channel fails EL-04 with NEEDS_REUPLOAD ("Sub-channel is required") after an import clears the sub-channel.
+    - Correction: add it to the costs listed in owner decision 5.
+
+Cuts (not needed to make the findings untrue):
+- Freezing the gate (`submitGate.gate`) and owner decision 4. F05 needs only the frozen branch set. Store `{v:1, branchIds}` and keep using `salesmanSubmitGate()` at approval, as today.
+- The `applyEditChanges(expected)` signature change and removing its internal version re-reads. Under lockCustomerRow, every writer that bumps a version (imports, archive, merge, edits) is serialized, so the re-read already returns the snapshot's version. Take the lock and classify, then call the existing function.
+- The approval-page extras: "Now:" values, the out-of-scope wording, the disabled Approve, the new reject template. The server's STALE_BEFORE already makes F06 untrue. At most, one banner listing the stale field labels.
+- The new per-field error slots. Only the `enrichmentFormRendersError` allowlist is required; `surfaceUnrenderedErrors` already puts unslotted keys at the top.
+- The F05/N02/F16 read-only counts inside the rescore script. Run them as one-off SQL, not as part of an F21 script.
+- The channel `isActive` check and CHANNEL_PAIR_INVALID on a channel deactivated after submit. CREATE's rule, which F16 asks for, checks only that the sub-channel is active and belongs to the channel.
+- `convergedFields` in the audit, and the branch-code label formatting in STALE_BEFORE. A plain list of labels is enough.
+- Hiding "—" in the day-of-visit select. The server already refuses null.
+- The F-17 `noted` restructure, unless the lane note is kept (see item 3). The log line alone would do.
+- Keep only one explicit per-field resolution control ("Keep mine" or "Use this value") if item 1 is adopted; the rebase machinery (`rebaseGen`, writing `current` into loadedRef) then shrinks to that one action.

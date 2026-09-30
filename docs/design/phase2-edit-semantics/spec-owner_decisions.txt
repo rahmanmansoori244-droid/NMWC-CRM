@@ -1,0 +1,42 @@
+[
+ {
+  "question": "May a CR number be cleared from the edit form? A Steward or Manager would clear it directly; a salesman on a CASH customer through approval.",
+  "recommended_default": "Yes. crNumber is in CLEARABLE_CUSTOMER_FIELDS, and a clear sets crNumber and crNumberNorm to null. The approver sees it as 'Cleared'. Under the FULL gate a salesman's clear is refused ('CR number is required.').",
+  "why": "CR is optional under the owner's CORE gate, and a wrong CR must be removable. But it is identity data: duplicate detection uses it and it is exported to Temix as cr_no. To change: remove 'crNumber' from the set in lib/edit-values.ts."
+ },
+ {
+  "question": "May a branch's day of visit be cleared once it is set, or only changed to another day?",
+  "recommended_default": "Only changed. null is refused, and the select hides '—' once the branch has a day.",
+  "why": "A branch with no day drops off every day-based list and exports a blank day_of_visit to Temix. It is also mandatory under FULL. To change: add 'dayOfVisit' to CLEARABLE_BRANCH_FIELDS and keep '—' in the select."
+ },
+ {
+  "question": "Should a salesman's own CLOSED or SUSPENDED branches still block his submit when they lack an address, GPS or a shop photo?",
+  "recommended_default": "Unchanged: they are still checked. F05 changes only WHICH branches are checked (the ones on his route), not their status.",
+  "why": "Exempting them would be a new product rule on top of the owner's CORE decision of 2026-09-10. To change: filter status === 'ACTIVE' in lib/edit-scope.ts before the server gate, and in EnrichmentForm's missingMandatory loop. lib/access.ts is not the place, because it also decides what the form shows."
+ },
+ {
+  "question": "When SALESMAN_SUBMIT_GATE is switched while requests are pending, which gate judges them at approval?",
+  "recommended_default": "The gate in force when the salesman submitted, frozen in CustomerEdit.submitGate.gate. Rows from before this deploy use the current setting.",
+  "why": "Today a CORE-to-FULL switch turns every pending request into NEEDS_REUPLOAD at approval. Freezing the gate makes the approval re-check exactly what the submit checked. To keep today's behaviour: use salesmanSubmitGate() in place of record.gate in lib/edit-scope.ts gateForApproval (one line)."
+ },
+ {
+  "question": "When the customer import changes a customer's channel and the stored sub-channel belongs to the old channel: clear the sub-channel, or hold the row for Steward review?",
+  "recommended_default": "Clear it in the same write, add a _lane note on the lead row, and log a PII-free line. A sub-channel that belongs to the new channel is kept.",
+  "why": "The file's channel is master data, and the old sub-channel is wrong under the new channel. Holding the row would block loads with no in-app fix, because the sheet carries no sub-channel column. Costs: minus 10 completeness for that customer, and the change is not pushed to Temix until the customer's next queued change (F12 is the owner's). To hold instead: throw a CROSSWALK error where clearSub is computed."
+ },
+ {
+  "question": "Branches that already store zero equipment: treat them as counted?",
+  "recommended_default": "No backfill. They stay unconfirmed and earn no equipment points until someone ticks 'Counted' or enters a count. Every existing score stays as it is.",
+  "why": "A stored 0 cannot be told apart from 'never counted', so a backfill would invent data. The critic's line was 'unconfirmed, tell the owner'. A backfill would be a one-line UPDATE plus a rescore if the owner wants it."
+ },
+ {
+  "question": "Production data cleanups and database backstops: existing channel/sub-channel mismatches, '' stored in optional text columns, empty legal or branch names (N02), and CHECK constraints or triggers to enforce these.",
+  "recommended_default": "After deploy, take the read-only counts only (the SQL is in prod_rescore; the dry run prints them). Nothing is written and no constraint is added without a separate go-ahead, each as a dry-run-first operator script. The new code already treats '' as empty and refuses new bad values.",
+  "why": "Every cleanup is a production write. A CHECK or trigger added while bad rows exist makes `prisma migrate deploy` fail before `next build`, leaving production migrated but undeployed."
+ },
+ {
+  "question": "Run the one-off completeness rescore on production after this deploy?",
+  "recommended_default": "Yes, in this order: dry run, share the counts, --apply --actor <steward username>, dry run again showing 0. npm run smoke before and after.",
+  "why": "Branches the import created sit at 0 and the ones it updated are stale, so the dashboard leaderboards are understated. It is a production write, and the figures will rise visibly. The standing 2026-09-27 production-write permission may cover it; confirm it is still in force when it runs."
+ }
+]
