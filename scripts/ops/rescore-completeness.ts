@@ -64,6 +64,7 @@ import {
   type RescorePlan,
 } from '../../lib/rescore';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
+import { operatorErrorLabel } from './error-label';
 
 /** Customers per page: one read of them and their branches, one transaction each. */
 export const DEFAULT_CHUNK = 200;
@@ -339,6 +340,13 @@ export async function run(
     pageAfter = ids[ids.length - 1];
   }
 
+  // Preserve committed counts even if the COMPLETED insert fails.
+  log('='.repeat(76));
+  log(
+    `Wrote ${written.customers} customer score(s) and ${written.branches} branch score(s) ` +
+      `in ${pages} page(s).`
+  );
+
   // COMPLETED as soon as the last page has committed, with the counts it
   // wrote, and BEFORE the check below re-reads every live customer (tens of
   // seconds over the WAN). Written after that check, a failure there lost the
@@ -369,21 +377,18 @@ export async function run(
     },
   });
 
-  log('='.repeat(76));
-  log(
-    `Wrote ${written.customers} customer score(s) and ${written.branches} branch score(s) ` +
-      `in ${pages} page(s); the COMPLETED ledger row is written.`
-  );
+  log('The COMPLETED ledger row is written.');
   log('Checking every stored score again ...');
 
   // The check: every live customer read and scored again, as the dry run does.
   // null when it failed — the scores the pages wrote stay written either way.
-  let remaining: number | null = null;
+  let checked: Awaited<ReturnType<typeof survey>> | null = null;
   try {
-    remaining = scoresToChange(await survey(prisma, opts.chunk));
+    checked = await survey(prisma, opts.chunk);
   } catch (e) {
-    log(`The check after the last page FAILED: ${e instanceof Error ? e.message : String(e)}`);
+    log(`The check after the last page FAILED: ${operatorErrorLabel(e)}`);
   }
+  const remaining = checked === null ? null : scoresToChange(checked);
 
   log('='.repeat(76));
   log(
@@ -406,8 +411,8 @@ export async function run(
   );
   log('');
   if (remaining === null) {
-    log('Next: a dry run (expect "Nothing to do"; if it finds scores to change, --apply again),');
-    log('then npm run smoke.\n');
+    log('Next: run a dry run; if it finds work, re-run --apply, then a dry run: "Nothing to do".');
+    log('Then npm run smoke.\n');
     return 2;
   }
   if (remaining > 0) {
@@ -443,8 +448,8 @@ async function main(): Promise<number> {
 if (/rescore-completeness\.ts$/.test(process.argv[1] ?? '')) {
   main()
     .then((code) => process.exit(code))
-    .catch((e: Error) => {
-      console.error(`\nCOMPLETENESS RESCORE FAILED: ${e.message}\n`);
+    .catch((e: unknown) => {
+      console.error(`\nCOMPLETENESS RESCORE FAILED: ${operatorErrorLabel(e)}\n`);
       process.exit(2);
     });
 }

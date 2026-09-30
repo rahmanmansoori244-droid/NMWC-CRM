@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EditProcess, EditState, PrismaClient } from '@prisma/client';
+import { EditProcess, EditState, Prisma, PrismaClient } from '@prisma/client';
 import { signalHash } from '@/lib/duplicate-pairing';
 import { main } from '../../scripts/ops/recompute-cr-norm';
 
@@ -49,6 +49,8 @@ type FailureStage = 'customers' | 'drafts' | 'pairs';
 
 function fakeDb(options: {
   failCheck?: FailureStage;
+  checkError?: Error;
+  failCheckCalculation?: boolean;
   failWrite?: 'customers' | 'drafts';
   failCompleted?: boolean;
   skip?: boolean;
@@ -82,7 +84,9 @@ function fakeDb(options: {
     reads[stage] += 1;
     events.push(`read:${stage}:${reads[stage]}`);
     // Initial survey, fresh dismissal history, then the verification read.
-    if (reads[stage] === 3 && options.failCheck === stage) throw new Error(READ_ERROR);
+    if (reads[stage] === 3 && options.failCheck === stage) {
+      throw options.checkError ?? new Error(READ_ERROR);
+    }
   }
   function update(rows: Array<Customer | Draft>, stage: 'customers' | 'drafts', write: Write) {
     events.push(`write:${stage}:${write.where.id}`);
@@ -105,7 +109,14 @@ function fakeDb(options: {
     customer: {
       findMany: vi.fn(async () => {
         read('customers');
-        return structuredClone(customers);
+        const rows = structuredClone(customers);
+        if (reads.customers === 3 && options.failCheckCalculation) {
+          // The read resolves successfully; normalization, after the read,
+          // must propagate a programming/data-shape failure rather than call
+          // it an unavailable verification read.
+          rows[0].crNumber = 1 as unknown as string;
+        }
+        return rows;
       }),
       updateMany: vi.fn(async (write: Write) => update(customers, 'customers', write)),
     },
@@ -145,10 +156,18 @@ function output() {
   return vi.mocked(console.log).mock.calls.map((args) => args.join(' ')).join('\n');
 }
 
+function allOutput() {
+  return [console.log, console.error, console.warn]
+    .flatMap((method) => vi.mocked(method).mock.calls.map((args) => args.join(' ')))
+    .join('\n');
+}
+
 let savedArgv: string[];
 beforeEach(() => {
   vi.resetAllMocks();
   vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.stubEnv('DIRECT_URL', 'postgresql://test@localhost:5432/cr_norm_test');
   vi.stubEnv('DATABASE_URL', 'postgresql://test@localhost:5432/cr_norm_test');
   savedArgv = process.argv;
@@ -178,7 +197,7 @@ describe('CR recompute run: completion ledger precedes verification', () => {
     expect([...db.customers, ...db.drafts].every((r) => r.crNumberNorm === NEW_CR)).toBe(true);
     expect(db.customers.every((r) => r.updatedAt.getTime() === STAMP.getTime())).toBe(true);
     expect(output()).toContain('Checked: 0 stored norm(s) still differ');
-    const recorded = JSON.stringify(phases) + output();
+    const recorded = JSON.stringify(phases) + allOutput();
     for (const value of [OLD_CR, NEW_CR, ...db.customers.map((r) => r.legalName)]) {
       expect(recorded).not.toContain(value);
     }
@@ -199,11 +218,13 @@ describe('CR recompute run: completion ledger precedes verification', () => {
     expect(db.events.indexOf('ledger:completed')).toBeLessThan(db.events.indexOf('read:customers:3'));
     expect([...db.customers, ...db.drafts].every((r) => r.crNumberNorm === NEW_CR)).toBe(true);
     expect(output()).toMatch(/not checked/i);
-    expect(output()).toMatch(/dry run/i);
+    expect(output()).toMatch(/Next:.*dry run/i);
+    expect(output()).toMatch(/if it finds.*(?:re-run --apply|--apply again)/i);
     expect(output()).toContain('COMPLETED');
     expect(output()).toContain('customers       2 written, 0 skipped');
     expect(output()).toContain('drafts          2 written, 0 skipped');
-    expect(output()).not.toContain(READ_ERROR);
+    expect(allOutput()).not.toContain(READ_ERROR);
+    expect(output()).toMatch(/FAILED: Error\b/);
     // This retry cannot repair a missing completion row: it finds no work.
     // The original run therefore has to have persisted its own completion.
     const count = db.ledger.length;
@@ -211,6 +232,19 @@ describe('CR recompute run: completion ledger precedes verification', () => {
     expect(db.ledger).toHaveLength(count);
     expect(output()).toContain('Nothing to do');
     expect(db.raw.$disconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a failed verification read by Prisma code without its message on any console channel', async () => {
+    const db = fakeDb({
+      failCheck: 'customers',
+      checkError: new Prisma.PrismaClientKnownRequestError(READ_ERROR, {
+        code: 'P1001', clientVersion: 'test',
+      }),
+    });
+    expect(await main()).toBe(2);
+    expect(completed(db)).toBeDefined();
+    expect(output()).toMatch(/FAILED: P1001\b/);
+    expect(allOutput()).not.toContain(READ_ERROR);
   });
 
   it('records actual guarded skips and carried dismissals, and exits 1 when norms remain stale', async () => {
@@ -226,6 +260,7 @@ describe('CR recompute run: completion ledger precedes verification', () => {
       signals: [`cr:${signalHash(OLD_CR)}`, `cr:${signalHash(NEW_CR)}`], carried: true,
     });
     expect(output()).toContain('Checked: 2 stored norm(s) still differ');
+    expect(output()).toMatch(/Next:.*--apply/i);
   });
 
   it.each(['customers', 'drafts'] as const)('a failed %s write propagates without COMPLETED or verification', async (stage) => {
@@ -239,13 +274,26 @@ describe('CR recompute run: completion ledger precedes verification', () => {
   });
 
   it('a failed COMPLETED insert propagates before verification and never claims completion', async () => {
-    const db = fakeDb({ failCompleted: true });
+    const db = fakeDb({ failCompleted: true, skip: true });
     await expect(main()).rejects.toThrow('synthetic completion insert failed');
     expect(completed(db)).toBeUndefined();
     expect(db.reads.customers).toBe(2);
-    expect([...db.customers, ...db.drafts].every((r) => r.crNumberNorm === NEW_CR)).toBe(true);
+    expect(db.customers[0].crNumberNorm).toBe(NEW_CR);
+    expect(db.drafts[0].crNumberNorm).toBe(NEW_CR);
+    expect(output()).toContain('customers       1 written, 1 skipped');
+    expect(output()).toContain('drafts          1 written, 1 skipped');
+    expect(output()).toContain('marked distinct 1 pair(s) kept marked');
     expect(output()).not.toContain('COMPLETED');
     expect(output()).not.toMatch(/not checked/i);
+    expect(db.raw.$disconnect).toHaveBeenCalledOnce();
+  });
+
+  it('a verification calculation failure propagates after COMPLETED instead of becoming a failed-read result', async () => {
+    const db = fakeDb({ failCheckCalculation: true });
+    await expect(main()).rejects.toBeInstanceOf(TypeError);
+    expect(completed(db)).toBeDefined();
+    expect(db.reads).toEqual({ customers: 3, drafts: 3, pairs: 3 });
+    expect(output()).not.toMatch(/not checked|the check.*failed/i);
     expect(db.raw.$disconnect).toHaveBeenCalledOnce();
   });
 

@@ -80,6 +80,7 @@ import {
   type SignalRow,
 } from '../../lib/duplicate-pairing';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
+import { operatorErrorLabel } from './error-label';
 
 export type NormRow = { id: string; crNumber: string | null; crNumberNorm: string | null };
 
@@ -388,6 +389,12 @@ export async function main(): Promise<number> {
       else draftSkipped += 1;
     }
 
+    // Preserve the counts in the operator's output even if the ledger insert fails.
+    console.log('='.repeat(76));
+    console.log(`  customers       ${custWritten} written, ${custSkipped} skipped`);
+    console.log(`  drafts          ${draftWritten} written, ${draftSkipped} skipped`);
+    console.log(`  marked distinct ${carry.length} pair(s) kept marked`);
+
     // Record the committed writes before checking them. A failed re-read must
     // not leave this run looking interrupted: a retry that finds nothing to do
     // returns above without writing a ledger row (as in rescore-completeness.ts).
@@ -416,22 +423,18 @@ export async function main(): Promise<number> {
       },
     });
 
-    console.log('='.repeat(76));
-    console.log(
-      `Wrote ${custWritten} customer(s) and ${draftWritten} draft(s); ` +
-        `${custSkipped + draftSkipped} skipped; the COMPLETED ledger row is written.`
-    );
+    console.log('The COMPLETED ledger row is written.');
     console.log('Checking every stored norm again ...');
 
-    let remaining: number | null = null;
+    let now: Awaited<ReturnType<typeof read>> | null = null;
     try {
-      const now = await read();
-      remaining = planCrNormFixes(now.customers).length + planCrNormFixes(now.drafts).length;
-    } catch {
-      // Database errors can include row values or connection details. The
-      // operator needs the outcome here, never the raw error.
-      console.log('The verification read FAILED; its error details are not printed.');
+      now = await read();
+    } catch (e) {
+      console.log(`The verification read FAILED: ${operatorErrorLabel(e)}`);
     }
+    const remaining = now === null
+      ? null
+      : planCrNormFixes(now.customers).length + planCrNormFixes(now.drafts).length;
     console.log(
       remaining === null
         ? 'Not checked: the norms above are written and the ledger has its COMPLETED row, ' +
@@ -454,10 +457,18 @@ export async function main(): Promise<number> {
     );
     console.log('');
     if (remaining === null) {
-      console.log('Next: a dry run to verify the stored norms; expect "Nothing to do".');
+      console.log('Next: run a dry run; if it finds work, re-run --apply, then a dry run: "Nothing to do".');
+      console.log('Then npm run smoke.\n');
       return 2;
     }
-    return remaining === 0 ? 0 : 1;
+    if (remaining > 0) {
+      console.log('Next: --apply again (it rewrites only what differs), then a dry run: "Nothing to do".');
+      console.log('If a second --apply still leaves some, stop and find that writer before a third.');
+      console.log('Then npm run smoke.\n');
+      return 1;
+    }
+    console.log('Next: a dry run again (expect "Nothing to do"), then npm run smoke.\n');
+    return 0;
   } finally {
     await prisma.$disconnect();
   }
@@ -472,8 +483,8 @@ export async function main(): Promise<number> {
 if (/recompute-cr-norm\.ts$/.test(process.argv[1] ?? '')) {
   main()
     .then((code) => process.exit(code))
-    .catch((e: Error) => {
-      console.error(`\nCR NORM RECOMPUTE FAILED: ${e.message}\n`);
+    .catch((e: unknown) => {
+      console.error(`\nCR NORM RECOMPUTE FAILED: ${operatorErrorLabel(e)}\n`);
       process.exit(2);
     });
 }

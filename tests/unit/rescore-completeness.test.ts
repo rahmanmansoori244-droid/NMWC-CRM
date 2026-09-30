@@ -15,7 +15,7 @@
  * review of phase 2, finding 7).
  * The same run against Postgres: tests/integration/rescore-completeness.test.ts.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { stripComments } from '../support/strip-comments';
@@ -32,6 +32,20 @@ import { scoreBranch, scoreCustomer } from '@/lib/completeness';
 import type { RescoreBranch, RescoreCustomer } from '@/lib/rescore';
 
 const URL_OF = (host: string) => ['postgresql://', 'u:p', '@', host, '/db'].join('');
+const READ_ERROR = 'synthetic-private-connection-detail';
+
+beforeEach(() => {
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+afterEach(() => vi.restoreAllMocks());
+
+function consoleOutput() {
+  return [console.log, console.error, console.warn]
+    .flatMap((method) => vi.mocked(method).mock.calls.map((args) => args.join(' ')))
+    .join('\n');
+}
 
 describe('prepare: the database is named before anything connects', () => {
   it('refuses without --expect-host, for a dry run too', () => {
@@ -491,11 +505,16 @@ describe('run: --apply', () => {
     });
   }
 
-  it('the check failing after every page has committed loses neither the COMPLETED row nor the counts; exit 2, and it says so', async () => {
+  it.each([
+    ['error class', new Error(READ_ERROR), 'Error'],
+    ['Prisma code', new Prisma.PrismaClientKnownRequestError(READ_ERROR, {
+      code: 'P1001', clientVersion: 'test',
+    }), 'P1001'],
+  ] as const)('the check failing after every page committed keeps COMPLETED and counts; exit 2, reports only the %s', async (_kind, error, label) => {
     const customers = world();
     const db = fakeDb(customers);
     checkAfterPages(db, () => {
-      throw new Error('Connection terminated unexpectedly');
+      throw error;
     });
     const { out, log } = lines();
     const code = await run({ apply: true, actor: 'data.steward', chunk: 2 }, db.prisma, 'h', log);
@@ -526,15 +545,15 @@ describe('run: --apply', () => {
     }
 
     const text = out.join('\n');
-    expect(text).toContain(
-      'The check after the last page FAILED: Connection terminated unexpectedly'
-    );
+    expect(text).toContain(`The check after the last page FAILED: ${label}`);
+    expect(text + consoleOutput() + JSON.stringify(db.ledger)).not.toContain(READ_ERROR);
     expect(text).toContain('the ledger has its COMPLETED row');
     // The go-live block still carries the counts.
     expect(out).toContain('  customers       4 score(s) rewritten');
     expect(out).toContain('  branches        4 score(s) rewritten');
     expect(out).toContain('  still differ    not checked (the check failed)');
-    expect(text).toContain('Next: a dry run (expect "Nothing to do"');
+    expect(text).toMatch(/Next:.*dry run/i);
+    expect(text).toMatch(/if it finds.*(?:re-run --apply|--apply again)/i);
 
     // And the dry run it asks for finds nothing to do.
     const again = lines();
@@ -542,6 +561,34 @@ describe('run: --apply', () => {
       await run({ apply: false, actor: '', chunk: 2 }, fakeDb(customers).prisma, 'h', again.log)
     ).toBe(0);
     expect(again.out.join('\n')).toContain('Nothing to do');
+  });
+
+  it('prints the committed counts even if the COMPLETED insert fails, without claiming completion or checking', async () => {
+    const customers = world();
+    const db = fakeDb(customers);
+    const create = db.raw.auditLog.create.getMockImplementation()!;
+    db.raw.auditLog.create.mockImplementation(async (args) => {
+      if ((args.data.after as { phase: string }).phase === 'completed') {
+        db.events.push('completion failed');
+        throw new Error('synthetic completion insert failed');
+      }
+      return create(args);
+    });
+    checkAfterPages(db, () => {});
+    const { out, log } = lines();
+    await expect(
+      run({ apply: true, actor: 'data.steward', chunk: 2 }, db.prisma, 'h', log)
+    ).rejects.toThrow('synthetic completion insert failed');
+    expect(db.ledger.map((r) => (r.after as { phase: string }).phase)).toEqual(['started']);
+    expect(db.events.slice(-2)).toEqual(['commit', 'completion failed']);
+    expect(db.events).not.toContain('check');
+    expect(out.join('\n')).toContain('Wrote 4 customer score(s) and 4 branch score(s) in 3 page(s)');
+    expect(out.join('\n')).not.toContain('COMPLETED');
+    for (const c of customers.filter((x) => x.deletedAt === null)) {
+      expect(c.completenessScore).toBe(
+        scoreCustomer(c, c.branches.filter((b) => b.deletedAt === null))
+      );
+    }
   });
 
   it('a score gone stale again after its page was written: exit 1, and it says to --apply again', async () => {
@@ -637,6 +684,7 @@ describe('the script keeps the operator conventions (comment-stripped source)', 
     expect(froms).toEqual([
       '../../lib/locks',
       '../../lib/rescore',
+      './error-label',
       './requeue-untracked',
       '@prisma/client',
     ]);
