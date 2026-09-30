@@ -362,9 +362,15 @@ in §6.2.
 From the auditor's recheck: ENH-4 and enhancements 1, 2, 7, 8, 9; the dependency-audit
 triage.
 
-Loose ends the reviews recorded: the two export routes accept unbounded filter lists;
-the Temix-linked (refresh) import lane does not repair a branch's region; the CHANGELOG
-has not been kept since July.
+Completed in code: the two export download routes now bound repeated query filters after
+authentication, before validation or workbook building: 500 region IDs and 500 route IDs,
+each ID at most 128 UTF-16 code units; the master route also permits three statuses and two
+payment terms. Repetitions count, and overflow returns the existing generic 400 without
+truncating or dropping filters. Direct server-action calls and the separate filtered export
+are unchanged.
+
+Loose ends the reviews recorded: the Temix-linked (refresh) import lane does not repair a
+branch's region; the CHANGELOG has not been kept since July.
 
 CR-recompute and completeness rescore use the same verification-failure policy; their
 completed safeguards and the pending production CR run are recorded in §6.2.

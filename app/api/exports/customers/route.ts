@@ -4,6 +4,7 @@ import { checkActor } from '@/lib/session';
 import { buildCustomerExport, type ExportFilters } from '@/services/exports';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
+import { readExportFilterLists } from '@/lib/export-filter-lists';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -33,19 +34,12 @@ export async function GET(req: NextRequest) {
 
   let filters: ExportFilters;
   try {
+    const lists = readExportFilterLists(req.nextUrl.searchParams, true);
+    if (!lists) {
+      return NextResponse.json({ error: 'Invalid filter parameters' }, { status: 400 });
+    }
     filters = filterSchema.parse({
-      regionIds: req.nextUrl.searchParams.getAll('regionId').length
-        ? req.nextUrl.searchParams.getAll('regionId')
-        : undefined,
-      routeIds: req.nextUrl.searchParams.getAll('routeId').length
-        ? req.nextUrl.searchParams.getAll('routeId')
-        : undefined,
-      statuses: req.nextUrl.searchParams.getAll('status').length
-        ? (req.nextUrl.searchParams.getAll('status') as ExportFilters['statuses'])
-        : undefined,
-      paymentTerms: req.nextUrl.searchParams.getAll('paymentTerms').length
-        ? (req.nextUrl.searchParams.getAll('paymentTerms') as ExportFilters['paymentTerms'])
-        : undefined,
+      ...lists,
       minCompleteness: req.nextUrl.searchParams.get('minCompleteness') ?? undefined,
       maxCompleteness: req.nextUrl.searchParams.get('maxCompleteness') ?? undefined,
       updatedSince: req.nextUrl.searchParams.get('updatedSince') ?? undefined,

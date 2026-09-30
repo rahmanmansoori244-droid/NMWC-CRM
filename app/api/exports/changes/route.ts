@@ -5,6 +5,7 @@ import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { buildChangeReport } from '@/lib/change-report';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
+import { readExportFilterLists } from '@/lib/export-filter-lists';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -48,11 +49,14 @@ export async function GET(req: NextRequest) {
   }
 
   const sp = req.nextUrl.searchParams;
+  const lists = readExportFilterLists(sp);
+  if (!lists) {
+    return NextResponse.json({ error: 'Invalid filter parameters' }, { status: 400 });
+  }
   const parsed = schema.safeParse({
+    ...lists,
     since: sp.get('since') || undefined,
     until: sp.get('until') || undefined,
-    regionIds: sp.getAll('regionId').length ? sp.getAll('regionId') : undefined,
-    routeIds: sp.getAll('routeId').length ? sp.getAll('routeId') : undefined,
     onlyChanged: sp.get('onlyChanged') || undefined,
     includePending: sp.get('includePending') || undefined,
   });
