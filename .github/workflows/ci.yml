@@ -262,7 +262,7 @@ jobs:
           exit "$CODE"
       - name: Upload the traces of a failed run
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-${{ github.run_id }}
           path: |
@@ -478,7 +478,7 @@ jobs:
 
       - name: Upload evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: restore-chain-${{ github.run_id }}
           # No restore log in any form: the plaintext is shredded by the load
