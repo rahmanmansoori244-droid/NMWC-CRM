@@ -71,6 +71,9 @@ export function r2(): S3Client {
     }),
     maxAttempts: 2,
   });
+  // Sentry's HTTP integration can change baggage after SigV4 signing. R2 does
+  // not need AWS trace propagation, so keep that context out of signed requests.
+  _client.middlewareStack.removeByTag('TRACE_CONTEXT_PROPAGATION');
   return _client;
 }
 
