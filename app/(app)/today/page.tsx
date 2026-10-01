@@ -21,7 +21,13 @@ export const metadata = { title: 'Today · NMWC' };
 // so a shared 30-second cache entry would either be scoped to nobody or serve
 // one manager the counts of another. They are dynamic and stay dynamic.
 
-export default async function TodayPage() {
+const PAGE_SIZE = 200;
+
+export default async function TodayPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ page?: string | string[] }>;
+} = {}) {
   const session = await auth();
   if (!session?.user) redirect('/login');
   if (session.user.role !== Role.SALESMAN) redirect('/home');
@@ -57,14 +63,21 @@ export default async function TodayPage() {
   // the server returned yesterday's customer list between Oman 00:00 and 04:00.
   const today = omanDayOfWeek();
 
-  const [branches, total] = await Promise.all([
-    prisma.branch.findMany({
-      where: {
-        routeId: me.ownedRouteId,
-        deletedAt: null,
-        dayOfVisit: today,
-      },
-      take: 200,
+  const where = { routeId: me.ownedRouteId, deletedAt: null, dayOfVisit: today };
+  const [scheduled, total] = await Promise.all([
+    prisma.branch.count({ where }),
+    prisma.branch.count({ where: { routeId: me.ownedRouteId, deletedAt: null } }),
+  ]);
+  const rawPage = (await searchParams)?.page;
+  const requestedPage = typeof rawPage === 'string' && /^[1-9]\d*$/.test(rawPage)
+    ? Number(rawPage)
+    : 1;
+  const pages = Math.max(1, Math.ceil(scheduled / PAGE_SIZE));
+  const page = Math.min(Number.isSafeInteger(requestedPage) ? requestedPage : 1, pages);
+  const branches = await prisma.branch.findMany({
+      where,
+      take: PAGE_SIZE,
+      skip: (page - 1) * PAGE_SIZE,
       include: {
         customer: {
           select: {
@@ -78,10 +91,9 @@ export default async function TodayPage() {
           },
         },
       },
-      orderBy: { branchName: 'asc' },
-    }),
-    prisma.branch.count({ where: { routeId: me.ownedRouteId, deletedAt: null } }),
-  ]);
+      // Branch names can repeat; the id keeps page boundaries deterministic.
+      orderBy: [{ branchName: 'asc' }, { id: 'asc' }],
+    });
 
   return (
     <main>
@@ -116,7 +128,7 @@ export default async function TodayPage() {
       <section className="px-4 py-4 sm:px-6">
         <div className="mb-3 flex items-center justify-between gap-2">
           <h2 className="text-base font-semibold text-slate-700">
-            Today&apos;s visits ({branches.length})
+            Today&apos;s visits ({scheduled})
           </h2>
           {/* Go-live: only ~1 in 3 branches carries a journey-plan day, so the
               scheduled list is NOT the salesman's whole route. Keep the full,
@@ -128,6 +140,23 @@ export default async function TodayPage() {
             <Search className="h-3.5 w-3.5" />
             All my customers ({total})
           </Link>
+        </div>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
+          <p>Showing {branches.length} of {scheduled} visits · Page {page} of {pages}</p>
+          {pages > 1 && (
+            <nav aria-label="Visit pages" className="flex gap-3">
+              {page > 1 && (
+                <Link href={`/today?page=${page - 1}`} className="inline-flex min-h-11 items-center font-medium text-brand-700 hover:underline">
+                  Previous
+                </Link>
+              )}
+              {page < pages && (
+                <Link href={`/today?page=${page + 1}`} className="inline-flex min-h-11 items-center font-medium text-brand-700 hover:underline">
+                  Next
+                </Link>
+              )}
+            </nav>
+          )}
         </div>
         {branches.length === 0 ? (
           <EmptyState

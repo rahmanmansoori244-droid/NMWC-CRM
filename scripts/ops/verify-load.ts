@@ -2,6 +2,9 @@
  * Did the customer-master load actually land? Read-only, one command.
  *
  *   DIRECT_URL='<owner connection>' npx tsx scripts/ops/verify-load.ts
+ *   Optional: --expected-branches N --expected-visit-days N
+ *   Defaults come from load-manifest.json. After an approved cleanup, supply
+ *   independently established current expectations; both flags avoid manifest IO.
  *
  * The in-app reconcile at runbook step 6 proves the BATCH balanced — left to
  * promote is zero, and promoted plus rejected plus quarantined equals the total.
@@ -24,17 +27,59 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { GOLIVE_REGION_CODES } from '../../lib/ops/golive-accounts';
 import { isDemoAccount } from '../../lib/demo-accounts';
+import { OperatorRefusal, operatorErrorLabel } from './error-label';
 
-const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
-});
+type LoadExpectations = { branches: number; visitDays: number };
+
+/** Explicit counts override the corresponding manifest field after an approved cleanup. */
+export function loadExpectations(
+  args: string[],
+  env: { GOLIVE_DIR?: string } = { GOLIVE_DIR: process.env.GOLIVE_DIR }
+): LoadExpectations {
+  const overrides = new Map<string, number>();
+  for (let i = 0; i < args.length; i += 2) {
+    const flag = args[i];
+    if (!['--expected-branches', '--expected-visit-days'].includes(flag) || overrides.has(flag)) {
+      throw new OperatorRefusal('Use --expected-branches N and/or --expected-visit-days N, once each.');
+    }
+    const value = args[i + 1];
+    if (!value || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
+      throw new OperatorRefusal(`${flag} requires a non-negative integer count.`);
+    }
+    overrides.set(flag, Number(value));
+  }
+
+  let manifest: { branchRows?: unknown; branchesWithVisitDay?: unknown } = {};
+  if (overrides.size < 2) {
+    const manifestPath = path.join(env.GOLIVE_DIR ?? 'golive-data', 'load-manifest.json');
+    if (!existsSync(manifestPath)) {
+      throw new OperatorRefusal('No load-manifest.json: supply both --expected-branches N and --expected-visit-days N from the approved expected state.');
+    }
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
+      manifest = parsed;
+    } catch {
+      throw new OperatorRefusal('Cannot read a valid load-manifest.json; check the manifest or supply both expected counts.');
+    }
+  }
+  const branches = overrides.get('--expected-branches') ?? manifest.branchRows;
+  const visitDays = overrides.get('--expected-visit-days') ?? manifest.branchesWithVisitDay;
+  if (typeof branches !== 'number' || !Number.isSafeInteger(branches) || branches <= 0) {
+    throw new OperatorRefusal('Expected branches must be a positive integer (manifest branchRows or --expected-branches).');
+  }
+  if (typeof visitDays !== 'number' || !Number.isSafeInteger(visitDays) || visitDays < 0 || visitDays > branches) {
+    throw new OperatorRefusal('Expected visit days must be an integer from 0 to expected branches (manifest branchesWithVisitDay or --expected-visit-days).');
+  }
+  return { branches, visitDays };
+}
 
 type Result = { ok: boolean; detail: string; note?: string };
 type Check = { name: string; why: string; run: () => Promise<Result> };
 
 const n = (v: unknown) => Number(v ?? 0);
 
-const checks: Check[] = [
+export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Check[] => [
   {
     name: 'customers exist',
     why: 'the load either ran or it did not',
@@ -86,7 +131,7 @@ const checks: Check[] = [
     },
   },
   {
-    name: 'the load kept the visit days the master gave it',
+    name: 'live branch and visit-day counts match expectations',
     why: 'no visit day means the customer never appears on Today, for anyone, ever — but only the branches the journey plan actually covers are supposed to have one',
     run: async () => {
       // This replaced "every branch on a worked route has a day of visit", which
@@ -109,35 +154,23 @@ const checks: Check[] = [
       // refuses that row outright. A check for it would pass for the wrong reason
       // — which is the failure mode this whole pass is about.
 
-      const manifestPath = path.join(process.env.GOLIVE_DIR ?? 'golive-data', 'load-manifest.json');
-      if (!existsSync(manifestPath)) {
-        return {
-          ok: withDay > 0,
-          detail: `${withDay} of ${branches} branches carry a visit day — no load-manifest.json, so the expected figure is unknown. Rebuild with scripts/golive/build-masters.ts to enable the exact comparison.`,
-          note: withDay === 0 ? 'NO branch carries a visit day — the journey-plan step did not run' : undefined,
-        };
-      }
-
-      const m = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
-        branchRows?: number;
-        branchesWithVisitDay?: number;
-      };
-      const expectedRows = m.branchRows ?? 0;
-      const expectedDays = m.branchesWithVisitDay ?? 0;
-      const complete = branches >= expectedRows && expectedRows > 0;
-
-      if (!complete) {
-        // A rehearsal inside a time box legitimately loads a subset.
-        return {
-          ok: true,
-          detail: `PARTIAL load: ${branches} of ${expectedRows} branch rows present, ${withDay} carrying a visit day (the full master supplies ${expectedDays}). Not compared — finish the load, then re-run.`,
-        };
-      }
+      const { branches: expectedRows, visitDays: expectedDays } = expected;
+      const detail = `${branches < expectedRows ? 'PARTIAL load: ' : ''}${branches} live branches (expected ${expectedRows}); ${withDay} carry a visit day (expected ${expectedDays})`;
 
       if (withDay === expectedDays) {
         return {
-          ok: true,
-          detail: `${withDay} branches carry a visit day, exactly what the master supplied`,
+          ok: branches === expectedRows,
+          detail,
+          note: branches !== expectedRows
+            ? 'Branch count mismatch: reconcile the load or confirm approved post-cleanup expectations before re-running. Do not set expectations from the observed count merely to pass.'
+            : undefined,
+        };
+      }
+      if (withDay > expectedDays) {
+        return {
+          ok: false,
+          detail,
+          note: 'More branches carry visit days than expected. Reconcile changes against the approved expected state before re-running.',
         };
       }
 
@@ -156,7 +189,7 @@ const checks: Check[] = [
       //
       // The reason it keeps being wrong is structural, not a wording problem.
       // This check compares two TOTALS — how many branches carry a day, against
-      // how many the manifest says the master supplied. It never learns WHICH
+      // how many the manifest or explicit expectation says should exist. It never learns WHICH
       // branches are short, because it does not read the master. A number that
       // cannot name a row cannot attribute a cause, and every attempt to make it
       // do so has sent the next reader to the wrong file.
@@ -223,7 +256,7 @@ const checks: Check[] = [
 
       return {
         ok: false,
-        detail: `${withDay} branches carry a visit day; the master supplied ${expectedDays} — ${expectedDays - withDay} went missing in the load`,
+        detail,
         // No empty-leads branch: the refresh-lane line is always pushed, so one
         // would be unreachable. An unreachable arm of a ternary reads as a handled
         // case and is not one.
@@ -460,19 +493,14 @@ const checks: Check[] = [
   },
 ];
 
-async function main(): Promise<number> {
-  const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
-  const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
-  console.log(`\nLoad verification — ${host}`);
-  console.log('='.repeat(76));
-
+export async function runChecks(checks: Check[]): Promise<number> {
   let failed = 0;
   for (const c of checks) {
     let r: Result;
     try {
       r = await c.run();
     } catch (err) {
-      r = { ok: false, detail: `query failed: ${(err as Error).message}` };
+      r = { ok: false, detail: `query failed: ${operatorErrorLabel(err)}` };
     }
     if (!r.ok) failed += 1;
     console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${c.name.padEnd(52)} ${r.detail}`);
@@ -489,13 +517,30 @@ async function main(): Promise<number> {
   return 1;
 }
 
-main()
-  .then(async (code) => {
-    await prisma.$disconnect();
-    process.exit(code);
-  })
-  .catch(async (err) => {
-    console.error(`\nverify-load failed: ${(err as Error).message}\n`);
-    await prisma.$disconnect();
-    process.exit(2);
+async function main(): Promise<number> {
+  const expected = loadExpectations(process.argv.slice(2));
+  const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+  let host = '?';
+  try { host = new URL(url ?? '').hostname; } catch { /* The client reports invalid configuration. */ }
+  const prisma = new PrismaClient({
+    datasourceUrl: url,
   });
+  try {
+    console.log(`\nLoad verification — ${host}`);
+    console.log(`Expected: ${expected.branches} live branches, ${expected.visitDays} with a visit day`);
+    console.log('='.repeat(76));
+    return await runChecks(loadChecks(prisma, expected));
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+// Importing for unit tests must neither read a private manifest nor connect to a database.
+if (/verify-load\.ts$/.test(process.argv[1] ?? '')) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((err: unknown) => {
+      console.error(`\nverify-load failed: ${operatorErrorLabel(err)}\n`);
+      process.exit(2);
+    });
+}

@@ -110,7 +110,7 @@ importer enforces most of the order, but not all of it.
    approvers, who own no class and keep their names. The usernames are read from
    `managers.json` and also appear in `credentials.xlsx`, sheet *Create in app FIRST*.
 
-   **Every account starts on the same initial password, `12345`, and is forced to
+   **Every account starts on the same initial password recorded in the private credentials file, and is forced to
    choose its own at first sign-in** (owner decision of 2026-09-10, restated
    2026-09-20). An earlier draft of this runbook described a per-account password
    (SEC-11); that was reversed. If you find twelve distinct values in
@@ -167,9 +167,17 @@ importer enforces most of the order, but not all of it.
    asks the database whether the rows actually landed. A customer can be counted
    as promoted and still have no branch, no route and no visit day — that is
    exactly what the narrow ERP refresh lane used to produce, and the reconcile
-   balanced anyway. It also reports how many branches on a worked route have no
-   visit day, which is the number that decides whether a salesman's **Today**
-   screen has anything on it the next morning.
+   balanced anyway. It compares both the live-branch total and the number carrying
+   visit days with `load-manifest.json`. Both must match exactly. A partial load
+   fails with exit 1 and still reports the visit-day comparison; it never passes
+   as an incomplete rehearsal. Missing or invalid expectations refuse with exit 2.
+
+   After an approved cleanup or journey-plan change, the original manifest may
+   be historical. The authorized operator can pass `--expected-branches N` and/or
+   `--expected-visit-days N` after `npm run verify:load --`. An omitted count still
+   comes from the manifest; supplying both avoids reading it. Obtain expectations
+   from the approved intended state, never from the observed counts just to make
+   this check pass. This does not grant production access: follow HANDOVER §5.
 
 6. **Reconcile** (SOP §8.4): *Left to promote* = 0, and *Promoted + Rejected +
    Quarantined = Total*. Open every REJECTED row (they are listed first). Screenshot
@@ -183,7 +191,7 @@ importer enforces most of the order, but not all of it.
    `alwafi-duqm`); Rashid and Saud own no class and keep their names. The approvers
    sign in as `accountant.<region code>` (`accountant.mct` …), `finance.manager` and
    `gm.nmwc`. **The initial
-   password is `12345` for everyone**, and the app forces each person to choose a
+   password is recorded in the private credentials file for everyone**, and the app forces each person to choose a
    12+ character password of their own the first time they sign in.
 
    That forced change is the whole control, so it is not optional and it is not
@@ -197,12 +205,12 @@ importer enforces most of the order, but not all of it.
    in — their row still shows the forced-change flag, and that flag IS the list of
    accounts still standing open. Chase them the same day.
 
-   A manager who also sells a route has **two logins**, both with `12345`; give them
+   A manager who also sells a route has **two logins**, each listed in the private credentials file; give them
    both and say so, or they will change one and keep trying the other.
 
    If someone loses their slip, reset that one account from **Users → Reset
    password**. The value you type there must itself be 12+ characters — the reset
-   screen is not another `12345` — and it re-arms the forced change and kills that
+   screen requires a new operator-chosen password — and it re-arms the forced change and kills that
    account's open sessions.
 
    When you are done, delete the files that carry credentials. Three names carry
@@ -247,7 +255,7 @@ importer enforces most of the order, but not all of it.
 | Many customer rows QUARANTINED for *duplicate phone* | A phone shared across customers that the builder did not catch. | Review; if genuine duplicates, merge later — they will not block the rest. |
 | Promote stops with *"Stopped — N rows made no progress"* | Repeated technical failures on the same customers. | Do not keep clicking. Screenshot and call IT. |
 | Promote refused: *"Another customer import is being promoted"* | Someone else (or an earlier tab) holds the batch. | Wait a minute and resume; only one load runs at a time by design. |
-| `audit-accounts` exits non-zero and lists accounts under *CAN SIGN IN* | **Expect this the first time.** It is not a failure of the load. This database was seeded in May, and nothing in the load removes an account — so `pilot.steward`, `pilot.manager`, `ahmed.alndabi` and the ten `<route>-12345-nmwc` salesmen are still there, with passwords that are literals in `prisma/seed-muscat-pilot.ts`. | Deactivate or reset each one from **Users** before handing out a single login, then re-run the script until it prints *OK*. A reset also kills that account's live sessions. Do not skip it because the load itself succeeded. |
+| `audit-accounts` exits non-zero and lists accounts under *CAN SIGN IN* | **Expect this the first time.** It is not a failure of the load. This database was seeded in May, and nothing in the load removes an account — so `pilot.steward`, `pilot.manager`, `ahmed.alndabi` and the ten legacy pilot salesmen are still there, with passwords that are literals in `prisma/seed-muscat-pilot.ts`. | Deactivate or reset each one from **Users** before handing out a single login, then re-run the script until it prints *OK*. A reset also kills that account's live sessions. Do not skip it because the load itself succeeded. |
 | `audit-accounts` says a managers.json or account-master file is missing | You have not rebuilt the go-live files on this machine, or you are in the wrong directory. | Run `npx tsx scripts/golive/build-masters.ts` first (see the preamble), then re-run. |
 | The load is wrong and must be undone | — | Restore production from the Neon branch taken in step 0.7. |
 
