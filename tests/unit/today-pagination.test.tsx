@@ -82,7 +82,7 @@ afterEach(cleanup);
 
 describe('Today route-day pagination', () => {
   it('makes all 266 scheduled branches reachable without duplication or scope leakage', async () => {
-    render(await TodayPage());
+    render(await TodayPage({}));
     expect(screen.getByRole('heading', { name: "Today's visits (266)" })).toBeTruthy();
     expect(screen.getByText('Showing 200 of 266 visits · Page 1 of 2')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'All my customers (267)' })).toBeTruthy();
@@ -125,7 +125,7 @@ describe('Today route-day pagination', () => {
 
   it('does not query branches when no route is assigned', async () => {
     state.route = null;
-    render(await TodayPage());
+    render(await TodayPage({}));
     expect(screen.getByText('No route assigned')).toBeTruthy();
     expect(prisma.branch.count).not.toHaveBeenCalled();
     expect(prisma.branch.findMany).not.toHaveBeenCalled();
@@ -134,7 +134,7 @@ describe('Today route-day pagination', () => {
   it.each(['anonymous', 'MANAGER'])('redirects %s before querying branches', async (role) => {
     state.signedIn = role !== 'anonymous';
     state.role = role;
-    await expect(TodayPage()).rejects.toThrow(role === 'anonymous' ? 'REDIRECT /login' : 'REDIRECT /home');
+    await expect(TodayPage({})).rejects.toThrow(role === 'anonymous' ? 'REDIRECT /login' : 'REDIRECT /home');
     expect(prisma.branch.count).not.toHaveBeenCalled();
     expect(prisma.branch.findMany).not.toHaveBeenCalled();
   });

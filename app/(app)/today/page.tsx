@@ -27,7 +27,7 @@ export default async function TodayPage({
   searchParams,
 }: {
   searchParams?: Promise<{ page?: string | string[] }>;
-} = {}) {
+}) {
   const session = await auth();
   if (!session?.user) redirect('/login');
   if (session.user.role !== Role.SALESMAN) redirect('/home');

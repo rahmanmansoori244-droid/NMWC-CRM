@@ -142,7 +142,7 @@ describe('40b — the Today list, rendered', () => {
       { id: 'b2', branchName: 'Seeb', address: 'Seeb souq', gpsLat: 23.67, gpsLng: 58.19, customer: c },
     ];
     const { default: TodayPage } = await import('@/app/(app)/today/page');
-    const { container } = render(await TodayPage());
+    const { container } = render(await TodayPage({}));
     const cards = [...container.querySelectorAll('article')];
     expect(cards).toHaveLength(2);
     expect(cards.map((card) => within(card as HTMLElement).getByRole('link', { name: 'Directions' }).getAttribute('href'))).toEqual([

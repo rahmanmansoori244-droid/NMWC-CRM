@@ -29,7 +29,7 @@ afterEach(cleanup);
 
 describe('/today', () => {
   it('has a New customer button that opens a blank form, visible without the sidebar', async () => {
-    render(await TodayPage());
+    render(await TodayPage({}));
     const link = screen.getByRole('link', { name: /New customer/ });
     expect(link.getAttribute('href')).toBe('/customers/new');
     // Not tucked behind a breakpoint: no hidden / md:-only class on it.
