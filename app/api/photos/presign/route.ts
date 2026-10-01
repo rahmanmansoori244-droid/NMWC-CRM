@@ -87,7 +87,12 @@ export async function POST(req: NextRequest) {
         ContentType: mimeType,
         ContentLength: bytes,
       }),
-      { expiresIn: PRESIGN_EXPIRES_S } // 10 minutes
+      {
+        expiresIn: PRESIGN_EXPIRES_S, // 10 minutes
+        // The SDK can inherit server tracing headers that the browser PUT never sends.
+        // Keep the upload's content-length and host bound without requiring that context.
+        unsignableHeaders: new Set(['traceparent', 'tracestate', 'baggage']),
+      }
     );
 
     return NextResponse.json({
