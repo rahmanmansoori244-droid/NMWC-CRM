@@ -31,8 +31,7 @@ Read in this order:
   package has not reached `main` yet: stop and ask the owner.
 - **Rollout status** (who is using the system, and whether accounts have been handed
   out): ask the owner. It is deliberately not recorded in this public file.
-- The data is loaded: seven regions; 18,703 live customers and 20,682 live branches on
-  2026-09-29.
+- Keep dated production totals in private owner records.
 - **21 migrations** are applied on production; the last is
   `20260929120000_edit_submit_gate_equipment_confirmed` (two added columns).
 - Hosting: Vercel Pro (project `nmwc-cm`, functions in `iad1`), Neon Postgres
@@ -303,12 +302,13 @@ The recommendations below are **Claude's, not yet answered by the owner**.
 Also carried: whether an import row with a blank `temix_code` takes the full lane; unkeyed
 dismissal digests; the new-customer form's Back after "Save draft" and a way to discard a
 create draft; placeholder CR numbers on `/duplicates`; the salesman guide's create section;
-`BranchStatusActions` pending state; whether a GM breach notifies every Manager; whether the
-synthetic `accountant.*` / `pilot.*` names should be denylisted; five security items from the
+`BranchStatusActions` pending state; whether a GM breach notifies every Manager; the
+exact-name synthetic-account denylist question in §6.2; five security items from the
 re-benchmark that the owner parked.
 
 ### 6.2 Only the owner can do, or must confirm
 
+- Confirm with the owner that the signed-in CSP browser walk (sign-in, forced change, early sign-out, /audit filter, approve/reject, photo upload) is done or superseded.
 - Restore drill secrets (`NEON_API_KEY`, `NEON_PROJECT_ID`); `ALERT_WEBHOOK_URL`.
 - Retire cron-job.org by following `docs/OPERATIONS.md` §5d exactly (delete both jobs and
   the API key, delete the `CRONJOB_API_KEY` secret, rotate `CRON_SECRET` in Vercel and

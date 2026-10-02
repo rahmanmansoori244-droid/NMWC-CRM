@@ -1,9 +1,8 @@
 # NMWC CRM — Go-live runbook
 
-> **The 13 September target passed.** The load has not run: production still holds the
-> May seed data. Nothing in this document expires with the date — it is written for
-> "load day", whichever day that turns out to be. Where it says "Sunday", read "load
-> day"; where it says "before Sunday", read "before you start".
+> This is the procedure for an authorized customer-data load. Where it says "Sunday",
+> read "load day"; where it says "before Sunday", read "before you start". Confirm the
+> intended scope and prerequisites with the owner before following the steps.
 
 This is the step-by-step for putting the real customer master into production. The
 files it loads are built by `scripts/golive/build-masters.ts` into `golive-data/`

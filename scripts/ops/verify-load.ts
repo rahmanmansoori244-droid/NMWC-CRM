@@ -272,7 +272,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
         // case and is not one.
         note:
           expectationSource + ' ' +
-          'this count cannot say WHICH branches or why — it compares two totals and never reads the master. ' +
+          'This count cannot say WHICH branches or why — it compares two totals and never reads the master. ' +
           `Places a day gets withheld, as leads rather than an accounting: ${leads.join('; ')}. ` +
           'To attribute it properly, line the master up against production per customer (docs/OPERATIONS.md §7).',
       };

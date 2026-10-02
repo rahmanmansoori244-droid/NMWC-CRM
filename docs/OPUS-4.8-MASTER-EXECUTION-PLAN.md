@@ -17,7 +17,7 @@ This document is 25 deliverables followed by the **OPUS 4.8 MASTER EXECUTION HAN
 |---|---|---|---|---|---|
 | **A** | Local / automated | ephemeral Neon *schema-only* branch, auto-expiring | mocked / none | test-only in a gitignored `.env` | unit, property, DB, service, API, server-action, static-security, migration tests, generator |
 | **B** | Online UAT | **dedicated** Neon branch, no prod data | **dedicated** test bucket | UAT-only, distinct from prod | full online deployment, browser/role/mobile/cron/perf tests, UAT sign-off |
-| **C** | Production | live Neon (`ep-sweet-haze-aq6nra0j`) | `nmwc-photos` | prod (owner-rotated) | **later, gated** controlled go-live only |
+| **C** | Production | live Neon (`ep-sweet-haze`) | `nmwc-photos` | prod (owner-rotated) | **later, gated** controlled go-live only |
 
 ### 0.2 ERRATA — corrections after an independent adversarial red-team of this plan
 

@@ -64,7 +64,7 @@ The exhaustive pre-go-live hunt found **7 P1s** including one caused by this ses
 - **Vercel Preview-DB isolated:** `DATABASE_URL`+`DIRECT_URL` scoped Preview→uat-testing, Production+Development→production; `DATABASE_URL1` removed; migration history baselined so the Preview build's `migrate deploy` is a no-op.
 - **Live Preview URL** (production build, isolated DB, `iad1`): `nmwc-cm-git-claude-nmwc-7e903d-…vercel.app`.
 - **Verified live online:** login+auth; region scope (scoped manager 100 customers, unscoped 0, disabled-user rejected); the **CREATE flow** (4 real cash+credit requests via `submitCreateAction`); the **approval queue** (correct scope + 8h SLA); a **real approval** — Manager-fallback of the Supervisor step (R4) advanced a cash CREATE SUP→ACC.
-- Org seeded: 59 users (all 8 roles + edge accounts: unscoped manager/accountant, disabled user), 7 regions, 38 routes, ~270 customers (95 seeded + 175 imported), 115 branches, 18 pending edits. Demo password `Demo!2026Demo`; steward/manager.a/manager.b/supervisor.1-7/salesman.<route>/accountant.a-b/fm.a-b/gm.a-b.
+- Org seeded: 59 users (all 8 roles + edge accounts: unscoped manager/accountant, disabled user), 7 regions, 38 routes, ~270 customers (95 seeded + 175 imported), 115 branches, 18 pending edits. Demo password `[private credential]`; steward/manager.a/manager.b/supervisor.1-7/salesman.<route>/accountant.a-b/fm.a-b/gm.a-b.
 
 ## 5. Evidence + reports (in `qa/`)
 - `qa/reports/`: PRODUCTION-READINESS-VERDICT.md, LAUNCH-CHECKLIST.md, OWNER-DECISIONS.md, EXEC-RECORD.md, execution-tracker.md.
@@ -140,7 +140,7 @@ Owner's Sunday-critical ask: every salesman sees the customers they serve, can s
 
 Method: read every code path on the route (list scope, search, Today, EnrichmentForm, GPS capture, photo presign/PUT/finalize/attach, submit gate, approval queue + step authorization for a Manager-as-supervisor, approve/reject, notifications, exports); then two new UAT-safe suites that build their own org under a unique suffix and remove it afterwards — `tests/integration/golive-update-flow.test.ts` (12 tests through the real service actions, incl. the report) and `tests/e2e/golive-update-flow.spec.ts` (a real Chromium against `next dev` + the UAT database + the real R2 bucket: route-code login → forced change → Today → search → Enrich → emulated device GPS → three camera-input photos through presign/R2/finalize/attach → submit → manager login → Approvals → photos + map on the review page → approve → profile → report download and photo bytes back through `/api/photos`). Also a data check with the dashboard SQLite: of 3,068 customers invoiced in the 56 days to 2026-08-08, 3,065 are in the master and 3,054 sit on a live salesman's route (11 parked: `CASHCUST`/`COUPCUST` + 9 small ones on S20/SL04/NZ04/S04/WHS-; 3 tiny S07 codes absent from RoutePro).
 
-The browser walk was itself blocked three times by defects that no service-level test could see, each a go-live blocker in its own right: **(a)** nothing hydrated on `next dev` — the nonce'd CSP lacks `'unsafe-eval'`, which the webpack dev runtime needs, so every client component was dead in local development (added dev-only; production untouched); **(b)** a tap on *Sign in* before hydration submitted the form natively as a GET, putting **username and password into the URL** (button now inert until hydrated, `data-hydrated` marker); **(c)** the login action's own zod schema still demanded a 3-character username — `lib/auth.ts` and `services/users.ts` had been relaxed for route-code logins but this first gate had not, so **C1–C9 and W could not sign in** (min 1; the walk now logs in as a two-character route on purpose); and **(d)** the **first-login password change could not be completed at all**: `signIn` redirected to `/home`, the middleware redirected the RSC fetch to the change-password page but the client router kept `/home` in the address bar, and the form's server action then POSTed to `/home`, where the middleware redirected the POST as well — "An unexpected response was received from the server". With "12345 for everyone + forced change" that would have stranded every user on Sunday. Fixed twice over: `loginAction` now signs in without redirect, reads `mustChangePassword` and lands the user on `/profile/change-password` directly; and the form corrects a wrong address bar (`router.replace`) on mount so a must-change user who taps a nav link is safe too.
+The browser walk was itself blocked three times by defects that no service-level test could see, each a go-live blocker in its own right: **(a)** nothing hydrated on `next dev` — the nonce'd CSP lacks `'unsafe-eval'`, which the webpack dev runtime needs, so every client component was dead in local development (added dev-only; production untouched); **(b)** a tap on *Sign in* before hydration submitted the form natively as a GET, putting **username and password into the URL** (button now inert until hydrated, `data-hydrated` marker); **(c)** the login action's own zod schema still demanded a 3-character username — `lib/auth.ts` and `services/users.ts` had been relaxed for route-code logins but this first gate had not, so **C1–C9 and W could not sign in** (min 1; the walk now logs in as a two-character route on purpose); and **(d)** the **first-login password change could not be completed at all**: `signIn` redirected to `/home`, the middleware redirected the RSC fetch to the change-password page but the client router kept `/home` in the address bar, and the form's server action then POSTed to `/home`, where the middleware redirected the POST as well — "An unexpected response was received from the server". With "[private credential] for everyone + forced change" that would have stranded every user on Sunday. Fixed twice over: `loginAction` now signs in without redirect, reads `mustChangePassword` and lands the user on `/profile/change-password` directly; and the form corrects a wrong address bar (`router.replace`) on mount so a must-change user who taps a nav link is safe too.
 
 Defects found (all fixed, with the tests above as regression): **(1)** `attachPhotoCore`'s transaction ran on Prisma's 5 s default and died with *Transaction already closed* at 5.3 s over the WAN — the same class as the promote P2028 — so `lib/db.ts` now sets `transactionOptions { maxWait 10 s, timeout 20 s }` for every interactive transaction that does not pass its own; **(2)** `approveEditCore` deleted BOTH `legalName` and `crNumber` whenever legalName was locked (always, for a salesman) although the CR lock only applies on CREDIT — a CASH customer's CR number was discarded at approval and the EL-04 re-check then failed the approval with *CR number is required*; the two locks are now evaluated independently; **(3)** the EnrichmentForm's mandatory gate read photo slots from the initial server snapshot, so after taking the three photos Submit stayed disabled until a reload — slot state is now tracked live via `PhotoCaptureSlot.onChange`; **(4)** the Manager sidebar had no Approvals entry although Managers are the approvers; **(5)** the review page for an UPDATE showed no photos and no map — it now shows the current CR/shop/signboard/extra photos (scope-filtered), Google Maps links for the location on file and the proposed one, and channel labels instead of cuids; the profile shows photo thumbnails and a map link; **(6)** `/api/exports/customers` refused above 10,000 rows (master = 20,129) → 25,000; **(7)** search now also matches branch name and branch code (scope-intersected); **(8)** the QA-021 formula guard escaped every `+968…` phone to `'+968…` in every export — sign-prefixed numerics are now left alone (unit test).
 
@@ -467,37 +467,23 @@ of issued passwords on a rebuild the runbook invites. A re-import re-armed
 against the password-reuse guard. And a customer imported without a `temix_code`
 was born SYNCED and never queued for Temix, so the ERP never learned it existed.
 
-### What is actually in each database (2026-09-20)
+### Account inventory and sign-in diagnostics
 
-Established by read-only query while diagnosing a failed login, and worth keeping
-because the three environments use **different username schemes**:
+Keep environment-specific account inventories, sign-in history and initial-password /
+forced-change status in private owner records. Do not name unused accounts or infer
+their credential state in this public document. Confirm the environment and account
+identity privately before diagnosing a sign-in failure; production access follows
+`docs/HANDOVER.md` §5.
 
-- **UAT** (`ep-lucky-bar`, the branch this worktree's `.env` points at) holds
-  **58 accounts, 42 of them salesmen**, loaded from the go-live account master.
-  Usernames are therefore bare route codes — `c1`, `c4` — plus managers by name
-  and `steward`. `c1` and `c4` are active, have **never logged in**, and still
-  carry the forced-change flag, so they hold their original initial password.
-  One leftover: `admin`, active, with no forced change.
-- **Production** still holds the **May seed**, whose salesmen are
-  `<route>-12345-nmwc` with passwords derived from the route code
-  (`prisma/seed-muscat-pilot.ts`). `steward`, `admin` and `viewer` are all
-  **refused** there by the demo denylist. This worktree cannot query production
-  and should not be given the credential to.
-- **After the go-live load**, production moves to the UAT scheme: route codes.
-
-So `c4-12345-nmwc` exists on neither, which is why it failed. A wrong password and
-a lockout are distinguishable from the message: the limiter says "Too many
-attempts from your network", so "Invalid username or password" means the
-credential, not the rate limit.
-
-That query was also the first time `scripts/golive/audit-accounts.ts` had been run
-against a real database. It works, and it immediately found the `admin` leftover.
+An authorized operator can use `scripts/golive/audit-accounts.ts` for the account
+inventory, keeping its results private. Distinguish a rate-limit refusal from an
+invalid-credential response without publishing account-level observations.
 
 ### An open decision: one shared initial password, or one per account
 
 The owner's instruction, given 2026-09-10 and reaffirmed 2026-09-15:
 
-> create the account for everyone with username as their route code password 12345
+> create the account for everyone with username as their route code password [private credential]
 > then once they log in it forces them to change password and for managers with
 > their name.
 

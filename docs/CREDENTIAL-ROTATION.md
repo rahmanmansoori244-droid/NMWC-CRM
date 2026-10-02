@@ -45,15 +45,14 @@ interpolated into a SQL statement.
 
 ## Step 1 — move the application off the owner role
 
-**Do this first.** Right now the production application connects as
-`neondb_owner` — I checked, and all four live connections during the customer
-load were the owner. That is why this step comes first: once the app is on
-`nmwc_app`, resetting the owner password in step 2 does not touch the running
-site at all, and there is no window where the app is down.
+**Do this first.** Confirm the application's current database role and the runtime
+role's grants privately, following HANDOVER §5. Move the app to the least-privilege
+`nmwc_app` role and verify the switch before rotating the owner credential in step 2,
+so the app no longer depends on the credential being replaced.
 
-The role `nmwc_app` already exists on production, with its privilege set applied.
-It has simply never been used. This step gives it a fresh password and points the
-app at it.
+Provision and verify the runtime role using the operations runbook before this step
+if necessary. This procedure does not establish whether a role is already in use;
+keep configuration and usage evidence in the private operations record.
 
 1. GitHub → Settings → Secrets and variables → Actions → **Secrets**. Find
    `NMWC_APP_PASSWORD` and **Update** it to the new app password. (Update, not
@@ -178,10 +177,10 @@ npm run smoke
 Say these out loud to yourself, because a rotation that quietly leaves something
 behind is worse than one that never happened.
 
-- **The 62 application account passwords.** They are `12345` by your decision,
-  they are in `golive-data/credentials.xlsx`, and they are unchanged by any of
-  the above. They are meant to be changed by each person at first sign-in. That
-  is a separate piece of work and it is not done.
+- **Application account passwords.** Infrastructure credential rotation does not
+  rotate application passwords. Follow the owner's enrollment policy in HANDOVER §4;
+  confirm any account reset or forced-change status privately. Do not infer current
+  credential state or completion from this document.
 - **`NEXTAUTH_SECRET`.** Not exposed. Rotating it signs every user out
   immediately, so do not do it casually. Leave it.
 - **`BACKUP_AGE_IDENTITY`, the R2 access keys, `PROD_CRON_SECRET`,
