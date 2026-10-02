@@ -530,6 +530,7 @@ describe('N06: attach claims the photo under the lock, before anything else is w
 // Now the target is read again under the lock, before the claim.
 describe('attach reads its target again under the lock, before the claim', () => {
   const WINNER = 'ckcustomer0000000000000009';
+  const customerSelect = { deletedAt: true, branches: { where: { deletedAt: null }, select: { routeId: true, regionId: true, deletedAt: true } } };
   const refusedBeforeTheClaim = (res: Awaited<ReturnType<typeof attach>>) => {
     expect(res).toEqual({ ok: false, code: 'PHOTO_CHANGED', message: PHOTO_TARGET_CHANGED_MESSAGE });
     expect(db.attachment.updateMany).not.toHaveBeenCalled();
@@ -543,7 +544,7 @@ describe('attach reads its target again under the lock, before the claim', () =>
     db.attachment.findUnique.mockResolvedValue(photo({ kind: 'CR' }));
     db.customer.findUnique.mockResolvedValue(customer({ deletedAt: new Date() }));
     refusedBeforeTheClaim(await attach({ attachmentId: ATT, customerId: CUST, slot: 'CR' }));
-    expect(db.customer.findUnique).toHaveBeenCalledWith({ where: { id: CUST }, select: { deletedAt: true } });
+    expect(db.customer.findUnique).toHaveBeenCalledWith({ where: { id: CUST }, select: customerSelect });
   });
 
   it('the CR slot: the customer row is gone altogether — refused', async () => {
@@ -569,8 +570,8 @@ describe('attach reads its target again under the lock, before the claim', () =>
       changed();
       refusedBeforeTheClaim(await attach({ attachmentId: ATT, ...target }));
       // Read on the transaction, as they stand now: the branch, and the customer that was locked.
-      expect(db.branch.findUnique).toHaveBeenCalledWith({ where: { id: B1 }, select: { customerId: true, deletedAt: true } });
-      expect(db.customer.findUnique).toHaveBeenCalledWith({ where: { id: CUST }, select: { deletedAt: true } });
+      expect(db.branch.findUnique).toHaveBeenCalledWith({ where: { id: B1 }, select: { customerId: true, deletedAt: true, routeId: true } });
+      expect(db.customer.findUnique).toHaveBeenCalledWith({ where: { id: CUST }, select: customerSelect });
     });
   });
 
