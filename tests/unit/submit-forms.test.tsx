@@ -540,7 +540,7 @@ describe('the customer update form', () => {
     }
   });
 
-  it('a replayed "Already received" drops the autosave already due — and a later edit still saves', async () => {
+  it('a replayed "Already received" drops the autosave already due and locks the received snapshot', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       renderForm();
@@ -565,12 +565,15 @@ describe('the customer update form', () => {
         await vi.advanceTimersByTimeAsync(600);
       });
       expect(window.localStorage.getItem(draftKey)).toBeNull();
-      // The form stays on this path: what he types next is his, and is kept.
-      fireEvent.change(screen.getByDisplayValue('Said'), { target: { value: 'Said Al Harthy' } });
+      // OCT-02: the received form stays visible but is no longer editable.
+      // Even a programmatic event must not revive the submitted phone draft.
+      expect(screen.getByDisplayValue('Said')).toBeDisabled();
+      fireEvent.change(screen.getByDisplayValue('Said'), { target: { value: 'Synthetic later value' } });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(600);
       });
-      expect(JSON.parse(window.localStorage.getItem(draftKey)!).contactPerson).toBe('Said Al Harthy');
+      expect(screen.getByDisplayValue('Said')).toBeDisabled();
+      expect(window.localStorage.getItem(draftKey)).toBeNull();
     } finally {
       vi.useRealTimers();
     }
