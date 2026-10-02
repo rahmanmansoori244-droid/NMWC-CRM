@@ -67,6 +67,161 @@ function holdInGap() {
   return { inGap, release: () => release() };
 }
 
+describe.skipIf(!ENABLED)('photo attach scope under a real customer lock', () => {
+  let prisma: import('@prisma/client').PrismaClient;
+  let mover: import('@prisma/client').PrismaClient;
+  let photos: typeof import('@/services/photos');
+  const tag = randomUUID().slice(0, 8);
+  const ids = { regionA: '', regionB: '', routeA: '', routeB: '', sales: `ZZPS-sales-${tag}`, manager: `ZZPS-mgr-${tag}`, customer: '', branch: '', sibling: '' };
+
+  beforeAll(async () => {
+    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    ({ prisma } = await import('@/lib/db'));
+    const { PrismaClient } = await import('@prisma/client');
+    mover = new PrismaClient();
+    photos = await import('@/services/photos');
+    for (const side of ['A', 'B'] as const) {
+      const region = await prisma.region.create({ data: { name: `ZZPS ${side} ${tag}`, code: `ZZPS-${side}-${tag}` } });
+      ids[`region${side}`] = region.id;
+      const route = await prisma.route.create({ data: { name: `ZZPS ${side} ${tag}`, code: `ZZPS-RT-${side}-${tag}`, regionId: region.id } });
+      ids[`route${side}`] = route.id;
+    }
+    await prisma.user.create({ data: { id: ids.sales, username: ids.sales, passwordHash: 'x', fullName: 'Synthetic photo salesman', role: 'SALESMAN', ownedRouteId: ids.routeA } });
+    await prisma.user.create({ data: { id: ids.manager, username: ids.manager, passwordHash: 'x', fullName: 'Synthetic photo manager', role: 'MANAGER', managedRegions: { connect: { id: ids.regionA } } } });
+  });
+
+  beforeEach(async () => {
+    if (!ENABLED) return;
+    gate.hold = null; // No audit-envelope mock barrier: PostgreSQL proves the wait below.
+    const n = randomUUID().slice(0, 8);
+    const customer = await prisma.customer.create({ data: { nmwcCode: `ZZPS-${tag}-${n}`, legalName: 'Synthetic photo customer', paymentTerms: 'CASH', createdById: ids.sales } });
+    ids.customer = customer.id;
+    for (const [key, side] of [['branch', 'A'], ['sibling', 'B']] as const) {
+      const b = await prisma.branch.create({ data: {
+        customerId: ids.customer, branchCode: `ZZPS-${tag}-${n}-${side}`, branchName: `Synthetic ${side}`,
+        address: 'Synthetic address', routeId: ids[`route${side}`], regionId: ids[`region${side}`], status: 'ACTIVE',
+      } });
+      ids[key] = b.id;
+    }
+  });
+
+  afterEach(async () => {
+    if (!prisma || !ids.customer) return;
+    await prisma.branch.updateMany({ where: { customerId: ids.customer }, data: { shopPhotoId: null, signboardPhotoId: null } });
+    await prisma.customer.update({ where: { id: ids.customer }, data: { crPhotoId: null } });
+    await prisma.attachment.deleteMany({ where: { capturedById: ids.sales } });
+    await purgeAuditLog(prisma, { where: { actorId: { in: [ids.sales, ids.manager] } } });
+    await prisma.branch.deleteMany({ where: { customerId: ids.customer } });
+    await prisma.customer.delete({ where: { id: ids.customer } });
+    current = null;
+  });
+
+  afterAll(async () => {
+    if (!prisma) return;
+    try {
+      await prisma.user.deleteMany({ where: { id: { in: [ids.sales, ids.manager] } } });
+      await prisma.route.deleteMany({ where: { id: { in: [ids.routeA, ids.routeB] } } });
+      await prisma.region.deleteMany({ where: { id: { in: [ids.regionA, ids.regionB] } } });
+    } finally {
+      await mover?.$disconnect();
+      await prisma.$disconnect();
+    }
+  });
+
+  async function snapshot(tx: import('@prisma/client').Prisma.TransactionClient) {
+    return {
+      customer: await tx.customer.findUniqueOrThrow({ where: { id: ids.customer }, include: { branches: { orderBy: { id: 'asc' } } } }),
+      photos: await tx.attachment.findMany({ where: { capturedById: ids.sales }, orderBy: { id: 'asc' } }),
+      audits: await tx.auditLog.count({ where: { actorId: { in: [ids.sales, ids.manager] } } }),
+    };
+  }
+
+  const cases = (['MANAGER', 'SALESMAN'] as const).flatMap((role) =>
+    (['CR', 'SHOP', 'SIGNBOARD', 'FREE'] as const).flatMap((slot) =>
+      [false, true].map((move) => ({ role, slot, move, sibling: false, allowed: !move }))
+    )
+  );
+  // Preserve F04's existing customer-overlap policy for Managers and CR photos.
+  // A salesman branch attach still requires that specific branch's route.
+  cases.push(
+    { role: 'MANAGER', slot: 'SHOP', move: true, sibling: true, allowed: true },
+    { role: 'SALESMAN', slot: 'CR', move: true, sibling: true, allowed: true },
+    { role: 'SALESMAN', slot: 'SHOP', move: true, sibling: true, allowed: false },
+  );
+  it.each(cases)('$role $slot after locked route move=$move, sibling=$sibling: allowed=$allowed', async ({ role, slot, move, sibling, allowed }) => {
+    current = { id: role === 'MANAGER' ? ids.manager : ids.sales, role, username: role === 'MANAGER' ? ids.manager : ids.sales };
+    if (sibling) await prisma.branch.update({ where: { id: ids.sibling }, data: { routeId: ids.routeA, regionId: ids.regionA } });
+    const old = await prisma.attachment.create({ data: {
+      kind: slot, r2Key: `synthetic-photo-scope/${tag}/${randomUUID()}.jpg`, mimeType: 'image/jpeg', bytes: 100,
+      capturedById: ids.sales, capturedAt: new Date(),
+      ...(slot === 'CR' ? { customerId: ids.customer } : { branchId: ids.branch }),
+      ...(slot === 'FREE' ? { branchExtraId: ids.branch } : {}),
+    } });
+    if (slot === 'CR') await prisma.customer.update({ where: { id: ids.customer }, data: { crPhotoId: old.id } });
+    else if (slot !== 'FREE') await prisma.branch.update({ where: { id: ids.branch }, data: slot === 'SHOP' ? { shopPhotoId: old.id } : { signboardPhotoId: old.id } });
+    const fresh = await prisma.attachment.create({ data: {
+      kind: slot, r2Key: `synthetic-photo-scope/${tag}/${randomUUID()}.jpg`, mimeType: 'image/jpeg', bytes: 100,
+      capturedById: ids.sales, capturedAt: new Date(),
+    } });
+    const input = slot === 'CR'
+      ? { attachmentId: fresh.id, customerId: ids.customer, slot }
+      : { attachmentId: fresh.id, branchId: ids.branch, slot };
+    let waiting: ReturnType<typeof photos.attachPhotoAction> | undefined;
+    let committed: Awaited<ReturnType<typeof snapshot>> | undefined;
+    try {
+      await mover.$transaction(async (tx) => {
+        const { lockCustomerRow } = await import('@/lib/locks');
+        await lockCustomerRow(tx, ids.customer);
+        const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        waiting = photos.attachPhotoAction(input);
+        const deadline = Date.now() + 10_000;
+        let blocked = false;
+        while (Date.now() < deadline) {
+          await tx.$queryRaw`SELECT 1 FROM pg_stat_clear_snapshot()`;
+          const rows = await tx.$queryRaw<Array<{ pid: number }>>`
+            SELECT pid FROM pg_stat_activity
+            WHERE ${pid} = ANY(pg_blocking_pids(pid)) AND query LIKE '%Customer%FOR UPDATE%'
+          `;
+          if (rows.length) {
+            expect(rows.every((row) => row.pid !== pid)).toBe(true);
+            blocked = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(blocked, 'The real attach connection must wait on the mover customer lock').toBe(true);
+        // The same customer-first lock and route/region/version update used by
+        // import promotion, without invoking its workbook pipeline.
+        if (move) await tx.branch.update({ where: { id: ids.branch }, data: { routeId: ids.routeB, regionId: ids.regionB, version: { increment: 1 } } });
+        committed = await snapshot(tx);
+      }, { timeout: 20_000, maxWait: 10_000 });
+      const result = await waiting!;
+      if (!allowed) {
+        expect(result).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+        // No claim, prior-photo deletion, slot/score change or audit survives.
+        expect(await snapshot(prisma)).toEqual(committed);
+      } else {
+        expect(result).toMatchObject({ ok: true });
+        const attached = await prisma.attachment.findUniqueOrThrow({ where: { id: fresh.id } });
+        expect(attached.deletedAt).toBeNull();
+        expect(slot === 'CR' ? attached.customerId : attached.branchId).toBe(slot === 'CR' ? ids.customer : ids.branch);
+        if (slot === 'CR') expect((await prisma.customer.findUniqueOrThrow({ where: { id: ids.customer } })).crPhotoId).toBe(fresh.id);
+        else if (slot === 'FREE') expect(attached.branchExtraId).toBe(ids.branch);
+        else {
+          const b = await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } });
+          expect(slot === 'SHOP' ? b.shopPhotoId : b.signboardPhotoId).toBe(fresh.id);
+        }
+        const previous = await prisma.attachment.findUniqueOrThrow({ where: { id: old.id } });
+        if (slot === 'FREE') expect(previous.deletedAt).toBeNull();
+        else expect(previous.deletedAt).not.toBeNull();
+        expect((await snapshot(prisma)).audits).toBe(committed!.audits + 1);
+      }
+    } finally {
+      await waiting?.catch(() => {});
+    }
+  });
+});
+
 describe.skipIf(!ENABLED)('photo attach and Remove on real Postgres (N06, X-PHOTO-1)', () => {
   let prisma: import('@prisma/client').PrismaClient;
   let photos: typeof import('@/services/photos');
