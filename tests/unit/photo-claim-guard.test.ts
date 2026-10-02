@@ -102,11 +102,11 @@ function assertTargetReadAgain(tx: string, reads: RegExp[], conditions: string[]
   for (const part of conditions) expect(flat, part).toContain(part);
 }
 
-const CR_READ = [/const customerNow = await tx\.customer\.findUnique\(\{ where: \{ id: c\.id \}, select: \{ deletedAt: true \} \}\)/];
+const CR_READ = [/const customerNow = await tx\.customer\.findUnique\(\{\s*where: \{ id: c\.id \},\s*select: \{ deletedAt: true, branches: \{ where: \{ deletedAt: null \}, select: \{ routeId: true, regionId: true, deletedAt: true \} \} \},?\s*\}\)/];
 const CR_COND = ['!customerNow', 'customerNow.deletedAt'];
 const BRANCH_READ = [
-  /const branchNow = await tx\.branch\.findUnique\(\{\s*where: \{ id: b\.id \},\s*select: \{ customerId: true, deletedAt: true \},?\s*\}\)/,
-  /const customerNow = await tx\.customer\.findUnique\(\{\s*where: \{ id: b\.customerId \},\s*select: \{ deletedAt: true \},?\s*\}\)/,
+  /const branchNow = await tx\.branch\.findUnique\(\{\s*where: \{ id: b\.id \},\s*select: \{ customerId: true, deletedAt: true, routeId: true \},?\s*\}\)/,
+  /const customerNow = await tx\.customer\.findUnique\(\{\s*where: \{ id: b\.customerId \},\s*select: \{ deletedAt: true, branches: \{ where: \{ deletedAt: null \}, select: \{ routeId: true, regionId: true, deletedAt: true \} \} \},?\s*\}\)/,
 ];
 const BRANCH_COND = ['!branchNow', 'branchNow.deletedAt', 'branchNow.customerId !== b.customerId', '!customerNow', 'customerNow.deletedAt'];
 
@@ -132,7 +132,7 @@ describe('N06: attach claims the photo first, guarded', () => {
     const tx = (body: string) => `$transaction(async (tx) => {
       ${body}
     })`;
-    const READ = `const customerNow = await tx.customer.findUnique({ where: { id: c.id }, select: { deletedAt: true } });`;
+    const READ = `const customerNow = await tx.customer.findUnique({ where: { id: c.id }, select: { deletedAt: true, branches: { where: { deletedAt: null }, select: { routeId: true, regionId: true, deletedAt: true } } } });`;
     const LOCK = `await lockCustomer(tx, c.id);`;
     const REFUSE = `if (!customerNow || customerNow.deletedAt) {
         throw new ConflictError('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE);

@@ -227,6 +227,10 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     }
   }
 
+  // Keep the existing actor-scope policy; recheck the target under its lock.
+  const managerScope = session.user.role === Role.MANAGER ? await loadScope(session.user.id) : null;
+  let ownedRouteId: string | null = null;
+
   if ('customerId' in data) {
     const c = await prisma.customer.findFirst({
       where: { id: data.customerId, deletedAt: null },
@@ -238,7 +242,8 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         where: { id: session.user.id },
         select: { ownedRouteId: true },
       });
-      if (!c.branches.some((b) => b.routeId === me.ownedRouteId)) {
+      ownedRouteId = me.ownedRouteId;
+      if (!c.branches.some((b) => b.routeId === ownedRouteId)) {
         throw new ForbiddenError('Customer not on your route.');
       }
     } else if (session.user.role === Role.MANAGER) {
@@ -247,11 +252,10 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       // this a Manager (even one with empty managedRegions) could attach to —
       // and destructively soft-delete the existing CR photo of — ANY customer
       // nationwide. assertCanEditCustomer is fail-closed for empty regions.
-      const scope = await loadScope(session.user.id);
       assertCanEditCustomer(
         { id: session.user.id, role: session.user.role, username: session.user.username },
         c,
-        scope
+        managerScope!
       );
     }
     if (wired) {
@@ -269,10 +273,19 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       // winner by the time the lock is ours; claimed here, the photo landed on the
       // tombstone, out of every salesman's reach, and was answered ok. Refused
       // before the claim, as Remove refuses a photo that moved (X-PHOTO-1).
-      const customerNow = await tx.customer.findUnique({ where: { id: c.id }, select: { deletedAt: true } });
+      const customerNow = await tx.customer.findUnique({
+        where: { id: c.id },
+        select: { deletedAt: true, branches: { where: { deletedAt: null }, select: { routeId: true, regionId: true, deletedAt: true } } },
+      });
       if (!customerNow || customerNow.deletedAt) {
         throw new ConflictError('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE);
       }
+      // An import may have moved the last reachable branch while we waited.
+      // Refuse before claiming the upload, replacing a photo or rescoring.
+      if (session.user.role === Role.SALESMAN && !customerNow.branches.some((b) => b.routeId === ownedRouteId)) {
+        throw new ForbiddenError('Customer not on your route.');
+      }
+      if (managerScope) assertCanEditCustomer(session.user, customerNow, managerScope);
       // N06: claim first. Refused, the previous photo and the slot are untouched.
       const claim = await tx.attachment.updateMany({
         where: claimWhere(att.id, data, isAdmin ? null : session.user.id),
@@ -330,17 +343,17 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         where: { id: session.user.id },
         select: { ownedRouteId: true },
       });
-      if (b.routeId !== me.ownedRouteId) {
+      ownedRouteId = me.ownedRouteId;
+      if (b.routeId !== ownedRouteId) {
         throw new ForbiddenError('Branch not on your route.');
       }
     } else if (session.user.role === Role.MANAGER) {
       // SEC-H1 (completeness): region-scope the Manager branch-photo attach too,
       // via the branch's owning customer. Fail-closed for empty managedRegions.
-      const scope = await loadScope(session.user.id);
       assertCanEditCustomer(
         { id: session.user.id, role: session.user.role, username: session.user.username },
         b.customer,
-        scope
+        managerScope!
       );
     }
     if (wired) {
@@ -366,11 +379,11 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       // stale while rescoring the tombstone; an archive has removed both.
       const branchNow = await tx.branch.findUnique({
         where: { id: b.id },
-        select: { customerId: true, deletedAt: true },
+        select: { customerId: true, deletedAt: true, routeId: true },
       });
       const customerNow = await tx.customer.findUnique({
         where: { id: b.customerId },
-        select: { deletedAt: true },
+        select: { deletedAt: true, branches: { where: { deletedAt: null }, select: { routeId: true, regionId: true, deletedAt: true } } },
       });
       if (
         !branchNow ||
@@ -381,6 +394,12 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       ) {
         throw new ConflictError('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE);
       }
+      if (session.user.role === Role.SALESMAN && branchNow.routeId !== ownedRouteId) {
+        throw new ForbiddenError('Branch not on your route.');
+      }
+      // Manager photo access remains customer-level overlap (F04 is an owner
+      // decision); this rechecks that policy using the locked live branches.
+      if (managerScope) assertCanEditCustomer(session.user, customerNow, managerScope);
       // N06: claim first, as on the CR path. An extra (FREE) photo is wired by
       // its own columns alone, so for it the claim is the whole attach.
       const claim = await tx.attachment.updateMany({
