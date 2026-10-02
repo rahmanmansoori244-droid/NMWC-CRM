@@ -122,3 +122,87 @@ describe('verify-load count gate and exit status', () => {
     expect(text).not.toContain('PRIVATE_QUERY_DETAIL');
   });
 });
+
+describe('verify-load usable supervisor-step approvers (OCT-06)', () => {
+  type Candidate = {
+    id: string; username: string; role: string; isActive: boolean;
+    managedRegions: { id: string }[];
+  };
+  const candidate = (overrides: Partial<Candidate> = {}): Candidate => ({
+    id: 'approver', username: 'synthetic.approver', role: 'MANAGER', isActive: true,
+    managedRegions: [{ id: 'region-a' }], ...overrides,
+  });
+
+  // Return only requested fields, like Prisma: omitting isActive from the
+  // query must not be hidden by a fixture that returns extra fields.
+  function project(row: Record<string, unknown>, select: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(Object.entries(select).map(([key, selection]) => {
+      const value = row[key];
+      if (selection === true || value == null) return [key, value];
+      const nested = (selection as { select: Record<string, unknown> }).select;
+      return [key, Array.isArray(value)
+        ? value.map((item) => project(item, nested))
+        : project(value as Record<string, unknown>, nested)];
+    }));
+  }
+
+  async function coverage(supervisor: Candidate | null, managers: Candidate[] = [], hasRoute = true, empty = false) {
+    const salesman = {
+      id: 'salesman', username: 'synthetic.salesman', supervisorId: supervisor?.id ?? null,
+      ownedRoute: hasRoute ? { code: 'SYNTHETIC', regionId: 'region-a' } : null,
+      supervisor,
+    };
+    const db = { user: { findMany: vi.fn(async ({ where, select }: {
+      where: { role: string; isActive?: boolean }; select: Record<string, unknown>;
+    }) => {
+      const rows = where.role === 'SALESMAN' ? (empty ? [] : [salesman])
+        : managers.filter((m) => m.role === where.role && (where.isActive === undefined || m.isActive === where.isActive));
+      return rows.map((row) => project(row, select));
+    }) } };
+    const check = loadChecks(db as unknown as PrismaClient, { branches: 500, visitDays: 200 })
+      .find((c) => c.name === 'every salesman has an approver who can actually act')!;
+    return check.run();
+  }
+
+  it.each(['MANAGER', 'SUPERVISOR'])('rejects an inactive assigned %s even with an active manager in another region', async (role) => {
+    const assigned = candidate({ role, isActive: false });
+    const elsewhere = candidate({ id: 'elsewhere', managedRegions: [{ id: 'region-b' }] });
+    expect((await coverage(assigned, [elsewhere])).ok).toBe(false);
+  });
+
+  it.each(['ACCOUNTANT', 'STEWARD', 'SALESMAN'])('rejects assigned %s despite matching managed regions', async (role) => {
+    expect((await coverage(candidate({ role }))).ok).toBe(false);
+  });
+
+  it('rejects a region without any eligible manager or assigned supervisor', async () => {
+    const elsewhere = candidate({ managedRegions: [{ id: 'region-b' }] });
+    expect((await coverage(elsewhere, [elsewhere])).ok).toBe(false);
+  });
+
+  it.each(['MANAGER', 'SUPERVISOR'])('accepts an active eligible assigned %s', async (role) => {
+    expect((await coverage(candidate({ role }))).ok).toBe(true);
+  });
+
+  it.each([null, 'inactive', 'foreign'])('accepts the active regional Manager fallback when assignment is %s', async (assignment) => {
+    const assigned = assignment === null ? null : candidate({
+      id: 'assigned', isActive: assignment !== 'inactive', managedRegions: [{ id: 'region-b' }],
+    });
+    expect((await coverage(assigned, [candidate()])).ok).toBe(true);
+  });
+
+  it.each([
+    candidate({ username: 'admin' }),
+    candidate({ role: 'SUPERVISOR', username: 'supervisor.synthetic' }),
+  ])('rejects an assigned demo-denied account $username', async (assigned) => {
+    expect((await coverage(assigned)).ok).toBe(false);
+  });
+
+  it('does not use an inactive or demo-denied Manager fallback', async () => {
+    expect((await coverage(null, [candidate({ isActive: false }), candidate({ username: 'admin' })])).ok).toBe(false);
+  });
+
+  it('fails closed for no active salesmen or no route for Manager coverage', async () => {
+    expect((await coverage(null, [candidate()], true, true)).ok).toBe(false);
+    expect((await coverage(candidate(), [candidate()], false)).ok).toBe(false);
+  });
+});
