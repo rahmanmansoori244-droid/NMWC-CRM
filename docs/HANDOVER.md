@@ -23,17 +23,15 @@ Read in this order:
 
 ---
 
-## 1. Where things stand (2026-09-30)
+## 1. Operational reference
 
-- **`main` = `95c8a63`**, deployed to production and verified: the build serves that
-  commit, `npm run smoke` passes 14/14, and the post-deploy smoke in CI passes 16/16
-  with no scheduled job alarming. If `origin/main` has no `AGENTS.md`, this handover
-  package has not reached `main` yet: stop and ask the owner.
+- Confirm the current `main` commit and its CI results through GitHub, including
+  post-deploy smoke. Keep deployment verification in private owner records.
 - **Rollout status** (who is using the system, and whether accounts have been handed
   out): ask the owner. It is deliberately not recorded in this public file.
 - Keep dated production totals in private owner records.
-- **21 migrations** are applied on production; the last is
-  `20260929120000_edit_submit_gate_equipment_confirmed` (two added columns).
+- Migration definitions live in `prisma/migrations/`; confirm applied production
+  migration state privately with the owner.
 - Hosting: Vercel Pro (project `nmwc-cm`, functions in `iad1`), Neon Postgres
   (production and a separate UAT branch), Cloudflare R2 for photos, Sentry for errors.
 
@@ -49,18 +47,25 @@ Read in this order:
 | 2026-09-29 | `ab6d998` | Phase 2 of the recheck — edit-form semantics: F05 (a salesman is gated only on his own route's branches), F06 (only touched fields are sent, each with the value it was based on; a stale one is refused field by field, and again at approval), F16 (channel/sub-channel pair), F19 (phones in Arabic and Persian digits), F20 (clearing optional fields), N02 (strip before length), F21 ("Counted" equipment, import rescoring). One migration. |
 | 2026-09-29 | `95c8a63` | Fixes from the adversarial pass after `ab6d998`: a late GPS fix, the sub-channel base after a channel conflict, request arrays refused on length before parsing, linear HTML strip and e-mail scrub, the import's region repair, the rescore ledger. |
 
-### Production operations already run (each with the owner's go-ahead)
+### Operation names and evidence pointers
 
-- **2026-09-23 — the go-live load**, and after it: 3,308 customers with no Temix code
-  requeued (`scripts/ops/requeue-untracked.ts`), 1,770 empty credit limits set to 0 with a
-  one-day term (`zero-credit-limits.ts`), quarantined visit days applied
-  (`apply-quarantined-visit-days.ts`).
-- **2026-09-27** — the `nmwc_app` role's grants corrected (`scripts/ops/app-role.ts grant`).
-- **2026-09-29 06:00 UTC — completeness rescore** (`npm run ops:rescore-completeness`, as
-  the Data Steward): 550 customer and 18,890 branch scores rewritten; a second dry run found
-  nothing to do. Ledger: `AuditLog` rows with `entityType = CompletenessRescore`.
-- **2026-09-29 — one customer's sub-channel cleared**: it belonged to another channel than
-  the customer's (F16). One audited `UPDATE` as the Data Steward, no Temix requeue.
+Confirm execution dates, results and counts in the owner's private operation records.
+
+- **Go-live load:** the load procedure and reconciliation are in
+  `docs/GO-LIVE-RUNBOOK.md`; retain the manifest and load evidence privately.
+- **Requeue customers without a Temix code:** `scripts/ops/requeue-untracked.ts`;
+  ledger: `AuditLog` rows with `entityType = TemixRequeue`.
+- **Zero empty credit limits with a one-day term:** `scripts/ops/zero-credit-limits.ts`;
+  ledger: `AuditLog` rows with `entityType = CreditLimitZeroing`.
+- **Apply quarantined visit days:** `scripts/ops/apply-quarantined-visit-days.ts`;
+  ledger: `AuditLog` rows with `entityType = QuarantinedVisitDays`.
+- **Correct the `nmwc_app` role's grants:** `scripts/ops/app-role.ts grant`;
+  retain the operator's grant/status evidence privately.
+- **Completeness rescore:** `npm run ops:rescore-completeness`;
+  ledger: `AuditLog` rows with `entityType = CompletenessRescore`.
+- **Clear a sub-channel belonging to a different channel (F16):** the audited
+  `UPDATE` as the Data Steward, without a Temix requeue; retain the corresponding
+  audit-row reference in the private operation record.
 
 ---
 

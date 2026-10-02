@@ -13,9 +13,8 @@ and nothing here is an emergency in the "we are being attacked" sense — but a
 credential that has been in a screenshot is not a secret any more, and it is the
 strongest one this system has.
 
-The load was finished first, deliberately and at your instruction, because
-rotating mid-load would have left a half-imported customer master. The load is
-done. This is the next thing.
+Plan infrastructure credential rotation outside any active data load. Confirm the
+operation window and current state privately with the owner before starting.
 
 ---
 

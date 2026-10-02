@@ -62,9 +62,9 @@ This is the hardest question in the system and it was created deliberately.
 
 ## Timing
 
-The go-live data load has **not** been executed: production still holds May seed data. Until it runs, the customer master is not yet in a US database at scale, and a residency decision can still be implemented by changing where the system is deployed rather than by migrating live data. After the load, the same decision becomes a cutover.
-
-This is the one point in the project where Q1 is cheap to answer.
+Confirm the current data location and scope privately with the owner before making a
+residency decision. Before a load, the approved destination can be configured for the
+load; if data already exists there, plan an authorized migration or cutover instead.
 
 ## What engineering has already done, so counsel need not ask
 

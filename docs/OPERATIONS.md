@@ -839,7 +839,8 @@ Keep current account inventories, initial-password status and rotation evidence 
 private owner records. The accepted enrollment decision is recorded in HANDOVER §4;
 it does not establish any account's current credential or usage state.
 
-Use `docs/CREDENTIAL-ROTATION.md` for an authorized rotation, following HANDOVER §5.
+For an individual application password, use §7, "Reset password for a user".
+Use `docs/CREDENTIAL-ROTATION.md` for infrastructure credentials, following HANDOVER §5.
 Never infer usable logins from historical seed examples or publish per-account
 credential-state observations here.
 
