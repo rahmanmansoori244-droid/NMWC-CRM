@@ -59,7 +59,7 @@ services/*.ts        16 'use server' modules exporting 47 async functions (serve
 prisma/              schema.prisma, 21 migrations, seeds, ad-hoc test scripts (§2)
 scripts/             ops/ (smoke, app-role, restore-verify, cron-scheduler, R2 checks), qa/, golive/,
                      compliance/, plus ~16 historical scripts at the root (§2)
-tests/unit           144 files, 2,733 tests (vitest + jsdom); one runs only where golive-data/ exists
+tests/unit           144 files, 2,748 tests (vitest + jsdom); one runs only where golive-data/ exists
 tests/integration    38 DB-backed suites gated by RUN_* flags; 35 run in CI
 tests/e2e            2 Playwright specs; only login.spec.ts runs in CI
 tests/support        strip-comments (TypeScript-parser based), jsx-ast, where-eval, workflow-step,
@@ -298,7 +298,7 @@ Do not report these as defects without new evidence; you may of course challenge
 - **Structural guards** assert on source or configuration where the historical defect was "a correct helper nobody called": `submit-wiring-guard`, `audit-guard` and `branch-address-guard` read comment-stripped source; `ci-gates-guard` executes the workflow's shell steps under `bash -e` with stubs; `typed-routes-guard` compiles probe files; `pii-classification` parses the schema. 11 test files still strip comments with a naive regex that `tests/support/strip-comments.ts` documents as wrong.
 - **Mutation testing by hand**, recorded in commit messages (e.g. `efe3729` 11/11 unit mutants; `ab5867f` 20/20; `2d1e702` 11/11). No Stryker config.
 - **Adversarial review after merges**: three to six lenses, each finding put to one or two independent skeptics; confirmed findings are fixed in a follow-up commit whose message lists them.
-- **What the tests actually exercise (read "2,733 unit tests" with this in mind):**
+- **What the tests actually exercise (read "2,748 unit tests" with this in mind):**
   - Service functions are exercised against real Postgres by the integration suites; 31 of 38 mock `@/lib/auth`, so the real session path runs only in `tests/e2e/login.spec.ts`.
   - Unit tests reach services mostly through source-text guards or `vi.mock`; some run a service with Prisma mocked, among them `customer-master-export.test.ts`, `duplicates-service.test.ts` and `photo-attach-service.test.ts` (`services/photos.ts` through its two routes), and since phase 2 `edit-service.test.ts` and `edit-approval-service.test.ts` (`services/edits.ts`), `rescore.test.ts` and `rescore-completeness.test.ts`; `edit-phase2-guard.test.ts` and `import-rescore-guard.test.ts` pin the lock → read → plan → gate → write order structurally.
   - No test exercises `services/saved-views.ts` or `notifications-actions.ts` for behaviour. Since the recheck the others have behavioural tests: `temix.ts` (`tests/unit/temix-service.test.ts`), `customers.ts` archive (`tests/unit/archive-temix-shared-code.test.ts` and the Postgres suite of the same name on `RUN_MERGE_TESTS`), `customer-export.ts` (`tests/unit/customer-export-branch.test.ts` and `tests/integration/customer-export-branch-filter.test.ts` on `RUN_EXPORT_TESTS`) and `routes.ts` (`tests/unit/admin-audit-atomic.test.ts`). Duplicate detection gained unit tests (the pure pairing, the service with Prisma mocked, the page and the card) and a Postgres suite `duplicate-detection.test.ts` riding `RUN_MERGE_TESTS` (item 16).
@@ -358,7 +358,7 @@ Trust the code. Known stale or contradictory documents:
 npm ci
 npm run typecheck        # next typegen + tsc --noEmit
 npm run lint
-npm test                 # 2,733 unit tests (one skips without golive-data/); integration files collect and skip
+npm test                 # 2,748 unit tests (one skips without golive-data/); integration files collect and skip
 npx next build           # no migrate; needs AUTH_SECRET >= 32 varied chars and placeholder DATABASE_URL/DIRECT_URL
 ```
 
