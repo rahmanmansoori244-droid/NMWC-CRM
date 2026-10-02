@@ -713,7 +713,7 @@ whether a gap came from rejected rows, quarantine or a skipped refresh-lane bran
 
 To attribute it, join the master to production per customer:
 
-1. The authorized operator reconciles the master with the recorded pre-load baseline and approved change records. Include retained branches outside the master and expected retained visit days; exclude branches removed by approved cleanup, without double-counting overlap. Where the master's `branch_code` is blank, account for the importer's derived identity rather than joining on that blank value. Keep this reconciliation private.
+1. For each customer's `cust_code`, the authorized operator derives **expected day-bearing branches = branches the master gives a non-blank `day_of_visit`, plus that customer's retained branches that keep a day, minus approved cleanups**. Match by the importer's derived branch identity, not a blank `branch_code`, and count an identity in both the master and retained sets only once. Apply other recorded approved changes only if not already represented in that expectation. The master already counts the days restored by the quarantine fill. Keep the per-customer reconciliation and source records private.
 2. Query production for the same customers and count their live branches carrying a `dayOfVisit`.
 3. The customers where production is short are the answer. For each, look at the import rows: a REJECTED row wrote nothing at all, a QUARANTINED row was held for review and never promoted, and a customer that already carries a `temixCode` may have taken the refresh lane, which skips the branch loop.
 
@@ -727,19 +727,20 @@ DIRECT_URL='<owner connection>' npm run ops:visit-days -- --expect-host ep-sweet
 # read the counts, then:
 DIRECT_URL='<owner connection>' npm run ops:visit-days -- --expect-host ep-sweet-haze --apply
 npm run smoke
-# Reconcile the approved journey-plan fill in the private expected-count record first.
+# Use the privately reconciled expectations; do not add the days this quarantine fill restores.
 npm run verify:load -- \
   --expected-branches "$EXPECTED_BRANCHES" --expected-visit-days "$EXPECTED_VISIT_DAYS"
 ```
 
 A quarantined row is never promoted, so its branch never receives the journey plan's `dayOfVisit`. This writes that day onto the branch that already exists — exactly what the promote would have written. It does **not** merge customers, clear the quarantine or resolve the duplicate; those stay in `/duplicates` for a Steward, because merging two customer records needs a human to say which one survives.
 
-Derive the post-change expected counts using GO-LIVE-RUNBOOK §6a and the recorded approved
-fill. Branches already live before this operation stay in the branch expectation once;
-only a retained branch moving from no day to a day increases the visit-day expectation.
-Changing an existing weekday does not add a branch or another day-bearing branch. Keep
-the totals and records private; an incomplete approved operation must be reconciled, not
-hidden by copying the observed counts into the expected-count variables.
+Use the recorded expectations from GO-LIVE-RUNBOOK §6a. **This quarantine fill restores
+days that the manifest's `branchesWithVisitDay` already counts, so the expectation does
+not change after it.** Branches already live before this operation stay in the branch
+expectation once. Only an approved no-day → day change on a branch whose day is not
+already counted in the expectation adds 1; changing an existing weekday adds nothing.
+Keep the totals and records private. Do not increase the expectation for this repair or
+copy observed totals into it; an incomplete approved operation must be reconciled.
 
 It applies a row only when the customer has exactly one live branch of that name and that branch has no day recorded. Anything ambiguous is skipped and reported — writing the wrong branch's visit day sends a salesman to the wrong shop on the wrong morning.
 

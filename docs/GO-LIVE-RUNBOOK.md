@@ -187,11 +187,13 @@ importer enforces most of the order, but not all of it.
      baseline branches expected to retain a non-null day, including matched branches
      whose blank incoming day leaves their existing day unchanged. Do not add the
      entire baseline to the manifest and double-count their overlap.
-   - Apply the net effect of each recorded approved change once. A cleanup that removes
-     a live branch reduces the branch expectation and, if it had a day, the visit-day
-     expectation. A journey-plan fill increases the visit-day expectation only for a
-     retained branch moving from no day to a day; changing one non-null day to another
-     does not increase that count.
+   - Apply the net effect of each recorded approved change once. An approved cleanup
+     removes the branch from the expected live set and, if its day was counted there,
+     from the visit-day expectation. **The quarantine visit-day fill restores days that
+     `branchesWithVisitDay` already counts; it does not change the expectation.** Only
+     an approved no-day → day change on a branch whose day is not already counted in
+     the expectation adds 1. Changing one non-null day to another adds nothing. Do not
+     count a repair of an already expected day as a new expected day.
    - Keep the reconciled totals, branch identities and supporting records in the private
      operations log. If the baseline or change records cannot support an expectation,
      stop and reconcile them; never copy the observed totals merely to make a check pass.

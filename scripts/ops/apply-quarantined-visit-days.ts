@@ -278,8 +278,9 @@ async function main(): Promise<number> {
       `  audit rows      AuditLog entityType=QuarantinedVisitDays entityId=${at.toISOString()} (STARTING + COMPLETED)`
     );
     console.log('');
-    console.log('Next: npm run smoke, then npm run verify:load.');
-    console.log('The 69 duplicate-phone quarantines are still open in /duplicates.\n');
+    console.log('Next: npm run smoke, then see GO-LIVE-RUNBOOK §6a for verification with expected-count flags.');
+    console.log('This restores days already counted by the manifest; do not increase the expectation.');
+    console.log('Quarantined rows remain open in /duplicates.\n');
     return 0;
   } finally {
     await prisma.$disconnect();

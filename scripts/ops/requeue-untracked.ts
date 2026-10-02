@@ -692,8 +692,8 @@ async function main(): Promise<number> {
         ' (STARTING + COMPLETED)'
     );
     console.log('');
-    console.log('Next: npm run smoke, then npm run verify:load should pass "customers with no');
-    console.log('Temix code are queued for upload", and /temix should offer a batch to');
+    console.log('Next: npm run smoke, then see GO-LIVE-RUNBOOK §6a for verification with expected-count flags.');
+    console.log('"customers with no Temix code are queued for upload" should pass, and /temix should offer a batch to');
     console.log('generate.\n');
     return remaining === 0 ? 0 : 1;
   } finally {

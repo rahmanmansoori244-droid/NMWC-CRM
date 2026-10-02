@@ -322,8 +322,13 @@ re-benchmark that the owner parked.
   the app under `nmwc_app` on UAT; the switch itself is `docs/CREDENTIAL-ROTATION.md` step 1,
   done by the owner (Vercel and GitHub secrets).
 - The PDPL / data-residency blanks and the memo to counsel; the export round-trip decision;
-  the D2 credit-ownership note; the draft-photo retention period; the items under
-  "Decisions" in `docs/OWNER-ACTIONS-NOW.md`.
+  the D2 credit-ownership note; the draft-photo retention period.
+- Policy questions carried forward from the retired `docs/OWNER-ACTIONS-NOW.md`: whether
+  to deny synthetic approver accounts by exact name (never an `accountant.` prefix);
+  whether archiving releases a customer's documents (DATA-RETENTION gap 1); audit-write
+  failure policy (check current call sites before proposing a change); and the Steward's
+  reach / two-person provisioning for approver-tier accounts. These remain owner questions,
+  not permission to implement. The settled initial-password decision remains in §4.
 - The CR-number recompute on production (item 16): the script is ready and falls under
   Claude's standing permission, but `AUDITOR-BRIEF.md` §18 still says "go-ahead pending" —
   confirm with the owner; the production run remains pending. The code safeguards are

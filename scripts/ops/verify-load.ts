@@ -36,7 +36,9 @@ const expectationSource =
   'Derive totals from load-manifest.json, or the manifest adjusted by recorded approved changes ' +
   '(cleanup ledger rows, journey-plan fills). Reconcile the recorded pre-load baseline with the ' +
   'underlying master: include retained live branches outside it and their expected visit days; count branches ' +
-  'matched by the load only once, including any retained visit day. See GO-LIVE-RUNBOOK §6a. ' +
+  'matched by the load only once, including any retained visit day. The quarantine visit-day fill restores ' +
+  'days already counted in branchesWithVisitDay, so the expectation does not change. Only an approved ' +
+  'no-day -> day change on a branch whose day is not already counted in the expectation adds 1. See GO-LIVE-RUNBOOK §6a. ' +
   'Never copy observed totals merely to pass.';
 
 /** Explicit counts override the corresponding manifest field after an approved cleanup. */

@@ -293,8 +293,8 @@ async function main(): Promise<number> {
       `  audit rows      AuditLog entityType=CreditLimitZeroing entityId=${at.toISOString()} (STARTING + COMPLETED)`
     );
     console.log('');
-    console.log('Next: npm run smoke, then npm run verify:load — "every CREDIT customer that');
-    console.log('carries a limit also carries terms" must still pass.\n');
+    console.log('Next: npm run smoke, then see GO-LIVE-RUNBOOK §6a for verification with expected-count flags.');
+    console.log('"every CREDIT customer that carries a limit also carries terms" must still pass.\n');
     return remaining === 0 ? 0 : 1;
   } finally {
     await prisma.$disconnect();
