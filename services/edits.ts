@@ -798,6 +798,27 @@ async function submitEditOnce(
         });
         if (!now || now.deletedAt) throw new NotFoundError('Customer not found.');
         const nowBranches = new Map(now.branches.map((b) => [b.id, b] as const));
+        // OCT-01: a waiting import may move a branch out of the Manager's
+        // region. Reauthorize the locked snapshot before classifying changes
+        // or returning any live conflict values, and before receipt/audit writes.
+        const { assertCanEditCustomer } = await import('@/lib/access');
+        assertCanEditCustomer(sessionUserShape, now, {
+          ownedRouteId: me.ownedRouteId,
+          teamRouteIds: [],
+          managedRegionIds: managerRegionIds ?? [],
+        });
+        for (const bp of bInputs) {
+          const branch = nowBranches.get(bp.branchId);
+          if (!branch) {
+            throw new ConflictError(
+              'VERSION_CONFLICT',
+              'A branch was modified by someone else while your changes were processing. Refresh and try again.'
+            );
+          }
+          if (me.role === Role.MANAGER && !managerRegionIds?.includes(branch.regionId)) {
+            throw new ForbiddenError('You can only edit branches in a region you manage.');
+          }
+        }
         const { apply, stale, droppedBranchIds } = classifyChanges(
           fieldChanges,
           liveSnapshotOf(now, now.branches)
