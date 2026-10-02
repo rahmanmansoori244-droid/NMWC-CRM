@@ -543,7 +543,11 @@ export function EnrichmentForm({
           // Drop the autosave already due before clearing the received copy.
           // A replay of Submit freezes the form even though it stays visible.
           if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-          if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+          try {
+            if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+          } catch {
+            /* Storage cleanup must not hide the server's receipt. */
+          }
           if (!isDraft) setArrived(true);
         }
         return;
@@ -563,7 +567,11 @@ export function EnrichmentForm({
         return;
       }
       draftGoneRef.current = true;
-      if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+      try {
+        if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
+      } catch {
+        /* Storage cleanup must not prevent confirmation and navigation. */
+      }
       // Item 22: said beside the button BEFORE moving on — on weak signal the
       // next page can take a while, or fail to load, and the salesman must
       // already know that this arrived.

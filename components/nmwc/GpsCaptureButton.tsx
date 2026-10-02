@@ -80,6 +80,7 @@ export function GpsCaptureButton({
         if (generation !== captureGenerationRef.current) return;
         if (disabledRef.current) {
           setPending(false);
+          setError('Location not updated — capture again');
           return;
         }
         const next: Gps = {
@@ -98,6 +99,7 @@ export function GpsCaptureButton({
         if (generation !== captureGenerationRef.current) return;
         if (disabledRef.current) {
           setPending(false);
+          setError('Location not updated — capture again');
           return;
         }
         // B-07: any of timeout / denied / unavailable opens the manual fallback.

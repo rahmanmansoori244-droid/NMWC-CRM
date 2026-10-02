@@ -30,7 +30,7 @@ const draftKey = 'nmwc:draft:synthetic-user:synthetic-customer';
 const response = (body: unknown) => new Response(JSON.stringify(body), {
   status: 200, headers: { 'content-type': 'application/json' },
 });
-const receipt = (state: string, replayed = false) => ({ ok: true, data: { id: 'receipt', state, replayed } });
+const receipt = (state: string, replayed = false) => ({ ok: true, data: { editId: 'receipt', state, replayed } });
 type Asked = { ok: PositionCallback; fail: PositionErrorCallback };
 let gps: Asked[];
 let sent: Array<Record<string, unknown>>;
@@ -120,6 +120,57 @@ describe('OCT-02: the submitted snapshot stays fixed until its outcome', () => {
     expect(screen.getByText('23.500000, 58.300000')).toBeTruthy();
     await tick();
     expect(window.localStorage.getItem(draftKey)).toBeNull();
+  });
+
+  it.each(['draft', 'refusal', 'timeout'].flatMap((outcome) =>
+    ['fix', 'error'].map((result) => ({ outcome, result }))
+  ))('asks for recapture after a GPS $result during $outcome', async ({ outcome, result }) => {
+    const view = form();
+    changeNotes('Snapshot');
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    const request = gps.at(-1)!;
+    fireEvent.click(outcome === 'draft' ? save() : submit());
+    await act(async () => {
+      if (result === 'fix') request.ok({ coords: { latitude: 24, longitude: 59, accuracy: 3 } } as GeolocationPosition);
+      else request.fail({ code: 3, TIMEOUT: 3, message: 'Synthetic timeout' } as GeolocationPositionError);
+    });
+    expect(screen.getByText('23.500000, 58.300000')).toBeTruthy();
+    expect(screen.getByText('Location not updated — capture again')).toBeTruthy();
+    if (outcome === 'timeout') await tick(SUBMIT_TIMEOUT_MS);
+    else await answer(outcome === 'draft' ? receipt('DRAFT')
+      : { ok: false, code: 'FORBIDDEN', message: 'Synthetic refusal' });
+    expect(nav.hardReplace).not.toHaveBeenCalled();
+    expect(screen.getByText('Location not updated — capture again')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Recapture GPS' }));
+    await act(async () => {
+      gps.at(-1)!.ok({ coords: { latitude: 24, longitude: 59, accuracy: 3 } } as GeolocationPosition);
+    });
+    expect(screen.getByText('24.000000, 59.000000')).toBeTruthy();
+    expect(screen.queryByText('Location not updated — capture again')).toBeNull();
+    await tick();
+    expect(JSON.parse(window.localStorage.getItem(draftKey)!).branchStates['synthetic-branch'].gps.lat).toBe(24);
+    view.unmount();
+    window.localStorage.clear();
+  });
+
+  it.each([false, true])('confirms a received submit despite fully blocked storage, replay=%s', async (replayed) => {
+    for (const method of ['getItem', 'setItem', 'removeItem'] as const) {
+      vi.spyOn(Storage.prototype, method).mockImplementation(() => { throw new DOMException('Synthetic storage refusal', 'SecurityError'); });
+    }
+    form();
+    expect(screen.getByText(/could not read.*phone/i)).toBeTruthy();
+    changeNotes('Received snapshot');
+    await tick();
+    expect(screen.getByText(/could not save.*phone/i)).toBeTruthy();
+    fireEvent.click(submit());
+    await answer(receipt('APPROVED', replayed));
+    expect(Storage.prototype.removeItem).toHaveBeenCalledWith(draftKey);
+    expect(notes()).toBeDisabled();
+    expect(screen.getByText(replayed ? /already received/i : /Saved \(auto-approved/)).toBeTruthy();
+    expect(nav.hardReplace).toHaveBeenCalledTimes(replayed ? 0 : 1);
+    if (!replayed) expect(nav.hardReplace).toHaveBeenCalledWith('/customers/synthetic-customer');
+    await tick();
+    expect(screen.queryByText(/could not save.*phone/i)).toBeNull();
   });
 
   it('locks conflict choices during draft save and re-enables them afterward', async () => {
