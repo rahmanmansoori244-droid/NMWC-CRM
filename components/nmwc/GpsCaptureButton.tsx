@@ -26,10 +26,12 @@ export function GpsCaptureButton({
   initial,
   onCapture,
   required,
+  disabled = false,
 }: {
   initial?: Gps | null;
   onCapture: (g: Gps) => void;
   required?: boolean;
+  disabled?: boolean;
 }) {
   const [gps, setGps] = useState<Gps | null>(initial ?? null);
   const [pending, setPending] = useState(false);
@@ -52,6 +54,9 @@ export function GpsCaptureButton({
   // (post-merge review of phase 2, finding 1). On the new-customer form the
   // button unmounts only with its branch, and that fix has nowhere to go.
   const mountedRef = useRef(true);
+  const captureGenerationRef = useRef(0);
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -60,6 +65,8 @@ export function GpsCaptureButton({
   }, []);
 
   function capture() {
+    if (disabledRef.current) return;
+    const generation = ++captureGenerationRef.current;
     if (!('geolocation' in navigator)) {
       setError('GPS not available in this browser. Use manual entry below.');
       setShowManual(true);
@@ -70,6 +77,11 @@ export function GpsCaptureButton({
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         if (!mountedRef.current) return;
+        if (generation !== captureGenerationRef.current) return;
+        if (disabledRef.current) {
+          setPending(false);
+          return;
+        }
         const next: Gps = {
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
@@ -83,6 +95,11 @@ export function GpsCaptureButton({
       },
       (err) => {
         if (!mountedRef.current) return;
+        if (generation !== captureGenerationRef.current) return;
+        if (disabledRef.current) {
+          setPending(false);
+          return;
+        }
         // B-07: any of timeout / denied / unavailable opens the manual fallback.
         const reason =
           err.code === err.PERMISSION_DENIED
@@ -101,6 +118,7 @@ export function GpsCaptureButton({
   }
 
   function applyManual() {
+    if (disabledRef.current) return;
     setManualErr(null);
     // Replace comma decimals with periods so phones with locale-comma keypads
     // (typical in MENA) don't silently NaN.
@@ -118,6 +136,9 @@ export function GpsCaptureButton({
       setManualErr('Tell us why GPS did not work (5+ characters).');
       return;
     }
+    // An explicit valid choice supersedes every older device callback.
+    captureGenerationRef.current += 1;
+    setPending(false);
     const outside =
       latNum < OMAN_LAT_MIN ||
       latNum > OMAN_LAT_MAX ||
@@ -145,7 +166,7 @@ export function GpsCaptureButton({
       <button
         type="button"
         onClick={capture}
-        disabled={pending}
+        disabled={pending || disabled}
         className="inline-flex items-center gap-2 rounded-md bg-brand-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-brand-700 disabled:bg-slate-300"
       >
         {gps ? <RotateCcw className="h-4 w-4" /> : <MapPin className="h-4 w-4" />}
@@ -192,6 +213,7 @@ export function GpsCaptureButton({
       {!showManual && (
         <button
           type="button"
+          disabled={disabled}
           onClick={() => setShowManual(true)}
           className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
         >

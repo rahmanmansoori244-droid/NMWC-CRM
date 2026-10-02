@@ -174,7 +174,10 @@ export function EnrichmentForm({
   const [branchStates, setBranchStates] = useState<Record<string, FormBranch>>(
     () => loadedFormState(customer).branches
   );
-  const setValue = (key: keyof FormCustomer) => (v: string) => setValues((c) => ({ ...c, [key]: v }));
+  const setValue = (key: keyof FormCustomer) => (v: string) => {
+    if (submitLockRef.current || arrived) return;
+    setValues((c) => ({ ...c, [key]: v }));
+  };
   const { legalName, crNumber, channelId, subChannelId, primaryPhone, contactPerson } = values;
 
   // Ruling 1 (phase 2): the fields a STALE_FIELDS answer named, with the value
@@ -302,7 +305,13 @@ export function EnrichmentForm({
   useEffect(() => {
     if (restoredForKeyRef.current === draftKey) return;
     restoredForKeyRef.current = draftKey;
-    const saved = typeof window !== 'undefined' ? window.localStorage.getItem(draftKey) : null;
+    let saved: string | null;
+    try {
+      saved = typeof window !== 'undefined' ? window.localStorage.getItem(draftKey) : null;
+    } catch {
+      setNotice({ tone: 'failed', text: 'Could not read the draft on this phone. Keep this page open while you work.', retry: false });
+      return;
+    }
     if (!saved) return;
     try {
       const d = JSON.parse(saved);
@@ -325,6 +334,10 @@ export function EnrichmentForm({
       setValues((c) => {
         const next = { ...c };
         for (const k of DRAFT_TEXT_FIELDS) if (typeof d[k] === 'string') next[k] = d[k];
+        if ((userRole === Role.MANAGER || userRole === Role.STEWARD) &&
+            (d.status === 'ACTIVE' || d.status === 'CLOSED' || d.status === 'SUSPENDED')) {
+          next.status = d.status;
+        }
         return next;
       });
       // Phase 2: per branch the page shows, never a branch handed to another
@@ -338,7 +351,7 @@ export function EnrichmentForm({
     } catch {
       /* ignore */
     }
-  }, [draftKey, customer.branches]);
+  }, [draftKey, customer.branches, userRole]);
 
   // Set when a submit arrived and the page is leaving: from then on nothing
   // writes the phone copy — not a keystroke's autosave already due, which fired
@@ -348,40 +361,47 @@ export function EnrichmentForm({
   const draftGoneRef = useRef(false);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-save every change (debounced)
+  // OCT-04: both the debounce and explicit Save draft write this exact phone
+  // snapshot. A successful server draft is not proof that local storage worked.
+  const savePhoneDraft = useCallback(() => {
+    if (typeof window === 'undefined' || draftGoneRef.current) return false;
+    try {
+      window.localStorage.setItem(draftKey, JSON.stringify({
+        legalName: values.legalName,
+        crNumber: values.crNumber,
+        channelId: values.channelId,
+        subChannelId: values.subChannelId,
+        primaryPhone: values.primaryPhone,
+        altPhone: values.altPhone,
+        contactPerson: values.contactPerson,
+        contactRole: values.contactRole,
+        notes: values.notes,
+        // OCT-05: preserve permitted status choices without changing the base
+        // format or authorizing status transitions for any additional role.
+        ...((userRole === Role.MANAGER || userRole === Role.STEWARD) ? { status: values.status } : {}),
+        branchStates: draftBranchStates(branchStates, loadedRef.current),
+        savedAt: Date.now(),
+        base: baseRef.current,
+        ...(kept.customer.length > 0 || Object.keys(kept.branches).length > 0 ? { kept } : {}),
+      }));
+      return true;
+    } catch {
+      setNotice({ tone: 'failed', text: 'Could not save the draft on this phone. Keep this page open; your entries are still here.', retry: false });
+      return false;
+    }
+  }, [draftKey, values, branchStates, kept, userRole]);
+
+  // Auto-save every change (debounced).
   useEffect(() => {
-    const handle = setTimeout(() => {
-      if (typeof window === 'undefined' || draftGoneRef.current) return;
-      window.localStorage.setItem(
-        draftKey,
-        JSON.stringify({
-          legalName: values.legalName,
-          crNumber: values.crNumber,
-          channelId: values.channelId,
-          subChannelId: values.subChannelId,
-          primaryPhone: values.primaryPhone,
-          altPhone: values.altPhone,
-          contactPerson: values.contactPerson,
-          contactRole: values.contactRole,
-          notes: values.notes,
-          // With the "counted" value loaded now, beside each branch's boxes: a
-          // restore takes his tick or untick back only while that still holds.
-          branchStates: draftBranchStates(branchStates, loadedRef.current),
-          savedAt: Date.now(),
-          base: baseRef.current,
-          // Ruling 1: a "Keep mine" survives a reload with the draft, so the
-          // approver is still told what it replaces.
-          ...(kept.customer.length > 0 || Object.keys(kept.branches).length > 0 ? { kept } : {}),
-        })
-      );
-    }, 500);
+    const handle = setTimeout(savePhoneDraft, 500);
     autosaveTimerRef.current = handle;
     // Item 22: a green "saved" no longer describes the form once it changes.
     setNotice((n) => (n?.tone === 'received' ? null : n));
     return () => clearTimeout(handle);
-  }, [draftKey, values, branchStates, kept, rebaseGen]);
+  }, [savePhoneDraft, rebaseGen]);
 
   function setBranch(id: string, change: Partial<FormBranch>) {
+    if (submitLockRef.current || arrived) return;
     setBranchStates((s) => ({ ...s, [id]: { ...s[id]!, ...change } }));
   }
 
@@ -391,6 +411,7 @@ export function EnrichmentForm({
    * resolveConflict says what each answer does.
    */
   function choose(slot: string, choice: 'mine' | 'theirs') {
+    if (submitLockRef.current || arrived) return;
     if (!conflicts[slot]) return;
     const live: Record<string, BaseValue> = { ...conflicts[slot] };
     const answered = [slot];
@@ -448,7 +469,7 @@ export function EnrichmentForm({
     if (!isDraft && unresolved.length > 0) return;
     // UXI-004: synchronous lock so a fast double-tap on the Submit button
     // can't fire two parallel requests before `sending` renders.
-    if (submitLockRef.current) return;
+    if (submitLockRef.current || arrived) return;
     submitLockRef.current = true;
     setSending(true);
     setErrors({});
@@ -506,12 +527,21 @@ export function EnrichmentForm({
         return;
       }
       const res = result.data;
+      // Flush before acknowledging a first or replayed DRAFT, including a
+      // response that beats the 500 ms debounce and an immediate page leave.
+      if (isDraft && res.state === 'DRAFT') {
+        if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+        if (!savePhoneDraft()) {
+          setNotice({ tone: 'failed', text: 'Draft received by the server. Could not save it on this phone; keep this page open to preserve your entries.', retry: false });
+          return;
+        }
+      }
       if (res.replayed) {
         // It had already arrived: said above, beside the button. Stay — there
         // is nothing to send, and moving on would hide the answer.
         if (res.state === 'SUBMITTED' || res.state === 'APPROVED') {
-          // The form stays, so a later edit may still save: drop only the
-          // autosave already due, which would write back what just arrived.
+          // Drop the autosave already due before clearing the received copy.
+          // A replay of Submit freezes the form even though it stays visible.
           if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
           if (typeof window !== 'undefined') window.localStorage.removeItem(draftKey);
           if (!isDraft) setArrived(true);
@@ -560,7 +590,7 @@ export function EnrichmentForm({
   }
 
   return (
-    <div className="space-y-4 p-4 sm:p-6">
+    <fieldset disabled={sending || arrived} className="m-0 min-w-0 space-y-4 border-0 p-4 sm:p-6">
       {info && (
         <div className="rounded-md bg-emerald-50 px-3 py-2 text-base font-medium text-emerald-700 ring-1 ring-emerald-200">
           {info}
@@ -654,6 +684,7 @@ export function EnrichmentForm({
                 // A new channel empties the sub-channel, and the submit sends that
                 // (null) unless one of the new channel's is picked (F16).
                 const next = e.currentTarget.value;
+                if (submitLockRef.current || arrived) return;
                 setValues((c) => ({ ...c, channelId: next, subChannelId: '' }));
               }}
               className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm"
@@ -769,6 +800,7 @@ export function EnrichmentForm({
                 </label>
                 <GpsCaptureButton
                   key={`${restoreGeneration}:${gpsGeneration[b.id] ?? 0}`}
+                  disabled={sending || arrived}
                   initial={gpsForButton(s.gps)}
                   onCapture={(g) => setBranch(b.id, { gps: g })}
                   required
@@ -976,7 +1008,7 @@ export function EnrichmentForm({
           {missingMandatory.join(', ')}. Save as a draft and finish the rest before submitting.
         </div>
       )}
-    </div>
+    </fieldset>
   );
 }
 
