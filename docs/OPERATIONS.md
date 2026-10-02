@@ -672,7 +672,16 @@ The rotation is audit-logged.
 
 ### Requeue customers the ERP was never told about (one-off, 2026-09-23)
 
-A customer whose `temixSyncState` is `SYNCED` while `temixCode` is null is claiming Temix already knows it, and nothing re-examines that claim: the upload queue selects only `PENDING_UPLOAD` and `DEACTIVATE_PENDING`, so the row never enters a batch, never shows on `/temix`, and the ERP never learns it exists — it cannot be invoiced, however complete it looks in the CRM. The May pilot seed left several thousand rows in that state; the importer has handled it correctly for rows it creates since. `npm run verify:load` fails on exactly this ("customers with no Temix code are queued for upload"). To fix it, **dry run first** — the script writes nothing without `--apply`, and `--expect-host` is required either way, because a dry run against the wrong database reports "nothing to do" and reads as "already fixed":
+A customer whose `temixSyncState` is `SYNCED` while `temixCode` is null is claiming Temix already knows it, and nothing re-examines that claim: the upload queue selects only `PENDING_UPLOAD` and `DEACTIVATE_PENDING`, so the row never enters a batch, never shows on `/temix`, and the ERP never learns it exists — it cannot be invoiced, however complete it looks in the CRM. The May pilot seed could leave rows in that state; the importer handles it correctly for rows it creates. `verify:load` fails on exactly this ("customers with no Temix code are queued for upload"). To fix it, **dry run first** — the script writes nothing without `--apply`, and `--expect-host` is required either way, because a dry run against the wrong database reports "nothing to do" and reads as "already fixed":
+
+Before the verification command, set `EXPECTED_BRANCHES` and `EXPECTED_VISIT_DAYS`
+from the private reconciliation described in [GO-LIVE-RUNBOOK §6a](GO-LIVE-RUNBOOK.md).
+Use the manifest, or the manifest adjusted by recorded approved changes (cleanup ledger
+rows, journey-plan fills). Reconcile retained pre-load branches outside the underlying master
+and their expected days; count branches matched by the load only once, including retained
+days. These are whole-database live totals, not counts inserted by this batch. Requeuing
+Temix state does not itself change those totals. Never set them from observed totals merely
+to make verification pass; if the baseline or change records are missing, reconcile first.
 
 ```bash
 npm run smoke                       # before any production change — fourteen checks, ~15s
@@ -680,7 +689,8 @@ DIRECT_URL='<owner connection>' npm run ops:requeue-untracked -- --expect-host e
 # read the counts, then:
 DIRECT_URL='<owner connection>' npm run ops:requeue-untracked -- --expect-host ep-sweet-haze --apply
 npm run smoke                       # and after
-npm run verify:load
+npm run verify:load -- \
+  --expected-branches "$EXPECTED_BRANCHES" --expected-visit-days "$EXPECTED_VISIT_DAYS"
 ```
 
 `npm run smoke` on both sides is not optional — it is the standing rule for any production change, it needs no credentials, and each of its fourteen checks is something that has already been wrong here (including production serving a four-month-old build for weeks). Run it before, so a regression that was already there is not blamed on this; run it after, so one caused by this is caught while the operator is still at the keyboard.
@@ -695,15 +705,20 @@ Two `AuditLog` rows per applied run (`entityType = TemixRequeue`), sharing one `
 
 ### Work out WHICH branches are missing a visit day
 
-`verify:load`'s visit-day check compares two totals — how many branches carry a day against how many `load-manifest.json` says the master supplied. It never reads the master, so **it cannot name a single row**, and it deliberately no longer tries to: it lists the mechanisms that withhold a day as leads and stops there. Twice in one day it asserted a cause from that number and was wrong both times — first blaming the Temix refresh lane for a gap that was 95% rejected rows, then blaming the rejections for a gap that turned out to be a quarantine.
+`verify:load` compares the live-branch and visit-day totals against the reconciled expectations
+from the manifest or explicit overrides (GO-LIVE-RUNBOOK §6a), including retained pre-load
+branches and recorded approved changes. It never reads the master, so **it cannot name a
+single row**: it lists mechanisms that withhold a day as leads. Counts alone cannot say
+whether a gap came from rejected rows, quarantine or a skipped refresh-lane branch update.
 
 To attribute it, join the master to production per customer:
 
-1. Read `golive-data/customer-master.xlsx`, and for each `cust_code` count the rows whose `day_of_visit` is non-blank. Do **not** join on `branch_code` — 18,184 of the 20,199 rows have a blank one, because the importer derives it.
+1. The authorized operator reconciles the master with the recorded pre-load baseline and approved change records. Include retained branches outside the master and expected retained visit days; exclude branches removed by approved cleanup, without double-counting overlap. Where the master's `branch_code` is blank, account for the importer's derived identity rather than joining on that blank value. Keep this reconciliation private.
 2. Query production for the same customers and count their live branches carrying a `dayOfVisit`.
 3. The customers where production is short are the answer. For each, look at the import rows: a REJECTED row wrote nothing at all, a QUARANTINED row was held for review and never promoted, and a customer that already carries a `temixCode` may have taken the refresh lane, which skips the branch loop.
 
-On 2026-09-24 that produced: 47 customers short, **all 47** with a quarantined row, every quarantine being `phone already exists in master`. The fix was `npm run ops:visit-days` (below), not a code change.
+If the missing days belong to held quarantined rows, assess `ops:visit-days` (below)
+under its matching safeguards. A mismatch alone does not justify applying it.
 
 ### Land a visit day that a quarantine held back
 
@@ -711,10 +726,20 @@ On 2026-09-24 that produced: 47 customers short, **all 47** with a quarantined r
 DIRECT_URL='<owner connection>' npm run ops:visit-days -- --expect-host ep-sweet-haze
 # read the counts, then:
 DIRECT_URL='<owner connection>' npm run ops:visit-days -- --expect-host ep-sweet-haze --apply
-npm run smoke && npm run verify:load
+npm run smoke
+# Reconcile the approved journey-plan fill in the private expected-count record first.
+npm run verify:load -- \
+  --expected-branches "$EXPECTED_BRANCHES" --expected-visit-days "$EXPECTED_VISIT_DAYS"
 ```
 
 A quarantined row is never promoted, so its branch never receives the journey plan's `dayOfVisit`. This writes that day onto the branch that already exists — exactly what the promote would have written. It does **not** merge customers, clear the quarantine or resolve the duplicate; those stay in `/duplicates` for a Steward, because merging two customer records needs a human to say which one survives.
+
+Derive the post-change expected counts using GO-LIVE-RUNBOOK §6a and the recorded approved
+fill. Branches already live before this operation stay in the branch expectation once;
+only a retained branch moving from no day to a day increases the visit-day expectation.
+Changing an existing weekday does not add a branch or another day-bearing branch. Keep
+the totals and records private; an incomplete approved operation must be reconciled, not
+hidden by copying the observed counts into the expected-count variables.
 
 It applies a row only when the customer has exactly one live branch of that name and that branch has no day recorded. Anything ambiguous is skipped and reported — writing the wrong branch's visit day sends a salesman to the wrong shop on the wrong morning.
 
@@ -842,7 +867,7 @@ development environments only — DO NOT run against production.
 
 ## 10. Things to do before real pilot
 
-- [ ] Replace `admin / ChangeMeNow!2026` password.
+- [ ] Replace the seeded administrator password (see the private credential record).
 - [ ] Run real Account master import (all real users, real regions, real routes).
 - [ ] Run real Customer master import (current ERP export).
 - [ ] Verify each Manager has the right regions assigned.

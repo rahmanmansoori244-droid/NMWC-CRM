@@ -3,8 +3,9 @@
  *
  *   DIRECT_URL='<owner connection>' npx tsx scripts/ops/verify-load.ts
  *   Optional: --expected-branches N --expected-visit-days N
- *   Defaults come from load-manifest.json. After an approved cleanup, supply
- *   independently established current expectations; both flags avoid manifest IO.
+ *   Defaults come from load-manifest.json. Reconcile its counts with the recorded
+ *   pre-load baseline and approved cleanup/journey-plan changes (runbook §6a);
+ *   both flags avoid manifest IO. Expectations cover all live branches, not just the load.
  *
  * The in-app reconcile at runbook step 6 proves the BATCH balanced — left to
  * promote is zero, and promoted plus rejected plus quarantined equals the total.
@@ -31,6 +32,13 @@ import { OperatorRefusal, operatorErrorLabel } from './error-label';
 
 type LoadExpectations = { branches: number; visitDays: number };
 
+const expectationSource =
+  'Derive totals from load-manifest.json, or the manifest adjusted by recorded approved changes ' +
+  '(cleanup ledger rows, journey-plan fills). Reconcile the recorded pre-load baseline with the ' +
+  'underlying master: include retained live branches outside it and their expected visit days; count branches ' +
+  'matched by the load only once, including any retained visit day. See GO-LIVE-RUNBOOK §6a. ' +
+  'Never copy observed totals merely to pass.';
+
 /** Explicit counts override the corresponding manifest field after an approved cleanup. */
 export function loadExpectations(
   args: string[],
@@ -40,11 +48,11 @@ export function loadExpectations(
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i];
     if (!['--expected-branches', '--expected-visit-days'].includes(flag) || overrides.has(flag)) {
-      throw new OperatorRefusal('Use --expected-branches N and/or --expected-visit-days N, once each.');
+      throw new OperatorRefusal('Use --expected-branches N and/or --expected-visit-days N, once each. ' + expectationSource);
     }
     const value = args[i + 1];
     if (!value || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
-      throw new OperatorRefusal(`${flag} requires a non-negative integer count.`);
+      throw new OperatorRefusal(`${flag} requires a non-negative integer count. ${expectationSource}`);
     }
     overrides.set(flag, Number(value));
   }
@@ -53,23 +61,23 @@ export function loadExpectations(
   if (overrides.size < 2) {
     const manifestPath = path.join(env.GOLIVE_DIR ?? 'golive-data', 'load-manifest.json');
     if (!existsSync(manifestPath)) {
-      throw new OperatorRefusal('No load-manifest.json: supply both --expected-branches N and --expected-visit-days N from the approved expected state.');
+      throw new OperatorRefusal('No load-manifest.json: supply both --expected-branches N and --expected-visit-days N. ' + expectationSource);
     }
     try {
       const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
       manifest = parsed;
     } catch {
-      throw new OperatorRefusal('Cannot read a valid load-manifest.json; check the manifest or supply both expected counts.');
+      throw new OperatorRefusal('Cannot read a valid load-manifest.json; check the manifest or supply both expected counts. ' + expectationSource);
     }
   }
   const branches = overrides.get('--expected-branches') ?? manifest.branchRows;
   const visitDays = overrides.get('--expected-visit-days') ?? manifest.branchesWithVisitDay;
   if (typeof branches !== 'number' || !Number.isSafeInteger(branches) || branches <= 0) {
-    throw new OperatorRefusal('Expected branches must be a positive integer (manifest branchRows or --expected-branches).');
+    throw new OperatorRefusal('Expected branches must be a positive integer (manifest branchRows or --expected-branches). ' + expectationSource);
   }
   if (typeof visitDays !== 'number' || !Number.isSafeInteger(visitDays) || visitDays < 0 || visitDays > branches) {
-    throw new OperatorRefusal('Expected visit days must be an integer from 0 to expected branches (manifest branchesWithVisitDay or --expected-visit-days).');
+    throw new OperatorRefusal('Expected visit days must be an integer from 0 to expected branches (manifest branchesWithVisitDay or --expected-visit-days). ' + expectationSource);
   }
   return { branches, visitDays };
 }
@@ -162,7 +170,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
           ok: branches === expectedRows,
           detail,
           note: branches !== expectedRows
-            ? 'Branch count mismatch: reconcile the load or confirm approved post-cleanup expectations before re-running. Do not set expectations from the observed count merely to pass.'
+            ? 'Branch count mismatch: reconcile the load before re-running. ' + expectationSource
             : undefined,
         };
       }
@@ -170,7 +178,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
         return {
           ok: false,
           detail,
-          note: 'More branches carry visit days than expected. Reconcile changes against the approved expected state before re-running.',
+          note: 'More branches carry visit days than expected. ' + expectationSource,
         };
       }
 
@@ -261,6 +269,7 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
         // would be unreachable. An unreachable arm of a ternary reads as a handled
         // case and is not one.
         note:
+          expectationSource + ' ' +
           'this count cannot say WHICH branches or why — it compares two totals and never reads the master. ' +
           `Places a day gets withheld, as leads rather than an accounting: ${leads.join('; ')}. ` +
           'To attribute it properly, line the master up against production per customer (docs/OPERATIONS.md §7).',

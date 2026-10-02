@@ -157,7 +157,8 @@ importer enforces most of the order, but not all of it.
 6a. **Verify the data, not just the batch.**
 
    ```bash
-   DIRECT_URL='<the OWNER connection string>' npm run verify:load
+   DIRECT_URL='<the OWNER connection string>' npm run verify:load -- \
+     --expected-branches "$EXPECTED_BRANCHES" --expected-visit-days "$EXPECTED_VISIT_DAYS"
    ```
 
    Read-only checks — the count is printed at the end, so it cannot go stale here.
@@ -168,16 +169,37 @@ importer enforces most of the order, but not all of it.
    as promoted and still have no branch, no route and no visit day — that is
    exactly what the narrow ERP refresh lane used to produce, and the reconcile
    balanced anyway. It compares both the live-branch total and the number carrying
-   visit days with `load-manifest.json`. Both must match exactly. A partial load
-   fails with exit 1 and still reports the visit-day comparison; it never passes
-   as an incomplete rehearsal. Missing or invalid expectations refuse with exit 2.
+   visit days with the manifest-derived expectations described below. Both must match
+   exactly. A partial load fails with exit 1 and still reports the visit-day comparison;
+   it never passes as an incomplete rehearsal. Missing or invalid expectations refuse
+   with exit 2.
 
-   After an approved cleanup or journey-plan change, the original manifest may
-   be historical. The authorized operator can pass `--expected-branches N` and/or
-   `--expected-visit-days N` after `npm run verify:load --`. An omitted count still
-   comes from the manifest; supplying both avoids reading it. Obtain expectations
-   from the approved intended state, never from the observed counts just to make
-   this check pass. This does not grant production access: follow HANDOVER §5.
+   Set the two variables from an independently reconciled expectation before running
+   the command. The source is the manifest (`branchRows`, `branchesWithVisitDay`), or
+   that manifest adjusted by **recorded approved changes**, such as cleanup ledger
+   rows and journey-plan fills. The checks cover **all live branches in the database**
+   (`deletedAt IS NULL`), not just rows newly inserted by the latest load:
+
+   - Use the private master represented by the manifest to reconcile branch identities
+     with the recorded pre-load baseline; the manifest's totals alone cannot identify
+     overlap. Add retained live branches outside that master; count a pre-existing branch
+     matched/refreshed by the load only once. For visit-day expectations, include
+     baseline branches expected to retain a non-null day, including matched branches
+     whose blank incoming day leaves their existing day unchanged. Do not add the
+     entire baseline to the manifest and double-count their overlap.
+   - Apply the net effect of each recorded approved change once. A cleanup that removes
+     a live branch reduces the branch expectation and, if it had a day, the visit-day
+     expectation. A journey-plan fill increases the visit-day expectation only for a
+     retained branch moving from no day to a day; changing one non-null day to another
+     does not increase that count.
+   - Keep the reconciled totals, branch identities and supporting records in the private
+     operations log. If the baseline or change records cannot support an expectation,
+     stop and reconcile them; never copy the observed totals merely to make a check pass.
+
+   An omitted override still comes from the manifest; use that default only when its
+   count already represents the entire expected live state. Supplying both overrides
+   avoids reading the manifest at verification time, but still requires the recorded
+   derivation above. This does not grant production access: follow HANDOVER §5.
 
 6. **Reconcile** (SOP §8.4): *Left to promote* = 0, and *Promoted + Rejected +
    Quarantined = Total*. Open every REJECTED row (they are listed first). Screenshot

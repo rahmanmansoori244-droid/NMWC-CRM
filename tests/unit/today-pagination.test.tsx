@@ -59,8 +59,8 @@ import TodayPage from '@/app/(app)/today/page';
 import { prisma } from '@/lib/db';
 
 const branch = (i: number, extra: Partial<Branch> = {}): Branch => ({
-  id: `branch-${String(i).padStart(3, '0')}`,
-  // Duplicate names straddle the page boundary.
+  // Id order opposes name order, and duplicate names straddle page boundaries.
+  id: `branch-${String(999 - i).padStart(3, '0')}`,
   branchName: `Branch ${String(Math.floor(i / 3)).padStart(3, '0')}`,
   routeId: 'route-a', dayOfVisit: 'FRI', deletedAt: null,
   customer: { id: `customer-${i}` }, ...extra,
@@ -71,48 +71,62 @@ beforeEach(() => {
   state.role = 'SALESMAN';
   state.route = 'route-a';
   state.signedIn = true;
-  state.branches = Array.from({ length: 266 }, (_, i) => branch(i));
+  state.branches = Array.from({ length: 465 }, (_, i) => branch(i));
   state.branches.push(
-    branch(300, { routeId: 'other-route' }),
-    branch(301, { dayOfVisit: 'SAT' }),
-    branch(302, { deletedAt: new Date('2026-01-01') })
+    branch(500, { routeId: 'other-route' }),
+    branch(501, { dayOfVisit: 'SAT' }),
+    branch(502, { deletedAt: new Date('2026-01-01') })
   );
 });
 afterEach(cleanup);
 
 describe('Today route-day pagination', () => {
-  it('makes all 266 scheduled branches reachable without duplication or scope leakage', async () => {
+  it('orders and links all three pages of 465 branches without duplication or scope leakage', async () => {
     render(await TodayPage({}));
-    expect(screen.getByRole('heading', { name: "Today's visits (266)" })).toBeTruthy();
-    expect(screen.getByText('Showing 200 of 266 visits · Page 1 of 2')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'All my customers (267)' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: "Today's visits (465)" })).toBeTruthy();
+    expect(screen.getByText('Showing 200 of 465 visits · Page 1 of 3')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'All my customers (466)' })).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Previous' })).toBeNull();
     const next = screen.getByRole('link', { name: 'Next' });
+    expect(next.getAttribute('href')).toBe('/today?page=2');
     const page = new URL(next.getAttribute('href')!, 'https://test.invalid').searchParams.get('page')!;
     const first = screen.getAllByTestId('visit').map((el) => el.textContent);
+    // Name comes first; ascending id reverses the three customers sharing each name.
+    expect(first[0]).toBe('customer-2');
+    expect(first[first.length - 1]).toBe('customer-199');
     cleanup();
     // Database row order is unspecified for ties unless the query orders by id too.
     state.branches.reverse();
     render(await TodayPage({ searchParams: Promise.resolve({ page }) }));
     const second = screen.getAllByTestId('visit').map((el) => el.textContent);
-    expect(screen.getByText('Showing 66 of 266 visits · Page 2 of 2')).toBeTruthy();
+    expect(screen.getByText('Showing 200 of 465 visits · Page 2 of 3')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Previous' }).getAttribute('href')).toBe('/today?page=1');
+    const lastPage = screen.getByRole('link', { name: 'Next' });
+    expect(lastPage.getAttribute('href')).toBe('/today?page=3');
+    const pageThree = new URL(lastPage.getAttribute('href')!, 'https://test.invalid').searchParams.get('page')!;
+    cleanup();
+    state.branches.reverse();
+    render(await TodayPage({ searchParams: Promise.resolve({ page: pageThree }) }));
+    const third = screen.getAllByTestId('visit').map((el) => el.textContent);
+    expect(screen.getByText('Showing 65 of 465 visits · Page 3 of 3')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Previous' }).getAttribute('href')).toBe('/today?page=2');
     expect(screen.queryByRole('link', { name: 'Next' })).toBeNull();
     expect(first).toHaveLength(200);
-    expect(second).toHaveLength(66);
-    expect(new Set([...first, ...second])).toEqual(new Set(Array.from({ length: 266 }, (_, i) => `customer-${i}`)));
+    expect(second).toHaveLength(200);
+    expect(third).toHaveLength(65);
+    expect(new Set([...first, ...second, ...third])).toEqual(new Set(Array.from({ length: 465 }, (_, i) => `customer-${i}`)));
   });
 
   it.each(['0', '-1', '1.5', 'abc', '1e3', '9007199254740992', ['2', '3']])(
     'uses the first page for an invalid page parameter %j', async (page) => {
       render(await TodayPage({ searchParams: Promise.resolve({ page }) }));
-      expect(screen.getByText('Showing 200 of 266 visits · Page 1 of 2')).toBeTruthy();
+      expect(screen.getByText('Showing 200 of 465 visits · Page 1 of 3')).toBeTruthy();
     }
   );
 
   it('clamps a stale page link after the route shrinks', async () => {
     render(await TodayPage({ searchParams: Promise.resolve({ page: '999999' }) }));
-    expect(screen.getByText('Showing 66 of 266 visits · Page 2 of 2')).toBeTruthy();
+    expect(screen.getByText('Showing 65 of 465 visits · Page 3 of 3')).toBeTruthy();
   });
 
   it('keeps the empty-day message and full-route link', async () => {
