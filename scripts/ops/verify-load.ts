@@ -28,6 +28,7 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { GOLIVE_REGION_CODES } from '../../lib/ops/golive-accounts';
 import { isDemoAccount } from '../../lib/demo-accounts';
+import { canApproveSpecificEdit } from '../../lib/permissions';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 
 type LoadExpectations = { branches: number; visitDays: number };
@@ -399,41 +400,46 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
   },
   {
     name: 'every salesman has an approver who can actually act',
-    why: 'the supervisor step is the first step of every chain; a manager clears it only if they manage the region the salesman route sits in, so a correct-looking supervisor assignment with the wrong regions stalls that team silently',
+    why: 'the supervisor step needs an active, sign-in-eligible assigned Supervisor or a Manager covering the route region; an unusable assignment without that fallback strands the team',
     run: async () => {
+      const approverSelect = {
+        id: true, username: true, role: true, isActive: true,
+        managedRegions: { select: { id: true } },
+      } as const;
       const salesmen = await prisma.user.findMany({
         where: { role: 'SALESMAN', isActive: true },
         select: {
+          id: true,
           username: true,
+          supervisorId: true,
           ownedRoute: { select: { code: true, regionId: true } },
-          supervisor: {
-            select: { username: true, role: true, managedRegions: { select: { id: true } } },
-          },
+          supervisor: { select: approverSelect },
         },
+      });
+      const managers = await prisma.user.findMany({
+        where: { role: 'MANAGER', isActive: true },
+        select: approverSelect,
       });
       const stranded = salesmen
         .filter((s) => {
-          if (!s.supervisor) return true;
-          // A real SUPERVISOR clears the step by the direct relationship, which
-          // this salesman already has by virtue of supervisorId pointing at them.
-          if (s.supervisor.role === 'SUPERVISOR') return false;
-          if (!s.ownedRoute) return true;
-          return !s.supervisor.managedRegions.some((r) => r.id === s.ownedRoute!.regionId);
+          const candidates = s.supervisor ? [s.supervisor, ...managers] : managers;
+          // Use the application's actual supervisor-step rule, including its
+          // unassigned regional Manager fallback. Readiness already excludes
+          // demo-denied accounts; a password-change flag is not ineligibility.
+          return !candidates.some((actor) => actor.isActive && !isDemoAccount(actor.username) &&
+            canApproveSpecificEdit(actor, s, {
+              customerBranches: s.ownedRoute ? [{ regionId: s.ownedRoute.regionId, deletedAt: null }] : [],
+              managedRegionIds: actor.managedRegions.map((r) => r.id),
+            }));
         })
-        .map((s) =>
-          !s.supervisor
-            ? `${s.username} (no supervisor)`
-            : !s.ownedRoute
-              ? `${s.username} (no route)`
-              : `${s.username} → ${s.supervisor.username} (does not manage the ${s.ownedRoute.code} region)`
-        );
+        .map((s) => `${s.username} (no eligible assigned Supervisor or regional Manager${s.ownedRoute ? ` for ${s.ownedRoute.code}` : '; no route'})`);
       return {
         ok: stranded.length === 0 && salesmen.length > 0,
         detail:
           stranded.length > 0
             ? `cannot be approved: ${stranded.join('; ')}`
             : salesmen.length > 0
-              ? `${salesmen.length} salesmen, each with an approver whose regions cover their route`
+              ? `${salesmen.length} salesmen, each with an eligible assigned Supervisor or regional Manager`
               : 'no active salesmen at all',
       };
     },
