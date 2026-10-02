@@ -43,6 +43,7 @@ const db = vi.hoisted(() => ({
     updateMany: vi.fn(),
   },
   user: { findUniqueOrThrow: vi.fn() },
+  customerEdit: { findUnique: vi.fn() },
   $transaction: vi.fn(),
   // The customer row lock every photo transaction takes first.
   $queryRaw: vi.fn(),
@@ -134,7 +135,7 @@ const wrote = () =>
 beforeEach(() => {
   s.user = { id: 'u1', role: 'SALESMAN', username: 'c4' };
   s.scope = { ownedRouteId: 'r1', teamRouteIds: [], managedRegionIds: [] };
-  for (const group of [db.attachment, db.customer, db.branch, db.user]) {
+  for (const group of [db.attachment, db.customer, db.branch, db.user, db.customerEdit]) {
     for (const f of Object.values(group)) f.mockReset();
   }
   db.$transaction.mockReset().mockImplementation(async (fn: (tx: typeof db) => unknown) => fn(db));
@@ -799,5 +800,35 @@ describe('one lock order: the customer row before its branches', () => {
     const photos = src('services/photos.ts');
     expect(photos.match(/await lockCustomer\(tx,/g)?.length).toBe(3);
     expect(photos).toMatch(/const lockCustomer = lockCustomerRow;/);
+  });
+});
+
+describe('Remove of CREATE-draft photos preserves its existing scope and no-customer-lock behavior', () => {
+  it.each([
+    { role: 'SALESMAN', own: true, inScope: false, code: null },
+    { role: 'MANAGER', own: true, inScope: false, code: null },
+    { role: 'MANAGER', own: false, inScope: true, code: null },
+    { role: 'MANAGER', own: false, inScope: false, code: 'NOT_FOUND' },
+    { role: 'SALESMAN', own: false, inScope: true, code: 'FORBIDDEN' },
+    { role: 'STEWARD', own: false, inScope: false, code: null },
+  ])('$role own=$own inScope=$inScope', async ({ role, own, inScope, code }) => {
+    s.user = { id: 'u1', username: 'synthetic', role };
+    s.scope = { ownedRouteId: 'r1', teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.attachment.findFirst.mockResolvedValue(photo({ editId: 'ckedit00000000000000000001', capturedById: own ? 'u1' : 'someone-else' }));
+    db.customerEdit.findUnique.mockResolvedValue({ customerId: null, branchDrafts: [
+      { routeId: inScope ? 'r1' : 'r9', route: { regionId: inScope ? 'g1' : 'g9' } },
+    ] });
+    const result = await detach({ attachmentId: ATT });
+    if (code) {
+      expect(result).toMatchObject({ ok: false, code });
+      expect(db.attachment.updateMany).not.toHaveBeenCalled();
+      expect(audit.writeAudit).not.toHaveBeenCalled();
+    } else {
+      expect(result).toEqual({ ok: true });
+      expect(db.attachment.updateMany).toHaveBeenCalledOnce();
+      expect(audit.writeAudit).toHaveBeenCalledOnce();
+    }
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(db.customer.findFirst).not.toHaveBeenCalled();
   });
 });

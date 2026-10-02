@@ -13,7 +13,7 @@
  * the UI surfaces "doesn't exist" rather than "you can't see this", denying
  * the attacker a confirmation oracle for IDs.
  */
-import { Role, type User, type Customer, type Branch, type Attachment } from '@prisma/client';
+import { Role, type User, type Customer, type Branch, type Attachment, type Prisma } from '@prisma/client';
 import { cache } from 'react';
 import { prisma } from './db';
 import { NotFoundError, ForbiddenError } from './errors';
@@ -189,6 +189,8 @@ export function assertCanEditCustomer(
  * a slot. In that case fall back to capturedById ownership — or, for photos
  * claimed by a pending CREATE request (editId set, Phase 1 creation flow),
  * to the request's DRAFT-branch scope so chain approvers can review them.
+ * Pass the transaction as reader to recheck this same policy after taking the
+ * customer lock; all owner and branch reads then use that transaction.
  */
 export async function assertCanAccessAttachment(
   user: SessionUser,
@@ -196,7 +198,8 @@ export async function assertCanAccessAttachment(
     Attachment,
     'id' | 'capturedById' | 'customerId' | 'branchId' | 'branchExtraId' | 'editId'
   >,
-  scope: Scope
+  scope: Scope,
+  reader: Pick<Prisma.TransactionClient, 'branch' | 'customer' | 'customerEdit'> = prisma
 ): Promise<void> {
   if (user.role === Role.STEWARD || user.role === Role.VIEWER) return;
 
@@ -211,14 +214,14 @@ export async function assertCanAccessAttachment(
   // Resolve to a customer
   let customerId: string | null = attachment.customerId ?? null;
   if (!customerId && attachment.branchId) {
-    const branch = await prisma.branch.findUnique({
+    const branch = await reader.branch.findUnique({
       where: { id: attachment.branchId },
       select: { customerId: true },
     });
     customerId = branch?.customerId ?? null;
   }
   if (!customerId && attachment.branchExtraId) {
-    const branch = await prisma.branch.findUnique({
+    const branch = await reader.branch.findUnique({
       where: { id: attachment.branchExtraId },
       select: { customerId: true },
     });
@@ -232,7 +235,7 @@ export async function assertCanAccessAttachment(
     // supervisor; region overlap (fail-closed) ⇒ manager/accountant; org-wide
     // ⇒ FM/GM. The edit's own customerId (set at finalize) is preferred when
     // present so post-approval access follows the live customer.
-    const edit = await prisma.customerEdit.findUnique({
+    const edit = await reader.customerEdit.findUnique({
       where: { id: attachment.editId },
       select: {
         customerId: true,
@@ -257,7 +260,7 @@ export async function assertCanAccessAttachment(
     // Orphan attachment owned by another user — no access
     throw new NotFoundError('Attachment not found.');
   }
-  const customer = await prisma.customer.findFirst({
+  const customer = await reader.customer.findFirst({
     where: { id: customerId, deletedAt: null },
     select: {
       branches: { select: { routeId: true, regionId: true, deletedAt: true } },

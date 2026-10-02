@@ -584,6 +584,10 @@ async function detachPhotoCore(input: { attachmentId: string }) {
       now.editId !== wiring.editId ||
       ownerNow !== ownerId;
     if (moved) throw new ConflictError('PHOTO_CHANGED', PHOTO_CHANGED_MESSAGE);
+    // A route/region move can commit while Remove waits for the customer
+    // lock without changing the photo wiring. Recheck live customer scope
+    // through tx before writing; retain F04's customer-level overlap rule.
+    await assertCanAccessAttachment(sessionUser, now, scope, tx);
     // UXI-008: real soft-delete column. Keep the r2Key as-is for the GC job
     // to find the object; clear the hash so dedup queries miss the row. Guarded
     // on the same wiring: without a lock (a photo on no slot) an attach or a
