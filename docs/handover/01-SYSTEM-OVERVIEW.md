@@ -322,7 +322,9 @@ salesmen directly, so `SUPERVISOR` accounts are optional (comment in
 by the submitter's direct supervisor (`User.supervisorId`, which may be a Manager) **or**
 by any active Manager whose regions overlap the request's branches (`canActOnStep` and
 `canApproveSpecificEdit` in `lib/permissions.ts`). Only the direct supervisor is
-**notified**; fallback Managers act from their queue (`lib/notifications.ts`).
+**notified**; fallback Managers act from their queue (`lib/notifications.ts`). The one
+exception (F1): a close-shop request whose supervisor cannot act on it notifies the
+region's active Managers instead (`lib/notify-hierarchy.ts`).
 
 **Rules that apply to every role:**
 
@@ -656,8 +658,7 @@ The exact Temix file format is still to be confirmed with Temix (owner decision 
   decides one.
 - **No e-mail is sent yet.** The F1 foundation (2026-10-05) added the outbox columns
   `emailStatus`, `emailAttempts` and `emailLeaseUntil` beside `emailedAt`; every row that
-  existed then is marked `PRE_FEATURE` and done, so history is never e-mailed. Two kinds,
-  `REQUEST_FYI` and `REACTIVATION_REQUESTED`, are read and labelled but not yet written.
+  existed then is marked `PRE_FEATURE` and done, so history is never e-mailed.
 - `/approvals/[id]` says, in a banner, when its viewer cannot decide the current step or
   the request is a reactivation (`lib/decision-lane.ts`).
 - Addresses: the Steward sets or clears an account's e-mail on `/users`; the page shows
@@ -671,6 +672,14 @@ The exact Temix file format is still to be confirmed with Temix (owner decision 
   - an **UPDATE** (enrichment or close shop) → the submitter only;
   - a **CREATE** (new customer) → the submitter, plus every active Steward ("Ready for
     Temix upload").
+- **When a salesman submits** (F1, 2026-10-05; `lib/notify-hierarchy.ts`, defaults in
+  `lib/notify-policy.ts`): update and new-customer requests notify the supervisor as
+  above; a close-shop request notifies his supervisor if that supervisor can act on it,
+  else every active Manager of the branch's region; a reactivation request notifies his
+  supervisor if he is an active Manager of the region, else every active Manager of it
+  (`REACTIVATION_REQUESTED`, linked to `/reactivations`). Every salesman request also
+  tells the region's active Accountant, for information (`REQUEST_FYI`). Never the GM,
+  the Steward, a Viewer or a salesman. Photo uploads notify nobody.
 - A reject → the submitter. An SLA breach → the escalation targets (section 4.15).
 - Bodies carry only the legal name, the customer code and a link. Never a phone or CR
   number.

@@ -146,6 +146,7 @@ These were found while writing the user guides. Most are defaults that nobody de
 - **Why it matters.** Requests wait unseen. Salesmen re-ask or resubmit.
 - **Where.** `services/reactivations.ts`; `lib/notifications.ts` (`notifyUsers`, `resolveStepAudience`).
 - **Decides:** Owner (who is told, and of what). **Effort:** S–M. **Tier:** B, because it writes inside the decision transaction.
+- **Request half built 2026-10-05 (F1 writers, branch `claude/notify-email`, not yet merged).** A close-shop request now tells the salesman's supervisor when he can act on it, else every active Manager of the branch's region; a reactivation request tells his supervisor if he is an active Manager of the region, else every active Manager of it (`REACTIVATION_REQUESTED`, linked to `/reactivations`); both also tell the region's Accountant for information. The request and its rows are one transaction. These audiences are the defaults in `lib/notify-policy.ts`, waiting for the owner's confirmation (A1.11). **Not done:** the salesman is still not told of a reactivation decision (**Approve** / **Keep closed** in `services/reactivations.ts` notify nobody), and a **Keep closed** still sits on his Needs correction page (A1.1).
 
 #### A1.8 Photos go live without approval — P2
 
@@ -178,6 +179,7 @@ These were found while writing the user guides. Most are defaults that nobody de
 - **Where.** AUDITOR-BRIEF §6 ("Notifications"); re-benchmark item 27; [`POST-LAUNCH-ROADMAP.md`](../POST-LAUNCH-ROADMAP.md) §4; `lib/notifications.ts`; `lib/escalation.ts`.
 - **Decides:** Owner. Which channel and provider? What personal data may leave the app (see the PDPL row in A4)? **Effort:** L. **Tier:** B.
 - **Progress, 2026-10-05 (F1 foundation, branch `claude/notify-foundation`).** Built and not yet merged: the two notification kinds, the e-mail outbox columns with a backfill that marks every existing row done, the inbox labels and links for the new kinds (a reactivation now links a Manager to `/reactivations`), a banner on `/approvals/[id]` for a viewer who cannot decide the current step, the Steward's e-mail edit on `/users`, and `scripts/ops/notify-readiness.ts`. **Not done in the foundation:** nothing writes the new kinds and no e-mail is sent; those come with the writers and the e-mail drain.
+- **Progress, 2026-10-05 (F1 writers, branch `claude/notify-email`).** Every salesman request now writes its in-app rows: the must-act audience of close and reactivation requests (A1.7) and a for-information row to the region's Accountant on every request. **Not done in this step:** no e-mail is sent yet.
 
 ### A2. Owner decisions carried from HANDOVER §6.1 and the auditor's recheck
 

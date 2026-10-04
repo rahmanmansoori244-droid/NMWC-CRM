@@ -27,6 +27,7 @@ import {
   type RequestKind,
 } from '@/lib/submission-replay';
 import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
+import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 
 async function require(role?: Role[]) {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -126,7 +127,8 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   }
   const meRow = await prisma.user.findUniqueOrThrow({
     where: { id: me.id },
-    select: { ownedRouteId: true },
+    // supervisorId: F1, who is told of this request (lib/notify-hierarchy.ts).
+    select: { ownedRouteId: true, supervisorId: true },
   });
   if (branch.routeId !== meRow.ownedRouteId) {
     throw new ForbiddenError('Branch is not on your route.');
@@ -166,33 +168,53 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   }
 
   const reactSubmittedAt = new Date();
-  const edit = await prisma.customerEdit.create({
-    data: {
-      target: EditTarget.BRANCH,
-      branchId: branch.id,
+  // F1 / A1.7: the request and the notifications of it commit together, so a
+  // replay (answered from the receipt before any of this runs) and a refused
+  // insert (P2002, rolled back whole) both leave no notification behind. The
+  // P2002 is still translated outside the transaction by openEditConflict.
+  // A failed hierarchy lookup now fails the submit, as a new-customer submit's
+  // notification always has; the salesman's retry is answered or re-run.
+  const edit = await prisma.$transaction(async (tx) => {
+    const e = await tx.customerEdit.create({
+      data: {
+        target: EditTarget.BRANCH,
+        branchId: branch.id,
+        customerId: branch.customerId,
+        state: EditState.SUBMITTED,
+        submittedById: me.id,
+        submittedAt: reactSubmittedAt,
+        isReactivation: true,
+        decisionReason: reason,
+        // Phase 1 SLA: reactivations are decided by MANAGER (approveReactivation
+        // is Manager-only) — stamping pendingRole keeps them OUT of the
+        // Supervisor-step /approvals queues and puts them on the SLA clock.
+        pendingRole: Role.MANAGER,
+        stageEnteredAt: reactSubmittedAt,
+        slaDueAt: stepDeadline(
+          reactSubmittedAt,
+          (STAGE_SLA_MINUTES[Role.MANAGER] ?? DEFAULT_STAGE_SLA_MIN) / 60
+        ),
+        fieldChanges: [
+          { field: `branch.${branch.id}.status`, before: 'CLOSED', after: 'ACTIVE' },
+        ] as unknown as Prisma.InputJsonValue,
+        attachmentChanges: [
+          { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
+        ] as unknown as Prisma.InputJsonValue,
+        submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
+      },
+    });
+    // A Manager decides a reactivation: his supervisor if he is a Manager over
+    // the branch's region, else every active Manager of it (REACTIVATION_REQUESTED,
+    // linked to /reactivations); the region's Accountant for information.
+    await notifySalesmanRequest(tx, {
+      event: 'REACTIVATION',
+      submitter: { id: me.id, supervisorId: meRow.supervisorId },
+      regionId: branch.regionId,
+      editId: e.id,
       customerId: branch.customerId,
-      state: EditState.SUBMITTED,
-      submittedById: me.id,
-      submittedAt: reactSubmittedAt,
-      isReactivation: true,
-      decisionReason: reason,
-      // Phase 1 SLA: reactivations are decided by MANAGER (approveReactivation
-      // is Manager-only) — stamping pendingRole keeps them OUT of the
-      // Supervisor-step /approvals queues and puts them on the SLA clock.
-      pendingRole: Role.MANAGER,
-      stageEnteredAt: reactSubmittedAt,
-      slaDueAt: stepDeadline(
-        reactSubmittedAt,
-        (STAGE_SLA_MINUTES[Role.MANAGER] ?? DEFAULT_STAGE_SLA_MIN) / 60
-      ),
-      fieldChanges: [
-        { field: `branch.${branch.id}.status`, before: 'CLOSED', after: 'ACTIVE' },
-      ] as unknown as Prisma.InputJsonValue,
-      attachmentChanges: [
-        { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
-      ] as unknown as Prisma.InputJsonValue,
-      submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
-    },
+      subject: { legalName: branch.customer.legalName, nmwcCode: branch.customer.nmwcCode },
+    });
+    return e;
   }).catch((err: unknown) =>
     openEditConflict(err, me.id, branch.customerId, { kind: 'reactivate', branchId: branch.id })
   );
@@ -237,7 +259,8 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
   if (!branch) throw new NotFoundError('Branch not found.');
   const meRow = await prisma.user.findUniqueOrThrow({
     where: { id: me.id },
-    select: { ownedRouteId: true },
+    // supervisorId: F1, who is told of this request (lib/notify-hierarchy.ts).
+    select: { ownedRouteId: true, supervisorId: true },
   });
   if (branch.routeId !== meRow.ownedRouteId) {
     throw new ForbiddenError('Branch is not on your route.');
@@ -279,30 +302,46 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
 
   // Submit as a regular CustomerEdit so a Supervisor approves the closure.
   const closeSubmittedAt = new Date();
-  const edit = await prisma.customerEdit.create({
-    data: {
-      target: EditTarget.BRANCH,
-      branchId: branch.id,
+  // F1 / A1.7: as for a reactivation — the request and its notifications commit
+  // together, and the P2002 is translated outside the transaction.
+  const edit = await prisma.$transaction(async (tx) => {
+    const e = await tx.customerEdit.create({
+      data: {
+        target: EditTarget.BRANCH,
+        branchId: branch.id,
+        customerId: branch.customerId,
+        state: EditState.SUBMITTED,
+        submittedById: me.id,
+        submittedAt: closeSubmittedAt,
+        decisionReason: reason,
+        // Phase 1 SLA: close requests ride the normal Supervisor approval.
+        pendingRole: Role.SUPERVISOR,
+        stageEnteredAt: closeSubmittedAt,
+        slaDueAt: stepDeadline(
+          closeSubmittedAt,
+          (STAGE_SLA_MINUTES[Role.SUPERVISOR] ?? DEFAULT_STAGE_SLA_MIN) / 60
+        ),
+        fieldChanges: [
+          { field: `branch.${branch.id}.status`, before: branch.status, after: 'CLOSED' },
+        ] as unknown as Prisma.InputJsonValue,
+        attachmentChanges: [
+          { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
+        ] as unknown as Prisma.InputJsonValue,
+        submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
+      },
+    });
+    // The Supervisor step decides a close: his supervisor if he can act on it,
+    // else the active Managers of the branch's region (EDIT_SUBMITTED, linked to
+    // the review page); the region's Accountant for information.
+    await notifySalesmanRequest(tx, {
+      event: 'CLOSE',
+      submitter: { id: me.id, supervisorId: meRow.supervisorId },
+      regionId: branch.regionId,
+      editId: e.id,
       customerId: branch.customerId,
-      state: EditState.SUBMITTED,
-      submittedById: me.id,
-      submittedAt: closeSubmittedAt,
-      decisionReason: reason,
-      // Phase 1 SLA: close requests ride the normal Supervisor approval.
-      pendingRole: Role.SUPERVISOR,
-      stageEnteredAt: closeSubmittedAt,
-      slaDueAt: stepDeadline(
-        closeSubmittedAt,
-        (STAGE_SLA_MINUTES[Role.SUPERVISOR] ?? DEFAULT_STAGE_SLA_MIN) / 60
-      ),
-      fieldChanges: [
-        { field: `branch.${branch.id}.status`, before: branch.status, after: 'CLOSED' },
-      ] as unknown as Prisma.InputJsonValue,
-      attachmentChanges: [
-        { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
-      ] as unknown as Prisma.InputJsonValue,
-      submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
-    },
+      subject: { legalName: branch.customer.legalName, nmwcCode: branch.customer.nmwcCode },
+    });
+    return e;
   }).catch((err: unknown) =>
     openEditConflict(err, me.id, branch.customerId, { kind: 'close', branchId: branch.id })
   );

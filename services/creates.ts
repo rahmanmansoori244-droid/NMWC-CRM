@@ -58,6 +58,7 @@ import {
 } from '@/lib/validation/create';
 import { reportedIssues } from '@/lib/validation/fields';
 import { resolveStepAudience, notifyUsers } from '@/lib/notifications';
+import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from '@/lib/create-guards';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { answerIfLanded, findReceipt, shownTime } from '@/lib/submission-replay';
@@ -522,6 +523,17 @@ async function submitCreateOnce(
         title: 'New customer request',
         body: `${c.legalName} — new ${c.paymentTerms} customer request awaiting your review.`,
         editId: editRow.id,
+      });
+      // F1: the route region's Accountant is told for information — he is the
+      // final approver on both create chains (lib/notify-policy.ts). In this
+      // transaction, like the row above: it commits with the submit or not at all.
+      await notifySalesmanRequest(tx, {
+        event: 'CREATE',
+        submitter: { id: session.id, supervisorId: me.supervisorId },
+        regionId: route.regionId,
+        editId: editRow.id,
+        subject: { legalName: c.legalName, nmwcCode: null },
+        alreadyTold: audience,
       });
     }
 

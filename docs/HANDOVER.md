@@ -149,7 +149,7 @@ is also **Tier B**, as requested by the owner, because it changes the rulebook.
    success. Every branch push builds a Vercel preview that applies its migrations to UAT:
    push a migration only when final, and never edit or rename one once pushed. CI runs
    lint, unit, `next build`, Playwright on a production build, the secrets scan, the
-   backup → encrypt → restore → verify chain, and 35 of 38 Postgres integration suites
+   backup → encrypt → restore → verify chain, and 36 of 39 Postgres integration suites
    against a fresh database with all migrations applied.
 5. **Review by tier.** Tier A needs no Claude review. Tier B waits for Claude to read the
    diff and touched files, verify the checks and review adversarially, then say it is
