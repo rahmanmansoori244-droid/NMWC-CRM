@@ -68,6 +68,9 @@ export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
   ],
   STEWARD: [
     { href: '/import', label: 'Import', icon: Upload },
+    // F2: the dashboard admits the Steward (RBAC-05-013) but no menu offered it.
+    // lib/insights/policy.ts DASHBOARD_ROLES; pinned by tests/unit/dashboard-page.test.tsx.
+    { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/export', label: 'Export', icon: Download },
     { href: '/temix', label: 'Temix sync', icon: RefreshCw },
     { href: '/customers', label: 'Customers', icon: Search },
