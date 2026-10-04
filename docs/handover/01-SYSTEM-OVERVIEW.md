@@ -528,12 +528,15 @@ live branch is in his regions, can archive a customer. Archive is a soft delete
   held back can be landed by `scripts/ops/apply-quarantined-visit-days.ts`
   (`npm run ops:visit-days`, an owner-run operator script; see
   [`docs/OPERATIONS.md` §7](../OPERATIONS.md#7-common-operations)).
-- **No loader exists yet for the per-region visit-day sheets** (lists of branches with
-  no visit day, sent to each region to fill in). One must be written on the same
-  dry run → independent check → rehearsal (where the script has one) → apply pattern as the existing operator
-  scripts (examples such as `visitdays-jp.ts`, `temix-link-apply.ts` and
-  `pilot-edits-delete.ts` are in the private pack, not the repository). See
-  [04 — pending work](04-PENDING-WORK.md).
+- **The per-region visit-day sheets** (lists of branches with no visit day, sent to each
+  region to fill in) are loaded by `scripts/ops/visitdays-from-sheets.ts`
+  (`npm run ops:visitdays-from-sheets`, an owner-run operator script) on the dry run →
+  independent check → rehearsal → apply pattern, with `--reverse` to undo a run. It writes
+  only ACTIVE branches that still have no day, and lists the rows that need a person
+  (a note, an unknown day, a branch that moved, closed or already has another day, rows
+  that disagree) in a private review workbook. See
+  [03 §7.6](03-OPERATIONS-AND-DEPLOYMENT.md#76-scripts-that-read-or-write-a-database) and
+  [04 D2](04-PENDING-WORK.md#d2-filling-in-missing-visit-days--p1).
 
 ### 4.8 Imports (Steward only)
 
@@ -803,7 +806,7 @@ from `lib/compliance/pii-classification.ts`.
 | `lib/` | Domain and infrastructure: `access`, `permissions`, `session`, `auth`, `audit`, `csp`, `rate-limit`, `approval-chains`, `escalation`, `working-hours`, `submission*`, `excel`, `temix`, `r2`, `heartbeat`, `health`, `logger`, `scrub`. Sub-folders: `validation/` (zod schemas), `ops/` (go-live account and route lists, and `required-secrets.ts`), `compliance/` (PII classification). |
 | `services/` | The server actions (`'use server'`): `edits`, `creates`, `photos`, `reactivations`, `imports`, `import-fixes`, `exports`, `customer-export`, `duplicates`, `temix`, `users`, `routes`, `customers`, `password`, `saved-views`, `notifications-actions`. |
 | `prisma/` | `schema.prisma`, `migrations/`, the seeds, and **historical one-off scripts that write as soon as they run**. Read [AUDITOR-BRIEF §2](../../AUDITOR-BRIEF.md#2-ground-rules-for-you-the-auditor) before running anything here. |
-| `scripts/ops/` | Operator tools: `smoke.ts`, `verify-load.ts`, `app-role.ts`, `restore-verify.ts`, R2 checks (`r2-photos-versioning.ts`), and one-off production fixes (for example `requeue-untracked.ts`, `zero-credit-limits.ts`, `rescore-completeness.ts`) that take `--expect-host` and write only with `--apply`. Owner-run; see [`docs/HANDOVER.md` §5](../HANDOVER.md#5-production-how-to-read-and-write-safely). |
+| `scripts/ops/` | Operator tools: `smoke.ts`, `verify-load.ts`, `app-role.ts`, `restore-verify.ts`, R2 checks (`r2-photos-versioning.ts`), and one-off production fixes (for example `requeue-untracked.ts`, `zero-credit-limits.ts`, `rescore-completeness.ts`, `visitdays-from-sheets.ts`) that take `--expect-host` and write only with `--apply` (`visitdays-from-sheets.ts` also with `--reverse <runId> --confirm`, which undoes one of its own runs). Owner-run; see [`docs/HANDOVER.md` §5](../HANDOVER.md#5-production-how-to-read-and-write-safely). |
 | `scripts/golive/` | `build-masters.ts` (builds the go-live master files from the business sources), `bootstrap-accounts.ts`, `audit-accounts.ts`, `verify-credentials.ts`. They read or write `golive-data/`, which is gitignored and private. |
 | `scripts/dev/` | Merge-loop and safety helpers: `ci-watch-sha.sh` (waits for CI on an exact commit), `deploy-watch.sh`, `build-id.cjs`, `prod-run.cjs` (runs a script against production without printing the connection string; an operator script copied into a checkout for it as `*.tmp.ts` is gitignored, and is still deleted after use), `env-check.cjs` (is `.env` production?), `leak-check.cjs` (no known password literal in the public docs). See [`docs/HANDOVER.md` §2](../HANDOVER.md#2-how-a-change-is-made-verified-and-merged-here). |
 | `scripts/qa/`, `scripts/ci/`, `scripts/compliance/` | `run-with-env.mjs` (loads `.env` for integration runs; no host check), synthetic data, CI's action-worker check (`check-action-workers.ts`), the PII inventory builder (`build-pii-inventory.ts`). |

@@ -147,6 +147,9 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         // The completeness rescore (auditor recheck F21): same two-row shape,
         // recording how many stored scores were rewritten — counts only.
         'scripts/ops/rescore-completeness.ts',
+        // The visit-day sheet load: same two-row shape, plus one Branch row per day
+        // written that carries the run id, so a run is reversible from the ledger.
+        'scripts/ops/visitdays-from-sheets.ts',
         // The least-privilege role probe: its insert proves the app role may INSERT
         // but not UPDATE/DELETE the ledger, and the transaction is rolled back. Not
         // an audit record at all.
@@ -206,6 +209,7 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         'scripts/ops/apply-quarantined-visit-days.ts',
         'scripts/ops/recompute-cr-norm.ts',
         'scripts/ops/rescore-completeness.ts',
+        'scripts/ops/visitdays-from-sheets.ts',
         'scripts/ops/app-role.ts',
       ].sort();
 

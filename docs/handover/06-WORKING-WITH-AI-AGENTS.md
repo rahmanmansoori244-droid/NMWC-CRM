@@ -200,10 +200,10 @@ grant still stands. Tell it in the chat.
   output, and a second dry run that reports nothing left. The models are
   `scripts/ops/rescore-completeness.ts` and `scripts/ops/recompute-cr-norm.ts`. Run the
   script through `prod-run.cjs` like a read. Never put `DIRECT_URL=…` on a command line.
-- **Not every script follows that convention.** Of the 16 `.ts` scripts in
-  `scripts/ops/`, six take `--expect-host`: `apply-quarantined-visit-days`,
-  `export-crm-terms`, `recompute-cr-norm`, `requeue-untracked`, `rescore-completeness`
-  and `zero-credit-limits`. `app-role.ts` and `restore-verify.ts` refuse production
+- **Not every script follows that convention.** Of the 17 `.ts` scripts in
+  `scripts/ops/`, seven take `--expect-host`: `apply-quarantined-visit-days`,
+  `export-crm-terms`, `recompute-cr-norm`, `requeue-untracked`, `rescore-completeness`,
+  `visitdays-from-sheets` and `zero-credit-limits`. `app-role.ts` and `restore-verify.ts` refuse production
   unless `ALLOW_PRODUCTION=1` is set. `AUDITOR-BRIEF.md` §2 lists scripts elsewhere in
   the repository whose write switch differs, and some that write as soon as they run,
   with no production check. Read a script before you run it.
@@ -218,10 +218,10 @@ grant still stands. Tell it in the chat.
   `npm run smoke` before and after. `temix-link-apply.ts` and `pilot-edits-delete.ts`
   in the pack have a `--rehearse` mode and are the models. `visitdays-jp.ts` has no
   rehearse or reverse mode.
-- **One operator script still has to be written:** no loader exists yet for the
-  per-region visit-day sheets. Write it on that same dry run → independent check →
-  rehearse → apply pattern. Claude planned to write it while its grant lasts; check
-  whether it has been done.
+- **The loader for the per-region visit-day sheets** is
+  `scripts/ops/visitdays-from-sheets.ts`, written on that same dry run → independent
+  check → rehearse → apply pattern, with a `--reverse` mode. It is in the repository, so
+  it needs no `*.tmp.ts` copy.
 
 **At the handover.** On 2026-10-04 the owner set an end to the grant: **it ends on the
 date recorded in `PRIVATE-HANDOVER.md`; after that, you decide** whether to keep, narrow
@@ -838,8 +838,6 @@ records only as a result.
 - **Claude's production grant** ends on the date recorded in `PRIVATE-HANDOVER.md`;
   HANDOVER §4 says so without the date. When it ends, update HANDOVER §4 and Claude's
   memory note (§2.3, §2.4). After that, you decide.
-- **No loader yet for the per-region visit-day sheets.** It has to be written on the
-  dry run → independent check → rehearse → apply pattern (§2.3).
 - **The review-depth rule** (§2.6) lives only in Claude's memory and the transcripts,
   not in the repository.
 - **No tier rule for rulebook changes.** Edits to `CLAUDE.md`, `AGENTS.md` and

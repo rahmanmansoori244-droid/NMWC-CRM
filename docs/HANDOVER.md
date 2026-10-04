@@ -59,6 +59,9 @@ Confirm execution dates, results and counts in the owner's private operation rec
   ledger: `AuditLog` rows with `entityType = CreditLimitZeroing`.
 - **Apply quarantined visit days:** `scripts/ops/apply-quarantined-visit-days.ts`;
   ledger: `AuditLog` rows with `entityType = QuarantinedVisitDays`.
+- **Load the per-region visit-day sheets:** `scripts/ops/visitdays-from-sheets.ts`;
+  ledger: `AuditLog` rows with `entityType = VisitDaysFromSheets`, plus one `Branch` row
+  per day written that carries the run id; the set and review files stay private.
 - **Correct the `nmwc_app` role's grants:** `scripts/ops/app-role.ts grant`;
   retain the operator's grant/status evidence privately.
 - **Completeness rescore:** `npm run ops:rescore-completeness`;
