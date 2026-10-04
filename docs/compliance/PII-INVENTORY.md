@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**297 stored columns across 24 tables** — Customer contact: 26 · Employee: 67 · Customer entity (personal if a sole establishment): 36 · Not personal data: 168.
+**300 stored columns across 24 tables** — Customer contact: 26 · Employee: 67 · Customer entity (personal if a sole establishment): 36 · Not personal data: 171.
 
 ## Columns holding personal data
 
@@ -398,6 +398,9 @@ Every column the database stores, classified by whose personal data it is. This 
 | Notification | `editId` | String | foreign key / structural value |
 | Notification | `customerId` | String | foreign key / structural value |
 | Notification | `emailedAt` | DateTime | record timestamp, not an attribute of a person |
+| Notification | `emailStatus` | String | outbox state of this row (SENT, FAILED, SKIPPED_* or PRE_FEATURE); no address or message text |
+| Notification | `emailAttempts` | Int | outbox claim counter |
+| Notification | `emailLeaseUntil` | DateTime | record timestamp, not an attribute of a person |
 | Notification | `createdAt` | DateTime | record timestamp, not an attribute of a person |
 | TemixSyncBatch | `id` | String | foreign key / structural value |
 | TemixSyncBatch | `createdAt` | DateTime | record timestamp, not an attribute of a person |

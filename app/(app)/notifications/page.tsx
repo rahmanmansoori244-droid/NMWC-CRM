@@ -1,47 +1,14 @@
-import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import { Role } from '@prisma/client';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
+import { hrefFor } from '@/lib/notification-links';
 import { MarkAllReadButton, NotificationRow } from './NotificationList';
 
 export const metadata = { title: 'Notifications · NMWC' };
 export const dynamic = 'force-dynamic';
-
-/** Roles allowed onto /approvals/[id] — mirror of the detail page's gate. */
-const APPROVER_ROLES: Role[] = [
-  Role.SUPERVISOR,
-  Role.MANAGER,
-  Role.ACCOUNTANT,
-  Role.FINANCE_MANAGER,
-  Role.GM,
-];
-
-/**
- * Deep link per notification, kind- and role-aware:
- *  - review-request kinds route APPROVERS to the edit's review page (the
- *    customer profile has a DIFFERENT scope gate and may 404 on a reviewer
- *    who legitimately received the ping — adversarial-review fix);
- *  - everything else lands on the customer profile / the recipient's queue.
- *
- * The return type is checked against the app's routes: any static page, or one
- * of the two dynamic pages named here.
- */
-function hrefFor(
-  n: { editId: string | null; customerId: string | null; kind: string },
-  role: Role
-): Route<`/approvals/${string}` | `/customers/${string}`> {
-  if (n.kind === 'TEMIX_UPLOAD_READY') return '/temix';
-  const reviewKinds = ['EDIT_SUBMITTED', 'EDIT_STAGE_ADVANCED', 'SLA_BREACH'];
-  if (n.editId && reviewKinds.includes(n.kind) && APPROVER_ROLES.includes(role)) {
-    return `/approvals/${n.editId}`;
-  }
-  if (n.customerId) return `/customers/${n.customerId}`;
-  return '/work';
-}
 
 export default async function NotificationsPage() {
   const session = await auth();
@@ -51,6 +18,18 @@ export default async function NotificationsPage() {
     where: { userId: session.user.id },
     orderBy: { createdAt: 'desc' },
     take: 100,
+    // Named columns: the e-mail outbox columns are no business of the inbox.
+    select: {
+      id: true,
+      kind: true,
+      title: true,
+      body: true,
+      editId: true,
+      customerId: true,
+      readAt: true,
+      createdAt: true,
+      edit: { select: { isReactivation: true } },
+    },
   });
   const unread = notifications.filter((n) => !n.readAt).length;
 

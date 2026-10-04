@@ -136,6 +136,8 @@ enum NotificationKind {
   SLA_BREACH // to the escalation target
   TEMIX_UPLOAD_READY // to Stewards, DEBOUNCED (max 1/day via cron) — queue non-empty
   TEMIX_SYNC_ACKED // to the submitter: their customer landed in Temix (code assigned)
+  REQUEST_FYI // F1: a salesman's request, for the region's Accountant to know of (lib/notify-policy.ts)
+  REACTIVATION_REQUESTED // F1: a reactivation waiting on a Manager; decided only on /reactivations
 }
 
 // ── ORG HIERARCHY ────────────────────────────────────────
@@ -781,8 +783,10 @@ model EditApproval {
   @@index([at(sort: Desc)])
 }
 
-// In-app + email notification. Row exists ⇒ visible in-app; emailedAt marks the
-// email batch-drain queue. Body is PII-safe (legalName + nmwcCode + deep link).
+// In-app + email notification. Row exists ⇒ visible in-app; a row with emailedAt
+// NULL is waiting in the e-mail outbox (lib/email/drain.ts). Body is PII-safe
+// (legalName + nmwcCode + deep link) and is NEVER e-mailed: the digest is built
+// from kind and editId only (lib/email/digest.ts).
 model Notification {
   id         String           @id @default(cuid())
   userId     String
@@ -792,7 +796,13 @@ model Notification {
   editId     String?
   customerId String?
   readAt     DateTime?
-  emailedAt  DateTime?
+  // F1 e-mail outbox (lib/email/drain.ts): emailedAt = the outbox is done with
+  // this row; emailStatus says how (SENT, FAILED, SKIPPED_*, PRE_FEATURE for every
+  // row that existed before the feature). emailLeaseUntil is a drain run's claim.
+  emailedAt       DateTime?
+  emailStatus     String?
+  emailAttempts   Int       @default(0)
+  emailLeaseUntil DateTime?
   createdAt  DateTime         @default(now())
 
   user User          @relation("UserNotifications", fields: [userId], references: [id])

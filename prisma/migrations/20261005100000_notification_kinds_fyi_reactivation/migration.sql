@@ -1,0 +1,24 @@
+-- F1 (2026-10-05): two notification kinds for the salesman's hierarchy.
+--
+--   REQUEST_FYI             "for your information": a salesman submitted a
+--                           request that someone ELSE must act on. Written to the
+--                           region's Accountant(s) on every salesman request
+--                           (lib/notify-policy.ts), never to the people who must
+--                           act on it and never to the submitter.
+--   REACTIVATION_REQUESTED  a must-act alert for a reactivation request. Its own
+--                           kind because a reactivation is decided only on
+--                           /reactivations (services/edits.ts refuses it on
+--                           /approvals with WRONG_LANE), so the inbox must link
+--                           it there, which EDIT_SUBMITTED cannot say.
+--
+-- Isolated enum-only migration: Postgres refuses a new enum value in the same
+-- transaction that added it, so nothing else goes here (same pattern as
+-- 20260715120000_phase1_enums and 20260716100000_notification_temix_kinds).
+--
+-- Safe before the build that uses it: the running build never writes either
+-- value. Its inbox (app/(app)/notifications/page.tsx) is the only reader of
+-- Notification.kind, so the two values must exist in the build that reads them
+-- before any build writes them; the read side ships in the same change, ahead
+-- of any writer (docs/handover/04-PENDING-WORK.md A1.11).
+ALTER TYPE "NotificationKind" ADD VALUE IF NOT EXISTS 'REQUEST_FYI';
+ALTER TYPE "NotificationKind" ADD VALUE IF NOT EXISTS 'REACTIVATION_REQUESTED';

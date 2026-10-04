@@ -138,6 +138,9 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
         isActive: true,
         lastLoginAt: true,
         mustChangePassword: true,
+        // F1: read for the "E-mail on file" badge only. The address is never
+        // rendered or handed to a client component (RBAC-05-023).
+        email: true,
         ownedRouteId: true,
         supervisorId: true,
         supervisor: { select: { fullName: true, username: true } },
@@ -319,12 +322,26 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                         </span>
                       )}
                       <PasswordClaimBadge claim={passwordClaim(u)} />
+                      {u.email ? (
+                        <span
+                          title="An e-mail address is on file: work notifications can reach this account by e-mail."
+                          className="ml-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
+                        >
+                          E-mail on file
+                        </span>
+                      ) : null}
                     </td>
                     <td className="px-4 py-2 text-xs text-slate-500">
                       {u.lastLoginAt ? u.lastLoginAt.toLocaleDateString('en-GB') : 'never'}
                     </td>
                     <td className="px-4 py-2 text-right">
-                      <UserRowActions userId={u.id} username={u.username} isActive={u.isActive} />
+                      <UserRowActions
+                        userId={u.id}
+                        username={u.username}
+                        isActive={u.isActive}
+                        canEditEmail={!isManager && u.id !== session.user.id}
+                        hasEmail={!!u.email}
+                      />
                     </td>
                   </tr>
                 ))}

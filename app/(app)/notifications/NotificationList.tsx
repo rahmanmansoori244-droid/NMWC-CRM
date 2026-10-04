@@ -15,6 +15,9 @@ const KIND_LABEL: Record<string, string> = {
   SLA_BREACH: 'SLA',
   TEMIX_UPLOAD_READY: 'Temix',
   TEMIX_SYNC_ACKED: 'Temix',
+  // F1
+  REQUEST_FYI: 'FYI',
+  REACTIVATION_REQUESTED: 'Reactivation',
 };
 
 const KIND_TONE: Record<string, string> = {
@@ -25,6 +28,8 @@ const KIND_TONE: Record<string, string> = {
   SLA_BREACH: 'bg-red-50 text-red-700 ring-red-200',
   TEMIX_UPLOAD_READY: 'bg-violet-50 text-violet-700 ring-violet-200',
   TEMIX_SYNC_ACKED: 'bg-violet-50 text-violet-700 ring-violet-200',
+  REQUEST_FYI: 'bg-slate-100 text-slate-600 ring-slate-200',
+  REACTIVATION_REQUESTED: 'bg-sky-50 text-sky-700 ring-sky-200',
 };
 
 export function NotificationRow({

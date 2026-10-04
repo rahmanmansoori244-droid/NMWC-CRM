@@ -11,6 +11,7 @@ import { sentByPreviousForm, staleLabelsForPendingEdit } from '@/lib/edit-approv
 import { isUnmovedCoordinate } from '@/lib/edit-values';
 import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-manual';
 import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
+import { decisionLaneFor } from '@/lib/decision-lane';
 import { AlertTriangle } from 'lucide-react';
 import {
   ApproveRejectActions,
@@ -138,6 +139,16 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
 
   const chain = parseChain(edit.approvalChain);
   const isPending = edit.state === 'SUBMITTED';
+  // F1: whether this viewer can decide the current step, by the same rule and
+  // inputs approveEditCore gives canActOnStep. A viewer who cannot (an Accountant
+  // told of a request for information, a GM opening a reactivation) gets a
+  // banner saying so; the buttons stay and the action stays the authority.
+  const lane = decisionLaneFor(sessionUser, edit, {
+    branches: isCreate
+      ? edit.branchDrafts.map((b) => ({ regionId: b.route.regionId, deletedAt: null }))
+      : (edit.customer?.branches ?? []),
+    managedRegionIds: scope.managedRegionIds,
+  });
   // X-APPR-2: what approving the current step does, for the confirmation's words.
   // Read off the same frozen chain approveEditCore advances along.
   const approveOutcome: ApproveOutcome = !isFinalStep(chain, edit.currentStepIndex)
@@ -306,6 +317,34 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               <p className="mt-1 italic">&ldquo;{edit.decisionReason}&rdquo;</p>
             ) : null}
           </div>
+        )}
+
+        {lane.kind === 'reactivation' && (
+          <p
+            role="note"
+            className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 ring-1 ring-inset ring-sky-200"
+          >
+            Reactivation requests are decided on the Reactivations page by a Manager of the
+            branch&apos;s region, not here.
+            {session.user.role === Role.MANAGER && (
+              <>
+                {' '}
+                <Link href="/reactivations" className="font-medium underline underline-offset-2">
+                  Open Reactivations
+                </Link>
+              </>
+            )}
+          </p>
+        )}
+        {lane.kind === 'inform' && (
+          <p
+            role="note"
+            className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 ring-1 ring-inset ring-sky-200"
+          >
+            For your information: this request is waiting at the{' '}
+            <strong>{lane.waitingOn.replace('_', ' ')}</strong> step, which you cannot decide.
+            You can read it here; only that step&apos;s approver can approve or reject it now.
+          </p>
         )}
 
         {/* Chain progress — which step this request is on, and every decision

@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useTransition } from 'react';
-import { toggleUserActiveAction, resetPasswordAction } from '@/services/users';
+import { toggleUserActiveAction, resetPasswordAction, updateUserEmailAction } from '@/services/users';
 
 // Go-live: a successful Disable used to confirm itself — the row stayed put, the
 // badge flipped to Disabled and the button flipped to Enable, one click from undo.
@@ -52,12 +52,20 @@ export function UserRowActions({
   userId,
   username,
   isActive,
+  canEditEmail = false,
+  hasEmail = false,
 }: {
   userId: string;
   username: string;
   isActive: boolean;
+  /** F1: the Steward's e-mail edit (services/users.ts updateUserEmailAction). */
+  canEditEmail?: boolean;
+  /** Whether an address is on file. The address itself never reaches the browser. */
+  hasEmail?: boolean;
 }) {
   const [pending, start] = useTransition();
+  const [showEmail, setShowEmail] = useState(false);
+  const [emailMsg, setEmailMsg] = useState<string | null>(null);
   const [showReset, setShowReset] = useState(false);
   const [resetMsg, setResetMsg] = useState<string | null>(null);
   const [resetMismatch, setResetMismatch] = useState(false);
@@ -121,8 +129,75 @@ export function UserRowActions({
     });
   }
 
+  // F1: set or clear the address work e-mails go to. The box starts empty, and the
+  // stored value is never sent here (RBAC-05-023): typing replaces it, an empty
+  // box clears it, which the button's words say before anything is sent.
+  async function saveEmail(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const typed = String(fd.get('contactAddress') ?? '').trim();
+    if (typed === '' && !confirm(`Clear the e-mail address of "${username}"? Work e-mails stop reaching them.`)) {
+      return;
+    }
+    fd.set('userId', userId);
+    start(async () => {
+      const res = await updateUserEmailAction(fd);
+      if (!res.ok) {
+        setEmailMsg(res.fields ? Object.values(res.fields).join(' ') : res.message);
+        return;
+      }
+      setEmailMsg(null);
+      setShowEmail(false);
+      announce(typed === '' ? `Cleared the e-mail of "${username}".` : `Saved the e-mail of "${username}".`);
+    });
+  }
+
   return (
-    <div className="flex justify-end gap-2 text-xs">
+    <div className="flex flex-wrap justify-end gap-2 text-xs">
+      {canEditEmail && (
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => {
+            setShowEmail((s) => !s);
+            setEmailMsg(null);
+          }}
+          className="rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+        >
+          {hasEmail ? 'Change e-mail' : 'Add e-mail'}
+        </button>
+      )}
+      {canEditEmail && showEmail && (
+        <form
+          onSubmit={saveEmail}
+          autoComplete="off"
+          className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1"
+        >
+          <input
+            type="text"
+            name="contactAddress"
+            inputMode="email"
+            autoComplete="off"
+            maxLength={200}
+            aria-label={`New e-mail for ${username}`}
+            placeholder={hasEmail ? 'New address (empty clears it)' : 'name@company.com'}
+            {...AS_TYPED}
+            className="w-56 rounded-md border-slate-200 px-2 py-1 text-xs"
+          />
+          <button
+            type="submit"
+            disabled={pending}
+            className="rounded-md bg-brand-600 px-2 py-1 text-xs font-semibold text-white hover:bg-brand-700"
+          >
+            Save
+          </button>
+          {emailMsg && (
+            <span role="alert" className="text-left text-red-600">
+              {emailMsg}
+            </span>
+          )}
+        </form>
+      )}
       <button
         type="button"
         disabled={pending}
