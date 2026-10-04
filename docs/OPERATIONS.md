@@ -38,18 +38,34 @@ missing ones included `CRON_SECRET`, `HEALTH_BEARER` and `ALERT_WEBHOOK_URL`.
 
 ## 4. Deploy
 
-Branch model: trunk (`main`). Every push to `main` is a deploy.
+Branch model: trunk (`main`). Every push to `main` is a deploy, and `main` moves only
+to a commit whose CI is green (HANDOVER §2).
 
-```bash
-# manually deploy current local commit (CI does this on push too)
-npx vercel --prod --token=$VERCEL_TOKEN --yes
-```
+**Never deploy from a laptop.** This section used to recommend
+`npx vercel --prod --yes` to "manually deploy the current local commit". That uploads
+and builds whatever tree is checked out, committed or not, and the build runs
+`prisma migrate deploy` before `next build` (§5) — so an old or unreviewed tree can
+migrate the production database and then go live without CI having seen it.
 
-Rollback: in the Vercel dashboard, find the previous deploy → "Promote to production". Or via CLI:
+**When production is broken, roll back, then fix forward through CI:**
 
-```bash
-vercel rollback <deployment-url>
-```
+1. `npm run smoke` and note what fails.
+2. **Instant rollback.** Vercel → the `nmwc-cm` project → Deployments → the last
+   production deployment known to be good → ⋯ → **Instant Rollback**. This re-points
+   production at a build that already exists: nothing is uploaded, nothing is built,
+   and no migration runs. `npm run smoke` again.
+3. **Revert through a pull request.** `git revert` the bad change on a branch, open a PR, and
+   let CI go green; the owner merges it as any other change. Its production deployment
+   is the fix.
+4. After an instant rollback, Vercel does not hand production to new deployments on its
+   own. When the revert's deployment is ready, check that it is the one serving
+   production, and **Promote** it if it is not. `npm run smoke` once more.
+
+**Rolling back the application does not undo a migration that already ran.** The
+rolled-back build runs against the newer schema. If the migration itself is what broke
+production, or the older build cannot work with the new schema, a rollback will not
+cure it: stop and take it to the owner. Reverting a migration is a separate, deliberate
+change, never part of a rollback (HANDOVER §2).
 
 ## 5. Database migrations
 
@@ -544,7 +560,12 @@ Two independent buckets, each with its own lifecycle policy. Both are verified d
 The rotation is audit-logged.
 
 ### Disable a leaving salesman
-`/users` → row → "Disable". Their account stays in audit history but they cannot sign in. To later reassign their route, edit the route from `/routes` and pick a new owner.
+`/users` → row → "Disable". Their account stays in audit history but they cannot sign in. Disabling does not free their route: it stays theirs until it is given to someone else.
+
+### Move a route to another salesman
+There is no button for this. A row on `/users` offers only Disable/Enable and Reset password, and `/routes` shows each route's salesman read-only. The one path is the Steward's **account-master import**: a `Users` row for the new salesman (role `SALESMAN`, an active account) with that `route_code`. A Manager who needs a route moved sends the Steward the route and the salesman who should own it.
+
+The account import has no review step — it applies as it is uploaded, and the route is taken off its previous owner in the same transaction (`services/imports.ts`, F-18; audited as a `REASSIGN` row on that user). The previous owner is left owning no route, so when two salesmen swap, put both rows in the same file.
 
 ### Re-import the master after a bulk fix
 1. Sign in as Steward.
@@ -778,6 +799,21 @@ npm run smoke                       # and after
 ### Reactivate a closed shop
 1. Salesman: from a closed customer's profile, submit reactivation with a fresh photo.
 2. Manager: `/reactivations` → review with photo evidence → Approve or Keep closed.
+
+## 7a. Day-1 support — symptom → action
+
+What users report in their first days, and the control in the app that answers each one. Every action here is a control the app has; if a fix needs something that is not listed, collect the details and hand them to the Steward rather than improvising.
+
+| The user says or sees | Action |
+|---|---|
+| First sign-in: "my password does not work" | Open `/users` and read the account's **Last login**. **`never`**: nobody has signed in with it — check the username, then reset the password (who may: last row). **Anything else** (a date): someone has already signed in with this account and may have changed its password. The Steward resets it at once — a reset also ends that other session within five minutes — and looks in `/audit` at that account's `LOGIN` rows for when, and from which IP. |
+| "Account temporarily locked due to repeated attempts" | Five sign-in attempts on that username in quick succession. Wait 60 seconds and type it carefully. A password reset does not lift the lock; waiting does. |
+| "Too many attempts from your network. Try again in …s" | The same limit, counted per network: everyone on one Wi-Fi shares five sign-ins a minute, right or wrong. Stagger sign-ins — no more than five a minute from one network — or sign in over mobile data. |
+| A customer's visit day is wrong | A Manager (customers in his regions) or the Steward opens the customer → **Enrich** → **Day of visit** → submit. From those two roles it is a direct write, with no approval step, and it is audited. A day can be changed but not cleared — pick the right one. While a request is waiting on the customer the form will not submit; decide that one first (two rows down). |
+| A customer is on the wrong route, or a salesman needs another route | Collect the customer codes or the route, and the right owner, and hand them to the Steward (§7, "Move a route to another salesman"). |
+| "This customer already has a pending change awaiting review" | Only one request can be open on a customer. The Manager decides the waiting one — **Approvals**, or **Reactivations** for a reopen request — and the salesman then submits again. |
+| An error page showing a **Reference** | Ask for the Reference exactly as shown and the time it happened, then look it up as §5g describes. |
+| Who can reset or disable whom | **Manager**: Salesman and Supervisor accounts in his own regions. **Steward**: every account except his own. Nobody changes their own password from `/users`; that is `/profile`. |
 
 ## 8. Incident playbook
 

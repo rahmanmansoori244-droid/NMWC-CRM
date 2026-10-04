@@ -839,7 +839,11 @@ const MANAGER_EN: Guide = {
           html: '<strong>Disable</strong> — when a salesman leaves the company. They can no longer log in. Their history stays in audit logs.',
         },
         {
-          html: '<strong>Reassign route</strong> — if a salesman switches routes. The new owner can immediately see those customers.',
+          // This step (and its AR twin) used to offer a "Reassign route" button the
+          // Users page has never had — a row offers Disable/Enable and Reset password —
+          // and Routes shows the salesman read-only. The one path is the Steward's
+          // account-master import, which applies at once (services/imports.ts F-18).
+          html: '<strong>Moving a route to another salesman</strong> — there is no button for this. Send the Data Steward the route and the salesman who should own it. The Steward makes the change, which applies at once and takes the route off its previous salesman.',
         },
       ],
     },
@@ -906,7 +910,7 @@ const MANAGER_EN: Guide = {
           ],
           [
             'Salesman moved to another route',
-            'Use the Users page → Reassign route. New customers visible immediately.',
+            'Ask the Data Steward, with the route and the salesman who should own it. The change applies at once; the previous salesman no longer owns that route.',
           ],
           [
             'Salesman left the company',
@@ -927,7 +931,7 @@ const MANAGER_EN: Guide = {
           ['<strong>Keep closed</strong>', 'Reject a reactivation request.'],
           ['<strong>Reset password</strong>', 'Generate a temporary password for a team member.'],
           ['<strong>Disable user</strong>', 'Block a leaver from logging in.'],
-          ['<strong>Reassign route</strong>', 'Move a route to another salesman.'],
+          ['<strong>Move a route</strong>', 'No button for it — ask the Data Steward.'],
           ['<strong>Force override</strong>', 'Edit the master directly. Use sparingly — logged.'],
         ],
       },
@@ -1202,8 +1206,14 @@ const STEWARD_EN: Guide = {
     },
     {
       number: 9,
-      title: 'User management — view-only for stewards',
-      intro: 'Stewards see all users for visibility but most user-edit actions belong to managers.',
+      // This section was titled "view-only for stewards" and sent every reset and
+      // disable to a manager, but canMutateUser (lib/permissions.ts) lets a Steward
+      // reset and disable every account except their own, while a Manager is held
+      // to the salesmen and supervisors in his regions: most requests are the
+      // Steward's to do.
+      title: 'User management',
+      intro:
+        'You see every account, and you can reset the password of, disable or enable any of them except your own.',
       steps: [
         { html: 'Tap <strong>Users</strong> in the sidebar.', img: 'steward-09-users.png' },
         {
@@ -1213,7 +1223,10 @@ const STEWARD_EN: Guide = {
           html: 'The list opens on the <strong>Active</strong> tab, which is NOT every account: the pilot and QA accounts kept for their audit history are deactivated, and they sit on <strong>Disabled</strong>. When you reconcile the roster against HR, read it from the <strong>All</strong> tab — otherwise the counts will not match and accounts will look missing.',
         },
         {
-          html: "Reset password, disable, and reassign-route actions live with the user's manager. Forward HR requests to the right manager.",
+          html: '<strong>Reset password</strong> and <strong>Disable</strong> work on every account except your own, which you change from your <strong>Profile</strong>. A Manager can do the same only for the salesmen and supervisors in his own regions, so a request about any other account — a Manager, an approver, another Steward — is yours to do.',
+        },
+        {
+          html: '<strong>Moving a route to another salesman</strong> has no button: a row on the Users page offers only Disable/Enable and Reset password, and Routes shows the salesman read-only. Use the <strong>account master</strong>: a <strong>Users</strong> row for the new salesman with that <strong>route_code</strong>. It applies the moment the upload completes and takes the route off its previous salesman. When two salesmen swap routes, put both rows in the same file.',
         },
         {
           html: "You CAN onboard a new manager (since managers don't have a higher-rank approver) — head office hands you the request, you create the user record with the MANAGER role and the regions they cover.",
@@ -1919,7 +1932,7 @@ const MANAGER_AR: Guide = {
           html: '<strong>تعطيل</strong> — عندما يترك مندوب الشركة. لا يستطيع تسجيل الدخول. سجل أعماله يبقى في سجل التدقيق.',
         },
         {
-          html: '<strong>إعادة تعيين الخط</strong> — إذا غيّر مندوب خطه. المالك الجديد يرى عملاءه فورًا.',
+          html: '<strong>نقل خط إلى مندوب آخر</strong> — لا يوجد زر لذلك. أرسل إلى أمين البيانات رمز الخط واسم المندوب الذي سيتولاه. يُجري أمين البيانات التغيير، فيسري فورًا ويُسحب الخط من مندوبه السابق.',
         },
       ],
     },
@@ -1980,7 +1993,7 @@ const MANAGER_AR: Guide = {
           ['"لا توجد مناطق معينة لك"', 'حسابك لم يُعيَّن منطقة بعد. اتصل بالمكتب الرئيسي.'],
           [
             'مندوب انتقل إلى خط آخر',
-            'استخدم صفحة المستخدمون → إعادة تعيين خط. العملاء الجدد ظاهرون فورًا.',
+            'اطلب ذلك من أمين البيانات، مع رمز الخط واسم المندوب الذي سيتولاه. يسري التغيير فورًا، ولا يبقى الخط بعدها لدى المندوب السابق.',
           ],
           ['مندوب ترك الشركة', 'علّمه كمعطّل في صفحة المستخدمون. سجل تدقيقه محفوظ.'],
         ],
@@ -1998,7 +2011,7 @@ const MANAGER_AR: Guide = {
           ['<strong>إبقاء مغلق</strong>', 'رفض طلب إعادة تفعيل.'],
           ['<strong>إعادة ضبط كلمة المرور</strong>', 'توليد كلمة مرور مؤقتة لعضو في الفريق.'],
           ['<strong>تعطيل مستخدم</strong>', 'منع شخص ترك الشركة من تسجيل الدخول.'],
-          ['<strong>إعادة تعيين خط</strong>', 'نقل خط إلى مندوب آخر.'],
+          ['<strong>نقل خط</strong>', 'لا يوجد زر لذلك — اطلبه من أمين البيانات.'],
           ['<strong>تجاوز إجباري</strong>', 'تحرير السجل مباشرةً. استخدمه باعتدال — يُسجَّل.'],
         ],
       },
