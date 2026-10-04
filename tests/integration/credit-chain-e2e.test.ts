@@ -171,6 +171,13 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(st.pendingRole).toBe('SUPERVISOR');
     expect(st.customerId).toBeNull();
     expect(await customerCount()).toBe(0); // R19: nothing materialized at submit
+    // F1: the region's Accountant is told at submit, for information, in the
+    // submit's own transaction; the Finance Manager and the GM are told only when
+    // the request reaches their step.
+    expect(await prisma.notification.findMany({ where: { editId, kind: 'REQUEST_FYI' }, select: { userId: true } })).toEqual([
+      { userId: ids.acc },
+    ]);
+    expect(await prisma.notification.count({ where: { editId, userId: { in: [ids.fm, ids.gm] } } })).toBe(0);
     keepStage(st);
   });
 

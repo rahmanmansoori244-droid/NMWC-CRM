@@ -76,6 +76,11 @@ vi.mock('@/lib/notifications', () => ({
   resolveStepAudience: vi.fn(async () => []),
   resolveStewardAudience: vi.fn(async () => []),
 }));
+// F1: the services also write the hierarchy's rows (lib/notify-hierarchy.ts);
+// mocked here like '@/lib/notifications', so these suites keep testing what they test.
+vi.mock('@/lib/notify-hierarchy', () => ({
+  notifySalesmanRequest: vi.fn(async () => ({ mustAct: [], fyi: [] })),
+}));
 vi.mock('@/lib/rate-limit', () => ({ checkLimit: async () => ({ ok: true, retryAfterSec: 0 }), FORM_LIMIT: {} }));
 vi.mock('@/lib/completeness', () => ({ scoreCustomer: () => 50, scoreBranch: () => 50 }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
@@ -749,5 +754,48 @@ describe('the point is one value (phase-2 review, finding 2)', () => {
       fields: { [`branch.${B1}.gps`]: STALE_LOCATION_MESSAGE },
     });
     nothingWritten();
+  });
+});
+
+describe('F1 — a salesman’s submit tells his region’s Accountant, for information', () => {
+  const hierarchy = async () => vi.mocked((await import('@/lib/notify-hierarchy')).notifySalesmanRequest);
+  const steps = async () => vi.mocked((await import('@/lib/notifications')).resolveStepAudience);
+
+  beforeEach(async () => {
+    (await hierarchy()).mockReset().mockResolvedValue({ mustAct: [], fyi: [] });
+    (await steps()).mockReset().mockResolvedValue(['u-sup']);
+  });
+
+  it('hands the hierarchy HIS branch’s region and the supervisor already told', async () => {
+    // B2 of the same customer is on another route in another region: not his.
+    live = customerRow({}, [branchRow(), branchRow({ id: B2, branchCode: 'MCT-0002', routeId: 'r2', regionId: 'g2' })]);
+    expect((await submit({ customer: { notes: 'Closed on Fridays' } })).ok).toBe(true);
+    const notify = await hierarchy();
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0]![1]).toEqual({
+      event: 'UPDATE',
+      submitter: { id: 'u-sales', supervisorId: 'u-sup' },
+      regionId: 'g1',
+      editId: 'e-new',
+      customerId: CUST,
+      subject: { legalName: 'Al Noor Trading', nmwcCode: 'NMWC-000001' },
+      alreadyTold: ['u-sup'],
+    });
+  });
+
+  it('a draft tells nobody, and neither does a Steward’s or a Manager’s direct write', async () => {
+    expect((await submit({ isDraft: true, customer: { notes: 'Half done' } })).ok).toBe(true);
+    asStaff('STEWARD');
+    expect((await submit({ customer: { notes: 'Steward note' } })).ok).toBe(true);
+    asStaff('MANAGER');
+    expect((await submit({ customer: { notes: 'Manager note' } })).ok).toBe(true);
+    expect(await hierarchy()).not.toHaveBeenCalled();
+  });
+
+  it('a failure in the hierarchy write does not undo or fail the submit that already landed', async () => {
+    (await hierarchy()).mockRejectedValueOnce(new Error('pool timeout'));
+    const res = await submit({ customer: { notes: 'Closed on Fridays' } });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(db.customerEdit.create).toHaveBeenCalledTimes(1);
   });
 });

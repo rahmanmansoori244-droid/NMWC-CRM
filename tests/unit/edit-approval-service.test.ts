@@ -80,6 +80,11 @@ vi.mock('@/lib/notifications', () => ({
   resolveStepAudience: vi.fn(async () => []),
   resolveStewardAudience: vi.fn(async () => []),
 }));
+// F1: the services also write the hierarchy's rows (lib/notify-hierarchy.ts);
+// mocked here like '@/lib/notifications', so these suites keep testing what they test.
+vi.mock('@/lib/notify-hierarchy', () => ({
+  notifySalesmanRequest: vi.fn(async () => ({ mustAct: [], fyi: [] })),
+}));
 vi.mock('@/lib/completeness', () => ({ scoreCustomer: () => 50, scoreBranch: () => 50 }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 vi.mock('next/navigation', () => ({ redirect: vi.fn(), notFound: vi.fn() }));

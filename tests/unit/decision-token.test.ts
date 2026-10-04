@@ -69,6 +69,11 @@ vi.mock('@/lib/notifications', () => ({
   resolveStewardAudience: async () => [],
   notifyUsers: h.notifyUsers,
 }));
+// F1: the services also write the hierarchy's rows (lib/notify-hierarchy.ts);
+// mocked here like '@/lib/notifications', so these suites keep testing what they test.
+vi.mock('@/lib/notify-hierarchy', () => ({
+  notifySalesmanRequest: vi.fn(async () => ({ mustAct: [], fyi: [] })),
+}));
 vi.mock('@/lib/create-finalize', () => ({
   assertFinalizable: () => {},
   finalizeCreateInTx: h.finalize,

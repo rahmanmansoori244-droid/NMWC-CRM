@@ -411,7 +411,7 @@ run on a working branch is cancelled. A run on `main` never is. `ci-watch-sha.sh
 | Job ID | Display name | What it proves | On a branch | On `main` |
 |---|---|---|---|---|
 | `lint-test-build` | `lint-test-build` | Typecheck, lint, unit tests, `next build` (without a migrate), production-dependency audit | `success` | `success` |
-| `db-tests` | `db-tests` | Migrations on a fresh Postgres; the `nmwc_app` role created, granted and verified; 35 of the 38 integration suites | `success` | `success` |
+| `db-tests` | `db-tests` | Migrations on a fresh Postgres; the `nmwc_app` role created, granted and verified; 36 of the 39 integration suites | `success` | `success` |
 | `e2e` | `Playwright (login, health probe, CSP) on a production build` | Login, health probe and CSP on a production build | `success` | `success` |
 | `restore-chain` | `Backup → encrypt → restore → verify` | The backup chain, on throw-away databases | `success` | `success` |
 | `secrets-scan` | `secrets-scan` | gitleaks over **the commits each push adds**. It does not scan the whole history, whatever the comment in `ci.yml` says ([AUDITOR-BRIEF §8](../../AUDITOR-BRIEF.md#8-security-controls), §15). It uses default rules, which miss low-entropy passwords. | `success` | `success` |

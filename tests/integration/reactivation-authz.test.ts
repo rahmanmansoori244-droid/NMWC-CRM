@@ -76,6 +76,12 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
     if (!prisma) return;
     await purgeAuditLog(prisma, { where: { actorId: { in: [ids.salesman, ids.supervisor, ids.manager] } } });
     await purgeCustomerEdits(prisma, { where: { submittedById: ids.salesman } });
+    // F1: a reactivation request now tells the region's Manager
+    // (REACTIVATION_REQUESTED), and Notification.userId is ON DELETE RESTRICT.
+    // clearEdits() removes rows by editId only, and only when the next case runs,
+    // so a partial run (-t C12) or a reordered last case left the Manager's rows
+    // behind and the user delete below failed. Delete by user, whatever is left.
+    await prisma.notification.deleteMany({ where: { userId: { in: [ids.salesman, ids.supervisor, ids.manager] } } });
     await prisma.attachment.deleteMany({ where: { id: ids.photo } });
     await prisma.branch.deleteMany({ where: { id: ids.branch } });
     await prisma.customer.deleteMany({ where: { id: ids.customer } });
@@ -114,6 +120,12 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
     expect(res.ok).toBe(true);
     return (res as { ok: true; data: { editId: string } }).data.editId;
   }
+
+  it('F1: the request tells the region’s Manager, in the same commit (his Supervisor cannot decide a reactivation)', async () => {
+    const editId = await newReactivation();
+    const rows = await prisma.notification.findMany({ where: { editId }, select: { userId: true, kind: true } });
+    expect(rows).toEqual([{ userId: ids.manager, kind: 'REACTIVATION_REQUESTED' }]);
+  });
 
   it('C11: Supervisor CANNOT approve a reactivation via the generic engine (WRONG_LANE)', async () => {
     const editId = await newReactivation();

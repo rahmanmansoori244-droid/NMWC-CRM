@@ -86,6 +86,7 @@ import {
   readDecisionToken,
 } from '@/lib/decision-token';
 import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/notifications';
+import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
 
@@ -931,19 +932,36 @@ async function submitEditOnce(
     // error (the salesman's retry would dead-end on EDIT_LOCKED).
     if (!isDraft) {
       try {
-        await notifyUsers(
+        const firstAudience = await resolveStepAudience(
           prisma,
-          await resolveStepAudience(prisma, firstStep, { supervisorId: me.supervisorId }, [
-            ...new Set(customer.branches.map((b) => b.regionId)),
-          ]),
-          {
-            kind: 'EDIT_SUBMITTED',
-            title: 'Edit awaiting your review',
-            body: `${customer.legalName} (${customer.nmwcCode}) — changes submitted for approval.`,
+          firstStep,
+          { supervisorId: me.supervisorId },
+          [...new Set(customer.branches.map((b) => b.regionId))]
+        );
+        await notifyUsers(prisma, firstAudience, {
+          kind: 'EDIT_SUBMITTED',
+          title: 'Edit awaiting your review',
+          body: `${customer.legalName} (${customer.nmwcCode}) — changes submitted for approval.`,
+          editId: edit.id,
+          customerId: customer.id,
+        });
+        // F1: the salesman's region's Accountant is told for information
+        // (lib/notify-policy.ts). His region is the region of HIS branch of this
+        // customer — he can touch only branches on his own route — not every
+        // region a multi-region customer spans. Inside the same best-effort
+        // try: this insert has already committed, so a failure here is logged and
+        // the submit still stands (the SLA sweep remains the backstop).
+        if (me.role === Role.SALESMAN) {
+          await notifySalesmanRequest(prisma, {
+            event: 'UPDATE',
+            submitter: { id: me.id, supervisorId: me.supervisorId },
+            regionId: customer.branches.find((b) => b.routeId === me.ownedRouteId)?.regionId ?? null,
             editId: edit.id,
             customerId: customer.id,
-          }
-        );
+            subject: { legalName: customer.legalName, nmwcCode: customer.nmwcCode },
+            alreadyTold: firstAudience,
+          });
+        }
       } catch (err) {
         logger.warn({ editId: edit.id, err: (err as Error).message }, 'edit.submit.notify_failed');
       }
