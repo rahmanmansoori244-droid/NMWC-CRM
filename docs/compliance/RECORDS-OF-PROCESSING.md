@@ -81,7 +81,7 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Purpose** | Authenticate staff, enforce role and region scoping, and evidence who did what. |
 | **Personal data** | Username (the route code for salesmen), full name, e-mail, phone, bcrypt password hash and the last five previous hashes, last-login time, every audited action — with source IP and user-agent for anything done through the application — SLA timings and escalation counts, and device GPS attached to each photo. |
 | **Subjects** | Employees. |
-| **Recipients** | Stewards and managers within scope. |
+| **Recipients** | Stewards and managers within scope. The insights dashboard (`/dashboard`, 2026-10-05) also shows route-level counts of approved field activity — to a Manager for his regions and to the Viewer and the Steward organisation-wide. It names no salesman, but a route has one, so a route's figures describe that salesman's work. |
 | **Retention** | Accounts are disabled, never deleted — seven `ON DELETE RESTRICT` foreign keys make deletion impossible without first removing the append-only ledger. |
 | **Lawful basis** | **[COUNSEL]** — employment-context processing and monitoring. |
 
