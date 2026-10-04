@@ -312,12 +312,12 @@ There are eight roles (the `Role` enum in `prisma/schema.prisma`). Checks live i
 |---|---|---|---|
 | `SALESMAN` | His own route only | `/today` | Enrich customers on his route (update requests). The **only** role that starts a new-customer request, a close-shop request or a reactivation request. Uploads and attaches photos he captured. `legalName` is always locked for him; `crNumber` is locked on CREDIT customers. |
 | `SUPERVISOR` | His direct reports' routes | `/approvals` | Approves the **Supervisor step** for his reports. Sees "My team". Exports his team's routes. Cannot edit customers. |
-| `MANAGER` | His managed regions | `/dashboard` | **Direct write**: his edits apply at once, with no approval (audited). Acts as the **fallback approver on the Supervisor step** for any request whose branches overlap his regions. The **only** role that decides reactivations. Archives a customer when every live branch is in his regions. Administers `SALESMAN` and `SUPERVISOR` accounts, and routes, in his regions. Exports, reads the audit log and the Service status page. |
-| `STEWARD` (Data Steward) | Everything | `/import` | Imports, duplicates and merge, Temix batches, direct write, archive. Creates regions and routes. Administers every role. Exports, audit log, Service status. |
+| `MANAGER` | His managed regions | `/dashboard` | **Direct write**: his edits apply at once, with no approval (audited). Acts as the **fallback approver on the Supervisor step** for any request whose branches overlap his regions. The **only** role that decides reactivations. Archives a customer when every live branch is in his regions. Administers `SALESMAN` and `SUPERVISOR` accounts, and routes, in his regions. Exports, reads the audit log, the Service status page and the dashboard of his regions (4.17). |
+| `STEWARD` (Data Steward) | Everything | `/import` | Imports, duplicates and merge, Temix batches, direct write, archive. Creates regions and routes. Administers every role. Exports, audit log, Service status, the dashboard (from the menu). |
 | `ACCOUNTANT` | His managed regions | `/approvals` | The **final step** of both new-customer chains (cash and credit). |
 | `FINANCE_MANAGER` | Everything (read) | `/approvals` | A step on the **credit** new-customer chain only. Approves or rejects the requested credit figures; never amends them. |
 | `GM` | Everything (read) | `/approvals` | A step on the **credit** new-customer chain only, after the Finance Manager. Always required. |
-| `VIEWER` | Everything (read) | `/dashboard` | Read and export org-wide, including CR and guarantee documents. Cannot edit. |
+| `VIEWER` | Everything (read) | `/dashboard` | Read and export org-wide, including CR and guarantee documents. Cannot edit. The dashboard shows the whole organisation (4.17). |
 
 **How the Supervisor step really works.** The design lets regional Managers supervise
 salesmen directly, so `SUPERVISOR` accounts are optional (comment in
@@ -773,6 +773,31 @@ is retired
   `import.rejections`) to `ALERT_WEBHOOK_URL`. Unset, it does nothing.
 - `npm run smoke` (`scripts/ops/smoke.ts`) makes read-only, anonymous checks against
   production. Run it before and after any production change.
+
+### 4.17 The insights dashboard
+
+`/dashboard` (F2, 2026-10-05) is the landing page of Managers and Viewers; the Steward
+reaches it from the menu. Who may open it is `DASHBOARD_ROLES` in
+`lib/insights/policy.ts`, which also holds every definition the owner has not yet
+confirmed ([04-PENDING-WORK](04-PENDING-WORK.md) A6).
+
+- **Scope.** A Manager sees his regions only, never a company figure; the Viewer and
+  the Steward see the whole organisation. Period, region and route filters live in the
+  URL and only narrow that scope (`lib/insights/scope.ts`). One server render per
+  change; the filter bar is the only client component.
+- **Figures.** Six SQL aggregates in one wave (`lib/insights/load.ts`): customers and
+  branches in view now, new customers (new-customer requests finalized), customers
+  updated (approved update requests, direct writes apart), closures and reactivations,
+  requests by state, and GPS cells for the map. Counts only reach the page. A failing
+  query shows a notice in its own cards; the rest of the page loads.
+- **Definitions** are printed on every card. Days are Oman calendar days; attribution is
+  by each branch's current route and region; figures are route-level, never per
+  salesman.
+- **The map** is an approximate outline of Oman drawn by the app itself
+  (`lib/geo/oman.ts`) with counts per grid square. GPS exists only where a salesman
+  captured it, so the page shows the coverage beside the map.
+- **Pending approval** for a Manager counts his `/approvals` queue (the Supervisor step
+  in his regions), new-customer requests included.
 
 ---
 
