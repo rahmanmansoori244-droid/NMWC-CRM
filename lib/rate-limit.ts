@@ -15,6 +15,7 @@
  * automatically when DATABASE_URL is set.
  */
 import { prisma } from './db';
+import { logger } from './logger';
 
 type Bucket = { tokens: number; lastRefill: number };
 
@@ -131,6 +132,63 @@ async function checkLimitPg(
   const deficit = 1 - row.tokens;
   const retry = Math.max(1, Math.ceil(deficit / cfg.refillPerSec));
   return { ok: false, retryAfterSec: retry };
+}
+
+/**
+ * X-AUTH-2: give back the one token checkLimit() charged a request that turned
+ * out not to be what the bucket counts. authorize() (lib/auth.ts) refunds the
+ * per-network login bucket when a sign-in SUCCEEDS, so that bucket in effect
+ * counts failed sign-ins only.
+ *
+ * The bucket is refilled exactly as checkLimit would refill it at this instant,
+ * then given one token, capped at capacity. A key with no bucket is a full
+ * bucket: there is nothing to give back, and nothing is created.
+ *
+ * Never throws. A refund that could not be written leaves the token spent — what
+ * every request cost before refunds existed — so the failure is logged and the
+ * caller carries on; a sign-in that has already succeeded is not failed over it.
+ */
+export async function refundLimit(key: string, cfg: RateLimitConfig): Promise<void> {
+  try {
+    const forceMemory = process.env.RATE_LIMIT_BACKEND === 'memory';
+    if (forceMemory || !process.env.DATABASE_URL) {
+      refundLimitMemory(key, cfg);
+      return;
+    }
+    await refundLimitPg(key, cfg);
+  } catch (err) {
+    // No in-memory fallback, unlike checkLimit: the token was taken from the
+    // durable bucket, and a per-Lambda map has nothing to give back.
+    logger.warn({ err: String(err), key }, 'rate-limit.refund.failed');
+  }
+}
+
+function refundLimitMemory(key: string, cfg: RateLimitConfig): void {
+  const b = memBuckets.get(key);
+  if (!b) return;
+  const now = Date.now();
+  const elapsed = (now - b.lastRefill) / 1000;
+  b.tokens = Math.min(cfg.capacity, b.tokens + elapsed * cfg.refillPerSec + 1);
+  b.lastRefill = now;
+}
+
+/**
+ * One UPDATE, so it is atomic against a concurrent checkLimitPg on the same row
+ * (both take the row lock). Not an UPSERT: a missing row is a full bucket and
+ * must stay missing. The refill expression is checkLimitPg's.
+ */
+async function refundLimitPg(key: string, cfg: RateLimitConfig): Promise<void> {
+  await prisma.$executeRaw`
+    UPDATE "RateLimit" SET
+      "tokens" = LEAST(
+        ${cfg.capacity}::float,
+        "RateLimit"."tokens" +
+          EXTRACT(EPOCH FROM (NOW() - "RateLimit"."lastRefill")) * ${cfg.refillPerSec} + 1
+      ),
+      "lastRefill" = NOW(),
+      "updatedAt" = NOW()
+    WHERE "key" = ${key};
+  `;
 }
 
 export const LOGIN_LIMIT: RateLimitConfig = { capacity: 5, refillPerSec: 5 / 60 };

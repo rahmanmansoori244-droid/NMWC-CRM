@@ -8,7 +8,7 @@ import { prisma } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { Role } from '@prisma/client';
 import { authConfig } from '../auth.config';
-import { checkLimit, LOGIN_LIMIT } from '@/lib/rate-limit';
+import { checkLimit, LOGIN_LIMIT, refundLimit } from '@/lib/rate-limit';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isDemoAccount } from '@/lib/demo-accounts';
 import { LoginThrottledError } from '@/lib/login-throttle';
@@ -315,10 +315,22 @@ const {
         // /api/auth/callback/credentials directly — so the form's action does
         // not charge them again (it did, and a form login cost two tokens per
         // bucket: a correct password on the third quick try was refused).
+        //
+        // X-AUTH-2: the per-network bucket is charged FIRST. Charged second, an
+        // attempt it refused had already cost the per-user bucket a token, so one
+        // address cycling through usernames kept many accounts locked while being
+        // refused itself; now a network refusal touches no account's bucket. And
+        // a sign-in that succeeds gives its network token back (below), so that
+        // bucket counts failed attempts only: an office behind one address, where
+        // everyone signs in and then again after the forced password change, is
+        // no longer throttled by its colleagues' successes. The per-user bucket
+        // is unchanged — every attempt costs it one token, success or not; it is
+        // the brute-force control.
         const ip = await clientIp();
+        const ipKey = `login:ip:${ip}`;
         const buckets = [
+          ['ip', ipKey],
           ['user', `login:user:${username}`],
-          ['ip', `login:ip:${ip}`],
         ] as const;
         for (const [bucket, key] of buckets) {
           const lim = await checkLimit(key, LOGIN_LIMIT);
@@ -394,6 +406,11 @@ const {
         }
 
         logger.info({ userId: user.id, username: user.username }, 'login.success');
+
+        // X-AUTH-2: a successful sign-in gives back the network token it was
+        // charged above. refundLimit never throws; a refund it could not write
+        // leaves the token spent, as every sign-in was charged before.
+        await refundLimit(ipKey, LOGIN_LIMIT);
 
         return {
           id: user.id,

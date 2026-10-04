@@ -27,13 +27,14 @@ let savedBackend: string | undefined;
 describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () => {
   // Imported lazily so this file never touches the DB when the suite is skipped.
   let checkLimit: typeof import('@/lib/rate-limit').checkLimit;
+  let refundLimit: typeof import('@/lib/rate-limit').refundLimit;
   let prisma: typeof import('@/lib/db').prisma;
   let key: string;
 
   beforeAll(async () => {
     savedBackend = process.env.RATE_LIMIT_BACKEND;
     delete process.env.RATE_LIMIT_BACKEND; // ensure the PG path is taken
-    ({ checkLimit } = await import('@/lib/rate-limit'));
+    ({ checkLimit, refundLimit } = await import('@/lib/rate-limit'));
     ({ prisma } = await import('@/lib/db'));
   });
 
@@ -85,5 +86,43 @@ describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () =
     expect(later.ok).toBe(false);
     // tokens floored at -1 => deficit <= 2 => retry <= ceil(2 / refill).
     expect(later.retryAfterSec).toBeLessThanOrEqual(Math.ceil(2 / cfg.refillPerSec));
+  });
+
+  // X-AUTH-2: refundLimit, which authorize() calls on the per-network login
+  // bucket when a sign-in succeeds.
+  it('a refund gives back exactly one token', async () => {
+    const cfg = { capacity: 3, refillPerSec: 0.0001 };
+    for (let i = 0; i < 3; i++) expect((await checkLimit(key, cfg)).ok).toBe(true);
+    await refundLimit(key, cfg);
+    expect((await checkLimit(key, cfg)).ok).toBe(true);
+    expect((await checkLimit(key, cfg)).ok).toBe(false);
+  });
+
+  it('refunds never lift a bucket above capacity', async () => {
+    const cfg = { capacity: 2, refillPerSec: 0.0001 };
+    expect((await checkLimit(key, cfg)).ok).toBe(true);
+    for (let i = 0; i < 3; i++) await refundLimit(key, cfg);
+    const row = await prisma.rateLimit.findUnique({ where: { key } });
+    expect(row?.tokens).toBe(2);
+  });
+
+  it('a refund on a key with no row creates nothing and does not throw', async () => {
+    await expect(refundLimit(key, { capacity: 5, refillPerSec: 1 })).resolves.toBeUndefined();
+    expect(await prisma.rateLimit.findUnique({ where: { key } })).toBeNull();
+  });
+
+  it('a refund first refills the elapsed time, as checkLimitPg does', async () => {
+    const cfg = { capacity: 5, refillPerSec: 1 };
+    expect((await checkLimit(key, cfg)).ok).toBe(true);
+    // Empty, last refilled two seconds ago by the DATABASE's clock, so the
+    // client's clock (and any skew) plays no part.
+    await prisma.$executeRaw`
+      UPDATE "RateLimit" SET "tokens" = 0, "lastRefill" = NOW() - INTERVAL '2 seconds'
+      WHERE "key" = ${key}`;
+    await refundLimit(key, cfg);
+    const row = await prisma.rateLimit.findUnique({ where: { key } });
+    // 0 + ~2 s × 1/s + 1, plus however long the round trip between took.
+    expect(row!.tokens).toBeGreaterThanOrEqual(3);
+    expect(row!.tokens).toBeLessThan(4);
   });
 });
