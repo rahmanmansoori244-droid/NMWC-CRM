@@ -65,6 +65,14 @@ class MemoryStore implements OutboxStore {
     for (const r of hit) Object.assign(r, { emailStatus: 'SKIPPED_STALE', emailedAt: now, emailLeaseUntil: null });
     return hit.length;
   }
+  async markIneligible(a: { kinds: readonly string[]; roles: readonly string[]; now: Date; limit: number }) {
+    const open = () => this.rows.filter((r) => !r.emailedAt && this.free(r, a.now));
+    const byKind = open().filter((r) => !a.kinds.includes(r.kind)).slice(0, a.limit);
+    for (const r of byKind) Object.assign(r, { emailStatus: 'SKIPPED_KIND', emailedAt: a.now, emailLeaseUntil: null });
+    const byRole = open().filter((r) => !a.roles.includes(this.users.get(r.userId)?.role ?? '')).slice(0, a.limit);
+    for (const r of byRole) Object.assign(r, { emailStatus: 'SKIPPED_ROLE', emailedAt: a.now, emailLeaseUntil: null });
+    return { kind: byKind.length, role: byRole.length };
+  }
   async markExhausted(max: number, now: Date, limit: number) {
     const hit = this.rows.filter((r) => !r.emailedAt && r.emailAttempts >= max && this.free(r, now)).slice(0, limit);
     for (const r of hit) Object.assign(r, { emailStatus: 'FAILED', emailedAt: now, emailLeaseUntil: null });

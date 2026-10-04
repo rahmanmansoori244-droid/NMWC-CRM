@@ -48,8 +48,15 @@ export const READINESS_APPROVER_ROLES: readonly Role[] = [
   Role.FINANCE_MANAGER,
 ];
 
-/** The same address shape lib/email/config.ts accepts: one @, a dot after it, no spaces. */
-const ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/**
+ * The address rule of lib/email/config.ts isEmailAddress, copied because nothing
+ * outside lib/email may import it (tests/unit/email-structure-guard.test.ts);
+ * tests/unit/notify-readiness.test.ts holds the two to the same answers.
+ */
+const ADDRESS = /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]+$/;
+export function readinessAddress(value: string): boolean {
+  return value.length <= 254 && ADDRESS.test(value);
+}
 
 export type ReadinessUser = {
   id: string;
@@ -88,9 +95,9 @@ export function readinessReport(users: ReadinessUser[], regions: ReadinessRegion
     const holders = active.filter((u) => u.role === role);
     const has = (u: ReadinessUser) => (u.email ?? '').trim() !== '';
     approvers[role] = {
-      withEmail: holders.filter((u) => has(u) && ADDRESS.test(u.email!.trim())).length,
+      withEmail: holders.filter((u) => has(u) && readinessAddress(u.email!.trim())).length,
       without: holders.filter((u) => !has(u)).length,
-      malformed: holders.filter((u) => has(u) && !ADDRESS.test(u.email!.trim())).length,
+      malformed: holders.filter((u) => has(u) && !readinessAddress(u.email!.trim())).length,
     };
   }
 

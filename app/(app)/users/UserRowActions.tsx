@@ -136,6 +136,10 @@ export function UserRowActions({
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     const typed = String(fd.get('contactAddress') ?? '').trim();
+    if (typed === '' && !hasEmail) {
+      setEmailMsg('Type the address to add.');
+      return;
+    }
     if (typed === '' && !confirm(`Clear the e-mail address of "${username}"? Work e-mails stop reaching them.`)) {
       return;
     }
