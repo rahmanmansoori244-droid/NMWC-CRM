@@ -56,7 +56,12 @@ migrate the production database and then go live without CI having seen it.
    and no migration runs. `npm run smoke` again.
 3. **Revert through a pull request.** `git revert` the bad change on a branch, open a PR, and
    let CI go green; the owner merges it as any other change. Its production deployment
-   is the fix.
+   is the fix. **If the bad change contains a migration** (a directory under
+   `prisma/migrations/`), a plain `git revert` deletes that migration and takes its
+   change back out of `prisma/schema.prisma`, which turns the rollback into a migration
+   revert. Keep both out of it: `git revert --no-commit`, then
+   `git checkout HEAD -- prisma/schema.prisma prisma/migrations/<that migration>` before
+   committing, and take the migration itself to the owner (below).
 4. After an instant rollback, Vercel does not hand production to new deployments on its
    own. When the revert's deployment is ready, check that it is the one serving
    production, and **Promote** it if it is not. `npm run smoke` once more.
@@ -90,7 +95,7 @@ The CLI cannot toggle this on its own. Do it via UI:
 1. Open https://vercel.com/rahmanmansoori244-6893s-projects/nmwc-cm/settings/git
 2. Under "Connected Git Repository", click "Connect" and select `rahmanmansoori244-droid/NMWC-CRM` on `main`.
 3. Confirm in https://github.com/rahmanmansoori244-droid/NMWC-CRM/settings/installations that the Vercel app is installed.
-4. From now on, every `git push origin main` triggers a Vercel build automatically. Until then, the deploy must be done manually with `npx vercel --prod`.
+4. From then on, every push to `main` triggers a Vercel build automatically; that is how production deploys. If the connection is ever lost, reconnect it as above — do not fall back to `npx vercel --prod` from a laptop, which builds and migrates whatever tree is checked out (§4).
 
 ### B. Configure GitHub Actions secrets for the daily DB backup (op note 2)
 The workflow `.github/workflows/db-backup.yml` fails at its **Validate** step without `DIRECT_URL`, at **Encrypt** without the age recipients, and at **Upload** without the R2 pair — so a missing value never produces a quiet, incomplete backup. Note that GitHub keeps *variables* and *secrets* on two different settings pages, and a value set on the wrong page simply reads as empty.
@@ -806,14 +811,14 @@ What users report in their first days, and the control in the app that answers e
 
 | The user says or sees | Action |
 |---|---|
-| First sign-in: "my password does not work" | Open `/users` and read the account's **Last login**. **`never`**: nobody has signed in with it — check the username, then reset the password (who may: last row). **Anything else** (a date): someone has already signed in with this account and may have changed its password. The Steward resets it at once — a reset also ends that other session within five minutes — and looks in `/audit` at that account's `LOGIN` rows for when, and from which IP. |
+| First sign-in: "my password does not work" | Open `/users` on the **All** tab (the default **Active** tab hides disabled accounts) and find the account. Read **Status** first: **Disabled**, or an amber **Cannot sign in** badge (the username itself is refused by the demo-account block), means no password will work and a reset changes nothing — find out why it was disabled before anyone enables it, and take a **Cannot sign in** account to the owner, since it has to be renamed. Then read **Last login**. **`never`**: nobody has signed in with it — check the username, then reset the password (who may: last row). **Anything else** (a date): someone has already signed in with this account and may have changed its password. The Steward resets it at once — a reset also ends that other session within five minutes — then opens `/audit`, sets **Action** = `LOGIN` and **Entity** = `User`, and reads the **When** column of the rows whose **Actor** is that person (newest first, 50 to a page). `/audit` does not show where a sign-in came from: the IP is recorded with the row, but only the owner can read it, from the database. |
 | "Account temporarily locked due to repeated attempts" | Five sign-in attempts on that username in quick succession. Wait 60 seconds and type it carefully. A password reset does not lift the lock; waiting does. |
 | "Too many attempts from your network. Try again in …s" | The same limit, counted per network: everyone on one Wi-Fi shares five sign-ins a minute, right or wrong. Stagger sign-ins — no more than five a minute from one network — or sign in over mobile data. |
 | A customer's visit day is wrong | A Manager (customers in his regions) or the Steward opens the customer → **Enrich** → **Day of visit** → submit. From those two roles it is a direct write, with no approval step, and it is audited. A day can be changed but not cleared — pick the right one. While a request is waiting on the customer the form will not submit; decide that one first (two rows down). |
 | A customer is on the wrong route, or a salesman needs another route | Collect the customer codes or the route, and the right owner, and hand them to the Steward (§7, "Move a route to another salesman"). |
-| "This customer already has a pending change awaiting review" | Only one request can be open on a customer. The Manager decides the waiting one — **Approvals**, or **Reactivations** for a reopen request — and the salesman then submits again. |
+| "A submitted edit is already pending review for this customer.", "This customer already has a pending change awaiting review", or on the edit page "A submission is already pending review (by …)". When the waiting request is the user's own, the message starts "Your changes sent…" or "Your … sent …" instead. | Only one request can be open on a customer. The Manager decides the waiting one — **Approvals**, or **Reactivations** for a reopen request — and the salesman then submits again. |
 | An error page showing a **Reference** | Ask for the Reference exactly as shown and the time it happened, then look it up as §5g describes. |
-| Who can reset or disable whom | **Manager**: Salesman and Supervisor accounts in his own regions. **Steward**: every account except his own. Nobody changes their own password from `/users`; that is `/profile`. |
+| Who can reset or disable whom | **Manager**: Salesman and Supervisor accounts in his own regions. **Steward**: every account except his own. Nobody can disable the only active Manager until another Manager account is active. Nobody changes their own password from `/users`; that is `/profile`. |
 
 ## 8. Incident playbook
 

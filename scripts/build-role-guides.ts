@@ -1210,10 +1210,11 @@ const STEWARD_EN: Guide = {
       // disable to a manager, but canMutateUser (lib/permissions.ts) lets a Steward
       // reset and disable every account except their own, while a Manager is held
       // to the salesmen and supervisors in his regions: most requests are the
-      // Steward's to do.
+      // Steward's to do. The one other refusal is AUTH-07 (services/users.ts): nobody
+      // may disable the only active Manager.
       title: 'User management',
       intro:
-        'You see every account, and you can reset the password of, disable or enable any of them except your own.',
+        'You see every account, and you can reset the password of, disable or enable any of them except your own. The only active Manager cannot be disabled until another Manager account is active.',
       steps: [
         { html: 'Tap <strong>Users</strong> in the sidebar.', img: 'steward-09-users.png' },
         {
@@ -1305,9 +1306,13 @@ const STEWARD_EN: Guide = {
             '"Export failed"',
             "Check the row's error message. Most are network blips — re-run. If it persists, check the date range — exports over 50k rows can time out.",
           ],
+          // This row used to forward every leaver to their manager, but a Manager can
+          // disable only the salesmen and supervisors in his regions (canMutateUser,
+          // managerCanAdministerUser): an approver, Manager or Steward who left stayed
+          // active. It now matches section 9.
           [
             '"User left the company"',
-            'Forward to their manager. The manager uses the Users page → Disable. Their audit trail stays.',
+            'A salesman or supervisor: you, or their manager, use the Users page → Disable. Anyone else — an approver, a Manager, another Steward: you disable them yourself; their manager cannot. Their audit trail stays. A salesman’s route stays his until the account master gives it to someone else.',
           ],
         ],
       },
