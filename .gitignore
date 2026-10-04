@@ -10,10 +10,12 @@ dist
 tsconfig.tsbuildinfo
 *.tsbuildinfo
 
-# Env
-.env
-.env.local
-.env.*.local
+# Env: every env file, whatever it is named (B7.1), so a file copied in from the
+# private pack or during a move cannot be staged. Only the template is tracked.
+.env*
+*.env
+*.env.local
+!.env.example
 
 # Logs
 *.log
