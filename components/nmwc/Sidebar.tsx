@@ -75,6 +75,10 @@ export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     // SEC-10: regions are Steward-created (a Manager only works inside theirs).
     { href: '/routes', label: 'Routes & regions', icon: Map },
     { href: '/users', label: 'Users', icon: Users },
+    // RBAC-05-007: the Steward's audit log is the global one (app/(app)/audit/page.tsx
+    // admits MANAGER and STEWARD), but only the Manager's menu offered it
+    // (tests/unit/audit-menu.test.tsx).
+    { href: '/audit', label: 'Audit log', icon: ScrollText },
     { href: '/work', label: 'Work items', icon: Inbox },
     { href: '/status', label: 'Service status', icon: Activity },
   ],
