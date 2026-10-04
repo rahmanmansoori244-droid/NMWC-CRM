@@ -239,8 +239,10 @@ the server, items 40b and 41).
 **Operations**
 - Vercel Pro (2026-09-27). Credential rotation is the owner's.
 - On 2026-09-27 the owner gave **Claude** standing permission to write to production
-  through operator scripts, with the safeguards in §5, until the owner says the product is
-  "done". It covers no merge, no credential rotation, and no other agent. The 2026-09-30
+  through operator scripts, with the safeguards in §5. At the 2026-10-04 handover the owner
+  set its end date (recorded in the private handover pack, `PRIVATE-HANDOVER.md`); after
+  that the person taking over decides whether to keep, narrow or end it. It covers no
+  merge, no credential rotation, and no other agent. The 2026-09-30
   working agreement (§2) gives Codex **no production access, including reads**; production
   work is written up for the owner to have Claude run.
 
@@ -335,9 +337,8 @@ re-benchmark that the owner parked.
   failure policy (check current call sites before proposing a change); and the Steward's
   reach / two-person provisioning for approver-tier accounts. These remain owner questions,
   not permission to implement. The settled initial-password decision remains in §4.
-- The CR-number recompute on production (item 16): the script is ready and falls under
-  Claude's standing permission, but `AUDITOR-BRIEF.md` §18 still says "go-ahead pending" —
-  confirm with the owner; the production run remains pending. The code safeguards are
+- The CR-number recompute on production (item 16): closed — a read-only production dry run
+  on 2026-10-04 found nothing to recompute. The code safeguards are
   complete: CR-recompute and completeness rescore print committed counts before their
   COMPLETED insert and record completion before verification. Both the verification-read
   catch and each script's CLI catch show safe argument/configuration instructions marked
@@ -348,8 +349,9 @@ re-benchmark that the owner parked.
   mismatches exit 1 with the next step printed; a second apply that still leaves work calls
   for investigation before a third. CR-normalization calculation errors after a successful
   verification read propagate.
-- Two edit requests left pending since the May pilot: an approver should reject them (one
-  flips a customer-level status, which approval refuses).
+- ~~Two edit requests left pending since the May pilot~~ — done 2026-10-04: every open
+  May-pilot edit request was deleted on the owner's decision (audited; a backup is kept
+  privately).
 - Credential rotation.
 
 ### 6.3 Engineering follow-ups
@@ -381,10 +383,10 @@ truncating or dropping filters. Direct server-action calls and the separate filt
 are unchanged.
 
 Loose ends the reviews recorded: the Temix-linked (refresh) import lane does not repair a
-branch's region; the CHANGELOG has not been kept since July.
+branch's region; the CHANGELOG has no entries after 2026-05-11 (v1.0.1).
 
 CR-recompute and completeness rescore use the same verification-failure policy; their
-completed safeguards and the pending production CR run are recorded in §6.2.
+completed safeguards are recorded in §6.2; the production CR run is closed (nothing to recompute, 2026-10-04).
 
 Historical rough size (Claude's estimate, 2026-09-29, before the tiered review agreement):
 the decision items ~2 days once decided; item 14 and the CI suites ~1 day; the data tools

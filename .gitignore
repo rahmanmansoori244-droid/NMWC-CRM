@@ -75,3 +75,7 @@ prisma/*.db-journal
 /*.sql.gz
 /*.sql.gz.age
 /sigpipetest/
+
+# Operator scripts copied into a checkout to run against production (prod-run.cjs).
+# They read private files and must never be committed; delete them after use too.
+*.tmp.ts
