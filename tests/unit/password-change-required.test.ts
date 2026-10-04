@@ -270,6 +270,42 @@ describe('the two ways out still work for a flagged session', () => {
     expect(h.audits).toEqual([{ tx: true, reason: 'self_password_change' }]);
   });
 
+  it('changeOwnPasswordAction refuses a confirmation that differs, before reading anything', async () => {
+    // The form compares the two before posting; this is the server's own check
+    // for a post that skipped it. A typo saved here locks the user out.
+    const { changeOwnPasswordAction } = await import('@/services/password');
+    h.session = flagged('SALESMAN');
+    h.users.set('u-flagged', { id: 'u-flagged', passwordHash: 'hash:Initial-Shared-1', mustChangePassword: true });
+    const fd = new FormData();
+    fd.set('currentPassword', 'Initial-Shared-1');
+    fd.set('newPassword', 'A-new-password-2026');
+    fd.set('confirmNewPassword', 'A-new-pasword-2026');
+    const res = await changeOwnPasswordAction(fd);
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      fields: { confirmNewPassword: 'The two new passwords do not match.' },
+    });
+    expect(h.calls).toEqual([]);
+    expect(h.userUpdates).toEqual([]);
+  });
+
+  it('changeOwnPasswordAction with a matching confirmation changes the password as before', async () => {
+    const { changeOwnPasswordAction } = await import('@/services/password');
+    h.session = flagged('SALESMAN');
+    h.users.set('u-flagged', { id: 'u-flagged', passwordHash: 'hash:Initial-Shared-1', mustChangePassword: true });
+    const fd = new FormData();
+    fd.set('currentPassword', 'Initial-Shared-1');
+    fd.set('newPassword', 'A-new-password-2026');
+    fd.set('confirmNewPassword', 'A-new-password-2026');
+    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: undefined });
+    expect(h.userUpdates).toHaveLength(1);
+    expect(h.userUpdates[0]!.data).toMatchObject({
+      passwordHash: 'hash:A-new-password-2026',
+      mustChangePassword: false,
+    });
+  });
+
   it('changeOwnPasswordAction still refuses when signed out', async () => {
     const { changeOwnPasswordAction } = await import('@/services/password');
     h.session = null;

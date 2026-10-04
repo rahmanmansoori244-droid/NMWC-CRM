@@ -1,0 +1,187 @@
+/**
+ * The two places a password is set by hand ask for it twice and can show it.
+ *
+ * The forced first-sign-in change (ChangePasswordForm) and a Manager's or
+ * Steward's Reset password (UserRowActions) each took the new password once,
+ * masked. A typo on a phone keyboard was saved as typed: the first locks the
+ * user out behind a session the change itself revoked, the second hands a
+ * salesman a password nobody knows. Driven through the real forms (jsdom): a
+ * mismatch never reaches the server action and says so, a match calls it once
+ * with the password typed, and Show switches both new-password boxes between
+ * masked and plain text. services/password.ts refuses the same mismatch on its
+ * own; password-change-required.test.ts pins that half.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+
+const h = vi.hoisted(() => ({
+  change: vi.fn(),
+  reset: vi.fn(),
+  replace: vi.fn(),
+}));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: h.replace }) }));
+vi.mock('@/services/password', () => ({ changeOwnPasswordAction: h.change }));
+vi.mock('@/services/users', () => ({
+  resetPasswordAction: h.reset,
+  toggleUserActiveAction: vi.fn(),
+}));
+
+import { ChangePasswordForm } from '@/app/(app)/profile/change-password/ChangePasswordForm';
+import { UserRowActions } from '@/app/(app)/users/UserRowActions';
+
+const MISMATCH = 'The two new passwords do not match.';
+const TYPED = 'Typed-on-a-phone-1';
+const TYPO = 'Typed-on-a-phnoe-1';
+
+const input = (label: string) => screen.getByLabelText(label) as HTMLInputElement;
+const type = (el: HTMLInputElement, value: string) => fireEvent.change(el, { target: { value } });
+const sent = (fn: typeof h.change, field: string) => (fn.mock.calls[0]![0] as FormData).get(field);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.change.mockResolvedValue({ ok: true, data: undefined });
+  h.reset.mockResolvedValue({ ok: true, data: undefined });
+});
+afterEach(() => {
+  cleanup();
+});
+
+describe('ChangePasswordForm — the new password twice', () => {
+  function fill(newPassword: string, confirm: string) {
+    render(<ChangePasswordForm />);
+    type(input('Current password'), 'The-temporary-one-1');
+    type(input('New password (min 12 chars)'), newPassword);
+    type(input('Confirm new password'), confirm);
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+  }
+
+  it('a mismatch never calls the action, says so, and keeps what was typed', () => {
+    fill(TYPED, TYPO);
+    expect(h.change).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toBe(MISMATCH);
+    // Refused before React's form action runs, so the fields are not reset:
+    // the user can press Show and see which box holds the typo.
+    expect(input('Current password').value).toBe('The-temporary-one-1');
+    expect(input('New password (min 12 chars)').value).toBe(TYPED);
+    expect(input('Confirm new password').value).toBe(TYPO);
+  });
+
+  it('a match calls the action once with the new password, and the mismatch message goes', async () => {
+    render(<ChangePasswordForm />);
+    type(input('Current password'), 'The-temporary-one-1');
+    type(input('New password (min 12 chars)'), TYPED);
+    type(input('Confirm new password'), TYPO);
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+    expect(screen.getByRole('alert').textContent).toBe(MISMATCH);
+
+    type(input('Confirm new password'), TYPED);
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+    await waitFor(() => expect(h.change).toHaveBeenCalledTimes(1));
+    expect(sent(h.change, 'currentPassword')).toBe('The-temporary-one-1');
+    expect(sent(h.change, 'newPassword')).toBe(TYPED);
+    expect(sent(h.change, 'confirmNewPassword')).toBe(TYPED);
+    await waitFor(() => expect(screen.getByText(/Password changed/)).toBeTruthy());
+    expect(screen.queryByText(MISMATCH)).toBeNull();
+  });
+
+  it('Show switches both new-password boxes between masked and text, and never the current one', () => {
+    render(<ChangePasswordForm />);
+    const show = screen.getByRole('button', { name: 'Show new password' });
+    expect(show.getAttribute('type')).toBe('button');
+    expect(show.getAttribute('aria-pressed')).toBe('false');
+    expect(input('New password (min 12 chars)').type).toBe('password');
+    expect(input('Confirm new password').type).toBe('password');
+
+    fireEvent.click(show);
+    expect(show.getAttribute('aria-pressed')).toBe('true');
+    expect(input('New password (min 12 chars)').type).toBe('text');
+    expect(input('Confirm new password').type).toBe('text');
+    expect(input('Current password').type).toBe('password');
+    // Shown as text, the keyboard must not "correct" the password as it is typed.
+    for (const el of [input('New password (min 12 chars)'), input('Confirm new password')]) {
+      expect(el.getAttribute('autocapitalize')).toBe('none');
+      expect(el.getAttribute('autocorrect')).toBe('off');
+      expect(el.getAttribute('spellcheck')).toBe('false');
+      expect(el.getAttribute('autocomplete')).toBe('new-password');
+    }
+
+    fireEvent.click(show);
+    expect(show.getAttribute('aria-pressed')).toBe('false');
+    expect(input('New password (min 12 chars)').type).toBe('password');
+    expect(input('Confirm new password').type).toBe('password');
+    expect(h.change).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserRowActions — Reset password twice', () => {
+  const box = (placeholder: string) => screen.getByPlaceholderText(placeholder) as HTMLInputElement;
+
+  function open() {
+    render(<UserRowActions userId="u-target" username="someone" isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'Reset password' }));
+  }
+
+  it('a mismatch never calls the action, says so, and keeps what was typed', () => {
+    open();
+    type(box('New password (12+ chars)'), TYPED);
+    type(box('Confirm new password'), TYPO);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(h.reset).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toBe(MISMATCH);
+    expect(box('New password (12+ chars)').value).toBe(TYPED);
+    expect(box('Confirm new password').value).toBe(TYPO);
+  });
+
+  it('a match calls the action once with the password and the row it is for', async () => {
+    open();
+    type(box('New password (12+ chars)'), TYPED);
+    type(box('Confirm new password'), TYPED);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(h.reset).toHaveBeenCalledTimes(1));
+    expect(sent(h.reset, 'password')).toBe(TYPED);
+    expect(sent(h.reset, 'userId')).toBe('u-target');
+    await waitFor(() => expect(screen.getByText('Password updated.')).toBeTruthy());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('Show switches both boxes between masked and text', () => {
+    open();
+    const show = screen.getByRole('button', { name: 'Show new password' });
+    expect(show.getAttribute('type')).toBe('button');
+    expect(show.getAttribute('aria-pressed')).toBe('false');
+    expect(box('New password (12+ chars)').type).toBe('password');
+    expect(box('Confirm new password').type).toBe('password');
+
+    fireEvent.click(show);
+    expect(show.getAttribute('aria-pressed')).toBe('true');
+    expect(box('New password (12+ chars)').type).toBe('text');
+    expect(box('Confirm new password').type).toBe('text');
+    for (const el of [box('New password (12+ chars)'), box('Confirm new password')]) {
+      expect(el.getAttribute('autocapitalize')).toBe('none');
+      expect(el.getAttribute('autocorrect')).toBe('off');
+      expect(el.getAttribute('spellcheck')).toBe('false');
+      expect(el.getAttribute('autocomplete')).toBe('new-password');
+    }
+
+    fireEvent.click(show);
+    expect(show.getAttribute('aria-pressed')).toBe('false');
+    expect(box('New password (12+ chars)').type).toBe('password');
+    expect(h.reset).not.toHaveBeenCalled();
+  });
+
+  it('reopened, the box is masked again and the last mismatch is gone', () => {
+    open();
+    fireEvent.click(screen.getByRole('button', { name: 'Show new password' }));
+    type(box('New password (12+ chars)'), TYPED);
+    type(box('Confirm new password'), TYPO);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(screen.getByRole('alert').textContent).toBe(MISMATCH);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset password' })); // close
+    fireEvent.click(screen.getByRole('button', { name: 'Reset password' })); // open again
+    expect(screen.queryByRole('alert')).toBeNull();
+    const show = screen.getByRole('button', { name: 'Show new password' });
+    expect(show.getAttribute('aria-pressed')).toBe('false');
+    expect(box('New password (12+ chars)').type).toBe('password');
+  });
+});

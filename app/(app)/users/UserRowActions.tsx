@@ -13,6 +13,17 @@ import { toggleUserActiveAction, resetPasswordAction } from '@/services/users';
 // state survives the re-render that removes the row.
 const AnnounceContext = createContext<(msg: string) => void>(() => {});
 
+// Reset password took the new password once, masked: a Manager's typo handed the
+// salesman a password nobody knew, and only another reset recovered the account.
+// So it is typed twice, compared here before anything is sent, and can be shown.
+// resetPasswordAction checks only the length; the comparison is this form's.
+const MISMATCH = 'The two new passwords do not match.';
+
+// Shown as text, a keyboard treats the password as prose: it capitalises the
+// first letter, autocorrects words, and a cloud spell-checker is sent it. Masked,
+// browsers do none of that, so these matter only once Show is on.
+const AS_TYPED = { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false } as const;
+
 export function UsersFeedback({ children }: { children: React.ReactNode }) {
   const [msg, setMsg] = useState<string | null>(null);
   return (
@@ -49,6 +60,8 @@ export function UserRowActions({
   const [pending, start] = useTransition();
   const [showReset, setShowReset] = useState(false);
   const [resetMsg, setResetMsg] = useState<string | null>(null);
+  const [resetMismatch, setResetMismatch] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const announce = useContext(AnnounceContext);
 
   function toggle() {
@@ -82,6 +95,13 @@ export function UserRowActions({
   async function reset(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
+    if (fd.get('password') !== fd.get('confirmPassword')) {
+      // A "Password updated." left from an earlier reset must not sit beside it.
+      setResetMsg(null);
+      setResetMismatch(true);
+      return;
+    }
+    setResetMismatch(false);
     fd.set('userId', userId);
     start(async () => {
       try {
@@ -114,7 +134,12 @@ export function UserRowActions({
       <button
         type="button"
         disabled={pending}
-        onClick={() => setShowReset((s) => !s)}
+        onClick={() => {
+          // Reopened, the box starts masked and without the last attempt's error.
+          setShowReset((s) => !s);
+          setResetMismatch(false);
+          setShowResetPassword(false);
+        }}
         className="rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
       >
         Reset password
@@ -124,15 +149,41 @@ export function UserRowActions({
           onSubmit={reset}
           className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1"
         >
-          <input
-            type="password"
-            name="password"
-            autoComplete="new-password"
-            placeholder="New password (12+ chars)"
-            minLength={12}
-            required
-            className="rounded-md border-slate-200 px-2 py-1 text-xs"
-          />
+          <div className="grid gap-1">
+            <input
+              type={showResetPassword ? 'text' : 'password'}
+              name="password"
+              autoComplete="new-password"
+              placeholder="New password (12+ chars)"
+              minLength={12}
+              required
+              {...AS_TYPED}
+              className="rounded-md border-slate-200 px-2 py-1 text-xs"
+            />
+            <input
+              type={showResetPassword ? 'text' : 'password'}
+              name="confirmPassword"
+              autoComplete="new-password"
+              placeholder="Confirm new password"
+              required
+              {...AS_TYPED}
+              className="rounded-md border-slate-200 px-2 py-1 text-xs"
+            />
+            {resetMismatch && (
+              <span role="alert" className="text-left text-red-600">
+                {MISMATCH}
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            aria-pressed={showResetPassword}
+            aria-label="Show new password"
+            onClick={() => setShowResetPassword((s) => !s)}
+            className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 aria-pressed:bg-slate-100"
+          >
+            Show
+          </button>
           <button
             type="submit"
             disabled={pending}

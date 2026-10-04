@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useEffect, useId, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 // X-AUTH-1: a module holding this ONE action. Next gives this page every action
 // of each 'use server' module it imports, and a session that must change its
@@ -9,11 +9,27 @@ import { changeOwnPasswordAction } from '@/services/password';
 
 const OWN_PATH = '/profile/change-password';
 
+// The forced first-sign-in change took the new password once, masked. A typo on
+// a phone keyboard was saved as typed, the action revoked the session (AUTH-12)
+// and sent the user to /login with a password nobody knows: an account only a
+// Manager reset recovers. So the new password is typed twice and can be shown.
+// services/password.ts refuses the same mismatch with the same words.
+const MISMATCH = 'The two new passwords do not match.';
+
+// Shown as text, a phone keyboard treats the password as prose: it capitalises
+// the first letter, autocorrects words, and a cloud spell-checker is sent it.
+// Masked, browsers do none of that, so these matter only once Show is on.
+const AS_TYPED = { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false } as const;
+
 export function ChangePasswordForm() {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [done, setDone] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  // UAT-07, as LabeledField does: with two new-password boxes on the page, a
+  // label not tied to its field leaves a screen reader three unnamed passwords.
+  const id = useId();
 
   // AUTH-09 hardening (go-live walk, 2026-09-10): when the middleware forces
   // this page onto a must-change user during a CLIENT navigation (they tapped
@@ -29,6 +45,17 @@ export function ChangePasswordForm() {
 
   return (
     <form
+      // The mismatch is refused here, not in `action`: React resets every
+      // uncontrolled field after a form action runs, so refusing inside it would
+      // wipe what the user typed, the current password too, and leave nothing for
+      // Show to reveal. A prevented submit never reaches the action.
+      onSubmit={(e) => {
+        const fd = new FormData(e.currentTarget);
+        if (fd.get('newPassword') !== fd.get('confirmNewPassword')) {
+          e.preventDefault();
+          setErrors({ confirmNewPassword: MISMATCH });
+        }
+      }}
       action={(fd) => {
         setErrors({});
         start(async () => {
@@ -65,10 +92,14 @@ export function ChangePasswordForm() {
             </div>
           )}
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">
+            <label
+              htmlFor={`${id}-current`}
+              className="mb-1 block text-xs font-medium text-slate-700"
+            >
               Current password
             </label>
             <input
+              id={`${id}-current`}
               type="password"
               name="currentPassword"
               required
@@ -80,21 +111,53 @@ export function ChangePasswordForm() {
             )}
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">
+            <label htmlFor={`${id}-new`} className="mb-1 block text-xs font-medium text-slate-700">
               New password (min 12 chars)
             </label>
             <input
-              type="password"
+              id={`${id}-new`}
+              type={showNew ? 'text' : 'password'}
               name="newPassword"
               required
               minLength={12}
               autoComplete="new-password"
+              {...AS_TYPED}
               className="block w-full rounded-md border-slate-300 px-3 py-2"
             />
             {errors.newPassword && (
               <p className="mt-0.5 text-xs text-red-600">{errors.newPassword}</p>
             )}
           </div>
+          <div>
+            <label
+              htmlFor={`${id}-confirm`}
+              className="mb-1 block text-xs font-medium text-slate-700"
+            >
+              Confirm new password
+            </label>
+            <input
+              id={`${id}-confirm`}
+              type={showNew ? 'text' : 'password'}
+              name="confirmNewPassword"
+              required
+              autoComplete="new-password"
+              {...AS_TYPED}
+              className="block w-full rounded-md border-slate-300 px-3 py-2"
+            />
+            {errors.confirmNewPassword && (
+              <p role="alert" className="mt-0.5 text-xs text-red-600">
+                {errors.confirmNewPassword}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            aria-pressed={showNew}
+            onClick={() => setShowNew((s) => !s)}
+            className="justify-self-start rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 aria-pressed:bg-slate-100"
+          >
+            Show new password
+          </button>
           <button
             type="submit"
             disabled={pending}

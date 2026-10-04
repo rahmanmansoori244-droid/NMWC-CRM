@@ -242,6 +242,7 @@ test('salesman: route-code login, forced password change, Today, search, enrich 
   await settled(page);
   await page.locator('input[name="currentPassword"]').fill(INITIAL_PASSWORD);
   await page.locator('input[name="newPassword"]').fill(NEW_PASSWORD);
+  await page.locator('input[name="confirmNewPassword"]').fill(NEW_PASSWORD);
   await page.getByRole('button', { name: /change password/i }).click();
   await expect(page.getByText(/password changed/i)).toBeVisible();
   await expect(page).toHaveURL(/\/login/);

@@ -109,7 +109,13 @@ describe('the autoComplete attributes are real and reach the input', () => {
   it('every password input asks for a NEW password, not the stored one', () => {
     expect(form).toMatch(/autoComplete="new-password"/);
     // The row's Reset password box is the second place a manager offers to fill.
-    expect(rowActions).toMatch(/type="password"[\s\S]{0,120}?autoComplete="new-password"/);
+    // It is two boxes now, the password and its confirmation, and Show switches
+    // their type, so the type is an expression naming 'password', not a literal.
+    const passwordInputs = (rowActions.match(/<input\b[\s\S]*?\/>/g) ?? []).filter((i) =>
+      /type=(?:"password"|\{[^}]*'password'[^}]*\})/.test(i)
+    );
+    expect(passwordInputs).toHaveLength(2);
+    for (const input of passwordInputs) expect(input).toMatch(/autoComplete="new-password"/);
   });
 
   it('the shared Field component forwards autoComplete to the input', () => {

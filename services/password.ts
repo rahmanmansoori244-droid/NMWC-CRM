@@ -52,6 +52,14 @@ async function changeOwnPasswordCore(formData: FormData) {
       Object.fromEntries(parsed.error.issues.map((i) => [i.path.join('.'), i.message]))
     );
   }
+  // The form asks for the new password twice and refuses a mismatch before it
+  // posts (ChangePasswordForm.tsx); this refuses one that reaches here anyway,
+  // before anything is read. Only when the field is sent: a caller posting no
+  // confirmation keeps the contract this action had.
+  const confirm = formData.get('confirmNewPassword');
+  if (confirm !== null && confirm !== parsed.data.newPassword) {
+    throw new ValidationError({ confirmNewPassword: 'The two new passwords do not match.' });
+  }
   const me = await prisma.user.findUniqueOrThrow({ where: { id: actor.id } });
   const ok = await bcrypt.compare(parsed.data.currentPassword, me.passwordHash);
   if (!ok) {
