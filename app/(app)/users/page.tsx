@@ -50,6 +50,49 @@ const ROLE_ORDER: Record<Role, number> = {
   VIEWER: 7,
 };
 
+// The day-1 operator check — who has not claimed their account yet — which the
+// Last login column cannot answer on its own: "never" is also what an account
+// created with no forced change shows, and a date is also what someone stopped at
+// the forced change shows. mustChangePassword is set when an operator issues or
+// resets a password (services/users.ts, and the account import when its sheet
+// asks) and cleared only by the holder's own change (services/password.ts), so
+// together with lastLoginAt it separates the two states. lastLoginAt is written
+// at sign-in, BEFORE the forced change (lib/auth.ts), which is why a date with
+// the flag still set means "signed in on the issued password and stopped there".
+const PASSWORD_CLAIM = {
+  notSignedIn: {
+    label: 'Not signed in yet',
+    title: 'Still on the password it was issued, and has never signed in.',
+    className: 'bg-blue-50 text-blue-700',
+  },
+  changePending: {
+    label: 'Password change pending',
+    title: 'Signed in on the issued password but has not set their own yet.',
+    className: 'bg-violet-50 text-violet-700',
+  },
+} as const;
+
+function passwordClaim(u: {
+  mustChangePassword: boolean;
+  lastLoginAt: Date | null;
+}): keyof typeof PASSWORD_CLAIM | null {
+  if (!u.mustChangePassword) return null;
+  return u.lastLoginAt ? 'changePending' : 'notSignedIn';
+}
+
+function PasswordClaimBadge({ claim }: { claim: keyof typeof PASSWORD_CLAIM | null }) {
+  if (!claim) return null;
+  const badge = PASSWORD_CLAIM[claim];
+  return (
+    <span
+      title={badge.title}
+      className={`ml-1 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}
+    >
+      {badge.label}
+    </span>
+  );
+}
+
 export default async function UsersPage({ searchParams }: { searchParams: Promise<Search> }) {
   const session = await auth();
   if (!session?.user) redirect('/login');
@@ -89,6 +132,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
         role: true,
         isActive: true,
         lastLoginAt: true,
+        mustChangePassword: true,
         ownedRouteId: true,
         supervisorId: true,
         supervisor: { select: { fullName: true, username: true } },
@@ -138,6 +182,12 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
   const users =
     status === 'all' ? roster : roster.filter((u) => u.isActive === (status === 'active'));
   const hiddenCount = roster.length - users.length;
+  // Counted over `users` — exactly the rows the table below renders — and nothing
+  // wider. A Manager's figure is their own administrable accounts under the
+  // current filter, never a company-wide one: aggregate only what the viewer can
+  // already open, because a total over more than that leaks by subtraction.
+  const notSignedInCount = users.filter((u) => passwordClaim(u) === 'notSignedIn').length;
+  const changePendingCount = users.filter((u) => passwordClaim(u) === 'changePending').length;
   // The green badge means isActive, which is NOT the same as "can sign in":
   // production sets DEMO_ACCOUNTS_DISABLED and lib/auth.ts then refuses every
   // username lib/demo-accounts.ts matches — `admin`, `steward`, `viewer` and the
@@ -207,6 +257,16 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
         ))}
       </nav>
 
+      {/* Above the grid rather than in it: a grid child takes a cell and pushes the
+          table into the Create-user column (see the banner below). Same scope as
+          the table — the counts are over `users`. */}
+      {users.length > 0 && (
+        <p className="border-b border-slate-200 bg-white px-6 py-2 text-sm text-slate-600">
+          Of {users.length} {noun} shown: {notSignedInCount} not signed in yet ·{' '}
+          {changePendingCount} password change pending
+        </p>
+      )}
+
       {/* The banner lives outside the grid so it cannot take a grid cell and push
           the table into the Create-user column. */}
       <UsersFeedback>
@@ -253,6 +313,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                           Cannot sign in
                         </span>
                       )}
+                      <PasswordClaimBadge claim={passwordClaim(u)} />
                     </td>
                     <td className="px-4 py-2 text-xs text-slate-500">
                       {u.lastLoginAt ? u.lastLoginAt.toLocaleDateString('en-GB') : 'never'}
