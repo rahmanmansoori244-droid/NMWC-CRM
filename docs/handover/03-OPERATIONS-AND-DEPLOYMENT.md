@@ -735,6 +735,7 @@ Read a script's header before you run it.
 | Land visit days that a quarantine held back | `apply-quarantined-visit-days.ts` (`ops:visit-days`) | With `--apply` | `QuarantinedVisitDays` | OPERATIONS §7 |
 | Rescore completeness | `rescore-completeness.ts` (`ops:rescore-completeness`) | With `--apply --actor` | `CompletenessRescore` | OPERATIONS §7 |
 | Recompute normalized CR numbers | `recompute-cr-norm.ts` (`ops:recompute-cr-norm`) | With `--apply` | `CrNormRecompute` (and `CustomerPair` rows) | Script header; HANDOVER §6.2 |
+| Load the visit days the Managers filled into the per-region sheets | `visitdays-from-sheets.ts` (`ops:visitdays-from-sheets`) | With `--apply`, of the reviewed set named by `--set` and `--set-sha`. `--reverse <runId> --confirm` undoes a run | `VisitDaysFromSheets`, plus one `Branch` row per day carrying the run id | Script header; OPERATIONS §7 |
 | Verify the customer-master load | `verify-load.ts` (`verify:load`) | No. Reads `golive-data/` unless both expectation flags are given | — | OPERATIONS §7, GO-LIVE-RUNBOOK |
 | Export the CRM's payment terms for the master builder | `export-crm-terms.ts` (`ops:export-crm-terms`) | Writes a CSV of customer data into `golive-data/` (private) | — | Script header |
 | The least-privilege app role | `app-role.ts` | Yes. Refuses production unless `ALLOW_PRODUCTION=1` | — | OPERATIONS §5c (prefer the **Provision app role** workflow) |
@@ -778,11 +779,16 @@ They were run on one pattern: a dry run, an independent check of its counts, a r
 `npm run smoke` before and after. `temix-link-apply.ts` and `pilot-edits-delete.ts` have a
 `--rehearse` mode. `visitdays-jp.ts` has no rehearse or reverse mode.
 
-**No loader exists yet for the per-region visit-day sheets.** One must be written on that
-same pattern (dry run → independent check → rehearse → apply; give it a `--rehearse` mode,
-which `visitdays-jp.ts` lacks), using those three scripts as models. It is Tier B like
-every script here. Until it exists, use the in-app ways of setting a visit day that
-[04 D2](./04-PENDING-WORK.md#d2-filling-in-missing-visit-days--p1) describes.
+**The per-region visit-day sheets are loaded by `scripts/ops/visitdays-from-sheets.ts`**
+(in the table above), on that same pattern: a dry run that writes a private set file and
+review workbook into `golive-data/visitdays/from-sheets/`, an independent check of the set
+against the same sheets, `--rehearse`, then `--apply` naming the reviewed set by `--set`
+and `--set-sha`, with `npm run smoke` before and after. `--reverse <runId>` undoes a run;
+it is a dry run until `--confirm`. The rows that need a person (a note, a day that is not
+one of the seven codes, a branch that moved, closed or already has another day, rows that
+disagree about one branch) are listed in the review workbook, for the in-app ways of
+setting a visit day that [04 D2](./04-PENDING-WORK.md#d2-filling-in-missing-visit-days--p1)
+describes. Blank rows, and rows whose branch already has that very day, are only counted.
 
 ---
 
@@ -1102,7 +1108,7 @@ fill-in list is in PRIVATE-HANDOVER.md.
 | A named Data Steward account for the new person | With too few Steward accounts, an absence or a lock-out leaves nobody able to import, correct quarantined rows or reset passwords | [§2.2](#22-accounts-and-access); PRIVATE-HANDOVER.md fill-in list |
 | Who approves merges after handover, and by which route | Until the owner and the person taking over agree, only the owner says "merge it". The `AGENTS.md` preface and HANDOVER §2 describe only Rebase and merge | [§4.1](#41-how-main-moves); PRIVATE-HANDOVER.md fill-in list |
 | Who reviews Tier B after handover | The recorded rule names Claude | [§4.1](#41-how-main-moves); HANDOVER §2 |
-| A loader for the per-region visit-day sheets | None exists, so the sheets cannot be loaded in bulk. It must be written on the dry run → independent check → rehearse → apply pattern | [§7.6](#76-scripts-that-read-or-write-a-database); PRIVATE-HANDOVER.md |
+| Loading the per-region visit-day sheets as they come back | The loader exists (`scripts/ops/visitdays-from-sheets.ts`), but each returned workbook still has to be run through it, and the rows it leaves need a person | [§7.6](#76-scripts-that-read-or-write-a-database); PRIVATE-HANDOVER.md |
 | Confirm that the signed-in CSP browser walk is done or superseded | It covers sign-in, the forced password change, early sign-out, the `/audit` filter, approve and reject, and photo upload | HANDOVER §6.2 |
 | Fix the stale parts of OPERATIONS.md (including §6.12 and §6.13), the GO-LIVE-RUNBOOK header and the `lib/escalation.ts` header comment | Readers follow wrong instructions ([§2.5](#25-read-first-and-what-is-stale)) | AUDITOR-BRIEF §15 |
 | The role guides in `docs/guide/` | Users hold the newer 2026-10-04 guide set, and `docs/guide/` carries old wording and lacks the Approvers and Arabic Steward guides. Decide whether the newer set replaces `docs/guide/`, after a leak review, or rebuild `docs/guide/` with `npm run guide:roles` ([§12](#12-day-1-support)) | AUDITOR-BRIEF §18; [04 B1.6](./04-PENDING-WORK.md) |

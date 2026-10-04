@@ -774,6 +774,50 @@ It applies a row only when the customer has exactly one live branch of that name
 
 It takes no customer lock and recomputes no completeness score, although a visit day is worth 5 points: the branches it wrote keep the score from before, until `ops:rescore-completeness` (below) repairs them. **Never run the two at the same time** — the rescore's safety under load is the customer lock, which this script does not take.
 
+### Load the visit days the Managers filled in (the per-region sheets)
+
+The sheets list, one workbook per region and one sheet per route, the live branches that
+had no visit day. A Manager fills column J (Visit day, one of SAT SUN MON TUE WED THU FRI)
+and sends the workbook back. `scripts/ops/visitdays-from-sheets.ts` loads it; its header
+gives every rule. Run it through the runner, never with `DIRECT_URL=` on the command line
+(HANDOVER §5):
+
+```bash
+npm run smoke
+NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs \
+  scripts/ops/visitdays-from-sheets.ts --expect-host ep-sweet-haze --sheets <folder of returned workbooks>
+# Have the set file checked against the same sheets by a second person or agent. Then,
+# with the set file and the SHA-256 the dry run printed:
+NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs \
+  scripts/ops/visitdays-from-sheets.ts --expect-host ep-sweet-haze --set <set .json> --set-sha <hash> --rehearse
+NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs \
+  scripts/ops/visitdays-from-sheets.ts --expect-host ep-sweet-haze --set <set .json> --set-sha <hash> --apply
+npm run smoke
+```
+
+The dry run writes two private files into `golive-data/visitdays/from-sheets/`: the set
+(every branch it would write, with its day) and the review workbook (every row that needs a
+person, with the reason; blank rows and rows whose branch already has that day are only
+counted). It writes a day only onto an ACTIVE branch that still has none, on the route its
+sheet names, and only when the row has no note; a branch named on several rows loads only
+when they all give the same day without a note. If one route's sheet is in two workbooks
+(two versions of a region's sheets), it refuses: pass one version at a time. The apply
+writes only branches that are unchanged since the dry run, in transactions of up to
+`--chunk` branches (default 200) that each take their customers' locks (in the order
+`lib/locks.ts` gives), with one audit row each, and rescores their customers inside that
+lock. It prints the run id as soon as it starts. The rehearsal takes about as long as the
+apply: time it first. The rows in the review workbook go to a Manager or the Steward to
+settle in the app (customer → **Enrich** → **Day of visit**). To undo a run,
+`--reverse <runId>` (a dry run), then `--reverse <runId> --confirm`: it clears only the
+days still as the run wrote them.
+
+Each day written onto a branch whose day the expectation does not already count adds 1 to
+the visit-day expectation of `verify:load` (GO-LIVE-RUNBOOK §6a). Derive it from the
+ledger, never from an observed total: count the run's `Branch` audit rows (each carries the
+run id in `after.runId`, so this also covers a run that stopped before its COMPLETED row),
+and subtract what a `--reverse` of that run set back to none (its `reversed` row in
+`entityType = VisitDaysFromSheets`). Keep the figures private.
+
 ### Rescore completeness after the import fix (one-off, auditor recheck F21, 2026-09-29)
 
 Until this fix the promote rescored only the customer: every branch the go-live load created sat at `completenessScore` 0, and a branch whose address, visit day, status or route an import changed kept its old score — unless a later edit, photo or reactivation happened to rescore that customer. `Branch.completenessScore` is what the dashboard's region and route leaderboards and the branch ring read, so they are understated. The fixed promote keeps the scores right from now on; this repairs what the earlier loads, and `ops:visit-days`, left behind. Run it **after** the fix is deployed, so nothing written behind it is stale again.

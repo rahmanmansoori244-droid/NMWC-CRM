@@ -105,17 +105,18 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Retention** | Rate-limit rows 1 day; dumps 30 days; Sentry per its own org setting **[OWNER]**; Vercel logs 30 days with Observability Plus since the Pro upgrade on 2026-09-27 (request paths, including search terms, are not scrubbed: DATA-RETENTION-SCHEDULE.md). |
 | **Lawful basis** | **[COUNSEL]** |
 
-**The rows the ledger cannot attribute to a device.** Ten maintenance scripts write
+**The rows the ledger cannot attribute to a device.** Twelve maintenance scripts write
 `AuditLog` directly: the bulk credential reset, the synthetic-data wipe and its
 cleanup, the branch flatten, the go-live account bootstrap, the least-privilege role
-probe (whose insert is rolled back and is not an audit record at all), and five
+probe (whose insert is rolled back and is not an audit record at all), and six
 go-live corrections that each write a STARTING row before their first chunk and a
 COMPLETED row after their last, so an interrupted run is visible as a STARTING with no
 COMPLETED beside it — the Temix requeue (`scripts/ops/requeue-untracked.ts`), the
 credit-limit zeroing (`scripts/ops/zero-credit-limits.ts`), the quarantined
 visit-day apply (`scripts/ops/apply-quarantined-visit-days.ts`), the CR-norm
-recompute (`scripts/ops/recompute-cr-norm.ts`, item 16) and the completeness
-rescore (`scripts/ops/rescore-completeness.ts`, auditor recheck F21). An operator runs
+recompute (`scripts/ops/recompute-cr-norm.ts`, item 16), the completeness
+rescore (`scripts/ops/rescore-completeness.ts`, auditor recheck F21) and the
+visit-day sheet load (`scripts/ops/visitdays-from-sheets.ts`). An operator runs
 these by hand against the database rather than through the application, so there is
 no request to read an address or a device string from. On those rows `ip` and
 `userAgent` are null **by construction, not by omission**, and a reader of the ledger

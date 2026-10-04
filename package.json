@@ -36,6 +36,7 @@
     "ops:export-crm-terms": "tsx scripts/ops/export-crm-terms.ts",
     "ops:recompute-cr-norm": "tsx scripts/ops/recompute-cr-norm.ts",
     "ops:rescore-completeness": "tsx scripts/ops/rescore-completeness.ts",
+    "ops:visitdays-from-sheets": "tsx scripts/ops/visitdays-from-sheets.ts",
     "verify:credentials": "tsx scripts/golive/verify-credentials.ts"
   },
   "dependencies": {

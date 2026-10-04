@@ -20,7 +20,7 @@
 ## 2. Ground rules for you (the auditor)
 
 - **Do not connect to production.** The production database endpoint contains `ep-sweet-haze`; the production app is `https://nmwc-cm.vercel.app`. `npm run smoke` makes read-only, anonymous requests to that URL; run nothing else against it.
-- **Run no script under `scripts/**` or `prisma/*.ts` against anything but your own empty database.** The write switch varies — `--apply`, a subcommand (`app-role.ts create|grant`), an environment flag (`CONFIRM_CREDENTIAL_RESET=yes`, `ALLOW_PRODUCTION=1`, `ALLOW_PROD_SEED=1`), or **nothing at all**. These write as soon as they run, with no production check: `scripts/wipe-synthetic-data.ts`, `flatten-customer-branches.ts`, `cleanup-synthetic-test.ts`, `seed-demo-edit.ts`, `prisma/inject-test-edits.ts`, `seed-muscat-customers.ts`, `seed-muscat-payment-terms.ts`, `prisma/test-*.ts`, and `prisma/seed.ts` (`npm run db:seed`). They are historical one-off tools the app never calls. The go-live operator scripts (`requeue-untracked.ts`, `zero-credit-limits.ts`, `apply-quarantined-visit-days.ts`, `recompute-cr-norm.ts`, `rescore-completeness.ts`, `scripts/golive/bootstrap-accounts.ts`) are built to write to production behind `--expect-host ep-sweet-haze`.
+- **Run no script under `scripts/**` or `prisma/*.ts` against anything but your own empty database.** The write switch varies — `--apply`, a subcommand (`app-role.ts create|grant`), `--confirm` (`scripts/ops/visitdays-from-sheets.ts --reverse`), an environment flag (`CONFIRM_CREDENTIAL_RESET=yes`, `ALLOW_PRODUCTION=1`, `ALLOW_PROD_SEED=1`), or **nothing at all**. These write as soon as they run, with no production check: `scripts/wipe-synthetic-data.ts`, `flatten-customer-branches.ts`, `cleanup-synthetic-test.ts`, `seed-demo-edit.ts`, `prisma/inject-test-edits.ts`, `seed-muscat-customers.ts`, `seed-muscat-payment-terms.ts`, `prisma/test-*.ts`, and `prisma/seed.ts` (`npm run db:seed`). They are historical one-off tools the app never calls. The go-live operator scripts (`requeue-untracked.ts`, `zero-credit-limits.ts`, `apply-quarantined-visit-days.ts`, `recompute-cr-norm.ts`, `rescore-completeness.ts`, `visitdays-from-sheets.ts`, `scripts/golive/bootstrap-accounts.ts`) are built to write to production behind `--expect-host ep-sweet-haze`.
 - **Customer data is not in the repository.** `golive-data/` (the real masters and generated passwords) is gitignored and appears in no commit on any ref. `.env` is gitignored; `.env.example` holds variable names with placeholder values and non-secret defaults.
 - **Some committed files do contain passwords and personal data** — see §14. Do not reproduce values in your report; name the file and line. Do not open `docs/guide/img/*.png` expecting test data: they were captured from production during the May 2026 pilot.
 - **Integration tests need a Postgres of your own** (§16). Never point them at a shared or production database: seven suites have no production check (§11).
@@ -59,8 +59,8 @@ services/*.ts        16 'use server' modules exporting 47 async functions (serve
 prisma/              schema.prisma, 21 migrations, seeds, ad-hoc test scripts (§2)
 scripts/             ops/ (smoke, app-role, restore-verify, cron-scheduler, R2 checks), qa/, golive/,
                      compliance/, plus ~16 historical scripts at the root (§2)
-tests/unit           153 files, 2,914 tests (vitest + jsdom); one runs only where golive-data/ exists
-tests/integration    38 DB-backed suites gated by RUN_* flags; 35 run in CI
+tests/unit           154 files, 2,988 tests (vitest + jsdom); one runs only where golive-data/ exists
+tests/integration    39 DB-backed suites gated by RUN_* flags; 36 run in CI
 tests/e2e            2 Playwright specs; only login.spec.ts runs in CI
 tests/support        strip-comments (TypeScript-parser based), jsx-ast, where-eval, workflow-step,
                      promote, audit (owner-client purge helper)
@@ -300,8 +300,8 @@ Do not report these as defects without new evidence; you may of course challenge
 - **Structural guards** assert on source or configuration where the historical defect was "a correct helper nobody called": `submit-wiring-guard`, `audit-guard` and `branch-address-guard` read comment-stripped source; `ci-gates-guard` executes the workflow's shell steps under `bash -e` with stubs; `typed-routes-guard` compiles probe files; `pii-classification` parses the schema. 11 test files still strip comments with a naive regex that `tests/support/strip-comments.ts` documents as wrong.
 - **Mutation testing by hand**, recorded in commit messages (e.g. `efe3729` 11/11 unit mutants; `ab5867f` 20/20; `2d1e702` 11/11). No Stryker config.
 - **Adversarial review after merges**: three to six lenses, each finding put to one or two independent skeptics; confirmed findings are fixed in a follow-up commit whose message lists them.
-- **What the tests actually exercise (read "2,914 unit tests" with this in mind):**
-  - Service functions are exercised against real Postgres by the integration suites; 31 of 38 mock `@/lib/auth`, so the real session path runs only in `tests/e2e/login.spec.ts`.
+- **What the tests actually exercise (read "2,988 unit tests" with this in mind):**
+  - Service functions are exercised against real Postgres by the integration suites; 31 of 39 mock `@/lib/auth`, so the real session path runs only in `tests/e2e/login.spec.ts`.
   - Unit tests reach services mostly through source-text guards or `vi.mock`; some run a service with Prisma mocked, among them `customer-master-export.test.ts`, `duplicates-service.test.ts` and `photo-attach-service.test.ts` (`services/photos.ts` through its two routes), and since phase 2 `edit-service.test.ts` and `edit-approval-service.test.ts` (`services/edits.ts`), `rescore.test.ts` and `rescore-completeness.test.ts`; `edit-phase2-guard.test.ts` and `import-rescore-guard.test.ts` pin the lock → read → plan → gate → write order structurally.
   - No test exercises `services/saved-views.ts` or `notifications-actions.ts` for behaviour. Since the recheck the others have behavioural tests: `temix.ts` (`tests/unit/temix-service.test.ts`), `customers.ts` archive (`tests/unit/archive-temix-shared-code.test.ts` and the Postgres suite of the same name on `RUN_MERGE_TESTS`), `customer-export.ts` (`tests/unit/customer-export-branch.test.ts` and `tests/integration/customer-export-branch-filter.test.ts` on `RUN_EXPORT_TESTS`) and `routes.ts` (`tests/unit/admin-audit-atomic.test.ts`). Duplicate detection gained unit tests (the pure pairing, the service with Prisma mocked, the page and the card) and a Postgres suite `duplicate-detection.test.ts` riding `RUN_MERGE_TESTS` (item 16).
   - Not run in CI and **not to be run by you**: `build-chain-data` and `uat-load` (leave data behind), `golive-rehearsal` (reads `golive-data/`); `tests/e2e/golive-update-flow.spec.ts` needs a live R2 bucket.
@@ -360,7 +360,7 @@ Trust the code. Known stale or contradictory documents:
 npm ci
 npm run typecheck        # next typegen + tsc --noEmit
 npm run lint
-npm test                 # 2,914 unit tests (one skips without golive-data/); integration files collect and skip
+npm test                 # 2,988 unit tests (one skips without golive-data/); integration files collect and skip
 npx next build           # no migrate; needs AUTH_SECRET >= 32 varied chars and placeholder DATABASE_URL/DIRECT_URL
 ```
 
