@@ -7,6 +7,12 @@
  * honours the page's `select`, so the badge depends on the page really reading
  * the column. The row-actions client component is replaced by a probe that
  * records its props, which is exactly what the server serialises to the browser.
+ *
+ * Fixer review (2026-10-05): the badge answers by the drain's own rule
+ * (lib/notify-address.ts) and only for the roles that are e-mailed
+ * (lib/notify-policy.ts EMAIL_ROLES). A stored value the drain skips is shown as
+ * not usable, and the GM, a Steward or a salesman gets no badge and no e-mail
+ * button, since nothing is ever e-mailed to them.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
@@ -91,6 +97,10 @@ beforeEach(() => {
     account('stw', 'STEWARD', 'steward.own@example.test'),
     account('acc', 'ACCOUNTANT', ADDRESS),
     account('fm', 'FINANCE_MANAGER', null),
+    // What the account import stores after a trim and nothing else (X-IMPORTS-4).
+    account('bad', 'ACCOUNTANT', 'n/a'),
+    account('nodot', 'MANAGER', '  name@company  '),
+    account('gm', 'GM', 'general.manager@example.test'),
     account('sal', 'SALESMAN', null, {
       ownedRouteId: 'r1',
       ownedRoute: { code: 'R1', name: 'Route 1', regionId: 'g1' },
@@ -107,7 +117,27 @@ describe('/users and e-mail addresses', () => {
     expect(html).not.toContain(ADDRESS);
     expect(html).not.toContain('steward.own@example.test');
     expect(container.textContent).toContain('E-mail on file');
-    expect(container.querySelectorAll('span[title^="An e-mail address is on file"]')).toHaveLength(2);
+    // Only the Accountant's: the Steward and the GM are never e-mailed.
+    expect(container.querySelectorAll('span[title^="An e-mail address is on file"]')).toHaveLength(1);
+    expect(html).not.toContain('general.manager@example.test');
+  });
+
+  it('a stored value the drain would skip is marked not usable, never "on file"', async () => {
+    const { container } = render(await UsersPage({ searchParams: Promise.resolve({}) }));
+    const unusable = container.querySelectorAll('[data-email-state="unusable"]');
+    expect(unusable).toHaveLength(2);
+    for (const b of unusable) expect(b.textContent).toContain('E-mail not usable');
+    expect(container.innerHTML).not.toContain('n/a');
+    expect(container.innerHTML).not.toContain('name@company');
+    // Re-enterable: the button says Change, not Add.
+    expect(h.rowProps.find((p) => p.userId === 'bad')).toMatchObject({ hasEmail: true, canEditEmail: true });
+    expect(h.rowProps.find((p) => p.userId === 'nodot')).toMatchObject({ hasEmail: true, canEditEmail: true });
+  });
+
+  it('the GM, a Steward and a salesman get no e-mail badge and no e-mail button: they are never e-mailed', async () => {
+    h.rows.push(account('stw2', 'STEWARD', 'steward.two@example.test'));
+    render(await UsersPage({ searchParams: Promise.resolve({}) }));
+    for (const id of ['gm', 'stw2', 'sal']) expect(h.rowProps.find((p) => p.userId === id), id).toMatchObject({ canEditEmail: false });
   });
 
   it('hands the row actions a boolean, never the address', async () => {

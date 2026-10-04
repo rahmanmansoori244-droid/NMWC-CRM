@@ -17,8 +17,8 @@
  * so the switch being on is never silently a no-op.
  *
  * The JSON is counts only: it is stored as the heartbeat's last detail and served
- * to the monitor. A run with a send or login failure is recorded as failed and
- * raises the warning-tier `cron.failed` alert (lib/heartbeat.ts).
+ * to the monitor. A run with a send, login or sending-account failure is recorded
+ * as failed and raises the warning-tier `cron.failed` alert (lib/heartbeat.ts).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
@@ -58,6 +58,7 @@ async function handle(req: NextRequest) {
       capped: r.capped,
       sendErrors: r.sendErrors,
       authErrors: r.authErrors,
+      accountErrors: r.accountErrors,
     },
     'email.drain'
   );
@@ -77,6 +78,7 @@ async function handle(req: NextRequest) {
     errorLabels: r.errorLabels,
     sendErrors: r.sendErrors,
     authErrors: r.authErrors,
+    accountErrors: r.accountErrors,
   });
 }
 
@@ -86,5 +88,6 @@ export const GET = withHeartbeat(
   (body) =>
     Number(body?.sendErrors ?? 0) === 0 &&
     Number(body?.authErrors ?? 0) === 0 &&
+    Number(body?.accountErrors ?? 0) === 0 &&
     Number(body?.configErrors ?? 0) === 0
 );

@@ -563,9 +563,11 @@ that can read the repository's Actions runs.
 **If `main`'s CI or post-deploy smoke goes red:** Codex pushes nothing. The owner and
 Claude check the live build, smoke and migration state, then choose Vercel's instant
 rollback or a revert PR. Never revert a migration without Claude; rolling back the
-deployment does not undo a migration (HANDOVER §2 step 8). In Vercel, use Instant Rollback to the previous production deployment; the last code
-batches contain no database migration. The exact rollback targets are in
-`PRIVATE-HANDOVER.md`.
+deployment does not undo a migration (HANDOVER §2 step 8). In Vercel, use Instant Rollback to the previous production deployment; the code
+batches up to the handover contain no database migration. F1 (notifications) adds two:
+once its writers are live, the rollback target is its foundation's deployment, never
+older ([03 §6](03-OPERATIONS-AND-DEPLOYMENT.md#6-rolling-back)). The exact rollback
+targets are in `PRIVATE-HANDOVER.md`.
 
 These steps are not Claude-specific. A human operator uses the same commands.
 

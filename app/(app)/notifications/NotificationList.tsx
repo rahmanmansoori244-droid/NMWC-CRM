@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import {
   markNotificationReadAction,
   markAllNotificationsReadAction,
+  markInformationReadAction,
 } from '@/services/notifications-actions';
 
 const KIND_LABEL: Record<string, string> = {
@@ -84,6 +85,31 @@ export function NotificationRow({
         </span>
       </div>
     </div>
+  );
+}
+
+/**
+ * F1: marks only the information rows (REQUEST_FYI) read. Must-act rows stay
+ * unread, so their e-mail still goes (a read row is never e-mailed).
+ */
+export function MarkInformationReadButton() {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      title="Marks only the for-information notifications read. Requests waiting on you stay unread."
+      onClick={() =>
+        start(async () => {
+          await markInformationReadAction();
+          router.refresh();
+        })
+      }
+      className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+    >
+      {pending ? 'Marking…' : 'Mark information read'}
+    </button>
   );
 }
 

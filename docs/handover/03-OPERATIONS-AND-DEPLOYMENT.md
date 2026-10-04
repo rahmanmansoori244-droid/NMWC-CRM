@@ -520,12 +520,34 @@ The procedure is [OPERATIONS §4](../OPERATIONS.md#4-deploy). In short:
 | Bad data written (an import, a script, a mistake) | A database recovery, not an app rollback. Neon point-in-time recovery reaches back 7 days ([OPERATIONS §6.4](../OPERATIONS.md#64-runbook-a--neon-point-in-time-recovery)). |
 
 **The rollback target at handover.** In Vercel, Instant Rollback to the previous
-production deployment. The last code batches contain no database migration, so the
-previous build runs on the current schema. Identify the deployment in Vercel by its
-commit. Which deployments to roll back to, in order, and their build IDs are in
-PRIVATE-HANDOVER.md. Once `main` moves on, re-check this before you rely on it:
+production deployment. The code batches up to the handover contain no database
+migration, so the previous build runs on the current schema. Identify the deployment in
+Vercel by its commit. Which deployments to roll back to, in order, and their build IDs are
+in PRIVATE-HANDOVER.md. Once `main` moves on, re-check this before you rely on it:
 `git diff --name-only <rollback target's commit> origin/main -- prisma/` must print
 nothing.
+
+**Once F1 (notifications, 04-PENDING A1.11) is merged, that check prints its two
+migrations, and the rule changes.** The foundation (`claude/notify-foundation`) adds two
+notification kinds, `REQUEST_FYI` and `REACTIVATION_REQUESTED`. A build older than the
+foundation cannot read a row of either: its `/notifications` page reads whole rows and
+Prisma throws `Value '…' not found in enum`, so the page fails for every Accountant and
+Manager with such a row among their newest 100, until someone fixes forward. So the
+foundation is merged and deployed on its own, and passes smoke, before the writers
+(`claude/notify-email`) are merged; after that, **the rollback target is the
+foundation's deployment, never an older one.** The foundation writes neither kind, so
+rolling back from it to the build before it is safe while no writer has run. If you must
+go further back once writers have run, it is a deliberate database change first (Tier B,
+with Claude, through `scripts/dev/prod-run.cjs`; HANDOVER §5): give the new-kind rows a
+kind the old build knows, then roll back:
+
+```sql
+UPDATE "Notification" SET kind = 'EDIT_STAGE_ADVANCED' WHERE kind = 'REQUEST_FYI';
+UPDATE "Notification" SET kind = 'EDIT_SUBMITTED'      WHERE kind = 'REACTIVATION_REQUESTED';
+```
+
+The rows keep their links and text; the inbox labels them "Progress" and "Review", and the
+change is not undone when F1 is deployed again.
 
 **Redeploying without a laptop:** Vercel → Deployments → the current production deployment
 → **Redeploy** ([CREDENTIAL-ROTATION.md](../CREDENTIAL-ROTATION.md) step 1.4). A changed

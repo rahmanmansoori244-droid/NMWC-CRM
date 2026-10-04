@@ -13,9 +13,13 @@
  * under a lease; read the recipients and the requests as they are now; plan
  * (lib/email/eligibility.ts); mark the refused rows; release the held-back ones;
  * then send one digest per recipient until the budget is spent. On a sent digest
- * its rows are SENT with one send time. A permanent refusal marks them FAILED. A
- * transient one leaves them leased for a later run. A refused login stops the run
- * and hands every unsent row back.
+ * its rows are SENT with one send time. A recipient refused for good marks that
+ * digest FAILED. A transient failure leaves its rows leased for a later run. A
+ * refused login, or a refusal of the sending account itself (a used-up daily
+ * limit, a blocked account: lib/email/transport.ts 'account'), stops the run and
+ * hands every unsent row back, the current digest included — and so does a
+ * second recipient refusal in a row, because two different recipients refused one
+ * after the other is the account, not them.
  *
  * It returns counts only. The route's JSON is CronHeartbeat.lastDetail, kept
  * until the next run, and served to the monitor: no address, no subject, no
@@ -41,6 +45,8 @@ export type DrainResult = {
   budgetStopped: boolean;
   sendErrors: number;
   authErrors: number;
+  /** Gmail refused the sending account (or two recipients in a row): the run stopped. */
+  accountErrors: number;
   /** The kinds of send failure seen, by constrained label. */
   errorLabels: Partial<Record<EmailErrorLabel, number>>;
 };
@@ -89,6 +95,7 @@ export async function runEmailDrain(deps: {
     budgetStopped: false,
     sendErrors: 0,
     authErrors: 0,
+    accountErrors: 0,
     errorLabels: {},
   };
 
@@ -130,7 +137,8 @@ export async function runEmailDrain(deps: {
       edits: new Map(requests.map((e) => [e.id, e])),
       now: started,
       recentlySent,
-      sentLast24h,
+      sentLast24h: sentLast24h.all,
+      informationSentLast24h: sentLast24h.information,
       policy,
     });
 
@@ -147,6 +155,7 @@ export async function runEmailDrain(deps: {
     result.deferred = plan.deferred.length;
     result.capped = plan.capped;
 
+    let lastWasRecipientRefusal = false;
     for (let i = 0; i < plan.digests.length; i += 1) {
       const digest = plan.digests[i]!;
       const rest = () => plan.digests.slice(i).flatMap((d) => d.rowIds);
@@ -171,6 +180,7 @@ export async function runEmailDrain(deps: {
       if (outcome.ok) {
         await store.finish(digest.rowIds, 'SENT', now());
         result.sent += 1;
+        lastWasRecipientRefusal = false;
         continue;
       }
       result.errorLabels[outcome.label] = (result.errorLabels[outcome.label] ?? 0) + 1;
@@ -182,7 +192,18 @@ export async function runEmailDrain(deps: {
         result.deferred += rest().length;
         break;
       }
+      if (outcome.kind === 'account' || (outcome.kind === 'permanent' && lastWasRecipientRefusal)) {
+        // The account, not this recipient: every later send would meet the same
+        // refusal, and Google treats an account that keeps trying as suspect. Hand
+        // everything back, this digest included, so nothing is marked FAILED for
+        // a refusal that was never about it; a later run retries inside the max age.
+        result.accountErrors += 1;
+        await store.release(rest());
+        result.deferred += rest().length;
+        break;
+      }
       result.sendErrors += 1;
+      lastWasRecipientRefusal = outcome.kind === 'permanent';
       if (outcome.kind === 'permanent') {
         await store.finish(digest.rowIds, 'FAILED', now());
         result.failed += digest.rowIds.length;

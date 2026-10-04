@@ -12,6 +12,8 @@ import {
   type UserRegionFootprint,
 } from '@/lib/permissions';
 import { isDemoAccount } from '@/lib/demo-accounts';
+import { EMAIL_ROLES } from '@/lib/notify-policy';
+import { storedAddressState } from '@/lib/notify-address';
 import { CreateUserForm } from './CreateUserForm';
 import { UserRowActions, UsersFeedback } from './UserRowActions';
 
@@ -322,14 +324,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                         </span>
                       )}
                       <PasswordClaimBadge claim={passwordClaim(u)} />
-                      {u.email ? (
-                        <span
-                          title="An e-mail address is on file: work notifications can reach this account by e-mail."
-                          className="ml-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
-                        >
-                          E-mail on file
-                        </span>
-                      ) : null}
+                      <EmailBadge role={u.role} email={u.email} />
                     </td>
                     <td className="px-4 py-2 text-xs text-slate-500">
                       {u.lastLoginAt ? u.lastLoginAt.toLocaleDateString('en-GB') : 'never'}
@@ -339,8 +334,8 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                         userId={u.id}
                         username={u.username}
                         isActive={u.isActive}
-                        canEditEmail={!isManager && u.id !== session.user.id}
-                        hasEmail={!!u.email}
+                        canEditEmail={!isManager && u.id !== session.user.id && EMAIL_ROLES.includes(u.role)}
+                        hasEmail={storedAddressState(u.email) !== 'none'}
                       />
                     </td>
                   </tr>
@@ -370,4 +365,40 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
       </UsersFeedback>
     </main>
   );
+}
+
+/**
+ * F1: whether notification e-mail can reach this account, by the drain's own
+ * rule (lib/notify-address.ts) and only for the roles it e-mails (EMAIL_ROLES).
+ * Worked out here, on the server: the address itself never reaches the page
+ * (RBAC-05-023). A value the drain would skip — an import's "n/a", a name with
+ * no domain — is said to be unusable, so the Steward can find the accounts the
+ * readiness check counts as "not an address". The GM, a Steward, a Viewer or a
+ * salesman is never e-mailed, so no badge suggests otherwise.
+ */
+function EmailBadge({ role, email }: { role: Role; email: string | null }) {
+  if (!EMAIL_ROLES.includes(role)) return null;
+  const state = storedAddressState(email);
+  if (state === 'usable') {
+    return (
+      <span
+        title="An e-mail address is on file: work notifications can reach this account by e-mail once e-mail is switched on."
+        className="ml-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
+      >
+        E-mail on file
+      </span>
+    );
+  }
+  if (state === 'unusable') {
+    return (
+      <span
+        data-email-state="unusable"
+        title="What is stored is not an e-mail address, so no notification e-mail can reach this account. Use Change e-mail to enter it again."
+        className="ml-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800"
+      >
+        E-mail not usable — re-enter it
+      </span>
+    );
+  }
+  return null;
 }

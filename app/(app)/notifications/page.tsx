@@ -5,7 +5,8 @@ import { prisma } from '@/lib/db';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { hrefFor } from '@/lib/notification-links';
-import { MarkAllReadButton, NotificationRow } from './NotificationList';
+import { splitBellCounts } from '@/lib/notification-bell';
+import { MarkAllReadButton, MarkInformationReadButton, NotificationRow } from './NotificationList';
 
 export const metadata = { title: 'Notifications · NMWC' };
 export const dynamic = 'force-dynamic';
@@ -32,13 +33,30 @@ export default async function NotificationsPage() {
     },
   });
   const unread = notifications.filter((n) => !n.readAt).length;
+  // F1: the same split as the bell — rows that may ask for action, and rows
+  // that only inform (lib/notification-bell.ts).
+  const counts = splitBellCounts(notifications.filter((n) => !n.readAt).map((n) => ({ kind: n.kind, count: 1 })));
+  const subtitle =
+    unread === 0
+      ? 'All caught up'
+      : [
+          ...(counts.action > 0 ? [`${counts.action} unread`] : []),
+          ...(counts.information > 0 ? [`${counts.information} for information`] : []),
+        ].join(' · ');
 
   return (
     <main>
       <PageHeader
         title="Notifications"
-        subtitle={unread > 0 ? `${unread} unread` : 'All caught up'}
-        actions={unread > 0 ? <MarkAllReadButton /> : undefined}
+        subtitle={subtitle}
+        actions={
+          unread > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {counts.information > 0 && <MarkInformationReadButton />}
+              <MarkAllReadButton />
+            </div>
+          ) : undefined
+        }
       />
       <div className="p-4 sm:p-6">
         {notifications.length === 0 ? (

@@ -13,18 +13,31 @@
  *     demo account (lib/demo-accounts.ts), and its address is an address;
  *   - it has not been read in the app;
  *   - its request still exists and, for a row that asks its recipient to act,
- *     still waits on HIM: open, at a step he can decide, by role and by who the
- *     submitter's supervisor is, with the request's recorded pending role on that
- *     same step, and he has not decided another step of it in this cycle. A request stays SUBMITTED through every step of a new-customer
- *     chain, so "still open" alone would e-mail a Supervisor "please review"
- *     about a request already at the GM (challenges, item 29). The same check
- *     tells EDIT_STAGE_ADVANCED's two meanings apart: "now at your step" is sent,
- *     "your request advanced" (to the salesman) never is.
- * One digest per recipient per run; a recipient e-mailed within the gap waits;
- * the per-run and rolling daily caps hold back whole digests, oldest first.
+ *     still waits on HIM: open, with the request's recorded pending role on the
+ *     step its pointer names, and HE can decide that step by the very rule the
+ *     decision applies — `canActOnStep` with the inputs `approveEditCore` gives it
+ *     (the request's scope regions: a new-customer request's draft routes,
+ *     otherwise the customer's live branches; his managed regions; who decided
+ *     the other steps this cycle), and for a reactivation the decide gate of
+ *     services/reactivations.ts (a Manager of the branch's region). A request
+ *     stays SUBMITTED through every step of a new-customer chain, so "still
+ *     open" alone would e-mail a Supervisor "please review" about a request
+ *     already at the GM (challenges, item 29). The same check tells
+ *     EDIT_STAGE_ADVANCED's two meanings apart: "now at your step" is sent,
+ *     "your request advanced" (to the salesman) never is. And it keeps the
+ *     e-mail from a supervisor the in-app writer names but the page refuses: a
+ *     Manager who does not manage the salesman's route region, or one the
+ *     salesman was moved away from after he submitted (fixer review 2026-10-05).
+ * One digest per recipient per run. The gap and the caps put work first: a
+ * digest that asks him to act waits only for an earlier one that also did (an
+ * information-only e-mail does not hold back his "please review"); when a cap
+ * binds, digests with something to act on go first, oldest first, then the
+ * information-only ones; and information-only digests may use only their share
+ * of the rolling daily cap, so a busy day of FYI cannot spend the approvers' quota.
  */
 import { Role } from '@prisma/client';
 import { parseChain } from '../approval-chains';
+import { canActOnStep } from '../permissions';
 import { EMAIL_DELIVERY, EMAIL_KINDS, EMAIL_ROLES, MUST_ACT_KINDS, type EmailDeliveryPolicy } from '../notify-policy';
 import { isDemoAccount } from '../demo-accounts';
 import { isEmailAddress } from './config';
@@ -56,7 +69,15 @@ export type OutboxRow = {
   readAt: Date | null;
 };
 
-export type Recipient = { id: string; role: Role; isActive: boolean; email: string | null; username: string };
+export type Recipient = {
+  id: string;
+  role: Role;
+  isActive: boolean;
+  email: string | null;
+  username: string;
+  /** The regions he manages now (User.managedRegions): his scope as an approver. */
+  managedRegionIds: string[];
+};
 
 /** The request as it stands now. */
 export type RequestNow = {
@@ -73,6 +94,12 @@ export type RequestNow = {
   submitterSupervisorId: string | null;
   /** Who decided a step OTHER than the current one in the current cycle. */
   otherStepActorIds: string[];
+  /**
+   * The regions an approver must manage to act on it, read now, as the decision
+   * reads them: a new-customer request's draft routes' regions; a reactivation's
+   * branch region; otherwise the customer's live branches' regions.
+   */
+  scopeRegionIds: string[];
 };
 
 export function requestTypeOf(edit: Pick<RequestNow, 'process' | 'target' | 'isReactivation'>): RequestType {
@@ -83,11 +110,19 @@ export function requestTypeOf(edit: Pick<RequestNow, 'process' | 'target' | 'isR
   return 'UPDATE';
 }
 
-/** Does this request wait on this recipient now? */
+/** Does this request wait on this recipient now — and can he act on it? */
 export function waitsOn(recipient: Recipient, kind: string, edit: RequestNow): boolean {
   if (edit.state !== 'SUBMITTED') return false;
   if (recipient.id === edit.submittedById) return false;
-  if (kind === 'REACTIVATION_REQUESTED') return edit.isReactivation && recipient.role === Role.MANAGER;
+  if (kind === 'REACTIVATION_REQUESTED') {
+    // approveReactivationCore / rejectReactivationCore: a Manager whose managed
+    // regions include the branch's region, never the submitter.
+    return (
+      edit.isReactivation &&
+      recipient.role === Role.MANAGER &&
+      edit.scopeRegionIds.some((r) => recipient.managedRegionIds.includes(r))
+    );
+  }
   // A reactivation is decided on /reactivations only; nothing else asks for one.
   if (edit.isReactivation) return false;
   const step = parseChain(edit.approvalChain)[edit.currentStepIndex];
@@ -95,16 +130,20 @@ export function waitsOn(recipient: Recipient, kind: string, edit: RequestNow): b
   // The pointer and the recorded pending role must agree on the step: a request
   // whose pendingRole moved on is not waiting on this step, whatever the index says.
   if (edit.pendingRole && edit.pendingRole !== step.role) return false;
-  if (edit.otherStepActorIds.includes(recipient.id)) return false;
-  switch (step.scope) {
-    case 'SUPERVISOR_OF_SUBMITTER':
-      // His supervisor, or a region Manager (a close request's fallback audience;
-      // the region was checked when the row was written).
-      return recipient.id === edit.submitterSupervisorId || recipient.role === Role.MANAGER;
-    case 'REGION_OVERLAP':
-    case 'GLOBAL':
-      return recipient.role === step.role;
-  }
+  // The decision's own rule, with the decision's own inputs (approveEditCore):
+  // the supervisor or a Manager of the scope regions at the Supervisor step, the
+  // step's role in scope at a region step, any holder at a global one — never
+  // the submitter, never someone who decided another step this cycle.
+  return canActOnStep(
+    recipient,
+    step,
+    { id: edit.submittedById, supervisorId: edit.submitterSupervisorId },
+    {
+      customerBranches: edit.scopeRegionIds.map((regionId) => ({ regionId, deletedAt: null })),
+      managedRegionIds: recipient.managedRegionIds,
+      priorStepActorIds: edit.otherStepActorIds,
+    }
+  );
 }
 
 export type Verdict = { send: true; item: DigestItem } | { send: false; status: SkipStatus };
@@ -127,6 +166,7 @@ export function rowVerdict(
   if (!isEmailAddress(recipient.email?.trim())) return { send: false, status: 'SKIPPED_NO_ADDRESS' };
   if (row.readAt) return { send: false, status: 'SKIPPED_READ' };
   if (!edit || !row.editId) return { send: false, status: 'SKIPPED_RESOLVED' };
+  // "Resolved" for him: decided, moved past his step, or a step he cannot act on.
   if ((MUST_ACT_KINDS as readonly string[]).includes(row.kind) && !waitsOn(recipient, row.kind, edit)) {
     return { send: false, status: 'SKIPPED_RESOLVED' };
   }
@@ -144,6 +184,8 @@ export type PlannedDigest = {
   address: string;
   rowIds: string[];
   items: DigestItem[];
+  /** Every line only informs (REQUEST_FYI): nothing in it asks him to act. */
+  informationOnly: boolean;
 };
 
 export type RunPlan = {
@@ -162,6 +204,14 @@ const MUST_ACT_FIRST: Record<string, number> = {
   REQUEST_FYI: 2,
 };
 
+/** A line that only informs: nothing in it asks the recipient to do anything. */
+export function isInformationKind(kind: string): boolean {
+  return kind === 'REQUEST_FYI';
+}
+
+/** Who was e-mailed within the gap: anything at all, and a digest with something to act on. */
+export type RecentSends = { any: Set<string>; action: Set<string> };
+
 /**
  * Pure: one run's plan. Rows the verdict refuses are skipped for good; the rest
  * become one digest per recipient, one line per request (an FYI and an action
@@ -172,11 +222,13 @@ export function planRun(input: {
   recipients: Map<string, Recipient>;
   edits: Map<string, RequestNow>;
   now: Date;
-  /** Recipients sent a digest within the gap. */
-  recentlySent: Set<string>;
+  /** Recipients sent a digest within the gap, and those whose digest asked them to act. */
+  recentlySent: RecentSends;
   /** Digests sent in the last 24 hours. */
   sentLast24h: number;
-  policy?: Pick<EmailDeliveryPolicy, 'maxAgeMs' | 'perRunCap' | 'dailyCap'>;
+  /** Of those, the digests that carried information only. */
+  informationSentLast24h: number;
+  policy?: Pick<EmailDeliveryPolicy, 'maxAgeMs' | 'perRunCap' | 'dailyCap' | 'informationDailyCap'>;
 }): RunPlan {
   const policy = input.policy ?? EMAIL_DELIVERY;
   const skips: RunPlan['skips'] = [];
@@ -196,25 +248,37 @@ export function planRun(input: {
     byUser.set(row.userId, entry);
   }
 
-  // Oldest waiting first, so a cap holds back the newest, not the same people.
+  // Work first, then oldest waiting first: when a cap binds it holds back
+  // information before it holds back a "please review", and the newest before
+  // the same people again.
+  const informationOnly = (e: { items: Map<string, DigestItem> }) =>
+    [...e.items.values()].every((i) => isInformationKind(i.kind));
+  const oldest = (e: { rows: OutboxRow[] }) => Math.min(...e.rows.map((r) => r.createdAt.getTime()));
   const queue = [...byUser.entries()].sort(
-    ([, a], [, b]) =>
-      Math.min(...a.rows.map((r) => r.createdAt.getTime())) - Math.min(...b.rows.map((r) => r.createdAt.getTime()))
+    ([, a], [, b]) => Number(informationOnly(a)) - Number(informationOnly(b)) || oldest(a) - oldest(b)
   );
   const allowed = Math.max(0, Math.min(policy.perRunCap, policy.dailyCap - input.sentLast24h));
+  // Information-only digests stop at their share of the day, keeping the rest of
+  // the daily cap for digests that ask someone to act.
+  const informationAllowed = Math.max(0, policy.informationDailyCap - input.informationSentLast24h);
   const digests: PlannedDigest[] = [];
   const deferred: string[] = [];
   let capped = false;
+  let informationPlanned = 0;
   for (const [userId, entry] of queue) {
-    if (input.recentlySent.has(userId)) {
+    const info = informationOnly(entry);
+    // The gap, per class: an e-mail that only informed does not hold back one
+    // that asks him to act; an e-mail that asked him to act holds back both.
+    if (input.recentlySent.action.has(userId) || (info && input.recentlySent.any.has(userId))) {
       deferred.push(...entry.rows.map((r) => r.id));
       continue;
     }
-    if (digests.length >= allowed) {
+    if (digests.length >= allowed || (info && informationPlanned >= informationAllowed)) {
       capped = true;
       deferred.push(...entry.rows.map((r) => r.id));
       continue;
     }
+    if (info) informationPlanned += 1;
     const recipient = input.recipients.get(userId)!;
     digests.push({
       userId,
@@ -222,6 +286,7 @@ export function planRun(input: {
       address: recipient.email!.trim(),
       rowIds: entry.rows.map((r) => r.id),
       items: [...entry.items.values()].sort((a, b) => MUST_ACT_FIRST[a.kind]! - MUST_ACT_FIRST[b.kind]!),
+      informationOnly: info,
     });
   }
   return { digests, skips, deferred, capped };

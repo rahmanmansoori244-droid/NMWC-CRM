@@ -19,7 +19,7 @@
  * the suite against a shared database never touches a row it did not create.
  */
 import { Prisma, type PrismaClient } from '@prisma/client';
-import type { EmailStatus, OutboxRow, Recipient, RequestNow, SkipStatus } from './eligibility';
+import { isInformationKind, type EmailStatus, type OutboxRow, type RecentSends, type Recipient, type RequestNow, type SkipStatus } from './eligibility';
 
 export interface OutboxStore {
   /** Rows past the maximum age, never claimed again: SKIPPED_STALE. Bounded per call. */
@@ -37,10 +37,17 @@ export interface OutboxStore {
   claim(args: { now: Date; cutoff: Date; leaseUntil: Date; limit: number; maxAttempts: number }): Promise<OutboxRow[]>;
   loadRecipients(userIds: string[]): Promise<Recipient[]>;
   loadRequests(editIds: string[]): Promise<RequestNow[]>;
-  /** Of these users, who was sent a digest at or after `since`. */
-  recentlySent(userIds: string[], since: Date): Promise<Set<string>>;
-  /** Digests sent at or after `since` (one per recipient and send time). */
-  sentDigestsSince(since: Date): Promise<number>;
+  /**
+   * Of these users, who was sent a digest at or after `since` (`any`), and who
+   * was sent one with something to act on (`action`: a SENT row of a kind that is
+   * not information-only — such a row is only ever sent as an action line).
+   */
+  recentlySent(userIds: string[], since: Date): Promise<RecentSends>;
+  /**
+   * Digests sent at or after `since` (one per recipient and send time), and how
+   * many of them carried information only (every row of the digest REQUEST_FYI).
+   */
+  sentDigestsSince(since: Date): Promise<{ all: number; information: number }>;
   finish(ids: string[], status: Exclude<EmailStatus, 'PRE_FEATURE'>, at: Date): Promise<void>;
   /** Hand claimed rows back unsent; the claim does not count as an attempt. */
   release(ids: string[]): Promise<void>;
@@ -119,10 +126,19 @@ export function prismaOutboxStore(db: PrismaClient, scope?: { userIds: string[] 
 
     async loadRecipients(userIds) {
       if (userIds.length === 0) return [];
-      return db.user.findMany({
+      const users = await db.user.findMany({
         where: { id: { in: userIds } },
-        select: { id: true, role: true, isActive: true, email: true, username: true },
+        select: {
+          id: true,
+          role: true,
+          isActive: true,
+          email: true,
+          username: true,
+          // His approver scope now, as loadScope reads it for the decision.
+          managedRegions: { select: { id: true } },
+        },
       });
+      return users.map(({ managedRegions, ...u }) => ({ ...u, managedRegionIds: managedRegions.map((r) => r.id) }));
     },
 
     async loadRequests(editIds) {
@@ -141,6 +157,11 @@ export function prismaOutboxStore(db: PrismaClient, scope?: { userIds: string[] 
           cycle: true,
           submittedById: true,
           submittedBy: { select: { supervisorId: true } },
+          // The scope the decision checks (approveEditCore, the reactivation
+          // gate), read now: a route or branch can move region after submit.
+          branch: { select: { regionId: true } },
+          customer: { select: { deletedAt: true, branches: { where: { deletedAt: null }, select: { regionId: true } } } },
+          branchDrafts: { select: { route: { select: { regionId: true } } } },
         },
       });
       const steps = await db.editApproval.findMany({
@@ -161,26 +182,45 @@ export function prismaOutboxStore(db: PrismaClient, scope?: { userIds: string[] 
         otherStepActorIds: steps
           .filter((s) => s.editId === e.id && s.cycle === e.cycle && s.stepIndex !== e.currentStepIndex)
           .map((s) => s.actorId),
+        scopeRegionIds: [
+          ...new Set(
+            e.process === 'CREATE'
+              ? e.branchDrafts.map((d) => d.route.regionId)
+              : e.isReactivation
+                ? e.branch
+                  ? [e.branch.regionId]
+                  : []
+                : // A customer merged or deleted since: approveEditCore refuses it.
+                  e.customer && !e.customer.deletedAt
+                  ? e.customer.branches.map((b) => b.regionId)
+                  : []
+          ),
+        ],
       }));
     },
 
     async recentlySent(userIds, since) {
-      if (userIds.length === 0) return new Set();
+      if (userIds.length === 0) return { any: new Set(), action: new Set() };
       const rows = await db.notification.findMany({
         where: { userId: { in: userIds }, emailStatus: 'SENT', emailedAt: { gte: since } },
-        select: { userId: true },
-        distinct: ['userId'],
+        select: { userId: true, kind: true },
+        distinct: ['userId', 'kind'],
       });
-      return new Set(rows.map((r) => r.userId));
+      return {
+        any: new Set(rows.map((r) => r.userId)),
+        action: new Set(rows.filter((r) => !isInformationKind(r.kind)).map((r) => r.userId)),
+      };
     },
 
     async sentDigestsSince(since) {
-      const [row] = await db.$queryRaw<Array<{ n: number }>>`
-        SELECT count(*)::int AS n FROM (
-          SELECT DISTINCT n."userId", n."emailedAt" FROM "Notification" n
+      const [row] = await db.$queryRaw<Array<{ n: number; info: number }>>`
+        SELECT count(*)::int AS n, (count(*) FILTER (WHERE d.info))::int AS info FROM (
+          SELECT n."userId", n."emailedAt", bool_and(n.kind::text = 'REQUEST_FYI') AS info
+          FROM "Notification" n
           WHERE n."emailStatus" = 'SENT' AND n."emailedAt" >= ${since} ${scoped}
+          GROUP BY n."userId", n."emailedAt"
         ) d`;
-      return row?.n ?? 0;
+      return { all: row?.n ?? 0, information: row?.info ?? 0 };
     },
 
     async finish(ids, status, at) {

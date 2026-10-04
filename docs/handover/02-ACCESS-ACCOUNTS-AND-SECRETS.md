@@ -294,8 +294,9 @@ that variable any more, so do not create it.
   - A preview deploy for every branch push. Each preview runs
     `prisma migrate deploy` against UAT.
   - Instant rollback.
-  - The four scheduled jobs in `vercel.json`: `photo-gc`, `retention-sweep`,
-    `keep-warm` and `sla-escalate`.
+  - The five scheduled jobs in `vercel.json`: `photo-gc`, `retention-sweep`,
+    `keep-warm`, `sla-escalate` and, since F1, `email-drain` (it sends nothing until
+    `NOTIFY_EMAIL_ENABLED=on`, [OPERATIONS §5i](../OPERATIONS.md)).
   - Runtime logs. They are kept 30 days with Observability Plus
     ([OPERATIONS §5g](../OPERATIONS.md)). Confirming that it is on is still open
     ([HANDOVER §6.2](../HANDOVER.md)).
@@ -321,8 +322,8 @@ documentation on project transfer before you do that. Billing is a separate step
 1. The Git connection to the repository ([OPERATIONS §5b A](../OPERATIONS.md)).
 2. The plan is still Pro. The sub-daily schedules for keep-warm and the SLA sweep
    moved to Vercel because of Pro ([OPERATIONS §5d](../OPERATIONS.md)).
-3. Settings → Cron Jobs lists the four jobs. The in-app **Service status** page says
-   "Vercel last ran it" for keep-warm and the SLA sweep.
+3. Settings → Cron Jobs lists the five jobs, `email-drain` included. The in-app
+   **Service status** page says "Vercel last ran it" for keep-warm and the SLA sweep.
 4. Every Production name below is present. `npx vercel env ls` lists names; it needs
    your own `VERCEL_TOKEN` or a login ([OPERATIONS §3](../OPERATIONS.md)), and the
    link in `.vercel/project.json`.
@@ -343,6 +344,8 @@ documentation on project transfer before you do that. Billing is a separate step
 | Photos (R2) | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | Yes |
 | Photos (R2) | `R2_ACCOUNT_ID`, `R2_BUCKET` | No |
 | Alerts | `ALERT_WEBHOOK_URL` (not set yet) | Yes |
+| Notification e-mail (F1; optional, absent until the owner turns e-mail on, [OPERATIONS §5i](../OPERATIONS.md)) | `GMAIL_APP_PASSWORD` (opens the whole sending mailbox) | Yes |
+| Notification e-mail (F1; optional, as above) | `NOTIFY_EMAIL_ENABLED`, `GMAIL_ADDRESS`, `EMAIL_LINK_ORIGIN`; `EMAIL_REDIRECT_TO` belongs on Preview, not Production | No |
 | Errors | `NEXT_PUBLIC_SENTRY_DSN` (sent to the browser by design) | No |
 | Switches | `DEMO_ACCOUNTS_DISABLED`, `MAINTENANCE_MODE`, `SALESMAN_SUBMIT_GATE`, `RATE_LIMIT_BACKEND`, `LOG_LEVEL` | No |
 | Tuning | `PROMOTE_SLICE_BUDGET_MS`, `BULK_BUDGET_MS`, `WORK_TZ_OFFSET_MIN`, `WORK_DAYS`, `WORK_HOUR_START`, `WORK_HOUR_END`, `SLA_SUPERVISOR_MIN`, `SLA_ACCOUNTANT_MIN`, `SLA_MANAGER_MIN`, `SLA_FINANCE_MIN`, `SLA_GM_MIN` | No |

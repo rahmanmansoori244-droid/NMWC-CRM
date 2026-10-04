@@ -104,6 +104,20 @@ export const MUST_ACT_KINDS: readonly NotificationKind[] = [
 ];
 
 /**
+ * The in-app bell (app/(app)/layout.tsx, components/nmwc/TopBar.tsx) is the only
+ * in-app alert, and its red count means "something waits on you". These kinds
+ * are counted apart from it, in a muted second count: since F1 the region's
+ * Accountant gets a REQUEST_FYI row for every salesman request in his region,
+ * and counted in the red badge they would hold it at "9+" all day. Clearing
+ * that with "Mark all read" would also mark his unread must-act rows read, and
+ * a read row is never e-mailed (SKIPPED_READ); /notifications offers "Mark
+ * information read" for these kinds alone. A default (fixer review 2026-10-05),
+ * listed in 04-PENDING A1.11: an empty list puts every unread row back in the
+ * red count.
+ */
+export const BELL_INFORMATION_KINDS: readonly NotificationKind[] = ['REQUEST_FYI'];
+
+/**
  * Delivery. The drain (app/api/cron/email-drain, lib/email/drain.ts) runs every
  * 10 minutes 03:00–14:59 UTC (07:00–18:59 Oman), the window of the other jobs:
  * vercel.json `crons`, pinned to this module by tests/unit/email-structure-guard.test.ts.
@@ -114,6 +128,7 @@ export type EmailDeliveryPolicy = {
   recipientGapMs: number;
   perRunCap: number;
   dailyCap: number;
+  informationDailyCap: number;
   maxItemsPerDigest: number;
   claimLimit: number;
   leaseMs: number;
@@ -127,12 +142,23 @@ export const EMAIL_DELIVERY: Readonly<EmailDeliveryPolicy> = {
   schedule: '*/10 3-14 * * *',
   /** A row older than this is never e-mailed (SKIPPED_STALE): no backlog flood. */
   maxAgeMs: 24 * 60 * 60_000,
-  /** At most one digest per recipient in this window. */
+  /**
+   * At most one digest per recipient in this window — per class: a digest that
+   * only informs waits for any earlier one; a digest that asks him to act waits
+   * only for an earlier one that also did, so an FYI e-mail never delays his
+   * "please review" (lib/email/eligibility.ts planRun).
+   */
   recipientGapMs: 30 * 60_000,
-  /** Digests per run. */
+  /** Digests per run. When it binds, digests with something to act on go first. */
   perRunCap: 40,
   /** Digests per rolling 24 hours, under consumer Gmail's ~500 recipients a day. */
   dailyCap: 400,
+  /**
+   * Of the daily cap, what information-only digests may use: the rest is kept
+   * for digests that ask someone to act, so a heavy day of FYI to Accountants
+   * cannot spend the Managers' quota (fixer review 2026-10-05).
+   */
+  informationDailyCap: 300,
   /** Lines in one digest; the rest are "and N more" with a link to the inbox. */
   maxItemsPerDigest: 20,
   /** Rows one run claims. */

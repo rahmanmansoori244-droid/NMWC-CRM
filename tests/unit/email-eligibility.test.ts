@@ -6,11 +6,23 @@
 import { describe, it, expect } from 'vitest';
 import { EditProcess, PaymentTerms, Role } from '@prisma/client';
 import { resolveChain } from '@/lib/approval-chains';
-import { planRun, rowVerdict, waitsOn, type OutboxRow, type Recipient, type RequestNow } from '@/lib/email/eligibility';
+import { canActOnStep } from '@/lib/permissions';
+import {
+  planRun,
+  rowVerdict,
+  waitsOn,
+  type OutboxRow,
+  type RecentSends,
+  type Recipient,
+  type RequestNow,
+} from '@/lib/email/eligibility';
 import { EMAIL_DELIVERY, EMAIL_KINDS, EMAIL_ROLES } from '@/lib/notify-policy';
 
 const NOW = new Date('2026-10-05T08:00:00.000Z');
 const ago = (min: number) => new Date(NOW.getTime() - min * 60_000);
+const REGION = 'g-north';
+const OTHER = 'g-south';
+const none = (): RecentSends => ({ any: new Set(), action: new Set() });
 
 const row = (over: Partial<OutboxRow> = {}): OutboxRow => ({
   id: 'n1',
@@ -27,6 +39,7 @@ const who = (role: Role, over: Partial<Recipient> = {}): Recipient => ({
   isActive: true,
   email: 'person@example.test',
   username: 'person.x',
+  managedRegionIds: [REGION],
   ...over,
 });
 const req = (over: Partial<RequestNow> = {}): RequestNow => ({
@@ -41,6 +54,7 @@ const req = (over: Partial<RequestNow> = {}): RequestNow => ({
   submittedById: 's1',
   submitterSupervisorId: 'u1',
   otherStepActorIds: [],
+  scopeRegionIds: [REGION],
   ...over,
 });
 
@@ -102,8 +116,9 @@ describe('rowVerdict, in order', () => {
   });
 });
 
-describe('waitsOn: has the request moved past him?', () => {
-  const cash = () => req({ process: 'CREATE', approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CASH) });
+describe('waitsOn: has the request moved past him, and can he act on it?', () => {
+  const cash = (over: Partial<RequestNow> = {}) =>
+    req({ process: 'CREATE', approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CASH), ...over });
   const credit = () => req({ process: 'CREATE', approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT) });
 
   it('the supervisor, while the request is at the Supervisor step; not once it moved on, though it is still SUBMITTED', () => {
@@ -111,18 +126,54 @@ describe('waitsOn: has the request moved past him?', () => {
     expect(waitsOn(who(Role.MANAGER), 'EDIT_SUBMITTED', { ...cash(), currentStepIndex: 1 })).toBe(false);
   });
 
-  it('a Supervisor who is not the submitter’s supervisor does not; a region Manager (close fallback) does', () => {
+  it('a Supervisor who is not the submitter’s supervisor does not; a Manager of the request’s region does (close fallback, RBAC-05-003)', () => {
     expect(waitsOn(who(Role.SUPERVISOR, { id: 'other' }), 'EDIT_SUBMITTED', req())).toBe(false);
+    expect(waitsOn(who(Role.SUPERVISOR), 'EDIT_SUBMITTED', req())).toBe(true);
     expect(waitsOn(who(Role.MANAGER, { id: 'm2' }), 'EDIT_SUBMITTED', req({ target: 'BRANCH' }))).toBe(true);
   });
 
-  it('EDIT_STAGE_ADVANCED: the step that must act now, and nobody else', () => {
+  it('a Manager outside the request’s region is not e-mailed, even as the salesman’s supervisor — the page refuses him', () => {
+    // supervisorId points at him, but he does not manage the route region (the
+    // readiness script's "Manager does not manage the route region"), or the
+    // Steward moved the salesman after he submitted.
+    expect(waitsOn(who(Role.MANAGER, { managedRegionIds: [OTHER] }), 'EDIT_SUBMITTED', req())).toBe(false);
+    expect(waitsOn(who(Role.MANAGER, { managedRegionIds: [] }), 'EDIT_SUBMITTED', req())).toBe(false);
+    expect(waitsOn(who(Role.MANAGER, { id: 'm2', managedRegionIds: [OTHER] }), 'EDIT_SUBMITTED', req({ target: 'BRANCH' }))).toBe(false);
+    // A request whose scope reads nothing (its customer gone) waits on no Manager.
+    expect(waitsOn(who(Role.MANAGER), 'EDIT_SUBMITTED', req({ scopeRegionIds: [] }))).toBe(false);
+    // A new-customer request is scoped by its DRAFT routes' region.
+    expect(waitsOn(who(Role.MANAGER), 'EDIT_SUBMITTED', cash({ scopeRegionIds: [OTHER] }))).toBe(false);
+  });
+
+  it('EDIT_STAGE_ADVANCED: the step that must act now, in scope, and nobody else', () => {
     const atFm = { ...credit(), currentStepIndex: 1 };
-    expect(waitsOn(who(Role.FINANCE_MANAGER, { id: 'fm' }), 'EDIT_STAGE_ADVANCED', atFm)).toBe(true);
+    expect(waitsOn(who(Role.FINANCE_MANAGER, { id: 'fm', managedRegionIds: [] }), 'EDIT_STAGE_ADVANCED', atFm)).toBe(true);
     expect(waitsOn(who(Role.FINANCE_MANAGER, { id: 'fm' }), 'EDIT_STAGE_ADVANCED', { ...atFm, currentStepIndex: 2 })).toBe(false);
     expect(waitsOn(who(Role.ACCOUNTANT, { id: 'a' }), 'EDIT_STAGE_ADVANCED', { ...cash(), currentStepIndex: 1 })).toBe(true);
+    // The Accountant step is region-scoped: another region's Accountant cannot act on it.
+    expect(waitsOn(who(Role.ACCOUNTANT, { id: 'a', managedRegionIds: [OTHER] }), 'EDIT_STAGE_ADVANCED', { ...cash(), currentStepIndex: 1 })).toBe(false);
     // Returned to the Supervisor step by a step-back: his row again.
     expect(waitsOn(who(Role.MANAGER), 'EDIT_STAGE_ADVANCED', { ...cash(), currentStepIndex: 0 })).toBe(true);
+  });
+
+  it('answers as canActOnStep does — the rule the decision applies — for every role and scope', () => {
+    const chains = [cash(), { ...cash(), currentStepIndex: 1 }, credit(), { ...credit(), currentStepIndex: 1 }, { ...credit(), currentStepIndex: 2 }, { ...credit(), currentStepIndex: 3 }, req()];
+    for (const edit of chains) {
+      for (const role of EMAIL_ROLES) {
+        for (const managedRegionIds of [[REGION], [OTHER], []]) {
+          for (const id of ['u1', 'x9']) {
+            const r = who(role, { id, managedRegionIds });
+            const step = (edit.approvalChain as Array<{ role: Role; scope: 'SUPERVISOR_OF_SUBMITTER' | 'REGION_OVERLAP' | 'GLOBAL' }>)[edit.currentStepIndex]!;
+            const expected = canActOnStep(r, step, { id: edit.submittedById, supervisorId: edit.submitterSupervisorId }, {
+              customerBranches: edit.scopeRegionIds.map((regionId) => ({ regionId, deletedAt: null })),
+              managedRegionIds,
+              priorStepActorIds: edit.otherStepActorIds,
+            });
+            expect(waitsOn(r, 'EDIT_STAGE_ADVANCED', edit), `${role} ${id} ${managedRegionIds} step ${edit.currentStepIndex}`).toBe(expected);
+          }
+        }
+      }
+    }
   });
 
   it('the recorded pending role must agree with the step the pointer names', () => {
@@ -136,11 +187,15 @@ describe('waitsOn: has the request moved past him?', () => {
     expect(waitsOn(who(Role.MANAGER), 'EDIT_SUBMITTED', req({ isReactivation: true }))).toBe(false);
   });
 
-  it('REACTIVATION_REQUESTED: a Manager while it is open', () => {
+  it('REACTIVATION_REQUESTED: a Manager of the branch’s region while it is open — the decide gate', () => {
     const r = req({ isReactivation: true, target: 'BRANCH', approvalChain: null });
     expect(waitsOn(who(Role.MANAGER), 'REACTIVATION_REQUESTED', r)).toBe(true);
     expect(waitsOn(who(Role.ACCOUNTANT), 'REACTIVATION_REQUESTED', r)).toBe(false);
     expect(waitsOn(who(Role.MANAGER), 'REACTIVATION_REQUESTED', { ...r, state: 'APPROVED' })).toBe(false);
+    // The branch's region moved, or he never managed it: approveReactivationCore refuses him.
+    expect(waitsOn(who(Role.MANAGER, { managedRegionIds: [OTHER] }), 'REACTIVATION_REQUESTED', r)).toBe(false);
+    expect(waitsOn(who(Role.MANAGER), 'REACTIVATION_REQUESTED', { ...r, scopeRegionIds: [] })).toBe(false);
+    expect(waitsOn(who(Role.MANAGER, { id: 's1' }), 'REACTIVATION_REQUESTED', r)).toBe(false);
   });
 });
 
@@ -149,62 +204,107 @@ describe('planRun', () => {
     ['m1', who(Role.MANAGER, { id: 'm1', email: 'm1@example.test' })],
     ['m2', who(Role.MANAGER, { id: 'm2', email: 'm2@example.test' })],
     ['a1', who(Role.ACCOUNTANT, { id: 'a1', email: 'a1@example.test' })],
+    ['a2', who(Role.ACCOUNTANT, { id: 'a2', email: 'a2@example.test' })],
+    ['a3', who(Role.ACCOUNTANT, { id: 'a3', email: 'a3@example.test' })],
     ['gm', who(Role.GM, { id: 'gm', email: 'gm@example.test' })],
   ]);
   const edits = new Map<string, RequestNow>([
     ['e1', req({ id: 'e1', submitterSupervisorId: 'm1' })],
     ['e2', req({ id: 'e2', submitterSupervisorId: 'm2' })],
+    [
+      'c1',
+      req({ id: 'c1', process: 'CREATE', approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CASH), currentStepIndex: 1, submitterSupervisorId: 'm1' }),
+    ],
   ]);
+  const plan = (rows: OutboxRow[], over: Partial<Parameters<typeof planRun>[0]> = {}) =>
+    planRun({ rows, recipients, edits, now: NOW, recentlySent: none(), sentLast24h: 0, informationSentLast24h: 0, ...over });
 
   it('one digest per recipient, one line per request (action beats information), skips recorded', () => {
-    const plan = planRun({
-      rows: [
-        row({ id: 'r1', userId: 'm1', kind: 'EDIT_SUBMITTED', editId: 'e1' }),
-        row({ id: 'r2', userId: 'm1', kind: 'REQUEST_FYI', editId: 'e1' }),
-        row({ id: 'r3', userId: 'a1', kind: 'REQUEST_FYI', editId: 'e1' }),
-        row({ id: 'r4', userId: 'a1', kind: 'REQUEST_FYI', editId: 'e2' }),
-        row({ id: 'r5', userId: 'gm', kind: 'EDIT_STAGE_ADVANCED', editId: 'e1' }),
-      ],
-      recipients,
-      edits,
-      now: NOW,
-      recentlySent: new Set(),
-      sentLast24h: 0,
-    });
-    expect(plan.skips).toEqual([{ id: 'r5', status: 'SKIPPED_ROLE' }]);
-    expect(plan.digests.map((d) => [d.userId, d.rowIds, d.items.map((i) => `${i.kind}:${i.editId}`)])).toEqual([
-      ['m1', ['r1', 'r2'], ['EDIT_SUBMITTED:e1']],
-      ['a1', ['r3', 'r4'], ['REQUEST_FYI:e1', 'REQUEST_FYI:e2']],
+    const p = plan([
+      row({ id: 'r1', userId: 'm1', kind: 'EDIT_SUBMITTED', editId: 'e1' }),
+      row({ id: 'r2', userId: 'm1', kind: 'REQUEST_FYI', editId: 'e1' }),
+      row({ id: 'r3', userId: 'a1', kind: 'REQUEST_FYI', editId: 'e1' }),
+      row({ id: 'r4', userId: 'a1', kind: 'REQUEST_FYI', editId: 'e2' }),
+      row({ id: 'r5', userId: 'gm', kind: 'EDIT_STAGE_ADVANCED', editId: 'e1' }),
     ]);
-    expect(plan.digests[0]!.address).toBe('m1@example.test');
-    expect(plan.capped).toBe(false);
+    expect(p.skips).toEqual([{ id: 'r5', status: 'SKIPPED_ROLE' }]);
+    expect(p.digests.map((d) => [d.userId, d.rowIds, d.items.map((i) => `${i.kind}:${i.editId}`), d.informationOnly])).toEqual([
+      ['m1', ['r1', 'r2'], ['EDIT_SUBMITTED:e1'], false],
+      ['a1', ['r3', 'r4'], ['REQUEST_FYI:e1', 'REQUEST_FYI:e2'], true],
+    ]);
+    expect(p.digests[0]!.address).toBe('m1@example.test');
+    expect(p.capped).toBe(false);
   });
 
   it('a recipient e-mailed within the gap waits; his rows go back', () => {
-    const plan = planRun({
-      rows: [row({ id: 'r1', userId: 'm1' }), row({ id: 'r2', userId: 'a1', kind: 'REQUEST_FYI' })],
-      recipients,
-      edits,
-      now: NOW,
-      recentlySent: new Set(['m1']),
-      sentLast24h: 0,
+    const p = plan([row({ id: 'r1', userId: 'm1' }), row({ id: 'r2', userId: 'a1', kind: 'REQUEST_FYI' })], {
+      recentlySent: { any: new Set(['m1']), action: new Set(['m1']) },
     });
-    expect(plan.deferred).toEqual(['r1']);
-    expect(plan.digests.map((d) => d.userId)).toEqual(['a1']);
+    expect(p.deferred).toEqual(['r1']);
+    expect(p.digests.map((d) => d.userId)).toEqual(['a1']);
   });
 
-  it('the caps hold back whole digests, newest first, and say so', () => {
+  it('the gap is per class: an FYI-only e-mail does not hold back a later "now at your step"', () => {
+    // 10:00 the Accountant was sent information only; 10:01 a cash new-customer
+    // request reached his step. It goes now, not at 10:40.
+    const atHisStep = row({ id: 'act', userId: 'a1', kind: 'EDIT_STAGE_ADVANCED', editId: 'c1' });
+    const moreInfo = row({ id: 'fyi', userId: 'a2', kind: 'REQUEST_FYI', editId: 'e1' });
+    const p = plan([atHisStep, moreInfo], { recentlySent: { any: new Set(['a1', 'a2']), action: new Set() } });
+    expect(p.digests.map((d) => d.userId)).toEqual(['a1']);
+    expect(p.deferred).toEqual(['fyi']);
+    // An e-mail that asked him to act still holds back the next one, of either class.
+    const held = plan([atHisStep], { recentlySent: { any: new Set(['a1']), action: new Set(['a1']) } });
+    expect(held.digests).toEqual([]);
+    expect(held.deferred).toEqual(['act']);
+  });
+
+  it('the caps hold back whole digests — information before work, then newest first — and say so', () => {
     const rows = [
       row({ id: 'old', userId: 'a1', kind: 'REQUEST_FYI', createdAt: ago(50) }),
       row({ id: 'new', userId: 'm1', createdAt: ago(1) }),
     ];
-    const perRun = planRun({ rows, recipients, edits, now: NOW, recentlySent: new Set(), sentLast24h: 0, policy: { ...EMAIL_DELIVERY, perRunCap: 1 } });
-    expect(perRun.digests.map((d) => d.userId)).toEqual(['a1']);
-    expect(perRun.deferred).toEqual(['new']);
+    const perRun = plan(rows, { policy: { ...EMAIL_DELIVERY, perRunCap: 1 } });
+    expect(perRun.digests.map((d) => d.userId)).toEqual(['m1']);
+    expect(perRun.deferred).toEqual(['old']);
     expect(perRun.capped).toBe(true);
-    const daily = planRun({ rows, recipients, edits, now: NOW, recentlySent: new Set(), sentLast24h: EMAIL_DELIVERY.dailyCap });
+    const daily = plan(rows, { sentLast24h: EMAIL_DELIVERY.dailyCap });
     expect(daily.digests).toEqual([]);
     expect(daily.deferred.sort()).toEqual(['new', 'old']);
     expect(daily.capped).toBe(true);
+    // Within a class, oldest first.
+    const twoFyi = plan(
+      [row({ id: 'y', userId: 'a2', kind: 'REQUEST_FYI', createdAt: ago(5) }), row({ id: 'x', userId: 'a1', kind: 'REQUEST_FYI', createdAt: ago(40) })],
+      { policy: { ...EMAIL_DELIVERY, perRunCap: 1 } }
+    );
+    expect(twoFyi.digests.map((d) => d.userId)).toEqual(['a1']);
+  });
+
+  it('FYI-only digests beyond the cap never crowd out a must-act digest', () => {
+    // Three Accountants' information, all older than one Manager's "please review".
+    const rows = [
+      row({ id: 'f1', userId: 'a1', kind: 'REQUEST_FYI', createdAt: ago(60) }),
+      row({ id: 'f2', userId: 'a2', kind: 'REQUEST_FYI', createdAt: ago(50) }),
+      row({ id: 'f3', userId: 'a3', kind: 'REQUEST_FYI', createdAt: ago(40) }),
+      row({ id: 'act', userId: 'm1', kind: 'EDIT_SUBMITTED', editId: 'e1', createdAt: ago(1) }),
+    ];
+    const p = plan(rows, { policy: { ...EMAIL_DELIVERY, perRunCap: 2 } });
+    expect(p.digests.map((d) => d.userId)).toEqual(['m1', 'a1']);
+    expect(p.deferred.sort()).toEqual(['f2', 'f3']);
+    expect(p.capped).toBe(true);
+  });
+
+  it('information-only digests stop at their share of the day; work still goes', () => {
+    const rows = [
+      row({ id: 'f1', userId: 'a1', kind: 'REQUEST_FYI', createdAt: ago(60) }),
+      row({ id: 'act', userId: 'm1', kind: 'EDIT_SUBMITTED', editId: 'e1', createdAt: ago(1) }),
+    ];
+    const p = plan(rows, {
+      sentLast24h: EMAIL_DELIVERY.informationDailyCap,
+      informationSentLast24h: EMAIL_DELIVERY.informationDailyCap,
+    });
+    expect(p.digests.map((d) => d.userId)).toEqual(['m1']);
+    expect(p.deferred).toEqual(['f1']);
+    expect(p.capped).toBe(true);
+    expect(EMAIL_DELIVERY.informationDailyCap).toBeLessThan(EMAIL_DELIVERY.dailyCap);
   });
 });
