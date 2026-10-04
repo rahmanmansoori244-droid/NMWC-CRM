@@ -21,7 +21,7 @@
  * until the next run, and served to the monitor: no address, no subject, no
  * error text.
  */
-import { EMAIL_DELIVERY, type EmailDeliveryPolicy } from '../notify-policy';
+import { EMAIL_DELIVERY, EMAIL_KINDS, EMAIL_ROLES, type EmailDeliveryPolicy } from '../notify-policy';
 import type { SendConfig } from './config';
 import { renderDigest } from './digest';
 import { planRun, type SkipStatus } from './eligibility';
@@ -96,6 +96,15 @@ export async function runEmailDrain(deps: {
     const cutoff = new Date(started.getTime() - policy.maxAgeMs);
     result.staleMarked = await store.markStale(cutoff, started, HOUSEKEEPING_LIMIT);
     result.exhaustedMarked = await store.markExhausted(policy.maxAttempts, started, HOUSEKEEPING_LIMIT);
+    const never = await store.markIneligible({
+      kinds: EMAIL_KINDS,
+      roles: EMAIL_ROLES,
+      now: started,
+      limit: HOUSEKEEPING_LIMIT,
+    });
+    if (never.kind > 0) result.skippedBy.SKIPPED_KIND = never.kind;
+    if (never.role > 0) result.skippedBy.SKIPPED_ROLE = never.role;
+    result.skipped += never.kind + never.role;
 
     const rows = await store.claim({
       now: started,
@@ -127,12 +136,14 @@ export async function runEmailDrain(deps: {
 
     const byStatus = new Map<SkipStatus, string[]>();
     for (const s of plan.skips) byStatus.set(s.status, [...(byStatus.get(s.status) ?? []), s.id]);
+    await Promise.all([
+      ...[...byStatus].map(([status, ids]) => store.finish(ids, status, started)),
+      store.release(plan.deferred),
+    ]);
     for (const [status, ids] of byStatus) {
-      await store.finish(ids, status, started);
-      result.skippedBy[status] = ids.length;
+      result.skippedBy[status] = (result.skippedBy[status] ?? 0) + ids.length;
       result.skipped += ids.length;
     }
-    await store.release(plan.deferred);
     result.deferred = plan.deferred.length;
     result.capped = plan.capped;
 

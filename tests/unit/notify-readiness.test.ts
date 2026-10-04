@@ -88,3 +88,12 @@ describe('readinessReport', () => {
     expect(text).toContain('E-mail addresses held by more than one account');
   });
 });
+
+describe('the readiness address rule is the drain’s', () => {
+  it('answers as lib/email/config.ts isEmailAddress does', async () => {
+    const { isEmailAddress } = await import('@/lib/email/config');
+    const { readinessAddress } = await import('../../scripts/ops/notify-readiness');
+    const cases = ['a.b@example.test', 'a@b', 'a b@example.test', 'a@example.test, c@example.test', '<a@example.test>', 'a"b@example.test', `${'x'.repeat(250)}@example.test`];
+    for (const c of cases) expect(readinessAddress(c), c).toBe(isEmailAddress(c));
+  });
+});

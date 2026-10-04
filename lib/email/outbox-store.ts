@@ -24,6 +24,14 @@ import type { EmailStatus, OutboxRow, Recipient, RequestNow, SkipStatus } from '
 export interface OutboxStore {
   /** Rows past the maximum age, never claimed again: SKIPPED_STALE. Bounded per call. */
   markStale(cutoff: Date, now: Date, limit: number): Promise<number>;
+  /**
+   * Rows that can never be e-mailed — a kind not e-mailed, or a recipient whose
+   * role is not on the allowlist — marked SKIPPED_KIND / SKIPPED_ROLE before the
+   * claim, so the claim's limit is not spent on them (a bulk approval writes
+   * hundreds of salesman and Steward rows). Bounded per call. The plan re-checks
+   * both on what it claims, so a role changed in between still fails closed.
+   */
+  markIneligible(args: { kinds: readonly string[]; roles: readonly string[]; now: Date; limit: number }): Promise<{ kind: number; role: number }>;
   /** Rows that reached the attempt cap without a send: FAILED. */
   markExhausted(maxAttempts: number, now: Date, limit: number): Promise<number>;
   claim(args: { now: Date; cutoff: Date; leaseUntil: Date; limit: number; maxAttempts: number }): Promise<OutboxRow[]>;
@@ -54,6 +62,26 @@ export function prismaOutboxStore(db: PrismaClient, scope?: { userIds: string[] 
             AND (n."emailLeaseUntil" IS NULL OR n."emailLeaseUntil" < ${now}) ${scoped}
           LIMIT ${limit}
         )`;
+    },
+
+    async markIneligible({ kinds, roles, now, limit }) {
+      const kind = await db.$executeRaw`
+        UPDATE "Notification" SET "emailStatus" = 'SKIPPED_KIND', "emailedAt" = ${now}, "emailLeaseUntil" = NULL
+        WHERE id IN (
+          SELECT n.id FROM "Notification" n
+          WHERE n."emailedAt" IS NULL AND n.kind::text NOT IN (${Prisma.join([...kinds])})
+            AND (n."emailLeaseUntil" IS NULL OR n."emailLeaseUntil" < ${now}) ${scoped}
+          LIMIT ${limit}
+        )`;
+      const role = await db.$executeRaw`
+        UPDATE "Notification" SET "emailStatus" = 'SKIPPED_ROLE', "emailedAt" = ${now}, "emailLeaseUntil" = NULL
+        WHERE id IN (
+          SELECT n.id FROM "Notification" n JOIN "User" u ON u.id = n."userId"
+          WHERE n."emailedAt" IS NULL AND u.role::text NOT IN (${Prisma.join([...roles])})
+            AND (n."emailLeaseUntil" IS NULL OR n."emailLeaseUntil" < ${now}) ${scoped}
+          LIMIT ${limit}
+        )`;
+      return { kind, role };
     },
 
     async markExhausted(maxAttempts, now, limit) {
