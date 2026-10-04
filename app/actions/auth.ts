@@ -15,8 +15,14 @@ import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 // still demanded 3, so every two-character route would have been told
 // "Please enter your username and password" on launch day. Caught by the
 // browser walk; keep the three schemas in step.
+//
+// All three trim the username, ahead of every other rule: a phone keyboard adds a
+// space after a word it completed, and a padded name lower-cased below is still
+// not the account's name — it was refused as a wrong password, and charged a
+// per-user rate bucket of its own. The password is never trimmed; a space in it
+// is part of it.
 const loginSchema = z.object({
-  username: z.string().min(1).max(50),
+  username: z.string().trim().min(1).max(50),
   password: z.string().min(1).max(200),
 });
 

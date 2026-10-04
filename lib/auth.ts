@@ -54,7 +54,11 @@ if (process.env.VERCEL_ENV && process.env.VERCEL_ENV !== 'production') {
 
 const credentialsSchema = z.object({
   // Salesmen sign in with their route code, which can be as short as "C4" or "W".
-  username: z.string().min(1).max(50),
+  // Trimmed first, in step with loginSchema in app/actions/auth.ts: the callback
+  // route reaches authorize() without the form, and a padded name must find the
+  // same row and the same rate-limit bucket as the bare one. The password is
+  // never trimmed.
+  username: z.string().trim().min(1).max(50),
   password: z.string().min(1).max(200),
 });
 

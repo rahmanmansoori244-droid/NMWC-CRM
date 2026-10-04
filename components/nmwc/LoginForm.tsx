@@ -34,11 +34,17 @@ export function LoginForm() {
         <label htmlFor="username" className="mb-1 block text-sm font-medium text-slate-700">
           Username
         </label>
+        {/* Usernames are lower-case codes. A phone keyboard otherwise
+            capitalises the first letter and "corrects" a code into a word; the
+            server lower-cases and trims, but cannot undo a correction. */}
         <input
           id="username"
           name="username"
           type="text"
           autoComplete="username"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           required
           className="block w-full rounded-md border-slate-300 px-3 py-2 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
         />

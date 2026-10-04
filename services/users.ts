@@ -43,9 +43,12 @@ async function requireUserAdmin() {
 }
 
 // Go-live: salesmen sign in with their ROUTE CODE, and codes like "C4" or "W" are
-// shorter than three characters.
+// shorter than three characters. Trimmed first, in step with the two sign-in
+// schemas (app/actions/auth.ts, lib/auth.ts): a stored username never carries
+// the spaces a sign-in strips.
 const usernameRule = z
   .string()
+  .trim()
   .min(1)
   .max(50)
   .regex(/^[a-z0-9._-]+$/, 'lowercase letters, digits, dot, underscore, hyphen only');
