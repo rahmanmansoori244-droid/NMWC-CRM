@@ -3,6 +3,8 @@
  *
  *   - one failing statement degrades only its own section; the rest still load,
  *     and the log gets the card and the error's class, never its message;
+ *   - so does one SLOW statement: each runs under its own statement_timeout in
+ *     a short transaction, and the wave has one deadline (lib/insights/rollout.ts);
  *   - the rows are shaped as the cards read them (lib/insights/shape.ts): the
  *     GROUPING masks, the gap-filled series, the direct-write split;
  *   - the SQL text keeps the raw-SQL rules: counts ::int, averages ::float8, the
@@ -18,15 +20,18 @@ import { stripComments } from '../support/strip-comments';
 
 const h = vi.hoisted(() => ({
   queryRaw: vi.fn(),
+  executeRaw: vi.fn(),
+  transaction: vi.fn(),
   logError: vi.fn(),
 }));
-vi.mock('@/lib/db', () => ({ prisma: { $queryRaw: h.queryRaw } }));
+vi.mock('@/lib/db', () => ({ prisma: { $queryRaw: h.queryRaw, $executeRaw: h.executeRaw, $transaction: h.transaction } }));
 vi.mock('@/lib/logger', () => ({ logger: { error: h.logError, warn: vi.fn(), info: vi.fn() } }));
 
 import { loadInsights, cellDegFor, __sql } from '@/lib/insights/load';
 import { parsePeriod } from '@/lib/insights/period';
 import { resolveInsightScope, type InsightScope } from '@/lib/insights/scope';
 import { MAP } from '@/lib/insights/policy';
+import { STATEMENT_TIMEOUT_MS, WAVE_DEADLINE_MS } from '@/lib/insights/rollout';
 import {
   changePct,
   pct,
@@ -63,6 +68,9 @@ const stateRow = (over: Partial<StateRow>): StateRow => ({
 
 beforeEach(() => {
   h.queryRaw.mockReset().mockResolvedValue([]);
+  h.executeRaw.mockReset().mockResolvedValue(0);
+  // A batch transaction: every operation is already a promise; the result is theirs, in order.
+  h.transaction.mockReset().mockImplementation((ops: unknown[]) => Promise.all(ops));
   h.logError.mockReset();
 });
 
@@ -103,6 +111,46 @@ describe('one failing query degrades only its card', () => {
     expect(data.updated.ok).toBe(false);
     expect(data.created.ok).toBe(true);
     expect(data.heat.ok).toBe(true);
+  });
+
+  it('every statement runs in its own transaction, after SET LOCAL statement_timeout', async () => {
+    await loadInsights(MANAGER, PERIOD);
+    expect(h.transaction).toHaveBeenCalledTimes(6);
+    expect(h.executeRaw).toHaveBeenCalledTimes(6);
+    for (const [q] of h.executeRaw.mock.calls) {
+      expect((q as Prisma.Sql).sql).toBe(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`);
+      expect((q as Prisma.Sql).values).toEqual([]);
+    }
+    // Each transaction holds exactly its timeout and its one statement.
+    for (const [ops] of h.transaction.mock.calls) expect((ops as unknown[]).length).toBe(2);
+    expect(STATEMENT_TIMEOUT_MS).toBeLessThan(WAVE_DEADLINE_MS);
+    // Both well inside the function's 60 s limit (vercel.json maxDuration).
+    expect(WAVE_DEADLINE_MS).toBeLessThanOrEqual(30_000);
+  });
+
+  it('a statement that never answers fails its own section at the deadline; the other five load', async () => {
+    vi.useFakeTimers();
+    try {
+      h.queryRaw.mockImplementation((q: Prisma.Sql) => (marker(q) === 'updated' ? new Promise(() => {}) : Promise.resolve([])));
+      const pending = loadInsights(MANAGER, PERIOD);
+      await vi.advanceTimersByTimeAsync(WAVE_DEADLINE_MS);
+      const data = await pending;
+      for (const [k, s] of Object.entries(data)) expect(s.ok, k).toBe(k !== 'updated');
+      expect(h.logError).toHaveBeenCalledTimes(1);
+      expect(h.logError.mock.calls[0]![0]).toEqual({ card: 'updated', errorClass: 'InsightsDeadlineError', code: 'DEADLINE' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a wave that finishes in time leaves no timer behind', async () => {
+    vi.useFakeTimers();
+    try {
+      await loadInsights(MANAGER, PERIOD);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rows that cannot be shaped fail their section, not the page', async () => {
@@ -158,7 +206,7 @@ describe('shaping', () => {
   });
 
   it('customers updated: a bar is customers through a salesman’s request plus customers changed only by direct write', () => {
-    const blank = { regionId: null, routeId: null, byDirect: 0, changes: 0, prev: 0, gps: 0, phone: 0, address: 0, visitDay: 0, channel: 0, equipment: 0, contact: 0, regionName: null, regionCode: null, routeCode: null, routeName: null };
+    const blank = { regionId: null, routeId: null, byRequestOnRoute: 0, byDirect: 0, changes: 0, prev: 0, gps: 0, phone: 0, address: 0, visitDay: 0, channel: 0, equipment: 0, contact: 0, regionName: null, regionCode: null, routeCode: null, routeName: null };
     const u = shapeUpdated(
       [
         { ...blank, g: 3, bucket: PERIOD.buckets[0]!, customers: 5, byRequest: 3, byDirect: 3 },
@@ -169,6 +217,23 @@ describe('shaping', () => {
     expect(u.series[0]).toEqual({ bucket: PERIOD.buckets[0], byRequest: 3, directOnly: 2 });
     expect(u).toMatchObject({ customers: 9, byRequest: 6, directOnly: 3, changes: 12, prevCustomers: 7 });
     expect(u.families.gps).toBe(2);
+  });
+
+  it('customers updated, per route: the customer on each of its routes, and apart, the work done on that route', () => {
+    const blank = { bucket: null, regionId: null, byDirect: 0, changes: 0, prev: 0, gps: 0, phone: 0, address: 0, visitDay: 0, channel: 0, equipment: 0, contact: 0, regionName: null, regionCode: null, routeName: null };
+    const u = shapeUpdated(
+      [
+        // A chain customer updated by the salesman of R1: it counts on both routes,
+        // but only R1's salesman did the work.
+        { ...blank, g: 6, routeId: 'rt-1', routeCode: 'R1', customers: 1, byRequest: 1, byRequestOnRoute: 1 },
+        { ...blank, g: 6, routeId: 'rt-2', routeCode: 'R2', customers: 1, byRequest: 1, byRequestOnRoute: 0 },
+      ],
+      PERIOD
+    );
+    expect(u.routes.map((r) => [r.route.code, r.customers, r.byRequest, r.byRequestOnRoute])).toEqual([
+      ['R1', 1, 1, 1],
+      ['R2', 1, 1, 0],
+    ]);
   });
 
   it('requests: unknown kinds and states are ignored, not invented', () => {
@@ -293,6 +358,24 @@ describe('the SQL text', () => {
     for (const q of Object.values(statements(STEWARD))) expect(JSON.stringify(q.values)).not.toContain('__none__');
   });
 
+  it('every "period before" count stops where the window has run to (prevTo), not at its start', () => {
+    const running = parsePeriod({ period: '7d' }, NOW);
+    expect(running.prevTo.getTime()).toBeLessThan(running.from.getTime());
+    for (const q of [__sql.createdSql(MANAGER, running), __sql.updatedSql(MANAGER, running), __sql.statusSql(MANAGER, running)]) {
+      expect(q.values).toContainEqual(running.prevTo);
+      expect(q.sql).toMatch(/"reviewedAt" < \?\) AS "(inPrev|prev)"/);
+      expect(q.sql).not.toMatch(/WHERE NOT "cur"/);
+    }
+  });
+
+  it('the route ranking counts a request only on the route of the branch it changed, or its salesman’s own route', () => {
+    const q = __sql.updatedSql(MANAGER, PERIOD).sql;
+    expect(q).toContain(`array_agg(DISTINCT split_part(x."f", '.', 2)) FILTER (WHERE x."f" LIKE 'branch.%.%') AS "branchIds"`);
+    expect(q).toContain(`CASE WHEN cardinality(fam."branchIds") > 0 THEN b."id" = ANY(fam."branchIds")`);
+    expect(q).toContain(`ELSE COALESCE(s."ownedRouteId" = b."routeId", FALSE) END) AS "onRoute"`);
+    expect(q).toContain(`FILTER (WHERE "cur" AND NOT "direct" AND "onRoute")::int AS "byRequestOnRoute"`);
+  });
+
   it('updates exclude reactivations and close-shop requests; closures read the branch', () => {
     const u = __sql.updatedSql(MANAGER, PERIOD).sql;
     expect(u).toContain(`e."process" = 'UPDATE' AND e."target" = 'CUSTOMER' AND e."state" = 'APPROVED'`);
@@ -319,7 +402,7 @@ describe('the SQL text', () => {
 });
 
 describe('source rules for lib/insights', () => {
-  const files = ['scope', 'sql', 'period', 'policy', 'load', 'shape', 'url', 'highlights'].map((f) => `lib/insights/${f}.ts`);
+  const files = ['scope', 'sql', 'period', 'policy', 'load', 'shape', 'url', 'highlights', 'rollout'].map((f) => `lib/insights/${f}.ts`);
   const src = (f: string) => stripComments(readFileSync(f, 'utf8'), f);
 
   it.each(files)('%s: no cache, no server action, no session, no Customer.updatedAt, no row reads', (f) => {
@@ -331,15 +414,20 @@ describe('source rules for lib/insights', () => {
     expect(s).not.toMatch(/\.findMany\s*\(/);
   });
 
-  it('the loader runs exactly six statements, all in one Promise.allSettled', () => {
+  it('the loader runs exactly six statements, all in one Promise.allSettled, each timed and bounded', () => {
     const s = src('lib/insights/load.ts');
-    expect(s.match(/\$queryRaw\b/g)).toHaveLength(6);
+    // One query site, inside the bounded runner, behind its statement_timeout.
+    expect(s.match(/\$queryRaw\b/g)).toHaveLength(1);
+    expect(s).toMatch(/\$transaction\(\[prisma\.\$executeRaw\(SET_TIMEOUT\), prisma\.\$queryRaw<T>\(statement\)\]\)/);
     expect(s.match(/Promise\.allSettled\(/g)).toHaveLength(1);
     expect(s).not.toMatch(/Promise\.all\(/);
+    const wave = s.slice(s.indexOf('Promise.allSettled('));
+    expect(wave.slice(0, wave.indexOf(']);')).match(/\btimed</g)).toHaveLength(6);
+    expect(s).toMatch(/withinDeadline\(run<T>\(build\), WAVE_DEADLINE_MS\)/);
   });
 
   it('the pure modules import no database client', () => {
-    for (const f of ['scope', 'period', 'policy', 'shape', 'url', 'highlights']) {
+    for (const f of ['scope', 'period', 'policy', 'shape', 'url', 'highlights', 'rollout']) {
       expect(src(`lib/insights/${f}.ts`)).not.toMatch(/from ['"](\.\.\/db|@\/lib\/db|\.\.\/service-status)['"]/);
     }
   });

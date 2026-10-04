@@ -73,6 +73,10 @@ export function KpiRow({ data, ctx }: { data: Insights; ctx: CardContext }) {
   const st = data.statusChanges.ok ? data.statusChanges.data : null;
   const pipe = data.pipeline.ok ? data.pipeline.data : null;
   const pending = pipe ? (ctx.scoped ? sumKinds(pipe.waitingFirstStep) : sumKinds(pipe.waitingAnyStep)) : 0;
+  // Reactivations wait at the Manager's own step and are decided on /reactivations,
+  // not /approvals, so the Supervisor-step count leaves them out; a Manager is
+  // shown them beside it, so the tile never hides work that waits for him.
+  const reactivations = pipe ? pipe.waitingAnyStep.reactivation : 0;
   const gps = s ? pct(s.openWithGps, s.open) : null;
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
@@ -101,6 +105,16 @@ export function KpiRow({ data, ctx }: { data: Insights; ctx: CardContext }) {
         }
         href={ctx.canOpenApprovals ? '/approvals' : undefined}
         hrefLabel={ctx.canOpenApprovals ? 'Open the approval queue' : undefined}
+        extra={
+          ctx.canOpenApprovals ? (
+            <>
+              Not counted above:{' '}
+              <Link href="/reactivations" className="font-medium text-brand-700 hover:underline">
+                {fmt(reactivations)} reactivation{reactivations === 1 ? '' : 's'} waiting for your decision
+              </Link>
+            </>
+          ) : undefined
+        }
       />
       <KpiTile
         label="Branches closed"
@@ -135,21 +149,31 @@ export function KpiRow({ data, ctx }: { data: Insights; ctx: CardContext }) {
 
 // ── What stands out ──────────────────────────────────────────────────────────
 
-export function HighlightsCard({ items }: { items: Highlight[] }) {
+export function HighlightsCard({ items, coverage }: { items: Highlight[]; coverage: 'all' | 'some' | 'none' }) {
   return (
     <InsightCard
       title="What stands out"
       wide
+      failed={coverage === 'none'}
       definition="Read from the figures on this page, for exactly what is in view. Nothing here compares you with another region or person."
     >
       {items.length === 0 ? (
-        <p className="text-sm text-slate-500">Nothing to report for this view yet.</p>
+        <p className="text-sm text-slate-500">
+          {coverage === 'all'
+            ? 'Nothing to report for this view yet.'
+            : 'Nothing to report from the figures that loaded; some could not be loaded just now.'}
+        </p>
       ) : (
-        <ul className="list-disc space-y-1.5 pl-5 text-sm text-slate-700">
-          {items.map((h) => (
-            <li key={h.key}>{h.text}</li>
-          ))}
-        </ul>
+        <>
+          <ul className="list-disc space-y-1.5 pl-5 text-sm text-slate-700">
+            {items.map((h) => (
+              <li key={h.key}>{h.text}</li>
+            ))}
+          </ul>
+          {coverage === 'some' && (
+            <p className="mt-2 text-xs text-slate-500">Some figures could not be loaded just now, so this reading leaves them out.</p>
+          )}
+        </>
       )}
     </InsightCard>
   );
@@ -353,9 +377,11 @@ export function ActivityByAreaCard({ data, ctx }: { data: Insights; ctx: CardCon
 function routeActivityDefinition(ctx: CardContext) {
   return (
     <>
-      The share of each route&apos;s customers that a salesman&apos;s approved request updated {ctx.periodPhrase}, by the
-      route the customer&apos;s branch is on today. Only routes with at least {MIN_CUSTOMERS_TO_RANK} customers are ranked,
-      so one update on a tiny route does not top the list. Route-level only: no salesman is named.
+      The share of each route&apos;s customers that a salesman&apos;s approved request updated on that route{' '}
+      {ctx.periodPhrase}: a request counts on the route of the branch it changed (by the route that branch is on today),
+      or, when it changed no branch, on its salesman&apos;s own route — never on every route a customer has a branch on.
+      Only routes with at least {MIN_CUSTOMERS_TO_RANK} customers are ranked, so one update on a tiny route does not top
+      the list. Route-level: each route is shown by its code, which is its salesman&apos;s username.
     </>
   );
 }
@@ -365,7 +391,7 @@ export function RouteActivityCard({ data, ctx }: { data: Insights; ctx: CardCont
     return <InsightCard title="Routes: most and least active" failed definition={routeActivityDefinition(ctx)} />;
   }
   const created = new Map(data.created.data.routes.map((r) => [r.route.id, r.n]));
-  const updated = new Map(data.updated.data.routes.map((r) => [r.route.id, r.byRequest]));
+  const updated = new Map(data.updated.data.routes.map((r) => [r.route.id, r.byRequestOnRoute]));
   const routes = data.state.data.routes
     .filter((r) => r.customers > 0)
     .map((r) => ({
@@ -376,7 +402,12 @@ export function RouteActivityCard({ data, ctx }: { data: Insights; ctx: CardCont
     }))
     .map((r) => ({ ...r, rate: r.updated / r.customers }));
   const ranked = routes.filter((r) => r.customers >= MIN_CUSTOMERS_TO_RANK);
-  const top = [...ranked].sort((a, b) => b.rate - a.rate || b.updated - a.updated).slice(0, ROUTE_LIST_SIZE);
+  // "Most active" holds only routes with some activity: five routes at 0% would be
+  // ranked by a tie-breaker, as if by performance.
+  const top = ranked
+    .filter((r) => r.rate > 0)
+    .sort((a, b) => b.rate - a.rate || b.updated - a.updated)
+    .slice(0, ROUTE_LIST_SIZE);
   const bottom = [...ranked]
     .sort((a, b) => a.rate - b.rate || b.customers - a.customers)
     .filter((r) => !top.includes(r))
@@ -422,7 +453,13 @@ export function RouteActivityCard({ data, ctx }: { data: Insights; ctx: CardCont
         <div className="space-y-4">
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Most active</h3>
-            <BarList rows={top.map(row)} max={100} emptyText="" />
+            {top.length === 0 ? (
+              <p className="text-sm text-slate-500">
+                No route in view had an approved update request {ctx.periodPhrase}.
+              </p>
+            ) : (
+              <BarList rows={top.map(row)} max={100} emptyText="" />
+            )}
           </div>
           {bottom.length > 0 && (
             <div>

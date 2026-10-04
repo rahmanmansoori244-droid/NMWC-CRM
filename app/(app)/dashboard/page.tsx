@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { loadScope } from '@/lib/access';
@@ -16,7 +17,8 @@ import {
   type RoleScope,
 } from '@/lib/insights/scope';
 import { loadInsights } from '@/lib/insights/load';
-import { highlights } from '@/lib/insights/highlights';
+import { highlights, highlightsCoverage } from '@/lib/insights/highlights';
+import { insightsDashboardDisabled, WAVE_DEADLINE_MS, withinDeadline } from '@/lib/insights/rollout';
 import type { DashboardQuery } from '@/lib/insights/url';
 import { STATUS_ROLES } from '@/lib/service-levels';
 import { InsightFilters, type RouteOption } from './InsightFilters';
@@ -59,12 +61,18 @@ type Search = {
  * it (lib/insights/scope.ts). Every figure is an aggregate computed on the server
  * (lib/insights/load.ts); the only client component is the filter bar, which gets
  * option lists already cut to the viewer's scope.
+ *
+ * Levers (lib/insights/rollout.ts): INSIGHTS_DASHBOARD_DISABLED=true shows a short
+ * notice with the viewer's working links and runs no dashboard query; and every
+ * statement, and the filter lists, have a deadline, so a slow one fails its own
+ * cards instead of holding the landing page.
  */
 export default async function DashboardPage({ searchParams }: { searchParams: Promise<Search> }) {
   const session = await auth();
   if (!session?.user) redirect('/login');
   const role = session.user.role;
   if (!isDashboardRole(role)) redirect('/home');
+  if (insightsDashboardDisabled()) return <SwitchedOff role={role} />;
 
   const sp = await searchParams;
   // The clock is read once; every window and label below derives from it.
@@ -159,7 +167,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
       <div className="space-y-4 p-4 sm:p-6">
         <KpiRow data={insights} ctx={ctx} />
         <div className="grid gap-4 lg:grid-cols-2">
-          <HighlightsCard items={items} />
+          <HighlightsCard items={items} coverage={highlightsCoverage(insights)} />
           <NewCustomersCard data={insights} ctx={ctx} />
           <UpdatedCustomersCard data={insights} ctx={ctx} />
           <ActivityByAreaCard data={insights} ctx={ctx} />
@@ -196,8 +204,14 @@ function periodPhrase(p: InsightPeriod): string {
   return p.fromDay === p.toDay ? `on ${dayLabel(p.fromDay)}` : `from ${dayLabel(p.fromDay)} to ${dayLabel(p.toDay)}`;
 }
 
+/**
+ * The comparison window runs as long as this one has (period.ts prevTo): while
+ * today is under way, "the 7 days before" ends at the same time of day, and the
+ * phrase says so.
+ */
 function againstPhrase(p: InsightPeriod): string {
-  return `vs the ${p.days === 1 ? 'day' : `${p.days.toLocaleString('en-GB')} days`} before`;
+  const span = p.days === 1 ? 'day' : `${p.days.toLocaleString('en-GB')} days`;
+  return p.running ? `vs the ${span} before, to the same time of day` : `vs the ${span} before`;
 }
 
 function describeView(scope: Exclude<InsightScope, { kind: 'none' }>, regions: RegionLite[]): string {
@@ -226,7 +240,10 @@ async function filterOptions(
   scope: Exclude<InsightScope, { kind: 'none' }>
 ): Promise<{ regions: RegionLite[]; routes: RouteOption[]; failed: boolean }> {
   try {
-    const [regions, routes] = await Promise.all([getAllActiveRegions(), getAllActiveRoutes()]);
+    const [regions, routes] = await withinDeadline(
+      Promise.all([getAllActiveRegions(), getAllActiveRoutes()]),
+      WAVE_DEADLINE_MS
+    );
     const regionOk = (id: string) => !scope.roleRegionIds || scope.roleRegionIds.includes(id);
     const routeOk = (r: RouteLite) => regionOk(r.regionId) && (!scope.roleRouteIds || scope.roleRouteIds.includes(r.id));
     return {
@@ -239,4 +256,49 @@ async function filterOptions(
   } catch {
     return { regions: [], routes: [], failed: true };
   }
+}
+
+/**
+ * The kill switch's page (lib/insights/rollout.ts): no dashboard query and no scope
+ * read — only links to where each role works, so a broken dashboard never stands
+ * between a Manager or a Viewer and their work.
+ */
+function SwitchedOff({ role }: { role: string }) {
+  const link = 'font-medium text-brand-700 hover:underline';
+  return (
+    <main>
+      <PageHeader title="Dashboard" subtitle="Switched off for now" />
+      <div className="m-4 space-y-3 rounded-md bg-slate-50 p-4 text-sm text-slate-700 ring-1 ring-slate-200 sm:m-6">
+        <p>The dashboard is switched off for now. Nothing else is affected, and no data has changed.</p>
+        <ul className="list-disc space-y-1 pl-5">
+          {role === 'MANAGER' && (
+            <>
+              <li>
+                <Link href="/approvals" className={link}>
+                  Open the approval queue
+                </Link>
+              </li>
+              <li>
+                <Link href="/reactivations" className={link}>
+                  Open the reactivation requests
+                </Link>
+              </li>
+            </>
+          )}
+          <li>
+            <Link href="/customers" className={link}>
+              Open the customer list
+            </Link>
+          </li>
+          {STATUS_ROLES.includes(role) && (
+            <li>
+              <Link href="/status" className={link}>
+                Service status
+              </Link>
+            </li>
+          )}
+        </ul>
+      </div>
+    </main>
+  );
 }

@@ -13,7 +13,12 @@
  *   - Oman days: a decision at 21:00 UTC lands on the next Oman day, and the week
  *     bucket Postgres computes is the one lib/insights/period.ts gap-fills;
  *   - a multi-region customer adds no heat cell and no route count from its other
- *     region's branch to a region Manager's view.
+ *     region's branch to a region Manager's view;
+ *   - the route ranking credits a salesman's request to the route of the branch it
+ *     changed (or his own route), never to another route of the same customer;
+ *   - "the period before" is like for like: read at 08:00 Oman, a week with one
+ *     event per business day compares equal with the week before (cut at 08:00),
+ *     where full days would have shown a fall.
  *
  * Every fixture is synthetic and tagged with this run's suffix; every event is
  * dated in 2099 and every scope is limited to this suite's own regions, so rows
@@ -43,8 +48,8 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
   let access: typeof import('@/lib/access');
 
   const users = { salesman: '', steward: '', manager: '' };
-  const reg = { in: '', out: '' };
-  const rt = { in1: '', in2: '', out: '', moved: '' };
+  const reg = { in: '', out: '', flat: '' };
+  const rt = { in1: '', in2: '', out: '', moved: '', flat: '' };
   const cust: Record<string, { id: string; branchIds: string[] }> = {};
   const edits: Record<string, string> = {};
   const editIds: string[] = [];
@@ -79,6 +84,9 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     rt.in2 = await route('IN2', reg.in);
     rt.out = await route('OUT', reg.out);
     rt.moved = await route('MOVED', reg.in);
+    // A region of its own for the like-for-like comparison, so its events touch no other case.
+    reg.flat = (await prisma.region.create({ data: { name: `Insights Flat ${sfx}`, code: `${sfx}-FLAT` } })).id;
+    rt.flat = await route('FLAT', reg.flat);
     // The salesman owns IN1: a route with an owner, beside IN2 without one.
     await prisma.user.update({ where: { id: users.salesman }, data: { ownedRouteId: rt.in1 } });
 
@@ -180,6 +188,19 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
       customerId: cust.multi!.id, ...approved('2099-06-16T06:00:00'), fieldChanges: { unexpected: true },
     });
     await edit('updPrev', { customerId: cust.in!.id, ...approved('2099-05-25T06:00:00') });
+    // The salesman owns IN1, but this request changed OUT's branch of "out": the
+    // route ranking credits OUT (the branch it changed), and never IN1.
+    await edit('updOutNamed', {
+      customerId: cust.out!.id, ...approved('2099-06-19T06:00:00'),
+      fieldChanges: [{ field: `branch.${cust.out!.branchIds[0]}.dayOfVisit`, before: null, after: 'SUN' }],
+    });
+
+    // Like for like: one new customer per business day (Sun–Thu) at 10:00 Oman
+    // (06:00 UTC), from Wednesday 17 June to Monday 29 June 2099. Read at 08:00 on
+    // Tuesday 30 June, nothing of the 30th has happened yet.
+    for (const day of ['17', '18', '21', '22', '23', '24', '25', '28', '29']) {
+      await edit(`flat${day}`, { ...create(rt.flat, reg.flat, 'CASH'), ...approved(`2099-06-${day}T06:00:00`) });
+    }
 
     // Not updates: a close-shop request and a reactivation, both approved.
     await edit('closeIn', {
@@ -414,6 +435,12 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     expect(u.families.phone).toBe(1);
     // By current route: multi counts on IN1 through its IN branch only.
     expect(u.routes.map((r) => r.route.id).sort()).toEqual([rt.in1, rt.in2].sort());
+    // The route's own work: "in" (its IN1 branch changed) and multi (no branch
+    // changed; the salesman owns IN1). IN2's only update is a direct write.
+    const onIn1 = u.routes.find((r) => r.route.id === rt.in1)!;
+    const onIn2 = u.routes.find((r) => r.route.id === rt.in2)!;
+    expect([onIn1.customers, onIn1.byRequest, onIn1.byRequestOnRoute]).toEqual([2, 2, 2]);
+    expect([onIn2.customers, onIn2.byRequest, onIn2.byRequestOnRoute]).toEqual([1, 0, 0]);
 
     // Closures and reactivations, on the branch's own region.
     const st = data.statusChanges.data;
@@ -441,8 +468,13 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
       throw new Error('a card failed');
     }
     expect(data.created.data.total).toBe(2); // createOut and createMoved
-    expect(data.updated.data.customers).toBe(1); // multi
+    expect(data.updated.data.customers).toBe(2); // multi, out
     expect(data.updated.data.routes.map((r) => r.route.id)).toEqual([rt.out]);
+    // Both customers count on OUT, both by the IN1 salesman's requests; but only
+    // the request that changed OUT's branch is OUT's work. multi's request changed
+    // no branch, and its salesman's route is IN1: it is not credited to OUT.
+    const onOut = data.updated.data.routes[0]!;
+    expect([onOut.customers, onOut.byRequest, onOut.byRequestOnRoute]).toEqual([2, 2, 1]);
     expect(data.statusChanges.data.reactWaiting).toBe(1);
     expect(data.heat.data.cells.reduce((s, c) => s + c.n, 0)).toBe(2);
     for (const cell of data.heat.data.cells) expect(cell.lat).toBeLessThan(20);
@@ -456,7 +488,7 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     const data = await load.loadInsights(scope, period());
     if (!data.created.ok || !data.updated.ok || !data.state.ok || !data.heat.ok) throw new Error('a card failed');
     expect(data.created.data.total).toBe(4);
-    expect(data.updated.data.customers).toBe(3); // in, in2, multi — multi once
+    expect(data.updated.data.customers).toBe(4); // in, in2, multi, out — multi once
     expect(data.state.data.total.customers).toBe(7); // in's six and out
     expect(data.heat.data.cellDeg).toBe(0.05);
   });
@@ -482,6 +514,25 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     expect(data.created.data.series).toHaveLength(p.buckets.length);
     // A budget, not a benchmark: the page is a landing page.
     expect(ms).toBeLessThan(30_000);
+  });
+
+  it('the period before runs as long as this one has: one event per business day reads as no change at 08:00', async () => {
+    const morning = D('2099-06-30T04:00:00'); // 08:00 on Tuesday 30 June in Oman
+    const p = periodLib.parsePeriod({ period: 'custom', from: '2099-06-24', to: '2099-06-30' }, morning);
+    expect(p.running).toBe(true);
+    const scope = active(scopeLib.resolveInsightScope('MANAGER', manager([reg.flat]), noFilter));
+    const data = await load.loadInsights(scope, p);
+    if (!data.created.ok) throw new Error('a card failed');
+    // This week so far: Wed 24, Thu 25, Sun 28, Mon 29. The week before, to 08:00 on
+    // Tue 23: Wed 17, Thu 18, Sun 21, Mon 22 (Tue 23's came at 10:00).
+    expect([data.created.data.total, data.created.data.prevTotal]).toEqual([4, 4]);
+    // Full days would have compared with five, a false 20% fall.
+    const [full] = await prisma.$queryRaw<{ n: number }[]>(Prisma.sql`
+      SELECT count(*)::int AS "n" FROM "CustomerEdit" e
+       WHERE e."id" = ANY(${editIds}::text[]) AND e."process" = 'CREATE'
+         AND e."reviewedAt" >= ${p.prevFrom} AND e."reviewedAt" < ${p.from}
+         AND EXISTS (SELECT 1 FROM "EditBranchDraft" d WHERE d."editId" = e."id" AND d."routeId" = ${rt.flat})`);
+    expect(full!.n).toBe(5);
   });
 
   it('Postgres buckets weeks on the Monday period.ts gap-fills, in Oman days', async () => {

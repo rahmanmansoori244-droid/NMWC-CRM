@@ -7,9 +7,14 @@
  *
  * Six aggregate statements run in ONE Promise.allSettled, each returning small
  * rows of counts (lib/insights/shape.ts). No row-level data leaves the database:
- * no customer, no branch, no person, no exact point. A statement that fails
- * degrades only the cards built on it — the dashboard is every Manager's and
- * Viewer's landing page, so one bad query must never take the page down.
+ * no customer, no branch, no exact point, and no person by name. Route-level
+ * rows are labelled by Route.code, which is the route's salesman's username
+ * (lib/compliance/pii-classification.ts), so a route's figures identify that
+ * salesman's work (docs/compliance/RECORDS-OF-PROCESSING.md A4). A statement
+ * that fails — or runs out of time (lib/insights/rollout.ts: its own Postgres
+ * statement_timeout, and one deadline for the wave) — degrades only the cards
+ * built on it: the dashboard is every Manager's and Viewer's landing page, so one
+ * bad or slow query must never take the page down.
  *
  * Definitions (owner decisions, defaults in lib/insights/policy.ts):
  *   - new customers: CREATE requests APPROVED in the window, by reviewedAt,
@@ -18,7 +23,13 @@
  *   - customers updated: APPROVED UPDATE requests on the customer (target
  *     CUSTOMER, not reactivations), by reviewedAt, salesman requests apart from
  *     direct writes (submittedById = reviewedById), attributed to the customer's
- *     live branches in view, by their current route and region;
+ *     live branches in view, by their current route and region; for ranking
+ *     ROUTES by their salesmen's work ("byRequestOnRoute") a request counts only
+ *     on the route of a branch it changed (branch.<id>.* in fieldChanges) or,
+ *     when it changed no branch, on its submitter's own route — never on every
+ *     route a chain customer has a branch on;
+ *   - "the period before" (every prev count) runs exactly as long as the window
+ *     has run so far (lib/insights/period.ts prevTo): like for like;
  *   - closures and reactivations: branch requests on the branch's own region;
  *   - the request pipeline and "Pending approval": the /approvals/[id] gate
  *     (lib/service-status.ts countedInRegionsSql), states only, no timings —
@@ -40,6 +51,7 @@ import { prisma } from '../db';
 import { logger } from '../logger';
 import type { Grain, InsightPeriod } from './period';
 import { MANAGER_PENDING_STEP_ROLES, MAP, NEW_CUSTOMERS, OMAN_OFFSET_HOURS, UPDATED_CUSTOMERS } from './policy';
+import { STATEMENT_TIMEOUT_MS, WAVE_DEADLINE_MS, withinDeadline } from './rollout';
 import { singleRegionInView, type InsightScope } from './scope';
 import { branchInScopeSql, draftInScopeSql, requestInScopeSql } from './sql';
 import {
@@ -147,6 +159,7 @@ function createdSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
 WITH v AS (
   SELECT e."id", e."paymentTermsAtSubmit"::text AS "terms",
          (e."reviewedAt" >= ${p.from}) AS "cur",
+         (e."reviewedAt" < ${p.prevTo}) AS "inPrev",
          CASE WHEN e."reviewedAt" >= ${p.from} THEN ${bucketSql(Prisma.sql`e."reviewedAt"`, p.grain)} END AS "bucket",
          r."regionId", d."routeId"
     FROM "CustomerEdit" e
@@ -159,7 +172,7 @@ WITH v AS (
   SELECT "bucket", "regionId", "routeId", "terms",
          GROUPING("bucket", "regionId", "routeId", "terms")::int AS "g",
          count(DISTINCT "id") FILTER (WHERE "cur")::int AS "n",
-         count(DISTINCT "id") FILTER (WHERE NOT "cur")::int AS "prev"
+         count(DISTINCT "id") FILTER (WHERE "inPrev")::int AS "prev"
     FROM v
    GROUP BY GROUPING SETS (("bucket", "terms"), ("regionId"), ("routeId"), ("terms"), ())
 )
@@ -180,16 +193,29 @@ const FAMILY_SQL = Prisma.sql`
             OR x."f" LIKE 'branch.%.emptyBottlesCount' OR x."f" LIKE 'branch.%.equipmentConfirmed') AS "equipment",
     bool_or(x."f" IN ('customer.contactPerson', 'customer.contactRole')) AS "contact"`;
 
-/** 3. Customers updated: approved UPDATE requests on the customer, in the window and the one before. */
+/**
+ * 3. Customers updated: approved UPDATE requests on the customer, in the window
+ * and the one before.
+ *
+ * "onRoute" is the work a branch's ROUTE did: the request changed that branch
+ * (its fieldChanges name branch.<id>), or it changed no branch at all
+ * (customer-level fields, or photos only) and its submitter owns that branch's
+ * route today. Only "byRequestOnRoute" reads it — the figure the route ranking
+ * and the idle-route count rest on — so one salesman's change to a chain
+ * customer's branch never counts as work on the other routes that customer has
+ * branches on. Every other figure keeps counting the customer on each of its
+ * branches in view, as the cards say.
+ */
 function updatedSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
   const directWrites = UPDATED_CUSTOMERS.includeDirectWrites
     ? Prisma.empty
     : Prisma.sql`AND e."reviewedById" IS DISTINCT FROM e."submittedById"`;
   return Prisma.sql`/* insights:updated */
 WITH ed AS (
-  SELECT e."id", e."customerId",
+  SELECT e."id", e."customerId", e."submittedById",
          COALESCE(e."submittedById" = e."reviewedById", FALSE) AS "direct",
          (e."reviewedAt" >= ${p.from}) AS "cur",
+         (e."reviewedAt" < ${p.prevTo}) AS "inPrev",
          CASE WHEN e."reviewedAt" >= ${p.from} THEN ${bucketSql(Prisma.sql`e."reviewedAt"`, p.grain)} END AS "bucket",
          CASE WHEN jsonb_typeof(e."fieldChanges") = 'array' THEN e."fieldChanges" ELSE '[]'::jsonb END AS "fc"
     FROM "CustomerEdit" e
@@ -198,7 +224,8 @@ WITH ed AS (
      AND e."reviewedAt" >= ${p.prevFrom} AND e."reviewedAt" < ${p.to}
      ${directWrites}
 ), fam AS (
-  SELECT ed."id", ${FAMILY_SQL}
+  SELECT ed."id", ${FAMILY_SQL},
+         array_agg(DISTINCT split_part(x."f", '.', 2)) FILTER (WHERE x."f" LIKE 'branch.%.%') AS "branchIds"
     FROM ed
     CROSS JOIN LATERAL (
       SELECT el->>'field' AS "f", el->'before' AS "before", el->'after' AS "after"
@@ -206,23 +233,27 @@ WITH ed AS (
        WHERE jsonb_typeof(el) = 'object') x
    GROUP BY ed."id"
 ), v AS (
-  SELECT ed."id", ed."customerId", ed."direct", ed."cur", ed."bucket", b."regionId", b."routeId",
+  SELECT ed."id", ed."customerId", ed."direct", ed."cur", ed."inPrev", ed."bucket", b."regionId", b."routeId",
          COALESCE(fam."gps", FALSE) AS "gps", COALESCE(fam."phone", FALSE) AS "phone",
          COALESCE(fam."address", FALSE) AS "address", COALESCE(fam."visitDay", FALSE) AS "visitDay",
          COALESCE(fam."channel", FALSE) AS "channel", COALESCE(fam."equipment", FALSE) AS "equipment",
-         COALESCE(fam."contact", FALSE) AS "contact"
+         COALESCE(fam."contact", FALSE) AS "contact",
+         (CASE WHEN cardinality(fam."branchIds") > 0 THEN b."id" = ANY(fam."branchIds")
+               ELSE COALESCE(s."ownedRouteId" = b."routeId", FALSE) END) AS "onRoute"
     FROM ed
     JOIN "Customer" c ON c."id" = ed."customerId" AND c."deletedAt" IS NULL
     JOIN "Branch" b ON b."customerId" = ed."customerId" AND b."deletedAt" IS NULL
      AND ${branchInScopeSql(scope, 'b')}
     LEFT JOIN fam ON fam."id" = ed."id"
+    LEFT JOIN "User" s ON s."id" = ed."submittedById"
 ), agg AS (
   SELECT "bucket", "regionId", "routeId", GROUPING("bucket", "regionId", "routeId")::int AS "g",
          count(DISTINCT "customerId") FILTER (WHERE "cur")::int AS "customers",
          count(DISTINCT "customerId") FILTER (WHERE "cur" AND NOT "direct")::int AS "byRequest",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND NOT "direct" AND "onRoute")::int AS "byRequestOnRoute",
          count(DISTINCT "customerId") FILTER (WHERE "cur" AND "direct")::int AS "byDirect",
          count(DISTINCT "id") FILTER (WHERE "cur")::int AS "changes",
-         count(DISTINCT "customerId") FILTER (WHERE NOT "cur")::int AS "prev",
+         count(DISTINCT "customerId") FILTER (WHERE "inPrev")::int AS "prev",
          count(DISTINCT "customerId") FILTER (WHERE "cur" AND "gps")::int AS "gps",
          count(DISTINCT "customerId") FILTER (WHERE "cur" AND "phone")::int AS "phone",
          count(DISTINCT "customerId") FILTER (WHERE "cur" AND "address")::int AS "address",
@@ -244,7 +275,7 @@ function statusSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
 WITH v AS (
   SELECT e."isReactivation" AS "react", e."state"::text AS "state",
          (e."state" <> 'SUBMITTED' AND e."reviewedAt" >= ${p.from}) AS "cur",
-         (e."state" <> 'SUBMITTED' AND e."reviewedAt" < ${p.from}) AS "prev",
+         (e."state" <> 'SUBMITTED' AND e."reviewedAt" < ${p.prevTo}) AS "prev",
          CASE WHEN e."state" <> 'SUBMITTED' AND e."reviewedAt" >= ${p.from}
               THEN ${bucketSql(Prisma.sql`e."reviewedAt"`, p.grain)} END AS "bucket",
          b."regionId"
@@ -357,8 +388,20 @@ function logCardFailure(card: string, err: unknown): void {
   );
 }
 
-async function run<T>(statement: () => PromiseLike<T>): Promise<T> {
-  return statement();
+/** A literal in the SQL text (SET takes no bound parameter), from an integer constant. */
+const SET_TIMEOUT = Prisma.raw(`SET LOCAL statement_timeout = ${Math.trunc(STATEMENT_TIMEOUT_MS)}`);
+
+/**
+ * One statement, built inside this async function (so even a failure while
+ * building it becomes its own rejection, not the wave's), run in its own short
+ * transaction under SET LOCAL statement_timeout: Postgres cancels it, and frees
+ * the connection, if it runs too long. SET LOCAL ends with the transaction, so
+ * nothing leaks to the next user of a pooled connection.
+ */
+async function run<T>(build: () => Prisma.Sql): Promise<T> {
+  const statement = build();
+  const [, rows] = await prisma.$transaction([prisma.$executeRaw(SET_TIMEOUT), prisma.$queryRaw<T>(statement)]);
+  return rows;
 }
 
 /** The cell size the map uses for this view: finer when exactly one region is in view. */
@@ -372,15 +415,16 @@ export function cellDegFor(scope: ActiveScope): number {
  */
 export async function loadInsights(scope: ActiveScope, period: InsightPeriod): Promise<Insights> {
   const cellDeg = cellDegFor(scope);
-  // Each statement is built inside its own async thunk, so even a failure while
-  // building one becomes that section's rejection instead of escaping the wave.
+  // Every statement races the same deadline: a slow one fails its own section
+  // and the page renders the rest, instead of every card waiting on it.
+  const timed = <T>(build: () => Prisma.Sql) => withinDeadline(run<T>(build), WAVE_DEADLINE_MS);
   const [state, created, updated, statusChanges, pipeline, heat] = await Promise.allSettled([
-    run(() => prisma.$queryRaw<StateRow[]>(stateSql(scope, period))),
-    run(() => prisma.$queryRaw<CreatedRow[]>(createdSql(scope, period))),
-    run(() => prisma.$queryRaw<UpdatedRow[]>(updatedSql(scope, period))),
-    run(() => prisma.$queryRaw<StatusRow[]>(statusSql(scope, period))),
-    run(() => prisma.$queryRaw<RequestRow[]>(requestsSql(scope, period))),
-    run(() => prisma.$queryRaw<HeatRow[]>(heatSql(scope, cellDeg))),
+    timed<StateRow[]>(() => stateSql(scope, period)),
+    timed<CreatedRow[]>(() => createdSql(scope, period)),
+    timed<UpdatedRow[]>(() => updatedSql(scope, period)),
+    timed<StatusRow[]>(() => statusSql(scope, period)),
+    timed<RequestRow[]>(() => requestsSql(scope, period)),
+    timed<HeatRow[]>(() => heatSql(scope, cellDeg)),
   ]);
   return {
     state: section('state', state, shapeState),

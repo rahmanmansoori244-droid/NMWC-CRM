@@ -55,6 +55,7 @@ one complete list: OPERATIONS.md §3 used to be that list and had fallen behind.
 | `MAINTENANCE_MODE` | | `on` closes the app behind a notice, after a redeploy (OPERATIONS.md §6.8) | — | — |
 | `MAINTENANCE_BYPASS_TOKEN` | S | Lets the operator through while closed | Bypasses only the maintenance notice, not sign-in | — |
 | `DEMO_ACCOUNTS_DISABLED` | | Blocks the seeded demo logins; production sets it | — | — |
+| `INSIGHTS_DASHBOARD_DISABLED` | | `true` switches the insights dashboard off, after a redeploy: `/dashboard` then shows a notice and links and runs no dashboard query (`lib/insights/rollout.ts`). Unset in normal running | — | — |
 | `NEXT_PUBLIC_SENTRY_DSN` | | Where error reports go. It ships to the browser by design. | Someone could post junk events | — |
 | `LOG_LEVEL` | | Log verbosity | — | — |
 | `RATE_LIMIT_BACKEND` | | `memory` forces the in-process limiter (tests only) | — | — |

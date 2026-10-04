@@ -21,6 +21,7 @@ export function KpiTile({
   delta,
   href,
   hrefLabel,
+  extra,
   failed = false,
 }: {
   label: string;
@@ -29,6 +30,8 @@ export function KpiTile({
   delta?: Delta;
   href?: Route;
   hrefLabel?: string;
+  /** A second, related figure under the first (e.g. what waits elsewhere). */
+  extra?: React.ReactNode;
   failed?: boolean;
 }) {
   return (
@@ -43,6 +46,7 @@ export function KpiTile({
           <div className="text-2xl font-bold tabular-nums text-slate-900">{value}</div>
           {delta && <DeltaLine delta={delta} />}
           {sub && <div className="mt-0.5 text-[11px] leading-snug text-slate-500">{sub}</div>}
+          {extra && <div className="mt-0.5 text-[11px] leading-snug text-slate-600">{extra}</div>}
           {href && hrefLabel && (
             <Link href={href} className="mt-1 text-[11px] font-medium text-brand-700 hover:underline">
               {hrefLabel}

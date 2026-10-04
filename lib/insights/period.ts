@@ -39,10 +39,21 @@ export type InsightPeriod = {
   from: Date;
   /** UTC instant of Oman 00:00 on the day after toDay (exclusive). */
   to: Date;
-  /** The previous window of the same length, ending where this one starts. */
+  /**
+   * The comparison window: it starts `days` Oman days before `from` and runs for
+   * exactly as long as this window has run so far — so a preset that ends today,
+   * read at 08:00, is compared with the same days before up to 08:00, never with
+   * full days (a like-for-like comparison). A window that has ended is compared
+   * with the whole `days` before it, and then prevTo = from.
+   */
   prevFromDay: string;
+  /** The last Oman day the comparison window touches (always fromDay − 1). */
   prevToDay: string;
   prevFrom: Date;
+  /** Exclusive end of the comparison window. */
+  prevTo: Date;
+  /** The window's last day is still under way (it ends today and today is not over): its bucket is partial. */
+  running: boolean;
   grain: Grain;
   /** Every bucket key in the window, in order: the gap-fill. */
   buckets: string[];
@@ -148,12 +159,18 @@ export function dayLabel(day: string): string {
 }
 
 /**
- * Whether a bucket is cut by the window: the first or last week or month may
- * hold days outside it, and its bar then counts only the days inside.
+ * Whether a bucket holds less than its full span: the first or last week or month
+ * may hold days outside the window, and its bar then counts only the days inside;
+ * and the bucket holding today, while today is under way, has only counted part of
+ * today — at any grain, a day included — so its bar is not read as a dip.
  */
-export function isPartialBucket(key: string, period: Pick<InsightPeriod, 'fromDay' | 'toDay' | 'grain'>): boolean {
-  if (period.grain === 'day') return false;
+export function isPartialBucket(
+  key: string,
+  period: Pick<InsightPeriod, 'fromDay' | 'toDay' | 'grain'> & { running?: boolean }
+): boolean {
   const end = addDays(nextBucket(key, period.grain), -1);
+  if (period.running && key <= period.toDay && end >= period.toDay) return true;
+  if (period.grain === 'day') return false;
   return key < period.fromDay || end > period.toDay;
 }
 
@@ -165,33 +182,46 @@ function first(v: string | string[] | undefined): string | undefined {
   return Array.isArray(v) ? v[0] : v;
 }
 
-function build(key: PeriodKey, fromDay: string, toDay: string, note: string | null): InsightPeriod {
+function build(key: PeriodKey, fromDay: string, toDay: string, note: string | null, now: Date): InsightPeriod {
   const days = daysInclusive(fromDay, toDay);
   const grain = grainFor(days);
   const prevToDay = addDays(fromDay, -1);
   const prevFromDay = addDays(fromDay, -days);
+  const from = omanMidnightUtc(fromDay);
+  const to = omanMidnightUtc(addDays(toDay, 1));
+  const prevFrom = omanMidnightUtc(prevFromDay);
+  // How long this window has run: up to now while it is under way, all of it after.
+  const elapsed = Math.max(0, Math.min(now.getTime(), to.getTime()) - from.getTime());
   return {
     key,
     fromDay,
     toDay,
     days,
-    from: omanMidnightUtc(fromDay),
-    to: omanMidnightUtc(addDays(toDay, 1)),
+    from,
+    to,
     prevFromDay,
     prevToDay,
-    prevFrom: omanMidnightUtc(prevFromDay),
+    prevFrom,
+    prevTo: new Date(prevFrom.getTime() + elapsed),
+    running: now.getTime() < to.getTime(),
     grain,
     buckets: bucketKeys(fromDay, toDay, grain),
     note,
   };
 }
 
+/** A preset key the table itself defines — never one every object inherits ("toString", "__proto__"). */
+function isPresetKey(raw: string): raw is PresetKey {
+  return Object.hasOwn(PERIOD_PRESETS, raw);
+}
+
 /**
  * The window a request asks for. Presets end today (Oman). A custom window is
  * read as Oman days, inclusive at both ends; reversed ends are swapped, a window
  * reaching into the future ends today, one longer than MAX_WINDOW_DAYS keeps its
- * last MAX_WINDOW_DAYS days, and anything unreadable falls back to the default
- * preset — each adjustment says so in `note`.
+ * last MAX_WINDOW_DAYS days, and anything unreadable — an unknown preset, dates
+ * that are not dates, a window wholly before EARLIEST_DAY — falls back to the
+ * default preset. Each adjustment says so in `note`.
  */
 export function parsePeriod(sp: PeriodParams, now: Date): InsightPeriod {
   const today = omanDateISO(now);
@@ -202,10 +232,19 @@ export function parsePeriod(sp: PeriodParams, now: Date): InsightPeriod {
     let from = parseDay(fromRaw);
     let to = parseDay(toRaw);
     if (!from || !to) {
-      return preset(DEFAULT_PRESET, today, 'The custom dates could not be read; showing the default period.');
+      return preset(DEFAULT_PRESET, today, 'The custom dates could not be read; showing the default period.', now);
     }
     const notes: string[] = [];
     if (from > to) [from, to] = [to, from];
+    if (to < EARLIEST_DAY) {
+      // Clamping only the start would leave it after the end: a reversed window.
+      return preset(
+        DEFAULT_PRESET,
+        today,
+        `The custom period ends before ${dayLabel(EARLIEST_DAY)}, the earliest day the dashboard reads; showing the default period.`,
+        now
+      );
+    }
     if (to > today) {
       to = today;
       notes.push('ends today');
@@ -219,13 +258,13 @@ export function parsePeriod(sp: PeriodParams, now: Date): InsightPeriod {
       from = addDays(to, -(MAX_WINDOW_DAYS - 1));
       notes.push(`is limited to ${MAX_WINDOW_DAYS} days`);
     }
-    return build('custom', from, to, notes.length ? `The period ${notes.join(' and ')}.` : null);
+    return build('custom', from, to, notes.length ? `The period ${notes.join(' and ')}.` : null, now);
   }
-  if (raw && raw in PERIOD_PRESETS) return preset(raw as PresetKey, today, null);
-  return preset(DEFAULT_PRESET, today, raw ? 'Unknown period; showing the default.' : null);
+  if (raw && isPresetKey(raw)) return preset(raw, today, null, now);
+  return preset(DEFAULT_PRESET, today, raw ? 'Unknown period; showing the default.' : null, now);
 }
 
-function preset(key: PresetKey, today: string, note: string | null): InsightPeriod {
+function preset(key: PresetKey, today: string, note: string | null, now: Date): InsightPeriod {
   const days = PERIOD_PRESETS[key].days;
-  return build(key, addDays(today, -(days - 1)), today, note);
+  return build(key, addDays(today, -(days - 1)), today, note, now);
 }

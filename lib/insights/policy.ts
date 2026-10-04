@@ -3,10 +3,21 @@
  * OWNER'S to make, in one place.
  *
  * None of these was answered when the dashboard was built (2026-10-05). Each is
- * the default recommended in the F2 design, implemented so the dashboard works,
- * and kept here so changing one is a one-file change plus the tests that pin it.
- * docs/handover/04-PENDING-WORK.md (A2, "F2 dashboard defaults") lists them as
- * open questions for the owner. Nothing else in the dashboard restates them.
+ * the default recommended in the F2 design, implemented so the dashboard works.
+ * docs/handover/04-PENDING-WORK.md section A6 ("Insights dashboard (F2): built on
+ * defaults the owner has not confirmed") lists them as OPEN questions for the
+ * owner. Nothing else in the dashboard restates them.
+ *
+ * Two kinds of entry, and the difference matters when the owner answers:
+ *   - SWITCHES, which the code reads: DASHBOARD_ROLES, NEW_CUSTOMERS.showImported,
+ *     UPDATED_CUSTOMERS.includeDirectWrites, MANAGER_PENDING_STEP_ROLES, MAP and
+ *     the time and ranking constants. Changing one changes the page (plus the
+ *     tests that pin it).
+ *   - RECORDS of a default the code implements in its structure:
+ *     NEW_CUSTOMERS.counts, ATTRIBUTION, ROUTE_LEVEL_ONLY,
+ *     MANAGER_SEES_COMPANY_FIGURES. Each has ONE supported value;
+ *     tests/unit/insights-policy.test.ts fails if it is edited alone, because
+ *     a different answer means changing the code each one names, not this line.
  *
  * Pure: no database, no session, no 'use server'. Safe to import from tests and
  * from the client filter bar.
@@ -46,7 +57,9 @@ export function isDashboardRole(role: string): role is Role {
  * and appear in neither figure.
  */
 export const NEW_CUSTOMERS = {
+  /** RECORD, not a switch: lib/insights/load.ts createdSql counts finalized CREATE requests and nothing else. */
   counts: 'requests-finalized',
+  /** Switch: read by load.ts stateSql and the New customers card. */
   showImported: true,
 } as const;
 
@@ -69,7 +82,14 @@ export const UPDATED_CUSTOMERS = {
  * new customer to the route its request was raised on and that route's region
  * today (the same test /approvals/[id] applies). A route handed over or moved
  * takes its history with it; snapshotting the route at decision time would be a
- * schema change. Every card that attributes says "current".
+ * schema change. Every card that attributes says "current". Ranking routes (the
+ * work of each route's salesman) counts a request only on the route of the branch
+ * it changed, or on its salesman's own route when it changed no branch — still
+ * by the current route (load.ts updatedSql "onRoute").
+ *
+ * RECORD, not a switch: the joins in lib/insights/load.ts and lib/insights/sql.ts
+ * read the current Branch.routeId / Route.regionId; another answer is a schema
+ * change and new joins there.
  */
 export const ATTRIBUTION = 'current-route-and-region' as const;
 
@@ -79,7 +99,11 @@ export const ATTRIBUTION = 'current-route-and-region' as const;
  * username, so route-level activity is already employee-monitoring data —
  * docs/compliance/RECORDS-OF-PROCESSING.md A4). The one owner fact shown is
  * whether a route has an active salesman at all, because a route without one
- * shows no field activity by construction.
+ * shows no field activity by construction. Route-level is not anonymous: each
+ * route is shown by its code, which is its salesman's username.
+ *
+ * RECORD, not a switch: no statement in lib/insights/load.ts groups by person;
+ * per-salesman figures would be new statements and a new card.
  */
 export const ROUTE_LEVEL_ONLY = true as const;
 
@@ -88,15 +112,29 @@ export const ROUTE_LEVEL_ONLY = true as const;
  * company average. Every figure is aggregated over what the viewer can open
  * (lib/insights/scope.ts reuses the access gates as the query predicates), and
  * comparisons are with the viewer's own previous period, never with the company.
+ *
+ * RECORD, not a switch: lib/insights/scope.ts builds every statement's predicate
+ * from the viewer's scope; a company benchmark would be a second, unscoped wave
+ * and a privacy review (the /status history: lib/service-levels.ts).
  */
 export const MANAGER_SEES_COMPANY_FIGURES = false as const;
 
 /**
  * Owner decision (default): a Manager's "Pending approval" counts what his
  * /approvals queue holds and what /status counts for him — requests waiting at
- * the Supervisor step in his regions, NEW-CUSTOMER REQUESTS INCLUDED (before F2
- * the dashboard left them out). These are the step roles that count; the Steward
- * and the Viewer count every step.
+ * the Supervisor step in his regions. Against the dashboard before F2, which
+ * counted every waiting request on a customer with a branch in his regions at
+ * any step, two things changed: NEW-CUSTOMER REQUESTS at the Supervisor step are
+ * now included (it left them out), and REACTIVATIONS — waiting at the Manager's
+ * own step, decided on /reactivations, not /approvals — are no longer in this
+ * number; the tile shows them on a line of their own, and the Closures card
+ * counts them as "Reactivations waiting". So the number can rise or fall.
+ *
+ * Switch, read by lib/insights/load.ts requestsSql. It must equal
+ * lib/service-levels.ts MANAGER_VIEW_ROLES — the steps /status counts for a
+ * Manager — and tests/unit/insights-policy.test.ts fails when the two differ
+ * (this module stays importable by the client filter bar, so it does not import
+ * that one). The Steward and the Viewer count every step.
  */
 export const MANAGER_PENDING_STEP_ROLES: readonly string[] = ['SUPERVISOR'];
 

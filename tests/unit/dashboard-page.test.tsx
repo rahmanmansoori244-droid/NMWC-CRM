@@ -1,9 +1,10 @@
 /**
  * F2: the insights dashboard page — who gets in, that the menu offers it to
  * exactly those people, whose figures it asks for, what each role is shown, and
- * that one failed card leaves the rest of the page standing. The loader is
- * mocked; its SQL is tested in tests/unit/insights-load.test.ts and on Postgres in
- * tests/integration/insights.test.ts.
+ * that one failed card leaves the rest of the page standing, and that the kill
+ * switch (lib/insights/rollout.ts) leaves only links and runs nothing. The loader
+ * is mocked; its SQL is tested in tests/unit/insights-load.test.ts and on Postgres
+ * in tests/integration/insights.test.ts.
  *
  * The page reads the clock once; here the clock is fixed and every expectation
  * about dates is derived from that one value.
@@ -106,7 +107,12 @@ function fixture(buckets: string[]): Insights {
         families: { gps: 11, phone: 8, address: 5, visitDay: 3, channel: 0, equipment: 2, contact: 1 },
         series: buckets.map((b) => ({ bucket: b, byRequest: 2, directOnly: 1 })),
         regions: [{ region: region('r-north', 'North'), customers: 24, byRequest: 20 }],
-        routes: [{ route: route('rt-n1', 'N1', 'r-north', true), customers: 24, byRequest: 20 }],
+        routes: [
+          { route: route('rt-n1', 'N1', 'r-north', true), customers: 24, byRequest: 20, byRequestOnRoute: 20 },
+          // A chain customer's update by N1's salesman also reaches S1's branch of it:
+          // S1 counts the customer, but did none of the work.
+          { route: route('rt-s1', 'S1', 'r-south', false), customers: 1, byRequest: 1, byRequestOnRoute: 0 },
+        ],
       },
     },
     statusChanges: {
@@ -160,6 +166,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 describe('who gets in', () => {
@@ -257,12 +264,33 @@ describe('what each role is shown', () => {
     expect(link.getAttribute('href')).toBe('/approvals');
   });
 
+  it('the reactivations that wait for a Manager are shown beside it, not hidden by it', async () => {
+    // The old tile counted them; the Supervisor-step count does not, so they get a line of their own.
+    await open();
+    const tile = screen.getByText('Pending approval').parentElement!;
+    expect(tile.textContent).toMatch(/Not counted above: 1 reactivation waiting for your decision/);
+    const link = within(tile).getByRole('link', { name: '1 reactivation waiting for your decision' });
+    expect(link.getAttribute('href')).toBe('/reactivations');
+  });
+
   it('the Steward’s Pending approval counts every step, and offers no queue it cannot open', async () => {
     h.user = { id: 'x', role: 'STEWARD', username: 'x' };
     await open();
     const tile = screen.getByText('Pending approval').parentElement!;
     expect(within(tile).getByText('12')).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Open the approval queue' })).toBeNull();
+    expect(tile.textContent).not.toMatch(/Not counted above/);
+  });
+
+  it('the comparison with the period before says it runs to the same time of day while today is under way', async () => {
+    await open();
+    const tile = screen.getByText('New customers').parentElement!;
+    expect(tile.textContent).toMatch(/\+50% vs the 30 days before, to the same time of day/);
+    cleanup();
+    await open({ period: 'custom', from: '2026-09-01', to: '2026-09-30' });
+    const ended = screen.getByText('New customers').parentElement!;
+    expect(ended.textContent).toMatch(/vs the 30 days before/);
+    expect(ended.textContent).not.toMatch(/same time of day/);
   });
 
   it('the link to /approvals the go-live browser test follows is still the menu’s “Approvals”', async () => {
@@ -329,9 +357,76 @@ describe('one failed card leaves the rest of the page standing', () => {
     });
     const { container } = await open();
     expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeTruthy();
-    expect(screen.getAllByText(/could not be loaded just now/).length).toBe(9);
+    // Ten cards, ten notices: "What stands out" says it could not be read, never "nothing to report".
+    expect(screen.getAllByText(/could not be loaded just now/).length).toBe(10);
+    expect(container.textContent).not.toMatch(/Nothing to report/);
     expect(screen.getAllByText('Not available just now')).toHaveLength(7);
     expect(container.querySelectorAll('section[aria-labelledby]').length).toBe(10);
+  });
+
+  it('some of what "What stands out" reads failed: it reads the rest, and says that some is missing', async () => {
+    h.load.mockImplementation(async (_s: unknown, p: InsightPeriod) => ({ ...fixture(p.buckets), heat: { ok: false }, statusChanges: { ok: false } }));
+    await open();
+    const card = screen.getByRole('heading', { name: 'What stands out' }).closest('section')!;
+    expect(card.querySelectorAll('li').length).toBeGreaterThan(0);
+    expect(card.textContent).toMatch(/Some figures could not be loaded just now, so this reading leaves them out/);
+  });
+});
+
+describe('Routes: most and least active', () => {
+  const card = () => screen.getByRole('heading', { name: 'Routes: most and least active' }).closest('section')!;
+
+  it('ranks each route by its own salesman’s work, not by a chain customer’s other branches', async () => {
+    await open();
+    const most = within(card()).getByText('Most active').parentElement!;
+    expect(most.textContent).toMatch(/N1/);
+    // S1 counts the chain customer (byRequest 1) but did none of the work.
+    expect(most.textContent).not.toMatch(/S1/);
+    expect(card().textContent).toMatch(/1 route with customers had no approved new-customer or update request/);
+  });
+
+  it('no route had any approved update: none is called "most active"', async () => {
+    h.load.mockImplementation(async (_s: unknown, p: InsightPeriod) => {
+      const d = fixture(p.buckets);
+      if (!d.updated.ok) throw new Error('fixture');
+      return { ...d, updated: { ok: true, data: { ...d.updated.data, routes: d.updated.data.routes.map((r) => ({ ...r, byRequestOnRoute: 0 })) } } };
+    });
+    await open();
+    const most = within(card()).getByText('Most active').parentElement!;
+    expect(most.textContent).toMatch(/No route in view had an approved update request in the last 30 days/);
+    expect(most.textContent).not.toMatch(/0%/);
+    // The least active still lists them, honestly, at 0%.
+    expect(within(card()).getByText('Least active').parentElement!.textContent).toMatch(/0%/);
+  });
+});
+
+describe('the kill switch', () => {
+  it.each([
+    ['MANAGER', ['/approvals', '/reactivations', '/customers', '/status']],
+    ['STEWARD', ['/customers', '/status']],
+    ['VIEWER', ['/customers']],
+  ])('%s: a notice and working links, and no query, no scope read', async (role, hrefs) => {
+    vi.stubEnv('INSIGHTS_DASHBOARD_DISABLED', 'true');
+    h.user = { id: 'x', role, username: 'x' };
+    const { container } = await open();
+    expect(screen.getByText('Switched off for now')).toBeTruthy();
+    expect(h.load).not.toHaveBeenCalled();
+    expect(h.scopeFor).not.toHaveBeenCalled();
+    expect([...container.querySelectorAll('a')].map((a) => a.getAttribute('href'))).toEqual(hrefs);
+    expect(container.querySelectorAll('section[aria-labelledby]')).toHaveLength(0);
+  });
+
+  it('the roles the page refuses are still refused while it is off', async () => {
+    vi.stubEnv('INSIGHTS_DASHBOARD_DISABLED', 'true');
+    h.user = { id: 'x', role: 'SALESMAN', username: 'x' };
+    await expect(open()).rejects.toThrow('REDIRECT /home');
+  });
+
+  it.each(['', '1', 'TRUE', 'yes'])('only the exact value "true" switches it off (%j does not)', async (value) => {
+    vi.stubEnv('INSIGHTS_DASHBOARD_DISABLED', value);
+    await open();
+    expect(h.load).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Switched off for now')).toBeNull();
   });
 });
 
@@ -381,6 +476,16 @@ describe('the filter bar', () => {
   it('an adjusted period says so', async () => {
     await open({ period: 'custom', from: '2020-01-01', to: '2026-10-01' });
     expect(screen.getByText(/limited to 366 days/)).toBeTruthy();
+  });
+
+  it.each(['toString', 'constructor', '__proto__'])('?period=%s is an unknown period: the default, with a note, and no NaN', async (key) => {
+    const { container } = await open({ period: key });
+    expect(lastPeriod().key).toBe('30d');
+    expect(screen.getByText(/Unknown period; showing the default/)).toBeTruthy();
+    expect(container.textContent).not.toMatch(/NaN|undefined/);
+    // The filter bar does not carry the bad key on.
+    fireEvent.click(screen.getByRole('button', { name: '7 days' }));
+    expect(h.push).toHaveBeenCalledWith('/dashboard?period=7d');
   });
 });
 

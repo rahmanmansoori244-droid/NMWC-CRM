@@ -4,13 +4,24 @@
  *
  * Pure. Every sentence is built only from figures already on the page, in the
  * viewer's own scope: no company figure, no comparison with another region or
- * Manager, no person (MANAGER_SEES_COMPANY_FIGURES, ROUTE_LEVEL_ONLY). A sentence
- * whose data failed to load is simply left out.
+ * Manager, no person and no route named (MANAGER_SEES_COMPANY_FIGURES,
+ * ROUTE_LEVEL_ONLY). A sentence whose data failed to load is left out, and
+ * highlightsCoverage tells the card whether that happened, so an outage never
+ * reads as "nothing to report".
  */
 import type { Insights } from './load';
 import { changePct, pct, type HeatData } from './shape';
 
 export type Highlight = { key: string; text: string };
+
+/** The sections the sentences are read from. */
+const SOURCES = ['state', 'created', 'updated', 'statusChanges', 'heat'] as const;
+
+/** Whether every section the sentences read loaded ('all'), some did ('some'), or none did ('none'). */
+export function highlightsCoverage(data: Insights): 'all' | 'some' | 'none' {
+  const loaded = SOURCES.filter((k) => data[k].ok).length;
+  return loaded === SOURCES.length ? 'all' : loaded === 0 ? 'none' : 'some';
+}
 
 const fmt = (v: number) => v.toLocaleString('en-GB');
 
@@ -62,9 +73,11 @@ export function highlights(data: Insights, periodPhrase: string): Highlight[] {
   }
 
   if (data.state.ok && data.created.ok && data.updated.ok) {
+    // A route's own work only: a request on a chain customer counts on the route
+    // of the branch it changed, not on every route the customer has a branch on.
     const touched = new Set([
       ...data.created.data.routes.map((r) => r.route.id),
-      ...data.updated.data.routes.filter((r) => r.byRequest > 0).map((r) => r.route.id),
+      ...data.updated.data.routes.filter((r) => r.byRequestOnRoute > 0).map((r) => r.route.id),
     ]);
     const idle = data.state.data.routes.filter((r) => r.customers > 0 && !touched.has(r.route.id));
     if (idle.length > 0) {
