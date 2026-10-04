@@ -865,10 +865,16 @@ const MANAGER_EN: Guide = {
         {
           html: 'Every action by every user is logged: login, login fail, customer create/update, approval, reject, reactivation, photo capture, password reset, etc.',
         },
+        // These two steps (and their AR twins) promised an IP, old/new values and
+        // filters by user and date range. app/(app)/audit/page.tsx shows When, Actor,
+        // Action, Entity and Reason, and filters by action, entity type and entity id
+        // only; the IP and before/after values are stored but no page reads them.
         {
-          html: 'Each row shows: who, when, from what IP, what action, on what record. Old/new values too.',
+          html: 'Each row shows when, who, what action, on which record (its type and the start of its id), and the reason if one was given. The IP and the old and new values are recorded too, but this page does not show them; if an investigation needs them, ask head office.',
         },
-        { html: 'Filter by user, date range, action type, or customer to narrow down.' },
+        {
+          html: 'Narrow it down by action type, by record type (Customer, Branch, User…), or by a record id: paste a customer’s id — the part of its page address after <code>/customers/</code> — into <strong>Entity ID contains…</strong>. There is no filter by person or by date; the newest rows come first.',
+        },
       ],
       callouts: [
         {
@@ -1163,17 +1169,22 @@ const STEWARD_EN: Guide = {
       intro: 'Every action by every user, immutable, queryable.',
       steps: [
         { html: 'Tap <strong>Audit log</strong> in the sidebar.', img: 'steward-07-audit.png' },
+        // These steps promised the IP, user-agent and old/new values, filters by
+        // user and date range, and a History button on the customer. The page
+        // (app/(app)/audit/page.tsx) shows When, Actor, Action, Entity and Reason and
+        // filters by action, entity type and entity id; the customer page has no
+        // History. The rest is stored but no page reads it.
         {
-          html: 'Each row: who, when, from what IP and user-agent, what action (CREATE / UPDATE / APPROVE / REJECT / MERGE / IMPORT / REACTIVATE / LOGIN / LOGIN_FAIL / FORCE_OVERRIDE / DELETE / SOFT_DELETE / PHOTO_VIEW), on what entity, with old and new values stored as JSON.',
+          html: 'Each row: when, who, what action (CREATE / UPDATE / APPROVE / REJECT / MERGE / IMPORT / REACTIVATE / LOGIN / LOGIN_FAIL / FORCE_OVERRIDE / DELETE / SOFT_DELETE / PHOTO_VIEW), on which record (its type and the start of its id), and the reason if one was given. The IP, user-agent and old and new values are stored with the row as well, but this page does not show them: reading them takes a database query by head-office ops.',
         },
         {
-          html: 'Filter by user (e.g. investigate one salesman), date range (e.g. last week), entity type (Customer / Branch / CustomerEdit / User), or action type.',
+          html: 'Filter by action type, by entity type (Customer / Branch / CustomerEdit / User / ImportBatch / Attachment / Export), or by a record id in <strong>Entity ID contains…</strong>. There is no filter by person or by date range: the newest rows come first, 50 to a page.',
         },
         {
-          html: 'For an HR investigation: filter by user + date range + entity type Customer to see exactly what they changed.',
+          html: 'For an HR investigation of one person: narrow by action and entity type, then read the <strong>Actor</strong> column. Over a long period that is many pages; ask head-office ops for a database query instead.',
         },
         {
-          html: 'For a "what happened" investigation on one customer: open the customer, click <strong>History</strong> — same data filtered to that record.',
+          html: 'For a "what happened" investigation on one customer: open the customer, copy its id from the page address (the part after <code>/customers/</code>), choose entity type <strong>Customer</strong> and paste the id into <strong>Entity ID contains…</strong>.',
         },
       ],
       callouts: [
@@ -1252,7 +1263,7 @@ const STEWARD_EN: Guide = {
           ],
           [
             '<strong>"I deleted the wrong customer"</strong>',
-            'Open the audit log, find the SOFT_DELETE row for that customer, get the JSON of the prior state, and restore it via a steward-only Prisma script (head-office ops can write this).',
+            'Open the audit log and find the SOFT_DELETE row for that customer (action SOFT_DELETE, entity type Customer; the newest rows come first). The prior state is stored with that row but the page does not show it: hand the row to head-office ops, who read it and restore the customer with a steward-only Prisma script.',
           ],
           [
             '<strong>"I promoted a bad batch"</strong>',
@@ -1363,7 +1374,10 @@ const STEWARD_EN: Guide = {
             'ERP team asks for the cleaned master',
             'Export with completeness ≥ 60% (mid-pilot) or ≥ 90% (year-end).',
           ],
-          ['HR investigates a salesman', 'Audit log → filter by user + date range.'],
+          [
+            'HR investigates a salesman',
+            'Audit log → narrow by action and entity type, read the Actor column. No person or date filter: a long period needs a database query by head-office ops.',
+          ],
           [
             'Customer profile shows wrong info, no one knows why',
             'Audit log → filter by entity Customer + entityId from URL.',
@@ -1960,9 +1974,11 @@ const MANAGER_AR: Guide = {
           html: 'كل عمل من كل مستخدم مسجل: تسجيل دخول، فشل دخول، إنشاء/تعديل عميل، موافقة، رفض، إعادة تفعيل، التقاط صورة، إعادة ضبط كلمة مرور، إلخ.',
         },
         {
-          html: 'كل صف يظهر: من، متى، من أي IP، أي عمل، على أي سجل. القيم القديمة والجديدة أيضًا.',
+          html: 'كل صف يظهر: متى، ومن، وأي عمل، وعلى أي سجل (نوعه وبداية رقمه)، والسبب إن وُجد. عنوان IP والقيم القديمة والجديدة تُسجَّل أيضًا، لكن هذه الصفحة لا تعرضها؛ إذا احتاج تحقيق إليها فاطلبها من المكتب الرئيسي.',
         },
-        { html: 'استخدم الفلترة بالمستخدم، نطاق التاريخ، نوع العمل، أو العميل لتضييق البحث.' },
+        {
+          html: 'ضيّق البحث بنوع العمل، أو بنوع السجل (عميل، فرع، مستخدم…)، أو برقم السجل: الصق رقم العميل — وهو الجزء الذي يلي <code>/customers/</code> في عنوان صفحته — في خانة <strong>Entity ID contains…</strong>. لا توجد فلترة حسب الشخص أو التاريخ؛ وتظهر أحدث الصفوف أولًا.',
+        },
       ],
       callouts: [
         {
