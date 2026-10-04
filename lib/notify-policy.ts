@@ -108,7 +108,21 @@ export const MUST_ACT_KINDS: readonly NotificationKind[] = [
  * 10 minutes 03:00–14:59 UTC (07:00–18:59 Oman), the window of the other jobs:
  * vercel.json `crons`, pinned to this module by tests/unit/email-structure-guard.test.ts.
  */
-export const EMAIL_DELIVERY = {
+export type EmailDeliveryPolicy = {
+  schedule: string;
+  maxAgeMs: number;
+  recipientGapMs: number;
+  perRunCap: number;
+  dailyCap: number;
+  maxItemsPerDigest: number;
+  claimLimit: number;
+  leaseMs: number;
+  maxAttempts: number;
+  sendBudgetMs: number;
+  hardStopMs: number;
+};
+
+export const EMAIL_DELIVERY: Readonly<EmailDeliveryPolicy> = {
   /** vercel.json schedule, stated here so the guard can hold the two together. */
   schedule: '*/10 3-14 * * *',
   /** A row older than this is never e-mailed (SKIPPED_STALE): no backlog flood. */
@@ -129,4 +143,11 @@ export const EMAIL_DELIVERY = {
   maxAttempts: 5,
   /** No new send starts after this much of the run (maxDuration is 60 s). */
   sendBudgetMs: 40_000,
-} as const;
+  /**
+   * No send may still be waiting this long after the run started: one that is
+   * counts as a transient timeout and the run stops, leaving 10 s for the marks,
+   * the heartbeat and its alert (the photo-gc precedent). The SMTP timeouts alone
+   * would let a send started at 39 s run past the limit.
+   */
+  hardStopMs: 50_000,
+};

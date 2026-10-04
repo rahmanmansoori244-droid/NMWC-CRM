@@ -171,6 +171,34 @@ npm run smoke
 
 ---
 
+## The Gmail app password (notification e-mail, F1, 2026-10-05)
+
+`GMAIL_APP_PASSWORD` is the app password of the Gmail mailbox notification e-mail
+is sent from (`GMAIL_ADDRESS`; docs/OPERATIONS.md §5i). It opens the whole mailbox,
+IMAP included: whoever holds it can read the Sent folder, which holds a copy of every
+notification e-mail, and can send mail that staff trust from that address. Rotate it
+when it may have been seen, when someone who held it leaves, and straight after the
+Google account's own password changes (that revokes every app password at once, so
+e-mail stops until this is done).
+
+1. In the sending Google account: **Security → 2-Step Verification → App passwords**
+   (2-Step Verification must be on). Create a new one, named for this system. Google
+   shows it once: put it in the password manager first.
+2. Vercel → Settings → Environment Variables → `GMAIL_APP_PASSWORD` → edit the
+   **Production** value (and Preview, if a preview sends to the test inbox). Keep it
+   marked **Sensitive**.
+3. **Redeploy** production: a running instance keeps the value it started with.
+4. Prove it: wait for the next e-mail drain run inside 03:00–14:59 UTC and check that
+   `email-drain` reads `ok` on the bearer health probe, with no `authErrors`
+   (OPERATIONS.md §5i). Nothing was lost while the old one failed: unsent rows are
+   handed back and retried for 24 hours.
+5. Only then **revoke the old app password** in the Google account.
+
+Never paste the value into a ticket, a chat, a screenshot or a command line. The app
+never logs it, and `lib/sentry-scrub.ts` redacts its exact value from error reports.
+
+---
+
 ## What this does **not** rotate
 
 Say these out loud to yourself, because a rotation that quietly leaves something

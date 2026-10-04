@@ -28,6 +28,7 @@ These are the roots. Whoever holds them can reset every secret below.
 | Sentry | Error reports from all three runtimes | Owner | The free plan has one user. |
 | cron-job.org | The keep-warm and SLA sweep schedules — **being retired**: Vercel runs both since the Pro plan (OPERATIONS.md §5d) | Owner | Not needed once retired. Retiring it properly — delete the jobs and the API key, then rotate `CRON_SECRET` — removes cron-job.org's copy of the secret. Vercel and GitHub Actions (`PROD_CRON_SECRET`) still hold it. |
 | The alert destination (`ALERT_WEBHOOK_URL`, once set) | Where failed-job and SLA alerts land | Not set yet | Point it at a channel two people read (OPERATIONS.md §5f). |
+| The notification sending mailbox (a Gmail account, `GMAIL_ADDRESS`; F1, 2026-10-05) | Every notification e-mail is sent from it, and its Sent folder keeps a copy of each one. Its app password (`GMAIL_APP_PASSWORD`) opens the whole mailbox, IMAP included. | Owner: it is the owner's own Gmail (his decision), with its 2-Step Verification device and its app passwords | Not on a personal Gmail without sharing the owner's login. Move the sender to a dedicated or company mailbox before the handover if anyone else is to hold it (OPERATIONS.md §5i). |
 
 Check each provider's current plan page before acting on the "second person" column.
 Plans change, and this column was written from what the plans allowed in September 2026.
@@ -62,8 +63,14 @@ one complete list: OPERATIONS.md §3 used to be that list and had fallen behind.
 | `PROMOTE_SLICE_BUDGET_MS`, `BULK_BUDGET_MS` | | Time budgets for import promote and bulk approve | — | — |
 | `WORK_TZ_OFFSET_MIN`, `WORK_DAYS`, `WORK_HOUR_START`, `WORK_HOUR_END` | | The working calendar SLA clocks run on | — | — |
 | `SLA_SUPERVISOR_MIN`, `SLA_ACCOUNTANT_MIN`, `SLA_MANAGER_MIN`, `SLA_FINANCE_MIN`, `SLA_GM_MIN` | | Approval SLA per tier | — | — |
+| `NOTIFY_EMAIL_ENABLED` | | F1 kill switch: `on` lets the e-mail drain send notification e-mail; anything else and it sends nothing and reads nothing. Off until the owner turns it on; a change needs a redeploy (OPERATIONS.md §5i) | — | — |
+| `GMAIL_ADDRESS` | | The sending mailbox: the SMTP user and the From address (`smtp.gmail.com`, port 465, TLS) | Names the mailbox to attack; nothing more on its own | The Google account that issued `GMAIL_APP_PASSWORD` |
+| `GMAIL_APP_PASSWORD` | S | That mailbox's app password (Google requires 2-Step Verification for one). Read only by `lib/email/config.ts`; never logged; `lib/sentry-scrub.ts` redacts its exact value | The whole mailbox: read its Sent folder (every notification e-mail), and send mail that staff trust from that address. Revoke it in the Google account and issue a new one (CREDENTIAL-ROTATION.md) | `GMAIL_ADDRESS` (same Google account) |
+| `EMAIL_REDIRECT_TO` | | **Preview/UAT only.** Every notification e-mail goes to this one test inbox instead, subject marked `[UAT]`. Without it a non-production deployment sends nothing, because UAT holds a copy of the real staff addresses. Set on production, it redirects there too (subject `[REDIRECTED]`) | — | — |
+| `EMAIL_LINK_ORIGIN` | | The https origin links in notification e-mails are built on. Unset: the production alias on production, the preview's own address on a preview. Named so it collides with neither the GitHub variable `APP_BASE_URL` nor `NMWC_APP_URL` | A wrong value sends staff to the wrong site from a trusted mailbox | The production domain |
 
-Set by the platform, never by hand: `NODE_ENV`, `NEXT_RUNTIME`, `VERCEL_ENV`,
+Set by the platform, never by hand: `NODE_ENV`, `NEXT_RUNTIME`, `VERCEL_ENV`, `VERCEL_URL`
+(a preview's own address; the e-mail links' default off production),
 `VERCEL_GIT_COMMIT_SHA`. `next.config.ts` maps the last two into `NEXT_PUBLIC_SENTRY_ENV`
 and `NEXT_PUBLIC_SENTRY_RELEASE` at build time.
 
@@ -118,3 +125,8 @@ column in §2 lists them. Two are easy to forget:
 - **The owner database password**: Vercel `DIRECT_URL`, GitHub `DIRECT_URL`, then every
   local `.env`. Neon branches share the role's password, so UAT changes with it.
   CREDENTIAL-ROTATION.md is the full procedure.
+- **`GMAIL_APP_PASSWORD`**: generate a new app password in the sending Google account,
+  put it in Vercel (Production, and Preview if UAT sends), **redeploy** (variables are read
+  when an instance starts), check that the next e-mail drain run reports no `authErrors`,
+  then revoke the old app password. Changing the Google account's own password revokes
+  every app password at once, so do this step straight after it. CREDENTIAL-ROTATION.md.

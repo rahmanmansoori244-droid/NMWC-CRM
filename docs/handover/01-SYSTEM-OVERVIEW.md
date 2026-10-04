@@ -650,15 +650,22 @@ The exact Temix file format is still to be confirmed with Temix (owner decision 
 - System actions are attributed to a real user with a `system:` reason.
 - The `/audit` page is for `MANAGER` and `STEWARD`.
 
-### 4.14 Notifications (in-app only)
+### 4.14 Notifications (in-app, and e-mail once switched on)
 
 - Rows in `Notification`, shown on `/notifications` (`lib/notifications.ts`,
   `services/notifications-actions.ts`). Where each row links is `lib/notification-links.ts`:
   anything about a reactivation takes a Manager to `/reactivations`, the only page that
   decides one.
-- **No e-mail is sent yet.** The F1 foundation (2026-10-05) added the outbox columns
-  `emailStatus`, `emailAttempts` and `emailLeaseUntil` beside `emailedAt`; every row that
-  existed then is marked `PRE_FEATURE` and done, so history is never e-mailed.
+- **E-mail (F1, 2026-10-05), off until `NOTIFY_EMAIL_ENABLED=on`.** The `Notification`
+  table is the outbox (`emailedAt`, `emailStatus`, `emailAttempts`, `emailLeaseUntil`;
+  every row that existed before the feature is marked `PRE_FEATURE` and is never e-mailed).
+  `/api/cron/email-drain` (every 10 minutes, 03:00–14:59 UTC) sends each recipient one
+  plain-text digest from the owner's Gmail: counts, request kinds and links, never a
+  customer, salesman or route name. Only Managers, Supervisors, Accountants and the
+  Finance Manager are e-mailed — never the GM, a Steward, a Viewer or a salesman — and
+  only about a row not yet read whose request still waits on them. Caps: one digest per
+  person per 30 minutes, 40 per run, 400 a day. Off production it sends only to a redirect
+  inbox. Runbook: [OPERATIONS §5i](../OPERATIONS.md). Defaults: `lib/notify-policy.ts`.
 - `/approvals/[id]` says, in a banner, when its viewer cannot decide the current step or
   the request is a reactivation (`lib/decision-lane.ts`).
 - Addresses: the Steward sets or clears an account's e-mail on `/users`; the page shows
@@ -694,6 +701,7 @@ The exact Temix file format is still to be confirmed with Temix (owner decision 
 | `/api/cron/keep-warm` | every 4 minutes, 03:00–14:59 | Keeps the function and the database pool warm. Each run is also the availability probe for the service levels. |
 | `/api/cron/photo-gc` | 03:00 daily | Processes photos soft-deleted more than 30 days ago (see the F02 item in 4.5). |
 | `/api/cron/retention-sweep` | 03:30 daily | Prunes stale rate-limit rows, notifications, cron-run rows and old import payloads, per [`docs/compliance/DATA-RETENTION-SCHEDULE.md`](../compliance/DATA-RETENTION-SCHEDULE.md). Never touches the audit ledgers. |
+| `/api/cron/email-drain` | every 10 minutes, 03:00–14:59 | F1: sends the notification e-mail digests (above). Does nothing until `NOTIFY_EMAIL_ENABLED=on`. Warning-tier heartbeat. |
 
 - **SLA budgets:** Supervisor 8 working hours, Accountant 9. The Finance Manager, GM and
   Manager budgets are placeholders (owner question "Q-sla"). The budgets are frozen onto
@@ -800,7 +808,7 @@ erDiagram
 | `AuditLog` | The forensic record. | `actorId`, `action` (`AuditAction` enum), `entityType`, `entityId`, `before`/`after` JSON, `reason`, ip, user agent. **Append-only** (trigger). Also stores duplicate dismissals and operator-script ledgers. |
 | `ImportBatch`, `ImportRow` | One upload and its rows. | `kind` `CUSTOMER` or `ACCOUNT`; promote lease fields. Rows keep `state` (`ImportRowState`, default `PENDING`), `raw`, `parsed`, `issues`, `corrections`, exclusion fields. |
 | `TemixSyncBatch` | One outbound Temix batch. | `customerIds` is a **JSON snapshot**, not a relation. `markedLoadedAt` when the Steward confirms. |
-| `Notification` | An in-app message. | `kind` (`NotificationKind`), `readAt`; the e-mail outbox columns `emailedAt`, `emailStatus`, `emailAttempts`, `emailLeaseUntil` (no sender yet). |
+| `Notification` | An in-app message, and the e-mail outbox. | `kind` (`NotificationKind`), `readAt`; `emailedAt`, `emailStatus`, `emailAttempts`, `emailLeaseUntil` (`lib/email/`). |
 | Others | `Channel`, `SubChannel` (the channel taxonomy), `SavedView`, `RateLimit`, `CronHeartbeat`, `CronRun`, `CodeSequence`, `ExportJob` (unused). | |
 
 **Raw-SQL objects the schema file does not show** (partial unique indexes, trigram

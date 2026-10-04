@@ -149,7 +149,7 @@ is also **Tier B**, as requested by the owner, because it changes the rulebook.
    success. Every branch push builds a Vercel preview that applies its migrations to UAT:
    push a migration only when final, and never edit or rename one once pushed. CI runs
    lint, unit, `next build`, Playwright on a production build, the secrets scan, the
-   backup → encrypt → restore → verify chain, and 36 of 39 Postgres integration suites
+   backup → encrypt → restore → verify chain, and 37 of 40 Postgres integration suites
    against a fresh database with all migrations applied.
 5. **Review by tier.** Tier A needs no Claude review. Tier B waits for Claude to read the
    diff and touched files, verify the checks and review adversarially, then say it is
@@ -241,6 +241,10 @@ the server, items 40b and 41).
 
 **Operations**
 - Vercel Pro (2026-09-27). Credential rotation is the owner's.
+- Notification e-mail (F1, 2026-10-05): sent from the **owner's own Gmail** over SMTP
+  with an app password (`GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`), the owner's choice.
+  Everything else about F1 — who is told, what is e-mailed, the limits — is a default
+  awaiting his confirmation (§6.1, 04-PENDING A1.11), not a decision.
 - On 2026-09-27 the owner gave **Claude** standing permission to write to production
   through operator scripts, with the safeguards in §5. At the 2026-10-04 handover the owner
   set its end date (recorded in the private handover pack, `PRIVATE-HANDOVER.md`); after
@@ -309,6 +313,7 @@ Decided since the list below was written: **X-AUTH-2** (the owner, 2026-10-04) �
 | N04 | How a customer's status follows its branches | ACTIVE if any branch is active; CLOSED only when all are |
 | Q-sla | Response-time budgets for the Finance Manager, GM, Manager | The owner's numbers |
 | — | May a salesman remove a guarantee or status-evidence photo while its request is pending? | No; he may replace it |
+| F1 defaults | Who is told of a salesman's request, what is e-mailed, the limits (`lib/notify-policy.ts`; 04-PENDING A1.11) | Confirm or change each default before `NOTIFY_EMAIL_ENABLED=on` |
 | X-IMPORTS-4 | Clearing an account's e-mail or phone | A Steward edit on the Users screen, not the import. The e-mail half is built (2026-10-05, F1); the phone half is open |
 
 Also carried: whether an import row with a blank `temix_code` takes the full lane; unkeyed
@@ -371,7 +376,8 @@ From the 41-item benchmark list (2026-09-24): **32** three integration suites
 partly done; **15** duplicate scan on open; **17** a merge cannot be undone; **18** no
 data-quality history; **19** the score counts "Address pending"; **21** installable /
 offline; **23** offline photos; **24** plan adherence; **25** Today covers a third of the
-route; **26** Arabic only in old PDFs; **27** notifications are in-app only; **29** no API;
+route; **26** Arabic only in old PDFs; **27** notifications are in-app only (built 2026-10-05
+on `claude/notify-email`, not merged; e-mail off until the owner switches it on); **29** no API;
 **30** no machine accounts; **31** no feature flags or staging; **33–35** months-scale
 (visits/orders/surveys/coolers, multi-company, order capture). Item 14's engineering part is
 in §6.2.

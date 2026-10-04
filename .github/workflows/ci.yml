@@ -160,6 +160,7 @@ jobs:
           RUN_RESCORE: '1'
           RUN_VISITDAYS_SHEETS: '1'
           RUN_NOTIFY_WRITERS: '1'
+          RUN_EMAIL_DRAIN: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

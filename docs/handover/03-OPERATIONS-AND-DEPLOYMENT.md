@@ -411,7 +411,7 @@ run on a working branch is cancelled. A run on `main` never is. `ci-watch-sha.sh
 | Job ID | Display name | What it proves | On a branch | On `main` |
 |---|---|---|---|---|
 | `lint-test-build` | `lint-test-build` | Typecheck, lint, unit tests, `next build` (without a migrate), production-dependency audit | `success` | `success` |
-| `db-tests` | `db-tests` | Migrations on a fresh Postgres; the `nmwc_app` role created, granted and verified; 36 of the 39 integration suites | `success` | `success` |
+| `db-tests` | `db-tests` | Migrations on a fresh Postgres; the `nmwc_app` role created, granted and verified; 37 of the 40 integration suites | `success` | `success` |
 | `e2e` | `Playwright (login, health probe, CSP) on a production build` | Login, health probe and CSP on a production build | `success` | `success` |
 | `restore-chain` | `Backup → encrypt → restore → verify` | The backup chain, on throw-away databases | `success` | `success` |
 | `secrets-scan` | `secrets-scan` | gitleaks over **the commits each push adds**. It does not scan the whole history, whatever the comment in `ci.yml` says ([AUDITOR-BRIEF §8](../../AUDITOR-BRIEF.md#8-security-controls), §15). It uses default rules, which miss low-entropy passwords. | `success` | `success` |
@@ -872,6 +872,7 @@ Times are UTC. Oman is UTC+4, so `3-14` means 07:00–18:59 in Oman.
 | `sla-escalate` | Notifies about approvals that are past their SLA. A Supervisor-step breach goes to the Managers of the request's regions. When no active regional Manager covers it, the route sends it to the GM ([`app/api/cron/sla-escalate/route.ts`](../../app/api/cron/sla-escalate/route.ts)); the header comment in [`lib/escalation.ts`](../../lib/escalation.ts), "all active MANAGERs", is stale | `15,45 3-14 * * *` | `sla-escalate.yml`, same schedule | Yes, until retired | **critical** |
 | `photo-gc` | Takes photos soft-deleted more than 30 days ago, tags their objects for an R2 expiry rule, then deletes their rows. R2 does not implement object tagging (F02). When R2 refuses the tag, the row is kept and the run records a failure ([`app/api/cron/photo-gc/route.ts`](../../app/api/cron/photo-gc/route.ts)). Do not rely on it to remove photo bytes. | `0 3 * * *` | — | — | warning |
 | `retention-sweep` | The personal-data retention sweep | `30 3 * * *` | — | — | warning |
+| `email-drain` | F1 (2026-10-05, not yet merged): sends the notification e-mail digests; does nothing until `NOTIFY_EMAIL_ENABLED=on` ([OPERATIONS §5i](../OPERATIONS.md)) | `*/10 3-14 * * *` | — | — | warning |
 | `db-backup` | The nightly encrypted dump | — | `db-backup.yml`, `0 2 * * *` | — | **critical**; `stale` after 40 h |
 | Restore drill | The monthly proof that a restore works | — | `restore-drill.yml`, `0 4 1 * *` | — | — |
 | R2 bucket settings | Checks backup retention and photo versioning | — | `r2-config.yml`, `0 5 * * *` | — | — |

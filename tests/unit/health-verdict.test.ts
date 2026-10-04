@@ -123,6 +123,11 @@ describe('item 11: the tiers themselves', () => {
     const v = evaluateHealth({ checks: allOk, jobs: report, production: true });
     expect(v.httpStatus).toBe(503);
     expect([...v.criticalJobs].sort()).toEqual(['db-backup', 'sla-escalate']);
-    expect([...v.warnings].sort()).toEqual(['keep-warm:never', 'photo-gc:never', 'retention-sweep:never']);
+    expect([...v.warnings].sort()).toEqual([
+      'email-drain:never',
+      'keep-warm:never',
+      'photo-gc:never',
+      'retention-sweep:never',
+    ]);
   });
 });

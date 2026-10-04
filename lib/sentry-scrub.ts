@@ -113,6 +113,40 @@ function redactWebhook(s: string): string {
 }
 
 /**
+ * F1 (2026-10-05): the Gmail app password (GMAIL_APP_PASSWORD, lib/email/config.ts)
+ * opens the whole sending mailbox, IMAP included. lib/email/transport.ts keeps it
+ * out of every log line and error it reports, and configures nodemailer with an
+ * object (never an smtps://user:pass@ URL) and its logger off; this is the
+ * backstop for whatever else could carry it into an event — a library message, a
+ * span attribute, a breadcrumb. Exact value only, as for the webhook: in the form
+ * stored, trimmed, without its spaces and, for the 16 characters Google issues, in
+ * the four groups of four Google shows it in. A value shorter than 8 characters is
+ * not redacted: it would hit ordinary words, and no app password is that short.
+ * Read on every call; absent on the client and the Edge, where this is a no-op.
+ */
+const MIN_SECRET = 8;
+
+function appPasswordForms(): string[] {
+  const raw = typeof process !== 'undefined' ? process.env?.GMAIL_APP_PASSWORD : undefined;
+  if (!raw) return [];
+  const out = new Set<string>();
+  const trimmed = raw.trim();
+  const compact = trimmed.replace(/\s+/g, '');
+  for (const v of [raw, trimmed, compact]) if (v.length >= MIN_SECRET) out.add(v);
+  if (compact.length === 16) out.add(compact.match(/.{4}/g)!.join(' '));
+  return [...out].sort((a, b) => b.length - a.length);
+}
+
+/** Every configured credential this file knows by value: the webhook URL and the app password. */
+function redactCredentials(s: string): string {
+  let out = redactWebhook(s);
+  for (const f of appPasswordForms()) {
+    if (out.includes(f)) out = out.split(f).join('[app-password]');
+  }
+  return out;
+}
+
+/**
  * Post-merge review (2026-09-29): the words on the screen, as the browser SDK
  * copies them into a CSS-like selector.
  *
@@ -142,10 +176,10 @@ const stripSelectorValues = (s: string): string =>
  * Webhook, then selector values, then query-pair redaction, then the pattern
  * scrub. Use for any free text.
  */
-const scrubText = (s: string): string => scrub(scrubQueryPairs(stripSelectorValues(redactWebhook(s))));
+const scrubText = (s: string): string => scrub(scrubQueryPairs(stripSelectorValues(redactCredentials(s))));
 
 function scrubUrl(rawUrl: string): string {
-  const url = redactWebhook(rawUrl);
+  const url = redactCredentials(rawUrl);
   try {
     const u = new URL(url);
     u.searchParams.forEach((_v, k) => {
@@ -292,18 +326,22 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
   // Transaction events carry the route in `transaction` and the query string in
   // `request.query_string`, neither of which the error path ever populated.
   if (typeof event.transaction === 'string') event.transaction = scrubText(event.transaction);
+  // F1 (2026-10-05): a message event's own text (captureMessage) was sent as it
+  // was. It is free text like any other, and the credential redaction above must
+  // reach it too.
+  if (typeof event.message === 'string') event.message = scrubText(event.message);
   scrubSamplingContext(event);
   const qs = event.request?.query_string;
   if (typeof qs === 'string') {
-    event.request!.query_string = scrubQueryPairs(redactWebhook(qs));
+    event.request!.query_string = scrubQueryPairs(redactCredentials(qs));
   } else if (Array.isArray(qs)) {
     event.request!.query_string = qs.map(([k, v]) =>
-      SENSITIVE_PARAM.test(k) ? [k, '[redacted]'] : [k, scrub(redactWebhook(v))]
+      SENSITIVE_PARAM.test(k) ? [k, '[redacted]'] : [k, scrub(redactCredentials(v))]
     ) as typeof qs;
   } else if (qs && typeof qs === 'object') {
     for (const [k, v] of Object.entries(qs)) {
       if (typeof v === 'string') {
-        (qs as Record<string, string>)[k] = SENSITIVE_PARAM.test(k) ? '[redacted]' : scrub(redactWebhook(v));
+        (qs as Record<string, string>)[k] = SENSITIVE_PARAM.test(k) ? '[redacted]' : scrub(redactCredentials(v));
       }
     }
   }
@@ -329,7 +367,7 @@ export function scrubEvent<T extends Event>(event: T, hint?: EventHint): T {
   if (event.extra && typeof event.extra === 'object') scrubDeep(event.extra);
   if (event.exception?.values) {
     for (const v of event.exception.values) {
-      if (typeof v.value === 'string') v.value = scrub(redactWebhook(v.value));
+      if (typeof v.value === 'string') v.value = scrub(redactCredentials(v.value));
     }
   }
   if (event.breadcrumbs) {
