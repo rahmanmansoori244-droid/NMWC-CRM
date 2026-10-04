@@ -1,3 +1,4 @@
+import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { Search, UserPlus } from 'lucide-react';
@@ -6,7 +7,7 @@ import { prisma } from '@/lib/db';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { CustomerCard } from '@/components/nmwc/CustomerCard';
 import { EmptyState } from '@/components/nmwc/EmptyState';
-import { Role } from '@prisma/client';
+import { Role, type Prisma } from '@prisma/client';
 import { omanDayOfWeek } from '@/lib/tz';
 
 export const metadata = { title: 'Today · NMWC' };
@@ -23,10 +24,21 @@ export const metadata = { title: 'Today · NMWC' };
 
 const PAGE_SIZE = 200;
 
+// The one scope every list and count on this page reads: the salesman's own
+// route, live branches of live customers. The no-day view differs from Today
+// only in `dayOfVisit`, so it cannot drift onto another route or onto archived
+// rows. `customer.deletedAt` matters because a branch of an archived customer
+// opens a profile that is not found (/customers/[id] reads `deletedAt: null`).
+// N03 once put such a branch on Today; the import was fixed, and this keeps
+// any other path from doing it again.
+function routeBranchWhere(routeId: string) {
+  return { routeId, deletedAt: null, customer: { deletedAt: null } } satisfies Prisma.BranchWhereInput;
+}
+
 export default async function TodayPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ page?: string | string[] }>;
+  searchParams?: Promise<{ page?: string | string[]; view?: string | string[] }>;
 }) {
   const session = await auth();
   if (!session?.user) redirect('/login');
@@ -63,19 +75,31 @@ export default async function TodayPage({
   // the server returned yesterday's customer list between Oman 00:00 and 04:00.
   const today = omanDayOfWeek();
 
-  const where = { routeId: me.ownedRouteId, deletedAt: null, dayOfVisit: today };
-  const [scheduled, total] = await Promise.all([
-    prisma.branch.count({ where }),
-    prisma.branch.count({ where: { routeId: me.ownedRouteId, deletedAt: null } }),
+  // Go-live: a branch with no journey-plan day never matches `today`, so it
+  // never appeared here, and /customers cannot ask for "no visit day". The
+  // no-day view lists exactly those, paged and ordered like Today, so the
+  // salesman can open each one and set its day from the enrichment form.
+  const sp = await searchParams;
+  const noDay = sp?.view === 'no-day';
+  const route = routeBranchWhere(me.ownedRouteId);
+  const scheduledWhere = { ...route, dayOfVisit: today };
+  const undatedWhere = { ...route, dayOfVisit: null };
+  const [scheduled, undated, total] = await Promise.all([
+    prisma.branch.count({ where: scheduledWhere }),
+    prisma.branch.count({ where: undatedWhere }),
+    prisma.branch.count({ where: route }),
   ]);
-  const rawPage = (await searchParams)?.page;
+  const listed = noDay ? undated : scheduled;
+  const rawPage = sp?.page;
   const requestedPage = typeof rawPage === 'string' && /^[1-9]\d*$/.test(rawPage)
     ? Number(rawPage)
     : 1;
-  const pages = Math.max(1, Math.ceil(scheduled / PAGE_SIZE));
+  const pages = Math.max(1, Math.ceil(listed / PAGE_SIZE));
   const page = Math.min(Number.isSafeInteger(requestedPage) ? requestedPage : 1, pages);
+  const pageHref = (p: number): Route =>
+    noDay ? `/today?view=no-day&page=${p}` : `/today?page=${p}`;
   const branches = await prisma.branch.findMany({
-      where,
+      where: noDay ? undatedWhere : scheduledWhere,
       take: PAGE_SIZE,
       skip: (page - 1) * PAGE_SIZE,
       include: {
@@ -120,45 +144,72 @@ export default async function TodayPage({
       />
 
       <div className="grid grid-cols-3 gap-2 px-4 pt-4 sm:gap-3 sm:px-6">
-        <Stat label="Route customers" value={total} />
+        {/* It counts branches: /customers counts customers, and one customer
+            can have several branches on the route. */}
+        <Stat label="Route branches" value={total} />
         <Stat label="Pending approval" value={pending} tone={pending > 0 ? 'amber' : undefined} />
         <Stat label="Needs correction" value={rejected} tone={rejected > 0 ? 'red' : undefined} />
       </div>
 
       <section className="px-4 py-4 sm:px-6">
-        <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-base font-semibold text-slate-700">
-            Today&apos;s visits ({scheduled})
+            {noDay ? <>Branches with no visit day ({undated})</> : <>Today&apos;s visits ({scheduled})</>}
           </h2>
           {/* Go-live: only ~1 in 3 branches carries a journey-plan day, so the
               scheduled list is NOT the salesman's whole route. Keep the full,
-              searchable list one tap away from the landing page. */}
-          <Link
-            href="/customers"
-            className="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline"
-          >
-            <Search className="h-3.5 w-3.5" />
-            All my customers ({total})
-          </Link>
+              searchable list one tap away from the landing page. It carries no
+              number: /customers counts customers, and every number on this
+              page counts branches. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            {noDay ? (
+              <Link href="/today" className="text-sm font-medium text-brand-700 hover:underline">
+                Today&apos;s visits ({scheduled})
+              </Link>
+            ) : (
+              <Link href="/today?view=no-day" className="text-sm font-medium text-brand-700 hover:underline">
+                Branches with no visit day ({undated})
+              </Link>
+            )}
+            <Link
+              href="/customers"
+              className="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline"
+            >
+              <Search className="h-3.5 w-3.5" />
+              All my customers
+            </Link>
+          </div>
         </div>
+        {/* The day is set through the enrichment form, which waits for
+            approval: say so, or a submitted branch staying here reads as lost. */}
+        {noDay && (
+          <p className="mb-3 text-sm text-slate-600">
+            Open a branch, tap Enrich and set its Day of visit. It leaves this list once the change is approved.
+          </p>
+        )}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
-          <p>Showing {branches.length} of {scheduled} visits · Page {page} of {pages}</p>
+          <p>Showing {branches.length} of {listed} {noDay ? 'branches' : 'visits'} · Page {page} of {pages}</p>
           {pages > 1 && (
-            <nav aria-label="Visit pages" className="flex gap-3">
+            <nav aria-label={noDay ? 'Branch pages' : 'Visit pages'} className="flex gap-3">
               {page > 1 && (
-                <Link href={`/today?page=${page - 1}`} className="inline-flex min-h-11 items-center font-medium text-brand-700 hover:underline">
+                <Link href={pageHref(page - 1)} className="inline-flex min-h-11 items-center font-medium text-brand-700 hover:underline">
                   Previous
                 </Link>
               )}
               {page < pages && (
-                <Link href={`/today?page=${page + 1}`} className="inline-flex min-h-11 items-center font-medium text-brand-700 hover:underline">
+                <Link href={pageHref(page + 1)} className="inline-flex min-h-11 items-center font-medium text-brand-700 hover:underline">
                   Next
                 </Link>
               )}
             </nav>
           )}
         </div>
-        {branches.length === 0 ? (
+        {branches.length === 0 && noDay ? (
+          <EmptyState
+            title="Every branch has a visit day"
+            description="No branch on your route is missing its visit day."
+          />
+        ) : branches.length === 0 ? (
           <EmptyState
             title="No customers scheduled today"
             description={`No branches on your route are flagged for ${today}. Open your full customer list to find any customer on your route.`}
@@ -168,7 +219,7 @@ export default async function TodayPage({
                 className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-4 py-2.5 text-base font-semibold text-white hover:bg-brand-700"
               >
                 <Search className="h-4 w-4" />
-                All my customers ({total})
+                All my customers
               </Link>
             }
           />

@@ -253,7 +253,7 @@ test('salesman: route-code login, forced password change, Today, search, enrich 
   // 2. real login → Today
   await signIn(page, F.routeCode.toLowerCase(), NEW_PASSWORD);
   await expect(page).toHaveURL(/\/today/);
-  await expect(page.getByText('Route customers')).toBeVisible();
+  await expect(page.getByText('Route branches')).toBeVisible();
   await expect(page.getByRole('link', { name: /all my customers/i }).first()).toBeVisible();
 
   // 3. search → profile → Enrich
