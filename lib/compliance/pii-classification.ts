@@ -425,6 +425,15 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'Notification.customerId': { subject: 'none', note: STRUCTURAL },
   'Notification.readAt': { subject: 'employee', kind: 'behaviour', note: 'whether and when this person read it' },
   'Notification.emailedAt': { subject: 'none', note: RECORD_META },
+  // F1 e-mail outbox state (lib/email/drain.ts). Operational values about this
+  // row's delivery, never the address, the subject or the text of a message,
+  // none of which is stored anywhere in the database.
+  'Notification.emailStatus': {
+    subject: 'none',
+    note: 'outbox state of this row (SENT, FAILED, SKIPPED_* or PRE_FEATURE); no address or message text',
+  },
+  'Notification.emailAttempts': { subject: 'none', note: 'outbox claim counter' },
+  'Notification.emailLeaseUntil': { subject: 'none', note: RECORD_META },
   'Notification.createdAt': { subject: 'none', note: RECORD_META },
 
   // ---- TemixSyncBatch: the outbound ERP hand-off ---------------------------

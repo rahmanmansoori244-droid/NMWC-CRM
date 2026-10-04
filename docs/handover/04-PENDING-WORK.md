@@ -177,6 +177,7 @@ These were found while writing the user guides. Most are defaults that nobody de
 - **Why it matters.** Approvals are delayed. The objectives in [`SERVICE-LEVELS.md`](../SERVICE-LEVELS.md) depend on people looking.
 - **Where.** AUDITOR-BRIEF §6 ("Notifications"); re-benchmark item 27; [`POST-LAUNCH-ROADMAP.md`](../POST-LAUNCH-ROADMAP.md) §4; `lib/notifications.ts`; `lib/escalation.ts`.
 - **Decides:** Owner. Which channel and provider? What personal data may leave the app (see the PDPL row in A4)? **Effort:** L. **Tier:** B.
+- **Progress, 2026-10-05 (F1 foundation, branch `claude/notify-foundation`).** Built and not yet merged: the two notification kinds, the e-mail outbox columns with a backfill that marks every existing row done, the inbox labels and links for the new kinds (a reactivation now links a Manager to `/reactivations`), a banner on `/approvals/[id]` for a viewer who cannot decide the current step, the Steward's e-mail edit on `/users`, and `scripts/ops/notify-readiness.ts`. **Not done in the foundation:** nothing writes the new kinds and no e-mail is sent; those come with the writers and the e-mail drain.
 
 ### A2. Owner decisions carried from HANDOVER §6.1 and the auditor's recheck
 
@@ -192,7 +193,7 @@ The recommendations are Claude's and have not been answered. The sources are [`H
 | F12 / E5 | The Temix lifecycle: what closed and reactivated branches look like in the batch file, and what happens to a live customer with no Temix code. | Get the file contract from the ERP team first (A4). | The ERP and the CRM drift apart. | Depends on the contract | P2 |
 | Q-sla | Response-time budgets for the Finance Manager, GM and Manager steps. Today they are placeholders. | The owner supplies the numbers (`SLA_*_MIN` in `lib/working-hours.ts`). | Escalations and Service status mean nothing for those steps until they are set. | S | P2 |
 | F09 | Shared phone numbers inside one import file cannot be released. | A reviewed release per row on the batch page, like the existing release for a phone already in the master. | Legitimately shared phones are held back. | M | P3 |
-| X-IMPORTS-4 | How to clear an account's e-mail or phone. | A Steward edit on the Users screen, not through the import. | Stale contact data stays on accounts. | S | P3 |
+| X-IMPORTS-4 | How to clear an account's e-mail or phone. | A Steward edit on the Users screen, not through the import. **E-mail half built 2026-10-05** (F1 foundation: `updateUserEmailAction`, Steward only). The phone half and the import's own validation of the e-mail cell are still open. | Stale contact data stays on accounts. | S | P3 |
 | Enh. 5 | Immutable Temix batch payloads, and the 5,000-row batch ceiling. | Depends on the Temix contract. | A batch re-download may not match what was loaded. | Depends on the contract | P3 |
 
 ### A3. Smaller owner questions carried forward

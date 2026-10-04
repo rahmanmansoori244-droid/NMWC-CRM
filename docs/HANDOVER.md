@@ -309,7 +309,7 @@ Decided since the list below was written: **X-AUTH-2** (the owner, 2026-10-04) â
 | N04 | How a customer's status follows its branches | ACTIVE if any branch is active; CLOSED only when all are |
 | Q-sla | Response-time budgets for the Finance Manager, GM, Manager | The owner's numbers |
 | â€” | May a salesman remove a guarantee or status-evidence photo while its request is pending? | No; he may replace it |
-| X-IMPORTS-4 | Clearing an account's e-mail or phone | A Steward edit on the Users screen, not the import |
+| X-IMPORTS-4 | Clearing an account's e-mail or phone | A Steward edit on the Users screen, not the import. The e-mail half is built (2026-10-05, F1); the phone half is open |
 
 Also carried: whether an import row with a blank `temix_code` takes the full lane; unkeyed
 dismissal digests; the new-customer form's Back after "Save draft" and a way to discard a

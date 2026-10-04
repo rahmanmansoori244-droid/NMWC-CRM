@@ -588,5 +588,105 @@ async function updateUserRoleCore(formData: FormData) {
   revalidatePath('/users');
 }
 
+/**
+ * F1 / X-IMPORTS-4 (the e-mail half): the Steward sets or clears an account's
+ * e-mail address on /users.
+ *
+ * The address is where the notification e-mail (lib/email/drain.ts) goes, and
+ * before this nothing in the app could change one after the account existed: it
+ * was typed at creation or written by the account import, which can overwrite a
+ * value but never clear one. Every Manager, Accountant and Finance Manager
+ * address therefore has to be entered by a Steward, because canMutateUser lets a
+ * Manager administer only the field force and nobody edit their own account
+ * here (self-service is /profile, which shows the address read-only).
+ *
+ * STEWARD only, deliberately narrower than the other user actions: a wrong
+ * address sends work alerts to someone else's mailbox, and the approver tier is
+ * Steward-provisioned already (SR-USR-01).
+ *
+ * The value is trimmed and lower-cased before it is checked, and '' clears it.
+ * User.email is unique but case-sensitive, so the clash check here ignores case:
+ * two accounts holding one mailbox in different cases would each be mailed.
+ * The audit row names the field, never the value (AuditLog is append-only, so a
+ * value written there cannot be erased: lib/account-import.ts PERSONAL_FIELDS).
+ * The form field is called contactAddress, not email: a browser's password
+ * manager keys its autofill off names like that (users-autofill-guard).
+ */
+const contactAddressRule = z.string().toLowerCase().email().max(200);
+
+export async function updateUserEmailAction(formData: FormData): SafeAction<void> {
+  return runAction(() => updateUserEmailCore(formData));
+}
+
+async function updateUserEmailCore(formData: FormData) {
+  const me = await requireUserAdmin();
+  if (me.role !== Role.STEWARD) {
+    throw new ForbiddenError('Only a Steward can change an account’s e-mail address.');
+  }
+  const userId = String(formData.get('userId') ?? '');
+  if (!userId) throw new ValidationError({ userId: 'required' });
+  const raw = String(formData.get('contactAddress') ?? '').trim();
+  let email: string | null = null;
+  if (raw !== '') {
+    const parsed = contactAddressRule.safeParse(raw);
+    if (!parsed.success) {
+      throw new ValidationError({
+        contactAddress: 'Enter a valid e-mail address, or leave the box empty to clear it.',
+      });
+    }
+    email = parsed.data;
+  }
+
+  const target = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, role: true, email: true },
+  });
+  if (!target) throw new NotFoundError('User not found.');
+  const guard = canMutateUser(
+    { id: me.id, role: me.role, username: me.username },
+    { id: target.id, role: target.role }
+  );
+  if (!guard.ok) throw new ForbiddenError(guard.reason);
+  // Nothing to change, nothing to record.
+  if ((target.email ?? null) === email) return;
+
+  if (email) {
+    const clash = await prisma.user.findFirst({
+      where: { id: { not: userId }, email: { equals: email, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    if (clash) {
+      throw new ValidationError({ contactAddress: 'That e-mail is already used by another account.' });
+    }
+  }
+
+  const env = await getAuditEnvelope(me.id);
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { email } });
+      await writeAudit(tx, env, {
+        action: 'UPDATE',
+        entityType: 'User',
+        entityId: userId,
+        after: { changed: ['email'] },
+        reason: email ? 'email_set' : 'email_cleared',
+      });
+    });
+  } catch (err) {
+    // Another account took the address between the check above and this write.
+    // Mapped outside the transaction, as on create.
+    const code = (err as { code?: string })?.code;
+    if (code === 'P2002') {
+      const fields = createClashFields(err);
+      throw new ValidationError(
+        fields.email ? { contactAddress: fields.email } : { contactAddress: 'That e-mail is already used by another account.' }
+      );
+    }
+    throw err;
+  }
+  logger.info({ actorId: me.id, userId, cleared: email === null }, 'user.email_update');
+  revalidatePath('/users');
+}
+
 // A user's own password change (AUTH-16) is services/password.ts, and the reuse
 // and history rules both paths share are lib/password-policy.ts (X-AUTH-1).

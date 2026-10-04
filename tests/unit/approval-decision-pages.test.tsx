@@ -536,3 +536,58 @@ describe('the approval queue', () => {
     });
   });
 });
+
+describe('F1: the review page says when its viewer cannot decide the request (lib/decision-lane.ts)', () => {
+  const liveBranch = {
+    id: 'b1',
+    branchName: 'Main',
+    branchCode: 'B-1',
+    address: 'Synthetic address',
+    gpsLat: null,
+    gpsLng: null,
+    gpsAccuracy: null,
+    gpsCapturedAt: null,
+    shopPhotoId: null,
+    signboardPhotoId: null,
+    routeId: 'r1',
+    regionId: 'g1',
+    deletedAt: null,
+    route: { code: 'R1' },
+  };
+  const update = (over: Record<string, unknown> = {}) =>
+    createRow('CASH', 0, {
+      process: 'UPDATE',
+      customerId: 'c1',
+      customer: { id: 'c1', legalName: 'Muscat Pearl', nmwcCode: 'NMWC-000123', crPhotoId: null, branches: [liveBranch] },
+      approvalChain: resolveChain(EditProcess.UPDATE, PaymentTerms.CASH),
+      customerDraft: null,
+      ...over,
+    });
+
+  it('an Accountant told for information while the request is at the Supervisor step reads it under a banner', async () => {
+    h.role = 'ACCOUNTANT';
+    await renderDetail(update());
+    const note = screen.getByRole('note');
+    expect(note.textContent).toMatch(/For your information/);
+    expect(note.textContent).toContain('SUPERVISOR');
+  });
+
+  it('the approver of the current step sees no banner', async () => {
+    h.role = 'MANAGER';
+    await renderDetail(update());
+    expect(screen.queryByRole('note')).toBeNull();
+  });
+
+  it('a reactivation says where it is decided; only a Manager gets the link', async () => {
+    h.role = 'GM';
+    await renderDetail(update({ isReactivation: true, approvalChain: null }));
+    expect(screen.getByRole('note').textContent).toMatch(/decided on the Reactivations page/);
+    expect(screen.queryByRole('link', { name: 'Open Reactivations' })).toBeNull();
+
+    cleanup();
+    h.actionProps = [];
+    h.role = 'MANAGER';
+    await renderDetail(update({ isReactivation: true, approvalChain: null }));
+    expect(screen.getByRole('link', { name: 'Open Reactivations' }).getAttribute('href')).toBe('/reactivations');
+  });
+});

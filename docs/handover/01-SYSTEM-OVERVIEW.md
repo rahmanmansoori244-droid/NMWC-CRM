@@ -137,7 +137,7 @@ flowchart LR
 | Server logic | `'use server'` modules export the server actions. Shared domain and infrastructure code lives in `lib/`. | `services/*.ts`, `lib/*.ts` |
 | HTTP routes | 16 route handlers: auth, field-form submits, photos, exports, health, crons, ops, a perf probe. | `app/api/**/route.ts` |
 | Auth | next-auth 5 (beta.32), Credentials provider, JWT sessions of 8 hours, `__Host-` cookie. | `auth.config.ts`, `lib/auth.ts`, `lib/session.ts`, `middleware.ts` |
-| Database | Prisma 6 on PostgreSQL hosted by Neon. 24 models, 21 migrations. | `prisma/schema.prisma`, `prisma/migrations/`, `lib/db.ts` |
+| Database | Prisma 6 on PostgreSQL hosted by Neon. 24 models, 23 migrations. | `prisma/schema.prisma`, `prisma/migrations/`, `lib/db.ts` |
 | Files | Cloudflare R2, two buckets: `nmwc-photos` (photos and documents) and `nmwc-backups` (encrypted nightly database dumps). Separate credentials per bucket. | `lib/r2.ts`, `.github/workflows/db-backup.yml` |
 | Hosting | Vercel Pro, functions in region `iad1`, `maxDuration` 60 s. | `vercel.json` |
 | Scheduled jobs | Four Vercel crons, plus GitHub Actions workflows for backups, the restore drill and R2 checks. | `vercel.json`, `.github/workflows/` |
@@ -651,9 +651,18 @@ The exact Temix file format is still to be confirmed with Temix (owner decision 
 ### 4.14 Notifications (in-app only)
 
 - Rows in `Notification`, shown on `/notifications` (`lib/notifications.ts`,
-  `services/notifications-actions.ts`).
-- **No e-mail is sent.** `Notification.emailedAt` exists for a future e-mail drain that
-  was never built.
+  `services/notifications-actions.ts`). Where each row links is `lib/notification-links.ts`:
+  anything about a reactivation takes a Manager to `/reactivations`, the only page that
+  decides one.
+- **No e-mail is sent yet.** The F1 foundation (2026-10-05) added the outbox columns
+  `emailStatus`, `emailAttempts` and `emailLeaseUntil` beside `emailedAt`; every row that
+  existed then is marked `PRE_FEATURE` and done, so history is never e-mailed. Two kinds,
+  `REQUEST_FYI` and `REACTIVATION_REQUESTED`, are read and labelled but not yet written.
+- `/approvals/[id]` says, in a banner, when its viewer cannot decide the current step or
+  the request is a reactivation (`lib/decision-lane.ts`).
+- Addresses: the Steward sets or clears an account's e-mail on `/users`; the page shows
+  only an "E-mail on file" badge. `scripts/ops/notify-readiness.ts` counts the gaps
+  (read-only).
 - Who is told when a request reaches a step (`resolveStepAudience`):
   - the Supervisor step → the submitter's direct supervisor only;
   - the Accountant step → active Accountants whose regions overlap the request;
@@ -782,7 +791,7 @@ erDiagram
 | `AuditLog` | The forensic record. | `actorId`, `action` (`AuditAction` enum), `entityType`, `entityId`, `before`/`after` JSON, `reason`, ip, user agent. **Append-only** (trigger). Also stores duplicate dismissals and operator-script ledgers. |
 | `ImportBatch`, `ImportRow` | One upload and its rows. | `kind` `CUSTOMER` or `ACCOUNT`; promote lease fields. Rows keep `state` (`ImportRowState`, default `PENDING`), `raw`, `parsed`, `issues`, `corrections`, exclusion fields. |
 | `TemixSyncBatch` | One outbound Temix batch. | `customerIds` is a **JSON snapshot**, not a relation. `markedLoadedAt` when the Steward confirms. |
-| `Notification` | An in-app message. | `kind` (`NotificationKind`), `readAt`, unused `emailedAt`. |
+| `Notification` | An in-app message. | `kind` (`NotificationKind`), `readAt`; the e-mail outbox columns `emailedAt`, `emailStatus`, `emailAttempts`, `emailLeaseUntil` (no sender yet). |
 | Others | `Channel`, `SubChannel` (the channel taxonomy), `SavedView`, `RateLimit`, `CronHeartbeat`, `CronRun`, `CodeSequence`, `ExportJob` (unused). | |
 
 **Raw-SQL objects the schema file does not show** (partial unique indexes, trigram
