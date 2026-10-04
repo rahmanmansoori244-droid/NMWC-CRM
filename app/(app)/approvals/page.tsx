@@ -20,6 +20,9 @@ const APPROVER_ROLES: Role[] = [
   Role.GM,
 ];
 
+/** The most cards the queue renders, most overdue first. */
+const QUEUE_PAGE_SIZE = 200;
+
 export default async function ApprovalsPage() {
   const session = await auth();
   if (!session?.user) redirect('/login');
@@ -128,8 +131,13 @@ export default async function ApprovalsPage() {
     // Most-overdue first (index [state, slaDueAt] backs it); legacy rows
     // without a deadline sort last.
     orderBy: [{ slaDueAt: 'asc' }, { submittedAt: 'asc' }],
-    take: 200,
+    take: QUEUE_PAGE_SIZE,
   });
+  // The header counts the queue, not the page: it printed items.length, so a
+  // queue of 600 read "200 pending". The count takes the very `where` the list
+  // does — one object, never a second derivation of the scope — so it counts
+  // exactly the requests this approver could open.
+  const pendingCount = await prisma.customerEdit.count({ where });
 
   // N01: a new-customer request's token also binds its live guarantee documents
   // (lib/decision-token.ts), so a card is decided on the request as it stood when
@@ -197,7 +205,17 @@ export default async function ApprovalsPage() {
 
   return (
     <main>
-      <PageHeader title="Approval queue" subtitle={`${items.length} pending`} />
+      {/* Past the page size, say which ones are on screen. Against the cards
+          listed, not QUEUE_PAGE_SIZE: the list and the count are two reads, and
+          a request sent between them is counted but not shown. */}
+      <PageHeader
+        title="Approval queue"
+        subtitle={
+          pendingCount > items.length
+            ? `${pendingCount} pending · showing the ${items.length} most overdue`
+            : `${pendingCount} pending`
+        }
+      />
 
       <div className="pt-4 sm:pt-6">
         {items.length === 0 ? (

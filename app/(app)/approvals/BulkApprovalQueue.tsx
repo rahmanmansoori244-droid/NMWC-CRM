@@ -9,6 +9,7 @@ import {
   bulkApproveEditsAction,
   bulkRejectEditsAction,
 } from '@/services/edits';
+import { BULK_DECISION_LIMIT } from '@/lib/bulk-run';
 
 /**
  * B-11 (Senior-audit 2026-05-10): bulk-approval queue.
@@ -76,7 +77,16 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
   } | null>(null);
 
   const allOnPage = items.map((i) => i.id);
-  const allSelected = allOnPage.length > 0 && allOnPage.every((id) => selected.has(id));
+  // Select all stops at the bulk limit, taking cards in the order shown (most
+  // overdue first). It used to take every card on the page — up to 200 — and the
+  // server refuses a list over the limit whole, so on a region-wide queue past
+  // the limit Select all → Approve could only ever fail.
+  const selectAllIds = allOnPage.slice(0, BULK_DECISION_LIMIT);
+  const allSelected = selectAllIds.length > 0 && selectAllIds.every((id) => selected.has(id));
+  // Exactly the first BULK_DECISION_LIMIT of a longer queue: said, not silent,
+  // or the approver reads "Select all" as all of it.
+  const selectAllCapped =
+    allOnPage.length > BULK_DECISION_LIMIT && allSelected && selected.size === BULK_DECISION_LIMIT;
 
   function toggleOne(id: string) {
     setSelected((prev) => {
@@ -91,7 +101,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
     if (allSelected) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(allOnPage));
+      setSelected(new Set(selectAllIds));
     }
   }
 
@@ -161,13 +171,22 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
               : 'bg-amber-50 text-amber-800 ring-1 ring-amber-200'
           }`}
         >
+          {/* A refusal of the whole action (`_form`, e.g. over the bulk limit)
+              decided nothing, so it is not "0 processed, 1 failed"; its message,
+              below, says what to do. */}
           <p className="font-semibold">
-            {outcome.successes} processed
-            {outcome.failures.length > 0 ? `, ${outcome.failures.length} failed` : ''}
-            {outcome.notAttempted > 0
-              ? `, ${outcome.notAttempted} not attempted — run it again to finish`
-              : ''}
-            .
+            {outcome.failures[0]?.editId === '_form' ? (
+              'Nothing was processed.'
+            ) : (
+              <>
+                {outcome.successes} processed
+                {outcome.failures.length > 0 ? `, ${outcome.failures.length} failed` : ''}
+                {outcome.notAttempted > 0
+                  ? `, ${outcome.notAttempted} not attempted — run it again to finish`
+                  : ''}
+                .
+              </>
+            )}
           </p>
           {outcome.failures.length > 0 && (
             <ul className="mt-2 list-disc pl-5 text-xs">
@@ -200,6 +219,11 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
           {selected.size} selected
         </p>
       </div>
+      {selectAllCapped && (
+        <p role="status" className="mx-4 mb-3 text-xs font-medium text-amber-800 sm:mx-6">
+          {`Selected the first ${BULK_DECISION_LIMIT} — the limit per action.`}
+        </p>
+      )}
 
       <ul className="grid grid-cols-1 gap-3 px-4 sm:px-6">
         {items.map((e) => {

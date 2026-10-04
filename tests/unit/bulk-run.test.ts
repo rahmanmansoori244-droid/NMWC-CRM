@@ -7,7 +7,14 @@
  * reasonably assume nothing worked and do it again.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { runBulk, bulkBudgetMs } from '@/lib/bulk-run';
+import { readFileSync } from 'node:fs';
+import {
+  BULK_DECISION_LIMIT,
+  BULK_DECISION_LIMIT_MESSAGE,
+  runBulk,
+  bulkBudgetMs,
+} from '@/lib/bulk-run';
+import { stripComments } from '../support/strip-comments';
 
 const ok = async () => ({ ok: true }) as const;
 
@@ -94,5 +101,37 @@ describe('bulkBudgetMs', () => {
     process.env.BULK_BUDGET_MS = 'not a number';
     expect(bulkBudgetMs()).toBe(40_000);
     delete process.env.BULK_BUDGET_MS;
+  });
+});
+
+describe('BULK_DECISION_LIMIT — one limit, read by the server and by Select all', () => {
+  // The queue's Select all took every card on the page (up to 200) while the
+  // server refused more than 50, so the two disagreed and the approver was told
+  // only "Validation failed". Both now read this constant; a literal in either
+  // place would let them drift apart again.
+  const code = (path: string) => stripComments(readFileSync(path, 'utf8'), path);
+
+  it('is 50, and its refusal says what to do', () => {
+    expect(BULK_DECISION_LIMIT).toBe(50);
+    expect(BULK_DECISION_LIMIT_MESSAGE).toBe('At most 50 requests per bulk action — select 50 or fewer.');
+  });
+
+  it('the server refuses a longer list with it, field and message both', () => {
+    const src = code('services/edits.ts');
+    expect(src).toMatch(/import \{[^}]*\bBULK_DECISION_LIMIT\b[^}]*\} from '@\/lib\/bulk-run';/);
+    expect(src).toMatch(
+      /if \(list\.length > BULK_DECISION_LIMIT\) \{\s*throw new ValidationError\(\{ decisions: BULK_DECISION_LIMIT_MESSAGE \}, BULK_DECISION_LIMIT_MESSAGE\);/
+    );
+    expect(src).not.toMatch(/list\.length\s*>\s*\d/);
+  });
+
+  it('the queue stops Select all at it', () => {
+    const src = code('app/(app)/approvals/BulkApprovalQueue.tsx');
+    expect(src).toContain("import { BULK_DECISION_LIMIT } from '@/lib/bulk-run';");
+    expect(src).toContain('const selectAllIds = allOnPage.slice(0, BULK_DECISION_LIMIT);');
+    expect(src).toContain('setSelected(new Set(selectAllIds))');
+    // The old Select all — every card on the page — is gone, and no numeric cap stands in.
+    expect(src).not.toContain('new Set(allOnPage)');
+    expect(src).not.toMatch(/allOnPage\.slice\(0,\s*\d/);
   });
 });

@@ -1,7 +1,12 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { runBulk, type BulkOutcome } from '@/lib/bulk-run';
+import {
+  BULK_DECISION_LIMIT,
+  BULK_DECISION_LIMIT_MESSAGE,
+  runBulk,
+  type BulkOutcome,
+} from '@/lib/bulk-run';
 import { Role, EditState, EditTarget, EditProcess, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
@@ -1727,8 +1732,10 @@ function readBulkDecisions(formData: FormData): { editIds: string[]; tokenOf: Ma
   if (list.length === 0) {
     throw new ValidationError({ decisions: 'Pick at least one edit.' });
   }
-  if (list.length > 50) {
-    throw new ValidationError({ decisions: 'Bulk limit is 50 edits per call.' });
+  // The message too, not only the field: the queue has no `decisions` input and
+  // shows the form-level message, which was the default "Validation failed".
+  if (list.length > BULK_DECISION_LIMIT) {
+    throw new ValidationError({ decisions: BULK_DECISION_LIMIT_MESSAGE }, BULK_DECISION_LIMIT_MESSAGE);
   }
   const tokenOf = new Map(list.map((d) => [d.editId, d.decisionToken]));
   // One token per request: a repeated id with two views of it has no answer.
@@ -1746,8 +1753,8 @@ function readBulkDecisions(formData: FormData): { editIds: string[]; tokenOf: Ma
  * other approvals. The result reports per-edit outcomes so the form can
  * surface "12 approved, 1 needs your attention" inline.
  *
- * Hard cap: 50 edits per call to bound the round-trip and keep approveEditCore
- * isolated transactions sane on Neon.
+ * Hard cap: BULK_DECISION_LIMIT (50, lib/bulk-run.ts) edits per call to bound
+ * the round-trip and keep approveEditCore isolated transactions sane on Neon.
  */
 export async function bulkApproveEditsAction(formData: FormData): SafeAction<BulkOutcome> {
   return runAction(async () => {

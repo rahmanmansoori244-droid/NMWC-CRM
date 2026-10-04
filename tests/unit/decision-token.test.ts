@@ -33,6 +33,7 @@ import {
   type DecisionRow,
   type DecisionView,
 } from '@/lib/decision-token';
+import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE } from '@/lib/bulk-run';
 
 type User = { id: string; role: string; username: string };
 
@@ -485,6 +486,38 @@ describe('bulk: every card is decided on its own token', () => {
       });
     }
     expect(h.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('over the bulk limit: refused whole, with a message that says what to do', async () => {
+    // The queue shows the form-level message; it was the default "Validation failed".
+    const over = decisions(
+      Array.from({ length: BULK_DECISION_LIMIT + 1 }, (_, i): [string, string] => [`x${i}`, `token-${i}`])
+    );
+    const refused = { ok: false, code: 'VALIDATION_FAILED', message: BULK_DECISION_LIMIT_MESSAGE };
+    expect(await bulkApproveEditsAction(form({ decisions: over }))).toEqual({
+      ...refused,
+      fields: { decisions: BULK_DECISION_LIMIT_MESSAGE },
+    });
+    expect(
+      await bulkRejectEditsAction(form({ decisions: over, reason: 'Credit figures need rework.', category: 'other' }))
+    ).toMatchObject(refused);
+    expect(h.findUnique).not.toHaveBeenCalled();
+    expectNothingWritten();
+  });
+
+  it('at the bulk limit: not refused — every request is decided on its own', async () => {
+    const atLimit = Array.from({ length: BULK_DECISION_LIMIT }, (_, i): [string, string] => [
+      `x${i}`,
+      tokenOf(creditRow(`x${i}`)),
+    ]);
+    const res = await bulkApproveEditsAction(form({ decisions: decisions(atLimit) }));
+    expect(res.ok, JSON.stringify(res).slice(0, 300)).toBe(true);
+    if (!res.ok) return;
+    // None of these requests exists, so each is looked up and fails alone; the
+    // list itself was not refused.
+    expect(h.findUnique).toHaveBeenCalledTimes(BULK_DECISION_LIMIT);
+    expect(res.data.failures).toHaveLength(BULK_DECISION_LIMIT);
+    expect(new Set(res.data.failures.map((f) => f.code))).toEqual(new Set(['NOT_FOUND']));
   });
 });
 

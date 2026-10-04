@@ -36,6 +36,20 @@ export type BulkOutcome = {
 export type BulkItemResult = { ok: true } | { ok: false; code: string; message: string };
 
 /**
+ * The most requests one bulk approve or reject may carry. The server refuses a
+ * longer list (readBulkDecisions in services/edits.ts) and the queue's Select all
+ * stops here (BulkApprovalQueue), so both read this one value: the old Select all
+ * picked every card on the page — up to 200 — and the server then refused all of
+ * them as "Validation failed". This module has no imports, so the client
+ * component can share it; services/edits.ts is 'use server' and may export only
+ * async functions.
+ */
+export const BULK_DECISION_LIMIT = 50;
+
+/** The refusal of a longer list: says what to do, not only that it failed. */
+export const BULK_DECISION_LIMIT_MESSAGE = `At most ${BULK_DECISION_LIMIT} requests per bulk action — select ${BULK_DECISION_LIMIT} or fewer.`;
+
+/**
  * How long a bulk loop may keep starting new items.
  *
  * Vercel functions are capped at 60s (`vercel.json`). The budget stops well

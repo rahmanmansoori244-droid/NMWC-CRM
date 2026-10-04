@@ -20,6 +20,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MISSING_TOKEN_MESSAGE, STALE_VIEW_MESSAGE } from '@/lib/decision-token';
+import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE } from '@/lib/bulk-run';
 
 const h = vi.hoisted(() => ({
   approve: vi.fn(),
@@ -313,5 +314,71 @@ describe('the bulk queue', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 3' }));
     expect(await screen.findByText(/1 processed, 1 failed/)).toBeTruthy();
     expect(screen.getByText(new RegExp(STALE_VIEW_MESSAGE.slice(0, 30)))).toBeTruthy();
+  });
+
+  describe('Select all stops at the bulk limit', () => {
+    const CAPPED = `Selected the first ${BULK_DECISION_LIMIT} — the limit per action.`;
+    const many = (n: number) => Array.from({ length: n }, (_, i) => item(`q${String(i).padStart(3, '0')}`));
+
+    it('a queue of 60: the first 50 in the order shown are selected, and it says so', async () => {
+      const items = many(60);
+      render(<BulkApprovalQueue items={items} />);
+      fireEvent.click(screen.getByLabelText('Select all on page'));
+      expect(screen.getByRole('status').textContent).toBe(CAPPED);
+      expect(screen.getByRole('button', { name: `✓ Approve ${BULK_DECISION_LIMIT}` })).toBeTruthy();
+      const ticked = items.filter((i) => (screen.getByLabelText(`Select edit for Shop ${i.id}`) as HTMLInputElement).checked);
+      expect(ticked.map((i) => i.id)).toEqual(items.slice(0, BULK_DECISION_LIMIT).map((i) => i.id));
+      // The header box reads as checked, so the next click deselects them.
+      expect((screen.getByLabelText('Select all on page') as HTMLInputElement).checked).toBe(true);
+
+      fireEvent.click(screen.getByRole('button', { name: `✓ Approve ${BULK_DECISION_LIMIT}` }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: `Approve ${BULK_DECISION_LIMIT}` }));
+      await waitFor(() => expect(h.bulkApprove).toHaveBeenCalledTimes(1));
+      const sent = JSON.parse(String((h.bulkApprove.mock.calls[0]![0] as FormData).get('decisions')));
+      expect(sent).toEqual(
+        items.slice(0, BULK_DECISION_LIMIT).map((i) => ({ editId: i.id, decisionToken: i.decisionToken }))
+      );
+    });
+
+    it('Deselect all clears it, and the note goes with it', () => {
+      render(<BulkApprovalQueue items={many(60)} />);
+      fireEvent.click(screen.getByLabelText('Select all on page'));
+      fireEvent.click(screen.getByLabelText('Select all on page'));
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(screen.getAllByText('0 selected')).toHaveLength(1);
+    });
+
+    it('the note is only for exactly the first 50 of a longer queue', () => {
+      render(<BulkApprovalQueue items={many(60)} />);
+      fireEvent.click(screen.getByLabelText('Select all on page'));
+      // One more ticked by hand: no longer "the first 50".
+      fireEvent.click(screen.getByLabelText('Select edit for Shop q055'));
+      expect(screen.queryByRole('status')).toBeNull();
+      cleanup();
+
+      // A queue at the limit is selected whole, with nothing to explain.
+      render(<BulkApprovalQueue items={many(BULK_DECISION_LIMIT)} />);
+      fireEvent.click(screen.getByLabelText('Select all on page'));
+      expect(screen.getAllByText(`${BULK_DECISION_LIMIT} selected`).length).toBeGreaterThan(0);
+      expect(screen.queryByRole('status')).toBeNull();
+    });
+
+    it("the server's refusal of a longer list is shown with what to do, not counted as one failed request", async () => {
+      h.bulkApprove.mockResolvedValue({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: BULK_DECISION_LIMIT_MESSAGE,
+        fields: { decisions: BULK_DECISION_LIMIT_MESSAGE },
+      });
+      render(<BulkApprovalQueue items={ITEMS} />);
+      fireEvent.click(screen.getByLabelText('Select all on page'));
+      fireEvent.click(screen.getByRole('button', { name: '✓ Approve 3' }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 3' }));
+      expect(await screen.findByText(BULK_DECISION_LIMIT_MESSAGE)).toBeTruthy();
+      expect(screen.getByText('Nothing was processed.')).toBeTruthy();
+      expect(screen.queryByText(/processed, 1 failed/)).toBeNull();
+      // The selection stays, to be cut down and sent again.
+      expect(screen.getByRole('button', { name: '✓ Approve 3' })).toBeTruthy();
+    });
   });
 });

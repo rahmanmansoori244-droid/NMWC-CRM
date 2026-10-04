@@ -24,6 +24,8 @@ const h = vi.hoisted(() => ({
   role: 'FINANCE_MANAGER',
   edit: null as unknown,
   queueRows: [] as Array<Record<string, unknown>>,
+  /** Each read of the queue, with the arguments it was given, in order. */
+  queueReads: [] as Array<{ op: 'findMany' | 'count'; args: { where: unknown; orderBy?: unknown } }>,
   actionProps: [] as Array<Record<string, unknown>>,
   queueItems: [] as Array<Record<string, unknown>>,
   attachments: [] as Array<{ id: string; editId: string; kind: string; deletedAt: Date | null }>,
@@ -78,7 +80,16 @@ vi.mock('@/lib/db', () => ({
   prisma: {
     customerEdit: {
       findUnique: async () => h.edit,
-      findMany: async (args: { select: Record<string, unknown> }) => h.queueRows.map((r) => project(r, args.select)),
+      // The queue's rows match its `where` by construction, so `take` is all the
+      // list applies and `count` is all of them — as Postgres would answer.
+      findMany: async (args: { where: unknown; select: Record<string, unknown>; take?: number }) => {
+        h.queueReads.push({ op: 'findMany', args });
+        return h.queueRows.slice(0, args.take ?? h.queueRows.length).map((r) => project(r, args.select));
+      },
+      count: async (args: { where: unknown }) => {
+        h.queueReads.push({ op: 'count', args });
+        return h.queueRows.length;
+      },
     },
     attachment: {
       findMany: async (args: { where: Parameters<typeof attachmentsFor>[0] }) =>
@@ -108,6 +119,7 @@ beforeEach(() => {
   h.role = 'FINANCE_MANAGER';
   h.actionProps = [];
   h.queueItems = [];
+  h.queueReads = [];
   h.attachments = [];
   h.live = null;
   h.submitter = null;
@@ -480,5 +492,47 @@ describe('the approval queue', () => {
     expect(bound('e1')).toBe(guaranteeDigest(['g-a', 'g-b']));
     expect(bound('e3')).toBe(guaranteeDigest(['g-c']));
     expect(bound('u1')).toBeNull();
+  });
+
+  describe('the header counts the queue, not the page', () => {
+    // It printed the number of cards, so a queue of 600 read "200 pending".
+    const rows = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ ...createRow('CASH', 0), id: `q${String(i).padStart(3, '0')}` }));
+    const subtitle = () => screen.getByText(/ pending/).textContent;
+
+    it('600 waiting: all 600 counted, and it says which 200 are on screen — the most overdue, in queue order', async () => {
+      const all = rows(600);
+      const cards = await renderQueue(all);
+      expect(subtitle()).toBe('600 pending · showing the 200 most overdue');
+      expect(cards.map((c) => c.id)).toEqual(all.slice(0, 200).map((r) => r.id));
+      const list = h.queueReads.find((r) => r.op === 'findMany')!;
+      expect(list.args.orderBy).toEqual([{ slaDueAt: 'asc' }, { submittedAt: 'asc' }]);
+    });
+
+    it.each([
+      [3, '3 pending'],
+      [200, '200 pending'],
+      [201, '201 pending · showing the 200 most overdue'],
+    ])('%i waiting reads "%s"', async (n, text) => {
+      await renderQueue(rows(n));
+      expect(subtitle()).toBe(text);
+    });
+
+    it("the count reads the list's own `where` — the same object, for every approver role", async () => {
+      for (const role of ['SUPERVISOR', 'MANAGER', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM']) {
+        cleanup();
+        h.queueReads = [];
+        h.role = role;
+        await renderQueue(rows(2));
+        const list = h.queueReads.filter((r) => r.op === 'findMany');
+        const count = h.queueReads.filter((r) => r.op === 'count');
+        expect([list.length, count.length], role).toEqual([1, 1]);
+        // Not an equal copy: a second derivation of the scope could drift from
+        // the list's and count requests this approver cannot open.
+        expect(count[0]!.args.where, role).toBe(list[0]!.args.where);
+        // Nothing else narrows the count — no take, no skip.
+        expect(Object.keys(count[0]!.args), role).toEqual(['where']);
+      }
+    });
   });
 });
