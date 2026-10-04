@@ -377,8 +377,10 @@ describe('the bulk queue', () => {
       expect(await screen.findByText(BULK_DECISION_LIMIT_MESSAGE)).toBeTruthy();
       expect(screen.getByText('Nothing was processed.')).toBeTruthy();
       expect(screen.queryByText(/processed, 1 failed/)).toBeNull();
-      // The selection stays, to be cut down and sent again.
-      expect(screen.getByRole('button', { name: '✓ Approve 3' })).toBeTruthy();
+      // The selection stays, to be cut down and sent again. Found, not got: the refusal
+      // can render while the transition still shows "Working…" on that button, and a
+      // loaded machine lets the test look in between.
+      expect(await screen.findByRole('button', { name: '✓ Approve 3' })).toBeTruthy();
     });
   });
 });
