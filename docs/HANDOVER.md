@@ -290,6 +290,8 @@ The recommendations below are **Claude's, not yet answered by the owner**.
 
 ### 6.1 Waiting on the owner's decision
 
+Decided since the list below was written: **X-AUTH-2** (the owner, 2026-10-04) — the per-network login bucket counts failed sign-ins only. It is charged first and given back on a successful sign-in and on a per-user refusal (`lib/auth.ts`, `refundLimit` in `lib/rate-limit.ts`). Trade-offs accepted with it: successful sign-ins from one address are no longer capped per address, and once an account is locked, keeping it locked costs the address doing so no network tokens (no worse than before, when the per-user bucket was charged first; no help for guessing, since refused attempts never reach the password check).
+
 | Item | Question | Recommendation |
 |---|---|---|
 | F02 | Photo cleanup and backup. The owner earlier chose R2 versioning (`scripts/ops/r2-photos-versioning.ts`), and the cleanup relies on object tagging; R2 implements neither | Delete the object directly 30 days after its row was soft-deleted, driven by the rows; copy every photo nightly to a second bucket for recovery. A cost and data-residency choice as well |
@@ -298,7 +300,6 @@ The recommendations below are **Claude's, not yet answered by the owner**.
 | F12 / E5 | The Temix lifecycle: what CLOSED and reactivated branches look like in the batch file; a live customer with no Temix code | Needs the file contract from Temix/ERP first |
 | F14 | A route moved to another region leaves its branches in the old region | Move the route's branches (and drafts) with it in the same transaction, audited |
 | N04 | How a customer's status follows its branches | ACTIVE if any branch is active; CLOSED only when all are |
-| X-AUTH-2 | ~~The per-network login bucket counts every attempt~~ — **decided by the owner on 2026-10-04 and done:** the network bucket is charged first and given back on a successful sign-in and on a per-user refusal, so it counts failed sign-ins only (`lib/auth.ts`, `refundLimit` in `lib/rate-limit.ts`) | — |
 | X-APPR-1(a) | May the Finance Manager, GM and Accountant-on-CREDIT steps decide new-credit applications in bulk? | No |
 | Q-sla | Response-time budgets for the Finance Manager, GM, Manager | The owner's numbers |
 | — | May a salesman remove a guarantee or status-evidence photo while its request is pending? | No; he may replace it |

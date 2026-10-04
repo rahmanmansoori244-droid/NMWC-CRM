@@ -184,7 +184,7 @@ export default async function TodayPage({
             approval: say so, or a submitted branch staying here reads as lost. */}
         {noDay && undated > 0 && (
           <p className="mb-3 text-sm text-slate-600">
-            Open the shop, tap Enrich and set the branch&apos;s Day of visit. It leaves this list once the change is approved.
+            When you next enrich the shop (open it, tap Enrich), set the branch&apos;s Day of visit. It leaves this list once the change is approved.
           </p>
         )}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">

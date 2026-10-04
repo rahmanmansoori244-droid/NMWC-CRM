@@ -220,7 +220,7 @@ describe('Today: branches with no visit day', () => {
     expect(screen.queryByRole('link', { name: /Branches with no visit day/ })).toBeNull();
     expect(tile('Route branches')).toBe('671');
     // Setting the day waits for approval, and the page says so.
-    expect(screen.getByText(/tap Enrich and set the branch's Day of visit\. It leaves this list once the change is approved\./)).toBeTruthy();
+    expect(screen.getByText(/tap Enrich\), set the branch's Day of visit\. It leaves this list once the change is approved\./)).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Previous' })).toBeNull();
     const next = screen.getByRole('link', { name: 'Next' });
     expect(next.getAttribute('href')).toBe('/today?view=no-day&page=2');

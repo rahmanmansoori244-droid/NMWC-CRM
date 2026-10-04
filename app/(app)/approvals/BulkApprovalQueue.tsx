@@ -211,7 +211,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
             checked={allSelected}
             onChange={toggleAll}
             className="h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-            aria-label="Select all on page"
+            aria-label="Select up to 50 on this page"
           />
           {allSelected ? 'Deselect all' : 'Select all'}
         </label>

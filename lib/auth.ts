@@ -346,6 +346,10 @@ const {
             // not a failed sign-in. Otherwise an outsider who locks one salesman's
             // account would, through his retries from the office, drain the
             // office's network bucket and lock out everyone behind that address.
+            // Accepted cost (integrated review, 2026-10-04): once an account is
+            // locked, keeping it locked costs the address doing so no network
+            // tokens — no worse than before X-AUTH-2, when this bucket was charged
+            // first, and no help for guessing: these attempts never reach bcrypt.
             if (bucket === 'user') await refundLimit(ipKey, LOGIN_LIMIT);
             // B-04: surface rate-limit hits in the audit trail with a
             // sentinel entityId so forensics can spot pattern attacks.

@@ -253,7 +253,7 @@ describe('the bulk queue', () => {
 
   it('N01: bulk approve sends each selected card with its own token, and no bare id list', async () => {
     render(<BulkApprovalQueue items={ITEMS} />);
-    fireEvent.click(screen.getByLabelText('Select all on page'));
+    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
     fireEvent.click(screen.getByRole('button', { name: '✓ Approve 3' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 3' }));
     await waitFor(() => expect(h.bulkApprove).toHaveBeenCalledTimes(1));
@@ -288,7 +288,7 @@ describe('the bulk queue', () => {
     expect(resolveRejectTarget(2, 1)).toEqual({ kind: 'TO_SALESMAN' });
 
     render(<BulkApprovalQueue items={ITEMS} />);
-    fireEvent.click(screen.getByLabelText('Select all on page'));
+    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
     fireEvent.click(screen.getByRole('button', { name: '✗ Reject 3' }));
     const dialog = screen.getByRole('dialog');
     const words = dialog.textContent!.replace(/\s+/g, ' ');
@@ -309,7 +309,7 @@ describe('the bulk queue', () => {
       data: { successes: ['c2'], failures: [{ editId: 'c1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
     });
     render(<BulkApprovalQueue items={ITEMS} />);
-    fireEvent.click(screen.getByLabelText('Select all on page'));
+    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
     fireEvent.click(screen.getByRole('button', { name: '✓ Approve 3' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 3' }));
     expect(await screen.findByText(/1 processed, 1 failed/)).toBeTruthy();
@@ -323,13 +323,13 @@ describe('the bulk queue', () => {
     it('a queue of 60: the first 50 in the order shown are selected, and it says so', async () => {
       const items = many(60);
       render(<BulkApprovalQueue items={items} />);
-      fireEvent.click(screen.getByLabelText('Select all on page'));
+      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
       expect(screen.getByRole('status').textContent).toBe(CAPPED);
       expect(screen.getByRole('button', { name: `✓ Approve ${BULK_DECISION_LIMIT}` })).toBeTruthy();
       const ticked = items.filter((i) => (screen.getByLabelText(`Select edit for Shop ${i.id}`) as HTMLInputElement).checked);
       expect(ticked.map((i) => i.id)).toEqual(items.slice(0, BULK_DECISION_LIMIT).map((i) => i.id));
       // The header box reads as checked, so the next click deselects them.
-      expect((screen.getByLabelText('Select all on page') as HTMLInputElement).checked).toBe(true);
+      expect((screen.getByLabelText('Select up to 50 on this page') as HTMLInputElement).checked).toBe(true);
 
       fireEvent.click(screen.getByRole('button', { name: `✓ Approve ${BULK_DECISION_LIMIT}` }));
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: `Approve ${BULK_DECISION_LIMIT}` }));
@@ -342,15 +342,15 @@ describe('the bulk queue', () => {
 
     it('Deselect all clears it, and the note goes with it', () => {
       render(<BulkApprovalQueue items={many(60)} />);
-      fireEvent.click(screen.getByLabelText('Select all on page'));
-      fireEvent.click(screen.getByLabelText('Select all on page'));
+      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
       expect(screen.queryByRole('status')).toBeNull();
       expect(screen.getAllByText('0 selected')).toHaveLength(1);
     });
 
     it('the note is only for exactly the first 50 of a longer queue', () => {
       render(<BulkApprovalQueue items={many(60)} />);
-      fireEvent.click(screen.getByLabelText('Select all on page'));
+      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
       // One more ticked by hand: no longer "the first 50".
       fireEvent.click(screen.getByLabelText('Select edit for Shop q055'));
       expect(screen.queryByRole('status')).toBeNull();
@@ -358,7 +358,7 @@ describe('the bulk queue', () => {
 
       // A queue at the limit is selected whole, with nothing to explain.
       render(<BulkApprovalQueue items={many(BULK_DECISION_LIMIT)} />);
-      fireEvent.click(screen.getByLabelText('Select all on page'));
+      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
       expect(screen.getAllByText(`${BULK_DECISION_LIMIT} selected`).length).toBeGreaterThan(0);
       expect(screen.queryByRole('status')).toBeNull();
     });
@@ -371,7 +371,7 @@ describe('the bulk queue', () => {
         fields: { decisions: BULK_DECISION_LIMIT_MESSAGE },
       });
       render(<BulkApprovalQueue items={ITEMS} />);
-      fireEvent.click(screen.getByLabelText('Select all on page'));
+      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
       fireEvent.click(screen.getByRole('button', { name: '✓ Approve 3' }));
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 3' }));
       expect(await screen.findByText(BULK_DECISION_LIMIT_MESSAGE)).toBeTruthy();
