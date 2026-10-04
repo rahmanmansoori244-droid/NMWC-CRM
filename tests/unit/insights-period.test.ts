@@ -22,7 +22,7 @@ import {
   parseDay,
   parsePeriod,
 } from '@/lib/insights/period';
-import { DAY_MAX_DAYS, MAX_WINDOW_DAYS, WEEK_MAX_DAYS } from '@/lib/insights/policy';
+import { DAY_MAX_DAYS, DEFAULT_PRESET, EARLIEST_DAY, MAX_WINDOW_DAYS, PERIOD_PRESETS, WEEK_MAX_DAYS } from '@/lib/insights/policy';
 
 // 20:30 UTC on Monday 5 October 2026 is 00:30 on Tuesday 6 October in Oman.
 const EVENING_UTC = new Date('2026-10-05T20:30:00Z');
@@ -93,6 +93,28 @@ describe('buckets', () => {
     expect(isPartialBucket('2026-10-05', { ...period, grain: 'day' })).toBe(false);
   });
 
+  it('the bucket holding today is partial while today is under way, at every grain, and only then', () => {
+    const running = parsePeriod({ period: '7d' }, EVENING_UTC);
+    expect(running.running).toBe(true);
+    expect(isPartialBucket(TODAY_IN_OMAN, running)).toBe(true);
+    expect(isPartialBucket(addDays(TODAY_IN_OMAN, -1), running)).toBe(false);
+    const weeks = parsePeriod({ period: '90d' }, EVENING_UTC);
+    expect(isPartialBucket(bucketStart(TODAY_IN_OMAN, 'week'), weeks)).toBe(true);
+    const months = parsePeriod({ period: '12m' }, EVENING_UTC);
+    expect(isPartialBucket(bucketStart(TODAY_IN_OMAN, 'month'), months)).toBe(true);
+    // A week that ends today (a Sunday) is not cut by the window, but today is not over.
+    const sundayNoon = new Date('2026-10-11T08:00:00Z');
+    expect(new Date(`${omanDateISO(sundayNoon)}T00:00:00Z`).getUTCDay()).toBe(0);
+    const sundayWeeks = parsePeriod({ period: '90d' }, sundayNoon);
+    const lastWeek = bucketStart(sundayWeeks.toDay, 'week');
+    expect(isPartialBucket(lastWeek, { ...sundayWeeks, running: false })).toBe(false);
+    expect(isPartialBucket(lastWeek, sundayWeeks)).toBe(true);
+    // A window that has ended has no running bucket.
+    const ended = parsePeriod({ period: 'custom', from: '2026-09-01', to: '2026-09-30' }, EVENING_UTC);
+    expect(ended.running).toBe(false);
+    expect(isPartialBucket('2026-09-30', ended)).toBe(false);
+  });
+
   it('labels: a day or a week by its first day, a month by name', () => {
     expect(bucketLabel('2026-10-05', 'week')).toBe('5 Oct');
     expect(bucketLabel('2026-10-01', 'month')).toBe('Oct 2026');
@@ -147,6 +169,21 @@ describe('the window', () => {
     expect(p.note).toMatch(/Unknown period/);
   });
 
+  // Every object inherits these keys; `key in PERIOD_PRESETS` took them for presets
+  // with no length, and the page printed "NaN" and failed every dated card.
+  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'])(
+    'an inherited key (%s) is an unknown preset, never a window of undefined days',
+    (key) => {
+      const p = parsePeriod({ period: key }, EVENING_UTC);
+      expect(p.key).toBe(DEFAULT_PRESET);
+      expect(p.days).toBe(PERIOD_PRESETS[DEFAULT_PRESET].days);
+      expect(p.note).toMatch(/Unknown period/);
+      expect(Number.isNaN(p.from.getTime())).toBe(false);
+      expect(p.fromDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(p.buckets).toHaveLength(p.days);
+    }
+  );
+
   it('a custom window is read as Oman days, both ends included', () => {
     const p = parsePeriod({ period: 'custom', from: '2026-09-01', to: '2026-09-30' }, EVENING_UTC);
     expect(p).toMatchObject({ key: 'custom', fromDay: '2026-09-01', toDay: '2026-09-30', days: 30, note: null });
@@ -171,10 +208,41 @@ describe('the window', () => {
     expect(p.note).toMatch(/limited to 366 days/);
   });
 
+  it(`a custom window wholly before ${EARLIEST_DAY} falls back to the default and says so — never a reversed window`, () => {
+    const p = parsePeriod({ period: 'custom', from: '2019-01-01', to: '2019-02-01' }, EVENING_UTC);
+    expect(p.key).toBe(DEFAULT_PRESET);
+    expect(p.fromDay <= p.toDay).toBe(true);
+    expect(p.days).toBeGreaterThan(0);
+    expect(p.note).toMatch(/ends before 1 Jan 2020/);
+    // One that only starts before it is clamped, as before.
+    const q = parsePeriod({ period: 'custom', from: '2019-12-01', to: '2020-01-10' }, EVENING_UTC);
+    expect(q).toMatchObject({ key: 'custom', fromDay: EARLIEST_DAY, toDay: '2020-01-10', days: 10 });
+  });
+
   it('unreadable dates fall back to the default and say so', () => {
     const p = parsePeriod({ period: 'custom', from: '2026-02-30', to: 'yesterday' }, EVENING_UTC);
     expect(p.key).toBe('30d');
     expect(p.note).toMatch(/could not be read/);
+  });
+
+  it('the comparison runs exactly as long as the window has: like for like, at 08:00 Oman on a weekday', () => {
+    // 04:00 UTC is 08:00 in Oman. Read once; every expectation derives from it.
+    const morning = new Date('2026-10-05T04:00:00Z');
+    for (const key of ['7d', '30d', '90d', '12m']) {
+      const p = parsePeriod({ period: key }, morning);
+      expect(p.running, key).toBe(true);
+      expect(p.prevTo.getTime() - p.prevFrom.getTime(), key).toBe(morning.getTime() - p.from.getTime());
+      // It ends inside the comparison window's last day, at the same time of day.
+      expect(p.prevTo.getTime(), key).toBeLessThan(p.from.getTime());
+      expect(p.from.getTime() - p.prevTo.getTime(), key).toBe(p.to.getTime() - morning.getTime());
+    }
+  });
+
+  it('a window that has ended is compared with all of the days before it', () => {
+    const p = parsePeriod({ period: 'custom', from: '2026-09-01', to: '2026-09-30' }, EVENING_UTC);
+    expect(p.running).toBe(false);
+    expect(p.prevTo.getTime()).toBe(p.from.getTime());
+    expect(p.prevTo.getTime() - p.prevFrom.getTime()).toBe(p.to.getTime() - p.from.getTime());
   });
 
   it('with the real clock, read once: the window ends on today in Oman', () => {
@@ -185,5 +253,6 @@ describe('the window', () => {
     expect(p.fromDay).toBe(addDays(today, -6));
     expect(p.from.getTime()).toBeLessThanOrEqual(now.getTime());
     expect(p.to.getTime()).toBeGreaterThan(now.getTime());
+    expect(p.prevTo.getTime() - p.prevFrom.getTime()).toBe(now.getTime() - p.from.getTime());
   });
 });

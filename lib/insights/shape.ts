@@ -181,7 +181,7 @@ export type CreatedRow = {
 
 export type CreatedData = {
   total: number;
-  /** The same count over the previous window of equal length. */
+  /** The same count over the comparison window (as long as this window has run: period.ts prevTo). */
   prevTotal: number;
   cash: number;
   credit: number;
@@ -233,6 +233,8 @@ export type UpdatedRow = {
   g: number;
   customers: number;
   byRequest: number;
+  /** Customers a salesman's approved request changed ON this route (load.ts updatedSql "onRoute"); read per route only. */
+  byRequestOnRoute: number;
   byDirect: number;
   changes: number;
   prev: number;
@@ -268,11 +270,18 @@ export type UpdatedData = {
   directOnly: number;
   /** Approved changes (requests and direct writes), not customers. */
   changes: number;
+  /** The same count over the comparison window (as long as this window has run: period.ts prevTo). */
   prevCustomers: number;
   families: FieldFamilies;
   series: Array<{ bucket: string; byRequest: number; directOnly: number }>;
   regions: Array<{ region: RegionRef; customers: number; byRequest: number }>;
-  routes: Array<{ route: RouteRef; customers: number; byRequest: number }>;
+  /**
+   * customers / byRequest: the customer counts on every route it has a branch on
+   * in view. byRequestOnRoute: only where a salesman's request did the work — the
+   * branch it changed, or the submitter's own route for a change to no branch.
+   * Ranking routes, which stand for their salesmen, reads byRequestOnRoute.
+   */
+  routes: Array<{ route: RouteRef; customers: number; byRequest: number; byRequestOnRoute: number }>;
 };
 
 export function shapeUpdated(rows: UpdatedRow[], period: Pick<InsightPeriod, 'buckets'>): UpdatedData {
@@ -313,7 +322,12 @@ export function shapeUpdated(rows: UpdatedRow[], period: Pick<InsightPeriod, 'bu
       .sort((a, b) => b.customers - a.customers || a.region.name.localeCompare(b.region.name)),
     routes: rows
       .filter((r) => n(r.g) === 6 && r.routeId && n(r.customers) > 0)
-      .map((r) => ({ route: routeRef(r), customers: n(r.customers), byRequest: n(r.byRequest) }))
+      .map((r) => ({
+        route: routeRef(r),
+        customers: n(r.customers),
+        byRequest: n(r.byRequest),
+        byRequestOnRoute: n(r.byRequestOnRoute),
+      }))
       .sort(byCode),
   };
 }

@@ -14,7 +14,7 @@ import { ColumnChart } from '@/components/insights/ColumnChart';
 import { KpiTile } from '@/components/insights/KpiTile';
 import { OMAN_FRAME, OMAN_POLYGONS, frameAround, frameSize, outlinePath, project } from '@/lib/geo/oman';
 import { MAP } from '@/lib/insights/policy';
-import { concentration, highlights } from '@/lib/insights/highlights';
+import { concentration, highlights, highlightsCoverage } from '@/lib/insights/highlights';
 import type { Insights } from '@/lib/insights/load';
 
 afterEach(cleanup);
@@ -156,6 +156,31 @@ describe('What stands out', () => {
     expect(text).toMatch(/the most in Alpha \(80, 80% of its open branches\)/);
     expect(text).toMatch(/30 open branches have no visit day \(17%\)/);
     expect(text).toMatch(/Half of the branches located on the map sit in 2 squares/);
+  });
+
+  it('an idle route stays idle when another route’s salesman updated a customer it shares', () => {
+    const shared: Insights = {
+      ...data,
+      updated: data.updated.ok
+        ? {
+            ok: true,
+            data: {
+              ...data.updated.data,
+              // c1 counts the chain customer (byRequest) but did none of the work.
+              routes: [{ route: routeRef('c1', true), customers: 1, byRequest: 1, byRequestOnRoute: 0 }],
+            },
+          }
+        : data.updated,
+    };
+    const text = highlights(shared, 'in the last 30 days').map((i) => i.text).join(' | ');
+    expect(text).toMatch(/2 routes with customers had no approved field request in the last 30 days/);
+  });
+
+  it('says how much of what it reads loaded', () => {
+    expect(highlightsCoverage(data)).toBe('some'); // statusChanges failed in this fixture
+    const failed = { ok: false } as const;
+    expect(highlightsCoverage({ ...data, state: failed, created: failed, updated: failed, heat: failed })).toBe('none');
+    expect(highlightsCoverage({ ...data, statusChanges: { ok: true, data: { closed: 0, reactivated: 0, closeRefused: 0, keptClosed: 0, prevClosed: 0, prevReactivated: 0, closeWaiting: 0, reactWaiting: 0, series: [], regions: [] } } })).toBe('all');
   });
 
   it('leaves out what failed, and never compares the viewer with anyone else', () => {
