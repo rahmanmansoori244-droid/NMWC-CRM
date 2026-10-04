@@ -728,11 +728,13 @@ variable's value again unless it was saved as Sensitive, so `CRON_SECRET`,
 not. If no copy exists anywhere else, whoever holds those accounts must generate new
 values, and that is a rotation (§5).
 
-**Which env file names Git ignores.** `.gitignore` ignores only `.env`, `.env.local`
-and `.env.*.local`. A file unpacked into a checkout as `.env.production`, `.env.prod`,
-`.env.uat` or `prod.env` is **not** ignored, and `git add .` would commit it. Next.js
-also loads `.env.production` during `next build` and `next start`. So never put a
-pack file inside a checkout under any other name. Keep production files outside every
+**Which env file names Git ignores.** Every one except the template: `.gitignore`
+ignores any name that starts with `.env`, or ends in `.env` or `.env.local`, and
+tracks only `.env.example` (B7.1, pinned by `tests/unit/gitignore-guard.test.ts`). So
+`.env.production`, `.env.uat`, `prod.env` and a pack file copied in under its own name
+are all ignored. That only keeps them out of Git: Next.js still loads
+`.env.production` during `next build` and `next start`, and any file in a checkout
+can be picked up by a tool started there. Keep production files outside every
 checkout (step 3 below).
 
 `.gitignore` also ignores `*.tmp.ts`, the name an operator script from the pack is

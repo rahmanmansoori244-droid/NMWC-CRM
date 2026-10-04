@@ -53,7 +53,8 @@ the pack.** Do not copy the owner's project folder to the new computer.
   `graphify-out/.graphify_root`.
 - **[SECRETS]** Leave out what must not travel this way:
   - `golive-data/`. It comes from the pack and lives in one place (§6.2).
-  - `.env`, `.env.local` and any `.env.*.local`. Place fresh ones from the pack (§6.1).
+  - Every env file except `.env.example`: any name that starts with `.env`, or ends in
+    `.env` or `.env.local`. Place fresh ones from the pack (§6.1).
   - Any `*.sql`, `*.sql.gz` or `*.sql.gz.age` file in the root. These are dump files from
     testing the backup pipeline, and they can hold customer data.
 - Everything in both lists is gitignored ([.gitignore](../../.gitignore)).
@@ -302,8 +303,8 @@ line, not only the last one:
    node scripts/dev/env-check.cjs <path to the env file>
    ```
 
-2. Copy the UAT file to `.env` in the clone root. `.env`, `.env.local` and `.env.*.local`
-   are gitignored ([.gitignore](../../.gitignore)), so git will not pick it up.
+2. Copy the UAT file to `.env` in the clone root. Every env file name except
+   `.env.example` is gitignored ([.gitignore](../../.gitignore)), so git will not pick it up.
 3. Run `node scripts/dev/env-check.cjs` with no argument, in the clone root. It checks
    `./.env`. The `env file:` line must not say `(missing)`, both `(file)` lines must say
    `not production`, and the last line must be `ok: nothing here points at production.`
@@ -313,7 +314,8 @@ line, not only the last one:
    `.env.local` first. If a `.env.local` exists, check it:
    `node scripts/dev/env-check.cjs .env.local`.
 5. **Never put secrets in `.env.development` or `.env.production`.** Next.js loads those
-   names too, and `.gitignore` does not cover them. A `git add` would pick them up.
+   names too, so their values take effect without anyone naming the file. `.gitignore`
+   covers them, but that only keeps them out of Git.
 6. Never print an env file to a terminal: no `cat`, `type`, `grep` or `Select-String`.
    They print the whole line, password included ([AGENTS.md](../../AGENTS.md), "Before
    you start" 4). Edit it in an editor, alone.
@@ -655,7 +657,7 @@ variables the workflows need, and where each one comes from. **[SECRETS]** It re
 | Print an env file, or put a secret in `node -e "…"` or a heredoc | Secrets reach transcripts. Shells eat backslashes. Put such code in a scratch `.cjs` file outside the repo and run `node <file>`. | [CLAUDE.md](../../CLAUDE.md), "Safety" |
 | Put `DIRECT_URL=…` on a command line | It lands in shell history and on screen. Use `prod-run.cjs` (§6.3). | [HANDOVER.md §5](../HANDOVER.md) |
 | Work in a checkout whose `.env` is production | Every command goes to production. | [HANDOVER.md §3](../HANDOVER.md) |
-| Put secrets in `.env.development` or `.env.production` | They are not gitignored. | [.gitignore](../../.gitignore) |
+| Put secrets in `.env.development` or `.env.production` | Next.js loads them without being asked. They are gitignored, but they still take effect. | §6.1 step 5 |
 | Decrypt the pack through a PowerShell 5.1 pipe | It corrupts the archive (§5). | — |
 | Commit anything from the pack, or a graph built from anything but the tracked files | The repository is public. | [HANDOVER.md](../HANDOVER.md) (opening paragraph) |
 

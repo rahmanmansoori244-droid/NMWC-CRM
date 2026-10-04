@@ -130,7 +130,7 @@ There are two separate layers. Keep them apart in your head.
    **Choose the mode on purpose.** At least the handover workflow that produced this
    page ran with permission prompts bypassed. In that mode the only safeguards are the
    written rules and the scripts' own refusals. No permission settings travel with the
-   repository: `.claude/` is gitignored ([`.gitignore`](../../.gitignore) line 55), and
+   repository: `.claude/` is gitignored ([`.gitignore`](../../.gitignore)), and
    the main checkout's `.claude/` folder holds no `settings*.json`. User-level Claude Code
    settings stay on the old computer.
 2. **What Claude *should* do** is set by `CLAUDE.md`, `docs/HANDOVER.md` and what the
