@@ -58,7 +58,7 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Purpose** | Control who may change a customer record, and record who approved a credit limit or payment terms. |
 | **Personal data** | Before/after snapshots of every field in A1 (`CustomerEdit.fieldChanges`, and a second copy in `AuditLog.before/after`), and, since 2026-09-29, for a field the salesman kept over a value changed after his form opened, that newer value (`overrodeLive`, auditor recheck F06); the approver's identity, role, decision, reason and timing; and, for a GPS point the salesman typed in by hand, the salesman's own free-text reason (since 2026-09-25, item 41), which may name people — kept in `CustomerEdit.fieldChanges` and, once an update is approved, copied into that `APPROVE` row's `AuditLog.after`. |
 | **Subjects** | Customer contacts; employees (as approvers and submitters, and as the authors of a manual-GPS reason). |
-| **Recipients** | NMWC staff in the approval chain. |
+| **Recipients** | NMWC staff in the approval chain. Since 2026-10-05 (F1) the region's Accountant is also told of every salesman request, for information (`REQUEST_FYI`, in-app: the customer's legal name and code, as every notification). When notification e-mail is on (`NOTIFY_EMAIL_ENABLED=on`), approvers in the allowlisted roles (Manager, Supervisor, Accountant, Finance Manager — never the GM, a Steward, a Viewer or a salesman) are also e-mailed through **Google (Gmail, P9)** to their own mailboxes: counts, request kinds and links only, no customer data (`lib/email/digest.ts`). Copies stay in the sending mailbox's Sent folder and in each recipient's mailbox. |
 | **Retention** | Indefinite. `AuditLog` and `EditApproval` are **append-only at the database** (migrations `20260914150000`, `20260914160000`) and cannot be edited or deleted by any application credential. |
 | **Lawful basis** | **[COUNSEL]** — and specifically whether the evidential purpose justifies retaining customer identifiers in a ledger that cannot be edited. See `PDPL-ASSESSMENT.md` Q4. |
 
@@ -79,9 +79,9 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | | |
 |---|---|
 | **Purpose** | Authenticate staff, enforce role and region scoping, and evidence who did what. |
-| **Personal data** | Username (the route code for salesmen), full name, e-mail, phone, bcrypt password hash and the last five previous hashes, last-login time, every audited action — with source IP and user-agent for anything done through the application — SLA timings and escalation counts, and device GPS attached to each photo. |
+| **Personal data** | Username (the route code for salesmen), full name, e-mail, phone, bcrypt password hash and the last five previous hashes, last-login time, every audited action — with source IP and user-agent for anything done through the application — SLA timings and escalation counts, and device GPS attached to each photo. Since 2026-10-05 (F1) the work e-mail address is also **used**: notification e-mail goes to it, and each notification row records whether and when it was e-mailed (`Notification.emailStatus`, `emailedAt`) — kept with the row (90 days once read, 180 unread). The Steward sets or clears an address on `/users`; the audit row names the field, never the value. |
 | **Subjects** | Employees. |
-| **Recipients** | Stewards and managers within scope. |
+| **Recipients** | Stewards and managers within scope. The employee's e-mail address is also disclosed to **Google (Gmail, P9)** as the recipient of each notification e-mail, and the message lands in whatever provider runs that mailbox (DATA-RESIDENCY-REGISTER.md). |
 | **Retention** | Accounts are disabled, never deleted — seven `ON DELETE RESTRICT` foreign keys make deletion impossible without first removing the append-only ledger. |
 | **Lawful basis** | **[COUNSEL]** — employment-context processing and monitoring. |
 

@@ -87,10 +87,16 @@ today.
 | 15 | Local `.env` files | Operator scripts, tests, local development | Owner's computer | Copies are in the pack (§3) | Pack. §3 lists the names each file holds, and the values that are in no local file |
 | 16 | Application accounts (`data.steward` and others) | Day-to-day administration inside the app | The owner. Keep at least two Data Steward accounts; the current state is in `PRIVATE-HANDOVER.md` | The owner, signed in as a Data Steward, creates a named Steward account for the new person (§4) | No application password is written in the handover docs |
 
-**E-mail: none.** [OPERATIONS §2](../OPERATIONS.md) lists Resend as optional and
-not set up. Nothing in the app sends e-mail: a notification is in-app only
-(`lib/notifications.ts`, [OPERATIONS §5f](../OPERATIONS.md)). There is no e-mail
-account or e-mail secret to hand over.
+**E-mail: the notification sending mailbox (F1, 2026-10-05, not yet merged).** The
+notification e-mail (`lib/email/`, [OPERATIONS §5i](../OPERATIONS.md)) is sent from
+the owner's own Gmail account (his decision), through SMTP with an app password held in
+Vercel as `GMAIL_APP_PASSWORD` beside `GMAIL_ADDRESS`; it sends nothing until
+`NOTIFY_EMAIL_ENABLED=on`. That app password opens the whole mailbox, and a personal
+Gmail account cannot be handed over without its owner's login: before the handover,
+either move the sender to a dedicated or company mailbox (a new app password, set in
+Vercel, then redeploy — [CREDENTIAL-ROTATION](../CREDENTIAL-ROTATION.md)), or record
+that the owner keeps it ([SECRETS-INVENTORY §1](../SECRETS-INVENTORY.md)). Whether the
+variables are set, and on which environments, is private.
 
 The smallest set that lets someone keep production running is GitHub, Vercel, Neon
 and the age private key ([SECRETS-INVENTORY §4](../SECRETS-INVENTORY.md)). Hand those

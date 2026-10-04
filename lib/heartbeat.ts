@@ -23,7 +23,8 @@ export type HeartbeatKey =
   | 'keep-warm'
   | 'photo-gc'
   | 'db-backup'
-  | 'retention-sweep';
+  | 'retention-sweep'
+  | 'email-drain';
 
 /**
  * Item 11 (re-benchmark, 2026-09-24): "health goes red for minor things".
@@ -68,6 +69,11 @@ export const HEARTBEAT_EXPECTATIONS: Record<HeartbeatKey, HeartbeatExpectation> 
   // vercel.json crons: daily. B6 — enforces docs/compliance/DATA-RETENTION-SCHEDULE.md.
   // Its periods are counted in days and the next run catches up: warning.
   'retention-sweep': { label: 'Personal-data retention sweep', severity: 'warning', everyMinutes: 24 * 60 },
+  // vercel.json crons: '*/10 3-14 * * *' (F1, 2026-10-05). The in-app rows are
+  // the notification; the e-mail is a courtesy copy that a missed run delays, not
+  // loses (the next run sends it inside the 24-hour maximum age): warning. A run
+  // with e-mail switched off is a healthy run, so this alarms on the schedule.
+  'email-drain': { label: 'Notification e-mail drain', severity: 'warning', everyMinutes: 10, activeHoursUtc: [3, 15] },
   // .github/workflows/db-backup.yml: '0 2 * * *' — reported by the workflow
   // itself (POST /api/ops/backup-report), not by a route in this app. B3: a
   // rotated database password or an expired R2 token used to break the nightly

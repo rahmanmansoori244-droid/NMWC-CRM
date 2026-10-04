@@ -500,6 +500,66 @@ describe('the alert webhook URL never reaches Sentry', () => {
   });
 });
 
+/**
+ * F1 (2026-10-05): the Gmail app password (GMAIL_APP_PASSWORD) opens the whole
+ * sending mailbox. lib/email/transport.ts never logs or throws it; this is the
+ * backstop for anything that carries it into an event anyway. Exact value only,
+ * in the forms it can be written: as stored, without its spaces, and in Google's
+ * four groups of four. Synthetic, zero-entropy value (gitleaks).
+ */
+describe('the Gmail app password never reaches Sentry', () => {
+  type SpanJSON = ReturnType<typeof spanToJSON>;
+  const SPACED = 'qqqq rrrr ssss tttt';
+  const COMPACT = 'qqqqrrrrsssstttt';
+
+  const withPassword = <T,>(value: string | undefined, fn: () => T): T => {
+    const before = process.env.GMAIL_APP_PASSWORD;
+    if (value === undefined) delete process.env.GMAIL_APP_PASSWORD;
+    else process.env.GMAIL_APP_PASSWORD = value;
+    try {
+      return fn();
+    } finally {
+      if (before === undefined) delete process.env.GMAIL_APP_PASSWORD;
+      else process.env.GMAIL_APP_PASSWORD = before;
+    }
+  };
+  const eventQuoting = (text: string) =>
+    ({
+      type: undefined,
+      message: `smtp login failed: ${text}`,
+      exception: { values: [{ type: 'Error', value: `Invalid login ${text}` }] },
+      breadcrumbs: [{ category: 'console', message: `auth ${text}`, data: { arg: text } }],
+      extra: { config: { auth: { pass: text } } },
+      contexts: { trace: { data: { note: text } } },
+    }) as unknown as SentryEvent;
+
+  it.each([
+    ['stored with spaces, quoted with spaces', SPACED, SPACED],
+    ['stored with spaces, quoted without', SPACED, COMPACT],
+    ['stored without spaces, quoted in groups', COMPACT, SPACED],
+    ['stored without spaces, quoted as stored', COMPACT, COMPACT],
+  ])('%s', (_name, stored, quoted) => {
+    const out = withPassword(stored, () => JSON.stringify(scrubEvent(eventQuoting(quoted))));
+    expect(out).not.toContain(SPACED);
+    expect(out).not.toContain(COMPACT);
+    expect(out).toContain('[app-password]');
+    expect(out).toContain('smtp login failed');
+  });
+
+  it('a span carrying it is scrubbed too', () => {
+    const span = { description: `AUTH PLAIN ${COMPACT}`, data: { 'smtp.pass': COMPACT }, span_id: 'a'.repeat(16), trace_id: 'b'.repeat(32), start_timestamp: 1 } as unknown as SpanJSON;
+    const out = withPassword(SPACED, () => JSON.stringify(scrubSpan(span)));
+    expect(out).not.toContain(COMPACT);
+  });
+
+  it('unset, or too short to be one, nothing is replaced', () => {
+    expect(withPassword(undefined, () => JSON.stringify(scrubEvent(eventQuoting('plain text'))))).not.toContain('[app-password]');
+    // A short value would replace ordinary words in every event.
+    const out = withPassword('abc', () => JSON.stringify(scrubEvent(eventQuoting('abc abc'))));
+    expect(out).not.toContain('[app-password]');
+  });
+});
+
 // "Every runtime wires both hooks" lived here as a regex over the raw file, which a
 // comment quoting `beforeSend: scrubEvent` satisfied. It is now
 // tests/unit/sentry-scrub-guard.test.ts: comments stripped, the init call parsed,

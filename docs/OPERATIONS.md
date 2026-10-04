@@ -18,7 +18,7 @@ This is the operator's manual: what to do when something breaks, how to deploy, 
 | Database | Neon project `nmwc-cm` (region: AWS us-east-1) | https://console.neon.tech/app/projects/snowy-haze-29025382 |
 | Photos | Cloudflare R2 bucket `nmwc-photos` (account `a5cc755aea210134949be8fcc1146819`) | https://dash.cloudflare.com/a5cc755aea210134949be8fcc1146819/r2/default/buckets/nmwc-photos |
 | Errors | Sentry project `nmwc-cm` (org `nmwc`) | https://nmwc.sentry.io |
-| Email | Resend (free tier, optional — not yet wired) | n/a |
+| Email | Notification e-mail only (F1, 2026-10-05): Gmail SMTP, `smtp.gmail.com:465`, from the owner's Gmail mailbox. Off until `NOTIFY_EMAIL_ENABLED=on` (section 5i). Resend, planned earlier, was not used. | The sending Google account (SECRETS-INVENTORY.md section 1) |
 
 ## 3. Environment variables (Vercel)
 
@@ -194,7 +194,7 @@ ALLOW_PRODUCTION=1 NMWC_APP_URL='postgresql://nmwc_app:<password>@<production po
 
 ## 5d. Cron heartbeats and the health probe (B5, 2026-09-14)
 
-Every scheduled job (`sla-escalate`, `keep-warm`, `photo-gc`) records a heartbeat row (`CronHeartbeat`) when it finishes, success or failure. The bearer health probe reports them:
+Every scheduled job (`sla-escalate`, `keep-warm`, `photo-gc`, `retention-sweep`, `email-drain`) records a heartbeat row (`CronHeartbeat`) when it finishes, success or failure. The bearer health probe reports them:
 
 ```bash
 curl -s -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health | jq .cron
@@ -207,7 +207,7 @@ States: `ok`, `outside-window` (not expected right now), `failed` (last run repo
 | Answer | When | Body |
 |---|---|---|
 | **503** `status: degraded` | a check fails (`db`, `r2`, `heartbeats`), R2 is **unconfigured on production**, or a **critical** job alarms: `sla-escalate` (approvals stop escalating) or `db-backup` (no off-Neon copy) | `cron.alarms` names the critical jobs |
-| **200** `status: warn` | only a **warning** job alarms: `keep-warm` (speed only), `photo-gc`, `retention-sweep` (housekeeping; the next run catches up), or R2 unconfigured off production | `warnings: ["keep-warm:failed", …]` |
+| **200** `status: warn` | only a **warning** job alarms: `keep-warm` (speed only), `photo-gc`, `retention-sweep` (housekeeping; the next run catches up), `email-drain` (the e-mail copy is late, the in-app row is not; §5i), or R2 unconfigured off production | `warnings: ["keep-warm:failed", …]` |
 | **200** `status: ok` | nothing to report | |
 
 Point an external uptime monitor at this URL with the bearer header and alert on non-200. It then pages only for the critical row. The warning rows are still visible: in the body, as `warn=[…]` on smoke's dead-man line, and as a `warn` (not `critical`) webhook alert when a warning job's run fails. Before this change any alarm answered 503, so one failed keep-warm ping paged as loudly as a dead SLA sweep. To move a job between tiers, change its `severity` in `HEARTBEAT_EXPECTATIONS`. `tests/unit/health-verdict.test.ts` pins which jobs are critical, so the change has to be deliberate.
@@ -278,7 +278,7 @@ The targets and how each is measured: [SERVICE-LEVELS.md](SERVICE-LEVELS.md). Th
 
 ## 5f. Outbound alerts — the only way this system can reach you (GAP-2, 2026-09-24)
 
-Until 2026-09-24 nothing in this system could reach a person who was not looking at a screen. There is no mailer and no SMS: a `Notification` row existing means "visible in-app" and nothing more (`lib/notifications.ts` says so in terms — the e-mail drain queue has no drainer). So the SLA sweep escalated twice an hour into a bell nobody had open, and a cron that stopped running was visible only to whoever thought to curl `/api/health` with the monitor bearer.
+Until 2026-09-24 nothing in this system could reach a person who was not looking at a screen. There was no mailer and there is no SMS: a `Notification` row existing meant "visible in-app" and nothing more. (Since 2026-10-05 approvers can also receive notification e-mail, §5i. That is for their work, not for operations: this webhook is still the only channel that tells the OPERATOR something broke.) So the SLA sweep escalated twice an hour into a bell nobody had open, and a cron that stopped running was visible only to whoever thought to curl `/api/health` with the monitor bearer.
 
 There is now one outgoing webhook: one URL, one variable, no account, no vendor.
 
@@ -313,7 +313,7 @@ Every message reads `[SEVERITY] event/scope — sentence (counts)` and carries a
 
 | `event` | Fires when | What it means, and what to do |
 |---|---|---|
-| `cron.failed` | A scheduled job records a failed run. `scope` is the job: `sla-escalate`, `keep-warm`, `photo-gc`, `retention-sweep`, `db-backup` | Something scheduled is broken *now*. `db-backup` means last night's dump did not land — go to §6 and the Actions run. `sla-escalate` means approvals are no longer being escalated. Read the detail: `curl -H "Authorization: Bearer $HEALTH_BEARER" …/api/health \| jq .cron` — the scrubbed error text stays there rather than on the webhook. |
+| `cron.failed` | A scheduled job records a failed run. `scope` is the job: `sla-escalate`, `keep-warm`, `photo-gc`, `retention-sweep`, `email-drain`, `db-backup`. For `email-drain` a failed run means a send or the Gmail login failed (§5i) | Something scheduled is broken *now*. `db-backup` means last night's dump did not land — go to §6 and the Actions run. `sla-escalate` means approvals are no longer being escalated. Read the detail: `curl -H "Authorization: Bearer $HEALTH_BEARER" …/api/health \| jq .cron` — the scrubbed error text stays there rather than on the webhook. |
 | `sla.escalated` | The SLA sweep escalated at least one request. `critical` when any of them was a *second* escalation | Approvals are sitting past their budget. Nobody is required to act at 3am — the working window is Sun–Thu 08:00–17:00 — but a `critical` means a request has now been waiting over twice its stage budget. `warn` and `critical` are deduplicated separately, so a first escalation earlier in the window cannot hold a `critical` back. Open the app; it names them, the alert deliberately does not. |
 | `import.rejections` | A customer master promote **finished** with rejected rows. `scope` and `ids.batchId` are the batch | The Steward's load is done but incomplete. Open `/import/<batchId>` for the per-row reasons. One alert per batch, never one per row — a load that rejects 1,833 rows sends exactly one message. |
 
@@ -331,6 +331,29 @@ The windows are **fixed clock windows** — 00:00, 04:00, 08:00, 12:00, 16:00 an
 - **The URL is also kept out of Sentry.** Sentry records every outgoing request itself and keeps the URL's path, which for Slack, Teams and Discord is the secret; `lib/sentry-scrub.ts` replaces the configured URL, its path and its query with `[alert-webhook]` in every event it sends.
 - **Nothing else alerts.** Not a degraded health check, not sign-in failures, not R2 errors, not the database being unreachable on its own — only a scheduled job that failed *because* of it.
 - The alert never says *which* customer. That is not an oversight; a webhook is a third party.
+
+## 5i. Notification e-mail (F1, 2026-10-05)
+
+**What it is.** When a salesman submits a request, the people in his hierarchy who must act on it, and his region's Accountant, get an in-app notification at once, written in the same transaction as the request. Every 10 minutes from 07:00 to 18:59 Oman time (`*/10 3-14 * * *` UTC, `vercel.json`), `/api/cron/email-drain` sends each of them at most one e-mail with what is new: counts, the kind of each request and links. **Never a customer, salesman or route name, never a reason**: the e-mail is built from the notification's kind and the request's id only (`lib/email/digest.ts`). Who is told, what is e-mailed and the limits are defaults in one module, `lib/notify-policy.ts`, listed for the owner in 04-PENDING A1.11.
+
+Never e-mailed: the GM, a Steward, a Viewer or a salesman (an allowlist of roles, checked at send time; their in-app rows are unchanged), a notification already read in the app, a request already decided or moved past its recipient, anything older than 24 hours, and anything at all while `NOTIFY_EMAIL_ENABLED` is not `on`. Every notification that existed before this feature was marked done by its migration and is never e-mailed.
+
+**Limits.** One e-mail per person per run and at most one per person per 30 minutes; 40 per run; 400 per rolling 24 hours (consumer Gmail allows about 500 recipients a day — check Google's current figure). A capped e-mail waits for a later run and is dropped after 24 hours; the in-app row stays. After 18:59 Oman nothing is sent until 07:00; inside that window it runs every day, weekends and public holidays included, like the other jobs.
+
+**Before turning it on** (owner, in this order):
+1. Read-only readiness check, counts only — its output is never committed or pasted into the repository: `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs scripts/ops/notify-readiness.ts --expect-host ep-sweet-haze`. It counts approvers with no e-mail on file, salesmen whose supervisor is missing, disabled, of the wrong role or a Manager outside the route's region, regions with no active Accountant or Manager, and addresses held twice once case is ignored.
+2. The Steward fixes what it found on `/users`: **Add e-mail / Change e-mail** on each approver's row (Steward only; an empty box clears the address), and **Reports to** for salesmen. `/users` shows "E-mail on file" and never the address.
+3. Vercel → Settings → Environment Variables → **Production**: `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD` (the app password is **Sensitive**; Google issues one only with 2-Step Verification on). `EMAIL_LINK_ORIGIN` only if links must not use `https://nmwc-cm.vercel.app`.
+4. Prove it on a **preview** first (below), then set `NOTIFY_EMAIL_ENABLED=on` on Production and **redeploy**: variables are read when an instance starts. Then `npm run smoke`.
+5. Watch the first runs: `curl -s -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/api/health | jq '.cron'` — `email-drain` should read `ok`. Each run's counts are in the Vercel logs (event key `email.drain`) and in its heartbeat row (`CronHeartbeat.lastDetail`): `sent`, `skipped` and `skippedBy` (why), `deferred`, `capped`, `sendErrors`, `authErrors`.
+
+**Proving it on a preview (UAT).** Vercel runs crons on the production deployment only, so a preview never drains by itself. On the Preview environment set `NOTIFY_EMAIL_ENABLED=on`, the two Gmail variables and `EMAIL_REDIRECT_TO` = one test inbox (without it a preview sends nothing at all: UAT holds a copy of the real staff addresses). Redeploy the preview, submit a request there as a salesman whose supervisor and Accountant have addresses on file, then call the drain by hand with the preview's `CRON_SECRET`: `curl -s -H "Authorization: Bearer <preview CRON_SECRET>" https://<preview host>/api/cron/email-drain`. Check: the e-mail arrives in the test inbox with `[UAT]` in the subject and links to the preview; an immediate second call sends nothing more (the 30-minute gap); a deliberately wrong app password answers `authErrors: 1` and raises the warning-tier `cron.failed` alert. **This is also the only proof that Vercel's functions can open SMTP on port 465** — the repository cannot show it.
+
+**Turning it off.** Set `NOTIFY_EMAIL_ENABLED` to anything but `on` (or delete it) and redeploy. The drain then reads nothing and answers `{ "enabled": false, "reason": "disabled" }`, a healthy run. Notifications written while it is off are never e-mailed more than 24 hours after they were written. During `MAINTENANCE_MODE=on` it sends nothing either (`reason: "maintenance"`): a restore may roll the rows back.
+
+**When `email-drain` fails** (a warning-tier `cron.failed`): `configErrors` means the switch is on but a setting is unusable — a Gmail variable missing, or `EMAIL_REDIRECT_TO` / `EMAIL_LINK_ORIGIN` not an address / an https origin (the run's `reason` says which); nothing is sent until it is fixed and redeployed. `authErrors` means Gmail refused the login — the app password was revoked (changing the Google account's password revokes them all) or mistyped. Issue a new one (SECRETS-INVENTORY.md section 5, CREDENTIAL-ROTATION.md); nothing is lost meanwhile, since every unsent row is handed back and retried for 24 hours. Every run in the window tries the login again, so fix it promptly: Google may treat a stream of refused logins as suspicious. `sendErrors` with `errorLabels` such as `ETIMEDOUT` / `ECONNECTION` is the network or Gmail being slow — those rows retry after their 5-minute lease; `SMTP_5XX` / `EENVELOPE` means Gmail refused that message for good (its rows are marked `FAILED`). The labels are all the app records about a failure: never the error text, never an address.
+
+**What this does not cover.** A run killed between a send and its record can send that e-mail twice (rare; the lease keeps two overlapping runs apart). The sending mailbox's Sent folder keeps a copy of every e-mail, and each recipient's mailbox keeps another, outside the app's retention (DATA-RETENTION-SCHEDULE.md). `scripts/ops/smoke.ts` does not yet check that `/api/cron/email-drain` refuses an anonymous call: add `'email-drain'` to its unauthenticated-cron list after the route is live on production, since adding it earlier makes the pre-merge smoke against the old production fail.
 
 ## 6. Backups, recovery, and what they are actually worth
 

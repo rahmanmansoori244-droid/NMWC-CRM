@@ -12,7 +12,9 @@ Read with [`RECORDS-OF-PROCESSING.md`](RECORDS-OF-PROCESSING.md) (what we do), [
 
 **Facts.** The controller is an Omani company. The subjects are Omani customers and Omani employees. Every byte is processed outside Oman: application compute in `iad1` (US East), the database in Neon `us-east-1`, photographs and backups in two Cloudflare R2 buckets whose location is not recorded, error telemetry in a Sentry region determined by an environment variable, and a nightly copy of the whole database transiting a GitHub-hosted runner in an unknowable region. No in-country component exists. No transfer mechanism has been put in place, because no one asked whether one was needed.
 
-**Needed from counsel.** Whether the law applies; if so, what mechanism legitimises the transfer to each destination; and whether any category here (employee monitoring data, credit information, identity documents) attracts a stricter rule.
+**Since 2026-10-05 (F1).** Notification e-mail adds a destination when it is switched on (`NOTIFY_EMAIL_ENABLED=on`; off until the owner does): messages are sent through the owner's consumer Gmail account (DATA-RESIDENCY-REGISTER.md P9) to each approver's own mailbox. By design a message carries no customer data — counts, the kind of each request and links — so what crosses is employee data: the recipient's work e-mail address, and the fact and time that he was told of a number of requests.
+
+**Needed from counsel.** Whether the law applies; if so, what mechanism legitimises the transfer to each destination; and whether any category here (employee monitoring data, credit information, identity documents) attracts a stricter rule. For the e-mail: whether the content rule (no customer data) is sufficient, and whether a consumer mailbox may be the sending processor at all (Q6).
 
 **What turns on the answer.** If in-country or in-region processing is required, remediation is a full database and object-store migration. It is materially cheaper before the go-live data load than after — see "Timing" below.
 
@@ -42,6 +44,8 @@ This is the hardest question in the system and it was created deliberately.
 
 **The consequence, stated plainly.** Pseudonymising a customer record does not make that person unidentifiable. Their name and phone number remain readable in the ledger, joined to the customer id. Only an owner-credential maintenance transaction can reach them, and doing so is exactly the tamper action the ledger exists to prevent.
 
+**Notification e-mail (F1, 2026-10-05).** A sent notification e-mail cannot be erased by the system: a copy stays in the sending Gmail account's Sent folder and one in the recipient's mailbox (DATA-RETENTION-SCHEDULE.md gap 8). Neither copy names a customer — the message is built from the notification's kind and the request's id, never its title or body — so a customer's erasure request does not reach them; an employee's might (his address, and that he was e-mailed).
+
 **Needed from counsel.** Whether the ledger may be retained despite an erasure request and on what footing; whether pseudonymising the live record while retaining the ledger is an acceptable response; and if the ledger must be edited, what record of that edit is required — noting that by construction it cannot be recorded inside the ledger itself.
 
 **Deliberately not built yet.** An erasure script would encode the answers to all of the above — which fields to blank, which rows to leave, what tombstone values to write. Writing it before counsel rules would make an engineering guess into the company's de-facto policy the first time it ran. The mechanics are documented; the tool waits for the ruling.
@@ -56,7 +60,9 @@ This is the hardest question in the system and it was created deliberately.
 
 **Facts.** Every vendor account appears to be held by an individual rather than by NMWC SAOG. A processor relationship the controller is not a party to is not a processor relationship.
 
-**Needed from the owner.** The account holder of record per vendor, and whether each is being transferred to the company.
+**Since 2026-10-05 (F1), the worst case of this question.** Notification e-mail is sent from the owner's **own consumer Gmail account** (his decision): there is no processor agreement with Google for it, the account is a person's and not the company's, and its app password — which opens the whole mailbox — is held by that one person. It sends nothing until the owner sets `NOTIFY_EMAIL_ENABLED=on`.
+
+**Needed from the owner.** The account holder of record per vendor, and whether each is being transferred to the company — including whether the notification sender moves to a dedicated or company mailbox before e-mail is switched on.
 
 ---
 
@@ -77,3 +83,4 @@ load; if data already exists there, plan an authorized migration or cutover inst
 | Retention enforced by a job, not a document | `app/api/cron/retention-sweep/route.ts` | `DATA-RETENTION-SCHEDULE.md` |
 | Backups encrypted, restorable and proven restorable | `.github/workflows/db-backup.yml`, `restore-drill.yml` | `restore-chain` job in CI, monthly drill |
 | Backup retention actually configured | `scripts/ops/r2-backups-lifecycle.ts --check` | on demand |
+| Notification e-mail carries no customer data, goes only to allowlisted roles, and is off until switched on | `lib/email/` (`digest.ts`, `eligibility.ts`, `config.ts`), `lib/notify-policy.ts` | `tests/unit/email-digest.test.ts`, `email-drain.test.ts`, `email-eligibility.test.ts`, `email-structure-guard.test.ts` (CI); `tests/integration/email-drain.test.ts` on `RUN_EMAIL_DRAIN` (CI) |

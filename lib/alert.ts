@@ -1,5 +1,8 @@
 /**
- * The one way this system can reach a human who is not looking at a screen.
+ * The one way this system can reach an OPERATOR who is not looking at a screen.
+ * (Since F1, 2026-10-05, approvers also get notification e-mail about their own
+ * work — lib/email/, drained by app/api/cron/email-drain. That is a separate
+ * channel to staff, not to operations, and nothing operational goes through it.)
  *
  * GAP-2 (re-benchmark, 2026-09-24): there was no such way. A grep across `lib/`,
  * `services/`, `app/` and `package.json` for nodemailer, resend, sendgrid,

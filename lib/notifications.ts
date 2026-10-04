@@ -1,7 +1,10 @@
 /**
  * In-app notification writers (Phase 1). A Notification row existing ⇒ visible
- * in-app; `emailedAt` marks the (future) email batch-drain queue — no drainer
- * exists yet, so rows are in-app only for now.
+ * in-app; a row with `emailedAt` NULL is also waiting in the e-mail outbox, which
+ * app/api/cron/email-drain drains after commit (F1, 2026-10-05; lib/email/). The
+ * e-mail is built from the row's kind and editId only, never its title or body,
+ * and goes only to allowlisted roles (lib/notify-policy.ts EMAIL_ROLES).
+ * A salesman's request writes its hierarchy's rows through lib/notify-hierarchy.ts.
  *
  * All writers are transaction-composable: they take the caller's
  * `Prisma.TransactionClient` so a notification is only committed when the
