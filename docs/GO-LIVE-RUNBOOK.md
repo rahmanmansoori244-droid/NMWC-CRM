@@ -221,8 +221,9 @@ importer enforces most of the order, but not all of it.
    "later". Until a person signs in, their account is open to anyone who knows the
    shared value — and usernames are route codes, which are printed on the journey
    plan. **Sit with each person while they sign in and change it.** The
-   change-password screen is English only, 12 characters minimum, with no
-   show-password toggle; it is the step most likely to stall, so budget time for it.
+   change-password screen is English only, 12 characters minimum; the new password
+   is typed twice and a Show button reveals it. It is still the step most likely to
+   stall, so budget time for it.
 
    Ask the Steward to check **Users** the next morning for anyone who has not signed
    in — their row still shows the forced-change flag, and that flag IS the list of

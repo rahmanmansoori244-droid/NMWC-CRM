@@ -341,6 +341,12 @@ const {
             );
             // Still pay equalized bcrypt cost so timing doesn't out the limit.
             await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
+            // X-AUTH-2 review: a refusal by the PER-USER bucket gives the network
+            // token back — the attempt never reached a password check, so it is
+            // not a failed sign-in. Otherwise an outsider who locks one salesman's
+            // account would, through his retries from the office, drain the
+            // office's network bucket and lock out everyone behind that address.
+            if (bucket === 'user') await refundLimit(ipKey, LOGIN_LIMIT);
             // B-04: surface rate-limit hits in the audit trail with a
             // sentinel entityId so forensics can spot pattern attacks.
             await writeLoginFail(`unknown:${username.slice(0, 50)}`, 'rate_limited');

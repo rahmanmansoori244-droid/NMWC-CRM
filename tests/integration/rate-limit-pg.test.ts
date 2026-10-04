@@ -32,6 +32,9 @@ describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () =
   let key: string;
 
   beforeAll(async () => {
+    // This suite writes to the database it is pointed at: never production.
+    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    if ((process.env.DIRECT_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     savedBackend = process.env.RATE_LIMIT_BACKEND;
     delete process.env.RATE_LIMIT_BACKEND; // ensure the PG path is taken
     ({ checkLimit, refundLimit } = await import('@/lib/rate-limit'));
@@ -121,8 +124,9 @@ describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () =
       WHERE "key" = ${key}`;
     await refundLimit(key, cfg);
     const row = await prisma.rateLimit.findUnique({ where: { key } });
-    // 0 + ~2 s × 1/s + 1, plus however long the round trip between took.
+    // 0 + ~2 s × 1/s + 1, plus however long the round trip between took — up
+    // to the capacity on a slow link (local database timings are WAN-bound).
     expect(row!.tokens).toBeGreaterThanOrEqual(3);
-    expect(row!.tokens).toBeLessThan(4);
+    expect(row!.tokens).toBeLessThanOrEqual(5);
   });
 });

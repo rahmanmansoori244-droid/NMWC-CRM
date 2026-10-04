@@ -197,10 +197,11 @@ describe('each row says whether its holder has claimed the account', () => {
 });
 
 describe('the count covers exactly the rows the table renders', () => {
-  it('follows the status filter: a disabled account is counted on the Disabled tab only', async () => {
+  it('follows the status filter, and a disabled account is never counted (it cannot sign in)', async () => {
     h.rows = [
       account('live', { mustChangePassword: true }),
       account('leftover', { isActive: false, mustChangePassword: true }),
+      account('leftover-reset', { isActive: false, mustChangePassword: true, lastLoginAt: SIGNED_IN }),
     ];
     await renderPage();
     expect(
@@ -210,15 +211,17 @@ describe('the count covers exactly the rows the table renders', () => {
 
     await renderPage('disabled');
     expect(
-      screen.getByText('Of 1 account shown: 1 not signed in yet · 0 password change pending')
+      screen.getByText('Of 2 accounts shown: 0 not signed in yet · 0 password change pending')
     ).toBeTruthy();
     expect(screen.getByText('Person leftover')).toBeTruthy();
+    expect(screen.queryByText('Not signed in yet')).toBeNull();
+    expect(screen.queryByText('Password change pending')).toBeNull();
     expect(screen.queryByText('Person live')).toBeNull();
     cleanup();
 
     await renderPage('all');
     expect(
-      screen.getByText('Of 2 accounts shown: 2 not signed in yet · 0 password change pending')
+      screen.getByText('Of 3 accounts shown: 1 not signed in yet · 0 password change pending')
     ).toBeTruthy();
   });
 

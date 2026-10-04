@@ -159,21 +159,21 @@ export default async function TodayPage({
           {/* Go-live: only ~1 in 3 branches carries a journey-plan day, so the
               scheduled list is NOT the salesman's whole route. Keep the full,
               searchable list one tap away from the landing page. It carries no
-              number: /customers counts customers, and every number on this
-              page counts branches. */}
+              number: /customers counts customers, and every list and route
+              count on this page counts branches. */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             {noDay ? (
-              <Link href="/today" className="text-sm font-medium text-brand-700 hover:underline">
+              <Link href="/today" className="inline-flex min-h-11 items-center text-sm font-medium text-brand-700 hover:underline">
                 Today&apos;s visits ({scheduled})
               </Link>
             ) : (
-              <Link href="/today?view=no-day" className="text-sm font-medium text-brand-700 hover:underline">
+              <Link href="/today?view=no-day" className="inline-flex min-h-11 items-center text-sm font-medium text-brand-700 hover:underline">
                 Branches with no visit day ({undated})
               </Link>
             )}
             <Link
               href="/customers"
-              className="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline"
+              className="inline-flex min-h-11 items-center gap-1 text-sm font-medium text-brand-700 hover:underline"
             >
               <Search className="h-3.5 w-3.5" />
               All my customers
@@ -182,9 +182,9 @@ export default async function TodayPage({
         </div>
         {/* The day is set through the enrichment form, which waits for
             approval: say so, or a submitted branch staying here reads as lost. */}
-        {noDay && (
+        {noDay && undated > 0 && (
           <p className="mb-3 text-sm text-slate-600">
-            Open a branch, tap Enrich and set its Day of visit. It leaves this list once the change is approved.
+            Open the shop, tap Enrich and set the branch&apos;s Day of visit. It leaves this list once the change is approved.
           </p>
         )}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">

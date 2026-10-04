@@ -298,7 +298,7 @@ The recommendations below are **Claude's, not yet answered by the owner**.
 | F12 / E5 | The Temix lifecycle: what CLOSED and reactivated branches look like in the batch file; a live customer with no Temix code | Needs the file contract from Temix/ERP first |
 | F14 | A route moved to another region leaves its branches in the old region | Move the route's branches (and drafts) with it in the same transaction, audited |
 | N04 | How a customer's status follows its branches | ACTIVE if any branch is active; CLOSED only when all are |
-| X-AUTH-2 | The per-network login bucket counts every attempt | Count only failed sign-ins |
+| X-AUTH-2 | ~~The per-network login bucket counts every attempt~~ — **decided by the owner on 2026-10-04 and done:** the network bucket is charged first and given back on a successful sign-in and on a per-user refusal, so it counts failed sign-ins only (`lib/auth.ts`, `refundLimit` in `lib/rate-limit.ts`) | — |
 | X-APPR-1(a) | May the Finance Manager, GM and Accountant-on-CREDIT steps decide new-credit applications in bulk? | No |
 | Q-sla | Response-time budgets for the Finance Manager, GM, Manager | The owner's numbers |
 | — | May a salesman remove a guarantee or status-evidence photo while its request is pending? | No; he may replace it |

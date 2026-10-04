@@ -417,6 +417,17 @@ describe('X-AUTH-2 at authorize(): the network bucket counts failed sign-ins onl
     expect(await tokensLeft(`login:user:${username}`)).toBe(FULL);
   });
 
+  it('an attempt the per-user bucket refuses gives the network token back', async () => {
+    // A locked account's owner retrying from the office must not drain the
+    // office's network bucket: the attempt never reached a password check.
+    const { username, password } = freshUser();
+    const userKey = `login:user:${username}`;
+    for (let i = 0; i < FULL; i += 1) expect((await checkLimit(userKey, LOGIN_LIMIT)).ok).toBe(true);
+    await expect(authorize()({ username, password })).rejects.toMatchObject({ code: 'locked_user' });
+    expect(vi.mocked(refundLimit).mock.calls).toEqual([[`login:ip:${h.ip}`, LOGIN_LIMIT]]);
+    expect(await tokensLeft(`login:ip:${h.ip}`)).toBe(FULL);
+  });
+
   it('one network cycling through many usernames cannot drain the accounts it is refused for', async () => {
     // Charged second, the network bucket used to refuse each of these only after
     // the account's own bucket had paid — one address could keep many locked.

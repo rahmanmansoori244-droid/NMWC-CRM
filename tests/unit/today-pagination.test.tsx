@@ -209,7 +209,7 @@ describe('Today: branches with no visit day', () => {
     expect(screen.queryByText('Route customers')).toBeNull();
     // /customers counts customers, not branches, so its link carries no number.
     expect(screen.getByRole('link', { name: 'All my customers' }).getAttribute('href')).toBe('/customers');
-    expect(screen.queryByText(/set its Day of visit/)).toBeNull();
+    expect(screen.queryByText(/Day of visit\. It leaves this list/)).toBeNull();
   });
 
   it('lists only his own live null-day branches, 200 a page, each opening its customer', async () => {
@@ -220,7 +220,7 @@ describe('Today: branches with no visit day', () => {
     expect(screen.queryByRole('link', { name: /Branches with no visit day/ })).toBeNull();
     expect(tile('Route branches')).toBe('671');
     // Setting the day waits for approval, and the page says so.
-    expect(screen.getByText(/set its Day of visit\. It leaves this list once the change is approved\./)).toBeTruthy();
+    expect(screen.getByText(/tap Enrich and set the branch's Day of visit\. It leaves this list once the change is approved\./)).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Previous' })).toBeNull();
     const next = screen.getByRole('link', { name: 'Next' });
     expect(next.getAttribute('href')).toBe('/today?view=no-day&page=2');
@@ -275,6 +275,8 @@ describe('Today: branches with no visit day', () => {
     cleanup();
     render(await noDayPage('2'));
     expect(screen.getByText('Every branch has a visit day')).toBeTruthy();
+    // nothing to open, so no 'open the shop' hint either
+    expect(screen.queryByText(/Day of visit\. It leaves this list/)).toBeNull();
     expect(screen.getByText('Showing 0 of 0 branches · Page 1 of 1')).toBeTruthy();
     expect(screen.queryByRole('navigation', { name: 'Branch pages' })).toBeNull();
     expect(screen.queryAllByTestId('visit')).toHaveLength(0);

@@ -58,7 +58,11 @@ const ROLE_ORDER: Record<Role, number> = {
 // asks) and cleared only by the holder's own change (services/password.ts), so
 // together with lastLoginAt it separates the two states. lastLoginAt is written
 // at sign-in, BEFORE the forced change (lib/auth.ts), which is why a date with
-// the flag still set means "signed in on the issued password and stopped there".
+// the flag still set means "has signed in before and must now set a password of
+// their own" — stopped at the first forced change, or reset by an operator since.
+// A disabled account gets no badge and is not counted: it cannot sign in, so it
+// is not part of the "who still has to claim" check (scripts/ops/verify-load.ts
+// counts these states over active accounts only, too).
 const PASSWORD_CLAIM = {
   notSignedIn: {
     label: 'Not signed in yet',
@@ -67,16 +71,17 @@ const PASSWORD_CLAIM = {
   },
   changePending: {
     label: 'Password change pending',
-    title: 'Signed in on the issued password but has not set their own yet.',
+    title: 'Has signed in before, but must set a new password (first sign-in, or after a reset) and has not yet.',
     className: 'bg-violet-50 text-violet-700',
   },
 } as const;
 
 function passwordClaim(u: {
+  isActive: boolean;
   mustChangePassword: boolean;
   lastLoginAt: Date | null;
 }): keyof typeof PASSWORD_CLAIM | null {
-  if (!u.mustChangePassword) return null;
+  if (!u.isActive || !u.mustChangePassword) return null;
   return u.lastLoginAt ? 'changePending' : 'notSignedIn';
 }
 

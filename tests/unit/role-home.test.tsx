@@ -44,6 +44,9 @@ vi.mock('@/lib/db', () => ({
         h.wheres.push(args.where);
         return [];
       },
+      // The queue header's true pending count (approvals page) reads the same
+      // where; the queue query above is the one these tests inspect.
+      count: async () => 0,
     },
     attachment: { findMany: async () => [] },
   },

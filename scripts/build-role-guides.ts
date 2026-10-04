@@ -1255,7 +1255,7 @@ const STEWARD_EN: Guide = {
         rows: [
           [
             '<strong>Daily DB backup</strong> — check the GitHub Actions tab once a week to confirm the nightly run is green.',
-            'If a run is red two days in a row, alert ops. The dump goes to the <code>nmwc-backups</code> R2 bucket as <code>db/&lt;DATE&gt;.sql.gz</code>.',
+            'If a run is red two days in a row, alert ops. The dump goes to the <code>nmwc-backups</code> R2 bucket as <code>db/&lt;DATE&gt;.sql.gz.age</code> (encrypted).',
           ],
           [
             '<strong>Photo storage</strong> — R2 lifecycle deletes "gc-marked" photos after 7 days.',
