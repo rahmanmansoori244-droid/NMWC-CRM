@@ -338,7 +338,7 @@ documentation on project transfer before you do that. Billing is a separate step
 | Photos (R2) | `R2_ACCOUNT_ID`, `R2_BUCKET` | No |
 | Alerts | `ALERT_WEBHOOK_URL` (not set yet) | Yes |
 | Errors | `NEXT_PUBLIC_SENTRY_DSN` (sent to the browser by design) | No |
-| Switches | `DEMO_ACCOUNTS_DISABLED`, `MAINTENANCE_MODE`, `SALESMAN_SUBMIT_GATE`, `RATE_LIMIT_BACKEND`, `LOG_LEVEL` | No |
+| Switches | `DEMO_ACCOUNTS_DISABLED`, `MAINTENANCE_MODE`, `INSIGHTS_DASHBOARD_DISABLED`, `SALESMAN_SUBMIT_GATE`, `RATE_LIMIT_BACKEND`, `LOG_LEVEL` | No |
 | Tuning | `PROMOTE_SLICE_BUDGET_MS`, `BULK_BUDGET_MS`, `WORK_TZ_OFFSET_MIN`, `WORK_DAYS`, `WORK_HOUR_START`, `WORK_HOUR_END`, `SLA_SUPERVISOR_MIN`, `SLA_ACCOUNTANT_MIN`, `SLA_MANAGER_MIN`, `SLA_FINANCE_MIN`, `SLA_GM_MIN` | No |
 | Set by the platform | `NODE_ENV`, `NEXT_RUNTIME`, `VERCEL_ENV`, `VERCEL_GIT_COMMIT_SHA`. `next.config.ts` derives `NEXT_PUBLIC_SENTRY_ENV` and `NEXT_PUBLIC_SENTRY_RELEASE` from the last two | Never set by hand |
 

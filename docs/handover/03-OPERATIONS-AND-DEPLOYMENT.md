@@ -411,7 +411,7 @@ run on a working branch is cancelled. A run on `main` never is. `ci-watch-sha.sh
 | Job ID | Display name | What it proves | On a branch | On `main` |
 |---|---|---|---|---|
 | `lint-test-build` | `lint-test-build` | Typecheck, lint, unit tests, `next build` (without a migrate), production-dependency audit | `success` | `success` |
-| `db-tests` | `db-tests` | Migrations on a fresh Postgres; the `nmwc_app` role created, granted and verified; 35 of the 38 integration suites | `success` | `success` |
+| `db-tests` | `db-tests` | Migrations on a fresh Postgres; the `nmwc_app` role created, granted and verified; 36 of the 39 integration suites | `success` | `success` |
 | `e2e` | `Playwright (login, health probe, CSP) on a production build` | Login, health probe and CSP on a production build | `success` | `success` |
 | `restore-chain` | `Backup → encrypt → restore → verify` | The backup chain, on throw-away databases | `success` | `success` |
 | `secrets-scan` | `secrets-scan` | gitleaks over **the commits each push adds**. It does not scan the whole history, whatever the comment in `ci.yml` says ([AUDITOR-BRIEF §8](../../AUDITOR-BRIEF.md#8-security-controls), §15). It uses default rules, which miss low-entropy passwords. | `success` | `success` |
@@ -515,6 +515,7 @@ The procedure is [OPERATIONS §4](../OPERATIONS.md#4-deploy). In short:
 | Problem | Lever |
 |---|---|
 | Bad application code, no migration | Instant Rollback, then a revert PR. |
+| The insights dashboard (`/dashboard`) is slow or broken | `INSIGHTS_DASHBOARD_DISABLED=true` in Vercel Production, then **Redeploy**: the page shows a notice and links and runs no dashboard query. Or Instant Rollback (F2 has no migration). |
 | Bad code that shipped with a migration, and the old build works on the new schema | Instant Rollback. Revert the code but keep the migration (step 3). |
 | The migration itself broke production, or the old build cannot run on the new schema | **Not a rollback.** Reverting a migration is a separate, deliberate database change. Stop and plan it. Never revert a migration without the Tier B review ([HANDOVER §2](../HANDOVER.md#2-how-a-change-is-made-verified-and-merged-here) step 8). A fix-forward through [§4.2](#42-the-gates-in-order) may be the only cure. |
 | Bad data written (an import, a script, a mistake) | A database recovery, not an app rollback. Neon point-in-time recovery reaches back 7 days ([OPERATIONS §6.4](../OPERATIONS.md#64-runbook-a--neon-point-in-time-recovery)). |
