@@ -37,23 +37,27 @@ vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {}
 const DAY = 24 * 60 * 60 * 1000;
 const tag = randomUUID().slice(0, 8);
 const P = `ZZNW-${tag}`;
+// Ids are cuid-shaped (a 'c', then no dash): the request actions validate the
+// customer, branch and attachment ids they receive with zod's cuid() before any
+// work, so a dashed fixture id is refused as VALIDATION_FAILED.
+const cid = (name: string) => `cznw${tag}${name}`;
 const ids = {
-  region: `${P}-region`,
-  otherRegion: `${P}-region2`,
-  route: `${P}-route`,
-  sales: `${P}-sales`,
-  mgrA: `${P}-mgra`,
-  mgrB: `${P}-mgrb`,
-  mgrOff: `${P}-mgroff`,
-  sup: `${P}-sup`,
-  acc: `${P}-acc`,
-  accOther: `${P}-acc2`,
-  gm: `${P}-gm`,
-  stw: `${P}-stw`,
-  viewer: `${P}-viewer`,
-  customer: `${P}-cust`,
-  branch: `${P}-b1`,
-  shop: `${P}-shop`,
+  region: cid('region'),
+  otherRegion: cid('regiontwo'),
+  route: cid('route'),
+  sales: cid('sales'),
+  mgrA: cid('mgra'),
+  mgrB: cid('mgrb'),
+  mgrOff: cid('mgroff'),
+  sup: cid('sup'),
+  acc: cid('acc'),
+  accOther: cid('acctwo'),
+  gm: cid('gm'),
+  stw: cid('stw'),
+  viewer: cid('viewer'),
+  customer: cid('cust'),
+  branch: cid('branchone'),
+  shop: cid('shop'),
 };
 const USERS = [ids.sales, ids.mgrA, ids.mgrB, ids.mgrOff, ids.sup, ids.acc, ids.accOther, ids.gm, ids.stw, ids.viewer];
 const NEVER = [ids.gm, ids.stw, ids.viewer, ids.accOther, ids.sales, ids.mgrOff];
