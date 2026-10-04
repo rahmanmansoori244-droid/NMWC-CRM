@@ -515,6 +515,7 @@ The procedure is [OPERATIONS §4](../OPERATIONS.md#4-deploy). In short:
 | Problem | Lever |
 |---|---|
 | Bad application code, no migration | Instant Rollback, then a revert PR. |
+| The insights dashboard (`/dashboard`) is slow or broken | `INSIGHTS_DASHBOARD_DISABLED=true` in Vercel Production, then **Redeploy**: the page shows a notice and links and runs no dashboard query. Or Instant Rollback (F2 has no migration). |
 | Bad code that shipped with a migration, and the old build works on the new schema | Instant Rollback. Revert the code but keep the migration (step 3). |
 | The migration itself broke production, or the old build cannot run on the new schema | **Not a rollback.** Reverting a migration is a separate, deliberate database change. Stop and plan it. Never revert a migration without the Tier B review ([HANDOVER §2](../HANDOVER.md#2-how-a-change-is-made-verified-and-merged-here) step 8). A fix-forward through [§4.2](#42-the-gates-in-order) may be the only cure. |
 | Bad data written (an import, a script, a mistake) | A database recovery, not an app rollback. Neon point-in-time recovery reaches back 7 days ([OPERATIONS §6.4](../OPERATIONS.md#64-runbook-a--neon-point-in-time-recovery)). |

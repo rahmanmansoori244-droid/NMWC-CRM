@@ -789,15 +789,21 @@ confirmed ([04-PENDING-WORK](04-PENDING-WORK.md) A6).
   branches in view now, new customers (new-customer requests finalized), customers
   updated (approved update requests, direct writes apart), closures and reactivations,
   requests by state, and GPS cells for the map. Counts only reach the page. A failing
-  query shows a notice in its own cards; the rest of the page loads.
+  query shows a notice in its own cards; the rest of the page loads. So does a slow one:
+  each statement has a 10 s `statement_timeout`, and the page waits 20 s at most
+  (`lib/insights/rollout.ts`).
+- **Switch.** `INSIGHTS_DASHBOARD_DISABLED=true` and a redeploy turn the page into a
+  notice with links, running no dashboard query.
 - **Definitions** are printed on every card. Days are Oman calendar days; attribution is
   by each branch's current route and region; figures are route-level, never per
-  salesman.
+  salesman, but a route is shown by its code, which is its salesman's username. "The
+  period before" runs exactly as long as the current window has so far.
 - **The map** is an approximate outline of Oman drawn by the app itself
   (`lib/geo/oman.ts`) with counts per grid square. GPS exists only where a salesman
   captured it, so the page shows the coverage beside the map.
 - **Pending approval** for a Manager counts his `/approvals` queue (the Supervisor step
-  in his regions), new-customer requests included.
+  in his regions), new-customer requests included. Reactivations, which he decides on
+  `/reactivations`, are shown on a line of their own under it.
 
 ---
 
