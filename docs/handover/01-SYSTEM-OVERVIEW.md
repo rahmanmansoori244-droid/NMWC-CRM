@@ -135,12 +135,12 @@ flowchart LR
 |---|---|---|
 | Web app | Next.js 15.5 App Router, React 19, TypeScript, Tailwind 3.4. Server components and server actions. `typedRoutes` is on. | `app/`, `components/nmwc/`, `next.config.ts` |
 | Server logic | `'use server'` modules export the server actions. Shared domain and infrastructure code lives in `lib/`. | `services/*.ts`, `lib/*.ts` |
-| HTTP routes | 16 route handlers: auth, field-form submits, photos, exports, health, crons, ops, a perf probe. | `app/api/**/route.ts` |
+| HTTP routes | 17 route handlers: auth, field-form submits, photos, exports, health, crons, ops, a perf probe. | `app/api/**/route.ts` |
 | Auth | next-auth 5 (beta.32), Credentials provider, JWT sessions of 8 hours, `__Host-` cookie. | `auth.config.ts`, `lib/auth.ts`, `lib/session.ts`, `middleware.ts` |
 | Database | Prisma 6 on PostgreSQL hosted by Neon. 24 models, 23 migrations. | `prisma/schema.prisma`, `prisma/migrations/`, `lib/db.ts` |
 | Files | Cloudflare R2, two buckets: `nmwc-photos` (photos and documents) and `nmwc-backups` (encrypted nightly database dumps). Separate credentials per bucket. | `lib/r2.ts`, `.github/workflows/db-backup.yml` |
 | Hosting | Vercel Pro, functions in region `iad1`, `maxDuration` 60 s. | `vercel.json` |
-| Scheduled jobs | Four Vercel crons, plus GitHub Actions workflows for backups, the restore drill and R2 checks. | `vercel.json`, `.github/workflows/` |
+| Scheduled jobs | Five Vercel crons (the fifth, `email-drain`, since F1), plus GitHub Actions workflows for backups, the restore drill and R2 checks. | `vercel.json`, `.github/workflows/` |
 | Errors and logs | Sentry on all three runtimes, with scrubbers. Structured logs through pino, scrubbed of phones, e-mails and digit runs. No source-map upload. | `sentry.*.config.ts`, `instrumentation*.ts`, `lib/sentry-scrub.ts`, `lib/logger.ts`, `lib/scrub.ts` |
 | Excel | exceljs 4.4: import parsing and a streaming writer for exports. | `lib/excel.ts` |
 
@@ -293,8 +293,11 @@ PRIVATE-HANDOVER.md, never in this repo.
 - Run `npm run smoke` before and after any production change.
 - **Rolling back.** Production runs `main` as of the handover. If a production
   deployment is faulty, use Vercel's Instant Rollback to the previous production
-  deployment; the last code batches contain no database migration. An Instant Rollback
-  never undoes a migration ([03 §6](03-OPERATIONS-AND-DEPLOYMENT.md#6-rolling-back)).
+  deployment; the code batches up to the handover contain no database migration. F1
+  (04-PENDING A1.11) adds two, and once its writers are live a build older than its
+  foundation cannot read the new notification kinds: the rollback target is then the
+  foundation's deployment, never older. An Instant Rollback never undoes a migration
+  ([03 §6](03-OPERATIONS-AND-DEPLOYMENT.md#6-rolling-back)).
 
 ---
 
@@ -663,14 +666,21 @@ The exact Temix file format is still to be confirmed with Temix (owner decision 
   plain-text digest from the owner's Gmail: counts, request kinds and links, never a
   customer, salesman or route name. Only Managers, Supervisors, Accountants and the
   Finance Manager are e-mailed — never the GM, a Steward, a Viewer or a salesman — and
-  only about a row not yet read whose request still waits on them. Caps: one digest per
-  person per 30 minutes, 40 per run, 400 a day. Off production it sends only to a redirect
+  only about a row not yet read whose request still waits on them and that they can act
+  on (`canActOnStep`, with their managed regions). Caps: one digest per person per 30
+  minutes, 40 per run, 400 a day; work goes before information-only e-mail, which may use
+  at most 300 a day. A refusal of the sending Gmail account (a used-up daily limit) stops
+  the run and keeps every row for a later one. Off production it sends only to a redirect
   inbox. Runbook: [OPERATIONS §5i](../OPERATIONS.md). Defaults: `lib/notify-policy.ts`.
+- The bell's red count is unread rows that may ask for action; unread for-information
+  rows (`REQUEST_FYI`) are a muted second count, and `/notifications` can mark only
+  those read (`lib/notification-bell.ts`).
 - `/approvals/[id]` says, in a banner, when its viewer cannot decide the current step or
   the request is a reactivation (`lib/decision-lane.ts`).
-- Addresses: the Steward sets or clears an account's e-mail on `/users`; the page shows
-  only an "E-mail on file" badge. `scripts/ops/notify-readiness.ts` counts the gaps
-  (read-only).
+- Addresses: the Steward sets or clears an account's e-mail on `/users`, for the
+  e-mailed roles; the page never shows the address, only "E-mail on file" or "E-mail not
+  usable — re-enter it" by the drain's own rule (`lib/notify-address.ts`).
+  `scripts/ops/notify-readiness.ts` counts the gaps (read-only).
 - Who is told when a request reaches a step (`resolveStepAudience`):
   - the Supervisor step → the submitter's direct supervisor only;
   - the Accountant step → active Accountants whose regions overlap the request;
@@ -724,8 +734,8 @@ The exact Temix file format is still to be confirmed with Temix (owner decision 
   ([AUDITOR-BRIEF §15](../../AUDITOR-BRIEF.md#15-docs-versus-code--known-contradictions)).
   The fallback applies only to the region-scoped Supervisor step; a GM-step breach always
   goes to all Managers and the Steward.
-- **Heartbeats:** five jobs record one (`CronHeartbeat`, plus one `CronRun` row per run)
-  through `lib/heartbeat.ts`: the four Vercel crons and the nightly backup (which reports
+- **Heartbeats:** six jobs record one (`CronHeartbeat`, plus one `CronRun` row per run)
+  through `lib/heartbeat.ts`: the five Vercel crons and the nightly backup (which reports
   through `/api/ops/backup-report`). The detailed `/api/health` alarms on a failed, stale
   or never-run job.
 

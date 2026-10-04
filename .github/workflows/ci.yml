@@ -541,7 +541,7 @@ jobs:
   # ::warning::, for the reasons written beside the check below. Their own
   # controls are the monitor on /api/health (OPERATIONS.md §5d, which is 503 while
   # a critical job alarms) and the alert lib/heartbeat.ts pushes on the failing run.
-  # A warning-tier job (keep-warm, photo-gc, retention-sweep) is not an alarm here
+  # A warning-tier job (keep-warm, photo-gc, retention-sweep, email-drain) is not an alarm here
   # at all since item 11: smoke prints it as `warn=[…]` and the check passes.
   #
   # Nothing else is excused. A second failing check, or `failed=[…]` inside the

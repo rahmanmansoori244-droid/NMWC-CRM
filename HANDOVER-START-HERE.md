@@ -290,9 +290,11 @@ job does not count as a pass.
 **If `main`'s CI or post-deploy smoke goes red**, check the live build, smoke and
 migration state. Only then choose between Vercel's instant rollback and a revert PR
 ([03 §6](docs/handover/03-OPERATIONS-AND-DEPLOYMENT.md)). If the deployed code is itself
-faulty, use Instant Rollback in Vercel to the previous production deployment. The last
-code batches contain no database migration. `PRIVATE-HANDOVER.md` names the deployments
-to roll back to, in order.
+faulty, use Instant Rollback in Vercel to the previous production deployment. The code
+batches up to the handover contain no database migration; F1 (notifications) adds two,
+and once its writers are live the rollback target is its foundation's deployment, never
+older ([03 §6](docs/handover/03-OPERATIONS-AND-DEPLOYMENT.md)). `PRIVATE-HANDOVER.md`
+names the deployments to roll back to, in order.
 
 ## 6. Where to ask
 

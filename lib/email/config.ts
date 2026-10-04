@@ -34,18 +34,15 @@
  * either the production deployment or EMAIL_REDIRECT_TO.
  */
 import { isProductionDeployment } from '../health';
+import { isEmailAddress } from '../notify-address';
+
+// The address rule is shared with /users and the readiness check (lib/notify-address.ts).
+export { isEmailAddress };
 
 /** The production alias (see the header). */
 export const DEFAULT_PRODUCTION_LINK_ORIGIN = 'https://nmwc-cm.vercel.app';
 
 export const GMAIL_SMTP = { host: 'smtp.gmail.com', port: 465, secure: true } as const;
-
-/** One @, a dot after it, no spaces, nothing that could end a header line. */
-const ADDRESS = /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]+$/;
-
-export function isEmailAddress(value: string | null | undefined): value is string {
-  return typeof value === 'string' && value.length <= 254 && ADDRESS.test(value);
-}
 
 export type EmailOffReason =
   | 'disabled'

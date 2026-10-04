@@ -53,7 +53,7 @@ beforeEach(() => {
   for (const n of NAMES) saved[n] = process.env[n];
   h.drain.mockReset().mockResolvedValue({
     claimed: 2, sent: 1, skipped: 1, skippedBy: { SKIPPED_ROLE: 1 }, failed: 0, deferred: 0, capped: false,
-    staleMarked: 0, exhaustedMarked: 0, budgetStopped: false, sendErrors: 0, authErrors: 0, errorLabels: {},
+    staleMarked: 0, exhaustedMarked: 0, budgetStopped: false, sendErrors: 0, authErrors: 0, accountErrors: 0, errorLabels: {},
   });
   h.transport.mockReset().mockReturnValue({ send: vi.fn(), close: vi.fn() });
   h.store.mockReset().mockReturnValue({ tag: 'store' });
@@ -109,11 +109,14 @@ describe('/api/cron/email-drain', () => {
     expect(h.store).toHaveBeenCalledWith({ tag: 'pooled-client' });
     expect(h.transport).toHaveBeenCalledWith(expect.objectContaining({ user: 'sender@example.test', from: 'NMWC CRM <sender@example.test>' }));
     expect(h.drain).toHaveBeenCalledTimes(1);
-    expect(body).toMatchObject({ enabled: true, redirected: false, sent: 1, skipped: 1, sendErrors: 0, authErrors: 0 });
+    expect(body).toMatchObject({ enabled: true, redirected: false, sent: 1, skipped: 1, sendErrors: 0, authErrors: 0, accountErrors: 0 });
     // Nothing in the answer can carry the password or an address.
     expect(JSON.stringify(body)).not.toMatch(/p{16}|@/);
     expect(h.okFrom!(body, res.status)).toBe(true);
     expect(h.okFrom!({ ...body, sendErrors: 1 }, 200)).toBe(false);
     expect(h.okFrom!({ ...body, authErrors: 1 }, 200)).toBe(false);
+    // Gmail refused the sending account itself (a used-up daily limit): the
+    // operator must hear of it, though nothing was marked FAILED.
+    expect(h.okFrom!({ ...body, accountErrors: 1 }, 200)).toBe(false);
   });
 });

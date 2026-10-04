@@ -167,7 +167,7 @@ async function alertJobFailed(key: HeartbeatKey): Promise<void> {
  *
  * This function is the opposite on every count: PUSHED, reached on the failing run
  * itself, and the single point every scheduled outcome in the system already flows
- * through — the four `withHeartbeat` routes AND the nightly dump, which reports
+ * through — the five `withHeartbeat` routes AND the nightly dump, which reports
  * itself from GitHub Actions through /api/ops/backup-report and so never passes
  * through the wrapper. Wiring the wrapper instead would have left the backup, the
  * one job whose silence costs the most, still unable to reach anybody.

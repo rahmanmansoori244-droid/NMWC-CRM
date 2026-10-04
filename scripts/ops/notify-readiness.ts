@@ -39,6 +39,7 @@
 import { PrismaClient, Role } from '@prisma/client';
 import { connectWaking, requireExpectedHost } from './requeue-untracked';
 import { operatorErrorLabel } from './error-label';
+import { isEmailAddress } from '../../lib/notify-address';
 
 /** Roles that can receive notification e-mail (lib/notify-policy.ts EMAIL_ROLES). */
 export const READINESS_APPROVER_ROLES: readonly Role[] = [
@@ -49,13 +50,12 @@ export const READINESS_APPROVER_ROLES: readonly Role[] = [
 ];
 
 /**
- * The address rule of lib/email/config.ts isEmailAddress, copied because nothing
- * outside lib/email may import it (tests/unit/email-structure-guard.test.ts);
- * tests/unit/notify-readiness.test.ts holds the two to the same answers.
+ * The drain's address rule itself (lib/notify-address.ts, shared with the drain
+ * and the /users badge), so "not an address" here is exactly what the drain
+ * skips as SKIPPED_NO_ADDRESS and what /users marks "E-mail not usable".
  */
-const ADDRESS = /^[^\s@<>",;]+@[^\s@<>",;]+\.[^\s@<>",;]+$/;
 export function readinessAddress(value: string): boolean {
-  return value.length <= 254 && ADDRESS.test(value);
+  return isEmailAddress(value);
 }
 
 export type ReadinessUser = {

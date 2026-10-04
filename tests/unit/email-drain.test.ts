@@ -94,10 +94,16 @@ class MemoryStore implements OutboxStore {
     return ids.map((id) => this.edits.get(id)).filter((e): e is RequestNow => !!e);
   }
   async recentlySent(ids: string[], since: Date) {
-    return new Set(this.rows.filter((r) => ids.includes(r.userId) && r.emailStatus === 'SENT' && r.emailedAt! >= since).map((r) => r.userId));
+    const hit = this.rows.filter((r) => ids.includes(r.userId) && r.emailStatus === 'SENT' && r.emailedAt! >= since);
+    return { any: new Set(hit.map((r) => r.userId)), action: new Set(hit.filter((r) => r.kind !== 'REQUEST_FYI').map((r) => r.userId)) };
   }
   async sentDigestsSince(since: Date) {
-    return new Set(this.rows.filter((r) => r.emailStatus === 'SENT' && r.emailedAt! >= since).map((r) => `${r.userId}|${r.emailedAt!.getTime()}`)).size;
+    const digests = new Map<string, boolean>();
+    for (const r of this.rows.filter((x) => x.emailStatus === 'SENT' && x.emailedAt! >= since)) {
+      const k = `${r.userId}|${r.emailedAt!.getTime()}`;
+      digests.set(k, (digests.get(k) ?? true) && r.kind === 'REQUEST_FYI');
+    }
+    return { all: digests.size, information: [...digests.values()].filter(Boolean).length };
   }
   async finish(ids: string[], status: string, at: Date) {
     for (const r of this.rows) if (ids.includes(r.id) && !r.emailedAt) Object.assign(r, { emailStatus: status, emailedAt: at, emailLeaseUntil: null });
@@ -132,12 +138,14 @@ let clock: number;
 const run = (extra: Partial<Parameters<typeof runEmailDrain>[0]> = {}) =>
   runEmailDrain({ store, transport, config: CONFIG, now: () => new Date(clock), ...extra });
 
+const REGION = 'g-north';
 const person = (id: string, role: Role, over: Partial<Recipient> = {}): Recipient => ({
   id,
   role,
   isActive: true,
   email: `${id}@example.test`,
   username: id,
+  managedRegionIds: [REGION],
   ...over,
 });
 const update = (id: string, over: Partial<RequestNow> = {}): RequestNow => ({
@@ -152,6 +160,7 @@ const update = (id: string, over: Partial<RequestNow> = {}): RequestNow => ({
   submittedById: 'sal',
   submitterSupervisorId: 'mgr',
   otherStepActorIds: [],
+  scopeRegionIds: [REGION],
   ...over,
 });
 
@@ -203,6 +212,29 @@ describe('runEmailDrain', () => {
     expect(transport.sent).toEqual([]);
     expect(r.skippedBy).toEqual({ SKIPPED_ROLE: 3, SKIPPED_INACTIVE: 1, SKIPPED_NO_ADDRESS: 1, SKIPPED_KIND: 1, SKIPPED_READ: 1 });
     for (const id of ['g', 's', 'x']) expect(store.get(id).emailStatus).toBe('SKIPPED_ROLE');
+  });
+
+  it('a supervisor outside the request’s region is not e-mailed "please review" — the page would refuse him', async () => {
+    store.users.set('far', person('far', Role.MANAGER, { managedRegionIds: ['g-south'] }));
+    store.edits.set('e9', update('e9', { submitterSupervisorId: 'far' }));
+    store.add({ id: 'far-row', userId: 'far', editId: 'e9' });
+    await run();
+    expect(store.get('far-row').emailStatus).toBe('SKIPPED_RESOLVED');
+    expect(transport.sent).toEqual([]);
+  });
+
+  it('the claim is not spent on rows that can never be sent: a must-act row behind them still goes this run', async () => {
+    // A bulk approval writes salesman and Steward rows ahead of the approver's.
+    store.add({ id: 'x1', userId: 'sal', kind: 'EDIT_STAGE_ADVANCED', createdAt: new Date(NOW.getTime() - 9 * 60_000) });
+    store.add({ id: 'x2', userId: 'gm', kind: 'EDIT_STAGE_ADVANCED', createdAt: new Date(NOW.getTime() - 8 * 60_000) });
+    store.add({ id: 'x3', userId: 'stw', kind: 'TEMIX_UPLOAD_READY', createdAt: new Date(NOW.getTime() - 7 * 60_000) });
+    store.add({ id: 'act', userId: 'mgr', createdAt: new Date(NOW.getTime() - 1 * 60_000) });
+    const r = await run({ policy: { ...EMAIL_DELIVERY, claimLimit: 2 } });
+    expect(r).toMatchObject({ claimed: 1, sent: 1 });
+    expect(transport.sent.map((m) => m.to)).toEqual(['mgr@example.test']);
+    expect(store.get('act').emailStatus).toBe('SENT');
+    for (const id of ['x1', 'x2']) expect(store.get(id).emailStatus, id).toBe('SKIPPED_ROLE');
+    expect(store.get('x3').emailStatus).toBe('SKIPPED_KIND');
   });
 
   it('a must-act row whose request moved on is not sent; one still waiting on him is', async () => {
@@ -263,6 +295,40 @@ describe('runEmailDrain', () => {
     const r = await run();
     expect(r).toMatchObject({ sent: 0, authErrors: 1, sendErrors: 0, deferred: 2, errorLabels: { EAUTH: 1 } });
     for (const id of ['a', 'b']) expect(store.get(id)).toMatchObject({ emailedAt: null, emailLeaseUntil: null, emailAttempts: 0 });
+  });
+
+  it('Gmail refusing the sending account stops the run: one attempt, every row handed back, nothing FAILED', async () => {
+    // A used-up daily sending limit answers at MAIL FROM (lib/email/transport.ts 'account').
+    store.add({ id: 'a', userId: 'mgr' });
+    store.add({ id: 'b', userId: 'acc', kind: 'REQUEST_FYI' });
+    store.users.set('acc2', person('acc2', Role.ACCOUNTANT));
+    store.add({ id: 'c', userId: 'acc2', kind: 'REQUEST_FYI' });
+    transport.outcomes = [{ ok: false, label: 'EENVELOPE', kind: 'account' }];
+    let attempts = 0;
+    const send = transport.send.bind(transport);
+    transport.send = (m) => {
+      attempts += 1;
+      return send(m);
+    };
+    const r = await run();
+    expect(attempts).toBe(1);
+    expect(r).toMatchObject({ sent: 0, failed: 0, accountErrors: 1, sendErrors: 0, deferred: 3, errorLabels: { EENVELOPE: 1 } });
+    for (const id of ['a', 'b', 'c']) expect(store.get(id), id).toMatchObject({ emailStatus: null, emailedAt: null, emailLeaseUntil: null, emailAttempts: 0 });
+  });
+
+  it('two recipients refused one after the other is the account, not them: the second and the rest go back', async () => {
+    store.users.set('acc2', person('acc2', Role.ACCOUNTANT));
+    store.add({ id: 'a', userId: 'mgr', createdAt: new Date(NOW.getTime() - 3 * 60_000) });
+    store.add({ id: 'b', userId: 'acc', kind: 'REQUEST_FYI', createdAt: new Date(NOW.getTime() - 2 * 60_000) });
+    store.add({ id: 'c', userId: 'acc2', kind: 'REQUEST_FYI', createdAt: new Date(NOW.getTime() - 1 * 60_000) });
+    transport.outcomes = [
+      { ok: false, label: 'EENVELOPE', kind: 'permanent' },
+      { ok: false, label: 'EENVELOPE', kind: 'permanent' },
+    ];
+    const r = await run();
+    expect(r).toMatchObject({ sent: 0, failed: 1, sendErrors: 1, accountErrors: 1, deferred: 2 });
+    expect(store.get('a').emailStatus).toBe('FAILED');
+    for (const id of ['b', 'c']) expect(store.get(id), id).toMatchObject({ emailStatus: null, emailedAt: null, emailAttempts: 0 });
   });
 
   it('a permanent refusal marks FAILED; a transient one leaves the rows leased for a later run', async () => {

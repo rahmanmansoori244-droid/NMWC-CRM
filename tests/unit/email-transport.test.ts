@@ -102,10 +102,28 @@ describe('classifySmtpError', () => {
     [{ code: 'EAUTH' }, { label: 'EAUTH', kind: 'auth' }],
     [{ responseCode: 535 }, { label: 'EAUTH', kind: 'auth' }],
     [{ responseCode: 534 }, { label: 'EAUTH', kind: 'auth' }],
-    [{ code: 'EENVELOPE', responseCode: 553 }, { label: 'EENVELOPE', kind: 'permanent' }],
-    [{ code: 'EMESSAGE' }, { label: 'EMESSAGE', kind: 'permanent' }],
-    [{ responseCode: 550 }, { label: 'SMTP_5XX', kind: 'permanent' }],
+    // One recipient refused: that digest only.
+    [{ code: 'EENVELOPE', responseCode: 553, command: 'RCPT TO' }, { label: 'EENVELOPE', kind: 'permanent' }],
+    [{ code: 'EENVELOPE', responseCode: 550, command: 'RCPT TO' }, { label: 'EENVELOPE', kind: 'permanent' }],
+    // A message nodemailer would not build, before any server answer: that digest only.
+    [{ code: 'EMESSAGE', command: 'API' }, { label: 'EMESSAGE', kind: 'permanent' }],
+    [{ code: 'EENVELOPE', command: 'API' }, { label: 'EENVELOPE', kind: 'permanent' }],
+    // The sending account refused (Gmail's daily sending limit or a blocked
+    // account answers at MAIL FROM; a refusal at DATA, or one that does not say
+    // where, is no better): the run stops and hands everything back.
+    [{ code: 'EENVELOPE', responseCode: 550, command: 'MAIL FROM' }, { label: 'EENVELOPE', kind: 'account' }],
+    [{ code: 'EENVELOPE', responseCode: 554, command: 'DATA' }, { label: 'EENVELOPE', kind: 'account' }],
+    [{ code: 'EMESSAGE', responseCode: 550, command: 'DATA' }, { label: 'EMESSAGE', kind: 'account' }],
+    [{ code: 'EPROTOCOL', responseCode: 554, command: 'CONN' }, { label: 'SMTP_5XX', kind: 'account' }],
+    [{ responseCode: 550 }, { label: 'SMTP_5XX', kind: 'account' }],
+    [{ code: 'EMESSAGE' }, { label: 'EMESSAGE', kind: 'account' }],
+    [{ responseCode: 550, command: 'RCPT TO' }, { label: 'SMTP_5XX', kind: 'permanent' }],
+    // "Not now" is transient wherever it comes from — Gmail's 421 at MAIL FROM
+    // used to be an EENVELOPE and so a permanent FAILED.
     [{ responseCode: 421 }, { label: 'SMTP_4XX', kind: 'transient' }],
+    [{ code: 'EENVELOPE', responseCode: 421, command: 'MAIL FROM' }, { label: 'SMTP_4XX', kind: 'transient' }],
+    [{ code: 'EENVELOPE', responseCode: 450, command: 'RCPT TO' }, { label: 'SMTP_4XX', kind: 'transient' }],
+    [{ code: 'EENVELOPE', responseCode: 550, command: { toString: (): string => 'RCPT TO' } }, { label: 'EENVELOPE', kind: 'account' }],
     [{ code: 'ETIMEDOUT' }, { label: 'ETIMEDOUT', kind: 'transient' }],
     [{ code: 'ECONNECTION' }, { label: 'ECONNECTION', kind: 'transient' }],
     [{ code: 'ESOCKET' }, { label: 'ESOCKET', kind: 'transient' }],
@@ -115,6 +133,19 @@ describe('classifySmtpError', () => {
     [null, { label: 'OTHER', kind: 'transient' }],
   ])('%j → %j', (err, expected) => {
     expect(classifySmtpError(err)).toEqual(expected);
+  });
+
+  it('reads the stage from nodemailer’s own command field, as nodemailer sets it', async () => {
+    // The real library's error for a sender Gmail refuses: built by its own
+    // _formatError, so a change in how nodemailer marks the stage fails here.
+    const { default: SMTPConnection } = (await vi.importActual('nodemailer/lib/smtp-connection')) as {
+      default: new (o: Record<string, unknown>) => { _formatError(m: string, t: string, r: string, c: string): unknown };
+    };
+    const conn = new SMTPConnection({});
+    const fromRefused = conn._formatError('Mail command failed', 'EENVELOPE', '550 5.4.5 Daily user sending limit exceeded.', 'MAIL FROM');
+    expect(classifySmtpError(fromRefused)).toEqual({ label: 'EENVELOPE', kind: 'account' });
+    const rcptRefused = conn._formatError('Recipient command failed', 'EENVELOPE', '550 5.1.1 The email account does not exist.', 'RCPT TO');
+    expect(classifySmtpError(rcptRefused)).toEqual({ label: 'EENVELOPE', kind: 'permanent' });
   });
 
   it('never reads the message, and survives a hostile error object', () => {
