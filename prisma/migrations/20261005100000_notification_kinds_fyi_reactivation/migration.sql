@@ -17,8 +17,15 @@
 --
 -- Safe before the build that uses it: the running build never writes either
 -- value. Its inbox (app/(app)/notifications/page.tsx) is the only reader of
--- Notification.kind, so the two values must exist in the build that reads them
--- before any build writes them; the read side ships in the same change, ahead
--- of any writer (docs/handover/04-PENDING-WORK.md A1.11).
+-- Notification.kind, and a Prisma client that does not know an enum value
+-- throws when it reads a row holding one ("Value ... not found in enum"). So
+-- the build that READS these values must already be production's rollback
+-- target before any build WRITES them. This migration and the read side ship
+-- in the F1 foundation, which writes neither value; the writers ship in a LATER
+-- deploy, once the foundation's deployment has served production and passed
+-- smoke. From then on the rollback target is the foundation's deployment,
+-- never an older one; rolling back past it needs the new-kind rows re-kinded
+-- first (docs/handover/03-OPERATIONS-AND-DEPLOYMENT.md section 6, and
+-- docs/handover/04-PENDING-WORK.md A1.11 "Deploy order").
 ALTER TYPE "NotificationKind" ADD VALUE IF NOT EXISTS 'REQUEST_FYI';
 ALTER TYPE "NotificationKind" ADD VALUE IF NOT EXISTS 'REACTIVATION_REQUESTED';
