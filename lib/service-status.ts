@@ -92,8 +92,8 @@ export function openableInRegions(regionIds: string[]): Prisma.CustomerEditWhere
   };
 }
 
-/** openableInRegions over the CustomerEdit aliased `e`. */
-function openableInRegionsSql(regionIds: string[]): Prisma.Sql {
+/** openableInRegions over the CustomerEdit aliased `e`. Also the dashboard's request gate (lib/insights/sql.ts). */
+export function openableInRegionsSql(regionIds: string[]): Prisma.Sql {
   return Prisma.sql`(
     (e."process" = 'CREATE' AND EXISTS (
        SELECT 1 FROM "EditBranchDraft" d JOIN "Route" r ON r."id" = d."routeId"
@@ -121,8 +121,8 @@ export function countedInRegions(regionIds: string[]): Prisma.CustomerEditWhereI
   };
 }
 
-/** countedInRegions over the CustomerEdit aliased `e`. */
-function countedInRegionsSql(regionIds: string[]): Prisma.Sql {
+/** countedInRegions over the CustomerEdit aliased `e`. Also the dashboard's request gate (lib/insights/sql.ts). */
+export function countedInRegionsSql(regionIds: string[]): Prisma.Sql {
   return Prisma.sql`(${openableInRegionsSql(regionIds)}
     AND (NOT e."isReactivation" OR EXISTS (
        SELECT 1 FROM "Branch" rb WHERE rb."id" = e."branchId" AND rb."regionId" = ANY(${regionIds}::text[]))))`;

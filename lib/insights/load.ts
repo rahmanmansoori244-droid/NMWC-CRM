@@ -1,0 +1,393 @@
+/**
+ * F2 — everything the insights dashboard (/dashboard) shows, read in one wave.
+ *
+ * Modelled on lib/service-status.ts: no 'use server' (nothing here is callable
+ * from a browser), no session read — the page gates the role, resolves the scope
+ * (lib/insights/scope.ts) and passes it in.
+ *
+ * Six aggregate statements run in ONE Promise.allSettled, each returning small
+ * rows of counts (lib/insights/shape.ts). No row-level data leaves the database:
+ * no customer, no branch, no person, no exact point. A statement that fails
+ * degrades only the cards built on it — the dashboard is every Manager's and
+ * Viewer's landing page, so one bad query must never take the page down.
+ *
+ * Definitions (owner decisions, defaults in lib/insights/policy.ts):
+ *   - new customers: CREATE requests APPROVED in the window, by reviewedAt,
+ *     counted as requests, attributed to the draft's route and that route's
+ *     current region (the /approvals/[id] gate for a CREATE);
+ *   - customers updated: APPROVED UPDATE requests on the customer (target
+ *     CUSTOMER, not reactivations), by reviewedAt, salesman requests apart from
+ *     direct writes (submittedById = reviewedById), attributed to the customer's
+ *     live branches in view, by their current route and region;
+ *   - closures and reactivations: branch requests on the branch's own region;
+ *   - the request pipeline and "Pending approval": the /approvals/[id] gate
+ *     (lib/service-status.ts countedInRegionsSql), states only, no timings —
+ *     /status has those, under its own privacy rules;
+ *   - everything branch-level (customers in view, gaps, the map): live branches of
+ *     live customers, on the branch's own region and route.
+ *
+ * Raw-SQL rules kept here: every count is cast ::int and every average ::float8
+ * (a BigInt or a Decimal neither renders nor crosses to a client component);
+ * time buckets are computed once in a CTE and grouped by name, with the grain
+ * and the Oman offset spliced from whitelisted literals (Prisma.raw), never bound
+ * twice; fieldChanges is read only when jsonb_typeof says it is an array; no
+ * findMany, no unbounded result (the map is capped at MAP.maxCells cells); no
+ * cache of any kind — nothing here may be shared between viewers.
+ * Customer.updatedAt is never read: it moves on imports, photo wiring and rescoring.
+ */
+import { Prisma } from '@prisma/client';
+import { prisma } from '../db';
+import { logger } from '../logger';
+import type { Grain, InsightPeriod } from './period';
+import { MANAGER_PENDING_STEP_ROLES, MAP, NEW_CUSTOMERS, OMAN_OFFSET_HOURS, UPDATED_CUSTOMERS } from './policy';
+import { singleRegionInView, type InsightScope } from './scope';
+import { branchInScopeSql, draftInScopeSql, requestInScopeSql } from './sql';
+import {
+  shapeCreated,
+  shapeHeat,
+  shapePipeline,
+  shapeState,
+  shapeStatusChanges,
+  shapeUpdated,
+  type CreatedData,
+  type CreatedRow,
+  type HeatData,
+  type HeatRow,
+  type PipelineData,
+  type RequestRow,
+  type Section,
+  type StateData,
+  type StateRow,
+  type StatusChangeData,
+  type StatusRow,
+  type UpdatedData,
+  type UpdatedRow,
+} from './shape';
+
+export type ActiveScope = Exclude<InsightScope, { kind: 'none' }>;
+
+export type Insights = {
+  state: Section<StateData>;
+  created: Section<CreatedData>;
+  updated: Section<UpdatedData>;
+  statusChanges: Section<StatusChangeData>;
+  pipeline: Section<PipelineData>;
+  heat: Section<HeatData>;
+};
+
+/** date_trunc's unit, from a whitelist: a literal in the SQL text, never a bound parameter. */
+const GRAIN_SQL: Record<Grain, Prisma.Sql> = {
+  day: Prisma.raw(`'day'`),
+  week: Prisma.raw(`'week'`),
+  month: Prisma.raw(`'month'`),
+};
+const OMAN_OFFSET = Prisma.raw(`interval '${Math.trunc(OMAN_OFFSET_HOURS)} hours'`);
+
+/** The Oman bucket a UTC timestamp column falls in, as 'YYYY-MM-DD'. */
+function bucketSql(column: Prisma.Sql, grain: Grain): Prisma.Sql {
+  return Prisma.sql`to_char(date_trunc(${GRAIN_SQL[grain]}, ${column} + ${OMAN_OFFSET}), 'YYYY-MM-DD')`;
+}
+
+const REGION_NAMES = Prisma.sql`rg."name" AS "regionName", rg."code" AS "regionCode"`;
+const ROUTE_NAMES = Prisma.sql`rt."code" AS "routeCode", rt."name" AS "routeName", rt."regionId" AS "routeRegionId",
+       rr."name" AS "routeRegionName",
+       (rt."id" IS NOT NULL AND EXISTS (
+          SELECT 1 FROM "User" u WHERE u."ownedRouteId" = rt."id" AND u."isActive")) AS "routeHasOwner"`;
+const NAME_JOINS = Prisma.sql`LEFT JOIN "Region" rg ON rg."id" = agg."regionId"
+  LEFT JOIN "Route" rt ON rt."id" = agg."routeId"
+  LEFT JOIN "Region" rr ON rr."id" = rt."regionId"`;
+
+/** 1. Branches and customers in view now, per region, per route and in total. */
+function stateSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
+  const imported = NEW_CUSTOMERS.showImported
+    ? Prisma.sql`(c."importBatchId" IS NOT NULL AND c."createdAt" >= ${p.from} AND c."createdAt" < ${p.to})`
+    : Prisma.sql`FALSE`;
+  return Prisma.sql`/* insights:state */
+WITH v AS (
+  SELECT b."regionId", b."routeId", b."customerId", b."status"::text AS "status",
+         (b."gpsLat" IS NOT NULL AND b."gpsLng" IS NOT NULL) AS "hasGps",
+         (b."dayOfVisit" IS NULL) AS "noDay",
+         (b."shopPhotoId" IS NULL) AS "noShop",
+         (b."signboardPhotoId" IS NULL) AS "noSign",
+         b."equipmentConfirmed" AS "equipment",
+         b."completenessScore" AS "score",
+         COALESCE(b."lastStatusChangeAt" >= ${p.from} AND b."lastStatusChangeAt" < ${p.to}, FALSE) AS "changedInPeriod",
+         (c."crPhotoId" IS NULL) AS "noCr",
+         ${imported} AS "importedInPeriod"
+    FROM "Branch" b
+    JOIN "Customer" c ON c."id" = b."customerId"
+   WHERE b."deletedAt" IS NULL AND c."deletedAt" IS NULL
+     AND ${branchInScopeSql(scope, 'b')}
+), agg AS (
+  SELECT "regionId", "routeId", GROUPING("regionId", "routeId")::int AS "g",
+         count(*)::int AS "branches",
+         count(DISTINCT "customerId")::int AS "customers",
+         count(*) FILTER (WHERE "status" = 'ACTIVE')::int AS "open",
+         count(*) FILTER (WHERE "status" = 'CLOSED')::int AS "closed",
+         count(*) FILTER (WHERE "status" = 'CLOSED' AND "changedInPeriod")::int AS "closedInPeriod",
+         count(*) FILTER (WHERE "status" = 'ACTIVE' AND "hasGps")::int AS "openWithGps",
+         count(*) FILTER (WHERE "status" = 'ACTIVE' AND "noDay")::int AS "openNoDay",
+         count(*) FILTER (WHERE "status" = 'ACTIVE' AND "noShop")::int AS "openNoShop",
+         count(*) FILTER (WHERE "status" = 'ACTIVE' AND "noSign")::int AS "openNoSign",
+         count(*) FILTER (WHERE "status" = 'ACTIVE' AND NOT "equipment")::int AS "openNoEquipment",
+         count(DISTINCT "customerId") FILTER (WHERE "noCr")::int AS "customersNoCr",
+         count(DISTINCT "customerId") FILTER (WHERE "importedInPeriod")::int AS "imported",
+         (avg("score") FILTER (WHERE "status" = 'ACTIVE'))::float8 AS "avgScore"
+    FROM v
+   GROUP BY GROUPING SETS (("regionId"), ("routeId"), ())
+)
+SELECT agg.*, ${REGION_NAMES}, ${ROUTE_NAMES}
+  FROM agg
+  ${NAME_JOINS}`;
+}
+
+/** 2. New customers: CREATE requests finalized in the window and the one before. */
+function createdSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
+  return Prisma.sql`/* insights:created */
+WITH v AS (
+  SELECT e."id", e."paymentTermsAtSubmit"::text AS "terms",
+         (e."reviewedAt" >= ${p.from}) AS "cur",
+         CASE WHEN e."reviewedAt" >= ${p.from} THEN ${bucketSql(Prisma.sql`e."reviewedAt"`, p.grain)} END AS "bucket",
+         r."regionId", d."routeId"
+    FROM "CustomerEdit" e
+    JOIN "EditBranchDraft" d ON d."editId" = e."id"
+    JOIN "Route" r ON r."id" = d."routeId"
+   WHERE e."process" = 'CREATE' AND e."state" = 'APPROVED'
+     AND e."reviewedAt" >= ${p.prevFrom} AND e."reviewedAt" < ${p.to}
+     AND ${draftInScopeSql(scope, 'd', 'r')}
+), agg AS (
+  SELECT "bucket", "regionId", "routeId", "terms",
+         GROUPING("bucket", "regionId", "routeId", "terms")::int AS "g",
+         count(DISTINCT "id") FILTER (WHERE "cur")::int AS "n",
+         count(DISTINCT "id") FILTER (WHERE NOT "cur")::int AS "prev"
+    FROM v
+   GROUP BY GROUPING SETS (("bucket", "terms"), ("regionId"), ("routeId"), ("terms"), ())
+)
+SELECT agg.*, ${REGION_NAMES}, ${ROUTE_NAMES}
+  FROM agg
+  ${NAME_JOINS}`;
+}
+
+/** fieldChanges paths, grouped as the cards name them (lib/change-report.ts grammar). */
+const FAMILY_SQL = Prisma.sql`
+    bool_or(x."f" LIKE 'branch.%.gpsLat'
+            AND NOT (jsonb_typeof(x."after") = 'number' AND x."before" = x."after")) AS "gps",
+    bool_or(x."f" IN ('customer.primaryPhone', 'customer.altPhone')) AS "phone",
+    bool_or(x."f" LIKE 'branch.%.address' OR x."f" LIKE 'branch.%.areaDescription') AS "address",
+    bool_or(x."f" LIKE 'branch.%.dayOfVisit') AS "visitDay",
+    bool_or(x."f" IN ('customer.channelId', 'customer.subChannelId')) AS "channel",
+    bool_or(x."f" LIKE 'branch.%.coolersCount' OR x."f" LIKE 'branch.%.standsCount'
+            OR x."f" LIKE 'branch.%.emptyBottlesCount' OR x."f" LIKE 'branch.%.equipmentConfirmed') AS "equipment",
+    bool_or(x."f" IN ('customer.contactPerson', 'customer.contactRole')) AS "contact"`;
+
+/** 3. Customers updated: approved UPDATE requests on the customer, in the window and the one before. */
+function updatedSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
+  const directWrites = UPDATED_CUSTOMERS.includeDirectWrites
+    ? Prisma.empty
+    : Prisma.sql`AND e."reviewedById" IS DISTINCT FROM e."submittedById"`;
+  return Prisma.sql`/* insights:updated */
+WITH ed AS (
+  SELECT e."id", e."customerId",
+         COALESCE(e."submittedById" = e."reviewedById", FALSE) AS "direct",
+         (e."reviewedAt" >= ${p.from}) AS "cur",
+         CASE WHEN e."reviewedAt" >= ${p.from} THEN ${bucketSql(Prisma.sql`e."reviewedAt"`, p.grain)} END AS "bucket",
+         CASE WHEN jsonb_typeof(e."fieldChanges") = 'array' THEN e."fieldChanges" ELSE '[]'::jsonb END AS "fc"
+    FROM "CustomerEdit" e
+   WHERE e."process" = 'UPDATE' AND e."target" = 'CUSTOMER' AND e."state" = 'APPROVED'
+     AND NOT e."isReactivation" AND e."customerId" IS NOT NULL
+     AND e."reviewedAt" >= ${p.prevFrom} AND e."reviewedAt" < ${p.to}
+     ${directWrites}
+), fam AS (
+  SELECT ed."id", ${FAMILY_SQL}
+    FROM ed
+    CROSS JOIN LATERAL (
+      SELECT el->>'field' AS "f", el->'before' AS "before", el->'after' AS "after"
+        FROM jsonb_array_elements(ed."fc") el
+       WHERE jsonb_typeof(el) = 'object') x
+   GROUP BY ed."id"
+), v AS (
+  SELECT ed."id", ed."customerId", ed."direct", ed."cur", ed."bucket", b."regionId", b."routeId",
+         COALESCE(fam."gps", FALSE) AS "gps", COALESCE(fam."phone", FALSE) AS "phone",
+         COALESCE(fam."address", FALSE) AS "address", COALESCE(fam."visitDay", FALSE) AS "visitDay",
+         COALESCE(fam."channel", FALSE) AS "channel", COALESCE(fam."equipment", FALSE) AS "equipment",
+         COALESCE(fam."contact", FALSE) AS "contact"
+    FROM ed
+    JOIN "Customer" c ON c."id" = ed."customerId" AND c."deletedAt" IS NULL
+    JOIN "Branch" b ON b."customerId" = ed."customerId" AND b."deletedAt" IS NULL
+     AND ${branchInScopeSql(scope, 'b')}
+    LEFT JOIN fam ON fam."id" = ed."id"
+), agg AS (
+  SELECT "bucket", "regionId", "routeId", GROUPING("bucket", "regionId", "routeId")::int AS "g",
+         count(DISTINCT "customerId") FILTER (WHERE "cur")::int AS "customers",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND NOT "direct")::int AS "byRequest",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND "direct")::int AS "byDirect",
+         count(DISTINCT "id") FILTER (WHERE "cur")::int AS "changes",
+         count(DISTINCT "customerId") FILTER (WHERE NOT "cur")::int AS "prev",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND "gps")::int AS "gps",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND "phone")::int AS "phone",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND "address")::int AS "address",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND "visitDay")::int AS "visitDay",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND "channel")::int AS "channel",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND "equipment")::int AS "equipment",
+         count(DISTINCT "customerId") FILTER (WHERE "cur" AND "contact")::int AS "contact"
+    FROM v
+   GROUP BY GROUPING SETS (("bucket"), ("regionId"), ("routeId"), ())
+)
+SELECT agg.*, ${REGION_NAMES}, ${ROUTE_NAMES}
+  FROM agg
+  ${NAME_JOINS}`;
+}
+
+/** 4. Close-shop and reactivation requests, on the branch's own region and route. */
+function statusSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
+  return Prisma.sql`/* insights:status */
+WITH v AS (
+  SELECT e."isReactivation" AS "react", e."state"::text AS "state",
+         (e."state" <> 'SUBMITTED' AND e."reviewedAt" >= ${p.from}) AS "cur",
+         (e."state" <> 'SUBMITTED' AND e."reviewedAt" < ${p.from}) AS "prev",
+         CASE WHEN e."state" <> 'SUBMITTED' AND e."reviewedAt" >= ${p.from}
+              THEN ${bucketSql(Prisma.sql`e."reviewedAt"`, p.grain)} END AS "bucket",
+         b."regionId"
+    FROM "CustomerEdit" e
+    JOIN "Branch" b ON b."id" = e."branchId" AND b."deletedAt" IS NULL
+    JOIN "Customer" c ON c."id" = b."customerId" AND c."deletedAt" IS NULL
+   WHERE e."process" = 'UPDATE' AND (e."target" = 'BRANCH' OR e."isReactivation")
+     AND (e."state" = 'SUBMITTED'
+          OR (e."state" IN ('APPROVED', 'NEEDS_CORRECTION')
+              AND e."reviewedAt" >= ${p.prevFrom} AND e."reviewedAt" < ${p.to}))
+     AND ${branchInScopeSql(scope, 'b')}
+), agg AS (
+  SELECT "bucket", "regionId", GROUPING("bucket", "regionId")::int AS "g",
+         count(*) FILTER (WHERE "cur" AND NOT "react" AND "state" = 'APPROVED')::int AS "closed",
+         count(*) FILTER (WHERE "cur" AND "react" AND "state" = 'APPROVED')::int AS "reactivated",
+         count(*) FILTER (WHERE "cur" AND NOT "react" AND "state" = 'NEEDS_CORRECTION')::int AS "closeRefused",
+         count(*) FILTER (WHERE "cur" AND "react" AND "state" = 'NEEDS_CORRECTION')::int AS "keptClosed",
+         count(*) FILTER (WHERE "prev" AND NOT "react" AND "state" = 'APPROVED')::int AS "prevClosed",
+         count(*) FILTER (WHERE "prev" AND "react" AND "state" = 'APPROVED')::int AS "prevReactivated",
+         count(*) FILTER (WHERE "state" = 'SUBMITTED' AND NOT "react")::int AS "closeWaiting",
+         count(*) FILTER (WHERE "state" = 'SUBMITTED' AND "react")::int AS "reactWaiting"
+    FROM v
+   GROUP BY GROUPING SETS (("bucket"), ("regionId"), ())
+)
+SELECT agg.*, ${REGION_NAMES}
+  FROM agg
+  LEFT JOIN "Region" rg ON rg."id" = agg."regionId"`;
+}
+
+/**
+ * 5. Requests submitted in the window by kind and the state they are in now, and
+ * what waits now. Direct writes never queue and are left out.
+ */
+function requestsSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
+  return Prisma.sql`/* insights:requests */
+SELECT CASE WHEN e."process" = 'CREATE' THEN 'create'
+            WHEN e."isReactivation" THEN 'reactivation'
+            WHEN e."target" = 'BRANCH' THEN 'close'
+            ELSE 'update' END AS "kind",
+       e."state"::text AS "state",
+       count(*) FILTER (WHERE e."submittedAt" >= ${p.from} AND e."submittedAt" < ${p.to})::int AS "submitted",
+       count(*) FILTER (WHERE e."state" = 'SUBMITTED')::int AS "waiting",
+       count(*) FILTER (WHERE e."state" = 'SUBMITTED'
+                          AND COALESCE(e."pendingRole"::text, 'SUPERVISOR') = ANY(${[...MANAGER_PENDING_STEP_ROLES]}::text[]))::int AS "waitingFirstStep"
+  FROM "CustomerEdit" e
+ WHERE e."state" <> 'DRAFT'
+   AND e."reviewedById" IS DISTINCT FROM e."submittedById"
+   AND (e."state" = 'SUBMITTED' OR (e."submittedAt" >= ${p.from} AND e."submittedAt" < ${p.to}))
+   AND ${requestInScopeSql(scope)}
+ GROUP BY 1, 2`;
+}
+
+/** 6. GPS cells of open branches in view, densest first, plus the coverage totals. */
+function heatSql(scope: ActiveScope, cellDeg: number): Prisma.Sql {
+  const perDeg = Math.round(1 / cellDeg);
+  const { latMin, latMax, lngMin, lngMax } = MAP.bounds;
+  return Prisma.sql`/* insights:heat */
+WITH base AS (
+  SELECT b."gpsLat" AS "lat", b."gpsLng" AS "lng"
+    FROM "Branch" b
+    JOIN "Customer" c ON c."id" = b."customerId"
+   WHERE b."deletedAt" IS NULL AND c."deletedAt" IS NULL AND b."status" = 'ACTIVE'
+     AND ${branchInScopeSql(scope, 'b')}
+), cells AS (
+  SELECT floor("lat" * ${perDeg})::int AS "cy", floor("lng" * ${perDeg})::int AS "cx", count(*)::int AS "n"
+    FROM base
+   WHERE "lat" IS NOT NULL AND "lng" IS NOT NULL
+     AND "lat" >= ${latMin} AND "lat" <= ${latMax} AND "lng" >= ${lngMin} AND "lng" <= ${lngMax}
+   GROUP BY 1, 2
+), ranked AS (
+  SELECT "cy", "cx", "n", row_number() OVER (ORDER BY "n" DESC, "cy", "cx") AS "rk" FROM cells
+)
+SELECT 'cell'::text AS "kind", "cy", "cx", "n", 0::int AS "m" FROM ranked WHERE "rk" <= ${MAP.maxCells}
+UNION ALL
+SELECT 'total', NULL::int, NULL::int,
+       (SELECT count(*)::int FROM base),
+       (SELECT count(*)::int FROM base WHERE "lat" IS NOT NULL AND "lng" IS NOT NULL)
+UNION ALL
+SELECT 'cells', NULL::int, NULL::int,
+       (SELECT count(*)::int FROM cells),
+       (SELECT COALESCE(sum("n"), 0)::int FROM cells)`;
+}
+
+/** Exported for tests/unit/insights-load.test.ts and the integration suite, which run the SQL text. */
+export const __sql = { stateSql, createdSql, updatedSql, statusSql, requestsSql, heatSql, bucketSql };
+
+function section<R, T>(card: string, result: PromiseSettledResult<R>, shape: (rows: R) => T): Section<T> {
+  if (result.status === 'fulfilled') {
+    try {
+      return { ok: true, data: shape(result.value) };
+    } catch (err) {
+      logCardFailure(card, err);
+      return { ok: false };
+    }
+  }
+  logCardFailure(card, result.reason);
+  return { ok: false };
+}
+
+/**
+ * Only the card and the error's class and code reach the log — never its message,
+ * which can quote the statement (lib/logger.ts scrubs, but there is nothing here
+ * a reader of the log needs beyond what failed and how).
+ */
+function logCardFailure(card: string, err: unknown): void {
+  const e = err as { name?: unknown; code?: unknown } | null;
+  logger.error(
+    { card, errorClass: typeof e?.name === 'string' ? e.name : typeof err, code: typeof e?.code === 'string' ? e.code : undefined },
+    'insights.card_failed'
+  );
+}
+
+async function run<T>(statement: () => PromiseLike<T>): Promise<T> {
+  return statement();
+}
+
+/** The cell size the map uses for this view: finer when exactly one region is in view. */
+export function cellDegFor(scope: ActiveScope): number {
+  return singleRegionInView(scope) ? MAP.cellDegRegion : MAP.cellDegCountry;
+}
+
+/**
+ * `scope` and `period` have no defaults: the page resolves both. A scope of kind
+ * 'none' never reaches here — the page shows its empty state instead.
+ */
+export async function loadInsights(scope: ActiveScope, period: InsightPeriod): Promise<Insights> {
+  const cellDeg = cellDegFor(scope);
+  // Each statement is built inside its own async thunk, so even a failure while
+  // building one becomes that section's rejection instead of escaping the wave.
+  const [state, created, updated, statusChanges, pipeline, heat] = await Promise.allSettled([
+    run(() => prisma.$queryRaw<StateRow[]>(stateSql(scope, period))),
+    run(() => prisma.$queryRaw<CreatedRow[]>(createdSql(scope, period))),
+    run(() => prisma.$queryRaw<UpdatedRow[]>(updatedSql(scope, period))),
+    run(() => prisma.$queryRaw<StatusRow[]>(statusSql(scope, period))),
+    run(() => prisma.$queryRaw<RequestRow[]>(requestsSql(scope, period))),
+    run(() => prisma.$queryRaw<HeatRow[]>(heatSql(scope, cellDeg))),
+  ]);
+  return {
+    state: section('state', state, shapeState),
+    created: section('created', created, (rows) => shapeCreated(rows, period)),
+    updated: section('updated', updated, (rows) => shapeUpdated(rows, period)),
+    statusChanges: section('status', statusChanges, (rows) => shapeStatusChanges(rows, period)),
+    pipeline: section('requests', pipeline, shapePipeline),
+    heat: section('heat', heat, (rows) => shapeHeat(rows, cellDeg)),
+  };
+}
