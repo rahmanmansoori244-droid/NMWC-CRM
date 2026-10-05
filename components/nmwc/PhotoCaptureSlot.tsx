@@ -656,9 +656,13 @@ export function PhotoCaptureSlot({
   const canRetry = progress === 'error' && retainedBlob != null && retainedHash != null;
 
   return (
+    // isolate: the z-10/z-20/z-30 layers below stay inside this slot. Without
+    // it they joined the page's stacking context and painted over the forms'
+    // sticky Submit bar whenever a photo row scrolled behind it, so a tap on
+    // Submit hit Retake or Remove photo (tests/unit/mobile-submit-bar.test.ts).
     <div
       className={cn(
-        'relative flex h-32 flex-col items-center justify-center overflow-hidden rounded-md border text-center text-sm',
+        'relative isolate flex h-32 flex-col items-center justify-center overflow-hidden rounded-md border text-center text-sm',
         filled
           ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
           : 'border-dashed border-slate-300 bg-slate-50 text-slate-500',
