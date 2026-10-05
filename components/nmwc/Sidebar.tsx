@@ -144,8 +144,11 @@ export function MobileTabBar({ role }: { role: Role }) {
     { href: '/work', label: 'Work', icon: Inbox },
     { href: '/profile', label: 'Me', icon: HomeIcon },
   ];
+  // h-14 is a contract, not a look: app/(app)/layout.tsx sets
+  // --nmwc-tabbar-h to 3.5rem for this bar, and the forms' sticky Submit bars
+  // stand on it (tests/unit/mobile-submit-bar.test.ts).
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-slate-200 bg-white md:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-30 grid h-14 grid-cols-4 border-t border-slate-200 bg-white md:hidden">
       {items.map((item) => {
         const active = pathname === item.href || pathname.startsWith(item.href + '/');
         const Icon = item.icon;

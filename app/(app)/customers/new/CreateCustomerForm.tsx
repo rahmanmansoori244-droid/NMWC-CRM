@@ -1205,7 +1205,7 @@ export function CreateCustomerForm({
       {!readOnly && (
         <>
           <div className="mb-3" />
-          <div className="sticky bottom-0 -mx-4 mt-4 flex flex-col border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
+          <div className="sticky bottom-[var(--nmwc-tabbar-h,0px)] -mx-4 mt-4 flex flex-col border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:-mx-6 sm:p-6">
             <SubmitNoticeBox
               notice={notice}
               busy={sending}
