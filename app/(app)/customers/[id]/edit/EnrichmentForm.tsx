@@ -9,6 +9,7 @@ import {
   withReloadHintForUnshownBranches,
 } from '@/lib/form-errors';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
+import { GPS_MAX_ACCURACY_M, isGpsTooInaccurate } from '@/lib/gps-accuracy';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import { postForm, noticeFor, SubmissionIds, type SubmitNotice } from '@/lib/submit-client';
@@ -73,6 +74,14 @@ const DRAFT_TEXT_FIELDS = [
 /** Why Submit waits after a STALE_FIELDS answer (ruling 1). */
 const UNRESOLVED_TITLE =
   'Some details changed after you opened this form. Choose “Keep mine” or “Use this value” for each one above, then submit.';
+
+/**
+ * Whether the form's point differs from the base the patch builder compares
+ * against (the loaded values, moved by "Use this value"): only such a point is
+ * sent, and only it is held to the ±100 m rule (lib/gps-accuracy.ts).
+ */
+const gpsMoved = (g: FormGps, base: { gpsLat: number | null; gpsLng: number | null }) =>
+  g.lat !== base.gpsLat || g.lng !== base.gpsLng;
 
 /** The GPS button takes a Date; a restored draft or a live value carries an ISO string. */
 const gpsForButton = (g: FormGps | null): Gps | null =>
@@ -256,12 +265,20 @@ export function EnrichmentForm({
         missingMandatory.push(`${tag} address`);
       if (!s.gps || s.gps.lat == null || s.gps.lng == null)
         missingMandatory.push(`${tag} GPS`);
+      else if (
+        gpsMoved(s.gps, loadedRef.current.branches.find((x) => x.id === b.id) ?? b) &&
+        isGpsTooInaccurate(s.gps.accuracy, s.gps.isManual ? s.gps.manualReason : undefined)
+      )
+        // The ±100 m standard (lib/gps-accuracy.ts), for a newly captured point only.
+        missingMandatory.push(`${tag} GPS within ${GPS_MAX_ACCURACY_M} m`);
       if (req('dayOfVisit') && !s.dayOfVisit) missingMandatory.push(`${tag} day of visit`);
       if (!branchPhotos[b.id]?.shop) missingMandatory.push(`${tag} shop photo`);
       if (req('signboardPhoto') && !branchPhotos[b.id]?.signboard)
         missingMandatory.push(`${tag} signboard photo`);
     });
   }
+  // Only a salesman's submit is held to the ±100 m GPS rule (lib/gps-accuracy.ts).
+  const gpsGated = userRole === Role.SALESMAN;
   // For every role: a Manager's direct write leaves the same way.
   const submitBlocked =
     !canSubmit ||
@@ -811,6 +828,7 @@ export function EnrichmentForm({
                   disabled={sending || arrived}
                   initial={gpsForButton(s.gps)}
                   onCapture={(g) => setBranch(b.id, { gps: g })}
+                  enforceAccuracy={gpsGated}
                   required
                 />
                 {errors[`branch.${b.id}.gps`] && (

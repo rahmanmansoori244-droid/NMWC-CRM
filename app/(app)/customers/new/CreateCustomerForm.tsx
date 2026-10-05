@@ -15,6 +15,7 @@ import { useCallback, useId, useEffect, useRef, useState } from 'react';
 import type { DayOfWeek, EditState, PaymentTerms } from '@prisma/client';
 import { FormSection } from '@/components/nmwc/FormSection';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
+import { GPS_MAX_ACCURACY_M, isGpsTooInaccurate } from '@/lib/gps-accuracy';
 import { StepperInput } from '@/components/nmwc/StepperInput';
 import { PhotoCaptureSlot } from '@/components/nmwc/PhotoCaptureSlot';
 import {
@@ -301,6 +302,9 @@ export function CreateCustomerForm({
     const tag = `Branch ${i + 1}`;
     if (!s.address.trim() || s.address.trim().length < 3) missingMandatory.push(`${tag} address`);
     if (!s.gps) missingMandatory.push(`${tag} GPS`);
+    else if (isGpsTooInaccurate(s.gps.accuracy, s.gps.isManual ? s.gps.manualReason : undefined))
+      // The ±100 m standard (lib/gps-accuracy.ts), as collectMissingForCreate applies it.
+      missingMandatory.push(`${tag} GPS within ${GPS_MAX_ACCURACY_M} m`);
     if (!s.dayOfVisit) missingMandatory.push(`${tag} day of visit`);
     if (!s.shopPhotoId) missingMandatory.push(`${tag} shop photo`);
     if (!s.signboardPhotoId) missingMandatory.push(`${tag} signboard photo`);

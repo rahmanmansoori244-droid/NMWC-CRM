@@ -50,6 +50,20 @@ export const BULK_DECISION_LIMIT = 50;
 export const BULK_DECISION_LIMIT_MESSAGE = `At most ${BULK_DECISION_LIMIT} requests per bulk action — select ${BULK_DECISION_LIMIT} or fewer.`;
 
 /**
+ * Owner decision 2026-10-05 (X-APPR-1(a): no): a credit application is approved
+ * one at a time, from its own review page, at every step — never by bulk approve.
+ * The queue offers no tick box for one (BulkApprovalQueue), so from the app it is
+ * approved or rejected on its own page; the server also refuses it inside a bulk
+ * approve (approveEditCore, BULK_RUN_FIELD). The server does not refuse it inside
+ * a bulk REJECT: a rejection grants nothing.
+ */
+export const CREDIT_BULK_REFUSED_MESSAGE =
+  'Credit applications are approved one at a time: open it, check the documents and the figures, then approve it there.';
+
+/** Set by bulkApproveEditsAction on each item it hands to approveEditAction. */
+export const BULK_RUN_FIELD = 'viaBulk';
+
+/**
  * How long a bulk loop may keep starting new items.
  *
  * Vercel functions are capped at 60s (`vercel.json`). The budget stops well

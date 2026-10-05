@@ -4,10 +4,12 @@ import { prisma } from '@/lib/db';
 import {
   BULK_DECISION_LIMIT,
   BULK_DECISION_LIMIT_MESSAGE,
+  BULK_RUN_FIELD,
+  CREDIT_BULK_REFUSED_MESSAGE,
   runBulk,
   type BulkOutcome,
 } from '@/lib/bulk-run';
-import { Role, EditState, EditTarget, EditProcess, type Prisma } from '@prisma/client';
+import { Role, EditState, EditTarget, EditProcess, PaymentTerms, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
@@ -64,6 +66,7 @@ import {
 } from '@/lib/edit-approval';
 import { resolveChannelPair } from '@/lib/channel-pair';
 import { markManualGps, takeManualGpsReason, type FieldChange } from '@/lib/gps-manual';
+import { isGpsTooInaccurate, gpsTooInaccurateMessage } from '@/lib/gps-accuracy';
 import { normalizeCR } from '@/lib/cr';
 import { lockCustomerRow } from '@/lib/locks';
 import { assertStatusEvidence, evidenceIds } from '@/lib/status-evidence';
@@ -738,6 +741,20 @@ async function submitEditOnce(
       branchProposedById,
       /* actorIsSalesman */ true
     );
+    // The ±100 m GPS standard (lib/gps-accuracy.ts): a newly captured point
+    // worse than the limit is refused here, at submit only. A point not sent
+    // (unchanged) or typed in with a reason is not checked.
+    for (const bp of bInputs) {
+      if (bp.gpsLat === undefined || missing[`branch.${bp.branchId}.gps`]) continue;
+      const branch = customer.branches.find((b) => b.id === bp.branchId);
+      const moves = !branch || bp.gpsLat !== branch.gpsLat || bp.gpsLng !== branch.gpsLng;
+      if (moves && isGpsTooInaccurate(bp.gpsAccuracy, bp.gpsManualReason)) {
+        missing[`branch.${bp.branchId}.gps`] = gpsTooInaccurateMessage(
+          `Branch ${branch?.branchCode || bp.branchId}`,
+          bp.gpsAccuracy as number
+        );
+      }
+    }
     if (Object.keys(missing).length > 0) {
       throw new ValidationError(missing);
     }
@@ -1157,6 +1174,16 @@ async function approveEditCore(formData: FormData) {
     );
   }
   const isCreate = edit.process === EditProcess.CREATE;
+  // Owner decision 2026-10-05 (X-APPR-1(a): no): a credit application is
+  // approved one at a time from its own review page, at every step, never inside
+  // a bulk approve. Only bulkApproveEditsAction sets the field; nothing is written.
+  if (
+    formData.get(BULK_RUN_FIELD) === '1' &&
+    isCreate &&
+    edit.customerDraft?.paymentTerms === PaymentTerms.CREDIT
+  ) {
+    throw new ValidationError({ decisions: CREDIT_BULK_REFUSED_MESSAGE }, CREDIT_BULK_REFUSED_MESSAGE);
+  }
   if (isCreate) {
     // Integrity: a CREATE row must have its draft payload (written atomically
     // at submit). Fails closed with an actionable code if not.
@@ -1768,6 +1795,9 @@ export async function bulkApproveEditsAction(formData: FormData): SafeAction<Bul
         const fd = new FormData();
         fd.set('editId', editId);
         fd.set('decisionToken', tokenOf.get(editId)!);
+        // Owner decision 2026-10-05 (X-APPR-1(a): no): marks the item as part of
+        // a bulk run, so approveEditCore refuses a credit application here.
+        fd.set(BULK_RUN_FIELD, '1');
         return approveEditAction(fd);
       },
       {

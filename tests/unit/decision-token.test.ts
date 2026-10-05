@@ -33,7 +33,7 @@ import {
   type DecisionRow,
   type DecisionView,
 } from '@/lib/decision-token';
-import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE } from '@/lib/bulk-run';
+import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE, CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
 
 type User = { id: string; role: string; username: string };
 
@@ -620,5 +620,66 @@ describe('guarantee documents: a decision lands only on the guarantees the page 
     if (!res.ok) return;
     expect(res.data.successes).toEqual(['e2']);
     expect(res.data.failures).toEqual([{ editId: 'e1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }]);
+  });
+});
+
+describe('owner decision 2026-10-05 (X-APPR-1(a): no): a credit application is never approved in bulk', () => {
+  /** As the database returns it: the draft carries the payment terms that route the chain. */
+  const credit = (id = 'e1') =>
+    creditRow(id, { customerDraft: { legalName: 'Al Noor Trading', paymentTerms: 'CREDIT' } });
+  const cash = (id: string) =>
+    creditRow(id, { customerDraft: { legalName: 'Corner Shop', paymentTerms: 'CASH' } });
+
+  it('inside a bulk approve it fails alone, saying what to do, and nothing is written for it', async () => {
+    h.rows.set('e1', credit('e1'));
+    const res = await bulkApproveEditsAction(
+      form({ decisions: JSON.stringify([{ editId: 'e1', decisionToken: tokenOf(credit('e1')) }]) })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.successes).toEqual([]);
+    expect(res.data.failures).toEqual([{ editId: 'e1', code: 'VALIDATION_FAILED', message: CREDIT_BULK_REFUSED_MESSAGE }]);
+    expectNothingWritten();
+  });
+
+  it('a cash application in the same bulk run is still approved', async () => {
+    h.rows.set('e1', credit('e1'));
+    h.rows.set('e2', cash('e2'));
+    h.guarantees.set('e2', []);
+    const res = await bulkApproveEditsAction(
+      form({
+        decisions: JSON.stringify([
+          { editId: 'e1', decisionToken: tokenOf(credit('e1')) },
+          { editId: 'e2', decisionToken: tokenOf(cash('e2')) },
+        ]),
+      })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.successes).toEqual(['e2']);
+    expect(res.data.failures.map((x) => x.editId)).toEqual(['e1']);
+    expect(h.updateMany).toHaveBeenCalledTimes(1);
+    expect(h.updateMany.mock.calls[0]![0].where).toMatchObject({ id: 'e2' });
+  });
+
+  it('the same credit application is approved from its own page', async () => {
+    h.rows.set('e1', credit('e1'));
+    const res = await approve('e1', tokenOf(credit('e1')));
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(h.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('a bulk reject of a credit application is still allowed: a rejection grants nothing', async () => {
+    h.rows.set('e1', credit('e1'));
+    const res = await bulkRejectEditsAction(
+      form({
+        decisions: JSON.stringify([{ editId: 'e1', decisionToken: tokenOf(credit('e1')) }]),
+        reason: 'Credit figures need rework.',
+        category: 'wrong_info',
+      })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.successes).toEqual(['e1']);
   });
 });

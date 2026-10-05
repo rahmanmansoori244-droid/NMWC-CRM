@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { submissionIdSchema } from '../submission';
 import { DayOfWeek, PaymentTerms } from '@prisma/client';
 import { gpsManualReasonSchema } from '../gps-manual';
+import { isGpsTooInaccurate, gpsTooInaccurateMessage } from '../gps-accuracy';
 // stripHtml / strippedStr moved to ./fields so the UPDATE payload strips before it
 // validates too (N02); the optional text fields below moved to optionalText there
 // (review of phase 2), because they checked the raw length and stripped after.
@@ -188,6 +189,9 @@ export function collectMissingForCreate(input: ParsedSubmitCreate): Record<strin
     }
     if (!isNum(b.gpsLat) || !isNum(b.gpsLng)) {
       errors[`branch.${i}.gps`] = `${tag}: GPS coordinates are required.`;
+    } else if (isGpsTooInaccurate(b.gpsAccuracy, b.gpsManualReason)) {
+      // The ±100 m standard (lib/gps-accuracy.ts): a captured point only.
+      errors[`branch.${i}.gps`] = gpsTooInaccurateMessage(tag, b.gpsAccuracy as number);
     }
     if (!isStr(b.dayOfVisit)) {
       errors[`branch.${i}.dayOfVisit`] = `${tag}: day of visit is required.`;

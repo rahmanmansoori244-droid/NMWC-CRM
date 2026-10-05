@@ -423,3 +423,40 @@ describe('resolveStepAudience', () => {
     ).toEqual(['gm1', 'gm2']);
   });
 });
+
+describe('owner decision 2026-10-05: the ±100 m GPS standard on a new customer', () => {
+  const parse = (input: unknown): ParsedSubmitCreate => {
+    const r = submitCreateSchema.safeParse(input);
+    if (!r.success) throw new Error('fixture must parse: ' + r.error.message);
+    return r.data;
+  };
+  const withBranch = (extra: Record<string, unknown>) =>
+    completeCashInput({
+      branches: [
+        {
+          branchName: 'Main',
+          address: 'Way 123, Al Khuwair',
+          gpsLat: 23.6,
+          gpsLng: 58.5,
+          dayOfVisit: 'MON',
+          shopPhotoAttachmentId: CUID,
+          signboardPhotoAttachmentId: CUID2,
+          ...extra,
+        },
+      ],
+    });
+
+  it('a captured point worse than ±100 m holds the submit, in the branch’s location slot', () => {
+    const missing = collectMissingForCreate(parse(withBranch({ gpsAccuracy: 150 })));
+    expect(Object.keys(missing)).toEqual(['branch.0.gps']);
+    expect(missing['branch.0.gps']).toMatch(/^Branch 1: the GPS reading is ±150 m, over the 100 m limit/);
+  });
+
+  it('±100 m, no accuracy at all, or a point typed in with a reason all pass', () => {
+    expect(collectMissingForCreate(parse(withBranch({ gpsAccuracy: 100 })))).toEqual({});
+    expect(collectMissingForCreate(parse(withBranch({})))).toEqual({});
+    expect(
+      collectMissingForCreate(parse(withBranch({ gpsAccuracy: 150, gpsManualReason: 'GPS not working at all' })))
+    ).toEqual({});
+  });
+});

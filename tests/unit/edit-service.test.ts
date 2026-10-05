@@ -751,3 +751,36 @@ describe('the point is one value (phase-2 review, finding 2)', () => {
     nothingWritten();
   });
 });
+
+describe('owner decision 2026-10-05: the ±100 m GPS standard at a salesman’s submit', () => {
+  const point = (accuracy: number | null, extra: Record<string, unknown> = {}) => ({
+    branchId: B1,
+    gpsLat: 23.61,
+    gpsLng: 58.41,
+    gpsAccuracy: accuracy,
+    gpsCapturedAt: CAPTURED.toISOString(),
+    ...extra,
+  });
+
+  it('a captured point worse than ±100 m is refused in the branch’s location slot; nothing is written', async () => {
+    const res = failed(await submit({ branches: [point(150)] }));
+    expect(res.code).toBe('VALIDATION_FAILED');
+    expect(res.fields![`branch.${B1}.gps`]).toMatch(/±150 m, over the 100 m limit/);
+    nothingWritten();
+  });
+
+  it('±100 m goes through', async () => {
+    const res = await submit({ branches: [point(100)] });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+  });
+
+  it('a point typed in with a reason is not held to it: the manager judges it', async () => {
+    const res = await submit({ branches: [point(null, { gpsManualReason: 'GPS not working inside the mall' })] });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+  });
+
+  it('a draft may hold a poor fix; only the submit is gated', async () => {
+    const res = await submit({ isDraft: true, branches: [point(150)] });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+  });
+});

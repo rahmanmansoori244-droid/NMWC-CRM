@@ -3,13 +3,11 @@
 import { useEffect, useRef, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { Lock } from 'lucide-react';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
-import {
-  bulkApproveEditsAction,
-  bulkRejectEditsAction,
-} from '@/services/edits';
-import { BULK_DECISION_LIMIT } from '@/lib/bulk-run';
+import { bulkApproveEditsAction, bulkRejectEditsAction } from '@/services/edits';
+import { BULK_DECISION_LIMIT, CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
 
 /**
  * B-11 (Senior-audit 2026-05-10): bulk-approval queue.
@@ -76,7 +74,12 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
     notAttempted: number;
   } | null>(null);
 
-  const allOnPage = items.map((i) => i.id);
+  // Owner decision 2026-10-05 (X-APPR-1(a): no): a credit application is never
+  // ticked into a bulk action; it is opened and approved on its own page. The
+  // server refuses one inside a bulk approve too (CREDIT_BULK_REFUSED_MESSAGE).
+  const isCreditCard = (i: ApprovalQueueItem) => i.isCreate && i.paymentTerms === 'CREDIT';
+  const allOnPage = items.filter((i) => !isCreditCard(i)).map((i) => i.id);
+  const hasCredit = items.some(isCreditCard);
   // Select all stops at the bulk limit, taking cards in the order shown (most
   // overdue first). It used to take every card on the page — up to 200 — and the
   // server refuses a list over the limit whole, so on a region-wide queue past
@@ -130,7 +133,11 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
         setSelected(new Set());
         router.refresh();
       } else {
-        setOutcome({ successes: 0, failures: [{ editId: '_form', code: res.code, message: res.message }], notAttempted: 0 });
+        setOutcome({
+          successes: 0,
+          failures: [{ editId: '_form', code: res.code, message: res.message }],
+          notAttempted: 0,
+        });
       }
     });
   }
@@ -156,7 +163,11 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
         setRejectReason('');
         router.refresh();
       } else {
-        setOutcome({ successes: 0, failures: [{ editId: '_form', code: res.code, message: res.message }], notAttempted: 0 });
+        setOutcome({
+          successes: 0,
+          failures: [{ editId: '_form', code: res.code, message: res.message }],
+          notAttempted: 0,
+        });
       }
     });
   }
@@ -196,29 +207,32 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                   {f.message}
                 </li>
               ))}
-              {outcome.failures.length > 5 && (
-                <li>… and {outcome.failures.length - 5} more.</li>
-              )}
+              {outcome.failures.length > 5 && <li>… and {outcome.failures.length - 5} more.</li>}
             </ul>
           )}
         </div>
       )}
 
-      <div className="mx-4 mb-3 flex items-center justify-between sm:mx-6">
-        <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-          <input
-            type="checkbox"
-            checked={allSelected}
-            onChange={toggleAll}
-            className="h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-            aria-label="Select up to 50 on this page"
-          />
-          {allSelected ? 'Deselect all' : 'Select all'}
-        </label>
-        <p className="text-xs text-slate-500">
-          {selected.size} selected
+      {hasCredit && (
+        <p className="mx-4 mb-3 text-xs font-medium text-slate-600 sm:mx-6">
+          Credit applications are approved one at a time: open each card marked with a lock.
         </p>
-      </div>
+      )}
+      {allOnPage.length > 0 && (
+        <div className="mx-4 mb-3 flex items-center justify-between sm:mx-6">
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleAll}
+              className="h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+              aria-label="Select up to 50 on this page"
+            />
+            {allSelected ? 'Deselect all' : 'Select all'}
+          </label>
+          <p className="text-xs text-slate-500">{selected.size} selected</p>
+        </div>
+      )}
       {selectAllCapped && (
         <p role="status" className="mx-4 mb-3 text-xs font-medium text-amber-800 sm:mx-6">
           {`Selected the first ${BULK_DECISION_LIMIT} — the limit per action.`}
@@ -235,22 +249,30 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                 checked ? 'ring-brand-400 bg-brand-50/30' : 'ring-slate-200 hover:shadow-md'
               }`}
             >
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() => toggleOne(e.id)}
-                onClick={(ev) => ev.stopPropagation()}
-                className="mt-1 h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-                aria-label={`Select edit for ${e.customer?.legalName ?? 'unknown'}`}
-              />
+              {isCreditCard(e) ? (
+                <span
+                  className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-slate-400"
+                  title={CREDIT_BULK_REFUSED_MESSAGE}
+                  aria-label="Credit application: open it to decide"
+                  role="img"
+                >
+                  <Lock className="h-4 w-4" aria-hidden="true" />
+                </span>
+              ) : (
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleOne(e.id)}
+                  onClick={(ev) => ev.stopPropagation()}
+                  className="mt-1 h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  aria-label={`Select edit for ${e.customer?.legalName ?? 'unknown'}`}
+                />
+              )}
               <Link
                 href={`/approvals/${e.id}`}
                 className="flex min-w-0 flex-1 flex-wrap items-start gap-3 sm:flex-nowrap"
               >
-                <CompletenessRing
-                  value={e.customer?.completenessScore ?? 0}
-                  size={44}
-                />
+                <CompletenessRing value={e.customer?.completenessScore ?? 0} size={44} />
                 {/* 56px = the 44px CompletenessRing + gap-3: the text takes the rest of
                     the first line on a phone, and the pills wrap below it. */}
                 <div className="min-w-0 flex-1 basis-[calc(100%-56px)] sm:basis-0">
@@ -319,9 +341,7 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
       {selected.size > 0 && (
         <div className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.06)] backdrop-blur sm:px-6">
           <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
-            <p className="text-sm font-medium text-slate-700">
-              {selected.size} selected
-            </p>
+            <p className="text-sm font-medium text-slate-700">{selected.size} selected</p>
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -474,11 +494,10 @@ function RejectModal({
             back, and the loop guard — a step's second rejection in one round
             goes to the salesman. The detail page names the one for its request. */}
         <p className="mt-1 text-xs text-slate-600">
-          The same category and reason go with every request rejected. Each one
-          goes back to the previous approver, except that it goes to the
-          salesman when it is at the first step, or when this step has already
-          rejected it once since the salesman last sent it. A request&apos;s own
-          page says which.
+          The same category and reason go with every request rejected. Each one goes back to the
+          previous approver, except that it goes to the salesman when it is at the first step, or
+          when this step has already rejected it once since the salesman last sent it. A
+          request&apos;s own page says which.
         </p>
         <label className="mt-4 block text-xs font-medium text-slate-700">
           Category

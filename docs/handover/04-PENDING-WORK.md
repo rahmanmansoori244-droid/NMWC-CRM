@@ -180,13 +180,12 @@ These were found while writing the user guides. Most are defaults that nobody de
 
 ### A2. Owner decisions carried from HANDOVER §6.1 and the auditor's recheck
 
-The recommendations are Claude's and have not been answered. The sources are [`HANDOVER.md`](../HANDOVER.md) §6.1 and the "Owner" rows of [`AUDITOR-BRIEF.md`](../../AUDITOR-BRIEF.md) Appendix B. The owner decides every row; F12 / E5 and Enh. 5 also need the ERP team. The owner decided X-AUTH-2 on 2026-10-04 (HANDOVER §6.1), so do not reopen it.
+The recommendations are Claude's and have not been answered. The sources are [`HANDOVER.md`](../HANDOVER.md) §6.1 and the "Owner" rows of [`AUDITOR-BRIEF.md`](../../AUDITOR-BRIEF.md) Appendix B. The owner decides every row; F12 / E5 and Enh. 5 also need the ERP team. The owner decided X-AUTH-2 on 2026-10-04, and X-APPR-1(a) (no bulk approval of credit, built) and the GPS accuracy standard (±30 m capture, ±100 m approve, built) on 2026-10-05 (HANDOVER §6.1), so do not reopen them.
 
 | ID | Question | Recommendation on record | Why it matters | Effort once decided | P |
 |---|---|---|---|---|---|
 | F02 | Photo clean-up and recovery. `photo-gc` relies on R2 object tagging, and the recovery plan relies on bucket versioning. The recheck found that R2 implements neither. | Driven by the rows, delete the object 30 days after its row was soft-deleted, and copy every photo to a second bucket each night. This is also a cost and data-residency choice. | Photos are the evidence behind credit decisions, and they have no recovery path ([`OPERATIONS.md`](../OPERATIONS.md) §6.2). Blocks C6, which also has to resolve a contradiction in OPERATIONS. | M–L | P1 |
 | F04 | Photo read and remove scope works at customer level: any branch of the customer in scope is enough. | Branch level: only photos of branches in the viewer's own scope. | Documents are visible across routes and regions. It also changes who may approve what (RBAC-05-003). | M | P1 |
-| X-APPR-1(a) | May the Finance Manager, the GM and the Accountant on the credit chain decide new-credit applications in bulk? | No. | Credit decisions could be made without being looked at. | S | P1 |
 | Photo removal while pending | May a salesman remove a guarantee or status-evidence photo while its request is pending? | No. He may replace it. | Today, removing the photo forces the request to be rejected (AUDITOR-BRIEF §6, "Close shop / reactivation"). | S–M | P1 |
 | F14 | A route moved to another region leaves its branches in the old region. | Move the route's branches (and drafts) with it, in the same transaction, audited. | Region scope is then wrong for Managers and Accountants. Related to A1.10. | M | P2 |
 | N04 | How should a customer's status follow its branches? | `ACTIVE` if any branch is active; `CLOSED` only when all are. | A customer's status can contradict its branches. | M | P2 |

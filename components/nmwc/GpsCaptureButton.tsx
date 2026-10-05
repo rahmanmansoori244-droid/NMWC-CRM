@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { MapPin, Check, RotateCcw, AlertTriangle, PencilLine } from 'lucide-react';
+import { gpsAccuracyAdvice, gpsAccuracyBand } from '@/lib/gps-accuracy';
 
 export type Gps = {
   lat: number;
@@ -27,13 +28,19 @@ export function GpsCaptureButton({
   onCapture,
   required,
   disabled = false,
+  enforceAccuracy = true,
 }: {
   initial?: Gps | null;
   onCapture: (g: Gps) => void;
   required?: boolean;
   disabled?: boolean;
+  /** Whether the submit gate holds this user to the ±100 m rule (a salesman). */
+  enforceAccuracy?: boolean;
 }) {
   const [gps, setGps] = useState<Gps | null>(initial ?? null);
+  // A reading taken on this page, as opposed to the point loaded from file:
+  // only a fresh capture is held to the ±100 m rule at submit.
+  const [fresh, setFresh] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // B-07: manual-entry fallback state. Surfaced after timeout / denied /
@@ -90,6 +97,7 @@ export function GpsCaptureButton({
           capturedAt: new Date(),
         };
         setGps(next);
+        setFresh(true);
         onCapture(next);
         setPending(false);
         setShowManual(false);
@@ -163,6 +171,12 @@ export function GpsCaptureButton({
     }
   }
 
+  // The owner's accuracy standard (lib/gps-accuracy.ts): green at ±30 m or
+  // better, amber up to ±100 m, red beyond, which the submit gates refuse.
+  // A typed point has no accuracy and keeps its own amber "Manual" look.
+  const band = gps && !gps.isManual ? gpsAccuracyBand(gps.accuracy) : 'unknown';
+  const advice = gps && !gps.isManual ? gpsAccuracyAdvice(gps.accuracy, enforceAccuracy && fresh) : null;
+
   return (
     <div className="space-y-2">
       <button
@@ -181,10 +195,13 @@ export function GpsCaptureButton({
       {gps && (
         <div
           className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium ring-1 ${
-            gps.isManual
+            gps.isManual || band === 'fair'
               ? 'bg-amber-50 text-amber-800 ring-amber-200'
-              : 'bg-emerald-50 text-emerald-800 ring-emerald-200'
+              : band === 'poor'
+                ? 'bg-red-50 text-red-800 ring-red-200'
+                : 'bg-emerald-50 text-emerald-800 ring-emerald-200'
           }`}
+          data-accuracy-band={gps.isManual ? 'manual' : band}
         >
           {gps.isManual ? (
             // B-07: pin-with-warning so supervisors immediately see manual entry.
@@ -192,21 +209,26 @@ export function GpsCaptureButton({
               <MapPin className="h-3.5 w-3.5" />
               <AlertTriangle className="absolute -right-1 -top-1 h-2.5 w-2.5 text-amber-700" />
             </span>
+          ) : band === 'fair' || band === 'poor' ? (
+            <AlertTriangle className="h-3.5 w-3.5" />
           ) : (
             <Check className="h-3.5 w-3.5" />
           )}
           <span className="font-mono">
             {gps.lat.toFixed(6)}, {gps.lng.toFixed(6)}
           </span>
-          {gps.accuracy != null && (
-            <span className="text-emerald-700">±{Math.round(gps.accuracy)}m</span>
-          )}
+          {gps.accuracy != null && <span>±{Math.round(gps.accuracy)}m</span>}
           {gps.isManual && (
             <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-800">
               Manual
             </span>
           )}
         </div>
+      )}
+      {advice && (
+        <p className={`text-sm font-medium ${band === 'poor' ? 'text-red-700' : 'text-amber-800'}`}>
+          {advice}
+        </p>
       )}
       {error && <p className="text-sm font-medium text-red-600">{error}</p>}
 

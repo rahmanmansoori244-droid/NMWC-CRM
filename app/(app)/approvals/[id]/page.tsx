@@ -10,6 +10,7 @@ import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
 import { sentByPreviousForm, staleLabelsForPendingEdit } from '@/lib/edit-approval';
 import { isUnmovedCoordinate } from '@/lib/edit-values';
 import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-manual';
+import { GpsAccuracyBadge } from '@/components/nmwc/GpsAccuracyBadge';
 import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
 import { AlertTriangle } from 'lucide-react';
 import {
@@ -196,7 +197,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   const branches = branchIds.length
     ? await prisma.branch.findMany({
         where: { id: { in: branchIds } },
-        select: { id: true, branchName: true, route: { select: { code: true } } },
+        // gpsAccuracy: the live value a moved point keeps when its accuracy did not change.
+        select: { id: true, branchName: true, gpsAccuracy: true, route: { select: { code: true } } },
       })
     : [];
   const branchMap = new Map(branches.map((b) => [b.id, b]));
@@ -230,6 +232,16 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     const lat = list.find((c) => c.field === 'gpsLat')?.after;
     const lng = list.find((c) => c.field === 'gpsLng')?.after;
     return typeof lat === 'number' && typeof lng === 'number' ? { lat, lng } : null;
+  };
+  /**
+   * The proposed point's reported accuracy, for the ±30/±100 m label. The
+   * accuracy is recorded only when it changed, so a moved point whose new fix
+   * reports the same accuracy as the old one keeps the live value.
+   */
+  const proposedAccuracy = (list: FieldChange[], liveAccuracy: number | null): number | null => {
+    const c = list.find((x) => x.field === 'gpsAccuracy');
+    if (c) return typeof c.after === 'number' ? c.after : null;
+    return liveAccuracy;
   };
 
   // Guarantee documents (CREATE-CREDIT): edit-claimed GUARANTEE attachments.
@@ -449,6 +461,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                           <span className="font-mono">
                             {`${b.gpsLat.toFixed(5)}, ${b.gpsLng.toFixed(5)}${b.gpsAccuracy != null ? ` (±${Math.round(b.gpsAccuracy)}m)` : ''}`}
                           </span>
+                          <GpsAccuracyBadge accuracy={b.gpsAccuracy} />
                           <LocationLinks lat={b.gpsLat} lng={b.gpsLng} />
                           <ManualGpsNote reason={manualGpsReasonForPoint(edit.fieldChanges, b.gpsLat, b.gpsLng)} />
                         </span>
@@ -524,7 +537,10 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                   />
                 ))}
                 {gps && (
-                  <div className="px-4 py-2.5 text-sm">
+                  <div className="flex flex-col items-start gap-2 px-4 py-2.5 text-sm">
+                    <GpsAccuracyBadge
+                      accuracy={manualReason ? null : proposedAccuracy(list, b?.gpsAccuracy ?? null)}
+                    />
                     <LocationLinks lat={gps.lat} lng={gps.lng} pinLabel="View proposed location on map" />
                   </div>
                 )}
@@ -605,6 +621,11 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                             {b.gpsLat.toFixed(5)}, {b.gpsLng.toFixed(5)}
                           </span>
                           {b.gpsAccuracy != null ? ` (±${Math.round(b.gpsAccuracy)}m)` : ''}
+                          {b.gpsAccuracy != null && (
+                            <span className="ml-2 align-middle">
+                              <GpsAccuracyBadge accuracy={b.gpsAccuracy} onFile />
+                            </span>
+                          )}
                           {b.gpsCapturedAt
                             ? ` · captured ${new Date(b.gpsCapturedAt).toLocaleString('en-GB')}`
                             : ''}

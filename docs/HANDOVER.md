@@ -292,6 +292,8 @@ The recommendations below are **Claude's, not yet answered by the owner**.
 
 ### 6.1 Waiting on the owner's decision
 
+Decided since the list below was written: **X-APPR-1(a)** and the **GPS accuracy standard** (the owner, 2026-10-05, launch-readiness review). X-APPR-1(a) is **No**: a credit application is approved one at a time from its own review page, at every step. The queue gives credit cards no tick box, so they are approved or rejected one at a time on their own page, and `approveEditCore` also refuses one inside a bulk approve (`CREDIT_BULK_REFUSED_MESSAGE`, `lib/bulk-run.ts`). GPS: capture within ±30 m, approve within ±100 m. A captured point worse than ±100 m is refused at a salesman's submit (update and new customer); a point typed in with a reason is not, and the manager judges it; no approval is refused on it. The capture chip and the review page show the band (`lib/gps-accuracy.ts`); the point already on file gets a neutral label with no reject instruction. The HORECA manager's second salesman login (c3) is to be disabled (owner, same day).
+
 Decided since the list below was written: **X-AUTH-2** (the owner, 2026-10-04) — the per-network login bucket counts failed sign-ins only. It is charged first and given back on a successful sign-in and on a per-user refusal (`lib/auth.ts`, `refundLimit` in `lib/rate-limit.ts`). Trade-offs accepted with it: successful sign-ins from one address are no longer capped per address, and once an account is locked, keeping it locked costs the address doing so no network tokens (no worse than before, when the per-user bucket was charged first; no help for guessing, since refused attempts never reach the password check).
 
 | Item | Question | Recommendation |
@@ -302,7 +304,6 @@ Decided since the list below was written: **X-AUTH-2** (the owner, 2026-10-04) �
 | F12 / E5 | The Temix lifecycle: what CLOSED and reactivated branches look like in the batch file; a live customer with no Temix code | Needs the file contract from Temix/ERP first |
 | F14 | A route moved to another region leaves its branches in the old region | Move the route's branches (and drafts) with it in the same transaction, audited |
 | N04 | How a customer's status follows its branches | ACTIVE if any branch is active; CLOSED only when all are |
-| X-APPR-1(a) | May the Finance Manager, GM and Accountant-on-CREDIT steps decide new-credit applications in bulk? | No |
 | Q-sla | Response-time budgets for the Finance Manager, GM, Manager | The owner's numbers |
 | — | May a salesman remove a guarantee or status-evidence photo while its request is pending? | No; he may replace it |
 | X-IMPORTS-4 | Clearing an account's e-mail or phone | A Steward edit on the Users screen, not the import |

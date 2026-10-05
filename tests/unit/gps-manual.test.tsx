@@ -156,7 +156,9 @@ describe('41 — the enrichment form shows every error the server returns', () =
     expect(src).toMatch(
       /setErrors\(\s*surfaceUnrenderedErrors\(\s*fields,\s*\(k\) => enrichmentFormRendersError\(k, shownBranchIds\) \|\| !!stale\?\.\[k\]\s*\)\s*\)/
     );
-    expect(src).toMatch(/<GpsCaptureButton[\s\S]{0,300}?\/>\s*\{errors\[`branch\.\$\{b\.id\}\.gps`\] && \(/);
+    // The window spans the button's own props (it grew with enforceAccuracy); what is
+    // pinned is that the gps error is rendered right after the button.
+    expect(src).toMatch(/<GpsCaptureButton[\s\S]{0,500}?\/>\s*\{errors\[`branch\.\$\{b\.id\}\.gps`\] && \(/);
   });
 });
 

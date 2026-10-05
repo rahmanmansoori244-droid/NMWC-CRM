@@ -29,6 +29,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { guaranteeDigest, parseDecisionToken } from '@/lib/decision-token';
+import { CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 90_000 });
@@ -429,7 +430,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editB } })).pendingRole).toBe('ACCOUNTANT');
     });
 
-    it('bulk at the final step: B on a current card is created; A on its visit-1 card fails alone and creates no customer', async () => {
+    it('bulk at the final step: B (cash) is created; A (credit) is refused in a bulk run and creates no customer', async () => {
       asUser(ids.acc, 'ACCOUNTANT');
       const before = await footprint(editA, nameA);
       const fd = new FormData();
@@ -441,10 +442,23 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect(res.ok, JSON.stringify(res)).toBe(true);
       if (!res.ok) return;
       expect(res.data.successes).toEqual([editB]);
-      expect(res.data.failures.map((f) => [f.editId, f.code])).toEqual([[editA, 'STALE_VIEW']]);
+      // Owner decision 2026-10-05 (X-APPR-1(a): no): A is a credit application, so a
+      // bulk approve refuses it before its card is compared, stale or fresh.
+      expect(res.data.failures.map((f) => [f.editId, f.code, f.message])).toEqual([
+        [editA, 'VALIDATION_FAILED', CREDIT_BULK_REFUSED_MESSAGE],
+      ]);
       expect(await prisma.customer.count({ where: { legalName: nameB } })).toBe(1);
       expect(await footprint(editA, nameA)).toEqual(before);
       expect(before.customers).toBe(0);
+
+      // A fresh card changes nothing: credit is never approved in bulk.
+      const again = new FormData();
+      again.set('decisions', JSON.stringify([{ editId: editA, decisionToken: await fresh(editA) }]));
+      const res2 = await edits.bulkApproveEditsAction(again);
+      expect(res2.ok, JSON.stringify(res2)).toBe(true);
+      if (!res2.ok) return;
+      expect(res2.data.failures.map((f) => [f.editId, f.code])).toEqual([[editA, 'VALIDATION_FAILED']]);
+      expect(await footprint(editA, nameA)).toEqual(before);
     });
 
     it('from a fresh page the Accountant creates A, with the figures that page showed', async () => {

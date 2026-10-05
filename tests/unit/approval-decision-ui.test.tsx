@@ -20,7 +20,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MISSING_TOKEN_MESSAGE, STALE_VIEW_MESSAGE } from '@/lib/decision-token';
-import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE } from '@/lib/bulk-run';
+import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE, CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
 
 const h = vi.hoisted(() => ({
   approve: vi.fn(),
@@ -251,16 +251,43 @@ describe('the bulk queue', () => {
     expect(screen.getByText(/^Requested credit:/).textContent).toBe('Requested credit: no limit given · no term given');
   });
 
+  it('owner decision 2026-10-05: a credit application has no tick box, and Select all leaves it out', () => {
+    render(<BulkApprovalQueue items={ITEMS} />);
+    expect(screen.queryByLabelText('Select edit for Shop c1')).toBeNull();
+    const lock = screen.getByRole('img', { name: 'Credit application: open it to decide' });
+    expect(lock.getAttribute('title')).toBe(CREDIT_BULK_REFUSED_MESSAGE);
+    const card = lock.closest('li')!;
+    expect(card.textContent).toContain('Shop c1');
+    // It still opens on its own page, where it is decided.
+    expect(card.querySelector('a')!.getAttribute('href')).toBe('/approvals/c1');
+    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+    expect(screen.getByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
+  });
+
+  it('a page with credit cards says, in words, that they are decided one at a time', () => {
+    render(<BulkApprovalQueue items={ITEMS} />);
+    expect(screen.getByText(/Credit applications are approved one at a time/)).toBeTruthy();
+    cleanup();
+    render(<BulkApprovalQueue items={[item('c2')]} />);
+    expect(screen.queryByText(/Credit applications are approved one at a time/)).toBeNull();
+  });
+
+  it('a queue of credit applications only (the Finance Manager’s, the GM’s) shows no dead Select all', () => {
+    render(<BulkApprovalQueue items={[item('c1', { paymentTerms: 'CREDIT' }), item('c4', { paymentTerms: 'CREDIT' })]} />);
+    expect(screen.queryByLabelText('Select up to 50 on this page')).toBeNull();
+    expect(screen.getAllByRole('img', { name: 'Credit application: open it to decide' })).toHaveLength(2);
+  });
+
   it('N01: bulk approve sends each selected card with its own token, and no bare id list', async () => {
     render(<BulkApprovalQueue items={ITEMS} />);
     fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
-    fireEvent.click(screen.getByRole('button', { name: '✓ Approve 3' }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 3' }));
+    fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
     await waitFor(() => expect(h.bulkApprove).toHaveBeenCalledTimes(1));
     const fd = h.bulkApprove.mock.calls[0]![0] as FormData;
     expect(fd.get('editIds')).toBeNull();
+    // c1 is a credit application: never in a bulk action (owner decision 2026-10-05).
     expect(JSON.parse(String(fd.get('decisions')))).toEqual([
-      { editId: 'c1', decisionToken: 'token-of-c1' },
       { editId: 'c2', decisionToken: 'token-of-c2' },
       { editId: 'u1', decisionToken: 'token-of-u1' },
     ]);
@@ -289,7 +316,7 @@ describe('the bulk queue', () => {
 
     render(<BulkApprovalQueue items={ITEMS} />);
     fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
-    fireEvent.click(screen.getByRole('button', { name: '✗ Reject 3' }));
+    fireEvent.click(screen.getByRole('button', { name: '✗ Reject 2' }));
     const dialog = screen.getByRole('dialog');
     const words = dialog.textContent!.replace(/\s+/g, ' ');
     expect(words).toMatch(/goes back to the previous approver/);
@@ -306,12 +333,12 @@ describe('the bulk queue', () => {
   it('a card refused as stale is reported with its message', async () => {
     h.bulkApprove.mockResolvedValue({
       ok: true,
-      data: { successes: ['c2'], failures: [{ editId: 'c1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
+      data: { successes: ['c2'], failures: [{ editId: 'u1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
     });
     render(<BulkApprovalQueue items={ITEMS} />);
     fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
-    fireEvent.click(screen.getByRole('button', { name: '✓ Approve 3' }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 3' }));
+    fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
     expect(await screen.findByText(/1 processed, 1 failed/)).toBeTruthy();
     expect(screen.getByText(new RegExp(STALE_VIEW_MESSAGE.slice(0, 30)))).toBeTruthy();
   });
@@ -372,15 +399,15 @@ describe('the bulk queue', () => {
       });
       render(<BulkApprovalQueue items={ITEMS} />);
       fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
-      fireEvent.click(screen.getByRole('button', { name: '✓ Approve 3' }));
-      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 3' }));
+      fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
       expect(await screen.findByText(BULK_DECISION_LIMIT_MESSAGE)).toBeTruthy();
       expect(screen.getByText('Nothing was processed.')).toBeTruthy();
       expect(screen.queryByText(/processed, 1 failed/)).toBeNull();
       // The selection stays, to be cut down and sent again. Found, not got: the refusal
       // can render while the transition still shows "Working…" on that button, and a
       // loaded machine lets the test look in between.
-      expect(await screen.findByRole('button', { name: '✓ Approve 3' })).toBeTruthy();
+      expect(await screen.findByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
     });
   });
 });
