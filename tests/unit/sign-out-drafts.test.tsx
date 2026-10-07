@@ -4,20 +4,27 @@
  * phones, contacts — for the next person on the phone to read. Sign out now
  * deletes the signing-out user's own copies first (lib/device-drafts.ts,
  * components/nmwc/SignOutButton.tsx), asks before deleting unsent work, and
- * leaves another user's copies and every other key alone. Driven through the
- * real button and the real TopBar (jsdom).
+ * leaves another user's copies and every other key alone; neither form on
+ * screen writes its copy back while the sign-out is on its way. Driven through
+ * the real button, the real TopBar and the real forms (jsdom).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 
 const h = vi.hoisted(() => ({ logout: vi.fn() }));
 vi.mock('@/app/actions/auth', () => ({ logoutAction: h.logout }));
 vi.mock('@/components/nmwc/Sidebar', () => ({ MobileNavDrawer: () => null }));
+// For the two forms rendered at the end.
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }) }));
+vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({ PhotoCaptureSlot: () => null }));
+vi.mock('@/lib/navigate', () => ({ hardReplace: vi.fn() }));
 
 import { SignOutButton, signOutDraftsQuestion } from '@/components/nmwc/SignOutButton';
 import { TopBar } from '@/components/nmwc/TopBar';
 import { DEVICE_DRAFT_PREFIXES, clearDeviceDrafts, countDeviceDrafts } from '@/lib/device-drafts';
+import { EnrichmentForm } from '@/app/(app)/customers/[id]/edit/EnrichmentForm';
+import { CreateCustomerForm } from '@/app/(app)/customers/new/CreateCustomerForm';
 
 const MINE = ['nmwc:draft:u1:cust-a', 'nmwc:draft:u1:cust-b', 'nmwc:create:u1:new', 'nmwc:create:u1:edit-7'];
 // Another user's copies on a shared phone, a user id that merely starts with
@@ -104,5 +111,97 @@ describe('Sign out deletes the signing-out user’s form copies from the phone',
     expect(DEVICE_DRAFT_PREFIXES).toEqual(['nmwc:draft:', 'nmwc:create:']);
     expect(enrich).toContain('const draftKey = `nmwc:draft:${sessionUserId}:${customer.id}`;');
     expect(create).toContain("const draftKey = `nmwc:create:${sessionUserId}:${editId ?? 'new'}`;");
+  });
+});
+
+describe('a form on screen does not write its copy back while Sign out is on its way', () => {
+  // logoutAction is a round trip, and the form stays on screen until the sign-in
+  // page loads. Its 500 ms autosave, already due when Sign out was tapped, or
+  // set off by a change in that time, wrote the copy straight back.
+  const customer = {
+    id: 'cust-a', nmwcCode: 'SYNTHETIC', legalName: 'Synthetic customer',
+    paymentTerms: 'CASH' as const, crNumber: null, channelId: null, subChannelId: null,
+    primaryPhone: '+96890000000', altPhone: null, contactPerson: 'Synthetic contact', contactRole: null,
+    status: 'ACTIVE' as const, notes: null, crPhotoId: null,
+    branches: [{
+      id: 'synthetic-branch', branchName: 'Synthetic branch', address: 'Synthetic address', areaDescription: null,
+      gpsLat: 23.5, gpsLng: 58.3, gpsAccuracy: 5, gpsCapturedAt: new Date('2026-01-01T00:00:00Z'),
+      dayOfVisit: 'SUN' as const, openingHours: null, deliveryWindow: null,
+      coolersCount: 0, standsCount: 0, emptyBottlesCount: 0, equipmentConfirmed: false,
+      status: 'ACTIVE' as const, shopPhotoId: 'synthetic-photo', signboardPhotoId: null,
+      region: { name: 'Synthetic region' }, route: { code: 'SYNTHETIC' },
+    }],
+  };
+  const tick = (ms = 500) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  const signOut = () => fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  });
+  afterEach(() => {
+    cleanup();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('the enrichment form', async () => {
+    const key = 'nmwc:draft:u1:cust-a';
+    render(
+      <>
+        <EnrichmentForm customer={customer} channels={[]} lockName={false} lockCr={false}
+          userRole="SALESMAN" canSubmit sessionUserId="u1" gate="CORE" />
+        <SignOutButton userId="u1" className="" />
+      </>
+    );
+    const notes = () => screen.getByLabelText(/Notes/);
+    fireEvent.change(notes(), { target: { value: 'Typed before Sign out' } });
+    await tick();
+    expect(JSON.parse(localStorage.getItem(key)!).notes).toBe('Typed before Sign out');
+
+    fireEvent.change(notes(), { target: { value: 'Typed just before Sign out' } });
+    signOut();
+    expect(localStorage.getItem(key)).toBeNull();
+    await tick(); // the autosave that was due
+    expect(localStorage.getItem(key)).toBeNull();
+    fireEvent.change(notes(), { target: { value: 'Typed while signing out' } });
+    await tick(2000);
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(h.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it('the new-customer form', async () => {
+    const key = 'nmwc:create:u1:new';
+    render(
+      <>
+        <CreateCustomerForm channels={[]} initial={null} sessionUserId="u1" />
+        <SignOutButton userId="u1" className="" />
+      </>
+    );
+    const name = () => screen.getByLabelText('Legal name *');
+    fireEvent.change(name(), { target: { value: 'Synthetic Trading' } });
+    await tick();
+    expect(JSON.parse(localStorage.getItem(key)!).legalName).toBe('Synthetic Trading');
+
+    fireEvent.change(name(), { target: { value: 'Synthetic Trading LLC' } });
+    signOut();
+    expect(localStorage.getItem(key)).toBeNull();
+    await tick();
+    expect(localStorage.getItem(key)).toBeNull();
+    fireEvent.change(name(), { target: { value: 'Synthetic Trading LLC (Ruwi)' } });
+    await tick(2000);
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(h.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it('a form opened afterwards keeps its copy as before', async () => {
+    const key = 'nmwc:create:u1:new';
+    const first = render(<SignOutButton userId="u1" className="" />);
+    signOut();
+    first.unmount();
+    render(<CreateCustomerForm channels={[]} initial={null} sessionUserId="u1" />);
+    fireEvent.change(screen.getByLabelText('Legal name *'), { target: { value: 'Next sign-in' } });
+    await tick();
+    expect(JSON.parse(localStorage.getItem(key)!).legalName).toBe('Next sign-in');
   });
 });

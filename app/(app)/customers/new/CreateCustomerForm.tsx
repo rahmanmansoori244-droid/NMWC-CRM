@@ -35,6 +35,7 @@ import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { hardReplace } from '@/lib/navigate';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
 import { typedNumber } from '@/lib/digits';
+import { onSignOut } from '@/lib/device-drafts';
 
 type ChannelWithSubs = {
   id: string;
@@ -201,6 +202,15 @@ export function CreateCustomerForm({
   // nothing may write the never-saved phone copy — not even an autosave
   // already due, which can fire before the re-render that would clear it.
   const phoneCopyGoneRef = useRef(false);
+  // And once Sign out has deleted it (lib/device-drafts.ts): the form stays on
+  // screen until the sign-in page loads, and its autosave wrote the copy back.
+  useEffect(
+    () =>
+      onSignOut(() => {
+        phoneCopyGoneRef.current = true;
+      }),
+    []
+  );
   // The reload check can outlive the form (a tap on Work while it waits);
   // after unmount it must not remove, navigate or say anything.
   const unmountedRef = useRef(false);

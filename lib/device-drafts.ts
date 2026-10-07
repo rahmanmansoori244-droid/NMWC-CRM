@@ -48,3 +48,23 @@ export function clearDeviceDrafts(userId: string): number {
   }
   return removed;
 }
+
+/**
+ * Sign out is a round trip, and on a slow connection the form stays on screen
+ * for seconds after the copies are deleted: an autosave already due, or a photo
+ * or GPS fix landing in that time, wrote the copy straight back (launch review).
+ * Sign out announces itself first; each form that keeps a copy listens, and from
+ * then on writes nothing on that page. A page opened later starts afresh.
+ */
+const SIGNING_OUT = 'nmwc:signing-out';
+
+/** Sign out is on its way: no form writes its copy from now on. */
+export function announceSignOut(): void {
+  window.dispatchEvent(new Event(SIGNING_OUT));
+}
+
+/** `stop` runs when Sign out is announced; returns the unsubscribe (an effect's cleanup). */
+export function onSignOut(stop: () => void): () => void {
+  window.addEventListener(SIGNING_OUT, stop);
+  return () => window.removeEventListener(SIGNING_OUT, stop);
+}
