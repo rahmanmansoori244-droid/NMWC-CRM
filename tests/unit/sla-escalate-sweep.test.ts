@@ -15,6 +15,11 @@
  *     is not escalated and gets no row and no audit;
  *   - idempotency: a second run (Vercel's cron and the GitHub workflow both call
  *     it) escalates nothing again, pings no Steward again, deletes nothing again.
+ *
+ * Owner decision 3 (2026-10-07): a late Supervisor step on a customer with
+ * branches in several regions goes to the Managers of the branches the request
+ * is about (lib/permissions.ts requestScopeBranches), who can decide it — not
+ * to every region's Managers, and to the GM when its own region has none.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NextRequest } from 'next/server';
@@ -36,8 +41,11 @@ type Edit = {
   slaBreachedAt: Date | null;
   submittedById: string;
   customerId: string | null;
-  /** The live branches' regions (UPDATE), or the draft routes' (CREATE). */
+  /** The live branches' regions (UPDATE: branch `${id}-b${i}` is in regions[i]), or the draft routes' (CREATE). */
   regions: string[];
+  fieldChanges?: unknown;
+  branchId?: string | null;
+  submitGate?: unknown;
 };
 type User = { id: string; role: string; isActive: boolean; regions: string[] };
 type Note = {
@@ -70,11 +78,19 @@ const DAY = 24 * HOUR;
 function includeShape(e: Edit) {
   const customer =
     e.process === 'UPDATE'
-      ? { id: e.customerId, nmwcCode: `C-${e.id}`, legalName: `Shop ${e.id}`, branches: e.regions.map((regionId) => ({ regionId })) }
+      ? {
+          id: e.customerId,
+          nmwcCode: `C-${e.id}`,
+          legalName: `Shop ${e.id}`,
+          branches: e.regions.map((regionId, i) => ({ id: `${e.id}-b${i}`, routeId: `t-${regionId}`, regionId, deletedAt: null })),
+        }
       : null;
   return {
+    fieldChanges: [],
+    branchId: null,
+    submitGate: null,
     ...e,
-    submittedBy: { id: e.submittedById },
+    submittedBy: { id: e.submittedById, ownedRouteId: null, ownedRoute: null },
     customer,
     customerDraft: e.process === 'CREATE' ? { legalName: `New ${e.id}` } : null,
     branchDrafts: e.process === 'CREATE' ? e.regions.map((regionId) => ({ route: { regionId } })) : [],
@@ -297,6 +313,35 @@ describe('who a breach is escalated to', () => {
     }
     // Each escalation is audited once, as the system.
     expect(h.audits.map((a) => a.entityId).sort()).toEqual(['e-acc', 'e-gm', 'e-orphan', 'e-react', 'e-sup']);
+  });
+
+  it('a customer with branches in two regions: the Managers of the branch the request is about, not the other region’s', async () => {
+    const change = (field: string) => [{ field, before: null, after: 'x' }];
+    h.edits = [
+      // Changes its r2 branch only.
+      overdue('e-split', 'SUPERVISOR', ['r1', 'r2'], { fieldChanges: change('branch.e-split-b1.openingHours') }),
+      // A customer-level change: its home, the salesman's branch frozen at submit (r1).
+      overdue('e-home', 'SUPERVISOR', ['r2', 'r1'], {
+        fieldChanges: change('customer.primaryPhone'),
+        submitGate: { v: 1, branchIds: ['e-home-b1'] },
+      }),
+      // A close request on its r2 branch.
+      overdue('e-close', 'SUPERVISOR', ['r1', 'r2'], { branchId: 'e-close-b1', fieldChanges: change('branch.e-close-b1.status') }),
+    ];
+    const { body } = await run();
+    expect(body).toMatchObject({ escalated: 3, sweepErrors: 0 });
+    expect(told('e-split')).toEqual(['mgr-r2']);
+    expect(told('e-home')).toEqual(['mgr-r1a', 'mgr-r1b']);
+    expect(told('e-close')).toEqual(['mgr-r2']);
+  });
+
+  it('no Manager over the request’s own region: the GM, even when another region of the customer has Managers', async () => {
+    // Before, r1's Managers were told — who cannot decide it — and the GM never was.
+    h.edits = [
+      overdue('e-r9', 'SUPERVISOR', ['r1', 'r9'], { fieldChanges: [{ field: 'branch.e-r9-b1.address', before: null, after: 'x' }] }),
+    ];
+    await run();
+    expect(told('e-r9')).toEqual(['gm']);
   });
 
   it('a second escalation at the Supervisor step adds the GM; a late GM step stays with the region’s Managers', async () => {

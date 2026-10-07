@@ -12,12 +12,16 @@
  *         request that is all live writes nothing to the customer (ruling 5).
  *   F05 — the mandatory-field re-check runs on the branches frozen at submit,
  *         whatever happened to the routes since.
+ *   Owner decision 4 (2026-10-07) — of that set, only the branches the request
+ *         changes, and the customer's fields only when it changes one.
+ *   Owner decision 3 (2026-10-07) — a Manager decides a request only when he
+ *         manages the region of every branch it is about.
  *   F16 — a sub-channel retired since submit is CHANNEL_PAIR_INVALID; a
  *         channel change stored with no sub-channel (the old form's shape)
  *         is refused in words that name the customer's current sub-channel.
  * Also the approval page's helper (ruling 8), which decides with the same plan.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import { decisionTokenFor, type DecisionRow } from '@/lib/decision-token';
 import {
@@ -91,7 +95,7 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }
 vi.mock('next/navigation', () => ({ redirect: vi.fn(), notFound: vi.fn() }));
 vi.mock('@/lib/logger', () => ({ logger: log }));
 
-import { approveEditAction, bulkApproveEditsAction } from '@/services/edits';
+import { approveEditAction, bulkApproveEditsAction, rejectEditAction } from '@/services/edits';
 
 type Row = Record<string, unknown>;
 type Change = { field: string; before: unknown; after: unknown };
@@ -457,6 +461,8 @@ describe('F06 — a close request', () => {
 
 describe('F05 — the mandatory re-check runs on the branches frozen at submit', () => {
   const notes: Change[] = [{ field: 'customer.notes', before: 'Old note', after: 'Closed Fridays' }];
+  // Owner decision 4: the re-check runs on a frozen branch only when the request changes it.
+  const onB1: Change[] = [{ field: `branch.${B1}.openingHours`, before: null, after: '08:00-20:00' }];
 
   it('another route’s incomplete branch, and one created since, do not fail it', async () => {
     db.customerEdit.findUnique.mockResolvedValue(request(notes));
@@ -465,7 +471,7 @@ describe('F05 — the mandatory re-check runs on the branches frozen at submit',
   });
 
   it('his own shop photo removed since submit does — NEEDS_REUPLOAD, rolled back', async () => {
-    db.customerEdit.findUnique.mockResolvedValue(request(notes));
+    db.customerEdit.findUnique.mockResolvedValue(request(onB1));
     now = customerRow({}, [branchRow({ shopPhotoId: null }), foreignBranch()]);
     const res = failed(await approve());
     expect(res.code).toBe('NEEDS_REUPLOAD');
@@ -476,7 +482,7 @@ describe('F05 — the mandatory re-check runs on the branches frozen at submit',
 
   it('a route handover since submit changes neither answer', async () => {
     db.user.findUnique.mockResolvedValue({ role: 'SALESMAN', ownedRouteId: 'r2' });
-    db.customerEdit.findUnique.mockResolvedValue(request(notes));
+    db.customerEdit.findUnique.mockResolvedValue(request(onB1));
     expect((await approve()).ok).toBe(true);
     now = customerRow({}, [branchRow({ shopPhotoId: null }), foreignBranch()]);
     expect(failed(await approve()).code).toBe('NEEDS_REUPLOAD');
@@ -503,6 +509,122 @@ describe('F05 — the mandatory re-check runs on the branches frozen at submit',
     db.customerEdit.findUnique.mockResolvedValue(request(notes, { submitGate: null }));
     now = customerRow({}, [branchRow({ shopPhotoId: null })]);
     expect((await approve()).ok).toBe(true);
+  });
+});
+
+describe('owner decision 4 — the re-check holds what the request changes', () => {
+  const notes: Change[] = [{ field: 'customer.notes', before: 'Old note', after: 'Closed Fridays' }];
+  const onB1: Change[] = [{ field: `branch.${B1}.dayOfVisit`, before: 'SUN', after: 'MON' }];
+
+  it('a customer-level change is not failed by his branch that lost its shop photo since', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(request(notes));
+    now = customerRow({}, [branchRow({ shopPhotoId: null, gpsLat: null }), foreignBranch()]);
+    expect((await approve()).ok).toBe(true);
+  });
+
+  it('a change to one branch is not failed by a customer-level field missing since', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(request(onB1));
+    now = customerRow({ contactPerson: null });
+    expect((await approve()).ok).toBe(true);
+  });
+
+  it('a customer-level change still is — NEEDS_REUPLOAD, rolled back', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(request(notes));
+    now = customerRow({ contactPerson: null });
+    const res = failed(await approve());
+    expect(res.code).toBe('NEEDS_REUPLOAD');
+    expect(res.message).toContain('Contact person');
+    expect(masterWrites()).toBe(0);
+  });
+
+  it('a stored gate of every branch he had (a request sent before the rule) is narrowed to the ones it changes', async () => {
+    const B4 = 'b4';
+    db.customerEdit.findUnique.mockResolvedValue(request(onB1, { submitGate: { v: 1, branchIds: [B1, B4] } }));
+    now = customerRow({}, [branchRow(), branchRow({ id: B4, branchCode: 'MCT-0004', shopPhotoId: null }), foreignBranch()]);
+    expect((await approve()).ok).toBe(true);
+  });
+});
+
+describe('owner decision 3 — a Manager decides only a request whose branches are all in his regions', () => {
+  // B1 is in g1 (route r1, the submitter's); B2 is in g2 (route r2). Both complete.
+  const twoRegions = () =>
+    customerRow({}, [branchRow(), foreignBranch({ regionId: 'g2', gpsLat: 23.7, gpsLng: 58.5, shopPhotoId: 'p-shop2' })]);
+  const asManagerOf = (...regions: string[]) => {
+    h.user = { id: 'u-mgr', role: 'MANAGER', username: 'mgr' };
+    h.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: regions };
+  };
+  const onB1: Change[] = [{ field: `branch.${B1}.openingHours`, before: null, after: '08:00-20:00' }];
+  const onB2: Change[] = [{ field: `branch.${B2}.openingHours`, before: null, after: '08:00-20:00' }];
+  const notes: Change[] = [{ field: 'customer.notes', before: 'Old note', after: 'Closed Fridays' }];
+  const pending = (changes: Change[], over: Row = {}) => {
+    now = twoRegions();
+    db.customerEdit.findUnique.mockResolvedValue(request(changes, { customer: twoRegions(), ...over }));
+  };
+  const forbidden = async () => {
+    const res = failed(await approve());
+    expect(res.code).toBe('FORBIDDEN');
+    expect(masterWrites()).toBe(0);
+    expect(tx.customerEdit.updateMany).not.toHaveBeenCalled();
+  };
+  afterEach(() => {
+    h.scope = { ownedRouteId: null, teamRouteIds: ['r1'], managedRegionIds: [] };
+  });
+
+  it('the Manager of the changed branch’s region approves it', async () => {
+    asManagerOf('g1');
+    pending(onB1);
+    expect((await approve()).ok).toBe(true);
+  });
+
+  it('the Manager of the customer’s OTHER region cannot (any-branch overlap let him)', async () => {
+    asManagerOf('g2');
+    pending(onB1);
+    await forbidden();
+  });
+
+  it('a change to the other region’s branch is not the first region’s Manager’s', async () => {
+    asManagerOf('g1');
+    pending(onB2, { submitGate: { v: 1, branchIds: [B2] } });
+    await forbidden();
+  });
+
+  it('customer-level fields belong to the request’s home: the submitter’s branch frozen at submit', async () => {
+    asManagerOf('g2');
+    pending(notes);
+    await forbidden();
+    asManagerOf('g1');
+    expect((await approve()).ok).toBe(true);
+  });
+
+  it('a request on branches of two regions needs a Manager of both', async () => {
+    const both = [...onB1, ...onB2];
+    asManagerOf('g1');
+    pending(both, { submitGate: null });
+    await forbidden();
+    asManagerOf('g1', 'g2');
+    expect((await approve()).ok).toBe(true);
+  });
+
+  it('the Managers who share a region all decide it (the four of MCT)', async () => {
+    for (const id of ['u-mgr-a', 'u-mgr-b']) {
+      h.user = { id, role: 'MANAGER', username: id };
+      h.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: ['g1'] };
+      pending(onB1);
+      expect((await approve()).ok).toBe(true);
+    }
+  });
+
+  it('reject takes the same rule', async () => {
+    asManagerOf('g2');
+    pending(onB1);
+    const loaded = (await db.customerEdit.findUnique()) as DecisionRow;
+    const fd = new FormData();
+    fd.set('editId', 'e1');
+    fd.set('decisionToken', decisionTokenFor(loaded, []));
+    fd.set('reason', 'Wrong opening hours');
+    const res = failed(await rejectEditAction(fd));
+    expect(res.code).toBe('FORBIDDEN');
+    expect(tx.editApproval.create).not.toHaveBeenCalled();
   });
 });
 

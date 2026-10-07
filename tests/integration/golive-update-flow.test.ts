@@ -403,12 +403,20 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asSalesman();
     const customerId = ids.customerIds[1]!; // the individual: no phone, no contact, no CR
     const branchId = ids.branchIds[`${sfx}002`]!;
+    // Owner decision 4 (2026-10-07): only the branches a request changes are
+    // gated, so this one changes the branch as well as the phone. A phone fix
+    // alone is held to the customer-level fields only.
+    const phoneOnly = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { primaryPhone: '+968 9111 2222' } })
+    );
+    expect(phoneOnly.ok).toBe(false);
+    if (!phoneOnly.ok) expect(Object.keys(phoneOnly.fields ?? {})).toEqual(['customer.contactPerson']);
     const res = await edits.submitEditAction(
       await editPayload(prisma, {
         customerId,
         isDraft: false,
         customer: { primaryPhone: '+968 9111 2222' },
-        branches: [{ branchId }],
+        branches: [{ branchId, openingHours: '08:00-20:00' }],
       })
     );
     expect(res.ok).toBe(false);
@@ -816,7 +824,11 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const cr3 = await finalizedPhoto('CR');
     const shop3 = await finalizedPhoto('SHOP');
     const sign3 = await finalizedPhoto('SIGNBOARD');
-    await photos.attachPhotoAction({ attachmentId: cr3, customerId: c3, slot: 'CR' });
+    // Owner decision 2 (2026-10-07): the CR document of a CREDIT customer is not his to change.
+    expect(await photos.attachPhotoAction({ attachmentId: cr3, customerId: c3, slot: 'CR' })).toMatchObject({
+      ok: false,
+      code: 'FORBIDDEN',
+    });
     await photos.attachPhotoAction({ attachmentId: shop3, branchId: b3, slot: 'SHOP' });
     await photos.attachPhotoAction({ attachmentId: sign3, branchId: b3, slot: 'SIGNBOARD' });
     const pending = await edits.submitEditAction(
@@ -909,7 +921,8 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(mine).toBeTruthy();
     expect(Number(mine!.customers_updated)).toBe(1);
     expect(Number(mine!.gps_captured)).toBe(1);
-    expect(Number(mine!.photos_added)).toBe(6);
+    // Three on the cash customer, shop and signboard on the credit one (its CR was refused).
+    expect(Number(mine!.photos_added)).toBe(5);
     expect(Number(mine!.edits_pending)).toBe(1);
 
     // onlyChanged drops the untouched rows.

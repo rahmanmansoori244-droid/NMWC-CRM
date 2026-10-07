@@ -122,10 +122,15 @@ export const MANAGER_SEES_COMPANY_FIGURES = false as const;
 
 /**
  * Owner decision (default): a Manager's "Pending approval" counts what his
- * /approvals queue holds and what /status counts for him — requests waiting at
- * the Supervisor step in his regions. Against the dashboard before F2, which
- * counted every waiting request on a customer with a branch in his regions at
- * any step, two things changed: NEW-CUSTOMER REQUESTS at the Supervisor step are
+ * /approvals queue holds — requests waiting at the Supervisor step in his
+ * regions — at the steps /status counts for him. Owner decision 3 (2026-10-07)
+ * narrowed that queue: on a customer with branches in several regions, a request
+ * is his only when every branch it is about is in his regions
+ * (lib/manager-queue.ts). The tile follows the queue, by the queue's own ids
+ * (lib/insights/load.ts queueIdsInView); /status and the pipeline card's "at
+ * any step" still count every request he can open in his regions. Against the
+ * dashboard before F2, which counted every waiting request on a customer with a
+ * branch in his regions at any step, two things changed: NEW-CUSTOMER REQUESTS at the Supervisor step are
  * now included (it left them out), and REACTIVATIONS — waiting at the Manager's
  * own step, decided on /reactivations, not /approvals — are no longer in this
  * number; the tile shows them on a line of their own, and the Closures card

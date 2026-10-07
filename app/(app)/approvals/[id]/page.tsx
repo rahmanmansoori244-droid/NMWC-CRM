@@ -14,6 +14,8 @@ import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-man
 import { GpsAccuracyBadge } from '@/components/nmwc/GpsAccuracyBadge';
 import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
 import { decisionLaneFor } from '@/lib/decision-lane';
+import { requestScopeBranches } from '@/lib/permissions';
+import { parseSubmitGate } from '@/lib/edit-scope';
 import { AlertTriangle } from 'lucide-react';
 import {
   ApproveRejectActions,
@@ -75,7 +77,17 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
         },
       },
       // role: ruling 2's banner is for a salesman's request (sentByPreviousForm).
-      submittedBy: { select: { id: true, fullName: true, supervisorId: true, role: true } },
+      // ownedRouteId, ownedRoute: the home of a request without a usable submitGate (owner decision 3).
+      submittedBy: {
+        select: {
+          id: true,
+          fullName: true,
+          supervisorId: true,
+          role: true,
+          ownedRouteId: true,
+          ownedRoute: { select: { regionId: true } },
+        },
+      },
       reviewedBy: { select: { fullName: true } },
       // Phase 1 creation flow: the CREATE payload lives in typed drafts.
       customerDraft: {
@@ -147,10 +159,19 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   // inputs approveEditCore gives canActOnStep. A viewer who cannot (an Accountant
   // told of a request for information, a GM opening a reactivation) gets a
   // banner saying so; the buttons stay and the action stays the authority.
+  // Owner decision 3 (2026-10-07): an update's or a close's scope is the
+  // branches it is about (requestScopeBranches), as approveEditCore reads it.
   const lane = decisionLaneFor(sessionUser, edit, {
     branches: isCreate
       ? edit.branchDrafts.map((b) => ({ regionId: b.route.regionId, deletedAt: null }))
-      : (edit.customer?.branches ?? []),
+      : requestScopeBranches({
+          branches: edit.customer?.branches ?? [],
+          fieldChanges: edit.fieldChanges,
+          branchId: edit.branchId,
+          homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
+          submitterRouteId: edit.submittedBy.ownedRouteId,
+          submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
+        }),
     managedRegionIds: scope.managedRegionIds,
   });
   // X-APPR-2: what approving the current step does, for the confirmation's words.
@@ -212,6 +233,17 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
       branchChangesByBranch.set(branchId, list);
     }
   }
+
+  // Owner decision 3 (2026-10-07): a region-scoped reviewer sees the changes to
+  // branches in his own regions only, as he sees only their photos and GPS
+  // below (RBAC-05-001). The customer-level changes stay: he sees the customer.
+  const outsideRegions =
+    session.user.role === Role.MANAGER || session.user.role === Role.ACCOUNTANT
+      ? (edit.customer?.branches ?? [])
+          .filter((b) => branchChangesByBranch.has(b.id) && !scope.managedRegionIds.includes(b.regionId))
+          .map((b) => b.id)
+      : [];
+  for (const id of outsideRegions) branchChangesByBranch.delete(id);
 
   // Resolve branch names for the UPDATE diff sections
   const branchIds = [...branchChangesByBranch.keys()];
@@ -703,6 +735,15 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               </DiffSection>
             );
           })}
+        {!isCreate && outsideRegions.length > 0 && (
+          <p
+            role="note"
+            className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 ring-1 ring-inset ring-sky-200"
+          >
+            Not shown: the changes to {outsideRegions.length === 1 ? '1 branch' : `${outsideRegions.length} branches`}{' '}
+            outside your regions. Their region&apos;s Manager decides them.
+          </p>
+        )}
 
         {!isCreate && showEvidence && (
           <DetailSection title="Evidence sent with this request">

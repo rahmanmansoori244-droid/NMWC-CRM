@@ -7,6 +7,8 @@
  *
  *   F05 — a salesman is gated on the branches of his own route only, and that
  *         set is stored on his request for the approval.
+ *   Owner decision 4 (2026-10-07) — of those, only the branches his request
+ *         changes, and the customer's fields only when it changes one.
  *   F06 — a sent field whose loaded value is no longer live is refused
  *         (STALE_FIELDS), never written over; a value already live is left out;
  *         a Steward/Manager direct write judges again under the customer lock.
@@ -19,7 +21,7 @@
  *   N02 — a tag-only name is refused on the direct write too.
  * The same flows against Postgres: tests/integration/golive-update-flow.test.ts.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { editPayload, type EditPatch } from '../support/edit-payload';
 import { FORM_OUTDATED_MESSAGE, STALE_FIELDS_MESSAGE } from '@/lib/errors';
@@ -356,12 +358,12 @@ describe('F05 — a salesman is gated on his own route’s branches, and the set
     expect(storedChanges()).toEqual([{ field: 'customer.notes', before: 'Old note', after: 'Closed on Fridays' }]);
   });
 
-  it('his own incomplete branch still blocks, under its own key — and only his', async () => {
+  it('his own incomplete branch still blocks a change to it, under its own key — and only his', async () => {
     live = customerRow({}, [
       branchRow({ shopPhotoId: null }),
       branchRow({ id: B2, branchCode: 'MCT-0002', routeId: 'r2', gpsLat: null, gpsLng: null, shopPhotoId: null }),
     ]);
-    const res = failed(await submit({ customer: { notes: 'Closed on Fridays' } }));
+    const res = failed(await submit({ branches: [{ branchId: B1, openingHours: '08:00-20:00' }] }));
     expect(res.code).toBe('VALIDATION_FAILED');
     expect(Object.keys(res.fields!)).toEqual([`branch.${B1}.shopPhoto`]);
     nothingWritten();
@@ -380,6 +382,62 @@ describe('F05 — a salesman is gated on his own route’s branches, and the set
     asStaff('STEWARD');
     expect((await submit({ customer: { notes: 'Steward note' } })).ok).toBe(true);
     expect(tx.customerEdit.create.mock.calls[1]![0].data).not.toHaveProperty('submitGate');
+  });
+});
+
+describe('owner decision 4 — a salesman’s submit is held complete on what it changes', () => {
+  const B3 = 'ckbranch000000000000000003'; // a second branch of his, on r1
+  const incompleteB3 = () =>
+    branchRow({ id: B3, branchCode: 'MCT-0003', address: '', gpsLat: null, gpsLng: null, shopPhotoId: null });
+
+  it('a phone fix goes through with his branches incomplete; the stored set is still all of his', async () => {
+    live = customerRow({}, [branchRow({ gpsLat: null, gpsLng: null, shopPhotoId: null }), incompleteB3()]);
+    const res = await submit({ customer: { primaryPhone: '+96898765432' } });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    const data = db.customerEdit.create.mock.calls[0]![0].data;
+    expect(data).toMatchObject({ state: 'SUBMITTED', submitGate: { v: 1, branchIds: [B1, B3] } });
+  });
+
+  it('the visit day set on one branch goes through without his other shop complete', async () => {
+    live = customerRow({}, [branchRow(), incompleteB3()]);
+    const res = await submit({ branches: [{ branchId: B1, dayOfVisit: 'MON' }] });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(storedChanges()).toEqual([{ field: `branch.${B1}.dayOfVisit`, before: 'SUN', after: 'MON' }]);
+  });
+
+  it('a change to one branch is not held to the customer-level fields', async () => {
+    live = customerRow({ contactPerson: null, primaryPhone: null });
+    expect((await submit({ branches: [{ branchId: B1, dayOfVisit: 'MON' }] })).ok).toBe(true);
+  });
+
+  it('the branch it changes is held complete, and a customer-level change to the customer’s fields', async () => {
+    live = customerRow({ contactPerson: null }, [branchRow(), incompleteB3()]);
+    const res = failed(await submit({ customer: { notes: 'New note' }, branches: [{ branchId: B3, dayOfVisit: 'MON' }] }));
+    expect(Object.keys(res.fields!).sort()).toEqual(
+      ['customer.contactPerson', `branch.${B3}.address`, `branch.${B3}.gps`, `branch.${B3}.shopPhoto`].sort()
+    );
+    nothingWritten();
+  });
+
+  describe('under the FULL gate (SALESMAN_SUBMIT_GATE=FULL)', () => {
+    const saved = process.env.SALESMAN_SUBMIT_GATE;
+    beforeEach(() => {
+      process.env.SALESMAN_SUBMIT_GATE = 'FULL';
+    });
+    afterEach(() => {
+      if (saved === undefined) delete process.env.SALESMAN_SUBMIT_GATE;
+      else process.env.SALESMAN_SUBMIT_GATE = saved;
+    });
+
+    it('owner decision 2: a credit customer’s missing CR document is not his to fill', async () => {
+      live = customerRow({ paymentTerms: 'CREDIT', crPhotoId: null });
+      expect((await submit({ customer: { notes: 'New note' } })).ok).toBe(true);
+    });
+
+    it('a cash customer’s still is', async () => {
+      live = customerRow({ crPhotoId: null });
+      expect(failed(await submit({ customer: { notes: 'New note' } })).fields).toHaveProperty(['customer.crPhoto']);
+    });
   });
 });
 

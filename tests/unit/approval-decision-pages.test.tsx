@@ -585,7 +585,10 @@ describe('the approval queue', () => {
         h.queueReads = [];
         h.role = role;
         await renderQueue(rows(2));
-        const list = h.queueReads.filter((r) => r.op === 'findMany');
+        // The list is the read that orders the cards. A Manager's queue first
+        // reads the requests on customers that also have branches outside his
+        // regions, to judge each one (owner decision 3, lib/manager-queue.ts).
+        const list = h.queueReads.filter((r) => r.op === 'findMany' && r.args.orderBy);
         const count = h.queueReads.filter((r) => r.op === 'count');
         expect([list.length, count.length], role).toEqual([1, 1]);
         // Not an equal copy: a second derivation of the scope could drift from
@@ -637,6 +640,34 @@ describe('F1: the review page says when its viewer cannot decide the request (li
     h.role = 'MANAGER';
     await renderDetail(update());
     expect(screen.queryByRole('note')).toBeNull();
+  });
+
+  describe('owner decision 3 (2026-10-07): a customer with branches in two regions', () => {
+    // b1 is in g1, which the viewing Manager manages (the access mock); b2 is in g2.
+    const otherBranch = { ...liveBranch, id: 'b2', branchName: 'Sohar shop', branchCode: 'B-2', routeId: 'r2', regionId: 'g2', route: { code: 'R2' } };
+    const twoRegions = { id: 'c1', legalName: 'Muscat Pearl', nmwcCode: 'NMWC-000123', crPhotoId: null, branches: [liveBranch, otherBranch] };
+    const onBranch = (id: string) =>
+      update({
+        customer: twoRegions,
+        fieldChanges: [{ field: `branch.${id}.openingHours`, before: null, after: '08:00 – 20:00' }],
+        submitGate: { v: 1, branchIds: [id] },
+      });
+
+    it('a change to the other region’s branch: read-only for him, and its changes are not shown', async () => {
+      h.role = 'MANAGER';
+      await renderDetail(onBranch('b2'));
+      const notes = screen.getAllByRole('note').map((n) => n.textContent ?? '');
+      expect(notes.some((t) => /For your information/.test(t))).toBe(true);
+      expect(notes.some((t) => /Not shown: the changes to 1 branch outside your regions/.test(t))).toBe(true);
+      expect(screen.queryByText('08:00 – 20:00')).toBeNull();
+    });
+
+    it('a change to his own region’s branch: his to decide, every change shown', async () => {
+      h.role = 'MANAGER';
+      await renderDetail(onBranch('b1'));
+      expect(screen.queryByRole('note')).toBeNull();
+      expect(screen.getByText('08:00 – 20:00')).toBeTruthy();
+    });
   });
 
   it('a reactivation says where it is decided; only a Manager gets the link', async () => {

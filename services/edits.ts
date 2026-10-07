@@ -32,7 +32,7 @@ import {
   NO_STATUS_EVENTS,
   statusEvents,
 } from '@/lib/customer-status';
-import { isFieldLocked, canActOnStep } from '@/lib/permissions';
+import { isFieldLocked, canActOnStep, requestScopeBranches } from '@/lib/permissions';
 import {
   EQUIPMENT_UNCONFIRM_MESSAGE,
   isCurrentEditPayload,
@@ -41,6 +41,7 @@ import {
   type SubmitEditInput,
 } from '@/lib/validation/edit';
 import { reportedIssues } from '@/lib/validation/fields';
+import { gateScopeOf } from '@/lib/validation/gate-scope';
 import {
   BRANCH_EDIT_FIELDS,
   CUSTOMER_EDIT_FIELDS,
@@ -62,7 +63,12 @@ import {
   type BranchEditField,
   type LiveVerdict,
 } from '@/lib/edit-values';
-import { gateBranchesForApproval, salesmanBranches, submitGateRecord } from '@/lib/edit-scope';
+import {
+  gateBranchesForApproval,
+  parseSubmitGate,
+  salesmanBranches,
+  submitGateRecord,
+} from '@/lib/edit-scope';
 import {
   channelPairInvalidMessage,
   planApproval,
@@ -205,6 +211,10 @@ function staleFieldsError(
  * (gateBranchesForApproval) — never on every branch of the customer: another
  * route's missing GPS blocked a salesman who could neither see nor edit it.
  * A proposed null (a clear) merges as missing.
+ *
+ * Owner decision 4 (2026-10-07, lib/validation/gate-scope.ts): callers pass only
+ * the branches the request changes, and `customerFields` false when it changes
+ * no customer-level field — then the customer's fields are not checked at all.
  */
 function collectMissingMandatory(
   customer: {
@@ -237,7 +247,9 @@ function collectMissingMandatory(
    */
   actorIsSalesman = false,
   /** Go-live: FULL (PRD §6) or CORE — see lib/submit-gate.ts. */
-  gate: SubmitGate = salesmanSubmitGate()
+  gate: SubmitGate = salesmanSubmitGate(),
+  /** Owner decision 4: whether the request changes a customer-level field. */
+  customerFields = true
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   const merged = (k: keyof typeof customer, fallback: unknown) =>
@@ -249,29 +261,33 @@ function collectMissingMandatory(
   // Lock-aware skips for salesman actor.
   const skipLegalName = actorIsSalesman; // always locked for salesman
   const skipCrNumber = actorIsSalesman && customer.paymentTerms === 'CREDIT';
+  // Owner decision 2 (2026-10-07): the CR document follows the CR number.
+  const skipCrPhoto = skipCrNumber;
 
-  if (!skipLegalName && !isStr(merged('legalName', customer.legalName))) {
-    errors['customer.legalName'] = 'Legal name is required.';
-  }
-  if (!isStr(merged('channelId', customer.channelId))) {
-    errors['customer.channelId'] = 'Channel is required.';
-  }
-  if (req('subChannelId') && !isStr(merged('subChannelId', customer.subChannelId))) {
-    errors['customer.subChannelId'] = 'Sub-channel is required.';
-  }
-  if (!isStr(merged('primaryPhone', customer.primaryPhone))) {
-    errors['customer.primaryPhone'] = 'Primary phone is required.';
-  }
-  if (!isStr(merged('contactPerson', customer.contactPerson))) {
-    errors['customer.contactPerson'] = 'Contact person is required.';
-  }
-  if (req('crNumber') && !skipCrNumber && !isStr(merged('crNumber', customer.crNumber))) {
-    errors['customer.crNumber'] = 'CR number is required.';
-  }
-  // Photos are wired via attachPhotoAction, so we read from the live customer
-  // (the edit payload does not carry photoId fields).
-  if (req('crPhoto') && !customer.crPhotoId) {
-    errors['customer.crPhoto'] = 'CR document photo is required.';
+  if (customerFields) {
+    if (!skipLegalName && !isStr(merged('legalName', customer.legalName))) {
+      errors['customer.legalName'] = 'Legal name is required.';
+    }
+    if (!isStr(merged('channelId', customer.channelId))) {
+      errors['customer.channelId'] = 'Channel is required.';
+    }
+    if (req('subChannelId') && !isStr(merged('subChannelId', customer.subChannelId))) {
+      errors['customer.subChannelId'] = 'Sub-channel is required.';
+    }
+    if (!isStr(merged('primaryPhone', customer.primaryPhone))) {
+      errors['customer.primaryPhone'] = 'Primary phone is required.';
+    }
+    if (!isStr(merged('contactPerson', customer.contactPerson))) {
+      errors['customer.contactPerson'] = 'Contact person is required.';
+    }
+    if (req('crNumber') && !skipCrNumber && !isStr(merged('crNumber', customer.crNumber))) {
+      errors['customer.crNumber'] = 'CR number is required.';
+    }
+    // Photos are wired via attachPhotoAction, so we read from the live customer
+    // (the edit payload does not carry photoId fields).
+    if (req('crPhoto') && !skipCrPhoto && !customer.crPhotoId) {
+      errors['customer.crPhoto'] = 'CR document photo is required.';
+    }
   }
 
   for (const b of gateBranches) {
@@ -747,9 +763,17 @@ async function submitEditOnce(
   // the top and tells him to reload (lib/form-errors.ts
   // withReloadHintForUnshownBranches); one taken off his route since is shown
   // but not gated.
+  // Owner decision 4 (2026-10-07, lib/validation/gate-scope.ts): of those, only
+  // the branches this request changes, and the customer-level fields only when
+  // it changes one — a phone fix no longer waits for every shop's GPS and photo.
+  // The record still stores ALL his branches here: the approval re-check takes
+  // the ones its changes name, and they are the request's home for who may
+  // decide it (lib/permissions.ts requestScopeBranches).
   let submitGate: Prisma.InputJsonValue | undefined;
   if (!isDraft && me.role === Role.SALESMAN) {
-    const gateBranches = salesmanBranches(customer.branches, me.ownedRouteId);
+    const ownBranches = salesmanBranches(customer.branches, me.ownedRouteId);
+    const scope = gateScopeOf(fieldChanges.map((c) => c.field));
+    const gateBranches = ownBranches.filter((b) => scope.branchIds.has(b.id));
     const branchProposedById = new Map<string, Record<string, unknown>>();
     for (const bp of bInputs) branchProposedById.set(bp.branchId, bp as Record<string, unknown>);
     const missing = collectMissingMandatory(
@@ -757,7 +781,9 @@ async function submitEditOnce(
       gateBranches,
       customerProposed,
       branchProposedById,
-      /* actorIsSalesman */ true
+      /* actorIsSalesman */ true,
+      salesmanSubmitGate(),
+      /* customerFields */ scope.customer
     );
     // The ±100 m GPS standard (lib/gps-accuracy.ts): a newly captured point
     // worse than the limit is refused here, at submit only. A point not sent
@@ -776,7 +802,7 @@ async function submitEditOnce(
     if (Object.keys(missing).length > 0) {
       throw new ValidationError(missing);
     }
-    submitGate = submitGateRecord(gateBranches.map((b) => b.id));
+    submitGate = submitGateRecord(ownBranches.map((b) => b.id));
   }
 
   const editState: EditState = isDraft ? EditState.DRAFT : EditState.SUBMITTED;
@@ -1000,11 +1026,19 @@ async function submitEditOnce(
     // error (the salesman's retry would dead-end on EDIT_LOCKED).
     if (!isDraft) {
       try {
+        // Owner decision 3: the regions of the request's scope, the Managers
+        // who can decide it — not every region the customer spans.
+        const scopeBranches = requestScopeBranches({
+          branches: customer.branches,
+          fieldChanges,
+          homeBranchIds: salesmanBranches(customer.branches, me.ownedRouteId).map((b) => b.id),
+          submitterRouteId: me.ownedRouteId,
+        });
         const firstAudience = await resolveStepAudience(
           prisma,
           firstStep,
           { supervisorId: me.supervisorId },
-          [...new Set(customer.branches.map((b) => b.regionId))]
+          [...new Set(scopeBranches.map((b) => b.regionId))]
         );
         await notifyUsers(prisma, firstAudience, {
           kind: 'EDIT_SUBMITTED',
@@ -1351,7 +1385,10 @@ async function approveEditCore(formData: FormData) {
     where: { id: editId },
     include: {
       customer: { include: { branches: { where: { deletedAt: null } } } },
-      submittedBy: { select: { id: true, supervisorId: true, fullName: true } },
+      // ownedRouteId, ownedRoute: the home of a request without a usable submitGate (owner decision 3).
+      submittedBy: {
+        select: { id: true, supervisorId: true, fullName: true, ownedRouteId: true, ownedRoute: { select: { regionId: true } } },
+      },
       // Phase 1 creation flow: a CREATE request (customerId = null) carries its
       // proposed payload in typed drafts; approver scope + finalize both read
       // from these instead of edit.customer. The route join gives the CURRENT
@@ -1401,13 +1438,22 @@ async function approveEditCore(formData: FormData) {
   // scoped steps (Supervisor/Accountant), plus separation of duty (no
   // self-approval; no acting on two DIFFERENT steps of the same edit).
   // For CREATE the scope branches are the DRAFT branches (region-scoped
-  // approvers act on where the customer WILL live).
+  // approvers act on where the customer WILL live). Owner decision 3
+  // (2026-10-07): for an update or close request, the branches it is about
+  // (requestScopeBranches) — a Manager must manage every one's region.
   const { loadScope } = await import('@/lib/access');
   const actorScope = await loadScope(session.id);
   const sessionUser = { id: session.id, role: session.role, username: session.username };
   const scopeBranches = isCreate
     ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
-    : edit.customer!.branches;
+    : requestScopeBranches({
+        branches: edit.customer!.branches,
+        fieldChanges: edit.fieldChanges,
+        branchId: edit.branchId,
+        homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
+        submitterRouteId: edit.submittedBy.ownedRouteId,
+        submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
+      });
   const scopeRegionIds = [...new Set(scopeBranches.map((b) => b.regionId))];
   const chain = parseChain(edit.approvalChain);
   const stepIndex = edit.currentStepIndex;
@@ -1864,13 +1910,18 @@ async function approveEditCore(formData: FormData) {
       // (lib/edit-scope.ts gateBranchesForApproval) — never the customer's whole
       // branch list, so another route's branch, one created after submit, or a
       // route handover cannot fail it.
-      const { gateBranches, unreadable } = gateBranchesForApproval({
+      // Owner decision 4 (2026-10-07): of that set, the branches the changes
+      // to be written name, and the customer's fields only when one of them is
+      // a customer-level change — the rule the submit applied.
+      const scope = gateScopeOf(considered.map((c) => c.field));
+      const { gateBranches: frozenGate, unreadable } = gateBranchesForApproval({
         submitGate: edit.submitGate,
         liveBranches: now.branches,
         fieldChanges,
         submitter: { role: submitterUser?.role, ownedRouteId: submitterUser?.ownedRouteId },
       });
       if (unreadable) logger.warn({ editId }, 'edit.approve.submit_gate_unreadable');
+      const gateBranches = frozenGate?.filter((b) => scope.branchIds.has(b.id)) ?? null;
       if (gateBranches && !isStatusOnlyEdit) {
         const proposal = payloadFromFieldChanges(considered);
         const missing = collectMissingMandatory(
@@ -1878,7 +1929,9 @@ async function approveEditCore(formData: FormData) {
           gateBranches,
           proposal.customer,
           proposal.byBranch,
-          /* actorIsSalesman */ true
+          /* actorIsSalesman */ true,
+          salesmanSubmitGate(),
+          /* customerFields */ scope.customer
         );
         if (Object.keys(missing).length > 0) {
           throw new ConflictError(
@@ -2103,11 +2156,12 @@ async function rejectEditCore(formData: FormData) {
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
     include: {
-      submittedBy: { select: { id: true, supervisorId: true } },
+      submittedBy: { select: { id: true, supervisorId: true, ownedRouteId: true, ownedRoute: { select: { regionId: true } } } },
       customer: {
         select: {
           legalName: true,
-          branches: { select: { regionId: true, deletedAt: true } },
+          // Owner decision 3: what requestScopeBranches reads, as on approve.
+          branches: { select: { id: true, routeId: true, regionId: true, deletedAt: true } },
         },
       },
       // Phase 1 creation flow: CREATE requests derive scope + display name
@@ -2137,7 +2191,14 @@ async function rejectEditCore(formData: FormData) {
   const rejectScope = await loadScopeReject(session.id);
   const rejectScopeBranches = rejectIsCreate
     ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
-    : (edit.customer?.branches ?? []);
+    : requestScopeBranches({
+        branches: edit.customer?.branches ?? [],
+        fieldChanges: edit.fieldChanges,
+        branchId: edit.branchId,
+        homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
+        submitterRouteId: edit.submittedBy.ownedRouteId,
+        submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
+      });
   const rejectRegionIds = [...new Set(rejectScopeBranches.map((b) => b.regionId))];
   const rejectRequestName = rejectIsCreate
     ? (edit.customerDraft?.legalName ?? '—')
