@@ -169,7 +169,7 @@ export const UPLOAD_SIGNED_OUT =
  * error"; neither said the photo is kept or what to do.
  */
 export const UPLOAD_NO_CONNECTION =
-  'No connection, so the photo is not sent yet. It is kept on this phone: check the signal, then tap Retry upload.';
+  'No connection, so the photo is not sent yet. Keep this page open: the photo is held here until it is sent. Check the signal, then tap Retry upload.';
 
 /**
  * Presign's 429 (PHOTO_LIMIT: 120 an hour, one back every 30 s). A wait up to

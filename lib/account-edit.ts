@@ -281,6 +281,8 @@ export function routeMoveNotes(p: {
   sentBack: number;
   /** New-customer requests withdrawn with this change. */
   withdrawn?: number;
+  /** The routes those withdrawn requests were started on (may differ from fromRoute for a salesman moved twice). */
+  withdrawnRoutes?: string[];
   /** He sends nothing again: disabled (the leaver), or given a role with no route. */
   leaver?: boolean;
 }): string[] {
@@ -303,7 +305,7 @@ export function routeMoveNotes(p: {
   }
   if (p.withdrawn) {
     notes.push(
-      `${p.withdrawn} new-customer request(s) ${p.who} had started on route ${p.fromRoute} (drafts, or sent back to him) were withdrawn with this change. The salesman of ${p.fromRoute} adds those shops afresh.`
+      `${p.withdrawn} new-customer request(s) ${p.who} had started on route ${p.withdrawnRoutes?.join(' or ') || p.fromRoute} (drafts, or sent back to him) were withdrawn with this change. The salesman of ${p.withdrawnRoutes?.join(' or ') || p.fromRoute} adds those shops afresh.`
     );
   }
   return notes;

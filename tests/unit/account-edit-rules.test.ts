@@ -399,6 +399,20 @@ describe('reviewer fixes (2026-10-07)', () => {
     ]);
   });
 
+  it('a salesman moved twice: the withdrawn note names the routes the requests were started on, not his last one', () => {
+    const [note] = routeMoveNotes({
+      who: 'Ali',
+      fromRoute: 'C9',
+      inReview: 0,
+      sentBack: 0,
+      withdrawn: 1,
+      withdrawnRoutes: ['C4'],
+    });
+    expect(note).toMatch(/started on route C4 /);
+    expect(note).toMatch(/The salesman of C4 adds/);
+    expect(note).not.toMatch(/C9/);
+  });
+
   it('a supervisor change moves the Supervisor step only when a Supervisor-role account is involved', () => {
     const mgrA = { name: 'Manager A', role: 'MANAGER' as const };
     const supS = { name: 'Supervisor S', role: 'SUPERVISOR' as const };

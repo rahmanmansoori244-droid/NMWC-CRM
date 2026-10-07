@@ -1326,6 +1326,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
         },
         sentBack: sentBackIds.filter((id) => !withdrawn.has(id)).length,
         withdrawn: withdrawn.size,
+        withdrawnRoutes: strandedFrom,
         leaver: !route,
       })
     );

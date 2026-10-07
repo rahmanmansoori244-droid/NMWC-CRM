@@ -975,7 +975,9 @@ describe("a connection that drops at presign or finalize says so in the app's ow
         await settleUntil(() => retryButton() !== null);
         expect(screen.getByText(UPLOAD_NO_CONNECTION)).toBeTruthy();
         expect(screen.queryByText(/Failed to fetch/)).toBeNull();
-        expect(UPLOAD_NO_CONNECTION).toMatch(/kept on this phone/);
+        // The photo lives only in this page's memory: leaving or reloading loses it.
+        expect(UPLOAD_NO_CONNECTION).toMatch(/Keep this page open/);
+        expect(UPLOAD_NO_CONNECTION).not.toMatch(/kept on this phone/);
         expect(UPLOAD_NO_CONNECTION).toMatch(/tap Retry upload\.$/);
 
         fireEvent.click(retryButton()!);
