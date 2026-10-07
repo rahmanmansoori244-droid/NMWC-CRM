@@ -8,7 +8,7 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { CustomerCard } from '@/components/nmwc/CustomerCard';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { Role, type Prisma } from '@prisma/client';
-import { omanDayOfWeek } from '@/lib/tz';
+import { omanDayOfWeek, omanLongDate } from '@/lib/tz';
 
 export const metadata = { title: 'Today · NMWC' };
 
@@ -123,12 +123,9 @@ export default async function TodayPage({
     <main>
       <PageHeader
         title={`Good day, ${me.fullName?.split(' ')[0] ?? 'there'}`}
-        subtitle={new Date().toLocaleDateString('en-GB', {
-          weekday: 'long',
-          day: 'numeric',
-          month: 'long',
-          year: 'numeric',
-        })}
+        // The Oman day, as the visit list below reads it (omanDayOfWeek): the
+        // server's clock is UTC, and printed yesterday's date until 04:00.
+        subtitle={omanLongDate()}
         actions={
           // Owner decision 2026-09-25: a salesman on a phone had no way to start
           // a new customer. The only link to a blank form was in the sidebar,

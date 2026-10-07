@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDateTime } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { loadScope, canSeeCustomer, filterBranchesByScope } from '@/lib/access';
 import { PageHeader } from '@/components/nmwc/PageHeader';
@@ -214,7 +215,7 @@ export default async function CustomerProfilePage({
                       {countFieldChanges(e.fieldChanges)} change(s)
                     </div>
                     <div className="text-sm text-slate-500">
-                      {e.submittedAt?.toLocaleString('en-GB') ?? 'draft'}
+                      {e.submittedAt ? omanDateTime(e.submittedAt) : 'draft'}
                     </div>
                   </div>
                   <StatusBadge status={e.state} />

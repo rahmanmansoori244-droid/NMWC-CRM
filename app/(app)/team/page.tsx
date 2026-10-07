@@ -2,6 +2,7 @@ import { TableScroll } from '@/components/nmwc/TableScroll';
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDate } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 
@@ -50,7 +51,7 @@ export default async function TeamPage() {
                   </td>
                   <td className="px-4 py-2 text-right">{u._count.submittedEdits}</td>
                   <td className="px-4 py-2 text-xs text-slate-500">
-                    {u.lastLoginAt?.toLocaleDateString('en-GB') ?? 'never'}
+                    {u.lastLoginAt ? omanDate(u.lastLoginAt) : 'never'}
                   </td>
                 </tr>
               ))}

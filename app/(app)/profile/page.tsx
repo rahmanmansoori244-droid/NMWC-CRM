@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDateTime } from '@/lib/tz';
 import { logoutAction } from '@/app/actions/auth';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 
@@ -41,7 +42,7 @@ export default async function ProfilePage() {
             />
             <Row
               label="Last login"
-              value={user.lastLoginAt?.toLocaleString('en-GB') ?? 'never'}
+              value={user.lastLoginAt ? omanDateTime(user.lastLoginAt) : 'never'}
             />
           </dl>
           <div className="mt-6 flex flex-wrap gap-2">

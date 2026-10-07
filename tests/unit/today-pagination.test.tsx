@@ -22,7 +22,10 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('next/navigation', () => ({
   redirect: (to: string) => { throw new Error(`REDIRECT ${to}`); },
 }));
-vi.mock('@/lib/tz', () => ({ omanDayOfWeek: () => 'FRI' }));
+vi.mock('@/lib/tz', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/tz')>()),
+  omanDayOfWeek: () => 'FRI',
+}));
 vi.mock('@/components/nmwc/CustomerCard', () => ({
   CustomerCard: ({ customer, href }: { customer: { id: string }; href?: string }) => (
     <div data-testid="visit" data-href={href}>{customer.id}</div>

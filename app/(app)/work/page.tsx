@@ -2,6 +2,7 @@ import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDate } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { OPEN_PROBLEM_ROW, WORK_BATCH_ROWS } from '@/lib/import-rows-view';
 import { PageHeader } from '@/components/nmwc/PageHeader';
@@ -283,7 +284,7 @@ export default async function WorkPage() {
                     </div>
                     <div className="text-right text-xs text-slate-500">
                       {it.state && <StatusBadge status={it.state} className="mb-1" />}
-                      {it.when && <div>{it.when.toLocaleDateString('en-GB')}</div>}
+                      {it.when && <div>{omanDate(it.when)}</div>}
                     </div>
                   </div>
                 </Link>

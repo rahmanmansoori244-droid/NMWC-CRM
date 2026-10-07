@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDate, omanDateTime } from '@/lib/tz';
 import { Role, TemixSyncState } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
@@ -85,7 +86,7 @@ export default async function TemixPage() {
                 {batches.map((b) => (
                   <tr key={b.id}>
                     <td className="px-4 py-2.5 text-slate-900">
-                      {b.createdAt.toLocaleString('en-GB')}
+                      {omanDateTime(b.createdAt)}
                       <span className="ml-2 font-mono text-[11px] text-slate-400">
                         …{b.id.slice(-6)}
                       </span>
@@ -95,7 +96,7 @@ export default async function TemixPage() {
                     <td className="px-4 py-2.5">
                       {b.markedLoadedAt ? (
                         <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
-                          ✓ {b.markedLoadedAt.toLocaleDateString('en-GB')}
+                          ✓ {omanDate(b.markedLoadedAt)}
                         </span>
                       ) : (
                         <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200">

@@ -1,5 +1,15 @@
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
-import { endOfOmanDay, omanDateISO, omanDayOfWeek, omanStamp, startOfOmanDay } from '@/lib/tz';
+import {
+  endOfOmanDay,
+  omanDate,
+  omanDateISO,
+  omanDateTime,
+  omanDayOfWeek,
+  omanDayTime,
+  omanLongDate,
+  omanStamp,
+  startOfOmanDay,
+} from '@/lib/tz';
 
 describe('lib/tz — omanDayOfWeek', () => {
   it('uses Oman local time, not UTC, for day-of-week', () => {
@@ -32,10 +42,75 @@ describe('lib/tz — omanDateISO', () => {
 });
 
 /*
- * Launch fix: the exports read and write Oman days. Vercel runs in UTC and this PC
- * runs in Asia/Muscat, so a test run here proved nothing: these run with the
- * process in UTC, as production is, and check that it is.
+ * Launch fix: every time a user reads is Oman time. Vercel runs in UTC and this
+ * PC runs in Asia/Muscat, so a test run here proved nothing: these run with the
+ * process in UTC, as production is, and the first assertion checks that it is.
+ * 2026-10-07 21:30:05 UTC is 01:30:05 on Thursday 8 October in Oman.
  */
+describe('lib/tz — showing a time (process in UTC, as on Vercel)', () => {
+  const LATE = new Date('2026-10-07T21:30:05.000Z');
+
+  beforeAll(() => {
+    vi.stubEnv('TZ', 'UTC');
+  });
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('runs where the old toLocaleString printed the UTC day', () => {
+    expect(LATE.getHours()).toBe(21);
+    expect(LATE.toLocaleDateString('en-GB')).toBe('07/10/2026');
+  });
+
+  it('prints the Oman date and time, past Oman midnight', () => {
+    expect(omanDate(LATE)).toBe('08/10/2026');
+    expect(omanDateTime(LATE)).toBe('08/10/2026, 01:30:05');
+    expect(omanDayTime(LATE)).toBe('08 Oct, 01:30');
+    expect(omanLongDate(LATE)).toBe('Thursday, 8 October 2026');
+  });
+
+  it('reads what a prop or a stored diff carries: a Date, an ISO string or epoch ms', () => {
+    expect(omanDateTime('2026-10-07T21:30:05.000Z')).toBe('08/10/2026, 01:30:05');
+    expect(omanDayTime(LATE.getTime())).toBe('08 Oct, 01:30');
+  });
+
+  it('defaults the long date to now, on the Oman day', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(LATE);
+      expect(omanLongDate()).toBe('Thursday, 8 October 2026');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses fixed month names, so the server and every browser print the same text', () => {
+    // en-GB September is "Sept" in current ICU and "Sep" in older ones: a client
+    // component formatted with Intl rendered differently on the server and the phone.
+    const sept = new Date('2026-09-14T08:05:00.000Z');
+    expect(omanDayTime(sept)).toBe('14 Sep, 12:05');
+    expect(omanLongDate(sept)).toBe('Monday, 14 September 2026');
+  });
+
+  it('agrees with Intl in Asia/Muscat on every field, across a year of instants', () => {
+    // The arithmetic relies on Oman being UTC+4 with no DST; Intl's zone data is
+    // the independent check.
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Muscat',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+    for (let t = Date.UTC(2026, 0, 1, 0, 7, 11); t < Date.UTC(2027, 0, 1); t += 7 * 3600_000 + 13 * 60_000) {
+      expect(omanDateTime(new Date(t))).toBe(fmt.format(new Date(t)));
+    }
+  });
+});
+
 describe('lib/tz — export stamps and day filters (process in UTC, as on Vercel)', () => {
   beforeAll(() => {
     vi.stubEnv('TZ', 'UTC');

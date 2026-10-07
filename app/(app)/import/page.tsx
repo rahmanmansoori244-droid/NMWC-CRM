@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDateTime } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { UploadAccountForm, UploadCustomerForm } from './forms';
@@ -114,7 +115,7 @@ export default async function ImportPage() {
               {batches.map((b) => (
                 <tr key={b.id} className="hover:bg-slate-50">
                   <td className="px-4 py-2 text-xs text-slate-500">
-                    {b.uploadedAt.toLocaleString('en-GB')}
+                    {omanDateTime(b.uploadedAt)}
                   </td>
                   <td className="px-4 py-2 font-medium">{b.filename}</td>
                   <td className="px-4 py-2 text-xs">{b.kind}</td>

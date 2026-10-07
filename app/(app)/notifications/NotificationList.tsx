@@ -7,6 +7,7 @@ import {
   markAllNotificationsReadAction,
   markInformationReadAction,
 } from '@/services/notifications-actions';
+import { omanDayTime } from '@/lib/tz';
 
 const KIND_LABEL: Record<string, string> = {
   EDIT_SUBMITTED: 'Review',
@@ -76,12 +77,9 @@ export function NotificationRow({
           <p className="mt-1 line-clamp-2 text-xs text-slate-600">{body}</p>
         </div>
         <span className="shrink-0 text-xs text-slate-500">
-          {new Date(createdAt).toLocaleString('en-GB', {
-            day: '2-digit',
-            month: 'short',
-            hour: '2-digit',
-            minute: '2-digit',
-          })}
+          {/* Oman time, built without Intl: the server (UTC) and the phone must
+              print the same text, or React throws #418 on every full load. */}
+          {omanDayTime(createdAt)}
         </span>
       </div>
     </div>
