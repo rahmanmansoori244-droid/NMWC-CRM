@@ -81,3 +81,7 @@ prisma/*.db-journal
 # Operator scripts copied into a checkout to run against production (prod-run.cjs).
 # They read private files and must never be committed; delete them after use too.
 *.tmp.ts
+
+# Launch e2e (playwright.launch.config.ts): crash registry and server logs.
+# Kept OUTSIDE test-results/ so a later run cannot wipe a crashed run's registry.
+/.e2e-launch/
