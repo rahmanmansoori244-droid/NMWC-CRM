@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDate } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { loadScope } from '@/lib/access';
@@ -327,7 +328,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                       <EmailBadge role={u.role} email={u.email} />
                     </td>
                     <td className="px-4 py-2 text-xs text-slate-500">
-                      {u.lastLoginAt ? u.lastLoginAt.toLocaleDateString('en-GB') : 'never'}
+                      {u.lastLoginAt ? omanDate(u.lastLoginAt) : 'never'}
                     </td>
                     <td className="px-4 py-2 text-right">
                       <UserRowActions

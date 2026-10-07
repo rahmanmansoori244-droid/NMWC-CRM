@@ -6,6 +6,8 @@ import { buildChangeReport } from '@/lib/change-report';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { readExportFilterLists } from '@/lib/export-filter-lists';
+// `until=2026-09-13` means the whole of that Oman day (inclusive).
+import { endOfOmanDay, omanDateISO, startOfOmanDay } from '@/lib/tz';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -13,20 +15,11 @@ export const runtime = 'nodejs';
 // exceljs takes a few seconds, so give the function the full Hobby budget.
 export const maxDuration = 60;
 
-/** `until=2026-09-13` means the whole of that Oman day (inclusive). */
-function endOfOmanDay(d: Date): Date {
-  // Oman is UTC+4 with no DST: local midnight of the NEXT day is 20:00 UTC of this day.
-  const local = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0));
-  return new Date(local.getTime() + 24 * 3600_000 - 4 * 3600_000 - 1);
-}
-function startOfOmanDay(d: Date): Date {
-  const local = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0));
-  return new Date(local.getTime() - 4 * 3600_000);
-}
-
 const schema = z.object({
-  since: z.coerce.date().optional(),
-  until: z.coerce.date().optional(),
+  // Days and only days ("YYYY-MM-DD", real ones), read as Oman days below: a full
+  // timestamp's UTC date can be the Oman day before the one it names.
+  since: z.string().date().optional(),
+  until: z.string().date().optional(),
   regionIds: z.array(z.string()).optional(),
   routeIds: z.array(z.string()).optional(),
   onlyChanged: z.enum(['1', 'true', '0', 'false']).optional(),
@@ -70,8 +63,8 @@ export async function GET(req: NextRequest) {
     const out = await buildChangeReport(
       { id: me.id, role: me.role, username: me.username },
       {
-        since: f.since ? startOfOmanDay(f.since) : undefined,
-        until: f.until ? endOfOmanDay(f.until) : undefined,
+        since: f.since ? startOfOmanDay(new Date(f.since)) : undefined,
+        until: f.until ? endOfOmanDay(new Date(f.until)) : undefined,
         regionIds: f.regionIds,
         routeIds: f.routeIds,
         onlyChanged: truthy(f.onlyChanged),
@@ -86,7 +79,7 @@ export async function GET(req: NextRequest) {
     await writeAudit(null, await getAuditEnvelope(me.id), {
       action: 'EXPORT',
       entityType: 'Export',
-      entityId: `field-updates-${new Date().toISOString().slice(0, 10)}`,
+      entityId: `field-updates-${omanDateISO()}`,
       reason: `field-updates ${out.rowCount} rows / ${out.changedRows} changed / ${out.changeCount} changes`,
     });
     return new NextResponse(out.bytes, {

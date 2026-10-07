@@ -3,6 +3,7 @@ import { LocationLinks, PhoneLink } from '@/components/nmwc/ContactLinks';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDateTime } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { isFinalStep, parseChain, resolveRejectTarget } from '@/lib/approval-chains';
@@ -237,7 +238,10 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     typeof v === 'string' &&
     refLabel.has(v)
       ? refLabel.get(v)
-      : v;
+      : // The stored diff carries the capture time as a UTC ISO string: show Oman time.
+        field.endsWith('gpsCapturedAt') && typeof v === 'string' && !Number.isNaN(Date.parse(v))
+        ? omanDateTime(v)
+        : v;
   /** Proposed GPS per branch (after-values), for a "view on map" link. */
   const proposedGps = (list: FieldChange[]): { lat: number; lng: number } | null => {
     const lat = list.find((c) => c.field === 'gpsLat')?.after;
@@ -300,7 +304,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     <main className="pb-24">
       <PageHeader
         title={displayName}
-        subtitle={`${subtitleCode} · submitted by ${edit.submittedBy.fullName}${edit.submittedAt ? ' · ' + new Date(edit.submittedAt).toLocaleString('en-GB') : ''}`}
+        subtitle={`${subtitleCode} · submitted by ${edit.submittedBy.fullName}${edit.submittedAt ? ' · ' + omanDateTime(edit.submittedAt) : ''}`}
         actions={
           edit.customerId ? (
             <Link
@@ -324,7 +328,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           >
             Decision: <strong>{edit.state}</strong>
             {edit.reviewedBy ? ` by ${edit.reviewedBy.fullName}` : ''}
-            {edit.reviewedAt ? ` on ${new Date(edit.reviewedAt).toLocaleString('en-GB')}` : ''}
+            {edit.reviewedAt ? ` on ${omanDateTime(edit.reviewedAt)}` : ''}
             {edit.decisionReason ? (
               <p className="mt-1 italic">&ldquo;{edit.decisionReason}&rdquo;</p>
             ) : null}
@@ -405,7 +409,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                       {s.reason ? <em className="text-slate-600"> — “{s.reason}”</em> : null}
                     </span>
                     <span className="shrink-0 text-slate-500">
-                      {new Date(s.at).toLocaleString('en-GB')}
+                      {omanDateTime(s.at)}
                       {s.cycle > 1 ? ` · round ${s.cycle}` : ''}
                     </span>
                   </li>
@@ -666,7 +670,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                             </span>
                           )}
                           {b.gpsCapturedAt
-                            ? ` · captured ${new Date(b.gpsCapturedAt).toLocaleString('en-GB')}`
+                            ? ` · captured ${omanDateTime(b.gpsCapturedAt)}`
                             : ''}
                           <span className="mt-2 block">
                             <LocationLinks lat={b.gpsLat} lng={b.gpsLng} pinLabel="Open in Google Maps" />
@@ -886,6 +890,6 @@ function formatValue(v: unknown): string {
   if (typeof v === 'number') return String(v);
   // The only yes/no field an edit carries: F21's "Equipment counted".
   if (typeof v === 'boolean') return v ? 'Yes' : 'No';
-  if (v instanceof Date) return v.toLocaleString('en-GB');
+  if (v instanceof Date) return omanDateTime(v);
   return JSON.stringify(v);
 }

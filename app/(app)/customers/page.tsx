@@ -286,7 +286,7 @@ export default async function CustomersPage({
     <main>
       <PageHeader
         title="Customers"
-        subtitle={`${total.isApprox ? '~' : ''}${total.total.toLocaleString()} total`}
+        subtitle={`${total.isApprox ? '~' : ''}${total.total.toLocaleString('en-US')} total`}
       />
       <CustomerFiltersClient
         initial={{

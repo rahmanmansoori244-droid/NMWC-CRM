@@ -433,6 +433,31 @@ describe('the review page of a customer update — phase 2 (F06, F20, F21, rulin
     expect(screen.queryByText('gpsLng', { selector: 'div' })).toBeNull();
     expect(screen.getByText('View proposed location on map')).toBeTruthy();
   });
+
+  it("launch fix: times read in Oman time on a UTC server — the submit time and a moved point's capture time", async () => {
+    // Vercel runs in UTC. 21:30 UTC on 7 October is 01:30 on the 8th in Oman; the
+    // page printed "07/10/2026, 21:30:05", and the capture time as a raw UTC ISO string.
+    vi.stubEnv('TZ', 'UTC');
+    try {
+      h.live = liveCustomer({ branches: [{ id: 'b1', status: 'ACTIVE', gpsLat: 23.6, gpsLng: 58.4 }] });
+      await renderDetail(
+        update({
+          submittedAt: new Date('2026-10-07T21:30:05.000Z'),
+          fieldChanges: [
+            { field: 'branch.b1.gpsLat', before: 23.6, after: 23.7 },
+            { field: 'branch.b1.gpsCapturedAt', before: '2026-09-01T06:00:00.000Z', after: '2026-10-07T21:30:00.000Z' },
+          ],
+        })
+      );
+      expect(screen.getByText(/submitted by Salesman One/).textContent).toMatch(/ · 08\/10\/2026, 01:30:05$/);
+      const row = screen.getByText('gpsCapturedAt', { selector: 'div' }).parentElement!;
+      expect(within(row).getByText('01/09/2026, 10:00:00')).toBeTruthy();
+      expect(within(row).getByText('08/10/2026, 01:30:00')).toBeTruthy();
+      expect(row.textContent).not.toMatch(/Z/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe('the approval queue', () => {

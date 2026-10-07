@@ -5,6 +5,7 @@ import { buildCustomerExport, type ExportFilters } from '@/services/exports';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { readExportFilterLists } from '@/lib/export-filter-lists';
+import { startOfOmanDay } from '@/lib/tz';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,7 +17,12 @@ const filterSchema = z.object({
   paymentTerms: z.array(z.enum(['CASH', 'CREDIT'])).optional(),
   minCompleteness: z.coerce.number().min(0).max(100).optional(),
   maxCompleteness: z.coerce.number().min(0).max(100).optional(),
-  updatedSince: z.coerce.date().optional(),
+  // `updatedSince=2026-09-30` means from the start of that OMAN day, as the
+  // field-update report reads its window. A bare date parses as UTC midnight,
+  // 04:00 in Oman, which left out a customer updated before 04:00 that day.
+  // A day and only a day ("YYYY-MM-DD", a real one): a full timestamp's UTC
+  // date can be the Oman day before the one it names.
+  updatedSince: z.string().date().transform((d) => startOfOmanDay(new Date(d))).optional(),
 });
 
 export async function GET(req: NextRequest) {

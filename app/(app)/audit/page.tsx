@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDateTime } from '@/lib/tz';
 import { Role, AuditAction, type Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { loadScope } from '@/lib/access';
@@ -111,7 +112,7 @@ export default async function AuditPage({
     <main>
       <PageHeader
         title="Audit log"
-        subtitle={`${total.toLocaleString()} matching events`}
+        subtitle={`${total.toLocaleString('en-US')} matching events`}
       />
       <form
         method="get"
@@ -172,7 +173,7 @@ export default async function AuditPage({
             <tbody className="divide-y divide-slate-100">
               {logs.map((l) => (
                 <tr key={l.id} className="hover:bg-slate-50">
-                  <td className="px-3 py-2 text-slate-500">{l.at.toLocaleString('en-GB')}</td>
+                  <td className="px-3 py-2 text-slate-500">{omanDateTime(l.at)}</td>
                   <td className="px-3 py-2">{l.actor.fullName}</td>
                   <td className="px-3 py-2 font-mono">{l.action}</td>
                   <td className="px-3 py-2 font-mono text-[11px] text-slate-600">

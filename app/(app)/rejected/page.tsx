@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDate } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
@@ -57,7 +58,7 @@ export default async function RejectedPage() {
                   </p>
                   <p className="mt-1 text-[11px] text-slate-500">
                     Rejected by {e.reviewedBy?.fullName} ·{' '}
-                    {e.reviewedAt?.toLocaleDateString('en-GB')}
+                    {e.reviewedAt && omanDate(e.reviewedAt)}
                   </p>
                 </Link>
               </li>
