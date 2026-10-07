@@ -27,6 +27,8 @@ import { cronAuthorized } from '@/lib/cron-auth';
 import { withHeartbeat } from '@/lib/heartbeat';
 import { escalationPlan } from '@/lib/escalation';
 import { parseChain } from '@/lib/approval-chains';
+import { requestScopeBranches } from '@/lib/permissions';
+import { parseSubmitGate } from '@/lib/edit-scope';
 import {
   slaDeadline,
   STAGE_SLA_MINUTES,
@@ -47,13 +49,13 @@ const NOTIFICATION_GC_CAP = 500;
 
 type DueEdit = Prisma.CustomerEditGetPayload<{
   include: {
-    submittedBy: { select: { id: true } };
+    submittedBy: { select: { id: true; ownedRouteId: true; ownedRoute: { select: { regionId: true } } } };
     customer: {
       select: {
         id: true;
         nmwcCode: true;
         legalName: true;
-        branches: { select: { regionId: true } };
+        branches: { select: { id: true; routeId: true; regionId: true; deletedAt: true } };
       };
     };
     customerDraft: { select: { legalName: true } };
@@ -62,24 +64,39 @@ type DueEdit = Prisma.CustomerEditGetPayload<{
 }>;
 
 const DUE_INCLUDE = {
-  submittedBy: { select: { id: true } },
+  submittedBy: { select: { id: true, ownedRouteId: true, ownedRoute: { select: { regionId: true } } } },
   customer: {
     select: {
       id: true,
       nmwcCode: true,
       legalName: true,
-      branches: { where: { deletedAt: null }, select: { regionId: true } },
+      branches: { where: { deletedAt: null }, select: { id: true, routeId: true, regionId: true, deletedAt: true } },
     },
   },
   customerDraft: { select: { legalName: true } },
   branchDrafts: { select: { route: { select: { regionId: true } } } },
 } as const;
 
+/**
+ * The regions whose Managers can decide the request (/approvals and canActOnStep
+ * read the same scope): a new customer's draft routes; an update's or a close's
+ * branches it is about (owner decision 3, lib/permissions.ts requestScopeBranches),
+ * not every region a customer with branches in several regions spans. So a
+ * Manager who cannot decide it is not told, and when the request's own region has
+ * no Manager the breach reaches the GM (the fallback below).
+ */
 function editRegionIds(e: DueEdit): string[] {
   const ids =
     e.process === 'CREATE'
       ? e.branchDrafts.map((b) => b.route.regionId)
-      : (e.customer?.branches.map((b) => b.regionId) ?? []);
+      : requestScopeBranches({
+          branches: e.customer?.branches ?? [],
+          fieldChanges: e.fieldChanges,
+          branchId: e.branchId,
+          homeBranchIds: parseSubmitGate(e.submitGate)?.branchIds,
+          submitterRouteId: e.submittedBy.ownedRouteId,
+          submitterRegionId: e.submittedBy.ownedRoute?.regionId,
+        }).map((b) => b.regionId);
   return [...new Set(ids)];
 }
 
