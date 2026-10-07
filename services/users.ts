@@ -520,6 +520,10 @@ async function createUserCore(formData: FormData) {
     }
   }
 
+  // Read before the write: a failed read after the commit would answer "Nothing
+  // was saved" about an account that was created.
+  const notes = handover && route ? await handOverNotes(handover, route.code, retired) : null;
+
   const passwordHash = await bcrypt.hash(data.password, 12);
   // F13: the account and its audit row commit together, or neither does — the
   // audit row is the only record of who created it. The envelope is read first
@@ -588,11 +592,8 @@ async function createUserCore(formData: FormData) {
   // (lib/reference-data.ts getAllHierarchyUsers); without this a new salesman
   // was missing from them for up to five minutes.
   revalidateTag('ref:users');
-  if (handover && route) {
-    revalidatePath('/routes');
-    return { notes: await handOverNotes(handover, route.code, retired) };
-  }
-  return undefined;
+  if (notes) revalidatePath('/routes');
+  return notes ? { notes } : undefined;
 }
 
 /**
@@ -1005,7 +1006,10 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
   // The route.
   let route: Awaited<ReturnType<typeof routeForAssignment>> = null;
   let handover: NonNullable<RouteHolder> | null = null;
-  if (role === Role.SALESMAN) {
+  // A salesman who already has none (a leaver whose route was handed on, or one
+  // an import moved off his route) can still be edited without one.
+  const keepsNoRoute = role === target.role && !target.ownedRoute && !d.ownedRouteId;
+  if (role === Role.SALESMAN && !keepsNoRoute) {
     if (!d.ownedRouteId) {
       throw new ValidationError({ ownedRouteId: 'A salesman must be assigned to a route.' });
     }

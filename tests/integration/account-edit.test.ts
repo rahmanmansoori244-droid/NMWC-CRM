@@ -485,5 +485,14 @@ describe.skipIf(!ENABLED)(
       });
       expect((await user(ids.leaver)).ownedRouteId).toBeNull();
     });
+
+    it('a salesman left with no route can still be edited without one', async () => {
+      as(ids.stw, 'STEWARD');
+      const res = await users.updateUserAccountAction(
+        fd({ userId: ids.leaver, role: 'SALESMAN', supervisorId: ids.mA, phone: '+968 9555 0000' })
+      );
+      expect(res, JSON.stringify(res)).toMatchObject({ ok: true, data: { changed: ['phone'] } });
+      expect(await user(ids.leaver)).toMatchObject({ ownedRouteId: null, phone: '+968 9555 0000' });
+    });
   }
 );
