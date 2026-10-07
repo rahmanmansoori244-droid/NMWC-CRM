@@ -85,8 +85,10 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
       },
       branchDrafts: {
         include: {
-          region: { select: { name: true } },
-          route: { select: { code: true, regionId: true } }, // final-hunt #7/#15: current region for visibility
+          // final-hunt #7/#15: the route's CURRENT region, for visibility — and
+          // (launch fix) for each branch's heading, which named the region frozen
+          // in the draft, not the one scope and finalize use.
+          route: { select: { code: true, regionId: true, region: { select: { name: true } } } },
         },
       },
       // Per-step decision history for the chain timeline.
@@ -104,7 +106,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   if (session.user.role === Role.SUPERVISOR && edit.submittedBy.supervisorId !== session.user.id) {
     notFound(); // hide existence — same posture as other scope misses
   }
-  const { loadScope, filterBranchesByScope } = await import('@/lib/access');
+  const { loadScope, filterBranchesByScope, canSeeCustomer } = await import('@/lib/access');
   const scope = await loadScope(session.user.id);
   // RBAC-05-003 / Phase 1: MANAGER and ACCOUNTANT region scope on the detail
   // page too — a deep link must not show another region's request. For CREATE
@@ -185,7 +187,14 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   const displayName = isCreate
     ? (edit.customerDraft?.legalName ?? '—')
     : (edit.customer?.legalName ?? '—');
-  const subtitleCode = isCreate ? 'New customer request' : edit.customer?.nmwcCode;
+  // Launch fix: once the last step has created it, the request carries the new
+  // customer — the Accountant never saw the code he had just created.
+  const createdCode = isCreate && edit.state === 'APPROVED' ? (edit.customer?.nmwcCode ?? null) : null;
+  const subtitleCode = isCreate
+    ? createdCode
+      ? `New customer ${createdCode}`
+      : 'New customer request'
+    : edit.customer?.nmwcCode;
 
   // UPDATE diff payload (empty for CREATE — its payload is the drafts).
   const changes = isCreate ? [] : ((edit.fieldChanges as unknown as FieldChange[]) ?? []);
@@ -296,6 +305,53 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   const draft = edit.customerDraft;
   const isCredit = isCreate && draft?.paymentTerms === 'CREDIT';
 
+  // Launch fix: a new-customer request's photos as they stand. One removed since
+  // it was sent rendered as a broken image, and only the final step's refusal
+  // said why; every approver now reads that it was removed and what to do.
+  const createPhotoIds = isCreate
+    ? [
+        ...(draft?.crPhotoAttachmentId ? [draft.crPhotoAttachmentId] : []),
+        ...edit.branchDrafts.flatMap((b) => [
+          ...(b.shopPhotoAttachmentId ? [b.shopPhotoAttachmentId] : []),
+          ...(b.signboardPhotoAttachmentId ? [b.signboardPhotoAttachmentId] : []),
+          ...(Array.isArray(b.extraPhotoAttachmentIds) ? (b.extraPhotoAttachmentIds as string[]) : []),
+        ]),
+      ]
+    : [];
+  const livePhotoIds = new Set(
+    createPhotoIds.length > 0
+      ? (
+          await prisma.attachment.findMany({
+            where: { id: { in: createPhotoIds }, editId: edit.id, deletedAt: null },
+            select: { id: true },
+          })
+        ).map((a) => a.id)
+      : []
+  );
+  const livePhotos = (ids: string[]) => ids.filter((id) => livePhotoIds.has(id));
+  const removedPhotos = (ids: string[]) => ids.length - livePhotos(ids).length;
+
+  // Launch fix: a shop sharing this request's phone with a live customer is let
+  // through (P1.3: a phone-only match never blocks) and was only logged, so no
+  // approver saw it. Named here when the approver can open that customer; the
+  // rest are counted.
+  const phoneMatches =
+    isCreate && isPending && draft?.primaryPhoneNorm
+      ? await prisma.customer.findMany({
+          where: { primaryPhoneNorm: draft.primaryPhoneNorm, deletedAt: null },
+          select: {
+            id: true,
+            nmwcCode: true,
+            legalName: true,
+            branches: { select: { routeId: true, regionId: true, deletedAt: true } },
+          },
+          orderBy: { nmwcCode: 'asc' },
+          take: 20,
+        })
+      : [];
+  const phoneMatchesShown = phoneMatches.filter((c) => canSeeCustomer(sessionUser, c, scope));
+  const phoneMatchesHidden = phoneMatches.length - phoneMatchesShown.length;
+
   return (
     <main className="pb-24">
       <PageHeader
@@ -325,6 +381,11 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
             Decision: <strong>{edit.state}</strong>
             {edit.reviewedBy ? ` by ${edit.reviewedBy.fullName}` : ''}
             {edit.reviewedAt ? ` on ${new Date(edit.reviewedAt).toLocaleString('en-GB')}` : ''}
+            {createdCode ? (
+              <p className="mt-1">
+                Created as customer <strong className="font-mono">{createdCode}</strong>.
+              </p>
+            ) : null}
             {edit.decisionReason ? (
               <p className="mt-1 italic">&ldquo;{edit.decisionReason}&rdquo;</p>
             ) : null}
@@ -447,9 +508,35 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               />
               <DetailRow label="Notes" value={draft.notes} />
               {draft.crPhotoAttachmentId && (
-                <PhotoRow label="CR document" ids={[draft.crPhotoAttachmentId]} />
+                <>
+                  <PhotoRow label="CR document" ids={livePhotos([draft.crPhotoAttachmentId])} />
+                  <RemovedPhotosRow
+                    label="CR document"
+                    removed={removedPhotos([draft.crPhotoAttachmentId])}
+                    pending={isPending}
+                  />
+                </>
               )}
             </DetailSection>
+
+            {(phoneMatchesShown.length > 0 || phoneMatchesHidden > 0) && (
+              <Warning>
+                <span className="font-semibold">This phone is already on another customer:</span>{' '}
+                {phoneMatchesShown.map((c, i) => (
+                  <span key={c.id}>
+                    {i > 0 ? ', ' : ''}
+                    <Link href={`/customers/${c.id}`} className="underline underline-offset-2">
+                      {c.nmwcCode} — {c.legalName}
+                    </Link>
+                  </span>
+                ))}
+                {phoneMatchesHidden > 0
+                  ? `${phoneMatchesShown.length > 0 ? ', and ' : ''}${phoneMatchesHidden} you cannot open`
+                  : ''}
+                . One owner can run several shops on one number, so it is allowed — check this is
+                a different shop before approving.
+              </Warning>
+            )}
 
             {isCredit && (
               <DetailSection title="Credit application (requested — approve or reject, no amendment)">
@@ -472,6 +559,11 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                 <PhotoRow
                   label={`Guarantee documents (${guaranteeDocs.length})`}
                   ids={guaranteeDocs.map((g) => g.id)}
+                  emptyText={
+                    isPending
+                      ? 'None on file: removed since the request was sent. It cannot be approved — reject it and say the guarantee is missing.'
+                      : 'None on file'
+                  }
                 />
               </DetailSection>
             )}
@@ -488,7 +580,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               return (
                 <DetailSection
                   key={b.id}
-                  title={`Branch ${i + 1}: ${b.branchName} (${b.region.name} · ${b.route.code})`}
+                  title={`Branch ${i + 1}: ${b.branchName} (${b.route.region.name} · ${b.route.code})`}
                 >
                   <DetailRow label="Address" value={b.address} />
                   <DetailRow label="Landmark" value={b.areaDescription} />
@@ -514,7 +606,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     label="Equipment"
                     value={`${b.coolersCount} coolers · ${b.standsCount} stands · ${b.emptyBottlesCount} empty bottles`}
                   />
-                  {photoIds.length > 0 && <PhotoRow label="Photos" ids={photoIds} />}
+                  {photoIds.length > 0 && <PhotoRow label="Photos" ids={livePhotos(photoIds)} />}
+                  <RemovedPhotosRow label="Photos" removed={removedPhotos(photoIds)} pending={isPending} />
                 </DetailSection>
               );
             })}
@@ -801,6 +894,24 @@ function PhotoRow({
             />
           </a>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Launch fix: photos of a new-customer request removed since it was sent, said
+ * as such instead of a broken image. While it waits: what to do — a reject
+ * steps back one approver (lib/create-finalize.ts says the same).
+ */
+function RemovedPhotosRow({ label, removed, pending }: { label: string; removed: number; pending: boolean }) {
+  if (removed === 0) return null;
+  return (
+    <div className={ROW}>
+      <div className="font-medium text-slate-600">{label}</div>
+      <div className="font-medium text-red-700">
+        {removed === 1 ? '1 photo was' : `${removed} photos were`} removed since the request was sent
+        {pending ? ' — it cannot be approved; reject it and say which photo is missing.' : '.'}
       </div>
     </div>
   );

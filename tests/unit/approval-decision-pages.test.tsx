@@ -32,6 +32,8 @@ const h = vi.hoisted(() => ({
   /** Phase 2: the live customer and the submitter as the stale-field check reads them. */
   live: null as unknown,
   submitter: null as unknown,
+  /** Launch fix: live customers on a new request's phone, as the review page reads them. */
+  phoneCustomers: [] as Array<Record<string, unknown>>,
 }));
 
 /** The attachment table, for a `where` of { editId | editId.in, kind, deletedAt: null }. */
@@ -60,6 +62,8 @@ vi.mock('next/link', () => ({
 }));
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: { id: 'u-viewer', role: h.role, username: 'viewer.x' } }) }));
 vi.mock('@/lib/access', () => ({
+  // Launch fix: the review page names a live customer sharing a new request's phone only if the viewer can open it.
+  canSeeCustomer: (_u: unknown, c: { canSee?: boolean }) => c.canSee !== false,
   loadScope: async () => ({ managedRegionIds: ['g1'] }),
   filterBranchesByScope: (_u: unknown, branches: unknown[]) => branches,
 }));
@@ -70,8 +74,10 @@ function project(row: Record<string, unknown>, select: Record<string, unknown>):
   for (const [k, v] of Object.entries(select)) {
     if (v === true) out[k] = row[k];
     else if (v && typeof v === 'object' && 'select' in v) {
-      const nested = row[k] as Record<string, unknown> | null | undefined;
-      out[k] = nested == null ? nested : project(nested, (v as { select: Record<string, unknown> }).select);
+      const sel = (v as { select: Record<string, unknown> }).select;
+      const nested = row[k] as Record<string, unknown> | Record<string, unknown>[] | null | undefined;
+      // A list relation comes back as a list of projected rows.
+      out[k] = nested == null ? nested : Array.isArray(nested) ? nested.map((r) => project(r, sel)) : project(nested, sel);
     }
   }
   return out;
@@ -98,7 +104,7 @@ vi.mock('@/lib/db', () => ({
     branch: { findMany: async () => [] },
     channel: { findMany: async () => [] },
     subChannel: { findMany: async () => [] },
-    customer: { findUnique: async () => h.live },
+    customer: { findUnique: async () => h.live, findMany: async () => h.phoneCustomers },
     user: { findUnique: async () => h.submitter },
   },
 }));
@@ -123,6 +129,7 @@ beforeEach(() => {
   h.attachments = [];
   h.live = null;
   h.submitter = null;
+  h.phoneCustomers = [];
 });
 
 const guarantee = (id: string, editId = 'e1', deletedAt: Date | null = null): Att => ({
@@ -589,5 +596,101 @@ describe('F1: the review page says when its viewer cannot decide the request (li
     h.role = 'MANAGER';
     await renderDetail(update({ isReactivation: true, approvalChain: null }));
     expect(screen.getByRole('link', { name: 'Open Reactivations' }).getAttribute('href')).toBe('/reactivations');
+  });
+});
+
+describe('launch fixes on the new-customer review page and queue card', () => {
+  const draftBranch = (over: Record<string, unknown> = {}) => ({
+    id: 'bd1',
+    branchName: 'Main',
+    // The region frozen in the draft at submit; the route has moved since.
+    region: { name: 'Frozen Region' },
+    route: { code: 'MCT-01', regionId: 'g1', region: { name: 'Muscat' } },
+    address: 'Way 1234, Ruwi',
+    areaDescription: null,
+    gpsLat: 23.6,
+    gpsLng: 58.4,
+    gpsAccuracy: 8,
+    dayOfVisit: 'SUN',
+    openingHours: '08:00 – 22:00',
+    deliveryWindow: null,
+    coolersCount: 1,
+    standsCount: 0,
+    emptyBottlesCount: 0,
+    shopPhotoAttachmentId: 'p-shop',
+    signboardPhotoAttachmentId: 'p-sign',
+    extraPhotoAttachmentIds: [],
+    ...over,
+  });
+
+  it("each branch is headed with its route's current region, not the one frozen in the draft", async () => {
+    await renderDetail(createRow('CASH', 0, { branchDrafts: [draftBranch()] }));
+    expect(screen.getByText('Branch 1: Main (Muscat · MCT-01)')).toBeTruthy();
+    expect(screen.queryByText(/Frozen Region/)).toBeNull();
+  });
+
+  it('a photo removed since the request was sent reads as removed, with what to do — never a broken image', async () => {
+    h.attachments = [{ id: 'p-shop', editId: 'e1', kind: 'SHOP', deletedAt: null }];
+    await renderDetail(createRow('CASH', 0, { branchDrafts: [draftBranch()] }));
+    const imgs = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src'));
+    expect(imgs).toEqual(['/api/photos/p-shop']);
+    expect(
+      screen.getByText(
+        '1 photo was removed since the request was sent — it cannot be approved; reject it and say which photo is missing.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('a live customer on the same phone is shown: named when the approver can open it, counted when not', async () => {
+    h.phoneCustomers = [
+      { id: 'c1', nmwcCode: 'NMWC-000001', legalName: 'Al Noor One', branches: [] },
+      { id: 'c2', nmwcCode: 'NMWC-000002', legalName: 'Hidden Shop', branches: [], canSee: false },
+    ];
+    const row = createRow('CASH', 0);
+    await renderDetail({ ...row, customerDraft: { ...row.customerDraft, primaryPhoneNorm: '+96891234567' } });
+    expect(screen.getByRole('link', { name: 'NMWC-000001 — Al Noor One' }).getAttribute('href')).toBe('/customers/c1');
+    expect(screen.getByText(/This phone is already on another customer/).parentElement!.textContent).toContain(
+      ', and 1 you cannot open.'
+    );
+    expect(screen.queryByText(/Hidden Shop|NMWC-000002/)).toBeNull();
+  });
+
+  it('once created, the request names the customer code it created', async () => {
+    h.edit = createRow('CASH', 1, {
+      state: 'APPROVED',
+      customerId: 'c-new',
+      customer: { id: 'c-new', legalName: 'Al Noor Trading', nmwcCode: 'NMWC-2026-000123', crPhotoId: null, branches: [] },
+      reviewedBy: { fullName: 'Accountant One' },
+      reviewedAt: new Date('2026-10-05T08:00:00Z'),
+    });
+    const { default: Page } = await import('@/app/(app)/approvals/[id]/page');
+    render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+    expect(screen.getByText(/^New customer NMWC-2026-000123 · submitted by Salesman One/)).toBeTruthy();
+    expect(screen.queryByText(/New customer request/)).toBeNull();
+    expect(screen.getByText('NMWC-2026-000123', { selector: 'strong' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open profile' }).getAttribute('href')).toBe('/customers/c-new');
+  });
+
+  it("the queue card's ring scores the new customer from its drafts, not 0%", async () => {
+    h.queueRows = [
+      createRow('CASH', 0, {
+        customerDraft: {
+          legalName: 'Al Noor Trading',
+          paymentTerms: 'CASH',
+          channelId: 'ch1',
+          subChannelId: 'sub1',
+          primaryPhone: '+96891234567',
+          contactPerson: 'Ali',
+          crNumber: '1234567',
+          crPhotoAttachmentId: 'p-cr',
+          notes: null,
+        },
+        branchDrafts: [draftBranch()],
+      }),
+    ];
+    const { default: Page } = await import('@/app/(app)/approvals/page');
+    render(await Page());
+    // 35 of 40 on the customer (no notes) + 60 of 60 on its one branch.
+    expect((h.queueItems[0]!.customer as { completenessScore: number }).completenessScore).toBe(95);
   });
 });

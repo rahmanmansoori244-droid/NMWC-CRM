@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useTransition } from 'react';
-import { approveEditAndGoAction, rejectEditAndGoAction } from '@/services/edits';
+import { useRouter } from 'next/navigation';
+import { approveEditAction, approveEditAndGoAction, rejectEditAndGoAction } from '@/services/edits';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 
 const REJECT_CATEGORIES = [
@@ -136,6 +137,7 @@ export function ApproveRejectActions({
   outcome: ApproveOutcome;
   rejectOutcome: RejectOutcome;
 }) {
+  const router = useRouter();
   const [pending, start] = useTransition();
   const [showReject, setShowReject] = useState(false);
   const [reason, setReason] = useState('');
@@ -156,6 +158,15 @@ export function ApproveRejectActions({
       // lib/errors.ts (runAction). Throws here are now reserved for genuine
       // 500s, which we still surface as a generic message.
       try {
+        // Launch fix: the last step of a new-customer request stays here, and
+        // the page then shows the customer code it created. Sent back to
+        // /approvals, the Accountant never saw the code anywhere.
+        if (outcome.kind === 'CREATE') {
+          const res = await approveEditAction(fd);
+          if (!res.ok) setErrors({ _form: res.message });
+          else router.refresh();
+          return;
+        }
         // perf audit #31: on success the action redirect()s server-side, so the
         // response already carries the fresh /approvals payload — ONE round trip.
         // The promise then resolves with no value; only error results return.

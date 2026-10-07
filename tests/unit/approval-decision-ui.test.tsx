@@ -24,6 +24,8 @@ import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE, CREDIT_BULK_REFUSED_M
 
 const h = vi.hoisted(() => ({
   approve: vi.fn(),
+  approveStay: vi.fn(),
+  refresh: vi.fn(),
   reject: vi.fn(),
   bulkApprove: vi.fn(),
   bulkReject: vi.fn(),
@@ -31,11 +33,12 @@ const h = vi.hoisted(() => ({
 
 vi.mock('@/services/edits', () => ({
   approveEditAndGoAction: h.approve,
+  approveEditAction: h.approveStay,
   rejectEditAndGoAction: h.reject,
   bulkApproveEditsAction: h.bulkApprove,
   bulkRejectEditsAction: h.bulkReject,
 }));
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), refresh: h.refresh }) }));
 vi.mock('next/link', () => ({
   default: ({ href, children, className }: { href: string; children: ReactNode; className?: string }) => (
     <a href={href} className={className}>
@@ -58,6 +61,8 @@ const formOf = (fn: ReturnType<typeof vi.fn>) => Object.fromEntries((fn.mock.cal
 
 beforeEach(() => {
   h.approve.mockReset().mockResolvedValue(undefined);
+  h.approveStay.mockReset().mockResolvedValue({ ok: true });
+  h.refresh.mockReset();
   h.reject.mockReset().mockResolvedValue(undefined);
   h.bulkApprove.mockReset().mockResolvedValue({ ok: true, data: { successes: [], failures: [], notAttempted: [] } });
   h.bulkReject.mockReset().mockResolvedValue({ ok: true, data: { successes: [], failures: [], notAttempted: [] } });
@@ -142,6 +147,42 @@ describe('N01 — the single-request page sends its token with every decision', 
     await rejectWithReason();
     expect(await screen.findByText('Reason must be 5–1000 characters.')).toBeTruthy();
     expect(screen.queryByText('Validation failed')).toBeNull();
+  });
+});
+
+describe('launch fix — "Approve and create" stays on the request, which then shows the new code', () => {
+  async function confirm() {
+    fireEvent.click(screen.getByRole('button', { name: '✓ Approve' }));
+    const dialog = screen.getByRole('dialog');
+    const buttons = within(dialog).getAllByRole('button');
+    fireEvent.click(buttons[buttons.length - 1]!);
+  }
+
+  it('the last step of a new-customer request approves without leaving, then refreshes this page', async () => {
+    renderActions({ kind: 'CREATE' });
+    await confirm();
+    await waitFor(() => expect(h.approveStay).toHaveBeenCalledTimes(1));
+    expect(formOf(h.approveStay)).toEqual({ editId: 'e1', decisionToken: TOKEN });
+    expect(h.approve).not.toHaveBeenCalled();
+    await waitFor(() => expect(h.refresh).toHaveBeenCalledTimes(1));
+  });
+
+  it('a refusal is shown and nothing is refreshed', async () => {
+    h.approveStay.mockResolvedValue({ ok: false, code: 'DUPLICATE_CR', message: 'Already a customer.' });
+    renderActions({ kind: 'CREATE' });
+    await confirm();
+    expect(await screen.findByText('Already a customer.')).toBeTruthy();
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('every other approval still returns to the queue in one round trip', async () => {
+    for (const outcome of [{ kind: 'APPLY' }, { kind: 'ADVANCE', nextRole: 'ACCOUNTANT' }] as const) {
+      h.approve.mockClear();
+      renderActions(outcome);
+      await approveThroughModal();
+      expect(h.approveStay).not.toHaveBeenCalled();
+      cleanup();
+    }
   });
 });
 
