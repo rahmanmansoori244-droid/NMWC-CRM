@@ -16,7 +16,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 const nav = vi.hoisted(() => ({ hardReplace: vi.fn() }));
 vi.mock('@/lib/navigate', () => nav);
 
-import { asciiDigits, foldNumberInput, numberText, typedNumber } from '@/lib/digits';
+import { asciiDigits, foldNumberInput, numberText, typedDecimal, typedNumber } from '@/lib/digits';
 import { submitCreateSchema } from '@/lib/validation/create';
 import { CreateCustomerForm, type CreateFormInitial } from '@/app/(app)/customers/new/CreateCustomerForm';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
@@ -26,9 +26,11 @@ import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
 // right-to-left mark of the kind copied Arabic text carries.
 const AR = (s: string) => s.replace(/[0-9]/g, (d) => String.fromCharCode(0x0660 + Number(d)));
 const FA = (s: string) => s.replace(/[0-9]/g, (d) => String.fromCharCode(0x06f0 + Number(d)));
-const DEC = '٫';
-const THOU = '٬';
-const RLM = '‏';
+const DEC = '\u066B';
+const THOU = '\u066C';
+const RLM = '\u200F';
+// U+060C, the comma key on an Arabic layout.
+const AR_COMMA = '\u060C';
 
 describe('lib/digits', () => {
   it('folds Arabic-Indic and Persian digits, the Arabic decimal and thousands marks, and bidi marks', () => {
@@ -48,6 +50,27 @@ describe('lib/digits', () => {
     expect(typedNumber('   ')).toBeNaN();
     expect(typedNumber('12,5')).toBeNaN();
     expect(typedNumber('abc')).toBeNaN();
+  });
+
+  it('typedDecimal: a comma of either script is the decimal point, and the whole text must be the number', () => {
+    expect(typedDecimal(`${AR('23')}${AR_COMMA}${AR('587')}`)).toBe(23.587);
+    expect(typedDecimal(`23${AR_COMMA}587`)).toBe(23.587);
+    expect(typedDecimal('23,587')).toBe(23.587);
+    expect(typedDecimal(`${AR('23')}${DEC}${AR('587')}`)).toBe(23.587);
+    expect(typedDecimal(' -23.5 ')).toBe(-23.5);
+    expect(typedDecimal('.5')).toBe(0.5);
+    // parseFloat read each of these as 23, a point inside Oman.
+    expect(typedDecimal(`${AR('23')} ${AR('587')}`)).toBeNaN();
+    expect(typedDecimal('23 587')).toBeNaN();
+    expect(typedDecimal('23.5.8')).toBeNaN();
+    expect(typedDecimal('23,5,8')).toBeNaN();
+    expect(typedDecimal('23.5°')).toBeNaN();
+    expect(typedDecimal('23.588, 58.382')).toBeNaN();
+    // Number() alone would take these.
+    expect(typedDecimal('0x17')).toBeNaN();
+    expect(typedDecimal('2.3e1')).toBeNaN();
+    expect(typedDecimal('')).toBeNaN();
+    expect(typedDecimal('-')).toBeNaN();
   });
 
   it('foldNumberInput folds text and passes anything else through', () => {
@@ -233,6 +256,24 @@ describe('the GPS fallback takes a point typed in Arabic digits', () => {
 
   it('a point that is not a number is still refused', () => {
     const onCapture = typePoint('north', AR('58'));
+    expect(screen.getByText('Enter valid latitude and longitude numbers.')).toBeTruthy();
+    expect(onCapture).not.toHaveBeenCalled();
+  });
+
+  it('with the Arabic comma, the comma key on an Arabic layout', () => {
+    const onCapture = typePoint(`${AR('23')}${AR_COMMA}${AR('587')}`, `58${AR_COMMA}382`);
+    expect(screen.queryByText('Enter valid latitude and longitude numbers.')).toBeNull();
+    expect(onCapture.mock.calls[0]![0]).toMatchObject({ lat: 23.587, lng: 58.382, isManual: true });
+  });
+
+  // parseFloat kept the digits before the first character it did not read:
+  // each of these was saved as latitude 23, inside Oman, with no warning.
+  it.each([
+    ['a space for the decimal point', `${AR('23')} ${AR('587')}`],
+    ['two decimal points', '23.5.87'],
+    ['both numbers in one box', '23.587, 58.382'],
+  ])('%s is refused, not cut short', (_name, lat) => {
+    const onCapture = typePoint(lat, '58.382');
     expect(screen.getByText('Enter valid latitude and longitude numbers.')).toBeTruthy();
     expect(onCapture).not.toHaveBeenCalled();
   });

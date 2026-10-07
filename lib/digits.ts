@@ -17,17 +17,17 @@
  *     is copied are removed (the lib/cr.ts set), and the ends are trimmed.
  * The Latin comma is NOT touched: '1,500' is a thousands group to one person and
  * a decimal to another, so each caller keeps the rule it had (the typed GPS
- * point reads it as a decimal; a credit limit refuses it).
+ * point reads it as a decimal, typedDecimal below; a credit limit refuses it).
  *
  * Each range is written as escapes, as in lib/cr.ts: look-alike digits and
  * invisible characters are easier to review as code points than as glyphs.
  */
-const ARABIC_INDIC_DIGIT = /[٠-٩]/g;
-const PERSIAN_DIGIT = /[۰-۹]/g;
-const ARABIC_DECIMAL_SEPARATOR = /٫/g;
-const ARABIC_THOUSANDS_SEPARATOR = /٬/g;
+const ARABIC_INDIC_DIGIT = /[\u0660-\u0669]/g;
+const PERSIAN_DIGIT = /[\u06F0-\u06F9]/g;
+const ARABIC_DECIMAL_SEPARATOR = /\u066B/g;
+const ARABIC_THOUSANDS_SEPARATOR = /\u066C/g;
 const INVISIBLE_FORMAT =
-  /[­؜᠎​-‏‪-‮⁠-⁤⁦-⁯﻿]/g;
+  /[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
 
 /** Arabic-Indic and Persian digits as ASCII; nothing else changes. */
 export function asciiDigits(s: string): string {
@@ -53,6 +53,22 @@ export function numberText(s: string): string {
 export function typedNumber(s: string): number {
   const t = numberText(s);
   return t ? Number(t) : NaN;
+}
+
+const COMMA_AS_DECIMAL = /[,\u060C]/g;
+const PLAIN_DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
+
+/**
+ * A typed number where a comma is the decimal mark (the typed GPS point), or
+ * NaN. The Latin ',' and the Arabic comma '،' (U+060C, the comma key on an
+ * Arabic layout) read as '.', and then the whole text must be one plain
+ * decimal number. parseFloat read up to the first character it did not know
+ * and dropped the rest, so '٢٣،٥٨٧' or '٢٣ ٥٨٧' became 23, still inside Oman
+ * and saved with no warning (launch review): refused now, as a typo should be.
+ */
+export function typedDecimal(s: string): number {
+  const t = numberText(s).replace(COMMA_AS_DECIMAL, '.');
+  return PLAIN_DECIMAL.test(t) ? Number(t) : NaN;
 }
 
 /**
