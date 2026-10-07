@@ -32,6 +32,7 @@ import {
   UPLOAD_SIGNED_OUT,
   RATE_LIMIT_MAX_WAIT_S,
   rateLimitedMessage,
+  rateLimitWaitMessage,
   postBodyDeadlineMs,
   type AttachTarget,
 } from '@/components/nmwc/PhotoCaptureSlot';
@@ -888,7 +889,7 @@ describe("presign's and finalize's refusals are answers too (launch review)", ()
     expect(count(`/api/photos/${step}`)).toBe(1); // an answer: not retried
   });
 
-  it('a 429 is waited out for as long as it says, then the photo goes up — no Retry upload to tap', () =>
+  it('a 429 is waited out for as long as it says, counting down on the slot, then the photo goes up — no Retry upload to tap', () =>
     withFakeTimers(async () => {
       uploadable();
       presignPlan = [throttled(20)];
@@ -897,12 +898,19 @@ describe("presign's and finalize's refusals are answers too (launch review)", ()
       const view = render(<PhotoCaptureSlot kind="SHOP" onChange={onChange} onBusyChange={(b) => calls.push(b)} />);
       pick(view.container);
       await settleUntil(() => count('/api/photos/presign') === 1);
-      await advance(19_999);
+      // Said while it waits: a silent 'Uploading… 0%' read as frozen.
+      await settleUntil(() => screen.queryByText(rateLimitWaitMessage(20)) !== null);
+      expect(screen.queryByText(/Uploading…/)).toBeNull();
+      await advance(5_000);
+      expect(screen.getByText(rateLimitWaitMessage(15))).toBeTruthy();
+      await advance(14_999);
       expect(count('/api/photos/presign')).toBe(1);
       expect(retryButton()).toBeNull();
       await advance(1);
       await settleUntil(() => xhrs.length === 1);
       expect(count('/api/photos/presign')).toBe(2);
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(screen.getByText(/Uploading…/)).toBeTruthy();
       act(() => xhrs[0]!.answer());
       await settleUntil(() => onChange.mock.calls.length === 1);
       await settleUntil(() => calls.length === 2);

@@ -168,6 +168,10 @@ export const UPLOAD_SIGNED_OUT =
  * a longer one, or a third refusal, ends with how long to wait.
  */
 export const RATE_LIMIT_MAX_WAIT_S = 30;
+/** Said on the slot while such a wait runs, second by second (below). */
+export function rateLimitWaitMessage(secondsLeft: number): string {
+  return `Too many photos — trying again in ${secondsLeft} s`;
+}
 export function rateLimitedMessage(retryAfterSec: number): string {
   const wait = retryAfterSec < 90 ? `${retryAfterSec} seconds` : `${Math.ceil(retryAfterSec / 60)} minutes`;
   return `Too many photos in a short time. Wait ${wait}, then tap Retry upload.`;
@@ -253,7 +257,15 @@ function isRetryable(err: unknown): boolean {
   return false;
 }
 
-async function retryable<T>(fn: () => Promise<T>): Promise<T> {
+/**
+ * `onWait` hears a 429's wait as it runs: the seconds left, once a second, then
+ * null. A silent "Uploading… 0%" for up to a minute read as frozen, and the
+ * salesman left the page (launch review).
+ */
+async function retryable<T>(
+  fn: () => Promise<T>,
+  onWait?: (secondsLeft: number | null) => void
+): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < RETRY_DELAYS.length; attempt += 1) {
     try {
@@ -262,14 +274,22 @@ async function retryable<T>(fn: () => Promise<T>): Promise<T> {
       lastErr = err;
       // A 429 says when the next try may go: that wait instead of the backoff,
       // when it is short enough to sit through.
-      const wait =
+      const waitSec =
         err instanceof RateLimitedError && err.retryAfterSec <= RATE_LIMIT_MAX_WAIT_S
-          ? err.retryAfterSec * 1000
+          ? err.retryAfterSec
           : null;
-      if (wait === null && !isRetryable(err)) throw err;
+      if (waitSec === null && !isRetryable(err)) throw err;
       // Don't sleep after the last attempt.
       if (attempt < RETRY_DELAYS.length - 1) {
-        await delay(wait ?? RETRY_DELAYS[attempt]);
+        if (waitSec === null) {
+          await delay(RETRY_DELAYS[attempt]);
+        } else {
+          for (let left = waitSec; left > 0; left -= 1) {
+            onWait?.(left);
+            await delay(1000);
+          }
+          onWait?.(null);
+        }
       }
     }
   }
@@ -452,6 +472,8 @@ export function PhotoCaptureSlot({
     initial ? 'done' : 'idle'
   );
   const [uploadPct, setUploadPct] = useState(0);
+  // The seconds left of a 429's wait that retryable() is sitting through.
+  const [rateWait, setRateWait] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A Remove the server refused. Its own line: in the failed-upload state the
   // upload error owns `error`, and a refusal shown there read as an upload
@@ -478,6 +500,7 @@ export function PhotoCaptureSlot({
     setRemoveRefused(null);
     setProgress('uploading');
     setUploadPct(resend ? 100 : 0);
+    setRateWait(null);
     try {
       let attachmentId: string;
       if (resend) {
@@ -496,7 +519,7 @@ export function PhotoCaptureSlot({
           );
           await putWithProgress(p.url, p.headers, blob, (pct) => setUploadPct(pct));
           return p;
-        });
+        }, setRateWait);
 
         // 3) Finalize
         ({ attachmentId } = await retryable(() =>
@@ -511,7 +534,8 @@ export function PhotoCaptureSlot({
               capturedLng,
             },
             'Finalize failed.'
-          )
+          ),
+          setRateWait
         ));
       }
 
@@ -754,7 +778,11 @@ export function PhotoCaptureSlot({
         {progress === 'compressing' && <span className="text-[11px]">Compressing…</span>}
         {progress === 'uploading' && (
           <>
-            <span className="text-[11px]">Uploading… {uploadPct}%</span>
+            {rateWait !== null ? (
+              <span role="status" className="text-[11px]">{rateLimitWaitMessage(rateWait)}</span>
+            ) : (
+              <span className="text-[11px]">Uploading… {uploadPct}%</span>
+            )}
             {/* B-08: byte-progress bar so the salesman can tell the upload
                 is actually moving over a slow 3G connection. */}
             <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-white/40">
