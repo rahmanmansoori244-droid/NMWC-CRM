@@ -55,6 +55,9 @@ export default async function ApprovalsPage() {
   ];
   const role = session.user.role;
   let where: Prisma.CustomerEditWhereInput;
+  // A region-scoped approver (Manager, Accountant) with no region: nothing can
+  // ever reach him, so the page says why instead of "Nothing pending".
+  let noRegion = false;
   if (role === Role.SUPERVISOR) {
     where = {
       state: 'SUBMITTED',
@@ -69,6 +72,7 @@ export default async function ApprovalsPage() {
     if (scope.managedRegionIds.length === 0) {
       // RBAC-05-003 / RBAC-05-012: fail-closed empty queue.
       where = { state: 'SUBMITTED', id: '__none__' };
+      noRegion = true;
     } else if (role === Role.MANAGER) {
       // Owner decision 3 (2026-10-07): lib/manager-queue.ts.
       where = await managerQueueWhere(prisma, scope.managedRegionIds, supervisorStepOr);
@@ -244,14 +248,24 @@ export default async function ApprovalsPage() {
       <PageHeader
         title="Approval queue"
         subtitle={
-          pendingCount > items.length
-            ? `${pendingCount} pending · showing the ${items.length} most overdue`
-            : `${pendingCount} pending`
+          noRegion
+            ? 'No region assigned'
+            : pendingCount > items.length
+              ? `${pendingCount} pending · showing the ${items.length} most overdue`
+              : `${pendingCount} pending`
         }
       />
 
       <div className="pt-4 sm:pt-6">
-        {items.length === 0 ? (
+        {noRegion ? (
+          // Launch browser suite (2026-10-07): it read "Nothing pending", which an
+          // Accountant takes for a quiet day. FINANCE_MANAGER and GM are org-wide
+          // (lib/permissions.ts canActOnStep GLOBAL) and never see this.
+          <div className="mx-4 rounded-md bg-amber-50 p-4 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
+            No region is assigned to this account, so no approval requests can reach it. Ask the
+            Data Steward to assign one: the Steward does it with Edit on your row of the Users page.
+          </div>
+        ) : items.length === 0 ? (
           <div className="px-4 sm:px-6">
             <EmptyState
               title="Nothing pending"
