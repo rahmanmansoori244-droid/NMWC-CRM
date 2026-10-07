@@ -250,8 +250,10 @@ export function revokesSessions(before: EditableAccount, after: EditableAccount)
  * one approver that follows the salesman is a SUPERVISOR-role supervisor at the
  * first step (supervisorStepNotes). But a new-customer request among them that
  * is sent back after the move cannot be sent again from his new route
- * (services/creates.ts refuses it): he withdraws it, and the salesman of the old
- * route adds the shop afresh (`inReviewCreates`).
+ * (services/creates.ts refuses it): he withdraws it, and the salesman of the
+ * route it was started on adds the shop afresh (`inReviewCreates`). That route
+ * is named from the requests themselves: a salesman moved twice can still have
+ * some in review from the route before the one he now leaves.
  *
  * Updates SENT BACK to him stay his too. One on a customer of his old route can
  * no longer be sent again, since he cannot open that customer; he clears it on
@@ -270,8 +272,11 @@ export function routeMoveNotes(p: {
   who: string;
   fromRoute: string;
   inReview: number;
-  /** Of those, new-customer requests started on another route than his new one. */
-  inReviewCreates?: number;
+  /**
+   * Of those, the new-customer requests started on another route than his new
+   * one, and the codes of the routes they were started on.
+   */
+  inReviewCreates?: { count: number; routes: string[] };
   /** Sent back to him and still waiting on him, not counting withdrawn ones. */
   sentBack: number;
   /** New-customer requests withdrawn with this change. */
@@ -283,8 +288,8 @@ export function routeMoveNotes(p: {
   if (p.inReview > 0) {
     notes.push(
       `${p.who} has ${p.inReview} request(s) in review. They stay with the same approvers — the Managers and Accountant of each customer's region — and are decided as before.${
-        p.inReviewCreates && !p.leaver
-          ? ` New-customer requests among them (${p.inReviewCreates}): if one is sent back to him, he cannot send it again from his new route — he withdraws it on Needs correction, and the salesman of ${p.fromRoute} adds the shop afresh.`
+        p.inReviewCreates?.count && !p.leaver
+          ? ` New-customer requests among them (${p.inReviewCreates.count}): if one is sent back to him, he cannot send it again from his new route — he withdraws it on Needs correction, and the salesman of ${p.inReviewCreates.routes.join(' or ') || 'its route'} adds the shop afresh.`
           : ''
       }`
     );

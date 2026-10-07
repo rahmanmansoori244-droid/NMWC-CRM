@@ -271,7 +271,7 @@ describe('what the Steward is told about open requests (routeMoveNotes)', () => 
       who: 'Ali',
       fromRoute: 'C4',
       inReview: 3,
-      inReviewCreates: 2,
+      inReviewCreates: { count: 2, routes: ['C4'] },
       sentBack: 0,
     });
     expect(notes).toHaveLength(1);
@@ -285,10 +285,34 @@ describe('what the Steward is told about open requests (routeMoveNotes)', () => 
         who: 'Ali',
         fromRoute: 'C4',
         inReview: 1,
-        inReviewCreates: 0,
+        inReviewCreates: { count: 0, routes: [] },
         sentBack: 0,
       })[0]
     ).not.toMatch(/new-customer/);
+  });
+
+  // A salesman moved twice: requests sent from his first route (C2) are still in
+  // review when he leaves his second (C4). The count covers creates on any route
+  // but the new one, so the route named must be theirs, not the one he leaves.
+  it('names the routes the new-customer requests were started on, not the route he leaves', () => {
+    const [note] = routeMoveNotes({
+      who: 'Ali',
+      fromRoute: 'C4',
+      inReview: 3,
+      inReviewCreates: { count: 3, routes: ['C2', 'C4'] },
+      sentBack: 0,
+    });
+    expect(note).toMatch(/New-customer requests among them \(3\):/);
+    expect(note).toMatch(/the salesman of C2 or C4 adds the shop afresh\./);
+    const [one] = routeMoveNotes({
+      who: 'Ali',
+      fromRoute: 'C4',
+      inReview: 1,
+      inReviewCreates: { count: 1, routes: ['C2'] },
+      sentBack: 0,
+    });
+    expect(one).toMatch(/the salesman of C2 adds the shop afresh\./);
+    expect(one).not.toMatch(/C4/);
   });
 });
 

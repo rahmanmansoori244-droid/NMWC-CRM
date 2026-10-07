@@ -1293,17 +1293,24 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
         where: { submittedById: target.id, state: EditState.SUBMITTED },
       }),
       // Security review: in review, a new customer stays with its route's
-      // approvers; sent back after the move, he cannot send it again.
+      // approvers; sent back after the move, he cannot send it again. The
+      // routes they were started on are named: not always the one he leaves.
       route
-        ? prisma.customerEdit.count({
+        ? prisma.customerEdit.findMany({
             where: {
               submittedById: target.id,
               process: EditProcess.CREATE,
               state: EditState.SUBMITTED,
               branchDrafts: { some: { routeId: { not: route.id } } },
             },
+            select: {
+              branchDrafts: {
+                where: { routeId: { not: route.id } },
+                select: { route: { select: { code: true } } },
+              },
+            },
           })
-        : 0,
+        : [],
       openReturnedIds(prisma, target.id),
     ]);
     notes.push(
@@ -1311,7 +1318,12 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
         who: target.fullName,
         fromRoute: target.ownedRoute?.code ?? strandedFrom.join(', '),
         inReview,
-        inReviewCreates,
+        inReviewCreates: {
+          count: inReviewCreates.length,
+          routes: [
+            ...new Set(inReviewCreates.flatMap((e) => e.branchDrafts.map((b) => b.route.code))),
+          ].sort(compareCodes),
+        },
         sentBack: sentBackIds.filter((id) => !withdrawn.has(id)).length,
         withdrawn: withdrawn.size,
         leaver: !route,
