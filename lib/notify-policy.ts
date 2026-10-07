@@ -108,6 +108,18 @@ export const MUST_ACT_KINDS: readonly NotificationKind[] = [
 ];
 
 /**
+ * Launch fix (2026-10-07): the rows a decision settles. When anyone decides a
+ * request (a step approved or rejected, a reactivation approved or kept closed),
+ * every unread row of these kinds about it, held by anyone but its submitter, is
+ * marked read in the same transaction (lib/notifications.ts settleRequestAlerts):
+ * the step they asked for has been taken, so they no longer count in a red bell.
+ * Before, only the recipient's own click marked a row read, so with four Managers
+ * sharing a region a supervisor's bell counted requests a colleague had already
+ * decided. The submitter's own rows are his progress pings and are left alone.
+ */
+export const SETTLED_ON_DECISION_KINDS: readonly NotificationKind[] = [...MUST_ACT_KINDS, 'SLA_BREACH'];
+
+/**
  * The in-app bell (app/(app)/layout.tsx, components/nmwc/TopBar.tsx) is the only
  * in-app alert, and its red count means "something waits on you". These kinds
  * are counted apart from it, in a muted second count: since F1 the region's

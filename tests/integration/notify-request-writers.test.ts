@@ -15,6 +15,15 @@
  *   - A replay (answered from its receipt) and a refused insert (another request
  *     already open: P2002, rolled back whole) write no notification.
  *
+ * Launch fixes (2026-10-07), through the real decisions:
+ *   - an update request whose supervisor cannot act on it (disabled, none) tells
+ *     the region's active Managers, as a close request does;
+ *   - the salesman is told how his reactivation and close requests ended, and a
+ *     refused close or a "Keep closed" is final (REJECTED, off his Needs
+ *     correction lists), with his own reason kept beside the reviewer's;
+ *   - a decision marks every other Manager's row about that request read, so it
+ *     stops counting in their red bells; the Accountant's FYI row is left alone.
+ *
  * GATED: RUN_NOTIFY_WRITERS=1. It needs the F1 migrations (the new kinds), so it
  * runs in CI's db-tests job, not against a database that has not had them. Writes
  * only rows it creates (prefix ZZNW-) and deletes them after. Never production.
@@ -25,6 +34,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { randomUUID } from 'node:crypto';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { editPayload } from '../support/edit-payload';
+import { freshDecisionToken } from '../support/decision-token';
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 90_000 });
 const ENABLED = process.env.RUN_NOTIFY_WRITERS === '1' && !!process.env.DATABASE_URL;
@@ -309,6 +319,142 @@ describe.skipIf(!ENABLED)('F1: a salesman request notifies his hierarchy, in its
       REQUEST_FYI: [ids.acc],
     });
     await noneOfNever();
+  });
+
+  // ── Launch fixes (2026-10-07) ──────────────────────────────────────────────
+
+  /** Who still holds an UNREAD row about this request, by kind, sorted. */
+  async function unread(editId: string) {
+    const rows = await prisma.notification.findMany({ where: { editId, readAt: null }, select: { userId: true, kind: true } });
+    const by: Record<string, string[]> = {};
+    for (const r of rows) (by[r.kind] ??= []).push(r.userId);
+    for (const k of Object.keys(by)) by[k]!.sort();
+    return by;
+  }
+  const asManager = (id: string) => {
+    current = { id, role: 'MANAGER', username: id };
+  };
+  /** What his Needs correction lists count (app/(app)/rejected, today, work). */
+  const needsCorrection = () => prisma.customerEdit.count({ where: { submittedById: ids.sales, state: 'NEEDS_CORRECTION' } });
+
+  it('an update request whose supervisor cannot act tells the region’s active Managers', async () => {
+    for (const supervisorId of [ids.mgrOff, null]) {
+      const eds = await prisma.customerEdit.findMany({ where: { customerId: ids.customer }, select: { id: true } });
+      if (eds.length) {
+        await prisma.notification.deleteMany({ where: { editId: { in: eds.map((e) => e.id) } } });
+        await purgeCustomerEdits(prisma, { where: { id: { in: eds.map((e) => e.id) } } });
+      }
+      await prisma.user.update({ where: { id: ids.sales }, data: { supervisorId } });
+      asSalesman();
+      const body = {
+        ...(await editPayload(prisma, { customerId: ids.customer, isDraft: false, customer: { notes: `Note ${randomUUID()}` } })),
+        submissionId: randomUUID(),
+      };
+      const res = await edits.submitEditAction(body);
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      if (!res.ok) return;
+      // Before: the disabled Manager was told and nobody else; with none, nobody at all.
+      expect(await told(res.data.editId), String(supervisorId)).toEqual({
+        EDIT_SUBMITTED: [ids.mgrA, ids.mgrB].sort(),
+        REQUEST_FYI: [ids.acc],
+      });
+    }
+    await noneOfNever();
+  });
+
+  async function reactivationToBothManagers(): Promise<string> {
+    // His supervisor is a Supervisor, so a reactivation goes to both Managers of the region.
+    await prisma.user.update({ where: { id: ids.sales }, data: { supervisorId: ids.sup } });
+    await prisma.branch.update({ where: { id: ids.branch }, data: { status: 'CLOSED', lastStatusChangeAt: new Date(Date.now() - DAY) } });
+    asSalesman();
+    const res = await reacts.requestReactivationAction(
+      form({ branchId: ids.branch, reason: 'Open again, same owner.', attachmentId: await evidence(), submissionId: randomUUID() })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) throw new Error('reactivation not sent');
+    expect(await unread(res.data.editId)).toEqual({ REACTIVATION_REQUESTED: [ids.mgrA, ids.mgrB].sort(), REQUEST_FYI: [ids.acc] });
+    return res.data.editId;
+  }
+
+  it('a reactivation approved: the salesman is told, and the other Manager’s row stops counting', async () => {
+    const editId = await reactivationToBothManagers();
+    asManager(ids.mgrA);
+    const res = await reacts.approveReactivationAction(form({ editId }));
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    // Both Managers' rows are answered; the Accountant's information stays his to read.
+    expect(await unread(editId)).toEqual({ REQUEST_FYI: [ids.acc], EDIT_APPROVED_FINAL: [ids.sales] });
+    const outcome = await prisma.notification.findFirstOrThrow({ where: { editId, userId: ids.sales }, select: { title: true, customerId: true } });
+    expect(outcome).toEqual({ title: 'Reactivation approved', customerId: ids.customer });
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } })).status).toBe('ACTIVE');
+    // His reason for asking is still the request's.
+    expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).decisionReason).toBe('Open again, same owner.');
+  });
+
+  it('"Keep closed": final, off his Needs correction lists, both reasons kept, and he is told why', async () => {
+    const before = await needsCorrection();
+    const editId = await reactivationToBothManagers();
+    asManager(ids.mgrB);
+    const why = 'Still shut, I phoned the owner.';
+    const res = await reacts.rejectReactivationAction(form({ editId, reason: why }));
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(row).toMatchObject({ state: 'REJECTED', reviewedById: ids.mgrB, decisionReason: 'Open again, same owner.' });
+    expect(await needsCorrection()).toBe(before);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { entityId: editId, action: 'REJECT' }, select: { reason: true } });
+    expect(audit.reason).toBe(why);
+
+    expect(await unread(editId)).toEqual({ REQUEST_FYI: [ids.acc], EDIT_NEEDS_CORRECTION: [ids.sales] });
+    const outcome = await prisma.notification.findFirstOrThrow({ where: { editId, userId: ids.sales }, select: { title: true, body: true } });
+    expect(outcome.title).toBe('Reactivation refused');
+    expect(outcome.body).toContain(why);
+    // The salesman's own free-text reason still never reaches a notification.
+    expect(await prisma.notification.count({ where: { editId, body: { contains: 'same owner' } } })).toBe(0);
+  });
+
+  async function closeToSupervisor(): Promise<string> {
+    asSalesman();
+    const res = await reacts.markBranchClosedAction(
+      form({ branchId: ids.branch, reason: 'Shop shut, seen today.', attachmentId: await evidence(), submissionId: randomUUID() })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) throw new Error('close not sent');
+    expect(await unread(res.data.editId)).toEqual({ EDIT_SUBMITTED: [ids.mgrA], REQUEST_FYI: [ids.acc] });
+    return res.data.editId;
+  }
+  const decide = async (editId: string, extra: Record<string, string> = {}) =>
+    form({ editId, decisionToken: await freshDecisionToken(prisma, editId), ...extra });
+
+  it('a close refused by another Manager: final, both reasons kept, the supervisor’s row answered, the salesman told', async () => {
+    const before = await needsCorrection();
+    const editId = await closeToSupervisor();
+    asManager(ids.mgrB);
+    const why = 'Shutters were up at noon, it is open.';
+    const res = await edits.rejectEditAction(await decide(editId, { reason: why, category: 'other' }));
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(row).toMatchObject({ state: 'REJECTED', reviewedById: ids.mgrB, decisionReason: 'Shop shut, seen today.' });
+    expect(await needsCorrection()).toBe(before);
+    const step = await prisma.editApproval.findFirstOrThrow({ where: { editId }, select: { decision: true, reason: true } });
+    expect(step).toEqual({ decision: 'REJECTED', reason: why });
+
+    expect(await unread(editId)).toEqual({ REQUEST_FYI: [ids.acc], EDIT_NEEDS_CORRECTION: [ids.sales] });
+    const outcome = await prisma.notification.findFirstOrThrow({ where: { editId, userId: ids.sales }, select: { title: true, body: true } });
+    expect(outcome.title).toBe('Close-shop request refused');
+    expect(outcome.body).toContain(why);
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } })).status).toBe('ACTIVE');
+  });
+
+  it('a close approved by another Manager: the supervisor’s row answered, the salesman told the branch is closed', async () => {
+    const editId = await closeToSupervisor();
+    asManager(ids.mgrB);
+    const res = await edits.approveEditAction(await decide(editId));
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(await unread(editId)).toEqual({ REQUEST_FYI: [ids.acc], EDIT_APPROVED_FINAL: [ids.sales] });
+    const outcome = await prisma.notification.findFirstOrThrow({ where: { editId, userId: ids.sales }, select: { title: true } });
+    expect(outcome.title).toBe('Close-shop request approved');
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } })).status).toBe('CLOSED');
   });
 
   it('every new row waits in the e-mail outbox (emailedAt NULL); none is PRE_FEATURE', async () => {

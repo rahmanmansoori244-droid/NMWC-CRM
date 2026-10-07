@@ -214,7 +214,8 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
         })
       )) as Result;
       expect(rejected.ok, JSON.stringify(rejected)).toBe(true);
-      expect(await editState(editId)).toBe('NEEDS_CORRECTION');
+      // A refused close and a "Keep closed" are final since 2026-10-07 (REJECTED).
+      expect(await editState(editId)).toBe('REJECTED');
     });
 
     it('whose photo was taken three days before the approval still closes the branch', async () => {
@@ -308,7 +309,8 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
         form({ editId, reason: 'Photo removed — send it again.' })
       )) as Result;
       expect(rejected.ok, JSON.stringify(rejected)).toBe(true);
-      expect(await editState(editId)).toBe('NEEDS_CORRECTION');
+      // A refused close and a "Keep closed" are final since 2026-10-07 (REJECTED).
+      expect(await editState(editId)).toBe('REJECTED');
       expect(await prisma.auditLog.count({ where: { action: 'REJECT', entityId: editId } })).toBe(1);
     });
 
@@ -374,7 +376,8 @@ describe.skipIf(!ENABLED)('status evidence at decision time (F10, X-STATUS-1, F1
       as(ids.mgr, 'MANAGER');
       const again = (await reacts.rejectReactivationAction(form({ editId, reason: 'Still shut — shutters down.' }))) as Result;
       expect(again.ok, JSON.stringify(again)).toBe(true);
-      expect(await editState(editId)).toBe('NEEDS_CORRECTION');
+      // A refused close and a "Keep closed" are final since 2026-10-07 (REJECTED).
+      expect(await editState(editId)).toBe('REJECTED');
     });
   });
 });

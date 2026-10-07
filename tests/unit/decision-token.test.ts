@@ -68,6 +68,7 @@ vi.mock('@/lib/notifications', () => ({
   resolveStepAudience: async () => [],
   resolveStewardAudience: async () => [],
   notifyUsers: h.notifyUsers,
+  settleRequestAlerts: async () => 0,
 }));
 // F1: the services also write the hierarchy's rows (lib/notify-hierarchy.ts);
 // mocked here like '@/lib/notifications', so these suites keep testing what they test.

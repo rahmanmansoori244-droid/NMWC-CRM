@@ -88,7 +88,12 @@ import {
   assertGuaranteesAsViewed,
   readDecisionToken,
 } from '@/lib/decision-token';
-import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/notifications';
+import {
+  resolveStepAudience,
+  resolveStewardAudience,
+  notifyUsers,
+  settleRequestAlerts,
+} from '@/lib/notifications';
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
@@ -1322,6 +1327,9 @@ async function approveEditCore(formData: FormData) {
             cycle: edit.cycle,
           } as unknown as Prisma.InputJsonValue,
         });
+        // This step's rows (and any breach pings) are answered: they stop
+        // counting in their holders' bells before the next step's are written.
+        await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
         // Notify the next step's approvers + the submitter (progress). Inside
         // the tx so a lost claim race never notifies.
         const nextAudience = await resolveStepAudience(
@@ -1421,6 +1429,7 @@ async function approveEditCore(formData: FormData) {
           finalizeEnv,
           finalizedAt
         );
+        await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
         // Submitter learns their customer is live; Stewards get the
         // Temix-upload-ready signal (temixSyncState is now PENDING_UPLOAD).
         await notifyUsers(tx, [edit.submittedById], {
@@ -1721,10 +1730,16 @@ async function approveEditCore(formData: FormData) {
           droppedBranchIds: droppedBranchIds.length > 0 ? droppedBranchIds : undefined,
         } as unknown as Prisma.InputJsonValue,
       });
+      await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
+      // A close-shop request (the only BRANCH-target request decided here) is told
+      // in its own words: "your changes are live" does not say the shop is closed.
+      const isCloseRequest = edit.target === EditTarget.BRANCH;
       await notifyUsers(tx, [edit.submittedById], {
         kind: 'EDIT_APPROVED_FINAL',
-        title: 'Edit approved',
-        body: `${requestName} — your changes were approved and are now live.`,
+        title: isCloseRequest ? 'Close-shop request approved' : 'Edit approved',
+        body: isCloseRequest
+          ? `${requestName} — your close-shop request was approved; the branch is now closed.`
+          : `${requestName} — your changes were approved and are now live.`,
         editId,
         customerId: edit.customerId ?? undefined,
       });
@@ -1978,6 +1993,14 @@ async function rejectEditCore(formData: FormData) {
   });
   const target = resolveRejectTarget(rejectStepIndex, priorRejectsHere);
   const rejectedAt = new Date();
+  // Launch fix (2026-10-07): a close-shop request (the only BRANCH-target request
+  // decided here; reactivations were refused above) is refused for good, not sent
+  // back. Nothing on it can be corrected — a new close request is a new row — so
+  // as NEEDS_CORRECTION it sat on the salesman's Needs correction lists for ever.
+  // It ends REJECTED, and the row below tells him why. Its decisionReason is HIS
+  // reason for asking and is kept; the reviewer's reason is on the decision row
+  // (EditApproval), the audit row and his notification.
+  const isCloseRequest = edit.target === EditTarget.BRANCH;
 
   // DG-06: envelope outside the transaction; `session.id` is the rejecting actor.
   const env = await getAuditEnvelope(session.id);
@@ -2011,7 +2034,7 @@ async function rejectEditCore(formData: FormData) {
             reviewedAt: rejectedAt,
           }
         : {
-            state: EditState.NEEDS_CORRECTION,
+            state: isCloseRequest ? EditState.REJECTED : EditState.NEEDS_CORRECTION,
             pendingRole: null,
             currentStepIndex: 0,
             // NEEDS_CORRECTION stops the clock; the salesman's rework is not
@@ -2020,7 +2043,7 @@ async function rejectEditCore(formData: FormData) {
             escalationLevel: 0,
             slaBreachedAt: null,
             lastEscalatedAt: null,
-            decisionReason: reason,
+            ...(isCloseRequest ? {} : { decisionReason: reason }),
             decisionCategory: category,
             reviewedById: session.id,
             reviewedAt: rejectedAt,
@@ -2061,7 +2084,10 @@ async function rejectEditCore(formData: FormData) {
         cycle: edit.cycle,
       } as unknown as Prisma.InputJsonValue,
     });
-    // Notifications (inside the tx — a lost claim race must not notify).
+    // Notifications (inside the tx — a lost claim race must not notify). The
+    // rows that asked for this decision are answered first, so a step-back's
+    // fresh rows to the previous step stay unread.
+    await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
     if (target.kind === 'STEP_BACK') {
       // The request went back to the previous approver step; tell that step's
       // audience it is waiting on them again, and give the submitter a
@@ -2088,10 +2114,14 @@ async function rejectEditCore(formData: FormData) {
         customerId: edit.customerId ?? undefined,
       });
     } else {
+      // EDIT_NEEDS_CORRECTION for a refused close too: it is the red row a
+      // salesman acts on, and he must read why (he may need to send it again).
       await notifyUsers(tx, [edit.submittedById], {
         kind: 'EDIT_NEEDS_CORRECTION',
-        title: 'Needs correction',
-        body: `${rejectRequestName} — returned to you: ${reason}`,
+        title: isCloseRequest ? 'Close-shop request refused' : 'Needs correction',
+        body: isCloseRequest
+          ? `${rejectRequestName} — your close-shop request was refused, so the branch is not closed: ${reason}`
+          : `${rejectRequestName} — returned to you: ${reason}`,
         editId,
         customerId: edit.customerId ?? undefined,
       });

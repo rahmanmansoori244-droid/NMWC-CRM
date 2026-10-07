@@ -18,7 +18,7 @@
 import { Role, type NotificationKind, type Prisma } from '@prisma/client';
 import type { ApprovalStep } from './approval-chains';
 import { logger } from './logger';
-import { SUPERVISING_ROLES } from './notify-policy';
+import { SETTLED_ON_DECISION_KINDS, SUPERVISING_ROLES } from './notify-policy';
 
 type Tx = Prisma.TransactionClient;
 
@@ -139,4 +139,31 @@ export async function notifyUsers(
   await tx.notification.createMany({
     data: unique.map((userId) => ({ userId, ...data })),
   });
+}
+
+/**
+ * Launch fix (2026-10-07): a decision settles the rows that asked for it. Every
+ * unread row about `editId` of a kind that asked its holder to act or to chase
+ * (lib/notify-policy.ts SETTLED_ON_DECISION_KINDS), held by anyone but the
+ * submitter, is marked read, so it stops counting in a red bell once the step it
+ * asked for has been taken — by him or by a colleague. Read, not deleted: the
+ * inbox keeps the history, and the e-mail outbox never sends a read row.
+ *
+ * Call it on the deciding transaction, after the claim and BEFORE writing the rows
+ * for the next step, so a lost race settles nothing and the new rows stay unread.
+ */
+export async function settleRequestAlerts(
+  tx: Tx,
+  edit: { editId: string; submittedById: string }
+): Promise<number> {
+  const res = await tx.notification.updateMany({
+    where: {
+      editId: edit.editId,
+      readAt: null,
+      kind: { in: [...SETTLED_ON_DECISION_KINDS] },
+      userId: { not: edit.submittedById },
+    },
+    data: { readAt: new Date() },
+  });
+  return res.count;
 }
