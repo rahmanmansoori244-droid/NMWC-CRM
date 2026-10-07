@@ -108,6 +108,8 @@ export function UserRowActions({
         setResetMsg({ text: refusalText(res), ok: false });
         return;
       }
+      // On the All tab the row stays: an earlier refusal must not sit beside it.
+      setResetMsg(null);
       announce(
         isActive
           ? `Disabled "${username}". It is on the Disabled tab, where Enable puts it back.`

@@ -31,7 +31,7 @@ vi.mock('next/link', () => ({
   ),
 }));
 
-import { UserRowActions } from '@/app/(app)/users/UserRowActions';
+import { UserRowActions, UsersFeedback } from '@/app/(app)/users/UserRowActions';
 
 const PASSWORD = 'A-long-password-1';
 const type = (el: HTMLElement, value: string) => fireEvent.change(el, { target: { value } });
@@ -87,6 +87,22 @@ describe('UserRowActions — refusals read as errors', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toBe('Cannot disable the only active Manager. Promote another user to Manager first.');
     expect(alert.className).toContain('text-red-600');
+  });
+
+  it('a Disable that works after a refusal clears the red refusal (the row stays on the All tab)', async () => {
+    h.toggle.mockResolvedValueOnce({ ok: false, code: 'FORBIDDEN', message: 'That account is outside the regions you manage.' });
+    h.toggle.mockResolvedValueOnce({ ok: true, data: undefined });
+    render(
+      <UsersFeedback>
+        <UserRowActions userId="u-target" username="someone" isActive />
+      </UsersFeedback>
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    await screen.findByRole('alert');
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    await screen.findByText(/^Disabled "someone"/);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('That account is outside the regions you manage.')).toBeNull();
   });
 
   it('a thrown failure is red too', async () => {
