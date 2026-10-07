@@ -587,7 +587,7 @@ describe('the approval queue', () => {
         await renderQueue(rows(2));
         // The list is the read that orders the cards. A Manager's queue first
         // reads the requests on customers that also have branches outside his
-        // regions, to judge each one (owner decision 3, approvals/manager-queue.ts).
+        // regions, to judge each one (owner decision 3, lib/manager-queue.ts).
         const list = h.queueReads.filter((r) => r.op === 'findMany' && r.args.orderBy);
         const count = h.queueReads.filter((r) => r.op === 'count');
         expect([list.length, count.length], role).toEqual([1, 1]);

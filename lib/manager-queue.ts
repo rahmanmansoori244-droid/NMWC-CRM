@@ -7,7 +7,9 @@
  * always be decided, and a request about another region's branch of a customer
  * with branches in several regions is not his to see there or to decide.
  *
- * Written as one `where`, so the list and its count take the very same scope:
+ * Written as one `where`, so every place that shows a Manager his queue takes the
+ * very same scope: /approvals (the list and its count), the Work page's stale
+ * list, and the dashboard's "Pending approval" (lib/insights/load.ts).
  *   - a customer whose live branches are all in his regions: every request on it
  *     is in scope, in SQL;
  *   - a customer that also has live branches elsewhere: its pending requests at
@@ -17,8 +19,15 @@
  *     route per request today, so this is the rule it always had.
  */
 import type { Prisma, PrismaClient } from '@prisma/client';
-import { managesEveryBranch, requestScopeBranches } from '@/lib/permissions';
-import { parseSubmitGate } from '@/lib/edit-scope';
+import { managesEveryBranch, requestScopeBranches } from './permissions';
+import { parseSubmitGate } from './edit-scope';
+
+/**
+ * The Supervisor step, as the Supervisor-step queues read it. pendingRole NULL is
+ * a row a pre-Phase-1 deploy submitted after the backfill: a single-step
+ * Supervisor edit by construction (app/(app)/approvals/page.tsx).
+ */
+export const SUPERVISOR_STEP_OR: Prisma.CustomerEditWhereInput[] = [{ pendingRole: 'SUPERVISOR' }, { pendingRole: null }];
 
 export async function managerQueueWhere(
   db: Pick<PrismaClient, 'customerEdit'>,
@@ -38,7 +47,7 @@ export async function managerQueueWhere(
       fieldChanges: true,
       branchId: true,
       submitGate: true,
-      submittedBy: { select: { ownedRouteId: true } },
+      submittedBy: { select: { ownedRouteId: true, ownedRoute: { select: { regionId: true } } } },
       customer: {
         select: {
           branches: {
@@ -59,6 +68,7 @@ export async function managerQueueWhere(
           branchId: e.branchId,
           homeBranchIds: parseSubmitGate(e.submitGate)?.branchIds,
           submitterRouteId: e.submittedBy.ownedRouteId,
+          submitterRegionId: e.submittedBy.ownedRoute?.regionId,
         })
       )
     )
@@ -76,4 +86,18 @@ export async function managerQueueWhere(
     },
   ];
   return { state: 'SUBMITTED', AND: [{ OR: stepOr }, { OR: regionOr }] };
+}
+
+/**
+ * The ids in a Manager's queue at the Supervisor step: managerQueueWhere, for a
+ * count taken in SQL elsewhere (the dashboard's "Pending approval",
+ * lib/insights/load.ts), so that count is the queue's.
+ */
+export async function managerQueueIds(
+  db: Pick<PrismaClient, 'customerEdit'>,
+  managedRegionIds: string[]
+): Promise<string[]> {
+  const where = await managerQueueWhere(db, managedRegionIds, SUPERVISOR_STEP_OR);
+  const rows = await db.customerEdit.findMany({ where, select: { id: true } });
+  return rows.map((r) => r.id);
 }

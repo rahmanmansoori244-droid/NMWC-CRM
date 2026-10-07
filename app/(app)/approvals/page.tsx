@@ -5,7 +5,7 @@ import { Role, type Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { loadScope } from '@/lib/access';
-import { managerQueueWhere } from './manager-queue';
+import { managerQueueWhere } from '@/lib/manager-queue';
 import { formatSlaStatus } from '@/lib/working-hours';
 import { countFieldChanges, hasManualGps } from '@/lib/gps-manual';
 import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
@@ -70,7 +70,7 @@ export default async function ApprovalsPage() {
       // RBAC-05-003 / RBAC-05-012: fail-closed empty queue.
       where = { state: 'SUBMITTED', id: '__none__' };
     } else if (role === Role.MANAGER) {
-      // Owner decision 3 (2026-10-07): ./manager-queue.ts.
+      // Owner decision 3 (2026-10-07): lib/manager-queue.ts.
       where = await managerQueueWhere(prisma, scope.managedRegionIds, supervisorStepOr);
     } else {
       const regionOr: Prisma.CustomerEditWhereInput[] = [

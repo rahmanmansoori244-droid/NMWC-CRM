@@ -152,8 +152,12 @@ export function assert(condition: unknown, message = 'Forbidden'): asserts condi
  *   - and, when it changes customer-level fields (name, phone, CR…) or names no
  *     live branch, its HOME: ONE branch — the first, by id, of the submitter's
  *     own branches of this customer frozen at submit (CustomerEdit.submitGate);
- *     else of the live branches on his route now; else of all live branches.
- *     One branch, so a customer-level change never needs two regions' Managers.
+ *     else of the live branches on his route now; else of the live branches in
+ *     his route's region now (a salesman moved since, on a request without a
+ *     usable record); else of all live branches — he has no route, or works in
+ *     a region with no branch of this customer, so where the change was made
+ *     cannot be read, and the request must still be decidable. One branch, so
+ *     a customer-level change never needs two regions' Managers.
  *
  * A salesman changes only branches on his route, and a route is in one region,
  * so his request's scope is that region: the Managers who share it (the four of
@@ -170,6 +174,8 @@ export function requestScopeBranches<B extends Pick<Branch, 'id' | 'regionId' | 
   homeBranchIds?: readonly string[] | null;
   /** The submitter's route now: the home of a request without a usable record. */
   submitterRouteId?: string | null;
+  /** That route's region now: the home when no branch of the customer is on his route. */
+  submitterRegionId?: string | null;
 }): B[] {
   const live = input.branches.filter((b) => !b.deletedAt);
   const named = new Set<string>(input.branchId ? [input.branchId] : []);
@@ -186,6 +192,7 @@ export function requestScopeBranches<B extends Pick<Branch, 'id' | 'regionId' | 
   const candidates = [
     live.filter((b) => homeIds.has(b.id)),
     input.submitterRouteId ? live.filter((b) => b.routeId === input.submitterRouteId) : [],
+    input.submitterRegionId ? live.filter((b) => b.regionId === input.submitterRegionId) : [],
     live,
   ].find((set) => set.length > 0);
   const home = candidates?.reduce((first, b) => (b.id < first.id ? b : first));

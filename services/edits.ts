@@ -1361,8 +1361,10 @@ async function approveEditCore(formData: FormData) {
     where: { id: editId },
     include: {
       customer: { include: { branches: { where: { deletedAt: null } } } },
-      // ownedRouteId: the home of a request without a usable submitGate (owner decision 3).
-      submittedBy: { select: { id: true, supervisorId: true, fullName: true, ownedRouteId: true } },
+      // ownedRouteId, ownedRoute: the home of a request without a usable submitGate (owner decision 3).
+      submittedBy: {
+        select: { id: true, supervisorId: true, fullName: true, ownedRouteId: true, ownedRoute: { select: { regionId: true } } },
+      },
       // Phase 1 creation flow: a CREATE request (customerId = null) carries its
       // proposed payload in typed drafts; approver scope + finalize both read
       // from these instead of edit.customer. The route join gives the CURRENT
@@ -1426,6 +1428,7 @@ async function approveEditCore(formData: FormData) {
         branchId: edit.branchId,
         homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
         submitterRouteId: edit.submittedBy.ownedRouteId,
+        submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
       });
   const scopeRegionIds = [...new Set(scopeBranches.map((b) => b.regionId))];
   const chain = parseChain(edit.approvalChain);
@@ -2126,7 +2129,7 @@ async function rejectEditCore(formData: FormData) {
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
     include: {
-      submittedBy: { select: { id: true, supervisorId: true, ownedRouteId: true } },
+      submittedBy: { select: { id: true, supervisorId: true, ownedRouteId: true, ownedRoute: { select: { regionId: true } } } },
       customer: {
         select: {
           legalName: true,
@@ -2167,6 +2170,7 @@ async function rejectEditCore(formData: FormData) {
         branchId: edit.branchId,
         homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
         submitterRouteId: edit.submittedBy.ownedRouteId,
+        submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
       });
   const rejectRegionIds = [...new Set(rejectScopeBranches.map((b) => b.regionId))];
   const rejectRequestName = rejectIsCreate

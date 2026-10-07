@@ -158,7 +158,7 @@ export function prismaOutboxStore(db: PrismaClient, scope?: { userIds: string[] 
           pendingRole: true,
           cycle: true,
           submittedById: true,
-          submittedBy: { select: { supervisorId: true, ownedRouteId: true } },
+          submittedBy: { select: { supervisorId: true, ownedRouteId: true, ownedRoute: { select: { regionId: true } } } },
           // The scope the decision checks (approveEditCore, the reactivation
           // gate), read now: a route or branch can move region after submit.
           // Owner decision 3 (2026-10-07): an update's or a close's scope is the
@@ -211,6 +211,7 @@ export function prismaOutboxStore(db: PrismaClient, scope?: { userIds: string[] 
                       branchId: e.branchId,
                       homeBranchIds: parseSubmitGate(e.submitGate)?.branchIds,
                       submitterRouteId: e.submittedBy.ownedRouteId,
+                      submitterRegionId: e.submittedBy.ownedRoute?.regionId,
                     }).map((b) => b.regionId)
                   : []
           ),

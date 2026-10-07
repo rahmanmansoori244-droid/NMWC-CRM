@@ -77,8 +77,17 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
         },
       },
       // role: ruling 2's banner is for a salesman's request (sentByPreviousForm).
-      // ownedRouteId: the home of a request without a usable submitGate (owner decision 3).
-      submittedBy: { select: { id: true, fullName: true, supervisorId: true, role: true, ownedRouteId: true } },
+      // ownedRouteId, ownedRoute: the home of a request without a usable submitGate (owner decision 3).
+      submittedBy: {
+        select: {
+          id: true,
+          fullName: true,
+          supervisorId: true,
+          role: true,
+          ownedRouteId: true,
+          ownedRoute: { select: { regionId: true } },
+        },
+      },
       reviewedBy: { select: { fullName: true } },
       // Phase 1 creation flow: the CREATE payload lives in typed drafts.
       customerDraft: {
@@ -161,6 +170,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           branchId: edit.branchId,
           homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
           submitterRouteId: edit.submittedBy.ownedRouteId,
+          submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
         }),
     managedRegionIds: scope.managedRegionIds,
   });

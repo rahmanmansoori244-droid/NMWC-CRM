@@ -2,12 +2,12 @@
 /**
  * Owner decision 3 (2026-10-07): a Manager's approval queue holds a request
  * only when he manages the region of every branch it is about
- * (app/(app)/approvals/manager-queue.ts). The same rows against Postgres:
+ * (lib/manager-queue.ts). The same rows against Postgres:
  * tests/integration/scope-gate.test.ts.
  */
 import { describe, it, expect, vi } from 'vitest';
 import type { Prisma, PrismaClient } from '@prisma/client';
-import { managerQueueWhere } from '@/app/(app)/approvals/manager-queue';
+import { managerQueueIds, managerQueueWhere, SUPERVISOR_STEP_OR } from '@/lib/manager-queue';
 
 const STEP_OR: Prisma.CustomerEditWhereInput[] = [{ pendingRole: 'SUPERVISOR' }, { pendingRole: null }];
 const MINE = ['g1'];
@@ -75,5 +75,31 @@ describe('managerQueueWhere', () => {
     const { db } = dbWith([pending('e-their-branch', ['branch.b2.openingHours'])]);
     const where = await managerQueueWhere(db, MINE, STEP_OR);
     expect(JSON.stringify(where)).not.toContain('e-their-branch');
+  });
+
+  it('a customer-level request with no usable record, from a salesman moved to a route with no branch of it: his route’s region decides', async () => {
+    const moved = (id: string, regionId: string) =>
+      pending(id, ['customer.notes'], { submitGate: null, submittedBy: { ownedRouteId: 't9', ownedRoute: { regionId } } });
+    // b1 (g1) has the lowest id, so the old fallback put both in g1.
+    const { db, findMany } = dbWith([moved('e-moved-to-g1', 'g1'), moved('e-moved-to-g2', 'g2')]);
+    const where = await managerQueueWhere(db, MINE, STEP_OR);
+    expect(JSON.stringify(where)).toContain('e-moved-to-g1');
+    expect(JSON.stringify(where)).not.toContain('e-moved-to-g2');
+    // The read selects what that needs.
+    const select = (findMany.mock.calls[0] as unknown as [{ select: { submittedBy: unknown } }])[0].select;
+    expect(select.submittedBy).toEqual({ select: { ownedRouteId: true, ownedRoute: { select: { regionId: true } } } });
+  });
+});
+
+describe('managerQueueIds', () => {
+  it('the ids of the very `where` the queue uses, at the Supervisor step', async () => {
+    const findMany = vi.fn(async (args: { select: Record<string, unknown> }) =>
+      'fieldChanges' in args.select ? [pending('e-his-branch', ['branch.b1.openingHours'])] : [{ id: 'e-1' }, { id: 'e-2' }]
+    );
+    const db = { customerEdit: { findMany } } as unknown as Pick<PrismaClient, 'customerEdit'>;
+    expect(await managerQueueIds(db, MINE)).toEqual(['e-1', 'e-2']);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    const [, second] = findMany.mock.calls as unknown as Array<[{ where: unknown; select: unknown }]>;
+    expect(second![0]).toEqual({ where: await managerQueueWhere(dbWith([pending('e-his-branch', ['branch.b1.openingHours'])]).db, MINE, SUPERVISOR_STEP_OR), select: { id: true } });
   });
 });

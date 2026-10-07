@@ -193,6 +193,26 @@ describe('lib/permissions — requestScopeBranches (owner decision 3, 2026-10-07
     expect(ids(requestScopeBranches({ branches, fieldChanges: notes, homeBranchIds: ['b2', 'b0'] }))).toEqual(['b0']);
   });
 
+  it('no usable record and a salesman moved to a route with no branch of it: his route’s region now, not the first branch', () => {
+    // Moved to route t7 in region r1: the customer's first branch by id (b0) is
+    // in r2, but the change belongs to r1, where he works now.
+    const notes = [change('customer.notes')];
+    expect(
+      ids(requestScopeBranches({ branches, fieldChanges: notes, homeBranchIds: null, submitterRouteId: 't7', submitterRegionId: 'r1' }))
+    ).toEqual(['b1']);
+    // A frozen home, or a branch on his route now, still comes first.
+    expect(
+      ids(requestScopeBranches({ branches, fieldChanges: notes, homeBranchIds: ['b2'], submitterRouteId: 't7', submitterRegionId: 'r1' }))
+    ).toEqual(['b2']);
+    expect(
+      ids(requestScopeBranches({ branches, fieldChanges: notes, homeBranchIds: null, submitterRouteId: 't2', submitterRegionId: 'r1' }))
+    ).toEqual(['b0']);
+    // A region with no branch of this customer: the first branch, so the request can still be decided.
+    expect(
+      ids(requestScopeBranches({ branches, fieldChanges: notes, homeBranchIds: null, submitterRouteId: 't7', submitterRegionId: 'r8' }))
+    ).toEqual(['b0']);
+  });
+
   it('a changed branch deleted since is not in it; a request naming no live branch takes its home', () => {
     const withDeleted = [...branches, b('b9', 't1', 'r9', new Date())];
     expect(ids(requestScopeBranches({ branches: withDeleted, fieldChanges: [change('branch.b9.address')], homeBranchIds: ['b1'] }))).toEqual(['b1']);

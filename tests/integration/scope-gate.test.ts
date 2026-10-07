@@ -37,7 +37,7 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
   let prisma: import('@prisma/client').PrismaClient;
   let edits: typeof import('@/services/edits');
   let photos: typeof import('@/services/photos');
-  let managerQueueWhere: typeof import('@/app/(app)/approvals/manager-queue').managerQueueWhere;
+  let managerQueueWhere: typeof import('@/lib/manager-queue').managerQueueWhere;
   let CR_LOCKED = '';
   const tag = randomUUID().slice(0, 8);
   const savedGate = process.env.SALESMAN_SUBMIT_GATE;
@@ -103,7 +103,7 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
     ({ prisma } = await import('@/lib/db'));
     edits = await import('@/services/edits');
     photos = await import('@/services/photos');
-    ({ managerQueueWhere } = await import('@/app/(app)/approvals/manager-queue'));
+    ({ managerQueueWhere } = await import('@/lib/manager-queue'));
     ({ CR_DOCUMENT_LOCKED_MESSAGE: CR_LOCKED } = await import('@/lib/permissions'));
 
     const channel = await prisma.channel.findFirstOrThrow({ where: { key: 'GENERAL_TRADE' }, select: { id: true } });
