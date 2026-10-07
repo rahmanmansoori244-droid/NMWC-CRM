@@ -6,6 +6,7 @@ import {
   canManageUsers,
   canImport,
   canExport,
+  requestScopeBranches,
 } from '@/lib/permissions';
 
 describe('lib/permissions — Salesman field locks', () => {
@@ -58,20 +59,28 @@ describe('lib/permissions — Salesman field locks', () => {
 });
 
 describe('lib/permissions — approval scope', () => {
-  it('Manager can approve only edits whose customer overlaps their managed regions', () => {
-    // Customer with branches in regions [r1, r2]; Manager managing [r1].
+  it('owner decision 3: a Manager must manage the region of EVERY branch of the request’s scope', () => {
+    // A request about branches in regions [r1, r2]; Manager managing [r1]. It
+    // was enough that one branch overlapped.
+    const twoRegions = {
+      customerBranches: [
+        { regionId: 'r1', deletedAt: null },
+        { regionId: 'r2', deletedAt: null },
+      ],
+    };
+    const m1 = { id: 'm1', role: Role.MANAGER, username: 'm' };
+    const submitter = { id: 'submitter', supervisorId: 'someoneelse' };
+    expect(canApproveSpecificEdit(m1, submitter, { ...twoRegions, managedRegionIds: ['r1'] })).toBe(false);
+    expect(canApproveSpecificEdit(m1, submitter, { ...twoRegions, managedRegionIds: ['r1', 'r2'] })).toBe(true);
+    // A deleted branch is not in the scope.
     expect(
-      canApproveSpecificEdit(
-        { id: 'm1', role: Role.MANAGER, username: 'm' },
-        { id: 'submitter', supervisorId: 'someoneelse' },
-        {
-          customerBranches: [
-            { regionId: 'r1', deletedAt: null },
-            { regionId: 'r2', deletedAt: null },
-          ],
-          managedRegionIds: ['r1'],
-        }
-      )
+      canApproveSpecificEdit(m1, submitter, {
+        customerBranches: [
+          { regionId: 'r1', deletedAt: null },
+          { regionId: 'r2', deletedAt: new Date() },
+        ],
+        managedRegionIds: ['r1'],
+      })
     ).toBe(true);
   });
   it('Manager cannot approve out-of-region edits (RBAC-05-003)', () => {
@@ -150,5 +159,46 @@ describe('lib/permissions — role gates', () => {
     expect(canExport({ id: 'x', role: Role.MANAGER, username: 'x' })).toBe(true);
     expect(canExport({ id: 'x', role: Role.STEWARD, username: 'x' })).toBe(true);
     expect(canExport({ id: 'x', role: Role.VIEWER, username: 'x' })).toBe(true);
+  });
+});
+
+describe('lib/permissions — requestScopeBranches (owner decision 3, 2026-10-07)', () => {
+  // A customer with B1 (route t1, region r1, the submitter's), B2 (route t2,
+  // region r2) and B0 (route t2, region r2: the lowest id).
+  const b = (id: string, routeId: string, regionId: string, deletedAt: Date | null = null) => ({ id, routeId, regionId, deletedAt });
+  const branches = [b('b1', 't1', 'r1'), b('b2', 't2', 'r2'), b('b0', 't2', 'r2')];
+  const ids = (xs: Array<{ id: string }>) => xs.map((x) => x.id);
+  const change = (field: string) => ({ field, before: null, after: 'x' });
+
+  it('a branch-only request: the branches it changes, nothing else', () => {
+    expect(ids(requestScopeBranches({ branches, fieldChanges: [change('branch.b2.openingHours')], homeBranchIds: ['b1'] }))).toEqual(['b2']);
+  });
+
+  it('a customer-level change adds its home: the submitter’s branch frozen at submit', () => {
+    expect(ids(requestScopeBranches({ branches, fieldChanges: [change('customer.notes')], homeBranchIds: ['b1'] }))).toEqual(['b1']);
+    expect(
+      ids(requestScopeBranches({ branches, fieldChanges: [change('customer.notes'), change('branch.b2.address')], homeBranchIds: ['b1'] }))
+    ).toEqual(['b2', 'b1']);
+  });
+
+  it('a close request is about its own branch', () => {
+    expect(ids(requestScopeBranches({ branches, fieldChanges: [change('branch.b2.status')], branchId: 'b2', homeBranchIds: null }))).toEqual(['b2']);
+  });
+
+  it('no usable record: the submitter’s route now, else the customer’s first branch by id — one home, never two regions', () => {
+    const notes = [change('customer.notes')];
+    expect(ids(requestScopeBranches({ branches, fieldChanges: notes, homeBranchIds: ['gone'], submitterRouteId: 't1' }))).toEqual(['b1']);
+    expect(ids(requestScopeBranches({ branches, fieldChanges: notes, homeBranchIds: null, submitterRouteId: 't9' }))).toEqual(['b0']);
+    // The frozen home is one branch even when he had several.
+    expect(ids(requestScopeBranches({ branches, fieldChanges: notes, homeBranchIds: ['b2', 'b0'] }))).toEqual(['b0']);
+  });
+
+  it('a changed branch deleted since is not in it; a request naming no live branch takes its home', () => {
+    const withDeleted = [...branches, b('b9', 't1', 'r9', new Date())];
+    expect(ids(requestScopeBranches({ branches: withDeleted, fieldChanges: [change('branch.b9.address')], homeBranchIds: ['b1'] }))).toEqual(['b1']);
+  });
+
+  it('a customer with no live branch has no scope (and so no Manager decides it)', () => {
+    expect(requestScopeBranches({ branches: [b('b1', 't1', 'r1', new Date())], fieldChanges: [change('customer.notes')] })).toEqual([]);
   });
 });

@@ -5,6 +5,7 @@ import { Role, type Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { loadScope } from '@/lib/access';
+import { managerQueueWhere } from './manager-queue';
 import { formatSlaStatus } from '@/lib/working-hours';
 import { countFieldChanges, hasManualGps } from '@/lib/gps-manual';
 import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
@@ -35,8 +36,9 @@ export default async function ApprovalsPage() {
   // CURRENT chain step is theirs (`pendingRole`), scoped exactly like
   // canActOnStep so a row in the queue is always actionable:
   //   SUPERVISOR       — pendingRole SUPERVISOR + their own team's submitters
-  //   MANAGER          — pendingRole SUPERVISOR + region overlap (RBAC-05-003
-  //                      fallback approver; fail-closed on empty regions)
+  //   MANAGER          — pendingRole SUPERVISOR + every branch of the request's
+  //                      scope in his regions (RBAC-05-003 fallback approver;
+  //                      owner decision 3; fail-closed on empty regions)
   //   ACCOUNTANT       — pendingRole ACCOUNTANT + region overlap (fail-closed)
   //   FINANCE_MANAGER  — pendingRole FINANCE_MANAGER (org-wide)
   //   GM               — pendingRole GM (org-wide)
@@ -67,6 +69,9 @@ export default async function ApprovalsPage() {
     if (scope.managedRegionIds.length === 0) {
       // RBAC-05-003 / RBAC-05-012: fail-closed empty queue.
       where = { state: 'SUBMITTED', id: '__none__' };
+    } else if (role === Role.MANAGER) {
+      // Owner decision 3 (2026-10-07): ./manager-queue.ts.
+      where = await managerQueueWhere(prisma, scope.managedRegionIds, supervisorStepOr);
     } else {
       const regionOr: Prisma.CustomerEditWhereInput[] = [
         {
@@ -87,10 +92,7 @@ export default async function ApprovalsPage() {
       ];
       where = {
         state: 'SUBMITTED',
-        AND: [
-          role === Role.MANAGER ? { OR: supervisorStepOr } : { pendingRole: Role.ACCOUNTANT },
-          { OR: regionOr },
-        ],
+        AND: [{ pendingRole: Role.ACCOUNTANT }, { OR: regionOr }],
       };
     }
   }

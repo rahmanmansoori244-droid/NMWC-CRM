@@ -26,7 +26,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
-import { isFieldLocked, canActOnStep } from '@/lib/permissions';
+import { isFieldLocked, canActOnStep, requestScopeBranches } from '@/lib/permissions';
 import {
   EQUIPMENT_UNCONFIRM_MESSAGE,
   isCurrentEditPayload,
@@ -57,7 +57,12 @@ import {
   type BranchEditField,
   type LiveVerdict,
 } from '@/lib/edit-values';
-import { gateBranchesForApproval, salesmanBranches, submitGateRecord } from '@/lib/edit-scope';
+import {
+  gateBranchesForApproval,
+  parseSubmitGate,
+  salesmanBranches,
+  submitGateRecord,
+} from '@/lib/edit-scope';
 import {
   channelPairInvalidMessage,
   planApproval,
@@ -756,7 +761,8 @@ async function submitEditOnce(
   // the branches this request changes, and the customer-level fields only when
   // it changes one — a phone fix no longer waits for every shop's GPS and photo.
   // The record still stores ALL his branches here: the approval re-check takes
-  // the ones its changes name.
+  // the ones its changes name, and they are the request's home for who may
+  // decide it (lib/permissions.ts requestScopeBranches).
   let submitGate: Prisma.InputJsonValue | undefined;
   if (!isDraft && me.role === Role.SALESMAN) {
     const ownBranches = salesmanBranches(customer.branches, me.ownedRouteId);
@@ -1011,11 +1017,19 @@ async function submitEditOnce(
     // error (the salesman's retry would dead-end on EDIT_LOCKED).
     if (!isDraft) {
       try {
+        // Owner decision 3: the regions of the request's scope, the Managers
+        // who can decide it — not every region the customer spans.
+        const scopeBranches = requestScopeBranches({
+          branches: customer.branches,
+          fieldChanges,
+          homeBranchIds: salesmanBranches(customer.branches, me.ownedRouteId).map((b) => b.id),
+          submitterRouteId: me.ownedRouteId,
+        });
         const firstAudience = await resolveStepAudience(
           prisma,
           firstStep,
           { supervisorId: me.supervisorId },
-          [...new Set(customer.branches.map((b) => b.regionId))]
+          [...new Set(scopeBranches.map((b) => b.regionId))]
         );
         await notifyUsers(prisma, firstAudience, {
           kind: 'EDIT_SUBMITTED',
@@ -1347,7 +1361,8 @@ async function approveEditCore(formData: FormData) {
     where: { id: editId },
     include: {
       customer: { include: { branches: { where: { deletedAt: null } } } },
-      submittedBy: { select: { id: true, supervisorId: true, fullName: true } },
+      // ownedRouteId: the home of a request without a usable submitGate (owner decision 3).
+      submittedBy: { select: { id: true, supervisorId: true, fullName: true, ownedRouteId: true } },
       // Phase 1 creation flow: a CREATE request (customerId = null) carries its
       // proposed payload in typed drafts; approver scope + finalize both read
       // from these instead of edit.customer. The route join gives the CURRENT
@@ -1397,13 +1412,21 @@ async function approveEditCore(formData: FormData) {
   // scoped steps (Supervisor/Accountant), plus separation of duty (no
   // self-approval; no acting on two DIFFERENT steps of the same edit).
   // For CREATE the scope branches are the DRAFT branches (region-scoped
-  // approvers act on where the customer WILL live).
+  // approvers act on where the customer WILL live). Owner decision 3
+  // (2026-10-07): for an update or close request, the branches it is about
+  // (requestScopeBranches) — a Manager must manage every one's region.
   const { loadScope } = await import('@/lib/access');
   const actorScope = await loadScope(session.id);
   const sessionUser = { id: session.id, role: session.role, username: session.username };
   const scopeBranches = isCreate
     ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
-    : edit.customer!.branches;
+    : requestScopeBranches({
+        branches: edit.customer!.branches,
+        fieldChanges: edit.fieldChanges,
+        branchId: edit.branchId,
+        homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
+        submitterRouteId: edit.submittedBy.ownedRouteId,
+      });
   const scopeRegionIds = [...new Set(scopeBranches.map((b) => b.regionId))];
   const chain = parseChain(edit.approvalChain);
   const stepIndex = edit.currentStepIndex;
@@ -2103,11 +2126,12 @@ async function rejectEditCore(formData: FormData) {
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
     include: {
-      submittedBy: { select: { id: true, supervisorId: true } },
+      submittedBy: { select: { id: true, supervisorId: true, ownedRouteId: true } },
       customer: {
         select: {
           legalName: true,
-          branches: { select: { regionId: true, deletedAt: true } },
+          // Owner decision 3: what requestScopeBranches reads, as on approve.
+          branches: { select: { id: true, routeId: true, regionId: true, deletedAt: true } },
         },
       },
       // Phase 1 creation flow: CREATE requests derive scope + display name
@@ -2137,7 +2161,13 @@ async function rejectEditCore(formData: FormData) {
   const rejectScope = await loadScopeReject(session.id);
   const rejectScopeBranches = rejectIsCreate
     ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
-    : (edit.customer?.branches ?? []);
+    : requestScopeBranches({
+        branches: edit.customer?.branches ?? [],
+        fieldChanges: edit.fieldChanges,
+        branchId: edit.branchId,
+        homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
+        submitterRouteId: edit.submittedBy.ownedRouteId,
+      });
   const rejectRegionIds = [...new Set(rejectScopeBranches.map((b) => b.regionId))];
   const rejectRequestName = rejectIsCreate
     ? (edit.customerDraft?.legalName ?? '—')

@@ -20,6 +20,8 @@
  */
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { isInformationKind, type EmailStatus, type OutboxRow, type RecentSends, type Recipient, type RequestNow, type SkipStatus } from './eligibility';
+import { requestScopeBranches } from '../permissions';
+import { parseSubmitGate } from '../edit-scope';
 
 export interface OutboxStore {
   /** Rows past the maximum age, never claimed again: SKIPPED_STALE. Bounded per call. */
@@ -156,11 +158,22 @@ export function prismaOutboxStore(db: PrismaClient, scope?: { userIds: string[] 
           pendingRole: true,
           cycle: true,
           submittedById: true,
-          submittedBy: { select: { supervisorId: true } },
+          submittedBy: { select: { supervisorId: true, ownedRouteId: true } },
           // The scope the decision checks (approveEditCore, the reactivation
           // gate), read now: a route or branch can move region after submit.
+          // Owner decision 3 (2026-10-07): an update's or a close's scope is the
+          // branches it is about (lib/permissions.ts requestScopeBranches), read
+          // from its changes' paths; the values in them are not used.
+          branchId: true,
+          fieldChanges: true,
+          submitGate: true,
           branch: { select: { regionId: true } },
-          customer: { select: { deletedAt: true, branches: { where: { deletedAt: null }, select: { regionId: true } } } },
+          customer: {
+            select: {
+              deletedAt: true,
+              branches: { where: { deletedAt: null }, select: { id: true, routeId: true, regionId: true, deletedAt: true } },
+            },
+          },
           branchDrafts: { select: { route: { select: { regionId: true } } } },
         },
       });
@@ -192,7 +205,13 @@ export function prismaOutboxStore(db: PrismaClient, scope?: { userIds: string[] 
                   : []
                 : // A customer merged or deleted since: approveEditCore refuses it.
                   e.customer && !e.customer.deletedAt
-                  ? e.customer.branches.map((b) => b.regionId)
+                  ? requestScopeBranches({
+                      branches: e.customer.branches,
+                      fieldChanges: e.fieldChanges,
+                      branchId: e.branchId,
+                      homeBranchIds: parseSubmitGate(e.submitGate)?.branchIds,
+                      submitterRouteId: e.submittedBy.ownedRouteId,
+                    }).map((b) => b.regionId)
                   : []
           ),
         ],
