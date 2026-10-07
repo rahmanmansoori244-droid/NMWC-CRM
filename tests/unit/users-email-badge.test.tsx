@@ -64,6 +64,7 @@ vi.mock('@/lib/db', () => ({
       findMany: async (args: { select: Record<string, unknown> }) => h.rows.map((r) => project(r, args.select)),
     },
     route: { findMany: async () => [] },
+    region: { findMany: async () => [] },
   },
 }));
 
@@ -104,7 +105,7 @@ beforeEach(() => {
     account('gm', 'GM', 'general.manager@example.test'),
     account('sal', 'SALESMAN', null, {
       ownedRouteId: 'r1',
-      ownedRoute: { code: 'R1', name: 'Route 1', regionId: 'g1' },
+      ownedRoute: { code: 'R1', name: 'Route 1', regionId: 'g1', region: { code: 'G1' } },
       managedRegions: [],
     }),
   ];

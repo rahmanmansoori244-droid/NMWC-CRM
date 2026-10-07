@@ -344,6 +344,35 @@ export function managerCanAssignSupervisor(
 }
 
 /**
+ * Owner decision 5 (2026-10-07): only the Data Steward switches a REGION off or
+ * on. A region is shared — the four Muscat Managers all manage MCT, and the two
+ * fallback approvers cover most of the others — so any one of them could switch
+ * it off for the rest (services/routes.ts used to let every Manager of the region).
+ */
+export function canToggleRegion(role: Role): boolean {
+  return role === Role.STEWARD;
+}
+
+/**
+ * Owner decision 5, applied to routes because they have the same problem: a
+ * route belongs to its region, so in a region several active Managers manage,
+ * any of them could switch off a route worked by another Manager's salesman — and
+ * a salesman whose route is off can no longer add a customer (services/creates.ts).
+ * There only the Steward switches it. A Manager who is the region's ONLY active
+ * Manager keeps the control he had: nobody else's route is at stake.
+ *
+ * `regionManagerIds` — the ids of the region's ACTIVE Managers.
+ */
+export function canToggleRoute(
+  actor: { id: string; role: Role },
+  regionManagerIds: readonly string[]
+): boolean {
+  if (actor.role === Role.STEWARD) return true;
+  if (actor.role !== Role.MANAGER) return false;
+  return regionManagerIds.length === 1 && regionManagerIds[0] === actor.id;
+}
+
+/**
  * The roles a given viewer may CREATE/assign — the single source of truth shared
  * by the server guard (services/users.ts) and the /users role dropdown, so the UI
  * can never offer a role the server would reject (final-hunt #29). A MANAGER is

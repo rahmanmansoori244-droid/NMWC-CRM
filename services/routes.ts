@@ -14,6 +14,7 @@ import { requireActor } from '@/lib/session';
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { loadScope } from '@/lib/access';
+import { canToggleRegion, canToggleRoute } from '@/lib/permissions';
 
 /**
  * Route/region administration: MANAGER (region-scoped) or STEWARD (org-wide).
@@ -24,6 +25,9 @@ import { loadScope } from '@/lib/access';
  * Manager's territory. A Manager now acts only inside the regions they manage
  * (fail-closed on none); creating a REGION is Steward-only because a new
  * region is, by definition, outside every Manager's scope.
+ *
+ * Owner decision 5 (2026-10-07): switching a region off or on is Steward-only
+ * too, and so is switching a route in a region other active Managers share.
  */
 async function requireRouteAdmin() {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -147,11 +151,15 @@ export async function toggleRegionActiveAction(formData: FormData): SafeAction<v
 
 async function toggleRegionActiveCore(formData: FormData) {
   const me = await requireRouteAdmin();
+  // Owner decision 5: a region is shared by several Managers, so only the
+  // Steward switches one off or on (lib/permissions.ts canToggleRegion).
+  if (!canToggleRegion(me.role)) {
+    throw new ForbiddenError('Only the Data Steward can switch a region off or on.');
+  }
   const id = String(formData.get('id') ?? '');
   if (!id) throw new ValidationError({ id: 'required' });
   const r = await prisma.region.findUnique({ where: { id } });
   if (!r) throw new NotFoundError('Region not found.');
-  assertRegionInScope(await regionScopeOf(me), r.id);
   const env = await getAuditEnvelope(me.id);
   await prisma.$transaction(async (tx) => {
     const updated = await tx.region.update({
@@ -182,6 +190,20 @@ async function toggleRouteActiveCore(formData: FormData) {
   const r = await prisma.route.findUnique({ where: { id } });
   if (!r) throw new NotFoundError('Route not found.');
   assertRegionInScope(await regionScopeOf(me), r.regionId);
+  // Owner decision 5, for routes: in a region several active Managers share,
+  // only the Steward switches a route (lib/permissions.ts canToggleRoute).
+  if (me.role === Role.MANAGER) {
+    const managers = await prisma.user.findMany({
+      where: { role: Role.MANAGER, isActive: true, managedRegions: { some: { id: r.regionId } } },
+      select: { id: true },
+    });
+    const managerIds = managers.map((m) => m.id);
+    if (!canToggleRoute(me, managerIds)) {
+      throw new ForbiddenError(
+        'Other Managers share this route’s region, so only the Data Steward can switch the route off or on.'
+      );
+    }
+  }
   const env = await getAuditEnvelope(me.id);
   await prisma.$transaction(async (tx) => {
     const updated = await tx.route.update({
