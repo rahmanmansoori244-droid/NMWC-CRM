@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
@@ -10,6 +11,10 @@ import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { EnrichmentForm } from './EnrichmentForm';
 import { salesmanSubmitGate } from '@/lib/submit-gate';
 import { ownPendingBanner, pendingReplacesDraft, requestKindOf } from '@/lib/submission-replay';
+import { omanWhen } from '@/lib/submission';
+import { openReturnedIds } from '@/lib/returned-work';
+import { returnedPrefill } from './returned';
+import { ClearReturned } from '../../../rejected/ClearReturned';
 
 export const metadata = { title: 'Enrich · NMWC' };
 // UXI-005: never serve a stale cached form. Without this, hitting Back after
@@ -19,12 +24,16 @@ export const dynamic = 'force-dynamic';
 
 export default async function EditCustomerPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  /** `returned`: fill the form with that sent-back update (Work and Needs correction link so). */
+  searchParams?: Promise<{ returned?: string | string[] }>;
 }) {
   const session = await auth();
   if (!session?.user) redirect('/login');
   const { id } = await params;
+  const asked = (await searchParams)?.returned;
 
   const customer = await prisma.customer.findFirst({
     where: { id, deletedAt: null },
@@ -152,6 +161,32 @@ export default async function EditCustomerPage({
   // whether his submit landed. His own pending edit says so in those words.
   const pendingIsMine = pending?.submittedById === session.user.id;
 
+  // Launch fix: his update of this customer that was sent back and that he has
+  // neither sent again nor cleared (lib/returned-work.ts). The page always says
+  // why. The form opens with what he sent filled in (./returned.ts) only when he
+  // asks for it — the rows on Work and Needs correction link with ?returned=, and
+  // the banner offers it. Filled in on every visit, a value he was told NOT to
+  // send went back with the next unrelated edit he made.
+  const [returnedId] = await openReturnedIds(prisma, session.user.id, {
+    customerId: customer.id,
+    updatesOnly: true,
+    take: 1,
+  });
+  const returnedEdit = returnedId
+    ? await prisma.customerEdit.findUnique({
+        where: { id: returnedId },
+        select: {
+          fieldChanges: true,
+          decisionReason: true,
+          reviewedAt: true,
+          reviewedBy: { select: { fullName: true } },
+        },
+      })
+    : null;
+  const fillIn = !!returnedEdit && asked === returnedId;
+  const returned =
+    returnedEdit && fillIn ? returnedPrefill(customer, returnedEdit.fieldChanges, { lockName, lockCr }) : null;
+
   return (
     <main className="pb-24">
       <PageHeader
@@ -164,6 +199,50 @@ export default async function EditCustomerPage({
           </div>
         }
       />
+
+      {returnedId && returnedEdit && (
+        <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 [overflow-wrap:anywhere] sm:mx-6">
+          <p>
+            <strong className="font-semibold">
+              Sent back to you
+              {returnedEdit.reviewedBy ? ` by ${returnedEdit.reviewedBy.fullName}` : ''}
+              {returnedEdit.reviewedAt ? `, ${omanWhen(returnedEdit.reviewedAt)}` : ''}:
+            </strong>{' '}
+            {returnedEdit.decisionReason ?? 'Needs correction.'}
+          </p>
+          {returned ? (
+            <>
+              <p className="mt-1">
+                What you sent is filled in below. Change what was asked, then submit again.
+              </p>
+              {returned.notFilled.length > 0 && (
+                <p className="mt-1">
+                  Not filled in, because it changed after you sent it: {returned.notFilled.join(', ')}.
+                </p>
+              )}
+              <Link
+                href={`/customers/${customer.id}/edit`}
+                className="mt-1 inline-flex min-h-11 items-center font-medium underline underline-offset-2"
+              >
+                Start from the customer as it is
+              </Link>
+            </>
+          ) : (
+            <>
+              <p className="mt-1">The form below shows the customer as it is now.</p>
+              <Link
+                href={`/customers/${customer.id}/edit?returned=${returnedId}`}
+                className="mt-1 inline-flex min-h-11 items-center font-medium underline underline-offset-2"
+              >
+                Fill in what I sent
+              </Link>
+            </>
+          )}
+          <div className="mt-2">
+            <ClearReturned editId={returnedId} then={`/customers/${customer.id}/edit`} />
+          </div>
+        </div>
+      )}
 
       {pending && (
         <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
@@ -180,6 +259,8 @@ export default async function EditCustomerPage({
       )}
 
       <EnrichmentForm
+        // A new form when he switches between what he sent and the customer as it is.
+        key={returned ? `returned:${returnedId}` : 'live'}
         customer={customer}
         channels={channels}
         lockName={lockName}
@@ -191,6 +272,7 @@ export default async function EditCustomerPage({
         pendingReplacesDraft={pendingReplacesDraft(pending ? requestKindOf(pending) : null, customer.status)}
         sessionUserId={session.user.id}
         gate={salesmanSubmitGate()}
+        returned={returned && returnedId ? { id: returnedId, prefill: returned.state } : undefined}
       />
     </main>
   );

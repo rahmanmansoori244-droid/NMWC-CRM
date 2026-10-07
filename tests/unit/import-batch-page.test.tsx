@@ -36,6 +36,7 @@ const h = vi.hoisted(() => ({
   }>,
   /** Customers linked to Temix (a stored Temix code). */
   linked: [] as string[],
+  kind: 'CUSTOMER' as 'CUSTOMER' | 'ACCOUNT',
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
@@ -83,7 +84,7 @@ vi.mock('@/lib/db', () => {
         findUnique: async () => ({
           id: 'b1',
           filename: 'master.xlsx',
-          kind: 'CUSTOMER',
+          kind: h.kind,
           totalRows: h.rows.length,
           status: 'PROMOTED',
           cleanRows: 0,
@@ -123,6 +124,7 @@ beforeEach(() => {
   h.rows = [];
   h.newer = [];
   h.linked = [];
+  h.kind = 'CUSTOMER';
   h.findMany.mockReset();
   h.findMany.mockImplementation(async ({ where, skip, take }: { where: Record<string, unknown>; skip: number; take: number }) => {
     const st = where.state as string | { in: string[] } | undefined;
@@ -139,13 +141,55 @@ afterEach(cleanup);
 const open = async (search: Record<string, string> = {}) =>
   render(await ImportBatchPage({ params: Promise.resolve({ batchId: 'b1' }), searchParams: Promise.resolve(search) }));
 
+// Launch fix (2026-10-07): an account master's issue rows are stored under the
+// row Excel shows (services/imports.ts), and with three sheets the number alone
+// is ambiguous, so the Row column names the sheet.
+describe('/import/[batchId] for an account master', () => {
+  it('the Row column reads the sheet and the Excel row', async () => {
+    h.kind = 'ACCOUNT';
+    const issue = { sheet: 'Users', row: 7, message: 'salesman needs route_code' };
+    h.rows = [{ id: 'a1', rowNumber: 7, state: 'QUARANTINED', raw: issue, parsed: null, issues: [issue] }];
+    await open();
+    const row = screen.getByText('Users sheet, row 7:').closest('tr')!;
+    expect(row.querySelector('td')!.textContent).toBe('Users #7');
+  });
+
+  it('a batch stored before the fix reads its Excel row from the issue, not the issue index', async () => {
+    h.kind = 'ACCOUNT';
+    // The 2nd issue of the batch, about Excel row 9 of the Users sheet.
+    const issue = { sheet: 'Users', row: 9, message: 'salesman needs route_code' };
+    h.rows = [{ id: 'a2', rowNumber: 2, state: 'QUARANTINED', raw: issue, parsed: null, issues: [issue] }];
+    await open();
+    const row = screen.getByText('Users sheet, row 9:').closest('tr')!;
+    expect(row.querySelector('td')!.textContent).toBe('Users #9');
+  });
+
+  it('rows are paged in a fixed order: sheets share row numbers, so the id breaks ties', async () => {
+    h.kind = 'ACCOUNT';
+    const issue = (sheet: string) => ({ sheet, row: 2, message: 'code and name required' });
+    h.rows = ['Regions', 'Routes', 'Users'].map((s, i) => ({
+      id: `t${i}`, rowNumber: 2, state: 'QUARANTINED', raw: issue(s), parsed: null, issues: [issue(s)],
+    }));
+    await open();
+    const paged = h.findMany.mock.calls.map((c) => c[0]).find((a) => a.take !== undefined);
+    expect(paged.orderBy).toEqual([{ rowNumber: 'asc' }, { id: 'asc' }]);
+  });
+
+  it('a customer master row keeps the bare number', async () => {
+    h.rows = [rejected(4)];
+    await open({ show: 'rejected' });
+    const row = screen.getAllByText('C4')[0]!.closest('tr')!;
+    expect(row.querySelector('td')!.textContent).toBe('#5');
+  });
+});
+
 describe('/import/[batchId]', () => {
   it('reaches the 250th rejected row — the page used to stop at 200', async () => {
     h.rows = Array.from({ length: 250 }, (_, i) => rejected(i));
     await open({ show: 'rejected', page: '3' });
     expect(h.findMany).toHaveBeenCalledWith({
       where: { batchId: 'b1', state: 'REJECTED' },
-      orderBy: { rowNumber: 'asc' },
+      orderBy: [{ rowNumber: 'asc' }, { id: 'asc' }],
       skip: 200,
       take: 100,
       include: { excludedBy: { select: { fullName: true } } },

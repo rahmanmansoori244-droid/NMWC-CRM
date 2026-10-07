@@ -17,7 +17,7 @@
  *  - X-TEMIX-2: re-downloading a batch is rate-limited and writes one EXPORT
  *    audit row before the file is returned; when that write fails, no file.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TemixSyncState } from '@prisma/client';
 import { parseWorkbook } from '@/lib/excel';
 
@@ -35,6 +35,9 @@ const h = vi.hoisted(() => ({
   writeAudit: vi.fn(),
   checkLimit: vi.fn(),
   batchFind: vi.fn(),
+  /** markTemixBatchLoadedAction's claim and its follow-up read, inside the transaction. */
+  batchClaim: vi.fn(),
+  batchFindTx: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -121,6 +124,8 @@ vi.mock('@/lib/db', () => {
         return { id: 'batch-new' };
       },
       update: async () => ({}),
+      updateMany: h.batchClaim,
+      findUnique: h.batchFindTx,
     },
   };
   return {
@@ -133,7 +138,7 @@ vi.mock('@/lib/db', () => {
   };
 });
 
-import { generateTemixBatchAction, downloadTemixBatchAction } from '@/services/temix';
+import { generateTemixBatchAction, downloadTemixBatchAction, markTemixBatchLoadedAction } from '@/services/temix';
 
 const at = new Date('2026-09-20T08:00:00Z');
 function cust(over: Partial<Cust> & { nmwcCode: string }): Record<string, unknown> {
@@ -437,5 +442,65 @@ describe('downloadTemixBatchAction — X-TEMIX-2', () => {
     expect(h.checkLimit).toHaveBeenCalledWith('temix-download:stew', { capacity: 3, refillPerSec: 0.05 });
     expect(h.batchFind).not.toHaveBeenCalled();
     expect(h.writeAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe('the upload file is named by the Oman day (launch fix)', () => {
+  // 21:30 UTC on the 7th is 01:30 on the 8th in Oman; the process runs in UTC,
+  // as on Vercel. A UTC date named a batch generated before 04:00 for the day before.
+  beforeEach(() => {
+    vi.stubEnv('TZ', 'UTC');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-07T21:30:00.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('on Generate', async () => {
+    model.state.rows = [cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD })];
+    const res = await generateTemixBatchAction();
+    expect(res.ok && res.data.filename).toBe('temix-upload-2026-10-08-ch-new.xlsx');
+  });
+
+  it('on a re-download', async () => {
+    model.state.rows = [cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.UPLOADED })];
+    h.batchFind.mockResolvedValue({ id: 'batch-old', customerIds: ['id-N1'] });
+    const f = new FormData();
+    f.set('batchId', 'batch-old');
+    const res = await downloadTemixBatchAction(f);
+    expect(res.ok && res.data.filename).toBe('temix-upload-2026-10-08-ch-old.xlsx');
+  });
+});
+
+// Launch fix (2026-10-07): these refusals carried their text only in
+// fields._form, so their message was ValidationError's default "Validation
+// failed" — all the Temix page showed. The message is now the text itself.
+describe('Temix refusals say what happened', () => {
+  it('Generate with an empty queue', async () => {
+    const res = await generateTemixBatchAction();
+    expect(res).toMatchObject({ ok: false, message: 'Nothing is pending for Temix upload.' });
+  });
+
+  it('Generate over the 5,000-customer cap', async () => {
+    model.state.rows = Array.from({ length: 5001 }, (_, i) =>
+      cust({ nmwcCode: `N${i}`, temixSyncState: TemixSyncState.PENDING_UPLOAD })
+    );
+    const res = await generateTemixBatchAction();
+    expect(res).toMatchObject({
+      ok: false,
+      message: 'Queue exceeds 5000 customers — contact support to split the batch.',
+    });
+    expect(model.state.log).not.toContain('flip');
+  });
+
+  it('Mark loaded on a batch already marked', async () => {
+    h.batchClaim.mockResolvedValue({ count: 0 });
+    h.batchFindTx.mockResolvedValue({ markedLoadedAt: new Date('2026-10-01T08:00:00Z') });
+    const fd = new FormData();
+    fd.set('batchId', 'batch-1');
+    const res = await markTemixBatchLoadedAction(fd);
+    expect(res).toMatchObject({ ok: false, message: 'This batch is already marked as loaded.' });
   });
 });

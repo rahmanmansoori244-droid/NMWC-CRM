@@ -48,6 +48,8 @@ vi.mock('@/lib/auth', () => ({
   auth: async () => ({ user: { id: 'u-rev', role: h.role, username: 'rev' } }),
 }));
 vi.mock('@/lib/access', () => ({
+  // Launch fix: the review page names a live customer sharing a new request's phone only if the viewer can open it.
+  canSeeCustomer: (_u: unknown, c: { canSee?: boolean }) => c.canSee !== false,
   loadScope: async () => ({ managedRegionIds: ['g1'], teamRouteIds: ['r1'], ownedRouteId: null }),
   filterBranchesByScope: (_u: unknown, branches: Array<{ id: string }>) =>
     h.inScope ? branches.filter((b) => h.inScope!.includes(b.id)) : branches,

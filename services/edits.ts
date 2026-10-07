@@ -25,8 +25,14 @@ import {
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { logger } from '@/lib/logger';
-import { getAuditEnvelope, writeAudit } from '@/lib/audit';
-import { isFieldLocked, canActOnStep } from '@/lib/permissions';
+import { getAuditEnvelope, writeAudit, type AuditEnvelope } from '@/lib/audit';
+import {
+  followBranchStatus,
+  mergeStatusEvents,
+  NO_STATUS_EVENTS,
+  statusEvents,
+} from '@/lib/customer-status';
+import { isFieldLocked, canActOnStep, requestScopeBranches } from '@/lib/permissions';
 import {
   EQUIPMENT_UNCONFIRM_MESSAGE,
   isCurrentEditPayload,
@@ -35,6 +41,7 @@ import {
   type SubmitEditInput,
 } from '@/lib/validation/edit';
 import { reportedIssues } from '@/lib/validation/fields';
+import { gateScopeOf } from '@/lib/validation/gate-scope';
 import {
   BRANCH_EDIT_FIELDS,
   CUSTOMER_EDIT_FIELDS,
@@ -56,7 +63,12 @@ import {
   type BranchEditField,
   type LiveVerdict,
 } from '@/lib/edit-values';
-import { gateBranchesForApproval, salesmanBranches, submitGateRecord } from '@/lib/edit-scope';
+import {
+  gateBranchesForApproval,
+  parseSubmitGate,
+  salesmanBranches,
+  submitGateRecord,
+} from '@/lib/edit-scope';
 import {
   channelPairInvalidMessage,
   planApproval,
@@ -88,10 +100,16 @@ import {
   assertGuaranteesAsViewed,
   readDecisionToken,
 } from '@/lib/decision-token';
-import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/notifications';
+import {
+  resolveStepAudience,
+  resolveStewardAudience,
+  notifyUsers,
+  settleRequestAlerts,
+} from '@/lib/notifications';
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
+import { openReturnedIds, RETURNED_CLEARED_REASON } from '@/lib/returned-work';
 
 async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
@@ -193,6 +211,10 @@ function staleFieldsError(
  * (gateBranchesForApproval) — never on every branch of the customer: another
  * route's missing GPS blocked a salesman who could neither see nor edit it.
  * A proposed null (a clear) merges as missing.
+ *
+ * Owner decision 4 (2026-10-07, lib/validation/gate-scope.ts): callers pass only
+ * the branches the request changes, and `customerFields` false when it changes
+ * no customer-level field — then the customer's fields are not checked at all.
  */
 function collectMissingMandatory(
   customer: {
@@ -225,7 +247,9 @@ function collectMissingMandatory(
    */
   actorIsSalesman = false,
   /** Go-live: FULL (PRD §6) or CORE — see lib/submit-gate.ts. */
-  gate: SubmitGate = salesmanSubmitGate()
+  gate: SubmitGate = salesmanSubmitGate(),
+  /** Owner decision 4: whether the request changes a customer-level field. */
+  customerFields = true
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   const merged = (k: keyof typeof customer, fallback: unknown) =>
@@ -237,29 +261,33 @@ function collectMissingMandatory(
   // Lock-aware skips for salesman actor.
   const skipLegalName = actorIsSalesman; // always locked for salesman
   const skipCrNumber = actorIsSalesman && customer.paymentTerms === 'CREDIT';
+  // Owner decision 2 (2026-10-07): the CR document follows the CR number.
+  const skipCrPhoto = skipCrNumber;
 
-  if (!skipLegalName && !isStr(merged('legalName', customer.legalName))) {
-    errors['customer.legalName'] = 'Legal name is required.';
-  }
-  if (!isStr(merged('channelId', customer.channelId))) {
-    errors['customer.channelId'] = 'Channel is required.';
-  }
-  if (req('subChannelId') && !isStr(merged('subChannelId', customer.subChannelId))) {
-    errors['customer.subChannelId'] = 'Sub-channel is required.';
-  }
-  if (!isStr(merged('primaryPhone', customer.primaryPhone))) {
-    errors['customer.primaryPhone'] = 'Primary phone is required.';
-  }
-  if (!isStr(merged('contactPerson', customer.contactPerson))) {
-    errors['customer.contactPerson'] = 'Contact person is required.';
-  }
-  if (req('crNumber') && !skipCrNumber && !isStr(merged('crNumber', customer.crNumber))) {
-    errors['customer.crNumber'] = 'CR number is required.';
-  }
-  // Photos are wired via attachPhotoAction, so we read from the live customer
-  // (the edit payload does not carry photoId fields).
-  if (req('crPhoto') && !customer.crPhotoId) {
-    errors['customer.crPhoto'] = 'CR document photo is required.';
+  if (customerFields) {
+    if (!skipLegalName && !isStr(merged('legalName', customer.legalName))) {
+      errors['customer.legalName'] = 'Legal name is required.';
+    }
+    if (!isStr(merged('channelId', customer.channelId))) {
+      errors['customer.channelId'] = 'Channel is required.';
+    }
+    if (req('subChannelId') && !isStr(merged('subChannelId', customer.subChannelId))) {
+      errors['customer.subChannelId'] = 'Sub-channel is required.';
+    }
+    if (!isStr(merged('primaryPhone', customer.primaryPhone))) {
+      errors['customer.primaryPhone'] = 'Primary phone is required.';
+    }
+    if (!isStr(merged('contactPerson', customer.contactPerson))) {
+      errors['customer.contactPerson'] = 'Contact person is required.';
+    }
+    if (req('crNumber') && !skipCrNumber && !isStr(merged('crNumber', customer.crNumber))) {
+      errors['customer.crNumber'] = 'CR number is required.';
+    }
+    // Photos are wired via attachPhotoAction, so we read from the live customer
+    // (the edit payload does not carry photoId fields).
+    if (req('crPhoto') && !skipCrPhoto && !customer.crPhotoId) {
+      errors['customer.crPhoto'] = 'CR document photo is required.';
+    }
   }
 
   for (const b of gateBranches) {
@@ -341,7 +369,12 @@ async function submitEditOnce(
   session: Awaited<ReturnType<typeof requireUser>>,
   submissionId: string | undefined
 ): Promise<SubmitReceipt> {
-  const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
+  // Launch fix: a draft save has its own bucket. Every save spent one of the 60
+  // an hour the submits share, so a salesman who saved often was told "Slow
+  // down" when he came to submit. Read off the body before the schema runs: a
+  // body that says draft can write nothing but a draft.
+  const draftSave = (input as { isDraft?: unknown } | undefined)?.isDraft === true;
+  const lim = await checkLimit(`${draftSave ? 'edit-draft' : 'edit'}:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
     throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
   }
@@ -730,9 +763,17 @@ async function submitEditOnce(
   // the top and tells him to reload (lib/form-errors.ts
   // withReloadHintForUnshownBranches); one taken off his route since is shown
   // but not gated.
+  // Owner decision 4 (2026-10-07, lib/validation/gate-scope.ts): of those, only
+  // the branches this request changes, and the customer-level fields only when
+  // it changes one — a phone fix no longer waits for every shop's GPS and photo.
+  // The record still stores ALL his branches here: the approval re-check takes
+  // the ones its changes name, and they are the request's home for who may
+  // decide it (lib/permissions.ts requestScopeBranches).
   let submitGate: Prisma.InputJsonValue | undefined;
   if (!isDraft && me.role === Role.SALESMAN) {
-    const gateBranches = salesmanBranches(customer.branches, me.ownedRouteId);
+    const ownBranches = salesmanBranches(customer.branches, me.ownedRouteId);
+    const scope = gateScopeOf(fieldChanges.map((c) => c.field));
+    const gateBranches = ownBranches.filter((b) => scope.branchIds.has(b.id));
     const branchProposedById = new Map<string, Record<string, unknown>>();
     for (const bp of bInputs) branchProposedById.set(bp.branchId, bp as Record<string, unknown>);
     const missing = collectMissingMandatory(
@@ -740,7 +781,9 @@ async function submitEditOnce(
       gateBranches,
       customerProposed,
       branchProposedById,
-      /* actorIsSalesman */ true
+      /* actorIsSalesman */ true,
+      salesmanSubmitGate(),
+      /* customerFields */ scope.customer
     );
     // The ±100 m GPS standard (lib/gps-accuracy.ts): a newly captured point
     // worse than the limit is refused here, at submit only. A point not sent
@@ -759,7 +802,7 @@ async function submitEditOnce(
     if (Object.keys(missing).length > 0) {
       throw new ValidationError(missing);
     }
-    submitGate = submitGateRecord(gateBranches.map((b) => b.id));
+    submitGate = submitGateRecord(ownBranches.map((b) => b.id));
   }
 
   const editState: EditState = isDraft ? EditState.DRAFT : EditState.SUBMITTED;
@@ -779,8 +822,9 @@ async function submitEditOnce(
     paymentTermsAtSubmit: customer.paymentTerms,
     currentStepIndex: 0,
     // INVARIANT: `cycle` starts at 1 and is never bumped today, because the only
-    // way to re-submit after NEEDS_CORRECTION is a brand-new edit row (this action
-    // always creates a new CustomerEdit). The step-back cascade + separation-of-
+    // way to re-submit after NEEDS_CORRECTION is a brand-new edit row (a submit
+    // always creates a new CustomerEdit; only a DRAFT is saved over in place, and
+    // a draft is never submitted from). The step-back cascade + separation-of-
     // duty queries key off `cycle`; if the creation-flow increment adds a
     // "re-submit the SAME create-request" path, it MUST increment `cycle` there,
     // or stale prior-cycle EditApproval rows will poison the reject loop guard.
@@ -881,7 +925,10 @@ async function submitEditOnce(
             ...chainFields,
           },
         });
-        await applyEditChanges(tx, customer.id, write.customer, write.branches, me.id);
+        await applyEditChanges(tx, customer.id, write.customer, write.branches, me.id, {
+          env,
+          via: `direct write by ${me.role}`,
+        });
         const customerBefore = Object.fromEntries(
           CUSTOMER_EDIT_FIELDS.map((f) => [f, toBaseValue(now[f])])
         );
@@ -907,23 +954,52 @@ async function submitEditOnce(
       { timeout: 30_000, maxWait: 10_000 }
     );
   } else {
+    // Launch fix (returned work): his sent-back updates of this customer that
+    // this submit answers. Read before it exists; once it does they no longer
+    // wait on him (lib/returned-work.ts), and each gets an audit row naming it.
+    const answered = isDraft
+      ? []
+      : await openReturnedIds(prisma, me.id, { customerId: customer.id, updatesOnly: true });
+    const answeredEnv = answered.length > 0 ? await getAuditEnvelope(me.id) : null;
+    const submitted: Prisma.CustomerEditUncheckedCreateInput = {
+      target: EditTarget.CUSTOMER,
+      customerId: customer.id,
+      state: editState,
+      submittedById: me.id,
+      submittedAt,
+      fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
+      attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+      submissionId,
+      // F05: a salesman's SUBMITTED request carries the branches it was gated on.
+      ...(submitGate ? { submitGate } : {}),
+      ...chainFields,
+      ...pendingFields,
+    };
     try {
-      edit = await prisma.customerEdit.create({
-        data: {
-          target: EditTarget.CUSTOMER,
-          customerId: customer.id,
-          state: editState,
-          submittedById: me.id,
-          submittedAt,
-          fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
-          attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+      if (isDraft) {
+        edit = await saveUpdateDraft(me.id, customer.id, {
+          fieldChanges: submitted.fieldChanges,
           submissionId,
-          // F05: a salesman's SUBMITTED request carries the branches it was gated on.
-          ...(submitGate ? { submitGate } : {}),
           ...chainFields,
-          ...pendingFields,
-        },
-      });
+        });
+      } else if (!answeredEnv) {
+        edit = await prisma.customerEdit.create({ data: submitted });
+      } else {
+        // F13: the trail on each request it answers commits with it, or neither does.
+        edit = await prisma.$transaction(async (tx) => {
+          const e = await tx.customerEdit.create({ data: submitted });
+          for (const id of answered) {
+            await writeAudit(tx, answeredEnv, {
+              action: 'UPDATE',
+              entityType: 'CustomerEdit',
+              entityId: id,
+              reason: 'resubmitted: answered by a new request',
+              after: { state: EditState.NEEDS_CORRECTION, answeredBy: e.id } as Prisma.InputJsonValue,
+            });
+          }
+          return e;
+        });
+      }
     } catch (err) {
       // QA-017 / EL-09 — partial unique index `CustomerEdit_open_per_customer`
       // enforces "one SUBMITTED edit per customer" at the DB level. The
@@ -942,18 +1018,27 @@ async function submitEditOnce(
       throw err;
     }
     // Tell the first approver a review is waiting (in-app Notification row).
-    // Best-effort AFTER the edit exists — an UPDATE submit is a single insert,
-    // not a transaction, and losing a notification is tolerable while losing
+    // Best-effort AFTER the edit exists — an UPDATE submit is a single insert
+    // (with the audit rows of what it answers), the notification is not part of
+    // it, and losing a notification is tolerable while losing
     // a submit is not. try/catch enforces that contract: a transient notify
     // failure must not convert an already-committed submit into a reported
     // error (the salesman's retry would dead-end on EDIT_LOCKED).
     if (!isDraft) {
       try {
+        // Owner decision 3: the regions of the request's scope, the Managers
+        // who can decide it — not every region the customer spans.
+        const scopeBranches = requestScopeBranches({
+          branches: customer.branches,
+          fieldChanges,
+          homeBranchIds: salesmanBranches(customer.branches, me.ownedRouteId).map((b) => b.id),
+          submitterRouteId: me.ownedRouteId,
+        });
         const firstAudience = await resolveStepAudience(
           prisma,
           firstStep,
           { supervisorId: me.supervisorId },
-          [...new Set(customer.branches.map((b) => b.regionId))]
+          [...new Set(scopeBranches.map((b) => b.regionId))]
         );
         await notifyUsers(prisma, firstAudience, {
           kind: 'EDIT_SUBMITTED',
@@ -1008,12 +1093,135 @@ async function submitEditOnce(
   };
 }
 
+/**
+ * Launch fix: ONE saved draft per person per customer, saved over in place.
+ * "Save draft" inserted a new DRAFT row every time; nothing reads one back (the
+ * form keeps its draft on the phone), and the customer's Recent activity listed
+ * each as "submitted N change(s)". Serialized per person and customer with a
+ * transaction-scoped advisory lock (lib/create-guards.ts takes them the same
+ * way), so two saves at once cannot both insert. A submit is always a new row:
+ * a draft never becomes a request, so the cycle invariant in submitEditOnce holds.
+ */
+async function saveUpdateDraft(
+  submittedById: string,
+  customerId: string,
+  data: Pick<
+    Prisma.CustomerEditUncheckedCreateInput,
+    | 'fieldChanges'
+    | 'submissionId'
+    | 'process'
+    | 'approvalChain'
+    | 'paymentTermsAtSubmit'
+    | 'currentStepIndex'
+    | 'cycle'
+  >
+) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:edit-draft:${submittedById}:${customerId}`}, 42))`;
+    const saved = await tx.customerEdit.findFirst({
+      where: {
+        submittedById,
+        customerId,
+        state: EditState.DRAFT,
+        process: EditProcess.UPDATE,
+        target: EditTarget.CUSTOMER,
+        isReactivation: false,
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    });
+    if (saved) return tx.customerEdit.update({ where: { id: saved.id }, data });
+    return tx.customerEdit.create({
+      data: {
+        ...data,
+        target: EditTarget.CUSTOMER,
+        customerId,
+        state: EditState.DRAFT,
+        submittedById,
+        submittedAt: null,
+        attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+      },
+    });
+  });
+}
+
+/**
+ * Launch fix: the salesman clears a request sent back to him that he has
+ * nothing to send again for: "the number on file is right", a Manager has since
+ * written the values, or the customer is no longer on his route. A sent-back
+ * request is answered only by a later request of his (lib/returned-work.ts), and
+ * a submit with no change is refused ("No changes to submit."), so such a
+ * request kept Today's red tile, its Work row and Needs correction for good.
+ *
+ * Nothing on the request changes. It stays NEEDS_CORRECTION with its reason, the
+ * record of the decision (the dashboard counts it so). The audit row written
+ * here is the trail, and it is what takes the request off his lists. Only his
+ * own request, only a sent-back one, and never a new-customer request: he
+ * withdraws that from its page (services/creates.ts withdrawCreateAction), which
+ * also frees its CR and shop. Serialized per request, so a double tap writes one
+ * row; one already answered or cleared answers ok and writes nothing.
+ */
+export async function clearReturnedEditAction(input: { editId: string }): SafeAction<{ editId: string }> {
+  return runAction(() => clearReturnedEditCore(input));
+}
+
+async function clearReturnedEditCore(input: { editId: string }): Promise<{ editId: string }> {
+  const me = await requireUser();
+  const editId = typeof input?.editId === 'string' ? input.editId : '';
+  if (!editId) throw new ValidationError({ editId: 'required' });
+  const lim = await checkLimit(`edit:${me.id}`, FORM_LIMIT);
+  if (!lim.ok) {
+    throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
+  }
+  const edit = await prisma.customerEdit.findUnique({
+    where: { id: editId },
+    select: { id: true, process: true, state: true, submittedById: true, customerId: true },
+  });
+  // His own: anyone else's reads as not found.
+  if (!edit || edit.submittedById !== me.id) throw new NotFoundError('Request not found.');
+  if (edit.process === EditProcess.CREATE) {
+    throw new ConflictError(
+      'EDIT_LOCKED',
+      'A new-customer request is withdrawn from its own page, which also frees its CR number and shop.'
+    );
+  }
+  if (edit.state !== EditState.NEEDS_CORRECTION) {
+    throw new ConflictError('EDIT_LOCKED', 'This request was not sent back to you, so there is nothing to clear.');
+  }
+
+  const env = await getAuditEnvelope(me.id);
+  const cleared = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:returned-clear:${editId}`}, 42))`;
+    // Answered since, cleared by a tap a moment ago, or its customer archived:
+    // it no longer waits on him, and that is the answer.
+    const open = await openReturnedIds(tx, me.id, { customerId: edit.customerId ?? undefined });
+    if (!open.includes(editId)) return false;
+    await writeAudit(tx, env, {
+      action: 'UPDATE',
+      entityType: 'CustomerEdit',
+      entityId: editId,
+      reason: RETURNED_CLEARED_REASON,
+      after: { state: EditState.NEEDS_CORRECTION, cleared: true } as Prisma.InputJsonValue,
+    });
+    return true;
+  });
+
+  if (cleared) logger.info({ editId, by: me.id }, 'edit.returned.clear');
+  revalidatePath('/work');
+  revalidatePath('/today');
+  revalidatePath('/rejected');
+  return { editId };
+}
+
 async function applyEditChanges(
   tx: Prisma.TransactionClient,
   customerId: string,
   customerProposed: Record<string, unknown>,
   branches: readonly BranchWrite[],
-  actorId: string
+  actorId: string,
+  // Owner decision 7: the customer's status follows a branch status this writes,
+  // audited with this envelope (lib/customer-status.ts).
+  statusAudit: { env: AuditEnvelope; via: string }
 ) {
   // B-05 (Senior-audit 2026-05-10): Optimistic locking on Customer + Branch.
   // We re-read `version` inside the tx (Read Committed sees the latest
@@ -1061,6 +1269,7 @@ async function applyEditChanges(
   }
 
   // Branches — same versioned-updateMany pattern per branch.
+  let statusChanges = NO_STATUS_EVENTS;
   for (const bp of branches) {
     const branchUpdate: Record<string, unknown> = {};
     for (const f of BRANCH_EDIT_FIELDS) {
@@ -1080,6 +1289,10 @@ async function applyEditChanges(
     // not just calendar time.
     if (branchUpdate.status !== undefined && currentBranch.status !== branchUpdate.status) {
       branchUpdate.lastStatusChangeAt = new Date();
+      statusChanges = mergeStatusEvents(
+        statusChanges,
+        statusEvents(currentBranch.status, branchUpdate.status as typeof currentBranch.status)
+      );
     }
     const branchResult = await tx.branch.updateMany({
       where: { id: bp.branchId, version: currentBranch.version },
@@ -1092,6 +1305,13 @@ async function applyEditChanges(
       );
     }
   }
+
+  // Owner decision 7: the last open branch closed closes the customer; a branch
+  // reopened opens it. Under the customer's row lock both callers hold.
+  await followBranchStatus(tx, statusAudit.env, customerId, statusChanges, {
+    actorId,
+    via: statusAudit.via,
+  });
 
   // Recompute completeness
   const fresh = await tx.customer.findUniqueOrThrow({
@@ -1165,7 +1385,10 @@ async function approveEditCore(formData: FormData) {
     where: { id: editId },
     include: {
       customer: { include: { branches: { where: { deletedAt: null } } } },
-      submittedBy: { select: { id: true, supervisorId: true, fullName: true } },
+      // ownedRouteId, ownedRoute: the home of a request without a usable submitGate (owner decision 3).
+      submittedBy: {
+        select: { id: true, supervisorId: true, fullName: true, ownedRouteId: true, ownedRoute: { select: { regionId: true } } },
+      },
       // Phase 1 creation flow: a CREATE request (customerId = null) carries its
       // proposed payload in typed drafts; approver scope + finalize both read
       // from these instead of edit.customer. The route join gives the CURRENT
@@ -1215,13 +1438,22 @@ async function approveEditCore(formData: FormData) {
   // scoped steps (Supervisor/Accountant), plus separation of duty (no
   // self-approval; no acting on two DIFFERENT steps of the same edit).
   // For CREATE the scope branches are the DRAFT branches (region-scoped
-  // approvers act on where the customer WILL live).
+  // approvers act on where the customer WILL live). Owner decision 3
+  // (2026-10-07): for an update or close request, the branches it is about
+  // (requestScopeBranches) — a Manager must manage every one's region.
   const { loadScope } = await import('@/lib/access');
   const actorScope = await loadScope(session.id);
   const sessionUser = { id: session.id, role: session.role, username: session.username };
   const scopeBranches = isCreate
     ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
-    : edit.customer!.branches;
+    : requestScopeBranches({
+        branches: edit.customer!.branches,
+        fieldChanges: edit.fieldChanges,
+        branchId: edit.branchId,
+        homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
+        submitterRouteId: edit.submittedBy.ownedRouteId,
+        submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
+      });
   const scopeRegionIds = [...new Set(scopeBranches.map((b) => b.regionId))];
   const chain = parseChain(edit.approvalChain);
   const stepIndex = edit.currentStepIndex;
@@ -1322,6 +1554,9 @@ async function approveEditCore(formData: FormData) {
             cycle: edit.cycle,
           } as unknown as Prisma.InputJsonValue,
         });
+        // This step's rows (and any breach pings) are answered: they stop
+        // counting in their holders' bells before the next step's are written.
+        await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
         // Notify the next step's approvers + the submitter (progress). Inside
         // the tx so a lost claim race never notifies.
         const nextAudience = await resolveStepAudience(
@@ -1421,6 +1656,7 @@ async function approveEditCore(formData: FormData) {
           finalizeEnv,
           finalizedAt
         );
+        await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
         // Submitter learns their customer is live; Stewards get the
         // Temix-upload-ready signal (temixSyncState is now PENDING_UPLOAD).
         await notifyUsers(tx, [edit.submittedById], {
@@ -1674,13 +1910,18 @@ async function approveEditCore(formData: FormData) {
       // (lib/edit-scope.ts gateBranchesForApproval) — never the customer's whole
       // branch list, so another route's branch, one created after submit, or a
       // route handover cannot fail it.
-      const { gateBranches, unreadable } = gateBranchesForApproval({
+      // Owner decision 4 (2026-10-07): of that set, the branches the changes
+      // to be written name, and the customer's fields only when one of them is
+      // a customer-level change — the rule the submit applied.
+      const scope = gateScopeOf(considered.map((c) => c.field));
+      const { gateBranches: frozenGate, unreadable } = gateBranchesForApproval({
         submitGate: edit.submitGate,
         liveBranches: now.branches,
         fieldChanges,
         submitter: { role: submitterUser?.role, ownedRouteId: submitterUser?.ownedRouteId },
       });
       if (unreadable) logger.warn({ editId }, 'edit.approve.submit_gate_unreadable');
+      const gateBranches = frozenGate?.filter((b) => scope.branchIds.has(b.id)) ?? null;
       if (gateBranches && !isStatusOnlyEdit) {
         const proposal = payloadFromFieldChanges(considered);
         const missing = collectMissingMandatory(
@@ -1688,7 +1929,9 @@ async function approveEditCore(formData: FormData) {
           gateBranches,
           proposal.customer,
           proposal.byBranch,
-          /* actorIsSalesman */ true
+          /* actorIsSalesman */ true,
+          salesmanSubmitGate(),
+          /* customerFields */ scope.customer
         );
         if (Object.keys(missing).length > 0) {
           throw new ConflictError(
@@ -1705,7 +1948,10 @@ async function approveEditCore(formData: FormData) {
       // the customer — no version bump, no rescore, no Temix requeue. It is still
       // approved, audited and notified.
       if (classified.apply.length > 0) {
-        await applyEditChanges(tx, edit.customerId!, write.customer, write.branches, session.id);
+        await applyEditChanges(tx, edit.customerId!, write.customer, write.branches, session.id, {
+          env,
+          via: `approved request ${editId}`,
+        });
       }
       // EL-05: persist the actual diff in the audit log, not just a count, so a
       // forensic Manager can answer "what did Supervisor X approve last week"
@@ -1721,10 +1967,16 @@ async function approveEditCore(formData: FormData) {
           droppedBranchIds: droppedBranchIds.length > 0 ? droppedBranchIds : undefined,
         } as unknown as Prisma.InputJsonValue,
       });
+      await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
+      // A close-shop request (the only BRANCH-target request decided here) is told
+      // in its own words: "your changes are live" does not say the shop is closed.
+      const isCloseRequest = edit.target === EditTarget.BRANCH;
       await notifyUsers(tx, [edit.submittedById], {
         kind: 'EDIT_APPROVED_FINAL',
-        title: 'Edit approved',
-        body: `${requestName} — your changes were approved and are now live.`,
+        title: isCloseRequest ? 'Close-shop request approved' : 'Edit approved',
+        body: isCloseRequest
+          ? `${requestName} — your close-shop request was approved; the branch is now closed.`
+          : `${requestName} — your changes were approved and are now live.`,
         editId,
         customerId: edit.customerId ?? undefined,
       });
@@ -1904,11 +2156,12 @@ async function rejectEditCore(formData: FormData) {
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
     include: {
-      submittedBy: { select: { id: true, supervisorId: true } },
+      submittedBy: { select: { id: true, supervisorId: true, ownedRouteId: true, ownedRoute: { select: { regionId: true } } } },
       customer: {
         select: {
           legalName: true,
-          branches: { select: { regionId: true, deletedAt: true } },
+          // Owner decision 3: what requestScopeBranches reads, as on approve.
+          branches: { select: { id: true, routeId: true, regionId: true, deletedAt: true } },
         },
       },
       // Phase 1 creation flow: CREATE requests derive scope + display name
@@ -1938,7 +2191,14 @@ async function rejectEditCore(formData: FormData) {
   const rejectScope = await loadScopeReject(session.id);
   const rejectScopeBranches = rejectIsCreate
     ? edit.branchDrafts.map((d) => ({ regionId: d.route.regionId, deletedAt: null }))
-    : (edit.customer?.branches ?? []);
+    : requestScopeBranches({
+        branches: edit.customer?.branches ?? [],
+        fieldChanges: edit.fieldChanges,
+        branchId: edit.branchId,
+        homeBranchIds: parseSubmitGate(edit.submitGate)?.branchIds,
+        submitterRouteId: edit.submittedBy.ownedRouteId,
+        submitterRegionId: edit.submittedBy.ownedRoute?.regionId,
+      });
   const rejectRegionIds = [...new Set(rejectScopeBranches.map((b) => b.regionId))];
   const rejectRequestName = rejectIsCreate
     ? (edit.customerDraft?.legalName ?? '—')
@@ -1978,6 +2238,14 @@ async function rejectEditCore(formData: FormData) {
   });
   const target = resolveRejectTarget(rejectStepIndex, priorRejectsHere);
   const rejectedAt = new Date();
+  // Launch fix (2026-10-07): a close-shop request (the only BRANCH-target request
+  // decided here; reactivations were refused above) is refused for good, not sent
+  // back. Nothing on it can be corrected — a new close request is a new row — so
+  // as NEEDS_CORRECTION it sat on the salesman's Needs correction lists for ever.
+  // It ends REJECTED, and the row below tells him why. Its decisionReason is HIS
+  // reason for asking and is kept; the reviewer's reason is on the decision row
+  // (EditApproval), the audit row and his notification.
+  const isCloseRequest = edit.target === EditTarget.BRANCH;
 
   // DG-06: envelope outside the transaction; `session.id` is the rejecting actor.
   const env = await getAuditEnvelope(session.id);
@@ -2011,7 +2279,7 @@ async function rejectEditCore(formData: FormData) {
             reviewedAt: rejectedAt,
           }
         : {
-            state: EditState.NEEDS_CORRECTION,
+            state: isCloseRequest ? EditState.REJECTED : EditState.NEEDS_CORRECTION,
             pendingRole: null,
             currentStepIndex: 0,
             // NEEDS_CORRECTION stops the clock; the salesman's rework is not
@@ -2020,7 +2288,7 @@ async function rejectEditCore(formData: FormData) {
             escalationLevel: 0,
             slaBreachedAt: null,
             lastEscalatedAt: null,
-            decisionReason: reason,
+            ...(isCloseRequest ? {} : { decisionReason: reason }),
             decisionCategory: category,
             reviewedById: session.id,
             reviewedAt: rejectedAt,
@@ -2061,7 +2329,10 @@ async function rejectEditCore(formData: FormData) {
         cycle: edit.cycle,
       } as unknown as Prisma.InputJsonValue,
     });
-    // Notifications (inside the tx — a lost claim race must not notify).
+    // Notifications (inside the tx — a lost claim race must not notify). The
+    // rows that asked for this decision are answered first, so a step-back's
+    // fresh rows to the previous step stay unread.
+    await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
     if (target.kind === 'STEP_BACK') {
       // The request went back to the previous approver step; tell that step's
       // audience it is waiting on them again, and give the submitter a
@@ -2088,10 +2359,14 @@ async function rejectEditCore(formData: FormData) {
         customerId: edit.customerId ?? undefined,
       });
     } else {
+      // EDIT_NEEDS_CORRECTION for a refused close too: it is the red row a
+      // salesman acts on, and he must read why (he may need to send it again).
       await notifyUsers(tx, [edit.submittedById], {
         kind: 'EDIT_NEEDS_CORRECTION',
-        title: 'Needs correction',
-        body: `${rejectRequestName} — returned to you: ${reason}`,
+        title: isCloseRequest ? 'Close-shop request refused' : 'Needs correction',
+        body: isCloseRequest
+          ? `${rejectRequestName} — your close-shop request was refused, so the branch is not closed: ${reason}`
+          : `${rejectRequestName} — returned to you: ${reason}`,
         editId,
         customerId: edit.customerId ?? undefined,
       });

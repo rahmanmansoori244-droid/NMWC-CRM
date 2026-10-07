@@ -17,15 +17,63 @@
  */
 import { Role, type NotificationKind, type Prisma } from '@prisma/client';
 import type { ApprovalStep } from './approval-chains';
+import { logger } from './logger';
+import { SETTLED_ON_DECISION_KINDS, SUPERVISING_ROLES } from './notify-policy';
 
 type Tx = Prisma.TransactionClient;
+
+/** Active holders of `role` who manage one of `regionIds`. No region ⇒ nobody. */
+async function activeHoldersOver(tx: Tx, role: Role, regionIds: readonly string[]): Promise<string[]> {
+  if (regionIds.length === 0) return [];
+  const users = await tx.user.findMany({
+    where: {
+      role,
+      isActive: true,
+      managedRegions: { some: { id: { in: [...regionIds] } } },
+    },
+    select: { id: true },
+  });
+  return users.map((u) => u.id);
+}
+
+/**
+ * The submitter's supervisor, if he can act on a Supervisor-step request over
+ * `regionIds`: active, and a SUPERVISOR (who acts as the submitter's supervisor)
+ * or a MANAGER who manages one of the regions (canApproveSpecificEdit refuses a
+ * Manager outside them, and the request's page 404s for him). `managerOnly`
+ * narrows it to such a Manager: a reactivation is decided by a Manager only.
+ * Read from the User table, never a cache: a just-disabled account must not be named.
+ */
+export async function supervisorWhoCanAct(
+  tx: Tx,
+  supervisorId: string | null,
+  regionIds: readonly string[],
+  opts: { managerOnly?: boolean } = {}
+): Promise<string | null> {
+  if (!supervisorId) return null;
+  const sup = await tx.user.findUnique({
+    where: { id: supervisorId },
+    select: { id: true, role: true, isActive: true, managedRegions: { select: { id: true } } },
+  });
+  if (!sup || !sup.isActive || !SUPERVISING_ROLES.includes(sup.role)) return null;
+  if (sup.role === Role.SUPERVISOR) return opts.managerOnly ? null : sup.id;
+  // A MANAGER: only over one of the request's regions.
+  if (!sup.managedRegions.some((r) => regionIds.includes(r.id))) return null;
+  return sup.id;
+}
 
 /**
  * Resolve the user ids who should be told a request is now waiting on `step`.
  *
- * SUPERVISOR_OF_SUBMITTER — the submitter's direct supervisor. Region-Manager
- * fallback approvers (RBAC-05-003) are deliberately NOT notified: they can act
- * from their scoped queue, but the supervisor owns the SLA.
+ * SUPERVISOR_OF_SUBMITTER — the submitter's direct supervisor, when he can act
+ * on it (supervisorWhoCanAct). Region-Manager fallback approvers (RBAC-05-003)
+ * are not notified while he can: they can act from their scoped queue, but the
+ * supervisor owns the SLA. When he cannot — no supervisorId, a disabled account,
+ * a role that cannot approve, a Manager of other regions — every active MANAGER
+ * of the request's regions is told instead, the same fallback canActOnStep lets
+ * act, and the gap is logged (launch fix 2026-10-07: before, the row went to the
+ * stored supervisorId as it stood, or to nobody, and the request waited for the
+ * SLA sweep).
  * REGION_OVERLAP — active holders of the step role whose managedRegions
  * overlap the request's branch regions (Accountants share the ManagerRegions
  * M:N). Fail-closed: no regions ⇒ nobody (matches canActOnStep).
@@ -38,20 +86,19 @@ export async function resolveStepAudience(
   regionIds: string[]
 ): Promise<string[]> {
   switch (step.scope) {
-    case 'SUPERVISOR_OF_SUBMITTER':
-      return submitter.supervisorId ? [submitter.supervisorId] : [];
-    case 'REGION_OVERLAP': {
-      if (regionIds.length === 0) return [];
-      const users = await tx.user.findMany({
-        where: {
-          role: step.role,
-          isActive: true,
-          managedRegions: { some: { id: { in: regionIds } } },
-        },
-        select: { id: true },
-      });
-      return users.map((u) => u.id);
+    case 'SUPERVISOR_OF_SUBMITTER': {
+      const sup = await supervisorWhoCanAct(tx, submitter.supervisorId, regionIds);
+      if (sup) return [sup];
+      const managers = await activeHoldersOver(tx, Role.MANAGER, regionIds);
+      // Ids and counts only: the log names no customer and no person.
+      logger.warn(
+        { supervisorId: submitter.supervisorId, regions: regionIds.length, managersTold: managers.length },
+        'notify.supervisor_step.supervisor_cannot_act'
+      );
+      return managers;
     }
+    case 'REGION_OVERLAP':
+      return activeHoldersOver(tx, step.role, regionIds);
     case 'GLOBAL': {
       const users = await tx.user.findMany({
         where: { role: step.role, isActive: true },
@@ -92,4 +139,31 @@ export async function notifyUsers(
   await tx.notification.createMany({
     data: unique.map((userId) => ({ userId, ...data })),
   });
+}
+
+/**
+ * Launch fix (2026-10-07): a decision settles the rows that asked for it. Every
+ * unread row about `editId` of a kind that asked its holder to act or to chase
+ * (lib/notify-policy.ts SETTLED_ON_DECISION_KINDS), held by anyone but the
+ * submitter, is marked read, so it stops counting in a red bell once the step it
+ * asked for has been taken — by him or by a colleague. Read, not deleted: the
+ * inbox keeps the history, and the e-mail outbox never sends a read row.
+ *
+ * Call it on the deciding transaction, after the claim and BEFORE writing the rows
+ * for the next step, so a lost race settles nothing and the new rows stay unread.
+ */
+export async function settleRequestAlerts(
+  tx: Tx,
+  edit: { editId: string; submittedById: string }
+): Promise<number> {
+  const res = await tx.notification.updateMany({
+    where: {
+      editId: edit.editId,
+      readAt: null,
+      kind: { in: [...SETTLED_ON_DECISION_KINDS] },
+      userId: { not: edit.submittedById },
+    },
+    data: { readAt: new Date() },
+  });
+  return res.count;
 }

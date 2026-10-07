@@ -293,7 +293,8 @@ async function approvalTiers(
   if (scope !== 'company' && !MANAGER_VIEW_ROLES.includes('MANAGER')) return { tiers, firstCounted };
   const reactivationWhere: Prisma.CustomerEditWhereInput = {
     isReactivation: true,
-    state: { in: [EditState.APPROVED, EditState.NEEDS_CORRECTION] },
+    // "Keep closed" ends REJECTED since 2026-10-07 (NEEDS_CORRECTION before it).
+    state: { in: [EditState.APPROVED, EditState.NEEDS_CORRECTION, EditState.REJECTED] },
     ...(scope === 'company' ? {} : { AND: [countedInRegions(scope.regionIds)] }),
   };
   const [reactivations, firstReactivation] = await Promise.all([

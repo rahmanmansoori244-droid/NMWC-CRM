@@ -36,6 +36,9 @@ import { logger } from './logger';
 import { mapPinHref } from './contact-links';
 import { isUnmovedCoordinate } from './edit-values';
 import { keysetPages } from './keyset';
+// "2026-09-13 14:05", Oman wall clock; the master export's omanISO stamps carry the
+// same Oman day, so both files put a row on one day. Plain arithmetic, no Intl call per cell.
+import { omanDateISO, omanStamp } from './tz';
 
 export type ChangeReportFilters = {
   /** Window start (inclusive). Defaults to the beginning of time. */
@@ -183,26 +186,6 @@ type Mark = {
   before: unknown;
   after: unknown;
 };
-
-/** Oman wall-clock, unambiguous in a spreadsheet: "2026-09-13 14:05". */
-// One formatter for the whole report: building an Intl.DateTimeFormat per call cost
-// about 2.7 s over a 60,000-row report (item 28 benchmark).
-const OMAN_STAMP = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Asia/Muscat',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-});
-
-function omanStamp(d: Date | null | undefined): string {
-  if (!d) return '';
-  const parts = OMAN_STAMP.formatToParts(d);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
-  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
-}
 
 function inWindow(d: Date | null | undefined, since: Date, until: Date): boolean {
   return !!d && d.getTime() >= since.getTime() && d.getTime() <= until.getTime();
@@ -740,7 +723,7 @@ export async function buildChangeReport(
   wl.commit();
 
   const bytes = await finish();
-  const stamp = new Date().toISOString().slice(0, 10);
+  const stamp = omanDateISO();
   logger.info(
     { rows: writtenRows, changed: changedRows, edits: scopedEdits.length, by: me.id },
     'export.change_report'

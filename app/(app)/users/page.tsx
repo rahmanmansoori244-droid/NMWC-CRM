@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { omanDate } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { loadScope } from '@/lib/access';
@@ -14,8 +15,10 @@ import {
 import { isDemoAccount } from '@/lib/demo-accounts';
 import { EMAIL_ROLES } from '@/lib/notify-policy';
 import { storedAddressState } from '@/lib/notify-address';
+import { REGION_SCOPED_ROLES } from '@/lib/account-edit';
 import { CreateUserForm } from './CreateUserForm';
 import { UserRowActions, UsersFeedback } from './UserRowActions';
+import { EditAccountButton, type EditOptions } from './EditAccount';
 
 export const metadata = { title: 'Users · NMWC' };
 
@@ -34,7 +37,7 @@ type Search = { status?: string };
 // the enum that tsc does not check: a role added to schema.prisma would have been
 // accepted here with 8 of 9 values, and every account holding it would have sorted
 // silently below sixty salesmen. `Record<Role, number>` names the missing role at
-// build time, the way ROLE_LABELS in CreateUserForm.tsx already does.
+// build time, the way ROLE_LABELS in lib/account-edit.ts already does.
 //
 // It deliberately disagrees with SEVERITY in scripts/golive/audit-accounts.ts,
 // which puts MANAGER above ACCOUNTANT and VIEWER above SALESMAN: that map ranks
@@ -127,7 +130,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
     ? (sp.status as StatusFilter)
     : 'active';
 
-  const [allUsers, routes] = await Promise.all([
+  const [allUsers, routes, regions] = await Promise.all([
     prisma.user.findMany({
       // Role grouping is applied in memory against ROLE_ORDER — the database
       // can only sort this enum in its declared order, which is the wrong one.
@@ -140,26 +143,47 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
         isActive: true,
         lastLoginAt: true,
         mustChangePassword: true,
-        // F1: read for the "E-mail on file" badge only. The address is never
-        // rendered or handed to a client component (RBAC-05-023).
+        // F1: read for the "E-mail on file" badge and for whether the Edit dialog
+        // says one is on file. The address is never rendered or handed to a
+        // client component (RBAC-05-023).
         email: true,
+        // Owner decision 8: read only to tell the Edit dialog whether a number is
+        // on file. The number itself never leaves the server (RBAC-05-023).
+        phone: true,
         ownedRouteId: true,
         supervisorId: true,
-        supervisor: { select: { fullName: true, username: true } },
-        ownedRoute: { select: { code: true, name: true, regionId: true } },
+        supervisor: { select: { fullName: true, username: true, isActive: true } },
+        ownedRoute: {
+          select: { code: true, name: true, regionId: true, region: { select: { code: true } } },
+        },
         reports: { select: { ownedRoute: { select: { regionId: true } } } },
-        managedRegions: { select: { id: true } },
+        managedRegions: { select: { id: true, code: true } },
       },
     }),
+    // A Manager is offered only the free, active routes of his regions. The
+    // Steward reads every route with its holder: a route held by a disabled
+    // account (the leaver) is handed over by the create or the Edit dialog
+    // (owner decision 8), and the dialog shows the account's own route.
     prisma.route.findMany({
-      where: {
+      where: isManager
+        ? { isActive: true, owner: null, regionId: { in: managed.length ? managed : ['__none__'] } }
+        : undefined,
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        regionId: true,
         isActive: true,
-        owner: null,
-        ...(isManager ? { regionId: { in: managed.length ? managed : ['__none__'] } } : {}),
+        owner: { select: { id: true, fullName: true, username: true, isActive: true } },
       },
-      select: { id: true, code: true, name: true },
       orderBy: { code: 'asc' },
     }),
+    isManager
+      ? Promise.resolve([] as { id: string; code: string; name: string; isActive: boolean }[])
+      : prisma.region.findMany({
+          select: { id: true, code: true, name: true, isActive: true },
+          orderBy: { code: 'asc' },
+        }),
   ]);
   const footprint = (u: (typeof allUsers)[number]): UserRegionFootprint => ({
     id: u.id,
@@ -221,12 +245,49 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
     .filter((u) =>
       isManager ? managerCanAssignSupervisor(session.user.id, managed, footprint(u)) : true
     )
-    .map((u) => ({ id: u.id, fullName: u.fullName, username: u.username, role: u.role }))
+    .map((u) => {
+      const f = footprint(u);
+      return {
+        id: u.id,
+        fullName: u.fullName,
+        username: u.username,
+        role: u.role,
+        isActive: u.isActive,
+        managedRegionIds: f.managedRegionIds,
+        teamRegionIds: f.teamRegionIds,
+      };
+    })
     .sort(
       (a, b) =>
         Number(a.role === Role.MANAGER) - Number(b.role === Role.MANAGER) ||
         a.fullName.localeCompare(b.fullName)
     );
+
+  // Owner decision 8: the create form's routes — free ones, and for the Steward
+  // the ones a disabled account still holds — and the Steward's Edit dialog.
+  const createRoutes = routes
+    .filter((r) => r.isActive && (!r.owner || !r.owner.isActive))
+    .map((r) => ({
+      id: r.id,
+      code: r.code,
+      name: r.name,
+      regionId: r.regionId,
+      holder: r.owner ? { fullName: r.owner.fullName, username: r.owner.username } : null,
+    }));
+  const editOptions: EditOptions = isManager
+    ? { routes: [], supervisors: [], regions: [] }
+    : {
+        routes: routes.map((r) => ({
+          id: r.id,
+          code: r.code,
+          name: r.name,
+          regionId: r.regionId,
+          isActive: r.isActive,
+          holder: r.owner,
+        })),
+        supervisors,
+        regions,
+      };
 
   const noun = users.length === 1 ? 'account' : 'accounts';
   const shown = status === 'all' ? `${users.length} ${noun}` : `${users.length} ${status} ${noun}`;
@@ -279,7 +340,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
 
       {/* The banner lives outside the grid so it cannot take a grid cell and push
           the table into the Create-user column. */}
-      <UsersFeedback>
+      <UsersFeedback editOptions={isManager ? undefined : editOptions}>
         <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-[1fr_360px]">
           <TableScroll label="Accounts" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -290,6 +351,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                   <th className="px-4 py-3 font-medium">Role</th>
                   <th className="px-4 py-3 font-medium">Reports to</th>
                   <th className="px-4 py-3 font-medium">Route</th>
+                  <th className="px-4 py-3 font-medium">Regions</th>
                   <th className="px-4 py-3 font-medium">Status</th>
                   <th className="px-4 py-3 font-medium">Last login</th>
                   <th className="px-4 py-3 font-medium"></th>
@@ -304,6 +366,9 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                     <td className="px-4 py-2 text-slate-600">{u.supervisor?.fullName ?? '—'}</td>
                     <td className="px-4 py-2 text-slate-600">
                       {u.ownedRoute ? `${u.ownedRoute.code}` : '—'}
+                    </td>
+                    <td className="px-4 py-2 text-slate-600">
+                      <RegionsCell user={u} />
                     </td>
                     <td className="px-4 py-2">
                       <span
@@ -327,7 +392,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                       <EmailBadge role={u.role} email={u.email} />
                     </td>
                     <td className="px-4 py-2 text-xs text-slate-500">
-                      {u.lastLoginAt ? u.lastLoginAt.toLocaleDateString('en-GB') : 'never'}
+                      {u.lastLoginAt ? omanDate(u.lastLoginAt) : 'never'}
                     </td>
                     <td className="px-4 py-2 text-right">
                       <UserRowActions
@@ -336,13 +401,34 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                         isActive={u.isActive}
                         canEditEmail={!isManager && u.id !== session.user.id && EMAIL_ROLES.includes(u.role)}
                         hasEmail={storedAddressState(u.email) !== 'none'}
-                      />
+                        isSelf={u.id === session.user.id}
+                      >
+                        {/* Owner decision 8: the Steward's Edit account, never on his own row. */}
+                        {!isManager && u.id !== session.user.id && (
+                          <EditAccountButton
+                            account={{
+                              id: u.id,
+                              username: u.username,
+                              fullName: u.fullName,
+                              role: u.role,
+                              isActive: u.isActive,
+                              ownedRouteId: u.ownedRouteId,
+                              routeCode: u.ownedRoute?.code ?? null,
+                              supervisorId: u.supervisorId,
+                              supervisor: u.supervisor,
+                              regionIds: u.managedRegions.map((g) => g.id),
+                              hasPhone: !!u.phone?.trim(),
+                              hasEmail: storedAddressState(u.email) !== 'none',
+                            }}
+                          />
+                        )}
+                      </UserRowActions>
                     </td>
                   </tr>
                 ))}
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-6 text-center text-slate-400">
+                    <td colSpan={9} className="px-4 py-6 text-center text-slate-400">
                       No {status === 'all' ? '' : `${status} `}accounts to show.
                     </td>
                   </tr>
@@ -357,7 +443,8 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
             </h2>
             <CreateUserForm
               supervisors={supervisors}
-              routes={routes}
+              routes={createRoutes}
+              regions={regions.filter((g) => g.isActive)}
               viewerRole={session.user.role}
             />
           </aside>
@@ -365,6 +452,32 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
       </UsersFeedback>
     </main>
   );
+}
+
+/**
+ * Owner decision 8: the regions an account works in — a Manager's or
+ * Accountant's managed regions, or a salesman's route's region (muted, since it
+ * follows the route). A Manager or Accountant with none sees nothing and can
+ * approve nothing, so that is said in amber.
+ */
+function RegionsCell({
+  user,
+}: {
+  user: {
+    role: Role;
+    managedRegions: { code: string }[];
+    ownedRoute: { region: { code: string } } | null;
+  };
+}) {
+  if (REGION_SCOPED_ROLES.includes(user.role)) {
+    if (user.managedRegions.length === 0) {
+      return <span className="text-xs font-medium text-amber-800">None — sees nothing</span>;
+    }
+    const codes = user.managedRegions.map((g) => g.code).sort();
+    return <>{codes.join(', ')}</>;
+  }
+  if (user.ownedRoute) return <span className="text-slate-400">{user.ownedRoute.region.code}</span>;
+  return <>—</>;
 }
 
 /**

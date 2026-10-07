@@ -84,7 +84,7 @@ export function PromoteButton({
             // an earlier run — the batch total is on the page, not in this counter.
             // `failed` counts CUSTOMERS while `promoted` counts ROWS, so name both.
             say(
-              `✓ Done — ${promoted.toLocaleString()} rows promoted in this run${failed ? ` · ${failed} customer(s) failed` : ''}.`
+              `✓ Done — ${promoted.toLocaleString('en-US')} rows promoted in this run${failed ? ` · ${failed} customer(s) failed` : ''}.`
             );
             router.refresh();
             return;
@@ -100,7 +100,7 @@ export function PromoteButton({
           // steward look at the rejected rows rather than hammering the server.
           if (res.data.remaining >= lastRemaining) {
             say(
-              `Stopped — ${res.data.remaining.toLocaleString()} rows made no progress. Review the rejected rows, then resume.`,
+              `Stopped — ${res.data.remaining.toLocaleString('en-US')} rows made no progress. Review the rejected rows, then resume.`,
               'warn'
             );
             router.refresh();
@@ -122,9 +122,13 @@ export function PromoteButton({
     });
   }
 
+  // Every count pins 'en-US' (as RowActions does): this label is rendered on the
+  // server and again in the browser, and a browser set to German or Arabic
+  // formats 1,234 as 1.234 or ١٬٢٣٤ — a hydration mismatch, and digits the
+  // rest of the page does not use.
   const label = pending
     ? live
-      ? `Promoting… ${live.promoted.toLocaleString()} done, ${live.left.toLocaleString()} left`
+      ? `Promoting… ${live.promoted.toLocaleString('en-US')} done, ${live.left.toLocaleString('en-US')} left`
       : 'Promoting…'
     : resume
       ? remainingCount === 0
@@ -133,8 +137,8 @@ export function PromoteButton({
           // stay clickable here, or the batch would be stuck in PROMOTING with no
           // way out of the UI.
           'Finish promote'
-        : `Resume promote (${remainingCount.toLocaleString()} rows left)`
-      : `Promote ${remainingCount.toLocaleString()} clean rows`;
+        : `Resume promote (${remainingCount.toLocaleString('en-US')} rows left)`
+      : `Promote ${remainingCount.toLocaleString('en-US')} clean rows`;
 
   return (
     <div className="flex items-center gap-3">

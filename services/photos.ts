@@ -17,7 +17,7 @@ import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { loadScope, assertCanAccessAttachment, assertCanEditCustomer } from '@/lib/access';
-import { PHOTO_WRITER_ROLES } from '@/lib/permissions';
+import { CR_DOCUMENT_LOCKED_MESSAGE, PHOTO_WRITER_ROLES, isFieldLocked } from '@/lib/permissions';
 import {
   ALREADY_ATTACHED_MESSAGE,
   PHOTO_CHANGED_MESSAGE,
@@ -246,6 +246,14 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       if (!c.branches.some((b) => b.routeId === ownedRouteId)) {
         throw new ForbiddenError('Customer not on your route.');
       }
+      // Owner decision 2 (2026-10-07): the CR document of a CREDIT customer
+      // follows its finance-locked CR number. An attach goes live at once and
+      // an update request cannot carry a photo for approval, so a salesman's is
+      // refused here, before anything is written; a Manager or the Steward
+      // replaces it. Checked again under the lock below (terms can change).
+      if (isFieldLocked('crPhoto', session.user, c)) {
+        throw new ForbiddenError(CR_DOCUMENT_LOCKED_MESSAGE);
+      }
     } else if (session.user.role === Role.MANAGER) {
       // SEC-H1 (completeness): a Manager attaching a CR photo must be
       // region-scoped, exactly like submitEditCore and detachPhotoCore. Without
@@ -275,7 +283,11 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       // before the claim, as Remove refuses a photo that moved (X-PHOTO-1).
       const customerNow = await tx.customer.findUnique({
         where: { id: c.id },
-        select: { deletedAt: true, branches: { where: { deletedAt: null }, select: { routeId: true, regionId: true, deletedAt: true } } },
+        select: {
+          deletedAt: true,
+          paymentTerms: true,
+          branches: { where: { deletedAt: null }, select: { routeId: true, regionId: true, deletedAt: true } },
+        },
       });
       if (!customerNow || customerNow.deletedAt) {
         throw new ConflictError('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE);
@@ -284,6 +296,10 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       // Refuse before claiming the upload, replacing a photo or rescoring.
       if (session.user.role === Role.SALESMAN && !customerNow.branches.some((b) => b.routeId === ownedRouteId)) {
         throw new ForbiddenError('Customer not on your route.');
+      }
+      // Owner decision 2: the terms as they stand under the lock.
+      if (isFieldLocked('crPhoto', session.user, customerNow)) {
+        throw new ForbiddenError(CR_DOCUMENT_LOCKED_MESSAGE);
       }
       if (managerScope) assertCanEditCustomer(session.user, customerNow, managerScope);
       // N06: claim first. Refused, the previous photo and the slot are untouched.
@@ -529,6 +545,19 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   if (session.user.role === Role.SALESMAN && att.capturedById !== session.user.id) {
     throw new ForbiddenError('You can only remove photos you captured.');
   }
+  // Owner decision 2 (2026-10-07): nor the CR document of a credit customer,
+  // even one he took — removing it changes it as much as replacing it does.
+  // Checked again under the lock below.
+  const crOfCustomer = att.kind === AttachmentKind.CR ? att.customerId : null;
+  if (session.user.role === Role.SALESMAN && crOfCustomer) {
+    const owner = await prisma.customer.findUnique({
+      where: { id: crOfCustomer },
+      select: { paymentTerms: true },
+    });
+    if (owner && isFieldLocked('crPhoto', sessionUser, owner)) {
+      throw new ForbiddenError(CR_DOCUMENT_LOCKED_MESSAGE);
+    }
+  }
   // Post-merge review (2026-09-29): the photo slot cleared on NOT_FOUND, taking
   // it to mean "removed already" — but the scope check above answers NOT_FOUND
   // too, for a customer archived or a route reassigned while the form was open,
@@ -588,6 +617,16 @@ async function detachPhotoCore(input: { attachmentId: string }) {
     // lock without changing the photo wiring. Recheck live customer scope
     // through tx before writing; retain F04's customer-level overlap rule.
     await assertCanAccessAttachment(sessionUser, now, scope, tx);
+    // Owner decision 2: the customer's terms as they stand under the lock.
+    if (session.user.role === Role.SALESMAN && crOfCustomer) {
+      const owner = await tx.customer.findUnique({
+        where: { id: crOfCustomer },
+        select: { paymentTerms: true },
+      });
+      if (owner && isFieldLocked('crPhoto', sessionUser, owner)) {
+        throw new ForbiddenError(CR_DOCUMENT_LOCKED_MESSAGE);
+      }
+    }
     // UXI-008: real soft-delete column. Keep the r2Key as-is for the GC job
     // to find the object; clear the hash so dedup queries miss the row. Guarded
     // on the same wiring: without a lock (a photo on no slot) an attach or a

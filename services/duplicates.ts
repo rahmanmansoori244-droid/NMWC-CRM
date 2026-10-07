@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, EditState, TemixSyncState, type Prisma } from '@prisma/client';
+import { Role, EditState, TemixSyncState, CustomerStatus, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
@@ -22,6 +22,8 @@ import {
 } from '@/lib/temix';
 import { lockCustomersAndTemixCodeHolders } from '@/lib/locks';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { followBranchStatus, NO_STATUS_EVENTS, statusEvents } from '@/lib/customer-status';
+import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
 import {
   pairCandidates,
   parseDismissals,
@@ -258,11 +260,25 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
       // deactivation goes out keyed on (lib/temix.ts archiveDeactivationCode).
       const sharedWith = await liveTemixCodeHolders(tx, archiveDeactivationCode(loserLive), loser.id);
 
+      // Owner decision 7: an open shop moving onto the winner makes it ACTIVE (a
+      // customer with at least one ACTIVE branch is ACTIVE), so a CLOSED winner
+      // is reopened. Counted under the locks, before the move. A merge closes no
+      // shop, so it never closes the winner.
+      const movedOpen = await tx.branch.count({
+        where: { customerId: loser.id, deletedAt: null, status: CustomerStatus.ACTIVE },
+      });
       // Move branches
       await tx.branch.updateMany({
         where: { customerId: loser.id, deletedAt: null },
         data: { customerId: winner.id, lastEditedById: session.id },
       });
+      await followBranchStatus(
+        tx,
+        env,
+        winner.id,
+        movedOpen > 0 ? statusEvents(null, CustomerStatus.ACTIVE) : NO_STATUS_EVENTS,
+        { actorId: session.id, via: `merge of ${loser.nmwcCode}` }
+      );
       // QA-028 / final-hunt #31: move the loser's CustomerEdit history into the
       // winner for audit continuity. The loser is about to be soft-deleted, so FIRST
       // terminate any OPEN (SUBMITTED) edit on it — reparenting a loser-side SUBMITTED
@@ -286,6 +302,25 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
           escalationLevel: 0,
         },
       });
+      // Launch fix (2026-10-07): an auto-closed request is decided too. Its
+      // approvers' rows stop counting in their bells (lib/notifications.ts
+      // settleRequestAlerts), and the salesman is told it ended without a
+      // decision, on the surviving customer (the loser's page is gone). Read back
+      // by this claim's own stamp, so a decision racing it is never counted here.
+      const autoClosed = await tx.customerEdit.findMany({
+        where: { customerId: loser.id, state: EditState.REJECTED, reviewedAt: mergedAt, reviewedById: session.id },
+        select: { id: true, submittedById: true },
+      });
+      for (const e of autoClosed) {
+        await settleRequestAlerts(tx, { editId: e.id, submittedById: e.submittedById });
+        await notifyUsers(tx, [e.submittedById], {
+          kind: 'EDIT_NEEDS_CORRECTION',
+          title: 'Request closed by a merge',
+          body: `${loser.legalName} (${loser.nmwcCode}) — merged into ${winner.nmwcCode}, so your request was closed without a decision. Send it again there if it still applies.`,
+          editId: e.id,
+          customerId: winner.id,
+        });
+      }
       await tx.customerEdit.updateMany({
         where: { customerId: loser.id },
         data: { customerId: winner.id },

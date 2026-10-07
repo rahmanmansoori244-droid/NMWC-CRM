@@ -12,6 +12,7 @@ import {
 import { logger } from '@/lib/logger';
 import { buildWorkbook } from '@/lib/excel';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { omanDateISO } from '@/lib/tz';
 import {
   applyCustomerFilters,
   customerBranchPredicate,
@@ -222,7 +223,7 @@ async function exportFilteredCustomersCore(
 
   const wb = await buildWorkbook(exportRows, 'Customers');
   const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
-  const stamp = new Date().toISOString().slice(0, 10);
+  const stamp = omanDateISO(); // the Oman day, as the master and field-update exports name theirs
 
   // DG-06/07: no longer best-effort — same reasoning as buildCustomerExport.
   // The throw lands BEFORE the base64 buffer is built, so the filtered PII never

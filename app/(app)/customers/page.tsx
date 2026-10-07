@@ -218,17 +218,20 @@ export default async function CustomersPage({
 
   // In-memory scope filtering on the cached reference data.
   // Compute scope route IDs once and reuse.
+  // Launch fix: an ACCOUNTANT is region-scoped like a MANAGER
+  // (customerListBranchScope), so his lists are cut to his regions too.
+  const regionScoped = me.role === Role.MANAGER || me.role === Role.ACCOUNTANT;
   const scopeRouteIds = new Set(
     me.role === Role.SUPERVISOR
       ? me.reports.map((r) => r.ownedRouteId).filter((id): id is string => !!id)
-      : me.role === Role.MANAGER
+      : regionScoped
         ? allRoutes
             .filter((r) => me.managedRegions.some((mr) => mr.id === r.regionId))
             .map((r) => r.id)
         : allRoutes.map((r) => r.id)
   );
   const scopeRegionIds = new Set(
-    me.role === Role.MANAGER
+    regionScoped
       ? me.managedRegions.map((mr) => mr.id)
       : me.role === Role.SUPERVISOR
         ? allRoutes.filter((r) => scopeRouteIds.has(r.id)).map((r) => r.regionId)
@@ -238,9 +241,17 @@ export default async function CustomersPage({
   const routes = showRoute ? allRoutes.filter((r) => scopeRouteIds.has(r.id)) : [];
   const channels = allChannels;
   const subChannels = allSubChannels;
+  // Launch fix: by the owned route's region, not scopeRouteIds — that set holds
+  // active routes only, and a switched-off route's customers still list.
+  const ownsRouteInMyRegions = (u: (typeof allHierarchyUsers)[number]) =>
+    !!u.ownedRouteRegionId && scopeRegionIds.has(u.ownedRouteRegionId);
   const supervisors = showSupervisor
     ? allHierarchyUsers
         .filter((u) => u.role === Role.SUPERVISOR)
+        // Launch fix: a Manager was offered every supervisor in the company. The
+        // supervisor filter lists his reports' routes, so he is offered those
+        // with a report on a route in his regions.
+        .filter((u) => !regionScoped || allHierarchyUsers.some((r) => r.supervisorId === u.id && ownsRouteInMyRegions(r)))
         .map((u) => ({ id: u.id, fullName: u.fullName, username: u.username }))
     : [];
   const salesmen = showSalesman
@@ -248,6 +259,9 @@ export default async function CustomersPage({
         .filter((u) => {
           if (u.role !== Role.SALESMAN) return false;
           if (me.role === Role.SUPERVISOR) return u.supervisorId === me.id;
+          // Launch fix: a Manager or Accountant was offered every salesman in the
+          // company; now only those whose route is in his regions.
+          if (regionScoped) return ownsRouteInMyRegions(u);
           return true;
         })
         .map((u) => ({ id: u.id, fullName: u.fullName, username: u.username }))
@@ -286,7 +300,7 @@ export default async function CustomersPage({
     <main>
       <PageHeader
         title="Customers"
-        subtitle={`${total.isApprox ? '~' : ''}${total.total.toLocaleString()} total`}
+        subtitle={`${total.isApprox ? '~' : ''}${total.total.toLocaleString('en-US')} total`}
       />
       <CustomerFiltersClient
         initial={{

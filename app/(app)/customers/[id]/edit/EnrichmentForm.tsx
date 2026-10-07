@@ -18,7 +18,10 @@ import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { hardReplace } from '@/lib/navigate';
 import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
 import { isRequired, type SubmitGate } from '@/lib/submit-gate';
+import { gateScopeOf } from '@/lib/validation/gate-scope';
+import { CR_DOCUMENT_LOCKED_MESSAGE, isFieldLocked } from '@/lib/permissions';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
+import { onSignOut } from '@/lib/device-drafts';
 import { EDIT_PAYLOAD_VERSION, fieldLabel, type BaseValue } from '@/lib/edit-values';
 import {
   buildEnrichmentPatch,
@@ -32,10 +35,12 @@ import {
   resolveConflict,
   restoreBranchStates,
   restoreKept,
+  sentPaths,
   type Conflicts,
   type FormBranch,
   type FormCustomer,
   type FormGps,
+  type FormState,
   type KeptFields,
   type LoadedBranch,
   type LoadedCustomer,
@@ -121,6 +126,7 @@ export function EnrichmentForm({
   pendingReplacesDraft = false,
   sessionUserId,
   gate: gateProp,
+  returned,
 }: {
   customer: CustomerWithBranches;
   channels: ChannelWithSubs[];
@@ -143,6 +149,13 @@ export function EnrichmentForm({
   sessionUserId: string;
   /** Which fields block a salesman's submit (FULL / CORE) — see lib/submit-gate.ts. */
   gate?: SubmitGate;
+  /**
+   * Launch fix: his update of this customer that was sent back, when he asked
+   * for what he sent — its id, and the boxes with each change of it that still
+   * applies (./returned.ts). The form opens on them instead of on the customer
+   * as it is.
+   */
+  returned?: { id: string; prefill: FormState };
 }) {
   const gate: SubmitGate = gateProp ?? 'FULL';
   const req = (field: string) => isRequired(field, gate);
@@ -179,9 +192,13 @@ export function EnrichmentForm({
   const loadedRef = useRef<LoadedCustomer>(customer);
 
   // The boxes: the customer's, and each branch's by id.
-  const [values, setValues] = useState<FormCustomer>(() => loadedFormState(customer).customer);
+  // The loaded values stay the base (loadedRef): what he sent goes back as his
+  // changes from them, never as the base.
+  const [values, setValues] = useState<FormCustomer>(
+    () => returned?.prefill.customer ?? loadedFormState(customer).customer
+  );
   const [branchStates, setBranchStates] = useState<Record<string, FormBranch>>(
-    () => loadedFormState(customer).branches
+    () => returned?.prefill.branches ?? loadedFormState(customer).branches
   );
   const setValue = (key: keyof FormCustomer) => (v: string) => {
     if (submitLockRef.current || arrived) return;
@@ -241,26 +258,36 @@ export function EnrichmentForm({
   // page load that follows the answer — silently, beside "It arrived".
   const photosLocked = sending || arrived;
 
+  // Owner decision 2 (2026-10-07): a salesman cannot change the CR document of
+  // a CREDIT customer (services/photos.ts refuses it); a Manager or the Steward does.
+  const lockCrPhoto = isFieldLocked('crPhoto', { id: sessionUserId, role: userRole, username: '' }, customer);
+
   // Client-side mandatory-field gate. Mirrors the server check in
   // services/edits.ts so the salesman gets immediate feedback and can't
   // even press "Submit for approval" until everything is filled.
+  // Owner decision 4 (2026-10-07, lib/validation/gate-scope.ts): on what this
+  // submit changes, as the server holds it — each branch it changes, and the
+  // customer's fields only when it changes one of them.
+  const gateScope = gateScopeOf(sentPaths(patch));
   const missingMandatory: string[] = [];
   if (userRole === Role.SALESMAN) {
     // 2026-05-11: locked fields are NOT the salesman's responsibility. If the
     // master is missing legalName or CR for this customer, that's a Steward
     // queue item — not a salesman blocker. Don't include them in the
     // "missing — cannot submit" pill.
-    if (!lockName && !legalName.trim()) missingMandatory.push('Legal name');
-    if (!channelId) missingMandatory.push('Channel');
-    if (req('subChannelId') && !subChannelId) missingMandatory.push('Sub-channel');
-    if (!primaryPhone.trim()) missingMandatory.push('Primary phone');
-    if (!contactPerson.trim()) missingMandatory.push('Contact person');
-    if (req('crNumber') && !lockCr && !crNumber.trim()) missingMandatory.push('CR number');
-    if (req('crPhoto') && !crPhotoId) missingMandatory.push('CR document photo');
+    if (gateScope.customer) {
+      if (!lockName && !legalName.trim()) missingMandatory.push('Legal name');
+      if (!channelId) missingMandatory.push('Channel');
+      if (req('subChannelId') && !subChannelId) missingMandatory.push('Sub-channel');
+      if (!primaryPhone.trim()) missingMandatory.push('Primary phone');
+      if (!contactPerson.trim()) missingMandatory.push('Contact person');
+      if (req('crNumber') && !lockCr && !crNumber.trim()) missingMandatory.push('CR number');
+      if (req('crPhoto') && !lockCrPhoto && !crPhotoId) missingMandatory.push('CR document photo');
+    }
     customer.branches.forEach((b, i) => {
       const s = branchStates[b.id];
       const tag = `Branch ${i + 1}`;
-      if (!s) return;
+      if (!s || !gateScope.branchIds.has(b.id)) return;
       if (!s.address.trim() || s.address.trim().length < 3)
         missingMandatory.push(`${tag} address`);
       if (!s.gps || s.gps.lat == null || s.gps.lng == null)
@@ -300,6 +327,8 @@ export function EnrichmentForm({
   // UXI-002: scope by user. Whether a saved draft may be restored is decided
   // by the server values it started from (item 22, lib/enrichment-draft.ts).
   const draftKey = `nmwc:draft:${sessionUserId}:${customer.id}`;
+  // Launch fix: the sent-back update the boxes were filled from, if any.
+  const returnedId = returned?.id ?? null;
   // GpsCaptureButton reads its `initial` only when it mounts. A restore replaces
   // the branch GPS after that, so the chip kept showing the old point while the
   // form submitted the restored one — including a typed point and its reason
@@ -332,6 +361,13 @@ export function EnrichmentForm({
     if (!saved) return;
     try {
       const d = JSON.parse(saved);
+      // Launch fix: a phone draft is restored only over the boxes it started
+      // from — what he sent (tagged with that request), or the customer as it
+      // is. One started from what he sent never comes back on a plain visit, so
+      // a value he was told not to send cannot ride along with a later edit; and
+      // an older one is not put over what he asked to have filled in. The next
+      // autosave replaces it.
+      if ((typeof d.returnedId === 'string' ? d.returnedId : null) !== returnedId) return;
       // UXI-003: stale-draft guard. If the server values the draft started from
       // have changed since, prefer server data and tell the user. Item 22: by
       // the values, not updatedAt — a photo taken after typing bumps updatedAt,
@@ -368,7 +404,7 @@ export function EnrichmentForm({
     } catch {
       /* ignore */
     }
-  }, [draftKey, customer.branches, userRole]);
+  }, [draftKey, customer.branches, userRole, returnedId]);
 
   // Set when a submit arrived and the page is leaving: from then on nothing
   // writes the phone copy — not a keystroke's autosave already due, which fired
@@ -377,6 +413,15 @@ export function EnrichmentForm({
   // phoneCopyGoneRef). The pending timer, so a replay that stays can drop it.
   const draftGoneRef = useRef(false);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // And once Sign out has deleted it (lib/device-drafts.ts): the form stays on
+  // screen until the sign-in page loads, and its autosave wrote the copy back.
+  useEffect(
+    () =>
+      onSignOut(() => {
+        draftGoneRef.current = true;
+      }),
+    []
+  );
 
   // OCT-04: both the debounce and explicit Save draft write this exact phone
   // snapshot. A successful server draft is not proof that local storage worked.
@@ -399,6 +444,8 @@ export function EnrichmentForm({
         branchStates: draftBranchStates(branchStates, loadedRef.current),
         savedAt: Date.now(),
         base: baseRef.current,
+        // Launch fix: which boxes it started from (the restore above).
+        ...(returnedId ? { returnedId } : {}),
         ...(kept.customer.length > 0 || Object.keys(kept.branches).length > 0 ? { kept } : {}),
       }));
       return true;
@@ -406,7 +453,7 @@ export function EnrichmentForm({
       setNotice({ tone: 'failed', text: 'Could not save the draft on this phone. Keep this page open; your entries are still here.', retry: false });
       return false;
     }
-  }, [draftKey, values, branchStates, kept, userRole]);
+  }, [draftKey, values, branchStates, kept, userRole, returnedId]);
 
   // Auto-save every change (debounced).
   useEffect(() => {
@@ -666,12 +713,12 @@ export function EnrichmentForm({
           <Field label="NMWC code" value={customer.nmwcCode} onChange={() => {}} disabled mono />
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-700">
-              CR document photo{star('crPhoto')}
+              CR document photo{lockCrPhoto ? '' : star('crPhoto')}
             </label>
             <div className="w-48">
               <PhotoCaptureSlot
                 kind="CR"
-                required={req('crPhoto')}
+                required={req('crPhoto') && !lockCrPhoto}
                 initial={
                   customer.crPhotoId
                     ? { attachmentId: customer.crPhotoId, remoteUrl: `/api/photos/${customer.crPhotoId}` }
@@ -680,9 +727,11 @@ export function EnrichmentForm({
                 attachTo={{ kind: 'customer', customerId: customer.id, slot: 'CR' }}
                 onChange={(p) => setCrPhotoId(p?.attachmentId ?? null)}
                 onBusyChange={onPhotoBusy}
-                disabled={photosLocked}
+                // Owner decision 2: shown, never captured, replaced or removed.
+                disabled={photosLocked || lockCrPhoto}
               />
             </div>
+            {lockCrPhoto && <p className="mt-1 text-sm text-slate-600">{CR_DOCUMENT_LOCKED_MESSAGE}</p>}
           </div>
           <div>
             <label htmlFor={`${uid}-notes`} className="mb-1 block text-sm font-medium text-slate-700">Notes</label>

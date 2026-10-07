@@ -23,6 +23,12 @@
  *   - X-IMPORTS-1 / ENH-6: a created account has a CREATE row, and a role change
  *     stamps sessionsRevokedAt.
  *
+ * And owner decision 8 (review, 2026-10-07), as /users applies it: a route is
+ * taken from an ACTIVE salesman only on change_route=yes (the rows above that
+ * take one say so), and after a hand-over on /users an older sheet cannot write
+ * the leaver's name, phone and supervisor onto the joiner who now signs in with
+ * the route code.
+ *
  *   RUN_IMPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/import-route-handover.test.ts
  */
@@ -69,6 +75,9 @@ const USERS_HEADERS = [
   'reset_password',
   'change_role',
   'must_change_password',
+  // Owner decision 8: the explicit-change flags for a route and a name.
+  'change_route',
+  'change_name',
 ] as const;
 
 async function accountMaster(rows: Array<Record<string, string>>): Promise<Uint8Array<ArrayBuffer>> {
@@ -178,7 +187,7 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
   it('a new salesman row with no password is skipped — and the route keeps its owner', async () => {
     const fresh = `zz.rho.nopw.${tag}`;
     newcomers.push(fresh);
-    const res = await upload([salesman(fresh, { password: '' })]);
+    const res = await upload([salesman(fresh, { password: '', change_route: 'yes' })]);
     expect(res.clean).toBe(0);
     expect(res.messages.join(' ')).toMatch(/new user needs a password/);
     expect(await routeOwner()).toBe(owner);
@@ -189,9 +198,24 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
   it('a row whose account write fails (an email already in use) leaves the route with its owner', async () => {
     const fresh = `zz.rho.dupmail.${tag}`;
     newcomers.push(fresh);
-    const res = await upload([salesman(fresh, { email: takenEmail })]);
+    const res = await upload([salesman(fresh, { email: takenEmail, change_route: 'yes' })]);
     expect(res.clean).toBe(0);
     expect(res.issues).toBe(1);
+    expect(await routeOwner()).toBe(owner);
+    expect(await reassignRows()).toEqual([]);
+    expect(await prisma.user.findUnique({ where: { username: fresh } })).toBeNull();
+  });
+
+  it('owner decision 8: without change_route, a row does not take the route from its active salesman', async () => {
+    const fresh = `zz.rho.noflag.${tag}`;
+    newcomers.push(fresh);
+    const res = await upload([salesman(fresh)]);
+    expect(res.clean).toBe(0);
+    expect(res.messages).toEqual([
+      expect.stringMatching(
+        new RegExp(`^route ${routeCode} is worked by "${owner}", whose account is active\\. Nothing was written for "${fresh}"`)
+      ),
+    ]);
     expect(await routeOwner()).toBe(owner);
     expect(await reassignRows()).toEqual([]);
     expect(await prisma.user.findUnique({ where: { username: fresh } })).toBeNull();
@@ -200,7 +224,7 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
   it('a row that lands takes the route, and the handover is audited', async () => {
     const fresh = `zz.rho.new.${tag}`;
     newcomers.push(fresh);
-    const res = await upload([salesman(fresh)]);
+    const res = await upload([salesman(fresh, { change_route: 'yes' })]);
     expect(res.clean).toBe(1);
     expect(await routeOwner()).toBe(fresh);
     const ownerRow = await prisma.user.findUniqueOrThrow({ where: { username: owner }, select: { id: true, ownedRouteId: true } });
@@ -280,7 +304,12 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
     const holderId = (await prisma.user.findUniqueOrThrow({ where: { username: holder! } })).id;
     const viewerId = (await prisma.user.findUniqueOrThrow({ where: { username: viewer } })).id;
     const reassignedBefore = (await reassignRows()).length;
-    const row = salesman(viewer, { password: '', change_role: 'yes', must_change_password: '' });
+    const row = salesman(viewer, {
+      password: '',
+      change_role: 'yes',
+      change_route: 'yes',
+      must_change_password: '',
+    });
 
     // The last audit the row writes, after the REASSIGN, the upsert and the role change.
     failAuditReason = 'account_import';
@@ -340,6 +369,48 @@ describe.skipIf(!ENABLED)('account master: a route changes hands only when the n
           after: expect.objectContaining({ route: routeCode }),
         }),
       ])
+    );
+  });
+
+  it('owner decision 8: after a hand-over on /users, an older sheet does not rename the joiner', async () => {
+    // The route's salesman (the viewer, since F07) leaves; the joiner is created
+    // onto his route on /users, under a sign-in name of his own here.
+    const users = await import('@/services/users');
+    const leaver = await prisma.user.findUniqueOrThrow({ where: { username: viewer } });
+    await prisma.user.update({ where: { id: leaver.id }, data: { isActive: false } });
+    const joiner = `zz.rho.joiner.${tag}`;
+    newcomers.push(joiner);
+    const fd = new FormData();
+    fd.set('username', joiner);
+    fd.set('fullName', 'ZZ Joiner');
+    fd.set('role', 'SALESMAN');
+    fd.set('password', 'Route-Handover-Test-2026!');
+    fd.set('ownedRouteId', routeId);
+    const made = await users.createUserAction(fd);
+    expect(made.ok, JSON.stringify(made)).toBe(true);
+    expect(await routeOwner()).toBe(joiner);
+
+    // The sheet from before: the joiner's sign-in name with the leaver's name.
+    const stale = await upload([
+      salesman(joiner, { full_name: `ZZ ${viewer}`, password: '', phone: '+96891234567' }),
+    ]);
+    expect(stale.clean).toBe(0);
+    expect(stale.messages).toEqual([
+      expect.stringMatching(new RegExp(`full_name is not the name of the salesman who signs in as "${joiner}"\\. Nothing was written`)),
+    ]);
+    expect(
+      await prisma.user.findUniqueOrThrow({
+        where: { username: joiner },
+        select: { fullName: true, phone: true },
+      })
+    ).toEqual({ fullName: 'ZZ Joiner', phone: null });
+    // The same person's name, corrected, is written when the row says so.
+    const fixed = await upload([
+      salesman(joiner, { full_name: 'ZZ Joiner Corrected', password: '', change_name: 'yes' }),
+    ]);
+    expect(fixed.clean).toBe(1);
+    expect((await prisma.user.findUniqueOrThrow({ where: { username: joiner } })).fullName).toBe(
+      'ZZ Joiner Corrected'
     );
   });
 });

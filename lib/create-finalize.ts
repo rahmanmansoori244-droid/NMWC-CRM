@@ -33,7 +33,7 @@ import {
 import { ConflictError } from './errors';
 import { formatCustomerCode, formatBranchCode } from './codes';
 import { omanYear } from './tz';
-import { scoreBranch, scoreCustomer } from './completeness';
+import { draftScores } from './create-score';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from './create-guards';
 import { writeAudit, type AuditEnvelope } from './audit';
 import { UNWIRED_LIVE } from './photo-attach';
@@ -188,16 +188,18 @@ export async function finalizeCreateInTx(
         select: { id: true },
       })
     : [];
+  // Launch fix (wording): a reject steps back one approver, not "down the
+  // chain to the salesman" (lib/approval-chains.ts resolveRejectTarget).
   if (liveReferenced.length !== referencedIds.length) {
     throw new ConflictError(
       'NEEDS_REUPLOAD',
-      'A required photo on this request was removed after submission. Reject it: it goes back down the chain to the salesman, who can capture the photo again.'
+      `A required photo on this request was removed after it was sent, so it cannot be approved. ${STEP_BACK_FOR_PHOTO}`
     );
   }
   if (isCredit && guarantees.length === 0) {
     throw new ConflictError(
       'NEEDS_REUPLOAD',
-      'The guarantee document was removed after submission. Reject it: it goes back down the chain to the salesman, who can attach it again.'
+      'The guarantee document was removed after it was sent, so it cannot be approved. Reject it and say the guarantee is missing. It goes back one approver at a time; once it reaches the salesman, he can attach it again.'
     );
   }
 
@@ -289,7 +291,7 @@ export async function finalizeCreateInTx(
     if (bound.count !== 1) {
       throw new ConflictError(
         'NEEDS_REUPLOAD',
-        'A required photo on this request was removed while it was being approved. Reject it: it goes back down the chain to the salesman, who can capture the photo again.'
+        `A required photo on this request was removed while it was being approved. ${STEP_BACK_FOR_PHOTO}`
       );
     }
   };
@@ -323,38 +325,11 @@ export async function finalizeCreateInTx(
     }
   }
 
-  // 7. Completeness — computed from the in-memory materialized shapes (the
-  //    photo-slot columns were just written above).
-  const branchShapes = branches.map(({ draft: b }) => ({
-    gpsLat: b.gpsLat,
-    gpsLng: b.gpsLng,
-    address: b.address,
-    shopPhotoId: b.shopPhotoAttachmentId,
-    signboardPhotoId: b.signboardPhotoAttachmentId,
-    dayOfVisit: b.dayOfVisit,
-    coolersCount: b.coolersCount,
-    standsCount: b.standsCount,
-    emptyBottlesCount: b.emptyBottlesCount,
-    // F21: CREATE captures no "counted" flag (left out on purpose), so a new
-    // branch keeps the >0 rule and earns the point on its first edit.
-    equipmentConfirmed: false,
-    openingHours: b.openingHours,
-    deliveryWindow: b.deliveryWindow,
-    status: CustomerStatus.ACTIVE,
-  }));
-  const branchScores = branchShapes.map(scoreBranch);
-  const customerScore = scoreCustomer(
-    {
-      channelId: draft.channelId,
-      subChannelId: draft.subChannelId,
-      primaryPhone: draft.primaryPhone,
-      contactPerson: draft.contactPerson,
-      crNumber: draft.crNumber,
-      crPhotoId: draft.crPhotoAttachmentId,
-      paymentTerms: draft.paymentTerms,
-      notes: draft.notes,
-    },
-    branchShapes
+  // 7. Completeness — computed from the drafts as they were just materialized
+  //    (lib/create-score.ts; the approval queue rings show the same figure).
+  const { customer: customerScore, branches: branchScores } = draftScores(
+    draft,
+    branches.map(({ draft: b }) => b)
   );
   await tx.customer.update({
     where: { id: customer.id },
@@ -399,6 +374,10 @@ export async function finalizeCreateInTx(
 
   return { customerId: customer.id, nmwcCode, legalName: draft.legalName };
 }
+
+/** What an approver at a later step does about a photo removed after the request was sent. */
+const STEP_BACK_FOR_PHOTO =
+  'Reject it and say which photo is missing. It goes back one approver at a time; once it reaches the salesman, he can take the photo again.';
 
 /** Narrow re-export so approveEditCore can assert the edit shape it loaded. */
 export function assertFinalizable(edit: {

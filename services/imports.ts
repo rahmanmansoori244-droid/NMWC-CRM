@@ -5,6 +5,8 @@ import { isTransientDbError } from '@/lib/db-errors';
 import {
   Role,
   ImportRowState,
+  EditProcess,
+  EditState,
   type Prisma,
   type DayOfWeek,
   type CustomerStatus,
@@ -18,7 +20,7 @@ import {
   runAction,
   type SafeAction,
 } from '@/lib/errors';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { duplicateHeadingIssue, parseWorkbook } from '@/lib/excel';
 import { normalizeCR } from '@/lib/cr';
 import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
@@ -49,6 +51,12 @@ import {
   supervisorReportsIssue,
   type AccountState,
 } from '@/lib/account-import';
+import {
+  importNameIssue,
+  importRouteHolderIssue,
+  importSupervisorCoverIssue,
+  strandedCreatesImportIssue,
+} from '@/lib/account-edit';
 import { assertPasswordNotReused, rotatePasswordHistory } from '@/lib/password-policy';
 import {
   checkCustomerRow,
@@ -57,6 +65,7 @@ import {
 } from '@/lib/import-row-check';
 import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
 import { lockCustomerRowByCode } from '@/lib/locks';
+import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
 import {
   branchOnlyNote,
@@ -90,6 +99,8 @@ async function requireSteward() {
 //   3. "Users"     — columns: username, full_name, role, password,
 //                                 supervisor_username (opt), route_code (opt for SALESMAN),
 //                                 region_codes (opt comma-separated for MANAGER), email (opt), phone (opt)
+//                  and the explicit-change flags reset_password, change_role,
+//                  change_route and change_name (opt, "yes")
 
 // The account-master import is a STEWARD-only bulk provisioning path (requireSteward
 // at the call site), so — unlike the Manager-driven /users UI — it may also mint the
@@ -424,10 +435,23 @@ async function uploadAccountMasterCore(
         String(row.change_role ?? row.changeRole ?? '')
           .trim()
           .toLowerCase() === 'yes';
+      // Owner decision 8 (review), as /users applies it: a route is taken from an
+      // ACTIVE salesman only on change_route=yes, and a salesman's account is
+      // given another person's full name only on change_name=yes.
+      const wantsRouteChange =
+        String(row.change_route ?? row.changeRoute ?? '')
+          .trim()
+          .toLowerCase() === 'yes';
+      const wantsNameChange =
+        String(row.change_name ?? row.changeName ?? '')
+          .trim()
+          .toLowerCase() === 'yes';
       const supUsername = lc(row.supervisor_username ?? row.supervisorUsername ?? '');
       const routeCode = uc(row.route_code ?? row.routeCode ?? '');
       const regionCodesRaw = String(row.region_codes ?? row.regionCodes ?? '').trim();
-      const email = String(row.email ?? '').trim() || null;
+      // Launch fix: lower-cased, as /users stores it (services/users.ts), so the
+      // case-sensitive unique index and the clash check below agree.
+      const email = String(row.email ?? '').trim().toLowerCase() || null;
       const phone = String(row.phone ?? '').trim() || null;
       // Go-live credential policy: a row may force the person to choose a new
       // password at first login (AUTH-09). Only then is a SHORT initial password
@@ -596,12 +620,16 @@ async function uploadAccountMasterCore(
 
         let ownedRouteId: string | null = null;
         let ownedRouteCode: string | null = null;
+        let routeRegion: { id: string; code: string } | null = null;
         if (role === Role.SALESMAN) {
           if (!routeCode) {
             issues.push({ sheet: 'Users', row: sheetRow, message: 'salesman needs route_code' });
             continue;
           }
-          const route = await prisma.route.findUnique({ where: { code: routeCode } });
+          const route = await prisma.route.findUnique({
+            where: { code: routeCode },
+            include: { region: { select: { code: true } } },
+          });
           if (!route) {
             issues.push({
               sheet: 'Users',
@@ -612,6 +640,7 @@ async function uploadAccountMasterCore(
           }
           ownedRouteId = route.id;
           ownedRouteCode = routeCode;
+          routeRegion = { id: route.regionId, code: route.region.code };
         }
         // X-IMPORTS-2: never take a route from its salesman to park it on an
         // account that cannot sign in.
@@ -627,6 +656,135 @@ async function uploadAccountMasterCore(
         if (inactive) {
           issues.push({ sheet: 'Users', row: sheetRow, message: inactive });
           continue;
+        }
+
+        // Owner decision 8 (review): the rules /users applies to the same change
+        // (lib/account-edit.ts), so a re-imported sheet cannot undo what the
+        // Steward did there. Each holds the row back with nothing written.
+        //
+        // (1) A route has one salesman. It is taken from a deactivated holder (the
+        // leaver) as before (F-18, below), but from an ACTIVE one only when the row
+        // says change_route=yes — /users refuses it outright.
+        const routeMoves = !!ownedRouteId && existing?.ownedRouteId !== ownedRouteId;
+        if (routeMoves) {
+          const taken = importRouteHolderIssue({
+            username,
+            routeCode: ownedRouteCode!,
+            holder: await prisma.user.findUnique({
+              where: { ownedRouteId: ownedRouteId! },
+              select: { username: true, isActive: true },
+            }),
+            wantsRouteChange,
+          });
+          if (taken) {
+            issues.push({ sheet: 'Users', row: sheetRow, message: taken });
+            continue;
+          }
+        }
+        // (2) The account is found by its sign-in name, which for a salesman is
+        // his route's code — after a hand-over on /users, the joiner's. A row
+        // that names someone else on a salesman's account is held back unless it
+        // says change_name=yes: an older sheet used to write the leaver's name,
+        // phone and supervisor onto the joiner.
+        if (existing) {
+          let named = importNameIssue({
+            username,
+            storedRole: existing.role,
+            storedName: existing.fullName,
+            rowName: fullName,
+            wantsNameChange,
+            retired: null,
+          });
+          if (named) {
+            // The leaver's retired sign-in name (lib/account-edit.ts retiredUsername).
+            const leaver = await prisma.user.findFirst({
+              where: { username: { startsWith: `${username}.left.` } },
+              orderBy: { username: 'desc' },
+              select: { username: true },
+            });
+            if (leaver) {
+              named = importNameIssue({
+                username,
+                storedRole: existing.role,
+                storedName: existing.fullName,
+                rowName: fullName,
+                wantsNameChange,
+                retired: leaver.username,
+              });
+            }
+            issues.push({ sheet: 'Users', row: sheetRow, message: named! });
+            continue;
+          }
+        }
+        // (3) The supervisor covers the region of the route, judged as /users
+        // judges it: when the supervisor, the route or the role changes. A blank
+        // cell keeps the stored supervisor, who is judged against a new route.
+        const keptSupervisorId = supervisorId ?? existing?.supervisorId ?? null;
+        const supervisorChanges = !!supervisorId && supervisorId !== existing?.supervisorId;
+        if (routeRegion && keptSupervisorId && (supervisorChanges || routeMoves || roleChanged)) {
+          const s = await prisma.user.findUnique({
+            where: { id: keptSupervisorId },
+            select: {
+              id: true,
+              username: true,
+              role: true,
+              isActive: true,
+              managedRegions: { select: { id: true } },
+              reports: { select: { id: true, ownedRoute: { select: { regionId: true } } } },
+            },
+          });
+          const cover = importSupervisorCoverIssue({
+            username,
+            supervisorUsername: s?.username ?? supUsername,
+            supervisor: s
+              ? {
+                  id: s.id,
+                  role: s.role,
+                  isActive: s.isActive,
+                  managedRegionIds: s.managedRegions.map((r) => r.id),
+                  teamRegionIds: [
+                    ...new Set(
+                      s.reports
+                        .filter((r) => r.id !== existing?.id)
+                        .map((r) => r.ownedRoute?.regionId)
+                        .filter((r): r is string => !!r)
+                    ),
+                  ],
+                }
+              : null,
+            targetId: existing?.id ?? null,
+            routeCode: ownedRouteCode!,
+            routeRegionId: routeRegion.id,
+            regionCode: routeRegion.code,
+          });
+          if (cover) {
+            issues.push({ sheet: 'Users', row: sheetRow, message: cover });
+            continue;
+          }
+        }
+        // (4) His new-customer requests that are not in review (drafts, or sent
+        // back) and were started on another route than the one this row leaves
+        // him with: sent again, services/creates.ts would file them under the new
+        // route. /users can withdraw them with the change; the import cannot.
+        if (existing?.isActive && (existing.ownedRouteId ?? null) !== ownedRouteId) {
+          const stranded = await prisma.customerEdit.count({
+            where: {
+              submittedById: existing.id,
+              process: EditProcess.CREATE,
+              state: { in: [EditState.DRAFT, EditState.NEEDS_CORRECTION] },
+              ...(ownedRouteId
+                ? { branchDrafts: { some: { routeId: { not: ownedRouteId } } } }
+                : {}),
+            },
+          });
+          if (stranded > 0) {
+            issues.push({
+              sheet: 'Users',
+              row: sheetRow,
+              message: strandedCreatesImportIssue(username, stranded),
+            });
+            continue;
+          }
         }
 
         // QA-010 / QA-011: only set passwordHash + role on INSERT or when
@@ -783,6 +941,26 @@ async function uploadAccountMasterCore(
           }
         }
 
+        // Launch fix: User.email's unique index is case-sensitive, so an address
+        // another account holds in other capitals got through and two accounts
+        // shared one mailbox. Checked ignoring case, in the words the unique
+        // clash itself produces (lib/account-import.ts accountRowFailure), which
+        // name the field and never the value.
+        if (email) {
+          const clash = await prisma.user.findFirst({
+            where: { email: { equals: email, mode: 'insensitive' }, NOT: { username } },
+            select: { id: true },
+          });
+          if (clash) {
+            issues.push({
+              sheet: 'Users',
+              row: sheetRow,
+              message: `nothing was written for "${username}": its email is already used by another record.`,
+            });
+            continue;
+          }
+        }
+
         const data: Prisma.UserCreateInput = {
           username,
           passwordHash,
@@ -829,9 +1007,10 @@ async function uploadAccountMasterCore(
           phone: before ? (phone ?? before.phone) : phone,
         };
 
-        // F-18: a salesman row takes its route from whoever owns it now, and the
-        // move is audited so the Manager can see "salesman.X used to own this
-        // route, salesman.Y owns it now".
+        // F-18: a salesman row takes its route from whoever owns it now — a
+        // deactivated owner, or an active one on change_route=yes (owner decision
+        // 8, above) — and the move is audited so the Manager can see "salesman.X
+        // used to own this route, salesman.Y owns it now".
         //
         // It happens HERE, with the account write, and not where the route is
         // resolved. It used to run before the row's remaining checks, so a row
@@ -855,8 +1034,15 @@ async function uploadAccountMasterCore(
             if (ownedRouteId) {
               const displacedOwners = await tx.user.findMany({
                 where: { ownedRouteId, NOT: { username } },
-                select: { id: true },
+                select: { id: true, isActive: true },
               });
+              // Owner decision 8 (review): re-checked here, as /users re-checks its
+              // hand-over — the holder may have been enabled since the check above.
+              if (!wantsRouteChange && displacedOwners.some((u) => u.isActive)) {
+                throw new Error(
+                  `route ${ownedRouteCode} is now worked by an active salesman; set change_route to yes to move it`
+                );
+              }
               if (displacedOwners.length > 0) {
                 await tx.user.updateMany({
                   where: { ownedRouteId, NOT: { username } },
@@ -962,9 +1148,11 @@ async function uploadAccountMasterCore(
       // Persist issues as ImportRow rows for review
       if (issues.length > 0) {
         await tx.importRow.createMany({
-          data: issues.map((iss, idx) => ({
+          data: issues.map((iss) => ({
             batchId: batch.id,
-            rowNumber: idx + 1,
+            // Launch fix: the row Excel shows (N05), not the issue's index — the
+            // batch page's Row column read #1, #2… The sheet is in raw and issues.
+            rowNumber: iss.row,
             raw: iss as unknown as Prisma.InputJsonValue,
             state: ImportRowState.QUARANTINED,
             issues: [{ message: iss.message, sheet: iss.sheet, row: iss.row }] as Prisma.InputJsonValue,
@@ -1031,6 +1219,10 @@ async function uploadAccountMasterCore(
     'import.account.complete'
   );
   revalidatePath('/import');
+  // Launch fix: regions, routes and people from this sheet reach the cached
+  // filter lists (lib/reference-data.ts) now, not up to five minutes later.
+  // Before the throw below: rows applied before an interruption are live too.
+  for (const tag of ['ref:regions', 'ref:routes', 'ref:users']) revalidateTag(tag);
   if (stopped || !recorded) {
     throw new AppError(
       'IMPORT_INTERRUPTED',
@@ -1748,6 +1940,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         select: { id: true, code: true, regionId: true },
       });
       routeByCode.set('UNASSIGNED', unassignedRoute);
+      // Launch fix: the cached filter lists (lib/reference-data.ts) learn of it now.
+      revalidateTag('ref:regions');
+      revalidateTag('ref:routes');
     }
 
     // QA-019: each customer's promotion (parent + branches + row state) runs
@@ -1988,6 +2183,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     channelId: true,
                     subChannelId: true,
                     subChannel: { select: { channelId: true } },
+                    // Owner decision 7: its status and its live branches' before
+                    // this group writes any, so the status can follow (below).
+                    status: true,
+                    branches: { where: { deletedAt: null }, select: { id: true, status: true } },
                   },
                 })
               : null;
@@ -2545,6 +2744,34 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 where: { id: customerId },
                 data: { status: liveActive > 0 ? 'ACTIVE' : statedStatus },
               });
+            }
+            // Owner decision 7 (2026-10-07), on every lane: a branch this load
+            // closed or reopened moves the customer as any other path does
+            // (lib/customer-status.ts) — the block above runs only when the file
+            // states a status on the full lane, so a fixed row on the branch-only
+            // lane closed a customer's last open branch and left it ACTIVE. A new
+            // customer takes the file's status above. An existing one can move only
+            // when a row states a status, when the file states the customer's own
+            // (the upsert and the block above write it), or when it is not ACTIVE (a
+            // branch this load creates without one is ACTIVE): otherwise nothing is
+            // read. The status read under the lock before this group wrote anything
+            // is passed on, so whichever of them moved it, the move is one audit row
+            // from the real prior status (fixer review: the block above wrote the
+            // file's status unaudited, and a CLOSE row then began at the file's).
+            if (
+              existing &&
+              (resolvedBranches.some((r) => r.status !== null) ||
+                (fullLane && statedStatus !== null && statedStatus !== existing.status) ||
+                existing.status !== 'ACTIVE')
+            ) {
+              const statusBefore = new Map(existing.branches.map((b) => [b.id, b.status] as const));
+              await followBranchStatus(
+                tx,
+                env,
+                customerId,
+                branchStatusEvents(statusBefore, await liveBranchStatuses(tx, customerId)),
+                { actorId: me.id, via: `import ${batchId}`, statusBefore: existing.status }
+              );
             }
             // What a fixed row asked for and did not get: branch only writes none
             // of the customer's own fields — but an empty phone, below — and the

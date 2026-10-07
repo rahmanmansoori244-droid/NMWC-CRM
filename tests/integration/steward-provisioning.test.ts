@@ -29,6 +29,8 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
   const stewardId = `ZZUP-stew-${tag}`;
   const managerId = `ZZUP-mgr-${tag}`;
   const created: string[] = [];
+  // Owner decision 8: an Accountant is created with the region(s) he works in.
+  let regionId = '';
 
   const asUser = (id: string, role: string) => { current = { id, role, username: id }; };
   function fd(entries: Record<string, string>) {
@@ -41,8 +43,12 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     users = await import('@/services/users');
-    await prisma.user.create({ data: { id: stewardId, username: stewardId, passwordHash: 'x', fullName: 'ZZ Steward', role: 'STEWARD' } });
-    await prisma.user.create({ data: { id: managerId, username: managerId, passwordHash: 'x', fullName: 'ZZ Manager', role: 'MANAGER' } });
+    // The two actors are switched off: the actions read the role from the
+    // session, and other suites running at the same time fan notifications out
+    // to every ACTIVE Steward and approver (see afterAll).
+    await prisma.user.create({ data: { id: stewardId, username: stewardId, passwordHash: 'x', fullName: 'ZZ Steward', role: 'STEWARD', isActive: false } });
+    await prisma.user.create({ data: { id: managerId, username: managerId, passwordHash: 'x', fullName: 'ZZ Manager', role: 'MANAGER', isActive: false } });
+    regionId = (await prisma.region.create({ data: { code: `ZZUP-${tag}`.toUpperCase(), name: `ZZ Provision ${tag}` } })).id;
   });
 
   afterAll(async () => {
@@ -50,24 +56,42 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     const names = [...created, `zzup-acc-${tag}`, `zzup-fm-${tag}`, `zzup-gm-${tag}`, `zzup-mgracc-${tag}`, `zzup-sales-${tag}`];
     const targets = await prisma.user.findMany({ where: { username: { in: names } }, select: { id: true } });
     const allIds = [stewardId, managerId, ...targets.map((t) => t.id)];
+    // The approvers created here are active, so a request another suite
+    // finalizes meanwhile notifies them, and Notification.userId would refuse
+    // the delete (teardown then stopped half-way, leaving active accounts with
+    // this file's password in UAT). Switch them off first, then clear them.
+    await prisma.user.updateMany({ where: { id: { in: allIds } }, data: { isActive: false } });
+    await prisma.notification.deleteMany({ where: { userId: { in: allIds } } });
     // createUserCore/updateUserRoleCore write AuditLog rows (actorId FK to User);
     // clear them before deleting the actors.
     await purgeAuditLog(prisma, { where: { OR: [{ actorId: { in: allIds } }, { entityId: { in: allIds } }] } });
     await prisma.user.deleteMany({ where: { username: { in: names } } });
     await prisma.user.deleteMany({ where: { id: { in: [stewardId, managerId] } } });
+    if (regionId) await prisma.region.deleteMany({ where: { id: regionId } });
     await prisma.$disconnect();
   });
 
   it('STEWARD creates an ACCOUNTANT (and FM, GM)', async () => {
     asUser(stewardId, 'STEWARD');
     for (const [role, uname] of [['ACCOUNTANT', `zzup-acc-${tag}`], ['FINANCE_MANAGER', `zzup-fm-${tag}`], ['GM', `zzup-gm-${tag}`]] as const) {
-      const res = await users.createUserAction(fd({ username: uname, fullName: `ZZ ${role}`, role, password: 'Provision-2026-xy' }));
+      const regions: Record<string, string> = role === 'ACCOUNTANT' ? { regionId } : {};
+      const res = await users.createUserAction(fd({ username: uname, fullName: `ZZ ${role}`, role, password: 'Provision-2026-xy', ...regions }));
       if (!res.ok) console.error(`create ${role} failed`, JSON.stringify(res));
       expect(res.ok).toBe(true);
       created.push(uname);
-      const row = await prisma.user.findUnique({ where: { username: uname }, select: { role: true } });
+      const row = await prisma.user.findUnique({ where: { username: uname }, select: { role: true, managedRegions: { select: { id: true } } } });
       expect(row?.role).toBe(role);
+      expect(row?.managedRegions.map((r) => r.id)).toEqual(role === 'ACCOUNTANT' ? [regionId] : []);
     }
+  });
+
+  it('STEWARD cannot create an ACCOUNTANT who manages no region (he would see nothing)', async () => {
+    asUser(stewardId, 'STEWARD');
+    const uname = `zzup-blind-${tag}`;
+    created.push(uname);
+    const res = await users.createUserAction(fd({ username: uname, fullName: 'ZZ Blind', role: 'ACCOUNTANT', password: 'Provision-2026-xy' }));
+    expect(res).toMatchObject({ ok: false, fields: { regionIds: expect.stringMatching(/at least one region/) } });
+    expect(await prisma.user.findUnique({ where: { username: uname } })).toBeNull();
   });
 
   it('MANAGER is REJECTED creating an ACCOUNTANT', async () => {
@@ -77,6 +101,23 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     expect((res as { ok: false; fields?: Record<string, string> }).fields?.role).toBeTruthy();
     const row = await prisma.user.findUnique({ where: { username: `zzup-mgracc-${tag}` } });
     expect(row).toBeNull(); // never created
+  });
+
+  // Launch fix (2026-10-07): User.email's unique index is case-sensitive; the
+  // create stores the address lower-cased and refuses it in any other capitals.
+  it('an e-mail is stored lower-cased, and the same mailbox in other capitals is refused', async () => {
+    asUser(stewardId, 'STEWARD');
+    const first = `zzup-mail1-${tag}`;
+    const second = `zzup-mail2-${tag}`;
+    created.push(first, second);
+    const address = `ZZ.Mail.${tag}@Example.TEST`;
+    const ok = await users.createUserAction(fd({ username: first, fullName: 'ZZ Mail One', role: 'VIEWER', email: address, password: 'Provision-2026-xy' }));
+    expect(ok.ok).toBe(true);
+    const row = await prisma.user.findUnique({ where: { username: first }, select: { email: true } });
+    expect(row?.email).toBe(address.toLowerCase());
+    const clash = await users.createUserAction(fd({ username: second, fullName: 'ZZ Mail Two', role: 'VIEWER', email: address.toUpperCase(), password: 'Provision-2026-xy' }));
+    expect(clash).toMatchObject({ ok: false, fields: { email: 'That e-mail is already used by another account.' } });
+    expect(await prisma.user.findUnique({ where: { username: second } })).toBeNull();
   });
 
   it('STEWARD promotes a SALESMAN to ACCOUNTANT; MANAGER cannot', async () => {

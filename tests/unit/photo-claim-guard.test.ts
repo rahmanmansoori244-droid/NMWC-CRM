@@ -102,7 +102,8 @@ function assertTargetReadAgain(tx: string, reads: RegExp[], conditions: string[]
   for (const part of conditions) expect(flat, part).toContain(part);
 }
 
-const CR_READ = [/const customerNow = await tx\.customer\.findUnique\(\{\s*where: \{ id: c\.id \},\s*select: \{ deletedAt: true, branches: \{ where: \{ deletedAt: null \}, select: \{ routeId: true, regionId: true, deletedAt: true \} \} \},?\s*\}\)/];
+// Owner decision 2 (2026-10-07): the CR slot's re-read also takes the terms (the CR document's lock).
+const CR_READ = [/const customerNow = await tx\.customer\.findUnique\(\{\s*where: \{ id: c\.id \},\s*select: \{\s*deletedAt: true,\s*(?:paymentTerms: true,\s*)?branches: \{ where: \{ deletedAt: null \}, select: \{ routeId: true, regionId: true, deletedAt: true \} \},?\s*\},?\s*\}\)/];
 const CR_COND = ['!customerNow', 'customerNow.deletedAt'];
 const BRANCH_READ = [
   /const branchNow = await tx\.branch\.findUnique\(\{\s*where: \{ id: b\.id \},\s*select: \{ customerId: true, deletedAt: true, routeId: true \},?\s*\}\)/,

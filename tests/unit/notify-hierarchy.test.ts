@@ -12,7 +12,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { Role, type Prisma } from '@prisma/client';
 
 const written = vi.hoisted(() => [] as Array<{ ids: string[]; kind: string; title: string; body: string; editId?: string; customerId?: string }>);
-vi.mock('@/lib/notifications', () => ({
+const warn = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn, error: vi.fn(), debug: vi.fn() } }));
+// The real module, but for its one writer: supervisorWhoCanAct reads the fake db.
+vi.mock('@/lib/notifications', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/notifications')>()),
   notifyUsers: vi.fn(async (_db: unknown, ids: string[], data: { kind: string; title: string; body: string; editId?: string; customerId?: string }) => {
     if (ids.length) written.push({ ids, ...data });
   }),
@@ -170,6 +174,27 @@ describe('resolveRequestAudience', () => {
   it('the defaults: Accountant FYI on every event, region-wide Manager FYI off', () => {
     expect(FYI_POLICY.accountants).toEqual({ UPDATE: true, CREATE: true, CLOSE: true, REACTIVATION: true });
     expect(FYI_POLICY.regionManagers).toBe(false);
+  });
+});
+
+describe('the gap is logged (launch fix 2026-10-07)', () => {
+  const sal = (supervisorId: string | null) => ({ id: 'sal-1', supervisorId });
+  const gaps =() => warn.mock.calls.filter((c) => c[1] === 'notify.request.supervisor_cannot_act').map((c) => c[0]);
+  it('a close or reactivation whose supervisor is missing or unusable is logged, ids and counts only', async () => {
+    warn.mockClear();
+    await resolveRequestAudience(db, { event: 'CLOSE', submitter: sal(null), regionId: 'g1' });
+    await resolveRequestAudience(db, { event: 'REACTIVATION', submitter: sal('mgr-off'), regionId: 'g1' });
+    expect(gaps()).toEqual([
+      { event: 'CLOSE', supervisorId: null, managersTold: 2 },
+      { event: 'REACTIVATION', supervisorId: 'mgr-off', managersTold: 2 },
+    ]);
+  });
+
+  it('a Supervisor on a reactivation is the design, not a gap; a supervisor who can act is not either', async () => {
+    warn.mockClear();
+    await resolveRequestAudience(db, { event: 'REACTIVATION', submitter: sal('sup-1'), regionId: 'g1' });
+    await resolveRequestAudience(db, { event: 'CLOSE', submitter: sal('sup-1'), regionId: 'g1' });
+    expect(gaps()).toEqual([]);
   });
 });
 

@@ -100,7 +100,7 @@ export function KpiRow({ data, ctx }: { data: Insights; ctx: CardContext }) {
         value={fmt(pending)}
         sub={
           ctx.scoped
-            ? 'Waiting now at the Supervisor step, new-customer requests included'
+            ? 'Waiting now in your approval queue, new-customer requests included'
             : 'Waiting now at any step, every kind of request'
         }
         href={ctx.canOpenApprovals ? '/approvals' : undefined}
@@ -556,7 +556,7 @@ export function ClosuresCard({ data, ctx }: { data: Insights; ctx: CardContext }
       definition={
         <>
           Close-shop and reactivation requests decided {ctx.periodPhrase}, on the branch&apos;s own region and route. A
-          customer&apos;s own status does not follow a branch closure, so this reads branches, not customers.
+          customer closes only when its last open branch does, so this reads branches, not customers.
         </>
       }
       footer={
@@ -628,17 +628,19 @@ export function PipelineCard({ data, ctx }: { data: Insights; ctx: CardContext }
       definition={
         <>
           Requests submitted {ctx.periodPhrase}, by the state each is in now
-          {ctx.scoped ? ' — only requests you can open from your regions' : ''}. A sent-back update or close request
-          stays &quot;sent back&quot; for good (the salesman sends a new one); a sent-back new-customer request is
-          revised and resubmitted, which re-dates it. Direct writes never queue and are not here. No timings: Service
-          status has those.
+          {ctx.scoped ? ' — only requests you can open from your regions' : ''}. A sent-back update stays
+          &quot;sent back&quot; for good (the salesman sends a new one); a refused close-shop or reactivation request
+          is final; a sent-back new-customer request is revised and resubmitted, which re-dates it. Direct writes
+          never queue and are not here. No timings: Service status has those.
         </>
       }
       footer={
         p ? (
           <>
             Waiting now, whenever submitted: {fmt(sumKinds(p.waitingAnyStep))} at any step
-            {ctx.scoped ? `, ${fmt(sumKinds(p.waitingFirstStep))} of them at the Supervisor step` : ''}.
+            {/* Owner decision 3: a Manager's Supervisor-step count is his queue
+                (lib/insights/load.ts), not every request he can open. */}
+            {ctx.scoped ? `, ${fmt(sumKinds(p.waitingFirstStep))} of them in your approval queue` : ''}.
             {ctx.canOpenStatus && (
               <>
                 {' '}
@@ -665,7 +667,13 @@ export function PipelineCard({ data, ctx }: { data: Insights; ctx: CardContext }
                   { key: 'waiting', label: 'Waiting', value: s.SUBMITTED, color: SERIES[0] },
                   { key: 'back', label: 'Sent back', value: s.NEEDS_CORRECTION, color: SERIES[1] },
                   { key: 'approved', label: 'Approved', value: s.APPROVED, color: SERIES[2] },
-                  { key: 'rejected', label: 'Closed by a merge', value: s.REJECTED, color: SERIES[3] },
+                  {
+                    key: 'rejected',
+                    // A refused close and a "Keep closed" end REJECTED (2026-10-07).
+                    label: k === 'close' || k === 'reactivation' ? 'Refused' : 'Closed by a merge',
+                    value: s.REJECTED,
+                    color: SERIES[3],
+                  },
                 ]}
               />
             );

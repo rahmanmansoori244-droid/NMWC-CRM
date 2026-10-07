@@ -84,20 +84,35 @@ describe('escalationPlan', () => {
     expect(escalationPlan(Role.SUPERVISOR, 1)).toEqual({
       regionScopedRoles: [Role.MANAGER],
       globalRoles: [],
+      visibilityOnly: false,
     });
     expect(escalationPlan(Role.SUPERVISOR, 2)).toEqual({
       regionScopedRoles: [Role.MANAGER],
       globalRoles: [Role.GM],
+      visibilityOnly: false,
     });
   });
 
-  it('finance chain escalates upward: ACCOUNTANT → FM+GM, FM → GM, GM → Managers+Steward', () => {
+  it('finance chain escalates upward: ACCOUNTANT → FM+GM, FM → GM, GM → the region’s Managers', () => {
     expect(escalationPlan(Role.ACCOUNTANT, 1).globalRoles).toEqual([
       Role.FINANCE_MANAGER,
       Role.GM,
     ]);
     expect(escalationPlan(Role.FINANCE_MANAGER, 1).globalRoles).toEqual([Role.GM]);
-    expect(escalationPlan(Role.GM, 1).globalRoles).toEqual([Role.MANAGER, Role.STEWARD]);
+    // Launch fix (2026-10-07): not every Manager in the company, and no Steward —
+    // only people who can open the request (/approvals/[id]).
+    // Owner decision 6 (2026-10-07): told for visibility only — nobody outranks the
+    // GM — so the drain does not e-mail them (lib/email/eligibility.ts).
+    expect(escalationPlan(Role.GM, 1)).toEqual({ regionScopedRoles: [Role.MANAGER], globalRoles: [], visibilityOnly: true });
+    for (const role of [Role.SUPERVISOR, Role.MANAGER, Role.ACCOUNTANT, Role.FINANCE_MANAGER, Role.GM]) {
+      for (const level of [1, 2] as const) {
+        const plan = escalationPlan(role, level);
+        expect(plan.globalRoles, `${role} L${level}`).not.toContain(Role.MANAGER);
+        expect([...plan.globalRoles, ...plan.regionScopedRoles], `${role} L${level}`).not.toContain(Role.STEWARD);
+        // Every other tier can decide the late step or chase whoever must.
+        expect(plan.visibilityOnly, `${role} L${level}`).toBe(role === Role.GM);
+      }
+    }
   });
 
   it('deploy-gap rows (pendingRole null) escalate as Supervisor edits', () => {

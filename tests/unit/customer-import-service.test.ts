@@ -312,6 +312,9 @@ function setup(
         }
       ),
       count: vi.fn(async () => 0),
+      // Owner decision 7's before/after read of the live branch statuses
+      // (lib/customer-status.ts): none here, so the customer's status is not moved.
+      findMany: vi.fn(async () => []),
       upsert: w('branch.upsert'),
       create: w('branch.create'),
       update: w('branch.update'),

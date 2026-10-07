@@ -159,7 +159,8 @@ describe('customerMasterRows — a page at a time', () => {
       delivery_window: '',
       gps_lat: 23.5,
       gps_lng: 58.3,
-      gps_captured_at: '2026-09-24T08:00:00.000Z',
+      // ISO-8601 on the Oman clock (08:00 UTC is 12:00 in Oman), the same instant.
+      gps_captured_at: '2026-09-24T12:00:00.000+04:00',
       coolers: 1,
       stands: 0,
       empty_bottles: 2,
@@ -168,8 +169,31 @@ describe('customerMasterRows — a page at a time', () => {
       customer_status: 'ACTIVE',
       branch_status: 'ACTIVE',
       completeness_pct: 70,
-      last_edited_at: '2026-09-24T08:00:00.000Z',
+      last_edited_at: '2026-09-24T12:00:00.000+04:00',
     });
+  });
+
+  it('dates a late-evening UTC time on the Oman day, as the field-update report does', async () => {
+    // 21:30 UTC on the 7th is 01:30 on the 8th in Oman. The UTC ISO stamp put it on
+    // the 7th, while the change report (and every screen) says the 8th. Run with the
+    // process in UTC, as on Vercel.
+    vi.stubEnv('TZ', 'UTC');
+    try {
+      const late = new Date('2026-10-07T21:30:45.123Z');
+      h.rows = [{ ...branch(1), gpsCapturedAt: late, updatedAt: late }, { ...branch(2), gpsCapturedAt: null }];
+      const out: Record<string, unknown>[] = [];
+      for await (const r of customerMasterRows({}, 2)) out.push(r);
+      expect(out[0]).toMatchObject({
+        gps_captured_at: '2026-10-08T01:30:45.123+04:00',
+        last_edited_at: '2026-10-08T01:30:45.123+04:00',
+      });
+      // Still the exact instant, seconds and milliseconds kept: a reader that parsed
+      // the old "...Z" stamp parses this one to the same time.
+      expect(new Date(String(out[0]!.last_edited_at)).getTime()).toBe(late.getTime());
+      expect(out[1]!.gps_captured_at).toBe('');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('reads every row once when branch codes interleave across regions, as ERP numbers do', async () => {
@@ -216,6 +240,22 @@ describe('buildCustomerExport', () => {
     // Still formula-escaped.
     expect(sheet!.rows[0]!.cust_name).toBe(`'=Shop 0`);
   }, 60_000);
+
+  it('names the file and its ledger row by the Oman day', async () => {
+    // 01:30 on 8 October in Oman, still the 7th in UTC.
+    vi.stubEnv('TZ', 'UTC');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-07T21:30:00.000Z'));
+      h.count_.mockResolvedValue(0);
+      const out = await buildCustomerExport({});
+      expect(out.filename).toBe('nmwc-customer-master-2026-10-08.xlsx');
+      expect(h.writeAudit.mock.calls[0]![2]).toMatchObject({ entityId: '2026-10-08' });
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
 
   it('builds at exactly the ceiling', async () => {
     h.count_.mockResolvedValue(60_000);

@@ -22,7 +22,10 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('next/navigation', () => ({
   redirect: (to: string) => { throw new Error(`REDIRECT ${to}`); },
 }));
-vi.mock('@/lib/tz', () => ({ omanDayOfWeek: () => 'FRI' }));
+vi.mock('@/lib/tz', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/tz')>()),
+  omanDayOfWeek: () => 'FRI',
+}));
 vi.mock('@/components/nmwc/CustomerCard', () => ({
   CustomerCard: ({ customer, href }: { customer: { id: string }; href?: string }) => (
     <div data-testid="visit" data-href={href}>{customer.id}</div>
@@ -41,6 +44,8 @@ vi.mock('@/lib/db', () => {
   return { prisma: {
     user: { findUniqueOrThrow: async () => ({ fullName: 'Test Salesman', ownedRouteId: state.route }) },
     customerEdit: { count: async () => 0 },
+    // lib/returned-work.ts countOpenReturned: nothing sent back waits on him.
+    $queryRaw: async () => [{ n: 0 }],
     branch: {
       count: vi.fn(async ({ where }: { where: Where }) => matching(where).length),
       findMany: vi.fn(async ({ where, skip = 0, take, orderBy }: {

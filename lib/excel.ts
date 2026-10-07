@@ -144,7 +144,7 @@ export async function parseWorkbook(buffer: ArrayBuffer | Uint8Array): Promise<P
     totalRows += rows.length;
     if (totalRows > MAX_TOTAL_ROWS) {
       throw new Error(
-        `Workbook has too many rows (>${MAX_TOTAL_ROWS.toLocaleString()}). Split the file into smaller batches.`
+        `Workbook has too many rows (>${MAX_TOTAL_ROWS.toLocaleString('en-US')}). Split the file into smaller batches.`
       );
     }
     sheets.push({ name: ws.name, headers, rows, rowNumbers, duplicateHeadings });

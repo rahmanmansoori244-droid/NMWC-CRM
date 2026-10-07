@@ -1,7 +1,10 @@
 'use client';
 
-import { createContext, useContext, useState, useTransition } from 'react';
+import { useContext, useState, useTransition } from 'react';
+import Link from 'next/link';
 import { toggleUserActiveAction, resetPasswordAction, updateUserEmailAction } from '@/services/users';
+import { AnnounceContext } from './announce';
+import { AccountEditor, type EditOptions } from './EditAccount';
 
 // Go-live: a successful Disable used to confirm itself — the row stayed put, the
 // badge flipped to Disabled and the button flipped to Enable, one click from undo.
@@ -10,8 +13,7 @@ import { toggleUserActiveAction, resetPasswordAction, updateUserEmailAction } fr
 // so a message held in the row can never be read, and a disable that silently
 // failed looks exactly like one that worked. The banner therefore lives above the
 // table: the provider keeps its position in the tree across the refresh, so its
-// state survives the re-render that removes the row.
-const AnnounceContext = createContext<(msg: string) => void>(() => {});
+// state survives the re-render that removes the row. The context is announce.ts.
 
 // Reset password took the new password once, masked: a Manager's typo handed the
 // salesman a password nobody knew, and only another reset recovered the account.
@@ -24,7 +26,14 @@ const MISMATCH = 'The two new passwords do not match.';
 // browsers do none of that, so these matter only once Show is on.
 const AS_TYPED = { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false } as const;
 
-export function UsersFeedback({ children }: { children: React.ReactNode }) {
+export function UsersFeedback({
+  children,
+  editOptions,
+}: {
+  children: React.ReactNode;
+  /** Owner decision 8: the Steward's Edit account dialog, inside the banner's reach. */
+  editOptions?: EditOptions;
+}) {
   const [msg, setMsg] = useState<string | null>(null);
   return (
     <AnnounceContext.Provider value={setMsg}>
@@ -43,9 +52,15 @@ export function UsersFeedback({ children }: { children: React.ReactNode }) {
           </button>
         </div>
       )}
-      {children}
+      {editOptions ? <AccountEditor options={editOptions}>{children}</AccountEditor> : children}
     </AnnounceContext.Provider>
   );
+}
+
+/** A refusal's words: the field messages when there are any (a ValidationError's
+ * message is only "Validation failed"), else the message. */
+function refusalText(res: { message: string; fields?: Record<string, string> }): string {
+  return res.fields ? Object.values(res.fields).join(' ') : res.message;
 }
 
 export function UserRowActions({
@@ -54,6 +69,8 @@ export function UserRowActions({
   isActive,
   canEditEmail = false,
   hasEmail = false,
+  isSelf = false,
+  children,
 }: {
   userId: string;
   username: string;
@@ -62,12 +79,24 @@ export function UserRowActions({
   canEditEmail?: boolean;
   /** Whether an address is on file. The address itself never reaches the browser. */
   hasEmail?: boolean;
+  /**
+   * The viewer's own row. Disable and Reset password always refuse one's own
+   * account (lib/permissions.ts canMutateUser), so they are not offered; the
+   * row points at the self-service page instead.
+   */
+  isSelf?: boolean;
+  /** Shown first among the actions: the Steward's Edit account button (EditAccount.tsx). */
+  children?: React.ReactNode;
 }) {
   const [pending, start] = useTransition();
   const [showEmail, setShowEmail] = useState(false);
   const [emailMsg, setEmailMsg] = useState<string | null>(null);
   const [showReset, setShowReset] = useState(false);
-  const [resetMsg, setResetMsg] = useState<string | null>(null);
+  // Launch fix: every refusal (own account, last active Manager, a reused
+  // password, an account outside the Manager's regions) used to land here and
+  // render in the same green as "Password updated.", so a refused helpdesk reset
+  // read as done. `ok` decides the colour and the role.
+  const [resetMsg, setResetMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [resetMismatch, setResetMismatch] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState(false);
   const announce = useContext(AnnounceContext);
@@ -87,11 +116,11 @@ export function UserRowActions({
       // last-Manager-lockout and peer-Manager guards must surface to the UI.
       const res = await toggleUserActiveAction(fd);
       if (!res.ok) {
-        setResetMsg(
-          res.fields ? Object.values(res.fields).join(' ') : res.message
-        );
+        setResetMsg({ text: refusalText(res), ok: false });
         return;
       }
+      // On the All tab the row stays: an earlier refusal must not sit beside it.
+      setResetMsg(null);
       announce(
         isActive
           ? `Disabled "${username}". It is on the Disabled tab, where Enable puts it back.`
@@ -115,16 +144,14 @@ export function UserRowActions({
       try {
         const res = await resetPasswordAction(fd);
         if (!res.ok) {
-          setResetMsg(
-            res.fields ? Object.values(res.fields).join(' ') : res.message
-          );
+          setResetMsg({ text: refusalText(res), ok: false });
           return;
         }
-        setResetMsg('Password updated.');
+        setResetMsg({ text: 'Password updated.', ok: true });
         (e.target as HTMLFormElement).reset();
         setTimeout(() => setShowReset(false), 1200);
       } catch (err) {
-        setResetMsg(err instanceof Error ? err.message : 'Failed.');
+        setResetMsg({ text: err instanceof Error ? err.message : 'Failed.', ok: false });
       }
     });
   }
@@ -147,7 +174,7 @@ export function UserRowActions({
     start(async () => {
       const res = await updateUserEmailAction(fd);
       if (!res.ok) {
-        setEmailMsg(res.fields ? Object.values(res.fields).join(' ') : res.message);
+        setEmailMsg(refusalText(res));
         return;
       }
       setEmailMsg(null);
@@ -156,8 +183,22 @@ export function UserRowActions({
     });
   }
 
+  if (isSelf) {
+    return (
+      <div className="flex flex-wrap justify-end gap-2 text-xs">
+        <Link
+          href="/profile/change-password"
+          className="rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100"
+        >
+          Change my password
+        </Link>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap justify-end gap-2 text-xs">
+      {children}
       {canEditEmail && (
         <button
           type="button"
@@ -272,7 +313,14 @@ export function UserRowActions({
           </button>
         </form>
       )}
-      {resetMsg && <span className="self-center text-emerald-600">{resetMsg}</span>}
+      {resetMsg && (
+        <span
+          role={resetMsg.ok ? 'status' : 'alert'}
+          className={`self-center ${resetMsg.ok ? 'text-emerald-600' : 'font-medium text-red-600'}`}
+        >
+          {resetMsg.text}
+        </span>
+      )}
     </div>
   );
 }

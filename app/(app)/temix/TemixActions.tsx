@@ -10,6 +10,16 @@ import {
   type TemixBatchResult,
 } from '@/services/temix';
 
+/**
+ * A refusal's words. Launch fix: the services/temix.ts refusals carried their
+ * text only in fields._form, and this page showed only the message, which was
+ * then "Validation failed". The service now sets both; reading _form first keeps
+ * the page right for any refusal that sets only the field.
+ */
+function refusal(res: { message: string; fields?: Record<string, string> }): string {
+  return res.fields?._form ?? res.message;
+}
+
 /** Decode the action's base64 payload into a browser download (same pattern as the filtered customer export). */
 function triggerDownload(result: TemixBatchResult) {
   const bytes = Uint8Array.from(atob(result.base64), (c) => c.charCodeAt(0));
@@ -38,7 +48,7 @@ export function GenerateBatchButton({ disabled }: { disabled: boolean }) {
     start(async () => {
       const res = await generateTemixBatchAction();
       if (!res.ok) {
-        setError(res.message);
+        setError(refusal(res));
         return;
       }
       triggerDownload(res.data);
@@ -95,7 +105,7 @@ export function BatchRowActions({ batchId, loaded }: { batchId: string; loaded: 
       fd.set('batchId', batchId);
       const res = await downloadTemixBatchAction(fd);
       if (!res.ok) {
-        setError(res.message);
+        setError(refusal(res));
         return;
       }
       triggerDownload(res.data);
@@ -111,7 +121,7 @@ export function BatchRowActions({ batchId, loaded }: { batchId: string; loaded: 
       fd.set('batchId', batchId);
       const res = await markTemixBatchLoadedAction(fd);
       if (!res.ok) {
-        setError(res.message);
+        setError(refusal(res));
         return;
       }
       router.refresh();

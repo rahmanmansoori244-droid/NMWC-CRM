@@ -13,7 +13,7 @@
  * surfaces take the branch shown from the shared helper. Against Postgres:
  * tests/integration/customer-export-branch-filter.test.ts.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { stripComments } from '../support/strip-comments';
 
@@ -89,6 +89,23 @@ describe('exportFilteredCustomersAction — F17', () => {
     await exportWith('route=ROUTE_B');
     expect(h.findMany.mock.calls[0][0].where.id).toBe('__none__');
     expect(branchWhere()).toEqual({ id: '__none__' });
+  });
+});
+
+describe('exportFilteredCustomersAction — the Oman day (launch fix)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('names the file and its EXPORT ledger row by the Oman day, as the other exports do', async () => {
+    // 21:30 UTC on the 7th is 01:30 on the 8th in Oman; the process runs in UTC, as on Vercel.
+    vi.stubEnv('TZ', 'UTC');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-07T21:30:00.000Z'));
+    const res = await exportWith('route=ROUTE_B');
+    expect(res.ok && res.data.filename).toBe('customers-2026-10-08.xlsx');
+    expect(h.writeAudit.mock.calls[0][2]).toMatchObject({ action: 'EXPORT', entityId: 'customers-2026-10-08' });
   });
 });
 

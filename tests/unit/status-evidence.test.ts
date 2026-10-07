@@ -98,6 +98,7 @@ vi.mock('@/lib/notifications', () => ({
   notifyUsers: vi.fn(),
   resolveStepAudience: vi.fn(async () => []),
   resolveStewardAudience: vi.fn(async () => []),
+  settleRequestAlerts: vi.fn(async () => 0),
 }));
 // F1: the services also write the hierarchy's rows (lib/notify-hierarchy.ts);
 // mocked here like '@/lib/notifications', so these suites keep testing what they test.
@@ -221,7 +222,9 @@ beforeEach(() => {
   tx.customerEdit.updateMany.mockResolvedValue({ count: 1 });
   tx.attachment.findMany.mockResolvedValue([photo()]);
   tx.branch.findUnique.mockResolvedValue({ customerId: CUST, status: 'CLOSED', deletedAt: null });
-  tx.customer.findUnique.mockResolvedValue({ deletedAt: null });
+  // Read twice by a decision: the X-STATUS-1 guard (deletedAt), then owner
+  // decision 7's status follow (lib/customer-status.ts: status and live branches).
+  tx.customer.findUnique.mockResolvedValue({ deletedAt: null, status: 'CLOSED', branches: [{ status: 'ACTIVE' }] });
   tx.branch.findMany.mockResolvedValue([{ id: B1, status: 'ACTIVE' }]);
   tx.branch.findUniqueOrThrow.mockResolvedValue({ version: 0, status: 'ACTIVE' });
   tx.branch.updateMany.mockResolvedValue({ count: 1 });
@@ -338,6 +341,34 @@ describe('approving a reactivation (F10 + X-STATUS-1)', () => {
       expect.objectContaining({ where: { id: B1 }, data: expect.objectContaining({ status: 'ACTIVE' }) })
     );
     expect(audit.writeAudit).toHaveBeenCalledWith(tx, expect.anything(), expect.objectContaining({ action: 'REACTIVATE' }));
+  });
+
+  it('owner decision 7: the customer reopens with its shop — another branch still closed no longer keeps it CLOSED', async () => {
+    tx.customer.findUnique.mockResolvedValue({
+      deletedAt: null,
+      status: 'CLOSED',
+      branches: [{ status: 'ACTIVE' }, { status: 'CLOSED' }],
+    });
+    expect((await approveReactivationAction(form({ editId: 'e-r' }))).ok).toBe(true);
+    expect(tx.customer.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: CUST }, data: expect.objectContaining({ status: 'ACTIVE' }) })
+    );
+    expect(audit.writeAudit).toHaveBeenCalledWith(
+      tx,
+      expect.anything(),
+      expect.objectContaining({
+        action: 'REACTIVATE',
+        entityType: 'Customer',
+        entityId: CUST,
+        before: { status: 'CLOSED' },
+        after: { status: 'ACTIVE' },
+      })
+    );
+    // An ACTIVE customer is left alone, and no customer row is written for it.
+    tx.customer.update.mockClear();
+    tx.customer.findUnique.mockResolvedValue({ deletedAt: null, status: 'ACTIVE', branches: [{ status: 'ACTIVE' }] });
+    expect((await approveReactivationAction(form({ editId: 'e-r' }))).ok).toBe(true);
+    expect(tx.customer.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: expect.anything() }) }));
   });
 
   it('reads the branch, the customer and the photo after the customer lock, and before the branch write', async () => {
@@ -481,8 +512,11 @@ describe('rejecting a reactivation (F13): the decision and its audit row are one
     expect(db.customerEdit.updateMany).not.toHaveBeenCalled();
     expect(tx.customerEdit.updateMany).toHaveBeenCalledWith({
       where: { id: 'e-r', state: 'SUBMITTED', isReactivation: true },
-      data: expect.objectContaining({ state: 'NEEDS_CORRECTION', reviewedById: MGR, decisionReason: 'Still shut — shutters down.' }),
+      data: expect.objectContaining({ state: 'REJECTED', reviewedById: MGR }),
     });
+    // Launch fix (2026-10-07): "Keep closed" is final (REJECTED, off the salesman's
+    // Needs correction lists), and his own reason for asking is no longer overwritten.
+    expect(tx.customerEdit.updateMany.mock.calls[0]![0].data).not.toHaveProperty('decisionReason');
     expect(audit.writeAudit).toHaveBeenCalledTimes(1);
     expect(audit.writeAudit.mock.calls[0]![0]).toBe(tx);
     expect(audit.writeAudit.mock.calls[0]![2]).toEqual({

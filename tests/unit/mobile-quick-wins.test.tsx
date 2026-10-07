@@ -187,8 +187,8 @@ function createEdit() {
       {
         id: 'd1',
         branchName: 'Seeb',
-        region: { name: 'Muscat' },
-        route: { code: 'C7', regionId: 'g1' },
+        // The page heads a branch with its route's current region (launch fix).
+        route: { code: 'C7', regionId: 'g1', region: { name: 'Muscat' } },
         address: 'Seeb souq',
         areaDescription: null,
         gpsLat: 23.67,

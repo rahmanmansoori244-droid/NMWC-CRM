@@ -37,10 +37,16 @@ const presignSchema = z.object({
   bytes: z.number().int().min(1).max(MAX_BYTES),
 });
 
+// Every refusal below carries a `message` beside its machine `error`: the photo
+// slot shows it (PhotoCaptureSlot readRefusal). Without one it said "Could not
+// get upload URL." to a salesman who was signed out, throttled or not allowed.
 export async function POST(req: NextRequest) {
   const who = await checkActor(); // F15: a session that must change its password gets 403
   if (!who.ok) {
-    return NextResponse.json({ error: who.status === 401 ? 'UNAUTHORIZED' : who.code }, { status: who.status });
+    return NextResponse.json(
+      { error: who.status === 401 ? 'UNAUTHORIZED' : who.code, message: who.message },
+      { status: who.status }
+    );
   }
   const session = { user: who.user };
   // ENH-3: only a role that can attach a photo may upload one. Here, not only
@@ -50,7 +56,11 @@ export async function POST(req: NextRequest) {
   const lim = await checkLimit(`photo:${session.user.id}`, PHOTO_LIMIT);
   if (!lim.ok) {
     return NextResponse.json(
-      { error: 'RATE_LIMITED', retryAfterSec: lim.retryAfterSec },
+      {
+        error: 'RATE_LIMITED',
+        retryAfterSec: lim.retryAfterSec,
+        message: `Too many photos in a short time. Try again in ${lim.retryAfterSec} seconds.`,
+      },
       { status: 429, headers: { 'Retry-After': String(lim.retryAfterSec) } }
     );
   }
@@ -58,12 +68,16 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'INVALID_JSON' }, { status: 400 });
+    return NextResponse.json({ error: 'INVALID_JSON', message: 'The upload request was not valid.' }, { status: 400 });
   }
   const parsed = presignSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: 'VALIDATION_FAILED', details: parsed.error.format() },
+      {
+        error: 'VALIDATION_FAILED',
+        message: 'This photo cannot be uploaded: it must be a JPEG, PNG or WebP image of 3 MB at most.',
+        details: parsed.error.format(),
+      },
       { status: 400 }
     );
   }

@@ -10,7 +10,10 @@
  *   - the SQL text keeps the raw-SQL rules: counts ::int, averages ::float8, the
  *     grain a whitelisted literal and never a bound parameter, fieldChanges read
  *     only as a JSON array, ids bound and never spliced, no Customer.updatedAt,
- *     and the six statements in one wave.
+ *     and the six statements in one wave;
+ *   - owner decision 3: a Manager's "Pending approval" (the Supervisor step of
+ *     waitingFirstStep) counts the ids of his /approvals queue
+ *     (lib/manager-queue.ts), read first under its own timeout.
  * The SQL itself runs against Postgres in tests/integration/insights.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -22,9 +25,12 @@ const h = vi.hoisted(() => ({
   queryRaw: vi.fn(),
   executeRaw: vi.fn(),
   transaction: vi.fn(),
+  findMany: vi.fn(),
   logError: vi.fn(),
 }));
-vi.mock('@/lib/db', () => ({ prisma: { $queryRaw: h.queryRaw, $executeRaw: h.executeRaw, $transaction: h.transaction } }));
+vi.mock('@/lib/db', () => ({
+  prisma: { $queryRaw: h.queryRaw, $executeRaw: h.executeRaw, $transaction: h.transaction, customerEdit: { findMany: h.findMany } },
+}));
 vi.mock('@/lib/logger', () => ({ logger: { error: h.logError, warn: vi.fn(), info: vi.fn() } }));
 
 import { loadInsights, cellDegFor, __sql } from '@/lib/insights/load';
@@ -70,7 +76,18 @@ beforeEach(() => {
   h.queryRaw.mockReset().mockResolvedValue([]);
   h.executeRaw.mockReset().mockResolvedValue(0);
   // A batch transaction: every operation is already a promise; the result is theirs, in order.
-  h.transaction.mockReset().mockImplementation((ops: unknown[]) => Promise.all(ops));
+  // An interactive one (a Manager's queue ids) runs its callback on the same client.
+  h.transaction
+    .mockReset()
+    .mockImplementation(async (ops: unknown) =>
+      typeof ops === 'function'
+        ? (ops as (tx: unknown) => Promise<unknown>)({ $executeRaw: h.executeRaw, customerEdit: { findMany: h.findMany } })
+        : Promise.all(ops as unknown[])
+    );
+  // The queue's read of mixed customers' requests, then its ids.
+  h.findMany.mockReset().mockImplementation(async (args: { select: Record<string, unknown> }) =>
+    'fieldChanges' in args.select ? [] : [{ id: 'e-q1' }, { id: 'e-q2' }]
+  );
   h.logError.mockReset();
 });
 
@@ -115,14 +132,17 @@ describe('one failing query degrades only its card', () => {
 
   it('every statement runs in its own transaction, after SET LOCAL statement_timeout', async () => {
     await loadInsights(MANAGER, PERIOD);
-    expect(h.transaction).toHaveBeenCalledTimes(6);
-    expect(h.executeRaw).toHaveBeenCalledTimes(6);
+    // Six statements, and a Manager's queue ids read first in a seventh.
+    expect(h.transaction).toHaveBeenCalledTimes(7);
+    expect(h.executeRaw).toHaveBeenCalledTimes(7);
     for (const [q] of h.executeRaw.mock.calls) {
       expect((q as Prisma.Sql).sql).toBe(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`);
       expect((q as Prisma.Sql).values).toEqual([]);
     }
-    // Each transaction holds exactly its timeout and its one statement.
-    for (const [ops] of h.transaction.mock.calls) expect((ops as unknown[]).length).toBe(2);
+    // Each statement's transaction holds exactly its timeout and its one statement.
+    const batches = h.transaction.mock.calls.filter(([ops]) => Array.isArray(ops));
+    expect(batches).toHaveLength(6);
+    for (const [ops] of batches) expect((ops as unknown[]).length).toBe(2);
     expect(STATEMENT_TIMEOUT_MS).toBeLessThan(WAVE_DEADLINE_MS);
     // Both well inside the function's 60 s limit (vercel.json maxDuration).
     expect(WAVE_DEADLINE_MS).toBeLessThanOrEqual(30_000);
@@ -151,6 +171,12 @@ describe('one failing query degrades only its card', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('a Manager’s queue ids that cannot be read fail the pipeline only', async () => {
+    h.findMany.mockRejectedValue(Object.assign(new Error('boom'), { name: 'PrismaClientKnownRequestError', code: 'P2024' }));
+    const data = await loadInsights(MANAGER, PERIOD);
+    for (const [k, s] of Object.entries(data)) expect(s.ok, k).toBe(k !== 'pipeline');
   });
 
   it('rows that cannot be shaped fail their section, not the page', async () => {
@@ -275,6 +301,36 @@ describe('the map’s cells', () => {
     expect(cellDegFor(ONE_REGION)).toBe(MAP.cellDegRegion);
     expect(cellDegFor(MANAGER)).toBe(MAP.cellDegCountry);
     expect(cellDegFor(STEWARD)).toBe(MAP.cellDegCountry);
+  });
+});
+
+describe('a Manager’s "Pending approval" is his /approvals queue (owner decision 3)', () => {
+  const requestsCall = () => h.queryRaw.mock.calls.map((c) => c[0] as Prisma.Sql).find((q) => marker(q) === 'requests')!;
+
+  it('the queue ids, read in his regions in view, are bound into the Supervisor step of waitingFirstStep', async () => {
+    await loadInsights(MANAGER, PERIOD);
+    // The queue's two reads: the mixed customers' requests in his regions, then the ids.
+    expect(h.findMany).toHaveBeenCalledTimes(2);
+    const mixedWhere = JSON.stringify((h.findMany.mock.calls[0]![0] as { where: unknown }).where);
+    expect(mixedWhere).toContain('r-a');
+    expect(mixedWhere).toContain('r-b');
+    const q = requestsCall();
+    expect(q.values).toContainEqual(['e-q1', 'e-q2']);
+    expect(q.sql).toContain(`COALESCE(e."pendingRole"::text, 'SUPERVISOR') <> 'SUPERVISOR' OR e."id" = ANY(`);
+    expect(q.sql).not.toContain('e-q1');
+  });
+
+  it('an empty queue counts nothing at the Supervisor step, never everything', async () => {
+    h.findMany.mockResolvedValue([]);
+    await loadInsights(MANAGER, PERIOD);
+    expect(requestsCall().values).toContainEqual([]);
+  });
+
+  it('the company view (Steward, Viewer) reads no queue and counts every request in scope', async () => {
+    await loadInsights(STEWARD, PERIOD);
+    expect(h.findMany).not.toHaveBeenCalled();
+    expect(h.transaction).toHaveBeenCalledTimes(6);
+    expect(requestsCall().sql).not.toContain(`OR e."id" = ANY(`);
   });
 });
 

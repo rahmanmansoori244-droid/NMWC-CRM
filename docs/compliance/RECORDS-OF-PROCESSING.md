@@ -58,7 +58,7 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Purpose** | Control who may change a customer record, and record who approved a credit limit or payment terms. |
 | **Personal data** | Before/after snapshots of every field in A1 (`CustomerEdit.fieldChanges`, and a second copy in `AuditLog.before/after`), and, since 2026-09-29, for a field the salesman kept over a value changed after his form opened, that newer value (`overrodeLive`, auditor recheck F06); the approver's identity, role, decision, reason and timing; and, for a GPS point the salesman typed in by hand, the salesman's own free-text reason (since 2026-09-25, item 41), which may name people — kept in `CustomerEdit.fieldChanges` and, once an update is approved, copied into that `APPROVE` row's `AuditLog.after`. |
 | **Subjects** | Customer contacts; employees (as approvers and submitters, and as the authors of a manual-GPS reason). |
-| **Recipients** | NMWC staff in the approval chain. Since 2026-10-05 (F1) the region's Accountant is also told of every salesman request, for information (`REQUEST_FYI`, in-app: the customer's legal name and code, as every notification). When notification e-mail is on (`NOTIFY_EMAIL_ENABLED=on`), approvers in the allowlisted roles (Manager, Supervisor, Accountant, Finance Manager — never the GM, a Steward, a Viewer or a salesman) are also e-mailed through **Google (Gmail, P9)** to their own mailboxes: counts, request kinds and links only, no customer data (`lib/email/digest.ts`). Copies stay in the sending mailbox's Sent folder and in each recipient's mailbox. |
+| **Recipients** | NMWC staff in the approval chain. Since 2026-10-05 (F1) the region's Accountant is also told of every salesman request, for information (`REQUEST_FYI`, in-app: the customer's legal name and code, as every notification). When notification e-mail is on (`NOTIFY_EMAIL_ENABLED=on`), approvers in the allowlisted roles (Manager, Supervisor, Accountant, Finance Manager and, since owner decision 6 of 2026-10-07, the GM for work waiting on him — never a Steward, a Viewer or a salesman) are also e-mailed through **Google (Gmail, P9)** to their own mailboxes: counts, request kinds and links only, no customer data (`lib/email/digest.ts`). Since the same decision, a late request (SLA escalation) is also e-mailed to the people the escalation tells — the request's region Managers, the Finance Manager or the GM, by step — re-checked at send time; the sweep's in-app copy for visibility only (a late GM step's Managers) is not e-mailed. Copies stay in the sending mailbox's Sent folder and in each recipient's mailbox. |
 | **Retention** | Indefinite. `AuditLog` and `EditApproval` are **append-only at the database** (migrations `20260914150000`, `20260914160000`) and cannot be edited or deleted by any application credential. |
 | **Lawful basis** | **[COUNSEL]** — and specifically whether the evidential purpose justifies retaining customer identifiers in a ledger that cannot be edited. See `PDPL-ASSESSMENT.md` Q4. |
 
@@ -105,7 +105,7 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Retention** | Rate-limit rows 1 day; dumps 30 days; Sentry per its own org setting **[OWNER]**; Vercel logs 30 days with Observability Plus since the Pro upgrade on 2026-09-27 (request paths, including search terms, are not scrubbed: DATA-RETENTION-SCHEDULE.md). |
 | **Lawful basis** | **[COUNSEL]** |
 
-**The rows the ledger cannot attribute to a device.** Twelve maintenance scripts write
+**The rows the ledger cannot attribute to a device.** Thirteen maintenance scripts write
 `AuditLog` directly: the bulk credential reset, the synthetic-data wipe and its
 cleanup, the branch flatten, the go-live account bootstrap, the least-privilege role
 probe (whose insert is rolled back and is not an audit record at all), and six
@@ -116,7 +116,10 @@ credit-limit zeroing (`scripts/ops/zero-credit-limits.ts`), the quarantined
 visit-day apply (`scripts/ops/apply-quarantined-visit-days.ts`), the CR-norm
 recompute (`scripts/ops/recompute-cr-norm.ts`, item 16), the completeness
 rescore (`scripts/ops/rescore-completeness.ts`, auditor recheck F21) and the
-visit-day sheet load (`scripts/ops/visitdays-from-sheets.ts`). An operator runs
+visit-day sheet load (`scripts/ops/visitdays-from-sheets.ts`); and the customer-status
+drift fix (`scripts/ops/customer-status-drift.ts`, owner decision 7, 2026-10-07), which
+writes one `CLOSE` or `REACTIVATE` row on each customer it moves, in that customer's own
+transaction. An operator runs
 these by hand against the database rather than through the application, so there is
 no request to read an address or a device string from. On those rows `ip` and
 `userAgent` are null **by construction, not by omission**, and a reader of the ledger

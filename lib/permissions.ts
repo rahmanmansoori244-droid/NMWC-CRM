@@ -6,6 +6,7 @@
 import { Role, AttachmentKind, type User, type Customer, type Branch } from '@prisma/client';
 import { ForbiddenError } from './errors';
 import type { StepScope } from './approval-chains';
+import { parseFieldPath } from './edit-values';
 
 export type SessionUser = {
   id: string;
@@ -87,20 +88,29 @@ export function canUploadPhoto(role: Role, kind?: AttachmentKind): boolean {
  *     this entry keeps the lock-check coherent for UI.)
  *   - `crNumber` / `crNumberNorm`: locked for SALESMAN only when the customer
  *     is on CREDIT terms. CASH customers may still have a CR field-collected.
+ *   - `crPhoto` (owner decision 2, 2026-10-07): the CR document follows the CR
+ *     number. A photo goes live the moment it is attached (services/photos.ts)
+ *     and an update request cannot carry one for approval, so on a CREDIT
+ *     customer a salesman can neither attach nor remove it; a Manager or the
+ *     Steward changes it.
  *
  * Steward bypasses everything.
  */
 export function isFieldLocked(
-  field: 'legalName' | 'nmwcCode' | 'crNumber' | 'crNumberNorm',
+  field: 'legalName' | 'nmwcCode' | 'crNumber' | 'crNumberNorm' | 'crPhoto',
   user: SessionUser,
   customer: Pick<Customer, 'paymentTerms'>
 ): boolean {
   if (user.role === Role.STEWARD) return false;
   if (user.role !== Role.SALESMAN) return false;
   if (field === 'legalName' || field === 'nmwcCode') return true;
-  // crNumber / crNumberNorm
+  // crNumber / crNumberNorm / crPhoto
   return customer.paymentTerms === 'CREDIT';
 }
+
+/** Owner decision 2 (2026-10-07): the refusal, and the locked slot's words. */
+export const CR_DOCUMENT_LOCKED_MESSAGE =
+  'The CR document of a credit customer is changed by your manager or the Data Steward.';
 
 /**
  * Whether a Salesman can interact with a given branch (i.e. it is on his
@@ -132,18 +142,81 @@ export function assert(condition: unknown, message = 'Forbidden'): asserts condi
 }
 
 /**
+ * Owner decision 3 (2026-10-07): the branches a request is ABOUT — the scope a
+ * Manager must cover to see it in his queue and to decide it. Not every branch
+ * of the customer: on a customer with branches in several regions, the Manager
+ * of one region decided changes to another region's branches (any-branch overlap).
+ *
+ *   - every live branch the request changes (a `branch.<id>.…` change, or a
+ *     close request's own branch);
+ *   - and, when it changes customer-level fields (name, phone, CR…) or names no
+ *     live branch, its HOME: ONE branch — the first, by id, of the submitter's
+ *     own branches of this customer frozen at submit (CustomerEdit.submitGate);
+ *     else of the live branches on his route now; else of the live branches in
+ *     his route's region now (a salesman moved since, on a request without a
+ *     usable record); else of all live branches — he has no route, or works in
+ *     a region with no branch of this customer, so where the change was made
+ *     cannot be read, and the request must still be decidable. One branch, so
+ *     a customer-level change never needs two regions' Managers.
+ *
+ * A salesman changes only branches on his route, and a route is in one region,
+ * so his request's scope is that region: the Managers who share it (the four of
+ * MCT) all see and decide it, and no other region's Manager does. A branch
+ * deleted or moved since submit is not live here: approval drops its changes.
+ */
+export function requestScopeBranches<B extends Pick<Branch, 'id' | 'regionId' | 'routeId' | 'deletedAt'>>(input: {
+  /** The customer's branches; deleted ones are ignored. */
+  branches: readonly B[];
+  fieldChanges: unknown;
+  /** A close request's branch (CustomerEdit.branchId). */
+  branchId?: string | null;
+  /** The submitter's own branches at submit (lib/edit-scope.ts parseSubmitGate). */
+  homeBranchIds?: readonly string[] | null;
+  /** The submitter's route now: the home of a request without a usable record. */
+  submitterRouteId?: string | null;
+  /** That route's region now: the home when no branch of the customer is on his route. */
+  submitterRegionId?: string | null;
+}): B[] {
+  const live = input.branches.filter((b) => !b.deletedAt);
+  const named = new Set<string>(input.branchId ? [input.branchId] : []);
+  let customerLevel = false;
+  for (const c of Array.isArray(input.fieldChanges) ? input.fieldChanges : []) {
+    const field = (c as { field?: unknown } | null)?.field;
+    const p = typeof field === 'string' ? parseFieldPath(field) : null;
+    if (p?.scope === 'customer') customerLevel = true;
+    else if (p?.scope === 'branch') named.add(p.branchId);
+  }
+  const changed = live.filter((b) => named.has(b.id));
+  if (!customerLevel && changed.length > 0) return changed;
+  const homeIds = new Set(input.homeBranchIds ?? []);
+  const candidates = [
+    live.filter((b) => homeIds.has(b.id)),
+    input.submitterRouteId ? live.filter((b) => b.routeId === input.submitterRouteId) : [],
+    input.submitterRegionId ? live.filter((b) => b.regionId === input.submitterRegionId) : [],
+    live,
+  ].find((set) => set.length > 0);
+  const home = candidates?.reduce((first, b) => (b.id < first.id ? b : first));
+  return home && !changed.includes(home) ? [...changed, home] : changed;
+}
+
+/**
  * Whether the calling user may approve a specific edit.
  *
  * RBAC-05-003 (Critical): Manager approve scope. Previously Manager returned
- * true unconditionally — any Manager could approve any edit anywhere. Now
- * requires region overlap with at least one branch of the edited customer.
+ * true unconditionally — any Manager could approve any edit anywhere.
+ *
+ * Owner decision 3 (2026-10-07): a Manager must manage the region of EVERY
+ * branch in `customerBranches`, which callers fill with the request's scope —
+ * requestScopeBranches for an update or close request, the draft branches for
+ * a new customer — so he never approves a change to a branch outside his
+ * regions. (It was any one branch of the customer.)
  *
  * EL-15: block self-approval. The submitter cannot also be the approver,
  * regardless of role.
  *
- * Caller must pass `customerBranches` (the branches of the edit's customer)
- * and `actorScope.managedRegionIds` for Manager checks. Passing an empty
- * `customerBranches` for a Manager will deny — caller must supply them.
+ * Caller must pass `customerBranches` and `actorScope.managedRegionIds` for
+ * Manager checks. Passing an empty `customerBranches` for a Manager will deny —
+ * caller must supply them.
  */
 export function canApproveSpecificEdit(
   user: SessionUser,
@@ -156,15 +229,24 @@ export function canApproveSpecificEdit(
   // EL-15: separation of duty — submitter can never approve their own edit.
   if (user.id === submittedBy.id) return false;
   if (user.role === Role.MANAGER) {
-    const branches = (context.customerBranches ?? []).filter((b) => !b.deletedAt);
-    const managed = context.managedRegionIds ?? [];
-    // Fail-closed: Manager with no scope cannot approve anything.
-    if (managed.length === 0) return false;
-    if (branches.length === 0) return false;
-    return branches.some((b) => managed.includes(b.regionId));
+    return managesEveryBranch(context.managedRegionIds ?? [], context.customerBranches ?? []);
   }
   if (user.role === Role.SUPERVISOR) return submittedBy.supervisorId === user.id;
   return false;
+}
+
+/**
+ * Owner decision 3: a Manager covers a request's scope when he manages the
+ * region of every live branch in it. Fail-closed: no regions, or no live
+ * branch, is no.
+ */
+export function managesEveryBranch(
+  managedRegionIds: readonly string[],
+  branches: ReadonlyArray<Pick<Branch, 'regionId' | 'deletedAt'>>
+): boolean {
+  const live = branches.filter((b) => !b.deletedAt);
+  if (managedRegionIds.length === 0 || live.length === 0) return false;
+  return live.every((b) => managedRegionIds.includes(b.regionId));
 }
 
 /**
@@ -176,8 +258,9 @@ export function canApproveSpecificEdit(
  *   your OWN step after a step-back cascade IS allowed — the caller must exclude
  *   the current step's own prior actors from `priorStepActorIds`.
  * - Scope per step:
- *     SUPERVISOR_OF_SUBMITTER — the submitter's supervisor OR a region-overlapping
- *                               Manager (RBAC-05-003 fallback), via canApproveSpecificEdit
+ *     SUPERVISOR_OF_SUBMITTER — the submitter's supervisor OR a Manager of every
+ *                               region of the request's scope (RBAC-05-003
+ *                               fallback; owner decision 3), via canApproveSpecificEdit
  *     REGION_OVERLAP          — the step's role (Accountant), region-scoped,
  *                               fail-closed on empty managedRegions
  *     GLOBAL                  — any holder of the step's role (Finance Manager / GM)
@@ -341,6 +424,35 @@ export function managerCanAssignSupervisor(
     return userRegionIds(supervisor).every((r) => managedRegionIds.includes(r));
   }
   return false;
+}
+
+/**
+ * Owner decision 5 (2026-10-07): only the Data Steward switches a REGION off or
+ * on. A region is shared — the four Muscat Managers all manage MCT, and the two
+ * fallback approvers cover most of the others — so any one of them could switch
+ * it off for the rest (services/routes.ts used to let every Manager of the region).
+ */
+export function canToggleRegion(role: Role): boolean {
+  return role === Role.STEWARD;
+}
+
+/**
+ * Owner decision 5, applied to routes because they have the same problem: a
+ * route belongs to its region, so in a region several active Managers manage,
+ * any of them could switch off a route worked by another Manager's salesman — and
+ * a salesman whose route is off can no longer add a customer (services/creates.ts).
+ * There only the Steward switches it. A Manager who is the region's ONLY active
+ * Manager keeps the control he had: nobody else's route is at stake.
+ *
+ * `regionManagerIds` — the ids of the region's ACTIVE Managers.
+ */
+export function canToggleRoute(
+  actor: { id: string; role: Role },
+  regionManagerIds: readonly string[]
+): boolean {
+  if (actor.role === Role.STEWARD) return true;
+  if (actor.role !== Role.MANAGER) return false;
+  return regionManagerIds.length === 1 && regionManagerIds[0] === actor.id;
 }
 
 /**

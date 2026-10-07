@@ -14,9 +14,13 @@
  * (lib/email/config.ts).
  *
  * Who must act (in-app EDIT_SUBMITTED / REACTIVATION_REQUESTED, and e-mail):
- *   UPDATE and CREATE  unchanged: the salesman's supervisorId (resolveStepAudience,
- *                      lib/notifications.ts). Region Managers who may also act
- *                      are deliberately not told (lib/notifications.ts).
+ *   UPDATE and CREATE  the salesman's supervisorId when that supervisor can act
+ *                      on the request, as for a CLOSE (resolveStepAudience,
+ *                      lib/notifications.ts); otherwise every active MANAGER of
+ *                      the request's regions, and the gap is logged. Region
+ *                      Managers who may also act are not told while he can
+ *                      (launch fix 2026-10-07: a null, disabled or out-of-region
+ *                      supervisorId used to alert nobody).
  *   CLOSE (new)        his supervisor when that supervisor can act on the request
  *                      (an active SUPERVISOR, or an active MANAGER who manages the
  *                      branch's region: canApproveSpecificEdit refuses a Manager
@@ -31,10 +35,19 @@
  * Region-wide Manager FYI is OFF: Muscat has several class Managers, and each
  * would be told of every Muscat salesman's request.
  *
- * Never e-mailed, whatever the kind: GM, STEWARD, VIEWER, SALESMAN, and any role
- * added later (EMAIL_ROLES is an allowlist). The GM and the Steward keep their
- * existing in-app rows: the GM must act on every CREDIT request, and the
- * Stewards drive the Temix hand-off.
+ * Never e-mailed, whatever the kind: STEWARD, VIEWER, SALESMAN, and any role
+ * added later (EMAIL_ROLES is an allowlist). The Steward keeps his in-app rows:
+ * the Stewards drive the Temix hand-off.
+ *
+ * Owner decision 6 (2026-10-07) changed two of the defaults above. The GM is
+ * e-mailed like the other approvers, for work waiting on HIM only — a credit
+ * request at the GM step, and a late request the escalation sends him — never
+ * for information (EMAIL_ACT_ONLY_ROLES). And a late request (SLA_BREACH) is
+ * e-mailed to the people the escalation tells (lib/escalation.ts: the region's
+ * Managers, then the GM at 2x), re-checked at send time (EMAIL_SLA_BREACH) —
+ * except where the escalation tells them for visibility only (a late GM step's
+ * Managers, who can neither decide nor chase it): e-mail goes only to people who
+ * can act.
  */
 import { Role, type NotificationKind } from '@prisma/client';
 
@@ -64,23 +77,36 @@ export const NOTIFY_PHOTO_UPLOADS = false;
 export const SUPERVISING_ROLES: readonly Role[] = [Role.MANAGER, Role.SUPERVISOR];
 
 /**
- * Roles that may receive notification E-MAIL. An allowlist: GM, STEWARD, VIEWER,
+ * Roles that may receive notification E-MAIL. An allowlist: STEWARD, VIEWER,
  * SALESMAN and any future role fail closed. Re-checked against the recipient's
  * CURRENT role, active flag and address at send time (lib/email/drain.ts).
+ * The GM since owner decision 6 (2026-10-07): "like the other approvers".
  */
 export const EMAIL_ROLES: readonly Role[] = [
   Role.MANAGER,
   Role.SUPERVISOR,
   Role.ACCOUNTANT,
   Role.FINANCE_MANAGER,
+  Role.GM,
 ];
 
 /**
- * SLA breaches are not e-mailed in v1: the escalation chain is still "[Open —
- * owner to confirm]" (lib/escalation.ts). Turning this on adds SLA_BREACH to
- * EMAIL_KINDS; the drain e-mails it only while the request is still open.
+ * Of EMAIL_ROLES, the roles e-mailed only rows that ask them to act or chase:
+ * a row that only informs (REQUEST_FYI) is skipped as SKIPPED_ROLE, whoever wrote
+ * it. Owner decision 6 asked for the GM's e-mail for work waiting on him.
  */
-export const EMAIL_SLA_BREACH = false;
+export const EMAIL_ACT_ONLY_ROLES: readonly Role[] = [Role.GM];
+
+/**
+ * Owner decision 6 (2026-10-07): late requests are e-mailed, to the people the
+ * escalation tells (lib/escalation.ts — the region's Managers, then the GM at
+ * 2x), not only shown in-app. The drain e-mails an SLA_BREACH row only while the
+ * request is still open and its recipient is still one the escalation would tell
+ * and can act on it — not a late GM step's Managers, told in-app for visibility
+ * only (lib/email/eligibility.ts escalationReaches); a decision marks the row read
+ * (SETTLED_ON_DECISION_KINDS), and a read row is never e-mailed.
+ */
+export const EMAIL_SLA_BREACH = true;
 
 /**
  * Kinds that are e-mailed. EDIT_STAGE_ADVANCED is sent only when its recipient
@@ -104,6 +130,18 @@ export const MUST_ACT_KINDS: readonly NotificationKind[] = [
 ];
 
 /**
+ * Launch fix (2026-10-07): the rows a decision settles. When anyone decides a
+ * request (a step approved or rejected, a reactivation approved or kept closed),
+ * every unread row of these kinds about it, held by anyone but its submitter, is
+ * marked read in the same transaction (lib/notifications.ts settleRequestAlerts):
+ * the step they asked for has been taken, so they no longer count in a red bell.
+ * Before, only the recipient's own click marked a row read, so with four Managers
+ * sharing a region a supervisor's bell counted requests a colleague had already
+ * decided. The submitter's own rows are his progress pings and are left alone.
+ */
+export const SETTLED_ON_DECISION_KINDS: readonly NotificationKind[] = [...MUST_ACT_KINDS, 'SLA_BREACH'];
+
+/**
  * The in-app bell (app/(app)/layout.tsx, components/nmwc/TopBar.tsx) is the only
  * in-app alert, and its red count means "something waits on you". These kinds
  * are counted apart from it, in a muted second count: since F1 the region's
@@ -116,6 +154,26 @@ export const MUST_ACT_KINDS: readonly NotificationKind[] = [
  * red count.
  */
 export const BELL_INFORMATION_KINDS: readonly NotificationKind[] = ['REQUEST_FYI'];
+
+/**
+ * Launch fix (2026-10-07): a SALESMAN's rows are about his own requests, and only
+ * one kind asks him to act — EDIT_NEEDS_CORRECTION, a request returned or refused,
+ * whose reason he must read. These only tell him how a request went: "advanced"
+ * and "approved" (the same kinds ask an approver or a Steward to act, so the split
+ * is by role), Temix's acknowledgement, and FYI. Counted in his red badge they
+ * read as work he did not have.
+ */
+export const SALESMAN_BELL_INFORMATION_KINDS: readonly NotificationKind[] = [
+  ...BELL_INFORMATION_KINDS,
+  'EDIT_STAGE_ADVANCED',
+  'EDIT_APPROVED_FINAL',
+  'TEMIX_SYNC_ACKED',
+];
+
+/** The kinds counted apart from `role`'s red bell (lib/notification-bell.ts). */
+export function bellInformationKinds(role: Role): readonly NotificationKind[] {
+  return role === Role.SALESMAN ? SALESMAN_BELL_INFORMATION_KINDS : BELL_INFORMATION_KINDS;
+}
 
 /**
  * Delivery. The drain (app/api/cron/email-drain, lib/email/drain.ts) runs every

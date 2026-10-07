@@ -253,7 +253,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     await purgeEditApprovals(prisma, { where: { editId: { in: editIds } } });
     await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
     await purgeAuditLog(prisma, { where: { actorId: { in: ids.userIds } } });
-    await prisma.rateLimit.deleteMany({ where: { key: { in: ids.userIds.flatMap((u) => [`edit:${u}`, `photo:${u}`]) } } });
+    await prisma.rateLimit.deleteMany({ where: { key: { in: ids.userIds.flatMap((u) => [`edit:${u}`, `edit-draft:${u}`, `photo:${u}`]) } } });
     // Photo slots reference attachments (and vice versa): clear the slots first.
     await prisma.customer.updateMany({ where: { id: { in: allCustomerIds } }, data: { crPhotoId: null } });
     await prisma.branch.updateMany({ where: { customerId: { in: allCustomerIds } }, data: { shopPhotoId: null, signboardPhotoId: null } });
@@ -403,12 +403,20 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     asSalesman();
     const customerId = ids.customerIds[1]!; // the individual: no phone, no contact, no CR
     const branchId = ids.branchIds[`${sfx}002`]!;
+    // Owner decision 4 (2026-10-07): only the branches a request changes are
+    // gated, so this one changes the branch as well as the phone. A phone fix
+    // alone is held to the customer-level fields only.
+    const phoneOnly = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { primaryPhone: '+968 9111 2222' } })
+    );
+    expect(phoneOnly.ok).toBe(false);
+    if (!phoneOnly.ok) expect(Object.keys(phoneOnly.fields ?? {})).toEqual(['customer.contactPerson']);
     const res = await edits.submitEditAction(
       await editPayload(prisma, {
         customerId,
         isDraft: false,
         customer: { primaryPhone: '+968 9111 2222' },
-        branches: [{ branchId }],
+        branches: [{ branchId, openingHours: '08:00-20:00' }],
       })
     );
     expect(res.ok).toBe(false);
@@ -661,6 +669,15 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const live = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
     expect(live.contactRole).toBe('Owner'); // rejected proposal never applied
 
+    // Launch fix: what Today, Work, /rejected and the edit page read.
+    const returned = await import('@/lib/returned-work');
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId)).toContain(editId);
+    expect(
+      await returned.openReturnedIds(prisma, ids.salesmanId, { customerId, updatesOnly: true })
+    ).toEqual([editId]);
+    const waitingBefore = await returned.countOpenReturned(prisma, ids.salesmanId);
+    expect(waitingBefore).toBeGreaterThanOrEqual(1);
+
     // Resubmit (a new edit) and approve.
     asSalesman();
     const res2 = await edits.submitEditAction(
@@ -668,6 +685,19 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     );
     expect(res2.ok, JSON.stringify(res2)).toBe(true);
     if (!res2.ok) return;
+
+    // Launch fix: the sent-back request is answered — it leaves every "Needs
+    // correction" count and list at once, before the new one is decided — and
+    // stays on record as sent back, with an audit row naming its answer.
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId)).not.toContain(editId);
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId, { customerId, updatesOnly: true })).toEqual([]);
+    expect(await returned.countOpenReturned(prisma, ids.salesmanId)).toBe(waitingBefore - 1);
+    expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).state).toBe('NEEDS_CORRECTION');
+    const answered = await prisma.auditLog.findFirstOrThrow({
+      where: { entityType: 'CustomerEdit', entityId: editId, action: 'UPDATE', actorId: ids.salesmanId },
+    });
+    expect(answered.reason).toBe('resubmitted: answered by a new request');
+    expect(answered.after).toMatchObject({ answeredBy: res2.data.editId });
     asManager();
     const fd2 = new FormData();
     fd2.set('editId', res2.data.editId);
@@ -675,6 +705,105 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect((await edits.approveEditAction(fd2)).ok).toBe(true);
     const final = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
     expect(final.contactRole).toBe('Owner / Partner');
+  });
+
+  it('launch fix: Save draft keeps one draft per salesman per customer, saved over in place', async () => {
+    asSalesman();
+    const customerId = ids.customerIds[1]!;
+    const branchId = ids.branchIds[`${sfx}002`]!;
+    const drafts = () =>
+      prisma.customerEdit.findMany({
+        where: { submittedById: ids.salesmanId, customerId, state: 'DRAFT' },
+        select: { id: true, fieldChanges: true },
+      });
+    const save = async (notes: string) => {
+      const res = await edits.submitEditAction(
+        await editPayload(prisma, { customerId, isDraft: true, customer: { notes }, branches: [{ branchId }] })
+      );
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      return res.ok ? res.data.editId : '';
+    };
+    const first = await save('First draft');
+    const second = await save('Second draft');
+    expect(second).toBe(first);
+    const rows = await drafts();
+    expect(rows.map((r) => r.id)).toEqual([first]);
+    expect(rows[0]!.fieldChanges).toEqual([{ field: 'customer.notes', before: null, after: 'Second draft' }]);
+    // And no other draft of this customer was written by either save.
+    expect(await prisma.customerEdit.count({ where: { customerId, state: 'DRAFT' } })).toBe(1);
+  });
+
+  it('launch fix: a new-customer request he abandoned stops blocking the shop once he withdraws it', async () => {
+    const creates = await import('@/services/creates');
+    const guards = await import('@/lib/create-guards');
+    const { normalizeCR } = await import('@/lib/cr');
+    const cr = `QA${sfx}`.toUpperCase();
+    asSalesman();
+    const draft = await creates.submitCreateAction({
+      isDraft: true,
+      customer: { legalName: `ZZ Abandoned ${sfx}`, paymentTerms: 'CASH', crNumber: cr },
+      branches: [{ branchName: 'Main' }],
+    });
+    expect(draft.ok, JSON.stringify(draft)).toBe(true);
+    if (!draft.ok) return;
+    const editId = draft.data.editId;
+
+    // Another salesman, at submit: told whose request it is and where it stands.
+    const otherSubmit = () =>
+      prisma.$transaction(async (tx) => {
+        const args = { crNumberNorm: normalizeCR(cr), legalName: `ZZ Another ${sfx}`, primaryPhoneNorm: null, regionIds: [ids.regionId] };
+        await guards.lockCreateIdentity(tx, args);
+        await guards.assertNoExactCreateDuplicate(tx, {
+          ...args,
+          includeOpenRequests: true,
+          callerId: ids.otherSalesmanId,
+          callerRouteId: ids.otherRouteId,
+        });
+      });
+    await expect(otherSubmit()).rejects.toMatchObject({
+      code: 'DUPLICATE_CR',
+      message: `QA Salesman ${sfx}'s new-customer request with this CR number is already in progress (saved as a draft). Ask them, or your supervisor, before adding it again.`,
+    });
+
+    // Only its own salesman can withdraw it; to anyone else it does not exist.
+    asOtherSalesman();
+    expect(await creates.withdrawCreateAction({ editId })).toMatchObject({ ok: false, code: 'NOT_FOUND' });
+    asSalesman();
+    expect(await creates.withdrawCreateAction({ editId })).toMatchObject({ ok: true, data: { editId } });
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(row).toMatchObject({ state: 'REJECTED', reviewedById: ids.salesmanId, decisionCategory: 'withdrawn' });
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { entityType: 'CustomerEdit', entityId: editId, reason: 'withdrawn by the salesman' },
+    });
+    expect(audit.after).toMatchObject({ state: 'REJECTED', from: 'DRAFT' });
+    // A retry whose first answer was lost: the same answer.
+    expect(await creates.withdrawCreateAction({ editId })).toMatchObject({ ok: true });
+
+    // The CR is free again — and the withdrawn request cannot be sent again.
+    await expect(otherSubmit()).resolves.toBeUndefined();
+    const again = await creates.submitCreateAction({
+      editId,
+      isDraft: true,
+      customer: { legalName: `ZZ Abandoned ${sfx}`, paymentTerms: 'CASH', crNumber: cr },
+      branches: [{ branchName: 'Main' }],
+    });
+    expect(again).toMatchObject({ ok: false, code: 'EDIT_LOCKED' });
+
+    // One in review cannot be withdrawn: an approver has it.
+    const inReview = await prisma.customerEdit.create({
+      data: {
+        target: 'CUSTOMER',
+        process: 'CREATE',
+        state: 'SUBMITTED',
+        submittedAt: new Date(),
+        submittedById: ids.salesmanId,
+        fieldChanges: [],
+        attachmentChanges: [],
+      },
+    });
+    expect(await creates.withdrawCreateAction({ editId: inReview.id })).toMatchObject({ ok: false, code: 'EDIT_LOCKED' });
+    expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: inReview.id } })).state).toBe('SUBMITTED');
+    await purgeCustomerEdits(prisma, { where: { id: inReview.id } });
   });
 
   it('a salesman from another route cannot edit the customer at all', async () => {
@@ -695,7 +824,11 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const cr3 = await finalizedPhoto('CR');
     const shop3 = await finalizedPhoto('SHOP');
     const sign3 = await finalizedPhoto('SIGNBOARD');
-    await photos.attachPhotoAction({ attachmentId: cr3, customerId: c3, slot: 'CR' });
+    // Owner decision 2 (2026-10-07): the CR document of a CREDIT customer is not his to change.
+    expect(await photos.attachPhotoAction({ attachmentId: cr3, customerId: c3, slot: 'CR' })).toMatchObject({
+      ok: false,
+      code: 'FORBIDDEN',
+    });
     await photos.attachPhotoAction({ attachmentId: shop3, branchId: b3, slot: 'SHOP' });
     await photos.attachPhotoAction({ attachmentId: sign3, branchId: b3, slot: 'SIGNBOARD' });
     const pending = await edits.submitEditAction(
@@ -788,7 +921,8 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(mine).toBeTruthy();
     expect(Number(mine!.customers_updated)).toBe(1);
     expect(Number(mine!.gps_captured)).toBe(1);
-    expect(Number(mine!.photos_added)).toBe(6);
+    // Three on the cash customer, shop and signboard on the credit one (its CR was refused).
+    expect(Number(mine!.photos_added)).toBe(5);
     expect(Number(mine!.edits_pending)).toBe(1);
 
     // onlyChanged drops the untouched rows.
@@ -1651,5 +1785,103 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(after.version).toBe(before.version);
     expect(after.updatedAt).toEqual(before.updatedAt);
     expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: res.data.editId } })).state).toBe('APPROVED');
+  });
+
+  // ── launch fix (review): returned work he will not send again ─────────────
+  it('launch fix: a sent-back update he has nothing to send again for is cleared by him, and stays on record as sent back', async () => {
+    const { customerId } = await readyCustomer(`${sfx}029`);
+    const returned = await import('@/lib/returned-work');
+    asSalesman();
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { primaryPhone: '+96892229999' } })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const editId = res.data.editId;
+    asManager();
+    const fd = new FormData();
+    fd.set('editId', editId);
+    fd.set('decisionToken', await freshDecisionToken(prisma, editId));
+    fd.set('reason', 'The phone on file is right — do not change it.');
+    fd.set('category', 'wrong_info');
+    expect((await edits.rejectEditAction(fd)).ok).toBe(true);
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId, { customerId })).toEqual([editId]);
+    const waiting = await returned.countOpenReturned(prisma, ids.salesmanId);
+
+    // He has nothing to send: the value on file is right. A submit cannot answer it.
+    asSalesman();
+    const nothing = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { primaryPhone: '+96892220000' } })
+    );
+    expect(nothing).toMatchObject({ ok: false, fields: { _form: 'No changes to submit.' } });
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId, { customerId })).toEqual([editId]);
+
+    // Nobody else can clear it.
+    asOtherSalesman();
+    expect(await edits.clearReturnedEditAction({ editId })).toMatchObject({ ok: false, code: 'NOT_FOUND' });
+
+    asSalesman();
+    expect(await edits.clearReturnedEditAction({ editId })).toEqual({ ok: true, data: { editId } });
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId, { customerId })).toEqual([]);
+    expect(await returned.countOpenReturned(prisma, ids.salesmanId)).toBe(waiting - 1);
+    // The decision stands as made: still sent back, with its reason.
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(row).toMatchObject({ state: 'NEEDS_CORRECTION', decisionReason: 'The phone on file is right — do not change it.' });
+    const trail = () =>
+      prisma.auditLog.findMany({
+        where: { entityType: 'CustomerEdit', entityId: editId, reason: returned.RETURNED_CLEARED_REASON },
+      });
+    expect((await trail()).map((a) => a.actorId)).toEqual([ids.salesmanId]);
+    // A second tap: the same answer, and one row.
+    expect(await edits.clearReturnedEditAction({ editId })).toEqual({ ok: true, data: { editId } });
+    expect(await trail()).toHaveLength(1);
+    // The customer was never touched.
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: customerId } })).primaryPhone).toBe('+96892220000');
+  });
+
+  it("launch fix: a departed salesman's new-customer draft or sent-back request no longer blocks the shop; one in review still does", async () => {
+    const guards = await import('@/lib/create-guards');
+    const { normalizeCR } = await import('@/lib/cr');
+    const cr = `QL${sfx}`.toUpperCase();
+    const left = await prisma.customerEdit.create({
+      data: {
+        target: 'CUSTOMER',
+        process: 'CREATE',
+        state: 'DRAFT',
+        submittedById: ids.otherSalesmanId,
+        fieldChanges: [],
+        attachmentChanges: [],
+        customerDraft: {
+          create: { legalName: `ZZ Left ${sfx}`, paymentTerms: 'CASH', crNumber: cr, crNumberNorm: normalizeCR(cr) },
+        },
+      },
+    });
+    const check = () =>
+      prisma.$transaction(async (tx) => {
+        await guards.assertNoExactCreateDuplicate(tx, {
+          crNumberNorm: normalizeCR(cr),
+          legalName: `ZZ Mine ${sfx}`,
+          primaryPhoneNorm: null,
+          regionIds: [ids.regionId],
+          includeOpenRequests: true,
+          callerId: ids.salesmanId,
+          callerRouteId: ids.routeId,
+        });
+      });
+    try {
+      await expect(check()).rejects.toMatchObject({ code: 'DUPLICATE_CR' });
+      await prisma.user.update({ where: { id: ids.otherSalesmanId }, data: { isActive: false } });
+      await expect(check()).resolves.toBeUndefined();
+      await prisma.customerEdit.update({ where: { id: left.id }, data: { state: 'NEEDS_CORRECTION', submittedAt: new Date() } });
+      await expect(check()).resolves.toBeUndefined();
+      await prisma.customerEdit.update({ where: { id: left.id }, data: { state: 'SUBMITTED' } });
+      await expect(check()).rejects.toMatchObject({
+        code: 'DUPLICATE_CR',
+        message: `QB Salesman ${sfx}'s new-customer request with this CR number is already in review. Ask your supervisor before adding it again.`,
+      });
+    } finally {
+      await prisma.user.update({ where: { id: ids.otherSalesmanId }, data: { isActive: true } });
+      await purgeCustomerEdits(prisma, { where: { id: left.id } });
+    }
   });
 });

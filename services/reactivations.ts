@@ -1,7 +1,16 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, EditState, EditTarget, EditProcess, type Prisma } from '@prisma/client';
+import {
+  Role,
+  EditState,
+  EditTarget,
+  EditProcess,
+  AttachmentKind,
+  CustomerStatus,
+  type Attachment,
+  type Prisma,
+} from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
@@ -15,6 +24,7 @@ import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { lockCustomerRow } from '@/lib/locks';
+import { followBranchStatus, statusEvents } from '@/lib/customer-status';
 import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/status-evidence';
 import { stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from '@/lib/working-hours';
@@ -28,6 +38,8 @@ import {
 } from '@/lib/submission-replay';
 import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
+import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
+import { UNWIRED_LIVE } from '@/lib/photo-attach';
 
 async function require(role?: Role[]) {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -86,12 +98,57 @@ function receiptFor(meId: string, formData: FormData, isReactivation: boolean) {
 type SessionUser = Awaited<ReturnType<typeof require>>;
 
 /**
+ * Launch review: the close / reactivate form (BranchStatusActions) attached its
+ * evidence photo to the LIVE branch, as an extra photo, the moment it was
+ * uploaded — so a Cancel, or a submit refused here, left it on the branch. The
+ * form now sends it on no slot, and wireEvidence puts it on the branch inside
+ * the transaction that writes the request: it reaches the branch only with a
+ * request that was accepted. A photo already on this branch (a page opened
+ * before this change) is taken as before; one wired anywhere else is not.
+ */
+function evidenceUnwired(att: Attachment, branchId: string): boolean | null {
+  if (att.branchId === branchId || att.branchExtraId === branchId) return false;
+  if (!att.customerId && !att.branchId && !att.branchExtraId && !att.editId) return true;
+  return null;
+}
+
+/**
+ * The photo onto the branch as one of its extra photos, written as the FREE
+ * slot's attach writes it (services/photos.ts), audit row included. The claim
+ * re-asserts "live, on no slot, not claimed by a new-customer request, his own"
+ * at the moment it writes (UNWIRED_LIVE, N06): a photo removed or taken in the
+ * gap is refused, and the request with it, since this runs in its transaction.
+ */
+async function wireEvidence(
+  tx: Prisma.TransactionClient,
+  env: Awaited<ReturnType<typeof getAuditEnvelope>>,
+  attachmentId: string,
+  branchId: string,
+  meId: string
+): Promise<void> {
+  const claim = await tx.attachment.updateMany({
+    where: { id: attachmentId, ...UNWIRED_LIVE, editId: null, capturedById: meId },
+    data: { branchExtraId: branchId, branchId, kind: AttachmentKind.FREE },
+  });
+  if (claim.count !== 1) {
+    throw new ValidationError({ attachmentId: 'This photo was just removed or used elsewhere. Take a new one.' });
+  }
+  await writeAudit(tx, env, {
+    action: 'UPDATE',
+    entityType: 'Branch',
+    entityId: branchId,
+    after: { slot: 'FREE', attachmentId } as unknown as Prisma.InputJsonValue,
+    reason: 'photo attached',
+  });
+}
+
+/**
  * Salesman submits a reactivation request for a CLOSED branch.
  *
  * QA-008 fix: requires a fresh photo (≤24h old) attached to this branch as
- * evidence. The salesman captures the photo first via PhotoCaptureSlot (which
- * sets Attachment.branchExtraId or shopPhotoId), then submits this action with
- * the attachment id.
+ * evidence. The salesman captures the photo first via PhotoCaptureSlot, on no
+ * slot, then submits this action with the attachment id; the photo goes onto
+ * the branch with the request (wireEvidence).
  */
 export async function requestReactivationAction(formData: FormData): SafeAction<SubmitReceipt> {
   return runAction(() => requestReactivationCore(formData));
@@ -135,7 +192,8 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   }
 
   // Photo evidence must:
-  //   1) exist, 2) be captured by this salesman, 3) be ≤24h old, 4) belong to this branch
+  //   1) exist, 2) be captured by this salesman, 3) be ≤24h old, 4) belong to this
+  //   branch, or to no slot yet (wired with the request)
   // UXI-008: filter soft-deleted. EL-11/EL-12: photo evidence must have been
   // captured AFTER the most recent status change on this branch — otherwise
   // a salesman can use a pre-closure shop photo to "prove" the shop reopened.
@@ -161,11 +219,14 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
         'Photo was captured before the last status change. Take a new photo at the shop today.',
     });
   }
-  if (att.branchId !== branch.id && att.branchExtraId !== branch.id) {
+  // On this branch already, or on no slot yet: wired below, with the request.
+  const unwired = evidenceUnwired(att, branch.id);
+  if (unwired === null) {
     throw new ValidationError({
       attachmentId: 'Photo is not attached to this branch.',
     });
   }
+  const env = unwired ? await getAuditEnvelope(me.id) : null;
 
   const reactSubmittedAt = new Date();
   // F1 / A1.7: the request and the notifications of it commit together, so a
@@ -175,6 +236,7 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   // A failed hierarchy lookup now fails the submit, as a new-customer submit's
   // notification always has; the salesman's retry is answered or re-run.
   const edit = await prisma.$transaction(async (tx) => {
+    if (env) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {
         target: EditTarget.BRANCH,
@@ -227,7 +289,8 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
 
 /**
  * Salesman marks a branch as CLOSED. Requires a fresh photo (≤24h old) of the
- * closed shop attached as the `shopPhotoId` slot or as a free photo.
+ * closed shop: on this branch already, or on no slot yet, when it goes onto the
+ * branch with the request (wireEvidence).
  */
 export async function markBranchClosedAction(formData: FormData): SafeAction<SubmitReceipt> {
   return runAction(() => markBranchClosedCore(formData));
@@ -294,17 +357,21 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
         'Photo was captured before the last status change. Take a new photo at the shop today.',
     });
   }
-  if (att.branchId !== branch.id && att.branchExtraId !== branch.id) {
+  // On this branch already, or on no slot yet: wired below, with the request.
+  const unwired = evidenceUnwired(att, branch.id);
+  if (unwired === null) {
     throw new ValidationError({
       attachmentId: 'Photo is not attached to this branch.',
     });
   }
+  const env = unwired ? await getAuditEnvelope(me.id) : null;
 
   // Submit as a regular CustomerEdit so a Supervisor approves the closure.
   const closeSubmittedAt = new Date();
   // F1 / A1.7: as for a reactivation — the request and its notifications commit
   // together, and the P2002 is translated outside the transaction.
   const edit = await prisma.$transaction(async (tx) => {
+    if (env) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {
         target: EditTarget.BRANCH,
@@ -352,7 +419,8 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
 }
 
 /**
- * Manager approves the reactivation: branch goes back to ACTIVE, customer too if all branches now active.
+ * Manager approves the reactivation: branch goes back to ACTIVE, and the customer
+ * with it (owner decision 7: a customer with at least one ACTIVE branch is ACTIVE).
  */
 export async function approveReactivationAction(formData: FormData): SafeAction<void> {
   return runAction(() => approveReactivationCore(formData));
@@ -463,17 +531,17 @@ async function approveReactivationCore(formData: FormData) {
         lastStatusChangeAt: new Date(),
       },
     });
-    // If any branch active, customer is active
-    const others = await tx.branch.findMany({
-      where: { customerId: edit.customerId!, deletedAt: null },
-    });
-    const allActive = others.every((b) => b.status === 'ACTIVE');
-    if (allActive) {
-      await tx.customer.update({
-        where: { id: edit.customerId! },
-        data: { status: 'ACTIVE', lastEditedById: me.id },
-      });
-    }
+    // Owner decision 7 (2026-10-07): a customer with at least one ACTIVE branch
+    // is ACTIVE — the same rule a closure follows (lib/customer-status.ts). It
+    // used to wait until EVERY branch was active, so reopening one shop of a
+    // closed customer with another still closed left the customer CLOSED.
+    await followBranchStatus(
+      tx,
+      env,
+      edit.customerId!,
+      statusEvents(CustomerStatus.CLOSED, CustomerStatus.ACTIVE),
+      { actorId: me.id, via: `reactivation ${editId}` }
+    );
     // Recompute scores
     const fresh = await tx.customer.findUniqueOrThrow({
       where: { id: edit.customerId! },
@@ -494,6 +562,17 @@ async function approveReactivationCore(formData: FormData) {
       entityType: 'Branch',
       entityId: edit.branchId!,
       reason: edit.decisionReason ?? undefined,
+    });
+    // Launch fix (2026-10-07): the decision answers every Manager's
+    // REACTIVATION_REQUESTED (and any breach ping), and the salesman is told —
+    // before, a reactivation's outcome reached him only if he went looking.
+    await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
+    await notifyUsers(tx, [edit.submittedById], {
+      kind: 'EDIT_APPROVED_FINAL',
+      title: 'Reactivation approved',
+      body: `${edit.customer!.legalName} (${edit.customer!.nmwcCode}) — your reactivation request was approved; the branch is active again.`,
+      editId,
+      customerId: edit.customerId ?? undefined,
     });
   });
 
@@ -517,7 +596,12 @@ async function rejectReactivationCore(formData: FormData) {
   // escalation but it still touches another Manager's queue.
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
-    include: { branch: true, submittedBy: { select: { id: true } } },
+    include: {
+      branch: true,
+      submittedBy: { select: { id: true } },
+      // For the salesman's notification: the name and code, never more.
+      customer: { select: { legalName: true, nmwcCode: true } },
+    },
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (!edit.branch) throw new NotFoundError('Branch missing.');
@@ -551,14 +635,18 @@ async function rejectReactivationCore(formData: FormData) {
   await prisma.$transaction(async (tx) => {
     // QA-C13: atomic claim (PROD-001) so a reject racing a concurrent approve/reject
     // can't double-decide — the loser aborts before writing an audit row.
+    // Launch fix (2026-10-07): "Keep closed" is final, so it ends REJECTED, not
+    // NEEDS_CORRECTION — nothing on it can be corrected, and it used to sit on the
+    // salesman's Needs correction lists for ever. decisionReason keeps HIS reason
+    // for asking (it was overwritten, and lost); the Manager's is on the REJECT
+    // audit row below and in the salesman's notification.
     const claim = await tx.customerEdit.updateMany({
       where: { id: editId, state: EditState.SUBMITTED, isReactivation: true },
       data: {
-        state: EditState.NEEDS_CORRECTION,
+        state: EditState.REJECTED,
         pendingRole: null,
         reviewedById: me.id,
         reviewedAt: new Date(),
-        decisionReason: reason,
       },
     });
     if (claim.count === 0) {
@@ -572,6 +660,17 @@ async function rejectReactivationCore(formData: FormData) {
       entityType: 'CustomerEdit',
       entityId: editId,
       reason,
+    });
+    // As on approve: every Manager's request row is answered, and the salesman
+    // is told — the red row he acts on, since he must read why.
+    await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
+    const name = edit.customer ? `${edit.customer.legalName} (${edit.customer.nmwcCode})` : 'A closed branch';
+    await notifyUsers(tx, [edit.submittedById], {
+      kind: 'EDIT_NEEDS_CORRECTION',
+      title: 'Reactivation refused',
+      body: `${name} — your reactivation request was refused; the branch stays closed: ${reason}`,
+      editId,
+      customerId: edit.customerId ?? undefined,
     });
   });
   revalidatePath('/reactivations');

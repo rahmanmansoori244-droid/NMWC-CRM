@@ -11,8 +11,9 @@
  * Fixer review (2026-10-05): the badge answers by the drain's own rule
  * (lib/notify-address.ts) and only for the roles that are e-mailed
  * (lib/notify-policy.ts EMAIL_ROLES). A stored value the drain skips is shown as
- * not usable, and the GM, a Steward or a salesman gets no badge and no e-mail
- * button, since nothing is ever e-mailed to them.
+ * not usable, and a Steward or a salesman gets no badge and no e-mail button,
+ * since nothing is ever e-mailed to them. The GM does since owner decision 6
+ * (2026-10-07): he is e-mailed credit requests at his step and late requests.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
@@ -63,6 +64,7 @@ vi.mock('@/lib/db', () => ({
       findMany: async (args: { select: Record<string, unknown> }) => h.rows.map((r) => project(r, args.select)),
     },
     route: { findMany: async () => [] },
+    region: { findMany: async () => [] },
   },
 }));
 
@@ -103,7 +105,7 @@ beforeEach(() => {
     account('gm', 'GM', 'general.manager@example.test'),
     account('sal', 'SALESMAN', null, {
       ownedRouteId: 'r1',
-      ownedRoute: { code: 'R1', name: 'Route 1', regionId: 'g1' },
+      ownedRoute: { code: 'R1', name: 'Route 1', regionId: 'g1', region: { code: 'G1' } },
       managedRegions: [],
     }),
   ];
@@ -117,8 +119,8 @@ describe('/users and e-mail addresses', () => {
     expect(html).not.toContain(ADDRESS);
     expect(html).not.toContain('steward.own@example.test');
     expect(container.textContent).toContain('E-mail on file');
-    // Only the Accountant's: the Steward and the GM are never e-mailed.
-    expect(container.querySelectorAll('span[title^="An e-mail address is on file"]')).toHaveLength(1);
+    // The Accountant's and the GM's (owner decision 6): the Steward is never e-mailed.
+    expect(container.querySelectorAll('span[title^="An e-mail address is on file"]')).toHaveLength(2);
     expect(html).not.toContain('general.manager@example.test');
   });
 
@@ -134,10 +136,15 @@ describe('/users and e-mail addresses', () => {
     expect(h.rowProps.find((p) => p.userId === 'nodot')).toMatchObject({ hasEmail: true, canEditEmail: true });
   });
 
-  it('the GM, a Steward and a salesman get no e-mail badge and no e-mail button: they are never e-mailed', async () => {
+  it('a Steward and a salesman get no e-mail badge and no e-mail button: they are never e-mailed', async () => {
     h.rows.push(account('stw2', 'STEWARD', 'steward.two@example.test'));
     render(await UsersPage({ searchParams: Promise.resolve({}) }));
-    for (const id of ['gm', 'stw2', 'sal']) expect(h.rowProps.find((p) => p.userId === id), id).toMatchObject({ canEditEmail: false });
+    for (const id of ['stw2', 'sal']) expect(h.rowProps.find((p) => p.userId === id), id).toMatchObject({ canEditEmail: false });
+  });
+
+  it('owner decision 6: the GM is e-mailed work at his step, so the Steward can set his address', async () => {
+    render(await UsersPage({ searchParams: Promise.resolve({}) }));
+    expect(h.rowProps.find((p) => p.userId === 'gm')).toMatchObject({ hasEmail: true, canEditEmail: true });
   });
 
   it('hands the row actions a boolean, never the address', async () => {
@@ -159,5 +166,13 @@ describe('/users and e-mail addresses', () => {
     render(await UsersPage({ searchParams: Promise.resolve({}) }));
     expect(h.rowProps.length).toBeGreaterThan(0);
     for (const p of h.rowProps) expect(p.canEditEmail).toBe(false);
+  });
+
+  // Launch fix (2026-10-07): Disable and Reset password always refuse one's own
+  // account, so the own row is marked and gets the self-service link instead
+  // (tests/unit/users-refusal-feedback.test.tsx drives the component).
+  it('marks the viewer’s own row, and only that row', async () => {
+    render(await UsersPage({ searchParams: Promise.resolve({}) }));
+    expect(h.rowProps.filter((p) => p.isSelf === true).map((p) => p.userId)).toEqual(['stw']);
   });
 });

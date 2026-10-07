@@ -5,8 +5,15 @@
  * mail leaves the test.
  *
  *   - Only allowlisted, active recipients with an address are e-mailed; every
- *     other row is marked with why (SKIPPED_ROLE for the GM and the Steward,
- *     SKIPPED_INACTIVE, SKIPPED_NO_ADDRESS, SKIPPED_STALE, SKIPPED_RESOLVED).
+ *     other row is marked with why (SKIPPED_ROLE for the Steward and a Viewer,
+ *     SKIPPED_INACTIVE, SKIPPED_NO_ADDRESS, SKIPPED_STALE, SKIPPED_RESOLVED —
+ *     the GM's row about a request not at his step).
+ *   - Owner decision 6 (2026-10-07): the GM is e-mailed a credit request at his
+ *     step, and a late request (SLA_BREACH) reaches the region's Managers and the
+ *     GM — each in one digest per run — and never a Manager of another region; a
+ *     request with shops in two regions reaches both regions' Managers; a late GM
+ *     step's Managers are told in-app for visibility only and are not e-mailed,
+ *     while the GM, as the sweep's fallback, is (he can decide it).
  *   - A PRE_FEATURE row (what the migration made of every historical row) is never
  *     touched.
  *   - Two drains at once claim disjoint rows (FOR UPDATE SKIP LOCKED + lease):
@@ -41,6 +48,7 @@ const ids = {
   region: `${P}-region`,
   otherRegion: `${P}-region2`,
   route: `${P}-route`,
+  otherRoute: `${P}-route2`,
   sales: `${P}-sales`,
   mgr: `${P}-mgr`,
   mgr2: `${P}-mgr2`,
@@ -51,11 +59,13 @@ const ids = {
   acc2: `${P}-acc2`,
   gm: `${P}-gm`,
   stw: `${P}-stw`,
+  viewer: `${P}-viewer`,
+  mgr4: `${P}-mgr4`,
   off: `${P}-off`,
   nomail: `${P}-nomail`,
 };
 const USERS = Object.entries(ids)
-  .filter(([k]) => !['region', 'otherRegion', 'route'].includes(k))
+  .filter(([k]) => !['region', 'otherRegion', 'route', 'otherRoute'].includes(k))
   .map(([, v]) => v);
 const addr = (id: string) => `${id.toLowerCase()}@example.test`;
 
@@ -88,6 +98,7 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
     await prisma.region.create({ data: { id: ids.region, code: `${P}-R`, name: `${P} Region` } });
     await prisma.region.create({ data: { id: ids.otherRegion, code: `${P}-R2`, name: `${P} Region 2` } });
     await prisma.route.create({ data: { id: ids.route, code: `${P}-RT`, name: `${P} Route`, regionId: ids.region } });
+    await prisma.route.create({ data: { id: ids.otherRoute, code: `${P}-RT2`, name: `${P} Route 2`, regionId: ids.otherRegion } });
     const user = (id: string, role: string, extra: Record<string, unknown> = {}) =>
       prisma.user.create({
         data: { id, username: id, passwordHash: 'x', fullName: `ZZ ${role}`, role: role as never, email: addr(id), ...extra },
@@ -97,12 +108,14 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
     await user(ids.mgr, 'MANAGER', inRegion(ids.region));
     await user(ids.mgr2, 'MANAGER', inRegion(ids.region));
     await user(ids.mgr3, 'MANAGER', inRegion(ids.region));
+    await user(ids.mgr4, 'MANAGER', inRegion(ids.region));
     // A supervisor who does not manage the route's region: the page refuses him.
     await user(ids.far, 'MANAGER', inRegion(ids.otherRegion));
     await user(ids.acc, 'ACCOUNTANT', inRegion(ids.region));
     await user(ids.acc2, 'ACCOUNTANT', inRegion(ids.region));
     await user(ids.gm, 'GM');
     await user(ids.stw, 'STEWARD');
+    await user(ids.viewer, 'VIEWER');
     await user(ids.off, 'MANAGER', { ...inRegion(ids.region), isActive: false });
     await user(ids.nomail, 'MANAGER', { ...inRegion(ids.region), email: null });
     await user(ids.sales, 'SALESMAN', { supervisorId: ids.mgr });
@@ -116,7 +129,7 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
       if (editIds.length) await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
       await prisma.user.updateMany({ where: { id: { in: USERS } }, data: { supervisorId: null } });
       await prisma.user.deleteMany({ where: { id: { in: USERS } } });
-      await prisma.route.deleteMany({ where: { id: ids.route } });
+      await prisma.route.deleteMany({ where: { id: { in: [ids.route, ids.otherRoute] } } });
       await prisma.region.deleteMany({ where: { id: { in: [ids.region, ids.otherRegion] } } });
     } catch (e) {
       console.error('cleanup', e);
@@ -194,7 +207,9 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
     expect(r).toMatchObject({ sent: 2, sendErrors: 0, authErrors: 0 });
     expect((await status(rows.mgr)).emailStatus).toBe('SENT');
     expect((await status(rows.acc)).emailStatus).toBe('SENT');
-    expect((await status(rows.gm)).emailStatus).toBe('SKIPPED_ROLE');
+    // Owner decision 6: the GM is on the allowlist now, but this request is at
+    // the Supervisor step, not his.
+    expect((await status(rows.gm)).emailStatus).toBe('SKIPPED_RESOLVED');
     expect((await status(rows.stw)).emailStatus).toBe('SKIPPED_ROLE');
     expect((await status(rows.off)).emailStatus).toBe('SKIPPED_INACTIVE');
     expect((await status(rows.nomail)).emailStatus).toBe('SKIPPED_NO_ADDRESS');
@@ -241,12 +256,12 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
 
   it('rows that can never be sent are marked before the claim: a small claim limit still reaches the approver', async () => {
     // Scoped to users with no open rows left, so the claim sees exactly these.
-    const scope = { userIds: [ids.gm, ids.stw, ids.sales, ids.mgr3] };
+    const scope = { userIds: [ids.viewer, ids.stw, ids.sales, ids.mgr3] };
     const e = await request();
     const at = (min: number) => ({ createdAt: new Date(Date.now() - min * 60_000) });
     const never = [
       await notify(ids.sales, 'EDIT_STAGE_ADVANCED', e, at(9)),
-      await notify(ids.gm, 'EDIT_STAGE_ADVANCED', e, at(8)),
+      await notify(ids.viewer, 'EDIT_STAGE_ADVANCED', e, at(8)),
       await notify(ids.stw, 'TEMIX_UPLOAD_READY', e, at(7)),
     ];
     const act = await notify(ids.mgr3, 'EDIT_SUBMITTED', e, at(1));
@@ -263,6 +278,80 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
     expect((await status(never[0]!)).emailStatus).toBe('SKIPPED_ROLE');
     expect((await status(never[1]!)).emailStatus).toBe('SKIPPED_ROLE');
     expect((await status(never[2]!)).emailStatus).toBe('SKIPPED_KIND');
+  });
+
+  it('owner decision 6: the GM gets a credit request at his step and a late request in ONE e-mail; a late request reaches the region’s Managers, not another region’s', async () => {
+    const { resolveChain } = await import('@/lib/approval-chains');
+    const credit = await request({
+      approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT) as never,
+      currentStepIndex: 2,
+      pendingRole: 'GM',
+    });
+    const late = await request();
+    const rows = {
+      gmStep: await notify(ids.gm, 'EDIT_STAGE_ADVANCED', credit),
+      gmLate: await notify(ids.gm, 'SLA_BREACH', late),
+      mgrLate: await notify(ids.mgr4, 'SLA_BREACH', late),
+      farLate: await notify(ids.far, 'SLA_BREACH', late),
+    };
+    const t = new FakeTransport();
+    const r = await drain.runEmailDrain({
+      store: storeOf.prismaOutboxStore(prisma, { userIds: [ids.gm, ids.mgr4, ids.far] }),
+      transport: t,
+      config: CONFIG,
+    });
+    expect(r).toMatchObject({ sent: 2, failed: 0 });
+    expect(t.sent.map((m) => m.to).sort()).toEqual([addr(ids.gm), addr(ids.mgr4)].sort());
+    const gmMail = t.sent.find((m) => m.to === addr(ids.gm))!;
+    expect(gmMail.subject).toBe('NMWC CRM: 2 requests waiting for you');
+    expect(gmMail.text).toContain('Now at your approval step: a new-customer request');
+    expect(gmMail.text).toContain('Overdue: a new-customer request');
+    for (const m of t.sent) expect(`${m.subject}\n${m.text}`).not.toContain('ZZ Customer Legal Name');
+    for (const id of [rows.gmStep, rows.gmLate, rows.mgrLate]) expect((await status(id)).emailStatus).toBe('SENT');
+    expect((await status(rows.farLate)).emailStatus).toBe('SKIPPED_RESOLVED');
+  });
+
+  it('owner decision 6: shops in two regions reach both regions’ Managers; a late GM step’s Managers are not e-mailed, the GM (the sweep’s fallback) is', async () => {
+    const { resolveChain } = await import('@/lib/approval-chains');
+    const mine = [ids.mgr2, ids.far, ids.mgr3, ids.gm];
+    // Earlier cases e-mailed some of these people: start them outside the gap, with nothing left over.
+    const earlier = new Date(Date.now() - 2 * 3600_000);
+    await prisma.notification.updateMany({ where: { userId: { in: mine }, emailStatus: 'SENT' }, data: { emailedAt: earlier } });
+    await prisma.notification.updateMany({
+      where: { userId: { in: mine }, emailedAt: null },
+      data: { emailStatus: 'SKIPPED_READ', emailedAt: earlier, emailLeaseUntil: null },
+    });
+    const twoRegions = await request({
+      branchDrafts: {
+        create: [
+          { branchName: 'ZZ Main', regionId: ids.region, routeId: ids.route, address: 'ZZ synthetic address' },
+          { branchName: 'ZZ Second', regionId: ids.otherRegion, routeId: ids.otherRoute, address: 'ZZ synthetic address 2' },
+        ],
+      },
+    });
+    const atGm = await request({
+      approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT) as never,
+      currentStepIndex: 2,
+      pendingRole: 'GM',
+    });
+    const rows = {
+      near: await notify(ids.mgr2, 'SLA_BREACH', twoRegions),
+      far: await notify(ids.far, 'SLA_BREACH', twoRegions),
+      gmStepManager: await notify(ids.mgr3, 'SLA_BREACH', atGm),
+      gmStepGm: await notify(ids.gm, 'SLA_BREACH', atGm),
+    };
+    const t = new FakeTransport();
+    const r = await drain.runEmailDrain({
+      store: storeOf.prismaOutboxStore(prisma, { userIds: mine }),
+      transport: t,
+      config: CONFIG,
+    });
+    expect(r).toMatchObject({ sent: 3, failed: 0 });
+    expect(t.sent.map((m) => m.to).sort()).toEqual([addr(ids.mgr2), addr(ids.far), addr(ids.gm)].sort());
+    for (const id of [rows.near, rows.far, rows.gmStepGm]) expect((await status(id)).emailStatus).toBe('SENT');
+    // Told in-app for visibility (the row stays unread in his bell), not e-mailed: nobody outranks the GM.
+    expect((await status(rows.gmStepManager)).emailStatus).toBe('SKIPPED_RESOLVED');
+    expect((await prisma.notification.findUniqueOrThrow({ where: { id: rows.gmStepManager } })).readAt).toBeNull();
   });
 
   it('a claim is a lease: a second claim while it holds gets none of its rows', async () => {

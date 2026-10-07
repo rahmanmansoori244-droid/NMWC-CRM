@@ -181,6 +181,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
         <p className="text-[11px] text-slate-500">
           Attribution is by each branch&apos;s current route and region: a route handed over or moved takes its history
           with it. Dates and buckets are Oman calendar days.
+          {!scoped && ' Regions that are switched off are left out of these figures.'}
         </p>
       </div>
     </main>
@@ -245,7 +246,13 @@ async function filterOptions(
       WAVE_DEADLINE_MS
     );
     const regionOk = (id: string) => !scope.roleRegionIds || scope.roleRegionIds.includes(id);
-    const routeOk = (r: RouteLite) => regionOk(r.regionId) && (!scope.roleRouteIds || scope.roleRouteIds.includes(r.id));
+    // Launch fix: an organisation-wide view counts active regions only
+    // (lib/insights/sql.ts), so it offers no route of an inactive region either.
+    const activeRegion = new Set(regions.map((r) => r.id));
+    const routeOk = (r: RouteLite) =>
+      regionOk(r.regionId) &&
+      (!scope.roleRouteIds || scope.roleRouteIds.includes(r.id)) &&
+      (scope.kind !== 'company' || activeRegion.has(r.regionId));
     return {
       regions: regions.filter((r) => regionOk(r.id)),
       routes: routes

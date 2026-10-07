@@ -13,6 +13,13 @@
  *
  * Ids are always bound parameters. Column names come from fixed strings and the
  * table aliases from a whitelist (alias()), never from a request.
+ *
+ * Launch fix (2026-10-07): an organisation-wide view (kind 'company': the Steward
+ * and the Viewer) counts ACTIVE regions only. An inactive region — the ZZTEST
+ * test region left in production, with its test request and archived customer —
+ * showed as rows of its own on their dashboard. A region-scoped view keeps the
+ * regions its role gives it as they are: what a Manager's switched-off region
+ * should mean is an owner decision (region on/off rules), not made here.
  */
 import { Prisma } from '@prisma/client';
 import { countedInRegionsSql, openableInRegionsSql } from '../service-status';
@@ -30,6 +37,28 @@ function col(a: string, name: 'regionId' | 'routeId'): Prisma.Sql {
   return Prisma.raw(`${alias(a)}."${name}"`);
 }
 
+/** The region in `column` is an active one (company views only; see the header). */
+function activeRegionSql(column: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`${column} IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive")`;
+}
+
+/**
+ * A request (CustomerEdit `e`) attributed to an active region, for a company
+ * view: a new-customer request by a draft's route's current region, a
+ * reactivation by its own branch, anything else by a branch of its customer —
+ * the attribution countedInRegionsSql uses, with a deleted branch still counting,
+ * so a request on a customer archived since stays in the figures as before.
+ */
+const REQUEST_IN_ACTIVE_REGION = Prisma.sql`(CASE
+    WHEN e."process" = 'CREATE' THEN EXISTS (
+      SELECT 1 FROM "EditBranchDraft" ad JOIN "Route" art ON art."id" = ad."routeId"
+       WHERE ad."editId" = e."id" AND ${activeRegionSql(Prisma.raw('art."regionId"'))})
+    WHEN e."isReactivation" THEN EXISTS (
+      SELECT 1 FROM "Branch" ab WHERE ab."id" = e."branchId" AND ${activeRegionSql(Prisma.raw('ab."regionId"'))})
+    ELSE EXISTS (
+      SELECT 1 FROM "Branch" ab WHERE ab."customerId" = e."customerId" AND ${activeRegionSql(Prisma.raw('ab."regionId"'))})
+  END)`;
+
 /**
  * The region and route tests on one branch row aliased `b`. Both on the SAME
  * row: a customer with one branch in the region and another on the route is not
@@ -39,6 +68,7 @@ function col(a: string, name: 'regionId' | 'routeId'): Prisma.Sql {
 export function branchInScopeSql(scope: InsightScope, b: string): Prisma.Sql {
   if (scope.kind === 'none') return FALSE;
   const parts: Prisma.Sql[] = [];
+  if (scope.kind === 'company') parts.push(activeRegionSql(col(b, 'regionId')));
   if (scope.regionIds) parts.push(Prisma.sql`${col(b, 'regionId')} = ANY(${scope.regionIds}::text[])`);
   if (scope.routeIds) parts.push(Prisma.sql`${col(b, 'routeId')} = ANY(${scope.routeIds}::text[])`);
   return parts.length ? Prisma.join(parts, ' AND ') : TRUE;
@@ -53,6 +83,7 @@ export function branchInScopeSql(scope: InsightScope, b: string): Prisma.Sql {
 export function draftInScopeSql(scope: InsightScope, d: string, r: string): Prisma.Sql {
   if (scope.kind === 'none') return FALSE;
   const parts: Prisma.Sql[] = [];
+  if (scope.kind === 'company') parts.push(activeRegionSql(col(r, 'regionId')));
   if (scope.regionIds) parts.push(Prisma.sql`${col(r, 'regionId')} = ANY(${scope.regionIds}::text[])`);
   if (scope.routeIds) parts.push(Prisma.sql`${col(d, 'routeId')} = ANY(${scope.routeIds}::text[])`);
   return parts.length ? Prisma.join(parts, ' AND ') : TRUE;
@@ -69,6 +100,7 @@ export function draftInScopeSql(scope: InsightScope, d: string, r: string): Pris
 export function requestInScopeSql(scope: InsightScope): Prisma.Sql {
   if (scope.kind === 'none') return FALSE;
   const parts: Prisma.Sql[] = [];
+  if (scope.kind === 'company') parts.push(REQUEST_IN_ACTIVE_REGION);
   if (scope.regionIds) parts.push(countedInRegionsSql(scope.regionIds));
   if (scope.routeIds) {
     const onDraft = scope.regionIds ? Prisma.sql`AND rr."regionId" = ANY(${scope.regionIds}::text[])` : Prisma.empty;

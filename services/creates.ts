@@ -19,6 +19,9 @@
  *    open CREATE requests), as does the EXACT_TRIPLE
  *    (legalName+phone+region) rule; phone-only matches are advisory/logged.
  *  - NEEDS_CORRECTION resubmits reuse the SAME row and bump `cycle`.
+ *  - Launch fix: the salesman can withdraw his own DRAFT or NEEDS_CORRECTION
+ *    request (withdrawCreateAction). It is closed for good (REJECTED), and so
+ *    stops blocking that CR and shop for everyone (lib/create-guards.ts).
  */
 import { prisma } from '@/lib/db';
 import type { ZodIssue } from 'zod';
@@ -135,7 +138,10 @@ async function submitCreateOnce(
   session: Awaited<ReturnType<typeof requireUser>>,
   submissionId: string | undefined
 ): Promise<SubmitReceipt> {
-  const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
+  // Launch fix: a draft save spends its own bucket, not the one submits share
+  // (services/edits.ts says why). Read off the body, as the schema has not run.
+  const draftSave = (input as { isDraft?: unknown } | undefined)?.isDraft === true;
+  const lim = await checkLimit(`${draftSave ? 'edit-draft' : 'edit'}:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
     throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
   }
@@ -229,7 +235,13 @@ async function submitCreateOnce(
           : 'This request was already approved.'
       );
     }
-    // DRAFT / NEEDS_CORRECTION / REJECTED may all be revised and resubmitted.
+    // Launch fix: a withdrawn request is closed for good. It no longer blocks
+    // its CR or shop, so sending it again could slip past a request made since.
+    // (Nothing else ever wrote REJECTED on a new-customer request.)
+    if (existing.state === EditState.REJECTED) {
+      throw new ConflictError('EDIT_LOCKED', WITHDRAWN_MESSAGE);
+    }
+    // DRAFT / NEEDS_CORRECTION may be revised and resubmitted.
   }
 
   // Mandatory-field gate — submits only; drafts save partial work.
@@ -362,6 +374,8 @@ async function submitCreateOnce(
       });
       await assertNoExactCreateDuplicate(tx, {
         callerId: session.id,
+        // Launch fix: name a live duplicate only when it is on his route.
+        callerRouteId: route.id,
         crNumberNorm,
         legalName: c.legalName,
         primaryPhoneNorm,
@@ -563,6 +577,102 @@ async function submitCreateOnce(
     submittedAt: edit.submittedAt?.toISOString() ?? null,
     replayed: false,
   };
+}
+
+const WITHDRAWN_MESSAGE =
+  'This request was withdrawn and is closed. Start a new request if the shop still needs adding.';
+
+/**
+ * Launch fix: the salesman withdraws his own new-customer request — a draft he
+ * abandoned, or one sent back to him that he will not correct. Until now
+ * nothing could end one: every open request (DRAFT, SUBMITTED,
+ * NEEDS_CORRECTION) blocks its CR number and its shop for every salesman
+ * (lib/create-guards.ts), and an approver's reject only ever returns it.
+ *
+ * It becomes REJECTED — closed without being applied, the state a merge leaves
+ * an open request in (services/duplicates.ts) — with the clock stopped, and
+ * the decision fields say who closed it and when. The approvers' earlier
+ * decisions and reasons stay in its EditApproval history. One in review
+ * (SUBMITTED) cannot be withdrawn: an approver has it, and sends it back first.
+ * Its photos stay bound to it (an abandoned-draft sweep is the owner's open
+ * retention decision, schema.prisma Attachment.editId).
+ */
+export async function withdrawCreateAction(input: { editId: string }): SafeAction<{ editId: string }> {
+  return runAction(() => withdrawCreateCore(input));
+}
+
+async function withdrawCreateCore(input: { editId: string }): Promise<{ editId: string }> {
+  const session = await requireUser();
+  const editId = typeof input?.editId === 'string' ? input.editId : '';
+  if (!editId) throw new ValidationError({ editId: 'required' });
+  const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
+  if (!lim.ok) {
+    throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
+  }
+  const edit = await prisma.customerEdit.findUnique({
+    where: { id: editId },
+    select: { id: true, process: true, state: true, submittedById: true, cycle: true },
+  });
+  // A create request is private to its submitter: anyone else's reads as not found.
+  if (!edit || edit.process !== EditProcess.CREATE || edit.submittedById !== session.id) {
+    throw new NotFoundError('Create request not found.');
+  }
+  // Already withdrawn (a retry whose first answer was lost): that is the answer.
+  if (edit.state === EditState.REJECTED) return { editId };
+  if (edit.state !== EditState.DRAFT && edit.state !== EditState.NEEDS_CORRECTION) {
+    throw new ConflictError(
+      'EDIT_LOCKED',
+      edit.state === EditState.SUBMITTED
+        ? 'This request is in review, so it cannot be withdrawn now. Ask the approver who has it to send it back to you, then withdraw it.'
+        : 'This request was already approved.'
+    );
+  }
+
+  const env = await getAuditEnvelope(session.id);
+  const withdrawnAt = new Date();
+  await prisma.$transaction(async (tx) => {
+    // Claimed on the state and cycle read above: a submit from another tab in
+    // between wins, and this answers that it changed.
+    const claim = await tx.customerEdit.updateMany({
+      where: { id: editId, state: edit.state, cycle: edit.cycle, submittedById: session.id },
+      data: {
+        state: EditState.REJECTED,
+        pendingRole: null,
+        slaDueAt: null,
+        slaBreachedAt: null,
+        lastEscalatedAt: null,
+        escalationLevel: 0,
+        reviewedById: session.id,
+        reviewedAt: withdrawnAt,
+        decisionReason: 'Withdrawn by the salesman who sent it.',
+        decisionCategory: 'withdrawn',
+      },
+    });
+    if (claim.count === 0) {
+      throw new ConflictError(
+        'EDIT_LOCKED',
+        'This request just changed in another tab. Refresh to see its current state.'
+      );
+    }
+    await writeAudit(tx, env, {
+      action: 'UPDATE',
+      entityType: 'CustomerEdit',
+      entityId: editId,
+      reason: 'withdrawn by the salesman',
+      after: {
+        process: 'CREATE',
+        state: EditState.REJECTED,
+        from: edit.state,
+        cycle: edit.cycle,
+      } as unknown as Prisma.InputJsonValue,
+    });
+  });
+
+  logger.info({ editId, by: session.id, from: edit.state }, 'create.withdraw');
+  revalidatePath('/work');
+  revalidatePath('/today');
+  revalidatePath('/rejected');
+  return { editId };
 }
 
 /**

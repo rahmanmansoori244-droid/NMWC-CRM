@@ -36,7 +36,16 @@ export type RegionLite = { id: string; name: string; code: string };
 export type RouteLite = { id: string; code: string; name: string; regionId: string };
 export type ChannelLite = { id: string; label: string };
 export type SubChannelLite = { id: string; label: string; channelId: string };
-export type UserLite = { id: string; fullName: string; username: string; role: Role; ownedRouteId: string | null; supervisorId: string | null };
+export type UserLite = {
+  id: string;
+  fullName: string;
+  username: string;
+  role: Role;
+  ownedRouteId: string | null;
+  /** The region of the route the user owns, whether or not that route is active. */
+  ownedRouteRegionId: string | null;
+  supervisorId: string | null;
+};
 
 const REVALIDATE_SECS = 5 * 60; // 5 minutes
 
@@ -104,11 +113,16 @@ export const getAllActiveSubChannels = reactCache(
  * Every active user with a hierarchy-relevant role (Salesman, Supervisor,
  * Manager). Returned with `supervisorId` and `ownedRouteId` so callers can
  * filter to "salesmen who report to X" in memory. ~80 rows in the pilot.
+ *
+ * Launch fix: also the owned route's region, so a region-scoped viewer's lists
+ * keep a salesman whose route was switched off (getAllActiveRoutes leaves that
+ * route out, but its customers still list). Tagged 'ref:routes' too, so a route
+ * moved to another region refreshes it.
  */
 export const getAllHierarchyUsers = reactCache(
   unstable_cache(
     async (): Promise<UserLite[]> => {
-      return prisma.user.findMany({
+      const users = await prisma.user.findMany({
         where: {
           isActive: true,
           role: { in: [Role.SALESMAN, Role.SUPERVISOR, Role.MANAGER] },
@@ -121,11 +135,13 @@ export const getAllHierarchyUsers = reactCache(
           role: true,
           ownedRouteId: true,
           supervisorId: true,
+          ownedRoute: { select: { regionId: true } },
         },
       });
+      return users.map(({ ownedRoute, ...u }) => ({ ...u, ownedRouteRegionId: ownedRoute?.regionId ?? null }));
     },
-    ['ref:users:v1'],
-    { revalidate: REVALIDATE_SECS, tags: ['ref:users'] }
+    ['ref:users:v2'],
+    { revalidate: REVALIDATE_SECS, tags: ['ref:users', 'ref:routes'] }
   )
 );
 

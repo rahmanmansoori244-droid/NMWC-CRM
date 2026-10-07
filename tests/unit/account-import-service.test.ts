@@ -72,8 +72,11 @@ type Store = {
   batches: Array<Record<string, unknown> & { id: string }>;
   importRows: Array<{
     batchId: string;
+    rowNumber: number;
     issues: Array<{ message: string; sheet: string; row: number }>;
   }>;
+  /** Open new-customer requests: whose, in what state, on which routes' branch drafts. */
+  creates: Array<{ submittedById: string; state: string; routeIds: string[] }>;
 };
 type Sheet = {
   name: string;
@@ -84,6 +87,8 @@ type Sheet = {
 };
 
 const h = vi.hoisted(() => ({
+  /** Cache tags the import revalidated (next/cache revalidateTag). */
+  tags: [] as string[],
   store: null as unknown as Store,
   /** null: the uploaded bytes go through the real parser (uploadWorkbook). */
   sheets: [] as Sheet[] | null,
@@ -101,7 +106,7 @@ const h = vi.hoisted(() => ({
 const STEWARD = { id: 'stew', role: 'STEWARD', username: 'steward.x' };
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: STEWARD }) }));
-vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {} }));
+vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: (tag: string) => h.tags.push(tag) }));
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -146,7 +151,26 @@ function makeClient(isTx: boolean): any {
     args: { select?: Record<string, boolean>; include?: Record<string, unknown> }
   ) => {
     if (args.select)
-      return Object.fromEntries(Object.keys(args.select).map((k) => [k, (u as any)[k]]));
+      return Object.fromEntries(
+        Object.keys(args.select).map((k) => {
+          // The supervisor's cover of a region (owner decision 8): his regions and
+          // the regions of his reports' routes.
+          if (k === 'managedRegions') return [k, u.regionIds.map((rid) => ({ id: rid }))];
+          if (k === 'reports')
+            return [
+              k,
+              st()
+                .users.filter((o) => o.supervisorId === u.id)
+                .map((o) => ({
+                  id: o.id,
+                  ownedRoute: o.ownedRouteId
+                    ? { regionId: st().routes.find((r) => r.id === o.ownedRouteId)!.regionId }
+                    : null,
+                })),
+            ];
+          return [k, (u as any)[k]];
+        })
+      );
     const { regionIds, ...scalars } = u;
     const out: any = { ...scalars };
     if (args.include?.supervisor)
@@ -193,9 +217,36 @@ function makeClient(isTx: boolean): any {
 
   return {
     user: {
+      // The e-mail clash check: another account (NOT this username) holding the
+      // address in any letter case.
+      findFirst: async (args: any) => {
+        gate('user', 'findFirst', args, false);
+        // A retired sign-in name (owner decision 8): the latest one by name.
+        const prefix = args.where.username?.startsWith;
+        if (prefix !== undefined) {
+          const hit = st()
+            .users.filter((x) => x.username.startsWith(prefix))
+            .sort((a, b) => (a.username < b.username ? 1 : -1))[0];
+          return hit ? viewUser(hit, args) : null;
+        }
+        const { equals, mode } = args.where.email;
+        const fold = (v: string) => (mode === 'insensitive' ? v.toLowerCase() : v);
+        const u = st().users.find(
+          (x) => x.email !== null && fold(x.email) === fold(equals) && x.username !== args.where.NOT?.username
+        );
+        return u ? viewUser(u, args) : null;
+      },
       findUnique: async (args: any) => {
         gate('user', 'findUnique', args, false);
-        const u = st().users.find((x) => x.username === args.where.username);
+        const w = args.where;
+        // By username, by the route the account owns, or by id.
+        const u = st().users.find((x) =>
+          w.username !== undefined
+            ? x.username === w.username
+            : w.ownedRouteId !== undefined
+              ? x.ownedRouteId === w.ownedRouteId
+              : x.id === w.id
+        );
         return u ? viewUser(u, args) : null;
       },
       findMany: async (args: any) => {
@@ -312,6 +363,21 @@ function makeClient(isTx: boolean): any {
         return { count: before - st().history.length };
       },
     },
+    // Owner decision 8: his new-customer requests not in review, started on another
+    // route than the one the row leaves him with.
+    customerEdit: {
+      count: async (args: any) => {
+        gate('customerEdit', 'count', args, false);
+        const w = args.where;
+        const other = w.branchDrafts?.some.routeId.not;
+        return st().creates.filter(
+          (c) =>
+            c.submittedById === w.submittedById &&
+            w.state.in.includes(c.state) &&
+            (other === undefined || c.routeIds.some((r) => r !== other))
+        ).length;
+      },
+    },
     auditLog: {
       create: async (args: any) => {
         gate('auditLog', 'create', args, true);
@@ -405,6 +471,7 @@ beforeEach(() => {
   h.txOptions = [];
   h.failOn = null;
   h.auditFails = null;
+  h.tags = [];
   h.store = {
     users: [user({ id: 'stew', username: 'steward.x', role: 'STEWARD' })],
     regions: [
@@ -419,6 +486,7 @@ beforeEach(() => {
     audits: [],
     batches: [],
     importRows: [],
+    creates: [],
   };
 });
 
@@ -644,6 +712,8 @@ describe('F08: without change_role the row must name the stored role', () => {
         role: 'SALESMAN',
         route_code: 'MCT-01',
         change_role: 'yes',
+        // Owner decision 8: the route's salesman is active, so the row says so.
+        change_route: 'yes',
       })
     );
     expect(okData(res).clean).toBe(1);
@@ -1057,7 +1127,8 @@ describe('AUTH-06: supervisor_username names an active SUPERVISOR or MANAGER, as
   it('a row naming the supervisor the account already has is not judged again, even once he is deactivated', async () => {
     // Re-importing the go-live sheet after a manager left: the cell changes
     // nothing, so it must not hold back the row's other changes. Naming him for
-    // a NEW account is still refused (the it.each above).
+    // a NEW account is still refused (the it.each above). Owner decision 8: a
+    // salesman's new name is said so (change_name).
     addUser({ id: 'm1', username: 'manager.x', role: 'MANAGER', isActive: false });
     addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1', supervisorId: 'm1' });
     const { res, messages } = await upload(
@@ -1067,6 +1138,7 @@ describe('AUTH-06: supervisor_username names an active SUPERVISOR or MANAGER, as
         role: 'SALESMAN',
         route_code: 'MCT-01',
         supervisor_username: 'manager.x',
+        change_name: 'yes',
       })
     );
     expect(messages).toEqual([]);
@@ -1332,6 +1404,39 @@ describe('X-IMPORTS-3: a database fault mid-import is reported as what it was', 
     expect(find('viewer.1')).toBeUndefined();
   });
 
+  // Launch fix (2026-10-07): the unique index is case-sensitive, so the same
+  // mailbox in other capitals used to be written to a second account.
+  it('an e-mail another account holds in other capitals is held back, in the words of the unique clash', async () => {
+    addUser({ id: 'v9', username: 'viewer.9', role: 'VIEWER', email: 'Taken@X.invalid' });
+    const { res, messages } = await upload(
+      usersSheet({
+        username: 'viewer.1',
+        full_name: 'V',
+        role: 'VIEWER',
+        password: '123456789012',
+        email: 'taken@x.INVALID',
+      })
+    );
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      'Users 2: nothing was written for "viewer.1": its email is already used by another record.',
+    ]);
+    expect(find('viewer.1')).toBeUndefined();
+  });
+
+  it('an e-mail is stored lower-cased, and the account’s own address in other capitals is no clash', async () => {
+    addUser({ id: 'v8', username: 'viewer.8', role: 'VIEWER', email: 'Own@X.invalid' });
+    const { res } = await upload(
+      usersSheet(
+        { username: 'viewer.8', full_name: 'Eight', role: 'VIEWER', email: 'OWN@x.invalid' },
+        { username: 'viewer.1', full_name: 'One', role: 'VIEWER', password: '123456789012', email: ' New.One@X.Invalid ' }
+      )
+    );
+    expect(okData(res)).toMatchObject({ clean: 2, issues: 0 });
+    expect(find('viewer.8')!.email).toBe('own@x.invalid');
+    expect(find('viewer.1')!.email).toBe('new.one@x.invalid');
+  });
+
   // ── the run is of failures IN A ROW ──
   const failLookup = (code: string, names: RegExp) => (model: string, op: string, args: any) =>
     model === 'user' && op === 'findUnique' && names.test(args.where.username)
@@ -1477,6 +1582,21 @@ describe('a failed row or report is logged with its message, and reported unless
 });
 
 // ── N05 in the account import ────────────────────────────────────────────────
+// Launch fix (2026-10-07): the /customers and /dashboard filters read regions,
+// routes and people from a 5-minute cache (lib/reference-data.ts); the import
+// never revalidated it, so what it created was missing there for minutes.
+describe('an account import refreshes the cached region, route and people lists', () => {
+  it('revalidates ref:regions, ref:routes and ref:users', async () => {
+    const { res } = await upload([
+      { name: 'Regions', rows: [{ code: 'DHO', name: 'Dhofar' }] },
+      { name: 'Routes', rows: [{ code: 'DHO-01', name: 'Dhofar 1', region_code: 'DHO' }] },
+      { name: 'Users', rows: [{ username: 'viewer.1', full_name: 'V', role: 'VIEWER', password: '123456789012' }] },
+    ]);
+    expect(okData(res).clean).toBe(3);
+    expect(h.tags).toEqual(expect.arrayContaining(['ref:regions', 'ref:routes', 'ref:users']));
+  });
+});
+
 describe('N05: rows are numbered as Excel shows them, and only the sheets read are checked for repeated headings', () => {
   it('reports the Excel row number on every sheet, blank lines included', async () => {
     const { res, messages } = await uploadWorkbook((wb) => {
@@ -1505,6 +1625,25 @@ describe('N05: rows are numbered as Excel shows them, and only the sheets read a
       'Users 4: username, full_name, role required',
     ]);
     expect(find('viewer.3')).toBeTruthy();
+  });
+
+  // Launch fix (2026-10-07): the issue rows were stored with rowNumber = the
+  // issue's index, so the batch page's Row column read #1, #2, #3.
+  it('stores each issue row under the row number Excel shows, not its index', async () => {
+    await uploadWorkbook((wb) => {
+      const regions = wb.addWorksheet('Regions');
+      regions.getCell('A1').value = 'code';
+      regions.getCell('B1').value = 'name';
+      regions.getCell('A4').value = 'NONAME';
+      const users = wb.addWorksheet('Users');
+      ['username', 'full_name', 'role', 'password'].forEach((v, i) => (users.getRow(1).getCell(i + 1).value = v));
+      users.getRow(2).values = ['viewer.1', 'V1', 'VIEWER', '123456789012'];
+      users.getRow(7).values = ['viewer.2', '', 'VIEWER', '123456789012'];
+    });
+    expect(h.store.importRows.map((r) => [r.issues[0]!.sheet, r.rowNumber])).toEqual([
+      ['Regions', 4],
+      ['Users', 7],
+    ]);
   });
 
   it('the Users sheet sorted by role still reports each row where Excel has it', async () => {
@@ -1544,5 +1683,189 @@ describe('N05: rows are numbered as Excel shows them, and only the sheets read a
     );
     expect(h.store.batches).toEqual([]);
     expect(find('viewer.1')).toBeUndefined();
+  });
+});
+
+// ── Owner decision 8 (review, 2026-10-07): the import keeps /users's rules ──
+describe('owner decision 8: the import and /users agree on routes, names and supervisors', () => {
+  const salesmanRow = (over: Record<string, string> = {}) => ({
+    username: 'mct-01',
+    full_name: 'Name mct-01',
+    role: 'SALESMAN',
+    route_code: 'MCT-01',
+    ...over,
+  });
+
+  it('a route is not taken from an ACTIVE salesman unless the row says change_route=yes', async () => {
+    addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1' });
+    const { res, messages } = await upload(
+      usersSheet({
+        username: 'new.one',
+        full_name: 'New One',
+        role: 'SALESMAN',
+        password: '123456789012',
+        route_code: 'MCT-01',
+      })
+    );
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      expect.stringMatching(
+        /^Users 2: route MCT-01 is worked by "mct-01", whose account is active\. Nothing was written for "new\.one"/
+      ),
+    ]);
+    expect(routeOwner('rt-1')).toBe('mct-01');
+    expect(find('new.one')).toBeUndefined();
+    expect(rowAudits()).toEqual([]);
+  });
+
+  it('a DEACTIVATED holder (the leaver) gives the route up without the flag, as on /users', async () => {
+    addUser({
+      id: 's1',
+      username: 'mct-01',
+      role: 'SALESMAN',
+      ownedRouteId: 'rt-1',
+      isActive: false,
+    });
+    const { res } = await upload(
+      usersSheet({
+        username: 'new.one',
+        full_name: 'New One',
+        role: 'SALESMAN',
+        password: '123456789012',
+        route_code: 'MCT-01',
+      })
+    );
+    expect(okData(res).clean).toBe(1);
+    expect(routeOwner('rt-1')).toBe('new.one');
+  });
+
+  it('an older sheet does not write the leaver’s name onto the joiner who now signs in with the code', async () => {
+    // After the hand-over on /users: the leaver retired, the joiner signs in as mct-01.
+    addUser({
+      id: 'old',
+      username: 'mct-01.left.20261007',
+      role: 'SALESMAN',
+      fullName: 'Leaving Salesman',
+      isActive: false,
+    });
+    addUser({
+      id: 's1',
+      username: 'mct-01',
+      role: 'SALESMAN',
+      fullName: 'Joining Salesman',
+      ownedRouteId: 'rt-1',
+      phone: '+96890000001',
+    });
+    const { res, messages } = await upload(
+      usersSheet(salesmanRow({ full_name: 'Leaving Salesman', phone: '+96899999999' }))
+    );
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      expect.stringMatching(
+        /^Users 2: "mct-01" was handed to a new salesman on Users \(the previous one now signs in as "mct-01\.left\.20261007"\), and this row's full_name is not his\. Nothing was written/
+      ),
+    ]);
+    expect(find('mct-01')).toMatchObject({ fullName: 'Joining Salesman', phone: '+96890000001' });
+    expect(rowAudits()).toEqual([]);
+  });
+
+  it('a salesman’s name changes only on change_name=yes; spaces and case are no change', async () => {
+    addUser({
+      id: 's1',
+      username: 'mct-01',
+      role: 'SALESMAN',
+      fullName: 'Ali  Said',
+      ownedRouteId: 'rt-1',
+    });
+    const same = await upload(usersSheet(salesmanRow({ full_name: 'ali said' })));
+    expect(okData(same.res).clean).toBe(1);
+    const other = await upload(usersSheet(salesmanRow({ full_name: 'Ahmed Said' })));
+    expect(other.messages).toEqual([
+      expect.stringMatching(
+        /full_name is not the name of the salesman who signs in as "mct-01"\. Nothing was written/
+      ),
+    ]);
+    const fixed = await upload(
+      usersSheet(salesmanRow({ full_name: 'Ahmed Said', change_name: 'yes' }))
+    );
+    expect(okData(fixed.res).clean).toBe(1);
+    expect(find('mct-01')!.fullName).toBe('Ahmed Said');
+  });
+
+  it('the supervisor must cover the route’s region — the one named, or the one kept when the route moves', async () => {
+    addUser({ id: 'mb', username: 'manager.bat', role: 'MANAGER', regionIds: ['rg-bat'] });
+    addUser({ id: 'mm', username: 'manager.mct', role: 'MANAGER', regionIds: ['rg-mct'] });
+    const named = await upload(
+      usersSheet({
+        username: 'new.one',
+        full_name: 'New One',
+        role: 'SALESMAN',
+        password: '123456789012',
+        route_code: 'MCT-02',
+        supervisor_username: 'manager.bat',
+      })
+    );
+    expect(named.messages).toEqual([
+      'Users 2: supervisor "manager.bat" does not cover region MCT, where route MCT-02 is: a MANAGER must manage the region, and a SUPERVISOR\'s team must work in it. Nothing was written for "new.one". Name a supervisor who covers region MCT in supervisor_username.',
+    ]);
+    expect(find('new.one')).toBeUndefined();
+    const ok = await upload(
+      usersSheet({
+        username: 'new.one',
+        full_name: 'New One',
+        role: 'SALESMAN',
+        password: '123456789012',
+        route_code: 'MCT-02',
+        supervisor_username: 'manager.mct',
+      })
+    );
+    expect(okData(ok.res).clean).toBe(1);
+
+    // A kept supervisor (blank cell) is judged when the route moves to his region's outside.
+    h.store.routes.push({ id: 'rt-b1', code: 'BAT-01', name: 'Batinah 1', regionId: 'rg-bat' });
+    const moved = await upload(
+      usersSheet({
+        username: 'new.one',
+        full_name: 'New One',
+        role: 'SALESMAN',
+        route_code: 'BAT-01',
+      })
+    );
+    expect(moved.messages).toEqual([
+      expect.stringMatching(
+        /^Users 2: supervisor "manager\.mct" does not cover region BAT, where route BAT-01 is/
+      ),
+    ]);
+    expect(routeOwner('rt-2')).toBe('new.one');
+    // Unchanged supervisor and route: not judged again.
+    const again = await upload(
+      usersSheet({
+        username: 'new.one',
+        full_name: 'New One',
+        role: 'SALESMAN',
+        route_code: 'MCT-02',
+        supervisor_username: 'manager.mct',
+      })
+    );
+    expect(okData(again.res).clean).toBe(1);
+  });
+
+  it('a route change is held back while he has new-customer requests not in review on his old route', async () => {
+    addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1' });
+    h.store.creates.push({ submittedById: 's1', state: 'NEEDS_CORRECTION', routeIds: ['rt-1'] });
+    const { res, messages } = await upload(usersSheet(salesmanRow({ route_code: 'MCT-02' })));
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      expect.stringMatching(
+        /^Users 2: "mct-01" has 1 new-customer request\(s\) that are not in review .*Nothing was written/
+      ),
+    ]);
+    expect(routeOwner('rt-1')).toBe('mct-01');
+    // One already on the route he is given is no obstacle.
+    h.store.creates = [{ submittedById: 's1', state: 'DRAFT', routeIds: ['rt-2'] }];
+    expect(
+      okData((await upload(usersSheet(salesmanRow({ route_code: 'MCT-02' })))).res).clean
+    ).toBe(1);
+    expect(routeOwner('rt-2')).toBe('mct-01');
   });
 });

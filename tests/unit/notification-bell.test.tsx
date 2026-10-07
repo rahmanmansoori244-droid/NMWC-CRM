@@ -64,7 +64,7 @@ import { TopBar } from '@/components/nmwc/TopBar';
 import { markAllNotificationsReadAction, markInformationReadAction } from '@/services/notifications-actions';
 import AppLayout from '@/app/(app)/layout';
 
-const USER = { fullName: 'Accounts North', username: 'accounts.north', role: 'ACCOUNTANT' as const };
+const USER = { id: 'u-acc', fullName: 'Accounts North', username: 'accounts.north', role: 'ACCOUNTANT' as const };
 
 beforeEach(() => {
   h.rows = [
@@ -81,14 +81,32 @@ describe('what the bell counts', () => {
   it('information-only kinds are counted apart; everything else is the red count', () => {
     expect([...BELL_INFORMATION_KINDS]).toEqual(['REQUEST_FYI']);
     expect(
-      splitBellCounts([
-        { kind: 'REQUEST_FYI', count: 12 },
-        { kind: 'EDIT_STAGE_ADVANCED', count: 1 },
-        { kind: 'SLA_BREACH', count: 2 },
-        { kind: 'EDIT_SUBMITTED', count: 3 },
-      ])
+      splitBellCounts(
+        [
+          { kind: 'REQUEST_FYI', count: 12 },
+          { kind: 'EDIT_STAGE_ADVANCED', count: 1 },
+          { kind: 'SLA_BREACH', count: 2 },
+          { kind: 'EDIT_SUBMITTED', count: 3 },
+        ],
+        'ACCOUNTANT'
+      )
     ).toEqual({ action: 6, information: 12 });
-    expect(splitBellCounts([])).toEqual({ action: 0, information: 0 });
+    expect(splitBellCounts([], 'ACCOUNTANT')).toEqual({ action: 0, information: 0 });
+  });
+
+  // Launch fix (2026-10-07): "advanced" and "approved" asked a salesman for
+  // nothing, yet held his red badge; only a returned or refused request asks
+  // him to act. The same kinds still ask an approver or a Steward to act.
+  it('a salesman’s progress pings are information; a returned or refused request is red', () => {
+    const rows = [
+      { kind: 'EDIT_STAGE_ADVANCED', count: 2 },
+      { kind: 'EDIT_APPROVED_FINAL', count: 3 },
+      { kind: 'TEMIX_SYNC_ACKED', count: 1 },
+      { kind: 'EDIT_NEEDS_CORRECTION', count: 1 },
+    ];
+    expect(splitBellCounts(rows, 'SALESMAN')).toEqual({ action: 1, information: 6 });
+    expect(splitBellCounts(rows, 'MANAGER')).toEqual({ action: 7, information: 0 });
+    expect(splitBellCounts([{ kind: 'EDIT_APPROVED_FINAL', count: 4 }], 'STEWARD')).toEqual({ action: 4, information: 0 });
   });
 
   it('says both counts in words', () => {
@@ -136,6 +154,33 @@ describe('the layout feeds the bell', () => {
     const { container } = render(await AppLayout({ children: null }));
     expect(container.querySelector('.bg-red-500')).toBeNull();
     expect(container.querySelector('[data-bell="information"]')?.textContent).toBe('2');
+  });
+});
+
+describe('a salesman’s bell', () => {
+  beforeEach(() => {
+    h.me = { id: 'sal', role: 'SALESMAN', username: 'r101' };
+    h.rows = [
+      { id: 'adv', userId: 'sal', kind: 'EDIT_STAGE_ADVANCED', readAt: null },
+      { id: 'ok', userId: 'sal', kind: 'EDIT_APPROVED_FINAL', readAt: null },
+      { id: 'back', userId: 'sal', kind: 'EDIT_NEEDS_CORRECTION', readAt: null },
+    ];
+  });
+  afterEach(() => {
+    h.me = { id: 'acc', role: 'ACCOUNTANT', username: 'accounts.north' };
+  });
+
+  it('is red only for the request returned to him', async () => {
+    const { container } = render(await AppLayout({ children: null }));
+    expect(container.querySelector('.bg-red-500')?.textContent).toBe('1');
+    expect(container.querySelector('a[href="/notifications"]')!.getAttribute('aria-label')).toBe(
+      'Notifications (1 unread, 2 for information)'
+    );
+  });
+
+  it('Mark information read clears his progress pings and leaves the returned request unread', async () => {
+    expect(await markInformationReadAction()).toEqual({ ok: true, data: { marked: 2 } });
+    expect(h.rows.filter((r) => r.readAt === null).map((r) => r.id)).toEqual(['back']);
   });
 });
 

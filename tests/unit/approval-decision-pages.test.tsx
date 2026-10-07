@@ -32,6 +32,8 @@ const h = vi.hoisted(() => ({
   /** Phase 2: the live customer and the submitter as the stale-field check reads them. */
   live: null as unknown,
   submitter: null as unknown,
+  /** Launch fix: live customers on a new request's phone, as the review page reads them. */
+  phoneCustomers: [] as Array<Record<string, unknown>>,
 }));
 
 /** The attachment table, for a `where` of { editId | editId.in, kind, deletedAt: null }. */
@@ -60,6 +62,8 @@ vi.mock('next/link', () => ({
 }));
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: { id: 'u-viewer', role: h.role, username: 'viewer.x' } }) }));
 vi.mock('@/lib/access', () => ({
+  // Launch fix: the review page names a live customer sharing a new request's phone only if the viewer can open it.
+  canSeeCustomer: (_u: unknown, c: { canSee?: boolean }) => c.canSee !== false,
   loadScope: async () => ({ managedRegionIds: ['g1'] }),
   filterBranchesByScope: (_u: unknown, branches: unknown[]) => branches,
 }));
@@ -70,8 +74,10 @@ function project(row: Record<string, unknown>, select: Record<string, unknown>):
   for (const [k, v] of Object.entries(select)) {
     if (v === true) out[k] = row[k];
     else if (v && typeof v === 'object' && 'select' in v) {
-      const nested = row[k] as Record<string, unknown> | null | undefined;
-      out[k] = nested == null ? nested : project(nested, (v as { select: Record<string, unknown> }).select);
+      const sel = (v as { select: Record<string, unknown> }).select;
+      const nested = row[k] as Record<string, unknown> | Record<string, unknown>[] | null | undefined;
+      // A list relation comes back as a list of projected rows.
+      out[k] = nested == null ? nested : Array.isArray(nested) ? nested.map((r) => project(r, sel)) : project(nested, sel);
     }
   }
   return out;
@@ -98,7 +104,7 @@ vi.mock('@/lib/db', () => ({
     branch: { findMany: async () => [] },
     channel: { findMany: async () => [] },
     subChannel: { findMany: async () => [] },
-    customer: { findUnique: async () => h.live },
+    customer: { findUnique: async () => h.live, findMany: async () => h.phoneCustomers },
     user: { findUnique: async () => h.submitter },
   },
 }));
@@ -123,6 +129,7 @@ beforeEach(() => {
   h.attachments = [];
   h.live = null;
   h.submitter = null;
+  h.phoneCustomers = [];
 });
 
 const guarantee = (id: string, editId = 'e1', deletedAt: Date | null = null): Att => ({
@@ -299,6 +306,35 @@ describe('the review page', () => {
     // A row older than the stage columns: the token carries its null stage.
     expect(parseDecisionToken(props.decisionToken)).toMatchObject({ cycle: 2, stepIndex: 0, stageEnteredAt: null, creditLimit: null });
   });
+
+  // Launch fix (2026-10-07): a refused close keeps the salesman's reason for
+  // asking in decisionReason (the reviewer's is on the decision row), so the
+  // decision box must not present it as the reviewer's words.
+  it('a decided close request names its kept reason as the salesman’s; a sent-back update does not', async () => {
+    const { default: Page } = await import('@/app/(app)/approvals/[id]/page');
+    const decided = (target: 'BRANCH' | 'CUSTOMER', state: string, decisionReason: string) =>
+      createRow('CASH', 0, {
+        process: 'UPDATE',
+        target,
+        state,
+        customerId: 'c1',
+        customer: { id: 'c1', legalName: 'Muscat Pearl', nmwcCode: 'NMWC-000123', crPhotoId: null, branches: [] },
+        approvalChain: resolveChain(EditProcess.UPDATE, PaymentTerms.CASH),
+        customerDraft: null,
+        decisionReason,
+        reviewedBy: { fullName: 'Manager B' },
+        reviewedAt: new Date('2026-10-07T06:00:00.000Z'),
+      });
+    h.role = 'GM';
+    h.edit = decided('BRANCH', 'REJECTED', 'Shop shut, seen today.');
+    render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+    expect(screen.getByText(/Salesman.s reason:/).parentElement!.textContent).toContain('Shop shut, seen today.');
+    cleanup();
+    h.edit = decided('CUSTOMER', 'NEEDS_CORRECTION', 'Phone number is wrong.');
+    render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+    expect(screen.getByText(/Phone number is wrong\./)).toBeTruthy();
+    expect(screen.queryByText(/Salesman.s reason:/)).toBeNull();
+  });
 });
 
 describe('the review page of a customer update — phase 2 (F06, F20, F21, rulings 1, 2 and 8)', () => {
@@ -433,6 +469,31 @@ describe('the review page of a customer update — phase 2 (F06, F20, F21, rulin
     expect(screen.queryByText('gpsLng', { selector: 'div' })).toBeNull();
     expect(screen.getByText('View proposed location on map')).toBeTruthy();
   });
+
+  it("launch fix: times read in Oman time on a UTC server — the submit time and a moved point's capture time", async () => {
+    // Vercel runs in UTC. 21:30 UTC on 7 October is 01:30 on the 8th in Oman; the
+    // page printed "07/10/2026, 21:30:05", and the capture time as a raw UTC ISO string.
+    vi.stubEnv('TZ', 'UTC');
+    try {
+      h.live = liveCustomer({ branches: [{ id: 'b1', status: 'ACTIVE', gpsLat: 23.6, gpsLng: 58.4 }] });
+      await renderDetail(
+        update({
+          submittedAt: new Date('2026-10-07T21:30:05.000Z'),
+          fieldChanges: [
+            { field: 'branch.b1.gpsLat', before: 23.6, after: 23.7 },
+            { field: 'branch.b1.gpsCapturedAt', before: '2026-09-01T06:00:00.000Z', after: '2026-10-07T21:30:00.000Z' },
+          ],
+        })
+      );
+      expect(screen.getByText(/submitted by Salesman One/).textContent).toMatch(/ · 08\/10\/2026, 01:30:05$/);
+      const row = screen.getByText('gpsCapturedAt', { selector: 'div' }).parentElement!;
+      expect(within(row).getByText('01/09/2026, 10:00:00')).toBeTruthy();
+      expect(within(row).getByText('08/10/2026, 01:30:00')).toBeTruthy();
+      expect(row.textContent).not.toMatch(/Z/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe('the approval queue', () => {
@@ -524,7 +585,10 @@ describe('the approval queue', () => {
         h.queueReads = [];
         h.role = role;
         await renderQueue(rows(2));
-        const list = h.queueReads.filter((r) => r.op === 'findMany');
+        // The list is the read that orders the cards. A Manager's queue first
+        // reads the requests on customers that also have branches outside his
+        // regions, to judge each one (owner decision 3, lib/manager-queue.ts).
+        const list = h.queueReads.filter((r) => r.op === 'findMany' && r.args.orderBy);
         const count = h.queueReads.filter((r) => r.op === 'count');
         expect([list.length, count.length], role).toEqual([1, 1]);
         // Not an equal copy: a second derivation of the scope could drift from
@@ -578,6 +642,34 @@ describe('F1: the review page says when its viewer cannot decide the request (li
     expect(screen.queryByRole('note')).toBeNull();
   });
 
+  describe('owner decision 3 (2026-10-07): a customer with branches in two regions', () => {
+    // b1 is in g1, which the viewing Manager manages (the access mock); b2 is in g2.
+    const otherBranch = { ...liveBranch, id: 'b2', branchName: 'Sohar shop', branchCode: 'B-2', routeId: 'r2', regionId: 'g2', route: { code: 'R2' } };
+    const twoRegions = { id: 'c1', legalName: 'Muscat Pearl', nmwcCode: 'NMWC-000123', crPhotoId: null, branches: [liveBranch, otherBranch] };
+    const onBranch = (id: string) =>
+      update({
+        customer: twoRegions,
+        fieldChanges: [{ field: `branch.${id}.openingHours`, before: null, after: '08:00 – 20:00' }],
+        submitGate: { v: 1, branchIds: [id] },
+      });
+
+    it('a change to the other region’s branch: read-only for him, and its changes are not shown', async () => {
+      h.role = 'MANAGER';
+      await renderDetail(onBranch('b2'));
+      const notes = screen.getAllByRole('note').map((n) => n.textContent ?? '');
+      expect(notes.some((t) => /For your information/.test(t))).toBe(true);
+      expect(notes.some((t) => /Not shown: the changes to 1 branch outside your regions/.test(t))).toBe(true);
+      expect(screen.queryByText('08:00 – 20:00')).toBeNull();
+    });
+
+    it('a change to his own region’s branch: his to decide, every change shown', async () => {
+      h.role = 'MANAGER';
+      await renderDetail(onBranch('b1'));
+      expect(screen.queryByRole('note')).toBeNull();
+      expect(screen.getByText('08:00 – 20:00')).toBeTruthy();
+    });
+  });
+
   it('a reactivation says where it is decided; only a Manager gets the link', async () => {
     h.role = 'GM';
     await renderDetail(update({ isReactivation: true, approvalChain: null }));
@@ -589,5 +681,130 @@ describe('F1: the review page says when its viewer cannot decide the request (li
     h.role = 'MANAGER';
     await renderDetail(update({ isReactivation: true, approvalChain: null }));
     expect(screen.getByRole('link', { name: 'Open Reactivations' }).getAttribute('href')).toBe('/reactivations');
+  });
+});
+
+describe('launch fixes on the new-customer review page and queue card', () => {
+  const draftBranch = (over: Record<string, unknown> = {}) => ({
+    id: 'bd1',
+    branchName: 'Main',
+    // The region frozen in the draft at submit; the route has moved since.
+    region: { name: 'Frozen Region' },
+    route: { code: 'MCT-01', regionId: 'g1', region: { name: 'Muscat' } },
+    address: 'Way 1234, Ruwi',
+    areaDescription: null,
+    gpsLat: 23.6,
+    gpsLng: 58.4,
+    gpsAccuracy: 8,
+    dayOfVisit: 'SUN',
+    openingHours: '08:00 – 22:00',
+    deliveryWindow: null,
+    coolersCount: 1,
+    standsCount: 0,
+    emptyBottlesCount: 0,
+    shopPhotoAttachmentId: 'p-shop',
+    signboardPhotoAttachmentId: 'p-sign',
+    extraPhotoAttachmentIds: [],
+    ...over,
+  });
+
+  it("each branch is headed with its route's current region, not the one frozen in the draft", async () => {
+    await renderDetail(createRow('CASH', 0, { branchDrafts: [draftBranch()] }));
+    expect(screen.getByText('Branch 1: Main (Muscat · MCT-01)')).toBeTruthy();
+    expect(screen.queryByText(/Frozen Region/)).toBeNull();
+  });
+
+  it('a photo removed since the request was sent reads as removed, with what to do — never a broken image', async () => {
+    h.attachments = [{ id: 'p-shop', editId: 'e1', kind: 'SHOP', deletedAt: null }];
+    await renderDetail(createRow('CASH', 1, { branchDrafts: [draftBranch()] }));
+    const imgs = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src'));
+    expect(imgs).toEqual(['/api/photos/p-shop']);
+    expect(
+      screen.getByText(
+        '1 photo was removed since the request was sent — it cannot be approved; reject it and say which photo is missing.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('before the last step it is not "cannot be approved": only the last step refuses it (review finding)', async () => {
+    h.attachments = [{ id: 'p-shop', editId: 'e1', kind: 'SHOP', deletedAt: null }];
+    await renderDetail(createRow('CASH', 0, { branchDrafts: [draftBranch()] }));
+    expect(
+      screen.getByText(
+        '1 photo was removed since the request was sent — it will be refused at the last step; reject it and say which photo is missing.'
+      )
+    ).toBeTruthy();
+    expect(screen.queryByText(/cannot be approved/)).toBeNull();
+    // The guarantee the same: at the Finance Manager step, and at the last.
+    cleanup();
+    h.actionProps = [];
+    h.attachments = [];
+    await renderDetail(createRow('CREDIT', 1));
+    expect(
+      screen.getByText(
+        'None on file: removed since the request was sent. It will be refused at the last step — reject it and say the guarantee is missing.'
+      )
+    ).toBeTruthy();
+    cleanup();
+    h.actionProps = [];
+    await renderDetail(createRow('CREDIT', 3));
+    expect(
+      screen.getByText(
+        'None on file: removed since the request was sent. It cannot be approved — reject it and say the guarantee is missing.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('a live customer on the same phone is shown: named when the approver can open it, counted when not', async () => {
+    h.phoneCustomers = [
+      { id: 'c1', nmwcCode: 'NMWC-000001', legalName: 'Al Noor One', branches: [] },
+      { id: 'c2', nmwcCode: 'NMWC-000002', legalName: 'Hidden Shop', branches: [], canSee: false },
+    ];
+    const row = createRow('CASH', 0);
+    await renderDetail({ ...row, customerDraft: { ...row.customerDraft, primaryPhoneNorm: '+96891234567' } });
+    expect(screen.getByRole('link', { name: 'NMWC-000001 — Al Noor One' }).getAttribute('href')).toBe('/customers/c1');
+    expect(screen.getByText(/This phone is already on another customer/).parentElement!.textContent).toContain(
+      ', and 1 you cannot open.'
+    );
+    expect(screen.queryByText(/Hidden Shop|NMWC-000002/)).toBeNull();
+  });
+
+  it('once created, the request names the customer code it created', async () => {
+    h.edit = createRow('CASH', 1, {
+      state: 'APPROVED',
+      customerId: 'c-new',
+      customer: { id: 'c-new', legalName: 'Al Noor Trading', nmwcCode: 'NMWC-2026-000123', crPhotoId: null, branches: [] },
+      reviewedBy: { fullName: 'Accountant One' },
+      reviewedAt: new Date('2026-10-05T08:00:00Z'),
+    });
+    const { default: Page } = await import('@/app/(app)/approvals/[id]/page');
+    render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+    expect(screen.getByText(/^New customer NMWC-2026-000123 · submitted by Salesman One/)).toBeTruthy();
+    expect(screen.queryByText(/New customer request/)).toBeNull();
+    expect(screen.getByText('NMWC-2026-000123', { selector: 'strong' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open profile' }).getAttribute('href')).toBe('/customers/c-new');
+  });
+
+  it("the queue card's ring scores the new customer from its drafts, not 0%", async () => {
+    h.queueRows = [
+      createRow('CASH', 0, {
+        customerDraft: {
+          legalName: 'Al Noor Trading',
+          paymentTerms: 'CASH',
+          channelId: 'ch1',
+          subChannelId: 'sub1',
+          primaryPhone: '+96891234567',
+          contactPerson: 'Ali',
+          crNumber: '1234567',
+          crPhotoAttachmentId: 'p-cr',
+          notes: null,
+        },
+        branchDrafts: [draftBranch()],
+      }),
+    ];
+    const { default: Page } = await import('@/app/(app)/approvals/page');
+    render(await Page());
+    // 35 of 40 on the customer (no notes) + 60 of 60 on its one branch.
+    expect((h.queueItems[0]!.customer as { completenessScore: number }).completenessScore).toBe(95);
   });
 });

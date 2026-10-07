@@ -56,8 +56,16 @@ describe('readinessReport', () => {
     expect(r.approvers.ACCOUNTANT).toEqual({ withEmail: 1, without: 0, malformed: 0 });
     expect(r.approvers.FINANCE_MANAGER).toEqual({ withEmail: 0, without: 1, malformed: 0 });
     expect(r.approvers.SUPERVISOR).toEqual({ withEmail: 0, without: 0, malformed: 0 });
-    // GM and Steward are never e-mailed, so they are not readiness rows at all.
-    expect(Object.keys(r.approvers).sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'MANAGER', 'SUPERVISOR']);
+    // Owner decision 6 (2026-10-07): the GM is e-mailed work at his step, so his
+    // address is a readiness row too. The Steward is never e-mailed: no row.
+    expect(r.approvers.GM).toEqual({ withEmail: 1, without: 0, malformed: 0 });
+    expect(Object.keys(r.approvers).sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SUPERVISOR']);
+  });
+
+  it('reports exactly the roles the drain may e-mail (lib/notify-policy.ts EMAIL_ROLES)', async () => {
+    const { EMAIL_ROLES } = await import('@/lib/notify-policy');
+    const { READINESS_APPROVER_ROLES } = await import('../../scripts/ops/notify-readiness');
+    expect([...READINESS_APPROVER_ROLES].sort()).toEqual([...EMAIL_ROLES].sort());
   });
 
   it('names each way a salesman’s request would reach no usable supervisor', () => {

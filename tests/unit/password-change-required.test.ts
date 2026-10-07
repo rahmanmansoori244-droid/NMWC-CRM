@@ -23,7 +23,7 @@ import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { stripComments } from '../support/strip-comments';
 
-type StoredUser = { id: string; passwordHash: string; mustChangePassword: boolean };
+type StoredUser = { id: string; username?: string; passwordHash: string; mustChangePassword: boolean };
 
 const h = vi.hoisted(() => ({
   session: null as null | { user: Record<string, unknown> },
@@ -32,12 +32,13 @@ const h = vi.hoisted(() => ({
   users: new Map<string, StoredUser>(),
   userUpdates: [] as Array<{ where: { id: string }; data: Record<string, unknown> }>,
   audits: [] as Array<{ tx: boolean; reason?: string }>,
+  signIn: vi.fn(),
   signOut: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({
   auth: async () => h.session,
-  signIn: vi.fn(),
+  signIn: h.signIn,
   signOut: h.signOut,
 }));
 // next-auth's own entry imports `next/server` in a form vitest's node resolver
@@ -131,6 +132,7 @@ beforeEach(() => {
   h.users.clear();
   h.userUpdates = [];
   h.audits = [];
+  h.signIn.mockReset().mockResolvedValue('/');
   h.signOut.mockReset().mockResolvedValue(undefined);
 });
 
@@ -261,7 +263,7 @@ describe('the two ways out still work for a flagged session', () => {
     fd.set('currentPassword', 'Initial-Shared-1');
     fd.set('newPassword', 'A-new-password-2026');
     const res = await changeOwnPasswordAction(fd);
-    expect(res).toEqual({ ok: true, data: undefined });
+    expect(res).toEqual({ ok: true, data: { renewed: true } });
     expect(h.userUpdates).toHaveLength(1);
     expect(h.userUpdates[0]!.data).toMatchObject({
       passwordHash: 'hash:A-new-password-2026',
@@ -298,12 +300,89 @@ describe('the two ways out still work for a flagged session', () => {
     fd.set('currentPassword', 'Initial-Shared-1');
     fd.set('newPassword', 'A-new-password-2026');
     fd.set('confirmNewPassword', 'A-new-password-2026');
-    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: undefined });
+    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: { renewed: true } });
     expect(h.userUpdates).toHaveLength(1);
     expect(h.userUpdates[0]!.data).toMatchObject({
       passwordHash: 'hash:A-new-password-2026',
       mustChangePassword: false,
     });
+  });
+
+  it('changeOwnPasswordAction gives this browser a new session, signed in with the new password, after the commit', async () => {
+    // Launch review: the cookie that made the change kept mustChangePassword, and
+    // an iat older than the revocation, until the 5-minute freshness check, so
+    // every tap went back to the forced page. It is replaced in the same response.
+    const { changeOwnPasswordAction } = await import('@/services/password');
+    h.session = flagged('SALESMAN');
+    h.users.set('u-flagged', {
+      id: 'u-flagged',
+      username: 'c4',
+      passwordHash: 'hash:Initial-Shared-1',
+      mustChangePassword: true,
+    });
+    let committedFirst = false;
+    h.signIn.mockImplementation(async () => {
+      committedFirst = h.userUpdates.length === 1 && h.audits.length === 1;
+      return '/';
+    });
+    const fd = new FormData();
+    fd.set('currentPassword', 'Initial-Shared-1');
+    fd.set('newPassword', 'A-new-password-2026');
+    fd.set('confirmNewPassword', 'A-new-password-2026');
+    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: { renewed: true } });
+    expect(h.signIn).toHaveBeenCalledTimes(1);
+    expect(h.signIn).toHaveBeenCalledWith('credentials', {
+      username: 'c4',
+      password: 'A-new-password-2026',
+      redirect: false,
+    });
+    expect(committedFirst).toBe(true);
+    expect(h.signOut).not.toHaveBeenCalled();
+  });
+
+  it('a renewal that is refused clears the cookie instead and says so (renewed: false); the change still stands', async () => {
+    const { changeOwnPasswordAction } = await import('@/services/password');
+    h.session = flagged('MANAGER');
+    h.users.set('u-flagged', {
+      id: 'u-flagged',
+      username: 'manager.x',
+      passwordHash: 'hash:Initial-Shared-1',
+      mustChangePassword: true,
+    });
+    h.signIn.mockRejectedValue(new Error('throttled'));
+    const fd = new FormData();
+    fd.set('currentPassword', 'Initial-Shared-1');
+    fd.set('newPassword', 'A-new-password-2026');
+    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: { renewed: false } });
+    expect(h.userUpdates[0]!.data).toMatchObject({ mustChangePassword: false });
+    expect(h.signOut).toHaveBeenCalledWith({ redirect: false });
+
+    // Neither could be done: still the change's answer, not an error.
+    h.userUpdates = [];
+    h.users.set('u-flagged', {
+      id: 'u-flagged',
+      username: 'manager.x',
+      passwordHash: 'hash:A-new-password-2026',
+      mustChangePassword: false,
+    });
+    h.signOut.mockRejectedValue(new Error('no cookies here'));
+    const again = new FormData();
+    again.set('currentPassword', 'A-new-password-2026');
+    again.set('newPassword', 'Another-new-password-2026');
+    expect(await changeOwnPasswordAction(again)).toEqual({ ok: true, data: { renewed: false } });
+    expect(h.userUpdates).toHaveLength(1);
+  });
+
+  it('a refused change neither renews nor clears the session', async () => {
+    const { changeOwnPasswordAction } = await import('@/services/password');
+    h.session = flagged('SALESMAN');
+    h.users.set('u-flagged', { id: 'u-flagged', username: 'c4', passwordHash: 'hash:Initial-Shared-1', mustChangePassword: true });
+    const fd = new FormData();
+    fd.set('currentPassword', 'not-the-password');
+    fd.set('newPassword', 'A-new-password-2026');
+    expect(await changeOwnPasswordAction(fd)).toMatchObject({ ok: false, code: 'VALIDATION_FAILED' });
+    expect(h.signIn).not.toHaveBeenCalled();
+    expect(h.signOut).not.toHaveBeenCalled();
   });
 
   it('changeOwnPasswordAction still refuses when signed out', async () => {

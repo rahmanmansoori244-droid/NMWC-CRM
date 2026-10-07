@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 // of each 'use server' module it imports, and a session that must change its
 // password can reach this page — so never import a multi-action module here.
 import { changeOwnPasswordAction } from '@/services/password';
+import { hardReplace } from '@/lib/navigate';
 
 const OWN_PATH = '/profile/change-password';
 
@@ -25,7 +26,9 @@ export function ChangePasswordForm() {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [done, setDone] = useState(false);
+  // Where the page goes once the password has changed (services/password.ts
+  // renewOwnSession): home on the renewed session, or sign in again.
+  const [done, setDone] = useState<'home' | 'signIn' | null>(null);
   const [showNew, setShowNew] = useState(false);
   // UAT-07, as LabeledField does: with two new-password boxes on the page, a
   // label not tied to its field leaves a screen reader three unnamed passwords.
@@ -68,11 +71,17 @@ export function ChangePasswordForm() {
               else setErrors({ _form: res.message });
               return;
             }
-            setDone(true);
-            // AUTH-12: the action bumps sessionsRevokedAt which kills the
-            // current JWT at the next freshness check. Force a hard reload
-            // to /login so the user re-authenticates with the new password.
-            setTimeout(() => router.replace('/login'), 1500);
+            // AUTH-12: the action bumps sessionsRevokedAt and has given this
+            // browser a new session, made with the new password
+            // (services/password.ts renewOwnSession). It went to /login, which
+            // made the user sign in again, and the old cookie, still flagged,
+            // sent any tap back to this page. `/` is the role's home. When the
+            // action had to sign this browser out instead, the page says so and
+            // goes to /login, with time to read it. A document load, so nothing
+            // on screen is from before the change.
+            const renewed = res.data.renewed;
+            setDone(renewed ? 'home' : 'signIn');
+            setTimeout(() => hardReplace(renewed ? '/' : '/login'), renewed ? 1500 : 4000);
           } catch (err) {
             setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
           }
@@ -82,7 +91,9 @@ export function ChangePasswordForm() {
     >
       {done ? (
         <div className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-700 ring-1 ring-emerald-200">
-          Password changed. Redirecting to sign in…
+          {done === 'home'
+            ? 'Password changed. Taking you to your home page…'
+            : 'Password changed. Please sign in again with your new password. Taking you to the sign-in page…'}
         </div>
       ) : (
         <>
