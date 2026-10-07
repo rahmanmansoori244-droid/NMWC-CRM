@@ -24,6 +24,7 @@ import {
   Menu,
   X,
   Activity,
+  KeyRound,
 } from 'lucide-react';
 
 type NavItem = {
@@ -34,6 +35,21 @@ type NavItem = {
   icon: React.ComponentType<{ className?: string }>;
 };
 
+/**
+ * Launch fix (2026-10-07): every account starts on a shared temporary password,
+ * but only the salesman's phone tab bar linked /profile ('Me'). Every other role
+ * could change his password only by typing the address. Last in every menu, so
+ * the phone drawer (which reads the same lists) offers it too.
+ */
+const CHANGE_PASSWORD: NavItem = { href: '/profile/change-password', label: 'Change password', icon: KeyRound };
+
+/**
+ * /export admits MANAGER, VIEWER and SUPERVISOR as well as the Steward
+ * (lib/permissions.ts canExport), but only the Steward's menu linked it
+ * (tests/unit/account-menu.test.tsx).
+ */
+const EXPORT: NavItem = { href: '/export', label: 'Export', icon: Download };
+
 // Exported for tests/unit/status-page.test.tsx: a page is only reachable if the
 // menu offers it, and nothing else ties the two together.
 export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
@@ -43,12 +59,15 @@ export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/customers/new', label: 'New customer', icon: UserPlus },
     { href: '/work', label: 'Work items', icon: Inbox },
     { href: '/rejected', label: 'Needs correction', icon: AlertTriangle },
+    CHANGE_PASSWORD,
   ],
   SUPERVISOR: [
     { href: '/approvals', label: 'Approvals', icon: ListChecks },
     { href: '/team', label: 'My team', icon: Users },
     { href: '/customers', label: 'Customers', icon: Search },
     { href: '/work', label: 'Work items', icon: Inbox },
+    EXPORT,
+    CHANGE_PASSWORD,
   ],
   MANAGER: [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -65,13 +84,15 @@ export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/work', label: 'Work items', icon: Inbox },
     // Item 9: service levels; a Manager sees the Supervisor step in their regions (lib/service-levels.ts STATUS_ROLES).
     { href: '/status', label: 'Service status', icon: Activity },
+    EXPORT,
+    CHANGE_PASSWORD,
   ],
   STEWARD: [
     { href: '/import', label: 'Import', icon: Upload },
     // F2: the dashboard admits the Steward (RBAC-05-013) but no menu offered it.
     // lib/insights/policy.ts DASHBOARD_ROLES; pinned by tests/unit/dashboard-page.test.tsx.
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/export', label: 'Export', icon: Download },
+    EXPORT,
     { href: '/temix', label: 'Temix sync', icon: RefreshCw },
     { href: '/customers', label: 'Customers', icon: Search },
     { href: '/duplicates', label: 'Duplicates', icon: AlertTriangle },
@@ -84,25 +105,31 @@ export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/audit', label: 'Audit log', icon: ScrollText },
     { href: '/work', label: 'Work items', icon: Inbox },
     { href: '/status', label: 'Service status', icon: Activity },
+    CHANGE_PASSWORD,
   ],
   VIEWER: [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/customers', label: 'Customers', icon: Search },
+    EXPORT,
+    CHANGE_PASSWORD,
   ],
   ACCOUNTANT: [
     { href: '/approvals', label: 'Approvals', icon: ListChecks },
     { href: '/customers', label: 'Customers', icon: Search },
     { href: '/work', label: 'Work items', icon: Inbox },
+    CHANGE_PASSWORD,
   ],
   FINANCE_MANAGER: [
     { href: '/approvals', label: 'Approvals', icon: ListChecks },
     { href: '/customers', label: 'Customers', icon: Search },
     { href: '/work', label: 'Work items', icon: Inbox },
+    CHANGE_PASSWORD,
   ],
   GM: [
     { href: '/approvals', label: 'Approvals', icon: ListChecks },
     { href: '/customers', label: 'Customers', icon: Search },
     { href: '/work', label: 'Work items', icon: Inbox },
+    CHANGE_PASSWORD,
   ],
 };
 
