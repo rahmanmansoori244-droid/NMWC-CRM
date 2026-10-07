@@ -12,6 +12,12 @@
  *       Manager does not;
  *   (2) a salesman can neither attach nor remove the CR document of a CREDIT
  *       customer; a Manager can; a CASH customer's is unchanged.
+ *   (3), the rest of the review of 2026-10-07: the submit notification goes to
+ *       the request's region's Managers only; a salesman moved after submit
+ *       leaves his request with the region it was made in (and, on a request
+ *       without that record, it goes to his route's region now, not to the
+ *       customer's first branch); a close request on region B's branch is region
+ *       B's; and a Manager's dashboard "Pending approval" is his queue's count.
  *
  * UAT-SAFE: creates its own regions, routes, users and customers under a unique
  * tag and deletes them in afterAll.
@@ -20,7 +26,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { editPayload, type EditPatch } from '../support/edit-payload';
@@ -38,6 +44,10 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
   let edits: typeof import('@/services/edits');
   let photos: typeof import('@/services/photos');
   let managerQueueWhere: typeof import('@/lib/manager-queue').managerQueueWhere;
+  let reactivations: typeof import('@/services/reactivations');
+  let insights: typeof import('@/lib/insights/load');
+  let insightScope: typeof import('@/lib/insights/scope');
+  let insightPeriod: typeof import('@/lib/insights/period');
   let CR_LOCKED = '';
   const tag = randomUUID().slice(0, 8);
   const savedGate = process.env.SALESMAN_SUBMIT_GATE;
@@ -46,6 +56,7 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
     regionB: '',
     routeA: '',
     routeB: '',
+    routeC: '',
     sales: '',
     salesB: '',
     mgrA: '',
@@ -55,6 +66,8 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
     bA1: '',
     bA2: '',
     bB1: '',
+    cust2: '',
+    bB2: '',
     credit: '',
     cash: '',
     users: [] as string[],
@@ -104,6 +117,10 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
     edits = await import('@/services/edits');
     photos = await import('@/services/photos');
     ({ managerQueueWhere } = await import('@/lib/manager-queue'));
+    reactivations = await import('@/services/reactivations');
+    insights = await import('@/lib/insights/load');
+    insightScope = await import('@/lib/insights/scope');
+    insightPeriod = await import('@/lib/insights/period');
     ({ CR_DOCUMENT_LOCKED_MESSAGE: CR_LOCKED } = await import('@/lib/permissions'));
 
     const channel = await prisma.channel.findFirstOrThrow({ where: { key: 'GENERAL_TRADE' }, select: { id: true } });
@@ -113,8 +130,11 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
     ids.regionB = rB.id;
     const tA = await prisma.route.create({ data: { code: `ZZSG-TA-${tag}`, name: `ZZ SG TA ${tag}`, regionId: rA.id } });
     const tB = await prisma.route.create({ data: { code: `ZZSG-TB-${tag}`, name: `ZZ SG TB ${tag}`, regionId: rB.id } });
+    // Route C, in region B, has no branch of the two-region customer: where a moved salesman lands.
+    const tC = await prisma.route.create({ data: { code: `ZZSG-TC-${tag}`, name: `ZZ SG TC ${tag}`, regionId: rB.id } });
     ids.routeA = tA.id;
     ids.routeB = tB.id;
+    ids.routeC = tC.id;
     const user = async (
       role: 'MANAGER' | 'SALESMAN',
       extra: Omit<Prisma.UserUncheckedCreateInput, 'username' | 'fullName' | 'role' | 'passwordHash'> = {}
@@ -178,6 +198,10 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
     ids.bA1 = await branch(ids.cust, 'A1', tA.id, rA.id, true);
     ids.bA2 = await branch(ids.cust, 'A2', tA.id, rA.id, false);
     ids.bB1 = await branch(ids.cust, 'B1', tB.id, rB.id, true);
+    // A second two-region customer, for a request of each region waiting at once.
+    ids.cust2 = await customer('MULTI2', 'CASH');
+    await branch(ids.cust2, 'A3', tA.id, rA.id, true);
+    ids.bB2 = await branch(ids.cust2, 'B2', tB.id, rB.id, true);
     ids.credit = await customer('CREDIT', 'CREDIT');
     await branch(ids.credit, 'C1', tA.id, rA.id, true);
     ids.cash = await customer('CASH', 'CASH');
@@ -211,7 +235,7 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
         await prisma.user.update({ where: { id }, data: { managedRegions: { set: [] } } }).catch(() => undefined);
       }
       await prisma.user.deleteMany({ where: { id: { in: ids.users } } });
-      await prisma.route.deleteMany({ where: { id: { in: [ids.routeA, ids.routeB] } } });
+      await prisma.route.deleteMany({ where: { id: { in: [ids.routeA, ids.routeB, ids.routeC] } } });
       await prisma.region.deleteMany({ where: { id: { in: [ids.regionA, ids.regionB] } } });
     } catch (e) {
       console.error('cleanup', e);
@@ -305,5 +329,134 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
     as(ids.mgrA, 'MANAGER');
     expect(await photos.detachPhotoAction({ attachmentId: his.id })).toEqual({ ok: true });
     expect((await prisma.customer.findUniqueOrThrow({ where: { id: ids.credit } })).crPhotoId).toBeNull();
+  });
+
+  it('(3) the submit notification goes to the request’s region’s Managers, not the other region’s', async () => {
+    // No supervisor who can act: the Supervisor step falls back to the Managers
+    // of the request's regions (lib/notifications.ts resolveStepAudience).
+    await prisma.user.update({ where: { id: ids.sales }, data: { supervisorId: null } });
+    try {
+      as(ids.sales, 'SALESMAN');
+      const res = await submit({ customerId: ids.cust, customer: { primaryPhone: '+968 9111 2222' } });
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      const editId = await pendingOn(ids.cust);
+      const told = await prisma.notification.findMany({ where: { editId, kind: 'EDIT_SUBMITTED' }, select: { userId: true } });
+      expect(told.map((n) => n.userId).sort()).toEqual([ids.mgrA, ids.mgrA2].sort());
+      as(ids.mgrA, 'MANAGER');
+      expect(await approve(editId)).toEqual({ ok: true });
+    } finally {
+      await prisma.user.update({ where: { id: ids.sales }, data: { supervisorId: ids.mgrA } });
+    }
+  });
+
+  it('(3) a salesman moved after submit: his request stays with the region it was made in', async () => {
+    as(ids.sales, 'SALESMAN');
+    const res = await submit({ customerId: ids.cust, customer: { primaryPhone: '+968 9333 4444' } });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    const editId = await pendingOn(ids.cust);
+    try {
+      // He takes route B, which holds the customer's region-B branch.
+      await prisma.user.update({ where: { id: ids.salesB }, data: { ownedRouteId: null } });
+      await prisma.user.update({ where: { id: ids.sales }, data: { ownedRouteId: ids.routeB } });
+      // The home frozen at submit (his branch in region A) decides, not his route now.
+      expect(await queueOf([ids.regionA])).toEqual([editId]);
+      expect(await queueOf([ids.regionB])).toEqual([]);
+      as(ids.mgrB, 'MANAGER');
+      expect(await approve(editId)).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+
+      // A request without that record (sent before F05): his route now, region B.
+      await prisma.customerEdit.update({ where: { id: editId }, data: { submitGate: Prisma.DbNull } });
+      expect(await queueOf([ids.regionA])).toEqual([]);
+      expect(await queueOf([ids.regionB])).toEqual([editId]);
+
+      // Moved again, to route C (region B), which holds no branch of this customer:
+      // his route's region, not the customer's first branch by id (region A).
+      await prisma.user.update({ where: { id: ids.sales }, data: { ownedRouteId: ids.routeC } });
+      expect(await queueOf([ids.regionA])).toEqual([]);
+      expect(await queueOf([ids.regionB])).toEqual([editId]);
+      as(ids.mgrA, 'MANAGER');
+      expect(await approve(editId)).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+      as(ids.mgrB, 'MANAGER');
+      expect(await approve(editId)).toEqual({ ok: true });
+    } finally {
+      await prisma.user.update({ where: { id: ids.sales }, data: { ownedRouteId: ids.routeA } });
+      await prisma.user.update({ where: { id: ids.salesB }, data: { ownedRouteId: ids.routeB } });
+    }
+  });
+
+  it('(3) a Manager’s dashboard “Pending approval” is the count of his /approvals queue', async () => {
+    // One request of each region waiting, each on a customer with branches in both.
+    as(ids.sales, 'SALESMAN');
+    const a = await submit({ customerId: ids.cust, customer: { primaryPhone: '+968 9555 6666' } });
+    expect(a.ok, JSON.stringify(a)).toBe(true);
+    as(ids.salesB, 'SALESMAN');
+    const b = await submit({ customerId: ids.cust2, branches: [{ branchId: ids.bB2, openingHours: '06:00-18:00' }] });
+    expect(b.ok, JSON.stringify(b)).toBe(true);
+    const [eA, eB] = [await pendingOn(ids.cust), await pendingOn(ids.cust2)];
+
+    const period = insightPeriod.parsePeriod({ period: '7d' }, new Date());
+    const noFilter = { regionIds: [] as string[], routeIds: [] as string[], rejected: false };
+    const dashboard = async (regions: string[]) => {
+      const scope = insightScope.resolveInsightScope(
+        'MANAGER',
+        { ownedRouteId: null, teamRouteIds: [], managedRegionIds: regions },
+        noFilter
+      );
+      if (scope.kind === 'none') throw new Error('no scope');
+      const data = await insights.loadInsights(scope, period);
+      if (!data.pipeline.ok) throw new Error('the pipeline card failed');
+      const sum = (r: Record<string, number>) => Object.values(r).reduce((x, y) => x + y, 0);
+      return { pending: sum(data.pipeline.data.waitingFirstStep), anyStep: sum(data.pipeline.data.waitingAnyStep) };
+    };
+    const queueCount = async (regions: string[]) =>
+      prisma.customerEdit.count({ where: await managerQueueWhere(prisma, regions, STEP_OR) });
+
+    const cases: Array<[string[], string[]]> = [
+      [[ids.regionA], [eA]],
+      [[ids.regionB], [eB]],
+      [[ids.regionA, ids.regionB], [eA, eB]],
+    ];
+    for (const [regions, mine] of cases) {
+      expect((await queueOf(regions)).sort()).toEqual([...mine].sort());
+      const d = await dashboard(regions);
+      expect(d.pending, `regions ${regions.length}`).toBe(await queueCount(regions));
+      expect(d.pending).toBe(mine.length);
+      // He can still open both (the pipeline's "at any step"), but decides only his own.
+      expect(d.anyStep).toBe(2);
+    }
+
+    as(ids.mgrA, 'MANAGER');
+    expect(await approve(eA)).toEqual({ ok: true });
+    as(ids.mgrB, 'MANAGER');
+    expect(await approve(eB)).toEqual({ ok: true });
+  });
+
+  it('(3) a close request on region B’s branch is region B’s: only its Manager finds and decides it', async () => {
+    const evidence = await prisma.attachment.create({
+      data: {
+        kind: 'SHOP',
+        r2Key: `uat/zzsg-${tag}-close.jpg`,
+        mimeType: 'image/jpeg',
+        bytes: 1000,
+        capturedById: ids.salesB,
+        capturedAt: new Date(),
+        branchId: ids.bB1,
+      },
+    });
+    as(ids.salesB, 'SALESMAN');
+    const fd = new FormData();
+    fd.set('branchId', ids.bB1);
+    fd.set('reason', 'Shop shut permanently, seen on the visit today.');
+    fd.set('attachmentId', evidence.id);
+    const res = await reactivations.markBranchClosedAction(fd);
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    const editId = await pendingOn(ids.cust);
+    expect(await queueOf([ids.regionA])).toEqual([]);
+    expect(await queueOf([ids.regionB])).toEqual([editId]);
+    as(ids.mgrA, 'MANAGER');
+    expect(await approve(editId)).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+    as(ids.mgrB, 'MANAGER');
+    expect(await approve(editId)).toEqual({ ok: true });
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.bB1 }, select: { status: true } })).status).toBe('CLOSED');
   });
 });

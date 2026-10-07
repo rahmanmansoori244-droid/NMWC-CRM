@@ -20,6 +20,13 @@
  * imported after submit, cannot change the answer. The branch ids come from the
  * server's own read of his route, never from the client.
  *
+ * Owner decision 4 (2026-10-07) narrowed what is checked: of his branches, only
+ * the ones the request changes (and the customer-level fields only when it
+ * changes one), at submit and again at approval (lib/validation/gate-scope.ts
+ * gateScopeOf). The frozen set still holds all his branches; owner decision 3
+ * also reads it as the request's home region (lib/permissions.ts
+ * requestScopeBranches), which decides which Managers approve it.
+ *
  * Pure: no database access. lib/access.ts imports salesmanBranches from here
  * (not the other way round), because lib/access.ts imports the database client.
  */
