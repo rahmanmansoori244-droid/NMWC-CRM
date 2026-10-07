@@ -13,6 +13,14 @@
  * Playwright, and Chromium silently refuses a non-Secure `__Host-` cookie. The
  * cookie is therefore added with domain 'localhost', path '/', secure, httpOnly
  * and no url.
+ *
+ * Passwords never go through a recorded Playwright call: `locator.fill(pw)`
+ * becomes an HTML-report step titled `Fill "<pw>"`. fillSecret() sets the
+ * field through the native value setter instead (the step is "Evaluate"), and
+ * every helper that typed one empties the password fields before it asserts — a
+ * failed assertion attaches an ARIA snapshot of the page, values included.
+ * Traces are off for the same reason (playwright.launch.config.ts), and
+ * secret-scan-reporter.ts checks every report and fails the run on a leak.
  */
 import {
   devices,
@@ -23,6 +31,7 @@ import {
   type BrowserContext,
   type BrowserContextOptions,
   type Cookie,
+  type Locator,
   type Page,
   type Route,
 } from '@playwright/test';
@@ -191,6 +200,49 @@ export async function contextAs(
 }
 
 /**
+ * Types a secret (a password) into an input without a recorded fill: the value
+ * is set through the element's native setter and input/change events fire, as
+ * typing would fire them (uncontrolled or React-controlled inputs alike). The
+ * report shows an "Evaluate" step and nothing else. Throws — without the value —
+ * when the field did not take it.
+ */
+export async function fillSecret(field: Locator, value: string): Promise<void> {
+  await field.waitFor({ state: 'visible' });
+  const took = await field.evaluate((el, v) => {
+    const input = el as HTMLInputElement | HTMLTextAreaElement;
+    const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    input.focus();
+    if (setter) setter.call(input, v);
+    else input.value = v;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return input.value === v;
+  }, value);
+  if (!took) throw new Error('fillSecret: the field did not take the value');
+}
+
+/**
+ * Empties every password field on the page (best effort, no argument: nothing
+ * secret is recorded). Called before any assertion that follows a typed
+ * password, so a failure's ARIA snapshot cannot hold one.
+ */
+export async function clearSecretFields(page: Page): Promise<void> {
+  if (page.isClosed()) return;
+  await page
+    .evaluate(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      for (const el of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="password"]'))) {
+        if (!el.value) continue;
+        if (setter) setter.call(el, '');
+        else el.value = '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    })
+    .catch(() => undefined);
+}
+
+/**
  * Signs in through the real login page. The x-forwarded-for of the sign-in POST
  * only is set to `ip` (a context-wide header would also reach the cross-origin
  * R2 PUT and break its CORS preflight). Waits for the hydration marker first: a
@@ -215,13 +267,18 @@ export async function signInViaUi(
     await page.goto('/login');
     await page.locator('form[data-hydrated="1"]').waitFor({ timeout: 60_000 });
     await page.getByLabel('Username').fill(username);
-    await page.getByLabel('Password').fill(password);
+    await fillSecret(page.getByLabel('Password'), password);
     await page.getByRole('button', { name: /sign in/i }).click();
     // Either the app navigates away from /login, or the form shows its refusal.
-    await Promise.race([
-      page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 60_000 }),
-      page.getByRole('alert').waitFor({ timeout: 60_000 }),
-    ]);
+    try {
+      await Promise.race([
+        page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 60_000 }),
+        page.getByRole('alert').waitFor({ timeout: 60_000 }),
+      ]);
+    } finally {
+      // A refused sign-in keeps the password in the field: empty it before any assertion.
+      await clearSecretFields(page);
+    }
     if (o.expectUrl) await expect(page).toHaveURL(o.expectUrl);
   } finally {
     if (o.ip) await page.unroute('**/login', handler).catch(() => undefined);
@@ -287,10 +344,15 @@ export async function fetchAs(page: Page, url: string): Promise<{ status: number
  */
 export async function changePasswordViaUi(page: Page, u: FixtureUser, next: string): Promise<void> {
   if (!/\/profile\/change-password/.test(page.url())) await page.goto('/profile/change-password');
-  await page.locator('input[name="currentPassword"]').fill(u.password);
-  await page.locator('input[name="newPassword"]').fill(next);
-  await page.locator('input[name="confirmNewPassword"]').fill(next);
-  await page.getByRole('button', { name: /change password/i }).click();
+  try {
+    await fillSecret(page.locator('input[name="currentPassword"]'), u.password);
+    await fillSecret(page.locator('input[name="newPassword"]'), next);
+    await fillSecret(page.locator('input[name="confirmNewPassword"]'), next);
+    await page.getByRole('button', { name: /change password/i }).click();
+  } finally {
+    // The submit has read the form (FormData is taken as it fires): empty it before asserting.
+    await clearSecretFields(page);
+  }
   await expect(page.getByText(/password changed/i)).toBeVisible();
   u.password = next;
   u.mustChangePassword = false;

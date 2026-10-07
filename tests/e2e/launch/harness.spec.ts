@@ -12,7 +12,11 @@
  *     enrich request through /api/forms, and a captured server action that is
  *     refused for the Viewer and runs for the supervisor;
  *   - cleanup leaves zero rows (by suffix and by id, every table touched) and
- *     zero R2 objects under the fixture users' folders.
+ *     zero R2 objects under the fixture users' folders;
+ *   - cleanup deletes only what is the world's: a bare two-character route code
+ *     or username in a registry finds nothing, and rows another world made with
+ *     this world's users, route and region are reported and kept — with the
+ *     users, route and region they point at — until their owner removes them.
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts harness --project=phone --project=desktop
  */
@@ -26,12 +30,14 @@ import {
   auditFor,
   captureServerAction,
   contextAs,
+  createWorld,
   db,
   fetchAs,
   hasR2,
   homePathFor,
   installLaunchHooks,
   mintingProven,
+  newId,
   notificationsFor,
   receiptEditId,
   replayServerAction,
@@ -300,5 +306,162 @@ test.describe('launch harness', { tag: ['@phone', '@desktop'] }, () => {
     expect(left, 'residue by suffix and id').toEqual(Object.fromEntries(Object.keys(left).map((k) => [k, 0])));
     expect(totalOf(left)).toBe(0);
     expect(world.registry.data.clean).toBe(true);
+  });
+});
+
+test.describe('launch harness: cleanup deletes only the world’s own rows', { tag: ['@phone', '@desktop'] }, () => {
+  requireLaunchEnv();
+  installLaunchHooks();
+  test.describe.configure({ mode: 'serial' });
+
+  /** A: a two-character route (no suffix in its code or its salesman's username), a steward, a manager. */
+  let a: World;
+  /** B: a world whose registry wrongly names A's bare code and username (the old two-world race). */
+  let b: World;
+  /** C: rows made WITH A's users, route and region — foreign to A, C's own. */
+  let c: World;
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    a = await createWorld('oa', {
+      regions: [{ key: 'R' }],
+      routes: [{ key: 'TWO', region: 'R', twoChar: true }],
+      users: [
+        { key: 'S', role: 'SALESMAN', route: 'TWO' },
+        { key: 'STW', role: 'STEWARD' },
+        { key: 'M', role: 'MANAGER', regions: ['R'] },
+      ],
+    });
+    b = await createWorld('ob', { regions: [{ key: 'R' }], routes: [{ key: 'X', region: 'R' }] });
+    c = await createWorld('oc', { regions: [{ key: 'R' }] });
+  });
+
+  test.afterAll(async () => {
+    test.setTimeout(300_000);
+    // C before A: A's rows are held while C's rows point at them.
+    for (const w of [b, c, a]) if (w) await w.cleanup();
+  });
+
+  test('a bare two-character code or username in a registry finds nothing', async () => {
+    const two = a.route('TWO');
+    const s = a.user('S');
+    expect(two.code).toMatch(/^[ZY][0-9A-Z]$/);
+    expect(s.username).toBe(two.code.toLowerCase());
+    expect(a.carriesSuffix(s.username), 'the salesman of a two-character route carries no suffix').toBe(false);
+    expect(a.registry.data.routeIds).toContain(two.id);
+    expect(a.registry.data.userIds).toContain(s.id);
+
+    // Adopting such a value is refused…
+    expect(() => b.adopt.routeCode(two.code)).toThrow(/does not carry the world suffix/);
+    expect(() => b.adopt.user(s.username)).toThrow(/does not carry the world suffix/);
+    // …and one that got into a registry anyway (as the old allocator left it after a P2002) finds nothing.
+    b.registry.add('routeCodes', two.code);
+    b.registry.add('usernames', s.username);
+    const out = await b.cleanup();
+    expect(out.warnings).toEqual([]);
+    expect(out.deleted.Route).toBe(1);
+    expect(out.deleted.User ?? 0).toBe(0);
+    expect(b.registry.data.clean).toBe(true);
+    expect(b.registry.data.userIds, 'nothing of A was written back into B').toEqual([]);
+    expect(b.registry.data.routeIds).not.toContain(two.id);
+    // A's route and salesman are untouched — not even deactivated.
+    expect(await db.route.findUnique({ where: { id: two.id }, select: { code: true } })).toEqual({ code: two.code });
+    expect(await db.user.findUnique({ where: { id: s.id }, select: { isActive: true, ownedRouteId: true } })).toEqual({
+      isActive: true,
+      ownedRouteId: two.id,
+    });
+  });
+
+  test('rows another world made with this world’s users, route and region are reported and kept, not deleted', async () => {
+    test.setTimeout(300_000);
+    const s = a.user('S');
+    const stw = a.user('STW');
+    const m = a.user('M');
+    const two = a.route('TWO');
+    const region = a.region('R');
+    // C's rows, in C's registry BEFORE the insert (C's cleanup, or the sweep, removes them).
+    const ids = { customer: newId(), branch: newId(), edit: newId(), batch: newId(), route: newId() };
+    c.adopt.customer(ids.customer);
+    c.registry.add('branchIds', ids.branch);
+    c.adopt.edit(ids.edit);
+    c.adopt.importBatch(ids.batch);
+    c.adopt.routeId(ids.route);
+    await db.customer.create({
+      data: { id: ids.customer, nmwcCode: `000E2E${c.SFX}-901`, legalName: c.name('Foreign Trading'), createdById: s.id },
+    });
+    await db.branch.create({
+      data: {
+        id: ids.branch,
+        customerId: ids.customer,
+        branchCode: `000E2E${c.SFX}-901-01`,
+        branchName: c.name('Foreign shop'),
+        regionId: region.id,
+        routeId: two.id,
+        address: 'Way 3012, Al Ghubra North, Muscat',
+      },
+    });
+    await db.route.create({ data: { id: ids.route, code: `E2${c.SFX}9`, name: c.name('Route in A'), regionId: region.id } });
+    // A request about C's customer, submitted by A's salesman and decided by A's manager.
+    await db.customerEdit.create({
+      data: {
+        id: ids.edit,
+        target: 'CUSTOMER',
+        customerId: ids.customer,
+        state: 'APPROVED',
+        submittedById: s.id,
+        submittedAt: new Date(),
+        reviewedById: m.id,
+        reviewedAt: new Date(),
+        fieldChanges: [],
+        attachmentChanges: [],
+      },
+    });
+    await db.editApproval.create({
+      data: { editId: ids.edit, cycle: 1, stepIndex: 0, role: 'SUPERVISOR', decision: 'APPROVED', actorId: m.id },
+    });
+    await db.importBatch.create({ data: { id: ids.batch, filename: c.name('foreign.xlsx'), uploadedById: stw.id, status: 'READY' } });
+    await db.auditLog.create({ data: { actorId: stw.id, action: 'UPDATE', entityType: 'Customer', entityId: ids.customer } });
+
+    // A's cleanup: nothing of C's is deleted; A's users, route and region they point at are kept.
+    const out = await a.cleanup();
+    expect(a.registry.data.clean).toBe(false);
+    const nonZero = Object.fromEntries(Object.entries(out.leftovers).filter(([, n]) => n !== 0));
+    expect(nonZero).toEqual({
+      User: 3,
+      Route: 1,
+      Region: 1,
+      foreignRoute: 1,
+      foreignBranch: 1,
+      foreignCustomer: 1,
+      foreignCustomerEdit: 1,
+      foreignEditApproval: 1,
+      foreignImportBatch: 1,
+      foreignAuditLog: 1,
+    });
+    expect(out.warnings.join('\n')).toMatch(/kept 3 world user\(s\)/);
+    expect(await db.customer.count({ where: { id: ids.customer } })).toBe(1);
+    expect(await db.branch.count({ where: { id: ids.branch } })).toBe(1);
+    expect(await db.customerEdit.findUnique({ where: { id: ids.edit }, select: { submittedById: true, reviewedById: true } })).toEqual({
+      submittedById: s.id,
+      reviewedById: m.id,
+    });
+    expect(await db.editApproval.count({ where: { editId: ids.edit, actorId: m.id } })).toBe(1);
+    expect(await db.importBatch.count({ where: { id: ids.batch } })).toBe(1);
+    expect(await db.auditLog.count({ where: { entityId: ids.customer, actorId: stw.id } })).toBe(1);
+    expect(await db.route.count({ where: { id: ids.route } })).toBe(1);
+    // A's users are out of every audience, but still there.
+    expect(await db.user.count({ where: { id: { in: [s.id, stw.id, m.id] }, isActive: false } })).toBe(3);
+
+    // C removes its own rows; then A cleans to zero, its two-character route found by id.
+    const cOut = await c.cleanup();
+    expect(cOut.warnings).toEqual([]);
+    expect(c.registry.data.clean).toBe(true);
+    expect(cOut.deleted).toMatchObject({ Customer: 1, Branch: 1, CustomerEdit: 1, EditApproval: 1, ImportBatch: 1, Route: 1, Region: 1 });
+    const again = await a.cleanup();
+    expect(again.warnings).toEqual([]);
+    expect(again.deleted).toMatchObject({ User: 3, Route: 1, Region: 1 });
+    expect(a.registry.data.clean).toBe(true);
+    expect(totalOf(await a.residue())).toBe(0);
+    expect(await db.route.count({ where: { id: two.id } })).toBe(0);
   });
 });

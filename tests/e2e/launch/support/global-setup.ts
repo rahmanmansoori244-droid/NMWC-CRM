@@ -8,7 +8,7 @@
  *   2. /api/health answers 200 {status:'ok'};
  *   3. the server under test reads THIS database (a probe account created here
  *      signs in through the page — a fixture round trip, not trust in port 3000);
- *   4. x-forwarded-for reaches the login limiter (bucket login:ip:198.18.255.254);
+ *   4. x-forwarded-for reaches the login limiter (bucket login:ip:<the run's probe address>);
  *   5. R2: a probe photo PUT under the probe user's folder streams back through
  *      /api/photos/<id>;
  *   6. sessions, each proven separately: UI sign-in, a MINTED cookie, and
@@ -37,14 +37,22 @@ import {
 } from './env';
 import { OMAN_TODAY, RUN_OMAN_DATE } from './oman';
 import { seedPhoto } from './photos';
+import { smallHash } from './ids';
 import { r2BucketName } from './r2';
 import { pruneCleanRegistries } from './registry';
+import { pruneRunLocks } from './runlock';
 import { apiSignIn, deviceOptions, mintSessionCookie, signInViaUi } from './sessions';
 import { createWorld } from './world';
 
 /** The F1 migrations the build under test needs (prisma migrate status covers the rest). */
 const F1_MIGRATIONS = ['20261005100000_notification_kinds_fyi_reactivation', '20261005100100_notification_email_outbox'];
-const PROBE_IP = '198.18.255.254';
+/**
+ * The probe's sign-in address: 198.18-19.248-255.x, a block no world uses
+ * (world.ts keeps the third octet below 248), picked by the run id so a run
+ * from another checkout does not share it — its cleanup would reset our bucket.
+ */
+const PROBE_HASH = smallHash(`probe:${RUN_ID}`);
+const PROBE_IP = `198.${18 + (PROBE_HASH % 2)}.${248 + ((PROBE_HASH >>> 1) % 8)}.${1 + ((PROBE_HASH >>> 4) % 254)}`;
 
 function log(msg: string): void {
   console.log(`[launch setup] ${msg}`);
@@ -68,6 +76,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
     if (stale.swept > 0) log(`swept ${stale.swept} world(s) left by earlier runs: ${stale.clean} clean, ${stale.dirty.length} still dirty`);
     for (const d of stale.dirty) log(`  still dirty: ${d.file} ${JSON.stringify(d.leftovers ?? d.error)}`);
     pruneCleanRegistries();
+    pruneRunLocks();
 
     // 1. Database and schema (read-only).
     await db.$queryRaw`SELECT 1`;
@@ -115,7 +124,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
     results.xffHonoured = Boolean(bucket);
     if (!bucket) {
       throw new Error(
-        'x-forwarded-for is NOT honoured: no login:ip:198.18.255.254 bucket after a refused sign-in. ' +
+        `x-forwarded-for is NOT honoured: no login:ip:${PROBE_IP} bucket after a refused sign-in. ` +
           'Is the server under test reading this database?'
       );
     }

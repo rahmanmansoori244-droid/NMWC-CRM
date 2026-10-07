@@ -181,16 +181,29 @@ export interface World {
   allocTwoCharRoute(region: string, key?: string): Promise<FixtureRoute>;
   /** Unique +9689… numbers, checked unused on the database. */
   allocPhones(n: number): Promise<string[]>;
-  /** Registers rows the UI created, so cleanup finds them. */
+  /** Whether a typed value (username, code, name) carries this world's suffix. */
+  carriesSuffix(value: string): boolean;
+  /**
+   * Registers rows the UI created, so cleanup finds — and may delete — them.
+   * Cleanup deletes only rows it can tie to the world: registered ids, values
+   * that carry the suffix, and what hangs off those. A row found only through
+   * a fixture user (submitted, uploaded, captured or decided by one) or a fixture
+   * route or region is someone else's: it is reported, and the world stays dirty.
+   * By value (user, routeCode, regionCode) only when the value carries the
+   * suffix — anything else throws; adopt such a row by id.
+   */
   adopt: {
     user(username: string): void;
+    userId(id: string): void;
     customer(id: string): void;
     edit(id: string): void;
     attachment(id: string): void;
     importBatch(id: string): void;
     temixBatch(id: string): void;
     routeCode(code: string): void;
+    routeId(id: string): void;
     regionCode(code: string): void;
+    regionId(id: string): void;
     ip(ip: string): void;
   };
   /** Idempotent. Deletes everything, returns what is left (all zero when clean). */

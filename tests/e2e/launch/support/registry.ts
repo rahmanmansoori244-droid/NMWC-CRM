@@ -1,16 +1,21 @@
 /**
  * The crash registry: one JSON file per world under .e2e-launch/registry/<runId>/.
  *
- * Every id, username and code a world creates is written here BEFORE the row is
- * inserted (ids are minted client-side), so a worker killed half-way leaves a
- * file that names everything it may have written. world.cleanup() and the
- * sweep read the file, delete, and mark it clean. The directory is outside every
- * Playwright outputDir, so the next run cannot wipe it before it is swept.
+ * Every id a world creates is written here BEFORE the row is inserted (ids are
+ * minted client-side), so a worker killed half-way leaves a file that names
+ * everything it may have written. Usernames and codes that carry the world's
+ * suffix are written first too; one that does not (a two-character route code,
+ * its salesman's username) is written only after its insert succeeded, and is
+ * never used to find rows — cleanup finds those by id (cleanup.ts).
+ * world.cleanup() and the sweep read the file, delete, and mark it clean. The
+ * directory is outside every Playwright outputDir, so the next run cannot wipe
+ * it before it is swept.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { REGISTRY_DIR } from './env';
+import { runIsLive } from './runlock';
 
 export const REGISTRY_LISTS = [
   'ymds',
@@ -155,23 +160,17 @@ export function listRegistryFiles(): string[] {
   return files.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
 }
 
-function pidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
-/** A registry may be swept by someone else only when its run is over. */
+/**
+ * A registry may be swept by someone else only when its run is over: its
+ * runner's heartbeat (runlock.ts) is stale or gone. Not the runner's process
+ * id — Windows hands a dead run's id to another process within minutes.
+ */
 export function ownedByLiveRun(r: RegistryData, currentRunId: string): boolean {
   if (r.runId === currentRunId) return false;
   if (r.host !== os.hostname()) return true; // never sweep another machine's run
   const ageH = (Date.now() - Date.parse(r.createdAt)) / 3_600_000;
   if (ageH > 6) return false; // longer than any run (globalTimeout 3 h)
-  return pidAlive(r.runnerPid);
+  return runIsLive(r.runId);
 }
 
 /** Removes clean registry files older than `days`, and empty run folders. */

@@ -5,7 +5,9 @@
  * project initial), built straight into the UAT database through Prisma. Every
  * typed value carries the suffix (usernames, codes, names) so the cleanup and
  * the residue check can find rows by it, and every id is minted client-side and
- * written to the crash registry before its row is inserted.
+ * written to the crash registry before its row is inserted. The exceptions —
+ * two-character route codes and their salesmen's usernames — are found by id
+ * only: another world, or a later real route or user, may hold the same code.
  *
  * Build worlds in a describe-level beforeAll, never at module level; call
  * world.cleanup() in afterAll. Never touch a row that is not the world's own.
@@ -20,6 +22,7 @@ import { normalizeCR } from '../../../../lib/cr';
 import { scoreBranch, scoreCustomer, type BranchForScore, type CustomerForScore } from '../../../../lib/completeness';
 import { cleanupRegistry, residue } from './cleanup';
 import { assertNotProduction, db, REGISTRY_DIR, RUN_ID, safeError, hasR2 } from './env';
+import { FIXTURE_PASSWORD_SHAPE } from './secret-scan';
 import { makeRunId, newId, smallHash } from './ids';
 import { assertOmanDayUnchanged, OMAN_TODAY, omanDayAfter } from './oman';
 import { seedPhotos, type PhotoSpec } from './photos';
@@ -50,6 +53,8 @@ export const MUSCAT = { lat: 23.5881, lng: 58.3829, accuracy: 9 } as const;
  * sign-in page is the only place it goes.
  */
 const RUN_PASSWORD = `E2e-${randomBytes(12).toString('base64url')}-9a`;
+// The secret scan finds a leaked run password by this shape (it never knows the value).
+if (!FIXTURE_PASSWORD_SHAPE.test(RUN_PASSWORD)) throw new Error('the run password does not have the shape secret-scan.ts looks for');
 const hashCache = new Map<string, Promise<string>>();
 function hashOnce(password: string): Promise<string> {
   let h = hashCache.get(password);
@@ -121,6 +126,7 @@ class WorldImpl implements World {
   private readonly customersByKey = new Map<string, FixtureCustomer>();
   private counters = { region: 0, route: 0, customer: 0, cr: 0, phone: 0 };
   private readonly ipBase: string;
+  private readonly ipOffset: number;
   private readonly phoneBase: string;
 
   constructor(
@@ -131,18 +137,23 @@ class WorldImpl implements World {
   ) {
     this.SFX = sfx.toUpperCase();
     this.runId = RUN_ID;
-    // Addresses: unique among worlds alive at the same time (one per worker and
-    // project at a time), and apart from the probe's 198.18.255.x.
-    const octet2 = 18 + (smallHash(RUN_ID) % 2);
-    const octet3 = ((slot.workerIndex % 30) * 8 + slot.projectIdx * 2 + (slot.counter % 2)) % 248;
+    // Addresses: unique among the run's worlds alive at the same time (one slot
+    // per worker, project and world parity), below the probe's 198.1x.248+ block.
+    // The run id turns the slot block and the last octet, so a run from another
+    // checkout rarely lands on the same addresses (and its cleanup on our buckets).
+    const h = smallHash(`ip:${RUN_ID}`);
+    const octet2 = 18 + (h % 2);
+    const slotNo = (slot.workerIndex % 30) * 8 + slot.projectIdx * 2 + (slot.counter % 2);
+    const octet3 = (slotNo + (h >>> 1)) % 248;
     this.ipBase = `198.${octet2}.${octet3}`;
+    this.ipOffset = (h >>> 9) % 254;
     // Phones: +968 9 <run> <worker 2> <project> <world> <seq 2>.
     this.phoneBase = `9${smallHash(RUN_ID) % 10}${String(slot.workerIndex % 100).padStart(2, '0')}${slot.projectIdx}${slot.counter % 10}`;
   }
 
   ip(n = 1): string {
     if (!Number.isInteger(n) || n < 1 || n > 254) throw new Error('world.ip(n): 1..254');
-    const ip = `${this.ipBase}.${n}`;
+    const ip = `${this.ipBase}.${((n - 1 + this.ipOffset) % 254) + 1}`;
     this.registry.add('ips', ip);
     return ip;
   }
@@ -255,11 +266,14 @@ class WorldImpl implements World {
       if (free.length === 0) throw new Error('no free Z?/Y? two-character route code on this database');
       const code = free[Math.floor(Math.random() * free.length)]!;
       const id = newId();
-      // Registered before the insert: a two-character code carries no suffix.
+      // The id first (a crash between here and the insert leaves it findable).
+      // The code carries no suffix: it is recorded only once the insert has
+      // succeeded — a P2002 means another world or a real route holds it — and
+      // cleanup never looks a route up by it.
       this.registry.add('routeIds', id);
-      this.registry.add('routeCodes', code);
       try {
         await db.route.create({ data: { id, code, name: `E2E Route ${key} ${this.sfx}`, regionId: region.id } });
+        this.registry.add('routeCodes', code);
         this.counters.route++;
         const r: FixtureRoute = { key, id, code, name: `E2E Route ${key} ${this.sfx}`, regionId: region.id, regionKey };
         this.routes.set(key, r);
@@ -304,8 +318,10 @@ class WorldImpl implements World {
     if (clash.length > 0) {
       throw new Error(`username(s) already on the database: ${clash.map((c) => c.username).join(', ')} — a fixture never reuses a row`);
     }
-    this.registry.add('usernames', ...planned.map((p) => p.username));
+    // Ids first. A username that carries the suffix is recorded first too; one
+    // that does not (a two-character route's salesman) only after its insert.
     this.registry.add('userIds', ...planned.map((p) => p.id));
+    this.registry.add('usernames', ...planned.map((p) => p.username).filter((n) => this.carriesSuffix(n)));
 
     const idOf = (key: string | null | undefined): string | null => {
       if (!key) return null;
@@ -337,6 +353,7 @@ class WorldImpl implements World {
         })),
       });
       wave.forEach((p) => done.add(p.id));
+      this.registry.add('usernames', ...wave.map((p) => p.username).filter((n) => !this.carriesSuffix(n)));
       pending = pending.filter((p) => !wave.includes(p));
     }
     const links = planned.flatMap((p) => p.regionIds.map((r) => [r, p.id] as const));
@@ -557,16 +574,39 @@ class WorldImpl implements World {
     return u.key;
   }
 
+  /** Whether a typed value (username, code, name) carries this world's suffix. */
+  carriesSuffix(value: string): boolean {
+    return value.toLowerCase().includes(this.sfx);
+  }
+
+  /** A username or code may be adopted by value only when it carries the suffix. */
+  private bySuffix(what: 'user' | 'routeCode' | 'regionCode', value: string): string {
+    if (!this.carriesSuffix(value)) {
+      const byId = { user: 'userId', routeCode: 'routeId', regionCode: 'regionId' }[what];
+      throw new Error(
+        `world.adopt.${what}("${value}") — it does not carry the world suffix ${this.sfx}, so cleanup could match ` +
+          `someone else's row by it. Type the suffix into it (world.name()), or adopt the row by id (adopt.${byId}).`
+      );
+    }
+    return value;
+  }
+
   readonly adopt = {
-    user: (username: string) => this.registry.add('usernames', username.toLowerCase()),
+    user: (username: string) => this.registry.add('usernames', this.bySuffix('user', username).toLowerCase()),
+    userId: (id: string) => this.registry.add('userIds', id),
     customer: (id: string) => this.registry.add('customerIds', id),
     edit: (id: string) => this.registry.add('editIds', id),
     attachment: (id: string) => this.registry.add('attachmentIds', id),
     importBatch: (id: string) => this.registry.add('importBatchIds', id),
     temixBatch: (id: string) => this.registry.add('temixBatchIds', id),
-    routeCode: (code: string) => this.registry.add('routeCodes', code),
-    regionCode: (code: string) => this.registry.add('regionCodes', code),
-    ip: (ip: string) => this.registry.add('ips', ip),
+    routeCode: (code: string) => this.registry.add('routeCodes', this.bySuffix('routeCode', code)),
+    routeId: (id: string) => this.registry.add('routeIds', id),
+    regionCode: (code: string) => this.registry.add('regionCodes', this.bySuffix('regionCode', code)),
+    regionId: (id: string) => this.registry.add('regionIds', id),
+    ip: (ip: string) => {
+      if (!/^198\.(18|19)\.\d{1,3}\.\d{1,3}$/.test(ip)) throw new Error(`world.adopt.ip: ${ip} is not a test address (198.18.0.0/15)`);
+      this.registry.add('ips', ip);
+    },
   };
 
   async cleanup() {

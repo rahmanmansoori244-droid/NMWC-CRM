@@ -1,7 +1,9 @@
 /**
  * The app's own fetch routes, called the way the phone calls them — for states
- * that are setup, not story. Every call goes through page.request, so the
- * page's context (its minted or signed-in session) is the caller.
+ * that are setup, not story. Every call to the app goes through page.request,
+ * so the page's context (its minted or signed-in session) is the caller; the
+ * one call to R2 (the presigned PUT) goes through Node's fetch, so its URL is
+ * never a recorded Playwright step.
  *
  *   POST /api/forms/customer-edit | customer-create | branch-close | branch-reactivate
  *   POST /api/photos/presign → PUT <presigned R2 url> → POST /api/photos/finalize → POST /api/photos/attach
@@ -169,13 +171,24 @@ export async function uploadPhotoViaApi(
   world.registry.add('ymds', key.split('/').slice(0, 3).join('/'));
   world.registry.add('r2Keys', key);
 
-  // The PUT goes to R2's own host; the page's localhost cookies do not travel there.
-  const put = await page.request.put(url, {
-    headers: { 'Content-Type': mimeType, ...headers },
-    data: bytes,
-    failOnStatusCode: false,
-  });
-  if (put.status() !== 200) throw new Error(`uploadPhotoViaApi: the R2 PUT answered ${put.status()}`);
+  // The PUT goes to R2's own host (the page's localhost cookies do not travel
+  // there), through Node's fetch — NOT page.request: a Playwright call is a
+  // report step titled with its URL, and this URL carries the R2 account id, the
+  // access key id and a live signature. Errors are re-thrown without it.
+  let putStatus: number;
+  try {
+    const put = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': mimeType, ...headers },
+      body: new Uint8Array(bytes),
+      signal: AbortSignal.timeout(60_000),
+    });
+    putStatus = put.status;
+    await put.arrayBuffer().catch(() => undefined);
+  } catch (err) {
+    throw new Error(`uploadPhotoViaApi: the R2 PUT failed (${(err as { name?: string }).name ?? 'error'})`);
+  }
+  if (putStatus !== 200) throw new Error(`uploadPhotoViaApi: the R2 PUT answered ${putStatus}`);
 
   const isTiny = !o.bytes;
   const finalize = await postJson(page, '/api/photos/finalize', {

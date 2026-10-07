@@ -12,6 +12,12 @@
  * are set with `??=` (a plain Date.now() would give every worker its own run).
  * It imports only the pure support modules: env.ts / oman.ts read these values
  * once at import, after this file has set them.
+ *
+ * Secrets stay out of what the run writes: traces are OFF (a trace records every
+ * call's parameters, DOM snapshots and the network log — session cookies, typed
+ * passwords, the presigned R2 URL), passwords are typed with fillSecret(), and
+ * the last reporter scans every launch report, test-results folder and server
+ * log, deleting what holds a secret and failing the run (secret-scan-reporter.ts).
  */
 import { defineConfig, devices } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
@@ -28,6 +34,7 @@ import {
 } from './tests/e2e/launch/support/base';
 import { clockGuard } from './tests/e2e/launch/support/clock';
 import { makeRunId } from './tests/e2e/launch/support/ids';
+import { holdRunLock } from './tests/e2e/launch/support/runlock';
 
 const enabled = process.env.RUN_LAUNCH_E2E === '1';
 const inWorker = process.env.TEST_WORKER_INDEX !== undefined;
@@ -51,13 +58,26 @@ delete process.env.RATE_LIMIT_BACKEND;
 
 const PORT = Number(process.env.E2E_PORT ?? 3000);
 const BASE_URL = `http://localhost:${PORT}`;
+/**
+ * The server listens on IPv4 loopback only: it holds the UAT database URL,
+ * AUTH_SECRET and production's R2 keys, and trusts x-forwarded-for — nothing
+ * else on the network may reach it. Every client resolves BASE_URL's
+ * "localhost" to ::1 and 127.0.0.1 and falls back between them (Chromium and
+ * Playwright's own HTTP client alike); global setup proves the page, a minted
+ * cookie and page.request all reach it.
+ */
+const BIND_HOST = '127.0.0.1';
 const DEV = process.env.E2E_SERVER === 'dev';
 const STEP = process.env.E2E_STEP;
 const SERVER_LOG = path.join(STATE_DIR, `server-${STEP}.log`);
 const MUSCAT = { latitude: 23.5881, longitude: 58.3829, accuracy: 9 };
 
 assertNotProduction();
-if (enabled && !inWorker) preflight();
+if (enabled && !inWorker) {
+  preflight();
+  // This run's heartbeat: while it is fresh, no other run sweeps our worlds (runlock.ts).
+  holdRunLock(process.env.E2E_RUN_ID!);
+}
 
 /**
  * Checks that must hold BEFORE the server starts (Playwright starts the
@@ -181,14 +201,22 @@ export default defineConfig({
   timeout: 180_000,
   globalTimeout: 3 * 60 * 60 * 1000,
   expect: { timeout: 20_000 },
-  reporter: [['list'], ['html', { outputFolder: `playwright-report/launch-${STEP}`, open: 'never' }]],
+  // The secret scan runs last: reporters end in this order, so the HTML report is on disk by then.
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: `playwright-report/launch-${STEP}`, open: 'never' }],
+    ['./tests/e2e/launch/support/secret-scan-reporter.ts'],
+  ],
   globalSetup: './tests/e2e/launch/support/global-setup.ts',
   globalTeardown: './tests/e2e/launch/support/global-teardown.ts',
   use: {
     baseURL: BASE_URL,
     timezoneId: 'Asia/Muscat',
     locale: 'en-GB',
-    trace: 'retain-on-failure',
+    // OFF, on purpose: every context carries a session cookie and some type a
+    // password; a trace would keep both (see the header). Failures keep a
+    // screenshot and Playwright's error context.
+    trace: 'off',
     screenshot: 'only-on-failure',
     actionTimeout: 20_000,
     navigationTimeout: 60_000,
@@ -216,7 +244,7 @@ export default defineConfig({
         // The production server CI uses (E2E_SERVER=dev for authoring). Output goes
         // to .e2e-launch/server-<step>.log, never to the console: a server error
         // can quote a connection string.
-        command: `node node_modules/next/dist/bin/next ${DEV ? 'dev' : 'start'} -p ${PORT} > "${SERVER_LOG}" 2>&1`,
+        command: `node node_modules/next/dist/bin/next ${DEV ? 'dev' : 'start'} -p ${PORT} -H ${BIND_HOST} > "${SERVER_LOG}" 2>&1`,
         url: `${BASE_URL}/api/health`,
         reuseExistingServer: false,
         timeout: 180_000,

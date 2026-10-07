@@ -54,11 +54,13 @@ export {
   MUSCAT_GEO,
   apiSignIn,
   changePasswordViaUi,
+  clearSecretFields,
   closeTestContexts,
   contextAs,
   deviceOptions,
   drainLimit,
   fetchAs,
+  fillSecret,
   homePathFor,
   mintSessionCookie,
   mintingProven,
@@ -101,3 +103,4 @@ export { actionIdFor, captureServerAction, replayServerAction, type CapturedActi
 export { assertFixtureKey, listFixturePrefix, r2BucketName } from './r2';
 export { cleanupRegistry, residue, sweepRun, sweepStale, totalOf, type CleanupResult, type Residue } from './cleanup';
 export { newId } from './ids';
+export { FIXTURE_PASSWORD_SHAPE, describeHit, launchArtifactRoots, scanForSecrets, type ScanResult, type SecretHit } from './secret-scan';

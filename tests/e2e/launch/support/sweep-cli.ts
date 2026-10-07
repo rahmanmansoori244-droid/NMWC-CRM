@@ -7,18 +7,30 @@
  *   node scripts/qa/run-with-env.mjs tsx tests/e2e/launch/support/sweep-cli.ts --list    # show, delete nothing
  *   node scripts/qa/run-with-env.mjs tsx tests/e2e/launch/support/sweep-cli.ts --run <id>
  *   node scripts/qa/run-with-env.mjs tsx tests/e2e/launch/support/sweep-cli.ts --check [--run <id>]
- *       # read-only: recount every world (by id AND by suffix, every table, and the
- *       # R2 folders of its users) and exit 1 if anything is left
+ *       # read-only: recount every world (by id AND by suffix, every table, the
+ *       # R2 folders of its users, and the foreign rows pointing at it) and exit 1
+ *       # if anything is left
+ *   node scripts/qa/run-with-env.mjs tsx tests/e2e/launch/support/sweep-cli.ts --scan
+ *       # read-only: scan every launch report, test-results folder and server log
+ *       # for secrets (secret-scan.ts) and exit 1 on a hit — names files, never values
  *
- * A run whose Playwright process is still alive on this machine is left alone.
+ * A run whose runner's heartbeat is still fresh on this machine is left alone.
  */
 import { residue, sweepRun, sweepStale, totalOf } from './cleanup';
 import { assertNotProduction, disconnectDb, redact } from './env';
 import { listRegistryFiles, Registry } from './registry';
+import { describeHit, launchArtifactRoots, scanForSecrets } from './secret-scan';
 
 async function main(): Promise<number> {
   assertNotProduction();
   const args = process.argv.slice(2);
+  if (args.includes('--scan')) {
+    const res = scanForSecrets(launchArtifactRoots());
+    for (const h of res.hits) console.log(`SECRET  ${describeHit(h)}`);
+    for (const u of res.unreadable) console.log(`UNREADABLE  ${u}`);
+    console.log(`scanned ${res.files} file(s), ${res.entries} part(s): ${res.hits.length === 0 ? 'no secrets' : `${res.hits.length} hit(s)`}`);
+    return res.hits.length === 0 ? 0 : 1;
+  }
   if (args.includes('--list')) {
     const files = listRegistryFiles();
     if (files.length === 0) console.log('no registry files');

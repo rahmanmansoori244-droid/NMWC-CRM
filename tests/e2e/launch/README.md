@@ -54,10 +54,25 @@ prefix — `$env:RUN_LAUNCH_E2E = '1'; node scripts/qa/run-with-env.mjs playwrig
 anything with spaces, `|`, `&`, `^` or `%` on the command line (a `--grep`
 alternation, a path with spaces): put it in the config or in an env variable.
 
-Reports: `playwright-report/launch-<step>/`, traces and screenshots of failures
-in `test-results/launch-<step>/` (one folder per step, so step 2 keeps step 1's).
-The server's own output goes to `.e2e-launch/server-<step>.log` — never to the
-console, because a server error can quote a connection string.
+Reports: `playwright-report/launch-<step>/`, screenshots and error context of
+failures in `test-results/launch-<step>/` (one folder per step, so step 2 keeps
+step 1's). The server's own output goes to `.e2e-launch/server-<step>.log` —
+never to the console, because a server error can quote a connection string.
+
+**No traces, and a secret scan.** Every context carries a session cookie, some
+type a password, and the photo upload uses a presigned R2 URL (the account id,
+the access key id, a live signature). A Playwright trace records call
+parameters, DOM snapshots and the network log, so traces are **off**; passing
+`--trace` brings them back and the scan below will delete them. The HTML
+report titles each `fill` step with the typed value, so passwords are typed
+with `fillSecret()` and the R2 PUT goes through Node's `fetch`. The last
+reporter (`support/secret-scan-reporter.ts`) then scans every
+`playwright-report/launch-*`, `test-results/launch-*` and `.e2e-launch/*.log`
+— zip entries and the report's embedded data included — for a run password
+(by its shape, `E2e-<16>-9a`), an Auth.js session token, a presigned URL or the
+value of a secret env variable. A file that holds one is deleted and the run
+fails, naming the file and the kind of secret, never the value. By hand,
+read-only: `… sweep-cli.ts --scan`.
 
 ### What the run refuses to do
 
@@ -66,9 +81,10 @@ The config checks, before the server starts:
 - `DATABASE_URL`/`DIRECT_URL` set, not production; not the Desktop clone;
 - no `.env.local`, `.env.production`, `.env.development` (`next start` would read them over the UAT `.env`);
 - the clock: no Oman midnight (20:00 UTC) inside the run's budget
-  (`E2E_RUN_BUDGET_MIN`, default 120 minutes) and no start in the two hours
-  after it — with the default budget, no start between 18:00 and 22:00 UTC —
-  and no overlap with Neon's compute-update window (Thursday 23:00–24:00 UTC);
+  (`E2E_RUN_BUDGET_MIN`, default 120 minutes) and no start in the four hours
+  after it, while the server's UTC date is still a day behind Oman's — with the
+  default budget, no start between 18:00 and 24:00 UTC — and no overlap with
+  Neon's compute-update window (Thursday 23:00–24:00 UTC);
 - a production build exists, is newer than every file in `app/`,
   `components/`, `lib/`, `services/`, the schema and the root configs, and has
   no Sentry DSN inlined in `.next/static` or `.next/server`;
@@ -98,6 +114,13 @@ streams back through `/api/photos/<id>`; a **minted** cookie opens a home page;
 | `E2E_RUN_BUDGET_MIN` | 120 | how long the run may take, for the clock guard |
 | `E2E_RUN_ID` | generated | set by the config with `??=`; set it yourself only to resume a run's naming |
 
+The server listens on `127.0.0.1` only (`-H 127.0.0.1`): it holds the UAT
+database URL, `AUTH_SECRET` and production's R2 keys and trusts
+`x-forwarded-for`, so nothing else on the network may reach it. `BASE_URL`
+stays `http://localhost:<port>` (the cookie domain): Chromium and Playwright's
+HTTP client try both loopback addresses, and global setup proves the page, a
+minted cookie and `page.request` all reach the server.
+
 The server always gets: `TZ=UTC`, `AUTH_URL=NEXTAUTH_URL=http://localhost:<port>`,
 `NOTIFY_EMAIL_ENABLED=''`, `EMAIL_REDIRECT_TO=''`, `ALERT_WEBHOOK_URL=''`,
 `NEXT_PUBLIC_SENTRY_DSN=''`, `MAINTENANCE_MODE=''`, `INSIGHTS_DASHBOARD_DISABLED=''`,
@@ -110,6 +133,9 @@ The server always gets: `TZ=UTC`, `AUTH_URL=NEXTAUTH_URL=http://localhost:<port>
   usernames `e2e.<key>.<sfx>` (a salesman's is his route code, lower case),
   regions `E2R<SFX>n`, routes `E2<SFX>n`, customers `000E2E<SFX>-NNN`
   (`… Trading <sfx>`), CR numbers `CR<SFX>NN`, phones `+9689…` checked unused.
+  The exception, `allocTwoCharRoute` (`Z?`/`Y?`, for the two-character
+  route rules): its code and its salesman's username carry no suffix, so they
+  are found by id only — never by the code or the name.
   Real rows are only ever read (clash checks, reference channels).
 - **R2** — the bucket in `.env` is **production's** photo bucket. The suite PUTs
   only under `<UTC yyyy/mm/dd>/<fixture user id>/<KIND>/<uuid>.jpg` (the
@@ -118,20 +144,39 @@ The server always gets: `TZ=UTC`, `AUTH_URL=NEXTAUTH_URL=http://localhost:<port>
 - **Rows the app writes for fixtures** — LOGIN/APPROVE audit rows, step ledger,
   notifications (including those sent to REAL Stewards/FM/GM about a fixture
   request — found by `editId`), rate-limit buckets of fixture names and
-  `198.18.x.x`/`198.19.x.x` addresses (plus the localhost buckets).
+  `198.18.x.x`/`198.19.x.x` addresses (plus the localhost buckets). The
+  addresses are spread by the run id (the probe's too), so a run from another
+  checkout rarely shares one — its cleanup would reset our buckets.
 - **Rows other UAT activity writes TO fixtures** — while a world is alive, its
   Steward, FMs and GM are active members of the org-wide audiences, so anyone's
   new-customer request (a real one, another suite's) notifies them too. Cleanup
   first deactivates the world's users, then deletes every notification
   addressed to them (it must, to delete the users); nothing else of those
   requests is touched.
+- **Rows other UAT activity makes WITH fixtures** — the integration suites pick
+  a user, route or region with `findFirst` and may pick ours (a CREATE request
+  submitted as our salesman, an import uploaded as our Steward, a route in our
+  region). Cleanup deletes only what is the world's: registered ids, values
+  that carry the suffix, and what hangs off those (branches and requests of a
+  world customer, the customer a world CREATE request or import made, photos
+  on world rows, rows of world imports). A row found only because a world user
+  submitted, uploaded, captured or decided it, or because it sits in a world
+  route or region, is **foreign**: never deleted, counted as `foreign<Table>`,
+  and the world user, route or region it points at is kept (deactivated) — so
+  the world stays dirty and a person decides. So is an audit row a world user
+  wrote about anything but a world row (the audit trail of a real request).
 - Known residue by design: the `CodeSequence 'CUSTOMER-<year>'` counter advances
   with every finalized CREATE; authorized cron calls leave `CronHeartbeat` /
   `CronRun` rows.
 
-Passwords: every fixture account gets a per-run password generated in memory
-(never logged); `mustChangePassword` fixtures (and any with `initialPassword: true`)
-get the real hand-out `12345`.
+Passwords: every fixture account gets a per-run password generated in memory,
+of the shape `E2e-<16 base64url>-9a` the secret scan looks for; `mustChangePassword`
+fixtures (and any with `initialPassword: true`) get the real hand-out `12345`.
+Never type one with `fill`/`type`/`pressSequentially` (the report titles the
+step with the value): use `fillSecret(locator, value)`, and `clearSecretFields(page)`
+before asserting on a page that still holds one (a failed assertion attaches an
+ARIA snapshot, field values included). `signInViaUi` and `changePasswordViaUi`
+do both.
 
 ## Writing a spec
 
@@ -176,7 +221,12 @@ test.describe('today', { tag: ['@phone'] }, () => {
   password, role or status a test changes is used by that test only (each of
   these revokes every other session of that user).
 - Any record created through the UI is registered: `world.adopt.customer(id)`,
-  `.edit(id)`, `.user(username)`, `.importBatch(id)` …
+  `.edit(id)`, `.attachment(id)`, `.importBatch(id)`, `.userId(id)`, `.routeId(id)` …
+  By value (`.user(username)`, `.routeCode`, `.regionCode`) only when the value
+  carries the suffix — anything else throws (adopt it by id). Unregistered rows
+  a fixture user made (a photo taken and never attached, a CREATE request typed
+  without the suffix, a workbook not named with `world.name()`) are FOREIGN to
+  cleanup: the world stays dirty until the test adopts them.
 - Seeds: `seedPhoto` (unique bytes, R2 + Attachment row), `seedUpdateEdit`
   (built from the live row with the app's own helpers and proven with
   `approvalPlanFor`), `seedNotification`. One SUBMITTED edit per customer.
@@ -236,12 +286,17 @@ wipes it. Cleanup finds rows by the registry AND by the world's suffix.
   connection (`DIRECT_URL`), in batches, with audit and step-ledger rows removed
   inside the owner's maintenance window (120 s transactions, not Prisma's 5 s).
   A pass that leaves anything is repeated up to three times; every pass is kept
-  in the file's `attempts` list. R2 objects are deleted only after the key is
-  checked to be `<ymd>/<fixture user id>/<KIND>/<file>`.
-- Global setup sweeps every unclean world of finished runs (a run whose
-  Playwright process is still alive on this machine is left alone); global
-  teardown re-sweeps the current run, prints what each unclean world had left
-  and why, and fails the run if anything is still left.
+  in the file's `attempts` list. R2 objects are deleted only under the folders
+  of the registry's users (minted, adopted or carrying the suffix), never the
+  object of a foreign photo, and only after the key is checked to be
+  `<ymd>/<fixture user id>/<KIND>/<file>`. Only ids are written back to the
+  registry — never a code or username without the suffix.
+- Global setup sweeps every unclean world of finished runs; global teardown
+  re-sweeps the current run, prints what each unclean world had left and why,
+  and fails the run if anything is still left. A run is "finished" when its
+  runner's heartbeat, `.e2e-launch/runs/<runId>.alive` (rewritten every 30 s,
+  removed when the runner exits), is gone or older than three minutes — not by
+  its process id, which Windows soon gives to another process.
 - By hand (PowerShell: the same commands — nothing here needs quoting):
 
   ```bash
@@ -249,9 +304,13 @@ wipes it. Cleanup finds rows by the registry AND by the world's suffix.
   node scripts/qa/run-with-env.mjs tsx tests/e2e/launch/support/sweep-cli.ts --check    # recount every world on UAT and R2, read-only
   node scripts/qa/run-with-env.mjs tsx tests/e2e/launch/support/sweep-cli.ts            # sweep every finished run
   node scripts/qa/run-with-env.mjs tsx tests/e2e/launch/support/sweep-cli.ts --run <runId>
+  node scripts/qa/run-with-env.mjs tsx tests/e2e/launch/support/sweep-cli.ts --scan     # secret scan of reports/results/logs, deletes nothing
   ```
 
-A world stays DIRTY, deliberately, when a fixture user decided or reviewed a
-REAL request (the FM/GM/Steward queues are org-wide): that edit, approval or
-audit trail is not the suite's to delete, and the user it points at is kept.
-The registry file names what is left; a person decides.
+A world stays DIRTY, deliberately, when a foreign row points at it — a fixture
+user decided or reviewed a REAL request (the FM/GM/Steward queues are org-wide),
+another suite submitted or imported as a fixture user, or put a row in a
+fixture route or region: that request, approval, import or audit trail is not
+the suite's to delete, and the user, route or region it points at is kept. The
+registry file names what is left (`foreign*` counts, `kept …` in the error);
+a person decides.

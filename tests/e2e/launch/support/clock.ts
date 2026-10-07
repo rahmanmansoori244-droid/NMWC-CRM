@@ -3,15 +3,20 @@
  * before it sets the run-wide environment.
  */
 
-/** Minutes after Oman midnight (20:00 UTC) in which a run may not start. */
-export const AFTER_OMAN_MIDNIGHT_MIN = 120;
+/**
+ * Minutes after Oman midnight (20:00 UTC) in which a run may not start: until
+ * 24:00 UTC, the server's UTC date is still a day behind Oman's
+ * (utcDateBehindOman), so "today" differs between the two for the whole run.
+ */
+export const AFTER_OMAN_MIDNIGHT_MIN = 240;
 
 /**
  * Why the run must not start now, or null. A run occupies [now, now + budget]:
  *  - it must not contain Oman midnight (20:00 UTC) — with the default budget of
  *    120 minutes that refuses a start from 18:00 UTC — nor start within
- *    `afterMinutes` (2 h) after it, while the server's UTC date still says
- *    yesterday and the "captured today" / "yesterday" fixtures sit on the edge;
+ *    `afterMinutes` (4 h) after it, i.e. before 24:00 UTC, while the server's
+ *    UTC date still says yesterday and the "captured today" / "yesterday"
+ *    fixtures sit on the edge (default: no start from 18:00 to 24:00 UTC);
  *  - it must not touch Neon's compute-update window, Thursday 23:00–24:00 UTC.
  */
 export function clockGuard(now: Date, budgetMinutes: number, afterMinutes = AFTER_OMAN_MIDNIGHT_MIN): string | null {
