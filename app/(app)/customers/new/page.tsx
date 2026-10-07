@@ -5,6 +5,7 @@ import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { manualGpsReasonForPoint } from '@/lib/gps-manual';
 import { CreateCustomerForm, type CreateFormInitial } from './CreateCustomerForm';
+import { WithdrawRequest } from './WithdrawRequest';
 
 export const metadata = { title: 'New customer · NMWC' };
 // UXI-005 posture: never serve a stale cached form (same as the edit page).
@@ -136,6 +137,11 @@ export default async function NewCustomerPage({
           initial={initial}
           sessionUserId={session.user.id}
         />
+      )}
+      {/* Launch fix: his own draft, or one sent back to him, can be withdrawn —
+          an open request blocks its CR and shop for everyone. Not one in review. */}
+      {initial && (initial.state === 'DRAFT' || initial.state === 'NEEDS_CORRECTION') && (
+        <WithdrawRequest editId={initial.editId} isDraft={initial.state === 'DRAFT'} />
       )}
     </main>
   );

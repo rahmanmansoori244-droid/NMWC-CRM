@@ -725,6 +725,79 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(await prisma.customerEdit.count({ where: { customerId, state: 'DRAFT' } })).toBe(1);
   });
 
+  it('launch fix: a new-customer request he abandoned stops blocking the shop once he withdraws it', async () => {
+    const creates = await import('@/services/creates');
+    const guards = await import('@/lib/create-guards');
+    const { normalizeCR } = await import('@/lib/cr');
+    const cr = `QA${sfx}`.toUpperCase();
+    asSalesman();
+    const draft = await creates.submitCreateAction({
+      isDraft: true,
+      customer: { legalName: `ZZ Abandoned ${sfx}`, paymentTerms: 'CASH', crNumber: cr },
+      branches: [{ branchName: 'Main' }],
+    });
+    expect(draft.ok, JSON.stringify(draft)).toBe(true);
+    if (!draft.ok) return;
+    const editId = draft.data.editId;
+
+    // Another salesman, at submit: told whose request it is and where it stands.
+    const otherSubmit = () =>
+      prisma.$transaction(async (tx) => {
+        const args = { crNumberNorm: normalizeCR(cr), legalName: `ZZ Another ${sfx}`, primaryPhoneNorm: null, regionIds: [ids.regionId] };
+        await guards.lockCreateIdentity(tx, args);
+        await guards.assertNoExactCreateDuplicate(tx, {
+          ...args,
+          includeOpenRequests: true,
+          callerId: ids.otherSalesmanId,
+          callerRouteId: ids.otherRouteId,
+        });
+      });
+    await expect(otherSubmit()).rejects.toMatchObject({
+      code: 'DUPLICATE_CR',
+      message: `QA Salesman ${sfx}'s new-customer request with this CR number is already in progress (saved as a draft). Ask them, or your supervisor, before adding it again.`,
+    });
+
+    // Only its own salesman can withdraw it; to anyone else it does not exist.
+    asOtherSalesman();
+    expect(await creates.withdrawCreateAction({ editId })).toMatchObject({ ok: false, code: 'NOT_FOUND' });
+    asSalesman();
+    expect(await creates.withdrawCreateAction({ editId })).toMatchObject({ ok: true, data: { editId } });
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(row).toMatchObject({ state: 'REJECTED', reviewedById: ids.salesmanId, decisionCategory: 'withdrawn' });
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { entityType: 'CustomerEdit', entityId: editId, reason: 'withdrawn by the salesman' },
+    });
+    expect(audit.after).toMatchObject({ state: 'REJECTED', from: 'DRAFT' });
+    // A retry whose first answer was lost: the same answer.
+    expect(await creates.withdrawCreateAction({ editId })).toMatchObject({ ok: true });
+
+    // The CR is free again — and the withdrawn request cannot be sent again.
+    await expect(otherSubmit()).resolves.toBeUndefined();
+    const again = await creates.submitCreateAction({
+      editId,
+      isDraft: true,
+      customer: { legalName: `ZZ Abandoned ${sfx}`, paymentTerms: 'CASH', crNumber: cr },
+      branches: [{ branchName: 'Main' }],
+    });
+    expect(again).toMatchObject({ ok: false, code: 'EDIT_LOCKED' });
+
+    // One in review cannot be withdrawn: an approver has it.
+    const inReview = await prisma.customerEdit.create({
+      data: {
+        target: 'CUSTOMER',
+        process: 'CREATE',
+        state: 'SUBMITTED',
+        submittedAt: new Date(),
+        submittedById: ids.salesmanId,
+        fieldChanges: [],
+        attachmentChanges: [],
+      },
+    });
+    expect(await creates.withdrawCreateAction({ editId: inReview.id })).toMatchObject({ ok: false, code: 'EDIT_LOCKED' });
+    expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: inReview.id } })).state).toBe('SUBMITTED');
+    await purgeCustomerEdits(prisma, { where: { id: inReview.id } });
+  });
+
   it('a salesman from another route cannot edit the customer at all', async () => {
     asOtherSalesman();
     const res = await edits.submitEditAction(

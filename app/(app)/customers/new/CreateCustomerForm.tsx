@@ -210,8 +210,10 @@ export function CreateCustomerForm({
     };
   }, []);
 
-  // A SUBMITTED request is read-only for the salesman until it is decided.
-  const readOnly = initial?.state === 'SUBMITTED';
+  // A SUBMITTED request is read-only for the salesman until it is decided; a
+  // withdrawn one (launch fix: REJECTED, services/creates.ts) for good.
+  const closed = initial?.state === 'REJECTED';
+  const readOnly = initial?.state === 'SUBMITTED' || closed;
 
   const ic = initial?.customer;
   const [legalName, setLegalName] = useState(ic?.legalName ?? '');
@@ -674,7 +676,12 @@ export function CreateCustomerForm({
           {initial.decisionReason}
         </div>
       )}
-      {readOnly && (
+      {closed && (
+        <div className="rounded-md bg-slate-100 px-3 py-2 text-sm text-slate-700 ring-1 ring-slate-200">
+          This request was withdrawn and is closed. Start a new request if the shop still needs adding.
+        </div>
+      )}
+      {readOnly && !closed && (
         <div className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 ring-1 ring-sky-200">
           This request is in review — current step:{' '}
           <strong>{initial?.pendingRole?.replace('_', ' ') ?? '…'}</strong>. You will be notified
