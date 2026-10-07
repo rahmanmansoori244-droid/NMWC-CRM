@@ -6,6 +6,7 @@ import {
   omanDateTime,
   omanDayOfWeek,
   omanDayTime,
+  omanISO,
   omanLongDate,
   omanStamp,
   startOfOmanDay,
@@ -128,6 +129,18 @@ describe('lib/tz — export stamps and day filters (process in UTC, as on Vercel
   it('leaves an empty export cell for no time', () => {
     expect(omanStamp(null)).toBe('');
     expect(omanStamp(undefined)).toBe('');
+    expect(omanISO(null)).toBe('');
+    expect(omanISO(undefined)).toBe('');
+  });
+
+  it('writes a data column as ISO-8601 on the Oman clock: the same instant, to the millisecond', () => {
+    const late = new Date('2026-10-07T21:30:45.123Z');
+    expect(omanISO(late)).toBe('2026-10-08T01:30:45.123+04:00');
+    // The date in front is the day omanStamp gives the same row in the field-update report.
+    expect(omanISO(late).slice(0, 10)).toBe(omanStamp(late).slice(0, 10));
+    for (let t = Date.UTC(2026, 0, 1, 0, 7, 11, 9); t < Date.UTC(2027, 0, 1); t += 7 * 3600_000 + 13 * 60_017) {
+      expect(new Date(omanISO(new Date(t))).getTime()).toBe(t);
+    }
   });
 
   it('starts a picked day at Oman midnight, 20:00 UTC the evening before', () => {

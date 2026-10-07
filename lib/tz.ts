@@ -92,14 +92,25 @@ export function omanLongDate(at: Date | string | number = new Date()): string {
 }
 
 /**
- * "2026-10-07 14:05": Oman wall clock for a spreadsheet cell, unambiguous and
- * sortable as text. Both exports (the master and the field-update report) use it,
- * so a row's day is the same Oman day in each. Empty for no time.
+ * "2026-10-07 14:05": Oman wall clock for a spreadsheet cell a person reads,
+ * unambiguous and sortable as text (the field-update report). Empty for no time.
  */
 export function omanStamp(at: Date | null | undefined): string {
   if (!at) return '';
   const o = omanClock(at);
   return `${omanDateISO(at)} ${two(o.getUTCHours())}:${two(o.getUTCMinutes())}`;
+}
+
+/**
+ * "2026-10-08T01:30:45.123+04:00": ISO-8601 on the Oman clock, for a data column
+ * another system may parse (the customer master). It is the same instant as
+ * toISOString(), to the millisecond, so any ISO reader gets what it got before;
+ * the date in front is the Oman day, the day omanStamp gives the same row in the
+ * field-update report. Empty for no time.
+ */
+export function omanISO(at: Date | null | undefined): string {
+  if (!at) return '';
+  return omanClock(at).toISOString().replace(/Z$/, '+04:00');
 }
 
 /**

@@ -36,8 +36,8 @@ import { logger } from './logger';
 import { mapPinHref } from './contact-links';
 import { isUnmovedCoordinate } from './edit-values';
 import { keysetPages } from './keyset';
-// "2026-09-13 14:05", Oman wall clock; shared with the master export so both files
-// put a row on the same Oman day. Plain arithmetic, no Intl call per cell.
+// "2026-09-13 14:05", Oman wall clock; the master export's omanISO stamps carry the
+// same Oman day, so both files put a row on one day. Plain arithmetic, no Intl call per cell.
 import { omanDateISO, omanStamp } from './tz';
 
 export type ChangeReportFilters = {
