@@ -37,13 +37,15 @@ const h = vi.hoisted(() => ({
   raceRouteId: null as null | string,
   /** When set, the next User insert throws a P2002 with this meta (or none). */
   clashMeta: undefined as undefined | { meta?: unknown },
+  /** Cache tags the actions revalidated (next/cache revalidateTag). */
+  tags: [] as string[],
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => h.session }));
 vi.mock('next/headers', () => ({
   headers: async () => new Headers({ 'x-forwarded-for': '10.1.2.3', 'user-agent': 'unit' }),
 }));
-vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {} }));
+vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: (tag: string) => h.tags.push(tag) }));
 vi.mock('bcryptjs', () => {
   const hash = async (plain: string) => `hash:${plain}`;
   const compare = async (plain: string, hashed: string) => hashed === `hash:${plain}`;
@@ -187,6 +189,7 @@ beforeEach(() => {
   h.raceUsername = null;
   h.raceRouteId = null;
   h.clashMeta = undefined;
+  h.tags = [];
   h.session = { user: { id: STEWARD, role: 'STEWARD', username: 'steward.one', mustChangePassword: false } };
   h.tables = {
     user: new Map([
@@ -441,5 +444,25 @@ describe('the unique-code answers survive the move into a transaction', () => {
     const res = await createRouteAction(form({ code: 'M01', name: 'Again', regionId: REGION }));
     expect(res).toMatchObject({ ok: false, code: 'UNIQUE_CONSTRAINT' });
     expect(h.tables.auditLog.size).toBe(0);
+  });
+});
+
+// Launch fix (2026-10-07): the /customers filters read the people from a
+// 5-minute cache (lib/reference-data.ts 'ref:users'), which nothing revalidated,
+// so a new salesman was missing from them for up to five minutes.
+describe('a change to who exists, is active or holds which role refreshes the cached people list', () => {
+  it.each([
+    ['createUserAction', () => createUserAction(form({ username: 'new.sup', fullName: 'New Supervisor', role: 'SUPERVISOR', password: 'A-long-password-1' }))],
+    ['toggleUserActiveAction', () => toggleUserActiveAction(form({ userId: TARGET }))],
+    ['updateUserRoleAction', () => updateUserRoleAction(form({ userId: TARGET, newRole: 'VIEWER' }))],
+  ])('%s revalidates ref:users', async (_name, run) => {
+    expect(await run()).toMatchObject({ ok: true });
+    expect(h.tags).toContain('ref:users');
+  });
+
+  it('a refused change revalidates nothing', async () => {
+    const res = await createUserAction(form({ username: 'Bad Name', fullName: 'X', role: 'SUPERVISOR', password: 'A-long-password-1' }));
+    expect(res).toMatchObject({ ok: false });
+    expect(h.tags).toEqual([]);
   });
 });

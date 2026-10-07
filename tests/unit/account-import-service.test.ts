@@ -84,6 +84,8 @@ type Sheet = {
 };
 
 const h = vi.hoisted(() => ({
+  /** Cache tags the import revalidated (next/cache revalidateTag). */
+  tags: [] as string[],
   store: null as unknown as Store,
   /** null: the uploaded bytes go through the real parser (uploadWorkbook). */
   sheets: [] as Sheet[] | null,
@@ -101,7 +103,7 @@ const h = vi.hoisted(() => ({
 const STEWARD = { id: 'stew', role: 'STEWARD', username: 'steward.x' };
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: STEWARD }) }));
-vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {} }));
+vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: (tag: string) => h.tags.push(tag) }));
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -416,6 +418,7 @@ beforeEach(() => {
   h.txOptions = [];
   h.failOn = null;
   h.auditFails = null;
+  h.tags = [];
   h.store = {
     users: [user({ id: 'stew', username: 'steward.x', role: 'STEWARD' })],
     regions: [
@@ -1521,6 +1524,21 @@ describe('a failed row or report is logged with its message, and reported unless
 });
 
 // ── N05 in the account import ────────────────────────────────────────────────
+// Launch fix (2026-10-07): the /customers and /dashboard filters read regions,
+// routes and people from a 5-minute cache (lib/reference-data.ts); the import
+// never revalidated it, so what it created was missing there for minutes.
+describe('an account import refreshes the cached region, route and people lists', () => {
+  it('revalidates ref:regions, ref:routes and ref:users', async () => {
+    const { res } = await upload([
+      { name: 'Regions', rows: [{ code: 'DHO', name: 'Dhofar' }] },
+      { name: 'Routes', rows: [{ code: 'DHO-01', name: 'Dhofar 1', region_code: 'DHO' }] },
+      { name: 'Users', rows: [{ username: 'viewer.1', full_name: 'V', role: 'VIEWER', password: '123456789012' }] },
+    ]);
+    expect(okData(res).clean).toBe(3);
+    expect(h.tags).toEqual(expect.arrayContaining(['ref:regions', 'ref:routes', 'ref:users']));
+  });
+});
+
 describe('N05: rows are numbered as Excel shows them, and only the sheets read are checked for repeated headings', () => {
   it('reports the Excel row number on every sheet, blank lines included', async () => {
     const { res, messages } = await uploadWorkbook((wb) => {

@@ -13,7 +13,7 @@ import {
 } from '@/lib/errors';
 import { requireActor } from '@/lib/session';
 import { assertPasswordNotReused, passwordRule, rotatePasswordHistory } from '@/lib/password-policy';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { logger } from '@/lib/logger';
 import {
   canMutateUser,
@@ -338,6 +338,10 @@ async function createUserCore(formData: FormData) {
   logger.info({ actorId: me.id, userId: user.id, role: user.role }, 'user.create');
 
   revalidatePath('/users');
+  // Launch fix: the /customers filters read the people from a 5-minute cache
+  // (lib/reference-data.ts getAllHierarchyUsers); without this a new salesman
+  // was missing from them for up to five minutes.
+  revalidateTag('ref:users');
 }
 
 /**
@@ -406,6 +410,7 @@ async function toggleUserActiveCore(formData: FormData) {
     });
   });
   revalidatePath('/users');
+  revalidateTag('ref:users'); // the cached list holds active accounts only
 }
 
 /**
@@ -604,6 +609,7 @@ async function updateUserRoleCore(formData: FormData) {
     });
   });
   revalidatePath('/users');
+  revalidateTag('ref:users'); // role and route are both in the cached list
 }
 
 /**

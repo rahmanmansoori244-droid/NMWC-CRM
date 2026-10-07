@@ -18,7 +18,7 @@ import {
   runAction,
   type SafeAction,
 } from '@/lib/errors';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { duplicateHeadingIssue, parseWorkbook } from '@/lib/excel';
 import { normalizeCR } from '@/lib/cr';
 import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
@@ -1053,6 +1053,10 @@ async function uploadAccountMasterCore(
     'import.account.complete'
   );
   revalidatePath('/import');
+  // Launch fix: regions, routes and people from this sheet reach the cached
+  // filter lists (lib/reference-data.ts) now, not up to five minutes later.
+  // Before the throw below: rows applied before an interruption are live too.
+  for (const tag of ['ref:regions', 'ref:routes', 'ref:users']) revalidateTag(tag);
   if (stopped || !recorded) {
     throw new AppError(
       'IMPORT_INTERRUPTED',
@@ -1770,6 +1774,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         select: { id: true, code: true, regionId: true },
       });
       routeByCode.set('UNASSIGNED', unassignedRoute);
+      // Launch fix: the cached filter lists (lib/reference-data.ts) learn of it now.
+      revalidateTag('ref:regions');
+      revalidateTag('ref:routes');
     }
 
     // QA-019: each customer's promotion (parent + branches + row state) runs

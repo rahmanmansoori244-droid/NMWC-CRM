@@ -218,17 +218,20 @@ export default async function CustomersPage({
 
   // In-memory scope filtering on the cached reference data.
   // Compute scope route IDs once and reuse.
+  // Launch fix: an ACCOUNTANT is region-scoped like a MANAGER
+  // (customerListBranchScope), so his lists are cut to his regions too.
+  const regionScoped = me.role === Role.MANAGER || me.role === Role.ACCOUNTANT;
   const scopeRouteIds = new Set(
     me.role === Role.SUPERVISOR
       ? me.reports.map((r) => r.ownedRouteId).filter((id): id is string => !!id)
-      : me.role === Role.MANAGER
+      : regionScoped
         ? allRoutes
             .filter((r) => me.managedRegions.some((mr) => mr.id === r.regionId))
             .map((r) => r.id)
         : allRoutes.map((r) => r.id)
   );
   const scopeRegionIds = new Set(
-    me.role === Role.MANAGER
+    regionScoped
       ? me.managedRegions.map((mr) => mr.id)
       : me.role === Role.SUPERVISOR
         ? allRoutes.filter((r) => scopeRouteIds.has(r.id)).map((r) => r.regionId)
@@ -248,6 +251,9 @@ export default async function CustomersPage({
         .filter((u) => {
           if (u.role !== Role.SALESMAN) return false;
           if (me.role === Role.SUPERVISOR) return u.supervisorId === me.id;
+          // Launch fix: a Manager or Accountant was offered every salesman in the
+          // company; now only those whose route is in his regions.
+          if (regionScoped) return !!u.ownedRouteId && scopeRouteIds.has(u.ownedRouteId);
           return true;
         })
         .map((u) => ({ id: u.id, fullName: u.fullName, username: u.username }))
