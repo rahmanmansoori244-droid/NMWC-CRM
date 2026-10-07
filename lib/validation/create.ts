@@ -26,6 +26,7 @@ import { isGpsTooInaccurate, gpsTooInaccurateMessage } from '../gps-accuracy';
 // let through strings it could not normalize; createPhone applies isValidPhoneFormat
 // itself (F19). The value stays as typed — services/creates.ts normalizes it.
 import { cappedArray, createPhone, optionalText, strippedStr } from './fields';
+import { foldNumberInput } from '../digits';
 
 /**
  * The limits a create request always had: 10 branches, and 10 attachments in
@@ -108,20 +109,27 @@ export const submitCreateSchema = z.object({
    * Customer.creditLimit / paymentTermDays verbatim.
    * OMR Decimal(14,3): ≤3 decimal places, exact in an IEEE double at this
    * magnitude (≤1e11 × 1000 < 2^53).
+   * Either may arrive as the text typed: Arabic-Indic or Persian digits and
+   * the Arabic decimal mark are folded before it is read (lib/digits.ts), as
+   * phones and CR numbers are. Coerced as '٥٠٠' it was NaN, and refused.
    */
   credit: z
     .object({
-      requestedCreditLimit: z.coerce
-        .number()
-        .positive('Credit limit must be greater than zero.')
-        .max(99_999_999_999)
-        .transform((v) => Math.round(v * 1000) / 1000)
+      requestedCreditLimit: z
+        .preprocess(
+          foldNumberInput,
+          z.coerce
+            .number()
+            .positive('Credit limit must be greater than zero.')
+            .max(99_999_999_999)
+            .transform((v) => Math.round(v * 1000) / 1000)
+        )
         .optional(),
-      requestedPaymentTermDays: z.coerce
-        .number()
-        .int()
-        .min(1, 'Payment term must be at least 1 day.')
-        .max(365)
+      requestedPaymentTermDays: z
+        .preprocess(
+          foldNumberInput,
+          z.coerce.number().int().min(1, 'Payment term must be at least 1 day.').max(365)
+        )
         .optional(),
     })
     .optional(),

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { MapPin, Check, RotateCcw, AlertTriangle, PencilLine } from 'lucide-react';
 import { gpsAccuracyAdvice, gpsAccuracyBand } from '@/lib/gps-accuracy';
+import { numberText } from '@/lib/digits';
 
 export type Gps = {
   lat: number;
@@ -131,9 +132,11 @@ export function GpsCaptureButton({
     if (disabledRef.current) return;
     setManualErr(null);
     // Replace comma decimals with periods so phones with locale-comma keypads
-    // (typical in MENA) don't silently NaN.
-    const latNum = Number.parseFloat(manualLat.replace(',', '.'));
-    const lngNum = Number.parseFloat(manualLng.replace(',', '.'));
+    // (typical in MENA) don't silently NaN. numberText first: Arabic-Indic
+    // digits and the Arabic decimal mark '٫' (lib/digits.ts), which parseFloat
+    // read as NaN — "Enter valid latitude and longitude numbers."
+    const latNum = Number.parseFloat(numberText(manualLat).replace(',', '.'));
+    const lngNum = Number.parseFloat(numberText(manualLng).replace(',', '.'));
     if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
       setManualErr('Enter valid latitude and longitude numbers.');
       return;
