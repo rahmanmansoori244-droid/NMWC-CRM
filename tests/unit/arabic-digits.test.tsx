@@ -20,6 +20,7 @@ import { asciiDigits, foldNumberInput, numberText, typedDecimal, typedNumber } f
 import { submitCreateSchema } from '@/lib/validation/create';
 import { CreateCustomerForm, type CreateFormInitial } from '@/app/(app)/customers/new/CreateCustomerForm';
 import { GpsCaptureButton, type Gps } from '@/components/nmwc/GpsCaptureButton';
+import { StepperInput } from '@/components/nmwc/StepperInput';
 
 // Written as escapes, as lib/digits.ts is: U+0660.. Arabic-Indic, U+06F0..
 // Persian, U+066B the Arabic decimal mark, U+066C the thousands mark, U+200F a
@@ -276,5 +277,50 @@ describe('the GPS fallback takes a point typed in Arabic digits', () => {
     const onCapture = typePoint(lat, '58.382');
     expect(screen.getByText('Enter valid latitude and longitude numbers.')).toBeTruthy();
     expect(onCapture).not.toHaveBeenCalled();
+  });
+});
+
+// The cooler, stand and empty-bottle counts on both forms. The box kept only
+// ASCII 0-9, so '٣' was read as blank and the count went to 0; and as a
+// type=number box the browser itself blanked text it could not read as a
+// number before the handler saw it (jsdom does the same, which this drives).
+describe('the count steppers take a count typed in Arabic digits', () => {
+  afterEach(() => cleanup());
+
+  function typeCount(typed: string, value = 0) {
+    const onChange = vi.fn<(n: number) => void>();
+    render(<StepperInput name="coolers" label="Coolers" value={value} onChange={onChange} max={1000} />);
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Coolers' }), { target: { value: typed } });
+    return onChange;
+  }
+
+  it.each([
+    ['Arabic-Indic digits', AR('3'), 3],
+    ['Persian digits', FA('12'), 12],
+    ['Arabic digits with a copied bidi mark', `${RLM}${AR('250')}`, 250],
+    ['ASCII digits, as before', '7', 7],
+  ])('%s', (_name, typed, n) => {
+    expect(typeCount(typed)).toHaveBeenLastCalledWith(n);
+  });
+
+  it('the count is still held to its maximum', () => {
+    expect(typeCount(AR('5000'))).toHaveBeenLastCalledWith(1000);
+  });
+
+  it('a blank box is still the minimum', () => {
+    expect(typeCount('', 4)).toHaveBeenLastCalledWith(0);
+  });
+
+  it('keeps the spin-button semantics, the arrow keys included', () => {
+    const onChange = vi.fn<(n: number) => void>();
+    render(<StepperInput name="coolers" label="Coolers" value={2} onChange={onChange} />);
+    const box = screen.getByRole('spinbutton', { name: 'Coolers' });
+    expect(box.getAttribute('aria-valuenow')).toBe('2');
+    expect(box.getAttribute('aria-valuemin')).toBe('0');
+    expect(box.getAttribute('aria-valuemax')).toBe('100');
+    fireEvent.keyDown(box, { key: 'ArrowUp' });
+    expect(onChange).toHaveBeenLastCalledWith(3);
+    fireEvent.keyDown(box, { key: 'ArrowDown' });
+    expect(onChange).toHaveBeenLastCalledWith(1);
   });
 });
