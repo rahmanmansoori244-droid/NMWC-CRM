@@ -336,6 +336,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                         isActive={u.isActive}
                         canEditEmail={!isManager && u.id !== session.user.id && EMAIL_ROLES.includes(u.role)}
                         hasEmail={storedAddressState(u.email) !== 'none'}
+                        isSelf={u.id === session.user.id}
                       />
                     </td>
                   </tr>

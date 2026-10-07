@@ -160,4 +160,12 @@ describe('/users and e-mail addresses', () => {
     expect(h.rowProps.length).toBeGreaterThan(0);
     for (const p of h.rowProps) expect(p.canEditEmail).toBe(false);
   });
+
+  // Launch fix (2026-10-07): Disable and Reset password always refuse one's own
+  // account, so the own row is marked and gets the self-service link instead
+  // (tests/unit/users-refusal-feedback.test.tsx drives the component).
+  it('marks the viewer’s own row, and only that row', async () => {
+    render(await UsersPage({ searchParams: Promise.resolve({}) }));
+    expect(h.rowProps.filter((p) => p.isSelf === true).map((p) => p.userId)).toEqual(['stw']);
+  });
 });

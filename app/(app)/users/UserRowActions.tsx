@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useTransition } from 'react';
+import Link from 'next/link';
 import { toggleUserActiveAction, resetPasswordAction, updateUserEmailAction } from '@/services/users';
 
 // Go-live: a successful Disable used to confirm itself — the row stayed put, the
@@ -48,12 +49,19 @@ export function UsersFeedback({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** A refusal's words: the field messages when there are any (a ValidationError's
+ * message is only "Validation failed"), else the message. */
+function refusalText(res: { message: string; fields?: Record<string, string> }): string {
+  return res.fields ? Object.values(res.fields).join(' ') : res.message;
+}
+
 export function UserRowActions({
   userId,
   username,
   isActive,
   canEditEmail = false,
   hasEmail = false,
+  isSelf = false,
 }: {
   userId: string;
   username: string;
@@ -62,12 +70,22 @@ export function UserRowActions({
   canEditEmail?: boolean;
   /** Whether an address is on file. The address itself never reaches the browser. */
   hasEmail?: boolean;
+  /**
+   * The viewer's own row. Disable and Reset password always refuse one's own
+   * account (lib/permissions.ts canMutateUser), so they are not offered; the
+   * row points at the self-service page instead.
+   */
+  isSelf?: boolean;
 }) {
   const [pending, start] = useTransition();
   const [showEmail, setShowEmail] = useState(false);
   const [emailMsg, setEmailMsg] = useState<string | null>(null);
   const [showReset, setShowReset] = useState(false);
-  const [resetMsg, setResetMsg] = useState<string | null>(null);
+  // Launch fix: every refusal (own account, last active Manager, a reused
+  // password, an account outside the Manager's regions) used to land here and
+  // render in the same green as "Password updated.", so a refused helpdesk reset
+  // read as done. `ok` decides the colour and the role.
+  const [resetMsg, setResetMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [resetMismatch, setResetMismatch] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState(false);
   const announce = useContext(AnnounceContext);
@@ -87,9 +105,7 @@ export function UserRowActions({
       // last-Manager-lockout and peer-Manager guards must surface to the UI.
       const res = await toggleUserActiveAction(fd);
       if (!res.ok) {
-        setResetMsg(
-          res.fields ? Object.values(res.fields).join(' ') : res.message
-        );
+        setResetMsg({ text: refusalText(res), ok: false });
         return;
       }
       announce(
@@ -115,16 +131,14 @@ export function UserRowActions({
       try {
         const res = await resetPasswordAction(fd);
         if (!res.ok) {
-          setResetMsg(
-            res.fields ? Object.values(res.fields).join(' ') : res.message
-          );
+          setResetMsg({ text: refusalText(res), ok: false });
           return;
         }
-        setResetMsg('Password updated.');
+        setResetMsg({ text: 'Password updated.', ok: true });
         (e.target as HTMLFormElement).reset();
         setTimeout(() => setShowReset(false), 1200);
       } catch (err) {
-        setResetMsg(err instanceof Error ? err.message : 'Failed.');
+        setResetMsg({ text: err instanceof Error ? err.message : 'Failed.', ok: false });
       }
     });
   }
@@ -147,13 +161,26 @@ export function UserRowActions({
     start(async () => {
       const res = await updateUserEmailAction(fd);
       if (!res.ok) {
-        setEmailMsg(res.fields ? Object.values(res.fields).join(' ') : res.message);
+        setEmailMsg(refusalText(res));
         return;
       }
       setEmailMsg(null);
       setShowEmail(false);
       announce(typed === '' ? `Cleared the e-mail of "${username}".` : `Saved the e-mail of "${username}".`);
     });
+  }
+
+  if (isSelf) {
+    return (
+      <div className="flex flex-wrap justify-end gap-2 text-xs">
+        <Link
+          href="/profile/change-password"
+          className="rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100"
+        >
+          Change my password
+        </Link>
+      </div>
+    );
   }
 
   return (
@@ -272,7 +299,14 @@ export function UserRowActions({
           </button>
         </form>
       )}
-      {resetMsg && <span className="self-center text-emerald-600">{resetMsg}</span>}
+      {resetMsg && (
+        <span
+          role={resetMsg.ok ? 'status' : 'alert'}
+          className={`self-center ${resetMsg.ok ? 'text-emerald-600' : 'font-medium text-red-600'}`}
+        >
+          {resetMsg.text}
+        </span>
+      )}
     </div>
   );
 }
