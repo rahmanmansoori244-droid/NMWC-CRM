@@ -258,7 +258,11 @@ export default async function ImportBatchPage({
                 const linked = !!code && linkedCodes.has(code);
                 return (
                   <tr key={r.id} className="align-top hover:bg-slate-50">
-                    <td className="px-3 py-2 font-mono text-[11px] tabular-nums">#{r.rowNumber}</td>
+                    <td className="px-3 py-2 font-mono text-[11px] tabular-nums">
+                      {/* An account master has three sheets: the row number alone
+                          is ambiguous there, so its sheet goes with it. */}
+                      {batch.kind === 'ACCOUNT' && sheetOf(r.raw) ? `${sheetOf(r.raw)} ` : ''}#{r.rowNumber}
+                    </td>
                     <td className="px-3 py-2">
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 font-medium ${stateClass(r.state)}`}
@@ -377,6 +381,12 @@ export default async function ImportBatchPage({
       </section>
     </main>
   );
+}
+
+/** The sheet an account-master issue row came from (services/imports.ts stores the issue as raw). */
+function sheetOf(raw: unknown): string | null {
+  const sheet = (raw as { sheet?: unknown } | null)?.sheet;
+  return typeof sheet === 'string' ? sheet : null;
 }
 
 function stateClass(state: string) {

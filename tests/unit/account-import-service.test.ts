@@ -72,6 +72,7 @@ type Store = {
   batches: Array<Record<string, unknown> & { id: string }>;
   importRows: Array<{
     batchId: string;
+    rowNumber: number;
     issues: Array<{ message: string; sheet: string; row: number }>;
   }>;
 };
@@ -1567,6 +1568,25 @@ describe('N05: rows are numbered as Excel shows them, and only the sheets read a
       'Users 4: username, full_name, role required',
     ]);
     expect(find('viewer.3')).toBeTruthy();
+  });
+
+  // Launch fix (2026-10-07): the issue rows were stored with rowNumber = the
+  // issue's index, so the batch page's Row column read #1, #2, #3.
+  it('stores each issue row under the row number Excel shows, not its index', async () => {
+    await uploadWorkbook((wb) => {
+      const regions = wb.addWorksheet('Regions');
+      regions.getCell('A1').value = 'code';
+      regions.getCell('B1').value = 'name';
+      regions.getCell('A4').value = 'NONAME';
+      const users = wb.addWorksheet('Users');
+      ['username', 'full_name', 'role', 'password'].forEach((v, i) => (users.getRow(1).getCell(i + 1).value = v));
+      users.getRow(2).values = ['viewer.1', 'V1', 'VIEWER', '123456789012'];
+      users.getRow(7).values = ['viewer.2', '', 'VIEWER', '123456789012'];
+    });
+    expect(h.store.importRows.map((r) => [r.issues[0]!.sheet, r.rowNumber])).toEqual([
+      ['Regions', 4],
+      ['Users', 7],
+    ]);
   });
 
   it('the Users sheet sorted by role still reports each row where Excel has it', async () => {

@@ -984,9 +984,11 @@ async function uploadAccountMasterCore(
       // Persist issues as ImportRow rows for review
       if (issues.length > 0) {
         await tx.importRow.createMany({
-          data: issues.map((iss, idx) => ({
+          data: issues.map((iss) => ({
             batchId: batch.id,
-            rowNumber: idx + 1,
+            // Launch fix: the row Excel shows (N05), not the issue's index — the
+            // batch page's Row column read #1, #2… The sheet is in raw and issues.
+            rowNumber: iss.row,
             raw: iss as unknown as Prisma.InputJsonValue,
             state: ImportRowState.QUARANTINED,
             issues: [{ message: iss.message, sheet: iss.sheet, row: iss.row }] as Prisma.InputJsonValue,

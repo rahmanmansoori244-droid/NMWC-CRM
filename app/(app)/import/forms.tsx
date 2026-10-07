@@ -1,10 +1,48 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import Link from 'next/link';
 import { uploadAccountMasterAction, uploadCustomerMasterAction } from '@/services/imports';
 import type { ActionResult } from '@/lib/errors';
 
 type UploadOk = Record<string, string | number>;
+
+type Tone = 'ok' | 'warn' | 'fail';
+const TONE_CLASS: Record<Tone, string> = {
+  ok: 'text-emerald-700',
+  warn: 'text-amber-700',
+  fail: 'text-red-600',
+};
+
+/**
+ * Launch fix: every upload the server accepted read as a green "Uploaded — 0
+ * clean · 7 issues", with no way to the batch, so a Steward could believe the
+ * accounts or customers existed when every row had been held back. Nothing
+ * loaded is a failure, some rows held back is a warning, and both link the
+ * batch, where each held-back row says why. Both actions return `clean` and the
+ * held-back count (`issues` for accounts, `quarantined` for customers).
+ */
+function uploadOutcome(data: UploadOk): { tone: Tone; message: string } {
+  const summary = Object.entries(data)
+    .filter(([k]) => k !== 'batchId')
+    .map(([k, v]) => `${v} ${k}`)
+    .join(' · ');
+  const clean = Number(data.clean ?? 0);
+  const held = Number(data.issues ?? data.quarantined ?? 0);
+  if (clean === 0) {
+    return {
+      tone: 'fail',
+      message:
+        held > 0
+          ? `Nothing was loaded: every row was held back (${summary}). Open the batch to see why.`
+          : `Nothing was loaded: the file had no rows this import reads (${summary}).`,
+    };
+  }
+  if (held > 0) {
+    return { tone: 'warn', message: `Uploaded — ${summary}. Some rows were held back: open the batch to see why.` };
+  }
+  return { tone: 'ok', message: `Uploaded — ${summary}` };
+}
 
 function UploadForm({
   label,
@@ -14,7 +52,7 @@ function UploadForm({
   action: (formData: FormData) => Promise<ActionResult<UploadOk>>;
 }) {
   const [pending, start] = useTransition();
-  const [result, setResult] = useState<{ message: string; ok: boolean } | null>(null);
+  const [result, setResult] = useState<{ message: string; tone: Tone; batchId?: string } | null>(null);
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -28,22 +66,19 @@ function UploadForm({
         const res = await action(fd);
         if (!res.ok) {
           setResult({
-            ok: false,
+            tone: 'fail',
             message: res.fields
               ? Object.values(res.fields).join(', ')
               : res.message,
           });
           return;
         }
-        const summary = Object.entries(res.data)
-          .filter(([k]) => k !== 'batchId')
-          .map(([k, v]) => `${v} ${k}`)
-          .join(' · ');
-        setResult({ ok: true, message: `Uploaded — ${summary}` });
+        const batchId = typeof res.data.batchId === 'string' ? res.data.batchId : undefined;
+        setResult({ ...uploadOutcome(res.data), batchId });
         (e.target as HTMLFormElement).reset();
       } catch (err) {
         setResult({
-          ok: false,
+          tone: 'fail',
           message: err instanceof Error ? err.message : 'Upload failed.',
         });
       }
@@ -68,9 +103,18 @@ function UploadForm({
       </button>
       {result && (
         <p
-          className={`text-xs font-medium ${result.ok ? 'text-emerald-700' : 'text-red-600'}`}
+          role={result.tone === 'fail' ? 'alert' : 'status'}
+          className={`text-xs font-medium ${TONE_CLASS[result.tone]}`}
         >
           {result.message}
+          {result.batchId && (
+            <>
+              {' '}
+              <Link href={`/import/${result.batchId}`} className="underline underline-offset-2">
+                Open the batch
+              </Link>
+            </>
+          )}
         </p>
       )}
     </form>

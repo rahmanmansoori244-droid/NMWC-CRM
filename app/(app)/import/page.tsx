@@ -55,7 +55,11 @@ export default async function ImportPage() {
                   <strong>Users</strong>: <code>username</code>, <code>full_name</code>,{' '}
                   <code>role</code>, <code>password</code>, <code>supervisor_username</code> (opt),{' '}
                   <code>route_code</code> (opt for SALESMAN), <code>region_codes</code> (opt
-                  comma-separated for MANAGER), <code>email</code> (opt), <code>phone</code> (opt)
+                  comma-separated for MANAGER and ACCOUNTANT), <code>email</code> (opt),{' '}
+                  <code>phone</code> (opt), <code>must_change_password</code> (opt, <code>yes</code>{' '}
+                  asks for a new password at first sign-in), <code>reset_password</code> (opt,{' '}
+                  <code>yes</code> replaces an existing account&apos;s password), <code>change_role</code>{' '}
+                  (opt, <code>yes</code> lets the row change an existing account&apos;s role)
                 </div>
               </div>
             </details>
@@ -79,7 +83,9 @@ export default async function ImportPage() {
                 <code>cust_code</code>, <code>cust_name</code>, <code>branch_code</code>,{' '}
                 <code>branch_name</code>, <code>sales_region</code>, <code>route</code>,{' '}
                 <code>address</code>, <code>phone</code>, <code>contact_person</code>,{' '}
-                <code>cr_no</code>, <code>payment_terms</code>
+                <code>cr_no</code>, <code>payment_terms</code>, <code>credit_limit</code>,{' '}
+                <code>payment_term_days</code>, <code>temix_code</code>, <code>channel</code>,{' '}
+                <code>day_of_visit</code>, <code>customer_status</code>
                 <p className="mt-2 text-[11px] text-slate-500">
                   Legacy uppercase headings (e.g. <code>SALES REGION</code>, <code>CUST NAME</code>)
                   are also accepted.
