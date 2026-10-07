@@ -154,6 +154,10 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         // but not UPDATE/DELETE the ledger, and the transaction is rolled back. Not
         // an audit record at all.
         'scripts/ops/app-role.ts',
+        // Owner decision 7: customers whose status already contradicted their
+        // shops, moved on the owner's word, one CLOSE / REACTIVATE row each, in
+        // that customer's own transaction (no STARTING / COMPLETED pair needed).
+        'scripts/ops/customer-status-drift.ts',
       ];
       for (const f of OPERATOR_WRITERS) {
         expect(await guardHits(f, code), `${f} must stay outside the rule`).toHaveLength(0);
@@ -211,6 +215,7 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
         'scripts/ops/rescore-completeness.ts',
         'scripts/ops/visitdays-from-sheets.ts',
         'scripts/ops/app-role.ts',
+        'scripts/ops/customer-status-drift.ts',
       ].sort();
 
       expect(

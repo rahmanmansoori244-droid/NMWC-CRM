@@ -5,7 +5,8 @@
  * open branch closed, or a closure leaving every shop closed, closes the customer;
  * a branch reopened opens it; nothing else moves it; an archived customer is never
  * touched; every move is audited, once, from the status before the caller's own
- * writes. The paths that call it — an approved close,
+ * writes. statusDrift reads existing data by the same rule
+ * (scripts/ops/customer-status-drift.ts). The paths that call it — an approved close,
  * a direct write, a reactivation, an import — are exercised on Postgres in
  * tests/integration/customer-status-follows.test.ts.
  */
@@ -22,6 +23,7 @@ import {
   followBranchStatus,
   statusEvents,
 } from '@/lib/customer-status';
+import { statusDrift } from '@/lib/customer-status-rule';
 
 const { ACTIVE, CLOSED, SUSPENDED } = CustomerStatus;
 const ENV = { actorId: 'u1', ip: null, userAgent: null };
@@ -209,5 +211,43 @@ describe('followBranchStatus: a caller that wrote the status itself (the import,
     stored(ACTIVE, [ACTIVE]);
     expect(await followBranchStatus(txc, ENV, 'c1', NO_STATUS_EVENTS, { actorId: 'u1', via: 'x', statusBefore: ACTIVE })).toBeNull();
     expect(audit.writeAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe('statusDrift: existing data read by the same rule (scripts/ops/customer-status-drift.ts)', () => {
+  const STATUSES = [ACTIVE, CLOSED, SUSPENDED];
+  // Every multiset of up to three live branch statuses.
+  const sets: CustomerStatus[][] = [[]];
+  for (const a of STATUSES) {
+    sets.push([a]);
+    for (const b of STATUSES) {
+      sets.push([a, b]);
+      for (const c of STATUSES) sets.push([a, b, c]);
+    }
+  }
+
+  it('names the contradictions the rule would have fixed, and only those', () => {
+    expect(statusDrift(ACTIVE, [CLOSED, CLOSED])).toEqual({ kind: 'close', to: CLOSED });
+    expect(statusDrift(SUSPENDED, [CLOSED])).toEqual({ kind: 'close', to: CLOSED });
+    expect(statusDrift(CLOSED, [ACTIVE, CLOSED])).toEqual({ kind: 'reopen', to: ACTIVE });
+    // Whether its last open shop closed or was suspended is not in the data.
+    expect(statusDrift(ACTIVE, [SUSPENDED, CLOSED])).toEqual({ kind: 'review' });
+    // A hold a person set; consistent ones; no live branch.
+    expect(statusDrift(SUSPENDED, [ACTIVE])).toBeNull();
+    expect(statusDrift(ACTIVE, [ACTIVE, CLOSED])).toBeNull();
+    expect(statusDrift(CLOSED, [CLOSED, SUSPENDED])).toBeNull();
+    expect(statusDrift(ACTIVE, [])).toBeNull();
+  });
+
+  it('every move it proposes is the move the rule makes on the matching change, and none leaves a closed customer with an open shop', () => {
+    for (const current of STATUSES) {
+      for (const live of sets) {
+        const d = statusDrift(current, live);
+        const at = `${current} [${live.join(', ')}]`;
+        if (d?.kind === 'close') expect(customerStatusFollowing(current, live, CLOSED_OTHER), at).toBe(CLOSED);
+        if (d?.kind === 'reopen') expect(customerStatusFollowing(current, live, REOPENED), at).toBe(ACTIVE);
+        if (!d) expect(current === CLOSED && live.includes(ACTIVE), at).toBe(false);
+      }
+    }
   });
 });

@@ -22,7 +22,9 @@
  *     and moves nothing; closing the last one closes the customer;
  *   - the full import lane: the customer status the file states is audited with
  *     the rest, one CLOSE row from the status before the load;
- *   - a duplicate merge that moves an open shop onto a CLOSED winner reopens it.
+ *   - a duplicate merge that moves an open shop onto a CLOSED winner reopens it;
+ *   - scripts/ops/customer-status-drift.ts finds the customers that already
+ *     contradicted their shops and moves the unambiguous ones, audited.
  *
  * GATED: RUN_CUSTOMER_STATUS=1. Synthetic rows only (prefix ZZCSF-), deleted
  * after. Never production.
@@ -79,6 +81,7 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
   let imports: typeof import('@/services/imports');
   let fixes: typeof import('@/services/import-fixes');
   let dupes: typeof import('@/services/duplicates');
+  let drift: typeof import('../../scripts/ops/customer-status-drift');
   const tag = randomUUID().slice(0, 8).toUpperCase();
   const P = `ZZCSF-${tag}`;
   const REGION = `ZZCSF${tag}R`;
@@ -111,6 +114,7 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
     imports = await import('@/services/imports');
     fixes = await import('@/services/import-fixes');
     dupes = await import('@/services/duplicates');
+    drift = await import('../../scripts/ops/customer-status-drift');
     ids.region = (await prisma.region.create({ data: { code: REGION, name: `ZZ CSF ${tag}` } })).id;
     ids.route = (await prisma.route.create({ data: { code: ROUTE, name: `ZZ CSF ${tag}`, regionId: ids.region } })).id;
     ids.region2 = (await prisma.region.create({ data: { code: REGION2, name: `ZZ CSF ${tag} 2` } })).id;
@@ -444,5 +448,33 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
     expect((await dupes.mergeCustomersAction(form({ winnerId: w2.id, loserId: l2.id }))).ok).toBe(true);
     expect(await statusOf(w2.id)).toBe('CLOSED');
     expect(await auditRows(w2.id)).toEqual([]);
+  });
+
+  it('customers that already contradicted their shops: the drift script lists them and moves the unambiguous ones, audited', async () => {
+    const close = await customer('DA', ['CLOSED', 'CLOSED'], { status: 'ACTIVE' });
+    const reopen = await customer('DB', ['ACTIVE'], { status: 'CLOSED' });
+    const review = await customer('DC', ['SUSPENDED', 'CLOSED'], { status: 'ACTIVE' });
+    const hold = await customer('DD', ['ACTIVE'], { status: 'SUSPENDED' });
+    const scope = { nmwcCode: { startsWith: `${P}-D` } };
+    const found = await drift.readDrift(prisma, scope);
+    expect(found.map((r) => [r.nmwcCode, r.drift.kind])).toEqual([
+      [`${P}-DA`, 'close'],
+      [`${P}-DB`, 'reopen'],
+      [`${P}-DC`, 'review'],
+    ]);
+    for (const r of found) await drift.applyDrift(prisma, r.id, ids.stew, 'uat-test');
+    expect(await statusOf(close.id)).toBe('CLOSED');
+    expect(await statusOf(reopen.id)).toBe('ACTIVE');
+    // A person decides these; a hold is not drift.
+    expect(await statusOf(review.id)).toBe('ACTIVE');
+    expect(await statusOf(hold.id)).toBe('SUSPENDED');
+    expect((await auditRows(close.id)).map((r) => [r.action, r.actorId, r.before, r.after])).toEqual([
+      ['CLOSE', ids.stew, { status: 'ACTIVE' }, { status: 'CLOSED' }],
+    ]);
+    expect((await auditRows(reopen.id)).map((r) => [r.action, r.actorId])).toEqual([['REACTIVATE', ids.stew]]);
+    expect(await auditRows(review.id)).toEqual([]);
+    // Re-running finds only the one for a person, and moves nothing again.
+    expect((await drift.readDrift(prisma, scope)).map((r) => r.nmwcCode)).toEqual([`${P}-DC`]);
+    expect(await drift.applyDrift(prisma, close.id, ids.stew, 'uat-test')).toBeNull();
   });
 });

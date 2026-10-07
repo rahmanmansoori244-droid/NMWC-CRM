@@ -23,7 +23,9 @@
  * The status itself is what /customers filters on ("Closed" finds a customer
  * whose every shop is closed, for reactivation); Today, the insights dashboard
  * and the Temix queue read branches or no status at all, so a CLOSED customer
- * stays on its salesman's route and findable.
+ * stays on its salesman's route and findable. Customers whose status already
+ * contradicted their branches before this shipped are listed, and on the
+ * owner's word moved, by scripts/ops/customer-status-drift.ts.
  */
 import { CustomerStatus, type AuditAction, type Prisma } from '@prisma/client';
 import { writeAudit, type AuditEnvelope } from './audit';

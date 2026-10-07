@@ -1,7 +1,8 @@
 /**
  * Owner decision 7 (2026-10-07): the rule by which a customer's status follows
- * its shops — pure, no database and no audit (lib/customer-status.ts applies it
- * in the caller's transaction).
+ * its shops — pure, no database and no audit, so the transaction that applies it
+ * (lib/customer-status.ts) and the operator script that reads existing data with
+ * it (scripts/ops/customer-status-drift.ts) share one definition.
  *
  *   - The last open (ACTIVE) live branch closed makes the customer CLOSED, and so
  *     does a closure that leaves every live branch CLOSED. Closing a SUSPENDED
@@ -70,4 +71,30 @@ export function customerStatusFollowing(
   const allClosed = liveBranchStatuses.every((s) => s === CustomerStatus.CLOSED);
   if (!anyActive && (events.closedOpen || (events.closed && allClosed))) return CustomerStatus.CLOSED;
   return current;
+}
+
+/** A live customer whose status contradicts its live branches, and what to do. */
+export type StatusDrift = { kind: 'close'; to: 'CLOSED' } | { kind: 'reopen'; to: 'ACTIVE' } | { kind: 'review' };
+
+/**
+ * The rule above runs on a change, so it never re-reads a customer whose
+ * branches changed before it shipped. Read as a state instead:
+ *   close  — every live branch CLOSED and the customer not: what closing its
+ *            last shop makes it;
+ *   reopen — CLOSED with an ACTIVE live branch: what reopening one makes it;
+ *   review — ACTIVE with no ACTIVE live branch and not every one CLOSED (some
+ *            SUSPENDED): whether its last open shop closed (CLOSED) or was
+ *            suspended (left as it is) is not in the data, so a person decides;
+ *   null   — consistent, or no live branch. A SUSPENDED customer with an ACTIVE
+ *            branch is a hold a person set, not drift.
+ */
+export function statusDrift(current: CustomerStatus, liveBranchStatuses: readonly CustomerStatus[]): StatusDrift | null {
+  if (liveBranchStatuses.length === 0) return null;
+  if (liveBranchStatuses.every((s) => s === CustomerStatus.CLOSED)) {
+    return current === CustomerStatus.CLOSED ? null : { kind: 'close', to: CustomerStatus.CLOSED };
+  }
+  const anyActive = liveBranchStatuses.includes(CustomerStatus.ACTIVE);
+  if (current === CustomerStatus.CLOSED && anyActive) return { kind: 'reopen', to: CustomerStatus.ACTIVE };
+  if (current === CustomerStatus.ACTIVE && !anyActive) return { kind: 'review' };
+  return null;
 }
