@@ -41,8 +41,11 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
     ({ prisma } = await import('@/lib/db'));
     users = await import('@/services/users');
-    await prisma.user.create({ data: { id: stewardId, username: stewardId, passwordHash: 'x', fullName: 'ZZ Steward', role: 'STEWARD' } });
-    await prisma.user.create({ data: { id: managerId, username: managerId, passwordHash: 'x', fullName: 'ZZ Manager', role: 'MANAGER' } });
+    // The two actors are switched off: the actions read the role from the
+    // session, and other suites running at the same time fan notifications out
+    // to every ACTIVE Steward and approver (see afterAll).
+    await prisma.user.create({ data: { id: stewardId, username: stewardId, passwordHash: 'x', fullName: 'ZZ Steward', role: 'STEWARD', isActive: false } });
+    await prisma.user.create({ data: { id: managerId, username: managerId, passwordHash: 'x', fullName: 'ZZ Manager', role: 'MANAGER', isActive: false } });
   });
 
   afterAll(async () => {
@@ -50,6 +53,12 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     const names = [...created, `zzup-acc-${tag}`, `zzup-fm-${tag}`, `zzup-gm-${tag}`, `zzup-mgracc-${tag}`, `zzup-sales-${tag}`];
     const targets = await prisma.user.findMany({ where: { username: { in: names } }, select: { id: true } });
     const allIds = [stewardId, managerId, ...targets.map((t) => t.id)];
+    // The approvers created here are active, so a request another suite
+    // finalizes meanwhile notifies them, and Notification.userId would refuse
+    // the delete (teardown then stopped half-way, leaving active accounts with
+    // this file's password in UAT). Switch them off first, then clear them.
+    await prisma.user.updateMany({ where: { id: { in: allIds } }, data: { isActive: false } });
+    await prisma.notification.deleteMany({ where: { userId: { in: allIds } } });
     // createUserCore/updateUserRoleCore write AuditLog rows (actorId FK to User);
     // clear them before deleting the actors.
     await purgeAuditLog(prisma, { where: { OR: [{ actorId: { in: allIds } }, { entityId: { in: allIds } }] } });

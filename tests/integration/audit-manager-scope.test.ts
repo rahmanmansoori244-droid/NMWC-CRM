@@ -52,9 +52,12 @@ describe.skipIf(!ENABLED)('a Manager’s audit log: his regions’ events and hi
     ids.rtMine = (await prisma.route.create({ data: { name: 'Audit mine', code: `${sfx}-RM`, regionId: ids.regMine } })).id;
     ids.rtOther = (await prisma.route.create({ data: { name: 'Audit other', code: `${sfx}-RO`, regionId: ids.regOther } })).id;
 
+    // Switched off: other suites running at the same time fan notifications out
+    // to every ACTIVE Steward and approver, and a notification left on a fixture
+    // account stops its delete below. The scope reads no isActive.
     const user = async (key: string, data: Record<string, unknown>) =>
       (await prisma.user.create({
-        data: { username: `${sfx}.${key}`, fullName: `Audit ${key}`, passwordHash: 'x', ...data } as never,
+        data: { username: `${sfx}.${key}`, fullName: `Audit ${key}`, passwordHash: 'x', isActive: false, ...data } as never,
       })).id;
     ids.steward = await user('stw', { role: 'STEWARD' });
     ids.manager = await user('mgr', { role: 'MANAGER', managedRegions: { connect: [{ id: ids.regMine }] } });
@@ -143,7 +146,8 @@ describe.skipIf(!ENABLED)('a Manager’s audit log: his regions’ events and hi
     await prisma.branch.deleteMany({ where: { customerId: { in: custs } } });
     await prisma.customer.deleteMany({ where: { id: { in: custs } } });
     const people = [ids.smMine, ids.smOther, ids.viewer, ids.manager, ids.steward].filter(Boolean);
-    await prisma.user.updateMany({ where: { id: { in: people } }, data: { ownedRouteId: null, supervisorId: null } });
+    await prisma.user.updateMany({ where: { id: { in: people } }, data: { ownedRouteId: null, supervisorId: null, isActive: false } });
+    await prisma.notification.deleteMany({ where: { userId: { in: people } } });
     await prisma.user.deleteMany({ where: { id: { in: people } } });
     await prisma.route.deleteMany({ where: { id: { in: [ids.rtMine, ids.rtOther].filter(Boolean) } } });
     await prisma.region.deleteMany({ where: { id: { in: [ids.regMine, ids.regOther].filter(Boolean) } } });

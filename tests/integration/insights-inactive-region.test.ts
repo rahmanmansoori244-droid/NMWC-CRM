@@ -52,8 +52,10 @@ describe.skipIf(!ENABLED)('the organisation’s dashboard counts active regions 
     scopeLib = await import('@/lib/insights/scope');
     periodLib = await import('@/lib/insights/period');
 
-    ids.steward = (await prisma.user.create({ data: { username: `${sfx}.stw`, fullName: 'Inactive stw', role: 'STEWARD', passwordHash: 'x' } })).id;
-    ids.salesman = (await prisma.user.create({ data: { username: `${sfx}.sm`, fullName: 'Inactive sm', role: 'SALESMAN', passwordHash: 'x' } })).id;
+    // Switched-off accounts: other suites fan notifications out to every ACTIVE
+    // Steward, and one left on this fixture would stop its delete below.
+    ids.steward = (await prisma.user.create({ data: { username: `${sfx}.stw`, fullName: 'Inactive stw', role: 'STEWARD', passwordHash: 'x', isActive: false } })).id;
+    ids.salesman = (await prisma.user.create({ data: { username: `${sfx}.sm`, fullName: 'Inactive sm', role: 'SALESMAN', passwordHash: 'x', isActive: false } })).id;
     ids.regOn = (await prisma.region.create({ data: { name: `Active ${sfx}`, code: `${sfx}-ON` } })).id;
     ids.regOff = (await prisma.region.create({ data: { name: `ZZTEST-like ${sfx}`, code: `${sfx}-OFF`, isActive: false } })).id;
     ids.rtOn = (await prisma.route.create({ data: { name: 'On', code: `${sfx}-RON`, regionId: ids.regOn } })).id;
@@ -94,7 +96,9 @@ describe.skipIf(!ENABLED)('the organisation’s dashboard counts active regions 
     await prisma.customer.deleteMany({ where: { id: { in: custIds } } });
     await prisma.route.deleteMany({ where: { id: { in: [ids.rtOn, ids.rtOff].filter(Boolean) } } });
     await prisma.region.deleteMany({ where: { id: { in: [ids.regOn, ids.regOff].filter(Boolean) } } });
-    await prisma.user.deleteMany({ where: { id: { in: [ids.steward, ids.salesman].filter(Boolean) } } });
+    const people = [ids.steward, ids.salesman].filter(Boolean);
+    await prisma.notification.deleteMany({ where: { userId: { in: people } } });
+    await prisma.user.deleteMany({ where: { id: { in: people } } });
     await prisma.$disconnect();
   });
 
