@@ -894,7 +894,7 @@ describe.skipIf(!ENABLED)(
       // the move, he cannot send it again from B1, and the Steward is told so.
       expect(notes).toMatch(
         new RegExp(
-          `New-customer requests among them \\(1\\): if one is sent back to him, he cannot send it again from his new route — he withdraws it on Needs correction, and the salesman of ${code('A3')} adds the shop afresh\\.`
+          `New-customer requests among them \\(1\\): if one is sent back to him, he cannot send it again from his new route — he opens it from Needs correction and withdraws it at the bottom of its page, and the salesman of ${code('A3')} adds the shop afresh\\.`
         )
       );
       expect(notes).toMatch(

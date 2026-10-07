@@ -38,7 +38,7 @@ export default async function NewCustomerPage({
   let initial: CreateFormInitial | null = null;
   // Security review: the route(s) a draft or sent-back request was started on,
   // when he has since moved off them. services/creates.ts refuses to save or
-  // send it again; the page says why, above its Withdraw.
+  // send it again; the page says why, shows it read-only, and keeps Withdraw.
   let startedOn: string | null = null;
   if (editParam) {
     const edit = await prisma.customerEdit.findUnique({
@@ -154,6 +154,7 @@ export default async function NewCustomerPage({
           channels={channels}
           initial={initial}
           sessionUserId={session.user.id}
+          startedOnOtherRoute={startedOn !== null}
         />
       )}
       {/* Launch fix: his own draft, or one sent back to him, can be withdrawn —

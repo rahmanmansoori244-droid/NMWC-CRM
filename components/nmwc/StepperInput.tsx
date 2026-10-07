@@ -1,6 +1,7 @@
 'use client';
 
 import { Minus, Plus } from 'lucide-react';
+import { numberText } from '@/lib/digits';
 
 /**
  * 44×44 CSS px, the minimum tap target (WCAG 2.5.5, Apple HIG; docs/UX-SPEC.md).
@@ -49,7 +50,16 @@ export function StepperInput({
           <Minus className="h-5 w-5" />
         </button>
         <input
-          type="number"
+          // A text box in the spin-button role, not type=number: the browser
+          // blanks a number box's value when it cannot read the text as a
+          // number, so '٣' typed on an Arabic keyboard reached the handler as
+          // '' and the count went to 0 before numberText() could fold it. The
+          // role, the aria-value* and the arrow keys keep what type=number gave.
+          type="text"
+          role="spinbutton"
+          aria-valuenow={value}
+          aria-valuemin={min}
+          aria-valuemax={max}
           name={name}
           // The caption beside this control is a <span>, not a <label>, so the
           // field itself had no accessible name: three of these per branch were
@@ -63,11 +73,19 @@ export function StepperInput({
           // UXI-013: Android `type=number` allows comma decimals which silently
           // produced NaN under `Number(...)`. Clamp inputMode to numeric keypad,
           // strip non-digits, and parse safely to avoid the NaN→empty bug.
+          // Arabic-Indic and Persian digits are folded to ASCII first
+          // (lib/digits.ts, as for the credit limit and the typed GPS point).
           inputMode="numeric"
           pattern="[0-9]*"
           disabled={disabled}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+              e.preventDefault();
+              set(value + (e.key === 'ArrowUp' ? 1 : -1));
+            }
+          }}
           onChange={(e) => {
-            const raw = e.currentTarget.value.replace(/[^0-9]/g, '');
+            const raw = numberText(e.currentTarget.value).replace(/[^0-9]/g, '');
             if (!raw) {
               set(min);
               return;

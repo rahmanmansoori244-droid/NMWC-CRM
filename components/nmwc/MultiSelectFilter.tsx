@@ -229,7 +229,7 @@ export function MultiSelectFilter({
                 }}
                 placeholder={`Search ${label.toLowerCase()}…`}
                 aria-label={`Search ${label.toLowerCase()}`}
-                className="w-full rounded-md border border-slate-300 py-1.5 pl-8 pr-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                className="w-full rounded-md border border-slate-300 py-1.5 pl-8 pr-2 text-base focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 sm:text-sm"
               />
             </div>
           )}

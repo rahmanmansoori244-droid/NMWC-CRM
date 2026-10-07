@@ -12,6 +12,7 @@
  * (withdrawCreateAction checks no route).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const EDIT_ID = 'ckzzzzzzzz0000zzzzzzzzzzzz';
 
@@ -91,6 +92,35 @@ describe('a new-customer request started on another route is not re-filed on his
     expect(h.tx).not.toHaveBeenCalled();
   });
 
+  // The route is checked before the fields: a sent-back request he corrected
+  // field by field was otherwise refused for its route only once every field
+  // passed. A legal name too short and a phone that is not one fail the schema.
+  const badFields = (isDraft: boolean) =>
+    ({
+      ...body(isDraft),
+      customer: { legalName: 'A', paymentTerms: 'CASH', primaryPhone: '123' },
+    }) as Parameters<typeof submitCreateAction>[0];
+
+  it.each([false, true])(
+    'isDraft=%s: the route is the reason given, before any field is refused',
+    async (isDraft) => {
+      h.existing = existing('NEEDS_CORRECTION', 'r-old', 'MCT-01');
+      const res = await submitCreateAction(badFields(isDraft));
+      expect(res).toMatchObject({ ok: false, code: 'EDIT_LOCKED' });
+      expect(res.ok ? '' : res.message).toMatch(/started on route MCT-01/);
+      expect(h.tx).not.toHaveBeenCalled();
+    }
+  );
+
+  it('on his own route the same fields are still refused, field by field', async () => {
+    h.existing = existing('NEEDS_CORRECTION', 'r-new', 'BTN-02');
+    const res = await submitCreateAction(badFields(false));
+    expect(res).toMatchObject({ ok: false, code: 'VALIDATION_FAILED' });
+    const fields = res.ok ? {} : (res as { fields?: Record<string, string> }).fields ?? {};
+    expect(Object.keys(fields).sort()).toEqual(['customer.legalName', 'customer.primaryPhone']);
+    expect(h.tx).not.toHaveBeenCalled();
+  });
+
   it('one started on his own route is saved as before', async () => {
     h.existing = existing('DRAFT', 'r-new', 'BTN-02');
     expect(await submitCreateAction(body(true))).toMatchObject({
@@ -98,5 +128,51 @@ describe('a new-customer request started on another route is not re-filed on his
       data: { editId: EDIT_ID, state: 'DRAFT' },
     });
     expect(h.tx).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The rule before the security review, still written in the import's guard (4):
+// the next person to change that guard reads its comment first.
+describe('nothing still says a request sent again is filed under his new route', () => {
+  /** The text with comment markers and line breaks folded, so a sentence reads whole. */
+  const prose = (f: string) =>
+    readFileSync(f, 'utf8')
+      .replace(/\r?\n\s*(?:\/\/+|\*(?!\/))?/g, ' ')
+      .replace(/\s+/g, ' ');
+
+  it.each([
+    'services/imports.ts',
+    'services/creates.ts',
+    'services/users.ts',
+    'lib/account-edit.ts',
+    'docs/OPERATIONS.md',
+    'docs/import-templates/README.md',
+  ])('%s', (f) => {
+    // The sentence it was found in, not the whole file, when it fails.
+    expect(prose(f).match(/[^.]*files? (them|it) under (the|his) new route[^.]*/i)?.[0]).toBeUndefined();
+  });
+
+  it("the import's guard (4) says what services/creates.ts does now", () => {
+    const guard = prose('services/imports.ts').match(/\(4\) His new-customer requests[^]*?\/users[^.]*\./)?.[0];
+    expect(guard).toMatch(
+      /not in review .* services\/creates\.ts refuses to save or send one again from another route, so after the move he could only withdraw them\./
+    );
+  });
+});
+
+// Withdraw is on the request's own page (/customers/new?edit=…), which Needs
+// correction links to; Needs correction itself has no Withdraw. "He withdraws
+// it on Needs correction" sent the Steward, and the salesman, looking for a
+// button that is not there.
+describe('where he withdraws a new-customer request sent back after a move', () => {
+  const prose = (f: string) =>
+    readFileSync(f, 'utf8')
+      .replace(/\r?\n\s*(?:\/\/+|\*(?!\/))?/g, ' ')
+      .replace(/\s+/g, ' ');
+
+  it.each(['lib/account-edit.ts', 'docs/OPERATIONS.md'])('%s', (f) => {
+    const text = prose(f);
+    expect(text.match(/[^.]*withdraws? it on Needs correction[^.]*/i)?.[0]).toBeUndefined();
+    expect(text).toContain('opens it from Needs correction and withdraws it at the bottom of its page');
   });
 });

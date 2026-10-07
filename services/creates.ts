@@ -154,11 +154,18 @@ async function submitCreateOnce(
   }
 
   const parsed = submitCreateSchema.safeParse(input);
-  if (!parsed.success) {
+  // The request being resumed, read on its own when the body fails the schema:
+  // one he can no longer save or send (another's, in review, withdrawn, or
+  // started on a route he has left) says so before any field is refused. He
+  // corrected every field first, and was then told. A body that fails with no
+  // request to resume is still refused before the database.
+  const editId = parsed.success
+    ? parsed.data.editId
+    : submitCreateSchema.shape.editId.safeParse((input as { editId?: unknown } | undefined)?.editId)
+        .data;
+  if (!parsed.success && !editId) {
     throw new ValidationError(zodIssuesToFields(parsed.error.issues));
   }
-  const data: ParsedSubmitCreate = parsed.data;
-  const isDraft = data.isDraft;
 
   // The salesman's own route decides region + route for EVERY branch draft.
   const me = await prisma.user.findUniqueOrThrow({
@@ -176,6 +183,64 @@ async function submitCreateOnce(
     throw new ForbiddenError('Your route is inactive — ask your supervisor.');
   }
   const route = me.ownedRoute;
+
+  // Resuming an existing request? Ownership + state gate.
+  const existing = editId
+    ? await prisma.customerEdit.findUnique({
+        where: { id: editId },
+        select: {
+          id: true,
+          process: true,
+          state: true,
+          submittedById: true,
+          cycle: true,
+          submittedAt: true,
+          branchDrafts: { select: { routeId: true, route: { select: { code: true } } } },
+        },
+      })
+    : null;
+  if (editId) {
+    if (!existing || existing.process !== EditProcess.CREATE) {
+      throw new NotFoundError('Create request not found.');
+    }
+    if (existing.submittedById !== session.id) {
+      throw new ForbiddenError('This create request belongs to another user.');
+    }
+    if (existing.state === EditState.SUBMITTED || existing.state === EditState.APPROVED) {
+      throw new ConflictError(
+        'EDIT_LOCKED',
+        existing.state === EditState.SUBMITTED
+          ? 'This request is already submitted and in review.'
+          : 'This request was already approved.'
+      );
+    }
+    // Launch fix: a withdrawn request is closed for good. It no longer blocks
+    // its CR or shop, so sending it again could slip past a request made since.
+    // (Nothing else ever wrote REJECTED on a new-customer request.)
+    if (existing.state === EditState.REJECTED) {
+      throw new ConflictError('EDIT_LOCKED', WITHDRAWN_MESSAGE);
+    }
+    // Security review: one started on a route he has since left (moved while it
+    // was in review, then sent back; or moved by a role change or an import) is
+    // never re-filed. Rebuilding its drafts below would put the shop on his NEW
+    // route, before that region's approvers. He withdraws it (withdrawCreateCore
+    // checks no route); the salesman of its route adds the shop afresh.
+    const startedOn = [
+      ...new Set(
+        existing.branchDrafts.filter((b) => b.routeId !== route.id).map((b) => b.route.code)
+      ),
+    ].join(', ');
+    if (startedOn) {
+      throw new ConflictError('EDIT_LOCKED', routeMovedMessage(startedOn, route.code));
+    }
+    // DRAFT / NEEDS_CORRECTION may be revised and resubmitted.
+  }
+
+  if (!parsed.success) {
+    throw new ValidationError(zodIssuesToFields(parsed.error.issues));
+  }
+  const data: ParsedSubmitCreate = parsed.data;
+  const isDraft = data.isDraft;
 
   // Normalize contact + CR. Invalid (unnormalizable) phones are rejected even
   // for drafts — storing a phone that normalizePhone(null)s would silently
@@ -213,58 +278,6 @@ async function submitCreateOnce(
         'customer.subChannelId': 'Sub-channel does not belong to the chosen channel.',
       });
     }
-  }
-
-  // Resuming an existing request? Ownership + state gate.
-  const existing = data.editId
-    ? await prisma.customerEdit.findUnique({
-        where: { id: data.editId },
-        select: {
-          id: true,
-          process: true,
-          state: true,
-          submittedById: true,
-          cycle: true,
-          submittedAt: true,
-          branchDrafts: { select: { routeId: true, route: { select: { code: true } } } },
-        },
-      })
-    : null;
-  if (data.editId) {
-    if (!existing || existing.process !== EditProcess.CREATE) {
-      throw new NotFoundError('Create request not found.');
-    }
-    if (existing.submittedById !== session.id) {
-      throw new ForbiddenError('This create request belongs to another user.');
-    }
-    if (existing.state === EditState.SUBMITTED || existing.state === EditState.APPROVED) {
-      throw new ConflictError(
-        'EDIT_LOCKED',
-        existing.state === EditState.SUBMITTED
-          ? 'This request is already submitted and in review.'
-          : 'This request was already approved.'
-      );
-    }
-    // Launch fix: a withdrawn request is closed for good. It no longer blocks
-    // its CR or shop, so sending it again could slip past a request made since.
-    // (Nothing else ever wrote REJECTED on a new-customer request.)
-    if (existing.state === EditState.REJECTED) {
-      throw new ConflictError('EDIT_LOCKED', WITHDRAWN_MESSAGE);
-    }
-    // Security review: one started on a route he has since left (moved while it
-    // was in review, then sent back; or moved by a role change or an import) is
-    // never re-filed. Rebuilding its drafts below would put the shop on his NEW
-    // route, before that region's approvers. He withdraws it (withdrawCreateCore
-    // checks no route); the salesman of its route adds the shop afresh.
-    const startedOn = [
-      ...new Set(
-        existing.branchDrafts.filter((b) => b.routeId !== route.id).map((b) => b.route.code)
-      ),
-    ].join(', ');
-    if (startedOn) {
-      throw new ConflictError('EDIT_LOCKED', routeMovedMessage(startedOn, route.code));
-    }
-    // DRAFT / NEEDS_CORRECTION may be revised and resubmitted.
   }
 
   // Mandatory-field gate — submits only; drafts save partial work.
