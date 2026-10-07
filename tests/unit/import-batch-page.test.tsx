@@ -154,6 +154,27 @@ describe('/import/[batchId] for an account master', () => {
     expect(row.querySelector('td')!.textContent).toBe('Users #7');
   });
 
+  it('a batch stored before the fix reads its Excel row from the issue, not the issue index', async () => {
+    h.kind = 'ACCOUNT';
+    // The 2nd issue of the batch, about Excel row 9 of the Users sheet.
+    const issue = { sheet: 'Users', row: 9, message: 'salesman needs route_code' };
+    h.rows = [{ id: 'a2', rowNumber: 2, state: 'QUARANTINED', raw: issue, parsed: null, issues: [issue] }];
+    await open();
+    const row = screen.getByText('Users sheet, row 9:').closest('tr')!;
+    expect(row.querySelector('td')!.textContent).toBe('Users #9');
+  });
+
+  it('rows are paged in a fixed order: sheets share row numbers, so the id breaks ties', async () => {
+    h.kind = 'ACCOUNT';
+    const issue = (sheet: string) => ({ sheet, row: 2, message: 'code and name required' });
+    h.rows = ['Regions', 'Routes', 'Users'].map((s, i) => ({
+      id: `t${i}`, rowNumber: 2, state: 'QUARANTINED', raw: issue(s), parsed: null, issues: [issue(s)],
+    }));
+    await open();
+    const paged = h.findMany.mock.calls.map((c) => c[0]).find((a) => a.take !== undefined);
+    expect(paged.orderBy).toEqual([{ rowNumber: 'asc' }, { id: 'asc' }]);
+  });
+
   it('a customer master row keeps the bare number', async () => {
     h.rows = [rejected(4)];
     await open({ show: 'rejected' });
@@ -168,7 +189,7 @@ describe('/import/[batchId]', () => {
     await open({ show: 'rejected', page: '3' });
     expect(h.findMany).toHaveBeenCalledWith({
       where: { batchId: 'b1', state: 'REJECTED' },
-      orderBy: { rowNumber: 'asc' },
+      orderBy: [{ rowNumber: 'asc' }, { id: 'asc' }],
       skip: 200,
       take: 100,
       include: { excludedBy: { select: { fullName: true } } },

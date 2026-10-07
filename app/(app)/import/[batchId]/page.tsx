@@ -76,7 +76,10 @@ export default async function ImportBatchPage({
   const page = Math.min(parsePage(sp.page), pages);
   const displayRows = await prisma.importRow.findMany({
     where: rowViewWhere(batchId, view),
-    orderBy: { rowNumber: 'asc' },
+    // The id breaks ties: an account master's sheets share row numbers (Regions
+    // #2, Routes #2, Users #2), and paging over ties alone could show a row twice
+    // or never.
+    orderBy: [{ rowNumber: 'asc' }, { id: 'asc' }],
     skip: (page - 1) * ROWS_PAGE_SIZE,
     take: ROWS_PAGE_SIZE,
     include: { excludedBy: { select: { fullName: true } } },
@@ -261,7 +264,7 @@ export default async function ImportBatchPage({
                     <td className="px-3 py-2 font-mono text-[11px] tabular-nums">
                       {/* An account master has three sheets: the row number alone
                           is ambiguous there, so its sheet goes with it. */}
-                      {batch.kind === 'ACCOUNT' && sheetOf(r.raw) ? `${sheetOf(r.raw)} ` : ''}#{r.rowNumber}
+                      {(batch.kind === 'ACCOUNT' && accountRowLabel(r.raw)) || `#${r.rowNumber}`}
                     </td>
                     <td className="px-3 py-2">
                       <span
@@ -383,10 +386,16 @@ export default async function ImportBatchPage({
   );
 }
 
-/** The sheet an account-master issue row came from (services/imports.ts stores the issue as raw). */
-function sheetOf(raw: unknown): string | null {
-  const sheet = (raw as { sheet?: unknown } | null)?.sheet;
-  return typeof sheet === 'string' ? sheet : null;
+/**
+ * An account-master issue row's sheet and Excel row, read from the issue that
+ * services/imports.ts stores as raw. Not rowNumber: batches stored before the
+ * launch fix hold the issue's index there (the 2nd issue, not row 2), while
+ * raw.row has always been the Excel row.
+ */
+function accountRowLabel(raw: unknown): string | null {
+  const issue = raw as { sheet?: unknown; row?: unknown } | null;
+  if (typeof issue?.sheet !== 'string' || typeof issue.row !== 'number') return null;
+  return `${issue.sheet} #${issue.row}`;
 }
 
 function stateClass(state: string) {
