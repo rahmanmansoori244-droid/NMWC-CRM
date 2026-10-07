@@ -59,8 +59,11 @@ export default async function ImportPage() {
                   comma-separated for MANAGER and ACCOUNTANT), <code>email</code> (opt),{' '}
                   <code>phone</code> (opt), <code>must_change_password</code> (opt, <code>yes</code>{' '}
                   asks for a new password at first sign-in), <code>reset_password</code> (opt,{' '}
-                  <code>yes</code> replaces an existing account&apos;s password), <code>change_role</code>{' '}
-                  (opt, <code>yes</code> lets the row change an existing account&apos;s role)
+                  <code>yes</code> replaces an existing account&apos;s password),{' '}
+                  <code>change_role</code> (opt, <code>yes</code> lets the row change an existing
+                  account&apos;s role), <code>change_route</code> (opt, <code>yes</code> lets the
+                  row take a route from an active salesman), <code>change_name</code> (opt,{' '}
+                  <code>yes</code> lets the row change a salesman&apos;s full name)
                 </div>
               </div>
             </details>
