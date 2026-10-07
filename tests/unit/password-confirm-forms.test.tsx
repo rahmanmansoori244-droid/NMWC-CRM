@@ -18,8 +18,10 @@ const h = vi.hoisted(() => ({
   change: vi.fn(),
   reset: vi.fn(),
   replace: vi.fn(),
+  hardReplace: vi.fn(),
 }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: h.replace }) }));
+vi.mock('@/lib/navigate', () => ({ hardReplace: h.hardReplace }));
 vi.mock('@/services/password', () => ({ changeOwnPasswordAction: h.change }));
 vi.mock('@/services/users', () => ({
   resetPasswordAction: h.reset,
@@ -82,6 +84,45 @@ describe('ChangePasswordForm — the new password twice', () => {
     expect(sent(h.change, 'confirmNewPassword')).toBe(TYPED);
     await waitFor(() => expect(screen.getByText(/Password changed/)).toBeTruthy());
     expect(screen.queryByText(MISMATCH)).toBeNull();
+  });
+
+  it('after the change, a document load of the role home — the session is already renewed, no second sign-in', async () => {
+    // services/password.ts renewOwnSession replaced the cookie. It went to
+    // /login before, through the router, and the old flagged cookie sent the
+    // user's next tap back to the forced page.
+    vi.useFakeTimers();
+    try {
+      render(<ChangePasswordForm />);
+      type(input('Current password'), 'The-temporary-one-1');
+      type(input('New password (min 12 chars)'), TYPED);
+      type(input('Confirm new password'), TYPED);
+      fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+      await vi.waitFor(() => expect(screen.getByText(/Password changed/)).toBeTruthy());
+      expect(h.hardReplace).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(h.hardReplace).toHaveBeenCalledTimes(1);
+      expect(h.hardReplace).toHaveBeenCalledWith('/');
+      expect(h.replace).not.toHaveBeenCalledWith('/login');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a refused change stays on the form and goes nowhere', async () => {
+    h.change.mockResolvedValue({ ok: false, code: 'VALIDATION_FAILED', message: 'x', fields: { currentPassword: 'Current password incorrect.' } });
+    vi.useFakeTimers();
+    try {
+      render(<ChangePasswordForm />);
+      type(input('Current password'), 'wrong');
+      type(input('New password (min 12 chars)'), TYPED);
+      type(input('Confirm new password'), TYPED);
+      fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+      await vi.waitFor(() => expect(screen.getByText('Current password incorrect.')).toBeTruthy());
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(h.hardReplace).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('Show switches both new-password boxes between masked and text, and never the current one', () => {

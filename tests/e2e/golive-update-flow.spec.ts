@@ -245,7 +245,12 @@ test('salesman: route-code login, forced password change, Today, search, enrich 
   await page.locator('input[name="confirmNewPassword"]').fill(NEW_PASSWORD);
   await page.getByRole('button', { name: /change password/i }).click();
   await expect(page.getByText(/password changed/i)).toBeVisible();
-  await expect(page).toHaveURL(/\/login/);
+  // Launch review: the change renews this browser's session (services/password.ts
+  // renewOwnSession), so the salesman lands on Today, not on a second sign-in,
+  // and the forced page does not come back: the middleware reads the new cookie.
+  await expect(page).toHaveURL(/\/today/);
+  await page.goto('/customers');
+  await expect(page.getByRole('heading', { name: /change password/i })).toHaveCount(0);
   // the old password is dead
   await signIn(page, F.routeCode.toLowerCase(), INITIAL_PASSWORD);
   await expect(page.getByRole('alert')).toBeVisible();

@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 // of each 'use server' module it imports, and a session that must change its
 // password can reach this page — so never import a multi-action module here.
 import { changeOwnPasswordAction } from '@/services/password';
+import { hardReplace } from '@/lib/navigate';
 
 const OWN_PATH = '/profile/change-password';
 
@@ -69,10 +70,14 @@ export function ChangePasswordForm() {
               return;
             }
             setDone(true);
-            // AUTH-12: the action bumps sessionsRevokedAt which kills the
-            // current JWT at the next freshness check. Force a hard reload
-            // to /login so the user re-authenticates with the new password.
-            setTimeout(() => router.replace('/login'), 1500);
+            // AUTH-12: the action bumps sessionsRevokedAt and has given this
+            // browser a new session, made with the new password
+            // (services/password.ts renewOwnSession). It went to /login, which
+            // made the user sign in again, and the old cookie, still flagged,
+            // sent any tap back to this page. `/` is the role's home, or
+            // /login if the action had to sign this browser out instead. A
+            // document load, so nothing on screen is from before the change.
+            setTimeout(() => hardReplace('/'), 1500);
           } catch (err) {
             setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
           }
@@ -82,7 +87,7 @@ export function ChangePasswordForm() {
     >
       {done ? (
         <div className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-700 ring-1 ring-emerald-200">
-          Password changed. Redirecting to sign in…
+          Password changed. Taking you to your home page…
         </div>
       ) : (
         <>
