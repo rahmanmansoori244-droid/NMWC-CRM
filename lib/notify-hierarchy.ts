@@ -95,8 +95,13 @@ export async function resolveRequestAudience(
       managerOnly: event === 'REACTIVATION',
     });
     mustAct = sup ? [sup] : await regionManagers(db, regionId);
-    // The gap is worth knowing even when the fallback covers it (ids and counts only).
-    if (!sup) {
+    // The gap is worth knowing even when the fallback covers it (ids and counts
+    // only). A Supervisor cannot decide a reactivation by design, so for one his
+    // being a Supervisor is not a gap; a missing or unusable supervisor is.
+    if (
+      !sup &&
+      (event === 'CLOSE' || !(await eligibleSupervisor(db, submitter.supervisorId, regionId)))
+    ) {
       logger.warn(
         { event, supervisorId: submitter.supervisorId, managersTold: mustAct.length },
         'notify.request.supervisor_cannot_act'
