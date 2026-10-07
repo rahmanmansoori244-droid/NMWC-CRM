@@ -556,7 +556,7 @@ export function ClosuresCard({ data, ctx }: { data: Insights; ctx: CardContext }
       definition={
         <>
           Close-shop and reactivation requests decided {ctx.periodPhrase}, on the branch&apos;s own region and route. A
-          customer&apos;s own status does not follow a branch closure, so this reads branches, not customers.
+          customer closes only when its last open branch does, so this reads branches, not customers.
         </>
       }
       footer={

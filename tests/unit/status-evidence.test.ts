@@ -222,7 +222,9 @@ beforeEach(() => {
   tx.customerEdit.updateMany.mockResolvedValue({ count: 1 });
   tx.attachment.findMany.mockResolvedValue([photo()]);
   tx.branch.findUnique.mockResolvedValue({ customerId: CUST, status: 'CLOSED', deletedAt: null });
-  tx.customer.findUnique.mockResolvedValue({ deletedAt: null });
+  // Read twice by a decision: the X-STATUS-1 guard (deletedAt), then owner
+  // decision 7's status follow (lib/customer-status.ts: status and live branches).
+  tx.customer.findUnique.mockResolvedValue({ deletedAt: null, status: 'CLOSED', branches: [{ status: 'ACTIVE' }] });
   tx.branch.findMany.mockResolvedValue([{ id: B1, status: 'ACTIVE' }]);
   tx.branch.findUniqueOrThrow.mockResolvedValue({ version: 0, status: 'ACTIVE' });
   tx.branch.updateMany.mockResolvedValue({ count: 1 });
@@ -339,6 +341,34 @@ describe('approving a reactivation (F10 + X-STATUS-1)', () => {
       expect.objectContaining({ where: { id: B1 }, data: expect.objectContaining({ status: 'ACTIVE' }) })
     );
     expect(audit.writeAudit).toHaveBeenCalledWith(tx, expect.anything(), expect.objectContaining({ action: 'REACTIVATE' }));
+  });
+
+  it('owner decision 7: the customer reopens with its shop — another branch still closed no longer keeps it CLOSED', async () => {
+    tx.customer.findUnique.mockResolvedValue({
+      deletedAt: null,
+      status: 'CLOSED',
+      branches: [{ status: 'ACTIVE' }, { status: 'CLOSED' }],
+    });
+    expect((await approveReactivationAction(form({ editId: 'e-r' }))).ok).toBe(true);
+    expect(tx.customer.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: CUST }, data: expect.objectContaining({ status: 'ACTIVE' }) })
+    );
+    expect(audit.writeAudit).toHaveBeenCalledWith(
+      tx,
+      expect.anything(),
+      expect.objectContaining({
+        action: 'REACTIVATE',
+        entityType: 'Customer',
+        entityId: CUST,
+        before: { status: 'CLOSED' },
+        after: { status: 'ACTIVE' },
+      })
+    );
+    // An ACTIVE customer is left alone, and no customer row is written for it.
+    tx.customer.update.mockClear();
+    tx.customer.findUnique.mockResolvedValue({ deletedAt: null, status: 'ACTIVE', branches: [{ status: 'ACTIVE' }] });
+    expect((await approveReactivationAction(form({ editId: 'e-r' }))).ok).toBe(true);
+    expect(tx.customer.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: expect.anything() }) }));
   });
 
   it('reads the branch, the customer and the photo after the customer lock, and before the branch write', async () => {

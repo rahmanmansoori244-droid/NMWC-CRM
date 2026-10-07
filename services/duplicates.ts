@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, EditState, TemixSyncState, type Prisma } from '@prisma/client';
+import { Role, EditState, TemixSyncState, CustomerStatus, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
@@ -22,6 +22,7 @@ import {
 } from '@/lib/temix';
 import { lockCustomersAndTemixCodeHolders } from '@/lib/locks';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { followBranchStatus, NO_STATUS_EVENTS, statusEvents } from '@/lib/customer-status';
 import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
 import {
   pairCandidates,
@@ -259,11 +260,25 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
       // deactivation goes out keyed on (lib/temix.ts archiveDeactivationCode).
       const sharedWith = await liveTemixCodeHolders(tx, archiveDeactivationCode(loserLive), loser.id);
 
+      // Owner decision 7: an open shop moving onto the winner makes it ACTIVE (a
+      // customer with at least one ACTIVE branch is ACTIVE), so a CLOSED winner
+      // is reopened. Counted under the locks, before the move. A merge closes no
+      // shop, so it never closes the winner.
+      const movedOpen = await tx.branch.count({
+        where: { customerId: loser.id, deletedAt: null, status: CustomerStatus.ACTIVE },
+      });
       // Move branches
       await tx.branch.updateMany({
         where: { customerId: loser.id, deletedAt: null },
         data: { customerId: winner.id, lastEditedById: session.id },
       });
+      await followBranchStatus(
+        tx,
+        env,
+        winner.id,
+        movedOpen > 0 ? statusEvents(null, CustomerStatus.ACTIVE) : NO_STATUS_EVENTS,
+        { actorId: session.id, via: `merge of ${loser.nmwcCode}` }
+      );
       // QA-028 / final-hunt #31: move the loser's CustomerEdit history into the
       // winner for audit continuity. The loser is about to be soft-deleted, so FIRST
       // terminate any OPEN (SUBMITTED) edit on it — reparenting a loser-side SUBMITTED

@@ -303,6 +303,9 @@ async function handle(req: NextRequest) {
   // GAP-2 (2026-09-24): this sweep escalated into an in-app bell and nothing else.
   // A breach reached a Notification row, the row reached a screen, and the screen
   // was not open — which is the whole of "the SLA is enforced" as it shipped.
+  // (Owner decision 6, 2026-10-07: the SLA_BREACH rows written above are e-mailed
+  // to their recipients by the outbox drain too — lib/notify-policy.ts
+  // EMAIL_SLA_BREACH. This alert is the operators', and says counts only.)
   //
   // Counts only, no customer names: the alert says how many and the app says which
   // (lib/alert.ts). Sent only when something actually escalated, so a quiet sweep

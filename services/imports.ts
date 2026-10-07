@@ -57,6 +57,7 @@ import {
 } from '@/lib/import-row-check';
 import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
 import { lockCustomerRowByCode } from '@/lib/locks';
+import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
 import {
   branchOnlyNote,
@@ -2019,6 +2020,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     channelId: true,
                     subChannelId: true,
                     subChannel: { select: { channelId: true } },
+                    // Owner decision 7: its status and its live branches' before
+                    // this group writes any, so the status can follow (below).
+                    status: true,
+                    branches: { where: { deletedAt: null }, select: { id: true, status: true } },
                   },
                 })
               : null;
@@ -2576,6 +2581,34 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 where: { id: customerId },
                 data: { status: liveActive > 0 ? 'ACTIVE' : statedStatus },
               });
+            }
+            // Owner decision 7 (2026-10-07), on every lane: a branch this load
+            // closed or reopened moves the customer as any other path does
+            // (lib/customer-status.ts) — the block above runs only when the file
+            // states a status on the full lane, so a fixed row on the branch-only
+            // lane closed a customer's last open branch and left it ACTIVE. A new
+            // customer takes the file's status above. An existing one can move only
+            // when a row states a status, when the file states the customer's own
+            // (the upsert and the block above write it), or when it is not ACTIVE (a
+            // branch this load creates without one is ACTIVE): otherwise nothing is
+            // read. The status read under the lock before this group wrote anything
+            // is passed on, so whichever of them moved it, the move is one audit row
+            // from the real prior status (fixer review: the block above wrote the
+            // file's status unaudited, and a CLOSE row then began at the file's).
+            if (
+              existing &&
+              (resolvedBranches.some((r) => r.status !== null) ||
+                (fullLane && statedStatus !== null && statedStatus !== existing.status) ||
+                existing.status !== 'ACTIVE')
+            ) {
+              const statusBefore = new Map(existing.branches.map((b) => [b.id, b.status] as const));
+              await followBranchStatus(
+                tx,
+                env,
+                customerId,
+                branchStatusEvents(statusBefore, await liveBranchStatuses(tx, customerId)),
+                { actorId: me.id, via: `import ${batchId}`, statusBefore: existing.status }
+              );
             }
             // What a fixed row asked for and did not get: branch only writes none
             // of the customer's own fields — but an empty phone, below — and the

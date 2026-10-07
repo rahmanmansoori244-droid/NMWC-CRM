@@ -664,10 +664,14 @@ The exact Temix file format is still to be confirmed with Temix (owner decision 
   every row that existed before the feature is marked `PRE_FEATURE` and is never e-mailed).
   `/api/cron/email-drain` (every 10 minutes, 03:00–14:59 UTC) sends each recipient one
   plain-text digest from the owner's Gmail: counts, request kinds and links, never a
-  customer, salesman or route name. Only Managers, Supervisors, Accountants and the
-  Finance Manager are e-mailed — never the GM, a Steward, a Viewer or a salesman — and
-  only about a row not yet read whose request still waits on them and that they can act
-  on (`canActOnStep`, with their managed regions). Caps: one digest per person per 30
+  customer, salesman or route name. Only Managers, Supervisors, Accountants, the
+  Finance Manager and (owner decision 6, 2026-10-07) the GM are e-mailed — never a
+  Steward, a Viewer or a salesman; the GM only for work waiting on him, never for
+  information — and only about a row not yet read whose request still waits on them and
+  that they can act on (`canActOnStep`, with their managed regions). A late request
+  (`SLA_BREACH`) is e-mailed to the people the escalation tells (`lib/escalation.ts`:
+  the region's Managers, then the GM at 2x), re-checked at send time, except a late GM
+  step's Managers, who are told in-app for visibility only. Caps: one digest per person per 30
   minutes, 40 per run, 400 a day; work goes before information-only e-mail, which may use
   at most 300 a day. A refusal of the sending Gmail account (a used-up daily limit) stops
   the run and keeps every row for a later one. Off production it sends only to a redirect

@@ -25,7 +25,13 @@ import {
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { logger } from '@/lib/logger';
-import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { getAuditEnvelope, writeAudit, type AuditEnvelope } from '@/lib/audit';
+import {
+  followBranchStatus,
+  mergeStatusEvents,
+  NO_STATUS_EVENTS,
+  statusEvents,
+} from '@/lib/customer-status';
 import { isFieldLocked, canActOnStep } from '@/lib/permissions';
 import {
   EQUIPMENT_UNCONFIRM_MESSAGE,
@@ -893,7 +899,10 @@ async function submitEditOnce(
             ...chainFields,
           },
         });
-        await applyEditChanges(tx, customer.id, write.customer, write.branches, me.id);
+        await applyEditChanges(tx, customer.id, write.customer, write.branches, me.id, {
+          env,
+          via: `direct write by ${me.role}`,
+        });
         const customerBefore = Object.fromEntries(
           CUSTOMER_EDIT_FIELDS.map((f) => [f, toBaseValue(now[f])])
         );
@@ -1175,7 +1184,10 @@ async function applyEditChanges(
   customerId: string,
   customerProposed: Record<string, unknown>,
   branches: readonly BranchWrite[],
-  actorId: string
+  actorId: string,
+  // Owner decision 7: the customer's status follows a branch status this writes,
+  // audited with this envelope (lib/customer-status.ts).
+  statusAudit: { env: AuditEnvelope; via: string }
 ) {
   // B-05 (Senior-audit 2026-05-10): Optimistic locking on Customer + Branch.
   // We re-read `version` inside the tx (Read Committed sees the latest
@@ -1223,6 +1235,7 @@ async function applyEditChanges(
   }
 
   // Branches — same versioned-updateMany pattern per branch.
+  let statusChanges = NO_STATUS_EVENTS;
   for (const bp of branches) {
     const branchUpdate: Record<string, unknown> = {};
     for (const f of BRANCH_EDIT_FIELDS) {
@@ -1242,6 +1255,10 @@ async function applyEditChanges(
     // not just calendar time.
     if (branchUpdate.status !== undefined && currentBranch.status !== branchUpdate.status) {
       branchUpdate.lastStatusChangeAt = new Date();
+      statusChanges = mergeStatusEvents(
+        statusChanges,
+        statusEvents(currentBranch.status, branchUpdate.status as typeof currentBranch.status)
+      );
     }
     const branchResult = await tx.branch.updateMany({
       where: { id: bp.branchId, version: currentBranch.version },
@@ -1254,6 +1271,13 @@ async function applyEditChanges(
       );
     }
   }
+
+  // Owner decision 7: the last open branch closed closes the customer; a branch
+  // reopened opens it. Under the customer's row lock both callers hold.
+  await followBranchStatus(tx, statusAudit.env, customerId, statusChanges, {
+    actorId,
+    via: statusAudit.via,
+  });
 
   // Recompute completeness
   const fresh = await tx.customer.findUniqueOrThrow({
@@ -1871,7 +1895,10 @@ async function approveEditCore(formData: FormData) {
       // the customer — no version bump, no rescore, no Temix requeue. It is still
       // approved, audited and notified.
       if (classified.apply.length > 0) {
-        await applyEditChanges(tx, edit.customerId!, write.customer, write.branches, session.id);
+        await applyEditChanges(tx, edit.customerId!, write.customer, write.branches, session.id, {
+          env,
+          via: `approved request ${editId}`,
+        });
       }
       // EL-05: persist the actual diff in the audit log, not just a count, so a
       // forensic Manager can answer "what did Supervisor X approve last week"

@@ -126,8 +126,12 @@ describe('pendingReplacesDraft — whether approving what is pending throws away
     for (const st of ['ACTIVE', 'CLOSED', 'SUSPENDED'] as const) expect(pendingReplacesDraft('update', st)).toBe(true);
   });
 
-  it('a pending close does not: it changes only its branch, which is not in the draft base', () => {
-    for (const st of ['ACTIVE', 'CLOSED', 'SUSPENDED'] as const) expect(pendingReplacesDraft('close', st)).toBe(false);
+  it('a pending close does when it may close the customer (owner decision 7) — never when it already is closed', () => {
+    // Closing the last open branch closes the customer (lib/customer-status.ts),
+    // and the page cannot tell whether it is the last one.
+    expect(pendingReplacesDraft('close', 'ACTIVE')).toBe(true);
+    expect(pendingReplacesDraft('close', 'SUSPENDED')).toBe(true);
+    expect(pendingReplacesDraft('close', 'CLOSED')).toBe(false);
   });
 
   it('a reactivation does when it turns the customer ACTIVE — never when it already is (item 22 review)', () => {

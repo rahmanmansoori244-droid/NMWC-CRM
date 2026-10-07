@@ -200,18 +200,76 @@ describe('runEmailDrain', () => {
     expect(transport.closed).toBe(1);
   });
 
-  it('never e-mails the GM, a Steward or a salesman; records why each row was not sent', async () => {
+  it('never e-mails a Steward or a salesman, nor the GM what does not wait on him; records why each row was not sent', async () => {
+    // Owner decision 6: the GM is on the allowlist now, for work at HIS step only —
+    // an update at the Supervisor step is not his, and information never is.
     store.add({ id: 'g', userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' });
+    store.add({ id: 'gf', userId: 'gm', kind: 'REQUEST_FYI' });
     store.add({ id: 's', userId: 'stw', kind: 'REQUEST_FYI' });
     store.add({ id: 'x', userId: 'sal', kind: 'EDIT_STAGE_ADVANCED' });
     store.add({ id: 'o', userId: 'off' });
     store.add({ id: 'q', userId: 'nomail', kind: 'REQUEST_FYI' });
-    store.add({ id: 'k', userId: 'mgr', kind: 'SLA_BREACH' });
+    store.add({ id: 'k', userId: 'mgr', kind: 'EDIT_APPROVED_FINAL' });
     store.add({ id: 'r', userId: 'mgr', readAt: NOW });
     const r = await run();
     expect(transport.sent).toEqual([]);
-    expect(r.skippedBy).toEqual({ SKIPPED_ROLE: 3, SKIPPED_INACTIVE: 1, SKIPPED_NO_ADDRESS: 1, SKIPPED_KIND: 1, SKIPPED_READ: 1 });
-    for (const id of ['g', 's', 'x']) expect(store.get(id).emailStatus).toBe('SKIPPED_ROLE');
+    expect(r.skippedBy).toEqual({
+      SKIPPED_ROLE: 3,
+      SKIPPED_RESOLVED: 1,
+      SKIPPED_INACTIVE: 1,
+      SKIPPED_NO_ADDRESS: 1,
+      SKIPPED_KIND: 1,
+      SKIPPED_READ: 1,
+    });
+    for (const id of ['gf', 's', 'x']) expect(store.get(id).emailStatus).toBe('SKIPPED_ROLE');
+    expect(store.get('g').emailStatus).toBe('SKIPPED_RESOLVED');
+  });
+
+  it('owner decision 6: the GM is e-mailed a credit request at his step, like the other approvers', async () => {
+    store.edits.set(
+      'cr',
+      update('cr', {
+        process: 'CREATE',
+        approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT),
+        currentStepIndex: 2,
+        pendingRole: Role.GM,
+      })
+    );
+    store.add({ id: 'g', userId: 'gm', kind: 'EDIT_STAGE_ADVANCED', editId: 'cr' });
+    const r = await run();
+    expect(r).toMatchObject({ sent: 1, skipped: 0 });
+    expect(transport.sent.map((m) => m.to)).toEqual(['gm@example.test']);
+    expect(transport.sent[0]!.text).toContain('Now at your approval step: a new-customer request');
+    expect(transport.sent[0]!.text).toContain('https://crm.example.test/approvals/cr');
+    expect(store.get('g').emailStatus).toBe('SENT');
+  });
+
+  it('owner decision 6: a late request is e-mailed to the region’s Managers and the GM — one digest each per run, redirect kept', async () => {
+    store.users.set('mgr2', person('mgr2', Role.MANAGER));
+    store.users.set('far', person('far', Role.MANAGER, { managedRegionIds: ['g-south'] }));
+    store.edits.set('e2', update('e2'));
+    store.edits.set('done', update('done', { state: 'APPROVED' }));
+    // Level 1 told the region's Managers; level 2 told them again and the GM.
+    store.add({ id: 'm-1', userId: 'mgr', kind: 'SLA_BREACH', editId: 'e1' });
+    store.add({ id: 'm-2', userId: 'mgr', kind: 'SLA_BREACH', editId: 'e2' });
+    store.add({ id: 'm-3', userId: 'mgr', kind: 'EDIT_SUBMITTED', editId: 'e2' });
+    store.add({ id: 'm2-1', userId: 'mgr2', kind: 'SLA_BREACH', editId: 'e1' });
+    store.add({ id: 'g-1', userId: 'gm', kind: 'SLA_BREACH', editId: 'e1' });
+    store.add({ id: 'g-2', userId: 'gm', kind: 'SLA_BREACH', editId: 'e2' });
+    // A Manager of another region (the page refuses him), and a request decided since.
+    store.add({ id: 'far-1', userId: 'far', kind: 'SLA_BREACH', editId: 'e1' });
+    store.add({ id: 'done-1', userId: 'mgr2', kind: 'SLA_BREACH', editId: 'done' });
+    const r = await run({ config: { ...CONFIG, redirectTo: 'uat-inbox@example.test', subjectPrefix: '[UAT] ' } });
+    expect(r).toMatchObject({ sent: 3, failed: 0 });
+    expect(r.skippedBy).toEqual({ SKIPPED_RESOLVED: 2 });
+    // EMAIL_REDIRECT_TO: every message goes to the one test inbox, marked.
+    expect(transport.sent.map((m) => m.to)).toEqual(['uat-inbox@example.test', 'uat-inbox@example.test', 'uat-inbox@example.test']);
+    for (const m of transport.sent) expect(m.subject.startsWith('[UAT] NMWC CRM: ')).toBe(true);
+    const mgrMail = transport.sent.find((m) => m.subject.includes('2 requests'))!;
+    expect(mgrMail.text).toContain('Overdue: a customer update request');
+    for (const id of ['m-1', 'm-2', 'm-3', 'm2-1', 'g-1', 'g-2']) expect(store.get(id).emailStatus, id).toBe('SENT');
+    for (const id of ['far-1', 'done-1']) expect(store.get(id).emailStatus, id).toBe('SKIPPED_RESOLVED');
+    for (const m of transport.sent) expect(`${m.subject}\n${m.text}`).not.toContain(LEGAL_NAME);
   });
 
   it('a supervisor outside the request’s region is not e-mailed "please review" — the page would refuse him', async () => {
@@ -226,7 +284,7 @@ describe('runEmailDrain', () => {
   it('the claim is not spent on rows that can never be sent: a must-act row behind them still goes this run', async () => {
     // A bulk approval writes salesman and Steward rows ahead of the approver's.
     store.add({ id: 'x1', userId: 'sal', kind: 'EDIT_STAGE_ADVANCED', createdAt: new Date(NOW.getTime() - 9 * 60_000) });
-    store.add({ id: 'x2', userId: 'gm', kind: 'EDIT_STAGE_ADVANCED', createdAt: new Date(NOW.getTime() - 8 * 60_000) });
+    store.add({ id: 'x2', userId: 'stw', kind: 'EDIT_STAGE_ADVANCED', createdAt: new Date(NOW.getTime() - 8 * 60_000) });
     store.add({ id: 'x3', userId: 'stw', kind: 'TEMIX_UPLOAD_READY', createdAt: new Date(NOW.getTime() - 7 * 60_000) });
     store.add({ id: 'act', userId: 'mgr', createdAt: new Date(NOW.getTime() - 1 * 60_000) });
     const r = await run({ policy: { ...EMAIL_DELIVERY, claimLimit: 2 } });
