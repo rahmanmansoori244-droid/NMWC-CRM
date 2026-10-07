@@ -51,6 +51,9 @@ vi.mock('@/lib/db', () => ({
     auditLog: { count: async () => 0, findMany: async () => [] },
     customer: { findMany: async () => [] },
     branch: { findMany: async () => [] },
+    // A Manager's log reads through lib/audit-scope.ts: his people, then raw SQL.
+    user: { findMany: async () => [] },
+    $queryRaw: async () => [],
   },
 }));
 
