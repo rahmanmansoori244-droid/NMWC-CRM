@@ -206,3 +206,61 @@ describe('verify-load usable supervisor-step approvers (OCT-06)', () => {
     expect((await coverage(candidate(), [candidate()], false)).ok).toBe(false);
   });
 });
+
+describe('verify-load: the org-wide approvers and the regions it counts (launch fix 2026-10-07)', () => {
+  type Holder = { username: string; role: string; isActive: boolean; mustChangePassword: boolean };
+  const holder = (role: string, overrides: Partial<Holder> = {}): Holder => ({
+    username: `synthetic.${role.toLowerCase()}`, role, isActive: true, mustChangePassword: false, ...overrides,
+  });
+
+  function check(name: string, users: Holder[]) {
+    const db = { user: { findMany: vi.fn(async ({ where, select }: {
+      where: { role: string; isActive: boolean }; select: Record<string, unknown>;
+    }) => users
+      .filter((u) => u.role === where.role && u.isActive === where.isActive)
+      .map((u) => Object.fromEntries(Object.keys(select).map((k) => [k, u[k as keyof Holder]])))) } };
+    const c = loadChecks(db as unknown as PrismaClient, { branches: 500, visitDays: 200 }).find((x) => x.name === name);
+    expect(c, name).toBeDefined();
+    return c!.run();
+  }
+  const FM = 'an active Finance Manager past the password change';
+  const GM = 'an active GM past the password change';
+
+  it('passes with one active Finance Manager and one GM who have changed the hand-out password', async () => {
+    const org = [holder('FINANCE_MANAGER'), holder('GM')];
+    expect((await check(FM, org)).ok).toBe(true);
+    expect((await check(GM, org)).ok).toBe(true);
+  });
+
+  it('fails with none, with only disabled ones, and with only demo-denied ones', async () => {
+    for (const org of [[], [holder('FINANCE_MANAGER', { isActive: false }), holder('GM', { isActive: false })],
+      [holder('FINANCE_MANAGER', { username: 'admin' }), holder('GM', { username: 'admin' })]]) {
+      const fm = await check(FM, org);
+      expect(fm.ok).toBe(false);
+      expect(fm.detail).toContain('no active FINANCE_MANAGER');
+      expect((await check(GM, org)).ok).toBe(false);
+    }
+  });
+
+  it('fails, and says why, while the only one still has the hand-out password', async () => {
+    const r = await check(GM, [holder('GM', { mustChangePassword: true })]);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('none has changed the hand-out password');
+    expect(r.note).toMatch(/signed in and changed the password/);
+  });
+
+  it('counts accountant coverage over active regions only: an inactive test region is not reported', async () => {
+    const regions = [
+      ...['MCT', 'KHB', 'NZW', 'SLL', 'AWF', 'DQM', 'BRK'].map((code) => ({ code, isActive: true, managers: [{ username: `acc.${code}` }] })),
+      { code: 'ZZTEST', isActive: false, managers: [] },
+    ];
+    const db = { region: { findMany: vi.fn(async ({ where }: { where: { code: { not: string }; isActive?: boolean } }) =>
+      regions.filter((r) => r.code !== where.code.not && (where.isActive === undefined || r.isActive === where.isActive))
+        .map(({ code, managers }) => ({ code, managers }))) } };
+    const c = loadChecks(db as unknown as PrismaClient, { branches: 500, visitDays: 200 })
+      .find((x) => x.name === 'every region has an active accountant')!;
+    const r = await c.run();
+    expect(r.ok, r.detail).toBe(true);
+    expect(r.detail).not.toContain('ZZTEST');
+  });
+});

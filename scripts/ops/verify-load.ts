@@ -448,8 +448,11 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
     name: 'every region has an active accountant',
     why: 'the CASH and CREDIT chains both end at the accountant who manages the request region; a region without one strands every new customer submitted there, and the symptom is an empty queue, which looks like a quiet day',
     run: async () => {
+      // Active regions only: a switched-off region takes no requests, and the
+      // ZZTEST region left inactive by the 2026-10-05 production walk was
+      // reported here as a region with no accountant on every run.
       const regions = await prisma.region.findMany({
-        where: { code: { not: 'UNASSIGNED' } },
+        where: { code: { not: 'UNASSIGNED' }, isActive: true },
         select: { code: true, managers: { where: { isActive: true, role: 'ACCOUNTANT' }, select: { username: true } } },
       });
       const uncovered = regions.filter((r) => r.managers.length === 0).map((r) => r.code);
@@ -494,6 +497,36 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
       };
     },
   },
+  ...(['FINANCE_MANAGER', 'GM'] as const).map(
+    (role): Check => ({
+      name: `an active ${role === 'GM' ? 'GM' : 'Finance Manager'} past the password change`,
+      why: `every CREDIT request has a GLOBAL ${role} step, told to every active ${role} (lib/notifications.ts); with none, or none who can get past the forced password change, each one waits on nobody and the queue just looks quiet`,
+      run: async () => {
+        // Demo-denied accounts cannot sign in where production runs
+        // (lib/demo-accounts.ts), so they do not count, as for the managers above.
+        const holders = (
+          await prisma.user.findMany({
+            where: { role, isActive: true },
+            select: { username: true, mustChangePassword: true },
+          })
+        ).filter((u) => !isDemoAccount(u.username));
+        const ready = holders.filter((u) => !u.mustChangePassword);
+        return {
+          ok: ready.length > 0,
+          detail:
+            ready.length > 0
+              ? `${ready.length} active ${role} account(s) past the forced password change`
+              : holders.length > 0
+                ? `${holders.length} active ${role} account(s), none has changed the hand-out password yet`
+                : `no active ${role} account at all`,
+          note:
+            ready.length === 0 && holders.length > 0
+              ? 'expected before the first sign-in: re-run once that person has signed in and changed the password'
+              : undefined,
+        };
+      },
+    })
+  ),
   {
     name: 'the append-only ledger is not empty',
     why: 'a load that wrote no audit rows means the trail everything else depends on was not recorded',
