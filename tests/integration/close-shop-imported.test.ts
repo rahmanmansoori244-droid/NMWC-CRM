@@ -29,7 +29,7 @@ describe.skipIf(!ENABLED)('imported customer branch can be closed (final-hunt #1
   let react: typeof import('@/services/reactivations');
   let edits: typeof import('@/services/edits');
   const tag = randomUUID().slice(0, 8);
-  const ids = { region: '', route: '', sup: `ZZCS-sup-${tag}`, sales: `ZZCS-sales-${tag}`, cust: '', branch: '' };
+  const ids = { region: '', route: '', sup: `ZZCS-sup-${tag}`, sales: `ZZCS-sales-${tag}`, cust: '', branch: '', cust2: '', branch2: '' };
 
   beforeAll(async () => {
     if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
@@ -48,12 +48,18 @@ describe.skipIf(!ENABLED)('imported customer branch can be closed (final-hunt #1
     ids.cust = cust.id;
     const branch = await prisma.branch.create({ data: { customerId: cust.id, branchCode: `ZZCS-C-${tag}-01`, branchName: 'ZZ Imported Branch', address: 'ZZ Way 1, Muscat', routeId: route.id, regionId: region.id, status: 'ACTIVE' } });
     ids.branch = branch.id;
+    // A second shop for the evidence-wiring cases below, so they do not depend
+    // on the close above.
+    const cust2 = await prisma.customer.create({ data: { nmwcCode: `ZZCS-D-${tag}`, legalName: 'ZZ Second Co', paymentTerms: 'CASH', createdById: ids.sales } });
+    ids.cust2 = cust2.id;
+    const branch2 = await prisma.branch.create({ data: { customerId: cust2.id, branchCode: `ZZCS-D-${tag}-01`, branchName: 'ZZ Second Branch', address: 'ZZ Way 2, Muscat', routeId: route.id, regionId: region.id, status: 'ACTIVE' } });
+    ids.branch2 = branch2.id;
   });
 
   afterAll(async () => {
     if (!prisma) return;
     try {
-      const eds = await prisma.customerEdit.findMany({ where: { customerId: ids.cust }, select: { id: true } });
+      const eds = await prisma.customerEdit.findMany({ where: { customerId: { in: [ids.cust, ids.cust2] } }, select: { id: true } });
       if (eds.length) {
         await purgeEditApprovals(prisma, { where: { editId: { in: eds.map((e) => e.id) } } });
         await purgeCustomerEdits(prisma, { where: { id: { in: eds.map((e) => e.id) } } });
@@ -61,8 +67,8 @@ describe.skipIf(!ENABLED)('imported customer branch can be closed (final-hunt #1
       await prisma.attachment.deleteMany({ where: { capturedById: ids.sales } });
       await purgeAuditLog(prisma, { where: { actorId: { in: [ids.sales, ids.sup] } } });
       await prisma.notification.deleteMany({ where: { userId: { in: [ids.sales, ids.sup] } } });
-      await prisma.branch.deleteMany({ where: { customerId: ids.cust } });
-      await prisma.customer.deleteMany({ where: { id: ids.cust } });
+      await prisma.branch.deleteMany({ where: { customerId: { in: [ids.cust, ids.cust2] } } });
+      await prisma.customer.deleteMany({ where: { id: { in: [ids.cust, ids.cust2] } } });
       await prisma.user.deleteMany({ where: { id: { in: [ids.sales, ids.sup] } } });
       await prisma.route.deleteMany({ where: { id: ids.route } });
       await prisma.region.deleteMany({ where: { id: ids.region } });
@@ -95,5 +101,66 @@ describe.skipIf(!ENABLED)('imported customer branch can be closed (final-hunt #1
 
     const branch = await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch }, select: { status: true } });
     expect(branch.status).toBe('CLOSED');
+  });
+
+  // Launch review: the form attached the evidence photo to the LIVE branch at
+  // upload, so a Cancel or a refused submit left it there. It now sends the
+  // photo on no slot, and the service wires it inside the request's transaction.
+  const unwiredPhoto = (n: string) =>
+    prisma.attachment.create({ data: { kind: 'FREE', r2Key: `uat/close-${tag}-${n}.jpg`, mimeType: 'image/jpeg', bytes: 1000, capturedById: ids.sales, capturedAt: new Date() } });
+  const closeWith = (branchId: string, attachmentId: string) => {
+    const fd = new FormData();
+    fd.set('branchId', branchId);
+    fd.set('reason', 'Shop shut permanently — verified on visit today.');
+    fd.set('attachmentId', attachmentId);
+    return react.markBranchClosedAction(fd);
+  };
+  const wiring = (id: string) =>
+    prisma.attachment.findUniqueOrThrow({ where: { id }, select: { branchId: true, branchExtraId: true, customerId: true, kind: true } });
+
+  it('a photo on no slot goes onto the branch with the accepted close, audit row included', async () => {
+    current = { id: ids.sales, role: 'SALESMAN', username: ids.sales };
+    const att = await unwiredPhoto('wired');
+    const res = await closeWith(ids.branch2, att.id);
+    if (!res.ok) console.error('CLOSE SUBMIT FAILED', JSON.stringify(res));
+    expect(res.ok).toBe(true);
+    expect(await wiring(att.id)).toEqual({ branchId: ids.branch2, branchExtraId: ids.branch2, customerId: null, kind: 'FREE' });
+    const audit = await prisma.auditLog.findFirst({
+      where: { actorId: ids.sales, entityType: 'Branch', entityId: ids.branch2, reason: 'photo attached' },
+      select: { after: true },
+    });
+    expect(audit?.after).toEqual({ slot: 'FREE', attachmentId: att.id });
+  });
+
+  it('a refused close leaves its photo on no slot — nothing reaches the live branch', async () => {
+    current = { id: ids.sales, role: 'SALESMAN', username: ids.sales };
+    // The close above is still open: this one is refused at the insert, after
+    // the photo was claimed in the same transaction — so the claim rolls back.
+    const att = await unwiredPhoto('refused');
+    const res = await closeWith(ids.branch2, att.id);
+    expect(res).toMatchObject({ ok: false, code: 'OPEN_EDIT_EXISTS' });
+    expect(await wiring(att.id)).toEqual({ branchId: null, branchExtraId: null, customerId: null, kind: 'FREE' });
+  });
+
+  it('a photo on another branch is still refused', async () => {
+    current = { id: ids.sales, role: 'SALESMAN', username: ids.sales };
+    const att = await prisma.attachment.create({ data: { kind: 'FREE', r2Key: `uat/close-${tag}-other.jpg`, mimeType: 'image/jpeg', bytes: 1000, capturedById: ids.sales, capturedAt: new Date(), branchId: ids.branch, branchExtraId: ids.branch } });
+    const res = await closeWith(ids.branch2, att.id);
+    expect(res).toMatchObject({ ok: false, fields: { attachmentId: 'Photo is not attached to this branch.' } });
+    expect(await wiring(att.id)).toMatchObject({ branchId: ids.branch, branchExtraId: ids.branch });
+  });
+
+  it('a reactivation wires its photo the same way (the branch closed by the first test)', async () => {
+    current = { id: ids.sales, role: 'SALESMAN', username: ids.sales };
+    // Captured after the close was approved (lastStatusChangeAt), as at the shop.
+    const att = await prisma.attachment.create({ data: { kind: 'FREE', r2Key: `uat/close-${tag}-react.jpg`, mimeType: 'image/jpeg', bytes: 1000, capturedById: ids.sales, capturedAt: new Date(Date.now() + 1000) } });
+    const fd = new FormData();
+    fd.set('branchId', ids.branch);
+    fd.set('reason', 'Reopened under the same owner.');
+    fd.set('attachmentId', att.id);
+    const res = await react.requestReactivationAction(fd);
+    if (!res.ok) console.error('REACTIVATION SUBMIT FAILED', JSON.stringify(res));
+    expect(res.ok).toBe(true);
+    expect(await wiring(att.id)).toMatchObject({ branchId: ids.branch, branchExtraId: ids.branch, kind: 'FREE' });
   });
 });
