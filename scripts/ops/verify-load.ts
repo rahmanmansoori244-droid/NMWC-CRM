@@ -300,15 +300,19 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
         where: { role: 'SALESMAN', isActive: true, ownedRouteId: null },
       });
       // ownedRouteId is unique in the schema, so a double-owner cannot exist;
-      // this reports routes with NO owner, which is the reachable half.
+      // this reports routes with NO owner, which is the reachable half. Active
+      // routes of active regions only: the ZZTEST route left switched off by the
+      // 2026-10-05 production walk, whose test salesman is disabled, is not one.
       const rows = await prisma.$queryRaw<{ n: bigint }[]>`
         SELECT count(*) AS n FROM "Route" r
-        WHERE NOT EXISTS (SELECT 1 FROM "User" u WHERE u."ownedRouteId" = r.id AND u."isActive")`;
+        JOIN "Region" g ON g.id = r."regionId" AND g."isActive"
+        WHERE r."isActive"
+          AND NOT EXISTS (SELECT 1 FROM "User" u WHERE u."ownedRouteId" = r.id AND u."isActive")`;
       const orphanRoutes = n(rows[0]?.n);
       return {
         ok: noRoute === 0,
-        detail: `${noRoute} active salesman without a route; ${orphanRoutes} route(s) with no active owner`,
-        note: orphanRoutes > 0 ? 'routes with no owner are expected for parked/inactive routes' : undefined,
+        detail: `${noRoute} active salesman without a route; ${orphanRoutes} active route(s) with no active owner`,
+        note: orphanRoutes > 0 ? 'an active route with no owner is expected only while it is parked' : undefined,
       };
     },
   },

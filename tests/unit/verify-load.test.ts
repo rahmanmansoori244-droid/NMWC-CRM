@@ -263,4 +263,22 @@ describe('verify-load: the org-wide approvers and the regions it counts (launch 
     expect(r.ok, r.detail).toBe(true);
     expect(r.detail).not.toContain('ZZTEST');
   });
+
+  it('counts unowned routes among active routes of active regions only (the ZZTEST route is neither)', async () => {
+    const sql: string[] = [];
+    const db = {
+      user: { count: vi.fn(async () => 0) },
+      $queryRaw: vi.fn(async (strings: TemplateStringsArray) => {
+        sql.push(strings.join('?').replace(/\s+/g, ' '));
+        return [{ n: 0n }];
+      }),
+    };
+    const c = loadChecks(db as unknown as PrismaClient, { branches: 500, visitDays: 200 })
+      .find((x) => x.name === 'every salesman owns a route, and no route has two owners')!;
+    const r = await c.run();
+    expect(r.ok).toBe(true);
+    expect(sql).toHaveLength(1);
+    expect(sql[0]).toContain('JOIN "Region" g ON g.id = r."regionId" AND g."isActive"');
+    expect(sql[0]).toMatch(/WHERE r\."isActive" AND NOT EXISTS/);
+  });
 });
