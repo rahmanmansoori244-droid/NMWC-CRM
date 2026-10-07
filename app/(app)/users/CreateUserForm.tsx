@@ -1,9 +1,16 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useRef, useState, useTransition } from 'react';
 import { Role } from '@prisma/client';
 import { createUserAction } from '@/services/users';
 import { administrableRolesFor } from '@/lib/permissions';
+import {
+  REGION_SCOPED_ROLES,
+  ROLE_LABELS,
+  routeSignInName,
+  supervisorCoverIssue,
+  type SupervisorCandidate,
+} from '@/lib/account-edit';
 
 // Go-live: the owner's screenshot of this panel showed Username pre-filled with
 // "data.steward" — their OWN sign-in — and Password pre-filled from the browser's
@@ -17,24 +24,28 @@ import { administrableRolesFor } from '@/lib/permissions';
 const USERNAME_FIELD = 'nmwc-new-account-handle';
 const PASSWORD_FIELD = 'nmwc-new-account-secret';
 
-const ROLE_LABELS: Record<Role, string> = {
-  SALESMAN: 'Salesman',
-  SUPERVISOR: 'Supervisor',
-  MANAGER: 'Manager',
-  STEWARD: 'Data Steward',
-  VIEWER: 'Read-only Viewer',
-  ACCOUNTANT: 'Accountant',
-  FINANCE_MANAGER: 'Finance Manager',
-  GM: 'GM',
-};
-
+// Owner decision 8: the route list holds free routes and, for the Steward, routes
+// whose holder is disabled (the leaver): creating the joiner onto one hands it
+// over (services/users.ts). A salesman signs in with his route's code, so picking
+// a route fills Username with it while the box is empty or still holds the last
+// code filled in. The Supervisor list keeps those who cover the route's region,
+// and a Manager or Accountant gets his regions here (lib/account-edit.ts).
 export function CreateUserForm({
   supervisors,
   routes,
+  regions = [],
   viewerRole,
 }: {
-  supervisors: { id: string; fullName: string; username: string; role?: Role }[];
-  routes: { id: string; code: string; name: string }[];
+  supervisors: (SupervisorCandidate & { fullName: string; username: string })[];
+  routes: {
+    id: string;
+    code: string;
+    name: string;
+    regionId: string;
+    /** The disabled account that holds it now, when it is handed over. */
+    holder?: { fullName: string; username: string } | null;
+  }[];
+  regions?: { id: string; code: string; name: string }[];
   viewerRole: Role;
 }) {
   const [pending, start] = useTransition();
@@ -44,6 +55,29 @@ export function CreateUserForm({
   // same allowlist the server enforces — the UI can never drift from the rule.
   const allowedRoles = administrableRolesFor(viewerRole);
   const [role, setRole] = useState<Role>(allowedRoles[0] ?? Role.SALESMAN);
+  const [routeId, setRouteId] = useState('');
+  const filledUsername = useRef('');
+  const route = routes.find((r) => r.id === routeId) ?? null;
+  const supervisorOptions = supervisors.filter(
+    (s) =>
+      supervisorCoverIssue({
+        supervisor: s,
+        targetId: null,
+        routeRegionId: role === Role.SALESMAN ? (route?.regionId ?? null) : null,
+      }) === null
+  );
+
+  function pickRoute(e: React.ChangeEvent<HTMLSelectElement>) {
+    const id = e.currentTarget.value;
+    setRouteId(id);
+    const picked = routes.find((r) => r.id === id);
+    const box = e.currentTarget.form?.elements.namedItem(USERNAME_FIELD);
+    if (!picked || !(box instanceof HTMLInputElement)) return;
+    if (box.value === '' || box.value === filledUsername.current) {
+      box.value = routeSignInName(picked.code);
+      filledUsername.current = box.value;
+    }
+  }
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -64,9 +98,11 @@ export function CreateUserForm({
           else setErrors({ _form: res.message });
           return;
         }
-        setSuccess('User created.');
+        setSuccess(['User created.', ...(res.data?.notes ?? [])].join(' '));
         (e.target as HTMLFormElement).reset();
         setRole(allowedRoles[0] ?? Role.SALESMAN);
+        setRouteId('');
+        filledUsername.current = '';
       } catch (err) {
         if (err instanceof Error) {
           setErrors({ _form: err.message });
@@ -111,7 +147,7 @@ export function CreateUserForm({
             className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
           >
             <option value="">—</option>
-            {supervisors.map((s) => (
+            {supervisorOptions.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.fullName} ({s.username}){s.role === Role.MANAGER ? ' · Manager' : ''}
               </option>
@@ -128,17 +164,46 @@ export function CreateUserForm({
           <select
             name="ownedRouteId"
             required
+            value={routeId}
+            onChange={pickRoute}
             className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
           >
             <option value="">— Pick a route —</option>
             {routes.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.code} · {r.name}
+                {r.holder ? ` — from ${r.holder.fullName} (disabled)` : ''}
               </option>
             ))}
           </select>
+          {route?.holder && (
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              The route is taken from {route.holder.fullName}’s disabled account
+              {route.holder.username === routeSignInName(route.code)
+                ? `, and his sign-in name ${route.holder.username} is retired so the new salesman can use it`
+                : ''}
+              .
+            </p>
+          )}
           {errors.ownedRouteId && <FieldError msg={errors.ownedRouteId} />}
         </div>
+      )}
+      {REGION_SCOPED_ROLES.includes(role) && (
+        <fieldset>
+          <legend className="mb-1 block text-xs font-medium text-slate-700">
+            Regions<span className="ml-0.5 text-red-500">*</span>
+          </legend>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {regions.map((g) => (
+              <label key={g.id} className="flex items-center gap-1 text-sm text-slate-700">
+                <input type="checkbox" name="regionId" value={g.id} />
+                {g.code}
+                <span className="text-xs text-slate-500">{g.name}</span>
+              </label>
+            ))}
+          </div>
+          {errors.regionIds && <FieldError msg={errors.regionIds} />}
+        </fieldset>
       )}
       <Field label="Email (optional)" name="email" type="email" error={errors.email} />
       <Field label="Phone (optional)" name="phone" type="tel" error={errors.phone} />

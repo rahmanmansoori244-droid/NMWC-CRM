@@ -20,7 +20,11 @@ import { render, cleanup, within } from '@testing-library/react';
 import { Role } from '@prisma/client';
 
 const h = vi.hoisted(() => ({
-  session: { id: 'm1', role: 'MANAGER', username: 'mct-gt' } as { id: string; role: string; username: string },
+  session: { id: 'm1', role: 'MANAGER', username: 'mct-gt' } as {
+    id: string;
+    role: string;
+    username: string;
+  },
   managed: ['solo', 'shared'] as string[],
   regions: new Map<string, { id: string; isActive: boolean }>(),
   routes: new Map<string, { id: string; regionId: string; isActive: boolean }>(),
@@ -219,7 +223,9 @@ describe('the /routes page offers the switches exactly where the action acts', (
 
   it('for a Manager: no region switch, a route switch only in the region he manages alone', async () => {
     const { container } = await renderPage();
-    const toggles = [...container.querySelectorAll('[data-toggle]')].map((b) => b.getAttribute('data-toggle'));
+    const toggles = [...container.querySelectorAll('[data-toggle]')].map((b) =>
+      b.getAttribute('data-toggle')
+    );
     expect(toggles).toEqual(['route:r-solo']);
     // The switched-off region still says so, without a button.
     expect(container.textContent).toContain('Region off');
@@ -229,7 +235,9 @@ describe('the /routes page offers the switches exactly where the action acts', (
   it('for the Steward: every region and every route', async () => {
     h.session = STEWARD;
     const { container } = await renderPage();
-    const toggles = [...container.querySelectorAll('[data-toggle]')].map((b) => b.getAttribute('data-toggle'));
+    const toggles = [...container.querySelectorAll('[data-toggle]')].map((b) =>
+      b.getAttribute('data-toggle')
+    );
     expect(toggles).toEqual(['region:solo', 'route:r-solo', 'region:shared', 'route:r-shared']);
     expect(container.textContent).not.toMatch(/Ask the Steward/);
   });
@@ -237,7 +245,9 @@ describe('the /routes page offers the switches exactly where the action acts', (
   it('marks a route whose salesman is disabled, so the Steward knows to hand it over', async () => {
     h.session = STEWARD;
     const { container } = await renderPage();
-    const row = [...container.querySelectorAll('tr')].find((tr) => tr.textContent?.includes('R-SOLO'))!;
+    const row = [...container.querySelectorAll('tr')].find((tr) =>
+      tr.textContent?.includes('R-SOLO')
+    )!;
     expect(within(row).getByText('(disabled)')).toBeTruthy();
   });
 });

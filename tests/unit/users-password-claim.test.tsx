@@ -33,7 +33,7 @@ type Row = {
   ownedRouteId: string | null;
   supervisorId: string | null;
   supervisor: { fullName: string; username: string } | null;
-  ownedRoute: { code: string; name: string; regionId: string } | null;
+  ownedRoute: { code: string; name: string; regionId: string; region: { code: string } } | null;
   reports: Array<{ ownedRoute: { regionId: string } | null }>;
   managedRegions: Array<{ id: string }>;
 };
@@ -101,6 +101,7 @@ vi.mock('@/lib/db', () => ({
       },
     },
     route: { findMany: async () => [] },
+    region: { findMany: async () => [] },
   },
 }));
 
@@ -131,7 +132,7 @@ function account(id: string, over: Partial<Row> = {}): Row {
 const salesman = (id: string, regionId: string, over: Partial<Row> = {}) =>
   account(id, {
     ownedRouteId: `route-${id}`,
-    ownedRoute: { code: `R-${id}`, name: `Route ${id}`, regionId },
+    ownedRoute: { code: `R-${id}`, name: `Route ${id}`, regionId, region: { code: regionId } },
     ...over,
   });
 

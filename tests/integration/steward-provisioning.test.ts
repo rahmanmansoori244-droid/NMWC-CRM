@@ -29,6 +29,8 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
   const stewardId = `ZZUP-stew-${tag}`;
   const managerId = `ZZUP-mgr-${tag}`;
   const created: string[] = [];
+  // Owner decision 8: an Accountant is created with the region(s) he works in.
+  let regionId = '';
 
   const asUser = (id: string, role: string) => { current = { id, role, username: id }; };
   function fd(entries: Record<string, string>) {
@@ -46,6 +48,7 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     // to every ACTIVE Steward and approver (see afterAll).
     await prisma.user.create({ data: { id: stewardId, username: stewardId, passwordHash: 'x', fullName: 'ZZ Steward', role: 'STEWARD', isActive: false } });
     await prisma.user.create({ data: { id: managerId, username: managerId, passwordHash: 'x', fullName: 'ZZ Manager', role: 'MANAGER', isActive: false } });
+    regionId = (await prisma.region.create({ data: { code: `ZZUP-${tag}`.toUpperCase(), name: `ZZ Provision ${tag}` } })).id;
   });
 
   afterAll(async () => {
@@ -64,19 +67,31 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     await purgeAuditLog(prisma, { where: { OR: [{ actorId: { in: allIds } }, { entityId: { in: allIds } }] } });
     await prisma.user.deleteMany({ where: { username: { in: names } } });
     await prisma.user.deleteMany({ where: { id: { in: [stewardId, managerId] } } });
+    if (regionId) await prisma.region.deleteMany({ where: { id: regionId } });
     await prisma.$disconnect();
   });
 
   it('STEWARD creates an ACCOUNTANT (and FM, GM)', async () => {
     asUser(stewardId, 'STEWARD');
     for (const [role, uname] of [['ACCOUNTANT', `zzup-acc-${tag}`], ['FINANCE_MANAGER', `zzup-fm-${tag}`], ['GM', `zzup-gm-${tag}`]] as const) {
-      const res = await users.createUserAction(fd({ username: uname, fullName: `ZZ ${role}`, role, password: 'Provision-2026-xy' }));
+      const regions: Record<string, string> = role === 'ACCOUNTANT' ? { regionId } : {};
+      const res = await users.createUserAction(fd({ username: uname, fullName: `ZZ ${role}`, role, password: 'Provision-2026-xy', ...regions }));
       if (!res.ok) console.error(`create ${role} failed`, JSON.stringify(res));
       expect(res.ok).toBe(true);
       created.push(uname);
-      const row = await prisma.user.findUnique({ where: { username: uname }, select: { role: true } });
+      const row = await prisma.user.findUnique({ where: { username: uname }, select: { role: true, managedRegions: { select: { id: true } } } });
       expect(row?.role).toBe(role);
+      expect(row?.managedRegions.map((r) => r.id)).toEqual(role === 'ACCOUNTANT' ? [regionId] : []);
     }
+  });
+
+  it('STEWARD cannot create an ACCOUNTANT who manages no region (he would see nothing)', async () => {
+    asUser(stewardId, 'STEWARD');
+    const uname = `zzup-blind-${tag}`;
+    created.push(uname);
+    const res = await users.createUserAction(fd({ username: uname, fullName: 'ZZ Blind', role: 'ACCOUNTANT', password: 'Provision-2026-xy' }));
+    expect(res).toMatchObject({ ok: false, fields: { regionIds: expect.stringMatching(/at least one region/) } });
+    expect(await prisma.user.findUnique({ where: { username: uname } })).toBeNull();
   });
 
   it('MANAGER is REJECTED creating an ACCOUNTANT', async () => {

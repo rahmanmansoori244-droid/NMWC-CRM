@@ -1,8 +1,10 @@
 'use client';
 
-import { createContext, useContext, useState, useTransition } from 'react';
+import { useContext, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { toggleUserActiveAction, resetPasswordAction, updateUserEmailAction } from '@/services/users';
+import { AnnounceContext } from './announce';
+import { AccountEditor, type EditOptions } from './EditAccount';
 
 // Go-live: a successful Disable used to confirm itself — the row stayed put, the
 // badge flipped to Disabled and the button flipped to Enable, one click from undo.
@@ -11,8 +13,7 @@ import { toggleUserActiveAction, resetPasswordAction, updateUserEmailAction } fr
 // so a message held in the row can never be read, and a disable that silently
 // failed looks exactly like one that worked. The banner therefore lives above the
 // table: the provider keeps its position in the tree across the refresh, so its
-// state survives the re-render that removes the row.
-const AnnounceContext = createContext<(msg: string) => void>(() => {});
+// state survives the re-render that removes the row. The context is announce.ts.
 
 // Reset password took the new password once, masked: a Manager's typo handed the
 // salesman a password nobody knew, and only another reset recovered the account.
@@ -25,7 +26,14 @@ const MISMATCH = 'The two new passwords do not match.';
 // browsers do none of that, so these matter only once Show is on.
 const AS_TYPED = { autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false } as const;
 
-export function UsersFeedback({ children }: { children: React.ReactNode }) {
+export function UsersFeedback({
+  children,
+  editOptions,
+}: {
+  children: React.ReactNode;
+  /** Owner decision 8: the Steward's Edit account dialog, inside the banner's reach. */
+  editOptions?: EditOptions;
+}) {
   const [msg, setMsg] = useState<string | null>(null);
   return (
     <AnnounceContext.Provider value={setMsg}>
@@ -44,7 +52,7 @@ export function UsersFeedback({ children }: { children: React.ReactNode }) {
           </button>
         </div>
       )}
-      {children}
+      {editOptions ? <AccountEditor options={editOptions}>{children}</AccountEditor> : children}
     </AnnounceContext.Provider>
   );
 }
@@ -62,6 +70,7 @@ export function UserRowActions({
   canEditEmail = false,
   hasEmail = false,
   isSelf = false,
+  children,
 }: {
   userId: string;
   username: string;
@@ -76,6 +85,8 @@ export function UserRowActions({
    * row points at the self-service page instead.
    */
   isSelf?: boolean;
+  /** Shown first among the actions: the Steward's Edit account button (EditAccount.tsx). */
+  children?: React.ReactNode;
 }) {
   const [pending, start] = useTransition();
   const [showEmail, setShowEmail] = useState(false);
@@ -187,6 +198,7 @@ export function UserRowActions({
 
   return (
     <div className="flex flex-wrap justify-end gap-2 text-xs">
+      {children}
       {canEditEmail && (
         <button
           type="button"
