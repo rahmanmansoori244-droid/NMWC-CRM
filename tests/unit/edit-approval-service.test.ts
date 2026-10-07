@@ -12,6 +12,8 @@
  *         request that is all live writes nothing to the customer (ruling 5).
  *   F05 — the mandatory-field re-check runs on the branches frozen at submit,
  *         whatever happened to the routes since.
+ *   Owner decision 4 (2026-10-07) — of that set, only the branches the request
+ *         changes, and the customer's fields only when it changes one.
  *   F16 — a sub-channel retired since submit is CHANNEL_PAIR_INVALID; a
  *         channel change stored with no sub-channel (the old form's shape)
  *         is refused in words that name the customer's current sub-channel.
@@ -457,6 +459,8 @@ describe('F06 — a close request', () => {
 
 describe('F05 — the mandatory re-check runs on the branches frozen at submit', () => {
   const notes: Change[] = [{ field: 'customer.notes', before: 'Old note', after: 'Closed Fridays' }];
+  // Owner decision 4: the re-check runs on a frozen branch only when the request changes it.
+  const onB1: Change[] = [{ field: `branch.${B1}.openingHours`, before: null, after: '08:00-20:00' }];
 
   it('another route’s incomplete branch, and one created since, do not fail it', async () => {
     db.customerEdit.findUnique.mockResolvedValue(request(notes));
@@ -465,7 +469,7 @@ describe('F05 — the mandatory re-check runs on the branches frozen at submit',
   });
 
   it('his own shop photo removed since submit does — NEEDS_REUPLOAD, rolled back', async () => {
-    db.customerEdit.findUnique.mockResolvedValue(request(notes));
+    db.customerEdit.findUnique.mockResolvedValue(request(onB1));
     now = customerRow({}, [branchRow({ shopPhotoId: null }), foreignBranch()]);
     const res = failed(await approve());
     expect(res.code).toBe('NEEDS_REUPLOAD');
@@ -476,7 +480,7 @@ describe('F05 — the mandatory re-check runs on the branches frozen at submit',
 
   it('a route handover since submit changes neither answer', async () => {
     db.user.findUnique.mockResolvedValue({ role: 'SALESMAN', ownedRouteId: 'r2' });
-    db.customerEdit.findUnique.mockResolvedValue(request(notes));
+    db.customerEdit.findUnique.mockResolvedValue(request(onB1));
     expect((await approve()).ok).toBe(true);
     now = customerRow({}, [branchRow({ shopPhotoId: null }), foreignBranch()]);
     expect(failed(await approve()).code).toBe('NEEDS_REUPLOAD');
@@ -502,6 +506,39 @@ describe('F05 — the mandatory re-check runs on the branches frozen at submit',
     db.user.findUnique.mockResolvedValue({ role: 'SUPERVISOR', ownedRouteId: null });
     db.customerEdit.findUnique.mockResolvedValue(request(notes, { submitGate: null }));
     now = customerRow({}, [branchRow({ shopPhotoId: null })]);
+    expect((await approve()).ok).toBe(true);
+  });
+});
+
+describe('owner decision 4 — the re-check holds what the request changes', () => {
+  const notes: Change[] = [{ field: 'customer.notes', before: 'Old note', after: 'Closed Fridays' }];
+  const onB1: Change[] = [{ field: `branch.${B1}.dayOfVisit`, before: 'SUN', after: 'MON' }];
+
+  it('a customer-level change is not failed by his branch that lost its shop photo since', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(request(notes));
+    now = customerRow({}, [branchRow({ shopPhotoId: null, gpsLat: null }), foreignBranch()]);
+    expect((await approve()).ok).toBe(true);
+  });
+
+  it('a change to one branch is not failed by a customer-level field missing since', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(request(onB1));
+    now = customerRow({ contactPerson: null });
+    expect((await approve()).ok).toBe(true);
+  });
+
+  it('a customer-level change still is — NEEDS_REUPLOAD, rolled back', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(request(notes));
+    now = customerRow({ contactPerson: null });
+    const res = failed(await approve());
+    expect(res.code).toBe('NEEDS_REUPLOAD');
+    expect(res.message).toContain('Contact person');
+    expect(masterWrites()).toBe(0);
+  });
+
+  it('a stored gate of every branch he had (a request sent before the rule) is narrowed to the ones it changes', async () => {
+    const B4 = 'b4';
+    db.customerEdit.findUnique.mockResolvedValue(request(onB1, { submitGate: { v: 1, branchIds: [B1, B4] } }));
+    now = customerRow({}, [branchRow(), branchRow({ id: B4, branchCode: 'MCT-0004', shopPhotoId: null }), foreignBranch()]);
     expect((await approve()).ok).toBe(true);
   });
 });

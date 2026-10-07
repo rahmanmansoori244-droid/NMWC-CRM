@@ -35,6 +35,7 @@ import {
   type SubmitEditInput,
 } from '@/lib/validation/edit';
 import { reportedIssues } from '@/lib/validation/fields';
+import { gateScopeOf } from '@/lib/validation/gate-scope';
 import {
   BRANCH_EDIT_FIELDS,
   CUSTOMER_EDIT_FIELDS,
@@ -199,6 +200,10 @@ function staleFieldsError(
  * (gateBranchesForApproval) — never on every branch of the customer: another
  * route's missing GPS blocked a salesman who could neither see nor edit it.
  * A proposed null (a clear) merges as missing.
+ *
+ * Owner decision 4 (2026-10-07, lib/validation/gate-scope.ts): callers pass only
+ * the branches the request changes, and `customerFields` false when it changes
+ * no customer-level field — then the customer's fields are not checked at all.
  */
 function collectMissingMandatory(
   customer: {
@@ -231,7 +236,9 @@ function collectMissingMandatory(
    */
   actorIsSalesman = false,
   /** Go-live: FULL (PRD §6) or CORE — see lib/submit-gate.ts. */
-  gate: SubmitGate = salesmanSubmitGate()
+  gate: SubmitGate = salesmanSubmitGate(),
+  /** Owner decision 4: whether the request changes a customer-level field. */
+  customerFields = true
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   const merged = (k: keyof typeof customer, fallback: unknown) =>
@@ -244,28 +251,30 @@ function collectMissingMandatory(
   const skipLegalName = actorIsSalesman; // always locked for salesman
   const skipCrNumber = actorIsSalesman && customer.paymentTerms === 'CREDIT';
 
-  if (!skipLegalName && !isStr(merged('legalName', customer.legalName))) {
-    errors['customer.legalName'] = 'Legal name is required.';
-  }
-  if (!isStr(merged('channelId', customer.channelId))) {
-    errors['customer.channelId'] = 'Channel is required.';
-  }
-  if (req('subChannelId') && !isStr(merged('subChannelId', customer.subChannelId))) {
-    errors['customer.subChannelId'] = 'Sub-channel is required.';
-  }
-  if (!isStr(merged('primaryPhone', customer.primaryPhone))) {
-    errors['customer.primaryPhone'] = 'Primary phone is required.';
-  }
-  if (!isStr(merged('contactPerson', customer.contactPerson))) {
-    errors['customer.contactPerson'] = 'Contact person is required.';
-  }
-  if (req('crNumber') && !skipCrNumber && !isStr(merged('crNumber', customer.crNumber))) {
-    errors['customer.crNumber'] = 'CR number is required.';
-  }
-  // Photos are wired via attachPhotoAction, so we read from the live customer
-  // (the edit payload does not carry photoId fields).
-  if (req('crPhoto') && !customer.crPhotoId) {
-    errors['customer.crPhoto'] = 'CR document photo is required.';
+  if (customerFields) {
+    if (!skipLegalName && !isStr(merged('legalName', customer.legalName))) {
+      errors['customer.legalName'] = 'Legal name is required.';
+    }
+    if (!isStr(merged('channelId', customer.channelId))) {
+      errors['customer.channelId'] = 'Channel is required.';
+    }
+    if (req('subChannelId') && !isStr(merged('subChannelId', customer.subChannelId))) {
+      errors['customer.subChannelId'] = 'Sub-channel is required.';
+    }
+    if (!isStr(merged('primaryPhone', customer.primaryPhone))) {
+      errors['customer.primaryPhone'] = 'Primary phone is required.';
+    }
+    if (!isStr(merged('contactPerson', customer.contactPerson))) {
+      errors['customer.contactPerson'] = 'Contact person is required.';
+    }
+    if (req('crNumber') && !skipCrNumber && !isStr(merged('crNumber', customer.crNumber))) {
+      errors['customer.crNumber'] = 'CR number is required.';
+    }
+    // Photos are wired via attachPhotoAction, so we read from the live customer
+    // (the edit payload does not carry photoId fields).
+    if (req('crPhoto') && !customer.crPhotoId) {
+      errors['customer.crPhoto'] = 'CR document photo is required.';
+    }
   }
 
   for (const b of gateBranches) {
@@ -741,9 +750,16 @@ async function submitEditOnce(
   // the top and tells him to reload (lib/form-errors.ts
   // withReloadHintForUnshownBranches); one taken off his route since is shown
   // but not gated.
+  // Owner decision 4 (2026-10-07, lib/validation/gate-scope.ts): of those, only
+  // the branches this request changes, and the customer-level fields only when
+  // it changes one — a phone fix no longer waits for every shop's GPS and photo.
+  // The record still stores ALL his branches here: the approval re-check takes
+  // the ones its changes name.
   let submitGate: Prisma.InputJsonValue | undefined;
   if (!isDraft && me.role === Role.SALESMAN) {
-    const gateBranches = salesmanBranches(customer.branches, me.ownedRouteId);
+    const ownBranches = salesmanBranches(customer.branches, me.ownedRouteId);
+    const scope = gateScopeOf(fieldChanges.map((c) => c.field));
+    const gateBranches = ownBranches.filter((b) => scope.branchIds.has(b.id));
     const branchProposedById = new Map<string, Record<string, unknown>>();
     for (const bp of bInputs) branchProposedById.set(bp.branchId, bp as Record<string, unknown>);
     const missing = collectMissingMandatory(
@@ -751,7 +767,9 @@ async function submitEditOnce(
       gateBranches,
       customerProposed,
       branchProposedById,
-      /* actorIsSalesman */ true
+      /* actorIsSalesman */ true,
+      salesmanSubmitGate(),
+      /* customerFields */ scope.customer
     );
     // The ±100 m GPS standard (lib/gps-accuracy.ts): a newly captured point
     // worse than the limit is refused here, at submit only. A point not sent
@@ -770,7 +788,7 @@ async function submitEditOnce(
     if (Object.keys(missing).length > 0) {
       throw new ValidationError(missing);
     }
-    submitGate = submitGateRecord(gateBranches.map((b) => b.id));
+    submitGate = submitGateRecord(ownBranches.map((b) => b.id));
   }
 
   const editState: EditState = isDraft ? EditState.DRAFT : EditState.SUBMITTED;
@@ -1840,13 +1858,18 @@ async function approveEditCore(formData: FormData) {
       // (lib/edit-scope.ts gateBranchesForApproval) — never the customer's whole
       // branch list, so another route's branch, one created after submit, or a
       // route handover cannot fail it.
-      const { gateBranches, unreadable } = gateBranchesForApproval({
+      // Owner decision 4 (2026-10-07): of that set, the branches the changes
+      // to be written name, and the customer's fields only when one of them is
+      // a customer-level change — the rule the submit applied.
+      const scope = gateScopeOf(considered.map((c) => c.field));
+      const { gateBranches: frozenGate, unreadable } = gateBranchesForApproval({
         submitGate: edit.submitGate,
         liveBranches: now.branches,
         fieldChanges,
         submitter: { role: submitterUser?.role, ownedRouteId: submitterUser?.ownedRouteId },
       });
       if (unreadable) logger.warn({ editId }, 'edit.approve.submit_gate_unreadable');
+      const gateBranches = frozenGate?.filter((b) => scope.branchIds.has(b.id)) ?? null;
       if (gateBranches && !isStatusOnlyEdit) {
         const proposal = payloadFromFieldChanges(considered);
         const missing = collectMissingMandatory(
@@ -1854,7 +1877,9 @@ async function approveEditCore(formData: FormData) {
           gateBranches,
           proposal.customer,
           proposal.byBranch,
-          /* actorIsSalesman */ true
+          /* actorIsSalesman */ true,
+          salesmanSubmitGate(),
+          /* customerFields */ scope.customer
         );
         if (Object.keys(missing).length > 0) {
           throw new ConflictError(

@@ -18,6 +18,7 @@ import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { hardReplace } from '@/lib/navigate';
 import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
 import { isRequired, type SubmitGate } from '@/lib/submit-gate';
+import { gateScopeOf } from '@/lib/validation/gate-scope';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
 import { onSignOut } from '@/lib/device-drafts';
 import { EDIT_PAYLOAD_VERSION, fieldLabel, type BaseValue } from '@/lib/edit-values';
@@ -33,6 +34,7 @@ import {
   resolveConflict,
   restoreBranchStates,
   restoreKept,
+  sentPaths,
   type Conflicts,
   type FormBranch,
   type FormCustomer,
@@ -258,23 +260,29 @@ export function EnrichmentForm({
   // Client-side mandatory-field gate. Mirrors the server check in
   // services/edits.ts so the salesman gets immediate feedback and can't
   // even press "Submit for approval" until everything is filled.
+  // Owner decision 4 (2026-10-07, lib/validation/gate-scope.ts): on what this
+  // submit changes, as the server holds it — each branch it changes, and the
+  // customer's fields only when it changes one of them.
+  const gateScope = gateScopeOf(sentPaths(patch));
   const missingMandatory: string[] = [];
   if (userRole === Role.SALESMAN) {
     // 2026-05-11: locked fields are NOT the salesman's responsibility. If the
     // master is missing legalName or CR for this customer, that's a Steward
     // queue item — not a salesman blocker. Don't include them in the
     // "missing — cannot submit" pill.
-    if (!lockName && !legalName.trim()) missingMandatory.push('Legal name');
-    if (!channelId) missingMandatory.push('Channel');
-    if (req('subChannelId') && !subChannelId) missingMandatory.push('Sub-channel');
-    if (!primaryPhone.trim()) missingMandatory.push('Primary phone');
-    if (!contactPerson.trim()) missingMandatory.push('Contact person');
-    if (req('crNumber') && !lockCr && !crNumber.trim()) missingMandatory.push('CR number');
-    if (req('crPhoto') && !crPhotoId) missingMandatory.push('CR document photo');
+    if (gateScope.customer) {
+      if (!lockName && !legalName.trim()) missingMandatory.push('Legal name');
+      if (!channelId) missingMandatory.push('Channel');
+      if (req('subChannelId') && !subChannelId) missingMandatory.push('Sub-channel');
+      if (!primaryPhone.trim()) missingMandatory.push('Primary phone');
+      if (!contactPerson.trim()) missingMandatory.push('Contact person');
+      if (req('crNumber') && !lockCr && !crNumber.trim()) missingMandatory.push('CR number');
+      if (req('crPhoto') && !crPhotoId) missingMandatory.push('CR document photo');
+    }
     customer.branches.forEach((b, i) => {
       const s = branchStates[b.id];
       const tag = `Branch ${i + 1}`;
-      if (!s) return;
+      if (!s || !gateScope.branchIds.has(b.id)) return;
       if (!s.address.trim() || s.address.trim().length < 3)
         missingMandatory.push(`${tag} address`);
       if (!s.gps || s.gps.lat == null || s.gps.lng == null)

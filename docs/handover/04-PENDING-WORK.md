@@ -121,6 +121,7 @@ These were found while writing the user guides. Most are defaults that nobody de
 - **Where.** `lib/edit-scope.ts:42` (`salesmanBranches` filters by route only), and `services/edits.ts:193` (`collectMissingMandatory`) and `:731`. [`HANDOVER.md`](../HANDOVER.md) §4 lists this as a default that was kept unchanged, not as an owner decision.
 - **Care.** `salesmanBranches` also decides which branches he sees (`lib/access.ts:132`), so change the gate only. The gated set is frozen on the request and checked again at approval (`CustomerEdit.submitGate`, `gateBranchesForApproval` in `lib/edit-scope.ts`).
 - **Decides:** Owner. **Effort:** S–M. **Tier:** B.
+- **Mostly answered by owner decision 4 (A1.5, built 2026-10-07).** A closed branch now blocks only a request that changes it. A change to a closed branch itself is still held to its address, GPS and shop photo.
 
 #### A1.5 A multi-branch customer needs every branch complete before any submit — P1
 
@@ -128,6 +129,7 @@ These were found while writing the user guides. Most are defaults that nobody de
 - **Why it matters.** The product was built for multi-branch customers from the start ([`docs/PROJECT-DESCRIPTION.md`](../PROJECT-DESCRIPTION.md): "never assume a single branch"). A salesman who wants to fix one branch must complete all of them first.
 - **Where.** As A1.4. Auditor finding F05 (AUDITOR-BRIEF Appendix B) already narrowed the gate to his own route.
 - **Option.** Gate the customer-level fields plus only the branches the request changes. The completeness score keeps the full picture.
+- **Decided 2026-10-07 (owner decision 4) and built on branch `claude/w2-scope-gate`.** That option. A salesman's update is held complete only on the branches it changes (address, GPS, shop photo; under `FULL` also visit day and signboard), plus the customer-level fields when it changes one of them. A phone fix, or a visit day set on one branch, no longer waits for his other shops. The ±100 m rule for a new point is unchanged. One reading of "what this request changes" (`lib/validation/gate-scope.ts`) drives the submit gate and the approval re-check (`services/edits.ts`) and the form's missing list (`EnrichmentForm.tsx`). `CustomerEdit.submitGate` still stores all his branches; the approval checks the ones the request changes.
 - **Decides:** Owner. **Effort:** M. **Tier:** B.
 
 #### A1.6 Today lists closed branches — P2
