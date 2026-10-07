@@ -12,7 +12,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { Role, type Prisma } from '@prisma/client';
 
 const written = vi.hoisted(() => [] as Array<{ ids: string[]; kind: string; title: string; body: string; editId?: string; customerId?: string }>);
-vi.mock('@/lib/notifications', () => ({
+// The real module, but for its one writer: supervisorWhoCanAct reads the fake db.
+vi.mock('@/lib/notifications', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/notifications')>()),
   notifyUsers: vi.fn(async (_db: unknown, ids: string[], data: { kind: string; title: string; body: string; editId?: string; customerId?: string }) => {
     if (ids.length) written.push({ ids, ...data });
   }),

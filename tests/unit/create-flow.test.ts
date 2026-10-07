@@ -396,14 +396,56 @@ describe('resolveStepAudience', () => {
       },
     }) as unknown as Parameters<typeof resolveStepAudience>[0];
 
-  it('SUPERVISOR_OF_SUBMITTER → exactly the submitter’s supervisor (empty when unassigned)', async () => {
+  // Launch fix (2026-10-07): the stored supervisorId was told as it stood — a
+  // disabled account, a Manager of another region — and a null one told nobody.
+  // Now he is told only when he can act; otherwise the request's region Managers.
+  const org = [
+    { id: 'sup1', role: Role.SUPERVISOR, isActive: true, regions: [] as string[] },
+    { id: 'sup-off', role: Role.SUPERVISOR, isActive: false, regions: [] as string[] },
+    { id: 'mgr-r1', role: Role.MANAGER, isActive: true, regions: ['r1'] },
+    { id: 'mgr-r1b', role: Role.MANAGER, isActive: true, regions: ['r1'] },
+    { id: 'mgr-r2', role: Role.MANAGER, isActive: true, regions: ['r2'] },
+    { id: 'mgr-off', role: Role.MANAGER, isActive: false, regions: ['r1'] },
+    { id: 'acc-r1', role: Role.ACCOUNTANT, isActive: true, regions: ['r1'] },
+  ];
+  const orgTx = {
+    user: {
+      findUnique: async ({ where }: { where: { id: string } }) => {
+        const u = org.find((x) => x.id === where.id);
+        return u ? { ...u, managedRegions: u.regions.map((id) => ({ id })) } : null;
+      },
+      findMany: async ({
+        where,
+      }: {
+        where: { role: Role; isActive: boolean; managedRegions: { some: { id: { in: string[] } } } };
+      }) =>
+        org
+          .filter(
+            (u) =>
+              u.role === where.role &&
+              u.isActive === where.isActive &&
+              u.regions.some((r) => where.managedRegions.some.id.in.includes(r))
+          )
+          .map((u) => ({ id: u.id })),
+    },
+  } as unknown as Parameters<typeof resolveStepAudience>[0];
+
+  it('SUPERVISOR_OF_SUBMITTER → the submitter’s supervisor when he can act on the request', async () => {
     const step = { role: Role.SUPERVISOR, scope: 'SUPERVISOR_OF_SUBMITTER' as const };
-    expect(
-      await resolveStepAudience(txWith([{ id: 'nope' }]), step, { supervisorId: 'sup1' }, [])
-    ).toEqual(['sup1']);
-    expect(
-      await resolveStepAudience(txWith([{ id: 'nope' }]), step, { supervisorId: null }, [])
-    ).toEqual([]);
+    expect(await resolveStepAudience(orgTx, step, { supervisorId: 'sup1' }, ['r1'])).toEqual(['sup1']);
+    expect(await resolveStepAudience(orgTx, step, { supervisorId: 'mgr-r2' }, ['r1', 'r2'])).toEqual(['mgr-r2']);
+  });
+
+  it('SUPERVISOR_OF_SUBMITTER → the region’s active Managers when he cannot (none, disabled, wrong role, other region)', async () => {
+    const step = { role: Role.SUPERVISOR, scope: 'SUPERVISOR_OF_SUBMITTER' as const };
+    for (const supervisorId of [null, 'sup-off', 'mgr-off', 'acc-r1', 'mgr-r2', 'ghost']) {
+      expect(await resolveStepAudience(orgTx, step, { supervisorId }, ['r1']), String(supervisorId)).toEqual([
+        'mgr-r1',
+        'mgr-r1b',
+      ]);
+    }
+    // Fail-closed like canActOnStep: no region, no fallback.
+    expect(await resolveStepAudience(orgTx, step, { supervisorId: null }, [])).toEqual([]);
   });
 
   it('REGION_OVERLAP → fail-closed on empty regions', async () => {

@@ -14,9 +14,13 @@
  * (lib/email/config.ts).
  *
  * Who must act (in-app EDIT_SUBMITTED / REACTIVATION_REQUESTED, and e-mail):
- *   UPDATE and CREATE  unchanged: the salesman's supervisorId (resolveStepAudience,
- *                      lib/notifications.ts). Region Managers who may also act
- *                      are deliberately not told (lib/notifications.ts).
+ *   UPDATE and CREATE  the salesman's supervisorId when that supervisor can act
+ *                      on the request, as for a CLOSE (resolveStepAudience,
+ *                      lib/notifications.ts); otherwise every active MANAGER of
+ *                      the request's regions, and the gap is logged. Region
+ *                      Managers who may also act are not told while he can
+ *                      (launch fix 2026-10-07: a null, disabled or out-of-region
+ *                      supervisorId used to alert nobody).
  *   CLOSE (new)        his supervisor when that supervisor can act on the request
  *                      (an active SUPERVISOR, or an active MANAGER who manages the
  *                      branch's region: canApproveSpecificEdit refuses a Manager
