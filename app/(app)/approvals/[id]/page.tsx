@@ -326,7 +326,13 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
             {edit.reviewedBy ? ` by ${edit.reviewedBy.fullName}` : ''}
             {edit.reviewedAt ? ` on ${new Date(edit.reviewedAt).toLocaleString('en-GB')}` : ''}
             {edit.decisionReason ? (
-              <p className="mt-1 italic">&ldquo;{edit.decisionReason}&rdquo;</p>
+              <p className="mt-1 italic">
+                {/* A close or reactivation request keeps the salesman's own reason
+                    here (2026-10-07). The reviewer's is on the close's decision row
+                    below, and on a reactivation's REJECT audit row. */}
+                {edit.target === 'BRANCH' ? <span className="not-italic">Salesman&apos;s reason: </span> : null}
+                &ldquo;{edit.decisionReason}&rdquo;
+              </p>
             ) : null}
           </div>
         )}
