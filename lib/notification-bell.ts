@@ -12,8 +12,13 @@
  * /notifications can mark them read on their own.
  *
  * Pure: the layout reads one grouped count per page render and this splits it.
+ *
+ * By role (launch fix 2026-10-07): a salesman's progress pings ("advanced",
+ * "approved") were red although they need nothing of him, while the same kinds
+ * ask an approver to act (lib/notify-policy.ts bellInformationKinds).
  */
-import { BELL_INFORMATION_KINDS } from './notify-policy';
+import type { Role } from '@prisma/client';
+import { bellInformationKinds } from './notify-policy';
 
 export type BellCounts = {
   /** Unread rows that may ask him to act: the red badge. */
@@ -22,8 +27,11 @@ export type BellCounts = {
   information: number;
 };
 
-export function splitBellCounts(byKind: ReadonlyArray<{ kind: string; count: number }>): BellCounts {
-  const info = BELL_INFORMATION_KINDS as readonly string[];
+export function splitBellCounts(
+  byKind: ReadonlyArray<{ kind: string; count: number }>,
+  role: Role
+): BellCounts {
+  const info = bellInformationKinds(role) as readonly string[];
   let action = 0;
   let information = 0;
   for (const { kind, count } of byKind) {

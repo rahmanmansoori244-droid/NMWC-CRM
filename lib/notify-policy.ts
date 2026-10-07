@@ -118,6 +118,26 @@ export const MUST_ACT_KINDS: readonly NotificationKind[] = [
 export const BELL_INFORMATION_KINDS: readonly NotificationKind[] = ['REQUEST_FYI'];
 
 /**
+ * Launch fix (2026-10-07): a SALESMAN's rows are about his own requests, and only
+ * one kind asks him to act — EDIT_NEEDS_CORRECTION, a request returned or refused,
+ * whose reason he must read. These only tell him how a request went: "advanced"
+ * and "approved" (the same kinds ask an approver or a Steward to act, so the split
+ * is by role), Temix's acknowledgement, and FYI. Counted in his red badge they
+ * read as work he did not have.
+ */
+export const SALESMAN_BELL_INFORMATION_KINDS: readonly NotificationKind[] = [
+  ...BELL_INFORMATION_KINDS,
+  'EDIT_STAGE_ADVANCED',
+  'EDIT_APPROVED_FINAL',
+  'TEMIX_SYNC_ACKED',
+];
+
+/** The kinds counted apart from `role`'s red bell (lib/notification-bell.ts). */
+export function bellInformationKinds(role: Role): readonly NotificationKind[] {
+  return role === Role.SALESMAN ? SALESMAN_BELL_INFORMATION_KINDS : BELL_INFORMATION_KINDS;
+}
+
+/**
  * Delivery. The drain (app/api/cron/email-drain, lib/email/drain.ts) runs every
  * 10 minutes 03:00–14:59 UTC (07:00–18:59 Oman), the window of the other jobs:
  * vercel.json `crons`, pinned to this module by tests/unit/email-structure-guard.test.ts.
