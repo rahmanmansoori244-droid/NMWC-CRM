@@ -114,7 +114,7 @@ export async function managerAuditUserIds(
  * Every entity type written to the audit log, for the Steward's filter. The
  * filter used to offer seven, so Region, Route, the Temix batches, duplicate
  * pairs, import rows and the operator runs could not be picked.
- * tests/unit/audit-scope.test.ts fails when a writer in app, services, lib,
+ * tests/unit/audit-page.test.tsx fails when a writer in app, services, lib,
  * scripts or prisma names a type this list lacks.
  */
 export const AUDIT_ENTITY_TYPES = [
