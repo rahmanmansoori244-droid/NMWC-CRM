@@ -219,7 +219,8 @@ export function MobileTabBar({ role }: { role: Role }) {
  * walked on into the page underneath, and tapping the page you were already on
  * left it open, because only a change of address closed it. Now focus moves in
  * on open, Tab stays inside, Escape or any link closes it, and focus goes back
- * to the Open menu button.
+ * to the Open menu button. It also closes when the screen grows past phone width
+ * (where md:hidden hides it), and the page behind does not scroll while it is open.
  */
 const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -269,6 +270,30 @@ export function MobileNavDrawer({ role }: { role: Role }) {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  // Widened past phone width (a phone turned to landscape, a wider window),
+  // md:hidden hides the drawer while it is still open: close it, or the Tab trap
+  // above would hold the keyboard on a page that shows no dialog. 768px is md.
+  useEffect(() => {
+    if (!open || typeof window.matchMedia !== 'function') return;
+    const wide = window.matchMedia('(min-width: 768px)');
+    const onChange = (e: { matches: boolean }) => {
+      if (e.matches) setOpen(false);
+    };
+    onChange(wide);
+    wide.addEventListener('change', onChange);
+    return () => wide.removeEventListener('change', onChange);
+  }, [open]);
+
+  // The page behind does not scroll under the backdrop while the drawer is open.
+  useEffect(() => {
+    if (!open) return;
+    const before = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = before;
+    };
   }, [open]);
 
   // The salesman already has the bottom tab bar; two navigations is worse than one.

@@ -11,9 +11,13 @@
  * aria-modal, named "Menu", with focus inside; Tab and Shift+Tab go round inside
  * it; the Close button, Escape and any link — the current page's too — close it
  * and put focus back on the Open menu button. The salesman still gets no drawer.
+ *
+ * Review follow-ups: widened past phone width (md:hidden then hides it) it
+ * closes, so its Tab trap cannot hold the keyboard on a page with no dialog on
+ * it; and the page behind it does not scroll while it is open.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, within } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, within, act } from '@testing-library/react';
 import type { MouseEvent, ReactNode } from 'react';
 
 const h = vi.hoisted(() => ({ pathname: '/dashboard' }));
@@ -135,6 +139,39 @@ describe('the phone menu drawer is a modal dialog', () => {
     fireEvent.click(backdrop);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(button);
+  });
+
+  it('widened past phone width (a phone turned to landscape), it closes and lets Tab go', () => {
+    // md:hidden hides the open drawer at 768px and up; left open, its Tab trap
+    // would hold the keyboard on a page that shows no dialog.
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    const wide = {
+      matches: false,
+      addEventListener: (_: string, l: (e: { matches: boolean }) => void) => listeners.add(l),
+      removeEventListener: (_: string, l: (e: { matches: boolean }) => void) => listeners.delete(l),
+    };
+    const matchMedia = vi.fn(() => wide);
+    vi.stubGlobal('matchMedia', matchMedia);
+    try {
+      const { button } = openDrawer();
+      expect(matchMedia).toHaveBeenCalledWith('(min-width: 768px)');
+      wide.matches = true;
+      act(() => listeners.forEach((l) => l({ matches: true })));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(button.getAttribute('aria-expanded')).toBe('false');
+      // Tab is no longer held: the keydown is not cancelled.
+      expect(fireEvent.keyDown(document.body, { key: 'Tab' })).toBe(true);
+      expect(listeners.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('the page behind does not scroll while it is open, and does again once it is closed', () => {
+    const { dialog } = openDrawer();
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close menu' }));
+    expect(document.body.style.overflow).toBe('');
   });
 
   it('the salesman still gets no drawer: his phone has the tab bar', () => {
