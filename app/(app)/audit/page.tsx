@@ -112,7 +112,7 @@ export default async function AuditPage({
     <main>
       <PageHeader
         title="Audit log"
-        subtitle={`${total.toLocaleString()} matching events`}
+        subtitle={`${total.toLocaleString('en-US')} matching events`}
       />
       <form
         method="get"

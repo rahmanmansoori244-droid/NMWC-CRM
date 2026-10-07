@@ -10,7 +10,10 @@
  *   - no toLocaleString / toLocaleDateString / toLocaleTimeString on a Date in
  *     app/, components/ or lib/: use the lib/tz.ts helpers (omanDate,
  *     omanDateTime, omanDayTime, omanLongDate, omanStamp);
- *   - no Intl.DateTimeFormat without an explicit timeZone.
+ *   - no Intl.DateTimeFormat without an explicit timeZone;
+ *   - every number's toLocaleString names its locale: a client component is
+ *     rendered on the server and again in the browser, and a browser in German
+ *     or Arabic formats 1,234 differently (a hydration mismatch).
  */
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -63,6 +66,7 @@ function violations(files: string[]): string[] {
         if (LOCALE_METHODS.has(method)) {
           const recv = checker.getTypeAtLocation(n.expression.expression);
           if (isDateType(recv)) out.push(`${where(n)} ${method} on a Date — use the lib/tz.ts Oman helpers`);
+          else if (n.arguments.length === 0) out.push(`${where(n)} ${method}() with no locale`);
         }
       }
       if (
@@ -79,8 +83,8 @@ function violations(files: string[]): string[] {
   return out;
 }
 
-describe('dates on screen (launch fix: Oman time, one text on server and client)', () => {
-  it('formats no Date with toLocale*, and no Intl.DateTimeFormat without a zone', () => {
+describe('dates and numbers on screen (launch fix: Oman time, one text on server and client)', () => {
+  it('formats no Date with toLocale*, no Intl.DateTimeFormat without a zone, no number without a locale', () => {
     const files = candidates();
     // The guard reads real files: if the scan finds nothing, it is broken, not passing.
     expect(files.length).toBeGreaterThan(5);
@@ -95,7 +99,8 @@ describe('dates on screen (launch fix: Oman time, one text on server and client)
       "export const b = (d: Date | null) => d?.toLocaleDateString('en-GB');",
       "export const c = (s: string) => new Date(s).toLocaleTimeString('en-GB', { timeZone: 'Asia/Muscat' });",
       "export const d = new Intl.DateTimeFormat('en-GB', { hour: '2-digit' });",
-      // Allowed: a number, and a zoned formatter.
+      'export const e = (n: number) => n.toLocaleString();',
+      // Allowed: a number with a locale, and a zoned formatter.
       "export const f = (n: number) => n.toLocaleString('en-US');",
       "export const g = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Muscat' });",
     ].join('\n');
@@ -111,6 +116,7 @@ describe('dates on screen (launch fix: Oman time, one text on server and client)
         '2 toLocaleDateString on a Date — use the lib/tz.ts Oman helpers',
         '3 toLocaleTimeString on a Date — use the lib/tz.ts Oman helpers',
         '4 Intl.DateTimeFormat without a timeZone',
+        '5 toLocaleString() with no locale',
       ]);
     } finally {
       host.readFile = readFile;

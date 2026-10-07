@@ -171,8 +171,8 @@ export default async function ImportBatchPage({
           <strong className="font-semibold">Promote interrupted.</strong>{' '}
           {remainingClean > 0 ? (
             <>
-              The {batch.promotedRows.toLocaleString()} rows already promoted are saved —{' '}
-              {remainingClean.toLocaleString()} still to go. Click{' '}
+              The {batch.promotedRows.toLocaleString('en-US')} rows already promoted are saved —{' '}
+              {remainingClean.toLocaleString('en-US')} still to go. Click{' '}
               <span className="font-semibold">Resume promote</span> to continue where it stopped.
             </>
           ) : (
@@ -196,7 +196,7 @@ export default async function ImportBatchPage({
       </div>
       {counts.rejected > 0 && (
         <div className="mx-4 -mt-1 mb-2 text-xs text-red-700 sm:mx-6">
-          {counts.rejected.toLocaleString()} row(s) were rejected and are <strong>not</strong> in
+          {counts.rejected.toLocaleString('en-US')} row(s) were rejected and are <strong>not</strong> in
           the master.{' '}
           <Link href={href('rejected')} className="font-medium underline">
             See them with the reason
@@ -219,7 +219,7 @@ export default async function ImportBatchPage({
               }`}
             >
               {ROW_VIEW_LABEL[v]}
-              <span className="tabular-nums opacity-80">{counts[v].toLocaleString()}</span>
+              <span className="tabular-nums opacity-80">{counts[v].toLocaleString('en-US')}</span>
             </Link>
           ))}
         </nav>
@@ -415,7 +415,7 @@ function Stat({
             : 'text-slate-900 ring-slate-200 bg-white';
   return (
     <div className={`rounded-lg ring-1 ring-inset ${toneClass} px-3 py-2.5`}>
-      <div className="text-xl font-bold">{value.toLocaleString()}</div>
+      <div className="text-xl font-bold">{value.toLocaleString('en-US')}</div>
       <div className="text-[11px] font-medium text-slate-600">{label}</div>
     </div>
   );

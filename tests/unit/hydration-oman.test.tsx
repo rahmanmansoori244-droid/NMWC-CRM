@@ -5,10 +5,13 @@
  * hydration error (#418 in production) and throws the server HTML away.
  *
  * Each test here does both renders for real: renderToString with the process in
- * UTC, then hydrateRoot with the process switched to Asia/Muscat, and fails on
- * any recoverable error React reports.
+ * UTC, then hydrateRoot with the process switched to Asia/Muscat (and, for
+ * numbers, a browser whose default locale is Arabic, Oman), and fails on any
+ * recoverable error React reports.
  *   - /notifications printed createdAt with toLocaleString('en-GB') and no time
  *     zone: "07 Oct, 21:30" on the server, "08 Oct, 01:30" on the phone.
+ *   - The Promote button printed counts with toLocaleString() and no locale:
+ *     "1,234" on the server, "١٬٢٣٤" in an ar-OM browser.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, type ReactElement } from 'react';
@@ -21,8 +24,10 @@ vi.mock('@/services/notifications-actions', () => ({
   markAllNotificationsReadAction: vi.fn(),
   markInformationReadAction: vi.fn(),
 }));
+vi.mock('@/services/imports', () => ({ promoteCustomerBatchAction: vi.fn() }));
 
 import { NotificationRow } from '@/app/(app)/notifications/NotificationList';
+import { PromoteButton } from '@/app/(app)/import/[batchId]/PromoteButton';
 
 let root: Root | null = null;
 afterEach(() => {
@@ -69,5 +74,43 @@ describe('/notifications — the time on a row', () => {
     expect(errors).toEqual([]);
     expect(html).toContain('08 Oct, 01:30');
     expect(text).toContain('08 Oct, 01:30');
+  });
+});
+
+describe('/import/<batch> — the Promote button', () => {
+  it('prints counts the same way in an Arabic-locale browser: no hydration error, Western digits', async () => {
+    const { errors, text } = await serverThenPhone(<PromoteButton batchId="b1" remainingCount={12345} />, () => {
+      inOman();
+      // A browser whose default locale is ar-OM: a call with no locale formats in Arabic.
+      const real = Number.prototype.toLocaleString;
+      vi.spyOn(Number.prototype, 'toLocaleString').mockImplementation(function (
+        this: number,
+        locales?: Intl.LocalesArgument,
+        options?: Intl.NumberFormatOptions
+      ) {
+        return real.call(this, locales ?? 'ar-OM', options);
+      });
+      expect((1234).toLocaleString()).not.toBe('1,234'); // the stand-in really is Arabic
+    });
+    expect(errors).toEqual([]);
+    expect(text).toContain('Promote 12,345 clean rows');
+  });
+
+  it('prints the resume count the same way in a German-locale browser', async () => {
+    const { errors, text } = await serverThenPhone(
+      <PromoteButton batchId="b1" remainingCount={2500} resume />,
+      () => {
+        const real = Number.prototype.toLocaleString;
+        vi.spyOn(Number.prototype, 'toLocaleString').mockImplementation(function (
+          this: number,
+          locales?: Intl.LocalesArgument,
+          options?: Intl.NumberFormatOptions
+        ) {
+          return real.call(this, locales ?? 'de-DE', options);
+        });
+      }
+    );
+    expect(errors).toEqual([]);
+    expect(text).toContain('Resume promote (2,500 rows left)');
   });
 });
