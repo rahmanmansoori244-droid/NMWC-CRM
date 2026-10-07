@@ -155,6 +155,25 @@ const ATTACH_SIGNED_OUT =
   'You need to sign in again, so the photo is not attached yet. Keep this page open, sign in in another tab, then tap Retry upload.';
 
 /**
+ * Presign's or finalize's 401. It read "Could not get upload URL." and was not
+ * retried, so nothing said the session had ended; Retry upload after signing in
+ * sends the kept photo from the start.
+ */
+export const UPLOAD_SIGNED_OUT =
+  'You need to sign in again, so the photo is not sent yet. Keep this page open, sign in in another tab, then tap Retry upload.';
+
+/**
+ * Presign's 429 (PHOTO_LIMIT: 120 an hour, one back every 30 s). A wait up to
+ * this long is waited out and the step tried again, as a dropped connection is;
+ * a longer one, or a third refusal, ends with how long to wait.
+ */
+export const RATE_LIMIT_MAX_WAIT_S = 30;
+export function rateLimitedMessage(retryAfterSec: number): string {
+  const wait = retryAfterSec < 90 ? `${retryAfterSec} seconds` : `${Math.ceil(retryAfterSec / 60)} minutes`;
+  return `Too many photos in a short time. Wait ${wait}, then tap Retry upload.`;
+}
+
+/**
  * runAction's codes for a database that dropped or did not answer: not an
  * answer about the attach (lib/submit-client.ts treats them the same way).
  */
@@ -174,7 +193,8 @@ class HttpError extends Error {
  * signed out (401), a session that must change its password first (403
  * PASSWORD_CHANGE_REQUIRED), a body it would not read. An answer, with a message
  * to show; nothing about the photo was read or changed. As a bare HttpError the
- * attach called it "got no answer", and every Retry said the same.
+ * attach called it "got no answer", and every Retry said the same. Presign's and
+ * finalize's refusals are read into it too (readRefusal).
  */
 class RefusedError extends HttpError {
   code: string;
@@ -184,16 +204,44 @@ class RefusedError extends HttpError {
   }
 }
 
-/** The action-shaped refusal in a 4xx reply's body, or null for any other body. */
+/** Presign's 429: how long until the next photo may go. Its message says so. */
+class RateLimitedError extends RefusedError {
+  retryAfterSec: number;
+  constructor(retryAfterSec: number) {
+    super(429, 'RATE_LIMITED', rateLimitedMessage(retryAfterSec));
+    this.retryAfterSec = retryAfterSec;
+  }
+}
+
+/**
+ * The refusal in a 4xx reply's body, or null for any other body: the action
+ * shape `{ ok: false, code, message }`, or presign's and finalize's own
+ * `{ error, message }` — which this did not read, so every refusal there,
+ * signed out included, showed as the step's bare failure.
+ */
 async function readRefusal(res: Response): Promise<{ code: string; message: string } | null> {
   try {
-    const body = (await res.json()) as { ok?: unknown; code?: unknown; message?: unknown } | null;
-    return body?.ok === false && typeof body.code === 'string' && typeof body.message === 'string'
-      ? { code: body.code, message: body.message }
-      : null;
+    const body = (await res.json()) as
+      | { ok?: unknown; code?: unknown; error?: unknown; message?: unknown }
+      | null;
+    if (typeof body?.message !== 'string') return null;
+    if (body.ok === false && typeof body.code === 'string') return { code: body.code, message: body.message };
+    return typeof body.error === 'string' ? { code: body.error, message: body.message } : null;
   } catch {
     return null;
   }
+}
+
+/** A 429's wait, in seconds: the body's retryAfterSec, else Retry-After, else a refill. */
+async function readRetryAfter(res: Response): Promise<number> {
+  let sec: unknown;
+  try {
+    sec = ((await res.json()) as { retryAfterSec?: unknown } | null)?.retryAfterSec;
+  } catch {
+    /* not JSON: the header below */
+  }
+  if (typeof sec !== 'number') sec = Number(res.headers.get('Retry-After'));
+  return typeof sec === 'number' && Number.isFinite(sec) && sec > 0 ? Math.ceil(sec) : RATE_LIMIT_MAX_WAIT_S;
 }
 
 function isRetryable(err: unknown): boolean {
@@ -212,10 +260,16 @@ async function retryable<T>(fn: () => Promise<T>): Promise<T> {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (!isRetryable(err)) throw err;
+      // A 429 says when the next try may go: that wait instead of the backoff,
+      // when it is short enough to sit through.
+      const wait =
+        err instanceof RateLimitedError && err.retryAfterSec <= RATE_LIMIT_MAX_WAIT_S
+          ? err.retryAfterSec * 1000
+          : null;
+      if (wait === null && !isRetryable(err)) throw err;
       // Don't sleep after the last attempt.
       if (attempt < RETRY_DELAYS.length - 1) {
-        await delay(RETRY_DELAYS[attempt]);
+        await delay(wait ?? RETRY_DELAYS[attempt]);
       }
     }
   }
@@ -320,6 +374,7 @@ async function postJson<T>(url: string, body: unknown, failMessage: string): Pro
       signal: abort.signal,
     });
     if (!res.ok) {
+      if (res.status === 429) throw new RateLimitedError(await readRetryAfter(res));
       const refusal = res.status < 500 ? await readRefusal(res) : null;
       if (refusal) throw new RefusedError(res.status, refusal.code, refusal.message);
       throw new HttpError(res.status, failMessage);
@@ -518,7 +573,9 @@ export function PhotoCaptureSlot({
       setRetainedHash(null);
       onChange?.(next);
     } catch (e) {
-      setError((e as Error).message);
+      // The attach's failures arrive here already worded (above). A 401 here is
+      // presign's or finalize's: the session ended, not the step.
+      setError(e instanceof HttpError && e.status === 401 ? UPLOAD_SIGNED_OUT : (e as Error).message);
       setProgress('error');
     }
   }

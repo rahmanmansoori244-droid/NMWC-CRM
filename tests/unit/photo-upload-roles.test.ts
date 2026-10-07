@@ -159,7 +159,10 @@ describe('finalize tells a missing object from R2 not answering', () => {
     h.send.mockReset().mockRejectedValue(Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } }));
     const res = await finalize(mintedKey(h.user.id, 'SHOP'), 'SHOP');
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'OBJECT_NOT_FOUND' });
+    expect(await res.json()).toEqual({
+      error: 'OBJECT_NOT_FOUND',
+      message: 'The photo did not reach storage. Tap Retry upload to send it again.',
+    });
     expect(h.create).not.toHaveBeenCalled();
   });
 
@@ -168,6 +171,64 @@ describe('finalize tells a missing object from R2 not answering', () => {
     const res = await finalize(mintedKey(h.user.id, 'SHOP'), 'SHOP');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'STORAGE_UNAVAILABLE' });
+    expect(h.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('every refusal carries a message the photo slot shows (launch review)', () => {
+  // The slot read only `{ ok: false, code, message }`, and these routes answered
+  // `{ error }` alone: signed out, throttled or refused, the salesman read "Could
+  // not get upload URL." The machine `error` stays; `message` is beside it.
+  const signedOut = () => {
+    h.user = null as unknown as typeof h.user;
+  };
+
+  it.each([
+    ['presign', () => presign('SHOP')],
+    ['finalize', () => finalize(mintedKey('nobody', 'SHOP'), 'SHOP')],
+  ])('%s, signed out: 401 with a message, before anything else', async (_name, call) => {
+    signedOut();
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'UNAUTHORIZED', message: 'Not signed in.' });
+    expect(h.checkLimit).not.toHaveBeenCalled();
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('presign, throttled: 429 with the wait in the body, the header and the message', async () => {
+    h.checkLimit.mockResolvedValue({ ok: false, retryAfterSec: 30 });
+    const res = await presign('SHOP');
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('30');
+    expect(await res.json()).toEqual({
+      error: 'RATE_LIMITED',
+      retryAfterSec: 30,
+      message: 'Too many photos in a short time. Try again in 30 seconds.',
+    });
+    expect(h.getSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('presign, a photo over 3 MB: 400 that says what is accepted', async () => {
+    const res = await post(presignPOST, 'presign', { kind: 'SHOP', mimeType: 'image/jpeg', bytes: 4 * 1024 * 1024 });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'VALIDATION_FAILED', message: expect.stringMatching(/3 MB at most/) });
+  });
+
+  it('finalize, a key another sign-in was given: 403 that says to send it again', async () => {
+    const res = await finalize(mintedKey('someoneelse', 'SHOP'), 'SHOP');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: 'KEY_MISMATCH',
+      message: 'This upload was started under another sign-in. Tap Retry upload to send the photo again.',
+    });
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('finalize, over 3 MB in R2: 413 that says to take it again', async () => {
+    h.send.mockResolvedValue({ ContentLength: 4 * 1024 * 1024, ContentType: 'image/jpeg', LastModified: new Date() });
+    const res = await finalize(mintedKey(h.user.id, 'SHOP'), 'SHOP');
+    expect(res.status).toBe(413);
+    expect(await res.json()).toMatchObject({ error: 'TOO_LARGE', message: 'This photo is larger than 3 MB. Take it again.' });
     expect(h.create).not.toHaveBeenCalled();
   });
 });
