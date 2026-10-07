@@ -18,7 +18,9 @@
  *  - Exact-CR duplicates HARD-BLOCK at submit (vs live customers AND other
  *    open CREATE requests), as does the EXACT_TRIPLE
  *    (legalName+phone+region) rule; phone-only matches are advisory/logged.
- *  - NEEDS_CORRECTION resubmits reuse the SAME row and bump `cycle`.
+ *  - NEEDS_CORRECTION resubmits reuse the SAME row and bump `cycle`. One
+ *    started on another route than the salesman's own (he was moved since) is
+ *    refused, never re-filed on his new route; he withdraws it.
  *  - Launch fix: the salesman can withdraw his own DRAFT or NEEDS_CORRECTION
  *    request (withdrawCreateAction). It is closed for good (REJECTED), and so
  *    stops blocking that CR and shop for everyone (lib/create-guards.ts).
@@ -164,7 +166,7 @@ async function submitCreateOnce(
     select: {
       id: true,
       supervisorId: true,
-      ownedRoute: { select: { id: true, regionId: true, isActive: true } },
+      ownedRoute: { select: { id: true, code: true, regionId: true, isActive: true } },
     },
   });
   if (!me.ownedRoute) {
@@ -217,7 +219,15 @@ async function submitCreateOnce(
   const existing = data.editId
     ? await prisma.customerEdit.findUnique({
         where: { id: data.editId },
-        select: { id: true, process: true, state: true, submittedById: true, cycle: true, submittedAt: true },
+        select: {
+          id: true,
+          process: true,
+          state: true,
+          submittedById: true,
+          cycle: true,
+          submittedAt: true,
+          branchDrafts: { select: { routeId: true, route: { select: { code: true } } } },
+        },
       })
     : null;
   if (data.editId) {
@@ -240,6 +250,19 @@ async function submitCreateOnce(
     // (Nothing else ever wrote REJECTED on a new-customer request.)
     if (existing.state === EditState.REJECTED) {
       throw new ConflictError('EDIT_LOCKED', WITHDRAWN_MESSAGE);
+    }
+    // Security review: one started on a route he has since left (moved while it
+    // was in review, then sent back; or moved by a role change or an import) is
+    // never re-filed. Rebuilding its drafts below would put the shop on his NEW
+    // route, before that region's approvers. He withdraws it (withdrawCreateCore
+    // checks no route); the salesman of its route adds the shop afresh.
+    const startedOn = [
+      ...new Set(
+        existing.branchDrafts.filter((b) => b.routeId !== route.id).map((b) => b.route.code)
+      ),
+    ].join(', ');
+    if (startedOn) {
+      throw new ConflictError('EDIT_LOCKED', routeMovedMessage(startedOn, route.code));
     }
     // DRAFT / NEEDS_CORRECTION may be revised and resubmitted.
   }
@@ -581,6 +604,11 @@ async function submitCreateOnce(
 
 const WITHDRAWN_MESSAGE =
   'This request was withdrawn and is closed. Start a new request if the shop still needs adding.';
+
+/** A request started on a route he no longer works (app/(app)/customers/new/page.tsx says the same). */
+function routeMovedMessage(from: string, to: string): string {
+  return `This request was started on route ${from}, and you now work route ${to}, so it cannot be saved or sent again. Withdraw it, and the salesman of route ${from} adds the shop afresh.`;
+}
 
 /**
  * Launch fix: the salesman withdraws his own new-customer request — a draft he

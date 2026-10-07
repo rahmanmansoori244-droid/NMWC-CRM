@@ -218,4 +218,58 @@ describe('the page offers Withdraw on his draft or sent-back request only', () =
     expect(h.formProps).toHaveLength(1);
     expect(h.withdrawProps).toEqual(expected);
   });
+
+  // Security review: one started on a route he has since left cannot be saved or
+  // sent again (services/creates.ts). The page says so, and Withdraw stays.
+  it('one started on a route he no longer works says why, and still offers Withdraw', async () => {
+    const onRoute = (routeId: string, code: string) => ({
+      id: 'e1',
+      process: 'CREATE',
+      state: 'NEEDS_CORRECTION',
+      submittedById: 'u1',
+      customerId: null,
+      decisionReason: 'The CR photo is unreadable.',
+      pendingRole: null,
+      requestedCreditLimit: null,
+      requestedPaymentTermDays: null,
+      fieldChanges: [],
+      customerDraft: null,
+      branchDrafts: [
+        {
+          id: 'b1',
+          routeId,
+          route: { code },
+          branchName: 'Main',
+          address: 'Way 1',
+          areaDescription: null,
+          gpsLat: null,
+          gpsLng: null,
+          gpsAccuracy: null,
+          gpsCapturedAt: null,
+          dayOfVisit: null,
+          openingHours: null,
+          deliveryWindow: null,
+          coolersCount: 0,
+          standsCount: 0,
+          emptyBottlesCount: 0,
+          shopPhotoAttachmentId: null,
+          signboardPhotoAttachmentId: null,
+          extraPhotoAttachmentIds: [],
+        },
+      ],
+    });
+    const { default: Page } = await import('@/app/(app)/customers/new/page');
+    h.edit = onRoute('r0', 'MCT-02');
+    render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
+    const said = screen.getByText(/This request was started on route MCT-02/).textContent ?? '';
+    expect(said).toMatch(/You now work route MCT-01, so it cannot be saved or sent again\./);
+    expect(said).toMatch(/Withdraw it .* and the salesman of route MCT-02 adds the shop afresh/);
+    expect(h.withdrawProps).toEqual([{ editId: 'e1', isDraft: false }]);
+    cleanup();
+
+    // One on his own route says nothing of the kind.
+    h.edit = onRoute('r1', 'MCT-01');
+    render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
+    expect(screen.queryByText(/This request was started on route/)).toBeNull();
+  });
 });

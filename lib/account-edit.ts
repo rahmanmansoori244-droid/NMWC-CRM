@@ -31,10 +31,11 @@
  *     the leaver's sign-in name is retired when the joiner takes the code, and a
  *     moved salesman can take the new route's code as his;
  *   - a salesman's new-customer requests that are not in review (drafts, or sent
- *     back to him) were started on his route, and services/creates.ts files a
- *     resubmit under the route he has THEN. A route change is refused while he
- *     has any started on another route (strandedCreatesIssue); the form can
- *     withdraw them with the move instead, the import cannot.
+ *     back to him) were started on his route, and services/creates.ts refuses
+ *     to save or send one again from another route: he can only withdraw it. A
+ *     route change is refused while he has any started on another route
+ *     (strandedCreatesIssue); the form can withdraw them with the move instead,
+ *     the import cannot.
  */
 import type { Role } from '@prisma/client';
 import { nameKey } from './name-key';
@@ -247,16 +248,20 @@ export function revokesSessions(before: EditableAccount, after: EditableAccount)
  * depends on the salesman's route (lib/permissions.ts canActOnStep, the
  * /approvals queue). He still sees them on Work and is told the decision. The
  * one approver that follows the salesman is a SUPERVISOR-role supervisor at the
- * first step (supervisorStepNotes).
+ * first step (supervisorStepNotes). But a new-customer request among them that
+ * is sent back after the move cannot be sent again from his new route
+ * (services/creates.ts refuses it): he withdraws it, and the salesman of the old
+ * route adds the shop afresh (`inReviewCreates`).
  *
  * Updates SENT BACK to him stay his too. One on a customer of his old route can
  * no longer be sent again, since he cannot open that customer; he clears it on
  * Needs correction, and the route's new salesman sends a fresh one.
  *
  * New-customer requests that are not in review (drafts, or sent back) cannot
- * follow him: a resubmit is filed under the route he has then. The change is
- * refused while he has any (strandedCreatesIssue) unless the Steward withdraws
- * them with it; `withdrawn` counts those, and `sentBack` leaves them out.
+ * follow him: services/creates.ts refuses to send one again from another route.
+ * The change is refused while he has any (strandedCreatesIssue) unless the
+ * Steward withdraws them with it; `withdrawn` counts those, and `sentBack`
+ * leaves them out.
  *
  * A leaver (disabled) sends nothing again; his drafts and sent-back requests no
  * longer hold the shop or the CR number for anyone (lib/create-guards.ts).
@@ -265,6 +270,8 @@ export function routeMoveNotes(p: {
   who: string;
   fromRoute: string;
   inReview: number;
+  /** Of those, new-customer requests started on another route than his new one. */
+  inReviewCreates?: number;
   /** Sent back to him and still waiting on him, not counting withdrawn ones. */
   sentBack: number;
   /** New-customer requests withdrawn with this change. */
@@ -275,7 +282,11 @@ export function routeMoveNotes(p: {
   const notes: string[] = [];
   if (p.inReview > 0) {
     notes.push(
-      `${p.who} has ${p.inReview} request(s) in review. They stay with the same approvers — the Managers and Accountant of each customer's region — and are decided as before.`
+      `${p.who} has ${p.inReview} request(s) in review. They stay with the same approvers — the Managers and Accountant of each customer's region — and are decided as before.${
+        p.inReviewCreates && !p.leaver
+          ? ` New-customer requests among them (${p.inReviewCreates}): if one is sent back to him, he cannot send it again from his new route — he withdraws it on Needs correction, and the salesman of ${p.fromRoute} adds the shop afresh.`
+          : ''
+      }`
     );
   }
   if (p.sentBack > 0) {
@@ -297,12 +308,11 @@ export function routeMoveNotes(p: {
  * Owner decision 8 (review): a change of route — or of role, to one with no
  * route — while the salesman has new-customer requests that are not in review
  * and were started on another route: drafts, or sent back to him.
- * services/creates.ts files every resubmit under the route he has THEN (its
- * region, so its approvers), so a shop on his old route would be sent as a shop
- * on his new one. With no route at all he can never send them, and until they
- * are closed they hold their shops and CR numbers for every salesman
- * (lib/create-guards.ts). Null when there are none, or the Steward withdraws
- * them with the change (`withdraw`).
+ * services/creates.ts refuses to save or send one again from another route, so
+ * after the move he could only withdraw them; with no route at all he can never
+ * send them. Until they are closed they hold their shops and CR numbers for
+ * every salesman (lib/create-guards.ts). Null when there are none, or the
+ * Steward withdraws them with the change (`withdraw`).
  */
 export function strandedCreatesIssue(p: {
   who: string;
@@ -316,14 +326,14 @@ export function strandedCreatesIssue(p: {
   if (p.count === 0 || p.withdraw) return null;
   const from = p.fromRoutes.length > 0 ? `route ${p.fromRoutes.join(', ')}` : 'his route';
   const why = p.toRoute
-    ? `Sent again after the move they would be filed under route ${p.toRoute}, its region and its approvers.`
+    ? `After the move he cannot send them again from route ${p.toRoute}, only withdraw them.`
     : 'Without a route he can never send them again, and until they are closed they hold their shops and CR numbers for every salesman.';
-  return `${p.who} has ${p.count} new-customer request(s) started on ${from} that are not in review (drafts, or sent back to him). ${why} Ask him to send them first — once in review they stay with the approvers of ${from} — or to withdraw them; or tick "Withdraw them with this change".`;
+  return `${p.who} has ${p.count} new-customer request(s) started on ${from} that are not in review (drafts, or sent back to him). ${why} Ask him to send them first — in review they stay with the approvers of ${from}, but if one is sent back after the move he cannot send it again and withdraws it — or to withdraw them; or tick "Withdraw them with this change".`;
 }
 
 /** The import's words for strandedCreatesIssue: it has no tick box, so it points at /users. */
 export function strandedCreatesImportIssue(username: string, count: number): string {
-  return `"${username}" has ${count} new-customer request(s) that are not in review (drafts, or sent back to him), started on a route this row takes him off. Nothing was written. Sent again afterwards they would be filed under his new route. Ask him to send or withdraw them first, or make this change on Users (Edit account), which can withdraw them with it.`;
+  return `"${username}" has ${count} new-customer request(s) that are not in review (drafts, or sent back to him), started on a route this row takes him off. Nothing was written. Afterwards he could not send them again from his new route, only withdraw them. Ask him to send or withdraw them first, or make this change on Users (Edit account), which can withdraw them with it.`;
 }
 
 /**
