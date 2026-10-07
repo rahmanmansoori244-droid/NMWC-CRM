@@ -92,6 +92,35 @@ describe('a new-customer request started on another route is not re-filed on his
     expect(h.tx).not.toHaveBeenCalled();
   });
 
+  // The route is checked before the fields: a sent-back request he corrected
+  // field by field was otherwise refused for its route only once every field
+  // passed. A legal name too short and a phone that is not one fail the schema.
+  const badFields = (isDraft: boolean) =>
+    ({
+      ...body(isDraft),
+      customer: { legalName: 'A', paymentTerms: 'CASH', primaryPhone: '123' },
+    }) as Parameters<typeof submitCreateAction>[0];
+
+  it.each([false, true])(
+    'isDraft=%s: the route is the reason given, before any field is refused',
+    async (isDraft) => {
+      h.existing = existing('NEEDS_CORRECTION', 'r-old', 'MCT-01');
+      const res = await submitCreateAction(badFields(isDraft));
+      expect(res).toMatchObject({ ok: false, code: 'EDIT_LOCKED' });
+      expect(res.ok ? '' : res.message).toMatch(/started on route MCT-01/);
+      expect(h.tx).not.toHaveBeenCalled();
+    }
+  );
+
+  it('on his own route the same fields are still refused, field by field', async () => {
+    h.existing = existing('NEEDS_CORRECTION', 'r-new', 'BTN-02');
+    const res = await submitCreateAction(badFields(false));
+    expect(res).toMatchObject({ ok: false, code: 'VALIDATION_FAILED' });
+    const fields = res.ok ? {} : (res as { fields?: Record<string, string> }).fields ?? {};
+    expect(Object.keys(fields).sort()).toEqual(['customer.legalName', 'customer.primaryPhone']);
+    expect(h.tx).not.toHaveBeenCalled();
+  });
+
   it('one started on his own route is saved as before', async () => {
     h.existing = existing('DRAFT', 'r-new', 'BTN-02');
     expect(await submitCreateAction(body(true))).toMatchObject({

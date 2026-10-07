@@ -99,6 +99,41 @@ describe('the location on a request that is not his to change now', () => {
   });
 });
 
+// Security review follow-up: services/creates.ts refuses to save or send a
+// request started on a route he no longer works. The full form with Save draft
+// and Submit still rendered, so he could correct it field by field before the
+// refusal; it is read-only now, under the page's banner, above its Withdraw.
+describe('a request started on a route he no longer works', () => {
+  it.each(['NEEDS_CORRECTION', 'DRAFT'] as const)(
+    '%s: read-only, with no Submit or Save draft, and the reason it was sent back still shown',
+    (state) => {
+      render(
+        <CreateCustomerForm
+          channels={[]}
+          initial={{ ...initial(state), decisionReason: 'The CR photo is unreadable.' }}
+          sessionUserId="u1"
+          startedOnOtherRoute
+        />
+      );
+      expect(screen.queryByRole('button', { name: /Submit for approval/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull();
+      expect(screen.queryByRole('button', { name: /Add another branch/ })).toBeNull();
+      expect(screen.getByDisplayValue('Al Noor Shop')).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Recapture GPS' })).toBeDisabled();
+      expect(screen.getByText('The CR photo is unreadable.')).toBeTruthy();
+      // Not in review, and not closed: neither banner.
+      expect(screen.queryByText(/This request is in review/)).toBeNull();
+      expect(screen.queryByText(/withdrawn and is closed/)).toBeNull();
+    }
+  );
+
+  it('the same request on his own route can still be changed and sent', () => {
+    render(<CreateCustomerForm channels={[]} initial={initial('NEEDS_CORRECTION')} sessionUserId="u1" />);
+    expect(screen.getByRole('button', { name: 'Save draft' })).toBeTruthy();
+    expect(screen.getByDisplayValue('Al Noor Shop')).toBeEnabled();
+  });
+});
+
 describe('the reason it was sent back', () => {
   it('stays in view after he saves it as a draft — only a submit clears it', () => {
     for (const state of ['NEEDS_CORRECTION', 'DRAFT'] as const) {
@@ -265,11 +300,14 @@ describe('the page offers Withdraw on his draft or sent-back request only', () =
     expect(said).toMatch(/You now work route MCT-01, so it cannot be saved or sent again\./);
     expect(said).toMatch(/Withdraw it .* and the salesman of route MCT-02 adds the shop afresh/);
     expect(h.withdrawProps).toEqual([{ editId: 'e1', isDraft: false }]);
+    // Shown read-only: he cannot spend time correcting what cannot be sent.
+    expect(h.formProps[0]).toMatchObject({ startedOnOtherRoute: true });
     cleanup();
 
     // One on his own route says nothing of the kind.
     h.edit = onRoute('r1', 'MCT-01');
     render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
     expect(screen.queryByText(/This request was started on route/)).toBeNull();
+    expect(h.formProps[1]).toMatchObject({ startedOnOtherRoute: false });
   });
 });

@@ -170,10 +170,17 @@ export function CreateCustomerForm({
   channels,
   initial,
   sessionUserId,
+  startedOnOtherRoute = false,
 }: {
   channels: ChannelWithSubs[];
   initial: CreateFormInitial | null;
   sessionUserId: string;
+  /**
+   * A draft or sent-back request started on a route he no longer works:
+   * services/creates.ts refuses to save or send it, so it is shown read-only.
+   * The page says why above the form and offers Withdraw below it.
+   */
+  startedOnOtherRoute?: boolean;
 }) {
   // UAT-07: one id prefix per form instance, so the labels on the inline
   // selects can point at their controls. Branch rows append their own key.
@@ -222,9 +229,10 @@ export function CreateCustomerForm({
   }, []);
 
   // A SUBMITTED request is read-only for the salesman until it is decided; a
-  // withdrawn one (launch fix: REJECTED, services/creates.ts) for good.
+  // withdrawn one (launch fix: REJECTED, services/creates.ts) for good; and one
+  // started on a route he has left, which he can only withdraw.
   const closed = initial?.state === 'REJECTED';
-  const readOnly = initial?.state === 'SUBMITTED' || closed;
+  const readOnly = initial?.state === 'SUBMITTED' || closed || startedOnOtherRoute;
 
   const ic = initial?.customer;
   const [legalName, setLegalName] = useState(ic?.legalName ?? '');
@@ -697,7 +705,7 @@ export function CreateCustomerForm({
           This request was withdrawn and is closed. Start a new request if the shop still needs adding.
         </div>
       )}
-      {readOnly && !closed && (
+      {initial?.state === 'SUBMITTED' && (
         <div className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 ring-1 ring-sky-200">
           This request is in review — current step:{' '}
           <strong>{initial?.pendingRole?.replace('_', ' ') ?? '…'}</strong>. You will be notified
