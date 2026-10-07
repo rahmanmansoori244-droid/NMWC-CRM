@@ -391,6 +391,7 @@ The source is AUDITOR-BRIEF Appendix B.
 - **Photo protection sections.** OPERATIONS §6.13 and "R2 backup & versioning" are stale: they rely on bucket versioning and on object tagging, and Cloudflare R2 supports neither (HANDOVER §6.1, F02; C6). AUDITOR-BRIEF §7 (the Backups line, "until R2 versioning is enabled") and Appendix A item 3 say the same. Rewrite them once F02 is decided. **Effort:** S.
 - **Restore drill history.** OPERATIONS §6.12 ("has never run"), AUDITOR-BRIEF §7 (the Backups line) and AUDITOR-BRIEF Appendix A item 1 are stale. The drill's scheduled run on 2026-10-01 failed at preflight, and it has never succeeded (C1). **Effort:** S.
 - **The `docs/GO-LIVE-RUNBOOK.md` header** is stale (AUDITOR-BRIEF §10). **Effort:** S.
+- **Salesman guide, Save draft and Sign out** (launch fixes, 2026-10-07, branch `claude/fix-field`). Sign out now deletes the user's unsent form copies from the phone, after asking (`components/nmwc/SignOutButton.tsx`). The guide's "come back within 7 days and finish" therefore holds for an enrichment draft only while the salesman stays signed in on that phone. After the forced password change the app now goes straight to the home page; there is no second sign-in. **Effort:** S.
 - Keep `AUDITOR-BRIEF.md` true whenever the code changes (HANDOVER §2 step 3).
 
 ### B6. Housekeeping
