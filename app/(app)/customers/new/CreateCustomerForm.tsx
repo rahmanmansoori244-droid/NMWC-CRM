@@ -1004,9 +1004,13 @@ export function CreateCustomerForm({
                   {errors[`branch.${idx}.gps`]}
                 </p>
               )}
+              {/* Launch fix: off on a request in review, like every other box —
+                  "Recapture GPS" and "Enter coordinates manually" changed the
+                  chip on a request nothing here could save. */}
               <GpsCaptureButton
                 initial={s.gps}
                 onCapture={(g) => !readOnly && setBranch(s.key, { gps: g })}
+                disabled={readOnly}
                 required
               />
             </div>
