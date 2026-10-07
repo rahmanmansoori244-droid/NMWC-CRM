@@ -250,6 +250,8 @@ function collectMissingMandatory(
   // Lock-aware skips for salesman actor.
   const skipLegalName = actorIsSalesman; // always locked for salesman
   const skipCrNumber = actorIsSalesman && customer.paymentTerms === 'CREDIT';
+  // Owner decision 2 (2026-10-07): the CR document follows the CR number.
+  const skipCrPhoto = skipCrNumber;
 
   if (customerFields) {
     if (!skipLegalName && !isStr(merged('legalName', customer.legalName))) {
@@ -272,7 +274,7 @@ function collectMissingMandatory(
     }
     // Photos are wired via attachPhotoAction, so we read from the live customer
     // (the edit payload does not carry photoId fields).
-    if (req('crPhoto') && !customer.crPhotoId) {
+    if (req('crPhoto') && !skipCrPhoto && !customer.crPhotoId) {
       errors['customer.crPhoto'] = 'CR document photo is required.';
     }
   }

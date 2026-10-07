@@ -1,12 +1,16 @@
 /**
- * Owner decision 4 (2026-10-07) on the customer edit form, driven through the
- * real EnrichmentForm (jsdom).
+ * Owner decisions 4 and 2 (2026-10-07) on the customer edit form, driven
+ * through the real EnrichmentForm (jsdom).
  *
  * 4 — the form's "missing" list mirrors the server's submit gate
  *     (lib/validation/gate-scope.ts): only the branches the salesman's changes
  *     touch are held to address, GPS and shop photo, and the customer-level
  *     fields only when he changes one. It used to list every branch shown — a
  *     phone fix waited until every shop of his had GPS and a photo.
+ * 2 — the CR document slot of a CREDIT customer is shown to a salesman but
+ *     cannot be captured, replaced or removed, with the reason beside it, and
+ *     is not on his missing list; a Manager's slot, and a CASH customer's, work
+ *     as before.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within } from '@testing-library/react';
@@ -23,6 +27,7 @@ vi.mock('@/components/nmwc/PhotoCaptureSlot', () => ({
 vi.mock('@/lib/navigate', () => ({ hardReplace: vi.fn() }));
 
 import { EnrichmentForm } from '@/app/(app)/customers/[id]/edit/EnrichmentForm';
+import { CR_DOCUMENT_LOCKED_MESSAGE } from '@/lib/permissions';
 import type { SubmitGate } from '@/lib/submit-gate';
 
 const branch = (id: string, branchName: string, complete: boolean) => ({
@@ -131,5 +136,36 @@ describe('owner decision 4: the form holds complete only what the change touches
     setDay('Branch 2: Second', 'MON');
     expect(submitBtn().getAttribute('title')).toBe('Missing: Branch 2 GPS, Branch 2 shop photo');
     expect(screen.getByText(/Cannot submit yet/).parentElement!.textContent).not.toMatch(/Branch 1|Contact person/);
+  });
+});
+
+describe('owner decision 2: the CR document of a credit customer', () => {
+  const crSlot = () => slots.props.filter((p) => p.kind === 'CR').at(-1)!;
+
+  it('a salesman sees it, cannot change it, and is told who can', () => {
+    renderForm(customer({ paymentTerms: 'CREDIT', crPhotoId: 'att-cr' }));
+    expect(crSlot()).toMatchObject({ disabled: true, required: false });
+    expect(screen.getByText(CR_DOCUMENT_LOCKED_MESSAGE)).toBeTruthy();
+  });
+
+  it('under the FULL gate a missing one is not on his list', () => {
+    renderForm(customer({ paymentTerms: 'CREDIT', crPhotoId: null }), { gate: 'FULL' });
+    setPhone('+96898765432');
+    expect(submitBtn().getAttribute('title')).toBe('');
+    expect(crSlot()).toMatchObject({ disabled: true, required: false });
+  });
+
+  it('a cash customer’s is his to take, as before', () => {
+    renderForm(customer({ crPhotoId: null }), { gate: 'FULL' });
+    expect(crSlot()).toMatchObject({ disabled: false, required: true });
+    expect(screen.queryByText(CR_DOCUMENT_LOCKED_MESSAGE)).toBeNull();
+    setPhone('+96898765432');
+    expect(submitBtn().getAttribute('title')).toBe('Missing: CR document photo');
+  });
+
+  it('a Manager replaces a credit customer’s', () => {
+    renderForm(customer({ paymentTerms: 'CREDIT', crPhotoId: 'att-cr' }), { role: Role.MANAGER });
+    expect(crSlot()).toMatchObject({ disabled: false });
+    expect(screen.queryByText(CR_DOCUMENT_LOCKED_MESSAGE)).toBeNull();
   });
 });

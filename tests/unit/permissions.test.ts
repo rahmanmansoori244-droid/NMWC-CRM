@@ -48,6 +48,13 @@ describe('lib/permissions — Salesman field locks', () => {
     expect(isFieldLocked('legalName', supervisor, credit)).toBe(false);
     expect(isFieldLocked('crNumber', supervisor, credit)).toBe(false);
   });
+
+  it('owner decision 2 (2026-10-07): the CR document follows the CR number — a salesman, on CREDIT only', () => {
+    expect(isFieldLocked('crPhoto', salesman, credit)).toBe(true);
+    expect(isFieldLocked('crPhoto', salesman, cash)).toBe(false);
+    expect(isFieldLocked('crPhoto', steward, credit)).toBe(false);
+    expect(isFieldLocked('crPhoto', { id: 'm', role: Role.MANAGER, username: 'm' }, credit)).toBe(false);
+  });
 });
 
 describe('lib/permissions — approval scope', () => {

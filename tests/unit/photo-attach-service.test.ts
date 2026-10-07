@@ -69,7 +69,7 @@ import {
   PHOTO_GONE_MESSAGE,
   PHOTO_TARGET_CHANGED_MESSAGE,
 } from '@/lib/photo-attach';
-import { PHOTO_WRITER_ROLES } from '@/lib/permissions';
+import { CR_DOCUMENT_LOCKED_MESSAGE, PHOTO_WRITER_ROLES } from '@/lib/permissions';
 
 const HOST = 'nmwc.example';
 async function call(handler: (req: NextRequest) => Promise<Response>, name: string, body: unknown) {
@@ -545,7 +545,11 @@ describe('attach reads its target again under the lock, before the claim', () =>
     db.attachment.findUnique.mockResolvedValue(photo({ kind: 'CR' }));
     db.customer.findUnique.mockResolvedValue(customer({ deletedAt: new Date() }));
     refusedBeforeTheClaim(await attach({ attachmentId: ATT, customerId: CUST, slot: 'CR' }));
-    expect(db.customer.findUnique).toHaveBeenCalledWith({ where: { id: CUST }, select: customerSelect });
+    // Owner decision 2: with the terms, which the CR document's lock reads under the lock too.
+    expect(db.customer.findUnique).toHaveBeenCalledWith({
+      where: { id: CUST },
+      select: { ...customerSelect, paymentTerms: true },
+    });
   });
 
   it('the CR slot: the customer row is gone altogether — refused', async () => {
@@ -830,5 +834,85 @@ describe('Remove of CREATE-draft photos preserves its existing scope and no-cust
     }
     expect(db.$queryRaw).not.toHaveBeenCalled();
     expect(db.customer.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+// Owner decision 2 (2026-10-07): the CR document of a CREDIT customer follows
+// its finance-locked CR number. An attach goes live at once and an update
+// request cannot carry a photo for approval, so a salesman can neither put one
+// in that slot nor remove the one there; a Manager or the Steward can. A CASH
+// customer's is unchanged.
+describe('owner decision 2: the CR document of a credit customer', () => {
+  const refused = (res: Awaited<ReturnType<typeof attach>>) => {
+    expect(res).toEqual({ ok: false, code: 'FORBIDDEN', message: CR_DOCUMENT_LOCKED_MESSAGE });
+    expect(db.attachment.updateMany).not.toHaveBeenCalled();
+    expect(db.attachment.update).not.toHaveBeenCalled();
+    expect(db.customer.update).not.toHaveBeenCalled();
+    expect(db.customer.updateMany).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  };
+
+  it('a salesman cannot attach it — refused before the transaction', async () => {
+    db.attachment.findUnique.mockResolvedValue(photo({ kind: 'CR' }));
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CREDIT', crPhotoId: 'ckprevious0000000000000001' }));
+    refused(await attach({ attachmentId: ATT, customerId: CUST, slot: 'CR' }));
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('…nor when the customer turned CREDIT while the attach waited for the lock', async () => {
+    db.attachment.findUnique.mockResolvedValue(photo({ kind: 'CR' }));
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    refused(await attach({ attachmentId: ATT, customerId: CUST, slot: 'CR' }));
+  });
+
+  it('a CASH customer’s, as before', async () => {
+    db.attachment.findUnique.mockResolvedValue(photo({ kind: 'CR' }));
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+    expect(await attach({ attachmentId: ATT, customerId: CUST, slot: 'CR' })).toEqual({ ok: true });
+  });
+
+  it.each(['MANAGER', 'STEWARD'])('a %s replaces it', async (role) => {
+    s.user = { id: 'x2', role, username: 'x2' };
+    s.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.attachment.findUnique.mockResolvedValue(photo({ kind: 'CR', capturedById: 'x2' }));
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    expect(await attach({ attachmentId: ATT, customerId: CUST, slot: 'CR' })).toEqual({ ok: true });
+    expect(db.customer.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ crPhotoId: ATT }) })
+    );
+  });
+
+  it('his shop photo of the same credit customer still goes in', async () => {
+    db.attachment.findUnique.mockResolvedValue(photo());
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toEqual({ ok: true });
+  });
+
+  it('a salesman cannot remove it, even one he took — before and under the lock', async () => {
+    db.attachment.findFirst.mockResolvedValue(photo({ kind: 'CR', customerId: CUST }));
+    db.customer.findFirst.mockResolvedValue(customer());
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: false, code: 'FORBIDDEN', message: CR_DOCUMENT_LOCKED_MESSAGE });
+    expect(db.$transaction).not.toHaveBeenCalled();
+    // CASH when read first, CREDIT under the lock: refused there, nothing removed.
+    db.customer.findUnique.mockResolvedValueOnce(customer({ paymentTerms: 'CASH' }));
+    expect((await detach({ attachmentId: ATT })).message).toBe(CR_DOCUMENT_LOCKED_MESSAGE);
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(db.attachment.updateMany).not.toHaveBeenCalled();
+    expect(db.customer.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('a Manager can remove it; a salesman his CASH customer’s', async () => {
+    db.attachment.findFirst.mockResolvedValue(photo({ kind: 'CR', customerId: CUST }));
+    db.customer.findFirst.mockResolvedValue(customer());
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    s.user = { id: 'x2', role: 'MANAGER', username: 'x2' };
+    s.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
   });
 });

@@ -21,7 +21,7 @@
  *   N02 — a tag-only name is refused on the direct write too.
  * The same flows against Postgres: tests/integration/golive-update-flow.test.ts.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { editPayload, type EditPatch } from '../support/edit-payload';
 import { FORM_OUTDATED_MESSAGE, STALE_FIELDS_MESSAGE } from '@/lib/errors';
@@ -417,6 +417,27 @@ describe('owner decision 4 — a salesman’s submit is held complete on what it
       ['customer.contactPerson', `branch.${B3}.address`, `branch.${B3}.gps`, `branch.${B3}.shopPhoto`].sort()
     );
     nothingWritten();
+  });
+
+  describe('under the FULL gate (SALESMAN_SUBMIT_GATE=FULL)', () => {
+    const saved = process.env.SALESMAN_SUBMIT_GATE;
+    beforeEach(() => {
+      process.env.SALESMAN_SUBMIT_GATE = 'FULL';
+    });
+    afterEach(() => {
+      if (saved === undefined) delete process.env.SALESMAN_SUBMIT_GATE;
+      else process.env.SALESMAN_SUBMIT_GATE = saved;
+    });
+
+    it('owner decision 2: a credit customer’s missing CR document is not his to fill', async () => {
+      live = customerRow({ paymentTerms: 'CREDIT', crPhotoId: null });
+      expect((await submit({ customer: { notes: 'New note' } })).ok).toBe(true);
+    });
+
+    it('a cash customer’s still is', async () => {
+      live = customerRow({ crPhotoId: null });
+      expect(failed(await submit({ customer: { notes: 'New note' } })).fields).toHaveProperty(['customer.crPhoto']);
+    });
   });
 });
 

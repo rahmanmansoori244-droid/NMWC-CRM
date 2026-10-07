@@ -87,20 +87,29 @@ export function canUploadPhoto(role: Role, kind?: AttachmentKind): boolean {
  *     this entry keeps the lock-check coherent for UI.)
  *   - `crNumber` / `crNumberNorm`: locked for SALESMAN only when the customer
  *     is on CREDIT terms. CASH customers may still have a CR field-collected.
+ *   - `crPhoto` (owner decision 2, 2026-10-07): the CR document follows the CR
+ *     number. A photo goes live the moment it is attached (services/photos.ts)
+ *     and an update request cannot carry one for approval, so on a CREDIT
+ *     customer a salesman can neither attach nor remove it; a Manager or the
+ *     Steward changes it.
  *
  * Steward bypasses everything.
  */
 export function isFieldLocked(
-  field: 'legalName' | 'nmwcCode' | 'crNumber' | 'crNumberNorm',
+  field: 'legalName' | 'nmwcCode' | 'crNumber' | 'crNumberNorm' | 'crPhoto',
   user: SessionUser,
   customer: Pick<Customer, 'paymentTerms'>
 ): boolean {
   if (user.role === Role.STEWARD) return false;
   if (user.role !== Role.SALESMAN) return false;
   if (field === 'legalName' || field === 'nmwcCode') return true;
-  // crNumber / crNumberNorm
+  // crNumber / crNumberNorm / crPhoto
   return customer.paymentTerms === 'CREDIT';
 }
+
+/** Owner decision 2 (2026-10-07): the refusal, and the locked slot's words. */
+export const CR_DOCUMENT_LOCKED_MESSAGE =
+  'The CR document of a credit customer is changed by your manager or the Data Steward.';
 
 /**
  * Whether a Salesman can interact with a given branch (i.e. it is on his
