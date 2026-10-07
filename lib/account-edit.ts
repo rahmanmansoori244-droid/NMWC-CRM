@@ -289,7 +289,7 @@ export function routeMoveNotes(p: {
     notes.push(
       `${p.who} has ${p.inReview} request(s) in review. They stay with the same approvers — the Managers and Accountant of each customer's region — and are decided as before.${
         p.inReviewCreates?.count && !p.leaver
-          ? ` New-customer requests among them (${p.inReviewCreates.count}): if one is sent back to him, he cannot send it again from his new route — he withdraws it on Needs correction, and the salesman of ${p.inReviewCreates.routes.join(' or ') || 'its route'} adds the shop afresh.`
+          ? ` New-customer requests among them (${p.inReviewCreates.count}): if one is sent back to him, he cannot send it again from his new route — he opens it from Needs correction and withdraws it at the bottom of its page, and the salesman of ${p.inReviewCreates.routes.join(' or ') || 'its route'} adds the shop afresh.`
           : ''
       }`
     );

@@ -277,7 +277,7 @@ describe('what the Steward is told about open requests (routeMoveNotes)', () => 
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatch(/3 request\(s\) in review\. They stay with the same approvers/);
     expect(notes[0]).toMatch(
-      /New-customer requests among them \(2\): if one is sent back to him, he cannot send it again from his new route — he withdraws it on Needs correction, and the salesman of C4 adds the shop afresh\./
+      /New-customer requests among them \(2\): if one is sent back to him, he cannot send it again from his new route — he opens it from Needs correction and withdraws it at the bottom of its page, and the salesman of C4 adds the shop afresh\./
     );
     // Updates only: nothing about new-customer requests.
     expect(

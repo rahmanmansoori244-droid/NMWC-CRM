@@ -130,3 +130,20 @@ describe('nothing still says a request sent again is filed under his new route',
     );
   });
 });
+
+// Withdraw is on the request's own page (/customers/new?edit=…), which Needs
+// correction links to; Needs correction itself has no Withdraw. "He withdraws
+// it on Needs correction" sent the Steward, and the salesman, looking for a
+// button that is not there.
+describe('where he withdraws a new-customer request sent back after a move', () => {
+  const prose = (f: string) =>
+    readFileSync(f, 'utf8')
+      .replace(/\r?\n\s*(?:\/\/+|\*(?!\/))?/g, ' ')
+      .replace(/\s+/g, ' ');
+
+  it.each(['lib/account-edit.ts', 'docs/OPERATIONS.md'])('%s', (f) => {
+    const text = prose(f);
+    expect(text.match(/[^.]*withdraws? it on Needs correction[^.]*/i)?.[0]).toBeUndefined();
+    expect(text).toContain('opens it from Needs correction and withdraws it at the bottom of its page');
+  });
+});
