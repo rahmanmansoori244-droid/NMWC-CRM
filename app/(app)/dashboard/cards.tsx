@@ -100,7 +100,7 @@ export function KpiRow({ data, ctx }: { data: Insights; ctx: CardContext }) {
         value={fmt(pending)}
         sub={
           ctx.scoped
-            ? 'Waiting now at the Supervisor step, new-customer requests included'
+            ? 'Waiting now in your approval queue, new-customer requests included'
             : 'Waiting now at any step, every kind of request'
         }
         href={ctx.canOpenApprovals ? '/approvals' : undefined}
@@ -638,7 +638,9 @@ export function PipelineCard({ data, ctx }: { data: Insights; ctx: CardContext }
         p ? (
           <>
             Waiting now, whenever submitted: {fmt(sumKinds(p.waitingAnyStep))} at any step
-            {ctx.scoped ? `, ${fmt(sumKinds(p.waitingFirstStep))} of them at the Supervisor step` : ''}.
+            {/* Owner decision 3: a Manager's Supervisor-step count is his queue
+                (lib/insights/load.ts), not every request he can open. */}
+            {ctx.scoped ? `, ${fmt(sumKinds(p.waitingFirstStep))} of them in your approval queue` : ''}.
             {ctx.canOpenStatus && (
               <>
                 {' '}

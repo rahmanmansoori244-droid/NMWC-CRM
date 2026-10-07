@@ -33,7 +33,11 @@
  *   - closures and reactivations: branch requests on the branch's own region;
  *   - the request pipeline and "Pending approval": the /approvals/[id] gate
  *     (lib/service-status.ts countedInRegionsSql), states only, no timings —
- *     /status has those, under its own privacy rules;
+ *     /status has those, under its own privacy rules. A Manager's Supervisor
+ *     step ("Pending approval") is narrowed further to his /approvals queue
+ *     (owner decision 3, lib/manager-queue.ts): on a customer with branches in
+ *     several regions, a request about another region's branch is in the
+ *     pipeline he can open but not in the queue he decides;
  *   - everything branch-level (customers in view, gaps, the map): live branches of
  *     live customers, on the branch's own region and route.
  *
@@ -42,13 +46,16 @@
  * time buckets are computed once in a CTE and grouped by name, with the grain
  * and the Oman offset spliced from whitelisted literals (Prisma.raw), never bound
  * twice; fieldChanges is read only when jsonb_typeof says it is an array; no
- * findMany, no unbounded result (the map is capped at MAP.maxCells cells); no
- * cache of any kind — nothing here may be shared between viewers.
+ * findMany, no unbounded result (the map is capped at MAP.maxCells cells) — the
+ * one read of ids is a Manager's queue (queueIdsInView, lib/manager-queue.ts),
+ * his pending requests, used only as a filter; no cache of any kind — nothing
+ * here may be shared between viewers.
  * Customer.updatedAt is never read: it moves on imports, photo wiring and rescoring.
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { logger } from '../logger';
+import { managerQueueIds } from '../manager-queue';
 import type { Grain, InsightPeriod } from './period';
 import { MANAGER_PENDING_STEP_ROLES, MAP, NEW_CUSTOMERS, OMAN_OFFSET_HOURS, UPDATED_CUSTOMERS } from './policy';
 import { STATEMENT_TIMEOUT_MS, WAVE_DEADLINE_MS, withinDeadline } from './rollout';
@@ -312,8 +319,16 @@ SELECT agg.*, ${REGION_NAMES}
 /**
  * 5. Requests submitted in the window by kind and the state they are in now, and
  * what waits now. Direct writes never queue and are left out.
+ *
+ * `queueIds`: a Manager's /approvals queue at the Supervisor step
+ * (queueIdsInView). Given, the Supervisor step of "waitingFirstStep" counts only
+ * these, so his "Pending approval" is the number his queue shows. Null (the
+ * Steward's and the Viewer's company view): every request in scope.
  */
-function requestsSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
+function requestsSql(scope: ActiveScope, p: InsightPeriod, queueIds: readonly string[] | null = null): Prisma.Sql {
+  const inQueue = queueIds
+    ? Prisma.sql`AND (COALESCE(e."pendingRole"::text, 'SUPERVISOR') <> 'SUPERVISOR' OR e."id" = ANY(${[...queueIds]}::text[]))`
+    : Prisma.empty;
   return Prisma.sql`/* insights:requests */
 SELECT CASE WHEN e."process" = 'CREATE' THEN 'create'
             WHEN e."isReactivation" THEN 'reactivation'
@@ -323,7 +338,8 @@ SELECT CASE WHEN e."process" = 'CREATE' THEN 'create'
        count(*) FILTER (WHERE e."submittedAt" >= ${p.from} AND e."submittedAt" < ${p.to})::int AS "submitted",
        count(*) FILTER (WHERE e."state" = 'SUBMITTED')::int AS "waiting",
        count(*) FILTER (WHERE e."state" = 'SUBMITTED'
-                          AND COALESCE(e."pendingRole"::text, 'SUPERVISOR') = ANY(${[...MANAGER_PENDING_STEP_ROLES]}::text[]))::int AS "waitingFirstStep"
+                          AND COALESCE(e."pendingRole"::text, 'SUPERVISOR') = ANY(${[...MANAGER_PENDING_STEP_ROLES]}::text[])
+                          ${inQueue})::int AS "waitingFirstStep"
   FROM "CustomerEdit" e
  WHERE e."state" <> 'DRAFT'
    AND e."reviewedById" IS DISTINCT FROM e."submittedById"
@@ -361,6 +377,22 @@ UNION ALL
 SELECT 'cells', NULL::int, NULL::int,
        (SELECT count(*)::int FROM cells),
        (SELECT COALESCE(sum("n"), 0)::int FROM cells)`;
+}
+
+/**
+ * Owner decision 3 (2026-10-07): the ids in a region-scoped viewer's (a
+ * Manager's) /approvals queue at the Supervisor step, in the regions in view —
+ * lib/manager-queue.ts, the very `where` the queue and its count use, so
+ * "Pending approval" and the queue cannot disagree. Null for a company view.
+ * Under the statement timeout, like every statement here.
+ */
+async function queueIdsInView(scope: ActiveScope): Promise<string[] | null> {
+  if (scope.kind !== 'regions' || !scope.regionIds) return null;
+  const regionIds = scope.regionIds;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw(SET_TIMEOUT);
+    return managerQueueIds(tx, regionIds);
+  });
 }
 
 /** Exported for tests/unit/insights-load.test.ts and the integration suite, which run the SQL text. */
@@ -402,8 +434,8 @@ const SET_TIMEOUT = Prisma.raw(`SET LOCAL statement_timeout = ${Math.trunc(STATE
  * the connection, if it runs too long. SET LOCAL ends with the transaction, so
  * nothing leaks to the next user of a pooled connection.
  */
-async function run<T>(build: () => Prisma.Sql): Promise<T> {
-  const statement = build();
+async function run<T>(build: () => Prisma.Sql | Promise<Prisma.Sql>): Promise<T> {
+  const statement = await build();
   const [, rows] = await prisma.$transaction([prisma.$executeRaw(SET_TIMEOUT), prisma.$queryRaw<T>(statement)]);
   return rows;
 }
@@ -421,13 +453,14 @@ export async function loadInsights(scope: ActiveScope, period: InsightPeriod): P
   const cellDeg = cellDegFor(scope);
   // Every statement races the same deadline: a slow one fails its own section
   // and the page renders the rest, instead of every card waiting on it.
-  const timed = <T>(build: () => Prisma.Sql) => withinDeadline(run<T>(build), WAVE_DEADLINE_MS);
+  const timed = <T>(build: () => Prisma.Sql | Promise<Prisma.Sql>) => withinDeadline(run<T>(build), WAVE_DEADLINE_MS);
   const [state, created, updated, statusChanges, pipeline, heat] = await Promise.allSettled([
     timed<StateRow[]>(() => stateSql(scope, period)),
     timed<CreatedRow[]>(() => createdSql(scope, period)),
     timed<UpdatedRow[]>(() => updatedSql(scope, period)),
     timed<StatusRow[]>(() => statusSql(scope, period)),
-    timed<RequestRow[]>(() => requestsSql(scope, period)),
+    // A Manager's queue ids are read first, under the same deadline.
+    timed<RequestRow[]>(async () => requestsSql(scope, period, await queueIdsInView(scope))),
     timed<HeatRow[]>(() => heatSql(scope, cellDeg)),
   ]);
   return {
