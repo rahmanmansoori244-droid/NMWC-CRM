@@ -12,6 +12,7 @@
  * (withdrawCreateAction checks no route).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const EDIT_ID = 'ckzzzzzzzz0000zzzzzzzzzzzz';
 
@@ -98,5 +99,34 @@ describe('a new-customer request started on another route is not re-filed on his
       data: { editId: EDIT_ID, state: 'DRAFT' },
     });
     expect(h.tx).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The rule before the security review, still written in the import's guard (4):
+// the next person to change that guard reads its comment first.
+describe('nothing still says a request sent again is filed under his new route', () => {
+  /** The text with comment markers and line breaks folded, so a sentence reads whole. */
+  const prose = (f: string) =>
+    readFileSync(f, 'utf8')
+      .replace(/\r?\n\s*(?:\/\/+|\*(?!\/))?/g, ' ')
+      .replace(/\s+/g, ' ');
+
+  it.each([
+    'services/imports.ts',
+    'services/creates.ts',
+    'services/users.ts',
+    'lib/account-edit.ts',
+    'docs/OPERATIONS.md',
+    'docs/import-templates/README.md',
+  ])('%s', (f) => {
+    // The sentence it was found in, not the whole file, when it fails.
+    expect(prose(f).match(/[^.]*files? (them|it) under (the|his) new route[^.]*/i)?.[0]).toBeUndefined();
+  });
+
+  it("the import's guard (4) says what services/creates.ts does now", () => {
+    const guard = prose('services/imports.ts').match(/\(4\) His new-customer requests[^]*?\/users[^.]*\./)?.[0];
+    expect(guard).toMatch(
+      /not in review .* services\/creates\.ts refuses to save or send one again from another route, so after the move he could only withdraw them\./
+    );
   });
 });

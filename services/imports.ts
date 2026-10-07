@@ -764,8 +764,9 @@ async function uploadAccountMasterCore(
         }
         // (4) His new-customer requests that are not in review (drafts, or sent
         // back) and were started on another route than the one this row leaves
-        // him with: sent again, services/creates.ts would file them under the new
-        // route. /users can withdraw them with the change; the import cannot.
+        // him with: services/creates.ts refuses to save or send one again from
+        // another route, so after the move he could only withdraw them. /users
+        // can withdraw them with the change; the import cannot.
         if (existing?.isActive && (existing.ownedRouteId ?? null) !== ownedRouteId) {
           const stranded = await prisma.customerEdit.count({
             where: {
