@@ -135,7 +135,10 @@ async function submitCreateOnce(
   session: Awaited<ReturnType<typeof requireUser>>,
   submissionId: string | undefined
 ): Promise<SubmitReceipt> {
-  const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
+  // Launch fix: a draft save spends its own bucket, not the one submits share
+  // (services/edits.ts says why). Read off the body, as the schema has not run.
+  const draftSave = (input as { isDraft?: unknown } | undefined)?.isDraft === true;
+  const lim = await checkLimit(`${draftSave ? 'edit-draft' : 'edit'}:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
     throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
   }

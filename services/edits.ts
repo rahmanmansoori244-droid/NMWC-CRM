@@ -342,7 +342,12 @@ async function submitEditOnce(
   session: Awaited<ReturnType<typeof requireUser>>,
   submissionId: string | undefined
 ): Promise<SubmitReceipt> {
-  const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
+  // Launch fix: a draft save has its own bucket. Every save spent one of the 60
+  // an hour the submits share, so a salesman who saved often was told "Slow
+  // down" when he came to submit. Read off the body before the schema runs: a
+  // body that says draft can write nothing but a draft.
+  const draftSave = (input as { isDraft?: unknown } | undefined)?.isDraft === true;
+  const lim = await checkLimit(`${draftSave ? 'edit-draft' : 'edit'}:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
     throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
   }
@@ -780,8 +785,9 @@ async function submitEditOnce(
     paymentTermsAtSubmit: customer.paymentTerms,
     currentStepIndex: 0,
     // INVARIANT: `cycle` starts at 1 and is never bumped today, because the only
-    // way to re-submit after NEEDS_CORRECTION is a brand-new edit row (this action
-    // always creates a new CustomerEdit). The step-back cascade + separation-of-
+    // way to re-submit after NEEDS_CORRECTION is a brand-new edit row (a submit
+    // always creates a new CustomerEdit; only a DRAFT is saved over in place, and
+    // a draft is never submitted from). The step-back cascade + separation-of-
     // duty queries key off `cycle`; if the creation-flow increment adds a
     // "re-submit the SAME create-request" path, it MUST increment `cycle` there,
     // or stale prior-cycle EditApproval rows will poison the reject loop guard.
@@ -930,7 +936,13 @@ async function submitEditOnce(
       ...pendingFields,
     };
     try {
-      if (!answeredEnv) {
+      if (isDraft) {
+        edit = await saveUpdateDraft(me.id, customer.id, {
+          fieldChanges: submitted.fieldChanges,
+          submissionId,
+          ...chainFields,
+        });
+      } else if (!answeredEnv) {
         edit = await prisma.customerEdit.create({ data: submitted });
       } else {
         // F13: the trail on each request it answers commits with it, or neither does.
@@ -1031,6 +1043,58 @@ async function submitEditOnce(
     submittedAt: edit.submittedAt?.toISOString() ?? null,
     replayed: false,
   };
+}
+
+/**
+ * Launch fix: ONE saved draft per person per customer, saved over in place.
+ * "Save draft" inserted a new DRAFT row every time; nothing reads one back (the
+ * form keeps its draft on the phone), and the customer's Recent activity listed
+ * each as "submitted N change(s)". Serialized per person and customer with a
+ * transaction-scoped advisory lock (lib/create-guards.ts takes them the same
+ * way), so two saves at once cannot both insert. A submit is always a new row:
+ * a draft never becomes a request, so the cycle invariant in submitEditOnce holds.
+ */
+async function saveUpdateDraft(
+  submittedById: string,
+  customerId: string,
+  data: Pick<
+    Prisma.CustomerEditUncheckedCreateInput,
+    | 'fieldChanges'
+    | 'submissionId'
+    | 'process'
+    | 'approvalChain'
+    | 'paymentTermsAtSubmit'
+    | 'currentStepIndex'
+    | 'cycle'
+  >
+) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:edit-draft:${submittedById}:${customerId}`}, 42))`;
+    const saved = await tx.customerEdit.findFirst({
+      where: {
+        submittedById,
+        customerId,
+        state: EditState.DRAFT,
+        process: EditProcess.UPDATE,
+        target: EditTarget.CUSTOMER,
+        isReactivation: false,
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    });
+    if (saved) return tx.customerEdit.update({ where: { id: saved.id }, data });
+    return tx.customerEdit.create({
+      data: {
+        ...data,
+        target: EditTarget.CUSTOMER,
+        customerId,
+        state: EditState.DRAFT,
+        submittedById,
+        submittedAt: null,
+        attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+      },
+    });
+  });
 }
 
 async function applyEditChanges(

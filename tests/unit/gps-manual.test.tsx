@@ -289,6 +289,8 @@ describe('41 — the approval queue flags it before a bulk approve', () => {
     const src = read('app/(app)/approvals/page.tsx');
     expect(src).toMatch(/manualGps:\s*hasManualGps\(e\.fieldChanges\)/);
     expect(src).toMatch(/changesCount\s*=\s*countFieldChanges\(e\.fieldChanges\)/);
-    expect(read('app/(app)/customers/[id]/page.tsx')).toMatch(/\{countFieldChanges\(e\.fieldChanges\)\} change\(s\)/);
+    // The profile's Recent activity counts through it too (launch fix: its own module).
+    expect(read('app/(app)/customers/[id]/page.tsx')).toMatch(/\{activityLine\(e\)\}/);
+    expect(read('app/(app)/customers/[id]/activity.ts')).toMatch(/\$\{countFieldChanges\(e\.fieldChanges\)\} change\(s\)/);
   });
 });

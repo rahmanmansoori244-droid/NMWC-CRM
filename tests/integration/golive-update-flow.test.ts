@@ -253,7 +253,7 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     await purgeEditApprovals(prisma, { where: { editId: { in: editIds } } });
     await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
     await purgeAuditLog(prisma, { where: { actorId: { in: ids.userIds } } });
-    await prisma.rateLimit.deleteMany({ where: { key: { in: ids.userIds.flatMap((u) => [`edit:${u}`, `photo:${u}`]) } } });
+    await prisma.rateLimit.deleteMany({ where: { key: { in: ids.userIds.flatMap((u) => [`edit:${u}`, `edit-draft:${u}`, `photo:${u}`]) } } });
     // Photo slots reference attachments (and vice versa): clear the slots first.
     await prisma.customer.updateMany({ where: { id: { in: allCustomerIds } }, data: { crPhotoId: null } });
     await prisma.branch.updateMany({ where: { customerId: { in: allCustomerIds } }, data: { shopPhotoId: null, signboardPhotoId: null } });
@@ -697,6 +697,32 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect((await edits.approveEditAction(fd2)).ok).toBe(true);
     const final = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
     expect(final.contactRole).toBe('Owner / Partner');
+  });
+
+  it('launch fix: Save draft keeps one draft per salesman per customer, saved over in place', async () => {
+    asSalesman();
+    const customerId = ids.customerIds[1]!;
+    const branchId = ids.branchIds[`${sfx}002`]!;
+    const drafts = () =>
+      prisma.customerEdit.findMany({
+        where: { submittedById: ids.salesmanId, customerId, state: 'DRAFT' },
+        select: { id: true, fieldChanges: true },
+      });
+    const save = async (notes: string) => {
+      const res = await edits.submitEditAction(
+        await editPayload(prisma, { customerId, isDraft: true, customer: { notes }, branches: [{ branchId }] })
+      );
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      return res.ok ? res.data.editId : '';
+    };
+    const first = await save('First draft');
+    const second = await save('Second draft');
+    expect(second).toBe(first);
+    const rows = await drafts();
+    expect(rows.map((r) => r.id)).toEqual([first]);
+    expect(rows[0]!.fieldChanges).toEqual([{ field: 'customer.notes', before: null, after: 'Second draft' }]);
+    // And no other draft of this customer was written by either save.
+    expect(await prisma.customerEdit.count({ where: { customerId, state: 'DRAFT' } })).toBe(1);
   });
 
   it('a salesman from another route cannot edit the customer at all', async () => {

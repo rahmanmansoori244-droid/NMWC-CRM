@@ -11,7 +11,7 @@ import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
 import { LocationLinks, PhoneLink } from '@/components/nmwc/ContactLinks';
-import { countFieldChanges } from '@/lib/gps-manual';
+import { activityLine } from './activity';
 import { ArchiveCustomerButton } from './ArchiveCustomerButton';
 import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil } from 'lucide-react';
 
@@ -43,6 +43,9 @@ export default async function CustomerProfilePage({
         },
       },
       edits: {
+        // Launch fix: a draft was never sent — and each Save draft by anyone
+        // used to be listed here, timed "draft".
+        where: { state: { not: 'DRAFT' } },
         orderBy: { createdAt: 'desc' },
         take: 5,
         include: {
@@ -209,10 +212,7 @@ export default async function CustomerProfilePage({
               {customer.edits.map((e) => (
                 <li key={e.id} className="flex items-start justify-between gap-3 py-2">
                   <div className="min-w-0">
-                    <div className="font-medium text-slate-900">
-                      {e.submittedBy.fullName} submitted{' '}
-                      {countFieldChanges(e.fieldChanges)} change(s)
-                    </div>
+                    <div className="font-medium text-slate-900">{activityLine(e)}</div>
                     <div className="text-sm text-slate-500">
                       {e.submittedAt?.toLocaleString('en-GB') ?? 'draft'}
                     </div>

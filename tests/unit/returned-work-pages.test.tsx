@@ -12,6 +12,8 @@
  *     the profile, a new-customer request its create form.
  *   - Nothing says "your supervisor" where a Manager decides: /rejected's
  *     subtitle and a pending reactivation on Work.
+ *   - The profile's Recent activity lists no drafts, and words a new customer,
+ *     a close and a reactivation as what they are.
  *
  * Which rows are still waiting is proven against Postgres in
  * tests/integration/golive-update-flow.test.ts; here the query is mocked.
@@ -179,3 +181,43 @@ describe('/rejected', () => {
   });
 });
 
+describe("the customer profile's Recent activity", () => {
+  it('lists no drafts, and says what a new customer, a close and a reactivation were', async () => {
+    const edit = (over: Record<string, unknown>) => ({
+      id: Math.random().toString(36).slice(2),
+      process: 'UPDATE',
+      target: 'CUSTOMER',
+      isReactivation: false,
+      state: 'APPROVED',
+      fieldChanges: [],
+      submittedAt: new Date('2026-10-01T08:00:00Z'),
+      submittedBy: { fullName: 'Said Ali', username: 'mct01' },
+      reviewedBy: null,
+      ...over,
+    });
+    h.customer = {
+      id: 'c1', legalName: 'Al Noor Trading', nmwcCode: 'NMWC-2026-000001', paymentTerms: 'CASH', status: 'ACTIVE',
+      completenessScore: 80, crNumber: null, notes: null, crPhoto: null, channel: null, subChannel: null,
+      primaryPhone: null, altPhone: null, contactPerson: null, contactRole: null, branches: [],
+      edits: [
+        // A customer created by the approval chain: fieldChanges holds only a GPS marker.
+        edit({ process: 'CREATE', fieldChanges: [{ field: 'draft.0.gps', before: null, after: { lat: 1, lng: 2 } }] }),
+        edit({ target: 'BRANCH', state: 'NEEDS_CORRECTION' }),
+        edit({ target: 'BRANCH', isReactivation: true, state: 'SUBMITTED' }),
+        edit({ fieldChanges: [{ field: 'customer.notes', before: null, after: 'x' }] }),
+      ],
+    };
+    const { default: Page } = await import('@/app/(app)/customers/[id]/page');
+    render(await Page({ params: Promise.resolve({ id: 'c1' }) }));
+    // Drafts are left out by the query itself.
+    expect((h.customerArgs as { include: { edits: { where: unknown } } }).include.edits.where).toEqual({
+      state: { not: 'DRAFT' },
+    });
+    expect(screen.getByText('Said Ali requested this new customer')).toBeTruthy();
+    expect(screen.getByText('Said Ali asked to mark a branch closed')).toBeTruthy();
+    expect(screen.getByText('Said Ali asked to reactivate a branch')).toBeTruthy();
+    expect(screen.getByText('Said Ali submitted 1 change(s)')).toBeTruthy();
+    expect(screen.queryByText(/submitted 0 change/)).toBeNull();
+    expect(screen.queryByText('draft')).toBeNull();
+  });
+});
