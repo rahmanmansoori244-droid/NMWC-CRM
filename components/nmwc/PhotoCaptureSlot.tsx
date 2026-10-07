@@ -163,6 +163,15 @@ export const UPLOAD_SIGNED_OUT =
   'You need to sign in again, so the photo is not sent yet. Keep this page open, sign in in another tab, then tap Retry upload.';
 
 /**
+ * A step that got no answer on all three tries: the connection dropped. The
+ * slot showed the error's own text, which for fetch is the browser's ("Failed
+ * to fetch" on Chrome, "Load failed" on Safari) and for the PUT was "Network
+ * error"; neither said the photo is kept or what to do.
+ */
+export const UPLOAD_NO_CONNECTION =
+  'No connection, so the photo is not sent yet. It is kept on this phone: check the signal, then tap Retry upload.';
+
+/**
  * Presign's 429 (PHOTO_LIMIT: 120 an hour, one back every 30 s). A wait up to
  * this long is waited out and the step tried again, as a dropped connection is;
  * a longer one, or a third refusal, ends with how long to wait.
@@ -248,13 +257,17 @@ async function readRetryAfter(res: Response): Promise<number> {
   return typeof sec === 'number' && Number.isFinite(sec) && sec > 0 ? Math.ceil(sec) : RATE_LIMIT_MAX_WAIT_S;
 }
 
-function isRetryable(err: unknown): boolean {
-  if (err instanceof HttpError) return err.status >= 500;
+/** A dropped connection, as fetch and putWithProgress report one. */
+function isNoConnection(err: unknown): boolean {
   // `fetch` throws a TypeError for network failures and CORS issues.
   if (err instanceof TypeError) return true;
   // XHR network error (we surface as generic Error with the marker message).
-  if (err instanceof Error && err.message === 'Network error') return true;
-  return false;
+  return err instanceof Error && err.message === 'Network error';
+}
+
+function isRetryable(err: unknown): boolean {
+  if (err instanceof HttpError) return err.status >= 500;
+  return isNoConnection(err);
 }
 
 /**
@@ -598,8 +611,15 @@ export function PhotoCaptureSlot({
       onChange?.(next);
     } catch (e) {
       // The attach's failures arrive here already worded (above). A 401 here is
-      // presign's or finalize's: the session ended, not the step.
-      setError(e instanceof HttpError && e.status === 401 ? UPLOAD_SIGNED_OUT : (e as Error).message);
+      // presign's or finalize's: the session ended, not the step. A dropped
+      // connection, three times, is said in the app's words, not the browser's.
+      setError(
+        e instanceof HttpError && e.status === 401
+          ? UPLOAD_SIGNED_OUT
+          : isNoConnection(e)
+            ? UPLOAD_NO_CONNECTION
+            : (e as Error).message
+      );
       setProgress('error');
     }
   }

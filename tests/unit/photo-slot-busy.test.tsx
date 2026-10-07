@@ -30,6 +30,7 @@ import {
   SLOW_LINK_MESSAGE,
   ATTACH_NO_ANSWER,
   UPLOAD_SIGNED_OUT,
+  UPLOAD_NO_CONNECTION,
   RATE_LIMIT_MAX_WAIT_S,
   rateLimitedMessage,
   rateLimitWaitMessage,
@@ -103,7 +104,7 @@ class FakeXHR {
  */
 /** A reply of the test's own: presign's or finalize's refusals (`{ error, message }`). */
 type Answer = { status: number; body: unknown; headers?: Record<string, string> };
-type Step = 'answer' | 'stall' | 'stallBody' | 'refuse' | Answer;
+type Step = 'answer' | 'stall' | 'stallBody' | 'refuse' | 'drop' | Answer;
 type Reply = { ok: boolean; code?: string; message?: string; fields?: Record<string, string> };
 type RouteRefusal = { status: number; refusal: { ok: false; code: string; message: string } };
 let presignPlan: Step[] = [];
@@ -141,6 +142,8 @@ const serveChain = () =>
     const step = (isPresign ? presignPlan : finalizePlan).shift() ?? 'answer';
     if (step === 'stall') return stall();
     if (step === 'refuse') return new Response('{}', { status: 400, headers: JSON_HEADERS });
+    // No network: fetch rejects with the browser's own TypeError.
+    if (step === 'drop') throw new TypeError('Failed to fetch');
     if (typeof step === 'object') {
       return new Response(JSON.stringify(step.body), { status: step.status, headers: { ...JSON_HEADERS, ...step.headers } });
     }
@@ -943,6 +946,62 @@ describe("presign's and finalize's refusals are answers too (launch review)", ()
     expect(rateLimitedMessage(600)).toMatch(/Wait 10 minutes/);
     expect(count('/api/photos/presign')).toBe(1);
   });
+});
+
+describe("a connection that drops at presign or finalize says so in the app's own words", () => {
+  // fetch rejects a request with no network with the browser's own TypeError,
+  // and after the third try the slot showed its text: "Failed to fetch" on
+  // Chrome, "Load failed" on Safari. Nothing in it says the photo is kept or
+  // what to do.
+  it.each(['presign', 'finalize'] as const)(
+    '%s: three drops end in the no-connection line, and Retry upload sends the kept photo',
+    (step) =>
+      withFakeTimers(async () => {
+        uploadable();
+        if (step === 'presign') presignPlan = ['drop', 'drop', 'drop'];
+        else finalizePlan = ['drop', 'drop', 'drop'];
+        const onChange = vi.fn();
+        const view = render(<PhotoCaptureSlot kind="SHOP" onChange={onChange} />);
+        pick(view.container);
+        if (step === 'finalize') {
+          await settleUntil(() => xhrs.length === 1);
+          act(() => xhrs[0]!.answer());
+        }
+        await settleUntil(() => count(`/api/photos/${step}`) === 1);
+        await advance(500);
+        await settleUntil(() => count(`/api/photos/${step}`) === 2);
+        await advance(1500);
+        await settleUntil(() => count(`/api/photos/${step}`) === 3);
+        await settleUntil(() => retryButton() !== null);
+        expect(screen.getByText(UPLOAD_NO_CONNECTION)).toBeTruthy();
+        expect(screen.queryByText(/Failed to fetch/)).toBeNull();
+        expect(UPLOAD_NO_CONNECTION).toMatch(/kept on this phone/);
+        expect(UPLOAD_NO_CONNECTION).toMatch(/tap Retry upload\.$/);
+
+        fireEvent.click(retryButton()!);
+        const put = step === 'presign' ? 0 : 1;
+        await settleUntil(() => xhrs.length === put + 1);
+        act(() => xhrs[put]!.answer());
+        await settleUntil(() => onChange.mock.calls.length === 1);
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: `att-${put + 1}` }));
+        expect(screen.queryByText(UPLOAD_NO_CONNECTION)).toBeNull();
+      })
+  );
+
+  it('the same for a PUT whose connection drops three times', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      const view = render(<PhotoCaptureSlot kind="SHOP" />);
+      pick(view.container);
+      for (const [i, backoff] of [[0, 500], [1, 1500], [2, 0]] as const) {
+        await settleUntil(() => xhrs.length === i + 1);
+        act(() => xhrs[i]!.onerror?.());
+        await advance(backoff);
+      }
+      await settleUntil(() => retryButton() !== null);
+      expect(screen.getByText(UPLOAD_NO_CONNECTION)).toBeTruthy();
+      expect(screen.queryByText('Network error')).toBeNull();
+    }));
 });
 
 describe('Remove', () => {
