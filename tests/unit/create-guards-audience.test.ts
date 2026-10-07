@@ -11,12 +11,16 @@
  *     it, unless it is in review.
  *   - At finalize (no caller) the approver at the last step reads it, and is
  *     told to reject — not to "open that customer instead".
+ *   - (review) A draft or sent-back request of a salesman who has left no
+ *     longer blocks the shop: nobody else can send or withdraw it. One in
+ *     review still does, and its refusal sends him to his supervisor — the
+ *     salesman who sent it cannot help.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { assertNoExactCreateDuplicate } from '@/lib/create-guards';
 
 type LiveRow = { nmwcCode: string; legalName: string; routeIds: string[] };
-type OpenRow = { state: string; submittedById: string; fullName: string };
+type OpenRow = { state: string; submittedById: string; fullName: string; active?: boolean };
 
 /**
  * A transaction stand-in that honours the guard's `select`: the matching
@@ -38,14 +42,26 @@ function fakeTx(live: LiveRow | null, open: OpenRow | null = null) {
     updatedAt: new Date('2026-10-01T06:00:00Z'),
     submittedBy: { fullName: open.fullName },
   };
+  // The guard's own rule for whose request counts, applied as Postgres would:
+  // in review, or its salesman still active.
+  type Or = Array<{ state?: string; submittedBy?: { isActive: boolean } }>;
+  const counts = (a: { where: { edit: { OR?: Or } } }) =>
+    !!open &&
+    (a.where.edit.OR ?? [{}]).some(
+      (c) =>
+        (c.state === undefined || c.state === open.state) &&
+        (c.submittedBy === undefined || c.submittedBy.isActive === (open.active ?? true))
+    );
   return {
     customer: {
       findFirst: vi.fn(async (a: { select: Record<string, unknown> }) => (live ? shape(live, a.select) : null)),
       findMany: vi.fn(async (a: { select: Record<string, unknown> }) => (live ? [shape(live, a.select)] : [])),
     },
     editCustomerDraft: {
-      findFirst: vi.fn(async () => (edit ? { edit } : null)),
-      findMany: vi.fn(async () => (edit ? [{ legalName: 'Al Noor Shop', edit }] : [])),
+      findFirst: vi.fn(async (a: { where: { edit: { OR?: Or } } }) => (edit && counts(a) ? { edit } : null)),
+      findMany: vi.fn(async (a: { where: { edit: { OR?: Or } } }) =>
+        edit && counts(a) ? [{ legalName: 'Al Noor Shop', edit }] : []
+      ),
     },
   } as never;
 }
@@ -97,7 +113,6 @@ describe('an open request in the way', () => {
   it("someone else's: whose, and where it stands", async () => {
     const cases = [
       ['DRAFT', 'saved as a draft'],
-      ['SUBMITTED', 'in review'],
       ['NEEDS_CORRECTION', 'sent back to them for correction'],
     ] as const;
     for (const [state, where] of cases) {
@@ -107,6 +122,27 @@ describe('an open request in the way', () => {
         message: `Huda Al Balushi's new-customer request with this CR number is already in progress (${where}). Ask them, or your supervisor, before adding it again.`,
       });
     }
+    // In review the approvers have it: "ask them" was advice he could not take.
+    const inReview = fakeTx(null, { state: 'SUBMITTED', submittedById: 'u-huda', fullName: 'Huda Al Balushi' });
+    await expect(assertNoExactCreateDuplicate(inReview, { ...cr, ...salesman })).rejects.toMatchObject({
+      code: 'DUPLICATE_CR',
+      message:
+        "Huda Al Balushi's new-customer request with this CR number is already in review. Ask your supervisor before adding it again.",
+    });
+  });
+
+  it('one left as a draft or sent back by a salesman who has left blocks nothing; one in review still does', async () => {
+    for (const state of ['DRAFT', 'NEEDS_CORRECTION']) {
+      for (const args of [cr, triple]) {
+        const tx = fakeTx(null, { state, submittedById: 'u-left', fullName: 'Left Salesman', active: false });
+        await expect(assertNoExactCreateDuplicate(tx, { ...args, ...salesman })).resolves.toBeUndefined();
+      }
+    }
+    const inReview = fakeTx(null, { state: 'SUBMITTED', submittedById: 'u-left', fullName: 'Left Salesman', active: false });
+    await expect(assertNoExactCreateDuplicate(inReview, { ...triple, ...salesman })).rejects.toMatchObject({
+      code: 'DUPLICATE_CUSTOMER',
+      message: expect.stringMatching(/is already in review\. Ask your supervisor before adding it again\.$/),
+    });
   });
 
   it('his own draft or sent-back request: he can carry on or withdraw it; one in review he cannot', async () => {

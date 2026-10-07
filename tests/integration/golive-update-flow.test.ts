@@ -1826,4 +1826,49 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect((await prisma.customer.findUniqueOrThrow({ where: { id: customerId } })).primaryPhone).toBe('+96892220000');
   });
 
+  it("launch fix: a departed salesman's new-customer draft or sent-back request no longer blocks the shop; one in review still does", async () => {
+    const guards = await import('@/lib/create-guards');
+    const { normalizeCR } = await import('@/lib/cr');
+    const cr = `QL${sfx}`.toUpperCase();
+    const left = await prisma.customerEdit.create({
+      data: {
+        target: 'CUSTOMER',
+        process: 'CREATE',
+        state: 'DRAFT',
+        submittedById: ids.otherSalesmanId,
+        fieldChanges: [],
+        attachmentChanges: [],
+        customerDraft: {
+          create: { legalName: `ZZ Left ${sfx}`, paymentTerms: 'CASH', crNumber: cr, crNumberNorm: normalizeCR(cr) },
+        },
+      },
+    });
+    const check = () =>
+      prisma.$transaction(async (tx) => {
+        await guards.assertNoExactCreateDuplicate(tx, {
+          crNumberNorm: normalizeCR(cr),
+          legalName: `ZZ Mine ${sfx}`,
+          primaryPhoneNorm: null,
+          regionIds: [ids.regionId],
+          includeOpenRequests: true,
+          callerId: ids.salesmanId,
+          callerRouteId: ids.routeId,
+        });
+      });
+    try {
+      await expect(check()).rejects.toMatchObject({ code: 'DUPLICATE_CR' });
+      await prisma.user.update({ where: { id: ids.otherSalesmanId }, data: { isActive: false } });
+      await expect(check()).resolves.toBeUndefined();
+      await prisma.customerEdit.update({ where: { id: left.id }, data: { state: 'NEEDS_CORRECTION', submittedAt: new Date() } });
+      await expect(check()).resolves.toBeUndefined();
+      await prisma.customerEdit.update({ where: { id: left.id }, data: { state: 'SUBMITTED' } });
+      await expect(check()).rejects.toMatchObject({
+        code: 'DUPLICATE_CR',
+        message: `QB Salesman ${sfx}'s new-customer request with this CR number is already in review. Ask your supervisor before adding it again.`,
+      });
+    } finally {
+      await prisma.user.update({ where: { id: ids.otherSalesmanId }, data: { isActive: true } });
+      await purgeCustomerEdits(prisma, { where: { id: left.id } });
+    }
+  });
 });

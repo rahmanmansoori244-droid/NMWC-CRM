@@ -96,6 +96,11 @@ export async function lockCreateIdentity(
  * (services/creates.ts withdrawCreateAction). At finalize (no caller) it is
  * the approver at the last step, who is told to reject, not to "open that
  * customer instead".
+ *
+ * Launch fix (review): a draft or sent-back request of a salesman who has left
+ * (his account disabled) no longer counts. Only its own salesman can send it or
+ * withdraw it, so it held that CR number and shop for everyone, for good. One in
+ * review still counts: an approver can decide it.
  */
 export async function assertNoExactCreateDuplicate(
   tx: Prisma.TransactionClient,
@@ -118,6 +123,12 @@ export async function assertNoExactCreateDuplicate(
   }
 ): Promise<void> {
   const openStates = [EditState.DRAFT, EditState.SUBMITTED, EditState.NEEDS_CORRECTION];
+  const openEdit: Prisma.CustomerEditWhereInput = {
+    state: { in: openStates },
+    process: EditProcess.CREATE,
+    OR: [{ state: EditState.SUBMITTED }, { submittedBy: { isActive: true } }],
+    ...(args.excludeEditId ? { id: { not: args.excludeEditId } } : {}),
+  };
   const openSelect = {
     edit: {
       select: {
@@ -152,12 +163,11 @@ export async function assertNoExactCreateDuplicate(
   const othersRequest = (open: OpenEdit, what: string) => {
     const by = open.edit.submittedBy?.fullName;
     if (!args.callerId || !by) return `Another new-customer request ${what} is already in progress.`;
-    const where =
-      open.edit.state === EditState.DRAFT
-        ? 'saved as a draft'
-        : open.edit.state === EditState.NEEDS_CORRECTION
-          ? 'sent back to them for correction'
-          : 'in review';
+    // In review, the approvers have it: he cannot help, and may have left.
+    if (open.edit.state === EditState.SUBMITTED) {
+      return `${by}'s new-customer request ${what} is already in review. Ask your supervisor before adding it again.`;
+    }
+    const where = open.edit.state === EditState.DRAFT ? 'saved as a draft' : 'sent back to them for correction';
     return `${by}'s new-customer request ${what} is already in progress (${where}). Ask them, or your supervisor, before adding it again.`;
   };
   // Launch fix: at submit, a live customer is named only when he can open it.
@@ -192,11 +202,7 @@ export async function assertNoExactCreateDuplicate(
       const openCr = await tx.editCustomerDraft.findFirst({
         where: {
           crNumberNorm: args.crNumberNorm,
-          edit: {
-            state: { in: openStates },
-            process: EditProcess.CREATE,
-            ...(args.excludeEditId ? { id: { not: args.excludeEditId } } : {}),
-          },
+          edit: openEdit,
         },
         select: openSelect,
       });
@@ -239,12 +245,7 @@ export async function assertNoExactCreateDuplicate(
       const openPhoneRegion = await tx.editCustomerDraft.findMany({
         where: {
           primaryPhoneNorm: args.primaryPhoneNorm,
-          edit: {
-            state: { in: openStates },
-            process: EditProcess.CREATE,
-            branchDrafts: { some: { regionId: { in: args.regionIds } } },
-            ...(args.excludeEditId ? { id: { not: args.excludeEditId } } : {}),
-          },
+          edit: { ...openEdit, branchDrafts: { some: { regionId: { in: args.regionIds } } } },
         },
         select: { legalName: true, ...openSelect },
       });
