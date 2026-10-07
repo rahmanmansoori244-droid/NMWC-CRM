@@ -393,7 +393,8 @@ describe('owner decision 6: the drain e-mails what the sweep wrote, to those who
     h.edits = [
       overdue('sup', 'SUPERVISOR', ['r1']),
       overdue('sup-2x', 'SUPERVISOR', ['r1'], second),
-      // A customer with shops in two regions: both regions' Managers.
+      // A customer with shops in two regions: only the Managers of the region the
+      // request is about (owner decision 3, 7 Oct), never the other region's.
       overdue('two', 'SUPERVISOR', ['r1', 'r2']),
       overdue('two-2x', 'SUPERVISOR', ['r1', 'r2'], second),
       overdue('orphan', 'SUPERVISOR', ['r9']),
@@ -426,8 +427,8 @@ describe('owner decision 6: the drain e-mails what the sweep wrote, to those who
     expect(Object.fromEntries(emailed)).toEqual({
       sup: ['mgr-r1a', 'mgr-r1b'],
       'sup-2x': ['gm', 'mgr-r1a', 'mgr-r1b'],
-      two: ['mgr-r1a', 'mgr-r1b', 'mgr-r2'],
-      'two-2x': ['gm', 'mgr-r1a', 'mgr-r1b', 'mgr-r2'],
+      two: ['mgr-r1a', 'mgr-r1b'],
+      'two-2x': ['gm', 'mgr-r1a', 'mgr-r1b'],
       orphan: ['gm'],
       acc: ['fm', 'gm'],
       fm: ['gm'],
