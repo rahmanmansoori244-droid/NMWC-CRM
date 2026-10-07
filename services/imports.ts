@@ -2588,16 +2588,26 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // states a status on the full lane, so a fixed row on the branch-only
             // lane closed a customer's last open branch and left it ACTIVE. A new
             // customer takes the file's status above. An existing one can move only
-            // when a row states a status, or when it is not ACTIVE (a branch this
-            // load creates without one is ACTIVE): otherwise nothing is read.
-            if (existing && (resolvedBranches.some((r) => r.status !== null) || existing.status !== 'ACTIVE')) {
+            // when a row states a status, when the file states the customer's own
+            // (the upsert and the block above write it), or when it is not ACTIVE (a
+            // branch this load creates without one is ACTIVE): otherwise nothing is
+            // read. The status read under the lock before this group wrote anything
+            // is passed on, so whichever of them moved it, the move is one audit row
+            // from the real prior status (fixer review: the block above wrote the
+            // file's status unaudited, and a CLOSE row then began at the file's).
+            if (
+              existing &&
+              (resolvedBranches.some((r) => r.status !== null) ||
+                (fullLane && statedStatus !== null && statedStatus !== existing.status) ||
+                existing.status !== 'ACTIVE')
+            ) {
               const statusBefore = new Map(existing.branches.map((b) => [b.id, b.status] as const));
               await followBranchStatus(
                 tx,
                 env,
                 customerId,
                 branchStatusEvents(statusBefore, await liveBranchStatuses(tx, customerId)),
-                { actorId: me.id, via: `import ${batchId}` }
+                { actorId: me.id, via: `import ${batchId}`, statusBefore: existing.status }
               );
             }
             // What a fixed row asked for and did not get: branch only writes none

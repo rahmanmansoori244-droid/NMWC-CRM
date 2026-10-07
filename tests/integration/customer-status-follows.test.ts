@@ -15,6 +15,15 @@
  *   - every move is an audit row on the customer (CLOSE / REACTIVATE), and an
  *     archived customer is never touched.
  *
+ * Fixer review (2026-10-07):
+ *   - a customer with shops in two regions closes when its last open shop
+ *     closes, whatever region the closed one is in;
+ *   - closing a suspended shop while another stays suspended closes no open shop
+ *     and moves nothing; closing the last one closes the customer;
+ *   - the full import lane: the customer status the file states is audited with
+ *     the rest, one CLOSE row from the status before the load;
+ *   - a duplicate merge that moves an open shop onto a CLOSED winner reopens it.
+ *
  * GATED: RUN_CUSTOMER_STATUS=1. Synthetic rows only (prefix ZZCSF-), deleted
  * after. Never production.
  *
@@ -69,13 +78,18 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
   let edits: typeof import('@/services/edits');
   let imports: typeof import('@/services/imports');
   let fixes: typeof import('@/services/import-fixes');
+  let dupes: typeof import('@/services/duplicates');
   const tag = randomUUID().slice(0, 8).toUpperCase();
   const P = `ZZCSF-${tag}`;
   const REGION = `ZZCSF${tag}R`;
   const ROUTE = `ZZCSF${tag}-RT`;
+  const REGION2 = `ZZCSF${tag}R2`;
+  const ROUTE2 = `ZZCSF${tag}-RT2`;
   const ids = {
     region: '',
     route: '',
+    region2: '',
+    route2: '',
     sup: `${P}-sup`,
     mgr: `${P}-mgr`,
     sales: `${P}-sales`,
@@ -96,8 +110,11 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
     edits = await import('@/services/edits');
     imports = await import('@/services/imports');
     fixes = await import('@/services/import-fixes');
+    dupes = await import('@/services/duplicates');
     ids.region = (await prisma.region.create({ data: { code: REGION, name: `ZZ CSF ${tag}` } })).id;
     ids.route = (await prisma.route.create({ data: { code: ROUTE, name: `ZZ CSF ${tag}`, regionId: ids.region } })).id;
+    ids.region2 = (await prisma.region.create({ data: { code: REGION2, name: `ZZ CSF ${tag} 2` } })).id;
+    ids.route2 = (await prisma.route.create({ data: { code: ROUTE2, name: `ZZ CSF ${tag} 2`, regionId: ids.region2 } })).id;
     const user = (id: string, role: string, extra: Record<string, unknown> = {}) =>
       prisma.user.create({ data: { id, username: id, passwordHash: 'x', fullName: `ZZ ${role}`, role: role as never, ...extra } });
     await user(ids.sup, 'SUPERVISOR');
@@ -129,8 +146,8 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
       await prisma.rateLimit.deleteMany({ where: { OR: USERS.map((u) => ({ key: { contains: u } })) } });
       await prisma.user.updateMany({ where: { id: { in: USERS } }, data: { supervisorId: null, ownedRouteId: null } });
       await prisma.user.deleteMany({ where: { id: { in: USERS } } });
-      await prisma.route.deleteMany({ where: { id: ids.route } });
-      await prisma.region.deleteMany({ where: { id: ids.region } });
+      await prisma.route.deleteMany({ where: { id: { in: [ids.route, ids.route2] } } });
+      await prisma.region.deleteMany({ where: { id: { in: [ids.region, ids.region2] } } });
     } catch (e) {
       console.error('cleanup', e);
     }
@@ -138,7 +155,7 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
   });
 
   let seq = 0;
-  async function customer(code: string, branches: Array<'ACTIVE' | 'CLOSED'>, over: Record<string, unknown> = {}) {
+  async function customer(code: string, branches: Array<'ACTIVE' | 'CLOSED' | 'SUSPENDED'>, over: Record<string, unknown> = {}) {
     const anyActive = branches.includes('ACTIVE');
     const c = await prisma.customer.create({
       data: {
@@ -287,7 +304,7 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
     const c = await customer('D', ['CLOSED'], { deletedAt: new Date() });
     await prisma.customer.update({ where: { id: c.id }, data: { status: 'ACTIVE' } });
     const moved = await prisma.$transaction((tx) =>
-      followBranchStatus(tx, { actorId: ids.mgr, ip: null, userAgent: null }, c.id, { closed: true, reopened: false }, {
+      followBranchStatus(tx, { actorId: ids.mgr, ip: null, userAgent: null }, c.id, { closed: true, closedOpen: true, reopened: false }, {
         actorId: ids.mgr,
         via: 'test',
       })
@@ -334,5 +351,98 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
     expect((await auditRows(cust.id)).map((r) => [r.action, r.actorId, r.reason])).toEqual([
       ['CLOSE', ids.stew, `customer status follows its branches: import ${batchId}`],
     ]);
+  });
+
+  it('shops in two regions: closing the last open one closes the customer, whatever region the closed one is in', async () => {
+    const c = await customer('R', ['ACTIVE']);
+    // Its other shop, in another region, closed earlier.
+    await prisma.branch.create({
+      data: {
+        customerId: c.id,
+        branchCode: `${P}-R-02`,
+        branchName: 'ZZ R 2',
+        address: `ZZ Way ${++seq}, Sohar`,
+        routeId: ids.route2,
+        regionId: ids.region2,
+        status: 'CLOSED',
+        lastStatusChangeAt: new Date(Date.now() - 3600_000),
+      },
+    });
+    const closeId = await closeAndApprove(c.branchIds[0]!);
+    expect(await statusOf(c.id)).toBe('CLOSED');
+    expect((await auditRows(c.id)).map((r) => [r.action, r.before, r.after, r.reason])).toEqual([
+      ['CLOSE', { status: 'ACTIVE' }, { status: 'CLOSED' }, `customer status follows its branches: approved request ${closeId}`],
+    ]);
+  });
+
+  it('a suspended shop closed while another stays suspended moves nothing; the last one closed closes the customer', async () => {
+    const c = await customer('S', ['SUSPENDED', 'SUSPENDED'], { status: 'SUSPENDED' });
+    as(ids.mgr, 'MANAGER');
+    const write = async (branchId: string) => {
+      await prisma.rateLimit.deleteMany({ where: { key: { contains: ids.mgr } } });
+      const res = await edits.submitEditAction(
+        await editPayload(prisma, { customerId: c.id, isDraft: false, customer: {}, branches: [{ branchId, status: 'CLOSED' }] })
+      );
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+    };
+    await write(c.branchIds[0]!);
+    expect(await statusOf(c.id)).toBe('SUSPENDED');
+    expect(await auditRows(c.id)).toEqual([]);
+    await write(c.branchIds[1]!);
+    expect(await statusOf(c.id)).toBe('CLOSED');
+    expect((await auditRows(c.id)).map((r) => [r.action, r.before, r.after])).toEqual([
+      ['CLOSE', { status: 'SUSPENDED' }, { status: 'CLOSED' }],
+    ]);
+  });
+
+  it('the full import lane: the status the file states is audited with the rest — one CLOSE row from the status before the load', async () => {
+    // Not linked to Temix: the plain row takes the full lane, whose item-20 block writes the stated status.
+    const c = await customer('F', ['ACTIVE', 'ACTIVE']);
+    as(ids.stew, 'STEWARD');
+    await prisma.rateLimit.deleteMany({ where: { key: { contains: ids.stew } } });
+    const row = (n: number) => ({
+      cust_code: `${P}-F`,
+      cust_name: 'ZZ F Co',
+      branch_code: `${P}-F-0${n}`,
+      branch_name: `ZZ F ${n}`,
+      sales_region: REGION,
+      route: ROUTE,
+      address: `ZZ Way F${n}, Muscat`,
+      day_of_visit: 'MON',
+      customer_status: 'CLOSED',
+    });
+    const fd = new FormData();
+    fd.set('file', new File([await sheet([row(1), row(2)])], `${P}-F.xlsx`, { type: XLSX_MIME }));
+    const res = await imports.uploadCustomerMasterAction(fd);
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    const batchId = (res as { ok: true; data: { batchId: string } }).data.batchId;
+    batchIds.push(batchId);
+    await promoteFully(imports, batchId);
+    const after = await prisma.customer.findUniqueOrThrow({ where: { id: c.id }, include: { branches: true } });
+    expect(after.branches.map((b) => b.status)).toEqual(['CLOSED', 'CLOSED']);
+    expect(after.status).toBe('CLOSED');
+    expect((await auditRows(c.id)).map((r) => [r.action, r.actorId, r.before, r.after, r.reason])).toEqual([
+      ['CLOSE', ids.stew, { status: 'ACTIVE' }, { status: 'CLOSED' }, `customer status follows its branches: import ${batchId}`],
+    ]);
+  });
+
+  it('a duplicate merge that moves an open shop onto a CLOSED winner reopens it, audited', async () => {
+    const winner = await customer('W', ['CLOSED']);
+    const loser = await customer('L', ['ACTIVE']);
+    expect(await statusOf(winner.id)).toBe('CLOSED');
+    as(ids.stew, 'STEWARD');
+    await prisma.rateLimit.deleteMany({ where: { key: { contains: ids.stew } } });
+    const res = await dupes.mergeCustomersAction(form({ winnerId: winner.id, loserId: loser.id }));
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(await statusOf(winner.id)).toBe('ACTIVE');
+    expect((await auditRows(winner.id)).map((r) => [r.action, r.actorId, r.before, r.after, r.reason])).toEqual([
+      ['REACTIVATE', ids.stew, { status: 'CLOSED' }, { status: 'ACTIVE' }, `customer status follows its branches: merge of ${P}-L`],
+    ]);
+    // A merge that moves only a closed shop leaves a CLOSED winner closed.
+    const w2 = await customer('W2', ['CLOSED']);
+    const l2 = await customer('L2', ['CLOSED']);
+    expect((await dupes.mergeCustomersAction(form({ winnerId: w2.id, loserId: l2.id }))).ok).toBe(true);
+    expect(await statusOf(w2.id)).toBe('CLOSED');
+    expect(await auditRows(w2.id)).toEqual([]);
   });
 });

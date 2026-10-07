@@ -46,5 +46,19 @@ describe('the customer status follows its shops on every path that changes a bra
     expect(s).toMatch(/status: true,\s*branches: \{ where: \{ deletedAt: null \}, select: \{ id: true, status: true \} \},\s*\},\s*\}\)\s*:\s*null;/);
     expect(s).toMatch(/const statusBefore = new Map\(existing\.branches\.map\(/);
     expect(s).toMatch(/await followBranchStatus\(\s*tx,\s*env,\s*customerId,\s*branchStatusEvents\(statusBefore, await liveBranchStatuses\(tx, customerId\)\)/);
+    // Fixer review: the status the file states (the upsert, item 20) is audited
+    // with the rest — one row, from the status read under the lock.
+    expect(s).toMatch(/\{ actorId: me\.id, via: `import \$\{batchId\}`, statusBefore: existing\.status \}/);
+    expect(s).toMatch(/\(fullLane && statedStatus !== null && statedStatus !== existing\.status\)/);
+  });
+
+  it('a duplicate merge that moves an open shop onto the winner reopens it (fixer review)', () => {
+    const b = body('services/duplicates.ts', 'mergeCustomersCore');
+    const counted = b.search(/const movedOpen = await tx\.branch\.count\(\{\s*where: \{ customerId: loser\.id, deletedAt: null, status: CustomerStatus\.ACTIVE \}/);
+    const moved = b.search(/await tx\.branch\.updateMany\(\{\s*where: \{ customerId: loser\.id, deletedAt: null \}/);
+    const followed = b.search(/await followBranchStatus\(\s*tx,\s*env,\s*winner\.id,\s*movedOpen > 0 \? statusEvents\(null, CustomerStatus\.ACTIVE\) : NO_STATUS_EVENTS/);
+    expect(counted, 'counted under the locks').toBeGreaterThan(-1);
+    expect(moved).toBeGreaterThan(counted);
+    expect(followed).toBeGreaterThan(moved);
   });
 });

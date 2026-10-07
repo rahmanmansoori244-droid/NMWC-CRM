@@ -83,7 +83,8 @@ vi.mock('@/lib/db', () => {
       update: rec('customer.update', {}),
       updateMany: rec('customer.updateMany', { count: 1 }),
     },
-    branch: { updateMany: rec('branch.updateMany', { count: 1 }) },
+    // No open shop moves (owner decision 7's reopening on a merge: tests/integration/customer-status-follows.test.ts).
+    branch: { count: async () => 0, updateMany: rec('branch.updateMany', { count: 1 }) },
     // No open request on the loser: the auto-close matches nothing, so its
     // read-back (launch fix 2026-10-07: settle and tell) finds nothing either.
     customerEdit: { updateMany: rec('customerEdit.updateMany', { count: 0 }), findMany: async () => [] },

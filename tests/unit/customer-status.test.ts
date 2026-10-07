@@ -1,9 +1,11 @@
 // @vitest-environment node
 /**
  * Owner decision 7 (2026-10-07): a customer's status follows its shops
- * (lib/customer-status.ts). The last open branch closed closes the customer; a
- * branch reopened opens it; nothing else moves it; an archived customer is never
- * touched; every move is audited. The paths that call it — an approved close,
+ * (lib/customer-status.ts, the rule in lib/customer-status-rule.ts). The last
+ * open branch closed, or a closure leaving every shop closed, closes the customer;
+ * a branch reopened opens it; nothing else moves it; an archived customer is never
+ * touched; every move is audited, once, from the status before the caller's own
+ * writes. The paths that call it — an approved close,
  * a direct write, a reactivation, an import — are exercised on Postgres in
  * tests/integration/customer-status-follows.test.ts.
  */
@@ -23,17 +25,21 @@ import {
 
 const { ACTIVE, CLOSED, SUSPENDED } = CustomerStatus;
 const ENV = { actorId: 'u1', ip: null, userAgent: null };
+const CLOSED_OPEN = { closed: true, closedOpen: true, reopened: false };
+const CLOSED_OTHER = { closed: true, closedOpen: false, reopened: false };
+const REOPENED = { closed: false, closedOpen: false, reopened: true };
 
 describe('statusEvents / branchStatusEvents', () => {
   it('a branch moving to CLOSED closes; to ACTIVE reopens; a new branch counts from nothing', () => {
-    expect(statusEvents(ACTIVE, CLOSED)).toEqual({ closed: true, reopened: false });
-    expect(statusEvents(SUSPENDED, CLOSED)).toEqual({ closed: true, reopened: false });
-    expect(statusEvents(CLOSED, ACTIVE)).toEqual({ closed: false, reopened: true });
-    expect(statusEvents(SUSPENDED, ACTIVE)).toEqual({ closed: false, reopened: true });
+    // An open shop closed is told apart from a suspended (or new) one closed.
+    expect(statusEvents(ACTIVE, CLOSED)).toEqual(CLOSED_OPEN);
+    expect(statusEvents(SUSPENDED, CLOSED)).toEqual(CLOSED_OTHER);
+    expect(statusEvents(CLOSED, ACTIVE)).toEqual(REOPENED);
+    expect(statusEvents(SUSPENDED, ACTIVE)).toEqual(REOPENED);
     expect(statusEvents(ACTIVE, SUSPENDED)).toEqual(NO_STATUS_EVENTS);
     expect(statusEvents(CLOSED, SUSPENDED)).toEqual(NO_STATUS_EVENTS);
-    expect(statusEvents(null, ACTIVE)).toEqual({ closed: false, reopened: true });
-    expect(statusEvents(null, CLOSED)).toEqual({ closed: true, reopened: false });
+    expect(statusEvents(null, ACTIVE)).toEqual(REOPENED);
+    expect(statusEvents(null, CLOSED)).toEqual(CLOSED_OTHER);
   });
 
   it('between two reads: only the branches whose status changed, or that are new', () => {
@@ -42,22 +48,37 @@ describe('statusEvents / branchStatusEvents', () => {
       ['b2', CLOSED],
     ]);
     expect(branchStatusEvents(before, new Map(before))).toEqual(NO_STATUS_EVENTS);
-    expect(branchStatusEvents(before, new Map([['b1', CLOSED], ['b2', CLOSED]]))).toEqual({ closed: true, reopened: false });
-    expect(branchStatusEvents(before, new Map([['b1', ACTIVE], ['b2', ACTIVE]]))).toEqual({ closed: false, reopened: true });
-    expect(branchStatusEvents(before, new Map([...before, ['b3', ACTIVE]]))).toEqual({ closed: false, reopened: true });
-    expect(branchStatusEvents(new Map(), new Map([['b1', CLOSED]]))).toEqual({ closed: true, reopened: false });
+    expect(branchStatusEvents(before, new Map([['b1', CLOSED], ['b2', CLOSED]]))).toEqual(CLOSED_OPEN);
+    expect(branchStatusEvents(before, new Map([['b1', ACTIVE], ['b2', ACTIVE]]))).toEqual(REOPENED);
+    expect(branchStatusEvents(before, new Map([...before, ['b3', ACTIVE]]))).toEqual(REOPENED);
+    expect(branchStatusEvents(new Map(), new Map([['b1', CLOSED]]))).toEqual(CLOSED_OTHER);
+    // One shop closed and another reopened in the same change: both.
+    expect(branchStatusEvents(before, new Map([['b1', CLOSED], ['b2', ACTIVE]]))).toEqual({
+      closed: true,
+      closedOpen: true,
+      reopened: true,
+    });
   });
 });
 
 describe('customerStatusFollowing', () => {
-  const closed = { closed: true, reopened: false };
-  const reopened = { closed: false, reopened: true };
+  const closed = CLOSED_OPEN;
+  const reopened = REOPENED;
 
   it('the last open branch closed closes the customer — ACTIVE or SUSPENDED', () => {
     expect(customerStatusFollowing(ACTIVE, [CLOSED], closed)).toBe(CLOSED);
     expect(customerStatusFollowing(ACTIVE, [CLOSED, CLOSED], closed)).toBe(CLOSED);
     expect(customerStatusFollowing(ACTIVE, [CLOSED, SUSPENDED], closed)).toBe(CLOSED);
     expect(customerStatusFollowing(SUSPENDED, [CLOSED], closed)).toBe(CLOSED);
+  });
+
+  it('a suspended shop closed: the customer closes only once every shop is closed (fixer review)', () => {
+    // [SUSPENDED, SUSPENDED], one closed: no open shop closed, and a suspended one stands.
+    expect(customerStatusFollowing(SUSPENDED, [CLOSED, SUSPENDED], CLOSED_OTHER)).toBe(SUSPENDED);
+    expect(customerStatusFollowing(ACTIVE, [CLOSED, SUSPENDED], CLOSED_OTHER)).toBe(ACTIVE);
+    // ...the other one closed too: every shop is closed.
+    expect(customerStatusFollowing(SUSPENDED, [CLOSED, CLOSED], CLOSED_OTHER)).toBe(CLOSED);
+    expect(customerStatusFollowing(ACTIVE, [CLOSED], CLOSED_OTHER)).toBe(CLOSED);
   });
 
   it('closing one of several shops leaves the customer as it was while another is open', () => {
@@ -77,7 +98,7 @@ describe('customerStatusFollowing', () => {
     for (const current of [ACTIVE, CLOSED, SUSPENDED]) {
       expect(customerStatusFollowing(current, [CLOSED], NO_STATUS_EVENTS)).toBe(current);
       expect(customerStatusFollowing(current, [ACTIVE], NO_STATUS_EVENTS)).toBe(current);
-      expect(customerStatusFollowing(current, [], { closed: true, reopened: true })).toBe(current);
+      expect(customerStatusFollowing(current, [], { closed: true, closedOpen: true, reopened: true })).toBe(current);
     }
     // A branch suspended is not a closure: the customer is left alone.
     expect(customerStatusFollowing(ACTIVE, [SUSPENDED], NO_STATUS_EVENTS)).toBe(ACTIVE);
@@ -100,7 +121,7 @@ describe('followBranchStatus', () => {
 
   it('moves the status, bumps the version, and writes a CLOSE audit row on the customer', async () => {
     stored(ACTIVE, [CLOSED]);
-    const moved = await followBranchStatus(txc, ENV, 'c1', { closed: true, reopened: false }, { actorId: 'u1', via: 'approved request e1' });
+    const moved = await followBranchStatus(txc, ENV, 'c1', CLOSED_OPEN, { actorId: 'u1', via: 'approved request e1' });
     expect(moved).toEqual({ from: ACTIVE, to: CLOSED });
     expect(tx.customer.update).toHaveBeenCalledWith({
       where: { id: 'c1' },
@@ -118,7 +139,7 @@ describe('followBranchStatus', () => {
 
   it('a reopening is a REACTIVATE audit row', async () => {
     stored(CLOSED, [ACTIVE, CLOSED]);
-    expect(await followBranchStatus(txc, ENV, 'c1', { closed: false, reopened: true }, { actorId: 'u1', via: 'x' })).toEqual({
+    expect(await followBranchStatus(txc, ENV, 'c1', REOPENED, { actorId: 'u1', via: 'x' })).toEqual({
       from: CLOSED,
       to: ACTIVE,
     });
@@ -127,7 +148,7 @@ describe('followBranchStatus', () => {
 
   it('an archived customer is never touched', async () => {
     stored(ACTIVE, [CLOSED], new Date());
-    expect(await followBranchStatus(txc, ENV, 'c1', { closed: true, reopened: false }, { actorId: 'u1', via: 'x' })).toBeNull();
+    expect(await followBranchStatus(txc, ENV, 'c1', CLOSED_OPEN, { actorId: 'u1', via: 'x' })).toBeNull();
     expect(tx.customer.update).not.toHaveBeenCalled();
     expect(audit.writeAudit).not.toHaveBeenCalled();
   });
@@ -136,10 +157,57 @@ describe('followBranchStatus', () => {
     expect(await followBranchStatus(txc, ENV, 'c1', NO_STATUS_EVENTS, { actorId: 'u1', via: 'x' })).toBeNull();
     expect(tx.customer.findUnique).not.toHaveBeenCalled();
     stored(ACTIVE, [CLOSED, ACTIVE]);
-    expect(await followBranchStatus(txc, ENV, 'c1', { closed: true, reopened: false }, { actorId: 'u1', via: 'x' })).toBeNull();
+    expect(await followBranchStatus(txc, ENV, 'c1', CLOSED_OPEN, { actorId: 'u1', via: 'x' })).toBeNull();
     tx.customer.findUnique.mockResolvedValue(null);
-    expect(await followBranchStatus(txc, ENV, 'gone', { closed: true, reopened: false }, { actorId: 'u1', via: 'x' })).toBeNull();
+    expect(await followBranchStatus(txc, ENV, 'gone', CLOSED_OPEN, { actorId: 'u1', via: 'x' })).toBeNull();
     expect(tx.customer.update).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe('followBranchStatus: a caller that wrote the status itself (the import, item 20)', () => {
+  const tx = { customer: { findUnique: vi.fn(), update: vi.fn() } };
+  const txc = tx as unknown as Prisma.TransactionClient;
+  const stored = (status: CustomerStatus, branches: CustomerStatus[]) =>
+    tx.customer.findUnique.mockResolvedValue({ status, deletedAt: null, branches: branches.map((st) => ({ status: st })) });
+
+  beforeEach(() => {
+    tx.customer.findUnique.mockReset();
+    tx.customer.update.mockReset();
+    audit.writeAudit.mockReset();
+  });
+
+  it('the whole move is one audit row from the status before its writes — the file said SUSPENDED, the rule then closed it', async () => {
+    stored(SUSPENDED, [CLOSED]);
+    expect(
+      await followBranchStatus(txc, ENV, 'c1', CLOSED_OPEN, { actorId: 'u1', via: 'import b1', statusBefore: ACTIVE })
+    ).toEqual({ from: ACTIVE, to: CLOSED });
+    expect(tx.customer.update).toHaveBeenCalledTimes(1);
+    expect(audit.writeAudit).toHaveBeenCalledTimes(1);
+    expect(audit.writeAudit).toHaveBeenCalledWith(
+      txc,
+      ENV,
+      expect.objectContaining({ action: 'CLOSE', before: { status: ACTIVE }, after: { status: CLOSED } })
+    );
+  });
+
+  it('the file’s own move, with no branch event, is audited too; a move back to where it began is not', async () => {
+    stored(CLOSED, [CLOSED]);
+    expect(
+      await followBranchStatus(txc, ENV, 'c1', NO_STATUS_EVENTS, { actorId: 'u1', via: 'import b1', statusBefore: ACTIVE })
+    ).toEqual({ from: ACTIVE, to: CLOSED });
+    expect(tx.customer.update).not.toHaveBeenCalled();
+    expect(audit.writeAudit).toHaveBeenCalledWith(txc, ENV, expect.objectContaining({ action: 'CLOSE', before: { status: ACTIVE } }));
+    // A hold the file stated is an UPDATE row.
+    audit.writeAudit.mockReset();
+    stored(SUSPENDED, [ACTIVE]);
+    expect(
+      await followBranchStatus(txc, ENV, 'c1', NO_STATUS_EVENTS, { actorId: 'u1', via: 'x', statusBefore: ACTIVE })
+    ).toEqual({ from: ACTIVE, to: SUSPENDED });
+    expect(audit.writeAudit).toHaveBeenCalledWith(txc, ENV, expect.objectContaining({ action: 'UPDATE', after: { status: SUSPENDED } }));
+    audit.writeAudit.mockReset();
+    stored(ACTIVE, [ACTIVE]);
+    expect(await followBranchStatus(txc, ENV, 'c1', NO_STATUS_EVENTS, { actorId: 'u1', via: 'x', statusBefore: ACTIVE })).toBeNull();
     expect(audit.writeAudit).not.toHaveBeenCalled();
   });
 });

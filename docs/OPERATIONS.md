@@ -625,7 +625,10 @@ The account import has no review step — it applies as it is uploaded, and the 
      do not, and always take this lane.
    - On the full lane a customer's status follows all its live branches, not only the file's rows:
      it is settled after the branches are written, and a blank `customer_status` cell says nothing
-     (its branch keeps its stored status, and a branch it creates is ACTIVE). A blank name, address
+     (its branch keeps its stored status, and a branch it creates is ACTIVE). On every lane, a load that
+     closes a customer's last open shop closes the customer and one that reopens a shop opens it (owner
+     decision 7, 2026-10-07); either move, or a status the file states, is one audit row on the
+     customer, from its status before the load. A blank name, address
      or route keeps the stored value (a NEW branch still gets "Main", "Address pending" or the
      UNASSIGNED route); and once a customer has branches, a row with no `branch_code` is rejected
      — it would be numbered by its position in the file and could overwrite a sibling. **Always
