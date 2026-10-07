@@ -145,6 +145,11 @@ export function ApproveRejectActions({
   const [errors, setErrors] = useState<Record<string, string>>({});
   // B-14: replace window.confirm() with a modal for the Approve action.
   const [confirmingApprove, setConfirmingApprove] = useState(false);
+  // Launch fix (review): the customer is created and this page is refreshing.
+  // The transition ends when the action answers, before the refresh lands, and
+  // a second tap in between told the Accountant it was "already APPROVED".
+  const [created, setCreated] = useState(false);
+  const busy = pending || created;
 
   function approve() {
     setConfirmingApprove(false);
@@ -164,7 +169,10 @@ export function ApproveRejectActions({
         if (outcome.kind === 'CREATE') {
           const res = await approveEditAction(fd);
           if (!res.ok) setErrors({ _form: res.message });
-          else router.refresh();
+          else {
+            setCreated(true);
+            router.refresh();
+          }
           return;
         }
         // perf audit #31: on success the action redirect()s server-side, so the
@@ -214,7 +222,7 @@ export function ApproveRejectActions({
         <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
-            disabled={pending}
+            disabled={busy}
             onClick={() => setShowReject(true)}
             className="rounded-md border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60"
           >
@@ -222,11 +230,11 @@ export function ApproveRejectActions({
           </button>
           <button
             type="button"
-            disabled={pending}
+            disabled={busy}
             onClick={() => setConfirmingApprove(true)}
             className="rounded-md bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-300"
           >
-            {pending ? 'Working…' : '✓ Approve'}
+            {created ? 'Created — loading…' : pending ? 'Working…' : '✓ Approve'}
           </button>
         </div>
       ) : (

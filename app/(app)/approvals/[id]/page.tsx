@@ -330,6 +330,9 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   );
   const livePhotos = (ids: string[]) => ids.filter((id) => livePhotoIds.has(id));
   const removedPhotos = (ids: string[]) => ids.length - livePhotos(ids).length;
+  // Only the last step refuses a request missing a photo (lib/create-finalize.ts);
+  // an earlier one can still send it on, to be refused there.
+  const refusedHere = isFinalStep(chain, edit.currentStepIndex) ? 'it cannot be approved' : 'it will be refused at the last step';
 
   // Launch fix: a shop sharing this request's phone with a live customer is let
   // through (P1.3: a phone-only match never blocks) and was only logged, so no
@@ -514,6 +517,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     label="CR document"
                     removed={removedPhotos([draft.crPhotoAttachmentId])}
                     pending={isPending}
+                    refused={refusedHere}
                   />
                 </>
               )}
@@ -561,7 +565,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                   ids={guaranteeDocs.map((g) => g.id)}
                   emptyText={
                     isPending
-                      ? 'None on file: removed since the request was sent. It cannot be approved — reject it and say the guarantee is missing.'
+                      ? `None on file: removed since the request was sent. ${refusedHere[0]!.toUpperCase()}${refusedHere.slice(1)} — reject it and say the guarantee is missing.`
                       : 'None on file'
                   }
                 />
@@ -607,7 +611,12 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     value={`${b.coolersCount} coolers · ${b.standsCount} stands · ${b.emptyBottlesCount} empty bottles`}
                   />
                   {photoIds.length > 0 && <PhotoRow label="Photos" ids={livePhotos(photoIds)} />}
-                  <RemovedPhotosRow label="Photos" removed={removedPhotos(photoIds)} pending={isPending} />
+                  <RemovedPhotosRow
+                    label="Photos"
+                    removed={removedPhotos(photoIds)}
+                    pending={isPending}
+                    refused={refusedHere}
+                  />
                 </DetailSection>
               );
             })}
@@ -902,16 +911,27 @@ function PhotoRow({
 /**
  * Launch fix: photos of a new-customer request removed since it was sent, said
  * as such instead of a broken image. While it waits: what to do — a reject
- * steps back one approver (lib/create-finalize.ts says the same).
+ * steps back one approver (lib/create-finalize.ts says the same). `refused`
+ * says where it fails: here at the last step, or there from an earlier one.
  */
-function RemovedPhotosRow({ label, removed, pending }: { label: string; removed: number; pending: boolean }) {
+function RemovedPhotosRow({
+  label,
+  removed,
+  pending,
+  refused,
+}: {
+  label: string;
+  removed: number;
+  pending: boolean;
+  refused: string;
+}) {
   if (removed === 0) return null;
   return (
     <div className={ROW}>
       <div className="font-medium text-slate-600">{label}</div>
       <div className="font-medium text-red-700">
         {removed === 1 ? '1 photo was' : `${removed} photos were`} removed since the request was sent
-        {pending ? ' — it cannot be approved; reject it and say which photo is missing.' : '.'}
+        {pending ? ` — ${refused}; reject it and say which photo is missing.` : '.'}
       </div>
     </div>
   );

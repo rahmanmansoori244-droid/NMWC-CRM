@@ -165,6 +165,11 @@ describe('launch fix — "Approve and create" stays on the request, which then s
     expect(formOf(h.approveStay)).toEqual({ editId: 'e1', decisionToken: TOKEN });
     expect(h.approve).not.toHaveBeenCalled();
     await waitFor(() => expect(h.refresh).toHaveBeenCalledTimes(1));
+    // Until the refreshed page lands, nothing can be tapped again: a second
+    // Approve answered the Accountant "already APPROVED" (review finding).
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Created — loading…' })).toBeDisabled());
+    expect(screen.getByRole('button', { name: '✗ Reject' })).toBeDisabled();
+    expect(h.approveStay).toHaveBeenCalledTimes(1);
   });
 
   it('a refusal is shown and nothing is refreshed', async () => {

@@ -631,12 +631,41 @@ describe('launch fixes on the new-customer review page and queue card', () => {
 
   it('a photo removed since the request was sent reads as removed, with what to do — never a broken image', async () => {
     h.attachments = [{ id: 'p-shop', editId: 'e1', kind: 'SHOP', deletedAt: null }];
-    await renderDetail(createRow('CASH', 0, { branchDrafts: [draftBranch()] }));
+    await renderDetail(createRow('CASH', 1, { branchDrafts: [draftBranch()] }));
     const imgs = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src'));
     expect(imgs).toEqual(['/api/photos/p-shop']);
     expect(
       screen.getByText(
         '1 photo was removed since the request was sent — it cannot be approved; reject it and say which photo is missing.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('before the last step it is not "cannot be approved": only the last step refuses it (review finding)', async () => {
+    h.attachments = [{ id: 'p-shop', editId: 'e1', kind: 'SHOP', deletedAt: null }];
+    await renderDetail(createRow('CASH', 0, { branchDrafts: [draftBranch()] }));
+    expect(
+      screen.getByText(
+        '1 photo was removed since the request was sent — it will be refused at the last step; reject it and say which photo is missing.'
+      )
+    ).toBeTruthy();
+    expect(screen.queryByText(/cannot be approved/)).toBeNull();
+    // The guarantee the same: at the Finance Manager step, and at the last.
+    cleanup();
+    h.actionProps = [];
+    h.attachments = [];
+    await renderDetail(createRow('CREDIT', 1));
+    expect(
+      screen.getByText(
+        'None on file: removed since the request was sent. It will be refused at the last step — reject it and say the guarantee is missing.'
+      )
+    ).toBeTruthy();
+    cleanup();
+    h.actionProps = [];
+    await renderDetail(createRow('CREDIT', 3));
+    expect(
+      screen.getByText(
+        'None on file: removed since the request was sent. It cannot be approved — reject it and say the guarantee is missing.'
       )
     ).toBeTruthy();
   });
