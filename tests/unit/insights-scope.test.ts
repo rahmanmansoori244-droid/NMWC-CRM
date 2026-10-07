@@ -186,13 +186,28 @@ describe('branchInView is filterBranchesByScope, for every role', () => {
 describe('the SQL twins', () => {
   const mgr = scoped(resolveInsightScope(Role.MANAGER, { ...empty, managedRegionIds: ['r1', 'r2'] }, { ...none, routeIds: ['x'] }));
 
-  it('no scope selects nothing; the unfiltered organisation selects everything', () => {
+  // Launch fix (2026-10-07): the organisation's view leaves out inactive regions
+  // (the ZZTEST test region); a region-scoped view is not touched.
+  it('no scope selects nothing; the unfiltered organisation selects every active region', () => {
     expect(branchInScopeSql({ kind: 'none' }, 'b').sql).toBe('FALSE');
     expect(requestInScopeSql({ kind: 'none' }).sql).toBe('FALSE');
     const org = scoped(resolveInsightScope(Role.STEWARD, empty, none));
-    expect(branchInScopeSql(org, 'b').sql).toBe('TRUE');
-    expect(draftInScopeSql(org, 'd', 'r').sql).toBe('TRUE');
-    expect(requestInScopeSql(org).sql).toBe('TRUE');
+    expect(branchInScopeSql(org, 'b').sql).toBe('b."regionId" IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive")');
+    expect(draftInScopeSql(org, 'd', 'r').sql).toBe('r."regionId" IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive")');
+    expect(requestInScopeSql(org).sql).toContain('ar."isActive"');
+    expect(requestInScopeSql(org).values).toEqual([]);
+    // A filtered organisation view keeps the active-region test beside the filter.
+    const picked = scoped(resolveInsightScope(Role.VIEWER, empty, { ...none, regionIds: ['r1'] }));
+    expect(branchInScopeSql(picked, 'b').text).toBe(
+      'b."regionId" IN (SELECT ar."id" FROM "Region" ar WHERE ar."isActive") AND b."regionId" = ANY($1::text[])'
+    );
+  });
+
+  it('a Manager’s regions are taken as his role gives them, active or not', () => {
+    const own = scoped(resolveInsightScope(Role.MANAGER, { ...empty, managedRegionIds: ['r1'] }, none));
+    expect(branchInScopeSql(own, 'b').sql).not.toContain('isActive');
+    expect(draftInScopeSql(own, 'd', 'r').sql).not.toContain('isActive');
+    expect(requestInScopeSql(own).sql).not.toContain('isActive');
   });
 
   it('region and route are tested on the same row, and ids are bound, never spliced', () => {

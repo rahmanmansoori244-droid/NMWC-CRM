@@ -13,6 +13,9 @@
  *   - lib/insights/sql.ts branchInScopeSql / draftInScopeSql / requestInScopeSql:
  *     the SQL twins, held equal to filterBranchesByScope, canSeeCustomer and the
  *     /approvals/[id] gate on real Postgres by tests/integration/insights.test.ts.
+ *     One exception (launch fix, 2026-10-07): for a 'company' view they also
+ *     leave out inactive regions, which neither branchInView nor the gates know
+ *     of (lib/insights/sql.ts; tests/integration/insights-inactive-region.test.ts).
  *
  * Every branch-level figure (customers, heat cells, gaps, route counts) is taken
  * on the BRANCH's own region and route, so a customer with branches in two
