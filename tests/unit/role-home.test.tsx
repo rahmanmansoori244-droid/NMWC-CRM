@@ -124,7 +124,7 @@ describe('the approvals page admits each approver role and shows it its own step
     h.regions = [];
     render(await ApprovalsPage());
     // Told why it is empty (tests/unit/approvals-no-region.test.tsx).
-    expect(screen.getByText(/No region is assigned to this account/)).toBeTruthy();
+    expect(screen.getByText(/No regions are assigned to this account/)).toBeTruthy();
     expect((h.wheres[0] as Record<string, unknown>).id).toBe('__none__');
   });
 

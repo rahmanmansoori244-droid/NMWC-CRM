@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { Role, type Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
+import { NoRegionNotice } from '@/components/nmwc/NoRegionNotice';
 import { loadScope } from '@/lib/access';
 import { managerQueueWhere } from '@/lib/manager-queue';
 import { formatSlaStatus } from '@/lib/working-hours';
@@ -247,13 +248,10 @@ export default async function ApprovalsPage() {
           a request sent between them is counted but not shown. */}
       <PageHeader
         title="Approval queue"
-        // The notice below says the rest, in one place.
         subtitle={
-          noRegion
-            ? 'Waiting for a region'
-            : pendingCount > items.length
-              ? `${pendingCount} pending · showing the ${items.length} most overdue`
-              : `${pendingCount} pending`
+          pendingCount > items.length
+            ? `${pendingCount} pending · showing the ${items.length} most overdue`
+            : `${pendingCount} pending`
         }
       />
 
@@ -261,10 +259,10 @@ export default async function ApprovalsPage() {
         {noRegion ? (
           // Launch browser suite (2026-10-07): it read "Nothing pending", which an
           // Accountant takes for a quiet day. FINANCE_MANAGER and GM are org-wide
-          // (lib/permissions.ts canActOnStep GLOBAL) and never see this.
-          <div className="mx-4 rounded-md bg-amber-50 p-4 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
-            No region is assigned to this account, so no approval requests can reach it. Ask the
-            Data Steward to assign one: the Steward does it with Edit on your row of the Users page.
+          // (lib/permissions.ts canActOnStep GLOBAL) and never see this. The header
+          // line still reads "0 pending": true, and the browser suite reads it.
+          <div className="px-4 sm:px-6">
+            <NoRegionNotice requests="approval requests" />
           </div>
         ) : items.length === 0 ? (
           <div className="px-4 sm:px-6">

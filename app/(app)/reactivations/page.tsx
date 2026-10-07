@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { Role, type Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
+import { NoRegionNotice } from '@/components/nmwc/NoRegionNotice';
 import { ReactivationDecisionForm } from './ReactivationDecisionForm';
 import { loadScope } from '@/lib/access';
 import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evidence';
@@ -22,7 +23,9 @@ export default async function ReactivationsPage() {
     isReactivation: true,
     state: 'SUBMITTED',
   };
-  if (scope.managedRegionIds.length === 0) {
+  // Nothing can ever reach him, so the page says why instead of "No reactivation requests".
+  const noRegion = scope.managedRegionIds.length === 0;
+  if (noRegion) {
     where.id = '__none__';
   } else {
     where.branch = { regionId: { in: scope.managedRegionIds } };
@@ -64,7 +67,11 @@ export default async function ReactivationsPage() {
         subtitle={`${items.length} closed shops requesting reactivation`}
       />
       <div className="p-4 sm:p-6">
-        {items.length === 0 ? (
+        {noRegion ? (
+          // Launch browser suite (2026-10-07), as on /approvals. The header line
+          // still reads "0 closed shops…": true, and the browser suite reads it.
+          <NoRegionNotice requests="reactivation requests" />
+        ) : items.length === 0 ? (
           <EmptyState
             title="No reactivation requests"
             description="When salesmen find a previously closed shop has reopened, they submit a request here for your review."

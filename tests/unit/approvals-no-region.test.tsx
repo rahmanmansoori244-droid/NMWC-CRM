@@ -12,6 +12,13 @@
  * no region by design (lib/ops/golive-accounts.ts) and keep "Nothing pending";
  * so does an Accountant who has a region and nothing waiting.
  *
+ * The header line keeps reading "0 pending" (true, and what the launch browser
+ * suite's region-less Manager check, access-control.spec.ts, reads); the notice
+ * replaces only the empty state. Its words are matched by two browser tests,
+ * /no regions? (are |is )?assigned/i and /no (managed )?regions/i, so they are
+ * pinned here too. The same notice on /reactivations:
+ * tests/unit/reactivations-no-region.test.tsx.
+ *
  * The page is rendered with its session, scope and database mocked.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -48,7 +55,7 @@ vi.mock('@/app/(app)/approvals/BulkApprovalQueue', () => ({ BulkApprovalQueue: (
 import ApprovalsPage from '@/app/(app)/approvals/page';
 
 const NOTICE =
-  /No region is assigned to this account, so no approval requests can reach it\. Ask the Data Steward to assign one/;
+  /No regions are assigned to this account, so no approval requests can reach it\. Ask the Data Steward to assign one/;
 
 beforeEach(() => {
   h.role = 'ACCOUNTANT';
@@ -67,10 +74,12 @@ describe('/approvals for an approver with no region', () => {
       // Once on the page: the header line names no region, so a reader (or a
       // browser test) finding the sentence finds the one notice.
       expect(screen.getAllByText(/no region/i)).toHaveLength(1);
-      expect(screen.getByText(NOTICE)).toBeTruthy();
-      expect(screen.getByText('Waiting for a region')).toBeTruthy();
+      const notice = screen.getByText(NOTICE);
+      expect(notice.textContent).toMatch(/no regions? (are |is )?assigned/i);
+      expect(notice.textContent).toMatch(/no (managed )?regions/i);
+      // Still true, and read by access-control.spec.ts's region-less Manager check.
+      expect(screen.getByText('0 pending')).toBeTruthy();
       expect(screen.queryByText('Nothing pending')).toBeNull();
-      expect(screen.queryByText('0 pending')).toBeNull();
     }
   );
 
