@@ -125,16 +125,21 @@ export function requestKindOf(e: { target: EditTarget; isReactivation: boolean }
  * Whether approving the customer's pending request replaces a draft saved on the
  * edit form meanwhile — the draft is dropped when the server values it started
  * from change (lib/enrichment-draft.ts), and the "Draft saved" line must say so
- * before, not after. An update changes them. A close changes only its branch's
- * status, which is not among them. A reactivation sets the CUSTOMER active once
- * every branch is (services/reactivations.ts), so for a customer that is not
- * ACTIVE now it changes them too: "stays on this phone" was false there (item 22
- * review). Said for every such customer, even one with another branch still
- * closed — the edit page's branch list is narrowed to the caller's scope and
- * cannot tell, and a spare warning costs less than a lost draft.
+ * before, not after. An update changes them. Since owner decision 7
+ * (2026-10-07) the CUSTOMER's status follows its branches (lib/customer-status.ts):
+ * a reactivation sets a customer that is not ACTIVE now active, and a close that
+ * shuts its last open branch closes it — so either changes them too: "stays on
+ * this phone" was false there (item 22 review). Said for every such customer,
+ * even one with another branch still open or closed — the edit page's branch
+ * list is narrowed to the caller's scope and cannot tell, and a spare warning
+ * costs less than a lost draft.
  */
 export function pendingReplacesDraft(kind: RequestKind | null, customerStatus: CustomerStatus): boolean {
-  return kind === 'update' || (kind === 'reactivate' && customerStatus !== 'ACTIVE');
+  return (
+    kind === 'update' ||
+    (kind === 'reactivate' && customerStatus !== 'ACTIVE') ||
+    (kind === 'close' && customerStatus !== 'CLOSED')
+  );
 }
 
 const KIND_PHRASE: Record<RequestKind, string> = {

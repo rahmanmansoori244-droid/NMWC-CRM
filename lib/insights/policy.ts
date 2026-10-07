@@ -68,7 +68,8 @@ export const NEW_CUSTOMERS = {
  * UPDATE request on the customer (target CUSTOMER) decided in the window —
  * never Customer.updatedAt, which imports, photo wiring and rescoring move too.
  * Reactivations and close-shop requests are not updates: they have their own card
- * (closures read the branch, because Customer.status does not follow a closure).
+ * (closures read the branch: Customer.status closes only with its last open
+ * branch, owner decision 7, lib/customer-status.ts).
  * A Manager's or Steward's direct write (an APPROVED row its author reviewed) is
  * shown as its own series beside the salesmen's approved requests.
  */

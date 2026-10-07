@@ -57,6 +57,7 @@ import {
 } from '@/lib/import-row-check';
 import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/import-master-lookup';
 import { lockCustomerRowByCode } from '@/lib/locks';
+import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
 import {
   branchOnlyNote,
@@ -2039,6 +2040,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   : 'CROSSWALK:customer is archived in the CRM, and an import does not bring an archived customer back — exclude the row; steward review'
               );
             }
+            // Owner decision 7: the branch statuses before this group writes any,
+            // so the customer's status can follow what the load changed (below).
+            const statusBefore = existing
+              ? await liveBranchStatuses(tx, existing.id)
+              : new Map<string, CustomerStatus>();
             // Owner decision 2026-09-25, "branch only" — decided PER ROW. For a
             // customer linked to Temix, a row the Steward fixed in the app writes
             // its own branch and nothing else about the customer, whatever its
@@ -2577,6 +2583,18 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 data: { status: liveActive > 0 ? 'ACTIVE' : statedStatus },
               });
             }
+            // Owner decision 7 (2026-10-07), on every lane: a branch this load
+            // closed or reopened moves the customer as any other path does
+            // (lib/customer-status.ts) — the block above runs only when the file
+            // states a status on the full lane, so a fixed row on the branch-only
+            // lane closed a customer's last open branch and left it ACTIVE.
+            await followBranchStatus(
+              tx,
+              env,
+              customerId,
+              branchStatusEvents(statusBefore, await liveBranchStatuses(tx, customerId)),
+              { actorId: me.id, via: `import ${batchId}` }
+            );
             // What a fixed row asked for and did not get: branch only writes none
             // of the customer's own fields — but an empty phone, below — and the
             // row read PROMOTED with nothing said: a released phone looked loaded

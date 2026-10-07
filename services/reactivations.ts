@@ -1,7 +1,16 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, EditState, EditTarget, EditProcess, AttachmentKind, type Attachment, type Prisma } from '@prisma/client';
+import {
+  Role,
+  EditState,
+  EditTarget,
+  EditProcess,
+  AttachmentKind,
+  CustomerStatus,
+  type Attachment,
+  type Prisma,
+} from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
@@ -15,6 +24,7 @@ import { revalidatePath } from 'next/cache';
 import { logger } from '@/lib/logger';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { lockCustomerRow } from '@/lib/locks';
+import { followBranchStatus, statusEvents } from '@/lib/customer-status';
 import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/status-evidence';
 import { stepDeadline } from '@/lib/approval-chains';
 import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from '@/lib/working-hours';
@@ -409,7 +419,8 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
 }
 
 /**
- * Manager approves the reactivation: branch goes back to ACTIVE, customer too if all branches now active.
+ * Manager approves the reactivation: branch goes back to ACTIVE, and the customer
+ * with it (owner decision 7: a customer with at least one ACTIVE branch is ACTIVE).
  */
 export async function approveReactivationAction(formData: FormData): SafeAction<void> {
   return runAction(() => approveReactivationCore(formData));
@@ -520,17 +531,17 @@ async function approveReactivationCore(formData: FormData) {
         lastStatusChangeAt: new Date(),
       },
     });
-    // If any branch active, customer is active
-    const others = await tx.branch.findMany({
-      where: { customerId: edit.customerId!, deletedAt: null },
-    });
-    const allActive = others.every((b) => b.status === 'ACTIVE');
-    if (allActive) {
-      await tx.customer.update({
-        where: { id: edit.customerId! },
-        data: { status: 'ACTIVE', lastEditedById: me.id },
-      });
-    }
+    // Owner decision 7 (2026-10-07): a customer with at least one ACTIVE branch
+    // is ACTIVE — the same rule a closure follows (lib/customer-status.ts). It
+    // used to wait until EVERY branch was active, so reopening one shop of a
+    // closed customer with another still closed left the customer CLOSED.
+    await followBranchStatus(
+      tx,
+      env,
+      edit.customerId!,
+      statusEvents(CustomerStatus.CLOSED, CustomerStatus.ACTIVE),
+      { actorId: me.id, via: `reactivation ${editId}` }
+    );
     // Recompute scores
     const fresh = await tx.customer.findUniqueOrThrow({
       where: { id: edit.customerId! },
