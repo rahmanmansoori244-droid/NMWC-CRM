@@ -247,9 +247,10 @@ export default async function ApprovalsPage() {
           a request sent between them is counted but not shown. */}
       <PageHeader
         title="Approval queue"
+        // The notice below says the rest, in one place.
         subtitle={
           noRegion
-            ? 'No region assigned'
+            ? 'Waiting for a region'
             : pendingCount > items.length
               ? `${pendingCount} pending · showing the ${items.length} most overdue`
               : `${pendingCount} pending`

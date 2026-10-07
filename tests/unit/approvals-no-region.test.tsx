@@ -64,8 +64,11 @@ describe('/approvals for an approver with no region', () => {
       h.role = role;
       render(await ApprovalsPage());
       expect(screen.getByRole('heading', { name: 'Approval queue' })).toBeTruthy();
+      // Once on the page: the header line names no region, so a reader (or a
+      // browser test) finding the sentence finds the one notice.
+      expect(screen.getAllByText(/no region/i)).toHaveLength(1);
       expect(screen.getByText(NOTICE)).toBeTruthy();
-      expect(screen.getByText('No region assigned')).toBeTruthy();
+      expect(screen.getByText('Waiting for a region')).toBeTruthy();
       expect(screen.queryByText('Nothing pending')).toBeNull();
       expect(screen.queryByText('0 pending')).toBeNull();
     }
