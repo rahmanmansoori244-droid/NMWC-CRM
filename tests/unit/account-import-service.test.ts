@@ -72,6 +72,7 @@ type Store = {
   batches: Array<Record<string, unknown> & { id: string }>;
   importRows: Array<{
     batchId: string;
+    rowNumber: number;
     issues: Array<{ message: string; sheet: string; row: number }>;
   }>;
 };
@@ -84,6 +85,8 @@ type Sheet = {
 };
 
 const h = vi.hoisted(() => ({
+  /** Cache tags the import revalidated (next/cache revalidateTag). */
+  tags: [] as string[],
   store: null as unknown as Store,
   /** null: the uploaded bytes go through the real parser (uploadWorkbook). */
   sheets: [] as Sheet[] | null,
@@ -101,7 +104,7 @@ const h = vi.hoisted(() => ({
 const STEWARD = { id: 'stew', role: 'STEWARD', username: 'steward.x' };
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: STEWARD }) }));
-vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {} }));
+vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: (tag: string) => h.tags.push(tag) }));
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -193,6 +196,17 @@ function makeClient(isTx: boolean): any {
 
   return {
     user: {
+      // The e-mail clash check: another account (NOT this username) holding the
+      // address in any letter case.
+      findFirst: async (args: any) => {
+        gate('user', 'findFirst', args, false);
+        const { equals, mode } = args.where.email;
+        const fold = (v: string) => (mode === 'insensitive' ? v.toLowerCase() : v);
+        const u = st().users.find(
+          (x) => x.email !== null && fold(x.email) === fold(equals) && x.username !== args.where.NOT?.username
+        );
+        return u ? viewUser(u, args) : null;
+      },
       findUnique: async (args: any) => {
         gate('user', 'findUnique', args, false);
         const u = st().users.find((x) => x.username === args.where.username);
@@ -405,6 +419,7 @@ beforeEach(() => {
   h.txOptions = [];
   h.failOn = null;
   h.auditFails = null;
+  h.tags = [];
   h.store = {
     users: [user({ id: 'stew', username: 'steward.x', role: 'STEWARD' })],
     regions: [
@@ -1332,6 +1347,39 @@ describe('X-IMPORTS-3: a database fault mid-import is reported as what it was', 
     expect(find('viewer.1')).toBeUndefined();
   });
 
+  // Launch fix (2026-10-07): the unique index is case-sensitive, so the same
+  // mailbox in other capitals used to be written to a second account.
+  it('an e-mail another account holds in other capitals is held back, in the words of the unique clash', async () => {
+    addUser({ id: 'v9', username: 'viewer.9', role: 'VIEWER', email: 'Taken@X.invalid' });
+    const { res, messages } = await upload(
+      usersSheet({
+        username: 'viewer.1',
+        full_name: 'V',
+        role: 'VIEWER',
+        password: '123456789012',
+        email: 'taken@x.INVALID',
+      })
+    );
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      'Users 2: nothing was written for "viewer.1": its email is already used by another record.',
+    ]);
+    expect(find('viewer.1')).toBeUndefined();
+  });
+
+  it('an e-mail is stored lower-cased, and the account’s own address in other capitals is no clash', async () => {
+    addUser({ id: 'v8', username: 'viewer.8', role: 'VIEWER', email: 'Own@X.invalid' });
+    const { res } = await upload(
+      usersSheet(
+        { username: 'viewer.8', full_name: 'Eight', role: 'VIEWER', email: 'OWN@x.invalid' },
+        { username: 'viewer.1', full_name: 'One', role: 'VIEWER', password: '123456789012', email: ' New.One@X.Invalid ' }
+      )
+    );
+    expect(okData(res)).toMatchObject({ clean: 2, issues: 0 });
+    expect(find('viewer.8')!.email).toBe('own@x.invalid');
+    expect(find('viewer.1')!.email).toBe('new.one@x.invalid');
+  });
+
   // ── the run is of failures IN A ROW ──
   const failLookup = (code: string, names: RegExp) => (model: string, op: string, args: any) =>
     model === 'user' && op === 'findUnique' && names.test(args.where.username)
@@ -1477,6 +1525,21 @@ describe('a failed row or report is logged with its message, and reported unless
 });
 
 // ── N05 in the account import ────────────────────────────────────────────────
+// Launch fix (2026-10-07): the /customers and /dashboard filters read regions,
+// routes and people from a 5-minute cache (lib/reference-data.ts); the import
+// never revalidated it, so what it created was missing there for minutes.
+describe('an account import refreshes the cached region, route and people lists', () => {
+  it('revalidates ref:regions, ref:routes and ref:users', async () => {
+    const { res } = await upload([
+      { name: 'Regions', rows: [{ code: 'DHO', name: 'Dhofar' }] },
+      { name: 'Routes', rows: [{ code: 'DHO-01', name: 'Dhofar 1', region_code: 'DHO' }] },
+      { name: 'Users', rows: [{ username: 'viewer.1', full_name: 'V', role: 'VIEWER', password: '123456789012' }] },
+    ]);
+    expect(okData(res).clean).toBe(3);
+    expect(h.tags).toEqual(expect.arrayContaining(['ref:regions', 'ref:routes', 'ref:users']));
+  });
+});
+
 describe('N05: rows are numbered as Excel shows them, and only the sheets read are checked for repeated headings', () => {
   it('reports the Excel row number on every sheet, blank lines included', async () => {
     const { res, messages } = await uploadWorkbook((wb) => {
@@ -1505,6 +1568,25 @@ describe('N05: rows are numbered as Excel shows them, and only the sheets read a
       'Users 4: username, full_name, role required',
     ]);
     expect(find('viewer.3')).toBeTruthy();
+  });
+
+  // Launch fix (2026-10-07): the issue rows were stored with rowNumber = the
+  // issue's index, so the batch page's Row column read #1, #2, #3.
+  it('stores each issue row under the row number Excel shows, not its index', async () => {
+    await uploadWorkbook((wb) => {
+      const regions = wb.addWorksheet('Regions');
+      regions.getCell('A1').value = 'code';
+      regions.getCell('B1').value = 'name';
+      regions.getCell('A4').value = 'NONAME';
+      const users = wb.addWorksheet('Users');
+      ['username', 'full_name', 'role', 'password'].forEach((v, i) => (users.getRow(1).getCell(i + 1).value = v));
+      users.getRow(2).values = ['viewer.1', 'V1', 'VIEWER', '123456789012'];
+      users.getRow(7).values = ['viewer.2', '', 'VIEWER', '123456789012'];
+    });
+    expect(h.store.importRows.map((r) => [r.issues[0]!.sheet, r.rowNumber])).toEqual([
+      ['Regions', 4],
+      ['Users', 7],
+    ]);
   });
 
   it('the Users sheet sorted by role still reports each row where Excel has it', async () => {

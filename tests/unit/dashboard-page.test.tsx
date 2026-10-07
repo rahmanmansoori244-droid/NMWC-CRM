@@ -52,6 +52,8 @@ vi.mock('@/lib/reference-data', () => ({
     { id: 'rt-e1', code: 'E1', name: 'East one', regionId: 'r-east' },
     { id: 'rt-n1', code: 'N1', name: 'North one', regionId: 'r-north' },
     { id: 'rt-s1', code: 'S1', name: 'South one', regionId: 'r-south' },
+    // An active route of an inactive region (getAllActiveRegions leaves the region out).
+    { id: 'rt-z1', code: 'ZZTEST-R1', name: 'Test route', regionId: 'r-zztest' },
   ],
 }));
 
@@ -441,6 +443,28 @@ describe('the filter bar', () => {
     const routes = screen.getByRole('dialog', { name: 'Route' });
     expect(within(routes).queryByLabelText('E1 · East one')).toBeNull();
     expect(within(routes).getByLabelText('N1 · North one')).toBeTruthy();
+  });
+
+  // Launch fix (2026-10-07): the organisation's view counts active regions only
+  // (lib/insights/sql.ts), so the ZZTEST test region offers no route either.
+  it('offers the Steward no route of an inactive region', async () => {
+    h.user = { id: 'u-s', role: 'STEWARD', username: 's' };
+    await open();
+    fireEvent.click(screen.getByRole('button', { name: /Route/ }));
+    const routes = screen.getByRole('dialog', { name: 'Route' });
+    expect(within(routes).getByLabelText('E1 · East one')).toBeTruthy();
+    expect(within(routes).queryByLabelText('ZZTEST-R1 · Test route')).toBeNull();
+  });
+
+  it('tells the organisation’s view that switched-off regions are left out, and not a Manager', async () => {
+    const note = /Regions that are switched off are left out of these figures/;
+    h.user = { id: 'u-v', role: 'VIEWER', username: 'v' };
+    await open();
+    expect(screen.getByText(note)).toBeTruthy();
+    cleanup();
+    h.user = { id: 'u-1', role: 'MANAGER', username: 'u' };
+    await open();
+    expect(screen.queryByText(note)).toBeNull();
   });
 
   it('a Manager of one region has no region control', async () => {

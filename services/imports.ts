@@ -18,7 +18,7 @@ import {
   runAction,
   type SafeAction,
 } from '@/lib/errors';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { duplicateHeadingIssue, parseWorkbook } from '@/lib/excel';
 import { normalizeCR } from '@/lib/cr';
 import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
@@ -427,7 +427,9 @@ async function uploadAccountMasterCore(
       const supUsername = lc(row.supervisor_username ?? row.supervisorUsername ?? '');
       const routeCode = uc(row.route_code ?? row.routeCode ?? '');
       const regionCodesRaw = String(row.region_codes ?? row.regionCodes ?? '').trim();
-      const email = String(row.email ?? '').trim() || null;
+      // Launch fix: lower-cased, as /users stores it (services/users.ts), so the
+      // case-sensitive unique index and the clash check below agree.
+      const email = String(row.email ?? '').trim().toLowerCase() || null;
       const phone = String(row.phone ?? '').trim() || null;
       // Go-live credential policy: a row may force the person to choose a new
       // password at first login (AUTH-09). Only then is a SHORT initial password
@@ -783,6 +785,26 @@ async function uploadAccountMasterCore(
           }
         }
 
+        // Launch fix: User.email's unique index is case-sensitive, so an address
+        // another account holds in other capitals got through and two accounts
+        // shared one mailbox. Checked ignoring case, in the words the unique
+        // clash itself produces (lib/account-import.ts accountRowFailure), which
+        // name the field and never the value.
+        if (email) {
+          const clash = await prisma.user.findFirst({
+            where: { email: { equals: email, mode: 'insensitive' }, NOT: { username } },
+            select: { id: true },
+          });
+          if (clash) {
+            issues.push({
+              sheet: 'Users',
+              row: sheetRow,
+              message: `nothing was written for "${username}": its email is already used by another record.`,
+            });
+            continue;
+          }
+        }
+
         const data: Prisma.UserCreateInput = {
           username,
           passwordHash,
@@ -962,9 +984,11 @@ async function uploadAccountMasterCore(
       // Persist issues as ImportRow rows for review
       if (issues.length > 0) {
         await tx.importRow.createMany({
-          data: issues.map((iss, idx) => ({
+          data: issues.map((iss) => ({
             batchId: batch.id,
-            rowNumber: idx + 1,
+            // Launch fix: the row Excel shows (N05), not the issue's index — the
+            // batch page's Row column read #1, #2… The sheet is in raw and issues.
+            rowNumber: iss.row,
             raw: iss as unknown as Prisma.InputJsonValue,
             state: ImportRowState.QUARANTINED,
             issues: [{ message: iss.message, sheet: iss.sheet, row: iss.row }] as Prisma.InputJsonValue,
@@ -1031,6 +1055,10 @@ async function uploadAccountMasterCore(
     'import.account.complete'
   );
   revalidatePath('/import');
+  // Launch fix: regions, routes and people from this sheet reach the cached
+  // filter lists (lib/reference-data.ts) now, not up to five minutes later.
+  // Before the throw below: rows applied before an interruption are live too.
+  for (const tag of ['ref:regions', 'ref:routes', 'ref:users']) revalidateTag(tag);
   if (stopped || !recorded) {
     throw new AppError(
       'IMPORT_INTERRUPTED',
@@ -1748,6 +1776,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         select: { id: true, code: true, regionId: true },
       });
       routeByCode.set('UNASSIGNED', unassignedRoute);
+      // Launch fix: the cached filter lists (lib/reference-data.ts) learn of it now.
+      revalidateTag('ref:regions');
+      revalidateTag('ref:routes');
     }
 
     // QA-019: each customer's promotion (parent + branches + row state) runs

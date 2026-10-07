@@ -6,6 +6,20 @@ import { omanDateISO } from '@/lib/tz';
 type Region = { id: string; name: string; code: string };
 type Route = { id: string; code: string; name: string; regionId: string };
 
+const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+/**
+ * The words for an export the server refused (app/api/exports/*: 400 for
+ * unreadable filters, 401 signed out, 403 for a role or a too-large export —
+ * whose message says how to split it — and 500).
+ */
+function refusalText(status: number, error: string): string {
+  if (status === 401) return 'Your session has ended. Sign in again, then download.';
+  if (status === 403 && error) return error;
+  if (status === 400) return 'These filters could not be read. Clear them and try again.';
+  return 'The export failed on the server. Nothing was downloaded — try again, and tell the Steward if it keeps failing.';
+}
+
 export function ExportFiltersForm({
   regions,
   routes,
@@ -29,6 +43,44 @@ export function ExportFiltersForm({
   const [changesUntil, setChangesUntil] = useState<string>(todayIso);
   const [onlyChanged, setOnlyChanged] = useState(false);
   const [includePending, setIncludePending] = useState(true);
+  // Launch fix: each download used to be a navigation (window.location.href or
+  // a plain link), so any refusal — 403 "Export too large…", 400, 401, 500 —
+  // replaced this page with raw JSON. It is fetched instead: a file is saved, a
+  // refusal is shown here, and the filters stay as they were.
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function download(href: string) {
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await fetch(href, { credentials: 'same-origin' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+        setError(refusalText(res.status, typeof body?.error === 'string' ? body.error : ''));
+        return;
+      }
+      // A redirect (to sign-in or the forced password change) answers 200 with a page.
+      if (!(res.headers.get('Content-Type') ?? '').includes(XLSX)) {
+        setError('The server answered with a page instead of the file. Reload this page, sign in if asked, and try again.');
+        return;
+      }
+      const name =
+        /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? 'nmwc-export.xlsx';
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch {
+      setError('The export could not be reached. Check the connection and try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // Filter routes by selected regions for usability
   const filteredRoutes = useMemo(
@@ -67,10 +119,15 @@ export function ExportFiltersForm({
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        window.location.href = buildHref();
+        void download(buildHref());
       }}
       className="grid gap-4"
     >
+      {error && (
+        <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm font-medium text-red-700 ring-1 ring-red-200">
+          {error}
+        </p>
+      )}
       <fieldset>
         <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
           Regions
@@ -193,17 +250,20 @@ export function ExportFiltersForm({
       </div>
 
       <div className="flex items-center justify-between border-t border-slate-200 pt-4">
-        <a
-          href="/api/exports/customers"
-          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void download('/api/exports/customers')}
+          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
         >
           Download all (no filters)
-        </a>
+        </button>
         <button
           type="submit"
-          className="rounded-md bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+          disabled={busy}
+          className="rounded-md bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
         >
-          Download .xlsx
+          {busy ? 'Preparing…' : 'Download .xlsx'}
         </button>
       </div>
 
@@ -262,12 +322,14 @@ export function ExportFiltersForm({
             />
             Mark pending (not yet approved) proposals
           </label>
-          <a
-            href={buildChangesHref()}
-            className="ml-auto rounded-md bg-amber-600 px-5 py-2 text-sm font-semibold text-white hover:bg-amber-700"
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void download(buildChangesHref())}
+            className="ml-auto rounded-md bg-amber-600 px-5 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
           >
             Download field-update report
-          </a>
+          </button>
         </div>
       </fieldset>
     </form>

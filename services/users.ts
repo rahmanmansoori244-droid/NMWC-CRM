@@ -13,7 +13,7 @@ import {
 } from '@/lib/errors';
 import { requireActor } from '@/lib/session';
 import { assertPasswordNotReused, passwordRule, rotatePasswordHistory } from '@/lib/password-policy';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { logger } from '@/lib/logger';
 import {
   canMutateUser,
@@ -57,8 +57,13 @@ const createUserSchema = z.object({
   username: usernameRule,
   fullName: z.string().min(2).max(200),
   role: z.nativeEnum(Role),
+  // Launch fix: trimmed and lower-cased, as the F1 e-mail edit stores it
+  // (contactAddressRule below). User.email's unique index is case-sensitive, so
+  // "A.Name@x" and "a.name@x" were two accounts sharing one mailbox.
   email: z
     .string()
+    .trim()
+    .toLowerCase()
     .email()
     .max(200)
     .optional()
@@ -269,6 +274,19 @@ async function createUserCore(formData: FormData) {
     throw new ValidationError({ username: 'Username already taken.' });
   }
 
+  // Launch fix: the unique index cannot see a clash in another letter case, so
+  // it is checked here ignoring case, as updateUserEmailCore does. An address
+  // stored before this rule, in capitals, is still found.
+  if (data.email) {
+    const clash = await prisma.user.findFirst({
+      where: { email: { equals: data.email, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    if (clash) {
+      throw new ValidationError({ email: 'That e-mail is already used by another account.' });
+    }
+  }
+
   // Route uniqueness (1 salesman per route)
   if (data.ownedRouteId) {
     const existing = await prisma.user.findUnique({ where: { ownedRouteId: data.ownedRouteId } });
@@ -320,6 +338,10 @@ async function createUserCore(formData: FormData) {
   logger.info({ actorId: me.id, userId: user.id, role: user.role }, 'user.create');
 
   revalidatePath('/users');
+  // Launch fix: the /customers filters read the people from a 5-minute cache
+  // (lib/reference-data.ts getAllHierarchyUsers); without this a new salesman
+  // was missing from them for up to five minutes.
+  revalidateTag('ref:users');
 }
 
 /**
@@ -388,6 +410,7 @@ async function toggleUserActiveCore(formData: FormData) {
     });
   });
   revalidatePath('/users');
+  revalidateTag('ref:users'); // the cached list holds active accounts only
 }
 
 /**
@@ -586,6 +609,7 @@ async function updateUserRoleCore(formData: FormData) {
     });
   });
   revalidatePath('/users');
+  revalidateTag('ref:users'); // role and route are both in the cached list
 }
 
 /**

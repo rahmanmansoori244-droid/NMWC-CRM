@@ -37,13 +37,15 @@ const h = vi.hoisted(() => ({
   raceRouteId: null as null | string,
   /** When set, the next User insert throws a P2002 with this meta (or none). */
   clashMeta: undefined as undefined | { meta?: unknown },
+  /** Cache tags the actions revalidated (next/cache revalidateTag). */
+  tags: [] as string[],
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => h.session }));
 vi.mock('next/headers', () => ({
   headers: async () => new Headers({ 'x-forwarded-for': '10.1.2.3', 'user-agent': 'unit' }),
 }));
-vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {} }));
+vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: (tag: string) => h.tags.push(tag) }));
 vi.mock('bcryptjs', () => {
   const hash = async (plain: string) => `hash:${plain}`;
   const compare = async (plain: string, hashed: string) => hashed === `hash:${plain}`;
@@ -84,6 +86,14 @@ vi.mock('@/lib/db', () => {
     },
     count: async ({ where }: { where: Record<string, unknown> }) =>
       [...tables()[name].values()].filter((r) => matches(r, where)).length,
+    // The create's e-mail clash check: `email: { equals, mode: 'insensitive' }`.
+    findFirst: async ({ where }: { where: { email?: { equals: string; mode?: string } } }) => {
+      const want = where.email?.equals;
+      if (want === undefined) throw new Error('findFirst: only the e-mail lookup is modelled');
+      const fold = (v: unknown) => (where.email!.mode === 'insensitive' && typeof v === 'string' ? v.toLowerCase() : v);
+      const row = [...tables()[name].values()].find((r) => r.email != null && fold(r.email) === fold(want));
+      return row ? { id: row.id } : null;
+    },
     create: async ({ data }: { data: Record<string, unknown> }) => {
       if (via === 'prisma') h.autocommit.push(`${name}.create`);
       if (name === 'auditLog' && h.failAudit) {
@@ -179,6 +189,7 @@ beforeEach(() => {
   h.raceUsername = null;
   h.raceRouteId = null;
   h.clashMeta = undefined;
+  h.tags = [];
   h.session = { user: { id: STEWARD, role: 'STEWARD', username: 'steward.one', mustChangePassword: false } };
   h.tables = {
     user: new Map([
@@ -349,6 +360,44 @@ describe('the unique-code answers survive the move into a transaction', () => {
     expect(snapshot()).toEqual(before);
   });
 
+  // Launch fix (2026-10-07): User.email's unique index is case-sensitive, so an
+  // address held in other capitals used to be accepted — two accounts, one mailbox.
+  it('an e-mail another account holds in other capitals is refused, and nothing is written', async () => {
+    h.tables.user.set('ckaccountantholder000001', {
+      id: 'ckaccountantholder000001',
+      username: 'acct.mct',
+      role: 'ACCOUNTANT',
+      email: 'Finance@X.invalid',
+    });
+    const before = snapshot();
+    const res = await createUserAction(
+      form({
+        username: 'new.viewer',
+        fullName: 'New Viewer',
+        role: 'VIEWER',
+        email: 'finance@x.INVALID',
+        password: 'A-long-password-1',
+      })
+    );
+    expect(res).toEqual(failed({ email: 'That e-mail is already used by another account.' }));
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('a new account’s e-mail is stored trimmed and lower-cased', async () => {
+    const res = await createUserAction(
+      form({
+        username: 'new.viewer',
+        fullName: 'New Viewer',
+        role: 'VIEWER',
+        email: '  New.Viewer@Example.TEST ',
+        password: 'A-long-password-1',
+      })
+    );
+    expect(res).toMatchObject({ ok: true });
+    const u = [...h.tables.user.values()].find((r) => r.username === 'new.viewer');
+    expect(u?.email).toBe('new.viewer@example.test');
+  });
+
   it('a route another create took between the pre-check and the insert is reported under the route field', async () => {
     h.raceRouteId = ROUTE;
     const res = await createUserAction(
@@ -395,5 +444,25 @@ describe('the unique-code answers survive the move into a transaction', () => {
     const res = await createRouteAction(form({ code: 'M01', name: 'Again', regionId: REGION }));
     expect(res).toMatchObject({ ok: false, code: 'UNIQUE_CONSTRAINT' });
     expect(h.tables.auditLog.size).toBe(0);
+  });
+});
+
+// Launch fix (2026-10-07): the /customers filters read the people from a
+// 5-minute cache (lib/reference-data.ts 'ref:users'), which nothing revalidated,
+// so a new salesman was missing from them for up to five minutes.
+describe('a change to who exists, is active or holds which role refreshes the cached people list', () => {
+  it.each([
+    ['createUserAction', () => createUserAction(form({ username: 'new.sup', fullName: 'New Supervisor', role: 'SUPERVISOR', password: 'A-long-password-1' }))],
+    ['toggleUserActiveAction', () => toggleUserActiveAction(form({ userId: TARGET }))],
+    ['updateUserRoleAction', () => updateUserRoleAction(form({ userId: TARGET, newRole: 'VIEWER' }))],
+  ])('%s revalidates ref:users', async (_name, run) => {
+    expect(await run()).toMatchObject({ ok: true });
+    expect(h.tags).toContain('ref:users');
+  });
+
+  it('a refused change revalidates nothing', async () => {
+    const res = await createUserAction(form({ username: 'Bad Name', fullName: 'X', role: 'SUPERVISOR', password: 'A-long-password-1' }));
+    expect(res).toMatchObject({ ok: false });
+    expect(h.tags).toEqual([]);
   });
 });

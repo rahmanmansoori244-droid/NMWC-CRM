@@ -50,6 +50,7 @@ import { lockTemixQueue } from '@/lib/locks';
 import { omanDateISO } from '@/lib/tz';
 
 const BATCH_ROW_CAP = 5000;
+const NOTHING_PENDING = 'Nothing is pending for Temix upload.';
 
 async function requireSteward() {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -212,13 +213,15 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
     // Soft cap pre-check (updateMany cannot `take`; a handful of rows racing
     // in over the cap between count and flip is harmless).
     const pending = await tx.customer.count({ where: TEMIX_QUEUE_WHERE });
+    // Launch fix: each refusal's text is its message too. Given only as _form,
+    // the message was ValidationError's default "Validation failed", which is
+    // all the Generate and Mark loaded buttons showed (TemixActions.tsx).
     if (pending === 0) {
-      throw new ValidationError({ _form: 'Nothing is pending for Temix upload.' });
+      throw new ValidationError({ _form: NOTHING_PENDING }, NOTHING_PENDING);
     }
     if (pending > BATCH_ROW_CAP) {
-      throw new ValidationError({
-        _form: `Queue exceeds ${BATCH_ROW_CAP} customers — contact support to split the batch.`,
-      });
+      const why = `Queue exceeds ${BATCH_ROW_CAP} customers — contact support to split the batch.`;
+      throw new ValidationError({ _form: why }, why);
     }
     // The queue's row locks, taken first and in the id order archive and merge
     // lock in (lib/locks.ts): the flip below claims only these rows, so it takes
@@ -274,7 +277,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
         const why = `Nothing can go to Temix yet. Held back for review: ${heldBackText(heldBack)}.`;
         throw new ValidationError({ _form: why }, why);
       }
-      throw new ValidationError({ _form: 'Nothing is pending for Temix upload.' });
+      throw new ValidationError({ _form: NOTHING_PENDING }, NOTHING_PENDING);
     }
     const queued = await tx.customer.findMany({
       where: { lastTemixUploadBatchId: b.id, temixSyncState: TemixSyncState.UPLOADED },
@@ -413,7 +416,8 @@ export async function markTemixBatchLoadedAction(formData: FormData): SafeAction
           select: { markedLoadedAt: true },
         });
         if (!exists) throw new NotFoundError('Batch not found.');
-        throw new ValidationError({ _form: 'This batch is already marked as loaded.' });
+        const why = 'This batch is already marked as loaded.';
+        throw new ValidationError({ _form: why }, why);
       }
       const batch = await tx.temixSyncBatch.findUniqueOrThrow({ where: { id: batchId } });
       const ids = Array.isArray(batch.customerIds) ? (batch.customerIds as string[]) : [];

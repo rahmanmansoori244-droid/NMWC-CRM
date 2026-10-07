@@ -1,4 +1,5 @@
 import { TableScroll } from '@/components/nmwc/TableScroll';
+import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
@@ -13,13 +14,28 @@ import { GenerateBatchButton, BatchRowActions } from './TemixActions';
 export const metadata = { title: 'Temix sync · NMWC' };
 export const dynamic = 'force-dynamic';
 
-export default async function TemixPage() {
+const PAGE_SIZE = 20;
+
+const BATCH_INCLUDE = { createdBy: { select: { fullName: true } } } as const;
+
+export default async function TemixPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
   const session = await auth();
   if (!session?.user) redirect('/login');
   // Steward-only (owner role matrix: Temix batch upload/refresh is Steward's).
   if (session.user.role !== Role.STEWARD) redirect('/home');
 
-  const [pendingUpload, deactivatePending, uploaded, queueTotal, batches] = await Promise.all([
+  const sp = await searchParams;
+  const page = Math.max(1, Number.parseInt(sp.page ?? '1', 10) || 1);
+
+  // Launch fix: the history was the 20 newest batches and nothing else, so an
+  // older batch still awaiting confirmation could no longer be re-downloaded or
+  // marked loaded. The history now pages, and the first page also lists every
+  // batch awaiting confirmation, however old, so none drops out of reach.
+  const [pendingUpload, deactivatePending, uploaded, queueTotal, batchTotal, pageBatches, awaiting] = await Promise.all([
     prisma.customer.count({
       where: { temixSyncState: TemixSyncState.PENDING_UPLOAD, deletedAt: null },
     }),
@@ -27,12 +43,27 @@ export default async function TemixPage() {
     prisma.customer.count({ where: { temixSyncState: TemixSyncState.DEACTIVATE_PENDING } }),
     prisma.customer.count({ where: { temixSyncState: TemixSyncState.UPLOADED } }),
     prisma.customer.count({ where: TEMIX_QUEUE_WHERE }),
+    prisma.temixSyncBatch.count(),
     prisma.temixSyncBatch.findMany({
       orderBy: { createdAt: 'desc' },
-      take: 20,
-      include: { createdBy: { select: { fullName: true } } },
+      skip: (page - 1) * PAGE_SIZE,
+      take: PAGE_SIZE,
+      include: BATCH_INCLUDE,
     }),
+    page === 1
+      ? prisma.temixSyncBatch.findMany({
+          where: { markedLoadedAt: null },
+          orderBy: { createdAt: 'desc' },
+          include: BATCH_INCLUDE,
+        })
+      : Promise.resolve([]),
   ]);
+  const onPage = new Set(pageBatches.map((b) => b.id));
+  const batches = [...pageBatches, ...awaiting.filter((b) => !onPage.has(b.id))].sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+  );
+  const lastPage = Math.max(1, Math.ceil(batchTotal / PAGE_SIZE));
+  const pageHref = (p: number): Route => (p > 1 ? `/temix?page=${p}` : '/temix');
 
   return (
     <main>
@@ -112,6 +143,27 @@ export default async function TemixPage() {
               </tbody>
             </table>
           </TableScroll>
+        )}
+        {lastPage > 1 && (
+          <nav aria-label="Batch history pages" className="mt-3 flex items-center justify-between text-sm">
+            <Link
+              href={pageHref(Math.max(1, page - 1))}
+              aria-disabled={page === 1}
+              className={`rounded-md px-3 py-1.5 ${page === 1 ? 'pointer-events-none text-slate-400' : 'text-brand-700 hover:bg-brand-50'}`}
+            >
+              ← Newer
+            </Link>
+            <span className="text-slate-600">
+              Page {Math.min(page, lastPage)} of {lastPage}
+            </span>
+            <Link
+              href={pageHref(Math.min(lastPage, page + 1))}
+              aria-disabled={page >= lastPage}
+              className={`rounded-md px-3 py-1.5 ${page >= lastPage ? 'pointer-events-none text-slate-400' : 'text-brand-700 hover:bg-brand-50'}`}
+            >
+              Older →
+            </Link>
+          </nav>
         )}
         <p className="mt-3 text-xs text-slate-500">
           Flow: generate a batch (queued rows flip to “uploaded”) → carry the sheet to Temix →
