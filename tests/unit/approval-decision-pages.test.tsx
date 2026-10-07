@@ -299,6 +299,35 @@ describe('the review page', () => {
     // A row older than the stage columns: the token carries its null stage.
     expect(parseDecisionToken(props.decisionToken)).toMatchObject({ cycle: 2, stepIndex: 0, stageEnteredAt: null, creditLimit: null });
   });
+
+  // Launch fix (2026-10-07): a refused close keeps the salesman's reason for
+  // asking in decisionReason (the reviewer's is on the decision row), so the
+  // decision box must not present it as the reviewer's words.
+  it('a decided close request names its kept reason as the salesman’s; a sent-back update does not', async () => {
+    const { default: Page } = await import('@/app/(app)/approvals/[id]/page');
+    const decided = (target: 'BRANCH' | 'CUSTOMER', state: string, decisionReason: string) =>
+      createRow('CASH', 0, {
+        process: 'UPDATE',
+        target,
+        state,
+        customerId: 'c1',
+        customer: { id: 'c1', legalName: 'Muscat Pearl', nmwcCode: 'NMWC-000123', crPhotoId: null, branches: [] },
+        approvalChain: resolveChain(EditProcess.UPDATE, PaymentTerms.CASH),
+        customerDraft: null,
+        decisionReason,
+        reviewedBy: { fullName: 'Manager B' },
+        reviewedAt: new Date('2026-10-07T06:00:00.000Z'),
+      });
+    h.role = 'GM';
+    h.edit = decided('BRANCH', 'REJECTED', 'Shop shut, seen today.');
+    render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+    expect(screen.getByText(/Salesman.s reason:/).parentElement!.textContent).toContain('Shop shut, seen today.');
+    cleanup();
+    h.edit = decided('CUSTOMER', 'NEEDS_CORRECTION', 'Phone number is wrong.');
+    render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+    expect(screen.getByText(/Phone number is wrong\./)).toBeTruthy();
+    expect(screen.queryByText(/Salesman.s reason:/)).toBeNull();
+  });
 });
 
 describe('the review page of a customer update — phase 2 (F06, F20, F21, rulings 1, 2 and 8)', () => {

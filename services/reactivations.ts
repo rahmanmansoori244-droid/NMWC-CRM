@@ -28,6 +28,7 @@ import {
 } from '@/lib/submission-replay';
 import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
+import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
 
 async function require(role?: Role[]) {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -495,6 +496,17 @@ async function approveReactivationCore(formData: FormData) {
       entityId: edit.branchId!,
       reason: edit.decisionReason ?? undefined,
     });
+    // Launch fix (2026-10-07): the decision answers every Manager's
+    // REACTIVATION_REQUESTED (and any breach ping), and the salesman is told —
+    // before, a reactivation's outcome reached him only if he went looking.
+    await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
+    await notifyUsers(tx, [edit.submittedById], {
+      kind: 'EDIT_APPROVED_FINAL',
+      title: 'Reactivation approved',
+      body: `${edit.customer!.legalName} (${edit.customer!.nmwcCode}) — your reactivation request was approved; the branch is active again.`,
+      editId,
+      customerId: edit.customerId ?? undefined,
+    });
   });
 
   logger.info({ editId, by: me.id }, 'reactivation.approve');
@@ -517,7 +529,12 @@ async function rejectReactivationCore(formData: FormData) {
   // escalation but it still touches another Manager's queue.
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
-    include: { branch: true, submittedBy: { select: { id: true } } },
+    include: {
+      branch: true,
+      submittedBy: { select: { id: true } },
+      // For the salesman's notification: the name and code, never more.
+      customer: { select: { legalName: true, nmwcCode: true } },
+    },
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (!edit.branch) throw new NotFoundError('Branch missing.');
@@ -551,14 +568,18 @@ async function rejectReactivationCore(formData: FormData) {
   await prisma.$transaction(async (tx) => {
     // QA-C13: atomic claim (PROD-001) so a reject racing a concurrent approve/reject
     // can't double-decide — the loser aborts before writing an audit row.
+    // Launch fix (2026-10-07): "Keep closed" is final, so it ends REJECTED, not
+    // NEEDS_CORRECTION — nothing on it can be corrected, and it used to sit on the
+    // salesman's Needs correction lists for ever. decisionReason keeps HIS reason
+    // for asking (it was overwritten, and lost); the Manager's is on the REJECT
+    // audit row below and in the salesman's notification.
     const claim = await tx.customerEdit.updateMany({
       where: { id: editId, state: EditState.SUBMITTED, isReactivation: true },
       data: {
-        state: EditState.NEEDS_CORRECTION,
+        state: EditState.REJECTED,
         pendingRole: null,
         reviewedById: me.id,
         reviewedAt: new Date(),
-        decisionReason: reason,
       },
     });
     if (claim.count === 0) {
@@ -572,6 +593,17 @@ async function rejectReactivationCore(formData: FormData) {
       entityType: 'CustomerEdit',
       entityId: editId,
       reason,
+    });
+    // As on approve: every Manager's request row is answered, and the salesman
+    // is told — the red row he acts on, since he must read why.
+    await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
+    const name = edit.customer ? `${edit.customer.legalName} (${edit.customer.nmwcCode})` : 'A closed branch';
+    await notifyUsers(tx, [edit.submittedById], {
+      kind: 'EDIT_NEEDS_CORRECTION',
+      title: 'Reactivation refused',
+      body: `${name} — your reactivation request was refused; the branch stays closed: ${reason}`,
+      editId,
+      customerId: edit.customerId ?? undefined,
     });
   });
   revalidatePath('/reactivations');

@@ -18,7 +18,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     where: { userId: session.user.id, readAt: null },
     _count: { _all: true },
   });
-  const bell = splitBellCounts(unreadByKind.map((g) => ({ kind: g.kind, count: g._count._all })));
+  const bell = splitBellCounts(
+    unreadByKind.map((g) => ({ kind: g.kind, count: g._count._all })),
+    session.user.role
+  );
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">

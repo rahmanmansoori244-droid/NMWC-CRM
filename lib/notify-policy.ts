@@ -14,9 +14,13 @@
  * (lib/email/config.ts).
  *
  * Who must act (in-app EDIT_SUBMITTED / REACTIVATION_REQUESTED, and e-mail):
- *   UPDATE and CREATE  unchanged: the salesman's supervisorId (resolveStepAudience,
- *                      lib/notifications.ts). Region Managers who may also act
- *                      are deliberately not told (lib/notifications.ts).
+ *   UPDATE and CREATE  the salesman's supervisorId when that supervisor can act
+ *                      on the request, as for a CLOSE (resolveStepAudience,
+ *                      lib/notifications.ts); otherwise every active MANAGER of
+ *                      the request's regions, and the gap is logged. Region
+ *                      Managers who may also act are not told while he can
+ *                      (launch fix 2026-10-07: a null, disabled or out-of-region
+ *                      supervisorId used to alert nobody).
  *   CLOSE (new)        his supervisor when that supervisor can act on the request
  *                      (an active SUPERVISOR, or an active MANAGER who manages the
  *                      branch's region: canApproveSpecificEdit refuses a Manager
@@ -104,6 +108,18 @@ export const MUST_ACT_KINDS: readonly NotificationKind[] = [
 ];
 
 /**
+ * Launch fix (2026-10-07): the rows a decision settles. When anyone decides a
+ * request (a step approved or rejected, a reactivation approved or kept closed),
+ * every unread row of these kinds about it, held by anyone but its submitter, is
+ * marked read in the same transaction (lib/notifications.ts settleRequestAlerts):
+ * the step they asked for has been taken, so they no longer count in a red bell.
+ * Before, only the recipient's own click marked a row read, so with four Managers
+ * sharing a region a supervisor's bell counted requests a colleague had already
+ * decided. The submitter's own rows are his progress pings and are left alone.
+ */
+export const SETTLED_ON_DECISION_KINDS: readonly NotificationKind[] = [...MUST_ACT_KINDS, 'SLA_BREACH'];
+
+/**
  * The in-app bell (app/(app)/layout.tsx, components/nmwc/TopBar.tsx) is the only
  * in-app alert, and its red count means "something waits on you". These kinds
  * are counted apart from it, in a muted second count: since F1 the region's
@@ -116,6 +132,26 @@ export const MUST_ACT_KINDS: readonly NotificationKind[] = [
  * red count.
  */
 export const BELL_INFORMATION_KINDS: readonly NotificationKind[] = ['REQUEST_FYI'];
+
+/**
+ * Launch fix (2026-10-07): a SALESMAN's rows are about his own requests, and only
+ * one kind asks him to act — EDIT_NEEDS_CORRECTION, a request returned or refused,
+ * whose reason he must read. These only tell him how a request went: "advanced"
+ * and "approved" (the same kinds ask an approver or a Steward to act, so the split
+ * is by role), Temix's acknowledgement, and FYI. Counted in his red badge they
+ * read as work he did not have.
+ */
+export const SALESMAN_BELL_INFORMATION_KINDS: readonly NotificationKind[] = [
+  ...BELL_INFORMATION_KINDS,
+  'EDIT_STAGE_ADVANCED',
+  'EDIT_APPROVED_FINAL',
+  'TEMIX_SYNC_ACKED',
+];
+
+/** The kinds counted apart from `role`'s red bell (lib/notification-bell.ts). */
+export function bellInformationKinds(role: Role): readonly NotificationKind[] {
+  return role === Role.SALESMAN ? SALESMAN_BELL_INFORMATION_KINDS : BELL_INFORMATION_KINDS;
+}
 
 /**
  * Delivery. The drain (app/api/cron/email-drain, lib/email/drain.ts) runs every

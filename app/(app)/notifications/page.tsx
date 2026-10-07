@@ -35,7 +35,10 @@ export default async function NotificationsPage() {
   const unread = notifications.filter((n) => !n.readAt).length;
   // F1: the same split as the bell — rows that may ask for action, and rows
   // that only inform (lib/notification-bell.ts).
-  const counts = splitBellCounts(notifications.filter((n) => !n.readAt).map((n) => ({ kind: n.kind, count: 1 })));
+  const counts = splitBellCounts(
+    notifications.filter((n) => !n.readAt).map((n) => ({ kind: n.kind, count: 1 })),
+    session.user.role
+  );
   const subtitle =
     unread === 0
       ? 'All caught up'

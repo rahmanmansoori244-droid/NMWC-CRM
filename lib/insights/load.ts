@@ -269,7 +269,11 @@ SELECT agg.*, ${REGION_NAMES}, ${ROUTE_NAMES}
   ${NAME_JOINS}`;
 }
 
-/** 4. Close-shop and reactivation requests, on the branch's own region and route. */
+/**
+ * 4. Close-shop and reactivation requests, on the branch's own region and route.
+ * A refused close and a "Keep closed" end REJECTED since the launch fix of
+ * 2026-10-07 (NEEDS_CORRECTION before it), so both states count as refused.
+ */
 function statusSql(scope: ActiveScope, p: InsightPeriod): Prisma.Sql {
   return Prisma.sql`/* insights:status */
 WITH v AS (
@@ -284,15 +288,15 @@ WITH v AS (
     JOIN "Customer" c ON c."id" = b."customerId" AND c."deletedAt" IS NULL
    WHERE e."process" = 'UPDATE' AND (e."target" = 'BRANCH' OR e."isReactivation")
      AND (e."state" = 'SUBMITTED'
-          OR (e."state" IN ('APPROVED', 'NEEDS_CORRECTION')
+          OR (e."state" IN ('APPROVED', 'NEEDS_CORRECTION', 'REJECTED')
               AND e."reviewedAt" >= ${p.prevFrom} AND e."reviewedAt" < ${p.to}))
      AND ${branchInScopeSql(scope, 'b')}
 ), agg AS (
   SELECT "bucket", "regionId", GROUPING("bucket", "regionId")::int AS "g",
          count(*) FILTER (WHERE "cur" AND NOT "react" AND "state" = 'APPROVED')::int AS "closed",
          count(*) FILTER (WHERE "cur" AND "react" AND "state" = 'APPROVED')::int AS "reactivated",
-         count(*) FILTER (WHERE "cur" AND NOT "react" AND "state" = 'NEEDS_CORRECTION')::int AS "closeRefused",
-         count(*) FILTER (WHERE "cur" AND "react" AND "state" = 'NEEDS_CORRECTION')::int AS "keptClosed",
+         count(*) FILTER (WHERE "cur" AND NOT "react" AND "state" IN ('NEEDS_CORRECTION', 'REJECTED'))::int AS "closeRefused",
+         count(*) FILTER (WHERE "cur" AND "react" AND "state" IN ('NEEDS_CORRECTION', 'REJECTED'))::int AS "keptClosed",
          count(*) FILTER (WHERE "prev" AND NOT "react" AND "state" = 'APPROVED')::int AS "prevClosed",
          count(*) FILTER (WHERE "prev" AND "react" AND "state" = 'APPROVED')::int AS "prevReactivated",
          count(*) FILTER (WHERE "state" = 'SUBMITTED' AND NOT "react")::int AS "closeWaiting",

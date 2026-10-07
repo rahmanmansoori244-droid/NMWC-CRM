@@ -6,6 +6,11 @@
  * (customerId WHERE state='SUBMITTED'). The fix auto-rejects the loser's open edit
  * (its identity is merged away) before reparenting, so the merge completes.
  *
+ * Launch fix (2026-10-07): that auto-close is a decision too. The approver's row
+ * asking for the loser's request is marked read (it stops counting in his bell),
+ * the winner's request keeps its row unread, and the salesman is told his request
+ * ended without a decision, linked to the surviving customer.
+ *
  *   RUN_MERGE_OPEN=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/merge-open-edit-collision.test.ts
  */
@@ -25,7 +30,7 @@ describe.skipIf(!ENABLED)('merge completes when BOTH customers have an open edit
   let prisma: import('@prisma/client').PrismaClient;
   let dupes: typeof import('@/services/duplicates');
   const tag = randomUUID().slice(0, 8);
-  const ids = { region: '', route: '', steward: `ZZMO-stew-${tag}`, sales: `ZZMO-sales-${tag}`, winner: '', loser: '', winnerEdit: '', loserEdit: '' };
+  const ids = { region: '', route: '', steward: `ZZMO-stew-${tag}`, sales: `ZZMO-sales-${tag}`, mgr: `ZZMO-mgr-${tag}`, winner: '', loser: '', winnerEdit: '', loserEdit: '' };
 
   async function mkOpenEdit(customerId: string, branchId: string) {
     const e = await prisma.customerEdit.create({
@@ -49,6 +54,7 @@ describe.skipIf(!ENABLED)('merge completes when BOTH customers have an open edit
     ids.route = route.id;
     await prisma.user.create({ data: { id: ids.steward, username: ids.steward, passwordHash: 'x', fullName: 'ZZ Steward', role: 'STEWARD' } });
     await prisma.user.create({ data: { id: ids.sales, username: ids.sales, passwordHash: 'x', fullName: 'ZZ Sales', role: 'SALESMAN', ownedRouteId: route.id } });
+    await prisma.user.create({ data: { id: ids.mgr, username: ids.mgr, passwordHash: 'x', fullName: 'ZZ Manager', role: 'MANAGER', managedRegions: { connect: { id: region.id } } } });
     const w = await prisma.customer.create({ data: { nmwcCode: `ZZMO-W-${tag}`, legalName: 'ZZ Winner', paymentTerms: 'CASH', createdById: ids.steward } });
     const l = await prisma.customer.create({ data: { nmwcCode: `ZZMO-L-${tag}`, legalName: 'ZZ Loser', paymentTerms: 'CASH', createdById: ids.steward } });
     ids.winner = w.id; ids.loser = l.id;
@@ -57,6 +63,10 @@ describe.skipIf(!ENABLED)('merge completes when BOTH customers have an open edit
     // BOTH sides have an OPEN (SUBMITTED) edit — the collision trigger.
     ids.winnerEdit = await mkOpenEdit(w.id, wb.id);
     ids.loserEdit = await mkOpenEdit(l.id, lb.id);
+    // The Manager was asked to review both (as resolveStepAudience would).
+    for (const [editId, customerId] of [[ids.winnerEdit, w.id], [ids.loserEdit, l.id]] as const) {
+      await prisma.notification.create({ data: { userId: ids.mgr, kind: 'EDIT_SUBMITTED', title: 'Edit awaiting your review', body: 'ZZ', editId, customerId } });
+    }
     current = { id: ids.steward, role: 'STEWARD', username: ids.steward };
   });
 
@@ -64,11 +74,12 @@ describe.skipIf(!ENABLED)('merge completes when BOTH customers have an open edit
     if (!prisma) return;
     try {
       const custIds = [ids.winner, ids.loser];
+      await prisma.notification.deleteMany({ where: { userId: { in: [ids.mgr, ids.sales] } } });
       await purgeCustomerEdits(prisma, { where: { customerId: { in: custIds } } });
       await purgeAuditLog(prisma, { where: { actorId: ids.steward } });
       await prisma.branch.deleteMany({ where: { customerId: { in: custIds } } });
       await prisma.customer.deleteMany({ where: { id: { in: custIds } } });
-      await prisma.user.deleteMany({ where: { id: { in: [ids.steward, ids.sales] } } });
+      await prisma.user.deleteMany({ where: { id: { in: [ids.steward, ids.sales, ids.mgr] } } });
       await prisma.route.deleteMany({ where: { id: ids.route } });
       await prisma.region.deleteMany({ where: { id: ids.region } });
     } catch (e) { console.error('cleanup', e); }
@@ -102,5 +113,19 @@ describe.skipIf(!ENABLED)('merge completes when BOTH customers have an open edit
     // the loser is archived
     const loser = await prisma.customer.findUniqueOrThrow({ where: { id: ids.loser }, select: { deletedAt: true } });
     expect(loser.deletedAt).not.toBeNull();
+
+    // Launch fix (2026-10-07): the auto-closed request's review row is answered;
+    // the winner's open request still waits on the Manager.
+    const mgrRows = await prisma.notification.findMany({ where: { userId: ids.mgr }, select: { editId: true, readAt: true } });
+    expect(mgrRows.find((n) => n.editId === ids.loserEdit)?.readAt).not.toBeNull();
+    expect(mgrRows.find((n) => n.editId === ids.winnerEdit)?.readAt).toBeNull();
+    // ...and the salesman is told, on the surviving customer (the loser's page is gone).
+    const told = await prisma.notification.findMany({
+      where: { userId: ids.sales },
+      select: { kind: true, title: true, editId: true, customerId: true, readAt: true },
+    });
+    expect(told).toEqual([
+      { kind: 'EDIT_NEEDS_CORRECTION', title: 'Request closed by a merge', editId: ids.loserEdit, customerId: ids.winner, readAt: null },
+    ]);
   });
 });

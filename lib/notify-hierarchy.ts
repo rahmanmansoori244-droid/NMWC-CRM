@@ -22,8 +22,9 @@
  * copied into a notification.
  */
 import { Role, type NotificationKind, type Prisma } from '@prisma/client';
-import { notifyUsers } from './notifications';
-import { FYI_POLICY, SUPERVISING_ROLES, type SalesmanRequestEvent } from './notify-policy';
+import { logger } from './logger';
+import { notifyUsers, supervisorWhoCanAct } from './notifications';
+import { FYI_POLICY, type SalesmanRequestEvent } from './notify-policy';
 
 type Db = Prisma.TransactionClient;
 
@@ -52,24 +53,16 @@ export function regionAccountants(db: Db, regionId: string | null): Promise<stri
  * `regionId`: active, and a SUPERVISOR (who acts as the submitter's supervisor)
  * or a MANAGER who manages the region (canApproveSpecificEdit refuses a Manager
  * outside it, and the request's page 404s for him). `managerOnly` narrows it to a
- * Manager over the region: a reactivation is decided by a Manager only.
+ * Manager over the region: a reactivation is decided by a Manager only. One rule
+ * with the UPDATE and CREATE Supervisor step (lib/notifications.ts supervisorWhoCanAct).
  */
-export async function eligibleSupervisor(
+export function eligibleSupervisor(
   db: Db,
   supervisorId: string | null,
   regionId: string | null,
   opts: { managerOnly?: boolean } = {}
 ): Promise<string | null> {
-  if (!supervisorId) return null;
-  const sup = await db.user.findUnique({
-    where: { id: supervisorId },
-    select: { id: true, role: true, isActive: true, managedRegions: { select: { id: true } } },
-  });
-  if (!sup || !sup.isActive || !SUPERVISING_ROLES.includes(sup.role)) return null;
-  if (sup.role === Role.SUPERVISOR) return opts.managerOnly ? null : sup.id;
-  // A MANAGER: only over the request's region.
-  if (!regionId || !sup.managedRegions.some((r) => r.id === regionId)) return null;
-  return sup.id;
+  return supervisorWhoCanAct(db, supervisorId, regionId ? [regionId] : [], opts);
 }
 
 export type RequestAudience = {
@@ -102,6 +95,18 @@ export async function resolveRequestAudience(
       managerOnly: event === 'REACTIVATION',
     });
     mustAct = sup ? [sup] : await regionManagers(db, regionId);
+    // The gap is worth knowing even when the fallback covers it (ids and counts
+    // only). A Supervisor cannot decide a reactivation by design, so for one his
+    // being a Supervisor is not a gap; a missing or unusable supervisor is.
+    if (
+      !sup &&
+      (event === 'CLOSE' || !(await eligibleSupervisor(db, submitter.supervisorId, regionId)))
+    ) {
+      logger.warn(
+        { event, supervisorId: submitter.supervisorId, managersTold: mustAct.length },
+        'notify.request.supervisor_cannot_act'
+      );
+    }
   }
   // Separation of duty: a submitter is never asked to act on his own request
   // (a Manager who also holds a salesman account is two accounts, but never one).

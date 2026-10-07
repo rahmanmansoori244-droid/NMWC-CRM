@@ -628,10 +628,10 @@ export function PipelineCard({ data, ctx }: { data: Insights; ctx: CardContext }
       definition={
         <>
           Requests submitted {ctx.periodPhrase}, by the state each is in now
-          {ctx.scoped ? ' — only requests you can open from your regions' : ''}. A sent-back update or close request
-          stays &quot;sent back&quot; for good (the salesman sends a new one); a sent-back new-customer request is
-          revised and resubmitted, which re-dates it. Direct writes never queue and are not here. No timings: Service
-          status has those.
+          {ctx.scoped ? ' — only requests you can open from your regions' : ''}. A sent-back update stays
+          &quot;sent back&quot; for good (the salesman sends a new one); a refused close-shop or reactivation request
+          is final; a sent-back new-customer request is revised and resubmitted, which re-dates it. Direct writes
+          never queue and are not here. No timings: Service status has those.
         </>
       }
       footer={
@@ -665,7 +665,13 @@ export function PipelineCard({ data, ctx }: { data: Insights; ctx: CardContext }
                   { key: 'waiting', label: 'Waiting', value: s.SUBMITTED, color: SERIES[0] },
                   { key: 'back', label: 'Sent back', value: s.NEEDS_CORRECTION, color: SERIES[1] },
                   { key: 'approved', label: 'Approved', value: s.APPROVED, color: SERIES[2] },
-                  { key: 'rejected', label: 'Closed by a merge', value: s.REJECTED, color: SERIES[3] },
+                  {
+                    key: 'rejected',
+                    // A refused close and a "Keep closed" end REJECTED (2026-10-07).
+                    label: k === 'close' || k === 'reactivation' ? 'Refused' : 'Closed by a merge',
+                    value: s.REJECTED,
+                    color: SERIES[3],
+                  },
                 ]}
               />
             );

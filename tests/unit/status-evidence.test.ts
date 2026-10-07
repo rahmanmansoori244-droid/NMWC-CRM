@@ -98,6 +98,7 @@ vi.mock('@/lib/notifications', () => ({
   notifyUsers: vi.fn(),
   resolveStepAudience: vi.fn(async () => []),
   resolveStewardAudience: vi.fn(async () => []),
+  settleRequestAlerts: vi.fn(async () => 0),
 }));
 // F1: the services also write the hierarchy's rows (lib/notify-hierarchy.ts);
 // mocked here like '@/lib/notifications', so these suites keep testing what they test.
@@ -481,8 +482,11 @@ describe('rejecting a reactivation (F13): the decision and its audit row are one
     expect(db.customerEdit.updateMany).not.toHaveBeenCalled();
     expect(tx.customerEdit.updateMany).toHaveBeenCalledWith({
       where: { id: 'e-r', state: 'SUBMITTED', isReactivation: true },
-      data: expect.objectContaining({ state: 'NEEDS_CORRECTION', reviewedById: MGR, decisionReason: 'Still shut — shutters down.' }),
+      data: expect.objectContaining({ state: 'REJECTED', reviewedById: MGR }),
     });
+    // Launch fix (2026-10-07): "Keep closed" is final (REJECTED, off the salesman's
+    // Needs correction lists), and his own reason for asking is no longer overwritten.
+    expect(tx.customerEdit.updateMany.mock.calls[0]![0].data).not.toHaveProperty('decisionReason');
     expect(audit.writeAudit).toHaveBeenCalledTimes(1);
     expect(audit.writeAudit.mock.calls[0]![0]).toBe(tx);
     expect(audit.writeAudit.mock.calls[0]![2]).toEqual({

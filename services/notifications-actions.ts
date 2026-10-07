@@ -7,7 +7,7 @@
  */
 import { prisma } from '@/lib/db';
 import { requireActor } from '@/lib/session';
-import { BELL_INFORMATION_KINDS } from '@/lib/notify-policy';
+import { bellInformationKinds } from '@/lib/notify-policy';
 import { ValidationError, runAction, type SafeAction } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
 
@@ -37,13 +37,14 @@ export async function markNotificationReadAction(formData: FormData): SafeAction
  * F1 fixer review (2026-10-05): mark the caller's unread information-only rows
  * (REQUEST_FYI) read, and nothing else. "Mark all read" also marks his unread
  * must-act rows read, and a read row is never e-mailed (SKIPPED_READ): clearing
- * the FYI noise must not cost him the e-mail that asks him to act.
+ * the FYI noise must not cost him the e-mail that asks him to act. The kinds are
+ * his role's, the same the bell counts apart (a salesman's progress pings too).
  */
 export async function markInformationReadAction(): SafeAction<{ marked: number }> {
   return runAction(async () => {
     const me = await requireUser();
     const res = await prisma.notification.updateMany({
-      where: { userId: me.id, readAt: null, kind: { in: [...BELL_INFORMATION_KINDS] } },
+      where: { userId: me.id, readAt: null, kind: { in: [...bellInformationKinds(me.role)] } },
       data: { readAt: new Date() },
     });
     revalidatePath('/notifications');

@@ -181,9 +181,10 @@ const checks: Check[] = [
   },
   {
     name: 'cron routes refuse an unauthenticated call',
-    why: 'these run the SLA engine and the photo GC; a regressed bearer check is invisible in the UI',
+    why: 'these run the SLA engine, the photo GC and the e-mail outbox; a regressed bearer check is invisible in the UI',
     run: async () => {
-      const routes = ['sla-escalate', 'keep-warm', 'photo-gc', 'retention-sweep'];
+      // Every route under app/api/cron (tests/unit/smoke-cron-coverage-guard.test.ts).
+      const routes = ['sla-escalate', 'keep-warm', 'photo-gc', 'retention-sweep', 'email-drain'];
       const got = await Promise.all(
         routes.map(async (r) => `${r}=${(await get(`/api/cron/${r}`)).status}`)
       );
