@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/nmwc/EmptyState';
 import Link from 'next/link';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { inIdOrder, openReturnedIds } from '@/lib/returned-work';
+import { managerQueueWhere, SUPERVISOR_STEP_OR } from '@/lib/manager-queue';
 
 export const metadata = { title: 'Work items · NMWC' };
 
@@ -206,6 +207,11 @@ export default async function WorkPage() {
   } else if (role === Role.MANAGER) {
     // RBAC-05-010: Manager work queue must be region-scoped. Without this,
     // the inbox shows stale approvals from every region globally.
+    // Owner decision 3 (2026-10-07): the stale requests he can decide — his
+    // /approvals queue (lib/manager-queue.ts, the same `where`), and the
+    // reactivations of a branch in his regions, decided on /reactivations. Not
+    // a request about another region's branch of a shared customer, nor one
+    // waiting at another role's step.
     const { loadScope } = await import('@/lib/access');
     const scope = await loadScope(userId);
     const stale =
@@ -213,18 +219,10 @@ export default async function WorkPage() {
         ? []
         : await prisma.customerEdit.findMany({
             where: {
-              state: 'SUBMITTED',
               submittedAt: { lt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
               OR: [
-                {
-                  customer: {
-                    branches: {
-                      some: { regionId: { in: scope.managedRegionIds }, deletedAt: null },
-                    },
-                  },
-                },
-                // Phase 1: stale CREATE requests match via draft-branch regions.
-                { branchDrafts: { some: { route: { regionId: { in: scope.managedRegionIds } } } } }, // final-hunt #7/#15: current route region
+                await managerQueueWhere(prisma, scope.managedRegionIds, SUPERVISOR_STEP_OR),
+                { state: 'SUBMITTED', isReactivation: true, branch: { regionId: { in: scope.managedRegionIds } } },
               ],
             },
             include: {
@@ -237,7 +235,7 @@ export default async function WorkPage() {
       id: e.id,
       category: 'Stale approval (>3 days)',
       title: e.customer?.legalName ?? e.customerDraft?.legalName ?? '—',
-      href: `/approvals/${e.id}`,
+      href: e.isReactivation ? '/reactivations' : `/approvals/${e.id}`,
       state: e.state,
       when: e.submittedAt,
     }));
