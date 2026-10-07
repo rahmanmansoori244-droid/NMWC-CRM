@@ -217,3 +217,25 @@ describe('buildChangeReport — a point change (phase-2 review, finding 2)', () 
     }
   });
 });
+
+describe('buildChangeReport — Oman days (process in UTC, as on Vercel)', () => {
+  it('names the file by the Oman day and stamps times as the master export does', async () => {
+    // 21:30 UTC on the 7th is 01:30 on the 8th in Oman.
+    const late = new Date('2026-10-07T21:30:00.000Z');
+    vi.stubEnv('TZ', 'UTC');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(late);
+    const branch = { ...reportBranch('0001-01', 'C5'), gpsLat: 23.7, gpsLng: 58.4, gpsCapturedAt: late };
+    h.findMany.mockReset().mockResolvedValueOnce([branch]).mockResolvedValue([]);
+    h.count.mockResolvedValueOnce(1);
+    try {
+      const out = await buildChangeReport(steward, {});
+      expect(out.filename).toBe('nmwc-field-updates-2026-10-08.xlsx');
+      const sheet = (await parseWorkbook(out.bytes)).find((s) => s.name === 'Customers')!;
+      expect(sheet.rows[0]!.gps_captured_at).toBe('2026-10-08 01:30');
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+});

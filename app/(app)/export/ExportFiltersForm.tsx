@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { omanDateISO } from '@/lib/tz';
 
 type Region = { id: string; name: string; code: string };
 type Route = { id: string; code: string; name: string; regionId: string };
@@ -20,9 +21,10 @@ export function ExportFiltersForm({
   const [maxCompleteness, setMaxCompleteness] = useState<string>('');
   const [updatedSince, setUpdatedSince] = useState<string>('');
   // Field-update report (go-live): window + row options. Default window = the
-  // last 7 days so a Monday download shows the week's enrichment.
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const weekAgoIso = new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
+  // last 7 days so a Monday download shows the week's enrichment. Oman days, as
+  // the report reads them: the UTC date made "until" yesterday before 04:00.
+  const todayIso = omanDateISO();
+  const weekAgoIso = omanDateISO(new Date(Date.now() - 7 * 86400_000));
   const [changesSince, setChangesSince] = useState<string>(weekAgoIso);
   const [changesUntil, setChangesUntil] = useState<string>(todayIso);
   const [onlyChanged, setOnlyChanged] = useState(false);

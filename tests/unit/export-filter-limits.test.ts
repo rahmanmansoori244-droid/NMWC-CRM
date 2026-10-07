@@ -247,7 +247,9 @@ describe('customer-only filter validation', () => {
     params.append('minCompleteness', '999');
     expect((await customersGET(request('customers', params))).status).toBe(200);
     expect(h.customers).toHaveBeenCalledWith(expect.objectContaining({
-      minCompleteness: 20, maxCompleteness: 80, updatedSince: new Date('2026-09-30T00:00:00Z'),
+      // The start of 30 September in OMAN (20:00 UTC the evening before), as the
+      // field-update report reads a day — not UTC midnight, 04:00 in Oman.
+      minCompleteness: 20, maxCompleteness: 80, updatedSince: new Date('2026-09-29T20:00:00Z'),
     }));
   });
 
@@ -298,5 +300,36 @@ describe('change-report filter compatibility', () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'Export failed' });
     expect(h.error).toHaveBeenCalledWith({ err: 'audit unavailable' }, 'export.change_report.fail');
+  });
+});
+
+describe('both exports read a picked day as the same Oman day', () => {
+  // Process in UTC, as on Vercel; 21:30 UTC on the 7th is 01:30 on the 8th in Oman.
+  beforeEach(() => {
+    vi.stubEnv('TZ', 'UTC');
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('starts "updated since" where the field-update report starts "changes from"', async () => {
+    const day = '2026-10-08';
+    expect((await customersGET(request('customers', new URLSearchParams({ updatedSince: day })))).status).toBe(200);
+    expect((await changesGET(request('changes', new URLSearchParams({ since: day })))).status).toBe(200);
+    const updatedSince = h.customers.mock.calls[0]![0].updatedSince as Date;
+    expect(updatedSince.toISOString()).toBe('2026-10-07T20:00:00.000Z');
+    expect(h.changes.mock.calls[0]![1].since).toEqual(updatedSince);
+    // A customer updated at 01:30 Oman on the 8th is inside "updated since the 8th".
+    expect(new Date('2026-10-07T21:30:00.000Z').getTime()).toBeGreaterThanOrEqual(updatedSince.getTime());
+  });
+
+  it('records the field-update export under the Oman day', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-07T21:30:00.000Z'));
+    expect((await changesGET(request('changes'))).status).toBe(200);
+    expect(h.audit).toHaveBeenCalledWith(null, expect.anything(), expect.objectContaining({
+      entityId: 'field-updates-2026-10-08',
+    }));
   });
 });

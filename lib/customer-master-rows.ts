@@ -9,6 +9,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { keysetPages } from '@/lib/keyset';
+import { omanStamp } from '@/lib/tz';
 
 /** Rows per database page: bounded memory, and few enough round trips (~11 for today's master). */
 export const CUSTOMER_MASTER_PAGE_SIZE = 2000;
@@ -145,7 +146,9 @@ export async function* customerMasterRows(
         delivery_window: b.deliveryWindow ?? '',
         gps_lat: b.gpsLat ?? '',
         gps_lng: b.gpsLng ?? '',
-        gps_captured_at: b.gpsCapturedAt?.toISOString() ?? '',
+        // Oman wall clock, as the field-update report writes it (lib/tz.ts omanStamp):
+        // a UTC ISO stamp put 00:00-03:59 Oman on the day before.
+        gps_captured_at: omanStamp(b.gpsCapturedAt),
         coolers: b.coolersCount,
         stands: b.standsCount,
         empty_bottles: b.emptyBottlesCount,
@@ -154,7 +157,7 @@ export async function* customerMasterRows(
         customer_status: b.customer.status,
         branch_status: b.status,
         completeness_pct: b.customer.completenessScore,
-        last_edited_at: b.updatedAt.toISOString(),
+        last_edited_at: omanStamp(b.updatedAt),
       };
     }
   }

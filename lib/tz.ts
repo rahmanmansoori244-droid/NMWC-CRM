@@ -43,3 +43,34 @@ export function omanDateISO(at: Date = new Date()): string {
 export function omanYear(at: Date = new Date()): number {
   return new Date(at.getTime() + OMAN_OFFSET_MS).getUTCFullYear();
 }
+
+/** The Oman wall clock of an instant, read with getUTC*. Accepts what a prop or a JSON diff carries. */
+function omanClock(at: Date | string | number): Date {
+  return new Date(new Date(at).getTime() + OMAN_OFFSET_MS);
+}
+const two = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * "2026-10-07 14:05": Oman wall clock for a spreadsheet cell, unambiguous and
+ * sortable as text. Both exports (the master and the field-update report) use it,
+ * so a row's day is the same Oman day in each. Empty for no time.
+ */
+export function omanStamp(at: Date | null | undefined): string {
+  if (!at) return '';
+  const o = omanClock(at);
+  return `${omanDateISO(at)} ${two(o.getUTCHours())}:${two(o.getUTCMinutes())}`;
+}
+
+/**
+ * Day filters. A date picker sends "2026-09-13", which parses as UTC midnight —
+ * 04:00 in Oman. `from`/`updatedSince` mean the start of that Oman day and `until`
+ * the whole of it (inclusive). Oman is UTC+4 with no DST: the day runs from 20:00
+ * UTC the evening before.
+ */
+export function startOfOmanDay(d: Date): Date {
+  const local = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0);
+  return new Date(local - OMAN_OFFSET_MS);
+}
+export function endOfOmanDay(d: Date): Date {
+  return new Date(startOfOmanDay(d).getTime() + 24 * 3600_000 - 1);
+}

@@ -8,6 +8,7 @@ import { logger } from '@/lib/logger';
 import { buildWorkbookStreamed } from '@/lib/excel';
 import { CUSTOMER_MASTER_COLUMNS, customerMasterRows } from '@/lib/customer-master-rows';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { omanDateISO } from '@/lib/tz';
 
 async function requireExport() {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -128,7 +129,7 @@ export async function buildCustomerExport(filters: ExportFilters) {
     customerMasterRows(where),
     'Customer Master'
   );
-  const stamp = new Date().toISOString().slice(0, 10);
+  const stamp = omanDateISO(); // the Oman day, as the field-update report names its file
 
   // DG-06/07: no longer best-effort. For a read-only export the AuditLog row is
   // the ONLY record that the master left the building — there is no ImportBatch
