@@ -18,8 +18,10 @@ import { AnnounceContext } from './announce';
  *
  * One dialog for the whole table: the options (routes, supervisors, regions) are
  * sent to the browser once, not once per row, and each row's Edit button carries
- * only that account's own values. The stored phone number is never sent — the
- * row says whether one is on file (RBAC-05-023, as the e-mail edit does).
+ * only that account's own values. The stored phone number and e-mail address are
+ * never sent — the row says whether one is on file (RBAC-05-023, as the row's
+ * e-mail edit does). The e-mail is edited here for every role; the row's own
+ * "Change e-mail" button stays for the roles that are e-mailed work.
  *
  * The dialog offers what the server would accept (lib/account-edit.ts): routes
  * that are free or held by a disabled account (the leaver, whose route is handed
@@ -38,8 +40,15 @@ export type EditableRow = {
   /** The owned route's code, to tell whether he signs in with it. */
   routeCode: string | null;
   supervisorId: string | null;
+  /**
+   * Who that is, so the dialog can show him when he is not among the active
+   * supervisors it offers (disabled since, or no longer a Supervisor or Manager).
+   */
+  supervisor?: { fullName: string; username: string; isActive: boolean } | null;
   regionIds: string[];
   hasPhone: boolean;
+  /** Whether an e-mail address is on file; the address itself never reaches the page. */
+  hasEmail?: boolean;
 };
 
 export type EditOptions = {
@@ -65,6 +74,7 @@ const FIELD_WORDS: Record<string, string> = {
   supervisor: 'supervisor',
   regions: 'regions',
   phone: 'phone',
+  email: 'e-mail',
 };
 
 export function AccountEditor({
@@ -119,6 +129,10 @@ function EditAccountDialog({
   const [routeSignIn, setRouteSignIn] = useState(
     row.routeCode !== null && row.username === routeSignInName(row.routeCode)
   );
+  // Offered once the action has said he has new-customer requests the change
+  // would strand (services/users.ts strandedCreatesIssue).
+  const [askWithdraw, setAskWithdraw] = useState(false);
+  const [withdrawCreates, setWithdrawCreates] = useState(false);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -143,10 +157,21 @@ function EditAccountDialog({
           routeRegionId: route?.regionId ?? null,
         }) === null)
   );
+  // His current supervisor, when the list of active supervisors leaves him out:
+  // shown for what he is, so the select does not read "—" while the server keeps him.
+  const unlistedSupervisor =
+    row.supervisorId &&
+    row.supervisor &&
+    !options.supervisors.some((s) => s.id === row.supervisorId)
+      ? row.supervisor
+      : null;
   const regionOptions = options.regions.filter((g) => g.isActive || row.regionIds.includes(g.id));
   const newSignIn =
     route && routeSignInName(route.code) !== row.username ? routeSignInName(route.code) : null;
   const handoverFrom = route && route.holder && route.holder.id !== row.id ? route.holder : null;
+  // The leaver's sign-in name is retired only when this account takes it.
+  const retiresName =
+    !!handoverFrom && routeSignIn && newSignIn !== null && newSignIn === handoverFrom.username;
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -160,11 +185,15 @@ function EditAccountDialog({
     if (REGION_SCOPED_ROLES.includes(role)) for (const id of regionIds) fd.append('regionId', id);
     fd.set('phone', String(form.get('phone') ?? ''));
     if (form.get('clearPhone') === 'on') fd.set('clearPhone', 'on');
+    fd.set('contactAddress', String(form.get('contactAddress') ?? ''));
+    if (form.get('clearContactAddress') === 'on') fd.set('clearContactAddress', 'on');
     if (newSignIn && routeSignIn) fd.set('routeSignIn', 'on');
+    if (askWithdraw && withdrawCreates) fd.set('withdrawCreates', 'on');
     start(async () => {
       const res = await updateUserAccountAction(fd);
       if (!res.ok) {
         setErrors(res.fields ?? { _form: res.message });
+        if (res.fields?.withdrawCreates) setAskWithdraw(true);
         return;
       }
       const { changed, username, notes } = res.data;
@@ -250,10 +279,7 @@ function EditAccountDialog({
               {handoverFrom && (
                 <p className="mt-0.5 text-[11px] text-slate-500">
                   The route is taken from {handoverFrom.fullName}’s disabled account
-                  {handoverFrom.username === routeSignInName(route!.code)
-                    ? `, and his sign-in name ${handoverFrom.username} is retired`
-                    : ''}
-                  .
+                  {retiresName ? `, and his sign-in name ${handoverFrom.username} is retired` : ''}.
                 </p>
               )}
               {errors.ownedRouteId && <FieldError msg={errors.ownedRouteId} />}
@@ -286,6 +312,12 @@ function EditAccountDialog({
                 className={select}
               >
                 <option value="">—</option>
+                {unlistedSupervisor && (
+                  <option value={row.supervisorId!}>
+                    {unlistedSupervisor.fullName} ({unlistedSupervisor.username}) —{' '}
+                    {unlistedSupervisor.isActive ? 'cannot supervise' : 'disabled'}
+                  </option>
+                )}
                 {supervisorOptions.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.fullName} ({s.username}){s.role === Role.MANAGER ? ' · Manager' : ''}
@@ -321,6 +353,21 @@ function EditAccountDialog({
             </fieldset>
           )}
 
+          {askWithdraw && (
+            <div>
+              {errors.withdrawCreates && <FieldError msg={errors.withdrawCreates} />}
+              <label className="mt-1 flex items-start gap-2 text-xs text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={withdrawCreates}
+                  onChange={(e) => setWithdrawCreates(e.currentTarget.checked)}
+                  className="mt-0.5"
+                />
+                <span>Withdraw them with this change</span>
+              </label>
+            </div>
+          )}
+
           <div>
             <label htmlFor="edit-phone" className={label}>
               Phone
@@ -343,6 +390,34 @@ function EditAccountDialog({
               </label>
             )}
             {errors.phone && <FieldError msg={errors.phone} />}
+          </div>
+
+          <div>
+            <label htmlFor="edit-contact-address" className={label}>
+              E-mail
+            </label>
+            <input
+              id="edit-contact-address"
+              name="contactAddress"
+              type="text"
+              inputMode="email"
+              autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              maxLength={200}
+              placeholder={
+                row.hasEmail ? 'An address is on file — type to replace it' : 'No address on file'
+              }
+              className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
+            />
+            {row.hasEmail && (
+              <label className="mt-1 flex items-center gap-2 text-xs text-slate-700">
+                <input type="checkbox" name="clearContactAddress" />
+                Remove the e-mail address
+              </label>
+            )}
+            {errors.contactAddress && <FieldError msg={errors.contactAddress} />}
           </div>
 
           {errors._form && <FieldError msg={errors._form} />}

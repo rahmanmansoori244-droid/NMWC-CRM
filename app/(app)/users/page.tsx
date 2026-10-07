@@ -143,15 +143,16 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
         isActive: true,
         lastLoginAt: true,
         mustChangePassword: true,
-        // F1: read for the "E-mail on file" badge only. The address is never
-        // rendered or handed to a client component (RBAC-05-023).
+        // F1: read for the "E-mail on file" badge and for whether the Edit dialog
+        // says one is on file. The address is never rendered or handed to a
+        // client component (RBAC-05-023).
         email: true,
         // Owner decision 8: read only to tell the Edit dialog whether a number is
         // on file. The number itself never leaves the server (RBAC-05-023).
         phone: true,
         ownedRouteId: true,
         supervisorId: true,
-        supervisor: { select: { fullName: true, username: true } },
+        supervisor: { select: { fullName: true, username: true, isActive: true } },
         ownedRoute: {
           select: { code: true, name: true, regionId: true, region: { select: { code: true } } },
         },
@@ -414,8 +415,10 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                               ownedRouteId: u.ownedRouteId,
                               routeCode: u.ownedRoute?.code ?? null,
                               supervisorId: u.supervisorId,
+                              supervisor: u.supervisor,
                               regionIds: u.managedRegions.map((g) => g.id),
                               hasPhone: !!u.phone?.trim(),
+                              hasEmail: storedAddressState(u.email) !== 'none',
                             }}
                           />
                         )}

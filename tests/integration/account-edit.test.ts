@@ -19,10 +19,25 @@
  *     route and supervisor; the phone is named in the audit row, never copied;
  *   • a save that changes nothing writes nothing.
  *
+ * And the independent review's findings (2026-10-07):
+ *   • a salesman's new-customer requests that are not in review (a draft, one
+ *     sent back) hold a route change back — sent again, services/creates.ts
+ *     would file them under his new route — unless the Steward withdraws them
+ *     with it; a withdrawn one cannot be sent again;
+ *   • his request in review stays with the region it was sent from: a Manager
+ *     of his NEW region cannot decide it, another Manager of the old (shared)
+ *     region can; a Supervisor-role supervisor change is said;
+ *   • a shared region: a salesman moves between its Managers freely;
+ *   • a switched-off route or region is refused on the server; region codes
+ *     with "_" do not read as a change; a Manager keeps a supervisor an import
+ *     gave him; a region keeps its only active Accountant; the e-mail is edited
+ *     for any role; the leaver keeps his sign-in name unless the joiner takes it.
+ *
  *   RUN_ACCOUNT_EDIT=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/account-edit.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { purgeAuditLog } from '../support/audit';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { freshDecisionToken } from '../support/decision-token';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -58,7 +73,19 @@ describe.skipIf(!ENABLED)(
       busy: '',
       joiner: '',
       edit: '',
+      A4: '',
+      A5: '',
+      C: '',
+      U1: '',
+      U2: '',
+      mS: '',
+      supS: '',
+      accA: '',
+      mU: '',
+      leaver5: '',
     };
+    let channelId = '';
+    let subChannelId = '';
     const as = (id: string, role: string) => {
       current = { id, role, username: id };
     };
@@ -154,6 +181,79 @@ describe.skipIf(!ENABLED)(
           attachmentChanges: {},
         },
       });
+      // The review's fixtures: a switched-off route (A4) and region (C), a route
+      // for a second hand-over (A5), two regions whose codes sort differently by
+      // locale and by code unit, a second Manager of A (the shared-region case), a
+      // Supervisor-role account, region A's Accountant, a Manager an import gave a
+      // supervisor, and A5's salesman.
+      const A4 = await prisma.route.create({
+        data: { code: code('A4'), name: 'A4', regionId: A.id, isActive: false },
+      });
+      const A5 = await route('A5', A.id);
+      const C = await prisma.region.create({
+        data: { code: code('EC'), name: `Edit C ${sfx}`, isActive: false },
+      });
+      const U1 = await prisma.region.create({ data: { code: code('ZZ'), name: `U1 ${sfx}` } });
+      const U2 = await prisma.region.create({
+        data: { code: `Z_Z${sfx}`.toUpperCase(), name: `U2 ${sfx}` },
+      });
+      const mS = await mgr('mgs', [A.id]);
+      const supS = await prisma.user.create({
+        data: {
+          username: `sups.${sfx}`,
+          fullName: 'Supervisor S',
+          role: 'SUPERVISOR',
+          passwordHash: 'x',
+        },
+      });
+      const accA = await prisma.user.create({
+        data: {
+          username: `acca.${sfx}`,
+          fullName: 'Accountant A',
+          role: 'ACCOUNTANT',
+          passwordHash: 'x',
+          managedRegions: { connect: [{ id: A.id }] },
+        },
+      });
+      const mU = await prisma.user.create({
+        data: {
+          username: `mgu.${sfx}`,
+          fullName: 'Manager U',
+          role: 'MANAGER',
+          passwordHash: 'x',
+          supervisorId: mB.id,
+          managedRegions: { connect: [{ id: U1.id }, { id: U2.id }] },
+        },
+      });
+      const leaver5 = await prisma.user.create({
+        data: {
+          username: code('A5').toLowerCase(),
+          fullName: 'Second Leaver',
+          role: 'SALESMAN',
+          passwordHash: 'x',
+          ownedRouteId: A5.id,
+          supervisorId: mA.id,
+        },
+      });
+      const ch = await prisma.channel.findFirst({
+        where: { isActive: true, subChannels: { some: { isActive: true } } },
+        include: { subChannels: { where: { isActive: true }, take: 1 } },
+      });
+      if (!ch) throw new Error('No channel/sub-channel seeded.');
+      channelId = ch.id;
+      subChannelId = ch.subChannels[0]!.id;
+      Object.assign(ids, {
+        A4: A4.id,
+        A5: A5.id,
+        C: C.id,
+        U1: U1.id,
+        U2: U2.id,
+        mS: mS.id,
+        supS: supS.id,
+        accA: accA.id,
+        mU: mU.id,
+        leaver5: leaver5.id,
+      });
       Object.assign(ids, {
         A: A.id,
         B: B.id,
@@ -174,6 +274,25 @@ describe.skipIf(!ENABLED)(
     afterAll(async () => {
       if (!prisma) return;
       if (ids.edit) await prisma.customerEdit.deleteMany({ where: { id: ids.edit } });
+      // The review's new-customer requests, and what their submits wrote.
+      if (ids.busy) {
+        const eds = (
+          await prisma.customerEdit.findMany({
+            where: { submittedById: ids.busy },
+            select: { id: true },
+          })
+        ).map((e) => e.id);
+        if (eds.length) {
+          await prisma.notification.deleteMany({ where: { editId: { in: eds } } });
+          await purgeEditApprovals(prisma, { where: { editId: { in: eds } } });
+          await prisma.editBranchDraft.deleteMany({ where: { editId: { in: eds } } });
+          await prisma.editCustomerDraft.deleteMany({ where: { editId: { in: eds } } });
+          await purgeAuditLog(prisma, { where: { entityId: { in: eds } } });
+          await purgeCustomerEdits(prisma, { where: { id: { in: eds } } });
+        }
+        await prisma.attachment.deleteMany({ where: { capturedById: ids.busy } });
+        await prisma.rateLimit.deleteMany({ where: { key: { contains: ids.busy } } });
+      }
       const created = await prisma.user.findMany({
         where: { username: { contains: sfx } },
         select: { id: true },
@@ -187,6 +306,11 @@ describe.skipIf(!ENABLED)(
           ids.stw,
           ids.leaver,
           ids.busy,
+          ids.mS,
+          ids.supS,
+          ids.accA,
+          ids.mU,
+          ids.leaver5,
         ]),
       ].filter(Boolean);
       await prisma.user.updateMany({ where: { id: { in: all } }, data: { isActive: false } });
@@ -206,9 +330,13 @@ describe.skipIf(!ENABLED)(
       }
       await prisma.user.deleteMany({ where: { id: { in: all } } });
       await prisma.route.deleteMany({
-        where: { id: { in: [ids.A1, ids.A2, ids.A3, ids.B1].filter(Boolean) } },
+        where: {
+          id: { in: [ids.A1, ids.A2, ids.A3, ids.A4, ids.A5, ids.B1].filter(Boolean) },
+        },
       });
-      await prisma.region.deleteMany({ where: { id: { in: [ids.A, ids.B].filter(Boolean) } } });
+      await prisma.region.deleteMany({
+        where: { id: { in: [ids.A, ids.B, ids.C, ids.U1, ids.U2].filter(Boolean) } },
+      });
       await prisma.$disconnect();
     });
 
@@ -493,6 +621,385 @@ describe.skipIf(!ENABLED)(
       );
       expect(res, JSON.stringify(res)).toMatchObject({ ok: true, data: { changed: ['phone'] } });
       expect(await user(ids.leaver)).toMatchObject({ ownedRouteId: null, phone: '+968 9555 0000' });
+    });
+
+    // ── The independent review (2026-10-07) ─────────────────────────────────
+    it('review: a switched-off route or region is refused on the server, unless the account has it already', async () => {
+      as(ids.stw, 'STEWARD');
+      const route = await users.updateUserAccountAction(
+        fd({ userId: ids.busy, role: 'SALESMAN', ownedRouteId: ids.A4, supervisorId: ids.mA })
+      );
+      expect(route, JSON.stringify(route)).toMatchObject({
+        ok: false,
+        fields: { ownedRouteId: expect.stringMatching(/switched off/) },
+      });
+      expect((await user(ids.busy)).ownedRouteId).toBe(ids.A3);
+      const created = await users.createUserAction(
+        fd({
+          username: `off.${sfx}`,
+          fullName: 'Off Route',
+          role: 'SALESMAN',
+          password: PASSWORD,
+          ownedRouteId: ids.A4,
+          supervisorId: ids.mA,
+        })
+      );
+      expect(created, JSON.stringify(created)).toMatchObject({
+        ok: false,
+        fields: { ownedRouteId: expect.stringMatching(/switched off/) },
+      });
+
+      const region = await users.updateUserAccountAction(
+        fd({ userId: ids.mX, role: 'MANAGER', regionId: [ids.B, ids.C] })
+      );
+      expect(region, JSON.stringify(region)).toMatchObject({
+        ok: false,
+        fields: { regionIds: expect.stringMatching(/switched off/) },
+      });
+      // One he has already (it was switched off since) he keeps.
+      await prisma.user.update({
+        where: { id: ids.mX },
+        data: { managedRegions: { connect: [{ id: ids.C }] } },
+      });
+      const kept = await users.updateUserAccountAction(
+        fd({ userId: ids.mX, role: 'MANAGER', regionId: [ids.B, ids.C], phone: '+968 9111 2222' })
+      );
+      expect(kept, JSON.stringify(kept)).toMatchObject({ ok: true, data: { changed: ['phone'] } });
+    });
+
+    it('review: region codes with "_" are compared in one order, and a Manager keeps the supervisor an import gave him', async () => {
+      as(ids.stw, 'STEWARD');
+      const before = await auditCount(ids.mU);
+      const res = await users.updateUserAccountAction(
+        fd({ userId: ids.mU, role: 'MANAGER', regionId: [ids.U1, ids.U2], phone: '+968 9333 4444' })
+      );
+      expect(res, JSON.stringify(res)).toMatchObject({ ok: true, data: { changed: ['phone'] } });
+      const u = await user(ids.mU);
+      // Not signed out: the regions did not change.
+      expect(u.sessionsRevokedAt).toBeNull();
+      expect(u.supervisorId).toBe(ids.mB);
+      expect(await auditCount(ids.mU)).toBe(before + 1);
+      expect((await lastAudit(ids.mU))?.after).toEqual({ changed: ['phone'] });
+    });
+
+    it('review: the leaver keeps his sign-in name when the joiner signs in with a name of his own', async () => {
+      as(ids.stw, 'STEWARD');
+      const off = await users.toggleUserActiveAction(fd({ userId: ids.leaver5 }));
+      expect(off, JSON.stringify(off)).toEqual({ ok: true, data: undefined });
+      const res = await users.createUserAction(
+        fd({
+          username: `own.${sfx}`,
+          fullName: 'Own Name Joiner',
+          role: 'SALESMAN',
+          password: PASSWORD,
+          ownedRouteId: ids.A5,
+          // Region A's other Manager: the shared-region case below has Manager A give A up.
+          supervisorId: ids.mS,
+        })
+      );
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      const notes = res.ok ? (res.data?.notes ?? []).join(' ') : '';
+      expect(notes).toMatch(/Route .* was taken from Second Leaver's disabled account\./);
+      expect(notes).not.toMatch(/sign-in name is now/);
+      expect(await user(ids.leaver5)).toMatchObject({
+        username: code('A5').toLowerCase(),
+        ownedRouteId: null,
+      });
+      expect(
+        (await prisma.user.findUniqueOrThrow({ where: { username: `own.${sfx}` } })).ownedRouteId
+      ).toBe(ids.A5);
+    });
+
+    it('review: the e-mail is edited for any role — stored lower-case, named in the audit row, refused when another account holds it', async () => {
+      as(ids.stw, 'STEWARD');
+      const same = {
+        userId: ids.busy,
+        role: 'SALESMAN',
+        ownedRouteId: ids.A3,
+        supervisorId: ids.mA,
+      };
+      const address = `Busy.${sfx}@Example.test`;
+      const set = await users.updateUserAccountAction(fd({ ...same, contactAddress: address }));
+      expect(set, JSON.stringify(set)).toMatchObject({ ok: true, data: { changed: ['email'] } });
+      expect((await user(ids.busy)).email).toBe(address.toLowerCase());
+      const row = await lastAudit(ids.busy);
+      expect(row?.after).toEqual({ changed: ['email'] });
+      expect(JSON.stringify(row).toLowerCase()).not.toContain(`busy.${sfx}@`);
+
+      const clash = await users.updateUserAccountAction(
+        fd({
+          userId: ids.mB,
+          role: 'MANAGER',
+          regionId: [ids.B],
+          contactAddress: address.toUpperCase(),
+        })
+      );
+      expect(clash, JSON.stringify(clash)).toMatchObject({
+        ok: false,
+        fields: { contactAddress: expect.stringMatching(/already used by another account/) },
+      });
+      expect((await user(ids.mB)).email).toBeNull();
+
+      const cleared = await users.updateUserAccountAction(
+        fd({ ...same, clearContactAddress: 'on' })
+      );
+      expect(cleared, JSON.stringify(cleared)).toMatchObject({
+        ok: true,
+        data: { changed: ['email'] },
+      });
+      expect((await user(ids.busy)).email).toBeNull();
+    });
+
+    it('review: a region keeps its only active Accountant', async () => {
+      as(ids.stw, 'STEWARD');
+      const regions = await users.updateUserAccountAction(
+        fd({ userId: ids.accA, role: 'ACCOUNTANT', regionId: [ids.B] })
+      );
+      expect(regions, JSON.stringify(regions)).toMatchObject({
+        ok: false,
+        fields: {
+          regionIds: expect.stringMatching(new RegExp(`only active Accountant of ${code('EA')}`)),
+        },
+      });
+      const role = await users.updateUserAccountAction(fd({ userId: ids.accA, role: 'VIEWER' }));
+      expect(role, JSON.stringify(role)).toMatchObject({
+        ok: false,
+        fields: { role: expect.stringMatching(/only active Accountant/) },
+      });
+      expect((await user(ids.accA)).managedRegions.map((r) => r.id)).toEqual([ids.A]);
+
+      const second = await users.createUserAction(
+        fd({
+          username: `acca2.${sfx}`,
+          fullName: 'Accountant A2',
+          role: 'ACCOUNTANT',
+          password: PASSWORD,
+          regionId: [ids.A],
+        })
+      );
+      expect(second.ok, JSON.stringify(second)).toBe(true);
+      const moved = await users.updateUserAccountAction(
+        fd({ userId: ids.accA, role: 'ACCOUNTANT', regionId: [ids.B] })
+      );
+      expect(moved, JSON.stringify(moved)).toMatchObject({
+        ok: true,
+        data: { changed: ['regions'] },
+      });
+    });
+
+    // A new-customer request of the busy salesman's on his route, through the
+    // real action, with photo rows he captured (no file is needed to submit).
+    let photos = 0;
+    const photo = async (kind: 'CR' | 'SHOP' | 'SIGNBOARD') =>
+      (
+        await prisma.attachment.create({
+          data: {
+            kind,
+            r2Key: `uat/account-edit-${sfx}-${kind.toLowerCase()}-${++photos}.jpg`,
+            mimeType: 'image/jpeg',
+            bytes: 1000,
+            capturedById: ids.busy,
+            capturedAt: new Date(),
+          },
+        })
+      ).id;
+    async function newCustomer(n: number, isDraft = false, editId?: string) {
+      as(ids.busy, 'SALESMAN');
+      const digits = String((parseInt(sfx.slice(2), 36) * 7 + n) % 1_000_000).padStart(6, '0');
+      const creates = await import('@/services/creates');
+      return creates.submitCreateAction({
+        ...(editId ? { editId } : {}),
+        isDraft,
+        customer: {
+          legalName: `ZZ Account Edit Shop ${n} ${sfx}`,
+          paymentTerms: 'CASH',
+          channelId,
+          subChannelId,
+          primaryPhone: `9${n}${digits}`,
+          contactPerson: 'ZZ Contact',
+          crNumber: `7${n}${digits}`,
+          crPhotoAttachmentId: isDraft ? undefined : await photo('CR'),
+        },
+        branches: [
+          {
+            branchName: `ZZ Branch ${n}`,
+            address: `ZZ Street ${n}, ${sfx}`,
+            gpsLat: 23.6,
+            gpsLng: 58.4,
+            dayOfVisit: 'MON',
+            coolersCount: 0,
+            standsCount: 0,
+            emptyBottlesCount: 0,
+            shopPhotoAttachmentId: isDraft ? undefined : await photo('SHOP'),
+            signboardPhotoAttachmentId: isDraft ? undefined : await photo('SIGNBOARD'),
+          },
+        ],
+      });
+    }
+    const editIdOf = (res: { ok: boolean }) => {
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      return (res as { ok: true; data: { editId: string } }).data.editId;
+    };
+    const create = { inReview: '', sentBack: '', draft: '' };
+
+    it('review: a draft or a sent-back new-customer request holds his route change back, unless it is withdrawn with it', async () => {
+      create.inReview = editIdOf(await newCustomer(1));
+      create.sentBack = editIdOf(await newCustomer(2));
+      as(ids.mA, 'MANAGER');
+      const back = new FormData();
+      back.set('editId', create.sentBack);
+      back.set('reason', 'The CR photo is unreadable, take it again.');
+      back.set('decisionToken', await freshDecisionToken(prisma, create.sentBack));
+      const edits = await import('@/services/edits');
+      const rej = await edits.rejectEditAction(back);
+      expect(rej.ok, JSON.stringify(rej)).toBe(true);
+      create.draft = editIdOf(await newCustomer(3, true));
+      const stateOf = (id: string) =>
+        prisma.customerEdit.findUniqueOrThrow({
+          where: { id },
+          select: { state: true, decisionCategory: true, reviewedById: true },
+        });
+      expect((await stateOf(create.sentBack)).state).toBe('NEEDS_CORRECTION');
+      expect((await stateOf(create.draft)).state).toBe('DRAFT');
+
+      as(ids.stw, 'STEWARD');
+      const move = {
+        userId: ids.busy,
+        role: 'SALESMAN',
+        ownedRouteId: ids.B1,
+        supervisorId: ids.mB,
+      };
+      const refused = await users.updateUserAccountAction(fd(move));
+      expect(refused, JSON.stringify(refused)).toMatchObject({
+        ok: false,
+        fields: {
+          withdrawCreates: expect.stringMatching(
+            new RegExp(
+              `2 new-customer request\\(s\\) started on route ${code('A3')} that are not in review`
+            )
+          ),
+        },
+      });
+      expect((await user(ids.busy)).ownedRouteId).toBe(ids.A3);
+      expect((await stateOf(create.sentBack)).state).toBe('NEEDS_CORRECTION');
+
+      const res = await users.updateUserAccountAction(fd({ ...move, withdrawCreates: 'on' }));
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      const notes = res.ok ? res.data.notes.join(' ') : '';
+      expect(notes).toMatch(/1 request\(s\) in review\. They stay with the same approvers/);
+      expect(notes).toMatch(
+        /2 new-customer request\(s\) Busy Salesman had started on route .* were withdrawn/
+      );
+      expect(await user(ids.busy)).toMatchObject({ ownedRouteId: ids.B1, supervisorId: ids.mB });
+      for (const id of [create.sentBack, create.draft]) {
+        expect(await stateOf(id)).toMatchObject({
+          state: 'REJECTED',
+          decisionCategory: 'withdrawn',
+          reviewedById: ids.stw,
+        });
+        expect(
+          await prisma.auditLog.findFirst({
+            where: { entityId: id, reason: 'withdrawn with an account edit', actorId: ids.stw },
+          })
+        ).not.toBeNull();
+      }
+      // The one in review is untouched, and still filed under route A3.
+      expect((await stateOf(create.inReview)).state).toBe('SUBMITTED');
+      expect(
+        await prisma.editBranchDraft.findMany({
+          where: { editId: create.inReview },
+          select: { routeId: true },
+        })
+      ).toEqual([{ routeId: ids.A3 }]);
+
+      // Sent again from route B1, the withdrawn one is refused, and nothing is
+      // filed under B1.
+      const again = await newCustomer(2, true, create.sentBack);
+      expect(again, JSON.stringify(again)).toMatchObject({ ok: false, code: 'EDIT_LOCKED' });
+      expect(
+        await prisma.editBranchDraft.count({
+          where: { routeId: ids.B1, edit: { submittedById: ids.busy } },
+        })
+      ).toBe(0);
+    });
+
+    it('review: his request in review stays with its region — not his new region’s Manager; a Supervisor-role supervisor change is said', async () => {
+      const edits = await import('@/services/edits');
+      const approve = async () => {
+        const f = new FormData();
+        f.set('editId', create.inReview);
+        f.set('decisionToken', await freshDecisionToken(prisma, create.inReview));
+        return edits.approveEditAction(f);
+      };
+      // Manager B is now his supervisor, and manages his new region — not the shop's.
+      as(ids.mB, 'MANAGER');
+      expect(await approve()).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+
+      as(ids.stw, 'STEWARD');
+      const toSup = await users.updateUserAccountAction(
+        fd({ userId: ids.busy, role: 'SALESMAN', ownedRouteId: ids.B1, supervisorId: ids.supS })
+      );
+      expect(toSup.ok, JSON.stringify(toSup)).toBe(true);
+      expect(toSup.ok ? toSup.data.notes.join(' ') : '').toMatch(
+        /1 of Busy Salesman's requests wait at the Supervisor step.*Supervisor S now can, wherever the customer is/
+      );
+      const back = await users.updateUserAccountAction(
+        fd({ userId: ids.busy, role: 'SALESMAN', ownedRouteId: ids.B1, supervisorId: ids.mB })
+      );
+      expect(back.ok ? back.data.notes.join(' ') : JSON.stringify(back)).toMatch(
+        /Supervisor S can no longer decide them/
+      );
+
+      // The second Manager of region A — not his supervisor, never was — decides it.
+      as(ids.mS, 'MANAGER');
+      const ok = await approve();
+      expect(ok.ok, JSON.stringify(ok)).toBe(true);
+      expect(
+        await prisma.customerEdit.findUniqueOrThrow({
+          where: { id: create.inReview },
+          select: { state: true, pendingRole: true },
+        })
+      ).toEqual({ state: 'SUBMITTED', pendingRole: 'ACCOUNTANT' });
+    });
+
+    it('review: a shared region — a salesman moves between its two Managers, and the first may then give the region up', async () => {
+      as(ids.stw, 'STEWARD');
+      const made = await users.createUserAction(
+        fd({
+          username: `shared.${sfx}`,
+          fullName: 'Shared Region Salesman',
+          role: 'SALESMAN',
+          password: PASSWORD,
+          ownedRouteId: ids.A2,
+          supervisorId: ids.mA,
+        })
+      );
+      expect(made.ok, JSON.stringify(made)).toBe(true);
+      const sh = await prisma.user.findUniqueOrThrow({ where: { username: `shared.${sfx}` } });
+      // While he reports to Manager A, Manager A keeps region A.
+      const early = await users.updateUserAccountAction(
+        fd({ userId: ids.mA, role: 'MANAGER', regionId: [ids.B] })
+      );
+      expect(early).toMatchObject({
+        ok: false,
+        fields: { regionIds: expect.stringMatching(/work in/) },
+      });
+
+      const moved = await users.updateUserAccountAction(
+        fd({ userId: sh.id, role: 'SALESMAN', ownedRouteId: ids.A2, supervisorId: ids.mS })
+      );
+      expect(moved, JSON.stringify(moved)).toMatchObject({
+        ok: true,
+        data: { changed: ['supervisor'], notes: [] },
+      });
+      const gave = await users.updateUserAccountAction(
+        fd({ userId: ids.mA, role: 'MANAGER', regionId: [ids.B] })
+      );
+      expect(gave, JSON.stringify(gave)).toMatchObject({
+        ok: true,
+        data: { changed: ['regions'] },
+      });
+      expect((await user(ids.mA)).sessionsRevokedAt).toBeInstanceOf(Date);
     });
   }
 );

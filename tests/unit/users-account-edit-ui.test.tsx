@@ -286,6 +286,47 @@ describe('Edit account — what the dialog offers', () => {
     expect(within(none).queryByRole('checkbox', { name: 'Remove the phone number' })).toBeNull();
   });
 
+  it('review: a supervisor the list leaves out (disabled since) is shown for what he is, and stays selected', () => {
+    const dialog = openDialog({
+      ...ALI,
+      supervisorId: 'm-old',
+      supervisor: { fullName: 'Old Boss', username: 'old.boss', isActive: false },
+    });
+    const sup = within(dialog).getByLabelText('Supervisor') as HTMLSelectElement;
+    expect(optionTexts(sup)).toEqual([
+      '—',
+      'Old Boss (old.boss) — disabled',
+      'Manager GT (mct-gt) · Manager',
+    ]);
+    expect(sup.value).toBe('m-old');
+  });
+
+  it('review: the leaver’s sign-in name is said to be retired only while the account takes the route code', () => {
+    const dialog = openDialog();
+    fireEvent.change(within(dialog).getByLabelText('Route'), { target: { value: 'r-c6' } });
+    expect(dialog.textContent).toMatch(/his sign-in name c6 is retired/);
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Sign in with the route code/ }));
+    expect(dialog.textContent).toMatch(/taken from Old Salesman’s disabled account./);
+    expect(dialog.textContent).not.toMatch(/is retired/);
+  });
+
+  it('review: the e-mail, for any role — never the stored address, only that one is on file, and a way to remove it', () => {
+    const dialog = openDialog({ ...ALI, hasEmail: true });
+    const box = within(dialog).getByLabelText('E-mail') as HTMLInputElement;
+    expect(box.value).toBe('');
+    expect(box.name).toBe('contactAddress');
+    expect(box.placeholder).toMatch(/An address is on file/);
+    expect(
+      within(dialog).getByRole('checkbox', { name: 'Remove the e-mail address' })
+    ).toBeTruthy();
+    cleanup();
+    const none = openDialog(ALI);
+    expect((within(none).getByLabelText('E-mail') as HTMLInputElement).placeholder).toBe(
+      'No address on file'
+    );
+    expect(within(none).queryByRole('checkbox', { name: 'Remove the e-mail address' })).toBeNull();
+  });
+
   it('Escape and Cancel close it without saving', () => {
     openDialog();
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -318,6 +359,7 @@ describe('Edit account — what it sends and what it says', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     const fd = sent();
     expect(fd.keys).toEqual([
+      'contactAddress',
       'ownedRouteId',
       'phone',
       'role',
@@ -381,6 +423,59 @@ describe('Edit account — what it sends and what it says', () => {
     expect(alert.textContent).toMatch(/Busy Salesman/);
     expect(screen.getByRole('dialog')).toBeTruthy();
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('review: a typed e-mail, or its removal, goes as the e-mail edit names it; the banner says e-mail', async () => {
+    h.edit.mockResolvedValue({ ok: true, data: { changed: ['email'], username: 'c4', notes: [] } });
+    const dialog = openDialog({ ...ALI, hasEmail: true });
+    fireEvent.change(within(dialog).getByLabelText('E-mail'), {
+      target: { value: 'Ali@Example.test' },
+    });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Remove the e-mail address' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(sent().get('contactAddress')).toBe('Ali@Example.test');
+    expect(sent().get('clearContactAddress')).toBe('on');
+    expect(screen.getByRole('status').textContent).toContain('Saved "c4": e-mail.');
+  });
+
+  it('review: requests the move would strand — the refusal offers to withdraw them, and the tick is sent', async () => {
+    h.edit
+      .mockResolvedValueOnce({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: 'Validation failed',
+        fields: {
+          withdrawCreates:
+            'Ali has 1 new-customer request(s) started on route C4 that are not in review (drafts, or sent back to him).',
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          changed: ['route'],
+          username: 'c4',
+          notes: [
+            '1 new-customer request(s) Ali had started on route C4 (drafts, or sent back to him) were withdrawn with this change.',
+          ],
+        },
+      });
+    const dialog = openDialog();
+    expect(
+      within(dialog).queryByRole('checkbox', { name: 'Withdraw them with this change' })
+    ).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText('Route'), { target: { value: 'r-c5' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert.textContent).toMatch(/started on route C4/);
+    expect((h.edit.mock.calls[0]![0] as FormData).get('withdrawCreates')).toBeNull();
+    fireEvent.click(
+      within(dialog).getByRole('checkbox', { name: 'Withdraw them with this change' })
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect((h.edit.mock.calls[1]![0] as FormData).get('withdrawCreates')).toBe('on');
+    expect(screen.getByRole('status').textContent).toMatch(/were withdrawn with this change/);
   });
 
   it('a save that changes nothing says so', async () => {
@@ -450,7 +545,7 @@ describe('Create user — regions, and the route code as the username', () => {
     );
     fireEvent.change(routeSelect(container), { target: { value: 'r-c6' } });
     expect(container.textContent).toMatch(
-      /his sign-in name c6 is retired so the new salesman can use it/
+      /his sign-in name c6 is retired if the new salesman signs in with it/
     );
     expect(
       optionTexts(container.querySelector('select[name="supervisorId"]') as HTMLElement)
@@ -541,6 +636,29 @@ describe('/users — Regions column and the Steward’s Edit', () => {
       /on file/
     );
     expect(document.body.innerHTML).not.toContain('99887766');
+  });
+
+  it('review: the e-mail address never reaches the page; the dialog says one is on file, and names a disabled supervisor', async () => {
+    h.rows.push(
+      account('old', 'MANAGER', { isActive: false }),
+      account('sal2', 'SALESMAN', {
+        email: 'sal.two@example.test',
+        supervisorId: 'old',
+        supervisor: { fullName: 'Person old', username: 'old', isActive: false },
+      })
+    );
+    const { container } = render(await UsersPage({ searchParams: Promise.resolve({}) }));
+    const row = [...container.querySelectorAll('tbody tr')].find((tr) =>
+      tr.textContent?.includes('Person sal2')
+    )!;
+    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Edit' }));
+    const dialog = screen.getByRole('dialog');
+    expect((within(dialog).getByLabelText('E-mail') as HTMLInputElement).placeholder).toMatch(
+      /An address is on file/
+    );
+    expect((within(dialog).getByLabelText('Supervisor') as HTMLSelectElement).value).toBe('old');
+    expect(dialog.textContent).toContain('Person old (old) — disabled');
+    expect(document.body.innerHTML).not.toContain('sal.two@');
   });
 
   it('a Manager gets no Edit', async () => {

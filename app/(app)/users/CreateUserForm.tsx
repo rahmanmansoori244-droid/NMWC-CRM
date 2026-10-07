@@ -180,7 +180,7 @@ export function CreateUserForm({
             <p className="mt-0.5 text-[11px] text-slate-500">
               The route is taken from {route.holder.fullName}’s disabled account
               {route.holder.username === routeSignInName(route.code)
-                ? `, and his sign-in name ${route.holder.username} is retired so the new salesman can use it`
+                ? `, and his sign-in name ${route.holder.username} is retired if the new salesman signs in with it`
                 : ''}
               .
             </p>

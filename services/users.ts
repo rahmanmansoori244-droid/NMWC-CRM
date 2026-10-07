@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { EditState, Role, type Prisma } from '@prisma/client';
+import { EditProcess, EditState, Role, type Prisma } from '@prisma/client';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import {
@@ -31,18 +31,21 @@ import {
   SUPERVISING_ROLES,
   accountEditAudit,
   changedFields,
+  compareCodes,
   retiredUsername,
   revokesSessions,
   routeHandover,
   routeMoveNotes,
   routeSignInName,
+  strandedCreatesIssue,
   supervisorCoverIssue,
+  supervisorStepNotes,
   type AccountEditResult,
   type EditableAccount,
   type RouteHolder,
   type SupervisorCandidate,
 } from '@/lib/account-edit';
-import { countOpenReturned } from '@/lib/returned-work';
+import { countOpenReturned, openReturnedIds } from '@/lib/returned-work';
 import { omanDateISO } from '@/lib/tz';
 
 // User administration is a MANAGER or STEWARD action. A MANAGER is capped at the
@@ -203,12 +206,13 @@ function createClashFields(err: unknown): Record<string, string> {
 async function supervisorCandidate(
   id: string,
   forId: string | null
-): Promise<(SupervisorCandidate & { username: string }) | null> {
+): Promise<(SupervisorCandidate & { username: string; fullName: string }) | null> {
   const s = await prisma.user.findUnique({
     where: { id },
     select: {
       id: true,
       username: true,
+      fullName: true,
       role: true,
       isActive: true,
       managedRegions: { select: { id: true } },
@@ -219,6 +223,7 @@ async function supervisorCandidate(
   return {
     id: s.id,
     username: s.username,
+    fullName: s.fullName,
     role: s.role,
     isActive: s.isActive,
     managedRegionIds: (s.managedRegions ?? []).map((r) => r.id),
@@ -233,12 +238,30 @@ async function supervisorCandidate(
   };
 }
 
-/** The route an account is being put on, with what the rules need of it. */
-async function routeForAssignment(id: string) {
-  return prisma.route.findUnique({
+/**
+ * The route an account is being put on, with what the rules need of it. A
+ * switched-off route is refused here, not only left out of the form's list: a
+ * salesman on one cannot send anything (services/creates.ts, services/edits.ts).
+ * `keeps` is the route the account works now, which it may keep either way.
+ */
+async function routeForAssignment(id: string, keeps: string | null = null) {
+  const route = await prisma.route.findUnique({
     where: { id },
-    select: { id: true, code: true, regionId: true, region: { select: { code: true } } },
+    select: {
+      id: true,
+      code: true,
+      regionId: true,
+      isActive: true,
+      region: { select: { code: true } },
+    },
   });
+  if (!route) throw new ValidationError({ ownedRouteId: 'Route not found.' });
+  if (!route.isActive && route.id !== keeps) {
+    throw new ValidationError({
+      ownedRouteId: `Route ${route.code} is switched off. Switch it on in Routes first, or pick another route.`,
+    });
+  }
+  return route;
 }
 
 /** Who holds a route now (User.ownedRouteId is unique: nobody or one account). */
@@ -251,13 +274,16 @@ async function routeHolder(routeId: string): Promise<RouteHolder> {
 
 /**
  * Owner decision 8: the regions a Manager or Accountant is given, sorted by
- * code. At least one — the account import refuses one that would manage none,
- * because an empty managedRegions sees nothing and clears no approval step — and
- * none for any other role.
+ * code (compareCodes, the order the edit's "before" uses too). At least one —
+ * the account import refuses one that would manage none, because an empty
+ * managedRegions sees nothing and clears no approval step — and none for any
+ * other role. A switched-off region is refused unless the account has it
+ * already (`held`): the form lists only those, and a crafted post is not trusted.
  */
 async function regionsFor(
   role: Role,
-  regionIds: string[]
+  regionIds: string[],
+  held: string[] = []
 ): Promise<{ id: string; code: string }[]> {
   if (!REGION_SCOPED_ROLES.includes(role)) {
     if (regionIds.length > 0) {
@@ -276,14 +302,22 @@ async function regionsFor(
   }
   const found = await prisma.region.findMany({
     where: { id: { in: ids } },
-    select: { id: true, code: true },
+    select: { id: true, code: true, isActive: true },
   });
   if (found.length !== ids.length) {
     throw new ValidationError({
       regionIds: 'A region was not found. Reload the page and try again.',
     });
   }
-  return found.sort((a, b) => a.code.localeCompare(b.code));
+  const off = found.filter((r) => !r.isActive && !held.includes(r.id)).map((r) => r.code);
+  if (off.length > 0) {
+    throw new ValidationError({
+      regionIds: `Region ${off.sort(compareCodes).join(', ')} is switched off. Switch it on in Routes first, or untick it.`,
+    });
+  }
+  return found
+    .map((r) => ({ id: r.id, code: r.code }))
+    .sort((a, b) => compareCodes(a.code, b.code));
 }
 
 /**
@@ -424,9 +458,6 @@ async function createUserCore(formData: FormData) {
     throw new ForbiddenError('You have no managed regions assigned — ask a Steward.');
   }
   const route = data.ownedRouteId ? await routeForAssignment(data.ownedRouteId) : null;
-  if (data.ownedRouteId && !route) {
-    throw new ValidationError({ ownedRouteId: 'Route not found.' });
-  }
   if (managerScope && route) {
     if (!managerCanAssignRoute(managerScope.managedRegionIds, route.regionId)) {
       throw new ValidationError({
@@ -490,8 +521,13 @@ async function createUserCore(formData: FormData) {
     if (verdict.kind === 'handover') {
       handover = verdict.from;
       // The leaver's sign-in name is the route's code (lib/account-edit.ts):
-      // retired with the route, so the joiner can sign in with the code.
-      if (handover.username === routeSignInName(route.code)) {
+      // retired with the route when the joiner takes the code as his. A joiner
+      // with a name of his own leaves the leaver his, rather than free a code
+      // nobody then signs in with (this app has no other way to rename one).
+      if (
+        handover.username === routeSignInName(route.code) &&
+        data.username === handover.username
+      ) {
         retired = await freeRetiredUsername(handover.username);
       }
     }
@@ -867,35 +903,49 @@ async function updateUserRoleCore(formData: FormData) {
 /**
  * Owner decision 8 (2026-10-07): the Data Steward's "Edit account" on /users —
  * the role, a salesman's route, a salesman's or supervisor's supervisor, a
- * Manager's or Accountant's regions, and the phone. It is the leaver/joiner tool
- * too: a route held by a DISABLED account (the leaver) is handed to the account
- * being edited. STEWARD only; a Manager keeps the actions he had (create,
- * disable, reset password, and the role action above).
+ * Manager's or Accountant's regions, the phone and the e-mail. It is the
+ * leaver/joiner tool too: a route held by a DISABLED account (the leaver) is
+ * handed to the account being edited. STEWARD only; a Manager keeps the actions
+ * he had (create, disable, reset password, and the role action above).
  *
  * The rules are lib/account-edit.ts, shared with the create:
  *   - a salesman has a route, and a route has one salesman: never taken from an
- *     active holder, taken from a disabled one with a REASSIGN row on him;
- *   - a salesman signs in with his route's code: the leaver's sign-in name is
- *     retired with the route, and `routeSignIn` gives the moved account the new
- *     route's code as his sign-in name;
+ *     active holder, taken from a disabled one with a REASSIGN row on him; never
+ *     a switched-off route or region, unless the account has it already;
+ *   - a salesman signs in with his route's code: `routeSignIn` gives the moved
+ *     account the new route's code as his sign-in name, and the leaver's is
+ *     retired when the account takes it;
  *   - a supervisor is an active SUPERVISOR or MANAGER who covers the route's
  *     region — judged when the supervisor, the route or the role changes, so a
- *     phone edit is not held back by an older assignment;
+ *     phone edit is not held back by an older assignment. Only salesmen and
+ *     Supervisors report to someone here; any other account keeps what it has
+ *     (an import may have set one) unless its role changes;
  *   - a Manager or Accountant manages at least one region; a Manager keeps every
- *     region where an active salesman reporting to him works;
+ *     region where an active salesman reporting to him works, and an active
+ *     region keeps at least one active Accountant;
  *   - an account anyone reports to stays a Supervisor or a Manager, and the only
  *     active Manager stays one (AUTH-07);
  *   - a change of role or regions ends the account's sessions;
- *   - one audit row with the before and after of what changed, the phone named
- *     and never copied (accountEditAudit), in the transaction that saves it.
+ *   - one audit row with the before and after of what changed, the phone and the
+ *     e-mail named and never copied (accountEditAudit), in the transaction that
+ *     saves it.
  *
- * His open requests (routeMoveNotes): those in review stay his and stay with the
- * same approvers, because every step's approver is found from the customer's
- * region (or org-wide), never from the salesman's route; the one exception is a
- * SUPERVISOR-role supervisor, whose Supervisor step follows the salesman's
- * current supervisorId, with the region's Managers able to decide it either way.
- * Sent-back requests stay his; one on a customer he can no longer open he clears
- * on Needs correction. The answer lists both counts for the Steward.
+ * His open requests (routeMoveNotes), when his route changes:
+ *   - those in review (SUBMITTED) stay his and stay with the same approvers,
+ *     because every step's approver is found from the customer's region — a new
+ *     customer's from its branch drafts, which keep the route they were sent
+ *     from — or org-wide, never from the salesman's route. The one exception is
+ *     a SUPERVISOR-role supervisor, whose Supervisor step follows the salesman's
+ *     current supervisorId (supervisorStepNotes), with the region's Managers
+ *     able to decide it either way;
+ *   - sent-back updates stay his; one on a customer he can no longer open he
+ *     clears on Needs correction;
+ *   - new-customer requests not in review (drafts, or sent back) would be filed
+ *     under his NEW route when sent again (services/creates.ts builds every
+ *     branch draft from the route he has then). So the change is refused while
+ *     he has any started on another route (strandedCreatesIssue), unless the
+ *     Steward ticks `withdrawCreates`: they are then withdrawn in the same
+ *     transaction, as he could withdraw them himself (withdrawCreateAction).
  */
 const editAccountSchema = z.object({
   userId: z.string().cuid(),
@@ -915,7 +965,12 @@ const editAccountSchema = z.object({
   // number never reaches the page (RBAC-05-023).
   phone: z.string().trim().max(50),
   clearPhone: z.boolean(),
+  // The e-mail, the same way, under the name the e-mail edit uses (an `email`
+  // field invites the browser's autofill: users-autofill-guard).
+  contactAddress: z.string().trim().max(200),
+  clearContactAddress: z.boolean(),
   routeSignIn: z.boolean(),
+  withdrawCreates: z.boolean(),
 });
 
 export async function updateUserAccountAction(formData: FormData): SafeAction<AccountEditResult> {
@@ -935,7 +990,10 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
     regionIds: formData.getAll('regionId').map(String).filter(Boolean),
     phone: String(formData.get('phone') ?? ''),
     clearPhone: formData.get('clearPhone') === 'on',
+    contactAddress: String(formData.get('contactAddress') ?? ''),
+    clearContactAddress: formData.get('clearContactAddress') === 'on',
     routeSignIn: formData.get('routeSignIn') === 'on',
+    withdrawCreates: formData.get('withdrawCreates') === 'on',
   });
   if (!parsed.success) {
     const fields: Record<string, string> = {};
@@ -955,9 +1013,10 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
       role: true,
       isActive: true,
       phone: true,
+      email: true,
       ownedRoute: { select: { id: true, code: true, regionId: true } },
-      supervisor: { select: { id: true, username: true } },
-      managedRegions: { select: { id: true, code: true } },
+      supervisor: { select: { id: true, username: true, fullName: true, role: true } },
+      managedRegions: { select: { id: true, code: true, isActive: true } },
       reports: {
         select: {
           id: true,
@@ -980,8 +1039,9 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
     username: target.username,
     route: target.ownedRoute?.code ?? null,
     supervisor: target.supervisor?.username ?? null,
-    regions: target.managedRegions.map((r) => r.code).sort(),
+    regions: target.managedRegions.map((r) => r.code).sort(compareCodes),
     phone: target.phone ?? null,
+    email: target.email ?? null,
   };
 
   // The role. AUTH-07: the only active Manager stays one. An account somebody
@@ -1004,7 +1064,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
   }
 
   // The route.
-  let route: Awaited<ReturnType<typeof routeForAssignment>> = null;
+  let route: Awaited<ReturnType<typeof routeForAssignment>> | null = null;
   let handover: NonNullable<RouteHolder> | null = null;
   // A salesman who already has none (a leaver whose route was handed on, or one
   // an import moved off his route) can still be edited without one.
@@ -1013,8 +1073,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
     if (!d.ownedRouteId) {
       throw new ValidationError({ ownedRouteId: 'A salesman must be assigned to a route.' });
     }
-    route = await routeForAssignment(d.ownedRouteId);
-    if (!route) throw new ValidationError({ ownedRouteId: 'Route not found.' });
+    route = await routeForAssignment(d.ownedRouteId, target.ownedRoute?.id ?? null);
     if (route.id !== target.ownedRoute?.id) {
       // X-IMPORTS-2, as the account import applies it: a route is never parked
       // on an account that cannot sign in.
@@ -1039,8 +1098,47 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
   }
   const routeChanged = (route?.id ?? null) !== (target.ownedRoute?.id ?? null);
 
-  // The supervisor: only salesmen and supervisors report to someone here.
-  let supervisor: { id: string; username: string } | null = null;
+  // His new-customer requests that are not in review and were started on
+  // another route than the one he now gets (none, for a role with no route):
+  // sent again, they would be filed under the new route (services/creates.ts).
+  // Refused, unless the Steward withdraws them with this change. A disabled
+  // account sends nothing again, and its drafts hold no shop
+  // (lib/create-guards.ts), so his are left as they are.
+  const strandedCreates =
+    target.isActive && routeChanged
+      ? await prisma.customerEdit.findMany({
+          where: {
+            submittedById: target.id,
+            process: EditProcess.CREATE,
+            state: { in: [EditState.DRAFT, EditState.NEEDS_CORRECTION] },
+            ...(route ? { branchDrafts: { some: { routeId: { not: route.id } } } } : {}),
+          },
+          select: {
+            id: true,
+            state: true,
+            cycle: true,
+            branchDrafts: { select: { route: { select: { code: true } } } },
+          },
+        })
+      : [];
+  const strandedFrom = [
+    ...new Set(strandedCreates.flatMap((e) => e.branchDrafts.map((b) => b.route.code))),
+  ].sort(compareCodes);
+  const strandedIssue = strandedCreatesIssue({
+    who: target.fullName,
+    count: strandedCreates.length,
+    fromRoutes: strandedFrom,
+    toRoute: route?.code ?? null,
+    withdraw: d.withdrawCreates,
+  });
+  if (strandedIssue) throw new ValidationError({ withdrawCreates: strandedIssue });
+
+  // The supervisor: only salesmen and supervisors report to someone here. Any
+  // other account keeps the one it has (an import may have set it), unless its
+  // role changes: a phone edit of a Manager does not quietly unlink him.
+  const keepsSupervisor = !SUPERVISED_ROLES.includes(role) && role === target.role;
+  let supervisor: { id: string; username: string; fullName: string; role: Role } | null =
+    keepsSupervisor ? (target.supervisor ?? null) : null;
   if (SUPERVISED_ROLES.includes(role) && d.supervisorId) {
     const sup = await supervisorCandidate(d.supervisorId, target.id);
     const unchanged =
@@ -1055,28 +1153,86 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
       if (issue) throw new ValidationError({ supervisorId: issue });
     }
     if (!sup) throw new ValidationError({ supervisorId: 'Supervisor must exist and be active.' });
-    supervisor = { id: sup.id, username: sup.username };
+    supervisor = { id: sup.id, username: sup.username, fullName: sup.fullName, role: sup.role };
   }
 
   // The regions. A Manager keeps every region where an active salesman who
   // reports to him works: otherwise he is told of their requests and can decide
   // none of them.
-  const regions = await regionsFor(role, d.regionIds);
+  const regions = await regionsFor(
+    role,
+    d.regionIds,
+    target.managedRegions.map((r) => r.id)
+  );
   if (role === Role.MANAGER) {
     const kept = new Set(regions.map((r) => r.id));
     const stranded = target.reports.filter(
       (r) => r.isActive && r.ownedRoute && !kept.has(r.ownedRoute.regionId)
     );
     if (stranded.length > 0) {
-      const codes = [...new Set(stranded.map((r) => r.ownedRoute!.region.code))].sort().join(', ');
+      const codes = [...new Set(stranded.map((r) => r.ownedRoute!.region.code))]
+        .sort(compareCodes)
+        .join(', ');
       throw new ValidationError({
         regionIds: `${stranded.length} active salesman/salesmen reporting to ${target.fullName} work in ${codes}. Keep the region, or give them another supervisor first.`,
       });
     }
   }
+  // An active region keeps an active Accountant: the last step of every
+  // new-customer and credit request there is his (lib/permissions.ts
+  // canActOnStep, REGION_OVERLAP), and without one they wait for nobody.
+  if (target.isActive && target.role === Role.ACCOUNTANT) {
+    const keeps = new Set(role === Role.ACCOUNTANT ? regions.map((r) => r.id) : []);
+    const lost = target.managedRegions.filter((r) => r.isActive && !keeps.has(r.id));
+    if (lost.length > 0) {
+      const covered = await prisma.region.findMany({
+        where: {
+          id: { in: lost.map((r) => r.id) },
+          managers: { some: { role: Role.ACCOUNTANT, isActive: true, id: { not: target.id } } },
+        },
+        select: { id: true },
+      });
+      const alone = lost
+        .filter((r) => !covered.some((c) => c.id === r.id))
+        .map((r) => r.code)
+        .sort(compareCodes);
+      if (alone.length > 0) {
+        throw new ValidationError({
+          [role === Role.ACCOUNTANT ? 'regionIds' : 'role']:
+            `${target.fullName} is the only active Accountant of ${alone.join(', ')}. Give the region to another Accountant first, or its new-customer and credit requests wait at the Accountant step with nobody to decide them.`,
+        });
+      }
+    }
+  }
 
   // The phone: an empty box keeps it.
   const phone = d.clearPhone ? null : d.phone !== '' ? d.phone : (target.phone ?? null);
+
+  // The e-mail, the same way, by updateUserEmailCore's rules: trimmed and
+  // lower-cased, and no other account may hold it in any letter case.
+  let email = target.email ?? null;
+  if (d.clearContactAddress) email = null;
+  else if (d.contactAddress !== '') {
+    const typed = contactAddressRule.safeParse(d.contactAddress);
+    if (!typed.success) {
+      throw new ValidationError({
+        contactAddress:
+          'Enter a valid e-mail address, or leave the box empty to keep the one on file.',
+      });
+    }
+    email = typed.data;
+  }
+  if (email && email !== (target.email ?? null)) {
+    const clash = await prisma.user.findFirst({
+      where: { id: { not: target.id }, email: { equals: email, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    if (clash) {
+      throw new ValidationError({
+        contactAddress: 'That e-mail is already used by another account.',
+      });
+    }
+  }
 
   // The sign-in name. A salesman signs in with his route's code
   // (lib/account-edit.ts); routeSignIn moves the moved account onto the new code.
@@ -1102,8 +1258,13 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
       username = wanted;
     }
   }
+  // The leaver's sign-in name is retired only when this account takes it: kept
+  // otherwise, rather than free a code nobody then signs in with.
   const retired =
-    handover && route && handover.username === routeSignInName(route.code)
+    handover &&
+    route &&
+    handover.username === routeSignInName(route.code) &&
+    username === handover.username
       ? await freeRetiredUsername(handover.username)
       : null;
 
@@ -1114,6 +1275,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
     supervisor: supervisor?.username ?? null,
     regions: regions.map((r) => r.code),
     phone,
+    email,
   };
   const audit = accountEditAudit(before, after);
   // Nothing to change, nothing to record.
@@ -1121,22 +1283,41 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
 
   const notes: string[] = [];
   if (handover && route) notes.push(...(await handOverNotes(handover, route.code, retired)));
-  if (target.ownedRoute && routeChanged) {
-    const [inReview, sentBack] = await Promise.all([
+  if (routeChanged && (target.ownedRoute || strandedCreates.length > 0)) {
+    const withdrawn = new Set(strandedCreates.map((e) => e.id));
+    const [inReview, sentBackIds] = await Promise.all([
       prisma.customerEdit.count({
         where: { submittedById: target.id, state: EditState.SUBMITTED },
       }),
-      countOpenReturned(prisma, target.id),
+      openReturnedIds(prisma, target.id),
     ]);
     notes.push(
       ...routeMoveNotes({
         who: target.fullName,
-        fromRoute: target.ownedRoute.code,
+        fromRoute: target.ownedRoute?.code ?? strandedFrom.join(', '),
         inReview,
-        sentBack,
+        sentBack: sentBackIds.filter((id) => !withdrawn.has(id)).length,
+        withdrawn: withdrawn.size,
         leaver: !route,
       })
     );
+  }
+  if (before.supervisor !== after.supervisor && target.isActive) {
+    const from = target.supervisor
+      ? { name: target.supervisor.fullName, role: target.supervisor.role }
+      : null;
+    const to = supervisor ? { name: supervisor.fullName, role: supervisor.role } : null;
+    const waiting =
+      from?.role === Role.SUPERVISOR || to?.role === Role.SUPERVISOR
+        ? await prisma.customerEdit.count({
+            where: {
+              submittedById: target.id,
+              state: EditState.SUBMITTED,
+              OR: [{ pendingRole: Role.SUPERVISOR }, { pendingRole: null }],
+            },
+          })
+        : 0;
+    notes.push(...supervisorStepNotes({ who: target.fullName, waiting, from, to }));
   }
   if (username !== target.username) {
     notes.push(`${target.fullName} now signs in as ${username}.`);
@@ -1144,6 +1325,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
 
   const revoke = revokesSessions(before, after);
   const env = await getAuditEnvelope(me.id);
+  const now = new Date();
   try {
     await prisma.$transaction(async (tx) => {
       if (handover && route) {
@@ -1155,17 +1337,60 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
           toUsername: username,
         });
       }
+      // His new-customer requests the change would strand, withdrawn as
+      // withdrawCreateCore (services/creates.ts) withdraws one: closed for good
+      // (REJECTED), the clock stopped, the decision fields saying who and why.
+      // Claimed on the state and cycle read above: one he sent or changed since
+      // is not withdrawn, and nothing is saved.
+      for (const e of strandedCreates) {
+        const claim = await tx.customerEdit.updateMany({
+          where: { id: e.id, state: e.state, cycle: e.cycle, submittedById: target.id },
+          data: {
+            state: EditState.REJECTED,
+            pendingRole: null,
+            slaDueAt: null,
+            slaBreachedAt: null,
+            lastEscalatedAt: null,
+            escalationLevel: 0,
+            reviewedById: me.id,
+            reviewedAt: now,
+            decisionReason: route
+              ? `Withdrawn by the Data Steward when your route changed to ${route.code}: sent again, it would have been filed under that route. The salesman of the shop's route adds it afresh.`
+              : 'Withdrawn by the Data Steward when your role changed: it can no longer be sent. The salesman of the shop’s route adds it afresh.',
+            decisionCategory: 'withdrawn',
+          },
+        });
+        if (claim.count === 0) {
+          throw new ValidationError({
+            withdrawCreates: `One of ${target.fullName}'s new-customer requests changed while this was being saved. Nothing was saved — reload the page and try again.`,
+          });
+        }
+        await writeAudit(tx, env, {
+          action: 'UPDATE',
+          entityType: 'CustomerEdit',
+          entityId: e.id,
+          reason: 'withdrawn with an account edit',
+          after: {
+            process: 'CREATE',
+            state: EditState.REJECTED,
+            from: e.state,
+            cycle: e.cycle,
+            route: route?.code ?? null,
+          } as unknown as Prisma.InputJsonValue,
+        });
+      }
       await tx.user.update({
         where: { id: target.id },
         data: {
           role,
           username,
           phone,
+          email,
           ownedRouteId: route?.id ?? null,
           supervisorId: supervisor?.id ?? null,
           managedRegions: { set: regions.map((r) => ({ id: r.id })) },
           // Owner decision 8, with the revocation disable and reset use (AUTH-12).
-          ...(revoke ? { sessionsRevokedAt: new Date() } : {}),
+          ...(revoke ? { sessionsRevokedAt: now } : {}),
         },
       });
       await writeAudit(tx, env, {
@@ -1178,7 +1403,8 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
       });
     });
   } catch (err) {
-    // Another save took the route or the name between the checks and this one.
+    // Another save took the route, the name or the e-mail between the checks
+    // and this one.
     const code = (err as { code?: string })?.code;
     if (code === 'P2002') {
       const fields = createClashFields(err);
@@ -1192,6 +1418,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
           ownedRouteId: 'That route was given to someone else meanwhile. Nothing was saved.',
         });
       }
+      if (fields.email) throw new ValidationError({ contactAddress: fields.email });
       throw new ValidationError(fields);
     }
     throw err;
@@ -1203,6 +1430,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
       changed: changedFields(before, after),
       revoked: revoke,
       handover: !!handover,
+      withdrawnCreates: strandedCreates.length,
     },
     'user.account_edit'
   );
@@ -1210,6 +1438,11 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
   revalidatePath('/users');
   revalidatePath('/routes');
   revalidateTag('ref:users'); // role, route and supervisor are all in the cached list
+  if (strandedCreates.length > 0) {
+    revalidatePath('/work');
+    revalidatePath('/today');
+    revalidatePath('/rejected');
+  }
   return { changed: changedFields(before, after), username, notes };
 }
 

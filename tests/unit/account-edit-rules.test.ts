@@ -8,12 +8,19 @@ import { describe, it, expect } from 'vitest';
 import {
   accountEditAudit,
   changedFields,
+  compareCodes,
+  importNameIssue,
+  importRouteHolderIssue,
+  importSupervisorCoverIssue,
   retiredUsername,
   revokesSessions,
   routeHandover,
   routeMoveNotes,
   routeSignInName,
+  strandedCreatesImportIssue,
+  strandedCreatesIssue,
   supervisorCoverIssue,
+  supervisorStepNotes,
   type EditableAccount,
   type SupervisorCandidate,
 } from '@/lib/account-edit';
@@ -25,6 +32,7 @@ const salesman: EditableAccount = {
   supervisor: 'mct-gt',
   regions: [],
   phone: '+96890000001',
+  email: null,
 };
 
 describe('a salesman signs in with his route code', () => {
@@ -253,5 +261,171 @@ describe('what the Steward is told about open requests (routeMoveNotes)', () => 
 
   it('says nothing when there is nothing open', () => {
     expect(routeMoveNotes({ who: 'Ali', fromRoute: 'C4', inReview: 0, sentBack: 0 })).toEqual([]);
+  });
+});
+
+describe('reviewer fixes (2026-10-07)', () => {
+  it('the e-mail is named in the audit row like the phone, never copied', () => {
+    const row = accountEditAudit(salesman, { ...salesman, email: 'ali@example.test' })!;
+    expect(row).toEqual({ before: {}, after: { changed: ['email'] } });
+    expect(JSON.stringify(row)).not.toContain('ali@');
+    expect(changedFields(salesman, { ...salesman, email: 'ali@example.test' })).toEqual(['email']);
+  });
+
+  it('region codes sort one way before and after, so an unchanged set is no change', () => {
+    // localeCompare puts "M_B" first, a bare sort() puts "MB" first: before the
+    // fix the edit sorted its "before" one way and its "after" the other.
+    const codes = ['MB', 'M_B', 'MA'];
+    expect([...codes].sort(compareCodes)).toEqual([...codes].sort());
+    const mgr: EditableAccount = {
+      ...salesman,
+      role: 'MANAGER',
+      regions: [...codes].sort(compareCodes),
+    };
+    expect(revokesSessions(mgr, { ...mgr, regions: [...codes].reverse().sort(compareCodes) })).toBe(
+      false
+    );
+  });
+
+  it('a route change with new-customer requests not in review is refused, unless they are withdrawn with it', () => {
+    const moved = strandedCreatesIssue({
+      who: 'Ali',
+      count: 2,
+      fromRoutes: ['C4'],
+      toRoute: 'C5',
+      withdraw: false,
+    });
+    expect(moved).toMatch(
+      /Ali has 2 new-customer request\(s\) started on route C4 that are not in review/
+    );
+    expect(moved).toMatch(/filed under route C5/);
+    expect(moved).toMatch(/Withdraw them with this change/);
+    expect(
+      strandedCreatesIssue({
+        who: 'Ali',
+        count: 1,
+        fromRoutes: ['C4'],
+        toRoute: null,
+        withdraw: false,
+      })
+    ).toMatch(/Without a route he can never send them again/);
+    expect(
+      strandedCreatesIssue({
+        who: 'Ali',
+        count: 2,
+        fromRoutes: ['C4'],
+        toRoute: 'C5',
+        withdraw: true,
+      })
+    ).toBeNull();
+    expect(
+      strandedCreatesIssue({ who: 'Ali', count: 0, fromRoutes: [], toRoute: 'C5', withdraw: false })
+    ).toBeNull();
+    expect(strandedCreatesImportIssue('c4', 2)).toMatch(
+      /"c4" has 2 new-customer request\(s\).*Nothing was written/
+    );
+  });
+
+  it('the notes count withdrawn new-customer requests apart from sent-back updates', () => {
+    expect(
+      routeMoveNotes({ who: 'Ali', fromRoute: 'C4', inReview: 0, sentBack: 0, withdrawn: 2 })
+    ).toEqual([
+      expect.stringMatching(
+        /^2 new-customer request\(s\) Ali had started on route C4 .* were withdrawn/
+      ),
+    ]);
+  });
+
+  it('a supervisor change moves the Supervisor step only when a Supervisor-role account is involved', () => {
+    const mgrA = { name: 'Manager A', role: 'MANAGER' as const };
+    const supS = { name: 'Supervisor S', role: 'SUPERVISOR' as const };
+    expect(
+      supervisorStepNotes({
+        who: 'Ali',
+        waiting: 3,
+        from: mgrA,
+        to: { ...mgrA, name: 'Manager B' },
+      })
+    ).toEqual([]);
+    expect(supervisorStepNotes({ who: 'Ali', waiting: 0, from: supS, to: mgrA })).toEqual([]);
+    const [lost] = supervisorStepNotes({ who: 'Ali', waiting: 3, from: supS, to: mgrA });
+    expect(lost).toMatch(/3 of Ali's requests wait at the Supervisor step/);
+    expect(lost).toMatch(/Supervisor S can no longer decide them/);
+    expect(lost).toMatch(/Managers of each customer’s region can decide them either way/);
+    expect(supervisorStepNotes({ who: 'Ali', waiting: 1, from: mgrA, to: supS })[0]).toMatch(
+      /Supervisor S now can, wherever the customer is/
+    );
+  });
+
+  it('the import holds back a row that names another person on a salesman’s account', () => {
+    const base = {
+      username: 'c4',
+      storedRole: 'SALESMAN' as const,
+      storedName: 'Joining  Salesman',
+      wantsNameChange: false,
+      retired: null,
+    };
+    // Spaces and case are not a different person.
+    expect(importNameIssue({ ...base, rowName: 'joining salesman' })).toBeNull();
+    expect(importNameIssue({ ...base, rowName: 'Leaving Salesman' })).toMatch(
+      /full_name is not the name of the salesman who signs in as "c4"\. Nothing was written/
+    );
+    expect(
+      importNameIssue({ ...base, rowName: 'Leaving Salesman', retired: 'c4.left.20261007' })
+    ).toMatch(
+      /"c4" was handed to a new salesman on Users \(the previous one now signs in as "c4\.left\.20261007"\)/
+    );
+    expect(
+      importNameIssue({ ...base, rowName: 'Leaving Salesman', wantsNameChange: true })
+    ).toBeNull();
+    expect(importNameIssue({ ...base, storedRole: 'VIEWER', rowName: 'Someone Else' })).toBeNull();
+  });
+
+  it('the import takes a route from an active salesman only on change_route=yes', () => {
+    const p = { username: 'new.one', routeCode: 'C4', wantsRouteChange: false };
+    expect(importRouteHolderIssue({ ...p, holder: null })).toBeNull();
+    expect(
+      importRouteHolderIssue({ ...p, holder: { username: 'c4', isActive: false } })
+    ).toBeNull();
+    expect(
+      importRouteHolderIssue({ ...p, holder: { username: 'new.one', isActive: true } })
+    ).toBeNull();
+    expect(importRouteHolderIssue({ ...p, holder: { username: 'c4', isActive: true } })).toMatch(
+      /route C4 is worked by "c4", whose account is active\. Nothing was written for "new\.one"/
+    );
+    expect(
+      importRouteHolderIssue({
+        ...p,
+        wantsRouteChange: true,
+        holder: { username: 'c4', isActive: true },
+      })
+    ).toBeNull();
+  });
+
+  it('the import judges a supervisor’s cover of the route’s region in its own words', () => {
+    const mgr: SupervisorCandidate = {
+      id: 'm1',
+      role: 'MANAGER',
+      isActive: true,
+      managedRegionIds: ['g-mct'],
+      teamRegionIds: [],
+    };
+    const p = {
+      username: 'c4',
+      supervisorUsername: 'mct-gt',
+      targetId: 's1',
+      routeCode: 'K1',
+      routeRegionId: 'g-khb',
+      regionCode: 'KHB',
+    };
+    expect(importSupervisorCoverIssue({ ...p, supervisor: mgr })).toBe(
+      'supervisor "mct-gt" does not cover region KHB, where route K1 is: a MANAGER must manage the region, and a SUPERVISOR\'s team must work in it. Nothing was written for "c4". Name a supervisor who covers region KHB in supervisor_username.'
+    );
+    expect(
+      importSupervisorCoverIssue({ ...p, supervisor: { ...mgr, managedRegionIds: ['g-khb'] } })
+    ).toBeNull();
+    expect(importSupervisorCoverIssue({ ...p, supervisor: { ...mgr, isActive: false } })).toMatch(
+      /^supervisor "mct-gt" is deactivated or missing/
+    );
   });
 });
