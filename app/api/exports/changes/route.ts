@@ -16,8 +16,10 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 const schema = z.object({
-  since: z.coerce.date().optional(),
-  until: z.coerce.date().optional(),
+  // Days and only days ("YYYY-MM-DD", real ones), read as Oman days below: a full
+  // timestamp's UTC date can be the Oman day before the one it names.
+  since: z.string().date().optional(),
+  until: z.string().date().optional(),
   regionIds: z.array(z.string()).optional(),
   routeIds: z.array(z.string()).optional(),
   onlyChanged: z.enum(['1', 'true', '0', 'false']).optional(),
@@ -61,8 +63,8 @@ export async function GET(req: NextRequest) {
     const out = await buildChangeReport(
       { id: me.id, role: me.role, username: me.username },
       {
-        since: f.since ? startOfOmanDay(f.since) : undefined,
-        until: f.until ? endOfOmanDay(f.until) : undefined,
+        since: f.since ? startOfOmanDay(new Date(f.since)) : undefined,
+        until: f.until ? endOfOmanDay(new Date(f.until)) : undefined,
         regionIds: f.regionIds,
         routeIds: f.routeIds,
         onlyChanged: truthy(f.onlyChanged),

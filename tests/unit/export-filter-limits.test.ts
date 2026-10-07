@@ -258,6 +258,17 @@ describe('customer-only filter validation', () => {
   ])('keeps existing validation of %s', async (key, value) => {
     await expectInvalid(await customersGET(request('customers', new URLSearchParams({ [key]: value }))));
   });
+
+  // A day filter takes a day: 22:00 UTC on the 30th is 02:00 on 1 October in Oman,
+  // and its UTC date would have started the export a whole Oman day early. And a
+  // date that does not exist is refused, not rolled into March.
+  it.each(['2026-09-30T22:00:00Z', '2026-09-30T00:00:00.000Z', '1759269600000', '2026-02-31', '2026-9-30'])(
+    'refuses updatedSince %j: only a real YYYY-MM-DD day',
+    async (value) => {
+      await expectInvalid(await customersGET(request('customers', new URLSearchParams({ updatedSince: value }))));
+      expect(h.customers).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe('change-report filter compatibility', () => {
@@ -292,6 +303,13 @@ describe('change-report filter compatibility', () => {
     ['since', 'invalid'], ['until', 'invalid'], ['onlyChanged', 'yes'], ['includePending', 'yes'],
   ])('keeps existing validation of %s', async (key, value) => {
     await expectInvalid(await changesGET(request('changes', new URLSearchParams({ [key]: value }))));
+  });
+
+  it.each([
+    ['since', '2026-09-30T22:00:00Z'], ['until', '2026-09-30T22:00:00Z'], ['since', '2026-02-31'], ['until', '2026-9-30'],
+  ])('refuses %s %j: only a real YYYY-MM-DD day', async (key, value) => {
+    await expectInvalid(await changesGET(request('changes', new URLSearchParams({ [key]: value }))));
+    expect(h.changes).not.toHaveBeenCalled();
   });
 
   it('still withholds the workbook if its export audit fails', async () => {

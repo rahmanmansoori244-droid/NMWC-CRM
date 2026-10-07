@@ -20,7 +20,9 @@ const filterSchema = z.object({
   // `updatedSince=2026-09-30` means from the start of that OMAN day, as the
   // field-update report reads its window. A bare date parses as UTC midnight,
   // 04:00 in Oman, which left out a customer updated before 04:00 that day.
-  updatedSince: z.coerce.date().transform(startOfOmanDay).optional(),
+  // A day and only a day ("YYYY-MM-DD", a real one): a full timestamp's UTC
+  // date can be the Oman day before the one it names.
+  updatedSince: z.string().date().transform((d) => startOfOmanDay(new Date(d))).optional(),
 });
 
 export async function GET(req: NextRequest) {
