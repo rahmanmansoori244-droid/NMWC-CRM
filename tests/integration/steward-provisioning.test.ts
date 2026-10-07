@@ -79,6 +79,23 @@ describe.skipIf(!ENABLED)('Steward may provision the approver tier; Manager may 
     expect(row).toBeNull(); // never created
   });
 
+  // Launch fix (2026-10-07): User.email's unique index is case-sensitive; the
+  // create stores the address lower-cased and refuses it in any other capitals.
+  it('an e-mail is stored lower-cased, and the same mailbox in other capitals is refused', async () => {
+    asUser(stewardId, 'STEWARD');
+    const first = `zzup-mail1-${tag}`;
+    const second = `zzup-mail2-${tag}`;
+    created.push(first, second);
+    const address = `ZZ.Mail.${tag}@Example.TEST`;
+    const ok = await users.createUserAction(fd({ username: first, fullName: 'ZZ Mail One', role: 'VIEWER', email: address, password: 'Provision-2026-xy' }));
+    expect(ok.ok).toBe(true);
+    const row = await prisma.user.findUnique({ where: { username: first }, select: { email: true } });
+    expect(row?.email).toBe(address.toLowerCase());
+    const clash = await users.createUserAction(fd({ username: second, fullName: 'ZZ Mail Two', role: 'VIEWER', email: address.toUpperCase(), password: 'Provision-2026-xy' }));
+    expect(clash).toMatchObject({ ok: false, fields: { email: 'That e-mail is already used by another account.' } });
+    expect(await prisma.user.findUnique({ where: { username: second } })).toBeNull();
+  });
+
   it('STEWARD promotes a SALESMAN to ACCOUNTANT; MANAGER cannot', async () => {
     // seed a salesman (no route needed for the role-change test)
     const sales = await prisma.user.create({ data: { username: `zzup-sales-${tag}`, passwordHash: 'x', fullName: 'ZZ Sales', role: 'SALESMAN' } });

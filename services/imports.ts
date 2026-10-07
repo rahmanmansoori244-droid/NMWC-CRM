@@ -427,7 +427,9 @@ async function uploadAccountMasterCore(
       const supUsername = lc(row.supervisor_username ?? row.supervisorUsername ?? '');
       const routeCode = uc(row.route_code ?? row.routeCode ?? '');
       const regionCodesRaw = String(row.region_codes ?? row.regionCodes ?? '').trim();
-      const email = String(row.email ?? '').trim() || null;
+      // Launch fix: lower-cased, as /users stores it (services/users.ts), so the
+      // case-sensitive unique index and the clash check below agree.
+      const email = String(row.email ?? '').trim().toLowerCase() || null;
       const phone = String(row.phone ?? '').trim() || null;
       // Go-live credential policy: a row may force the person to choose a new
       // password at first login (AUTH-09). Only then is a SHORT initial password
@@ -850,6 +852,26 @@ async function uploadAccountMasterCore(
         // Each of those rows names the batch, as the account_import rows do: a
         // reset or a role change that alters nothing else writes no account_import
         // row, and the batch's IMPORT summary holds counts only.
+        // Launch fix: User.email's unique index is case-sensitive, so an address
+        // another account holds in other capitals got through and two accounts
+        // shared one mailbox. Checked ignoring case, in the words the unique
+        // clash itself produces (lib/account-import.ts accountRowFailure), which
+        // name the field and never the value.
+        if (email) {
+          const clash = await prisma.user.findFirst({
+            where: { email: { equals: email, mode: 'insensitive' }, NOT: { username } },
+            select: { id: true },
+          });
+          if (clash) {
+            issues.push({
+              sheet: 'Users',
+              row: sheetRow,
+              message: `nothing was written for "${username}": its email is already used by another record.`,
+            });
+            continue;
+          }
+        }
+
         await prisma.$transaction(
           async (tx) => {
             if (ownedRouteId) {

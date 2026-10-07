@@ -193,6 +193,17 @@ function makeClient(isTx: boolean): any {
 
   return {
     user: {
+      // The e-mail clash check: another account (NOT this username) holding the
+      // address in any letter case.
+      findFirst: async (args: any) => {
+        gate('user', 'findFirst', args, false);
+        const { equals, mode } = args.where.email;
+        const fold = (v: string) => (mode === 'insensitive' ? v.toLowerCase() : v);
+        const u = st().users.find(
+          (x) => x.email !== null && fold(x.email) === fold(equals) && x.username !== args.where.NOT?.username
+        );
+        return u ? viewUser(u, args) : null;
+      },
       findUnique: async (args: any) => {
         gate('user', 'findUnique', args, false);
         const u = st().users.find((x) => x.username === args.where.username);
@@ -1330,6 +1341,39 @@ describe('X-IMPORTS-3: a database fault mid-import is reported as what it was', 
       'Users 2: nothing was written for "viewer.1": its email is already used by another record.',
     ]);
     expect(find('viewer.1')).toBeUndefined();
+  });
+
+  // Launch fix (2026-10-07): the unique index is case-sensitive, so the same
+  // mailbox in other capitals used to be written to a second account.
+  it('an e-mail another account holds in other capitals is held back, in the words of the unique clash', async () => {
+    addUser({ id: 'v9', username: 'viewer.9', role: 'VIEWER', email: 'Taken@X.invalid' });
+    const { res, messages } = await upload(
+      usersSheet({
+        username: 'viewer.1',
+        full_name: 'V',
+        role: 'VIEWER',
+        password: '123456789012',
+        email: 'taken@x.INVALID',
+      })
+    );
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([
+      'Users 2: nothing was written for "viewer.1": its email is already used by another record.',
+    ]);
+    expect(find('viewer.1')).toBeUndefined();
+  });
+
+  it('an e-mail is stored lower-cased, and the account’s own address in other capitals is no clash', async () => {
+    addUser({ id: 'v8', username: 'viewer.8', role: 'VIEWER', email: 'Own@X.invalid' });
+    const { res } = await upload(
+      usersSheet(
+        { username: 'viewer.8', full_name: 'Eight', role: 'VIEWER', email: 'OWN@x.invalid' },
+        { username: 'viewer.1', full_name: 'One', role: 'VIEWER', password: '123456789012', email: ' New.One@X.Invalid ' }
+      )
+    );
+    expect(okData(res)).toMatchObject({ clean: 2, issues: 0 });
+    expect(find('viewer.8')!.email).toBe('own@x.invalid');
+    expect(find('viewer.1')!.email).toBe('new.one@x.invalid');
   });
 
   // ── the run is of failures IN A ROW ──
