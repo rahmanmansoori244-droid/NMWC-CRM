@@ -26,6 +26,11 @@ export const passwordRule = z.string().min(12, 'Password must be at least 12 cha
  * until after a successful change — without that check, a user could
  * "rotate" to the same password they already have.
  *
+ * The refusal names both `password` (the admin reset's box, services/users.ts)
+ * and `newPassword` (the change-password form's), so each form shows it beside
+ * its own field; a display that joins every field's words keeps each sentence
+ * once (app/(app)/users/UserRowActions.tsx refusalText).
+ *
  * bcrypt.compare is intentionally serial (we await each one). Five
  * sequential bcrypt compares at cost-12 is ~250-500ms total — fine for an
  * interactive password-change form, and parallelising leaks little.

@@ -2,7 +2,7 @@
 
 import type { Route } from 'next';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import type { Role } from '@prisma/client';
@@ -212,25 +212,88 @@ export function MobileTabBar({ role }: { role: Role }) {
  *
  * A drawer rather than a second tab bar: these roles have five to nine
  * destinations, which does not fit a tab bar, and the set differs per role.
+ *
+ * Launch browser suite (2026-10-07): the open drawer is a modal dialog, as a
+ * screen reader must be told. It was a bare <nav> over the page: nothing said
+ * the page behind was out of reach, focus stayed on the Open menu button and Tab
+ * walked on into the page underneath, and tapping the page you were already on
+ * left it open, because only a change of address closed it. Now focus moves in
+ * on open, Tab stays inside, Escape or any link closes it, and focus goes back
+ * to the Open menu button. It also closes when the screen grows past phone width
+ * (where md:hidden hides it), and the page behind does not scroll while it is open.
  */
+const FOCUSABLE = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function MobileNavDrawer({ role }: { role: Role }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const items = NAV_BY_ROLE[role] ?? [];
+  const titleId = useId();
+  const openButton = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const wasOpen = useRef(false);
 
   // Close on navigation: without this the drawer stays open over the new page.
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
 
-  // Escape closes it, as every dialog should.
+  // Into the drawer on open; back to the button that opened it on close.
+  useEffect(() => {
+    if (open) panel.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    else if (wasOpen.current) openButton.current?.focus();
+    wasOpen.current = open;
+  }, [open]);
+
+  // Escape closes it, as every dialog should; Tab and Shift+Tab go round inside it.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') {
+        setOpen(false);
+        return;
+      }
+      if (e.key !== 'Tab' || !panel.current) return;
+      const focusable = Array.from(panel.current.querySelectorAll<HTMLElement>(FOCUSABLE));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      const active = document.activeElement;
+      const inside = active instanceof Node && panel.current.contains(active);
+      if (e.shiftKey && (!inside || active === first)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (!inside || active === last)) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  // Widened past phone width (a phone turned to landscape, a wider window),
+  // md:hidden hides the drawer while it is still open: close it, or the Tab trap
+  // above would hold the keyboard on a page that shows no dialog. 768px is md.
+  useEffect(() => {
+    if (!open || typeof window.matchMedia !== 'function') return;
+    const wide = window.matchMedia('(min-width: 768px)');
+    const onChange = (e: { matches: boolean }) => {
+      if (e.matches) setOpen(false);
+    };
+    onChange(wide);
+    wide.addEventListener('change', onChange);
+    return () => wide.removeEventListener('change', onChange);
+  }, [open]);
+
+  // The page behind does not scroll under the backdrop while the drawer is open.
+  useEffect(() => {
+    if (!open) return;
+    const before = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = before;
+    };
   }, [open]);
 
   // The salesman already has the bottom tab bar; two navigations is worse than one.
@@ -239,6 +302,7 @@ export function MobileNavDrawer({ role }: { role: Role }) {
   return (
     <>
       <button
+        ref={openButton}
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Open menu"
@@ -251,18 +315,27 @@ export function MobileNavDrawer({ role }: { role: Role }) {
 
       {open && (
         <div className="fixed inset-0 z-40 md:hidden">
+          {/* The tap-outside target. Outside the dialog, so neither Tab nor a
+              screen reader reaches it: they have the Close button and Escape. */}
           <button
             type="button"
-            aria-label="Close menu"
+            aria-hidden="true"
+            tabIndex={-1}
             onClick={() => setOpen(false)}
             className="absolute inset-0 bg-slate-900/50"
           />
-          <nav
+          <div
+            ref={panel}
             id="mobile-nav-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
             className="absolute inset-y-0 left-0 flex w-64 max-w-[80%] flex-col bg-white shadow-xl"
           >
             <div className="flex h-14 items-center justify-between border-b border-slate-200 px-4">
-              <span className="text-sm font-semibold text-slate-900">Menu</span>
+              <span id={titleId} className="text-sm font-semibold text-slate-900">
+                Menu
+              </span>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
@@ -272,29 +345,34 @@ export function MobileNavDrawer({ role }: { role: Role }) {
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <ul className="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
-              {items.map((item) => {
-                const active = pathname === item.href || pathname.startsWith(item.href + '/');
-                const Icon = item.icon;
-                return (
-                  <li key={item.href}>
-                    <Link
-                      href={item.href}
-                      className={cn(
-                        'flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition',
-                        active
-                          ? 'bg-brand-50 text-brand-700'
-                          : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
-                      )}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {item.label}
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </nav>
+            <nav className="flex min-h-0 flex-1 flex-col">
+              <ul className="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
+                {items.map((item) => {
+                  const active = pathname === item.href || pathname.startsWith(item.href + '/');
+                  const Icon = item.icon;
+                  return (
+                    <li key={item.href}>
+                      <Link
+                        href={item.href}
+                        // The current page too: it does not change the address,
+                        // so the close-on-navigation above never sees it.
+                        onClick={() => setOpen(false)}
+                        className={cn(
+                          'flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition',
+                          active
+                            ? 'bg-brand-50 text-brand-700'
+                            : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900'
+                        )}
+                      >
+                        <Icon className="h-4 w-4" />
+                        {item.label}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </nav>
+          </div>
         </div>
       )}
     </>

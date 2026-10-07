@@ -58,9 +58,12 @@ export function UsersFeedback({
 }
 
 /** A refusal's words: the field messages when there are any (a ValidationError's
- * message is only "Validation failed"), else the message. */
+ * message is only "Validation failed"), else the message. Each sentence once: a
+ * reused password is refused on `password` and `newPassword` alike
+ * (lib/password-policy.ts, for the two forms that each show one), and joined
+ * whole it read twice. */
 function refusalText(res: { message: string; fields?: Record<string, string> }): string {
-  return res.fields ? Object.values(res.fields).join(' ') : res.message;
+  return res.fields ? [...new Set(Object.values(res.fields))].join(' ') : res.message;
 }
 
 export function UserRowActions({
