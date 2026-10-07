@@ -19,13 +19,23 @@
  * so it leaves these lists by its own state: resubmitted, saved as a draft or
  * withdrawn. A request whose customer has since been archived waits on nobody.
  *
+ * One he has nothing to send again for — "the number on file is right", or a
+ * Manager has since written the values, or the customer has left his route — he
+ * clears himself (services/edits.ts clearReturnedEditAction). A submit with no
+ * change is refused, so without it such a request waited on him for good. The
+ * clear changes nothing on the request: it writes the audit row below on it, and
+ * that row is what takes it off these lists.
+ *
  * Raw SQL for the NOT EXISTS: Prisma cannot compare a row with a later one. The
- * outer read uses CustomerEdit(submittedById, state), the inner one
- * CustomerEdit(customerId, state).
+ * outer read uses CustomerEdit(submittedById, state), the inner ones
+ * CustomerEdit(customerId, state) and AuditLog(entityType, entityId, at).
  */
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 type Db = Pick<PrismaClient, '$queryRaw'> | Prisma.TransactionClient;
+
+/** The reason on the audit row that clears a sent-back request he will not send again. */
+export const RETURNED_CLEARED_REASON = 'cleared by the salesman: nothing to send again';
 
 export type ReturnedFilter = {
   /** Only this customer's. */
@@ -55,7 +65,13 @@ function openReturnedWhere(userId: string, f: ReturnedFilter): Prisma.Sql {
         AND n."isReactivation" = e."isReactivation"
         AND n."branchId" IS NOT DISTINCT FROM e."branchId"
         AND n."state" <> 'DRAFT'
-        AND n."submittedAt" > COALESCE(e."reviewedAt", e."submittedAt", e."createdAt"))`;
+        AND n."submittedAt" > COALESCE(e."reviewedAt", e."submittedAt", e."createdAt"))
+   AND NOT EXISTS (
+     SELECT 1
+       FROM "AuditLog" a
+      WHERE a."entityType" = 'CustomerEdit'
+        AND a."entityId" = e."id"
+        AND a."reason" = ${RETURNED_CLEARED_REASON})`;
 }
 
 /** The ids of his sent-back requests still waiting on him, latest decision first. */

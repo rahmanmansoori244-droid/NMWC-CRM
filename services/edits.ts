@@ -92,7 +92,7 @@ import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
-import { openReturnedIds } from '@/lib/returned-work';
+import { openReturnedIds, RETURNED_CLEARED_REASON } from '@/lib/returned-work';
 
 async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
@@ -1095,6 +1095,74 @@ async function saveUpdateDraft(
       },
     });
   });
+}
+
+/**
+ * Launch fix: the salesman clears a request sent back to him that he has
+ * nothing to send again for: "the number on file is right", a Manager has since
+ * written the values, or the customer is no longer on his route. A sent-back
+ * request is answered only by a later request of his (lib/returned-work.ts), and
+ * a submit with no change is refused ("No changes to submit."), so such a
+ * request kept Today's red tile, its Work row and Needs correction for good.
+ *
+ * Nothing on the request changes. It stays NEEDS_CORRECTION with its reason, the
+ * record of the decision (the dashboard counts it so). The audit row written
+ * here is the trail, and it is what takes the request off his lists. Only his
+ * own request, only a sent-back one, and never a new-customer request: he
+ * withdraws that from its page (services/creates.ts withdrawCreateAction), which
+ * also frees its CR and shop. Serialized per request, so a double tap writes one
+ * row; one already answered or cleared answers ok and writes nothing.
+ */
+export async function clearReturnedEditAction(input: { editId: string }): SafeAction<{ editId: string }> {
+  return runAction(() => clearReturnedEditCore(input));
+}
+
+async function clearReturnedEditCore(input: { editId: string }): Promise<{ editId: string }> {
+  const me = await requireUser();
+  const editId = typeof input?.editId === 'string' ? input.editId : '';
+  if (!editId) throw new ValidationError({ editId: 'required' });
+  const lim = await checkLimit(`edit:${me.id}`, FORM_LIMIT);
+  if (!lim.ok) {
+    throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
+  }
+  const edit = await prisma.customerEdit.findUnique({
+    where: { id: editId },
+    select: { id: true, process: true, state: true, submittedById: true, customerId: true },
+  });
+  // His own: anyone else's reads as not found.
+  if (!edit || edit.submittedById !== me.id) throw new NotFoundError('Request not found.');
+  if (edit.process === EditProcess.CREATE) {
+    throw new ConflictError(
+      'EDIT_LOCKED',
+      'A new-customer request is withdrawn from its own page, which also frees its CR number and shop.'
+    );
+  }
+  if (edit.state !== EditState.NEEDS_CORRECTION) {
+    throw new ConflictError('EDIT_LOCKED', 'This request was not sent back to you, so there is nothing to clear.');
+  }
+
+  const env = await getAuditEnvelope(me.id);
+  const cleared = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:returned-clear:${editId}`}, 42))`;
+    // Answered since, cleared by a tap a moment ago, or its customer archived:
+    // it no longer waits on him, and that is the answer.
+    const open = await openReturnedIds(tx, me.id, { customerId: edit.customerId ?? undefined });
+    if (!open.includes(editId)) return false;
+    await writeAudit(tx, env, {
+      action: 'UPDATE',
+      entityType: 'CustomerEdit',
+      entityId: editId,
+      reason: RETURNED_CLEARED_REASON,
+      after: { state: EditState.NEEDS_CORRECTION, cleared: true } as Prisma.InputJsonValue,
+    });
+    return true;
+  });
+
+  if (cleared) logger.info({ editId, by: me.id }, 'edit.returned.clear');
+  revalidatePath('/work');
+  revalidatePath('/today');
+  revalidatePath('/rejected');
+  return { editId };
 }
 
 async function applyEditChanges(

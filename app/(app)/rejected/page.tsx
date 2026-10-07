@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import Link from 'next/link';
 import { inIdOrder, openReturnedIds } from '@/lib/returned-work';
+import { ClearReturned } from './ClearReturned';
 
 export const metadata = { title: 'Needs correction · NMWC' };
 
@@ -46,7 +47,7 @@ export default async function RejectedPage() {
         ) : (
           <ul className="grid gap-3">
             {items.map((e) => (
-              <li key={e.id}>
+              <li key={e.id} className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200 hover:shadow-md">
                 <Link
                   // A sent-back update opens on the edit form, with the reason and
                   // what he sent filled in; a close or reactivation on the profile.
@@ -54,10 +55,10 @@ export default async function RejectedPage() {
                     e.process === 'CREATE'
                       ? `/customers/new?edit=${e.id}`
                       : e.target === 'CUSTOMER' && !e.isReactivation
-                        ? `/customers/${e.customerId}/edit`
+                        ? `/customers/${e.customerId}/edit?returned=${e.id}`
                         : `/customers/${e.customerId}`
                   }
-                  className="block rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200 hover:shadow-md"
+                  className="block p-4"
                 >
                   <h3 className="text-sm font-semibold text-slate-900">
                     {e.customer?.legalName ?? e.customerDraft?.legalName ?? '—'}
@@ -73,6 +74,14 @@ export default async function RejectedPage() {
                     {e.reviewedAt?.toLocaleDateString('en-GB')}
                   </p>
                 </Link>
+                {/* Launch fix: one he will not send again can be cleared here — even
+                    a customer no longer on his route, whose page he cannot open. A
+                    new-customer request is withdrawn from its own page instead. */}
+                {e.process !== 'CREATE' && (
+                  <div className="px-4 pb-3">
+                    <ClearReturned editId={e.id} then="/rejected" />
+                  </div>
+                )}
               </li>
             ))}
           </ul>

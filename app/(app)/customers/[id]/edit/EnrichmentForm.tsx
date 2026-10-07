@@ -146,11 +146,12 @@ export function EnrichmentForm({
   /** Which fields block a salesman's submit (FULL / CORE) — see lib/submit-gate.ts. */
   gate?: SubmitGate;
   /**
-   * Launch fix: his update of this customer that was sent back — the boxes with
-   * what he sent still applying (./returned.ts), and when he sent it. The form
-   * opens on them instead of on the customer as it is.
+   * Launch fix: his update of this customer that was sent back, when he asked
+   * for what he sent — its id, and the boxes with each change of it that still
+   * applies (./returned.ts). The form opens on them instead of on the customer
+   * as it is.
    */
-  returned?: { prefill: FormState; sentAt: string };
+  returned?: { id: string; prefill: FormState };
 }) {
   const gate: SubmitGate = gateProp ?? 'FULL';
   const req = (field: string) => isRequired(field, gate);
@@ -312,6 +313,8 @@ export function EnrichmentForm({
   // UXI-002: scope by user. Whether a saved draft may be restored is decided
   // by the server values it started from (item 22, lib/enrichment-draft.ts).
   const draftKey = `nmwc:draft:${sessionUserId}:${customer.id}`;
+  // Launch fix: the sent-back update the boxes were filled from, if any.
+  const returnedId = returned?.id ?? null;
   // GpsCaptureButton reads its `initial` only when it mounts. A restore replaces
   // the branch GPS after that, so the chip kept showing the old point while the
   // form submitted the restored one — including a typed point and its reason
@@ -344,16 +347,13 @@ export function EnrichmentForm({
     if (!saved) return;
     try {
       const d = JSON.parse(saved);
-      // Launch fix: a phone draft from before he sent the request that came back
-      // is older than what he sent, which is already in the boxes.
-      if (returned && typeof d.savedAt === 'number' && d.savedAt < Date.parse(returned.sentAt)) {
-        try {
-          window.localStorage.removeItem(draftKey);
-        } catch {
-          /* ignore */
-        }
-        return;
-      }
+      // Launch fix: a phone draft is restored only over the boxes it started
+      // from — what he sent (tagged with that request), or the customer as it
+      // is. One started from what he sent never comes back on a plain visit, so
+      // a value he was told not to send cannot ride along with a later edit; and
+      // an older one is not put over what he asked to have filled in. The next
+      // autosave replaces it.
+      if ((typeof d.returnedId === 'string' ? d.returnedId : null) !== returnedId) return;
       // UXI-003: stale-draft guard. If the server values the draft started from
       // have changed since, prefer server data and tell the user. Item 22: by
       // the values, not updatedAt — a photo taken after typing bumps updatedAt,
@@ -390,7 +390,7 @@ export function EnrichmentForm({
     } catch {
       /* ignore */
     }
-  }, [draftKey, customer.branches, userRole, returned]);
+  }, [draftKey, customer.branches, userRole, returnedId]);
 
   // Set when a submit arrived and the page is leaving: from then on nothing
   // writes the phone copy — not a keystroke's autosave already due, which fired
@@ -421,6 +421,8 @@ export function EnrichmentForm({
         branchStates: draftBranchStates(branchStates, loadedRef.current),
         savedAt: Date.now(),
         base: baseRef.current,
+        // Launch fix: which boxes it started from (the restore above).
+        ...(returnedId ? { returnedId } : {}),
         ...(kept.customer.length > 0 || Object.keys(kept.branches).length > 0 ? { kept } : {}),
       }));
       return true;
@@ -428,7 +430,7 @@ export function EnrichmentForm({
       setNotice({ tone: 'failed', text: 'Could not save the draft on this phone. Keep this page open; your entries are still here.', retry: false });
       return false;
     }
-  }, [draftKey, values, branchStates, kept, userRole]);
+  }, [draftKey, values, branchStates, kept, userRole, returnedId]);
 
   // Auto-save every change (debounced).
   useEffect(() => {

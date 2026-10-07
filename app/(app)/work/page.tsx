@@ -44,8 +44,8 @@ export default async function WorkPage() {
     const editHref = (e: { id: string; process: string; customerId: string | null }): WorkHref =>
       e.process === 'CREATE' ? `/customers/new?edit=${e.id}` : `/customers/${e.customerId}`;
     // Launch fix: a sent-back update opens on the edit form, which shows why and
-    // has what he sent filled in. A close or reactivation is sent again from the
-    // profile, so it still opens there.
+    // — asked for by ?returned= — has what he sent filled in. A close or
+    // reactivation is sent again from the profile, so it still opens there.
     const returnedHref = (e: {
       id: string;
       process: string;
@@ -54,7 +54,7 @@ export default async function WorkPage() {
       isReactivation: boolean;
     }): WorkHref =>
       e.process === 'UPDATE' && e.target === 'CUSTOMER' && !e.isReactivation
-        ? `/customers/${e.customerId}/edit`
+        ? `/customers/${e.customerId}/edit?returned=${e.id}`
         : editHref(e);
     const editTitle = (e: {
       customer: { legalName: string } | null;

@@ -7,9 +7,11 @@
  *     for good, and the red counter never cleared.
  *   - The red tile on Today, and a line on Work, link to /rejected — on a phone
  *     a salesman had no way to it.
- *   - A sent-back update opens on the edit form (which shows why and has what
- *     he sent filled in), not the profile; a close or reactivation still opens
- *     the profile, a new-customer request its create form.
+ *   - A sent-back update opens on the edit form with what he sent filled in
+ *     (?returned=), not the profile; a close or reactivation still opens the
+ *     profile, a new-customer request its create form.
+ *   - /rejected lets him clear one he has nothing to send again for — not a
+ *     new-customer request, which he withdraws from its own page.
  *   - Nothing says "your supervisor" where a Manager decides: /rejected's
  *     subtitle and a pending reactivation on Work.
  *   - The profile's Recent activity lists no drafts, and words a new customer,
@@ -47,6 +49,13 @@ vi.mock('next/link', () => ({
     <a href={href} className={className}>
       {children}
     </a>
+  ),
+}));
+vi.mock('@/app/(app)/rejected/ClearReturned', () => ({
+  ClearReturned: ({ editId, then }: { editId: string; then: string }) => (
+    <button data-edit={editId} data-then={then}>
+      Nothing to send again — clear this
+    </button>
   ),
 }));
 vi.mock('@/lib/returned-work', async (importOriginal) => ({
@@ -139,7 +148,7 @@ describe('Work, for a salesman', () => {
     h.openIds = ['e-upd', 'e-new', 'e-close'];
     await renderWork();
     const link = (name: string) => screen.getByText(name).closest('a')!.getAttribute('href');
-    expect(link('Al Noor Trading')).toBe('/customers/c1/edit');
+    expect(link('Al Noor Trading')).toBe('/customers/c1/edit?returned=e-upd');
     expect(link('New Shop')).toBe('/customers/new?edit=e-new');
     expect(link('Closed Shop')).toBe('/customers/c2');
     expect(screen.queryByText('Answered Shop')).toBeNull();
@@ -175,9 +184,26 @@ describe('/rejected', () => {
     expect(screen.queryByText(/supervisor/i)).toBeNull();
     expect(screen.queryByText('Gone')).toBeNull();
     const card = screen.getByText('Al Noor Trading').closest('a')!;
-    expect(card.getAttribute('href')).toBe('/customers/c1/edit');
+    expect(card.getAttribute('href')).toBe('/customers/c1/edit?returned=e-upd');
     expect(within(card).getByText(/^Sent back by Manager Muna/)).toBeTruthy();
     expect(within(card).queryByText(/Rejected by/)).toBeNull();
+  });
+
+  it('each one he can clear is cleared beside its card, not inside its link; a new-customer request is not', async () => {
+    h.rows = [
+      returned({ id: 'e-upd' }),
+      returned({ id: 'e-close', target: 'BRANCH', customer: { id: 'c2', legalName: 'Closed Shop', nmwcCode: 'N2' }, customerId: 'c2' }),
+      returned({ id: 'e-new', process: 'CREATE', customerId: null, customer: null, customerDraft: { legalName: 'New Shop' } }),
+    ];
+    h.openIds = ['e-upd', 'e-close', 'e-new'];
+    const { default: RejectedPage } = await import('@/app/(app)/rejected/page');
+    render(await RejectedPage());
+    const clears = screen.getAllByRole('button', { name: 'Nothing to send again — clear this' });
+    expect(clears.map((b) => b.getAttribute('data-edit'))).toEqual(['e-upd', 'e-close']);
+    for (const b of clears) {
+      expect(b.closest('a')).toBeNull();
+      expect(b.getAttribute('data-then')).toBe('/rejected');
+    }
   });
 });
 

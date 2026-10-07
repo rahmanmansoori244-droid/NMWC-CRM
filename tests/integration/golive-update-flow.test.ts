@@ -1773,4 +1773,57 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     expect(after.updatedAt).toEqual(before.updatedAt);
     expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: res.data.editId } })).state).toBe('APPROVED');
   });
+
+  // ── launch fix (review): returned work he will not send again ─────────────
+  it('launch fix: a sent-back update he has nothing to send again for is cleared by him, and stays on record as sent back', async () => {
+    const { customerId } = await readyCustomer(`${sfx}029`);
+    const returned = await import('@/lib/returned-work');
+    asSalesman();
+    const res = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { primaryPhone: '+96892229999' } })
+    );
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const editId = res.data.editId;
+    asManager();
+    const fd = new FormData();
+    fd.set('editId', editId);
+    fd.set('decisionToken', await freshDecisionToken(prisma, editId));
+    fd.set('reason', 'The phone on file is right — do not change it.');
+    fd.set('category', 'wrong_info');
+    expect((await edits.rejectEditAction(fd)).ok).toBe(true);
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId, { customerId })).toEqual([editId]);
+    const waiting = await returned.countOpenReturned(prisma, ids.salesmanId);
+
+    // He has nothing to send: the value on file is right. A submit cannot answer it.
+    asSalesman();
+    const nothing = await edits.submitEditAction(
+      await editPayload(prisma, { customerId, isDraft: false, customer: { primaryPhone: '+96892220000' } })
+    );
+    expect(nothing).toMatchObject({ ok: false, fields: { _form: 'No changes to submit.' } });
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId, { customerId })).toEqual([editId]);
+
+    // Nobody else can clear it.
+    asOtherSalesman();
+    expect(await edits.clearReturnedEditAction({ editId })).toMatchObject({ ok: false, code: 'NOT_FOUND' });
+
+    asSalesman();
+    expect(await edits.clearReturnedEditAction({ editId })).toEqual({ ok: true, data: { editId } });
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId, { customerId })).toEqual([]);
+    expect(await returned.countOpenReturned(prisma, ids.salesmanId)).toBe(waiting - 1);
+    // The decision stands as made: still sent back, with its reason.
+    const row = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    expect(row).toMatchObject({ state: 'NEEDS_CORRECTION', decisionReason: 'The phone on file is right — do not change it.' });
+    const trail = () =>
+      prisma.auditLog.findMany({
+        where: { entityType: 'CustomerEdit', entityId: editId, reason: returned.RETURNED_CLEARED_REASON },
+      });
+    expect((await trail()).map((a) => a.actorId)).toEqual([ids.salesmanId]);
+    // A second tap: the same answer, and one row.
+    expect(await edits.clearReturnedEditAction({ editId })).toEqual({ ok: true, data: { editId } });
+    expect(await trail()).toHaveLength(1);
+    // The customer was never touched.
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: customerId } })).primaryPhone).toBe('+96892220000');
+  });
+
 });

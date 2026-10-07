@@ -96,7 +96,8 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }
 vi.mock('next/navigation', () => ({ redirect: vi.fn(), notFound: vi.fn() }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 
-import { submitEditAction } from '@/services/edits';
+import { clearReturnedEditAction, submitEditAction } from '@/services/edits';
+import { RETURNED_CLEARED_REASON } from '@/lib/returned-work';
 
 // cuids, as the schema requires.
 const CUST = 'ckcustomer0000000000000001';
@@ -944,5 +945,63 @@ describe('launch fix — Save draft keeps one draft per person per customer', ()
     await submit({ isDraft: true, customer: { notes: 'Half done' } });
     await submit({ customer: { notes: 'Closed on Fridays' } });
     expect(limits.keys).toEqual(['edit-draft:u-sales', 'edit:u-sales']);
+  });
+});
+
+describe('launch fix (review) — he clears a sent-back request he has nothing to send again for', () => {
+  const sentBack = (over: Row = {}) => ({
+    id: 'e-returned',
+    process: 'UPDATE',
+    state: 'NEEDS_CORRECTION',
+    submittedById: 'u-sales',
+    customerId: CUST,
+    ...over,
+  });
+  const clear = () => clearReturnedEditAction({ editId: 'e-returned' });
+
+  it('his own: one audit row, under a lock per request, read and written in one transaction; the request is untouched', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(sentBack());
+    tx.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
+    expect(await clear()).toEqual({ ok: true, data: { editId: 'e-returned' } });
+    expect(sqlOf(tx.$executeRaw.mock.calls[0]!).values).toContain('nmwc:returned-clear:e-returned');
+    // Still waiting on him? Asked under the lock, with the clear rule in the query.
+    expect(order(tx.$executeRaw)).toBeLessThan(order(tx.$queryRaw));
+    const asked = sqlOf(tx.$queryRaw.mock.calls[0]!);
+    expect(asked.values).toEqual(expect.arrayContaining(['u-sales', CUST, RETURNED_CLEARED_REASON]));
+    expect(asked.text).toContain('FROM "AuditLog" a');
+    expect(audit.writeAudit).toHaveBeenCalledTimes(1);
+    expect(audit.writeAudit.mock.calls[0]![0]).toBe(tx);
+    expect(audit.writeAudit.mock.calls[0]![2]).toMatchObject({
+      action: 'UPDATE',
+      entityType: 'CustomerEdit',
+      entityId: 'e-returned',
+      reason: RETURNED_CLEARED_REASON,
+      after: { state: 'NEEDS_CORRECTION', cleared: true },
+    });
+    // It stays sent back: the record of the decision.
+    expect(tx.customerEdit.update).not.toHaveBeenCalled();
+    expect(tx.customerEdit.create).not.toHaveBeenCalled();
+  });
+
+  it('one already answered or cleared (a second tap, a lost answer retried) answers ok and writes nothing', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(sentBack());
+    tx.$queryRaw.mockResolvedValue([]);
+    expect(await clear()).toEqual({ ok: true, data: { editId: 'e-returned' } });
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("anyone else's is not found; a new-customer request is withdrawn instead; one not sent back has nothing to clear", async () => {
+    for (const [row, code] of [
+      [null, 'NOT_FOUND'],
+      [sentBack({ submittedById: 'u-other' }), 'NOT_FOUND'],
+      [sentBack({ process: 'CREATE', customerId: null }), 'EDIT_LOCKED'],
+      [sentBack({ state: 'SUBMITTED' }), 'EDIT_LOCKED'],
+      [sentBack({ state: 'APPROVED' }), 'EDIT_LOCKED'],
+    ] as const) {
+      db.customerEdit.findUnique.mockResolvedValue(row);
+      expect(failed(await clear()).code).toBe(code);
+    }
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
   });
 });

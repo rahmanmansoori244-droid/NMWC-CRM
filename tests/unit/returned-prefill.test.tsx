@@ -8,10 +8,15 @@
  * the value it was sent against; one changed since is left as it is now and
  * named. The form then sends each as an ordinary change from the value it
  * loaded (F06), so nothing newer is put back unseen.
+ *
+ * Only when he asks for it (the page passes `returned` for ?returned=<id>): a
+ * phone draft started from what he sent is never restored on a plain visit, so a
+ * value he was told not to send cannot go back with a later, unrelated edit.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { returnedPrefill } from '@/app/(app)/customers/[id]/edit/returned';
+import { enrichmentBase } from '@/lib/enrichment-draft';
 import type { LoadedCustomer } from '@/lib/enrichment-patch';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }) }));
@@ -163,7 +168,8 @@ describe('the edit form, opened on a sent-back update', () => {
     vi.unstubAllGlobals();
   });
 
-  const form = (prefill = returnedPrefill(customer, sent, LOCKS)) =>
+  const DRAFT_KEY = 'nmwc:draft:u-sales:c1';
+  const form = (fill: boolean = true) =>
     render(
       <EnrichmentForm
         customer={customer}
@@ -174,9 +180,18 @@ describe('the edit form, opened on a sent-back update', () => {
         canSubmit
         sessionUserId="u-sales"
         gate="CORE"
-        returned={{ prefill: prefill.state, sentAt: '2026-10-03T07:05:00.000Z' }}
+        returned={fill ? { id: 'e1', prefill: returnedPrefill(customer, sent, LOCKS).state } : undefined}
       />
     );
+  const phoneDraft = (over: Record<string, unknown>) =>
+    window.localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ notes: 'Typed on the phone', savedAt: Date.now(), base: enrichmentBase(customer), ...over })
+    );
+  const settle = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
 
   it('opens with what he sent, and Submit sends it as changes from the values loaded', async () => {
     form();
@@ -207,17 +222,42 @@ describe('the edit form, opened on a sent-back update', () => {
     });
   });
 
-  it('a phone draft saved before he sent it is older than what he sent, and is dropped', async () => {
-    window.localStorage.setItem(
-      'nmwc:draft:u-sales:c1',
-      JSON.stringify({ notes: 'Typed before sending', savedAt: Date.parse('2026-10-03T07:00:00.000Z'), base: 'x' })
-    );
+  it('a phone draft not started from what he sent is not put over it', async () => {
+    phoneDraft({});
     form();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
+    await settle();
     expect(screen.getByLabelText(/Notes/)).toHaveValue('');
     expect(screen.queryByText(/Restored a local draft/)).toBeNull();
     expect(screen.queryByText(/older than the latest server changes/)).toBeNull();
+  });
+
+  it('the phone copy says it started from what he sent, and comes back when he asks for it again', async () => {
+    form();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    expect(JSON.parse(window.localStorage.getItem(DRAFT_KEY)!)).toMatchObject({ returnedId: 'e1', contactRole: 'Partner' });
+    cleanup();
+    phoneDraft({ returnedId: 'e1' });
+    form();
+    await settle();
+    expect(screen.getByLabelText(/Notes/)).toHaveValue('Typed on the phone');
+    expect(screen.getByText('Restored a local draft from your last visit.')).toBeTruthy();
+  });
+
+  it('opened on the customer as it is, a phone copy of what he sent is not restored, and is replaced', async () => {
+    // The reviewer's case: he once opened what he sent, and a month later edits
+    // only the opening hours. The contact role he was told not to send stays out.
+    phoneDraft({ returnedId: 'e1', contactRole: 'Partner' });
+    form(false);
+    await settle();
+    expect(screen.getByLabelText(/Notes/)).toHaveValue('Old note');
+    expect(screen.queryByText(/Restored a local draft/)).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    const copy = JSON.parse(window.localStorage.getItem(DRAFT_KEY)!);
+    expect(copy.returnedId).toBeUndefined();
+    expect(copy.contactRole).toBe('Owner');
   });
 });
