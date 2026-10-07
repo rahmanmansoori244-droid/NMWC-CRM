@@ -152,9 +152,42 @@ describe('owner decision 6: a late request (SLA_BREACH) goes to the people the e
       req({ process: 'CREATE', approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT), currentStepIndex: step, pendingRole });
     expect([fm, gm, manager].map((r) => verdict(r, credit(3, Role.ACCOUNTANT)))).toEqual(['send', 'send', 'SKIPPED_RESOLVED']);
     expect([gm, fm, manager].map((r) => verdict(r, credit(1, Role.FINANCE_MANAGER)))).toEqual(['send', 'SKIPPED_RESOLVED', 'SKIPPED_RESOLVED']);
-    expect([manager, farManager, fm].map((r) => verdict(r, credit(2, Role.GM)))).toEqual(['send', 'SKIPPED_RESOLVED', 'SKIPPED_RESOLVED']);
     const react = req({ isReactivation: true, target: 'BRANCH', approvalChain: null, pendingRole: Role.MANAGER });
     expect([gm, manager].map((r) => verdict(r, react))).toEqual(['send', 'SKIPPED_RESOLVED']);
+  });
+
+  it('late at the GM step: the region’s Managers are told in-app for visibility only, and not e-mailed — only one who can decide it is', () => {
+    const atGm = (over: Partial<RequestNow> = {}) =>
+      req({
+        process: 'CREATE',
+        approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT),
+        currentStepIndex: 2,
+        pendingRole: Role.GM,
+        ...over,
+      });
+    // Nobody outranks the GM: a Manager can neither decide the step nor chase him.
+    expect([manager, farManager, fm, acc].map((r) => verdict(r, atGm()))).toEqual([
+      'SKIPPED_RESOLVED',
+      'SKIPPED_RESOLVED',
+      'SKIPPED_RESOLVED',
+      'SKIPPED_RESOLVED',
+    ]);
+    // The sweep's fallback for a region no Manager covers is the GM, who can.
+    expect(verdict(gm, atGm())).toBe('send');
+    // ...not if he decided another step of it this cycle, nor once it is decided.
+    expect(verdict(gm, atGm({ otherStepActorIds: ['gm'] }))).toBe('SKIPPED_RESOLVED');
+    expect(verdict(gm, atGm({ state: 'APPROVED' }))).toBe('SKIPPED_RESOLVED');
+  });
+
+  it('a customer with shops in two regions: each region’s Managers are e-mailed, a third region’s are not', () => {
+    const third = who(Role.MANAGER, { id: 'm-third', managedRegionIds: ['g-east'] });
+    const twoRegions = req({ scopeRegionIds: [REGION, OTHER] });
+    expect([manager, farManager, third, gm].map((r) => verdict(r, twoRegions))).toEqual([
+      'send',
+      'send',
+      'SKIPPED_RESOLVED',
+      'send',
+    ]);
   });
 
   it('never once the request is decided, never the submitter', () => {
@@ -172,6 +205,7 @@ describe('owner decision 6: a late request (SLA_BREACH) goes to the people the e
       for (const role of Object.values(Role)) {
         for (const managedRegionIds of [[REGION], [OTHER]]) {
           const r = who(role, { id: 'x9', managedRegionIds });
+          const e = req({ pendingRole });
           const named = plans.some(
             (p) =>
               p.globalRoles.includes(role) ||
@@ -179,7 +213,9 @@ describe('owner decision 6: a late request (SLA_BREACH) goes to the people the e
               // The sweep's fallback for a region nobody covers.
               (p.regionScopedRoles.length > 0 && role === Role.GM)
           );
-          expect(escalationReaches(r, req({ pendingRole })), `${pendingRole} ${role} ${managedRegionIds}`).toBe(named);
+          // A plan for visibility only is e-mailed to nobody it names; only to one who can decide the step.
+          const canAct = plans[1]!.visibilityOnly ? waitsOn(r, 'EDIT_STAGE_ADVANCED', e) : named;
+          expect(escalationReaches(r, e), `${pendingRole} ${role} ${managedRegionIds}`).toBe(canAct);
         }
       }
     }

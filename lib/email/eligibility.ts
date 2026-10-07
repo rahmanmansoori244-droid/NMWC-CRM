@@ -33,7 +33,8 @@
  *   - for a late request (SLA_BREACH, owner decision 6), the request is still
  *     open and he is still someone the escalation tells about it
  *     (escalationReaches: lib/escalation.ts's plan, a Manager only over the
- *     request's regions).
+ *     request's regions) and can act on it: a late GM step's Managers are told
+ *     in-app for visibility only, and not e-mailed.
  * One digest per recipient per run. The gap and the caps put work first: a
  * digest that asks him to act waits only for an earlier one that also did (an
  * information-only e-mail does not hold back his "please review"); when a cap
@@ -168,12 +169,18 @@ export function waitsOn(recipient: Recipient, kind: string, edit: RequestNow): b
  * (either level — the row itself says which level reached him): a region-scoped
  * role only over one of the request's regions (/approvals/[id] refuses a Manager
  * elsewhere), the GM also where he is the sweep's fallback for a region nobody
- * covers. Never the submitter.
+ * covers. Never the submitter. And only someone who can act: where the plan is
+ * for visibility only (a late GM step: the region's Managers are told, but
+ * nobody outranks the GM, so they can neither decide it nor chase it), the row
+ * stays in-app, and only someone who can decide the late step himself is
+ * e-mailed — the GM, where the sweep fell back to him for a region no Manager
+ * covers.
  */
 export function escalationReaches(recipient: Recipient, edit: RequestNow): boolean {
   if (edit.state !== 'SUBMITTED') return false;
   if (recipient.id === edit.submittedById) return false;
   const plan = escalationPlan(edit.pendingRole, 2);
+  if (plan.visibilityOnly) return waitsOn(recipient, 'EDIT_STAGE_ADVANCED', edit);
   if (plan.globalRoles.includes(recipient.role)) return true;
   if (plan.regionScopedRoles.includes(recipient.role)) {
     return edit.scopeRegionIds.some((r) => recipient.managedRegionIds.includes(r));

@@ -179,7 +179,9 @@ vi.mock('@/lib/audit', () => ({
 
 import { GET } from '@/app/api/cron/sla-escalate/route';
 import { hrefFor, APPROVER_ROLES } from '@/lib/notification-links';
-import type { Role } from '@prisma/client';
+import { rowVerdict, type Recipient, type RequestNow } from '@/lib/email/eligibility';
+import { resolveChain } from '@/lib/approval-chains';
+import { EditProcess, PaymentTerms, type Role } from '@prisma/client';
 
 const SECRET = 'sla-sweep-test-secret';
 const req = (auth = `Bearer ${SECRET}`) =>
@@ -308,6 +310,88 @@ describe('who a breach is escalated to', () => {
     expect(told('e-sup2')).toEqual(['gm', 'mgr-r1a', 'mgr-r1b']);
     expect(told('e-gm2')).toEqual(['mgr-r1a', 'mgr-r1b']);
     expect(h.edits.map((e) => e.escalationLevel)).toEqual([2, 2]);
+  });
+});
+
+describe('owner decision 6: the drain e-mails what the sweep wrote, to those who can act', () => {
+  // The step each pendingRole is at in the credit chain, so the drain can ask
+  // "can he decide it?" exactly as it does for a real request.
+  const CREDIT = resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT);
+  const asRequest = (e: Edit): RequestNow => ({
+    id: e.id,
+    state: e.state,
+    process: e.process,
+    target: e.isReactivation ? 'BRANCH' : 'CUSTOMER',
+    isReactivation: e.isReactivation,
+    approvalChain: CREDIT,
+    currentStepIndex: Math.max(0, CREDIT.findIndex((s) => s.role === e.pendingRole)),
+    pendingRole: e.pendingRole as Role | null,
+    submittedById: e.submittedById,
+    submitterSupervisorId: null,
+    otherStepActorIds: [],
+    // The regions the sweep resolved the audience over, as the drain reads them.
+    scopeRegionIds: e.regions,
+  });
+  const asRecipient = (u: User): Recipient => ({
+    id: u.id,
+    role: u.role as Role,
+    isActive: u.isActive,
+    email: `${u.id}@example.test`,
+    username: `${u.id}.zz`,
+    managedRegionIds: u.regions,
+  });
+
+  it('every breach row the sweep writes, at either level, is e-mailed — but a late GM step’s, told for visibility only', async () => {
+    const longAgo = new Date(NOW.getTime() - 30 * DAY);
+    const second = { escalationLevel: 1, stageEnteredAt: longAgo, slaDueAt: longAgo };
+    const create = { process: 'CREATE' as const, customerId: null };
+    h.edits = [
+      overdue('sup', 'SUPERVISOR', ['r1']),
+      overdue('sup-2x', 'SUPERVISOR', ['r1'], second),
+      // A customer with shops in two regions: both regions' Managers.
+      overdue('two', 'SUPERVISOR', ['r1', 'r2']),
+      overdue('two-2x', 'SUPERVISOR', ['r1', 'r2'], second),
+      overdue('orphan', 'SUPERVISOR', ['r9']),
+      overdue('acc', 'ACCOUNTANT', ['r1'], create),
+      overdue('fm', 'FINANCE_MANAGER', ['r1'], create),
+      overdue('gm', 'GM', ['r2'], create),
+      overdue('gm-2x', 'GM', ['r1'], { ...create, ...second }),
+      overdue('gm-orphan', 'GM', ['r9'], create),
+      overdue('react', 'MANAGER', ['r1'], { isReactivation: true }),
+    ];
+    const { body } = await run();
+    expect(body).toMatchObject({ escalated: 8, level2: 3, sweepErrors: 0 });
+
+    const emailed = new Map<string, string[]>();
+    for (const n of h.notes.filter((x) => x.kind === 'SLA_BREACH')) {
+      const e = h.edits.find((x) => x.id === n.editId)!;
+      const u = h.users.find((x) => x.id === n.userId)!;
+      const v = rowVerdict(
+        { id: n.id, userId: n.userId, kind: n.kind, editId: n.editId, createdAt: n.createdAt, readAt: n.readAt },
+        asRecipient(u),
+        asRequest(e),
+        NOW
+      );
+      // The sweep's own audience, row by row: only a late GM step's Managers are not e-mailed.
+      const visibilityOnly = e.pendingRole === 'GM' && u.role !== 'GM';
+      expect(v.send, `${u.id} on ${e.id}`).toBe(!visibilityOnly);
+      if (!v.send) expect(v.status).toBe('SKIPPED_RESOLVED');
+      if (v.send) emailed.set(e.id, [...(emailed.get(e.id) ?? []), u.id].sort());
+    }
+    expect(Object.fromEntries(emailed)).toEqual({
+      sup: ['mgr-r1a', 'mgr-r1b'],
+      'sup-2x': ['gm', 'mgr-r1a', 'mgr-r1b'],
+      two: ['mgr-r1a', 'mgr-r1b', 'mgr-r2'],
+      'two-2x': ['gm', 'mgr-r1a', 'mgr-r1b', 'mgr-r2'],
+      orphan: ['gm'],
+      acc: ['fm', 'gm'],
+      fm: ['gm'],
+      // Told in-app (mgr-r2; mgr-r1a and mgr-r1b), e-mailed to nobody: nobody outranks the GM.
+      'gm-orphan': ['gm'],
+      react: ['gm'],
+    });
+    expect(told('gm')).toEqual(['mgr-r2']);
+    expect(told('gm-2x')).toEqual(['mgr-r1a', 'mgr-r1b']);
   });
 });
 

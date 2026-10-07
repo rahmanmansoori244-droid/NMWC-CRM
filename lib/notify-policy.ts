@@ -44,7 +44,10 @@
  * request at the GM step, and a late request the escalation sends him — never
  * for information (EMAIL_ACT_ONLY_ROLES). And a late request (SLA_BREACH) is
  * e-mailed to the people the escalation tells (lib/escalation.ts: the region's
- * Managers, then the GM at 2x), re-checked at send time (EMAIL_SLA_BREACH).
+ * Managers, then the GM at 2x), re-checked at send time (EMAIL_SLA_BREACH) —
+ * except where the escalation tells them for visibility only (a late GM step's
+ * Managers, who can neither decide nor chase it): e-mail goes only to people who
+ * can act.
  */
 import { Role, type NotificationKind } from '@prisma/client';
 
@@ -99,7 +102,8 @@ export const EMAIL_ACT_ONLY_ROLES: readonly Role[] = [Role.GM];
  * escalation tells (lib/escalation.ts — the region's Managers, then the GM at
  * 2x), not only shown in-app. The drain e-mails an SLA_BREACH row only while the
  * request is still open and its recipient is still one the escalation would tell
- * (lib/email/eligibility.ts escalationReaches); a decision marks the row read
+ * and can act on it — not a late GM step's Managers, told in-app for visibility
+ * only (lib/email/eligibility.ts escalationReaches); a decision marks the row read
  * (SETTLED_ON_DECISION_KINDS), and a read row is never e-mailed.
  */
 export const EMAIL_SLA_BREACH = true;
