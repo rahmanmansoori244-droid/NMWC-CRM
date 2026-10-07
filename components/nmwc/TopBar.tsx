@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { Bell } from 'lucide-react';
-import { logoutAction } from '@/app/actions/auth';
+import { SignOutButton } from '@/components/nmwc/SignOutButton';
 import type { Role } from '@prisma/client';
 import { MobileNavDrawer } from '@/components/nmwc/Sidebar';
 import { bellLabel } from '@/lib/notification-bell';
@@ -21,7 +21,8 @@ export function TopBar({
   unreadCount = 0,
   infoCount = 0,
 }: {
-  user: { fullName?: string | null; username: string; role: Role };
+  /** `id`: Sign out deletes this user's form copies from the browser (SignOutButton). */
+  user: { id: string; fullName?: string | null; username: string; role: Role };
   /** Unread in-app notifications that may ask for action — server-computed per render (RSC model). */
   unreadCount?: number;
   /** Unread information-only notifications (F1 REQUEST_FYI): a muted count, never the red one. */
@@ -62,14 +63,10 @@ export function TopBar({
             <div className="font-semibold">{user.fullName ?? user.username}</div>
             <div className="text-blue-200">{ROLE_LABEL[user.role]}</div>
           </div>
-          <form action={logoutAction}>
-            <button
-              type="submit"
-              className="rounded-md bg-blue-800 px-3 py-1.5 text-xs font-medium text-white ring-1 ring-blue-700 hover:bg-blue-700"
-            >
-              Sign out
-            </button>
-          </form>
+          <SignOutButton
+            userId={user.id}
+            className="rounded-md bg-blue-800 px-3 py-1.5 text-xs font-medium text-white ring-1 ring-blue-700 hover:bg-blue-700"
+          />
         </div>
       </div>
     </header>

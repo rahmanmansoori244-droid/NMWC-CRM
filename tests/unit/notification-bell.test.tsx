@@ -64,7 +64,7 @@ import { TopBar } from '@/components/nmwc/TopBar';
 import { markAllNotificationsReadAction, markInformationReadAction } from '@/services/notifications-actions';
 import AppLayout from '@/app/(app)/layout';
 
-const USER = { fullName: 'Accounts North', username: 'accounts.north', role: 'ACCOUNTANT' as const };
+const USER = { id: 'u-acc', fullName: 'Accounts North', username: 'accounts.north', role: 'ACCOUNTANT' as const };
 
 beforeEach(() => {
   h.rows = [
