@@ -27,6 +27,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <div className="flex min-h-screen flex-col bg-slate-50">
       <TopBar
         user={{
+          id: session.user.id,
           fullName: session.user.name,
           username: session.user.username,
           role: session.user.role,

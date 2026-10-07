@@ -29,6 +29,10 @@ import {
   UPLOAD_STALL_MS,
   SLOW_LINK_MESSAGE,
   ATTACH_NO_ANSWER,
+  UPLOAD_SIGNED_OUT,
+  RATE_LIMIT_MAX_WAIT_S,
+  rateLimitedMessage,
+  rateLimitWaitMessage,
   postBodyDeadlineMs,
   type AttachTarget,
 } from '@/components/nmwc/PhotoCaptureSlot';
@@ -97,7 +101,9 @@ class FakeXHR {
  * shape (lib/fetch-route.ts refuse). The requests are kept, bodies and signals
  * included.
  */
-type Step = 'answer' | 'stall' | 'stallBody' | 'refuse';
+/** A reply of the test's own: presign's or finalize's refusals (`{ error, message }`). */
+type Answer = { status: number; body: unknown; headers?: Record<string, string> };
+type Step = 'answer' | 'stall' | 'stallBody' | 'refuse' | Answer;
 type Reply = { ok: boolean; code?: string; message?: string; fields?: Record<string, string> };
 type RouteRefusal = { status: number; refusal: { ok: false; code: string; message: string } };
 let presignPlan: Step[] = [];
@@ -135,6 +141,9 @@ const serveChain = () =>
     const step = (isPresign ? presignPlan : finalizePlan).shift() ?? 'answer';
     if (step === 'stall') return stall();
     if (step === 'refuse') return new Response('{}', { status: 400, headers: JSON_HEADERS });
+    if (typeof step === 'object') {
+      return new Response(JSON.stringify(step.body), { status: step.status, headers: { ...JSON_HEADERS, ...step.headers } });
+    }
     let body: unknown;
     if (isPresign) {
       presigned += 1;
@@ -788,6 +797,151 @@ describe("the attach route's own refusal is an answer, shown as that refusal", (
     expect(count('/api/photos/presign')).toBe(1);
     expect(xhrs).toHaveLength(1);
     expect(retryButton()).toBeNull();
+  });
+});
+
+describe("presign's and finalize's refusals are answers too (launch review)", () => {
+  // Both routes refuse as `{ error, message }`, which readRefusal did not read:
+  // signed out, throttled or not allowed, the slot said "Could not get upload
+  // URL." or "Finalize failed.", did not retry the throttle, and gave no hint.
+  const SIGNED_OUT_ROUTE: Answer = { status: 401, body: { error: 'UNAUTHORIZED', message: 'Not signed in.' } };
+  const throttled = (retryAfterSec: number): Answer => ({
+    status: 429,
+    body: { error: 'RATE_LIMITED', retryAfterSec, message: `Try again in ${retryAfterSec} seconds.` },
+    headers: { 'Retry-After': String(retryAfterSec) },
+  });
+
+  it('a 401 at presign says to sign in again; after it, Retry upload sends the kept photo', async () => {
+    uploadable();
+    presignPlan = [SIGNED_OUT_ROUTE];
+    const onChange = vi.fn();
+    const view = render(<PhotoCaptureSlot kind="SHOP" attachTo={shopOfB1} onChange={onChange} />);
+    pick(view.container);
+    expect(await screen.findByText(UPLOAD_SIGNED_OUT)).toBeTruthy();
+    expect(screen.queryByText('Could not get upload URL.')).toBeNull();
+    expect(count('/api/photos/presign')).toBe(1); // an answer: not retried
+    expect(xhrs).toHaveLength(0);
+
+    fireEvent.click(retryButton()!);
+    await waitFor(() => expect(xhrs).toHaveLength(1));
+    act(() => xhrs[0]!.answer());
+    await waitFor(() =>
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: 'att-1' }))
+    );
+    expect(requests(ATTACH)).toHaveLength(1);
+    expect(retryButton()).toBeNull();
+  });
+
+  it('the same at finalize: sign in again, and Retry upload sends the photo again', async () => {
+    uploadable();
+    finalizePlan = [SIGNED_OUT_ROUTE];
+    const onChange = vi.fn();
+    const view = render(<PhotoCaptureSlot kind="SHOP" attachTo={shopOfB1} onChange={onChange} />);
+    pick(view.container);
+    await waitFor(() => expect(xhrs).toHaveLength(1));
+    act(() => xhrs[0]!.answer());
+    expect(await screen.findByText(UPLOAD_SIGNED_OUT)).toBeTruthy();
+    expect(screen.queryByText('Finalize failed.')).toBeNull();
+    expect(count('/api/photos/finalize')).toBe(1);
+    expect(requests(ATTACH)).toHaveLength(0);
+
+    fireEvent.click(retryButton()!);
+    await waitFor(() => expect(xhrs).toHaveLength(2));
+    act(() => xhrs[1]!.answer());
+    await waitFor(() =>
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: 'att-2' }))
+    );
+    expect(requests(ATTACH)).toHaveLength(1);
+  });
+
+  const refusals: Array<[string, 'presign' | 'finalize', Answer, string]> = [
+    [
+      'presign, a password to change first',
+      'presign',
+      { status: 403, body: { error: 'PASSWORD_CHANGE_REQUIRED', message: PASSWORD_CHANGE_MESSAGE } },
+      PASSWORD_CHANGE_MESSAGE,
+    ],
+    [
+      'presign, a role that cannot upload',
+      'presign',
+      { status: 403, body: { error: 'FORBIDDEN_ROLE', message: 'Your role cannot upload this photo.' } },
+      'Your role cannot upload this photo.',
+    ],
+    [
+      'finalize, started under another sign-in',
+      'finalize',
+      { status: 403, body: { error: 'KEY_MISMATCH', message: 'This upload was started under another sign-in.' } },
+      'This upload was started under another sign-in.',
+    ],
+  ];
+  it.each(refusals)('%s: the server says why, and the slot shows it', async (_name, step, answer, shown) => {
+    uploadable();
+    if (step === 'presign') presignPlan = [answer];
+    else finalizePlan = [answer];
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    pick(view.container);
+    if (step === 'finalize') {
+      await waitFor(() => expect(xhrs).toHaveLength(1));
+      act(() => xhrs[0]!.answer());
+    }
+    expect(await screen.findByText(shown)).toBeTruthy();
+    expect(retryButton()).not.toBeNull();
+    expect(count(`/api/photos/${step}`)).toBe(1); // an answer: not retried
+  });
+
+  it('a 429 is waited out for as long as it says, counting down on the slot, then the photo goes up — no Retry upload to tap', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      presignPlan = [throttled(20)];
+      const calls: boolean[] = [];
+      const onChange = vi.fn();
+      const view = render(<PhotoCaptureSlot kind="SHOP" onChange={onChange} onBusyChange={(b) => calls.push(b)} />);
+      pick(view.container);
+      await settleUntil(() => count('/api/photos/presign') === 1);
+      // Said while it waits: a silent 'Uploading… 0%' read as frozen.
+      await settleUntil(() => screen.queryByText(rateLimitWaitMessage(20)) !== null);
+      expect(screen.queryByText(/Uploading…/)).toBeNull();
+      await advance(5_000);
+      expect(screen.getByText(rateLimitWaitMessage(15))).toBeTruthy();
+      await advance(14_999);
+      expect(count('/api/photos/presign')).toBe(1);
+      expect(retryButton()).toBeNull();
+      await advance(1);
+      await settleUntil(() => xhrs.length === 1);
+      expect(count('/api/photos/presign')).toBe(2);
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(screen.getByText(/Uploading…/)).toBeTruthy();
+      act(() => xhrs[0]!.answer());
+      await settleUntil(() => onChange.mock.calls.length === 1);
+      await settleUntil(() => calls.length === 2);
+      expect(calls).toEqual([true, false]);
+    }));
+
+  it('still throttled after the waits: says how long to wait, and Retry upload is offered', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      presignPlan = [throttled(30), throttled(30), throttled(25)];
+      const view = render(<PhotoCaptureSlot kind="SHOP" />);
+      pick(view.container);
+      await settleUntil(() => count('/api/photos/presign') === 1);
+      await advance(30_000);
+      await settleUntil(() => count('/api/photos/presign') === 2);
+      await advance(30_000);
+      await settleUntil(() => count('/api/photos/presign') === 3);
+      await settleUntil(() => retryButton() !== null);
+      expect(screen.getByText(rateLimitedMessage(25))).toBeTruthy();
+      expect(rateLimitedMessage(25)).toMatch(/Wait 25 seconds/);
+      expect(xhrs).toHaveLength(0);
+    }));
+
+  it(`a wait longer than ${RATE_LIMIT_MAX_WAIT_S} s is not sat through: it says so at once`, async () => {
+    uploadable();
+    presignPlan = [throttled(600)];
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    pick(view.container);
+    expect(await screen.findByText(rateLimitedMessage(600))).toBeTruthy();
+    expect(rateLimitedMessage(600)).toMatch(/Wait 10 minutes/);
+    expect(count('/api/photos/presign')).toBe(1);
   });
 });
 

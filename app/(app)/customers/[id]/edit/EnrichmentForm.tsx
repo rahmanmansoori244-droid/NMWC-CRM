@@ -19,6 +19,7 @@ import { hardReplace } from '@/lib/navigate';
 import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
 import { isRequired, type SubmitGate } from '@/lib/submit-gate';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
+import { onSignOut } from '@/lib/device-drafts';
 import { EDIT_PAYLOAD_VERSION, fieldLabel, type BaseValue } from '@/lib/edit-values';
 import {
   buildEnrichmentPatch,
@@ -377,6 +378,15 @@ export function EnrichmentForm({
   // phoneCopyGoneRef). The pending timer, so a replay that stays can drop it.
   const draftGoneRef = useRef(false);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // And once Sign out has deleted it (lib/device-drafts.ts): the form stays on
+  // screen until the sign-in page loads, and its autosave wrote the copy back.
+  useEffect(
+    () =>
+      onSignOut(() => {
+        draftGoneRef.current = true;
+      }),
+    []
+  );
 
   // OCT-04: both the debounce and explicit Save draft write this exact phone
   // snapshot. A successful server draft is not proof that local storage worked.

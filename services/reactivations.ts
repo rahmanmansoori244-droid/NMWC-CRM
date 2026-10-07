@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { Role, EditState, EditTarget, EditProcess, type Prisma } from '@prisma/client';
+import { Role, EditState, EditTarget, EditProcess, AttachmentKind, type Attachment, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
   ForbiddenError,
@@ -29,6 +29,7 @@ import {
 import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
+import { UNWIRED_LIVE } from '@/lib/photo-attach';
 
 async function require(role?: Role[]) {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -87,12 +88,57 @@ function receiptFor(meId: string, formData: FormData, isReactivation: boolean) {
 type SessionUser = Awaited<ReturnType<typeof require>>;
 
 /**
+ * Launch review: the close / reactivate form (BranchStatusActions) attached its
+ * evidence photo to the LIVE branch, as an extra photo, the moment it was
+ * uploaded — so a Cancel, or a submit refused here, left it on the branch. The
+ * form now sends it on no slot, and wireEvidence puts it on the branch inside
+ * the transaction that writes the request: it reaches the branch only with a
+ * request that was accepted. A photo already on this branch (a page opened
+ * before this change) is taken as before; one wired anywhere else is not.
+ */
+function evidenceUnwired(att: Attachment, branchId: string): boolean | null {
+  if (att.branchId === branchId || att.branchExtraId === branchId) return false;
+  if (!att.customerId && !att.branchId && !att.branchExtraId && !att.editId) return true;
+  return null;
+}
+
+/**
+ * The photo onto the branch as one of its extra photos, written as the FREE
+ * slot's attach writes it (services/photos.ts), audit row included. The claim
+ * re-asserts "live, on no slot, not claimed by a new-customer request, his own"
+ * at the moment it writes (UNWIRED_LIVE, N06): a photo removed or taken in the
+ * gap is refused, and the request with it, since this runs in its transaction.
+ */
+async function wireEvidence(
+  tx: Prisma.TransactionClient,
+  env: Awaited<ReturnType<typeof getAuditEnvelope>>,
+  attachmentId: string,
+  branchId: string,
+  meId: string
+): Promise<void> {
+  const claim = await tx.attachment.updateMany({
+    where: { id: attachmentId, ...UNWIRED_LIVE, editId: null, capturedById: meId },
+    data: { branchExtraId: branchId, branchId, kind: AttachmentKind.FREE },
+  });
+  if (claim.count !== 1) {
+    throw new ValidationError({ attachmentId: 'This photo was just removed or used elsewhere. Take a new one.' });
+  }
+  await writeAudit(tx, env, {
+    action: 'UPDATE',
+    entityType: 'Branch',
+    entityId: branchId,
+    after: { slot: 'FREE', attachmentId } as unknown as Prisma.InputJsonValue,
+    reason: 'photo attached',
+  });
+}
+
+/**
  * Salesman submits a reactivation request for a CLOSED branch.
  *
  * QA-008 fix: requires a fresh photo (≤24h old) attached to this branch as
- * evidence. The salesman captures the photo first via PhotoCaptureSlot (which
- * sets Attachment.branchExtraId or shopPhotoId), then submits this action with
- * the attachment id.
+ * evidence. The salesman captures the photo first via PhotoCaptureSlot, on no
+ * slot, then submits this action with the attachment id; the photo goes onto
+ * the branch with the request (wireEvidence).
  */
 export async function requestReactivationAction(formData: FormData): SafeAction<SubmitReceipt> {
   return runAction(() => requestReactivationCore(formData));
@@ -136,7 +182,8 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   }
 
   // Photo evidence must:
-  //   1) exist, 2) be captured by this salesman, 3) be ≤24h old, 4) belong to this branch
+  //   1) exist, 2) be captured by this salesman, 3) be ≤24h old, 4) belong to this
+  //   branch, or to no slot yet (wired with the request)
   // UXI-008: filter soft-deleted. EL-11/EL-12: photo evidence must have been
   // captured AFTER the most recent status change on this branch — otherwise
   // a salesman can use a pre-closure shop photo to "prove" the shop reopened.
@@ -162,11 +209,14 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
         'Photo was captured before the last status change. Take a new photo at the shop today.',
     });
   }
-  if (att.branchId !== branch.id && att.branchExtraId !== branch.id) {
+  // On this branch already, or on no slot yet: wired below, with the request.
+  const unwired = evidenceUnwired(att, branch.id);
+  if (unwired === null) {
     throw new ValidationError({
       attachmentId: 'Photo is not attached to this branch.',
     });
   }
+  const env = unwired ? await getAuditEnvelope(me.id) : null;
 
   const reactSubmittedAt = new Date();
   // F1 / A1.7: the request and the notifications of it commit together, so a
@@ -176,6 +226,7 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   // A failed hierarchy lookup now fails the submit, as a new-customer submit's
   // notification always has; the salesman's retry is answered or re-run.
   const edit = await prisma.$transaction(async (tx) => {
+    if (env) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {
         target: EditTarget.BRANCH,
@@ -228,7 +279,8 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
 
 /**
  * Salesman marks a branch as CLOSED. Requires a fresh photo (≤24h old) of the
- * closed shop attached as the `shopPhotoId` slot or as a free photo.
+ * closed shop: on this branch already, or on no slot yet, when it goes onto the
+ * branch with the request (wireEvidence).
  */
 export async function markBranchClosedAction(formData: FormData): SafeAction<SubmitReceipt> {
   return runAction(() => markBranchClosedCore(formData));
@@ -295,17 +347,21 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
         'Photo was captured before the last status change. Take a new photo at the shop today.',
     });
   }
-  if (att.branchId !== branch.id && att.branchExtraId !== branch.id) {
+  // On this branch already, or on no slot yet: wired below, with the request.
+  const unwired = evidenceUnwired(att, branch.id);
+  if (unwired === null) {
     throw new ValidationError({
       attachmentId: 'Photo is not attached to this branch.',
     });
   }
+  const env = unwired ? await getAuditEnvelope(me.id) : null;
 
   // Submit as a regular CustomerEdit so a Supervisor approves the closure.
   const closeSubmittedAt = new Date();
   // F1 / A1.7: as for a reactivation — the request and its notifications commit
   // together, and the P2002 is translated outside the transaction.
   const edit = await prisma.$transaction(async (tx) => {
+    if (env) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {
         target: EditTarget.BRANCH,

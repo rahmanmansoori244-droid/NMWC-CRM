@@ -155,6 +155,29 @@ const ATTACH_SIGNED_OUT =
   'You need to sign in again, so the photo is not attached yet. Keep this page open, sign in in another tab, then tap Retry upload.';
 
 /**
+ * Presign's or finalize's 401. It read "Could not get upload URL." and was not
+ * retried, so nothing said the session had ended; Retry upload after signing in
+ * sends the kept photo from the start.
+ */
+export const UPLOAD_SIGNED_OUT =
+  'You need to sign in again, so the photo is not sent yet. Keep this page open, sign in in another tab, then tap Retry upload.';
+
+/**
+ * Presign's 429 (PHOTO_LIMIT: 120 an hour, one back every 30 s). A wait up to
+ * this long is waited out and the step tried again, as a dropped connection is;
+ * a longer one, or a third refusal, ends with how long to wait.
+ */
+export const RATE_LIMIT_MAX_WAIT_S = 30;
+/** Said on the slot while such a wait runs, second by second (below). */
+export function rateLimitWaitMessage(secondsLeft: number): string {
+  return `Too many photos — trying again in ${secondsLeft} s`;
+}
+export function rateLimitedMessage(retryAfterSec: number): string {
+  const wait = retryAfterSec < 90 ? `${retryAfterSec} seconds` : `${Math.ceil(retryAfterSec / 60)} minutes`;
+  return `Too many photos in a short time. Wait ${wait}, then tap Retry upload.`;
+}
+
+/**
  * runAction's codes for a database that dropped or did not answer: not an
  * answer about the attach (lib/submit-client.ts treats them the same way).
  */
@@ -174,7 +197,8 @@ class HttpError extends Error {
  * signed out (401), a session that must change its password first (403
  * PASSWORD_CHANGE_REQUIRED), a body it would not read. An answer, with a message
  * to show; nothing about the photo was read or changed. As a bare HttpError the
- * attach called it "got no answer", and every Retry said the same.
+ * attach called it "got no answer", and every Retry said the same. Presign's and
+ * finalize's refusals are read into it too (readRefusal).
  */
 class RefusedError extends HttpError {
   code: string;
@@ -184,16 +208,44 @@ class RefusedError extends HttpError {
   }
 }
 
-/** The action-shaped refusal in a 4xx reply's body, or null for any other body. */
+/** Presign's 429: how long until the next photo may go. Its message says so. */
+class RateLimitedError extends RefusedError {
+  retryAfterSec: number;
+  constructor(retryAfterSec: number) {
+    super(429, 'RATE_LIMITED', rateLimitedMessage(retryAfterSec));
+    this.retryAfterSec = retryAfterSec;
+  }
+}
+
+/**
+ * The refusal in a 4xx reply's body, or null for any other body: the action
+ * shape `{ ok: false, code, message }`, or presign's and finalize's own
+ * `{ error, message }` — which this did not read, so every refusal there,
+ * signed out included, showed as the step's bare failure.
+ */
 async function readRefusal(res: Response): Promise<{ code: string; message: string } | null> {
   try {
-    const body = (await res.json()) as { ok?: unknown; code?: unknown; message?: unknown } | null;
-    return body?.ok === false && typeof body.code === 'string' && typeof body.message === 'string'
-      ? { code: body.code, message: body.message }
-      : null;
+    const body = (await res.json()) as
+      | { ok?: unknown; code?: unknown; error?: unknown; message?: unknown }
+      | null;
+    if (typeof body?.message !== 'string') return null;
+    if (body.ok === false && typeof body.code === 'string') return { code: body.code, message: body.message };
+    return typeof body.error === 'string' ? { code: body.error, message: body.message } : null;
   } catch {
     return null;
   }
+}
+
+/** A 429's wait, in seconds: the body's retryAfterSec, else Retry-After, else a refill. */
+async function readRetryAfter(res: Response): Promise<number> {
+  let sec: unknown;
+  try {
+    sec = ((await res.json()) as { retryAfterSec?: unknown } | null)?.retryAfterSec;
+  } catch {
+    /* not JSON: the header below */
+  }
+  if (typeof sec !== 'number') sec = Number(res.headers.get('Retry-After'));
+  return typeof sec === 'number' && Number.isFinite(sec) && sec > 0 ? Math.ceil(sec) : RATE_LIMIT_MAX_WAIT_S;
 }
 
 function isRetryable(err: unknown): boolean {
@@ -205,17 +257,39 @@ function isRetryable(err: unknown): boolean {
   return false;
 }
 
-async function retryable<T>(fn: () => Promise<T>): Promise<T> {
+/**
+ * `onWait` hears a 429's wait as it runs: the seconds left, once a second, then
+ * null. A silent "Uploading… 0%" for up to a minute read as frozen, and the
+ * salesman left the page (launch review).
+ */
+async function retryable<T>(
+  fn: () => Promise<T>,
+  onWait?: (secondsLeft: number | null) => void
+): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < RETRY_DELAYS.length; attempt += 1) {
     try {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (!isRetryable(err)) throw err;
+      // A 429 says when the next try may go: that wait instead of the backoff,
+      // when it is short enough to sit through.
+      const waitSec =
+        err instanceof RateLimitedError && err.retryAfterSec <= RATE_LIMIT_MAX_WAIT_S
+          ? err.retryAfterSec
+          : null;
+      if (waitSec === null && !isRetryable(err)) throw err;
       // Don't sleep after the last attempt.
       if (attempt < RETRY_DELAYS.length - 1) {
-        await delay(RETRY_DELAYS[attempt]);
+        if (waitSec === null) {
+          await delay(RETRY_DELAYS[attempt]);
+        } else {
+          for (let left = waitSec; left > 0; left -= 1) {
+            onWait?.(left);
+            await delay(1000);
+          }
+          onWait?.(null);
+        }
       }
     }
   }
@@ -320,6 +394,7 @@ async function postJson<T>(url: string, body: unknown, failMessage: string): Pro
       signal: abort.signal,
     });
     if (!res.ok) {
+      if (res.status === 429) throw new RateLimitedError(await readRetryAfter(res));
       const refusal = res.status < 500 ? await readRefusal(res) : null;
       if (refusal) throw new RefusedError(res.status, refusal.code, refusal.message);
       throw new HttpError(res.status, failMessage);
@@ -397,6 +472,8 @@ export function PhotoCaptureSlot({
     initial ? 'done' : 'idle'
   );
   const [uploadPct, setUploadPct] = useState(0);
+  // The seconds left of a 429's wait that retryable() is sitting through.
+  const [rateWait, setRateWait] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A Remove the server refused. Its own line: in the failed-upload state the
   // upload error owns `error`, and a refusal shown there read as an upload
@@ -423,6 +500,7 @@ export function PhotoCaptureSlot({
     setRemoveRefused(null);
     setProgress('uploading');
     setUploadPct(resend ? 100 : 0);
+    setRateWait(null);
     try {
       let attachmentId: string;
       if (resend) {
@@ -441,7 +519,7 @@ export function PhotoCaptureSlot({
           );
           await putWithProgress(p.url, p.headers, blob, (pct) => setUploadPct(pct));
           return p;
-        });
+        }, setRateWait);
 
         // 3) Finalize
         ({ attachmentId } = await retryable(() =>
@@ -456,7 +534,8 @@ export function PhotoCaptureSlot({
               capturedLng,
             },
             'Finalize failed.'
-          )
+          ),
+          setRateWait
         ));
       }
 
@@ -518,7 +597,9 @@ export function PhotoCaptureSlot({
       setRetainedHash(null);
       onChange?.(next);
     } catch (e) {
-      setError((e as Error).message);
+      // The attach's failures arrive here already worded (above). A 401 here is
+      // presign's or finalize's: the session ended, not the step.
+      setError(e instanceof HttpError && e.status === 401 ? UPLOAD_SIGNED_OUT : (e as Error).message);
       setProgress('error');
     }
   }
@@ -697,7 +778,11 @@ export function PhotoCaptureSlot({
         {progress === 'compressing' && <span className="text-[11px]">Compressing…</span>}
         {progress === 'uploading' && (
           <>
-            <span className="text-[11px]">Uploading… {uploadPct}%</span>
+            {rateWait !== null ? (
+              <span role="status" className="text-[11px]">{rateLimitWaitMessage(rateWait)}</span>
+            ) : (
+              <span className="text-[11px]">Uploading… {uploadPct}%</span>
+            )}
             {/* B-08: byte-progress bar so the salesman can tell the upload
                 is actually moving over a slow 3G connection. */}
             <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-white/40">

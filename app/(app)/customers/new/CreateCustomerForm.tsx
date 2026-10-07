@@ -34,6 +34,8 @@ import {
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { hardReplace } from '@/lib/navigate';
 import { LabeledField as Field } from '@/components/nmwc/LabeledField';
+import { typedNumber } from '@/lib/digits';
+import { onSignOut } from '@/lib/device-drafts';
 
 type ChannelWithSubs = {
   id: string;
@@ -200,6 +202,15 @@ export function CreateCustomerForm({
   // nothing may write the never-saved phone copy — not even an autosave
   // already due, which can fire before the re-render that would clear it.
   const phoneCopyGoneRef = useRef(false);
+  // And once Sign out has deleted it (lib/device-drafts.ts): the form stays on
+  // screen until the sign-in page loads, and its autosave wrote the copy back.
+  useEffect(
+    () =>
+      onSignOut(() => {
+        phoneCopyGoneRef.current = true;
+      }),
+    []
+  );
   // The reload check can outlive the form (a tap on Work while it waits);
   // after unmount it must not remove, navigate or say anything.
   const unmountedRef = useRef(false);
@@ -293,9 +304,11 @@ export function CreateCustomerForm({
   if (!crPhotoId) missingMandatory.push('CR document photo');
   if (isCredit) {
     // `!(x > 0)` instead of `x <= 0`: NaN (e.g. a comma-decimal '12,5') must
-    // also count as missing, and NaN fails every comparison.
-    if (!(Number(creditLimit) > 0)) missingMandatory.push('Credit limit');
-    if (!(Number(termDays) >= 1)) missingMandatory.push('Payment term days');
+    // also count as missing, and NaN fails every comparison. typedNumber reads
+    // Arabic-Indic digits and the Arabic decimal mark (lib/digits.ts): with
+    // Number(), '٥٠٠' was "missing".
+    if (!(typedNumber(creditLimit) > 0)) missingMandatory.push('Credit limit');
+    if (!(typedNumber(termDays) >= 1)) missingMandatory.push('Payment term days');
     if (guaranteeIds.length === 0) missingMandatory.push('Guarantee document');
   }
   branchStates.forEach((s, i) => {
@@ -545,8 +558,8 @@ export function CreateCustomerForm({
       },
       credit: isCredit
         ? {
-            requestedCreditLimit: creditLimit.trim() ? Number(creditLimit) : undefined,
-            requestedPaymentTermDays: termDays.trim() ? Number(termDays) : undefined,
+            requestedCreditLimit: creditLimit.trim() ? typedNumber(creditLimit) : undefined,
+            requestedPaymentTermDays: termDays.trim() ? typedNumber(termDays) : undefined,
           }
         : undefined,
       guaranteeAttachmentIds: isCredit ? guaranteeIds : [],

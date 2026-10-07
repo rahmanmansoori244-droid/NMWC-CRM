@@ -35,7 +35,10 @@ export function BranchStatusActions({
 
   const isClosed = status === 'CLOSED';
   const action = open;
-  const ready = !!photo && reason.length >= 5;
+  // Trimmed, as the server counts it: five spaces enabled Submit, and the
+  // server then refused "Tell us why (5+ chars)."
+  const trimmedReason = reason.trim();
+  const ready = !!photo && trimmedReason.length >= 5;
 
   function submit(e?: React.FormEvent<HTMLFormElement>) {
     e?.preventDefault();
@@ -47,7 +50,7 @@ export function BranchStatusActions({
       return;
     }
     if (action === null) return;
-    const body = { branchId, reason, attachmentId: photo.attachmentId };
+    const body = { branchId, reason: trimmedReason, attachmentId: photo.attachmentId };
     idsRef.current ??= new SubmissionIds();
     // The same request after no answer keeps its id, so a retry is never written twice.
     const submissionId = idsRef.current.idFor({ action, ...body });
@@ -133,12 +136,12 @@ export function BranchStatusActions({
               Photo evidence (must be fresh — captured today)
             </label>
             <div className="w-40">
-              <PhotoCaptureSlot
-                kind="FREE"
-                required
-                onChange={setPhoto}
-                attachTo={{ kind: 'branch', branchId, slot: 'FREE' }}
-              />
+              {/* On no slot: the photo goes onto the branch with the request,
+                  in its transaction (services/reactivations.ts wireEvidence).
+                  Attached at upload, it stayed on the live branch after a
+                  Cancel or a refused submit. `initial`: a photo that finished
+                  uploading after a Cancel is shown, since Submit would send it. */}
+              <PhotoCaptureSlot kind="FREE" required initial={photo} onChange={setPhoto} />
             </div>
           </div>
           <div>

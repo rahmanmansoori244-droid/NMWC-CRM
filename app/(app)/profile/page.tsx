@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { omanDateTime } from '@/lib/tz';
-import { logoutAction } from '@/app/actions/auth';
+import { SignOutButton } from '@/components/nmwc/SignOutButton';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 
 export const metadata = { title: 'Profile · NMWC' };
@@ -53,14 +53,10 @@ export default async function ProfilePage() {
             >
               Change password
             </Link>
-            <form action={logoutAction}>
-              <button
-                type="submit"
-                className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Sign out
-              </button>
-            </form>
+            <SignOutButton
+              userId={session.user.id}
+              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            />
           </div>
         </section>
       </div>

@@ -62,10 +62,16 @@ const finalizeSchema = z.object({
   capturedAt: z.coerce.date().optional(),
 });
 
+// Every refusal below carries a `message` beside its machine `error`, as at
+// presign: the photo slot shows it (PhotoCaptureSlot readRefusal) instead of
+// "Finalize failed.".
 export async function POST(req: NextRequest) {
   const who = await checkActor(); // F15: a session that must change its password gets 403
   if (!who.ok) {
-    return NextResponse.json({ error: who.status === 401 ? 'UNAUTHORIZED' : who.code }, { status: who.status });
+    return NextResponse.json(
+      { error: who.status === 401 ? 'UNAUTHORIZED' : who.code, message: who.message },
+      { status: who.status }
+    );
   }
   const session = { user: who.user };
   // ENH-3: the same gate as presign, checked again — this is a request of its
@@ -75,12 +81,12 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'INVALID_JSON' }, { status: 400 });
+    return NextResponse.json({ error: 'INVALID_JSON', message: 'The upload could not be confirmed.' }, { status: 400 });
   }
   const parsed = finalizeSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: 'VALIDATION_FAILED', details: parsed.error.format() },
+      { error: 'VALIDATION_FAILED', message: 'The upload could not be confirmed.', details: parsed.error.format() },
       { status: 400 }
     );
   }
@@ -95,14 +101,28 @@ export async function POST(req: NextRequest) {
   const allowed = expectedPrefixes(session.user.id);
   if (!allowed.some((p) => key.startsWith(p))) {
     logger.warn({ userId: session.user.id, key }, 'photo.finalize.key_mismatch');
-    return NextResponse.json({ error: 'KEY_MISMATCH' }, { status: 403 });
+    // Also what a phone shared mid-upload gets: the photo went up under the
+    // other sign-in. Retry upload presigns again, under this one.
+    return NextResponse.json(
+      {
+        error: 'KEY_MISMATCH',
+        message: 'This upload was started under another sign-in. Tap Retry upload to send the photo again.',
+      },
+      { status: 403 }
+    );
   }
   // NEW-PHOTO-001: server-side kind check derived from the key path so the
   // attachment.kind cannot be swapped at finalize time.
   const keyKind = kindFromKey(key);
   if (!keyKind || keyKind !== kind) {
     logger.warn({ userId: session.user.id, key, body_kind: kind, key_kind: keyKind }, 'photo.finalize.kind_mismatch');
-    return NextResponse.json({ error: 'KIND_MISMATCH' }, { status: 403 });
+    return NextResponse.json(
+      {
+        error: 'KIND_MISMATCH',
+        message: 'This upload does not match its photo slot. Tap Retry upload to send the photo again.',
+      },
+      { status: 403 }
+    );
   }
 
   // Confirm object exists in R2
@@ -117,7 +137,10 @@ export async function POST(req: NextRequest) {
     // a photo that was never uploaded.
     const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
     if (e?.name === 'NotFound' || e?.$metadata?.httpStatusCode === 404) {
-      return NextResponse.json({ error: 'OBJECT_NOT_FOUND' }, { status: 404 });
+      return NextResponse.json(
+        { error: 'OBJECT_NOT_FOUND', message: 'The photo did not reach storage. Tap Retry upload to send it again.' },
+        { status: 404 }
+      );
     }
     return NextResponse.json({ error: 'STORAGE_UNAVAILABLE' }, { status: 503 });
   }
@@ -132,7 +155,10 @@ export async function POST(req: NextRequest) {
   // signs ContentLength but a malicious client can re-PUT with a different
   // size and still finalize.
   if (bytes > MAX_FINALIZE_BYTES) {
-    return NextResponse.json({ error: 'TOO_LARGE', limit: MAX_FINALIZE_BYTES }, { status: 413 });
+    return NextResponse.json(
+      { error: 'TOO_LARGE', limit: MAX_FINALIZE_BYTES, message: 'This photo is larger than 3 MB. Take it again.' },
+      { status: 413 }
+    );
   }
 
   // NEW-PHOTO-002: hash dedupe ONLY within the same uploader. Cross-user
