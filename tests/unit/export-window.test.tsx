@@ -8,7 +8,7 @@
  * 8th in Oman.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ExportFiltersForm } from '@/app/(app)/export/ExportFiltersForm';
 
 beforeEach(() => {
@@ -22,15 +22,21 @@ afterEach(() => {
 });
 
 describe('/export default field-update window', () => {
-  it('ends on the Oman day and starts 7 Oman days before it', () => {
+  it('ends on the Oman day and starts 7 Oman days before it', async () => {
     vi.setSystemTime(new Date('2026-10-07T21:30:00.000Z'));
     render(<ExportFiltersForm regions={[]} routes={[]} />);
     expect((screen.getByLabelText('Changes until') as HTMLInputElement).value).toBe('2026-10-08');
     expect((screen.getByLabelText('Changes from') as HTMLInputElement).value).toBe('2026-10-01');
-    // And the download asks for exactly that window.
-    const href = screen.getByRole('link', { name: 'Download field-update report' }).getAttribute('href')!;
+    // And the download asks for exactly that window. The download is fetched in
+    // the browser (so a refusal stays on the page), so read the URL it fetches.
+    const fetchSpy = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', fetchSpy);
+    fireEvent.click(screen.getByRole('button', { name: 'Download field-update report' }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const href = String((fetchSpy.mock.calls[0] as unknown[])[0]);
     const sp = new URL(href, 'https://nmwc.example').searchParams;
     expect([sp.get('since'), sp.get('until')]).toEqual(['2026-10-01', '2026-10-08']);
+    vi.unstubAllGlobals();
   });
 
   it('is unchanged in the Oman afternoon, when both calendars agree', () => {

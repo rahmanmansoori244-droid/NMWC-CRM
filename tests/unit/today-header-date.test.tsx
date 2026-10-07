@@ -20,6 +20,8 @@ vi.mock('@/lib/db', () => ({
   prisma: {
     user: { findUniqueOrThrow: async () => ({ id: 'u1', fullName: 'Said Ali', ownedRouteId: 'r1' }) },
     customerEdit: { count: async () => 0 },
+    // countOpenReturned (lib/returned-work.ts) counts the open sent-back requests in SQL.
+    $queryRaw: async () => [{ n: 0 }],
     branch: {
       findMany: async () => [],
       // The visit day the list asks for, so the test can say header and list agree.
