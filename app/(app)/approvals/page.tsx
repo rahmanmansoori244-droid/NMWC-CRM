@@ -8,6 +8,7 @@ import { loadScope } from '@/lib/access';
 import { formatSlaStatus } from '@/lib/working-hours';
 import { countFieldChanges, hasManualGps } from '@/lib/gps-manual';
 import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
+import { draftScores } from '@/lib/create-score';
 import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
 
 export const metadata = { title: 'Approvals · NMWC' };
@@ -125,8 +126,37 @@ export default async function ApprovalsPage() {
           paymentTerms: true,
         },
       },
-      // CREATE requests: display fields come from the draft.
-      customerDraft: { select: { legalName: true, paymentTerms: true } },
+      // CREATE requests: display fields come from the draft — and, launch fix,
+      // what its completeness ring scores (lib/create-score.ts): the ring read
+      // 0% on every new customer, which has no customer row to score yet.
+      customerDraft: {
+        select: {
+          legalName: true,
+          paymentTerms: true,
+          channelId: true,
+          subChannelId: true,
+          primaryPhone: true,
+          contactPerson: true,
+          crNumber: true,
+          crPhotoAttachmentId: true,
+          notes: true,
+        },
+      },
+      branchDrafts: {
+        select: {
+          gpsLat: true,
+          gpsLng: true,
+          address: true,
+          shopPhotoAttachmentId: true,
+          signboardPhotoAttachmentId: true,
+          dayOfVisit: true,
+          coolersCount: true,
+          standsCount: true,
+          emptyBottlesCount: true,
+          openingHours: true,
+          deliveryWindow: true,
+        },
+      },
     },
     // Most-overdue first (index [state, slaDueAt] backs it); legacy rows
     // without a deadline sort last.
@@ -196,7 +226,8 @@ export default async function ApprovalsPage() {
           ? {
               legalName: e.customerDraft.legalName,
               nmwcCode: 'NEW',
-              completenessScore: 0,
+              // The score the customer will be created with.
+              completenessScore: draftScores(e.customerDraft, e.branchDrafts).customer,
             }
           : null,
       submittedByFullName: e.submittedBy.fullName,

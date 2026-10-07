@@ -12,7 +12,9 @@ import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { PaymentTermsPill } from '@/components/nmwc/PaymentTermsPill';
 import { BranchStatusActions } from '@/components/nmwc/BranchStatusActions';
 import { LocationLinks, PhoneLink } from '@/components/nmwc/ContactLinks';
-import { countFieldChanges } from '@/lib/gps-manual';
+import { activityLine } from './activity';
+import { openReturnedIds } from '@/lib/returned-work';
+import { omanWhen } from '@/lib/submission';
 import { ArchiveCustomerButton } from './ArchiveCustomerButton';
 import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil } from 'lucide-react';
 
@@ -44,6 +46,9 @@ export default async function CustomerProfilePage({
         },
       },
       edits: {
+        // Launch fix: a draft was never sent — and each Save draft by anyone
+        // used to be listed here, timed "draft".
+        where: { state: { not: 'DRAFT' } },
         orderBy: { createdAt: 'desc' },
         take: 5,
         include: {
@@ -81,6 +86,20 @@ export default async function CustomerProfilePage({
     session.user.role === Role.STEWARD ||
     session.user.role === Role.MANAGER;
 
+  // Launch fix: his update of this customer that was sent back and still waits
+  // on him. His "Correction" notification opens this page, which said nothing
+  // of why; the reason and the way to fix it are on the edit form.
+  const [returnedId] =
+    session.user.role === Role.SALESMAN
+      ? await openReturnedIds(prisma, session.user.id, { customerId: customer.id, updatesOnly: true, take: 1 })
+      : [];
+  const returned = returnedId
+    ? await prisma.customerEdit.findUnique({
+        where: { id: returnedId },
+        select: { decisionReason: true, reviewedAt: true, reviewedBy: { select: { fullName: true } } },
+      })
+    : null;
+
   return (
     <main>
       <PageHeader
@@ -110,6 +129,25 @@ export default async function CustomerProfilePage({
           </div>
         }
       />
+
+      {returnedId && returned && (
+        <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 [overflow-wrap:anywhere] sm:mx-6">
+          <p>
+            <strong className="font-semibold">
+              Your changes were sent back
+              {returned.reviewedBy ? ` by ${returned.reviewedBy.fullName}` : ''}
+              {returned.reviewedAt ? `, ${omanWhen(returned.reviewedAt)}` : ''}:
+            </strong>{' '}
+            {returned.decisionReason ?? 'Needs correction.'}
+          </p>
+          <Link
+            href={`/customers/${customer.id}/edit?returned=${returnedId}`}
+            className="mt-1 inline-flex min-h-11 items-center font-medium underline underline-offset-2"
+          >
+            Open the form to fix it
+          </Link>
+        </div>
+      )}
 
       <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-2">
         <Section title="Identity">
@@ -210,10 +248,7 @@ export default async function CustomerProfilePage({
               {customer.edits.map((e) => (
                 <li key={e.id} className="flex items-start justify-between gap-3 py-2">
                   <div className="min-w-0">
-                    <div className="font-medium text-slate-900">
-                      {e.submittedBy.fullName} submitted{' '}
-                      {countFieldChanges(e.fieldChanges)} change(s)
-                    </div>
+                    <div className="font-medium text-slate-900">{activityLine(e)}</div>
                     <div className="text-sm text-slate-500">
                       {e.submittedAt ? omanDateTime(e.submittedAt) : 'draft'}
                     </div>

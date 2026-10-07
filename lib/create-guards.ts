@@ -86,6 +86,21 @@ export async function lockCreateIdentity(
  * was compared in SQL, case-insensitively and nothing more, so "Al Noor  Shop"
  * with a doubled space, or with a pasted no-break space, was created beside
  * "Al Noor Shop" and then flagged by the detector as a duplicate of it.
+ *
+ * Launch fix — who reads the refusal. At submit (`callerId` given) it is the
+ * salesman: a live customer is named only when he can open it (a live branch on
+ * his route, `callerRouteId`), never one outside his scope — trying CR numbers
+ * read out other routes' customers, and told him to open one he could not. An
+ * open request in his way is named by whose it is and where it stands, so he
+ * knows whom to ask; one that is abandoned can now be withdrawn
+ * (services/creates.ts withdrawCreateAction). At finalize (no caller) it is
+ * the approver at the last step, who is told to reject, not to "open that
+ * customer instead".
+ *
+ * Launch fix (review): a draft or sent-back request of a salesman who has left
+ * (his account disabled) no longer counts. Only its own salesman can send it or
+ * withdraw it, so it held that CR number and shop for everyone, for good. One in
+ * review still counts: an approver can decide it.
  */
 export async function assertNoExactCreateDuplicate(
   tx: Prisma.TransactionClient,
@@ -103,48 +118,98 @@ export async function assertNoExactCreateDuplicate(
      * else's.
      */
     callerId?: string;
+    /** Launch fix: the salesman's route at submit — a live customer is named only if he can open it. */
+    callerRouteId?: string;
   }
 ): Promise<void> {
   const openStates = [EditState.DRAFT, EditState.SUBMITTED, EditState.NEEDS_CORRECTION];
+  const openEdit: Prisma.CustomerEditWhereInput = {
+    state: { in: openStates },
+    process: EditProcess.CREATE,
+    OR: [{ state: EditState.SUBMITTED }, { submittedBy: { isActive: true } }],
+    ...(args.excludeEditId ? { id: { not: args.excludeEditId } } : {}),
+  };
   const openSelect = {
-    edit: { select: { submittedById: true, state: true, submittedAt: true, updatedAt: true } },
+    edit: {
+      select: {
+        submittedById: true,
+        state: true,
+        submittedAt: true,
+        updatedAt: true,
+        submittedBy: { select: { fullName: true } },
+      },
+    },
   } as const;
-  const ownRequest = (
-    open: { edit: { submittedById: string; state: EditState; submittedAt: Date | null; updatedAt: Date } },
-    what: string
-  ) =>
+  type OpenEdit = {
+    edit: {
+      submittedById: string;
+      state: EditState;
+      submittedAt: Date | null;
+      updatedAt: Date;
+      submittedBy?: { fullName: string } | null;
+    };
+  };
+  const ownRequest = (open: OpenEdit, what: string) =>
     args.callerId && open.edit.submittedById === args.callerId
-      ? `Your own new-customer request ${what}, ${open.edit.state === EditState.DRAFT ? 'saved as a draft' : 'sent'} at ${omanWhen(shownTime(open.edit))}, is already in progress — see Work.`
+      ? `Your own new-customer request ${what}, ${open.edit.state === EditState.DRAFT ? 'saved as a draft' : 'sent'} at ${omanWhen(shownTime(open.edit))}, is already in progress — ${
+          // Launch fix: one in review cannot be withdrawn; the others can.
+          open.edit.state === EditState.SUBMITTED
+            ? 'see Work.'
+            : 'open it from Work to carry on, or to withdraw it if it is no longer needed.'
+        }`
       : null;
+  // Someone else's: whose, and where it stands — "in progress" alone left him
+  // nobody to ask. Without a caller (a check run outside a submit), as before.
+  const othersRequest = (open: OpenEdit, what: string) => {
+    const by = open.edit.submittedBy?.fullName;
+    if (!args.callerId || !by) return `Another new-customer request ${what} is already in progress.`;
+    // In review, the approvers have it: he cannot help, and may have left.
+    if (open.edit.state === EditState.SUBMITTED) {
+      return `${by}'s new-customer request ${what} is already in review. Ask your supervisor before adding it again.`;
+    }
+    const where = open.edit.state === EditState.DRAFT ? 'saved as a draft' : 'sent back to them for correction';
+    return `${by}'s new-customer request ${what} is already in progress (${where}). Ask them, or your supervisor, before adding it again.`;
+  };
+  // Launch fix: at submit, a live customer is named only when he can open it.
+  const routeBranch = args.callerRouteId
+    ? {
+        branches: {
+          where: { routeId: args.callerRouteId, deletedAt: null },
+          select: { id: true },
+          take: 1,
+        },
+      }
+    : {};
+  const opensIt = (c: { branches?: unknown[] }) => !!args.callerRouteId && (c.branches?.length ?? 0) > 0;
+  const atSubmit = !!args.callerId;
 
   if (args.crNumberNorm) {
-    const liveCr = await tx.customer.findFirst({
+    const liveCr = (await tx.customer.findFirst({
       where: { crNumberNorm: args.crNumberNorm, deletedAt: null },
-      select: { nmwcCode: true, legalName: true },
-    });
+      select: { nmwcCode: true, legalName: true, ...routeBranch },
+    })) as { nmwcCode: string; legalName: string; branches?: unknown[] } | null;
     if (liveCr) {
       throw new ConflictError(
         'DUPLICATE_CR',
-        `A customer with this CR number already exists: ${liveCr.nmwcCode} — ${liveCr.legalName}. Open that customer instead of creating a new one.`
+        !atSubmit
+          ? `A customer with this CR number already exists: ${liveCr.nmwcCode} — ${liveCr.legalName}. It cannot be created twice: reject this request and give that as the reason.`
+          : opensIt(liveCr)
+            ? `A customer with this CR number already exists: ${liveCr.nmwcCode} — ${liveCr.legalName}. Open it from your customers instead of creating a new one.`
+            : 'A customer with this CR number is already in the customer master, on another route, so it cannot be added again. If the shop is on your route, tell your supervisor.'
       );
     }
     if (args.includeOpenRequests) {
       const openCr = await tx.editCustomerDraft.findFirst({
         where: {
           crNumberNorm: args.crNumberNorm,
-          edit: {
-            state: { in: openStates },
-            process: EditProcess.CREATE,
-            ...(args.excludeEditId ? { id: { not: args.excludeEditId } } : {}),
-          },
+          edit: openEdit,
         },
         select: openSelect,
       });
       if (openCr) {
         throw new ConflictError(
           'DUPLICATE_CR',
-          ownRequest(openCr, 'with this CR number') ??
-            'Another new-customer request with this CR number is already in progress.'
+          ownRequest(openCr, 'with this CR number') ?? othersRequest(openCr, 'with this CR number')
         );
       }
     }
@@ -155,41 +220,41 @@ export async function assertNoExactCreateDuplicate(
     // Every live customer on this phone with a live branch in one of these
     // regions — a handful even for an owner who runs several shops on one
     // number — then the one whose name key matches.
-    const livePhoneRegion = await tx.customer.findMany({
+    const livePhoneRegion = (await tx.customer.findMany({
       where: {
         primaryPhoneNorm: args.primaryPhoneNorm,
         deletedAt: null,
         branches: { some: { regionId: { in: args.regionIds }, deletedAt: null } },
       },
       orderBy: { nmwcCode: 'asc' },
-      select: { nmwcCode: true, legalName: true },
-    });
+      select: { nmwcCode: true, legalName: true, ...routeBranch },
+    })) as Array<{ nmwcCode: string; legalName: string; branches?: unknown[] }>;
     const tripleLive = livePhoneRegion.find((c) => nameKey(c.legalName) === want);
     if (tripleLive) {
+      const named = `This shop already exists: ${tripleLive.nmwcCode} — ${tripleLive.legalName} (same name, phone and region).`;
       throw new ConflictError(
         'DUPLICATE_CUSTOMER',
-        `This shop already exists: ${tripleLive.nmwcCode} — ${tripleLive.legalName} (same name, phone and region).`
+        !atSubmit
+          ? `${named} It cannot be created twice: reject this request and give that as the reason.`
+          : opensIt(tripleLive)
+            ? `${named} Open it from your customers instead of creating a new one.`
+            : 'This shop (same name, phone and region) is already in the customer master, on another route, so it cannot be added again. If it is on your route, tell your supervisor.'
       );
     }
     if (args.includeOpenRequests) {
       const openPhoneRegion = await tx.editCustomerDraft.findMany({
         where: {
           primaryPhoneNorm: args.primaryPhoneNorm,
-          edit: {
-            state: { in: openStates },
-            process: EditProcess.CREATE,
-            branchDrafts: { some: { regionId: { in: args.regionIds } } },
-            ...(args.excludeEditId ? { id: { not: args.excludeEditId } } : {}),
-          },
+          edit: { ...openEdit, branchDrafts: { some: { regionId: { in: args.regionIds } } } },
         },
         select: { legalName: true, ...openSelect },
       });
       const tripleOpen = openPhoneRegion.find((d) => nameKey(d.legalName) === want);
       if (tripleOpen) {
+        const what = 'for this shop (same name, phone and region)';
         throw new ConflictError(
           'DUPLICATE_CUSTOMER',
-          ownRequest(tripleOpen, 'for this shop (same name, phone and region)') ??
-            'Another new-customer request for this shop (same name, phone and region) is already in progress.'
+          ownRequest(tripleOpen, what) ?? othersRequest(tripleOpen, what)
         );
       }
     }

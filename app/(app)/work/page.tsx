@@ -9,11 +9,14 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import Link from 'next/link';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
+import { inIdOrder, openReturnedIds } from '@/lib/returned-work';
 
 export const metadata = { title: 'Work items · NMWC' };
 
 /** Where a work item can lead: any static page, or one of these dynamic pages. */
-type WorkHref = Route<`/approvals/${string}` | `/customers/${string}` | `/import/${string}`>;
+type WorkHref = Route<
+  `/approvals/${string}` | `/customers/${string}` | `/customers/${string}/edit` | `/import/${string}`
+>;
 
 export default async function WorkPage() {
   const session = await auth();
@@ -21,6 +24,9 @@ export default async function WorkPage() {
 
   const role = session.user.role;
   const userId = session.user.id;
+
+  // Launch fix: a salesman's way to /rejected from here (his phone has no menu entry for it).
+  let returnedCount = 0;
 
   // Per-role queries
   let items: Array<{
@@ -38,6 +44,19 @@ export default async function WorkPage() {
     // the create form, not the customer profile — route its rows there.
     const editHref = (e: { id: string; process: string; customerId: string | null }): WorkHref =>
       e.process === 'CREATE' ? `/customers/new?edit=${e.id}` : `/customers/${e.customerId}`;
+    // Launch fix: a sent-back update opens on the edit form, which shows why and
+    // — asked for by ?returned= — has what he sent filled in. A close or
+    // reactivation is sent again from the profile, so it still opens there.
+    const returnedHref = (e: {
+      id: string;
+      process: string;
+      customerId: string | null;
+      target: string;
+      isReactivation: boolean;
+    }): WorkHref =>
+      e.process === 'UPDATE' && e.target === 'CUSTOMER' && !e.isReactivation
+        ? `/customers/${e.customerId}/edit?returned=${e.id}`
+        : editHref(e);
     const editTitle = (e: {
       customer: { legalName: string } | null;
       customerDraft: { legalName: string } | null;
@@ -48,13 +67,10 @@ export default async function WorkPage() {
     } as const;
     // perf audit #11/#39: three independent reads — one parallel wave, not
     // three sequential round trips.
-    const [rejected, pending, createDrafts] = await Promise.all([
-      prisma.customerEdit.findMany({
-        where: { submittedById: userId, state: 'NEEDS_CORRECTION' },
-        include,
-        orderBy: { reviewedAt: 'desc' },
-        take: 50,
-      }),
+    // Launch fix: only the sent-back requests still waiting on him — one he
+    // has sent again is answered (lib/returned-work.ts).
+    const [returnedIds, pending, createDrafts] = await Promise.all([
+      openReturnedIds(prisma, userId, { take: 50 }),
       prisma.customerEdit.findMany({
         where: { submittedById: userId, state: 'SUBMITTED' },
         include,
@@ -68,13 +84,20 @@ export default async function WorkPage() {
         take: 50,
       }),
     ]);
+    const rejected = inIdOrder(
+      returnedIds,
+      returnedIds.length > 0
+        ? await prisma.customerEdit.findMany({ where: { id: { in: returnedIds } }, include })
+        : []
+    );
+    returnedCount = rejected.length;
     items = [
       ...rejected.map((e) => ({
         id: e.id,
-        category: e.process === 'CREATE' ? 'New customer — needs correction' : 'Rejected',
+        category: e.process === 'CREATE' ? 'New customer — needs correction' : 'Needs correction',
         title: editTitle(e),
         subtitle: e.decisionReason ?? 'Needs correction',
-        href: editHref(e),
+        href: returnedHref(e),
         state: e.state,
         when: e.reviewedAt,
       })),
@@ -85,7 +108,10 @@ export default async function WorkPage() {
         subtitle:
           e.process === 'CREATE'
             ? `In review — current step: ${e.pendingRole?.replace('_', ' ') ?? '…'}`
-            : 'Submitted to your supervisor',
+            : // A reactivation is a Manager's decision (services/reactivations.ts).
+              e.isReactivation
+              ? 'Sent to a Manager'
+              : 'Submitted to your supervisor',
         href: editHref(e),
         state: e.state,
         when: e.submittedAt,
@@ -264,6 +290,14 @@ export default async function WorkPage() {
     <main>
       <PageHeader title="Work items" subtitle="Things that need your attention" />
       <div className="p-4 sm:p-6">
+        {returnedCount > 0 && (
+          <Link
+            href="/rejected"
+            className="mb-3 inline-flex min-h-11 items-center text-sm font-medium text-brand-700 hover:underline"
+          >
+            Sent back to you ({returnedCount}) — see why
+          </Link>
+        )}
         {items.length === 0 ? (
           <EmptyState title="All clear" description="Nothing is waiting on you right now." />
         ) : (

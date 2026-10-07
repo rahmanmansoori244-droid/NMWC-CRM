@@ -19,6 +19,8 @@ vi.mock('@/lib/db', () => ({
   prisma: {
     user: { findUniqueOrThrow: async () => ({ id: 'u1', fullName: 'Said Ali', ownedRouteId: 'r1' }) },
     customerEdit: { count: async () => 0 },
+    // lib/returned-work.ts countOpenReturned: nothing sent back waits on him.
+    $queryRaw: async () => [{ n: 0 }],
     branch: { findMany: async () => [], count: async () => 12 },
   },
 }));

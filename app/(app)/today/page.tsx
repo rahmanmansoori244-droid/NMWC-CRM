@@ -9,6 +9,7 @@ import { CustomerCard } from '@/components/nmwc/CustomerCard';
 import { EmptyState } from '@/components/nmwc/EmptyState';
 import { Role, type Prisma } from '@prisma/client';
 import { omanDayOfWeek, omanLongDate } from '@/lib/tz';
+import { countOpenReturned } from '@/lib/returned-work';
 
 export const metadata = { title: 'Today · NMWC' };
 
@@ -53,9 +54,10 @@ export default async function TodayPage({
       select: { id: true, fullName: true, ownedRouteId: true },
     }),
     prisma.customerEdit.count({ where: { submittedById: session.user.id, state: 'SUBMITTED' } }),
-    prisma.customerEdit.count({
-      where: { submittedById: session.user.id, state: 'NEEDS_CORRECTION' },
-    }),
+    // Launch fix: a sent-back update he has since sent again no longer waits
+    // on him (lib/returned-work.ts) — counting every sent-back row kept the
+    // tile red for good.
+    countOpenReturned(prisma, session.user.id),
   ]);
   if (!me.ownedRouteId) {
     return (
@@ -145,7 +147,14 @@ export default async function TodayPage({
             can have several branches on the route. */}
         <Stat label="Route branches" value={total} />
         <Stat label="Pending approval" value={pending} tone={pending > 0 ? 'amber' : undefined} />
-        <Stat label="Needs correction" value={rejected} tone={rejected > 0 ? 'red' : undefined} />
+        {/* Launch fix: the way to /rejected on a phone — the bottom bar has no
+            entry for it and a salesman gets no drawer. */}
+        <Stat
+          label="Needs correction"
+          value={rejected}
+          tone={rejected > 0 ? 'red' : undefined}
+          href="/rejected"
+        />
       </div>
 
       <section className="px-4 py-4 sm:px-6">
@@ -242,10 +251,12 @@ function Stat({
   label,
   value,
   tone,
+  href,
 }: {
   label: string;
   value: number;
   tone?: 'red' | 'amber';
+  href?: Route;
 }) {
   const toneClass =
     tone === 'red'
@@ -253,10 +264,18 @@ function Stat({
       : tone === 'amber'
         ? 'text-amber-700 ring-amber-200 bg-amber-50'
         : 'text-slate-900 ring-slate-200 bg-white';
-  return (
-    <div className={`rounded-lg ring-1 ring-inset ${toneClass} px-3 py-2.5 text-center`}>
+  const body = (
+    <>
       <div className="text-xl font-bold">{value}</div>
       <div className="text-xs font-medium text-slate-600">{label}</div>
-    </div>
+    </>
+  );
+  const box = `rounded-lg ring-1 ring-inset ${toneClass} px-3 py-2.5 text-center`;
+  return href ? (
+    <Link href={href} className={`block ${box} hover:ring-2`}>
+      {body}
+    </Link>
+  ) : (
+    <div className={box}>{body}</div>
   );
 }

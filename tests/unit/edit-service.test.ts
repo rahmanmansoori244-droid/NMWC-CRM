@@ -20,7 +20,7 @@
  * The same flows against Postgres: tests/integration/golive-update-flow.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { editPayload, type EditPatch } from '../support/edit-payload';
 import { FORM_OUTDATED_MESSAGE, STALE_FIELDS_MESSAGE } from '@/lib/errors';
 import {
@@ -43,6 +43,7 @@ const h = vi.hoisted(() => ({
 }));
 const tx = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
+  $executeRaw: vi.fn(),
   customer: {
     findUnique: vi.fn(),
     findUniqueOrThrow: vi.fn(),
@@ -50,11 +51,12 @@ const tx = vi.hoisted(() => ({
     update: vi.fn(),
   },
   branch: { findUniqueOrThrow: vi.fn(), updateMany: vi.fn(), update: vi.fn() },
-  customerEdit: { create: vi.fn() },
+  customerEdit: { create: vi.fn(), findFirst: vi.fn(), update: vi.fn() },
   channel: { findUnique: vi.fn() },
   subChannel: { findUnique: vi.fn() },
 }));
 const db = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
   customer: { findUnique: vi.fn(), findFirst: vi.fn() },
   user: { findUniqueOrThrow: vi.fn() },
   customerEdit: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn() },
@@ -63,6 +65,7 @@ const db = vi.hoisted(() => ({
   $transaction: vi.fn(),
 }));
 const audit = vi.hoisted(() => ({ writeAudit: vi.fn(), getAuditEnvelope: vi.fn() }));
+const limits = vi.hoisted(() => ({ keys: [] as string[] }));
 
 vi.mock('@/lib/db', () => ({ prisma: db }));
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
@@ -81,13 +84,20 @@ vi.mock('@/lib/notifications', () => ({
 vi.mock('@/lib/notify-hierarchy', () => ({
   notifySalesmanRequest: vi.fn(async () => ({ mustAct: [], fyi: [] })),
 }));
-vi.mock('@/lib/rate-limit', () => ({ checkLimit: async () => ({ ok: true, retryAfterSec: 0 }), FORM_LIMIT: {} }));
+vi.mock('@/lib/rate-limit', () => ({
+  checkLimit: async (key: string) => {
+    limits.keys.push(key);
+    return { ok: true, retryAfterSec: 0 };
+  },
+  FORM_LIMIT: {},
+}));
 vi.mock('@/lib/completeness', () => ({ scoreCustomer: () => 50, scoreBranch: () => 50 }));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 vi.mock('next/navigation', () => ({ redirect: vi.fn(), notFound: vi.fn() }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
 
-import { submitEditAction } from '@/services/edits';
+import { clearReturnedEditAction, submitEditAction } from '@/services/edits';
+import { RETURNED_CLEARED_REASON } from '@/lib/returned-work';
 
 // cuids, as the schema requires.
 const CUST = 'ckcustomer0000000000000001';
@@ -181,14 +191,23 @@ const failed = (r: unknown) => {
   expect((r as { ok: boolean }).ok, JSON.stringify(r)).toBe(false);
   return r as Fail;
 };
-/** The fieldChanges of the one request written outside a transaction (salesman submit, draft). */
+/**
+ * The fieldChanges of the one request written: a salesman's submit (outside a
+ * transaction), or a draft (saved in place, under its lock: saveUpdateDraft).
+ */
 const storedChanges = () => {
-  expect(db.customerEdit.create).toHaveBeenCalledTimes(1);
-  return db.customerEdit.create.mock.calls[0]![0].data.fieldChanges as Array<Row>;
+  const writes = [
+    ...db.customerEdit.create.mock.calls,
+    ...tx.customerEdit.create.mock.calls,
+    ...tx.customerEdit.update.mock.calls,
+  ];
+  expect(writes).toHaveLength(1);
+  return writes[0]![0].data.fieldChanges as Array<Row>;
 };
 const nothingWritten = () => {
   expect(db.customerEdit.create).not.toHaveBeenCalled();
   expect(tx.customerEdit.create).not.toHaveBeenCalled();
+  expect(tx.customerEdit.update).not.toHaveBeenCalled();
   expect(tx.customer.updateMany).not.toHaveBeenCalled();
   expect(tx.branch.updateMany).not.toHaveBeenCalled();
   expect(audit.writeAudit).not.toHaveBeenCalled();
@@ -216,6 +235,10 @@ beforeEach(() => {
     for (const f of Object.values(group)) f.mockReset();
   }
   tx.$queryRaw.mockReset().mockResolvedValue([]);
+  tx.$executeRaw.mockReset().mockResolvedValue(0);
+  // No sent-back request of his waits on this customer (lib/returned-work.ts).
+  db.$queryRaw.mockReset().mockResolvedValue([]);
+  limits.keys = [];
   db.$transaction.mockReset().mockImplementation(async (fn: (t: typeof tx) => unknown) => {
     try {
       return await fn(tx);
@@ -242,6 +265,13 @@ beforeEach(() => {
     id: 'e-direct',
     state: a.data.state,
     submittedAt: a.data.submittedAt,
+  }));
+  // No draft of his saved yet: the first save inserts one.
+  tx.customerEdit.findFirst.mockResolvedValue(null);
+  tx.customerEdit.update.mockImplementation(async (a: { where: { id: string } }) => ({
+    id: a.where.id,
+    state: 'DRAFT',
+    submittedAt: null,
   }));
   tx.customer.findUniqueOrThrow.mockImplementation(async () => ({ ...(locked ?? live) }));
   tx.customer.updateMany.mockResolvedValue({ count: 1 });
@@ -345,11 +375,11 @@ describe('F05 — a salesman is gated on his own route’s branches, and the set
 
   it('a draft stores no gate, and a Steward’s direct write none either', async () => {
     expect((await submit({ isDraft: true, customer: { notes: 'Half done' } })).ok).toBe(true);
-    expect(db.customerEdit.create.mock.calls[0]![0].data).not.toHaveProperty('submitGate');
-    expect(db.customerEdit.create.mock.calls[0]![0].data.state).toBe('DRAFT');
+    expect(tx.customerEdit.create.mock.calls[0]![0].data).not.toHaveProperty('submitGate');
+    expect(tx.customerEdit.create.mock.calls[0]![0].data.state).toBe('DRAFT');
     asStaff('STEWARD');
     expect((await submit({ customer: { notes: 'Steward note' } })).ok).toBe(true);
-    expect(tx.customerEdit.create.mock.calls[0]![0].data).not.toHaveProperty('submitGate');
+    expect(tx.customerEdit.create.mock.calls[1]![0].data).not.toHaveProperty('submitGate');
   });
 });
 
@@ -830,5 +860,148 @@ describe('F1 — a salesman’s submit tells his region’s Accountant, for info
     const res = await submit({ customer: { notes: 'Closed on Fridays' } });
     expect(res.ok, JSON.stringify(res)).toBe(true);
     expect(db.customerEdit.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** The SQL text and values of a tagged-template call, nested fragments flattened. */
+const sqlOf = (call: unknown[]) => {
+  const sql = Prisma.sql(call[0] as TemplateStringsArray, ...call.slice(1));
+  return { text: sql.sql, values: sql.values };
+};
+
+describe('launch fix — a resubmit answers the sent-back request it fixes (lib/returned-work.ts)', () => {
+  it('a submit answers his sent-back updates of this customer: each gets an audit row naming it, in its transaction', async () => {
+    db.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
+    expect((await submit({ customer: { notes: 'Closed on Fridays' } })).ok).toBe(true);
+    // Asked before the new request existed: his, this customer's, updates only.
+    const asked = sqlOf(db.$queryRaw.mock.calls[0]!);
+    expect(asked.values).toEqual(expect.arrayContaining(['u-sales', CUST]));
+    expect(asked.text).toContain(`e."process" = 'UPDATE' AND e."target" = 'CUSTOMER' AND NOT e."isReactivation"`);
+    expect(db.customerEdit.create).not.toHaveBeenCalled();
+    expect(order(db.$queryRaw)).toBeLessThan(order(tx.customerEdit.create));
+    expect(tx.customerEdit.create.mock.calls[0]![0].data).toMatchObject({ state: 'SUBMITTED', customerId: CUST });
+    expect(audit.writeAudit).toHaveBeenCalledTimes(1);
+    // F13: written with the request that answers it, never on its own.
+    expect(audit.writeAudit.mock.calls[0]![0]).toBe(tx);
+    expect(audit.writeAudit.mock.calls[0]![2]).toMatchObject({
+      action: 'UPDATE',
+      entityType: 'CustomerEdit',
+      entityId: 'e-returned',
+      reason: 'resubmitted: answered by a new request',
+      after: { state: 'NEEDS_CORRECTION', answeredBy: 'e-direct' },
+    });
+  });
+
+  it('a draft answers nothing; with nothing to answer a submit is the one insert it was', async () => {
+    db.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
+    expect((await submit({ isDraft: true, customer: { notes: 'Half done' } })).ok).toBe(true);
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+    db.$queryRaw.mockResolvedValue([]);
+    db.$transaction.mockClear();
+    db.customerEdit.create.mockClear();
+    expect((await submit({ customer: { notes: 'Closed on Fridays' } })).ok).toBe(true);
+    expect(db.customerEdit.create).toHaveBeenCalledTimes(1);
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it('an audit row that cannot be written fails the submit with it: nothing is half-saved', async () => {
+    db.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
+    audit.writeAudit.mockRejectedValueOnce(new Error('pool timeout'));
+    // A genuine 500 (runAction rethrows it): the phone says it got no answer and keeps his work.
+    await expect(submit({ customer: { notes: 'Closed on Fridays' } })).rejects.toThrow('pool timeout');
+    expect(h.rolledBack).toBe(true);
+  });
+});
+
+describe('launch fix — Save draft keeps one draft per person per customer', () => {
+  it('a second Save draft saves over his first, in place, under a lock per person and customer', async () => {
+    tx.customerEdit.findFirst.mockResolvedValue({ id: 'e-draft' });
+    const res = await submit({ isDraft: true, customer: { notes: 'Half done' } });
+    expect(res.ok && res.data).toMatchObject({ editId: 'e-draft', state: 'DRAFT' });
+    expect(tx.customerEdit.create).not.toHaveBeenCalled();
+    expect(db.customerEdit.create).not.toHaveBeenCalled();
+    const upd = tx.customerEdit.update.mock.calls[0]![0] as { where: { id: string }; data: Row };
+    expect(upd.where).toEqual({ id: 'e-draft' });
+    expect(upd.data.fieldChanges).toEqual([{ field: 'customer.notes', before: 'Old note', after: 'Half done' }]);
+    // His own update draft of this customer, and nobody else's.
+    expect(tx.customerEdit.findFirst.mock.calls[0]![0]).toMatchObject({
+      where: {
+        submittedById: 'u-sales',
+        customerId: CUST,
+        state: 'DRAFT',
+        process: 'UPDATE',
+        target: 'CUSTOMER',
+        isReactivation: false,
+      },
+    });
+    // The lock is taken before the read, so two saves at once cannot both insert.
+    expect(order(tx.$executeRaw)).toBeLessThan(order(tx.customerEdit.findFirst));
+    expect(sqlOf(tx.$executeRaw.mock.calls[0]!).values).toContain(`nmwc:edit-draft:u-sales:${CUST}`);
+  });
+
+  it('a draft save spends the draft bucket, never the one his submits share', async () => {
+    await submit({ isDraft: true, customer: { notes: 'Half done' } });
+    await submit({ customer: { notes: 'Closed on Fridays' } });
+    expect(limits.keys).toEqual(['edit-draft:u-sales', 'edit:u-sales']);
+  });
+});
+
+describe('launch fix (review) — he clears a sent-back request he has nothing to send again for', () => {
+  const sentBack = (over: Row = {}) => ({
+    id: 'e-returned',
+    process: 'UPDATE',
+    state: 'NEEDS_CORRECTION',
+    submittedById: 'u-sales',
+    customerId: CUST,
+    ...over,
+  });
+  const clear = () => clearReturnedEditAction({ editId: 'e-returned' });
+
+  it('his own: one audit row, under a lock per request, read and written in one transaction; the request is untouched', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(sentBack());
+    tx.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
+    expect(await clear()).toEqual({ ok: true, data: { editId: 'e-returned' } });
+    expect(sqlOf(tx.$executeRaw.mock.calls[0]!).values).toContain('nmwc:returned-clear:e-returned');
+    // Still waiting on him? Asked under the lock, with the clear rule in the query.
+    expect(order(tx.$executeRaw)).toBeLessThan(order(tx.$queryRaw));
+    const asked = sqlOf(tx.$queryRaw.mock.calls[0]!);
+    expect(asked.values).toEqual(expect.arrayContaining(['u-sales', CUST, RETURNED_CLEARED_REASON]));
+    expect(asked.text).toContain('FROM "AuditLog" a');
+    expect(audit.writeAudit).toHaveBeenCalledTimes(1);
+    expect(audit.writeAudit.mock.calls[0]![0]).toBe(tx);
+    expect(audit.writeAudit.mock.calls[0]![2]).toMatchObject({
+      action: 'UPDATE',
+      entityType: 'CustomerEdit',
+      entityId: 'e-returned',
+      reason: RETURNED_CLEARED_REASON,
+      after: { state: 'NEEDS_CORRECTION', cleared: true },
+    });
+    // It stays sent back: the record of the decision.
+    expect(tx.customerEdit.update).not.toHaveBeenCalled();
+    expect(tx.customerEdit.create).not.toHaveBeenCalled();
+  });
+
+  it('one already answered or cleared (a second tap, a lost answer retried) answers ok and writes nothing', async () => {
+    db.customerEdit.findUnique.mockResolvedValue(sentBack());
+    tx.$queryRaw.mockResolvedValue([]);
+    expect(await clear()).toEqual({ ok: true, data: { editId: 'e-returned' } });
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("anyone else's is not found; a new-customer request is withdrawn instead; one not sent back has nothing to clear", async () => {
+    for (const [row, code] of [
+      [null, 'NOT_FOUND'],
+      [sentBack({ submittedById: 'u-other' }), 'NOT_FOUND'],
+      [sentBack({ process: 'CREATE', customerId: null }), 'EDIT_LOCKED'],
+      [sentBack({ state: 'SUBMITTED' }), 'EDIT_LOCKED'],
+      [sentBack({ state: 'APPROVED' }), 'EDIT_LOCKED'],
+    ] as const) {
+      db.customerEdit.findUnique.mockResolvedValue(row);
+      expect(failed(await clear()).code).toBe(code);
+    }
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
   });
 });

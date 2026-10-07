@@ -124,7 +124,9 @@ describe('assertNoExactCreateDuplicate — the name + phone + region leg', () =>
     const { tx } = fakeTx([shop('Al Noor Shop')]);
     await expect(assertNoExactCreateDuplicate(tx, { ...base, legalName, includeOpenRequests: true })).rejects.toMatchObject({
       code: 'DUPLICATE_CUSTOMER',
-      message: 'This shop already exists: NMWC-2026-000001 — Al Noor Shop (same name, phone and region).',
+      // No caller: the check finalize runs, read by the approver at the last step.
+      message:
+        'This shop already exists: NMWC-2026-000001 — Al Noor Shop (same name, phone and region). It cannot be created twice: reject this request and give that as the reason.',
     });
   });
 
@@ -154,6 +156,8 @@ describe('assertNoExactCreateDuplicate — the name + phone + region leg', () =>
       edit: {
         state: { in: ['DRAFT', 'SUBMITTED', 'NEEDS_CORRECTION'] },
         process: 'CREATE',
+        // Launch fix (review): a departed salesman's draft or sent-back request does not count.
+        OR: [{ state: 'SUBMITTED' }, { submittedBy: { isActive: true } }],
         branchDrafts: { some: { regionId: { in: ['r1', 'r2'] } } },
         id: { not: 'e1' },
       },

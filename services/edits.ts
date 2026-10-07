@@ -97,6 +97,7 @@ import {
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
+import { openReturnedIds, RETURNED_CLEARED_REASON } from '@/lib/returned-work';
 
 async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
@@ -346,7 +347,12 @@ async function submitEditOnce(
   session: Awaited<ReturnType<typeof requireUser>>,
   submissionId: string | undefined
 ): Promise<SubmitReceipt> {
-  const lim = await checkLimit(`edit:${session.id}`, FORM_LIMIT);
+  // Launch fix: a draft save has its own bucket. Every save spent one of the 60
+  // an hour the submits share, so a salesman who saved often was told "Slow
+  // down" when he came to submit. Read off the body before the schema runs: a
+  // body that says draft can write nothing but a draft.
+  const draftSave = (input as { isDraft?: unknown } | undefined)?.isDraft === true;
+  const lim = await checkLimit(`${draftSave ? 'edit-draft' : 'edit'}:${session.id}`, FORM_LIMIT);
   if (!lim.ok) {
     throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
   }
@@ -784,8 +790,9 @@ async function submitEditOnce(
     paymentTermsAtSubmit: customer.paymentTerms,
     currentStepIndex: 0,
     // INVARIANT: `cycle` starts at 1 and is never bumped today, because the only
-    // way to re-submit after NEEDS_CORRECTION is a brand-new edit row (this action
-    // always creates a new CustomerEdit). The step-back cascade + separation-of-
+    // way to re-submit after NEEDS_CORRECTION is a brand-new edit row (a submit
+    // always creates a new CustomerEdit; only a DRAFT is saved over in place, and
+    // a draft is never submitted from). The step-back cascade + separation-of-
     // duty queries key off `cycle`; if the creation-flow increment adds a
     // "re-submit the SAME create-request" path, it MUST increment `cycle` there,
     // or stale prior-cycle EditApproval rows will poison the reject loop guard.
@@ -912,23 +919,52 @@ async function submitEditOnce(
       { timeout: 30_000, maxWait: 10_000 }
     );
   } else {
+    // Launch fix (returned work): his sent-back updates of this customer that
+    // this submit answers. Read before it exists; once it does they no longer
+    // wait on him (lib/returned-work.ts), and each gets an audit row naming it.
+    const answered = isDraft
+      ? []
+      : await openReturnedIds(prisma, me.id, { customerId: customer.id, updatesOnly: true });
+    const answeredEnv = answered.length > 0 ? await getAuditEnvelope(me.id) : null;
+    const submitted: Prisma.CustomerEditUncheckedCreateInput = {
+      target: EditTarget.CUSTOMER,
+      customerId: customer.id,
+      state: editState,
+      submittedById: me.id,
+      submittedAt,
+      fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
+      attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+      submissionId,
+      // F05: a salesman's SUBMITTED request carries the branches it was gated on.
+      ...(submitGate ? { submitGate } : {}),
+      ...chainFields,
+      ...pendingFields,
+    };
     try {
-      edit = await prisma.customerEdit.create({
-        data: {
-          target: EditTarget.CUSTOMER,
-          customerId: customer.id,
-          state: editState,
-          submittedById: me.id,
-          submittedAt,
-          fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
-          attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+      if (isDraft) {
+        edit = await saveUpdateDraft(me.id, customer.id, {
+          fieldChanges: submitted.fieldChanges,
           submissionId,
-          // F05: a salesman's SUBMITTED request carries the branches it was gated on.
-          ...(submitGate ? { submitGate } : {}),
           ...chainFields,
-          ...pendingFields,
-        },
-      });
+        });
+      } else if (!answeredEnv) {
+        edit = await prisma.customerEdit.create({ data: submitted });
+      } else {
+        // F13: the trail on each request it answers commits with it, or neither does.
+        edit = await prisma.$transaction(async (tx) => {
+          const e = await tx.customerEdit.create({ data: submitted });
+          for (const id of answered) {
+            await writeAudit(tx, answeredEnv, {
+              action: 'UPDATE',
+              entityType: 'CustomerEdit',
+              entityId: id,
+              reason: 'resubmitted: answered by a new request',
+              after: { state: EditState.NEEDS_CORRECTION, answeredBy: e.id } as Prisma.InputJsonValue,
+            });
+          }
+          return e;
+        });
+      }
     } catch (err) {
       // QA-017 / EL-09 — partial unique index `CustomerEdit_open_per_customer`
       // enforces "one SUBMITTED edit per customer" at the DB level. The
@@ -947,8 +983,9 @@ async function submitEditOnce(
       throw err;
     }
     // Tell the first approver a review is waiting (in-app Notification row).
-    // Best-effort AFTER the edit exists — an UPDATE submit is a single insert,
-    // not a transaction, and losing a notification is tolerable while losing
+    // Best-effort AFTER the edit exists — an UPDATE submit is a single insert
+    // (with the audit rows of what it answers), the notification is not part of
+    // it, and losing a notification is tolerable while losing
     // a submit is not. try/catch enforces that contract: a transient notify
     // failure must not convert an already-committed submit into a reported
     // error (the salesman's retry would dead-end on EDIT_LOCKED).
@@ -1011,6 +1048,126 @@ async function submitEditOnce(
     submittedAt: edit.submittedAt?.toISOString() ?? null,
     replayed: false,
   };
+}
+
+/**
+ * Launch fix: ONE saved draft per person per customer, saved over in place.
+ * "Save draft" inserted a new DRAFT row every time; nothing reads one back (the
+ * form keeps its draft on the phone), and the customer's Recent activity listed
+ * each as "submitted N change(s)". Serialized per person and customer with a
+ * transaction-scoped advisory lock (lib/create-guards.ts takes them the same
+ * way), so two saves at once cannot both insert. A submit is always a new row:
+ * a draft never becomes a request, so the cycle invariant in submitEditOnce holds.
+ */
+async function saveUpdateDraft(
+  submittedById: string,
+  customerId: string,
+  data: Pick<
+    Prisma.CustomerEditUncheckedCreateInput,
+    | 'fieldChanges'
+    | 'submissionId'
+    | 'process'
+    | 'approvalChain'
+    | 'paymentTermsAtSubmit'
+    | 'currentStepIndex'
+    | 'cycle'
+  >
+) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:edit-draft:${submittedById}:${customerId}`}, 42))`;
+    const saved = await tx.customerEdit.findFirst({
+      where: {
+        submittedById,
+        customerId,
+        state: EditState.DRAFT,
+        process: EditProcess.UPDATE,
+        target: EditTarget.CUSTOMER,
+        isReactivation: false,
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    });
+    if (saved) return tx.customerEdit.update({ where: { id: saved.id }, data });
+    return tx.customerEdit.create({
+      data: {
+        ...data,
+        target: EditTarget.CUSTOMER,
+        customerId,
+        state: EditState.DRAFT,
+        submittedById,
+        submittedAt: null,
+        attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+      },
+    });
+  });
+}
+
+/**
+ * Launch fix: the salesman clears a request sent back to him that he has
+ * nothing to send again for: "the number on file is right", a Manager has since
+ * written the values, or the customer is no longer on his route. A sent-back
+ * request is answered only by a later request of his (lib/returned-work.ts), and
+ * a submit with no change is refused ("No changes to submit."), so such a
+ * request kept Today's red tile, its Work row and Needs correction for good.
+ *
+ * Nothing on the request changes. It stays NEEDS_CORRECTION with its reason, the
+ * record of the decision (the dashboard counts it so). The audit row written
+ * here is the trail, and it is what takes the request off his lists. Only his
+ * own request, only a sent-back one, and never a new-customer request: he
+ * withdraws that from its page (services/creates.ts withdrawCreateAction), which
+ * also frees its CR and shop. Serialized per request, so a double tap writes one
+ * row; one already answered or cleared answers ok and writes nothing.
+ */
+export async function clearReturnedEditAction(input: { editId: string }): SafeAction<{ editId: string }> {
+  return runAction(() => clearReturnedEditCore(input));
+}
+
+async function clearReturnedEditCore(input: { editId: string }): Promise<{ editId: string }> {
+  const me = await requireUser();
+  const editId = typeof input?.editId === 'string' ? input.editId : '';
+  if (!editId) throw new ValidationError({ editId: 'required' });
+  const lim = await checkLimit(`edit:${me.id}`, FORM_LIMIT);
+  if (!lim.ok) {
+    throw new RateLimitError(`Slow down — try again in ${lim.retryAfterSec}s.`);
+  }
+  const edit = await prisma.customerEdit.findUnique({
+    where: { id: editId },
+    select: { id: true, process: true, state: true, submittedById: true, customerId: true },
+  });
+  // His own: anyone else's reads as not found.
+  if (!edit || edit.submittedById !== me.id) throw new NotFoundError('Request not found.');
+  if (edit.process === EditProcess.CREATE) {
+    throw new ConflictError(
+      'EDIT_LOCKED',
+      'A new-customer request is withdrawn from its own page, which also frees its CR number and shop.'
+    );
+  }
+  if (edit.state !== EditState.NEEDS_CORRECTION) {
+    throw new ConflictError('EDIT_LOCKED', 'This request was not sent back to you, so there is nothing to clear.');
+  }
+
+  const env = await getAuditEnvelope(me.id);
+  const cleared = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:returned-clear:${editId}`}, 42))`;
+    // Answered since, cleared by a tap a moment ago, or its customer archived:
+    // it no longer waits on him, and that is the answer.
+    const open = await openReturnedIds(tx, me.id, { customerId: edit.customerId ?? undefined });
+    if (!open.includes(editId)) return false;
+    await writeAudit(tx, env, {
+      action: 'UPDATE',
+      entityType: 'CustomerEdit',
+      entityId: editId,
+      reason: RETURNED_CLEARED_REASON,
+      after: { state: EditState.NEEDS_CORRECTION, cleared: true } as Prisma.InputJsonValue,
+    });
+    return true;
+  });
+
+  if (cleared) logger.info({ editId, by: me.id }, 'edit.returned.clear');
+  revalidatePath('/work');
+  revalidatePath('/today');
+  revalidatePath('/rejected');
+  return { editId };
 }
 
 async function applyEditChanges(
