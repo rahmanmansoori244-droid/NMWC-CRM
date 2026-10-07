@@ -47,6 +47,7 @@ import {
 } from '@/lib/temix';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { lockTemixQueue } from '@/lib/locks';
+import { omanDateISO } from '@/lib/tz';
 
 const BATCH_ROW_CAP = 5000;
 
@@ -115,7 +116,7 @@ async function buildBatchWorkbook(
   const rows = buildTemixRows(customers, batchId);
   const wb = await buildWorkbook(rows, 'Temix Upload');
   const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
-  const stamp = new Date().toISOString().slice(0, 10);
+  const stamp = omanDateISO(); // the Oman day: a UTC date named a batch made before 04:00 for the day before
   return {
     base64: Buffer.from(new Uint8Array(buf)).toString('base64'),
     filename: `temix-upload-${stamp}-${batchId.slice(-6)}.xlsx`,

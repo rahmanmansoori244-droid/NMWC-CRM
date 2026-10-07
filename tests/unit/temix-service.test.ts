@@ -17,7 +17,7 @@
  *  - X-TEMIX-2: re-downloading a batch is rate-limited and writes one EXPORT
  *    audit row before the file is returned; when that write fails, no file.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TemixSyncState } from '@prisma/client';
 import { parseWorkbook } from '@/lib/excel';
 
@@ -437,5 +437,34 @@ describe('downloadTemixBatchAction — X-TEMIX-2', () => {
     expect(h.checkLimit).toHaveBeenCalledWith('temix-download:stew', { capacity: 3, refillPerSec: 0.05 });
     expect(h.batchFind).not.toHaveBeenCalled();
     expect(h.writeAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe('the upload file is named by the Oman day (launch fix)', () => {
+  // 21:30 UTC on the 7th is 01:30 on the 8th in Oman; the process runs in UTC,
+  // as on Vercel. A UTC date named a batch generated before 04:00 for the day before.
+  beforeEach(() => {
+    vi.stubEnv('TZ', 'UTC');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-07T21:30:00.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('on Generate', async () => {
+    model.state.rows = [cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD })];
+    const res = await generateTemixBatchAction();
+    expect(res.ok && res.data.filename).toBe('temix-upload-2026-10-08-ch-new.xlsx');
+  });
+
+  it('on a re-download', async () => {
+    model.state.rows = [cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.UPLOADED })];
+    h.batchFind.mockResolvedValue({ id: 'batch-old', customerIds: ['id-N1'] });
+    const f = new FormData();
+    f.set('batchId', 'batch-old');
+    const res = await downloadTemixBatchAction(f);
+    expect(res.ok && res.data.filename).toBe('temix-upload-2026-10-08-ch-old.xlsx');
   });
 });
