@@ -670,7 +670,10 @@ export function CreateCustomerForm({
 
   return (
     <div className="space-y-4 p-4 sm:p-6">
-      {initial?.state === 'NEEDS_CORRECTION' && initial.decisionReason && (
+      {/* Launch fix (review): a sent-back request saved as a draft since is a
+          DRAFT that still carries the reason (only a submit clears it), and the
+          reason vanished after one Save draft. */}
+      {(initial?.state === 'NEEDS_CORRECTION' || initial?.state === 'DRAFT') && initial.decisionReason && (
         <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-200">
           <strong className="font-semibold">Returned for correction:</strong>{' '}
           {initial.decisionReason}

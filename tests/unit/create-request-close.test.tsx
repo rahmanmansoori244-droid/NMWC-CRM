@@ -99,6 +99,25 @@ describe('the location on a request that is not his to change now', () => {
   });
 });
 
+describe('the reason it was sent back', () => {
+  it('stays in view after he saves it as a draft — only a submit clears it', () => {
+    for (const state of ['NEEDS_CORRECTION', 'DRAFT'] as const) {
+      render(
+        <CreateCustomerForm
+          channels={[]}
+          initial={{ ...initial(state), decisionReason: 'The CR photo is unreadable.' }}
+          sessionUserId="u1"
+        />
+      );
+      expect(screen.getByText('The CR photo is unreadable.')).toBeTruthy();
+      cleanup();
+    }
+    // A draft never sent back has no reason, and shows none.
+    render(<CreateCustomerForm channels={[]} initial={initial('DRAFT')} sessionUserId="u1" />);
+    expect(screen.queryByText(/Returned for correction/)).toBeNull();
+  });
+});
+
 describe('Withdraw', () => {
   const confirm = () => {
     const dialog = screen.getByRole('dialog');
