@@ -263,7 +263,7 @@ describe('the two ways out still work for a flagged session', () => {
     fd.set('currentPassword', 'Initial-Shared-1');
     fd.set('newPassword', 'A-new-password-2026');
     const res = await changeOwnPasswordAction(fd);
-    expect(res).toEqual({ ok: true, data: undefined });
+    expect(res).toEqual({ ok: true, data: { renewed: true } });
     expect(h.userUpdates).toHaveLength(1);
     expect(h.userUpdates[0]!.data).toMatchObject({
       passwordHash: 'hash:A-new-password-2026',
@@ -300,7 +300,7 @@ describe('the two ways out still work for a flagged session', () => {
     fd.set('currentPassword', 'Initial-Shared-1');
     fd.set('newPassword', 'A-new-password-2026');
     fd.set('confirmNewPassword', 'A-new-password-2026');
-    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: undefined });
+    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: { renewed: true } });
     expect(h.userUpdates).toHaveLength(1);
     expect(h.userUpdates[0]!.data).toMatchObject({
       passwordHash: 'hash:A-new-password-2026',
@@ -329,7 +329,7 @@ describe('the two ways out still work for a flagged session', () => {
     fd.set('currentPassword', 'Initial-Shared-1');
     fd.set('newPassword', 'A-new-password-2026');
     fd.set('confirmNewPassword', 'A-new-password-2026');
-    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: undefined });
+    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: { renewed: true } });
     expect(h.signIn).toHaveBeenCalledTimes(1);
     expect(h.signIn).toHaveBeenCalledWith('credentials', {
       username: 'c4',
@@ -340,7 +340,7 @@ describe('the two ways out still work for a flagged session', () => {
     expect(h.signOut).not.toHaveBeenCalled();
   });
 
-  it('a renewal that is refused clears the cookie instead, and the change still stands', async () => {
+  it('a renewal that is refused clears the cookie instead and says so (renewed: false); the change still stands', async () => {
     const { changeOwnPasswordAction } = await import('@/services/password');
     h.session = flagged('MANAGER');
     h.users.set('u-flagged', {
@@ -353,7 +353,7 @@ describe('the two ways out still work for a flagged session', () => {
     const fd = new FormData();
     fd.set('currentPassword', 'Initial-Shared-1');
     fd.set('newPassword', 'A-new-password-2026');
-    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: undefined });
+    expect(await changeOwnPasswordAction(fd)).toEqual({ ok: true, data: { renewed: false } });
     expect(h.userUpdates[0]!.data).toMatchObject({ mustChangePassword: false });
     expect(h.signOut).toHaveBeenCalledWith({ redirect: false });
 
@@ -369,7 +369,7 @@ describe('the two ways out still work for a flagged session', () => {
     const again = new FormData();
     again.set('currentPassword', 'A-new-password-2026');
     again.set('newPassword', 'Another-new-password-2026');
-    expect(await changeOwnPasswordAction(again)).toEqual({ ok: true, data: undefined });
+    expect(await changeOwnPasswordAction(again)).toEqual({ ok: true, data: { renewed: false } });
     expect(h.userUpdates).toHaveLength(1);
   });
 

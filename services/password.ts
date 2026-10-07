@@ -38,7 +38,9 @@ const changePasswordSchema = z.object({
   newPassword: passwordRule,
 });
 
-export async function changeOwnPasswordAction(formData: FormData): SafeAction<void> {
+export async function changeOwnPasswordAction(
+  formData: FormData
+): SafeAction<{ renewed: boolean }> {
   return runAction(() => changeOwnPasswordCore(formData));
 }
 
@@ -99,7 +101,7 @@ async function changeOwnPasswordCore(formData: FormData) {
     });
   });
   revalidatePath('/profile');
-  await renewOwnSession(me.id, me.username, parsed.data.newPassword);
+  return { renewed: await renewOwnSession(me.id, me.username, parsed.data.newPassword) };
 }
 
 /**
@@ -118,12 +120,13 @@ async function changeOwnPasswordCore(formData: FormData) {
  * after the revocation. If that sign-in is refused or fails, the cookie is
  * cleared instead and the user signs in again. After the commit, and never
  * fatal: the password HAS changed, and a cookie left behind still dies at the
- * next freshness check.
+ * next freshness check. Says whether this browser was renewed, so the page can
+ * say where it is taking the user: home, or the sign-in page.
  */
-async function renewOwnSession(userId: string, username: string, password: string) {
+async function renewOwnSession(userId: string, username: string, password: string): Promise<boolean> {
   try {
     await signIn('credentials', { username, password, redirect: false });
-    return;
+    return true;
   } catch (err) {
     logger.warn({ err: String(err), userId }, 'password.change.renew_failed');
   }
@@ -132,4 +135,5 @@ async function renewOwnSession(userId: string, username: string, password: strin
   } catch (err) {
     logger.warn({ err: String(err), userId }, 'password.change.signout_failed');
   }
+  return false;
 }
