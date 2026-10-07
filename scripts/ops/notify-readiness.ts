@@ -17,8 +17,8 @@
  * fixed on /users first instead of discovered as silence.
  *
  * WHAT IT REPORTS, as counts and never as a name, username, address or id:
- *   (a) active approver accounts (MANAGER, SUPERVISOR, ACCOUNTANT, FINANCE_MANAGER)
- *       with an e-mail on file, without one, and with one that is not an address;
+ *   (a) active approver accounts (MANAGER, SUPERVISOR, ACCOUNTANT, FINANCE_MANAGER,
+ *       GM) with an e-mail on file, without one, and with one that is not an address;
  *   (b) active salesmen whose request reaches no supervisor: none set, set to an
  *       inactive account, set to a role that cannot supervise, or set to a Manager
  *       who does not manage the salesman's route region (that Manager is told,
@@ -41,12 +41,17 @@ import { connectWaking, requireExpectedHost } from './requeue-untracked';
 import { operatorErrorLabel } from './error-label';
 import { isEmailAddress } from '../../lib/notify-address';
 
-/** Roles that can receive notification e-mail (lib/notify-policy.ts EMAIL_ROLES). */
+/**
+ * Roles that can receive notification e-mail (lib/notify-policy.ts EMAIL_ROLES;
+ * tests/unit/notify-readiness.test.ts holds the two equal). The GM since owner
+ * decision 6 (2026-10-07): he is e-mailed credit requests at his step.
+ */
 export const READINESS_APPROVER_ROLES: readonly Role[] = [
   Role.MANAGER,
   Role.SUPERVISOR,
   Role.ACCOUNTANT,
   Role.FINANCE_MANAGER,
+  Role.GM,
 ];
 
 /**

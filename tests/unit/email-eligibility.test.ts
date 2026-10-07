@@ -8,6 +8,7 @@ import { EditProcess, PaymentTerms, Role } from '@prisma/client';
 import { resolveChain } from '@/lib/approval-chains';
 import { canActOnStep } from '@/lib/permissions';
 import {
+  escalationReaches,
   planRun,
   rowVerdict,
   waitsOn,
@@ -16,7 +17,8 @@ import {
   type Recipient,
   type RequestNow,
 } from '@/lib/email/eligibility';
-import { EMAIL_DELIVERY, EMAIL_KINDS, EMAIL_ROLES } from '@/lib/notify-policy';
+import { EMAIL_ACT_ONLY_ROLES, EMAIL_DELIVERY, EMAIL_KINDS, EMAIL_ROLES } from '@/lib/notify-policy';
+import { escalationPlan } from '@/lib/escalation';
 
 const NOW = new Date('2026-10-05T08:00:00.000Z');
 const ago = (min: number) => new Date(NOW.getTime() - min * 60_000);
@@ -59,19 +61,127 @@ const req = (over: Partial<RequestNow> = {}): RequestNow => ({
 });
 
 describe('the allowlists', () => {
-  it('no role but MANAGER, SUPERVISOR, ACCOUNTANT and FINANCE_MANAGER is ever e-mailed — whatever the row', () => {
+  it('information goes to MANAGER, SUPERVISOR, ACCOUNTANT and FINANCE_MANAGER only — never the GM, whatever the row', () => {
     for (const role of Object.values(Role)) {
       const v = rowVerdict(row({ kind: 'REQUEST_FYI' }), who(role), req(), NOW);
       const allowed = ([Role.MANAGER, Role.SUPERVISOR, Role.ACCOUNTANT, Role.FINANCE_MANAGER] as Role[]).includes(role);
       expect(v.send ? 'send' : (v as { status: string }).status, role).toBe(allowed ? 'send' : 'SKIPPED_ROLE');
     }
-    expect([...EMAIL_ROLES].sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'MANAGER', 'SUPERVISOR']);
+    // Owner decision 6 (2026-10-07): the GM is e-mailed, for work waiting on him only.
+    expect([...EMAIL_ROLES].sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SUPERVISOR']);
+    expect([...EMAIL_ACT_ONLY_ROLES]).toEqual(['GM']);
   });
 
-  it('only the e-mailed kinds; SLA breaches and the salesman-facing kinds are not', () => {
-    expect([...EMAIL_KINDS].sort()).toEqual(['EDIT_STAGE_ADVANCED', 'EDIT_SUBMITTED', 'REACTIVATION_REQUESTED', 'REQUEST_FYI']);
-    for (const kind of ['SLA_BREACH', 'EDIT_APPROVED_FINAL', 'EDIT_NEEDS_CORRECTION', 'TEMIX_UPLOAD_READY', 'TEMIX_SYNC_ACKED']) {
+  it('a Steward, a Viewer or a salesman is never e-mailed, even a row that would ask him to act', () => {
+    for (const role of [Role.STEWARD, Role.VIEWER, Role.SALESMAN]) {
+      for (const kind of ['EDIT_SUBMITTED', 'EDIT_STAGE_ADVANCED', 'REACTIVATION_REQUESTED', 'SLA_BREACH']) {
+        expect(rowVerdict(row({ kind }), who(role), req(), NOW), `${role} ${kind}`).toEqual({ send: false, status: 'SKIPPED_ROLE' });
+      }
+    }
+  });
+
+  it('only the e-mailed kinds — SLA breaches now among them (owner decision 6); the salesman-facing kinds are not', () => {
+    expect([...EMAIL_KINDS].sort()).toEqual(['EDIT_STAGE_ADVANCED', 'EDIT_SUBMITTED', 'REACTIVATION_REQUESTED', 'REQUEST_FYI', 'SLA_BREACH']);
+    for (const kind of ['EDIT_APPROVED_FINAL', 'EDIT_NEEDS_CORRECTION', 'TEMIX_UPLOAD_READY', 'TEMIX_SYNC_ACKED']) {
       expect(rowVerdict(row({ kind }), who(Role.MANAGER), req(), NOW), kind).toEqual({ send: false, status: 'SKIPPED_KIND' });
+    }
+  });
+});
+
+describe('owner decision 6: the GM is e-mailed work waiting on him', () => {
+  const credit = (step: number, over: Partial<RequestNow> = {}) =>
+    req({ process: 'CREATE', approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT), currentStepIndex: step, ...over });
+  const gm = who(Role.GM, { id: 'gm', managedRegionIds: [] });
+
+  it('a credit request at the GM step is e-mailed to him, as "now at your approval step"', () => {
+    const atGm = credit(2, { pendingRole: Role.GM });
+    expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, atGm, NOW)).toEqual({
+      send: true,
+      item: { kind: 'EDIT_STAGE_ADVANCED', editId: 'e1', requestType: 'CREATE' },
+    });
+  });
+
+  it('not before it reaches him, not once it moved past him, not if he decided another step, not information', () => {
+    for (const step of [0, 1, 3]) {
+      expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, credit(step), NOW), `step ${step}`).toEqual({
+        send: false,
+        status: 'SKIPPED_RESOLVED',
+      });
+    }
+    expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, credit(2, { state: 'APPROVED' }), NOW)).toEqual({
+      send: false,
+      status: 'SKIPPED_RESOLVED',
+    });
+    expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, credit(2, { otherStepActorIds: ['gm'] }), NOW)).toEqual({
+      send: false,
+      status: 'SKIPPED_RESOLVED',
+    });
+    // An update or a cash request never waits on the GM.
+    expect(rowVerdict(row({ userId: 'gm' }), gm, req(), NOW)).toEqual({ send: false, status: 'SKIPPED_RESOLVED' });
+    expect(rowVerdict(row({ userId: 'gm', kind: 'REQUEST_FYI' }), gm, credit(2), NOW)).toEqual({ send: false, status: 'SKIPPED_ROLE' });
+  });
+});
+
+describe('owner decision 6: a late request (SLA_BREACH) goes to the people the escalation tells', () => {
+  const sla = (userId: string) => row({ userId, kind: 'SLA_BREACH' });
+  const verdict = (r: Recipient, edit: RequestNow) => {
+    const v = rowVerdict(sla(r.id), r, edit, NOW);
+    return v.send ? 'send' : v.status;
+  };
+  const manager = who(Role.MANAGER, { id: 'm-in' });
+  const farManager = who(Role.MANAGER, { id: 'm-far', managedRegionIds: [OTHER] });
+  const gm = who(Role.GM, { id: 'gm', managedRegionIds: [] });
+  const fm = who(Role.FINANCE_MANAGER, { id: 'fm', managedRegionIds: [] });
+  const acc = who(Role.ACCOUNTANT, { id: 'acc' });
+
+  it('late at the Supervisor step: the region’s Managers, then the GM; nobody else', () => {
+    for (const pendingRole of [Role.SUPERVISOR, null]) {
+      const e = req({ pendingRole });
+      expect(verdict(manager, e)).toBe('send');
+      expect(verdict(gm, e)).toBe('send');
+      expect(verdict(farManager, e)).toBe('SKIPPED_RESOLVED');
+      expect(verdict(fm, e)).toBe('SKIPPED_RESOLVED');
+      expect(verdict(acc, e)).toBe('SKIPPED_RESOLVED');
+    }
+    const v = rowVerdict(sla('m-in'), manager, req(), NOW);
+    expect(v).toEqual({ send: true, item: { kind: 'SLA_BREACH', editId: 'e1', requestType: 'UPDATE' } });
+  });
+
+  it('late at a later step, or a reactivation: the plan’s people for that step', () => {
+    const credit = (step: number, pendingRole: Role) =>
+      req({ process: 'CREATE', approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT), currentStepIndex: step, pendingRole });
+    expect([fm, gm, manager].map((r) => verdict(r, credit(3, Role.ACCOUNTANT)))).toEqual(['send', 'send', 'SKIPPED_RESOLVED']);
+    expect([gm, fm, manager].map((r) => verdict(r, credit(1, Role.FINANCE_MANAGER)))).toEqual(['send', 'SKIPPED_RESOLVED', 'SKIPPED_RESOLVED']);
+    expect([manager, farManager, fm].map((r) => verdict(r, credit(2, Role.GM)))).toEqual(['send', 'SKIPPED_RESOLVED', 'SKIPPED_RESOLVED']);
+    const react = req({ isReactivation: true, target: 'BRANCH', approvalChain: null, pendingRole: Role.MANAGER });
+    expect([gm, manager].map((r) => verdict(r, react))).toEqual(['send', 'SKIPPED_RESOLVED']);
+  });
+
+  it('never once the request is decided, never the submitter', () => {
+    for (const state of ['APPROVED', 'NEEDS_CORRECTION', 'REJECTED']) {
+      expect(verdict(manager, req({ state })), state).toBe('SKIPPED_RESOLVED');
+      expect(verdict(gm, req({ state })), state).toBe('SKIPPED_RESOLVED');
+    }
+    expect(verdict(who(Role.MANAGER, { id: 's1' }), req())).toBe('SKIPPED_RESOLVED');
+  });
+
+  it('answers as lib/escalation.ts plans, at either level, for every role and step', () => {
+    const steps: Array<Role | null> = [null, Role.SUPERVISOR, Role.MANAGER, Role.ACCOUNTANT, Role.FINANCE_MANAGER, Role.GM];
+    for (const pendingRole of steps) {
+      const plans = [escalationPlan(pendingRole, 1), escalationPlan(pendingRole, 2)];
+      for (const role of Object.values(Role)) {
+        for (const managedRegionIds of [[REGION], [OTHER]]) {
+          const r = who(role, { id: 'x9', managedRegionIds });
+          const named = plans.some(
+            (p) =>
+              p.globalRoles.includes(role) ||
+              (p.regionScopedRoles.includes(role) && managedRegionIds.includes(REGION)) ||
+              // The sweep's fallback for a region nobody covers.
+              (p.regionScopedRoles.length > 0 && role === Role.GM)
+          );
+          expect(escalationReaches(r, req({ pendingRole })), `${pendingRole} ${role} ${managedRegionIds}`).toBe(named);
+        }
+      }
     }
   });
 });
@@ -227,7 +337,8 @@ describe('planRun', () => {
       row({ id: 'r4', userId: 'a1', kind: 'REQUEST_FYI', editId: 'e2' }),
       row({ id: 'r5', userId: 'gm', kind: 'EDIT_STAGE_ADVANCED', editId: 'e1' }),
     ]);
-    expect(p.skips).toEqual([{ id: 'r5', status: 'SKIPPED_ROLE' }]);
+    // The GM is e-mailed now (owner decision 6), but an update never waits on him.
+    expect(p.skips).toEqual([{ id: 'r5', status: 'SKIPPED_RESOLVED' }]);
     expect(p.digests.map((d) => [d.userId, d.rowIds, d.items.map((i) => `${i.kind}:${i.editId}`), d.informationOnly])).toEqual([
       ['m1', ['r1', 'r2'], ['EDIT_SUBMITTED:e1'], false],
       ['a1', ['r3', 'r4'], ['REQUEST_FYI:e1', 'REQUEST_FYI:e2'], true],
@@ -256,6 +367,21 @@ describe('planRun', () => {
     const held = plan([atHisStep], { recentlySent: { any: new Set(['a1']), action: new Set(['a1']) } });
     expect(held.digests).toEqual([]);
     expect(held.deferred).toEqual(['act']);
+  });
+
+  it('a late request and a "please review" are one digest for the person, one line per request (no e-mail storm)', () => {
+    const p = plan([
+      row({ id: 's1', userId: 'm1', kind: 'SLA_BREACH', editId: 'e1' }),
+      row({ id: 's2', userId: 'm1', kind: 'EDIT_SUBMITTED', editId: 'e1' }),
+      row({ id: 's3', userId: 'm1', kind: 'SLA_BREACH', editId: 'e2' }),
+      row({ id: 's4', userId: 'gm', kind: 'SLA_BREACH', editId: 'e1' }),
+      row({ id: 's5', userId: 'gm', kind: 'SLA_BREACH', editId: 'e2' }),
+    ]);
+    expect(p.skips).toEqual([]);
+    expect(p.digests.map((d) => [d.userId, d.rowIds, d.items.map((i) => `${i.kind}:${i.editId}`), d.informationOnly])).toEqual([
+      ['m1', ['s1', 's2', 's3'], ['EDIT_SUBMITTED:e1', 'SLA_BREACH:e2'], false],
+      ['gm', ['s4', 's5'], ['SLA_BREACH:e1', 'SLA_BREACH:e2'], false],
+    ]);
   });
 
   it('the caps hold back whole digests — information before work, then newest first — and say so', () => {

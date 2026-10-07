@@ -20,6 +20,12 @@
  * A level-2 escalation re-sends to the same people unless a tier is added above.
  * Region-scoped roles with nobody over the request's regions fall back to the GM
  * (app/api/cron/sla-escalate/route.ts), never to every Manager in the company.
+ *
+ * Owner decision 6 (2026-10-07): a late request is e-mailed to the people this
+ * plan tells ("the region's managers, then the GM at 2x" — the Supervisor step),
+ * not only shown in-app. The sweep still writes in-app rows only; the e-mail
+ * outbox drains them (lib/notify-policy.ts EMAIL_SLA_BREACH), and the drain asks
+ * this plan again at send time (lib/email/eligibility.ts escalationReaches).
  */
 import { Role } from '@prisma/client';
 

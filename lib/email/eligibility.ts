@@ -8,9 +8,11 @@
  *   - it is younger than the maximum age (an evening's rows go out next morning;
  *     a week-old one never does);
  *   - its kind is e-mailed (EMAIL_KINDS) and its recipient's CURRENT role is on
- *     the allowlist (EMAIL_ROLES: never GM, STEWARD, VIEWER or SALESMAN, and a
- *     role added later fails closed), the account is active, is not a seeded
- *     demo account (lib/demo-accounts.ts), and its address is an address;
+ *     the allowlist (EMAIL_ROLES: never STEWARD, VIEWER or SALESMAN, and a role
+ *     added later fails closed; the GM — owner decision 6 — only for a row that
+ *     asks him to act or chase, EMAIL_ACT_ONLY_ROLES), the account is active, is
+ *     not a seeded demo account (lib/demo-accounts.ts), and its address is an
+ *     address;
  *   - it has not been read in the app;
  *   - its request still exists and, for a row that asks its recipient to act,
  *     still waits on HIM: open, with the request's recorded pending role on the
@@ -27,7 +29,11 @@
  *     "your request advanced" (to the salesman) never is. And it keeps the
  *     e-mail from a supervisor the in-app writer names but the page refuses: a
  *     Manager who does not manage the salesman's route region, or one the
- *     salesman was moved away from after he submitted (fixer review 2026-10-05).
+ *     salesman was moved away from after he submitted (fixer review 2026-10-05);
+ *   - for a late request (SLA_BREACH, owner decision 6), the request is still
+ *     open and he is still someone the escalation tells about it
+ *     (escalationReaches: lib/escalation.ts's plan, a Manager only over the
+ *     request's regions).
  * One digest per recipient per run. The gap and the caps put work first: a
  * digest that asks him to act waits only for an earlier one that also did (an
  * information-only e-mail does not hold back his "please review"); when a cap
@@ -38,7 +44,15 @@
 import { Role } from '@prisma/client';
 import { parseChain } from '../approval-chains';
 import { canActOnStep } from '../permissions';
-import { EMAIL_DELIVERY, EMAIL_KINDS, EMAIL_ROLES, MUST_ACT_KINDS, type EmailDeliveryPolicy } from '../notify-policy';
+import { escalationPlan } from '../escalation';
+import {
+  EMAIL_ACT_ONLY_ROLES,
+  EMAIL_DELIVERY,
+  EMAIL_KINDS,
+  EMAIL_ROLES,
+  MUST_ACT_KINDS,
+  type EmailDeliveryPolicy,
+} from '../notify-policy';
 import { isDemoAccount } from '../demo-accounts';
 import { isEmailAddress } from './config';
 import type { DigestItem, RequestType } from './digest';
@@ -146,6 +160,27 @@ export function waitsOn(recipient: Recipient, kind: string, edit: RequestNow): b
   );
 }
 
+/**
+ * Owner decision 6 (2026-10-07): is this recipient still someone the escalation
+ * tells about this late request? The sweep (app/api/cron/sla-escalate) wrote the
+ * row to its plan's people at the time; at send time the request must still be
+ * open, and he must still hold a role the plan names for the step it waits on
+ * (either level — the row itself says which level reached him): a region-scoped
+ * role only over one of the request's regions (/approvals/[id] refuses a Manager
+ * elsewhere), the GM also where he is the sweep's fallback for a region nobody
+ * covers. Never the submitter.
+ */
+export function escalationReaches(recipient: Recipient, edit: RequestNow): boolean {
+  if (edit.state !== 'SUBMITTED') return false;
+  if (recipient.id === edit.submittedById) return false;
+  const plan = escalationPlan(edit.pendingRole, 2);
+  if (plan.globalRoles.includes(recipient.role)) return true;
+  if (plan.regionScopedRoles.includes(recipient.role)) {
+    return edit.scopeRegionIds.some((r) => recipient.managedRegionIds.includes(r));
+  }
+  return plan.regionScopedRoles.length > 0 && recipient.role === Role.GM;
+}
+
 export type Verdict = { send: true; item: DigestItem } | { send: false; status: SkipStatus };
 
 export function rowVerdict(
@@ -159,6 +194,10 @@ export function rowVerdict(
   if (!(EMAIL_KINDS as readonly string[]).includes(row.kind)) return { send: false, status: 'SKIPPED_KIND' };
   if (!recipient) return { send: false, status: 'SKIPPED_INACTIVE' };
   if (!EMAIL_ROLES.includes(recipient.role)) return { send: false, status: 'SKIPPED_ROLE' };
+  // Owner decision 6: the GM is e-mailed work waiting on him, never information.
+  if (EMAIL_ACT_ONLY_ROLES.includes(recipient.role) && isInformationKind(row.kind)) {
+    return { send: false, status: 'SKIPPED_ROLE' };
+  }
   if (!recipient.isActive) return { send: false, status: 'SKIPPED_INACTIVE' };
   // A seeded demo or test account (lib/demo-accounts.ts) is never a real person's
   // inbox, and production refuses its sign-in, so a link would lead nowhere.
@@ -170,7 +209,8 @@ export function rowVerdict(
   if ((MUST_ACT_KINDS as readonly string[]).includes(row.kind) && !waitsOn(recipient, row.kind, edit)) {
     return { send: false, status: 'SKIPPED_RESOLVED' };
   }
-  if (row.kind === 'SLA_BREACH' && edit.state !== 'SUBMITTED') return { send: false, status: 'SKIPPED_RESOLVED' };
+  // A late request: still open, and he is still one the escalation tells.
+  if (row.kind === 'SLA_BREACH' && !escalationReaches(recipient, edit)) return { send: false, status: 'SKIPPED_RESOLVED' };
   return {
     send: true,
     item: { kind: row.kind as DigestItem['kind'], editId: row.editId, requestType: requestTypeOf(edit) },
