@@ -661,6 +661,15 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     const live = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
     expect(live.contactRole).toBe('Owner'); // rejected proposal never applied
 
+    // Launch fix: what Today, Work, /rejected and the edit page read.
+    const returned = await import('@/lib/returned-work');
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId)).toContain(editId);
+    expect(
+      await returned.openReturnedIds(prisma, ids.salesmanId, { customerId, updatesOnly: true })
+    ).toEqual([editId]);
+    const waitingBefore = await returned.countOpenReturned(prisma, ids.salesmanId);
+    expect(waitingBefore).toBeGreaterThanOrEqual(1);
+
     // Resubmit (a new edit) and approve.
     asSalesman();
     const res2 = await edits.submitEditAction(
@@ -668,6 +677,19 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     );
     expect(res2.ok, JSON.stringify(res2)).toBe(true);
     if (!res2.ok) return;
+
+    // Launch fix: the sent-back request is answered — it leaves every "Needs
+    // correction" count and list at once, before the new one is decided — and
+    // stays on record as sent back, with an audit row naming its answer.
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId)).not.toContain(editId);
+    expect(await returned.openReturnedIds(prisma, ids.salesmanId, { customerId, updatesOnly: true })).toEqual([]);
+    expect(await returned.countOpenReturned(prisma, ids.salesmanId)).toBe(waitingBefore - 1);
+    expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).state).toBe('NEEDS_CORRECTION');
+    const answered = await prisma.auditLog.findFirstOrThrow({
+      where: { entityType: 'CustomerEdit', entityId: editId, action: 'UPDATE', actorId: ids.salesmanId },
+    });
+    expect(answered.reason).toBe('resubmitted: answered by a new request');
+    expect(answered.after).toMatchObject({ answeredBy: res2.data.editId });
     asManager();
     const fd2 = new FormData();
     fd2.set('editId', res2.data.editId);

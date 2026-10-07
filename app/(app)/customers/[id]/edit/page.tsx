@@ -10,6 +10,9 @@ import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { EnrichmentForm } from './EnrichmentForm';
 import { salesmanSubmitGate } from '@/lib/submit-gate';
 import { ownPendingBanner, pendingReplacesDraft, requestKindOf } from '@/lib/submission-replay';
+import { omanWhen } from '@/lib/submission';
+import { openReturnedIds } from '@/lib/returned-work';
+import { returnedPrefill } from './returned';
 
 export const metadata = { title: 'Enrich · NMWC' };
 // UXI-005: never serve a stale cached form. Without this, hitting Back after
@@ -152,6 +155,34 @@ export default async function EditCustomerPage({
   // whether his submit landed. His own pending edit says so in those words.
   const pendingIsMine = pending?.submittedById === session.user.id;
 
+  // Launch fix: his update of this customer that was sent back and that he has
+  // not sent again (lib/returned-work.ts). The page says why, and the form opens
+  // with what he sent filled in (./returned.ts) — Work and Needs correction link
+  // here for it.
+  const [returnedId] = await openReturnedIds(prisma, session.user.id, {
+    customerId: customer.id,
+    updatesOnly: true,
+    take: 1,
+  });
+  const returnedEdit = returnedId
+    ? await prisma.customerEdit.findUnique({
+        where: { id: returnedId },
+        select: {
+          fieldChanges: true,
+          decisionReason: true,
+          reviewedAt: true,
+          submittedAt: true,
+          reviewedBy: { select: { fullName: true } },
+        },
+      })
+    : null;
+  const returned = returnedEdit
+    ? {
+        ...returnedPrefill(customer, returnedEdit.fieldChanges, { lockName, lockCr }),
+        sentAt: (returnedEdit.submittedAt ?? returnedEdit.reviewedAt ?? new Date()).toISOString(),
+      }
+    : null;
+
   return (
     <main className="pb-24">
       <PageHeader
@@ -164,6 +195,27 @@ export default async function EditCustomerPage({
           </div>
         }
       />
+
+      {returnedEdit && returned && (
+        <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 [overflow-wrap:anywhere] sm:mx-6">
+          <p>
+            <strong className="font-semibold">
+              Sent back to you
+              {returnedEdit.reviewedBy ? ` by ${returnedEdit.reviewedBy.fullName}` : ''}
+              {returnedEdit.reviewedAt ? `, ${omanWhen(returnedEdit.reviewedAt)}` : ''}:
+            </strong>{' '}
+            {returnedEdit.decisionReason ?? 'Needs correction.'}
+          </p>
+          <p className="mt-1">
+            What you sent is filled in below. Change what was asked, then submit again.
+          </p>
+          {returned.notFilled.length > 0 && (
+            <p className="mt-1">
+              Not filled in, because it changed after you sent it: {returned.notFilled.join(', ')}.
+            </p>
+          )}
+        </div>
+      )}
 
       {pending && (
         <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
@@ -191,6 +243,7 @@ export default async function EditCustomerPage({
         pendingReplacesDraft={pendingReplacesDraft(pending ? requestKindOf(pending) : null, customer.status)}
         sessionUserId={session.user.id}
         gate={salesmanSubmitGate()}
+        returned={returned ? { prefill: returned.state, sentAt: returned.sentAt } : undefined}
       />
     </main>
   );

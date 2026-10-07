@@ -36,6 +36,7 @@ import {
   type FormBranch,
   type FormCustomer,
   type FormGps,
+  type FormState,
   type KeptFields,
   type LoadedBranch,
   type LoadedCustomer,
@@ -121,6 +122,7 @@ export function EnrichmentForm({
   pendingReplacesDraft = false,
   sessionUserId,
   gate: gateProp,
+  returned,
 }: {
   customer: CustomerWithBranches;
   channels: ChannelWithSubs[];
@@ -143,6 +145,12 @@ export function EnrichmentForm({
   sessionUserId: string;
   /** Which fields block a salesman's submit (FULL / CORE) — see lib/submit-gate.ts. */
   gate?: SubmitGate;
+  /**
+   * Launch fix: his update of this customer that was sent back — the boxes with
+   * what he sent still applying (./returned.ts), and when he sent it. The form
+   * opens on them instead of on the customer as it is.
+   */
+  returned?: { prefill: FormState; sentAt: string };
 }) {
   const gate: SubmitGate = gateProp ?? 'FULL';
   const req = (field: string) => isRequired(field, gate);
@@ -179,9 +187,13 @@ export function EnrichmentForm({
   const loadedRef = useRef<LoadedCustomer>(customer);
 
   // The boxes: the customer's, and each branch's by id.
-  const [values, setValues] = useState<FormCustomer>(() => loadedFormState(customer).customer);
+  // The loaded values stay the base (loadedRef): what he sent goes back as his
+  // changes from them, never as the base.
+  const [values, setValues] = useState<FormCustomer>(
+    () => returned?.prefill.customer ?? loadedFormState(customer).customer
+  );
   const [branchStates, setBranchStates] = useState<Record<string, FormBranch>>(
-    () => loadedFormState(customer).branches
+    () => returned?.prefill.branches ?? loadedFormState(customer).branches
   );
   const setValue = (key: keyof FormCustomer) => (v: string) => {
     if (submitLockRef.current || arrived) return;
@@ -332,6 +344,16 @@ export function EnrichmentForm({
     if (!saved) return;
     try {
       const d = JSON.parse(saved);
+      // Launch fix: a phone draft from before he sent the request that came back
+      // is older than what he sent, which is already in the boxes.
+      if (returned && typeof d.savedAt === 'number' && d.savedAt < Date.parse(returned.sentAt)) {
+        try {
+          window.localStorage.removeItem(draftKey);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
       // UXI-003: stale-draft guard. If the server values the draft started from
       // have changed since, prefer server data and tell the user. Item 22: by
       // the values, not updatedAt — a photo taken after typing bumps updatedAt,
@@ -368,7 +390,7 @@ export function EnrichmentForm({
     } catch {
       /* ignore */
     }
-  }, [draftKey, customer.branches, userRole]);
+  }, [draftKey, customer.branches, userRole, returned]);
 
   // Set when a submit arrived and the page is leaving: from then on nothing
   // writes the phone copy — not a keystroke's autosave already due, which fired

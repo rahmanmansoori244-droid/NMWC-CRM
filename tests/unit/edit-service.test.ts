@@ -20,7 +20,7 @@
  * The same flows against Postgres: tests/integration/golive-update-flow.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { editPayload, type EditPatch } from '../support/edit-payload';
 import { FORM_OUTDATED_MESSAGE, STALE_FIELDS_MESSAGE } from '@/lib/errors';
 import {
@@ -55,6 +55,7 @@ const tx = vi.hoisted(() => ({
   subChannel: { findUnique: vi.fn() },
 }));
 const db = vi.hoisted(() => ({
+  $queryRaw: vi.fn(),
   customer: { findUnique: vi.fn(), findFirst: vi.fn() },
   user: { findUniqueOrThrow: vi.fn() },
   customerEdit: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn() },
@@ -216,6 +217,8 @@ beforeEach(() => {
     for (const f of Object.values(group)) f.mockReset();
   }
   tx.$queryRaw.mockReset().mockResolvedValue([]);
+  // No sent-back request of his waits on this customer (lib/returned-work.ts).
+  db.$queryRaw.mockReset().mockResolvedValue([]);
   db.$transaction.mockReset().mockImplementation(async (fn: (t: typeof tx) => unknown) => {
     try {
       return await fn(tx);
@@ -830,5 +833,57 @@ describe('F1 — a salesman’s submit tells his region’s Accountant, for info
     const res = await submit({ customer: { notes: 'Closed on Fridays' } });
     expect(res.ok, JSON.stringify(res)).toBe(true);
     expect(db.customerEdit.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** The SQL text and values of a tagged-template call, nested fragments flattened. */
+const sqlOf = (call: unknown[]) => {
+  const sql = Prisma.sql(call[0] as TemplateStringsArray, ...call.slice(1));
+  return { text: sql.sql, values: sql.values };
+};
+
+describe('launch fix — a resubmit answers the sent-back request it fixes (lib/returned-work.ts)', () => {
+  it('a submit answers his sent-back updates of this customer: each gets an audit row naming it, in its transaction', async () => {
+    db.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
+    expect((await submit({ customer: { notes: 'Closed on Fridays' } })).ok).toBe(true);
+    // Asked before the new request existed: his, this customer's, updates only.
+    const asked = sqlOf(db.$queryRaw.mock.calls[0]!);
+    expect(asked.values).toEqual(expect.arrayContaining(['u-sales', CUST]));
+    expect(asked.text).toContain(`e."process" = 'UPDATE' AND e."target" = 'CUSTOMER' AND NOT e."isReactivation"`);
+    expect(db.customerEdit.create).not.toHaveBeenCalled();
+    expect(order(db.$queryRaw)).toBeLessThan(order(tx.customerEdit.create));
+    expect(tx.customerEdit.create.mock.calls[0]![0].data).toMatchObject({ state: 'SUBMITTED', customerId: CUST });
+    expect(audit.writeAudit).toHaveBeenCalledTimes(1);
+    // F13: written with the request that answers it, never on its own.
+    expect(audit.writeAudit.mock.calls[0]![0]).toBe(tx);
+    expect(audit.writeAudit.mock.calls[0]![2]).toMatchObject({
+      action: 'UPDATE',
+      entityType: 'CustomerEdit',
+      entityId: 'e-returned',
+      reason: 'resubmitted: answered by a new request',
+      after: { state: 'NEEDS_CORRECTION', answeredBy: 'e-direct' },
+    });
+  });
+
+  it('a draft answers nothing; with nothing to answer a submit is the one insert it was', async () => {
+    db.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
+    expect((await submit({ isDraft: true, customer: { notes: 'Half done' } })).ok).toBe(true);
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+    db.$queryRaw.mockResolvedValue([]);
+    db.$transaction.mockClear();
+    db.customerEdit.create.mockClear();
+    expect((await submit({ customer: { notes: 'Closed on Fridays' } })).ok).toBe(true);
+    expect(db.customerEdit.create).toHaveBeenCalledTimes(1);
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it('an audit row that cannot be written fails the submit with it: nothing is half-saved', async () => {
+    db.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
+    audit.writeAudit.mockRejectedValueOnce(new Error('pool timeout'));
+    // A genuine 500 (runAction rethrows it): the phone says it got no answer and keeps his work.
+    await expect(submit({ customer: { notes: 'Closed on Fridays' } })).rejects.toThrow('pool timeout');
+    expect(h.rolledBack).toBe(true);
   });
 });

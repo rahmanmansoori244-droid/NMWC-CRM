@@ -92,6 +92,7 @@ import { resolveStepAudience, resolveStewardAudience, notifyUsers } from '@/lib/
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
+import { openReturnedIds } from '@/lib/returned-work';
 
 async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
@@ -907,23 +908,46 @@ async function submitEditOnce(
       { timeout: 30_000, maxWait: 10_000 }
     );
   } else {
+    // Launch fix (returned work): his sent-back updates of this customer that
+    // this submit answers. Read before it exists; once it does they no longer
+    // wait on him (lib/returned-work.ts), and each gets an audit row naming it.
+    const answered = isDraft
+      ? []
+      : await openReturnedIds(prisma, me.id, { customerId: customer.id, updatesOnly: true });
+    const answeredEnv = answered.length > 0 ? await getAuditEnvelope(me.id) : null;
+    const submitted: Prisma.CustomerEditUncheckedCreateInput = {
+      target: EditTarget.CUSTOMER,
+      customerId: customer.id,
+      state: editState,
+      submittedById: me.id,
+      submittedAt,
+      fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
+      attachmentChanges: [] as unknown as Prisma.InputJsonValue,
+      submissionId,
+      // F05: a salesman's SUBMITTED request carries the branches it was gated on.
+      ...(submitGate ? { submitGate } : {}),
+      ...chainFields,
+      ...pendingFields,
+    };
     try {
-      edit = await prisma.customerEdit.create({
-        data: {
-          target: EditTarget.CUSTOMER,
-          customerId: customer.id,
-          state: editState,
-          submittedById: me.id,
-          submittedAt,
-          fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
-          attachmentChanges: [] as unknown as Prisma.InputJsonValue,
-          submissionId,
-          // F05: a salesman's SUBMITTED request carries the branches it was gated on.
-          ...(submitGate ? { submitGate } : {}),
-          ...chainFields,
-          ...pendingFields,
-        },
-      });
+      if (!answeredEnv) {
+        edit = await prisma.customerEdit.create({ data: submitted });
+      } else {
+        // F13: the trail on each request it answers commits with it, or neither does.
+        edit = await prisma.$transaction(async (tx) => {
+          const e = await tx.customerEdit.create({ data: submitted });
+          for (const id of answered) {
+            await writeAudit(tx, answeredEnv, {
+              action: 'UPDATE',
+              entityType: 'CustomerEdit',
+              entityId: id,
+              reason: 'resubmitted: answered by a new request',
+              after: { state: EditState.NEEDS_CORRECTION, answeredBy: e.id } as Prisma.InputJsonValue,
+            });
+          }
+          return e;
+        });
+      }
     } catch (err) {
       // QA-017 / EL-09 — partial unique index `CustomerEdit_open_per_customer`
       // enforces "one SUBMITTED edit per customer" at the DB level. The
@@ -942,8 +966,9 @@ async function submitEditOnce(
       throw err;
     }
     // Tell the first approver a review is waiting (in-app Notification row).
-    // Best-effort AFTER the edit exists — an UPDATE submit is a single insert,
-    // not a transaction, and losing a notification is tolerable while losing
+    // Best-effort AFTER the edit exists — an UPDATE submit is a single insert
+    // (with the audit rows of what it answers), the notification is not part of
+    // it, and losing a notification is tolerable while losing
     // a submit is not. try/catch enforces that contract: a transient notify
     // failure must not convert an already-committed submit into a reported
     // error (the salesman's retry would dead-end on EDIT_LOCKED).

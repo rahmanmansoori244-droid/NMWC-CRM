@@ -90,6 +90,7 @@ These were found while writing the user guides. Most are defaults that nobody de
   - (b) Let him reopen the sent-back request and resubmit the same row, as new-customer requests do. The `services/edits.ts` comment warns that `cycle` must then be incremented.
   - (c) Give final decisions such as **Keep closed** a terminal state. Today `REJECTED` is written only by a duplicate merge (AUDITOR-BRIEF §6, "Duplicates & merge").
 - **Decides:** Owner, including which state a finished row takes. **Effort:** M for (a) or (c), L for (b). **Tier:** B.
+- **Launch fix (branch `claude/fix-returned-work`).** Option (a), without a schema change or a new state: a sent-back request counts as answered once the same salesman sends a later request of the same kind for the same customer (the same branch, for a close or reactivation). Today, Work and Needs correction read only unanswered rows (`lib/returned-work.ts`). The old row keeps `NEEDS_CORRECTION` and its reason, so the dashboard is unchanged, and an update resubmit writes an audit row on it naming the new request. A **Keep closed** still waits until he asks again (A1.7).
 
 #### A1.2 Fixing a sent-back update means re-entering every change — P1
 
@@ -98,6 +99,7 @@ These were found while writing the user guides. Most are defaults that nobody de
 - **Where.** `app/(app)/rejected/page.tsx` (the link target), `app/(app)/customers/[id]/edit/page.tsx:141`, and `lib/enrichment-patch.ts` (the patch-v2 bases).
 - **Option.** Build this together with A1.1(b). Prefill from the sent-back request, re-based on today's live values so that the stale-field checks (F06) still apply.
 - **Decides:** Owner, together with A1.1. **Effort:** L, combined with A1.1(b). **Tier:** B.
+- **Launch fix (branch `claude/fix-returned-work`).** Needs correction, Work and Today's red tile lead to the edit form. It shows who sent the update back and why, and it opens with each change he sent that still applies to the live values. A change whose field has moved since is left as it is now and named. The form sends them as ordinary changes from the live values, so F06 still applies.
 
 #### A1.3 New customers need the full field list; updates need only the core — P1
 
