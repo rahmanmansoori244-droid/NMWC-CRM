@@ -58,6 +58,11 @@ const nextConfig: NextConfig = {
   eslint: {
     dirs: ['app', 'components', 'lib', 'services', 'scripts'],
   },
+  // Launch fix: the /import template download (app/(app)/import/template/route.ts)
+  // reads these two files at run time; listed so its function always ships them.
+  outputFileTracingIncludes: {
+    '/import/template': ['./docs/import-templates/*.xlsx'],
+  },
   reactStrictMode: true,
   poweredByHeader: false,
   images: {

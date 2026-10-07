@@ -63,6 +63,14 @@ export default async function ImportPage() {
                 </div>
               </div>
             </details>
+            {/* Launch fix: the generated template (app/(app)/import/template/route.ts). */}
+            <a
+              href="/import/template?kind=account"
+              download
+              className="mt-2 inline-block text-xs font-medium text-slate-700 underline underline-offset-2"
+            >
+              Download the account master template (.xlsx)
+            </a>
           </header>
           <UploadAccountForm />
         </section>
@@ -92,6 +100,14 @@ export default async function ImportPage() {
                 </p>
               </div>
             </details>
+            {/* Launch fix: the generated template (app/(app)/import/template/route.ts). */}
+            <a
+              href="/import/template?kind=customer"
+              download
+              className="mt-2 inline-block text-xs font-medium text-slate-700 underline underline-offset-2"
+            >
+              Download the customer master template (.xlsx)
+            </a>
           </header>
           <UploadCustomerForm />
         </section>
