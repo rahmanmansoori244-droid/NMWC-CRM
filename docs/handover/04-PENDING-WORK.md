@@ -259,6 +259,7 @@ These have been decided. They change only when the owner says so, so do not buil
 - **One shared initial password**, with a forced change at first sign-in (F01). The accepted risk: until an account first signs in, anyone who knows the shared value can take it over.
 - **The `CORE` submit gate is the default** (2026-09-10). A1.3 describes how it differs from the new-customer rules.
 - **The new-customer CR and credit rules** are owner-confirmed (A1.3).
+- **Only the Data Steward switches a region off or on** (owner decision 5, 2026-10-07; built in branch `claude/w2-accounts`). A region is shared (four Managers on MCT, and the two fallback approvers cover most others), so any one Manager could switch it off for the rest. Routes had the same problem, so a route in a region with more than one active Manager is switched by the Steward only; a Manager who manages a region alone keeps the switch for its routes. Rule: `lib/permissions.ts` (`canToggleRegion`, `canToggleRoute`), enforced in `services/routes.ts` and mirrored on `/routes`. Tests: `tests/unit/region-route-toggle.test.tsx`, `RUN_REGION_TOGGLE` (`tests/integration/region-route-toggle.test.ts`).
 
 ### A6. Insights dashboard (F2): built on defaults the owner has not confirmed
 

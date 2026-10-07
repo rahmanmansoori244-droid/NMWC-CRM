@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { loadScope } from '@/lib/access';
+import { canToggleRegion, canToggleRoute } from '@/lib/permissions';
 import { CreateRegionForm, CreateRouteForm, ToggleButton } from './forms';
 
 export const metadata = { title: 'Routes & Regions · NMWC' };
@@ -25,11 +26,20 @@ export default async function RoutesPage() {
     orderBy: { code: 'asc' },
     include: {
       routes: {
-        include: { owner: { select: { fullName: true, username: true } } },
+        include: { owner: { select: { fullName: true, username: true, isActive: true } } },
         orderBy: { code: 'asc' },
       },
+      // Owner decision 5: who else manages the region decides whether a Manager
+      // may switch its routes (lib/permissions.ts canToggleRoute).
+      managers: { where: { role: Role.MANAGER, isActive: true }, select: { id: true } },
     },
   });
+  const me = { id: session.user.id, role: session.user.role };
+  const routeToggle = (r: { managers: { id: string }[] }) =>
+    canToggleRoute(
+      me,
+      r.managers.map((m) => m.id)
+    );
 
   return (
     <main>
@@ -46,6 +56,12 @@ export default async function RoutesPage() {
 
       <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-[1fr_320px]">
         <section className="space-y-4">
+          {isManager && regions.length > 0 && (
+            <p className="text-xs text-slate-500">
+              Only the Data Steward switches a region off or on, and a route in a region you share
+              with another Manager. Ask the Steward.
+            </p>
+          )}
           {regions.map((region) => (
             <div
               key={region.id}
@@ -61,7 +77,15 @@ export default async function RoutesPage() {
                   </h2>
                   <p className="text-xs text-slate-500">{region.routes.length} routes</p>
                 </div>
-                <ToggleButton id={region.id} kind="region" isActive={region.isActive} />
+                {canToggleRegion(me.role) ? (
+                  <ToggleButton id={region.id} kind="region" isActive={region.isActive} />
+                ) : (
+                  !region.isActive && (
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+                      Region off
+                    </span>
+                  )
+                )}
               </header>
               <TableScroll label={`Routes in ${region.name}`}>
                 <table className="min-w-full divide-y divide-slate-100 text-sm">
@@ -81,6 +105,14 @@ export default async function RoutesPage() {
                         <td className="px-4 py-2">{route.name}</td>
                         <td className="px-4 py-2 text-slate-600">
                           {route.owner ? `${route.owner.fullName}` : '— unassigned —'}
+                          {route.owner && !route.owner.isActive && (
+                            <span
+                              title="His account is disabled. The Steward hands the route to the new salesman on Users."
+                              className="ml-1 text-xs text-slate-400"
+                            >
+                              (disabled)
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-2">
                           <span
@@ -94,7 +126,9 @@ export default async function RoutesPage() {
                           </span>
                         </td>
                         <td className="px-4 py-2 text-right">
-                          <ToggleButton id={route.id} kind="route" isActive={route.isActive} />
+                          {routeToggle(region) && (
+                            <ToggleButton id={route.id} kind="route" isActive={route.isActive} />
+                          )}
                         </td>
                       </tr>
                     ))}
