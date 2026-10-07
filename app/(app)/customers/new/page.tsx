@@ -36,12 +36,16 @@ export default async function NewCustomerPage({
 
   // Resume an existing request (draft / needs-correction / submitted status view).
   let initial: CreateFormInitial | null = null;
+  // Security review: the route(s) a draft or sent-back request was started on,
+  // when he has since moved off them. services/creates.ts refuses to save or
+  // send it again; the page says why, above its Withdraw.
+  let startedOn: string | null = null;
   if (editParam) {
     const edit = await prisma.customerEdit.findUnique({
       where: { id: editParam },
       include: {
         customerDraft: true,
-        branchDrafts: { orderBy: { id: 'asc' } },
+        branchDrafts: { orderBy: { id: 'asc' }, include: { route: { select: { code: true } } } },
       },
     });
     // Ownership: a create request is private to its submitter.
@@ -50,6 +54,13 @@ export default async function NewCustomerPage({
     }
     if (edit.state === 'APPROVED' && edit.customerId) {
       redirect(`/customers/${edit.customerId}`);
+    }
+    if (me.ownedRoute && (edit.state === 'DRAFT' || edit.state === 'NEEDS_CORRECTION')) {
+      const myRouteId = me.ownedRoute.id;
+      const elsewhere = new Set(
+        edit.branchDrafts.filter((b) => b.routeId !== myRouteId).map((b) => b.route.code)
+      );
+      if (elsewhere.size > 0) startedOn = [...elsewhere].join(', ');
     }
     const guarantees = await prisma.attachment.findMany({
       where: { editId: edit.id, kind: 'GUARANTEE', deletedAt: null },
@@ -125,6 +136,13 @@ export default async function NewCustomerPage({
             : 'Register a new shop'
         }
       />
+      {startedOn && me.ownedRoute && (
+        <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6 sm:mt-6">
+          This request was started on route {startedOn}. You now work route {me.ownedRoute.code}, so
+          it cannot be saved or sent again. Withdraw it at the bottom of this page, and the salesman
+          of route {startedOn} adds the shop afresh.
+        </div>
+      )}
       {!me.ownedRoute || !me.ownedRoute.isActive ? (
         <div className="m-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:m-6">
           {me.ownedRoute
