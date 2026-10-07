@@ -241,9 +241,17 @@ export default async function CustomersPage({
   const routes = showRoute ? allRoutes.filter((r) => scopeRouteIds.has(r.id)) : [];
   const channels = allChannels;
   const subChannels = allSubChannels;
+  // Launch fix: by the owned route's region, not scopeRouteIds — that set holds
+  // active routes only, and a switched-off route's customers still list.
+  const ownsRouteInMyRegions = (u: (typeof allHierarchyUsers)[number]) =>
+    !!u.ownedRouteRegionId && scopeRegionIds.has(u.ownedRouteRegionId);
   const supervisors = showSupervisor
     ? allHierarchyUsers
         .filter((u) => u.role === Role.SUPERVISOR)
+        // Launch fix: a Manager was offered every supervisor in the company. The
+        // supervisor filter lists his reports' routes, so he is offered those
+        // with a report on a route in his regions.
+        .filter((u) => !regionScoped || allHierarchyUsers.some((r) => r.supervisorId === u.id && ownsRouteInMyRegions(r)))
         .map((u) => ({ id: u.id, fullName: u.fullName, username: u.username }))
     : [];
   const salesmen = showSalesman
@@ -253,7 +261,7 @@ export default async function CustomersPage({
           if (me.role === Role.SUPERVISOR) return u.supervisorId === me.id;
           // Launch fix: a Manager or Accountant was offered every salesman in the
           // company; now only those whose route is in his regions.
-          if (regionScoped) return !!u.ownedRouteId && scopeRouteIds.has(u.ownedRouteId);
+          if (regionScoped) return ownsRouteInMyRegions(u);
           return true;
         })
         .map((u) => ({ id: u.id, fullName: u.fullName, username: u.username }))
