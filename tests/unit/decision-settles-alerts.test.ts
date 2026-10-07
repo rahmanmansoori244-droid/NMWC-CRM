@@ -109,4 +109,18 @@ describe('every decision path settles the rows that asked for it', () => {
   it.each(['approveReactivationCore', 'rejectReactivationCore'])('%s', (fn) => {
     settlesBeforeNotifying(fnBody(src('services/reactivations.ts'), fn), 1);
   });
+
+  it('a merge: each request it auto-closes, read back by its own stamp, before the salesman is told', () => {
+    const s = fnBody(src('services/duplicates.ts'), 'mergeCustomersCore');
+    const close = s.indexOf('state: EditState.REJECTED,');
+    const readBack = s.indexOf('reviewedAt: mergedAt, reviewedById: session.id');
+    const settle = s.indexOf('settleRequestAlerts(tx, { editId: e.id, submittedById: e.submittedById })');
+    const told = s.indexOf('notifyUsers(tx, [e.submittedById],');
+    const reparent = s.indexOf('data: { customerId: winner.id }');
+    expect(close, 'the auto-close').toBeGreaterThan(-1);
+    expect(readBack).toBeGreaterThan(close);
+    expect(settle).toBeGreaterThan(readBack);
+    expect(told).toBeGreaterThan(settle);
+    expect(reparent, 'before the loser’s edits move').toBeGreaterThan(told);
+  });
 });

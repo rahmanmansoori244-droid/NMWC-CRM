@@ -84,7 +84,9 @@ vi.mock('@/lib/db', () => {
       updateMany: rec('customer.updateMany', { count: 1 }),
     },
     branch: { updateMany: rec('branch.updateMany', { count: 1 }) },
-    customerEdit: { updateMany: rec('customerEdit.updateMany', { count: 0 }) },
+    // No open request on the loser: the auto-close matches nothing, so its
+    // read-back (launch fix 2026-10-07: settle and tell) finds nothing either.
+    customerEdit: { updateMany: rec('customerEdit.updateMany', { count: 0 }), findMany: async () => [] },
     attachment: { updateMany: rec('attachment.updateMany', { count: 0 }) },
   };
   return {

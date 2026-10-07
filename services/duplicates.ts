@@ -22,6 +22,7 @@ import {
 } from '@/lib/temix';
 import { lockCustomersAndTemixCodeHolders } from '@/lib/locks';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
 import {
   pairCandidates,
   parseDismissals,
@@ -286,6 +287,25 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
           escalationLevel: 0,
         },
       });
+      // Launch fix (2026-10-07): an auto-closed request is decided too. Its
+      // approvers' rows stop counting in their bells (lib/notifications.ts
+      // settleRequestAlerts), and the salesman is told it ended without a
+      // decision, on the surviving customer (the loser's page is gone). Read back
+      // by this claim's own stamp, so a decision racing it is never counted here.
+      const autoClosed = await tx.customerEdit.findMany({
+        where: { customerId: loser.id, state: EditState.REJECTED, reviewedAt: mergedAt, reviewedById: session.id },
+        select: { id: true, submittedById: true },
+      });
+      for (const e of autoClosed) {
+        await settleRequestAlerts(tx, { editId: e.id, submittedById: e.submittedById });
+        await notifyUsers(tx, [e.submittedById], {
+          kind: 'EDIT_NEEDS_CORRECTION',
+          title: 'Request closed by a merge',
+          body: `${loser.legalName} (${loser.nmwcCode}) — merged into ${winner.nmwcCode}, so your request was closed without a decision. Send it again there if it still applies.`,
+          editId: e.id,
+          customerId: winner.id,
+        });
+      }
       await tx.customerEdit.updateMany({
         where: { customerId: loser.id },
         data: { customerId: winner.id },
