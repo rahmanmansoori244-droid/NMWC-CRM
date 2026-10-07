@@ -2020,6 +2020,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     channelId: true,
                     subChannelId: true,
                     subChannel: { select: { channelId: true } },
+                    // Owner decision 7: its status and its live branches' before
+                    // this group writes any, so the status can follow (below).
+                    status: true,
+                    branches: { where: { deletedAt: null }, select: { id: true, status: true } },
                   },
                 })
               : null;
@@ -2040,11 +2044,6 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   : 'CROSSWALK:customer is archived in the CRM, and an import does not bring an archived customer back — exclude the row; steward review'
               );
             }
-            // Owner decision 7: the branch statuses before this group writes any,
-            // so the customer's status can follow what the load changed (below).
-            const statusBefore = existing
-              ? await liveBranchStatuses(tx, existing.id)
-              : new Map<string, CustomerStatus>();
             // Owner decision 2026-09-25, "branch only" — decided PER ROW. For a
             // customer linked to Temix, a row the Steward fixed in the app writes
             // its own branch and nothing else about the customer, whatever its
@@ -2587,14 +2586,20 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // closed or reopened moves the customer as any other path does
             // (lib/customer-status.ts) — the block above runs only when the file
             // states a status on the full lane, so a fixed row on the branch-only
-            // lane closed a customer's last open branch and left it ACTIVE.
-            await followBranchStatus(
-              tx,
-              env,
-              customerId,
-              branchStatusEvents(statusBefore, await liveBranchStatuses(tx, customerId)),
-              { actorId: me.id, via: `import ${batchId}` }
-            );
+            // lane closed a customer's last open branch and left it ACTIVE. A new
+            // customer takes the file's status above. An existing one can move only
+            // when a row states a status, or when it is not ACTIVE (a branch this
+            // load creates without one is ACTIVE): otherwise nothing is read.
+            if (existing && (resolvedBranches.some((r) => r.status !== null) || existing.status !== 'ACTIVE')) {
+              const statusBefore = new Map(existing.branches.map((b) => [b.id, b.status] as const));
+              await followBranchStatus(
+                tx,
+                env,
+                customerId,
+                branchStatusEvents(statusBefore, await liveBranchStatuses(tx, customerId)),
+                { actorId: me.id, via: `import ${batchId}` }
+              );
+            }
             // What a fixed row asked for and did not get: branch only writes none
             // of the customer's own fields — but an empty phone, below — and the
             // row read PROMOTED with nothing said: a released phone looked loaded

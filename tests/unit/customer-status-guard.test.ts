@@ -42,7 +42,9 @@ describe('the customer status follows its shops on every path that changes a bra
 
   it('the import follows what each group changed, on every lane', () => {
     const s = src('services/imports.ts');
-    expect(s).toMatch(/const statusBefore = existing\s*\?\s*await liveBranchStatuses\(tx, existing\.id\)/);
+    // The statuses before: read with the customer, under its lock, before any write.
+    expect(s).toMatch(/status: true,\s*branches: \{ where: \{ deletedAt: null \}, select: \{ id: true, status: true \} \},\s*\},\s*\}\)\s*:\s*null;/);
+    expect(s).toMatch(/const statusBefore = new Map\(existing\.branches\.map\(/);
     expect(s).toMatch(/await followBranchStatus\(\s*tx,\s*env,\s*customerId,\s*branchStatusEvents\(statusBefore, await liveBranchStatuses\(tx, customerId\)\)/);
   });
 });
