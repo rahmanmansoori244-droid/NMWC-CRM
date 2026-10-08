@@ -266,7 +266,10 @@ async function sendFromNode(
 export async function installCookieBridge(ctx: BrowserContext, extraHeaders?: Record<string, string>): Promise<void> {
   const origin = new URL(BASE_URL).origin;
   await ctx.route(
-    (url) => url.origin === origin && !url.pathname.startsWith('/_next/static/'),
+    // http(s) only. A blob: URL the page made (blob:http://localhost:3000/<uuid>) has the app's
+    // origin too, and WebKit routes it: sent from Node it failed, was aborted, and the photo slot's
+    // <img> of the picked file fired onerror ("This phone could not read this photo", run 2026-10-08).
+    (url) => (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === origin && !url.pathname.startsWith('/_next/static/'),
     async (route) => {
       const req = route.request();
       try {
