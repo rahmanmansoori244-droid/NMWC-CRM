@@ -19,7 +19,8 @@
  *        (lib/decision-token.ts). A page kept open across a step-back or a
  *        correction round is refused STALE_VIEW — approve, reject and bulk,
  *        mid-chain and at the final step — and writes nothing. So is one kept
- *        open while the salesman removed a guarantee document, including a
+ *        open while a guarantee document was removed (by the Steward: the
+ *        salesman may not, while the request is in review), including a
  *        removal still in flight when the decision reads them (FOR SHARE).
  *
  *   RUN_CREDIT_CHAIN=1 node scripts/qa/run-with-env.mjs vitest run \
@@ -30,6 +31,7 @@ import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../suppor
 import { freshDecisionToken } from '../support/decision-token';
 import { guaranteeDigest, parseDecisionToken } from '@/lib/decision-token';
 import { CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
+import { PHOTO_IN_REVIEW_MESSAGE } from '@/lib/photo-attach';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 90_000 });
@@ -51,12 +53,13 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     region: '', route: '',
     salesman: `ZZCC-sales-${tag}`, supervisor: `ZZCC-sup-${tag}`,
     fm: `ZZCC-fm-${tag}`, gm: `ZZCC-gm-${tag}`, acc: `ZZCC-acc-${tag}`,
+    steward: `ZZCC-stw-${tag}`,
   };
   const legalName = `ZZ-SYN Credit Chain ${tag}`;
   // N01's two requests: A (CREDIT, corrected mid-chain) and B (CASH).
   const nameA = `ZZ-SYN Credit Chain N01-A ${tag}`;
   const nameB = `ZZ-SYN Credit Chain N01-B ${tag}`;
-  // And D (CREDIT, two guarantee documents), whose salesman removes them while pages are open.
+  // And D (CREDIT, two guarantee documents), which are removed while pages are open.
   const nameD = `ZZ-SYN Credit Chain N01-D ${tag}`;
   const allNames = [legalName, nameA, nameB, nameD];
   const REQUESTED_LIMIT = 7777;
@@ -95,6 +98,8 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     await prisma.user.create({ data: { id: ids.gm, username: ids.gm, passwordHash: 'x', fullName: 'ZZ GM', role: 'GM' } });
     // Accountant is region-scoped: manage exactly this region so REGION_OVERLAP passes.
     await prisma.user.create({ data: { id: ids.acc, username: ids.acc, passwordHash: 'x', fullName: 'ZZ Acc', role: 'ACCOUNTANT', managedRegions: { connect: { id: region.id } } } });
+    // The Steward removes a guarantee document of a request in review (N01-D).
+    await prisma.user.create({ data: { id: ids.steward, username: ids.steward, passwordHash: 'x', fullName: 'ZZ Steward', role: 'STEWARD' } });
     // Salesman owns the route + reports to the supervisor.
     await prisma.user.create({ data: { id: ids.salesman, username: ids.salesman, passwordHash: 'x', fullName: 'ZZ Sales', role: 'SALESMAN', ownedRouteId: route.id, supervisorId: ids.supervisor } });
 
@@ -121,9 +126,9 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         await prisma.customer.deleteMany({ where: { id: { in: allCust } } });
       }
       await prisma.attachment.deleteMany({ where: { capturedById: ids.salesman } });
-      await purgeAuditLog(prisma, { where: { actorId: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc] } } });
-      await prisma.notification.deleteMany({ where: { userId: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc] } } });
-      await prisma.user.deleteMany({ where: { id: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc] } } });
+      await purgeAuditLog(prisma, { where: { actorId: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc, ids.steward] } } });
+      await prisma.notification.deleteMany({ where: { userId: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc, ids.steward] } } });
+      await prisma.user.deleteMany({ where: { id: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc, ids.steward] } } });
       await prisma.route.deleteMany({ where: { id: ids.route } });
       await prisma.region.deleteMany({ where: { id: ids.region } });
     } catch (e) { console.error('cleanup', e); }
@@ -510,10 +515,17 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect(parseDecisionToken(await fresh(editD))!.guarantees).toBe(guaranteeDigest([gD.one, gD.two]));
     });
 
-    it('the salesman removes one while the Supervisor’s page is open: that page can neither approve nor reject, and nothing is written', async () => {
+    it('one is removed while the Supervisor’s page is open: that page can neither approve nor reject, and nothing is written', async () => {
       asUser(ids.supervisor, 'SUPERVISOR');
       const page = await fresh(editD);
+      // Launch browser suite: with the approvers, his request's documents stay.
       asUser(ids.salesman, 'SALESMAN');
+      expect(await photos.detachPhotoAction({ attachmentId: gD.two })).toEqual({
+        ok: false,
+        code: 'FORBIDDEN',
+        message: PHOTO_IN_REVIEW_MESSAGE,
+      });
+      asUser(ids.steward, 'STEWARD');
       const removed = await photos.detachPhotoAction({ attachmentId: gD.two });
       expect(removed.ok, JSON.stringify(removed)).toBe(true);
 

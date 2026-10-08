@@ -31,8 +31,9 @@
  *                    is ever broken.
  *   guarantees       A CREATE request only (null on an UPDATE): a digest of the
  *                    sorted ids of its live GUARANTEE documents as the page
- *                    rendered them. They are attachments, not columns, and the
- *                    salesman can still Remove one while the request is SUBMITTED,
+ *                    rendered them. They are attachments, not columns, and a
+ *                    Manager or the Steward can still Remove one while the request
+ *                    is SUBMITTED (the salesman cannot: services/photos.ts),
  *                    which changes neither the cycle nor the row — so a decision
  *                    made on a page showing two could land on a request with one.
  *                    The claim cannot compare them; assertGuaranteesAsViewed

@@ -670,3 +670,107 @@ describe.skipIf(!ENABLED)('Remove scope under the customer lock on real Postgres
     }
   });
 });
+
+// Launch browser suite: a salesman removed a photo of his own new-customer request
+// while it was with the approvers (SUBMITTED), and they reviewed a removed photo.
+describe.skipIf(!ENABLED)("a salesman's Remove of a photo on his new-customer request", () => {
+  let prisma: import('@prisma/client').PrismaClient;
+  let submitter: import('@prisma/client').PrismaClient;
+  let photos: typeof import('@/services/photos');
+  let PHOTO_IN_REVIEW_MESSAGE: string;
+  const tag = randomUUID().slice(0, 8);
+  const ids = { region: '', route: '', sales: `ZZPV-sales-${tag}` };
+
+  beforeAll(async () => {
+    if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) throw new Error('ABORT: production');
+    ({ prisma } = await import('@/lib/db'));
+    const { PrismaClient } = await import('@prisma/client');
+    submitter = new PrismaClient();
+    photos = await import('@/services/photos');
+    ({ PHOTO_IN_REVIEW_MESSAGE } = await import('@/lib/photo-attach'));
+    const region = await prisma.region.create({ data: { name: `ZZPV Region ${tag}`, code: `ZZPV-${tag}` } });
+    ids.region = region.id;
+    const route = await prisma.route.create({ data: { name: `ZZPV Route ${tag}`, code: `ZZPV-RT-${tag}`, regionId: region.id } });
+    ids.route = route.id;
+    await prisma.user.create({ data: { id: ids.sales, username: ids.sales, passwordHash: 'x', fullName: 'Synthetic request salesman', role: 'SALESMAN', ownedRouteId: route.id } });
+  });
+
+  beforeEach(() => {
+    gate.hold = null;
+    current = { id: ids.sales, role: 'SALESMAN', username: ids.sales };
+  });
+
+  afterEach(async () => {
+    if (!prisma) return;
+    await prisma.attachment.deleteMany({ where: { capturedById: ids.sales } });
+    await purgeCustomerEdits(prisma, { where: { submittedById: ids.sales } });
+    await purgeAuditLog(prisma, { where: { actorId: ids.sales } });
+    current = null;
+  });
+
+  afterAll(async () => {
+    if (!prisma) return;
+    try {
+      await prisma.user.deleteMany({ where: { id: ids.sales } });
+      await prisma.route.deleteMany({ where: { id: ids.route } });
+      await prisma.region.deleteMany({ where: { id: ids.region } });
+    } finally {
+      await submitter?.$disconnect();
+      await prisma.$disconnect();
+    }
+  });
+
+  /** A new-customer request in `state`, holding one shop photo of his. */
+  async function requestWithPhoto(state: 'DRAFT' | 'SUBMITTED') {
+    const edit = await prisma.customerEdit.create({
+      data: { target: 'CUSTOMER', process: 'CREATE', submittedById: ids.sales, fieldChanges: [], attachmentChanges: [], state },
+    });
+    const att = await prisma.attachment.create({ data: {
+      kind: 'SHOP', r2Key: `zzpv/${tag}/${randomUUID()}.jpg`, mimeType: 'image/jpeg', bytes: 1000,
+      capturedById: ids.sales, capturedAt: new Date(), hash: randomUUID().replace(/-/g, '').padEnd(64, '0'), editId: edit.id,
+    } });
+    return { edit: edit.id, att: att.id };
+  }
+  const deletedAt = async (id: string) => (await prisma.attachment.findUniqueOrThrow({ where: { id } })).deletedAt;
+
+  it('with the approvers: refused, and the photo stays; sent back to him: removed', async () => {
+    const { edit, att } = await requestWithPhoto('SUBMITTED');
+    expect(await photos.detachPhotoAction({ attachmentId: att })).toEqual({ ok: false, code: 'FORBIDDEN', message: PHOTO_IN_REVIEW_MESSAGE });
+    expect(await deletedAt(att)).toBeNull();
+    await prisma.customerEdit.update({ where: { id: edit }, data: { state: 'NEEDS_CORRECTION' } });
+    expect(await photos.detachPhotoAction({ attachmentId: att })).toEqual({ ok: true });
+    expect(await deletedAt(att)).not.toBeNull();
+  });
+
+  it('sent while the Remove runs: the Remove waits on the request row, then is refused', async () => {
+    const { edit, att } = await requestWithPhoto('DRAFT');
+    let removing: ReturnType<typeof photos.detachPhotoAction> | undefined;
+    try {
+      await submitter.$transaction(async (tx) => {
+        // The submit's state write (services/creates.ts), not yet committed.
+        await tx.customerEdit.update({ where: { id: edit }, data: { state: 'SUBMITTED', submittedAt: new Date() } });
+        const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        removing = photos.detachPhotoAction({ attachmentId: att });
+        const deadline = Date.now() + 10_000;
+        let blocked = false;
+        while (Date.now() < deadline) {
+          await tx.$queryRaw`SELECT 1 FROM pg_stat_clear_snapshot()`;
+          const rows = await tx.$queryRaw<Array<{ pid: number }>>`
+            SELECT pid FROM pg_stat_activity
+            WHERE ${pid} = ANY(pg_blocking_pids(pid)) AND query LIKE '%CustomerEdit%FOR UPDATE%'
+          `;
+          if (rows.length) {
+            blocked = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(blocked, 'The Remove must wait on the request row the submit holds').toBe(true);
+      }, { timeout: 20_000, maxWait: 10_000 });
+      expect(await removing!).toEqual({ ok: false, code: 'FORBIDDEN', message: PHOTO_IN_REVIEW_MESSAGE });
+      expect(await deletedAt(att)).toBeNull();
+    } finally {
+      await removing?.catch(() => {});
+    }
+  });
+});

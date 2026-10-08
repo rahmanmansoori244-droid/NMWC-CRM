@@ -67,6 +67,7 @@ import {
   PHOTO_CHANGED_MESSAGE,
   PHOTO_CONFLICT_MESSAGE,
   PHOTO_GONE_MESSAGE,
+  PHOTO_IN_REVIEW_MESSAGE,
   PHOTO_TARGET_CHANGED_MESSAGE,
 } from '@/lib/photo-attach';
 import { CR_DOCUMENT_LOCKED_MESSAGE, PHOTO_WRITER_ROLES } from '@/lib/permissions';
@@ -123,6 +124,10 @@ const customer = (over: Record<string, unknown> = {}) => ({
   branches: [{ id: B1, routeId: 'r1', regionId: 'g1', deletedAt: null }],
   ...over,
 });
+
+/** The customer row locks taken (lib/locks.ts), by the SQL each sent. */
+const customerLocks = () =>
+  db.$queryRaw.mock.calls.filter(([sql]) => (sql as TemplateStringsArray).join('?').includes('"Customer" '));
 
 const wrote = () =>
   db.$transaction.mock.calls.length +
@@ -832,8 +837,71 @@ describe('Remove of CREATE-draft photos preserves its existing scope and no-cust
       expect(db.attachment.updateMany).toHaveBeenCalledOnce();
       expect(audit.writeAudit).toHaveBeenCalledOnce();
     }
-    expect(db.$queryRaw).not.toHaveBeenCalled();
+    // No customer lock: the request has no customer yet. (A salesman's Remove
+    // locks the request's own row: see the next describe.)
+    expect(customerLocks()).toEqual([]);
     expect(db.customer.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+// Launch browser suite: a salesman removed a photo of his own new-customer
+// request while it was with the approvers (SUBMITTED); it got deletedAt, and the
+// approvers then reviewed a removed photo. A draft's or a sent-back request's
+// photo he may still remove; the approvers and the Steward are not refused.
+describe("Remove of a photo on his new-customer request that is with the approvers", () => {
+  const EDIT = 'ckedit00000000000000000001';
+  let state = 'SUBMITTED';
+  beforeEach(() => {
+    state = 'SUBMITTED';
+    s.scope = { ownedRouteId: 'r1', teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.attachment.findFirst.mockResolvedValue(photo({ editId: EDIT }));
+    db.customerEdit.findUnique.mockResolvedValue({
+      customerId: null,
+      branchDrafts: [{ routeId: 'r1', route: { regionId: 'g1' } }],
+    });
+    db.$queryRaw.mockImplementation(async (sql: TemplateStringsArray) =>
+      sql.join('?').includes('"CustomerEdit"') ? [{ state }] : []
+    );
+  });
+  const requestLocks = () =>
+    db.$queryRaw.mock.calls.filter(([sql]) => (sql as TemplateStringsArray).join('?').includes('"CustomerEdit"'));
+
+  it('the salesman is refused, with what to do, and nothing is removed', async () => {
+    expect(await detach({ attachmentId: ATT })).toEqual({
+      ok: false,
+      code: 'FORBIDDEN',
+      message: PHOTO_IN_REVIEW_MESSAGE,
+    });
+    expect(PHOTO_IN_REVIEW_MESSAGE).toMatch(/send the request back/);
+    expect(db.attachment.updateMany).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("the request's row is read locked, under the transaction, before the soft-delete", async () => {
+    state = 'DRAFT';
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    const locks = requestLocks();
+    expect(locks).toHaveLength(1);
+    const [sql, id] = locks[0] as [TemplateStringsArray, string];
+    expect(sql.join('?')).toMatch(/FOR UPDATE$/);
+    expect(id).toBe(EDIT);
+    const lockAt = db.$queryRaw.mock.invocationCallOrder[db.$queryRaw.mock.calls.indexOf(locks[0]!)]!;
+    expect(lockAt).toBeGreaterThan(db.attachment.findFirst.mock.invocationCallOrder[1]!);
+    expect(db.attachment.updateMany.mock.invocationCallOrder[0]).toBeGreaterThan(lockAt);
+  });
+
+  it.each(['DRAFT', 'NEEDS_CORRECTION'])('a %s request: he removes it, as before', async (now) => {
+    state = now;
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    expect(db.attachment.updateMany).toHaveBeenCalledOnce();
+    expect(audit.writeAudit).toHaveBeenCalledOnce();
+  });
+
+  it.each(['MANAGER', 'STEWARD'])('a %s is not refused', async (role) => {
+    s.user = { id: 'x2', role, username: 'x2' };
+    db.attachment.findFirst.mockResolvedValue(photo({ editId: EDIT, capturedById: 'u1' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    expect(requestLocks()).toEqual([]);
   });
 });
 

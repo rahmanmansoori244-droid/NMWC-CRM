@@ -3,7 +3,7 @@
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { requireActor } from '@/lib/session';
-import { Role, AttachmentKind, type Attachment, type Prisma } from '@prisma/client';
+import { Role, AttachmentKind, EditState, type Attachment, type Prisma } from '@prisma/client';
 import {
   ConflictError,
   ForbiddenError,
@@ -23,6 +23,7 @@ import {
   PHOTO_CHANGED_MESSAGE,
   PHOTO_CONFLICT_MESSAGE,
   PHOTO_GONE_MESSAGE,
+  PHOTO_IN_REVIEW_MESSAGE,
   PHOTO_TARGET_CHANGED_MESSAGE,
   UNWIRED_LIVE,
 } from '@/lib/photo-attach';
@@ -626,6 +627,15 @@ async function detachPhotoCore(input: { attachmentId: string }) {
       if (owner && isFieldLocked('crPhoto', sessionUser, owner)) {
         throw new ForbiddenError(CR_DOCUMENT_LOCKED_MESSAGE);
       }
+    }
+    // Launch browser suite: a photo of his new-customer request stays while the
+    // request is with the approvers; removed, they reviewed a removed photo. The
+    // request's row is locked, as its submit's state write locks it before that
+    // submit claims the photos, so a submit cannot land between this and the
+    // soft-delete. A draft's or a sent-back request's photo he still removes.
+    if (session.user.role === Role.SALESMAN && now.editId) {
+      const [request] = await tx.$queryRaw<Array<{ state: EditState }>>`SELECT "state" FROM "CustomerEdit" WHERE "id" = ${now.editId} FOR UPDATE`;
+      if (request?.state === EditState.SUBMITTED) throw new ForbiddenError(PHOTO_IN_REVIEW_MESSAGE);
     }
     // UXI-008: real soft-delete column. Keep the r2Key as-is for the GC job
     // to find the object; clear the hash so dedup queries miss the row. Guarded
