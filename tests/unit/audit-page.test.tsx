@@ -129,6 +129,20 @@ describe('/audit entity filter', () => {
   });
 });
 
+describe('/audit filters are named', () => {
+  it('launch browser suite: every filter is found by its label', async () => {
+    // The search box had only a placeholder and the two selects only a first
+    // option: a screen reader read three unnamed fields, and getByLabel found none.
+    await open({ q: 'edit-1', action: 'APPROVE', entityType: 'CustomerEdit' });
+    expect((screen.getByLabelText('Entity ID contains') as HTMLInputElement).value).toBe('edit-1');
+    expect((screen.getByRole('combobox', { name: 'Action' }) as HTMLSelectElement).value).toBe('APPROVE');
+    expect((screen.getByRole('combobox', { name: 'Entity type' }) as HTMLSelectElement).value).toBe('CustomerEdit');
+    expect(screen.getByLabelText('Entity ID contains').getAttribute('name')).toBe('q');
+    expect(screen.getByLabelText('Action').getAttribute('name')).toBe('action');
+    expect(screen.getByLabelText('Entity type').getAttribute('name')).toBe('entityType');
+  });
+});
+
 describe('/audit ?actor=', () => {
   it('rides along on Apply, is named, and can be cleared', async () => {
     await open({ actor: 'u-ali', entityType: 'CustomerEdit' });
