@@ -33,6 +33,7 @@ import {
   UPLOAD_NO_CONNECTION,
   HEIC_PHOTO_MESSAGE,
   PHOTO_UNREADABLE_MESSAGE,
+  PHOTO_KEPT_NOTE,
   RATE_LIMIT_MAX_WAIT_S,
   PHOTO_REFILL_S,
   resetPhotoLimitClock,
@@ -1373,6 +1374,35 @@ describe('a photo the phone cannot read says why on its slot, and he picks again
     expect(await screen.findByText(PHOTO_UNREADABLE_MESSAGE)).toBeTruthy();
     expect(retryButton()).toBeNull();
     expect(screen.queryByText('Could not get upload URL.')).toBeNull();
+  });
+
+  // Launch review: a Retake it could not read turned a filled slot red over
+  // the earlier photo, which is still attached and counted by the form.
+  it('a Retake it cannot read keeps the slot done: the earlier photo stays, and the slot says so', async () => {
+    decode = 'fail';
+    const onChange = vi.fn();
+    const view = render(
+      <PhotoCaptureSlot
+        kind="SHOP"
+        required
+        attachTo={shopOfB1}
+        initial={{ attachmentId: 'att-0', remoteUrl: '/photo/att-0' }}
+        onChange={onChange}
+      />
+    );
+    pickFile(view.container, broken());
+    expect(await screen.findByText(`${PHOTO_UNREADABLE_MESSAGE} ${PHOTO_KEPT_NOTE}`)).toBeTruthy();
+    const slot = view.container.firstElementChild!;
+    expect(slot.className).toMatch(/border-emerald-300/);
+    expect(slot.className).not.toMatch(/border-red-300/);
+    expect(view.container.querySelector('label[aria-label="Retake photo"]')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Remove photo' })).toBeTruthy();
+    expect(retryButton()).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(seen).toEqual([]);
+
+    pickFile(view.container, heic());
+    expect(await screen.findByText(`${HEIC_PHOTO_MESSAGE} ${PHOTO_KEPT_NOTE}`)).toBeTruthy();
   });
 
   it('the slot is at least h-32, not exactly: the HEIC hint grows a half-width slot rather than being cut off', () => {

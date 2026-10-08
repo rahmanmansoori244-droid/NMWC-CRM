@@ -29,6 +29,8 @@ export const HEIC_PHOTO_MESSAGE =
 /** Any other photo the phone could not read or re-encode: a broken file, an unknown format. */
 export const PHOTO_UNREADABLE_MESSAGE =
   'This phone could not read this photo. Take it again, or pick another photo.';
+/** Said after either of them on a Retake: the photo already on the slot stays. */
+export const PHOTO_KEPT_NOTE = 'Your earlier photo is kept.';
 
 async function compressImage(file: File, maxLong = 1920, quality = 0.85): Promise<Blob> {
   // UXI-024: stream via URL.createObjectURL instead of FileReader.readAsDataURL.
@@ -717,13 +719,15 @@ export function PhotoCaptureSlot({
       // failure here but HEIC's is "could not read": the canvas's or the
       // hash's own words mean nothing to him. A photo kept from an earlier
       // failed upload goes, or Retry upload would send that one, not this.
-      setError(
-        (e as Error).message === HEIC_PHOTO_MESSAGE ? HEIC_PHOTO_MESSAGE : PHOTO_UNREADABLE_MESSAGE
-      );
+      // On a Retake the photo on the slot is still attached and counted: the
+      // slot stays done and says so, not red as if it had lost it.
+      const said =
+        (e as Error).message === HEIC_PHOTO_MESSAGE ? HEIC_PHOTO_MESSAGE : PHOTO_UNREADABLE_MESSAGE;
+      setError(photo ? `${said} ${PHOTO_KEPT_NOTE}` : said);
       unanswered.current = null;
       setRetainedBlob(null);
       setRetainedHash(null);
-      setProgress('error');
+      setProgress(photo ? 'done' : 'error');
       return;
     }
     // B-08: retain so a final-failure "Retry upload" works without re-photographing.
