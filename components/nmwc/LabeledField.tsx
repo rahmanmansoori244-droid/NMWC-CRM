@@ -59,6 +59,10 @@ export function LabeledField({
   autoComplete?: string;
 }) {
   const id = useId();
+  // An error is tied to its field. The notice beside Submit (an alert) says only
+  // "fix what is marked in red"; reaching the field now says what, and that it
+  // is the one in error. Not an alert itself: a refused submit marks several.
+  const invalid = error ? { 'aria-invalid': true, 'aria-describedby': `${id}-error` } : {};
   const cls = `block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500 ${mono ? 'font-mono text-[15px]' : ''} ${disabled ? 'cursor-not-allowed bg-slate-100' : ''}`;
   return (
     <div>
@@ -73,6 +77,7 @@ export function LabeledField({
           placeholder={placeholder}
           maxLength={maxLength}
           onChange={(e) => onChange(e.currentTarget.value)}
+          {...invalid}
           rows={2}
           className={cls}
         />
@@ -87,10 +92,15 @@ export function LabeledField({
           autoComplete={autoComplete}
           maxLength={maxLength}
           onChange={(e) => onChange(e.currentTarget.value)}
+          {...invalid}
           className={cls}
         />
       )}
-      {error && <p className="mt-0.5 text-xs font-medium text-red-600">{error}</p>}
+      {error && (
+        <p id={`${id}-error`} className="mt-0.5 text-xs font-medium text-red-600">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
