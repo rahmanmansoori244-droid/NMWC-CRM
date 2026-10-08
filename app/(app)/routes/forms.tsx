@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useId, useState, useTransition } from 'react';
 import {
   createRegionAction,
   createRouteAction,
   toggleRegionActiveAction,
   toggleRouteActiveAction,
 } from '@/services/routes';
+import { errorTiedTo } from '@/components/nmwc/LabeledField';
 
 // B-17: actions now return `{ ok, ... }` (runAction wrapping) instead of
 // throwing AppError. The form translates that shape into inline errors.
@@ -43,7 +44,11 @@ export function CreateRegionForm() {
       >
         {pending ? 'Creating…' : 'Create region'}
       </button>
-      {errors._form && <p className="text-xs text-red-600">{errors._form}</p>}
+      {errors._form && (
+        <p role="alert" className="text-xs text-red-600">
+          {errors._form}
+        </p>
+      )}
     </form>
   );
 }
@@ -55,6 +60,8 @@ export function CreateRouteForm({
 }) {
   const [pending, start] = useTransition();
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // The Region select is tied to its label and its error, as Input is.
+  const regionField = useId();
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -78,10 +85,14 @@ export function CreateRouteForm({
       <Input label="Code" name="code" placeholder="MCT-09" error={errors.code} />
       <Input label="Name" name="name" placeholder="Muscat MCT-09" error={errors.name} />
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-700">Region *</label>
+        <label htmlFor={regionField} className="mb-1 block text-xs font-medium text-slate-700">
+          Region *
+        </label>
         <select
+          id={regionField}
           name="regionId"
           required
+          {...errorTiedTo(regionField, errors.regionId)}
           className="block w-full rounded-md border-slate-300 px-3 py-2 shadow-sm"
         >
           <option value="">— Pick a region —</option>
@@ -91,7 +102,11 @@ export function CreateRouteForm({
             </option>
           ))}
         </select>
-        {errors.regionId && <p className="mt-0.5 text-[11px] text-red-600">{errors.regionId}</p>}
+        {errors.regionId && (
+          <p id={`${regionField}-error`} role="alert" className="mt-0.5 text-[11px] text-red-600">
+            {errors.regionId}
+          </p>
+        )}
       </div>
       <button
         type="submit"
@@ -100,7 +115,11 @@ export function CreateRouteForm({
       >
         {pending ? 'Creating…' : 'Create route'}
       </button>
-      {errors._form && <p className="text-xs text-red-600">{errors._form}</p>}
+      {errors._form && (
+        <p role="alert" className="text-xs text-red-600">
+          {errors._form}
+        </p>
+      )}
     </form>
   );
 }
@@ -161,16 +180,27 @@ function Input({
   placeholder?: string;
   error?: string;
 }) {
+  // The label tied to its field and an error tied to the field, as LabeledField
+  // ties them, and the error read out (useId: both forms have a Code and a Name).
+  const id = useId();
   return (
     <div>
-      <label className="mb-1 block text-xs font-medium text-slate-700">{label} *</label>
+      <label htmlFor={id} className="mb-1 block text-xs font-medium text-slate-700">
+        {label} *
+      </label>
       <input
+        id={id}
         name={name}
         required
         placeholder={placeholder}
+        {...errorTiedTo(id, error)}
         className="block w-full rounded-md border-slate-300 px-3 py-2 shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
       />
-      {error && <p className="mt-0.5 text-[11px] text-red-600">{error}</p>}
+      {error && (
+        <p id={`${id}-error`} role="alert" className="mt-0.5 text-[11px] text-red-600">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
