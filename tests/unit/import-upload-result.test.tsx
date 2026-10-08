@@ -105,8 +105,10 @@ describe('customer master upload result', () => {
 // refused by the platform before the importer's own "File is too large" could
 // answer, and the Steward saw Next's generic Server Components error. The form
 // now refuses it in the browser, in the importer's words, before the action runs.
+// The cap is 4,300 KB (4.2 MB): just under 4.5 MB, so a workbook Vercel would
+// carry is not refused in the browser.
 describe('a workbook too large to send', () => {
-  const MB4 = 4 * 1024 * 1024;
+  const MAX = 4300 * 1024;
   function choose(size: number) {
     const file = new File([new Uint8Array(size)], 'master.xlsx');
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
@@ -117,22 +119,22 @@ describe('a workbook too large to send', () => {
     ['customer', () => <UploadCustomerForm />, 'Upload customer master', h.customer],
     ['account', () => <UploadAccountForm />, 'Upload account master', h.account],
   ] as const)(
-    '%s master over 4 MB: the app says so, and nothing is sent',
+    '%s master over 4.2 MB: the app says so, and nothing is sent',
     async (_, form, button, action) => {
       render(form());
-      choose(MB4 + 1024);
+      choose(MAX + 1024);
       submit(button);
       expect((await screen.findByRole('alert')).textContent).toBe(
-        'File is too large (4097 KB). Maximum is 4 MB.'
+        'File is too large (4301 KB). Maximum is 4.2 MB.'
       );
       expect(action).not.toHaveBeenCalled();
     }
   );
 
-  it('exactly 4 MB is still sent to the importer', async () => {
+  it('a workbook of exactly 4.2 MB is still sent to the importer', async () => {
     h.customer.mockResolvedValue({ ok: true, data: { batchId: 'b-4mb', clean: 3, quarantined: 0 } });
     render(<UploadCustomerForm />);
-    choose(MB4);
+    choose(MAX);
     submit('Upload customer master');
     expect((await screen.findByRole('status')).textContent).toContain('Uploaded — 3 clean');
     expect(h.customer).toHaveBeenCalledTimes(1);

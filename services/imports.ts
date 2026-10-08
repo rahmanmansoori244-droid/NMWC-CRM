@@ -25,6 +25,7 @@ import { duplicateHeadingIssue, parseWorkbook } from '@/lib/excel';
 import { normalizeCR } from '@/lib/cr';
 import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
 import { checkLimit } from '@/lib/rate-limit';
+import { MAX_IMPORT_BYTES, importFileTooLarge } from '@/lib/import-file-size';
 import { rescoreCustomerTx } from '@/lib/rescore';
 import { subChannelClearedByChannelChange } from '@/lib/channel-pair';
 import bcrypt from 'bcryptjs';
@@ -128,9 +129,6 @@ function uc(v: unknown): string {
     .toUpperCase();
 }
 
-// QA-012: hard cap on uploaded xlsx (zip-bomb defense)
-const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5 MB
-
 /**
  * The shortest address the DATABASE will accept for a branch.
  *
@@ -196,10 +194,9 @@ async function uploadAccountMasterCore(
   }
   const file = formData.get('file');
   if (!(file instanceof File)) throw new ValidationError({ file: 'No file uploaded.' });
+  // QA-012: hard cap on uploaded xlsx (zip-bomb defense), the same the form checks.
   if (file.size > MAX_IMPORT_BYTES) {
-    throw new ValidationError({
-      file: `File is too large (${Math.round(file.size / 1024)} KB). Maximum is 5 MB.`,
-    });
+    throw new ValidationError({ file: importFileTooLarge(file.size) });
   }
   const buf = Buffer.from(await file.arrayBuffer());
 
@@ -1274,10 +1271,9 @@ async function uploadCustomerMasterCore(
   }
   const file = formData.get('file');
   if (!(file instanceof File)) throw new ValidationError({ file: 'No file uploaded.' });
+  // QA-012: hard cap on uploaded xlsx (zip-bomb defense), the same the form checks.
   if (file.size > MAX_IMPORT_BYTES) {
-    throw new ValidationError({
-      file: `File is too large (${Math.round(file.size / 1024)} KB). Maximum is 5 MB.`,
-    });
+    throw new ValidationError({ file: importFileTooLarge(file.size) });
   }
   const buf = Buffer.from(await file.arrayBuffer());
 
