@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useId, useState, useTransition } from 'react';
 import { unstable_rethrow, useRouter } from 'next/navigation';
 import { approveEditAction, approveEditAndGoAction, rejectEditAndGoAction } from '@/services/edits';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
@@ -150,6 +150,9 @@ export function ApproveRejectActions({
   // a second tap in between told the Accountant it was "already APPROVED".
   const [created, setCreated] = useState(false);
   const busy = pending || created;
+  // Each label tied to its field, so a screen reader names it and a tap on the
+  // label focuses it (UAT-07, as LabeledField does).
+  const uid = useId();
 
   function approve() {
     setConfirmingApprove(false);
@@ -222,7 +225,7 @@ export function ApproveRejectActions({
   return (
     <div>
       {errors._form && (
-        <p className="mb-2 text-sm font-medium text-red-600">{errors._form}</p>
+        <p role="alert" className="mb-2 text-sm font-medium text-red-600">{errors._form}</p>
       )}
       {!showReject ? (
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -247,8 +250,11 @@ export function ApproveRejectActions({
         <form onSubmit={reject} className="grid gap-3">
           <h3 className="text-sm font-semibold text-slate-900">Reject this submission</h3>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">Category</label>
+            <label htmlFor={`${uid}-category`} className="mb-1 block text-xs font-medium text-slate-700">
+              Category
+            </label>
             <select
+              id={`${uid}-category`}
               name="category"
               value={category}
               onChange={(e) => setCategory(e.currentTarget.value)}
@@ -283,10 +289,11 @@ export function ApproveRejectActions({
             </div>
           )}
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">
+            <label htmlFor={`${uid}-reason`} className="mb-1 block text-xs font-medium text-slate-700">
               {rejectCopy.reasonLabel}
             </label>
             <textarea
+              id={`${uid}-reason`}
               name="reason"
               value={reason}
               onChange={(e) => setReason(e.currentTarget.value)}
@@ -295,9 +302,15 @@ export function ApproveRejectActions({
               maxLength={1000}
               required
               placeholder={rejectCopy.placeholder}
+              aria-invalid={errors.reason ? true : undefined}
+              aria-describedby={errors.reason ? `${uid}-reason-error` : undefined}
               className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
             />
-            {errors.reason && <p className="mt-0.5 text-xs text-red-600">{errors.reason}</p>}
+            {errors.reason && (
+              <p id={`${uid}-reason-error`} role="alert" className="mt-0.5 text-xs text-red-600">
+                {errors.reason}
+              </p>
+            )}
           </div>
           <div className="flex items-center justify-end gap-2">
             <button
