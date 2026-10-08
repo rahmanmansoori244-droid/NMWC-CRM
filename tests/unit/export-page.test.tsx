@@ -120,6 +120,26 @@ describe('/export lists only what the viewer may export', () => {
     expect(checkboxLabels()).toEqual(expect.arrayContaining(['Muscat', 'Dhofar', 'MCT-01', 'MCT-02', 'DHO-01']));
   });
 
+  it('launch browser suite: every filter field is found by its label', async () => {
+    // Min and Max completeness and Updated since were bare <label>s beside bare
+    // inputs: a screen reader read three unnamed fields, and getByLabel found none.
+    render(await ExportPage());
+    const fields: [string, string][] = [
+      ['Min completeness %', 'number'],
+      ['Max completeness %', 'number'],
+      ['Updated since', 'date'],
+      ['Changes from', 'date'],
+      ['Changes until', 'date'],
+    ];
+    for (const [label, type] of fields) {
+      expect((screen.getByLabelText(label) as HTMLInputElement).type, label).toBe(type);
+    }
+    // Every checkbox is wrapped by its label.
+    for (const name of ['Muscat', 'MCT-01', 'ACTIVE', 'CASH', 'Only customers with changes']) {
+      expect(screen.getByRole('checkbox', { name }), name).toBeTruthy();
+    }
+  });
+
   it('a Manager with no regions is told there is nothing to export', async () => {
     h.regions = h.regions.map((r) => ({ ...r, managers: [] }));
     render(await ExportPage());
