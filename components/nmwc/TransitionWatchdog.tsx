@@ -30,7 +30,11 @@ import { useEffect, useReducer } from 'react';
  * each retry costs one render of the waiting tree. So the same parked lanes are
  * retried less and less often — 1, 2, 4, 8 s apart, then every 10 s — and left
  * alone after MAX_NUDGES (about two minutes), so a transition that never ends
- * is not re-rendered forever. Other lanes, or none, start over.
+ * is not re-rendered forever. Other lanes, or none, start over — and so does a
+ * commit the watchdog did not cause: every transition started inside one async
+ * action shares its lane, so the promote loop keeps the same lane parked for
+ * minutes while it commits its progress, and its final router.refresh() must
+ * still be woken within a second.
  *
  * It reads React's own root fields, which are not public: if they are not found
  * or not numbers, it does nothing. Remove it once the app runs on React >= 19.3
@@ -48,6 +52,11 @@ export type RootLanes = {
   callbackNode: unknown;
   cancelPendingCommit?: unknown;
   timeoutHandle?: unknown;
+  /**
+   * The committed tree's root fiber. React swaps it on every commit (between two
+   * fibers, so two commits between checks look like none; the next is seen).
+   */
+  current?: unknown;
 };
 
 /**
@@ -92,7 +101,10 @@ export const CHECK_EVERY_MS = 500;
  */
 export const NUDGE_GAPS_MS = [1_000, 2_000, 4_000, 8_000, 10_000] as const;
 
-/** Nudges for one parked set of lanes before it is left alone (about two minutes). */
+/**
+ * Nudges for one parked set of lanes, with nothing else committing, before it is
+ * left alone (about two minutes).
+ */
 export const MAX_NUDGES = 15;
 
 /** Checks the same parked lanes must stay parked before nudge number `nudges + 1`. */
@@ -117,6 +129,9 @@ export function TransitionWatchdog({
     let lanes = 0;
     let nudges = 0;
     let parkedChecks = 0;
+    // The committed tree last seen, and whether the watchdog nudged since.
+    let committed: unknown;
+    let nudgedSince = false;
     const id = window.setInterval(() => {
       if (document.visibilityState === 'hidden') {
         parkedChecks = 0;
@@ -133,6 +148,20 @@ export function TransitionWatchdog({
         nudges = 0;
         parkedChecks = 0;
       }
+      // Something else committed since the last check (the promote's progress,
+      // any update): that update made React retry every parked transition
+      // itself, so the same lanes start over too. A long async action keeps one
+      // lane parked for minutes, and must not use up the nudges its final
+      // refresh may need. The nudge's own commit does not count.
+      const current = root?.current;
+      if (current !== committed) {
+        if (!nudgedSince) {
+          nudges = 0;
+          parkedChecks = 0;
+        }
+        committed = current;
+      }
+      nudgedSince = false;
       if (!transitionParked(root)) {
         parkedChecks = 0;
         return;
@@ -144,6 +173,7 @@ export function TransitionWatchdog({
       if (nudges < MAX_NUDGES && parkedChecks >= checksBeforeNudge(nudges, checkEveryMs)) {
         parkedChecks = 0;
         nudges += 1;
+        nudgedSince = true;
         nudge();
       }
     }, checkEveryMs);

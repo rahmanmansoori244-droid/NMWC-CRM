@@ -90,6 +90,15 @@ describe('findReactRoot', () => {
     expect('callbackNode' in root!).toBe(true);
   });
 
+  it('its committed tree (current) changes on a commit: how the watchdog sees other work', () => {
+    const { container, rerender } = render(createElement('p', null, 'hello'));
+    const root = findReactRoot(container)!;
+    const before = root.current;
+    expect(before).toBeTruthy();
+    rerender(createElement('p', null, 'again'));
+    expect(root.current).not.toBe(before);
+  });
+
   it('is null where React rendered nothing', () => {
     expect(findReactRoot(document.createElement('div'))).toBeNull();
   });
@@ -169,6 +178,42 @@ describe('TransitionWatchdog', () => {
     run(commits, 1);
     root = PARKED; // a later tap that happens to park on the same lanes
     expect(run(commits, 2)).toEqual([2]);
+  });
+
+  // Every transition started inside one async action shares the action's lane:
+  // the promote loop (PromoteButton) keeps it parked for minutes while each slice
+  // commits its progress, then calls router.refresh() on that same lane. A commit
+  // the watchdog did not cause starts the back-off over; its own nudges' do not.
+  const ACTION = 0x100; // TransitionLane1, as a probe of a long async action read it
+
+  it('a commit it did not cause starts the same parked lanes over, even after the cap', () => {
+    vi.useFakeTimers();
+    let root: RootLanes = { ...PARKED, pendingLanes: ACTION, suspendedLanes: ACTION, current: {} };
+    const commits = mount(() => root);
+    const commit = () => (root = { ...root, current: {} });
+    // Each nudge's own render commits before the next check: still the back-off.
+    expect(run(commits, checksAt([300])[0]!, (nudgedLast) => nudgedLast && commit())).toEqual(
+      checksAt([1, 2, 4, 8, 16, 26, 36, 46, 56, 66, 76, 86, 96, 106, 116])
+    );
+    // Other work commits; React retries the lane, which parks again: woken again.
+    root = { ...root, callbackNode: {}, current: {} };
+    run(commits, 1);
+    root = { ...root, callbackNode: null };
+    expect(run(commits, 2)).toEqual([2]);
+  });
+
+  it('a promote that commits a slice every 7 s is woken 1, 2 and 4 s after each, for as long as it runs', () => {
+    vi.useFakeTimers();
+    let root: RootLanes = { ...PARKED, pendingLanes: ACTION, suspendedLanes: ACTION, current: {} };
+    const commits = mount(() => root);
+    const commit = () => (root = { ...root, current: {} });
+    // 40 slices: about five minutes, far past MAX_NUDGES. The last window is the
+    // final router.refresh() parked after the last slice: still woken in a second.
+    for (let slice = 0; slice < 40; slice++) {
+      commit(); // the slice's setLive
+      const at = run(commits, checksAt([7])[0]!, (nudgedLast) => nudgedLast && commit());
+      expect(at, `slice ${slice + 1}`).toEqual(checksAt([1, 2, 4]));
+    }
   });
 
   it('leaves React alone while nothing is parked, or the tab is hidden', () => {
