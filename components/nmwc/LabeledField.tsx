@@ -21,6 +21,24 @@
  */
 import { useId } from 'react';
 
+/**
+ * A field's error, tied to the field: `aria-invalid`, and `aria-describedby`
+ * pointing at the error rendered with id `${id}-error`. Nothing when no error.
+ */
+export function errorTiedTo(id: string, error?: string) {
+  return error ? { 'aria-invalid': true, 'aria-describedby': `${id}-error` } : {};
+}
+
+/**
+ * A caption over a group of controls (photo slots, the GPS capture, the
+ * steppers), where there is no single field for a <label> to point at: the
+ * caption with this id names the group, and its error (`${id}-error`), when
+ * shown, describes it.
+ */
+export function groupNamedBy(id: string, error?: string) {
+  return { role: 'group', 'aria-labelledby': id, 'aria-describedby': error ? `${id}-error` : undefined } as const;
+}
+
 export function LabeledField({
   label,
   value,
@@ -62,7 +80,7 @@ export function LabeledField({
   // An error is tied to its field. The notice beside Submit (an alert) says only
   // "fix what is marked in red"; reaching the field now says what, and that it
   // is the one in error. Not an alert itself: a refused submit marks several.
-  const invalid = error ? { 'aria-invalid': true, 'aria-describedby': `${id}-error` } : {};
+  const invalid = errorTiedTo(id, error);
   const cls = `block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500 ${mono ? 'font-mono text-[15px]' : ''} ${disabled ? 'cursor-not-allowed bg-slate-100' : ''}`;
   return (
     <div>
