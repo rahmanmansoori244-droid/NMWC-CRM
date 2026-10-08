@@ -71,6 +71,7 @@ import {
   PHOTO_TARGET_CHANGED_MESSAGE,
 } from '@/lib/photo-attach';
 import { CR_DOCUMENT_LOCKED_MESSAGE, PHOTO_WRITER_ROLES } from '@/lib/permissions';
+import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 
 const HOST = 'nmwc.example';
 async function call(handler: (req: NextRequest) => Promise<Response>, name: string, body: unknown) {
@@ -981,6 +982,70 @@ describe('owner decision 2: the CR document of a credit customer', () => {
     s.user = { id: 'x2', role: 'MANAGER', username: 'x2' };
     s.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: ['g1'] };
     db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+  });
+});
+
+// Launch browser suite: on a switched-off route his enrichments, closes and
+// reactivations are refused (ROUTE_INACTIVE_MESSAGE), but he could still attach
+// or remove the photos of a live branch, and the CR photo of a CASH customer,
+// which write the slots directly. A photo of his new-customer request is on no
+// customer yet; New customer refuses that request. Managers and the Steward are
+// not asked.
+describe('a salesman on a switched-off route', () => {
+  const EDIT = 'ckedit00000000000000000001';
+  beforeEach(() => {
+    db.user.findUniqueOrThrow.mockResolvedValue({ ownedRouteId: 'r1', ownedRoute: { isActive: false } });
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+  });
+  const refused = (res: Awaited<ReturnType<typeof attach>>) => {
+    expect(res).toEqual({ ok: false, code: 'FORBIDDEN', message: ROUTE_INACTIVE_MESSAGE });
+    expect(wrote()).toBe(0);
+  };
+
+  it.each([
+    ['a shop photo', photo(), { branchId: B1, slot: 'SHOP' }],
+    ['a signboard photo', photo({ kind: 'SIGNBOARD' }), { branchId: B1, slot: 'SIGNBOARD' }],
+    ['an extra photo', photo({ kind: 'FREE' }), { branchId: B1, slot: 'FREE' }],
+    ["a CASH customer's CR photo", photo({ kind: 'CR' }), { customerId: CUST, slot: 'CR' }],
+  ])('cannot attach %s', async (_n, att, target) => {
+    db.attachment.findUnique.mockResolvedValue(att);
+    refused(await attach({ attachmentId: ATT, ...target }));
+  });
+
+  it.each([
+    ['a shop photo', photo({ branchId: B1 })],
+    ['an extra photo', photo({ kind: 'FREE', branchId: B1, branchExtraId: B1 })],
+    ["a CASH customer's CR photo", photo({ kind: 'CR', customerId: CUST })],
+  ])('cannot remove %s', async (_n, att) => {
+    db.attachment.findFirst.mockResolvedValue(att);
+    db.branch.findUnique.mockResolvedValue(branch());
+    refused(await detach({ attachmentId: ATT }));
+  });
+
+  it('a photo of his new-customer request, or one on no slot yet, is not refused here', async () => {
+    db.customerEdit.findUnique.mockResolvedValue({ customerId: null, branchDrafts: [{ routeId: 'r1', route: { regionId: 'g1' } }] });
+    for (const att of [photo({ editId: EDIT }), photo()]) {
+      db.attachment.findFirst.mockResolvedValue(att);
+      expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    }
+  });
+
+  it('on a live route, as before', async () => {
+    db.user.findUniqueOrThrow.mockResolvedValue({ ownedRouteId: 'r1', ownedRoute: { isActive: true } });
+    db.attachment.findUnique.mockResolvedValue(photo());
+    expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toEqual({ ok: true });
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1 }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+  });
+
+  it.each(['MANAGER', 'STEWARD'])('a %s still attaches and removes there', async (role) => {
+    s.user = { id: 'x2', role, username: 'x2' };
+    s.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.attachment.findUnique.mockResolvedValue(photo({ capturedById: 'x2' }));
+    expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toEqual({ ok: true });
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1 }));
     expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
   });
 });

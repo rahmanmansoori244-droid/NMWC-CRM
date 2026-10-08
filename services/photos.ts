@@ -9,6 +9,7 @@ import {
   ForbiddenError,
   ValidationError,
   NotFoundError,
+  ROUTE_INACTIVE_MESSAGE,
   runAction,
   type SafeAction,
 } from '@/lib/errors';
@@ -241,12 +242,16 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     if (session.user.role === Role.SALESMAN) {
       const me = await prisma.user.findUniqueOrThrow({
         where: { id: session.user.id },
-        select: { ownedRouteId: true },
+        select: { ownedRouteId: true, ownedRoute: { select: { isActive: true } } },
       });
       ownedRouteId = me.ownedRouteId;
       if (!c.branches.some((b) => b.routeId === ownedRouteId)) {
         throw new ForbiddenError('Customer not on your route.');
       }
+      // Launch browser suite: a switched-off route takes no photo from him onto a
+      // live customer or branch, as it takes no enrichment, close or reactivation
+      // (ROUTE_INACTIVE_MESSAGE). A Manager or the Steward still writes them.
+      if (me.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
       // Owner decision 2 (2026-10-07): the CR document of a CREDIT customer
       // follows its finance-locked CR number. An attach goes live at once and
       // an update request cannot carry a photo for approval, so a salesman's is
@@ -358,12 +363,14 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     if (session.user.role === Role.SALESMAN) {
       const me = await prisma.user.findUniqueOrThrow({
         where: { id: session.user.id },
-        select: { ownedRouteId: true },
+        select: { ownedRouteId: true, ownedRoute: { select: { isActive: true } } },
       });
       ownedRouteId = me.ownedRouteId;
       if (b.routeId !== ownedRouteId) {
         throw new ForbiddenError('Branch not on your route.');
       }
+      // A switched-off route: as for the CR photo above.
+      if (me.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
     } else if (session.user.role === Role.MANAGER) {
       // SEC-H1 (completeness): region-scope the Manager branch-photo attach too,
       // via the branch's owning customer. Fail-closed for empty managedRegions.
@@ -545,6 +552,16 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   }
   if (session.user.role === Role.SALESMAN && att.capturedById !== session.user.id) {
     throw new ForbiddenError('You can only remove photos you captured.');
+  }
+  // Launch browser suite: nor one on a live customer or branch while his route
+  // is switched off, as attach refuses. A photo of a new-customer request not
+  // yet approved is on neither: New customer's own refusal covers that request.
+  if (session.user.role === Role.SALESMAN && (att.customerId || att.branchId || att.branchExtraId)) {
+    const me = await prisma.user.findUniqueOrThrow({
+      where: { id: session.user.id },
+      select: { ownedRoute: { select: { isActive: true } } },
+    });
+    if (me.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
   }
   // Owner decision 2 (2026-10-07): nor the CR document of a credit customer,
   // even one he took — removing it changes it as much as replacing it does.
