@@ -14,7 +14,7 @@
  * the form gave it. submit-forms.test.tsx covers the retry and receipt paths.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import { useEffect } from 'react';
 
 const h = vi.hoisted(() => ({
@@ -102,5 +102,37 @@ describe('the evidence photo is on no slot until the request is accepted', () =>
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.getByRole('button', { name: 'Mark closed' })).toBeTruthy();
     expect(h.sent.map((s) => s.url)).toEqual(['/api/forms/branch-close']);
+  });
+});
+
+describe('launch browser suite — the form names its fields, and a refusal is read out', () => {
+  it.each([
+    ['ACTIVE', 'Mark closed'],
+    ['CLOSED', 'Request reactivation'],
+  ] as const)('%s branch: the reason is found by its label, and the photo slot is in a named group', (status, open) => {
+    // Both captions were bare <label>s: the reason box had no name, and the
+    // photo's caption named nothing.
+    render(<BranchStatusActions branchId="b1" status={status} />);
+    fireEvent.click(screen.getByRole('button', { name: open }));
+    expect(screen.getByLabelText('Reason (5+ chars)')).toBe(reasonBox());
+    const group = screen.getByRole('group', { name: 'Photo evidence (must be fresh — captured today)' });
+    expect(within(group).getByText('photo')).toBeTruthy();
+  });
+
+  it('what the server refused is an alert, beside the notice that says it was not sent', async () => {
+    h.replies.push({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      message: 'Validation failed',
+      fields: { attachmentId: 'Photo is older than 24 hours — capture a fresh one.' },
+    });
+    render(<BranchStatusActions branchId="b1" status="ACTIVE" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Mark closed' }));
+    type('Shop shut for good.');
+    fireEvent.click(screen.getByRole('button', { name: 'Submit closure' }));
+    await screen.findByText('Photo is older than 24 hours — capture a fresh one.');
+    expect(screen.getAllByRole('alert').map((a) => a.textContent)).toContain(
+      'Photo is older than 24 hours — capture a fresh one.'
+    );
   });
 });

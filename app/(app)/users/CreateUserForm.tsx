@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useTransition } from 'react';
+import { useId, useRef, useState, useTransition } from 'react';
 import { Role } from '@prisma/client';
 import { createUserAction } from '@/services/users';
 import { administrableRolesFor } from '@/lib/permissions';
@@ -57,6 +57,9 @@ export function CreateUserForm({
   const [role, setRole] = useState<Role>(allowedRoles[0] ?? Role.SALESMAN);
   const [routeId, setRouteId] = useState('');
   const filledUsername = useRef('');
+  // Every label tied to its field, as the Edit account dialog does: a bare
+  // <label> beside a bare control names nothing for a screen reader.
+  const uid = useId();
   const route = routes.find((r) => r.id === routeId) ?? null;
   const supervisorOptions = supervisors.filter(
     (s) =>
@@ -122,8 +125,11 @@ export function CreateUserForm({
         required
       />
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-700">Role</label>
+        <label htmlFor={`${uid}-role`} className="mb-1 block text-xs font-medium text-slate-700">
+          Role
+        </label>
         <select
+          id={`${uid}-role`}
           name="role"
           required
           value={role}
@@ -141,8 +147,11 @@ export function CreateUserForm({
       </div>
       {(role === Role.SALESMAN || role === Role.SUPERVISOR) && (
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-700">Supervisor</label>
+          <label htmlFor={`${uid}-supervisor`} className="mb-1 block text-xs font-medium text-slate-700">
+            Supervisor
+          </label>
           <select
+            id={`${uid}-supervisor`}
             name="supervisorId"
             className="block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm"
           >
@@ -158,10 +167,11 @@ export function CreateUserForm({
       )}
       {role === Role.SALESMAN && (
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-700">
+          <label htmlFor={`${uid}-route`} className="mb-1 block text-xs font-medium text-slate-700">
             Route (must be unassigned)
           </label>
           <select
+            id={`${uid}-route`}
             name="ownedRouteId"
             required
             value={routeId}
@@ -246,13 +256,15 @@ function Field({
   hint?: string;
   autoComplete?: string;
 }) {
+  const id = useId();
   return (
     <div>
-      <label className="mb-1 block text-xs font-medium text-slate-700">
+      <label htmlFor={id} className="mb-1 block text-xs font-medium text-slate-700">
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
       </label>
       <input
+        id={id}
         name={name}
         type={type}
         required={required}
@@ -266,5 +278,9 @@ function Field({
 }
 
 function FieldError({ msg }: { msg: string }) {
-  return <p className="mt-0.5 text-[11px] font-medium text-red-600">{msg}</p>;
+  return (
+    <p role="alert" className="mt-0.5 text-[11px] font-medium text-red-600">
+      {msg}
+    </p>
+  );
 }

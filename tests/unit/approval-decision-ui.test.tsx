@@ -156,6 +156,46 @@ describe('N01 — the single-request page sends its token with every decision', 
   });
 });
 
+describe('launch browser suite — the reject form names its fields, and its errors are announced', () => {
+  // The Category and reason labels had no htmlFor and the fields no id: a screen
+  // reader read two unnamed fields, and getByLabel found neither.
+  it('Category and the reason are found by their labels', () => {
+    renderActions();
+    fireEvent.click(screen.getByRole('button', { name: '✗ Reject' }));
+    expect(screen.getByLabelText('Category').tagName).toBe('SELECT');
+    expect(screen.getByRole('combobox', { name: 'Category' })).toBeTruthy();
+    expect(screen.getByLabelText('Reason for the salesman *').tagName).toBe('TEXTAREA');
+  });
+
+  it('a step back names the reason for the approver it goes to', () => {
+    renderActions({ kind: 'APPLY' }, { kind: 'STEP_BACK', toRole: 'SUPERVISOR' });
+    fireEvent.click(screen.getByRole('button', { name: '✗ Reject' }));
+    expect(screen.getByRole('textbox', { name: 'Reason for the Supervisor *' })).toBeTruthy();
+  });
+
+  it('a reason error is announced and tied to the reason box', async () => {
+    h.reject.mockResolvedValue({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      message: 'Validation failed',
+      fields: { reason: 'Reason must be 5–1000 characters.' },
+    });
+    renderActions();
+    await rejectWithReason();
+    expect((await screen.findByRole('alert')).textContent).toBe('Reason must be 5–1000 characters.');
+    const box = screen.getByLabelText('Reason for the salesman *');
+    expect(box).toHaveAttribute('aria-invalid', 'true');
+    expect(box).toHaveAccessibleDescription('Reason must be 5–1000 characters.');
+  });
+
+  it('a refusal of the whole decision is announced', async () => {
+    h.approve.mockResolvedValue({ ok: false, code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE });
+    renderActions();
+    await approveThroughModal();
+    expect((await screen.findByRole('alert')).textContent).toBe(STALE_VIEW_MESSAGE);
+  });
+});
+
 describe("launch fix — the redirect back to the queue is Next's to follow, not a message", () => {
   // On success approveEditAndGoAction and rejectEditAndGoAction redirect('/approvals').
   // Next 15.5's client rejects the awaited action with its NEXT_REDIRECT error so
@@ -454,6 +494,43 @@ describe('the bulk queue', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
     expect(await screen.findByText(/1 processed, 1 failed/)).toBeTruthy();
     expect(screen.getByText(new RegExp(STALE_VIEW_MESSAGE.slice(0, 30)))).toBeTruthy();
+  });
+
+  describe('launch browser suite follow-up: what a bulk decision did is read out', () => {
+    const approveBoth = () => {
+      render(<BulkApprovalQueue items={ITEMS} />);
+      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
+    };
+
+    it('all done: a status', async () => {
+      h.bulkApprove.mockResolvedValue({ ok: true, data: { successes: ['c2', 'u1'], failures: [], notAttempted: [] } });
+      approveBoth();
+      expect((await screen.findByRole('status')).textContent).toBe('2 processed.');
+    });
+
+    it('one failed: an alert, with its message', async () => {
+      h.bulkApprove.mockResolvedValue({
+        ok: true,
+        data: { successes: ['c2'], failures: [{ editId: 'u1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
+      });
+      approveBoth();
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toMatch(/^1 processed, 1 failed\./);
+      expect(alert.textContent).toContain(STALE_VIEW_MESSAGE);
+    });
+
+    it('the whole action refused: an alert', async () => {
+      h.bulkApprove.mockResolvedValue({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: BULK_DECISION_LIMIT_MESSAGE,
+        fields: { decisions: BULK_DECISION_LIMIT_MESSAGE },
+      });
+      approveBoth();
+      expect((await screen.findByRole('alert')).textContent).toBe(`Nothing was processed.${BULK_DECISION_LIMIT_MESSAGE}`);
+    });
   });
 
   describe('Select all stops at the bulk limit', () => {

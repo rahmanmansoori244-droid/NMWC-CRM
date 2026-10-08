@@ -727,8 +727,11 @@ export function MapCard({ data, zoom }: { data: Insights; zoom: boolean }) {
         </>
       }
     >
+      {/* Side by side from lg, where the card spans the page. From md, on a
+          tablet beside the sidebar, the map's 26rem left the coverage ~15 px and
+          the page scrolled sideways (tests/unit/dashboard-map-card-width.test.ts). */}
       {h && (
-        <div className="grid gap-6 md:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
           {h.cells.length > 0 ? (
             <OmanHeatMap cells={h.cells} cellDeg={h.cellDeg} zoom={zoom} />
           ) : (

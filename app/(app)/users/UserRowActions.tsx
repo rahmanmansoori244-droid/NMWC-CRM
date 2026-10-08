@@ -277,6 +277,7 @@ export function UserRowActions({
               type={showResetPassword ? 'text' : 'password'}
               name="password"
               autoComplete="new-password"
+              aria-label={`New password for ${username}`}
               placeholder="New password (12+ chars)"
               minLength={12}
               required
@@ -287,6 +288,7 @@ export function UserRowActions({
               type={showResetPassword ? 'text' : 'password'}
               name="confirmPassword"
               autoComplete="new-password"
+              aria-label={`Confirm new password for ${username}`}
               placeholder="Confirm new password"
               required
               {...AS_TYPED}

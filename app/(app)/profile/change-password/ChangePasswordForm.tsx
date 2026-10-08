@@ -33,6 +33,10 @@ export function ChangePasswordForm() {
   // UAT-07, as LabeledField does: with two new-password boxes on the page, a
   // label not tied to its field leaves a screen reader three unnamed passwords.
   const id = useId();
+  // Launch browser suite: only the mismatch was read out. Every error is an
+  // alert, and its field points at it (read again when the field is reached).
+  const describedBy = (field: string) =>
+    errors[field] ? { 'aria-invalid': true, 'aria-describedby': `${id}-${field}-error` } : {};
 
   // AUTH-09 hardening (go-live walk, 2026-09-10): when the middleware forces
   // this page onto a must-change user during a CLIENT navigation (they tapped
@@ -92,7 +96,7 @@ export function ChangePasswordForm() {
       className="grid gap-3 text-sm"
     >
       {done ? (
-        <div className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-700 ring-1 ring-emerald-200">
+        <div role="status" className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-700 ring-1 ring-emerald-200">
           {done === 'home'
             ? 'Password changed. Taking you to your home page…'
             : 'Password changed. Please sign in again with your new password. Taking you to the sign-in page…'}
@@ -100,7 +104,7 @@ export function ChangePasswordForm() {
       ) : (
         <>
           {errors._form && (
-            <div className="rounded-md bg-red-50 px-3 py-2 text-red-700 ring-1 ring-red-200">
+            <div role="alert" className="rounded-md bg-red-50 px-3 py-2 text-red-700 ring-1 ring-red-200">
               {errors._form}
             </div>
           )}
@@ -117,10 +121,13 @@ export function ChangePasswordForm() {
               name="currentPassword"
               required
               autoComplete="current-password"
+              {...describedBy('currentPassword')}
               className="block w-full rounded-md border-slate-300 px-3 py-2 text-base sm:text-sm"
             />
             {errors.currentPassword && (
-              <p className="mt-0.5 text-xs text-red-600">{errors.currentPassword}</p>
+              <p id={`${id}-currentPassword-error`} role="alert" className="mt-0.5 text-xs text-red-600">
+                {errors.currentPassword}
+              </p>
             )}
           </div>
           <div>
@@ -135,10 +142,13 @@ export function ChangePasswordForm() {
               minLength={12}
               autoComplete="new-password"
               {...AS_TYPED}
+              {...describedBy('newPassword')}
               className="block w-full rounded-md border-slate-300 px-3 py-2 text-base sm:text-sm"
             />
             {errors.newPassword && (
-              <p className="mt-0.5 text-xs text-red-600">{errors.newPassword}</p>
+              <p id={`${id}-newPassword-error`} role="alert" className="mt-0.5 text-xs text-red-600">
+                {errors.newPassword}
+              </p>
             )}
           </div>
           <div>
@@ -155,10 +165,11 @@ export function ChangePasswordForm() {
               required
               autoComplete="new-password"
               {...AS_TYPED}
+              {...describedBy('confirmNewPassword')}
               className="block w-full rounded-md border-slate-300 px-3 py-2 text-base sm:text-sm"
             />
             {errors.confirmNewPassword && (
-              <p role="alert" className="mt-0.5 text-xs text-red-600">
+              <p id={`${id}-confirmNewPassword-error`} role="alert" className="mt-0.5 text-xs text-red-600">
                 {errors.confirmNewPassword}
               </p>
             )}

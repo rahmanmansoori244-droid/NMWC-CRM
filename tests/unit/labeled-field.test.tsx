@@ -89,3 +89,37 @@ describe('LabeledField', () => {
     expect(container.querySelector('input')!.disabled).toBe(true);
   });
 });
+
+describe('LabeledField — an error is tied to its field (launch browser suite)', () => {
+  // The error was a bare line under the box. The notice beside Submit says only
+  // "fix what is marked in red", so a screen reader reaching the field heard
+  // neither that it was the one in error nor what was wrong.
+  it.each([false, true])('textarea: %s', (textarea) => {
+    render(
+      <LabeledField label="Primary phone *" value="" onChange={() => {}} textarea={textarea} error="Enter a valid Oman number." />
+    );
+    const el = screen.getByLabelText('Primary phone *');
+    expect(el.tagName).toBe(textarea ? 'TEXTAREA' : 'INPUT');
+    expect(el).toHaveAttribute('aria-invalid', 'true');
+    expect(el).toHaveAccessibleDescription('Enter a valid Oman number.');
+  });
+
+  it('a field with no error is neither invalid nor described', () => {
+    render(<LabeledField label="Alt phone" value="" onChange={() => {}} />);
+    const el = screen.getByLabelText('Alt phone');
+    expect(el).not.toHaveAttribute('aria-invalid');
+    expect(el).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('two fields with errors each point at their own', () => {
+    render(
+      <>
+        <LabeledField label="Day of visit" value="" onChange={() => {}} error="Pick a day." />
+        <LabeledField label="Day of visit" value="" onChange={() => {}} error="Pick another day." />
+      </>
+    );
+    const [a, b] = screen.getAllByLabelText('Day of visit');
+    expect(a).toHaveAccessibleDescription('Pick a day.');
+    expect(b).toHaveAccessibleDescription('Pick another day.');
+  });
+});

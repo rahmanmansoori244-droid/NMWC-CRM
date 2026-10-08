@@ -909,9 +909,12 @@ export function PhotoCaptureSlot({
         )}
         {/* Every message but a failed upload's, which shows beside its Retry
             upload. A photo it could not read is in 'error' with no Retry: its
-            message showed nowhere (launch browser suite). */}
+            message showed nowhere (launch browser suite). Both are alerts: a
+            screen reader heard nothing when a photo failed. */}
         {error && !canRetry && (
-          <span className="text-[11px] font-medium leading-snug">{error}</span>
+          <span role="alert" className="text-[11px] font-medium leading-snug">
+            {error}
+          </span>
         )}
         {removeRefused && (
           <span role="alert" className="text-[11px] font-medium text-red-700">
@@ -965,7 +968,9 @@ export function PhotoCaptureSlot({
               it shows. The button does not — tapped during a submit, it
               started an upload that the page load after the answer cut off
               (item 22 review). */}
-          <span className="font-medium text-red-700">{error ?? 'Upload failed.'}</span>
+          <span role="alert" className="font-medium text-red-700">
+            {error ?? 'Upload failed.'}
+          </span>
           {!disabled && (
             <button
               type="button"
