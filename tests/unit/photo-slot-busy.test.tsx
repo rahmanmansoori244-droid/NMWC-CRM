@@ -31,6 +31,8 @@ import {
   ATTACH_NO_ANSWER,
   UPLOAD_SIGNED_OUT,
   UPLOAD_NO_CONNECTION,
+  HEIC_PHOTO_MESSAGE,
+  PHOTO_UNREADABLE_MESSAGE,
   RATE_LIMIT_MAX_WAIT_S,
   rateLimitedMessage,
   rateLimitWaitMessage,
@@ -1181,5 +1183,73 @@ describe('a locked slot starts nothing (a submit is on its way)', () => {
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Remove photo' })).toBeTruthy();
     expect(requests(DETACH)).toHaveLength(0);
+  });
+});
+
+describe('a photo the phone cannot read says why on its slot, and he picks again (launch browser suite)', () => {
+  // A decode failure set 'error' with no photo kept. The slot showed its
+  // message only outside 'error', or beside Retry upload, which needs a kept
+  // photo: a red slot with no words.
+  const pickFile = (container: HTMLElement, file: File) =>
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+  const heic = () => new File(['x'], 'IMG_0001.heic', { type: 'image/heic' });
+  const broken = () => new File(['not really a jpeg'], 'broken.jpg', { type: 'image/jpeg' });
+  const camera = (container: HTMLElement) => container.querySelector('label[aria-label="Capture photo"]');
+
+  it('a HEIC photo: the hint, no Retry upload, the camera still there, and nothing sent', async () => {
+    decode = 'fail';
+    const calls: boolean[] = [];
+    const view = render(<PhotoCaptureSlot kind="SHOP" required onBusyChange={(b) => calls.push(b)} />);
+    pickFile(view.container, heic());
+    expect(await screen.findByText(HEIC_PHOTO_MESSAGE)).toBeTruthy();
+    expect(retryButton()).toBeNull();
+    expect(camera(view.container)).not.toBeNull();
+    expect(calls).toEqual([true, false]);
+    expect(seen).toEqual([]);
+  });
+
+  it('a broken JPEG: "could not read this photo"; the next pick is read afresh and goes up', async () => {
+    decode = 'fail';
+    const onChange = vi.fn();
+    const view = render(<PhotoCaptureSlot kind="SIGNBOARD" onChange={onChange} />);
+    pickFile(view.container, broken());
+    expect(await screen.findByText(PHOTO_UNREADABLE_MESSAGE)).toBeTruthy();
+    expect(retryButton()).toBeNull();
+    uploadable();
+    pickFile(view.container, new File(['x'], 'sign.jpg', { type: 'image/jpeg' }));
+    await waitFor(() => expect(xhrs).toHaveLength(1));
+    expect(screen.queryByText(PHOTO_UNREADABLE_MESSAGE)).toBeNull();
+    act(() => xhrs[0]!.answer());
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: 'att-1' })));
+  });
+
+  it('a failed hash says the same, not its own words', async () => {
+    decode = 'load';
+    compressible();
+    vi.stubGlobal('crypto', { subtle: { digest: () => Promise.reject(new Error('Hashing failed.')) } });
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    pickFile(view.container, new File(['x'], 'shop.jpg', { type: 'image/jpeg' }));
+    expect(await screen.findByText(PHOTO_UNREADABLE_MESSAGE)).toBeTruthy();
+    expect(screen.queryByText('Hashing failed.')).toBeNull();
+  });
+
+  it('after a failed upload, a photo it cannot read says so, and Retry upload no longer offers the earlier photo', async () => {
+    uploadable();
+    presignPlan = ['refuse'];
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    pick(view.container);
+    await screen.findByRole('button', { name: /Retry upload/ });
+    decode = 'fail';
+    pickFile(view.container, broken());
+    expect(await screen.findByText(PHOTO_UNREADABLE_MESSAGE)).toBeTruthy();
+    expect(retryButton()).toBeNull();
+    expect(screen.queryByText('Could not get upload URL.')).toBeNull();
+  });
+
+  it('the slot is at least h-32, not exactly: the HEIC hint grows a half-width slot rather than being cut off', () => {
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    const slot = view.container.firstElementChild!;
+    expect(slot.className).toMatch(/(^|\s)min-h-32(\s|$)/);
+    expect(slot.className).not.toMatch(/(^|\s)h-32(\s|$)/);
   });
 });

@@ -23,6 +23,13 @@ const LABELS: Record<PhotoSlotKind, string> = {
   GUARANTEE: 'Guarantee doc',
 };
 
+/** A HEIC photo the browser cannot decode (NEW-PHOTO-012): how to stop sending them. */
+export const HEIC_PHOTO_MESSAGE =
+  "Your phone is sending HEIC photos. Open Settings → Camera → Formats and switch to 'Most Compatible' (JPEG).";
+/** Any other photo the phone could not read or re-encode: a broken file, an unknown format. */
+export const PHOTO_UNREADABLE_MESSAGE =
+  'This phone could not read this photo. Take it again, or pick another photo.';
+
 async function compressImage(file: File, maxLong = 1920, quality = 0.85): Promise<Blob> {
   // UXI-024: stream via URL.createObjectURL instead of FileReader.readAsDataURL.
   // Old path created a ~16 MB base64 string for a 12 MB HEIC and could OOM
@@ -36,13 +43,9 @@ async function compressImage(file: File, maxLong = 1920, quality = 0.85): Promis
         // NEW-PHOTO-012: HEIC inputs on Chrome/Android cannot decode here.
         // Surface a useful hint instead of generic "decode failed".
         if (file.type === 'image/heic' || file.type === 'image/heif') {
-          reject(
-            new Error(
-              "Your phone is sending HEIC photos. Open Settings → Camera → Formats and switch to 'Most Compatible' (JPEG)."
-            )
-          );
+          reject(new Error(HEIC_PHOTO_MESSAGE));
         } else {
-          reject(new Error('Image decode failed.'));
+          reject(new Error(PHOTO_UNREADABLE_MESSAGE));
         }
       };
       im.src = objectUrl;
@@ -651,7 +654,18 @@ export function PhotoCaptureSlot({
       // good — and now that a busy slot holds Submit, the form with it.
       hash = await sha256Hex(blob);
     } catch (e) {
-      setError((e as Error).message);
+      // Launch fix: said on the slot, and he picks again. The slot showed its
+      // message only outside 'error' or beside Retry upload, which needs a kept
+      // photo, so a photo it could not read left it red with no words. Any
+      // failure here but HEIC's is "could not read": the canvas's or the
+      // hash's own words mean nothing to him. A photo kept from an earlier
+      // failed upload goes, or Retry upload would send that one, not this.
+      setError(
+        (e as Error).message === HEIC_PHOTO_MESSAGE ? HEIC_PHOTO_MESSAGE : PHOTO_UNREADABLE_MESSAGE
+      );
+      unanswered.current = null;
+      setRetainedBlob(null);
+      setRetainedHash(null);
       setProgress('error');
       return;
     }
@@ -771,9 +785,11 @@ export function PhotoCaptureSlot({
     // it they joined the page's stacking context and painted over the forms'
     // sticky Submit bar whenever a photo row scrolled behind it, so a tap on
     // Submit hit Retake or Remove photo (tests/unit/mobile-submit-bar.test.ts).
+    // At least h-32, not exactly: a long message (the HEIC hint) grows the slot
+    // rather than being cut off in a half-width slot on a phone.
     <div
       className={cn(
-        'relative isolate flex h-32 flex-col items-center justify-center overflow-hidden rounded-md border text-center text-sm',
+        'relative isolate flex min-h-32 flex-col items-center justify-center overflow-hidden rounded-md border text-center text-sm',
         filled
           ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
           : 'border-dashed border-slate-300 bg-slate-50 text-slate-500',
@@ -790,7 +806,7 @@ export function PhotoCaptureSlot({
       )}
       <div
         className={cn(
-          'relative z-10 flex h-full w-full flex-col items-center justify-center gap-1 p-2',
+          'relative z-10 flex w-full flex-1 flex-col items-center justify-center gap-1 p-2',
           imgSrc && 'bg-black/30 text-white backdrop-blur-sm'
         )}
       >
@@ -823,8 +839,11 @@ export function PhotoCaptureSlot({
             </div>
           </>
         )}
-        {error && progress !== 'error' && (
-          <span className="text-[11px] font-medium">{error}</span>
+        {/* Every message but a failed upload's, which shows beside its Retry
+            upload. A photo it could not read is in 'error' with no Retry: its
+            message showed nowhere (launch browser suite). */}
+        {error && !canRetry && (
+          <span className="text-[11px] font-medium leading-snug">{error}</span>
         )}
         {removeRefused && (
           <span role="alert" className="text-[11px] font-medium text-red-700">
