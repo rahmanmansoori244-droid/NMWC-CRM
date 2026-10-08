@@ -488,11 +488,19 @@ function expectCodesInOrder(codes: string[], seqBefore: number, seqAfter: number
   }
 }
 
-/** Customers minted with an NMWC code of this year since `since` that are not ours (a parallel finalize). */
-async function codesMintedByOthers(since: Date, ours: string[]): Promise<number> {
-  return db.customer.count({
-    where: { nmwcCode: { startsWith: `NMWC-${omanYearNow()}-` }, createdAt: { gte: since }, legalName: { notIn: ours } },
-  });
+/**
+ * How many of the codes the counter handed out between two reads of it
+ * (seqBefore … seqAfter − 1) a customer other than ours holds: a parallel
+ * finalize. Counted by the code itself, not by createdAt: a time window opened a
+ * minute before seqBefore also caught the codes this describe's own previous test
+ * had minted just before the counter was read (8 Oct: the counter moved 0, and
+ * "2 minted by others" were the last two finalizes of the in-place test).
+ */
+async function codesMintedByOthers(seqBefore: number, seqAfter: number, ours: string[]): Promise<number> {
+  if (seqAfter <= seqBefore) return 0;
+  const year = omanYearNow();
+  const handedOut = Array.from({ length: seqAfter - seqBefore }, (_, i) => `NMWC-${year}-${String(seqBefore + i).padStart(6, '0')}`);
+  return db.customer.count({ where: { nmwcCode: { in: handedOut }, legalName: { notIn: ours } } });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1751,7 +1759,6 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     const ledger = await db.editApproval.count({ where: { editId: d.id } });
     const notes = await rowIds(d.id);
     const seqBefore = await codeSequenceNext();
-    const since = new Date(Date.now() - 60_000);
     const page = await pageAs(browser, w.user('ACC1'), 'desktop');
     await openApproval(page, d.id);
     const approve = page.getByRole('button', { name: '✓ Approve', exact: true });
@@ -1787,7 +1794,8 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     expect(await db.editApproval.count({ where: { editId: d.id } })).toBe(ledger);
     expect(await rowIds(d.id), 'nobody was told anything').toEqual(notes);
     expect(await db.customer.count({ where: { legalName: d.legalName } })).toBe(0);
-    expect((await codeSequenceNext()) - seqBefore, 'no NMWC code handed out (rolled back)').toBe(await codesMintedByOthers(since, [d.legalName]));
+    const seqAfter = await codeSequenceNext();
+    expect(seqAfter - seqBefore, 'no NMWC code handed out (rolled back)').toBe(await codesMintedByOthers(seqBefore, seqAfter, [d.legalName]));
 
     // A fresh code, typed in lower case with Arabic-Indic digits: created under it as Temix writes it.
     const fresh = temixCodeFor(w);
@@ -1837,7 +1845,6 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     });
     const frozen = await snapshot(['CustomerEdit'], { id: d.id });
     const seqBefore = await codeSequenceNext();
-    const since = new Date(Date.now() - 60_000);
     const page = await pageAs(browser, w.user('ACC1'), 'desktop');
     await openApproval(page, d.id);
     await typeTemixCode(page, temixCodeFor(w));
@@ -1850,7 +1857,8 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     ).toBeVisible();
     expect(await snapshot(['CustomerEdit'], { id: d.id })).toBe(frozen);
     expect(await db.customer.count({ where: { legalName: name } })).toBe(0);
-    expect((await codeSequenceNext()) - seqBefore, 'no code handed out (rolled back)').toBe(await codesMintedByOthers(since, [name]));
+    const seqAfter = await codeSequenceNext();
+    expect(seqAfter - seqBefore, 'no code handed out (rolled back)').toBe(await codesMintedByOthers(seqBefore, seqAfter, [name]));
 
     await page.reload();
     await rejectHere(page, { label: 'Reason for the Supervisor *', button: '✗ Send back to Supervisor', reason: `Same shop as ${live.code}` });
