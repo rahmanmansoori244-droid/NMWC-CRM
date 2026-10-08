@@ -181,6 +181,59 @@ describe('ChangePasswordForm — the new password twice', () => {
   });
 });
 
+describe('launch browser suite — every change-password error is read out, and tied to its field', () => {
+  // Only the mismatch was an alert. "Current password incorrect." and the form's
+  // own refusal were plain text: a screen reader said nothing after Change password.
+  function submit() {
+    render(<ChangePasswordForm />);
+    type(input('Current password'), 'wrong');
+    type(input('New password (min 12 chars)'), TYPED);
+    type(input('Confirm new password'), TYPED);
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+  }
+
+  it.each([
+    ['currentPassword', 'Current password', 'Current password incorrect.'],
+    ['newPassword', 'New password (min 12 chars)', 'You cannot reuse one of your last 5 passwords.'],
+  ])('a %s refusal is an alert, and its box points at it', async (field, label, message) => {
+    h.change.mockResolvedValue({ ok: false, code: 'VALIDATION_FAILED', message: 'x', fields: { [field]: message } });
+    submit();
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+    expect(input(label)).toHaveAttribute('aria-invalid', 'true');
+    expect(input(label)).toHaveAccessibleDescription(message);
+    for (const other of ['Current password', 'New password (min 12 chars)', 'Confirm new password'].filter((l) => l !== label)) {
+      expect(input(other), other).not.toHaveAttribute('aria-invalid');
+      expect(input(other), other).toHaveAccessibleDescription('');
+    }
+  });
+
+  it('the mismatch is tied to the confirm box', () => {
+    render(<ChangePasswordForm />);
+    type(input('Current password'), 'The-temporary-one-1');
+    type(input('New password (min 12 chars)'), TYPED);
+    type(input('Confirm new password'), TYPO);
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+    expect(input('Confirm new password')).toHaveAttribute('aria-invalid', 'true');
+    expect(input('Confirm new password')).toHaveAccessibleDescription(MISMATCH);
+  });
+
+  it('a refusal of the whole change is an alert', async () => {
+    h.change.mockResolvedValue({ ok: false, code: 'RATE_LIMITED', message: 'Too many attempts. Try again in a minute.' });
+    submit();
+    expect((await screen.findByRole('alert')).textContent).toBe('Too many attempts. Try again in a minute.');
+  });
+
+  it('the change itself is said in a status', async () => {
+    vi.useFakeTimers();
+    try {
+      submit();
+      await vi.waitFor(() => expect(screen.getByRole('status').textContent).toBe('Password changed. Taking you to your home page…'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('UserRowActions — Reset password twice', () => {
   const box = (placeholder: string) => screen.getByPlaceholderText(placeholder) as HTMLInputElement;
 
