@@ -1024,6 +1024,27 @@ describe('a salesman on a switched-off route', () => {
     refused(await detach({ attachmentId: ATT }));
   });
 
+  // A re-send of a request that already landed (the slot re-sends one that got
+  // no answer) is told so, as on a live route — not refused for the route.
+  it.each([
+    ['the shop slot', photo({ branchId: B1 }), { branchId: B1, slot: 'SHOP' }, () => db.branch.findFirst.mockResolvedValue(branch({ shopPhotoId: ATT }))],
+    ['an extra photo', photo({ kind: 'FREE', branchId: B1, branchExtraId: B1 }), { branchId: B1, slot: 'FREE' }, () => db.branch.findFirst.mockResolvedValue(branch())],
+    ["a CASH customer's CR slot", photo({ kind: 'CR', customerId: CUST }), { customerId: CUST, slot: 'CR' }, () =>
+      db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CASH', crPhotoId: ATT }))],
+  ] as const)('a re-sent attach already on %s is ok, and writes nothing', async (_n, att, target, slotHoldsIt) => {
+    db.attachment.findUnique.mockResolvedValue(att);
+    slotHoldsIt();
+    expect(await attach({ attachmentId: ATT, ...target })).toEqual({ ok: true });
+    expect(wrote()).toBe(0);
+  });
+
+  it('a re-sent Remove of a photo already removed is PHOTO_GONE, the answer its slot clears on', async () => {
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1, deletedAt: new Date() }));
+    db.branch.findUnique.mockResolvedValue(branch());
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: false, code: 'PHOTO_GONE', message: PHOTO_GONE_MESSAGE });
+    expect(wrote()).toBe(0);
+  });
+
   it('a photo of his new-customer request, or one on no slot yet, is not refused here', async () => {
     db.customerEdit.findUnique.mockResolvedValue({ customerId: null, branchDrafts: [{ routeId: 'r1', route: { regionId: 'g1' } }] });
     for (const att of [photo({ editId: EDIT }), photo()]) {

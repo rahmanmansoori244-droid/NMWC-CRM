@@ -163,13 +163,13 @@ export default async function TodayPage({
 
       {/* Launch fix (P2): a route switched off mid-week still lists its visits,
           but nothing he sends on it is accepted (services/creates.ts, edits.ts,
-          reactivations.ts): say so before he works a shop. The refusals say
+          reactivations.ts, photos.ts): say so before he works a shop. The refusals say
           the first sentence too. */}
       {me.ownedRoute?.isActive === false && (
         <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
-          {ROUTE_INACTIVE_MESSAGE} Until it is active again, you cannot submit an enrichment, mark a
-          shop closed, request a reactivation or register a new customer. An enrichment you start
-          stays saved on this phone.
+          {ROUTE_INACTIVE_MESSAGE} Until it is active again, you cannot submit an enrichment, add or
+          remove photos, mark a shop closed, request a reactivation or register a new customer. An
+          enrichment you start stays saved on this phone.
         </div>
       )}
 

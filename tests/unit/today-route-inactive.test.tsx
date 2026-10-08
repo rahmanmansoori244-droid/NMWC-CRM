@@ -2,8 +2,9 @@
  * Launch fix (P2, a route switched off mid-week): Today listed the route's
  * visits with no word that nothing he sent on it would be accepted. New
  * customer refused on it; an enrichment, a close and a reactivation now do too
- * (services/edits.ts, services/reactivations.ts). Today says so above the
- * visits, which stay listed, opening with the words the refusals use.
+ * (services/edits.ts, services/reactivations.ts), and so does his photo attach
+ * and Remove (services/photos.ts). Today says so above the visits, which stay
+ * listed, opening with the words the refusals use.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
@@ -65,7 +66,9 @@ describe('/today on a switched-off route', () => {
     render(await TodayPage({}));
     const main = screen.getByRole('main');
     expect(main.textContent).toContain(ROUTE_INACTIVE_MESSAGE);
-    expect(main.textContent).toMatch(/you cannot submit an enrichment, mark a shop closed, request a reactivation or register a new customer/);
+    expect(main.textContent).toMatch(
+      /you cannot submit an enrichment, add or remove photos, mark a shop closed, request a reactivation or register a new customer/
+    );
     expect(screen.getByRole('heading', { level: 3, name: 'Al Noor Grocery' })).toBeTruthy();
   });
 

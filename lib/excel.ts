@@ -15,7 +15,7 @@ export function loadExcelJS(): Promise<typeof ExcelJSNS> {
   return excelJsPromise;
 }
 
-// Defence-in-depth against a decompression-bomb / oversized workbook: the 5 MB
+// Defence-in-depth against a decompression-bomb / oversized workbook: the 4.2 MB
 // upload cap bounds only the COMPRESSED bytes, but a crafted .xlsx inflates to
 // far more rows. Cap total parsed data rows so the per-row DB loops downstream
 // (import promote) cannot be driven into a multi-hundred-thousand-query DoS.

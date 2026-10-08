@@ -1,6 +1,7 @@
 /**
  * Launch fix (2026-10-07): an upload where every row was held back reads as a
- * failure, and every accepted upload links its batch.
+ * failure, and every accepted upload links its batch. A workbook too large to
+ * send is refused in the browser with the app's own message (bottom).
  *
  * What was wrong: app/(app)/import/forms.tsx showed any upload the server
  * accepted in green — "Uploaded — 0 clean · 7 issues" — with no link to the
@@ -97,5 +98,45 @@ describe('customer master upload result', () => {
     render(<UploadCustomerForm />);
     submit('Upload customer master');
     expect((await screen.findByRole('status')).className).toContain('text-amber-700');
+  });
+});
+
+// Launch fix: a workbook bigger than Vercel lets a request carry (4.5 MB) was
+// refused by the platform before the importer's own "File is too large" could
+// answer, and the Steward saw Next's generic Server Components error. The form
+// now refuses it in the browser, in the importer's words, before the action runs.
+// The cap is 4,300 KB (4.2 MB): just under 4.5 MB, so a workbook Vercel would
+// carry is not refused in the browser.
+describe('a workbook too large to send', () => {
+  const MAX = 4300 * 1024;
+  function choose(size: number) {
+    const file = new File([new Uint8Array(size)], 'master.xlsx');
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [file] } });
+  }
+
+  it.each([
+    ['customer', () => <UploadCustomerForm />, 'Upload customer master', h.customer],
+    ['account', () => <UploadAccountForm />, 'Upload account master', h.account],
+  ] as const)(
+    '%s master over 4.2 MB: the app says so, and nothing is sent',
+    async (_, form, button, action) => {
+      render(form());
+      choose(MAX + 1024);
+      submit(button);
+      expect((await screen.findByRole('alert')).textContent).toBe(
+        'File is too large (4301 KB). Maximum is 4.2 MB.'
+      );
+      expect(action).not.toHaveBeenCalled();
+    }
+  );
+
+  it('a workbook of exactly 4.2 MB is still sent to the importer', async () => {
+    h.customer.mockResolvedValue({ ok: true, data: { batchId: 'b-4mb', clean: 3, quarantined: 0 } });
+    render(<UploadCustomerForm />);
+    choose(MAX);
+    submit('Upload customer master');
+    expect((await screen.findByRole('status')).textContent).toContain('Uploaded — 3 clean');
+    expect(h.customer).toHaveBeenCalledTimes(1);
   });
 });

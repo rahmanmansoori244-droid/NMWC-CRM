@@ -5,7 +5,9 @@
  * refused (services/edits.ts, services/reactivations.ts).
  *
  *   - The enrichment page says so at the top and holds Submit, with the same
- *     words as its title; Save draft stays (a draft is still saved).
+ *     words as its title; Save draft stays (a draft is still saved). Its photo
+ *     slots are locked, as services/photos.ts refuses his attach and Remove
+ *     there (the form locking them is in submit-forms.test.tsx).
  *   - The customer profile shows the words in place of Mark closed and Request
  *     reactivation, so the form never opens.
  *   - On a live route nothing changes.
@@ -17,7 +19,7 @@ import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 
 const h = vi.hoisted(() => ({
   isActive: false,
-  formProps: null as null | { canSubmit: boolean; submitHeldTitle?: string },
+  formProps: null as null | { canSubmit: boolean; submitHeldTitle?: string; photosHeld?: boolean },
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: { id: 'u-sales', role: 'SALESMAN', username: 'mct01' } }) }));
@@ -140,8 +142,17 @@ describe('on a switched-off route', () => {
     await editPage();
     const main = screen.getByRole('main');
     expect(main.textContent).toContain(ROUTE_INACTIVE_MESSAGE);
-    expect(main.textContent).toContain('You can save a draft, but you cannot submit it until the route is active again.');
+    expect(main.textContent).toContain(
+      'You can save a draft, but you cannot add or remove photos or submit until the route is active again.'
+    );
     expect(h.formProps).toMatchObject({ canSubmit: false, submitHeldTitle: ROUTE_INACTIVE_MESSAGE });
+  });
+
+  // services/photos.ts refuses his attach and Remove there: the slots are locked
+  // from the start, so no photo goes up only to be refused once it has.
+  it('the enrichment page locks its photo slots', async () => {
+    await editPage();
+    expect(h.formProps).toMatchObject({ photosHeld: true });
   });
 
   it('the customer profile says so in place of Mark closed, so the form never opens', async () => {
@@ -160,7 +171,7 @@ describe('on a live route', () => {
   it('the enrichment page says nothing of it, and Submit is not held for it', async () => {
     await editPage();
     expect(screen.getByRole('main').textContent).not.toMatch(/route is inactive/i);
-    expect(h.formProps).toMatchObject({ canSubmit: true });
+    expect(h.formProps).toMatchObject({ canSubmit: true, photosHeld: false });
     expect(h.formProps!.submitHeldTitle).toBeUndefined();
   });
 
