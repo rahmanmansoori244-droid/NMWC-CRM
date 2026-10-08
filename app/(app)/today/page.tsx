@@ -230,7 +230,9 @@ export default async function TodayPage({
             }
           />
         ) : (
-          <div className="grid gap-3">
+          // grid-cols-1: one column no wider than the phone. An auto column took
+          // the width of a card's whole name, which `truncate` keeps on one line.
+          <div className="grid grid-cols-1 gap-3">
             {branches.map((b) => (
               <CustomerCard
                 key={b.id}

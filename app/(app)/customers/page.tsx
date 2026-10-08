@@ -341,7 +341,10 @@ export default async function CustomersPage({
             description="Try clearing filters or searching for a different term."
           />
         ) : (
-          <div className="grid gap-3">
+          // grid-cols-1 is minmax(0, 1fr): an auto column took the width of a
+          // card's whole name, which `truncate` keeps on one line, so a long
+          // name made the page wider than the phone (launch browser suite).
+          <div className="grid grid-cols-1 gap-3">
             {customers.map((c) => (
               <CustomerCard
                 key={c.id}

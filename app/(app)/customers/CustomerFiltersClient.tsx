@@ -777,7 +777,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
         {showMore && (
           <div
             id="customer-more-filters"
-            className="mt-3 grid gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2 lg:grid-cols-4"
+            className="mt-3 grid grid-cols-1 gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2 lg:grid-cols-4"
           >
             <MultiSelectFilter
               label="Sub-channels"
