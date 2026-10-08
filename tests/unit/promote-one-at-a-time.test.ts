@@ -214,6 +214,32 @@ describe('promote while another customer import is being promoted', () => {
     );
   });
 
+  it.each(['PROMOTED', 'PARSING'])(
+    'a %s batch is told its state, not that another import is running',
+    async (status) => {
+      // Promote of a batch that cannot be promoted, while another import is
+      // live: the answer is the batch's own state, as with nothing else running.
+      table = [
+        batch({ status }),
+        batch({
+          id: 'other',
+          filename: 'other.xlsx',
+          status: 'PROMOTING',
+          promoteLeaseBy: 'someone:tok',
+          promoteLeaseUntil: live(),
+        }),
+      ];
+
+      const res = await promote();
+
+      expect(res.ok).toBe(false);
+      expect(JSON.stringify(res)).toContain(
+        `Batch is in state ${status} — only READY or interrupted batches can be promoted.`
+      );
+      expect(mine()).toEqual(batch({ status }));
+    }
+  );
+
   it('the claim only takes the batch as the preflight read it', async () => {
     // Read as PROMOTED; a fix puts it back to READY between that read and the
     // claim. The claim must not take it — an undo would otherwise put back

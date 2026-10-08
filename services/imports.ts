@@ -1723,8 +1723,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
   // batch page said "Promote interrupted" and Work listed it "to resume" although
   // nothing had run — and its momentary live lease could make the import that IS
   // running refuse its own next slice. The check after the claim stays: it is the
-  // one that closes the race of two batches claimed at the same moment.
-  const otherBefore = await otherLivePromote();
+  // one that closes the race of two batches claimed at the same moment. Only a
+  // batch the claim could take is checked: one that cannot be promoted (PROMOTED,
+  // still PARSING) is told its own state by the claim below, not "another import".
+  const promotable = ['READY', 'FAILED', 'PROMOTING'].includes(preflight.status);
+  const otherBefore = promotable ? await otherLivePromote() : null;
   if (otherBefore) throw anotherIsPromoting(otherBefore);
 
   const now = new Date();
