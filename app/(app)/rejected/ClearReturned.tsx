@@ -41,7 +41,11 @@ export function ClearReturned({ editId, then }: { editId: string; then: string }
 
   return (
     <div>
-      {error && <p className="mb-1 text-sm font-medium text-red-600">{error}</p>}
+      {error && (
+        <p role="alert" className="mb-1 text-sm font-medium text-red-600">
+          {error}
+        </p>
+      )}
       <button
         type="button"
         disabled={pending}

@@ -42,7 +42,11 @@ export function WithdrawRequest({ editId, isDraft }: { editId: string; isDraft: 
 
   return (
     <div className="px-4 pb-6 sm:px-6">
-      {error && <p className="mb-2 text-sm font-medium text-red-600">{error}</p>}
+      {error && (
+        <p role="alert" className="mb-2 text-sm font-medium text-red-600">
+          {error}
+        </p>
+      )}
       <button
         type="button"
         disabled={pending}
