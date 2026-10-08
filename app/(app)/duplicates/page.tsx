@@ -47,7 +47,10 @@ export default async function DuplicatesPage() {
             description="The check pairs customers who share a CR number, or share the exact name and phone with a branch in the same region. A pair marked distinct stays hidden until the two come to share a different CR number, name or phone."
           />
         ) : (
-          <ul className="grid gap-3">
+          // grid-cols-1, here and inside each card: one column no wider than
+          // the phone. An auto column took the width of a whole name, which
+          // `truncate` keeps on one line.
+          <ul className="grid grid-cols-1 gap-3">
             {candidates.map((c) => (
               <li
                 key={`${c.a.id}-${c.b.id}`}
@@ -73,7 +76,7 @@ export default async function DuplicatesPage() {
                     </p>
                   )}
                 </header>
-                <div className="grid gap-0 md:grid-cols-2">
+                <div className="grid grid-cols-1 gap-0 md:grid-cols-2">
                   <Side side={c.a} />
                   <div className="border-t border-slate-200 md:border-l md:border-t-0">
                     <Side side={c.b} />
@@ -149,7 +152,7 @@ function Side({ side }: { side: { id: string; nmwcCode: string; legalName: strin
       <div className="min-w-0 flex-1 text-sm">
         <h3 className="truncate font-semibold text-slate-900">{side.legalName}</h3>
         <p className="font-mono text-xs text-slate-500">{side.nmwcCode}</p>
-        <dl className="mt-2 grid grid-cols-[80px_1fr] gap-y-0.5 text-xs">
+        <dl className="mt-2 grid grid-cols-[80px_minmax(0,1fr)] gap-y-0.5 text-xs">
           <dt className="text-slate-500">Phone</dt>
           <dd>{side.primaryPhone ? <PhoneLink phone={side.primaryPhone} /> : '—'}</dd>
           <dt className="text-slate-500">CR</dt>

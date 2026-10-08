@@ -22,6 +22,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { randomUUID } from 'node:crypto';
+import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 
 // The QA DB is a remote Neon branch (~230ms/round-trip); each test does many
 // sequential queries, so 5s is far too tight. Raise the ceiling generously.
@@ -190,5 +191,56 @@ describe.skipIf(!ENABLED)('reactivation lane authz + concurrency (C11/C12/C13)',
     expect(res.ok).toBe(false); // 'Not a reactivation.'
     const after = await prisma.customerEdit.findUnique({ where: { id: plain.id } });
     expect(after?.state).toBe('SUBMITTED'); // untouched
+  });
+
+  // Launch fix (P2, a route switched off mid-week): New customer refused on it,
+  // but a close and a reactivation went through. Both are refused now in the
+  // same words; a Manager still decides what was already open on the route.
+  async function routeSwitchedOff<T>(body: () => Promise<T>): Promise<T> {
+    await prisma.route.update({ where: { id: ids.route }, data: { isActive: false } });
+    try {
+      return await body();
+    } finally {
+      await prisma.route.update({ where: { id: ids.route }, data: { isActive: true } });
+    }
+  }
+  const evidenceForm = (reason: string) => {
+    const fd = new FormData();
+    fd.set('branchId', ids.branch);
+    fd.set('reason', reason);
+    fd.set('attachmentId', ids.photo);
+    return fd;
+  };
+
+  it('P2: on a switched-off route his reactivation request is refused, and nothing is written', async () => {
+    await clearEdits();
+    await prisma.branch.update({ where: { id: ids.branch }, data: { status: 'CLOSED', lastStatusChangeAt: new Date(Date.now() - 86_400_000) } });
+    await prisma.attachment.update({ where: { id: ids.photo }, data: { capturedAt: new Date() } });
+    current = { id: ids.salesman, role: 'SALESMAN', username: ids.salesman };
+    const res = await routeSwitchedOff(() => reacts.requestReactivationAction(evidenceForm('shop reopened for real')));
+    expect(res).toMatchObject({ ok: false, code: 'FORBIDDEN', message: ROUTE_INACTIVE_MESSAGE });
+    expect(await prisma.customerEdit.count({ where: { branchId: ids.branch } })).toBe(0);
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } })).status).toBe('CLOSED');
+  });
+
+  it('P2: on a switched-off route his close request is refused, and nothing is written', async () => {
+    await clearEdits();
+    await prisma.branch.update({ where: { id: ids.branch }, data: { status: 'ACTIVE', lastStatusChangeAt: new Date(Date.now() - 86_400_000) } });
+    await prisma.attachment.update({ where: { id: ids.photo }, data: { capturedAt: new Date() } });
+    current = { id: ids.salesman, role: 'SALESMAN', username: ids.salesman };
+    const res = await routeSwitchedOff(() => reacts.markBranchClosedAction(evidenceForm('the shop has shut down')));
+    expect(res).toMatchObject({ ok: false, code: 'FORBIDDEN', message: ROUTE_INACTIVE_MESSAGE });
+    expect(await prisma.customerEdit.count({ where: { branchId: ids.branch } })).toBe(0);
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } })).status).toBe('ACTIVE');
+  });
+
+  it('P2: a reactivation sent before the route was switched off is still decided by the Manager', async () => {
+    const editId = await newReactivation();
+    current = { id: ids.manager, role: 'MANAGER', username: ids.manager };
+    const fd = new FormData();
+    fd.set('editId', editId);
+    const res = await routeSwitchedOff(() => reacts.approveReactivationAction(fd));
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } })).status).toBe('ACTIVE');
   });
 });

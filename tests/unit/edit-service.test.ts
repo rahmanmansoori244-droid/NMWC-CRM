@@ -24,7 +24,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { editPayload, type EditPatch } from '../support/edit-payload';
-import { FORM_OUTDATED_MESSAGE, STALE_FIELDS_MESSAGE } from '@/lib/errors';
+import { FORM_OUTDATED_MESSAGE, ROUTE_INACTIVE_MESSAGE, STALE_FIELDS_MESSAGE } from '@/lib/errors';
 import {
   STALE_EQUIPMENT_MESSAGE,
   STALE_FIELD_MESSAGE,
@@ -970,6 +970,42 @@ describe('launch fix — a resubmit answers the sent-back request it fixes (lib/
     // A genuine 500 (runAction rethrows it): the phone says it got no answer and keeps his work.
     await expect(submit({ customer: { notes: 'Closed on Fridays' } })).rejects.toThrow('pool timeout');
     expect(h.rolledBack).toBe(true);
+  });
+});
+
+describe('launch fix (P2) — a route switched off takes no enrichment from its salesman', () => {
+  const routeOff = () =>
+    db.user.findUniqueOrThrow.mockResolvedValue({
+      id: 'u-sales',
+      role: 'SALESMAN',
+      ownedRouteId: 'r1',
+      supervisorId: 'u-sup',
+      ownedRoute: { isActive: false },
+    });
+
+  it('his submit is refused in the words New customer uses, and nothing is written', async () => {
+    routeOff();
+    const res = failed(await submit({ customer: { notes: 'Closed on Fridays' } }));
+    expect(res).toMatchObject({ code: 'FORBIDDEN', message: ROUTE_INACTIVE_MESSAGE });
+    nothingWritten();
+  });
+
+  it('his draft is still saved', async () => {
+    routeOff();
+    const res = await submit({ isDraft: true, customer: { notes: 'Half done' } });
+    expect(res.ok && res.data, JSON.stringify(res)).toMatchObject({ state: 'DRAFT' });
+  });
+
+  it('on a live route he submits as before', async () => {
+    db.user.findUniqueOrThrow.mockResolvedValue({
+      id: 'u-sales',
+      role: 'SALESMAN',
+      ownedRouteId: 'r1',
+      supervisorId: 'u-sup',
+      ownedRoute: { isActive: true },
+    });
+    const res = await submit({ customer: { notes: 'Closed on Fridays' } });
+    expect(res.ok && res.data, JSON.stringify(res)).toMatchObject({ state: 'SUBMITTED' });
   });
 });
 

@@ -1884,4 +1884,49 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
       await purgeCustomerEdits(prisma, { where: { id: left.id } });
     }
   });
+
+  it('launch fix (P2): on a switched-off route his enrichment is refused as New customer is, his draft is kept, and his Manager still writes', async () => {
+    const { ROUTE_INACTIVE_MESSAGE } = await import('@/lib/errors');
+    const code = `${sfx}011`;
+    const c = await prisma.customer.create({
+      data: {
+        nmwcCode: code,
+        legalName: `Switched off shop ${sfx}`,
+        paymentTerms: 'CASH',
+        channelId,
+        temixCode: code,
+        branches: {
+          create: {
+            branchCode: `${code}-01`,
+            branchName: `Switched off shop ${sfx} (branch)`,
+            regionId: ids.regionId,
+            routeId: ids.routeId,
+            address: 'Imported address, Muscat',
+          },
+        },
+      },
+      include: { branches: true },
+    });
+    ids.extraCustomerIds.push(c.id);
+    const branchId = c.branches[0]!.id;
+    const body = async (isDraft: boolean, notes: string) =>
+      editPayload(prisma, { customerId: c.id, isDraft, customer: { notes }, branches: [{ branchId }] });
+    await prisma.route.update({ where: { id: ids.routeId }, data: { isActive: false } });
+    try {
+      asSalesman();
+      const sent = await edits.submitEditAction(await body(false, 'Sent on a switched-off route'));
+      expect(sent).toMatchObject({ ok: false, code: 'FORBIDDEN', message: ROUTE_INACTIVE_MESSAGE });
+      expect(await prisma.customerEdit.count({ where: { customerId: c.id } })).toBe(0);
+      const draft = await edits.submitEditAction(await body(true, 'Kept for later'));
+      expect(draft.ok, JSON.stringify(draft)).toBe(true);
+      expect(await prisma.customerEdit.count({ where: { customerId: c.id, state: 'DRAFT' } })).toBe(1);
+      // The Manager over the region writes its customers directly, switched off or not.
+      asManager();
+      const direct = await edits.submitEditAction(await body(false, 'Corrected by the manager'));
+      expect(direct.ok, JSON.stringify(direct)).toBe(true);
+      expect((await prisma.customer.findUniqueOrThrow({ where: { id: c.id } })).notes).toBe('Corrected by the manager');
+    } finally {
+      await prisma.route.update({ where: { id: ids.routeId }, data: { isActive: true } });
+    }
+  });
 });

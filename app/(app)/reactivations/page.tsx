@@ -77,7 +77,9 @@ export default async function ReactivationsPage() {
             description="When salesmen find a previously closed shop has reopened, they submit a request here for your review."
           />
         ) : (
-          <ul className="grid gap-3">
+          // grid-cols-1, here and inside each card: one column no wider than
+          // the phone, whatever a card holds.
+          <ul className="grid grid-cols-1 gap-3">
             {items.map((e) => (
               <li
                 key={e.id}
@@ -93,7 +95,7 @@ export default async function ReactivationsPage() {
                     {e.submittedBy.fullName}
                   </p>
                 </header>
-                <div className="grid gap-3 p-4 md:grid-cols-[1fr_auto] md:items-center">
+                <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-[1fr_auto] md:items-center">
                   <div>
                     <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-200">
                       <strong>Reason:</strong> {e.decisionReason ?? '—'}

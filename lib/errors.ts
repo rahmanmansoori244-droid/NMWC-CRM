@@ -109,6 +109,15 @@ export class FormOutdatedError extends AppError {
   }
 }
 
+/**
+ * A salesman whose route has been switched off sends nothing new on it: a new
+ * customer, an enrichment, a close or a reactivation request (services/creates.ts,
+ * services/edits.ts, services/reactivations.ts). An enrichment draft may still
+ * be saved. Managers and Stewards keep working the route's customers and decide
+ * its open requests.
+ */
+export const ROUTE_INACTIVE_MESSAGE = 'Your route is inactive — ask your supervisor.';
+
 // ── Server Action error contract ──────────────────────────────────────────
 //
 // PROD-006 / SC-RENDER-OMITTED: when an `AppError` (ConflictError /

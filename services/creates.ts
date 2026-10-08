@@ -42,6 +42,7 @@ import {
   ForbiddenError,
   NotFoundError,
   RateLimitError,
+  ROUTE_INACTIVE_MESSAGE,
   ValidationError,
   runAction,
   type SafeAction,
@@ -180,7 +181,7 @@ async function submitCreateOnce(
     throw new ForbiddenError('You have no route assigned — ask your supervisor.');
   }
   if (!me.ownedRoute.isActive) {
-    throw new ForbiddenError('Your route is inactive — ask your supervisor.');
+    throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
   }
   const route = me.ownedRoute;
 

@@ -23,6 +23,15 @@ const LABELS: Record<PhotoSlotKind, string> = {
   GUARANTEE: 'Guarantee doc',
 };
 
+/** A HEIC photo the browser cannot decode (NEW-PHOTO-012): how to stop sending them. */
+export const HEIC_PHOTO_MESSAGE =
+  "Your phone is sending HEIC photos. Open Settings → Camera → Formats and switch to 'Most Compatible' (JPEG).";
+/** Any other photo the phone could not read or re-encode: a broken file, an unknown format. */
+export const PHOTO_UNREADABLE_MESSAGE =
+  'This phone could not read this photo. Take it again, or pick another photo.';
+/** Said after either of them on a Retake: the photo already on the slot stays. */
+export const PHOTO_KEPT_NOTE = 'Your earlier photo is kept.';
+
 async function compressImage(file: File, maxLong = 1920, quality = 0.85): Promise<Blob> {
   // UXI-024: stream via URL.createObjectURL instead of FileReader.readAsDataURL.
   // Old path created a ~16 MB base64 string for a 12 MB HEIC and could OOM
@@ -36,13 +45,9 @@ async function compressImage(file: File, maxLong = 1920, quality = 0.85): Promis
         // NEW-PHOTO-012: HEIC inputs on Chrome/Android cannot decode here.
         // Surface a useful hint instead of generic "decode failed".
         if (file.type === 'image/heic' || file.type === 'image/heif') {
-          reject(
-            new Error(
-              "Your phone is sending HEIC photos. Open Settings → Camera → Formats and switch to 'Most Compatible' (JPEG)."
-            )
-          );
+          reject(new Error(HEIC_PHOTO_MESSAGE));
         } else {
-          reject(new Error('Image decode failed.'));
+          reject(new Error(PHOTO_UNREADABLE_MESSAGE));
         }
       };
       im.src = objectUrl;
@@ -175,8 +180,15 @@ export const UPLOAD_NO_CONNECTION =
  * Presign's 429 (PHOTO_LIMIT: 120 an hour, one back every 30 s). A wait up to
  * this long is waited out and the step tried again, as a dropped connection is;
  * a longer one, or a third refusal, ends with how long to wait.
+ *
+ * A minute, not 30 s: the durable limiter charges the refused call too and
+ * floors the bucket at −1 (lib/rate-limit.ts), so an empty bucket owes two
+ * refills and every photo 429 asks for 31–60 s. At 30 s the countdown never
+ * ran: each 429 went straight to "Wait N seconds, then tap Retry upload"
+ * (launch browser suite). A try sooner than asked is refused, and charged,
+ * again — by this slot or by another one (photoLimitUntil, below).
  */
-export const RATE_LIMIT_MAX_WAIT_S = 30;
+export const RATE_LIMIT_MAX_WAIT_S = 60;
 /** Said on the slot while such a wait runs, second by second (below). */
 export function rateLimitWaitMessage(secondsLeft: number): string {
   return `Too many photos — trying again in ${secondsLeft} s`;
@@ -184,6 +196,61 @@ export function rateLimitWaitMessage(secondsLeft: number): string {
 export function rateLimitedMessage(retryAfterSec: number): string {
   const wait = retryAfterSec < 90 ? `${retryAfterSec} seconds` : `${Math.ceil(retryAfterSec / 60)} minutes`;
   return `Too many photos in a short time. Wait ${wait}, then tap Retry upload.`;
+}
+
+/** PHOTO_LIMIT gives a photo back every 30 s: one refill. */
+export const PHOTO_REFILL_S = 30;
+
+/**
+ * The photo limit is his, not the slot's: presign charges one bucket per user
+ * (`photo:<id>`), and a form has four or five slots, SHOP and SIGNBOARD side by
+ * side. Each slot waiting out its own 429 did not work near the limit: a
+ * sibling that tried in between spent the refill, so the retry at the time it
+ * was given was refused and charged again. Two photos took about three
+ * minutes, five refusals and two Retry uploads (launch review). So the slots
+ * on the page keep one clock:
+ *   - a 429 sets the earliest the next presign may go;
+ *   - every presign waits for that first, counting down on its slot, without
+ *     calling and without spending one of its tries;
+ *   - while the limit is tight (that time has not passed by a whole refill),
+ *     the presign that goes takes the next refill for itself: the next slot
+ *     waits PHOTO_REFILL_S, when the bucket has a photo for it again, instead
+ *     of being refused and charged.
+ * Clear of the limit nothing waits: only a 429 sets the clock.
+ */
+let photoLimitUntil = 0;
+
+/** A fresh page's clock (tests). */
+export function resetPhotoLimitClock(): void {
+  photoLimitUntil = 0;
+}
+
+function holdPhotos(seconds: number): void {
+  photoLimitUntil = Math.max(photoLimitUntil, Date.now() + seconds * 1000);
+}
+
+/** Counts down to the clock, which another slot may move on while this waits. */
+async function waitForPhotoLimit(onWait?: (secondsLeft: number | null) => void): Promise<void> {
+  let waited = false;
+  for (let left = photoLimitUntil - Date.now(); left > 0; left = photoLimitUntil - Date.now()) {
+    waited = true;
+    onWait?.(Math.ceil(left / 1000));
+    await delay(left % 1000 || 1000);
+  }
+  if (waited) onWait?.(null);
+}
+
+/**
+ * Before a presign: wait for the clock, then, while the limit is tight, take
+ * the next refill. Nothing is awaited between the clock's check and the hold,
+ * so of two slots whose waits end together only one goes. True when it took
+ * the refill.
+ */
+async function takePhotoTurn(onWait?: (secondsLeft: number | null) => void): Promise<boolean> {
+  await waitForPhotoLimit(onWait);
+  if (Date.now() >= photoLimitUntil + PHOTO_REFILL_S * 1000) return false;
+  holdPhotos(PHOTO_REFILL_S);
+  return true;
 }
 
 /**
@@ -245,7 +312,10 @@ async function readRefusal(res: Response): Promise<{ code: string; message: stri
   }
 }
 
-/** A 429's wait, in seconds: the body's retryAfterSec, else Retry-After, else a refill. */
+/**
+ * A 429's wait, in seconds: the body's retryAfterSec, else Retry-After, else
+ * the longest a photo 429 asks for (one refill would be refused again).
+ */
 async function readRetryAfter(res: Response): Promise<number> {
   let sec: unknown;
   try {
@@ -286,22 +356,20 @@ async function retryable<T>(
     } catch (err) {
       lastErr = err;
       // A 429 says when the next try may go: that wait instead of the backoff,
-      // when it is short enough to sit through.
+      // when it is short enough to sit through. It goes on the page's photo
+      // clock, so every slot waits for it — this one's Retry upload included.
       const waitSec =
         err instanceof RateLimitedError && err.retryAfterSec <= RATE_LIMIT_MAX_WAIT_S
           ? err.retryAfterSec
           : null;
       if (waitSec === null && !isRetryable(err)) throw err;
+      if (waitSec !== null) holdPhotos(waitSec);
       // Don't sleep after the last attempt.
       if (attempt < RETRY_DELAYS.length - 1) {
         if (waitSec === null) {
           await delay(RETRY_DELAYS[attempt]);
         } else {
-          for (let left = waitSec; left > 0; left -= 1) {
-            onWait?.(left);
-            await delay(1000);
-          }
-          onWait?.(null);
+          await waitForPhotoLimit(onWait);
         }
       }
     }
@@ -525,11 +593,15 @@ export function PhotoCaptureSlot({
         // its third try after that URL's 10-minute life, R2 refused it (403),
         // and Submit had waited the whole time (pre-merge review).
         const presignData = await retryable(async () => {
+          // Its turn on the photo clock first: near the limit, one slot per refill.
+          const tight = await takePhotoTurn(setRateWait);
           const p = await postJson<{ url: string; key: string; headers: Record<string, string> }>(
             '/api/photos/presign',
             { kind, mimeType: 'image/jpeg', bytes: blob.size },
             'Could not get upload URL.'
           );
+          // The refill it took runs from the server's grant, which this answer follows.
+          if (tight) holdPhotos(PHOTO_REFILL_S);
           await putWithProgress(p.url, p.headers, blob, (pct) => setUploadPct(pct));
           return p;
         }, setRateWait);
@@ -641,8 +713,21 @@ export function PhotoCaptureSlot({
       // good — and now that a busy slot holds Submit, the form with it.
       hash = await sha256Hex(blob);
     } catch (e) {
-      setError((e as Error).message);
-      setProgress('error');
+      // Launch fix: said on the slot, and he picks again. The slot showed its
+      // message only outside 'error' or beside Retry upload, which needs a kept
+      // photo, so a photo it could not read left it red with no words. Any
+      // failure here but HEIC's is "could not read": the canvas's or the
+      // hash's own words mean nothing to him. A photo kept from an earlier
+      // failed upload goes, or Retry upload would send that one, not this.
+      // On a Retake the photo on the slot is still attached and counted: the
+      // slot stays done and says so, not red as if it had lost it.
+      const said =
+        (e as Error).message === HEIC_PHOTO_MESSAGE ? HEIC_PHOTO_MESSAGE : PHOTO_UNREADABLE_MESSAGE;
+      setError(photo ? `${said} ${PHOTO_KEPT_NOTE}` : said);
+      unanswered.current = null;
+      setRetainedBlob(null);
+      setRetainedHash(null);
+      setProgress(photo ? 'done' : 'error');
       return;
     }
     // B-08: retain so a final-failure "Retry upload" works without re-photographing.
@@ -761,9 +846,11 @@ export function PhotoCaptureSlot({
     // it they joined the page's stacking context and painted over the forms'
     // sticky Submit bar whenever a photo row scrolled behind it, so a tap on
     // Submit hit Retake or Remove photo (tests/unit/mobile-submit-bar.test.ts).
+    // At least h-32, not exactly: a long message (the HEIC hint) grows the slot
+    // rather than being cut off in a half-width slot on a phone.
     <div
       className={cn(
-        'relative isolate flex h-32 flex-col items-center justify-center overflow-hidden rounded-md border text-center text-sm',
+        'relative isolate flex min-h-32 flex-col items-center justify-center overflow-hidden rounded-md border text-center text-sm',
         filled
           ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
           : 'border-dashed border-slate-300 bg-slate-50 text-slate-500',
@@ -780,7 +867,7 @@ export function PhotoCaptureSlot({
       )}
       <div
         className={cn(
-          'relative z-10 flex h-full w-full flex-col items-center justify-center gap-1 p-2',
+          'relative z-10 flex w-full flex-1 flex-col items-center justify-center gap-1 p-2',
           imgSrc && 'bg-black/30 text-white backdrop-blur-sm'
         )}
       >
@@ -813,8 +900,11 @@ export function PhotoCaptureSlot({
             </div>
           </>
         )}
-        {error && progress !== 'error' && (
-          <span className="text-[11px] font-medium">{error}</span>
+        {/* Every message but a failed upload's, which shows beside its Retry
+            upload. A photo it could not read is in 'error' with no Retry: its
+            message showed nowhere (launch browser suite). */}
+        {error && !canRetry && (
+          <span className="text-[11px] font-medium leading-snug">{error}</span>
         )}
         {removeRefused && (
           <span role="alert" className="text-[11px] font-medium text-red-700">
