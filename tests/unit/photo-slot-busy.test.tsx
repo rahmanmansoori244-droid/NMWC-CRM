@@ -1168,6 +1168,33 @@ describe("a connection that drops at presign or finalize says so in the app's ow
       expect(screen.getByText(UPLOAD_NO_CONNECTION)).toBeTruthy();
       expect(screen.queryByText('Network error')).toBeNull();
     }));
+
+  // Launch browser suite: Chromium ends a PUT whose connection dies of
+  // ERR_TIMED_OUT with the XHR's timeout event, though xhr.timeout is 0. Unheard,
+  // each try sat until the stall watchdog gave up on it: about 2 1/4 minutes for
+  // three, with Submit held.
+  it('a PUT the browser ends as timed out is a dropped connection at once: tried again after the backoff, not the stall limit', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      const calls: boolean[] = [];
+      const view = render(<PhotoCaptureSlot kind="SHOP" onBusyChange={(b) => calls.push(b)} />);
+      const start = Date.now();
+      pick(view.container);
+      for (const [i, backoff] of [[0, 500], [1, 1500], [2, 0]] as const) {
+        await settleUntil(() => xhrs.length === i + 1);
+        act(() => xhrs[i]!.ontimeout?.());
+        await advance(backoff);
+      }
+      await settleUntil(() => retryButton() !== null);
+      expect(Date.now() - start).toBeLessThan(UPLOAD_STALL_MS);
+      expect(screen.getByText(UPLOAD_NO_CONNECTION)).toBeTruthy();
+      await settleUntil(() => calls.length === 2);
+      expect(calls).toEqual([true, false]);
+      // Each try's watchdog was stopped with it: nothing goes off later.
+      await advance(UPLOAD_STALL_MS);
+      expect(xhrs.map((x) => x.aborted)).toEqual([false, false, false]);
+      expect(xhrs).toHaveLength(3);
+    }));
 });
 
 describe('Remove', () => {
