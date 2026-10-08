@@ -70,6 +70,7 @@ import {
   kpiValue,
   queueCard,
   queueOrder,
+  relayR2Puts,
   seedBranchRequest,
   seedCreateRequest,
   slaBudgetMin,
@@ -215,8 +216,13 @@ async function openStatusForm(page: Page, opener: 'Mark closed' | 'Request react
   return form;
 }
 
-/** Takes the evidence photo in the form: the camera input, compressed and uploaded by the page. */
+/**
+ * Takes the evidence photo in the form: the camera input, compressed and uploaded by the page.
+ * On a lane's own E2E_PORT the page's PUT to R2 is relayed (relayR2Puts: the bucket's CORS
+ * admits http://localhost:3000 only); on 3000 the browser PUTs to R2 itself.
+ */
 async function takeEvidence(form: Locator): Promise<void> {
+  await relayR2Puts(form.page());
   await form.locator('input[type="file"]').setInputFiles({ name: 'evidence.png', mimeType: 'image/png', buffer: uniquePng() });
   // PhotoCaptureSlot offers "Retake photo" once the upload is finished and attached to the form.
   await expect(form.locator('label[aria-label="Retake photo"]')).toBeVisible({ timeout: 90_000 });

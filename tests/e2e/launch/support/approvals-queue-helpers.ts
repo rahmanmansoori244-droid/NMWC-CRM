@@ -15,17 +15,19 @@
  *   slaSweepImpact()     — what GET /api/cron/sla-escalate would touch that is
  *     NOT the world's (read-only), for the exclusive SLA test's precondition.
  *   tallyPhotoResponses(), imagesLoaded(), queueCard(), kpiTile(), bell().
+ *   relayR2Puts()        — on a lane's own E2E_PORT, the page's photo PUTs to
+ *     R2 are relayed from Node (R2's CORS admits http://localhost:3000 only).
  *
  * Every id is minted here and written to the world's registry BEFORE its row is
  * inserted, as the harness requires; every typed value carries the suffix.
  */
-import { expect, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { PaymentTerms, Prisma, Role } from '@prisma/client';
 import { resolveChain, stepDeadline } from '../../../../lib/approval-chains';
 import { normalizeCR } from '../../../../lib/cr';
 import { DEFAULT_STAGE_SLA_MIN, STAGE_SLA_MINUTES } from '../../../../lib/working-hours';
 import { receiptEditId, submitCreateViaApi, uploadPhotoViaApi } from './api';
-import { db, hasR2, safeError } from './env';
+import { db, hasR2, PORT, safeError } from './env';
 import { newId } from './ids';
 import { OMAN_TODAY, omanDayAfter } from './oman';
 import { seedPhoto, seedPhotos, type PhotoSpec } from './photos';
@@ -422,4 +424,58 @@ export function kpiValue(page: Page, label: string): Locator {
 /** The top bar's bell link (components/nmwc/TopBar.tsx); its name carries both counts. */
 export function bell(page: Page): Locator {
   return page.getByRole('link', { name: /^Notifications( \(|$)/ });
+}
+
+/** A presigned R2 URL (path-style, on the account host; lib/r2.ts). */
+const R2_HOST = /^https:\/\/[^/]*\.r2\.cloudflarestorage\.com\//;
+const relayed = new WeakSet<Page>();
+
+/**
+ * The bucket's CORS rule admits the browser's photo PUT from http://localhost:3000
+ * only, the suite's default port (iphone.spec.ts; field-faults-helpers.ts
+ * noteR2CorsRefusal). On a lane's own E2E_PORT the browser refuses every in-page
+ * upload, and the slot says "No connection" — the environment, not the app.
+ *
+ * There, and only there, this page's PUTs to R2 are sent from Node instead — the
+ * same presigned URL, Content-Type and body, to the same bucket — and R2's own
+ * answer, its status and body, is handed back to the page; Playwright answers
+ * the CORS preflight of a routed request and adds the page's origin to a
+ * fulfilled answer. Everything the app does — compress, presign, PUT with
+ * progress, finalize, attach, the slot's states — is unchanged. On port 3000
+ * nothing is routed: the browser meets the bucket's own rule. A relay that
+ * cannot reach R2 fails the PUT as a dropped connection, as the browser would.
+ *
+ * Node's fetch, NOT route.fetch(): that is a Playwright API call, a report step
+ * titled with its URL, and a presigned URL carries the R2 account id, the
+ * access key id and a live signature (support/api.ts uploadPhotoViaApi). The
+ * URL is never logged, and an error is swallowed without it.
+ */
+export async function relayR2Puts(page: Page): Promise<void> {
+  if (PORT === 3000 || relayed.has(page)) return;
+  relayed.add(page);
+  await page.route(R2_HOST, async (route) => {
+    const req = route.request();
+    if (req.method() !== 'PUT') return route.continue();
+    // What the presign signs and the page sends: Content-Type (lib/r2.ts), any x-amz-*.
+    const headers = Object.fromEntries(
+      Object.entries(req.headers()).filter(([k]) => k === 'content-type' || k.startsWith('x-amz-'))
+    );
+    try {
+      const res = await fetch(req.url(), {
+        method: 'PUT',
+        headers,
+        body: new Uint8Array(req.postDataBuffer() ?? Buffer.alloc(0)),
+        signal: AbortSignal.timeout(60_000),
+      });
+      const body = Buffer.from(await res.arrayBuffer());
+      const contentType = res.headers.get('content-type');
+      await route.fulfill({ status: res.status, body, ...(contentType ? { contentType } : {}) });
+    } catch {
+      await route.abort('failed').catch(() => undefined);
+    }
+  });
+  test.info().annotations.push({
+    type: 'R2 CORS',
+    description: `E2E_PORT=${PORT}: the page's photo PUTs to R2 were relayed from Node (the bucket's CORS admits http://localhost:3000 only)`,
+  });
 }
