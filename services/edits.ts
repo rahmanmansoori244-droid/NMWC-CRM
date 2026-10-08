@@ -19,6 +19,7 @@ import {
   RateLimitError,
   FormOutdatedError,
   StaleFieldsError,
+  ROUTE_INACTIVE_MESSAGE,
   runAction,
   type SafeAction,
 } from '@/lib/errors';
@@ -446,7 +447,13 @@ async function submitEditOnce(
   // Salesman scope: at least one branch must belong to his route
   const me = await prisma.user.findUniqueOrThrow({
     where: { id: session.id },
-    select: { id: true, ownedRouteId: true, role: true, supervisorId: true },
+    select: {
+      id: true,
+      ownedRouteId: true,
+      role: true,
+      supervisorId: true,
+      ownedRoute: { select: { isActive: true } },
+    },
   });
   // final-hunt #17: a Manager's customer-level authorization (assertCanEditCustomer)
   // is any-branch-overlap — it passes if ANY branch is in a region they manage. On a
@@ -455,6 +462,13 @@ async function submitEditOnce(
   // the branch loop below. STEWARD stays unrestricted (data-ops role).
   let managerRegionIds: string[] | null = null;
   if (me.role === Role.SALESMAN) {
+    // Launch fix (P2): a switched-off route takes no new request from him, as
+    // New customer already refused (services/creates.ts). A draft is still
+    // saved: nothing of it goes for approval. A Manager's or Steward's direct
+    // write below does not ask.
+    if (!isDraft && me.ownedRoute?.isActive === false) {
+      throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
+    }
     const onMyRoute = customer.branches.some((b) => b.routeId === me.ownedRouteId);
     if (!onMyRoute) throw new ForbiddenError('This customer is not on your route.');
   } else if (me.role === Role.STEWARD || me.role === Role.MANAGER) {

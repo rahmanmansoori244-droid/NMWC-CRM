@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/nmwc/EmptyState';
 import { Role, type Prisma } from '@prisma/client';
 import { omanDayOfWeek, omanLongDate } from '@/lib/tz';
 import { countOpenReturned } from '@/lib/returned-work';
+import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 
 export const metadata = { title: 'Today · NMWC' };
 
@@ -51,7 +52,12 @@ export default async function TodayPage({
   const [me, pending, rejected] = await Promise.all([
     prisma.user.findUniqueOrThrow({
       where: { id: session.user.id },
-      select: { id: true, fullName: true, ownedRouteId: true },
+      select: {
+        id: true,
+        fullName: true,
+        ownedRouteId: true,
+        ownedRoute: { select: { isActive: true } },
+      },
     }),
     prisma.customerEdit.count({ where: { submittedById: session.user.id, state: 'SUBMITTED' } }),
     // Launch fix: a sent-back update he has since sent again no longer waits
@@ -141,6 +147,18 @@ export default async function TodayPage({
           </Link>
         }
       />
+
+      {/* Launch fix (P2): a route switched off mid-week still lists its visits,
+          but nothing he sends on it is accepted (services/creates.ts, edits.ts,
+          reactivations.ts): say so before he works a shop. The refusals say
+          the first sentence too. */}
+      {me.ownedRoute?.isActive === false && (
+        <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
+          {ROUTE_INACTIVE_MESSAGE} Until it is active again, you cannot submit an enrichment, mark a
+          shop closed, request a reactivation or register a new customer. An enrichment you start
+          stays saved on this phone.
+        </div>
+      )}
 
       <div className="grid grid-cols-3 gap-2 px-4 pt-4 sm:gap-3 sm:px-6">
         {/* It counts branches: /customers counts customers, and one customer
