@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useTransition } from 'react';
+import { useId, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { PhotoCaptureSlot, type AttachedPhoto } from './PhotoCaptureSlot';
 import { postForm, noticeFor, SubmissionIds, type SubmitNotice } from '@/lib/submit-client';
@@ -39,6 +39,9 @@ export function BranchStatusActions({
   // After a request is in, the form closes and this says so (there was no
   // confirmation at all: the salesman saw the form vanish, nothing else).
   const [sent, setSent] = useState<string | null>(null);
+  // The reason's label is tied to its box, and the photo's caption names the
+  // slot's group: neither named anything for a screen reader (launch suite).
+  const uid = useId();
 
   const isClosed = status === 'CLOSED';
   const action = open;
@@ -140,10 +143,10 @@ export function BranchStatusActions({
           <h4 className="text-base font-semibold text-slate-900">
             {action === 'close' ? 'Mark this branch closed' : 'Reactivate this branch'}
           </h4>
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">
+          <div role="group" aria-labelledby={`${uid}-photo`}>
+            <p id={`${uid}-photo`} className="mb-1 block text-sm font-medium text-slate-700">
               Photo evidence (must be fresh — captured today)
-            </label>
+            </p>
             <div className="w-40">
               {/* On no slot: the photo goes onto the branch with the request,
                   in its transaction (services/reactivations.ts wireEvidence).
@@ -154,10 +157,11 @@ export function BranchStatusActions({
             </div>
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">
+            <label htmlFor={`${uid}-reason`} className="mb-1 block text-sm font-medium text-slate-700">
               Reason (5+ chars)
             </label>
             <textarea
+              id={`${uid}-reason`}
               value={reason}
               onChange={(e) => setReason(e.currentTarget.value)}
               rows={2}
@@ -172,7 +176,11 @@ export function BranchStatusActions({
             />
           </div>
           <div>
-            {err && <p className="mb-3 text-sm font-medium text-red-600">{err}</p>}
+            {err && (
+              <p role="alert" className="mb-3 text-sm font-medium text-red-600">
+                {err}
+              </p>
+            )}
             <SubmitNoticeBox notice={notice} busy={pending} onRetry={() => submit()} />
           </div>
           <div className="flex items-center justify-end gap-2">
