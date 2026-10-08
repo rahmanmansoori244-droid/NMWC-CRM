@@ -87,6 +87,8 @@ export function ChangePasswordForm() {
           }
         });
       }}
+      // The fields inherit this text-sm (preflight), and iOS Safari zooms the
+      // page into any field under 16 px, so each one is text-base below sm.
       className="grid gap-3 text-sm"
     >
       {done ? (
@@ -115,7 +117,7 @@ export function ChangePasswordForm() {
               name="currentPassword"
               required
               autoComplete="current-password"
-              className="block w-full rounded-md border-slate-300 px-3 py-2"
+              className="block w-full rounded-md border-slate-300 px-3 py-2 text-base sm:text-sm"
             />
             {errors.currentPassword && (
               <p className="mt-0.5 text-xs text-red-600">{errors.currentPassword}</p>
@@ -133,7 +135,7 @@ export function ChangePasswordForm() {
               minLength={12}
               autoComplete="new-password"
               {...AS_TYPED}
-              className="block w-full rounded-md border-slate-300 px-3 py-2"
+              className="block w-full rounded-md border-slate-300 px-3 py-2 text-base sm:text-sm"
             />
             {errors.newPassword && (
               <p className="mt-0.5 text-xs text-red-600">{errors.newPassword}</p>
@@ -153,7 +155,7 @@ export function ChangePasswordForm() {
               required
               autoComplete="new-password"
               {...AS_TYPED}
-              className="block w-full rounded-md border-slate-300 px-3 py-2"
+              className="block w-full rounded-md border-slate-300 px-3 py-2 text-base sm:text-sm"
             />
             {errors.confirmNewPassword && (
               <p role="alert" className="mt-0.5 text-xs text-red-600">
