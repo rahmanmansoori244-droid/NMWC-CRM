@@ -296,15 +296,18 @@ function watchdogVerdict(src: string, version: string): Verdict {
   };
 }
 
-/** A react-dom package's client build and version. */
+/**
+ * A react-dom package's client build and version. The version is the one the
+ * build itself carries (`reconcilerVersion: "…"`): Next's vendored copy has a
+ * package.json with no version field. package.json is the fallback.
+ */
 function reactDom(...dir: string[]) {
   const at = path.join(process.cwd(), 'node_modules', ...dir);
-  return {
-    src: fs.readFileSync(path.join(at, 'cjs', 'react-dom-client.production.js'), 'utf8'),
-    version: (
-      JSON.parse(fs.readFileSync(path.join(at, 'package.json'), 'utf8')) as { version: string }
-    ).version,
+  const src = fs.readFileSync(path.join(at, 'cjs', 'react-dom-client.production.js'), 'utf8');
+  const pkg = JSON.parse(fs.readFileSync(path.join(at, 'package.json'), 'utf8')) as {
+    version?: string;
   };
+  return { src, version: /reconcilerVersion:\s*"([^"]+)"/.exec(src)?.[1] ?? pkg.version ?? '' };
 }
 
 describe('when the workaround can go', () => {
@@ -312,6 +315,8 @@ describe('when the workaround can go', () => {
     // When this fails saying it can be removed, Next ships the fix: delete
     // TransitionWatchdog (and this file) and take it out of app/layout.tsx.
     const { src, version } = reactDom('next', 'dist', 'compiled', 'react-dom');
+    // Without a version the ">= 19.3" half of the verdict could never fire.
+    expect(version, "Next's vendored react-dom: no version found").toMatch(/^\d+\.\d+\.\d+/);
     const { verdict, why } = watchdogVerdict(src, version);
     if (verdict === 'unknown') {
       throw new Error(
@@ -329,6 +334,11 @@ describe('when the workaround can go', () => {
     const fixed = reactDom('react-dom');
     const buggy = reactDom('next', 'dist', 'compiled', 'react-dom');
     const CANARY = '19.2.0-canary-0bdb9206-20250818';
+
+    it("reads each build's own version: the vendored package.json has none", () => {
+      expect(buggy.version).toBe(CANARY);
+      expect(fixed.version).toBe('19.3.0');
+    });
 
     it('a build that records the render-phase ping is removable, whatever its version says', () => {
       expect(fixed.version).toBe('19.3.0');
