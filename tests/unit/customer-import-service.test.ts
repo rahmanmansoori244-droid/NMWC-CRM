@@ -950,11 +950,11 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
     const lockByCode = tx.$queryRaw as Fn;
     tx.$queryRaw = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const q = strings.join('?');
-      if (/UPPER\("temixCode"\)/.test(q)) {
+      if (/UPPER\(c\."temixCode"\)/.test(q)) {
         order.push('temix.holder');
         holderSql.push(Prisma.sql(strings, ...values).text);
-        expect(values).toEqual(['cust-1', 'cust-1', 'TX900', 'TX900']);
-        return holder ? [{ nmwcCode: holder.nmwcCode }] : [];
+        expect(values).toEqual(['cust-1', 'cust-1', 'TX900', 'TX900', 'TX900', 'cust-1', 'cust-1', 'TX900']);
+        return holder ? [holder] : [];
       }
       return lockByCode(strings, ...values);
     });
@@ -1008,12 +1008,13 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
     );
   });
 
-  it('checked under the lock a finalize takes, against every other live customer, before anything is written', async () => {
+  it('checked under the lock a finalize takes, against every other customer and live branch, before anything is written', async () => {
     setup({ ...APP }, [row()]);
     app(true);
     await promote();
     expect(temixLocks).toEqual(['nmwc:temix:TX900']);
     expect(holderSql).toHaveLength(1);
+    expect(holderSql[0]).toContain('FROM "Branch" b');
     const i = (name: string) => order.indexOf(name);
     expect(i('temix.lock')).toBeLessThan(i('temix.holder'));
     expect(i('temix.holder')).toBeLessThan(i('customer.update'));
@@ -1024,6 +1025,16 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
       'another live customer has it',
       { nmwcCode: 'NMWC-2026-000012', archived: false, branchCode: null },
       'temix_code is already the Temix code of live customer NMWC-2026-000012 — steward review',
+    ],
+    [
+      'an archived customer has it (in any case)',
+      { nmwcCode: 'C0367', archived: true, branchCode: null },
+      'temix_code is held by archived C0367 — its Temix deactivation may be in flight — steward review',
+    ],
+    [
+      'it is a live branch code',
+      { nmwcCode: 'NMWC-2026-000012', archived: false, branchCode: 'TX900' },
+      'temix_code is the code of branch TX900 of live customer NMWC-2026-000012 — steward review',
     ],
   ])('%s: reported on the row; nothing is written and nobody is told', async (_label, holder, message) => {
     setup({ ...APP }, [row()]);

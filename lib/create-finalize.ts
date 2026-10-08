@@ -23,8 +23,9 @@
  *
  * Owner decision 2026-10-08: the Accountant creates the customer in Temix
  * before he approves and types the Temix code it got (lib/temix-code.ts). The
- * customer is created with that code, refused if a live customer already holds
- * it, and stays PENDING_UPLOAD: the next batch sends the full record (branches,
+ * customer is created with that code, refused if any other customer holds it
+ * (an archived one included) or it is a live branch's code, and stays
+ * PENDING_UPLOAD: the next batch sends the full record (branches,
  * GPS, phones) as an UPSERT keyed by that temix_code — an update of the Temix
  * record he made, not a second one (lib/temix.ts buildTemixRows).
  */
@@ -44,7 +45,7 @@ import { draftScores } from './create-score';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from './create-guards';
 import { writeAudit, type AuditEnvelope } from './audit';
 import { UNWIRED_LIVE } from './photo-attach';
-import { liveTemixCodeHolder, lockTemixCode, temixCodeTakenMessage } from './temix-code';
+import { lockTemixCode, temixCodeHolder, temixCodeHolderMessage } from './temix-code';
 
 type Tx = Prisma.TransactionClient;
 
@@ -217,12 +218,14 @@ export async function finalizeCreateInTx(
 
   // 3b. Owner decision 2026-10-08: the Temix code is this customer's alone.
   //     After the photo checks, which no code typed here can fix. Locked first,
-  //     so two finalizes typing the same code (or a finalize and an inbound
-  //     refresh recording it, services/imports.ts) cannot both pass the check.
+  //     so two finalizes typing the same code (or a finalize and an import
+  //     recording it, services/imports.ts) cannot both pass the check. An
+  //     archived customer's code is refused as the customer import refuses it:
+  //     given to this customer, every inbound refresh of it would be rejected.
   await lockTemixCode(tx, temixCode);
-  const holder = await liveTemixCodeHolder(tx, temixCode);
+  const holder = await temixCodeHolder(tx, temixCode);
   if (holder) {
-    const message = temixCodeTakenMessage(temixCode, holder);
+    const message = temixCodeHolderMessage(temixCode, holder);
     throw new AppError('TEMIX_CODE_TAKEN', message, 409, { temixCode: message });
   }
 

@@ -32,6 +32,7 @@ import {
   TEMIX_CODE_BULK_REFUSED_MESSAGE,
 } from '@/lib/bulk-run';
 import {
+  TEMIX_CODE_CRM_MESSAGE,
   TEMIX_CODE_REQUIRED_MESSAGE,
   TEMIX_CODE_SHAPE_MESSAGE,
   TEMIX_CODE_SPACES_MESSAGE,
@@ -340,6 +341,8 @@ describe('owner decision 2026-10-08 — the Temix code at the last step of a new
   it.each([
     ['CAA 0367', TEMIX_CODE_SPACES_MESSAGE],
     ['=CAA0367', TEMIX_CODE_SHAPE_MESSAGE],
+    // The new customer's own NMWC code, or any other code of this CRM.
+    ['nmwc-2026-000123', TEMIX_CODE_CRM_MESSAGE],
   ])('%j is refused under the box before anything is sent', (typed, message) => {
     renderActions({ kind: 'CREATE' });
     typeTemixCode(typed);

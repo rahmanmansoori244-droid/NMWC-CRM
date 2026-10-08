@@ -26,7 +26,8 @@ const ARABIC_INDIC_DIGIT = /[\u0660-\u0669]/g;
 const PERSIAN_DIGIT = /[\u06F0-\u06F9]/g;
 const ARABIC_DECIMAL_SEPARATOR = /\u066B/g;
 const ARABIC_THOUSANDS_SEPARATOR = /\u066C/g;
-const INVISIBLE_FORMAT =
+/** The invisible bidi and format characters copied Arabic text carries (lib/cr.ts's set). */
+export const INVISIBLE_FORMAT =
   /[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
 
 /** Arabic-Indic and Persian digits as ASCII; nothing else changes. */

@@ -67,7 +67,7 @@ import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/impo
 import { lockCustomerRowByCode } from '@/lib/locks';
 import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
-import { liveTemixCodeHolder, lockTemixCode, normalizeTemixCode } from '@/lib/temix-code';
+import { lockTemixCode, normalizeTemixCode, temixCodeHolder } from '@/lib/temix-code';
 import {
   branchOnlyNote,
   composeBranchCode,
@@ -2380,8 +2380,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // authority is again only this sheet, so the lane writes the code and
             // nothing else the ERP owns: not the payment terms or credit figures,
             // which came through the approval chain; the next refresh, now
-            // matching, applies Temix's. The code must be no other live customer's
-            // (lib/temix-code.ts), under the lock a finalize takes; the guard above
+            // matching, applies Temix's. The code must be no other customer's,
+            // live or archived, nor a live branch's (lib/temix-code.ts, the rule
+            // finalize applies), under the lock a finalize takes; the guard above
             // has already refused one that any customer holds as its Temix code,
             // or that an archived one is deactivated under.
             let firstTemixCode = false;
@@ -2404,10 +2405,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               });
               if (createdByFinalize) {
                 await lockTemixCode(tx, lead.temixCode);
-                const holder = await liveTemixCodeHolder(tx, lead.temixCode, existing.id);
+                const holder = await temixCodeHolder(tx, lead.temixCode, existing.id);
                 if (holder) {
                   throw new Error(
-                    `CROSSWALK:temix_code is already the Temix code of live customer ${holder} — steward review`
+                    `CROSSWALK:${
+                      holder.branchCode
+                        ? `temix_code is the code of branch ${holder.branchCode} of live customer ${holder.nmwcCode}`
+                        : holder.archived
+                          ? `temix_code is held by archived ${holder.nmwcCode} — its Temix deactivation may be in flight`
+                          : `temix_code is already the Temix code of live customer ${holder.nmwcCode}`
+                    } — steward review`
                   );
                 }
                 firstTemixCode = true;
