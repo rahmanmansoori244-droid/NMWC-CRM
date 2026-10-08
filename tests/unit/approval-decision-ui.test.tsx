@@ -496,6 +496,43 @@ describe('the bulk queue', () => {
     expect(screen.getByText(new RegExp(STALE_VIEW_MESSAGE.slice(0, 30)))).toBeTruthy();
   });
 
+  describe('launch browser suite follow-up: what a bulk decision did is read out', () => {
+    const approveBoth = () => {
+      render(<BulkApprovalQueue items={ITEMS} />);
+      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
+    };
+
+    it('all done: a status', async () => {
+      h.bulkApprove.mockResolvedValue({ ok: true, data: { successes: ['c2', 'u1'], failures: [], notAttempted: [] } });
+      approveBoth();
+      expect((await screen.findByRole('status')).textContent).toBe('2 processed.');
+    });
+
+    it('one failed: an alert, with its message', async () => {
+      h.bulkApprove.mockResolvedValue({
+        ok: true,
+        data: { successes: ['c2'], failures: [{ editId: 'u1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
+      });
+      approveBoth();
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toMatch(/^1 processed, 1 failed\./);
+      expect(alert.textContent).toContain(STALE_VIEW_MESSAGE);
+    });
+
+    it('the whole action refused: an alert', async () => {
+      h.bulkApprove.mockResolvedValue({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: BULK_DECISION_LIMIT_MESSAGE,
+        fields: { decisions: BULK_DECISION_LIMIT_MESSAGE },
+      });
+      approveBoth();
+      expect((await screen.findByRole('alert')).textContent).toBe(`Nothing was processed.${BULK_DECISION_LIMIT_MESSAGE}`);
+    });
+  });
+
   describe('Select all stops at the bulk limit', () => {
     const CAPPED = `Selected the first ${BULK_DECISION_LIMIT} — the limit per action.`;
     const many = (n: number) => Array.from({ length: n }, (_, i) => item(`q${String(i).padStart(3, '0')}`));

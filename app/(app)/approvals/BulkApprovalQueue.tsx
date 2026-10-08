@@ -176,6 +176,9 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
     <div className="pb-32">
       {outcome && (
         <div
+          // Read out when it lands: what a bulk decision did was text a screen
+          // reader never reached. Anything failed or not attempted is an alert.
+          role={outcome.failures.length === 0 && outcome.notAttempted === 0 ? 'status' : 'alert'}
           className={`mx-4 mb-4 rounded-md p-3 text-sm sm:mx-6 ${
             outcome.failures.length === 0 && outcome.notAttempted === 0
               ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'
