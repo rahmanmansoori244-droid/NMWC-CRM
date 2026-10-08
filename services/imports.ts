@@ -1797,16 +1797,23 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
   if (otherLive) {
     // Undo the claim in ONE guarded write: status AND lease back to exactly what
     // the claim replaced (a READY batch stays READY, not "interrupted"). Guarded
-    // by our token, so it can never undo anyone else's claim.
-    await prisma.importBatch
-      .updateMany({
+    // by our token, so it can never undo anyone else's claim. It is a separate
+    // write on purpose: in one transaction with the claim, each claim would be
+    // hidden from the other batch's check and both could run. So it is tried
+    // twice; an undo that still cannot be written leaves the batch PROMOTING
+    // under this promote's lease, blocking other promotes until that runs out
+    // (PROMOTE_LEASE_MS), after which it reads interrupted and can be resumed.
+    const unclaim = () =>
+      prisma.importBatch.updateMany({
         where: { id: batchId, promoteLeaseBy: leaseToken },
         data: {
           status: preflight.status,
           promoteLeaseBy: preflight.promoteLeaseBy,
           promoteLeaseUntil: preflight.promoteLeaseUntil,
         },
-      })
+      });
+    await unclaim()
+      .catch(() => unclaim())
       .catch((e) => {
         logger.warn(
           { err: (e as Error).message?.slice(0, 80), batchId },

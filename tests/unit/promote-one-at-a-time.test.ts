@@ -21,7 +21,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const h = vi.hoisted(() => ({ db: {} as Record<string, unknown> }));
+const h = vi.hoisted(() => ({ db: {} as Record<string, unknown>, warn: vi.fn() }));
 
 vi.mock('@/lib/auth', () => ({
   auth: async () => ({ user: { id: 'stew', role: 'STEWARD', username: 'steward.x' } }),
@@ -33,7 +33,7 @@ vi.mock('@/lib/audit', () => ({
 }));
 vi.mock('@/lib/alert', () => ({ sendAlert: async () => {} }));
 vi.mock('@/lib/logger', () => ({
-  logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+  logger: { info: () => {}, warn: h.warn, error: () => {}, debug: () => {} },
 }));
 vi.mock('@/lib/db', () => ({ prisma: h.db }));
 
@@ -74,6 +74,8 @@ let table: Batch[];
 let writes: Array<{ where: Where; data: Partial<Batch> }>;
 /** Runs once, just before the claim on batch-9 is applied (simulates a racing claim). */
 let beforeClaim: (() => void) | null;
+/** How many of the next writes that undo a claim fail (a dropped connection). */
+let failUndos: number;
 
 const pick = (row: Batch, select?: Record<string, boolean>) =>
   select ? Object.fromEntries(Object.keys(select).map((k) => [k, row[k as keyof Batch]])) : row;
@@ -81,6 +83,8 @@ const pick = (row: Batch, select?: Record<string, boolean>) =>
 beforeEach(() => {
   writes = [];
   beforeClaim = null;
+  failUndos = 0;
+  h.warn.mockClear();
   Object.assign(h.db, {
     importBatch: {
       findUnique: vi.fn(
@@ -99,6 +103,10 @@ beforeEach(() => {
         if (where.id === 'batch-9' && data.status === 'PROMOTING' && beforeClaim) {
           beforeClaim();
           beforeClaim = null;
+        }
+        if (where.promoteLeaseBy && data.status !== 'PROMOTING' && failUndos > 0) {
+          failUndos -= 1;
+          throw new Error('Connection terminated unexpectedly');
         }
         writes.push({ where, data });
         const hit = table.filter((b) => matches(b, where));
@@ -212,6 +220,54 @@ describe('promote while another customer import is being promoted', () => {
     expect(mine()).toEqual(
       batch({ status: 'PROMOTING', promoteLeaseBy: 'stew:old', promoteLeaseUntil: expired })
     );
+  });
+
+  // The undo is a separate write from the claim (in one transaction, each claim
+  // would be hidden from the other batch's check). If it fails, a READY batch is
+  // left PROMOTING under this promote's live lease: blocking every other promote
+  // until it runs out, then reading "Promote interrupted". So it is tried twice.
+  it('the race: an undo that fails once is tried again, and the batch is put back', async () => {
+    const other = batch({ id: 'other', filename: 'other.xlsx', status: 'READY' });
+    table = [batch({}), other];
+    beforeClaim = () =>
+      Object.assign(other, {
+        status: 'PROMOTING',
+        promoteLeaseBy: 'someone:tok',
+        promoteLeaseUntil: live(),
+      });
+    failUndos = 1;
+
+    const res = await promote();
+
+    expect(res.ok).toBe(false);
+    expect(JSON.stringify(res)).toMatch(/Another customer import/);
+    expect(mine()).toEqual(batch({}));
+    expect(h.warn).not.toHaveBeenCalled();
+  });
+
+  it('the race: an undo that fails twice is logged, and the refusal still names the other import', async () => {
+    const other = batch({ id: 'other', filename: 'other.xlsx', status: 'READY' });
+    table = [batch({}), other];
+    beforeClaim = () =>
+      Object.assign(other, {
+        status: 'PROMOTING',
+        promoteLeaseBy: 'someone:tok',
+        promoteLeaseUntil: live(),
+      });
+    failUndos = 2;
+
+    const res = await promote();
+
+    expect(JSON.stringify(res)).toMatch(/Another customer import \(\\"other.xlsx\\"\)/);
+    expect(h.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ batchId: 'batch-9' }),
+      'import.promote.unclaim_failed'
+    );
+    // Left claimed under this promote's lease: resumable once that runs out.
+    expect(mine()).toMatchObject({
+      status: 'PROMOTING',
+      promoteLeaseBy: expect.stringMatching(/^stew:/),
+    });
   });
 
   it.each(['PROMOTED', 'PARSING'])(
