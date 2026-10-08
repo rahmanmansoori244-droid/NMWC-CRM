@@ -184,7 +184,7 @@ export const UPLOAD_NO_CONNECTION =
  * refills and every photo 429 asks for 31–60 s. At 30 s the countdown never
  * ran: each 429 went straight to "Wait N seconds, then tap Retry upload"
  * (launch browser suite). A try sooner than asked is refused, and charged,
- * again.
+ * again — by this slot or by another one (photoLimitUntil, below).
  */
 export const RATE_LIMIT_MAX_WAIT_S = 60;
 /** Said on the slot while such a wait runs, second by second (below). */
@@ -194,6 +194,61 @@ export function rateLimitWaitMessage(secondsLeft: number): string {
 export function rateLimitedMessage(retryAfterSec: number): string {
   const wait = retryAfterSec < 90 ? `${retryAfterSec} seconds` : `${Math.ceil(retryAfterSec / 60)} minutes`;
   return `Too many photos in a short time. Wait ${wait}, then tap Retry upload.`;
+}
+
+/** PHOTO_LIMIT gives a photo back every 30 s: one refill. */
+export const PHOTO_REFILL_S = 30;
+
+/**
+ * The photo limit is his, not the slot's: presign charges one bucket per user
+ * (`photo:<id>`), and a form has four or five slots, SHOP and SIGNBOARD side by
+ * side. Each slot waiting out its own 429 did not work near the limit: a
+ * sibling that tried in between spent the refill, so the retry at the time it
+ * was given was refused and charged again. Two photos took about three
+ * minutes, five refusals and two Retry uploads (launch review). So the slots
+ * on the page keep one clock:
+ *   - a 429 sets the earliest the next presign may go;
+ *   - every presign waits for that first, counting down on its slot, without
+ *     calling and without spending one of its tries;
+ *   - while the limit is tight (that time has not passed by a whole refill),
+ *     the presign that goes takes the next refill for itself: the next slot
+ *     waits PHOTO_REFILL_S, when the bucket has a photo for it again, instead
+ *     of being refused and charged.
+ * Clear of the limit nothing waits: only a 429 sets the clock.
+ */
+let photoLimitUntil = 0;
+
+/** A fresh page's clock (tests). */
+export function resetPhotoLimitClock(): void {
+  photoLimitUntil = 0;
+}
+
+function holdPhotos(seconds: number): void {
+  photoLimitUntil = Math.max(photoLimitUntil, Date.now() + seconds * 1000);
+}
+
+/** Counts down to the clock, which another slot may move on while this waits. */
+async function waitForPhotoLimit(onWait?: (secondsLeft: number | null) => void): Promise<void> {
+  let waited = false;
+  for (let left = photoLimitUntil - Date.now(); left > 0; left = photoLimitUntil - Date.now()) {
+    waited = true;
+    onWait?.(Math.ceil(left / 1000));
+    await delay(left % 1000 || 1000);
+  }
+  if (waited) onWait?.(null);
+}
+
+/**
+ * Before a presign: wait for the clock, then, while the limit is tight, take
+ * the next refill. Nothing is awaited between the clock's check and the hold,
+ * so of two slots whose waits end together only one goes. True when it took
+ * the refill.
+ */
+async function takePhotoTurn(onWait?: (secondsLeft: number | null) => void): Promise<boolean> {
+  await waitForPhotoLimit(onWait);
+  if (Date.now() >= photoLimitUntil + PHOTO_REFILL_S * 1000) return false;
+  holdPhotos(PHOTO_REFILL_S);
+  return true;
 }
 
 /**
@@ -299,22 +354,20 @@ async function retryable<T>(
     } catch (err) {
       lastErr = err;
       // A 429 says when the next try may go: that wait instead of the backoff,
-      // when it is short enough to sit through.
+      // when it is short enough to sit through. It goes on the page's photo
+      // clock, so every slot waits for it — this one's Retry upload included.
       const waitSec =
         err instanceof RateLimitedError && err.retryAfterSec <= RATE_LIMIT_MAX_WAIT_S
           ? err.retryAfterSec
           : null;
       if (waitSec === null && !isRetryable(err)) throw err;
+      if (waitSec !== null) holdPhotos(waitSec);
       // Don't sleep after the last attempt.
       if (attempt < RETRY_DELAYS.length - 1) {
         if (waitSec === null) {
           await delay(RETRY_DELAYS[attempt]);
         } else {
-          for (let left = waitSec; left > 0; left -= 1) {
-            onWait?.(left);
-            await delay(1000);
-          }
-          onWait?.(null);
+          await waitForPhotoLimit(onWait);
         }
       }
     }
@@ -538,11 +591,15 @@ export function PhotoCaptureSlot({
         // its third try after that URL's 10-minute life, R2 refused it (403),
         // and Submit had waited the whole time (pre-merge review).
         const presignData = await retryable(async () => {
+          // Its turn on the photo clock first: near the limit, one slot per refill.
+          const tight = await takePhotoTurn(setRateWait);
           const p = await postJson<{ url: string; key: string; headers: Record<string, string> }>(
             '/api/photos/presign',
             { kind, mimeType: 'image/jpeg', bytes: blob.size },
             'Could not get upload URL.'
           );
+          // The refill it took runs from the server's grant, which this answer follows.
+          if (tight) holdPhotos(PHOTO_REFILL_S);
           await putWithProgress(p.url, p.headers, blob, (pct) => setUploadPct(pct));
           return p;
         }, setRateWait);

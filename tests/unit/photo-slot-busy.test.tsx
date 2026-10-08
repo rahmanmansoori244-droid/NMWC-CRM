@@ -21,7 +21,7 @@
  * fetch serves every step.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react';
 
 import {
   PhotoCaptureSlot,
@@ -34,6 +34,8 @@ import {
   HEIC_PHOTO_MESSAGE,
   PHOTO_UNREADABLE_MESSAGE,
   RATE_LIMIT_MAX_WAIT_S,
+  PHOTO_REFILL_S,
+  resetPhotoLimitClock,
   rateLimitedMessage,
   rateLimitWaitMessage,
   postBodyDeadlineMs,
@@ -121,6 +123,29 @@ let seen: string[] = [];
 let signals: Array<AbortSignal | null | undefined> = [];
 let sent: Array<{ url: string; body: unknown; signal: AbortSignal | null | undefined }> = [];
 let presigned = 0;
+/**
+ * The user's photo bucket as presign charges it, when a test sets one: the
+ * durable limiter's formula (lib/rate-limit.ts checkLimitPg) on the test's
+ * clock, in ms of refill, so it adds up exactly. A refused call is charged
+ * too, down to −1 photo, and is answered with presign's own 429.
+ */
+const MS_PER_PHOTO = Math.round(1000 / PHOTO_LIMIT.refillPerSec);
+let bucket: { units: number; at: number } | null = null;
+let refusedAt: number[] = [];
+const charge = (): Response | null => {
+  if (!bucket) return null;
+  const now = Date.now();
+  const refilled = Math.min(PHOTO_LIMIT.capacity * MS_PER_PHOTO, bucket.units + (now - bucket.at));
+  bucket = { units: Math.max(-MS_PER_PHOTO, refilled - MS_PER_PHOTO), at: now };
+  if (bucket.units >= 0) return null;
+  refusedAt.push(now);
+  // (1 − tokens) / refillPerSec, in ms of refill.
+  const retryAfterSec = Math.max(1, Math.ceil((MS_PER_PHOTO - bucket.units) / 1000));
+  return new Response(
+    JSON.stringify({ error: 'RATE_LIMITED', retryAfterSec, message: `Try again in ${retryAfterSec} seconds.` }),
+    { status: 429, headers: { ...JSON_HEADERS, 'Retry-After': String(retryAfterSec) } }
+  );
+};
 const JSON_HEADERS = { 'content-type': 'application/json' };
 const abortError = () => new DOMException('The operation was aborted.', 'AbortError');
 const ATTACH = '/api/photos/attach';
@@ -145,6 +170,8 @@ const serveChain = () =>
       return new Response(JSON.stringify(next), { status: 200, headers: JSON_HEADERS });
     }
     const isPresign = url === '/api/photos/presign';
+    const refused = isPresign ? charge() : null;
+    if (refused) return refused;
     const step = (isPresign ? presignPlan : finalizePlan).shift() ?? 'answer';
     if (step === 'stall') return stall();
     if (step === 'refuse') return new Response('{}', { status: 400, headers: JSON_HEADERS });
@@ -186,6 +213,10 @@ beforeEach(() => {
   signals = [];
   sent = [];
   presigned = 0;
+  bucket = null;
+  refusedAt = [];
+  // The slots' shared photo clock is the page's: each test is a fresh page.
+  resetPhotoLimitClock();
   serveChain();
   vi.stubGlobal('Image', FakeImage);
   vi.stubGlobal('XMLHttpRequest', FakeXHR);
@@ -257,7 +288,8 @@ const advance = (ms: number) =>
     await vi.advanceTimersByTimeAsync(ms);
   });
 const withFakeTimers = async (body: () => Promise<void>) => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  // Date too: the slots' photo clock reads it.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   try {
     await body();
   } finally {
@@ -980,6 +1012,103 @@ describe("presign's and finalize's refusals are answers too (launch review)", ()
     expect(rateLimitedMessage(600)).toMatch(/Wait 10 minutes/);
     expect(count('/api/photos/presign')).toBe(1);
   });
+
+  // Launch review: each slot waited out its own 429, and the photo bucket is
+  // the salesman's. With SHOP and SIGNBOARD picked 5 s apart near the limit,
+  // the second slot's try spent the refill the first was waiting for, so every
+  // retry was refused and charged again: five refusals, and after about two
+  // minutes both slots said "Wait 60 seconds, then tap Retry upload".
+  const twoSlots = (onShop: () => void, onSign: () => void) => {
+    const view = render(
+      <>
+        <PhotoCaptureSlot kind="SHOP" attachTo={shopOfB1} onChange={onShop} />
+        <PhotoCaptureSlot
+          kind="SIGNBOARD"
+          attachTo={{ kind: 'branch', branchId: 'b1', slot: 'SIGNBOARD' }}
+          onChange={onSign}
+        />
+      </>
+    );
+    return Array.from(view.container.children) as HTMLElement[];
+  };
+
+  it('two slots near the photo limit share one clock: one refusal, then each goes when the bucket has a photo for it, and both attach with no Retry upload', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      const start = Date.now();
+      bucket = { units: 0.2 * MS_PER_PHOTO, at: start };
+      const onShop = vi.fn();
+      const onSign = vi.fn();
+      const [shop, sign] = twoSlots(onShop, onSign);
+
+      pick(shop!);
+      await settleUntil(() => within(shop!).queryByText(rateLimitWaitMessage(54)) !== null);
+      expect(refusedAt).toEqual([start]);
+
+      await advance(5_000);
+      pick(sign!);
+      // It waits for the same time, counting down, and does not call.
+      await settleUntil(() => within(sign!).queryByText(rateLimitWaitMessage(49)) !== null);
+      expect(count('/api/photos/presign')).toBe(1);
+
+      await advance(49_000); // 54 s: the bucket has a photo again — for one of them
+      await settleUntil(() => xhrs.length === 1);
+      act(() => xhrs[0]!.answer());
+      await settleUntil(() => onShop.mock.calls.length === 1);
+      // The other waits one more refill instead of being refused and charged.
+      expect(within(sign!).getByText(rateLimitWaitMessage(PHOTO_REFILL_S))).toBeTruthy();
+      expect(count('/api/photos/presign')).toBe(2);
+
+      await advance(PHOTO_REFILL_S * 1000); // 84 s
+      await settleUntil(() => xhrs.length === 2);
+      act(() => xhrs[1]!.answer());
+      await settleUntil(() => onSign.mock.calls.length === 1);
+
+      expect(refusedAt).toEqual([start]);
+      expect(count('/api/photos/presign')).toBe(3);
+      expect(retryButton()).toBeNull();
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(Date.now() - start).toBe(84_000);
+    }));
+
+  it('clear of the limit nothing waits: two photos picked together both go at once', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      bucket = { units: 3 * MS_PER_PHOTO, at: Date.now() };
+      const [shop, sign] = twoSlots(vi.fn(), vi.fn());
+      pick(shop!);
+      pick(sign!);
+      await settleUntil(() => xhrs.length === 2);
+      expect(count('/api/photos/presign')).toBe(2);
+      expect(refusedAt).toEqual([]);
+      expect(screen.queryByRole('status')).toBeNull();
+    }));
+
+  it('a Retry upload tapped before the wait is up counts down the rest; it does not call and be refused again', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      presignPlan = [throttled(30), throttled(30), throttled(25)];
+      const onChange = vi.fn();
+      const view = render(<PhotoCaptureSlot kind="SHOP" onChange={onChange} />);
+      pick(view.container);
+      await settleUntil(() => count('/api/photos/presign') === 1);
+      await advance(30_000);
+      await settleUntil(() => count('/api/photos/presign') === 2);
+      await advance(30_000);
+      await settleUntil(() => retryButton() !== null);
+      expect(count('/api/photos/presign')).toBe(3);
+
+      await advance(5_000);
+      fireEvent.click(retryButton()!);
+      // The third try took the refill after it (until 90 s); 65 s now.
+      await settleUntil(() => screen.queryByText(rateLimitWaitMessage(25)) !== null);
+      expect(count('/api/photos/presign')).toBe(3);
+      await advance(25_000);
+      await settleUntil(() => xhrs.length === 1);
+      expect(count('/api/photos/presign')).toBe(4);
+      act(() => xhrs[0]!.answer());
+      await settleUntil(() => onChange.mock.calls.length === 1);
+    }));
 });
 
 describe("a connection that drops at presign or finalize says so in the app's own words", () => {
