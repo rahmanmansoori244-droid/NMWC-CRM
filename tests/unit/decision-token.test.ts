@@ -11,6 +11,10 @@
  * database mocked, and pin what they write — nothing — when the view is stale.
  * The same scenarios against Postgres are in tests/integration/credit-chain-e2e.test.ts.
  *
+ * Owner decision 2026-10-08: the last step of a new-customer request carries the
+ * Temix code the Accountant typed (lib/temix-code.ts); no earlier step asks for
+ * it, and a bulk approve, which carries none, refuses such a request.
+ *
  * The guarantee documents of a new-customer request are bound too. They are
  * attachments, and the salesman can Remove one while the request is SUBMITTED
  * without touching the row, so a page showing two could decide a request with
@@ -33,7 +37,13 @@ import {
   type DecisionRow,
   type DecisionView,
 } from '@/lib/decision-token';
-import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE, CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
+import {
+  BULK_DECISION_LIMIT,
+  BULK_DECISION_LIMIT_MESSAGE,
+  CREDIT_BULK_REFUSED_MESSAGE,
+  TEMIX_CODE_BULK_REFUSED_MESSAGE,
+} from '@/lib/bulk-run';
+import { TEMIX_CODE_REQUIRED_MESSAGE, TEMIX_CODE_SHAPE_MESSAGE } from '@/lib/temix-code';
 
 type User = { id: string; role: string; username: string };
 
@@ -149,7 +159,8 @@ const form = (entries: Record<string, string | undefined>) => {
   for (const [k, v] of Object.entries(entries)) if (v !== undefined) fd.set(k, v);
   return fd;
 };
-const approve = (editId: string, decisionToken?: string) => approveEditAction(form({ editId, decisionToken }));
+const approve = (editId: string, decisionToken?: string, temixCode?: string) =>
+  approveEditAction(form({ editId, decisionToken, temixCode }));
 const reject = (editId: string, decisionToken?: string) =>
   rejectEditAction(form({ editId, decisionToken, reason: 'Credit figures need rework.', category: 'wrong_info' }));
 
@@ -165,7 +176,12 @@ beforeEach(() => {
   h.approvalCreate.mockResolvedValue({});
   h.writeAudit.mockResolvedValue(undefined);
   h.notifyUsers.mockResolvedValue(undefined);
-  h.finalize.mockResolvedValue({ customerId: 'c9', legalName: 'Al Noor Trading', nmwcCode: 'NMWC-000900' });
+  h.finalize.mockImplementation(async (...args: unknown[]) => ({
+    customerId: 'c9',
+    legalName: 'Al Noor Trading',
+    nmwcCode: 'NMWC-000900',
+    temixCode: args[4],
+  }));
   h.guarantees = new Map([['e1', [...G]]]);
   h.rolledBack = false;
   // A tagged template: the SQL text, then its values — the first is the request id.
@@ -368,10 +384,10 @@ describe('approve: a stale page decides nothing', () => {
     h.managedRegionIds = ['g1'];
     h.rows.set('e1', creditRow('e1', { currentStepIndex: 3 }));
     const stale = tokenOf(creditRow('e1', { currentStepIndex: 3, stageEnteredAt: T_EARLIER_VISIT }));
-    expect(await approve('e1', stale)).toMatchObject({ ok: false, code: 'STALE_VIEW' });
+    expect(await approve('e1', stale, 'CAA0367')).toMatchObject({ ok: false, code: 'STALE_VIEW' });
     expectNothingWritten();
 
-    const fresh = await approve('e1', tokenOf(creditRow('e1', { currentStepIndex: 3 })));
+    const fresh = await approve('e1', tokenOf(creditRow('e1', { currentStepIndex: 3 })), 'CAA0367');
     expect(fresh.ok, JSON.stringify(fresh)).toBe(true);
     expect(h.finalize).toHaveBeenCalledTimes(1);
     expect(h.updateMany.mock.calls[0]![0].where).toMatchObject({ currentStepIndex: 3, cycle: 2, stageEnteredAt: T_NOW });
@@ -567,7 +583,7 @@ describe('guarantee documents: a decision lands only on the guarantees the page 
     h.rows.set('e1', creditRow('e1', { currentStepIndex: 3 }));
     const token = tokenOf(creditRow('e1', { currentStepIndex: 3 }), [...G]);
     removeOne();
-    expect(await approve('e1', token)).toMatchObject({ ok: false, code: 'STALE_VIEW' });
+    expect(await approve('e1', token, 'CAA0367')).toMatchObject({ ok: false, code: 'STALE_VIEW' });
     expect(h.approvalCreate).not.toHaveBeenCalled();
     expectRolledBackBeforeAnyWrite();
   });
@@ -687,5 +703,128 @@ describe('owner decision 2026-10-05 (X-APPR-1(a): no): a credit application is n
     expect(res.ok, JSON.stringify(res)).toBe(true);
     if (!res.ok) return;
     expect(res.data.successes).toEqual(['e1']);
+  });
+});
+
+describe('owner decision 2026-10-08: the Accountant types the Temix code at the last step', () => {
+  const cashChain = resolveChain(EditProcess.CREATE, PaymentTerms.CASH); // SUP → ACC
+  /** A CASH request at its Supervisor step (0) or at the Accountant's, its last (1). */
+  const cash = (id: string, currentStepIndex: 0 | 1) =>
+    creditRow(id, {
+      approvalChain: cashChain,
+      currentStepIndex,
+      requestedCreditLimit: null,
+      requestedPaymentTermDays: null,
+      customerDraft: { legalName: 'Corner Shop', paymentTerms: 'CASH' },
+    });
+  const atLast = () => creditRow('e1', { currentStepIndex: 3 });
+
+  beforeEach(() => {
+    h.user = ACC;
+    h.managedRegionIds = ['g1'];
+    h.rows.set('e1', atLast());
+  });
+
+  it('without a code: refused beside the box, and nothing is written — no claim, no customer', async () => {
+    for (const code of [undefined, '', '   ']) {
+      const res = await approve('e1', tokenOf(atLast()), code);
+      expect(res, String(code)).toEqual({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: TEMIX_CODE_REQUIRED_MESSAGE,
+        fields: { temixCode: TEMIX_CODE_REQUIRED_MESSAGE },
+      });
+    }
+    expectNothingWritten();
+  });
+
+  it('a code not in the shape Temix codes have is refused the same way', async () => {
+    expect(await approve('e1', tokenOf(atLast()), '=HYPERLINK("x")')).toMatchObject({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      fields: { temixCode: TEMIX_CODE_SHAPE_MESSAGE },
+    });
+    expectNothingWritten();
+  });
+
+  it('the code is stored as Temix codes are — upper case, ASCII digits, trimmed — and handed to finalize', async () => {
+    const res = await approve('e1', tokenOf(atLast()), ' caa\u0660\u0663\u0666\u0667 ');
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(h.finalize).toHaveBeenCalledTimes(1);
+    expect(h.finalize.mock.calls[0]![4]).toBe('CAA0367');
+  });
+
+  it('the salesman is told both codes; the Steward is told the customer is queued under them', async () => {
+    expect((await approve('e1', tokenOf(atLast()), 'CAA0367')).ok).toBe(true);
+    type Sent = { to: unknown; title?: string; body?: string };
+    const sent: Sent[] = h.notifyUsers.mock.calls.map(([, to, row]) => ({ to, ...(row as object) }));
+    expect(sent.find((n) => n.title === 'New customer approved')).toMatchObject({
+      to: ['sales1'],
+      kind: 'EDIT_APPROVED_FINAL',
+      body: 'Al Noor Trading is now live as NMWC-000900, Temix code CAA0367.',
+      customerId: 'c9',
+    });
+    expect(sent.find((n) => n.title === 'Ready for Temix upload')!.body).toBe(
+      'Al Noor Trading (NMWC-000900, Temix code CAA0367) was approved and is queued for the next Temix batch.'
+    );
+  });
+
+  it('a stale page with a good code is still refused STALE_VIEW: the code does not loosen the view check', async () => {
+    const stale = tokenOf(creditRow('e1', { currentStepIndex: 3, stageEnteredAt: T_EARLIER_VISIT }));
+    expect(await approve('e1', stale, 'CAA0367')).toMatchObject({ ok: false, code: 'STALE_VIEW' });
+    expectNothingWritten();
+  });
+
+  it('no earlier step asks for it: the Supervisor, the Finance Manager and the GM approve without one', async () => {
+    for (const [user, step] of [
+      [SUP, 0],
+      [FM, 1],
+      [GM, 2],
+    ] as const) {
+      vi.clearAllMocks();
+      h.user = user;
+      h.rows.set('e1', creditRow('e1', { currentStepIndex: step }));
+      const res = await approve('e1', tokenOf(creditRow('e1', { currentStepIndex: step })));
+      expect(res.ok, `${user.role}: ${JSON.stringify(res)}`).toBe(true);
+      expect(h.finalize).not.toHaveBeenCalled();
+    }
+  });
+
+  it('bulk: a cash request at its last step is refused, saying why; one at the Supervisor step is still approved', async () => {
+    h.rows.set('k-last', cash('k-last', 1));
+    h.rows.set('k-sup', cash('k-sup', 0));
+    h.guarantees.set('k-last', []);
+    h.guarantees.set('k-sup', []);
+    h.user = ACC;
+    const atAcc = await bulkApproveEditsAction(
+      form({ decisions: JSON.stringify([{ editId: 'k-last', decisionToken: tokenOf(cash('k-last', 1)) }]) })
+    );
+    expect(atAcc.ok, JSON.stringify(atAcc)).toBe(true);
+    if (!atAcc.ok) return;
+    expect(atAcc.data.successes).toEqual([]);
+    expect(atAcc.data.failures).toEqual([
+      { editId: 'k-last', code: 'VALIDATION_FAILED', message: TEMIX_CODE_BULK_REFUSED_MESSAGE },
+    ]);
+    expectNothingWritten();
+
+    h.user = SUP;
+    const atSup = await bulkApproveEditsAction(
+      form({ decisions: JSON.stringify([{ editId: 'k-sup', decisionToken: tokenOf(cash('k-sup', 0)) }]) })
+    );
+    expect(atSup.ok, JSON.stringify(atSup)).toBe(true);
+    if (!atSup.ok) return;
+    expect(atSup.data.successes).toEqual(['k-sup']);
+    expect(h.finalize).not.toHaveBeenCalled();
+  });
+
+  it('bulk: a credit application at its last step keeps the credit refusal', async () => {
+    h.rows.set('e1', creditRow('e1', { currentStepIndex: 3, customerDraft: { legalName: 'Al Noor Trading', paymentTerms: 'CREDIT' } }));
+    const res = await bulkApproveEditsAction(
+      form({ decisions: JSON.stringify([{ editId: 'e1', decisionToken: tokenOf(h.rows.get('e1')!) }]) })
+    );
+    expect(res.ok && res.data.failures).toEqual([
+      { editId: 'e1', code: 'VALIDATION_FAILED', message: CREDIT_BULK_REFUSED_MESSAGE },
+    ]);
+    expectNothingWritten();
   });
 });

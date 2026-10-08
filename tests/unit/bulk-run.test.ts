@@ -127,7 +127,8 @@ describe('BULK_DECISION_LIMIT — one limit, read by the server and by Select al
 
   it('the queue stops Select all at it', () => {
     const src = code('app/(app)/approvals/BulkApprovalQueue.tsx');
-    expect(src).toMatch(/import \{ BULK_DECISION_LIMIT(, [A-Z_]+)* \} from '@\/lib\/bulk-run';/);
+    // One line or, past the print width, prettier's one name per line.
+    expect(src).toMatch(/import \{\s*BULK_DECISION_LIMIT(,\s*[A-Z_]+)*,?\s*\} from '@\/lib\/bulk-run';/);
     expect(src).toContain('const selectAllIds = allOnPage.slice(0, BULK_DECISION_LIMIT);');
     expect(src).toContain('setSelected(new Set(selectAllIds))');
     // The old Select all — every card on the page — is gone, and no numeric cap stands in.
