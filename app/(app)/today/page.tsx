@@ -138,13 +138,26 @@ export default async function TodayPage({
           // Owner decision 2026-09-25: a salesman on a phone had no way to start
           // a new customer. The only link to a blank form was in the sidebar,
           // which is hidden below the md breakpoint, and the bottom bar has none.
-          <Link
-            href="/customers/new"
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-brand-600 px-4 text-base font-semibold text-white hover:bg-brand-700"
-          >
-            <UserPlus className="h-4 w-4" aria-hidden />
-            New customer
-          </Link>
+          // On a switched-off route it is shown switched off too: live above
+          // the notice below, it said he could register one (launch review).
+          me.ownedRoute?.isActive === false ? (
+            <button
+              type="button"
+              disabled
+              className="inline-flex min-h-11 cursor-not-allowed items-center gap-1.5 rounded-md bg-slate-200 px-4 text-base font-semibold text-slate-500"
+            >
+              <UserPlus className="h-4 w-4" aria-hidden />
+              New customer
+            </button>
+          ) : (
+            <Link
+              href="/customers/new"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-brand-600 px-4 text-base font-semibold text-white hover:bg-brand-700"
+            >
+              <UserPlus className="h-4 w-4" aria-hidden />
+              New customer
+            </Link>
+          )
         }
       />
 

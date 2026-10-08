@@ -123,6 +123,7 @@ export function EnrichmentForm({
   lockCr,
   userRole,
   canSubmit,
+  submitHeldTitle = 'Pending edit already in review',
   pendingReplacesDraft = false,
   sessionUserId,
   gate: gateProp,
@@ -136,6 +137,8 @@ export function EnrichmentForm({
   lockCr: boolean;
   userRole: Role;
   canSubmit: boolean;
+  /** Why Submit is held when canSubmit is false: a request in review, or his route switched off. */
+  submitHeldTitle?: string;
   /**
    * Item 22: approving this customer's pending request changes the values this
    * draft started from, which then replaces the draft — a pending update, or a
@@ -314,7 +317,7 @@ export function EnrichmentForm({
     unresolved.length > 0 ||
     (userRole === Role.SALESMAN && missingMandatory.length > 0);
   const submitTitle = !canSubmit
-    ? 'Pending edit already in review'
+    ? submitHeldTitle
     : uploading > 0
       ? PHOTO_UPLOADING_MESSAGE
       : unresolved.length > 0

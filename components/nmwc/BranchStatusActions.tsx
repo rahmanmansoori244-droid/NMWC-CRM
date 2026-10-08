@@ -15,9 +15,16 @@ import { SubmitNoticeBox } from './SubmitNoticeBox';
 export function BranchStatusActions({
   branchId,
   status,
+  blocked,
 }: {
   branchId: string;
   status: 'ACTIVE' | 'CLOSED' | 'SUSPENDED';
+  /**
+   * Why nothing can be sent from here (a switched-off route): said in place of
+   * the buttons, so he does not fill the form and upload the evidence photo
+   * only to be refused at Submit (launch review).
+   */
+  blocked?: string;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState<'close' | 'reactivate' | null>(null);
@@ -97,7 +104,9 @@ export function BranchStatusActions({
       <p role="status" className={`text-sm font-medium text-emerald-700 ${sent ? 'mb-2' : ''}`}>
         {sent ?? ''}
       </p>
-      {open === null ? (
+      {blocked ? (
+        <p className="text-sm text-amber-800">{blocked}</p>
+      ) : open === null ? (
         <div className="flex flex-wrap items-center gap-2">
           {isClosed ? (
             <button

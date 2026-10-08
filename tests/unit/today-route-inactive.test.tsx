@@ -69,10 +69,23 @@ describe('/today on a switched-off route', () => {
     expect(screen.getByRole('heading', { level: 3, name: 'Al Noor Grocery' })).toBeTruthy();
   });
 
+  // Launch review: the notice said he cannot register a new customer under a
+  // live "New customer" button.
+  it('shows New customer switched off, with no way to the form', async () => {
+    state.isActive = false;
+    render(await TodayPage({}));
+    const button = screen.getByRole('button', { name: 'New customer' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.queryByRole('link', { name: 'New customer' })).toBeNull();
+    expect(document.querySelector('a[href="/customers/new"]')).toBeNull();
+  });
+
   it('says nothing of it on a live route', async () => {
     state.isActive = true;
     render(await TodayPage({}));
     expect(screen.getByRole('main').textContent).not.toMatch(/route is inactive/i);
     expect(screen.getByRole('heading', { level: 3, name: 'Al Noor Grocery' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'New customer' }).getAttribute('href')).toBe('/customers/new');
+    expect(screen.queryByRole('button', { name: 'New customer' })).toBeNull();
   });
 });
