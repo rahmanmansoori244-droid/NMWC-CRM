@@ -93,10 +93,11 @@ export async function newerUploadsCarrying(
            -- The refresh lane is decided for the customer's rows of one upload
            -- together (from its first plain row), so a row counts as a refresh
            -- row only when every row of the customer in that upload carries the
-           -- customer's own Temix code (pre-merge review).
+           -- customer's own Temix code (pre-merge review), in any case: the
+           -- upload now stores it upper case, an older row or batch may not.
            (c."temixCode" IS NOT NULL
              AND b."id" IS DISTINCT FROM c."importBatchId"
-             AND bool_and(COALESCE(r."parsed"->>'temixCode', '') = c."temixCode")
+             AND bool_and(UPPER(COALESCE(r."parsed"->>'temixCode', '')) = UPPER(c."temixCode"))
                    OVER (PARTITION BY r."batchId", r."parsed"->>'custCode')) AS "refreshRow"
       FROM "ImportRow" r
       JOIN "ImportBatch" b ON b."id" = r."batchId"

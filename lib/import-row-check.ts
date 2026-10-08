@@ -12,6 +12,7 @@
  */
 import { normalizePhone, isValidPhoneFormat } from '@/lib/phone';
 import { normalizeCR } from '@/lib/cr';
+import { normalizeTemixCode } from '@/lib/temix-code';
 import { stripHtml as stripTags } from '@/lib/validation/fields';
 
 export type SheetRow = Record<string, unknown>;
@@ -259,9 +260,13 @@ export function checkCustomerRow(
   //    as a REFRESH row at promote time (crosswalk backfill + narrow update).
   //  - credit_limit / payment_term_days: authoritatively FROM Temix
   //    (owner-locked) for existing CREDIT customers.
+  // temix_code is folded as the Accountant's typed code is (lib/temix-code.ts:
+  // upper case, ASCII digits, no invisible characters), so the promote's
+  // comparisons with recorded codes, and the F11 hold-back's, read one spelling.
   const temixCode =
-    stripHtml(row.temix_code ?? row.temixcode ?? row['TEMIX CODE'] ?? row['Temix Code']).trim() ||
-    null;
+    normalizeTemixCode(
+      stripHtml(row.temix_code ?? row.temixcode ?? row['TEMIX CODE'] ?? row['Temix Code'])
+    ) || null;
   let creditLimit: number | null = null;
   const creditRaw = String(row.credit_limit ?? row['CREDIT LIMIT'] ?? '').trim();
   if (creditRaw) {

@@ -11,6 +11,7 @@ import { formatSlaStatus } from '@/lib/working-hours';
 import { countFieldChanges, hasManualGps } from '@/lib/gps-manual';
 import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
 import { draftScores } from '@/lib/create-score';
+import { isFinalStep, parseChain } from '@/lib/approval-chains';
 import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
 
 export const metadata = { title: 'Approvals · NMWC' };
@@ -119,6 +120,9 @@ export default async function ApprovalsPage() {
       cycle: true,
       currentStepIndex: true,
       stageEnteredAt: true,
+      // Owner decision 2026-10-08: whether a new-customer request is at its last
+      // step, where it needs its Temix code and cannot be bulk-approved.
+      approvalChain: true,
       // X-APPR-1: a credit application's figures are on its card, and bound
       // into its token, so a bulk decision is made on the numbers shown.
       requestedCreditLimit: true,
@@ -214,6 +218,7 @@ export default async function ApprovalsPage() {
       changesCount,
       manualGps: hasManualGps(e.fieldChanges),
       isCreate,
+      needsTemixCode: isCreate && isFinalStep(parseChain(e.approvalChain), e.currentStepIndex),
       paymentTerms,
       // The same formatter the token uses: the figures bound are the figures shown.
       credit:

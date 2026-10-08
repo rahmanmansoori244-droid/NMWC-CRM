@@ -174,6 +174,12 @@ export default async function TemixPage({
           , with a <code className="font-mono">temix_code</code> column) back-fills ERP codes and
           settles rows to “synced”.
         </p>
+        <p className="mt-1 text-xs text-slate-500">
+          In Temix, load a row that has a <code className="font-mono">temix_code</code> as an update of
+          that Temix customer, never as a new one: for a new customer it is the record the Accountant
+          created in Temix before he approved it. A row with a blank{' '}
+          <code className="font-mono">temix_code</code> is a customer Temix does not have yet.
+        </p>
       </section>
     </main>
   );

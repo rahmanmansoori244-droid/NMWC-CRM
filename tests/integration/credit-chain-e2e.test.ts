@@ -22,6 +22,18 @@
  *        open while a guarantee document was removed (by the Steward: the
  *        salesman may not, while the request is in review), including a
  *        removal still in flight when the decision reads them (FOR SHARE).
+ *   Temix Owner decision 2026-10-08: the Accountant creates the customer in
+ *        Temix and types its code at the final approval. Without one, or with a
+ *        code a live customer holds (as its Temix code or its customer code), the
+ *        approval is refused and nothing is written; the customer is created with
+ *        it, still queued for the next Temix batch, which carries it as an UPSERT
+ *        of that code; the approval's audit row records it; the salesman is told
+ *        both codes. A new customer at its last step is never bulk-approved.
+ *        Review of the branch: a code an ARCHIVED customer holds (as its Temix
+ *        code, or as the customer code its deactivation goes out under), a live
+ *        branch's code and a code of this CRM (NMWC-…) are refused too; and two
+ *        DIFFERENT requests approved at the same moment with one code create one
+ *        customer, the other refused naming it (the advisory lock, on Postgres).
  *
  *   RUN_CREDIT_CHAIN=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/credit-chain-e2e.test.ts
@@ -30,7 +42,9 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { guaranteeDigest, parseDecisionToken } from '@/lib/decision-token';
-import { CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
+import { CREDIT_BULK_REFUSED_MESSAGE, TEMIX_CODE_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
+import { TEMIX_CODE_CRM_MESSAGE, TEMIX_CODE_REQUIRED_MESSAGE } from '@/lib/temix-code';
+import { buildTemixRows } from '@/lib/temix';
 import { PHOTO_IN_REVIEW_MESSAGE } from '@/lib/photo-attach';
 import { randomUUID } from 'node:crypto';
 
@@ -61,7 +75,14 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   const nameB = `ZZ-SYN Credit Chain N01-B ${tag}`;
   // And D (CREDIT, two guarantee documents), which are removed while pages are open.
   const nameD = `ZZ-SYN Credit Chain N01-D ${tag}`;
-  const allNames = [legalName, nameA, nameB, nameD];
+  // The Temix-code review: two CASH requests (E, F) at the Accountant's step, and
+  // the customers whose codes he must not reuse (archived ones, a live branch).
+  const nameE = `ZZ-SYN Credit Chain TX-E ${tag}`;
+  const nameF = `ZZ-SYN Credit Chain TX-F ${tag}`;
+  const nameHolders = `ZZ-SYN Credit Chain TX-holder ${tag}`;
+  const allNames = [legalName, nameA, nameB, nameD, nameE, nameF, nameHolders];
+  // Owner decision 2026-10-08: the Temix code the Accountant typed for each customer.
+  const TEMIX = { main: `ZTM${tag}`.toUpperCase(), a: `ZTA${tag}`.toUpperCase(), b: `ZTB${tag}`.toUpperCase() };
   const REQUESTED_LIMIT = 7777;
   const REQUESTED_DAYS = 45;
   let channelId = '', subChannelId = '';
@@ -136,10 +157,11 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   });
 
   /** Approve from a freshly opened review page: its decision token is the row now (N01). */
-  async function approve(editId: string) {
+  async function approve(editId: string, temixCode?: string) {
     const fd = new FormData();
     fd.set('editId', editId);
     fd.set('decisionToken', await freshDecisionToken(prisma, editId));
+    if (temixCode !== undefined) fd.set('temixCode', temixCode);
     return edits.approveEditAction(fd);
   }
   const editState = () => prisma.customerEdit.findUniqueOrThrow({ where: { id: editId }, select: { state: true, currentStepIndex: true, pendingRole: true, customerId: true, stageEnteredAt: true, slaDueAt: true } });
@@ -221,9 +243,26 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     keepStage(st);
   });
 
+  it('Temix: the Accountant approving without the Temix code is refused beside the box; nothing is written', async () => {
+    asUser(ids.acc, 'ACCOUNTANT');
+    const before = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } });
+    for (const code of [undefined, '  ']) {
+      expect(await approve(editId, code)).toEqual({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: TEMIX_CODE_REQUIRED_MESSAGE,
+        fields: { temixCode: TEMIX_CODE_REQUIRED_MESSAGE },
+      });
+    }
+    expect(await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).toEqual(before);
+    expect(await prisma.editApproval.count({ where: { editId, stepIndex: 3 } })).toBe(0);
+    expect(await customerCount()).toBe(0);
+  });
+
   it('R26 + R19 + R17: two concurrent ACCOUNTANT approvals — exactly one wins, customer materializes once with the ORIGINAL figures', async () => {
     asUser(ids.acc, 'ACCOUNTANT');
-    const [a, b] = await Promise.all([approve(editId), approve(editId)]);
+    // Typed as he might: lower case, with a stray space; stored as Temix codes are.
+    const [a, b] = await Promise.all([approve(editId, ` ${TEMIX.main.toLowerCase()}`), approve(editId, TEMIX.main)]);
     const oks = [a, b].filter((r) => r.ok);
     const fails = [a, b].filter((r) => !r.ok);
     // R26: atomic claim — exactly one approval succeeds.
@@ -243,6 +282,54 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(cust.paymentTerms).toBe('CREDIT');
     expect(Number(cust.creditLimit)).toBe(REQUESTED_LIMIT);
     expect(cust.paymentTermDays).toBe(REQUESTED_DAYS);
+  });
+
+  it('Temix: created with the code he typed, queued for the next batch as an UPSERT of that code; audited; the salesman told both codes', async () => {
+    const st = await editState();
+    const cust = await prisma.customer.findUniqueOrThrow({
+      where: { id: st.customerId! },
+      select: {
+        id: true, nmwcCode: true, temixCode: true, legalName: true, paymentTerms: true, creditLimit: true,
+        paymentTermDays: true, crNumber: true, primaryPhone: true, altPhone: true, contactPerson: true,
+        deletedAt: true, temixSyncState: true, temixSyncPendingSince: true,
+        channel: { select: { label: true } }, subChannel: { select: { label: true } },
+        branches: {
+          select: {
+            branchCode: true, branchName: true, address: true, dayOfVisit: true, gpsLat: true, gpsLng: true,
+            deletedAt: true, region: { select: { name: true, code: true } }, route: { select: { code: true } },
+          },
+        },
+      },
+    });
+    expect(cust.temixCode).toBe(TEMIX.main);
+    expect(cust.temixSyncState).toBe('PENDING_UPLOAD');
+    expect(cust.temixSyncPendingSince).not.toBeNull();
+    // The next batch updates the record he made in Temix, with all of it — not a second create.
+    const rows = buildTemixRows([{ ...cust, guaranteeDocs: 1 }], 'batch-x');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sync_action: 'UPSERT',
+      temix_code: TEMIX.main,
+      cust_code: cust.nmwcCode,
+      branch_code: cust.branches[0]!.branchCode,
+      gps_lat: 23.6,
+      gps_lng: 58.4,
+      credit_limit: REQUESTED_LIMIT,
+    });
+    // The approval's own audit row (FINALIZE) and the customer's CREATE row.
+    const finalize = await prisma.auditLog.findFirstOrThrow({ where: { action: 'FINALIZE', entityId: editId } });
+    expect(finalize.after).toMatchObject({ nmwcCode: cust.nmwcCode, temixCode: TEMIX.main });
+    const created = await prisma.auditLog.findFirstOrThrow({ where: { action: 'CREATE', entityId: cust.id } });
+    expect(created.after).toMatchObject({ temixCode: TEMIX.main });
+    // The salesman: both codes.
+    const told = await prisma.notification.findFirstOrThrow({
+      where: { editId, userId: ids.salesman, kind: 'EDIT_APPROVED_FINAL' },
+      select: { title: true, body: true },
+    });
+    expect(told).toEqual({
+      title: 'New customer approved',
+      body: `${legalName} is now live as ${cust.nmwcCode}, Temix code ${TEMIX.main}.`,
+    });
   });
 
   it('item 9: every step decision records the stage it decided — entered, due, working minutes', async () => {
@@ -303,10 +390,11 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         }],
       });
 
-    const decide = (kind: 'approve' | 'reject', id: string, token: string) => {
+    const decide = (kind: 'approve' | 'reject', id: string, token: string, temixCode?: string) => {
       const fd = new FormData();
       fd.set('editId', id);
       fd.set('decisionToken', token);
+      if (temixCode !== undefined) fd.set('temixCode', temixCode);
       if (kind === 'reject') {
         fd.set('reason', 'Please re-check the credit figures with the shop.');
         fd.set('category', 'wrong_info');
@@ -442,9 +530,10 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editB } })).pendingRole).toBe('ACCOUNTANT');
     });
 
-    it('bulk at the final step: B (cash) is created; A (credit) is refused in a bulk run and creates no customer', async () => {
+    it('bulk at the final step: neither is created — A (credit) keeps the credit refusal, B (cash) needs its Temix code', async () => {
       asUser(ids.acc, 'ACCOUNTANT');
       const before = await footprint(editA, nameA);
+      const beforeB = await footprint(editB, nameB);
       const fd = new FormData();
       fd.set('decisions', JSON.stringify([
         { editId: editA, decisionToken: kept.accVisit1 },
@@ -453,13 +542,16 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       const res = await edits.bulkApproveEditsAction(fd);
       expect(res.ok, JSON.stringify(res)).toBe(true);
       if (!res.ok) return;
-      expect(res.data.successes).toEqual([editB]);
+      expect(res.data.successes).toEqual([]);
       // Owner decision 2026-10-05 (X-APPR-1(a): no): A is a credit application, so a
-      // bulk approve refuses it before its card is compared, stale or fresh.
+      // bulk approve refuses it before its card is compared, stale or fresh. Owner
+      // decision 2026-10-08: B, at its last step, needs the Temix code typed on its page.
       expect(res.data.failures.map((f) => [f.editId, f.code, f.message])).toEqual([
         [editA, 'VALIDATION_FAILED', CREDIT_BULK_REFUSED_MESSAGE],
+        [editB, 'VALIDATION_FAILED', TEMIX_CODE_BULK_REFUSED_MESSAGE],
       ]);
-      expect(await prisma.customer.count({ where: { legalName: nameB } })).toBe(1);
+      expect(await footprint(editB, nameB)).toEqual(beforeB);
+      expect(beforeB.customers).toBe(0);
       expect(await footprint(editA, nameA)).toEqual(before);
       expect(before.customers).toBe(0);
 
@@ -473,9 +565,40 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect(await footprint(editA, nameA)).toEqual(before);
     });
 
+    it("Temix: from B's own page a code a live customer already holds is refused, naming it, and its NMWC code is no Temix code; nothing is written", async () => {
+      asUser(ids.acc, 'ACCOUNTANT');
+      const holder = await prisma.customer.findFirstOrThrow({ where: { legalName }, select: { nmwcCode: true } });
+      const before = await footprint(editB, nameB);
+      const taken = TEMIX.main.toLowerCase();
+      const message = `Temix code ${TEMIX.main} already belongs to customer ${holder.nmwcCode}. Check the code in Temix: every customer has its own.`;
+      expect(await decide('approve', editB, await fresh(editB), taken)).toEqual({
+        ok: false,
+        code: 'TEMIX_CODE_TAKEN',
+        message,
+        fields: { temixCode: message },
+      });
+      expect(await footprint(editB, nameB)).toEqual(before);
+      // A code of this CRM is refused for its shape, before anything is read (a
+      // live customer's own customer code that Temix holds is refused naming it:
+      // the next describe types one).
+      expect(await decide('approve', editB, await fresh(editB), holder.nmwcCode)).toEqual({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: TEMIX_CODE_CRM_MESSAGE,
+        fields: { temixCode: TEMIX_CODE_CRM_MESSAGE },
+      });
+      expect(await footprint(editB, nameB)).toEqual(before);
+      // Its own code creates it.
+      const ok = await decide('approve', editB, await fresh(editB), TEMIX.b);
+      expect(ok.ok, JSON.stringify(ok)).toBe(true);
+      expect(await prisma.customer.findFirstOrThrow({ where: { legalName: nameB }, select: { temixCode: true } })).toEqual({
+        temixCode: TEMIX.b,
+      });
+    });
+
     it('from a fresh page the Accountant creates A, with the figures that page showed', async () => {
       asUser(ids.acc, 'ACCOUNTANT');
-      const ok = await decide('approve', editA, await fresh(editA));
+      const ok = await decide('approve', editA, await fresh(editA), TEMIX.a);
       expect(ok.ok, JSON.stringify(ok)).toBe(true);
       const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editA } });
       expect(st.state).toBe('APPROVED');
@@ -574,6 +697,173 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expectStale(res);
       // Rolled back whole: the claim, the decision row, the audit row, the notifications.
       expect(await footprint(editD, nameD)).toEqual(before);
+    });
+  });
+
+  // ── Review of the Temix code at the Accountant's step ────────────────────────
+  // Finalize refused only a code a LIVE customer held, while the customer
+  // import's crosswalk guard names an archived one too: a new customer given an
+  // archived customer's code had every inbound refresh rejected for it. A live
+  // branch's code and a code of this CRM passed as well. And the race the
+  // advisory lock is for — two DIFFERENT requests, one code — never ran on Postgres.
+  describe('Temix: the codes the Accountant cannot use, and one code typed into two requests at once', () => {
+    let editE = '';
+    let editF = '';
+    const TAG = tag.toUpperCase();
+    const code = {
+      archivedTemix: `ZTR${TAG}`,
+      archivedUncoded: `ZZCC-AR2-${TAG}`,
+      branch: `ZZCC-LB-${TAG}-C1`,
+      raced: `ZTQ${TAG}`,
+      loser: `ZTL${TAG}`,
+    };
+    const digitsT = (salt: number) => String(100000 + ((parseInt(tag, 16) + salt) % 900000));
+    const decideT = async (id: string, temixCode: string) => {
+      const fd = new FormData();
+      fd.set('editId', id);
+      fd.set('decisionToken', await freshDecisionToken(prisma, id));
+      fd.set('temixCode', temixCode);
+      return edits.approveEditAction(fd);
+    };
+    const footprintT = async (id: string, name: string) => ({
+      row: await prisma.customerEdit.findUniqueOrThrow({
+        where: { id },
+        select: { state: true, cycle: true, currentStepIndex: true, pendingRole: true, reviewedAt: true, customerId: true },
+      }),
+      decisions: await prisma.editApproval.count({ where: { editId: id } }),
+      audits: await prisma.auditLog.count({ where: { entityId: id } }),
+      notifications: await prisma.notification.count({ where: { editId: id } }),
+      customers: await prisma.customer.count({ where: { legalName: name } }),
+    });
+    const submitCash = async (name: string, salt: number) => {
+      const res = await creates.submitCreateAction({
+        isDraft: false,
+        customer: {
+          legalName: name, paymentTerms: 'CASH', channelId, subChannelId,
+          primaryPhone: `+96894${digitsT(salt)}`, contactPerson: `ZZ Contact ${name}`,
+          crNumber: `94${digitsT(salt + 1)}`, crPhotoAttachmentId: await mkAtt('CR'),
+        },
+        branches: [{
+          branchName: `ZZ Branch ${name}`, address: `ZZ Way ${salt}, ${tag}`, gpsLat: 23.64, gpsLng: 58.44,
+          dayOfVisit: 'THU', coolersCount: 1, standsCount: 1, emptyBottlesCount: 5,
+          shopPhotoAttachmentId: await mkAtt('SHOP'), signboardPhotoAttachmentId: await mkAtt('SIGNBOARD'),
+        }],
+      });
+      if (!res.ok) console.error('TX SUBMIT FAILED', JSON.stringify(res));
+      expect(res.ok).toBe(true);
+      return (res as { ok: true; data: { editId: string } }).data.editId;
+    };
+
+    it('E and F (CASH) reach the Accountant; the holders exist: two archived customers and a live branch', async () => {
+      asUser(ids.salesman, 'SALESMAN');
+      editE = await submitCash(nameE, 41);
+      editF = await submitCash(nameF, 51);
+      asUser(ids.supervisor, 'SUPERVISOR');
+      for (const id of [editE, editF]) {
+        expect((await approve(id)).ok).toBe(true);
+        expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id } })).pendingRole).toBe('ACCOUNTANT');
+      }
+      const archivedAt = new Date();
+      // Archived with its Temix code; its deactivation is queued under it.
+      await prisma.customer.create({
+        data: {
+          nmwcCode: `ZZCC-AR1-${TAG}`, legalName: nameHolders, temixCode: code.archivedTemix,
+          deletedAt: archivedAt, temixSyncState: 'DEACTIVATE_PENDING',
+        },
+      });
+      // Archived with no Temix code: its deactivation goes out under its customer
+      // code (lib/temix.ts deactivationCode), as a seeded customer's does.
+      await prisma.customer.create({
+        data: {
+          nmwcCode: code.archivedUncoded, legalName: nameHolders, temixCode: null,
+          deletedAt: archivedAt, temixSyncState: 'DEACTIVATE_PENDING',
+        },
+      });
+      // A live customer with a branch account in the RoutePro shape.
+      const live = await prisma.customer.create({
+        data: { nmwcCode: `ZZCC-LB-${TAG}`, legalName: nameHolders, temixSyncState: 'SYNCED' },
+      });
+      await prisma.branch.create({
+        data: {
+          customerId: live.id, branchCode: code.branch, branchName: 'ZZ Branch account',
+          address: `ZZ Way 61, ${tag}`, regionId: ids.region, routeId: ids.route,
+        },
+      });
+    });
+
+    it.each([
+      [
+        "an archived customer's Temix code (typed in lower case)",
+        () => code.archivedTemix.toLowerCase(),
+        () =>
+          `Temix code ${code.archivedTemix} belongs to archived customer ZZCC-AR1-${TAG}, and its Temix deactivation is sent under that code. Check the code in Temix, and ask the Data Steward before using it again.`,
+      ],
+      [
+        'the customer code an archived customer with no Temix code is deactivated under',
+        () => code.archivedUncoded,
+        () =>
+          `Temix code ${code.archivedUncoded} belongs to archived customer ${code.archivedUncoded}, and its Temix deactivation is sent under that code. Check the code in Temix, and ask the Data Steward before using it again.`,
+      ],
+      [
+        "a live customer's customer code (a migrated or seeded customer's code is its Temix code)",
+        () => `zzcc-lb-${tag}`,
+        () =>
+          `Temix code ZZCC-LB-${TAG} already belongs to customer ZZCC-LB-${TAG}. Check the code in Temix: every customer has its own.`,
+      ],
+      [
+        "a live branch's code",
+        () => code.branch.toLowerCase(),
+        () =>
+          `${code.branch} is the code of branch ${code.branch} of customer ZZCC-LB-${TAG}, not a Temix customer code. Check the code in Temix.`,
+      ],
+    ])('%s is refused beside the box, naming the holder; nothing is written', async (_label, typed, message) => {
+      asUser(ids.acc, 'ACCOUNTANT');
+      const before = await footprintT(editE, nameE);
+      const res = await decideT(editE, typed());
+      expect(res).toEqual({ ok: false, code: 'TEMIX_CODE_TAKEN', message: message(), fields: { temixCode: message() } });
+      expect(await footprintT(editE, nameE)).toEqual(before);
+      expect(before.customers).toBe(0);
+    });
+
+    it('a code of this CRM (NMWC-…) is refused before anything is read', async () => {
+      asUser(ids.acc, 'ACCOUNTANT');
+      const before = await footprintT(editE, nameE);
+      expect(await decideT(editE, 'nmwc-2026-000123')).toEqual({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: TEMIX_CODE_CRM_MESSAGE,
+        fields: { temixCode: TEMIX_CODE_CRM_MESSAGE },
+      });
+      expect(await footprintT(editE, nameE)).toEqual(before);
+    });
+
+    it('E and F approved at the same moment with one code: one customer has it, the other is refused naming it and writes nothing', async () => {
+      asUser(ids.acc, 'ACCOUNTANT');
+      const beforeE = await footprintT(editE, nameE);
+      const beforeF = await footprintT(editF, nameF);
+      const [e, f] = await Promise.all([decideT(editE, code.raced), decideT(editF, code.raced)]);
+      const oks = [e, f].filter((r) => r.ok);
+      expect(oks, JSON.stringify([e, f])).toHaveLength(1);
+      const [winnerId, winnerName, loserId, loserName, loserBefore, lost] = e.ok
+        ? [editE, nameE, editF, nameF, beforeF, f]
+        : [editF, nameF, editE, nameE, beforeE, e];
+      const winner = await prisma.customer.findFirstOrThrow({
+        where: { legalName: winnerName },
+        select: { id: true, nmwcCode: true, temixCode: true },
+      });
+      expect(winner.temixCode).toBe(code.raced);
+      expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: winnerId } })).customerId).toBe(winner.id);
+      const message = `Temix code ${code.raced} already belongs to customer ${winner.nmwcCode}. Check the code in Temix: every customer has its own.`;
+      expect(lost).toEqual({ ok: false, code: 'TEMIX_CODE_TAKEN', message, fields: { temixCode: message } });
+      // One customer with the code; nothing at all for the loser.
+      expect(await prisma.customer.count({ where: { temixCode: code.raced } })).toBe(1);
+      expect(await footprintT(loserId, loserName)).toEqual(loserBefore);
+      // From a fresh page, with its own code, the loser is created.
+      const again = await decideT(loserId, code.loser);
+      expect(again.ok, JSON.stringify(again)).toBe(true);
+      expect(await prisma.customer.findFirstOrThrow({ where: { legalName: loserName }, select: { temixCode: true } })).toEqual({
+        temixCode: code.loser,
+      });
     });
   });
 });

@@ -4,6 +4,7 @@ import { useId, useState, useTransition } from 'react';
 import { unstable_rethrow, useRouter } from 'next/navigation';
 import { approveEditAction, approveEditAndGoAction, rejectEditAndGoAction } from '@/services/edits';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
+import { TEMIX_CODE_MAX, normalizeTemixCode, temixCodeProblem } from '@/lib/temix-code';
 
 const REJECT_CATEGORIES = [
   { value: 'bad_photo', label: 'Bad photo' },
@@ -67,7 +68,11 @@ const STEP_LABEL: Record<string, string> = {
   GM: 'GM',
 };
 
-export function approveConfirmCopy(outcome: ApproveOutcome): {
+export function approveConfirmCopy(
+  outcome: ApproveOutcome,
+  /** CREATE: the Temix code typed for it (owner decision 2026-10-08), named in the message. */
+  temixCode?: string
+): {
   title: string;
   message: string;
   confirmLabel: string;
@@ -84,8 +89,9 @@ export function approveConfirmCopy(outcome: ApproveOutcome): {
     case 'CREATE':
       return {
         title: 'Create this customer?',
-        message:
-          'This is the final approval: the new customer is created in the customer master now, as shown on this page. This cannot be undone.',
+        message: `This is the final approval: the new customer is created in the customer master now, as shown on this page${
+          temixCode ? `, with Temix code ${temixCode}` : ''
+        }. This cannot be undone.`,
         confirmLabel: 'Approve and create',
       };
     case 'APPLY':
@@ -154,12 +160,32 @@ export function ApproveRejectActions({
   // label focuses it (UAT-07, as LabeledField does).
   const uid = useId();
 
+  // Owner decision 2026-10-08: at the last step of a new-customer request the
+  // Accountant has created the customer in Temix, and types its code here.
+  const needsTemixCode = outcome.kind === 'CREATE';
+  const [temixCodeInput, setTemixCodeInput] = useState('');
+  const temixCode = normalizeTemixCode(temixCodeInput);
+
+  /** ✓ Approve: the Temix code is checked here first, then the confirmation opens. */
+  function askToApprove() {
+    if (needsTemixCode) {
+      const problem = temixCodeProblem(temixCode);
+      if (problem) {
+        setErrors({ temixCode: problem });
+        return;
+      }
+      setErrors({});
+    }
+    setConfirmingApprove(true);
+  }
+
   function approve() {
     setConfirmingApprove(false);
     setErrors({});
     const fd = new FormData();
     fd.set('editId', editId);
     fd.set('decisionToken', decisionToken);
+    if (needsTemixCode) fd.set('temixCode', temixCode);
     start(async () => {
       // PROD-006: server actions return `{ ok, code, message, fields? }` —
       // they no longer throw AppError across the SC boundary. See
@@ -171,8 +197,13 @@ export function ApproveRejectActions({
         // /approvals, the Accountant never saw the code anywhere.
         if (outcome.kind === 'CREATE') {
           const res = await approveEditAction(fd);
-          if (!res.ok) setErrors({ _form: res.message });
-          else {
+          // A refusal of the code itself (its shape, or a customer that has it)
+          // goes under the box it is about.
+          if (!res.ok) {
+            setErrors(
+              res.fields?.temixCode ? { temixCode: res.fields.temixCode } : { _form: res.message }
+            );
+          } else {
             setCreated(true);
             router.refresh();
           }
@@ -219,13 +250,47 @@ export function ApproveRejectActions({
   }
 
   const templates = REJECT_TEMPLATES[category] ?? [];
-  const confirm = approveConfirmCopy(outcome);
+  const confirm = approveConfirmCopy(outcome, needsTemixCode ? temixCode : undefined);
   const rejectCopy = rejectFormCopy(rejectOutcome);
 
   return (
     <div>
       {errors._form && (
         <p role="alert" className="mb-2 text-sm font-medium text-red-600">{errors._form}</p>
+      )}
+      {!showReject && needsTemixCode && (
+        <div className="mb-3">
+          <label htmlFor="temix-code" className="mb-1 block text-xs font-medium text-slate-700">
+            Temix code *
+          </label>
+          <input
+            id="temix-code"
+            name="temixCode"
+            value={temixCodeInput}
+            onChange={(e) => {
+              setTemixCodeInput(e.currentTarget.value);
+              if (errors.temixCode) setErrors({});
+            }}
+            disabled={busy}
+            aria-required="true"
+            maxLength={TEMIX_CODE_MAX + 10}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            aria-invalid={errors.temixCode ? true : undefined}
+            aria-describedby={errors.temixCode ? 'temix-code-help temix-code-error' : 'temix-code-help'}
+            placeholder="e.g. CAA0367"
+            className="block w-full rounded-md border-slate-300 px-3 py-2 font-mono text-base uppercase shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500 sm:max-w-xs sm:text-sm"
+          />
+          <p id="temix-code-help" className="mt-0.5 text-xs text-slate-500">
+            Create the customer in Temix first, then type the code Temix gave it.
+          </p>
+          {errors.temixCode && (
+            <p id="temix-code-error" role="alert" className="mt-0.5 text-xs text-red-600">
+              {errors.temixCode}
+            </p>
+          )}
+        </div>
       )}
       {!showReject ? (
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -240,7 +305,7 @@ export function ApproveRejectActions({
           <button
             type="button"
             disabled={busy}
-            onClick={() => setConfirmingApprove(true)}
+            onClick={askToApprove}
             className="rounded-md bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-300"
           >
             {created ? 'Created — loading…' : pending ? 'Working…' : '✓ Approve'}

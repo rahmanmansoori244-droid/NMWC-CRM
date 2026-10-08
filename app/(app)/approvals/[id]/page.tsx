@@ -52,6 +52,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           id: true,
           legalName: true,
           nmwcCode: true,
+          // Owner decision 2026-10-08: the Temix code the Accountant created it under.
+          temixCode: true,
           // Go-live review: photos are attached LIVE (outside fieldChanges), so a
           // reviewer of an enrichment edit must see the customer's CURRENT photo
           // slots + GPS to judge it — the diff alone shows only text fields.
@@ -212,6 +214,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   // Launch fix: once the last step has created it, the request carries the new
   // customer — the Accountant never saw the code he had just created.
   const createdCode = isCreate && edit.state === 'APPROVED' ? (edit.customer?.nmwcCode ?? null) : null;
+  // Owner decision 2026-10-08: and the Temix code he typed for it.
+  const createdTemixCode = createdCode ? (edit.customer?.temixCode ?? null) : null;
   const subtitleCode = isCreate
     ? createdCode
       ? `New customer ${createdCode}`
@@ -423,6 +427,11 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
             {createdCode ? (
               <p className="mt-1">
                 Created as customer <strong className="font-mono">{createdCode}</strong>.
+              </p>
+            ) : null}
+            {createdTemixCode ? (
+              <p className="mt-1">
+                Temix code <strong className="font-mono">{createdTemixCode}</strong>.
               </p>
             ) : null}
             {edit.decisionReason ? (

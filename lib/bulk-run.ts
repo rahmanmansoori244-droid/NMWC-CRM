@@ -60,6 +60,17 @@ export const BULK_DECISION_LIMIT_MESSAGE = `At most ${BULK_DECISION_LIMIT} reque
 export const CREDIT_BULK_REFUSED_MESSAGE =
   'Credit applications are approved one at a time: open it, check the documents and the figures, then approve it there.';
 
+/**
+ * Owner decision 2026-10-08: at the last step of a new-customer request the
+ * Accountant creates the customer in Temix and types its Temix code before he
+ * approves (lib/temix-code.ts), so each one is approved on its own page. The
+ * queue gives such a card a lock instead of a tick box (BulkApprovalQueue), and
+ * approveEditCore refuses one inside a bulk approve (BULK_RUN_FIELD). A cash
+ * request at the Supervisor step is still bulk-approved.
+ */
+export const TEMIX_CODE_BULK_REFUSED_MESSAGE =
+  'A new customer at its last step is approved one at a time: open it, enter its Temix code, then approve it there.';
+
 /** Set by bulkApproveEditsAction on each item it hands to approveEditAction. */
 export const BULK_RUN_FIELD = 'viaBulk';
 

@@ -270,6 +270,7 @@ describe('41 — the approval queue flags it before a bulk approve', () => {
     sla: null,
     escalationLevel: 0,
     isCreate: false,
+    needsTemixCode: false,
     manualGps,
     paymentTerms: null,
     customer: { legalName: 'Al Maha Foodstuff', nmwcCode: 'NMWC-018702', completenessScore: 60 },

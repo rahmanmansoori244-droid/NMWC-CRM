@@ -23,7 +23,7 @@ import {
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { duplicateHeadingIssue, parseWorkbook } from '@/lib/excel';
 import { normalizeCR } from '@/lib/cr';
-import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
+import { APP_CUSTOMER_CODE, formatCustomerCode, formatBranchCode } from '@/lib/codes';
 import { checkLimit } from '@/lib/rate-limit';
 import { MAX_IMPORT_BYTES, importFileTooLarge } from '@/lib/import-file-size';
 import { rescoreCustomerTx } from '@/lib/rescore';
@@ -68,6 +68,7 @@ import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/impo
 import { lockCustomerRowByCode } from '@/lib/locks';
 import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
+import { lockTemixCode, normalizeTemixCode, temixCodeHolder } from '@/lib/temix-code';
 import {
   branchOnlyNote,
   composeBranchCode,
@@ -1895,6 +1896,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     for (const row of cleanRows) {
       const p = row.parsed as unknown as ParsedShape | null;
       if (!p?.custCode) continue;
+      // Folded as the upload now folds it (lib/import-row-check.ts), for a batch
+      // staged before it did: every comparison below reads one spelling.
+      if (p.temixCode) p.temixCode = normalizeTemixCode(p.temixCode) || null;
       const g = groups.get(p.custCode) ?? { rowIds: [], parsed: [], corrections: [] };
       g.rowIds.push(row.id);
       g.parsed.push(p);
@@ -2204,6 +2208,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // F16: the full lane cleared the customer's sub-channel (logged once
         // the group has committed, never for a rolled-back one).
         let clearedSubChannelOf: string | null = null;
+        // Owner decision 2026-10-08: the customer whose first Temix code this
+        // group recorded (the backup match below), logged once committed.
+        // (Typed with `as`: it is assigned inside the transaction's callback,
+        // which TypeScript's narrowing of a `let` does not see.)
+        let firstTemixCodeOf = null as { customerId: string; temixCode: string } | null;
         // final-hunt #32, extended to promote: this interactive transaction makes
         // ~9 sequential round trips (customer read + upsert, per-branch ownership
         // check + upsert, row state, completeness). Prisma's DEFAULT 5s ceiling is
@@ -2214,6 +2223,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           async (tx) => {
             rowNotes = g.rowIds.map(() => ({ note: null, written: false }));
             clearedSubChannelOf = null;
+            firstTemixCodeOf = null;
             // N03: the customer's row lock FIRST, then the read, on every lane —
             // lib/locks.ts order, customer before branch. The read used to come
             // unlocked, so an archive committing after it was not seen and the
@@ -2225,6 +2235,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   select: {
                     id: true,
                     temixCode: true,
+                    // Owner decision 2026-10-08, the backup match (below): whether
+                    // it was ever sent to Temix.
+                    temixSyncState: true,
+                    lastTemixUploadAt: true,
                     paymentTerms: true,
                     deletedAt: true,
                     createdById: true,
@@ -2245,6 +2259,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   },
                 })
               : null;
+            // The Temix code on record, as the sheet's is now spelled (upper
+            // case, lib/temix-code.ts): an older row may hold it as its sheet had it.
+            const recordedCode = existing?.temixCode ? normalizeTemixCode(existing.temixCode) : null;
             // N03: an archived customer is refused before any lane is chosen,
             // whatever the rows carry. This check sat inside `if (lead.temixCode)`,
             // so a row with a blank temix_code took the full lane: the upsert
@@ -2286,6 +2303,14 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // so a code landing on a different customer, or disagreeing with an
             // already-recorded code, is Steward-review territory.
             if (lead.temixCode) {
+              // Owner decision 2026-10-08: a NEW customer is created below with
+              // this code as its Temix code, so the check and the write hold the
+              // lock a finalize takes for the code the Accountant typed
+              // (lib/create-finalize.ts): two customers given one code at the same
+              // moment, one by each path, would otherwise both pass. The backup
+              // match below takes it too; a customer that exists is otherwise
+              // never given a new code here.
+              if (!existing) await lockTemixCode(tx, lead.temixCode);
               // NO deletedAt filter (adversarial-review CONFIRMED fix): an
               // ARCHIVED customer holding this code has a DEACTIVATE for it
               // queued/in-flight — re-attaching the code to a live customer
@@ -2299,7 +2324,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   nmwcCode: { not: custCode },
                   OR: [
                     { temixCode: lead.temixCode },
-                    ...(existing?.temixCode === lead.temixCode
+                    ...(recordedCode === lead.temixCode
                       ? []
                       : [archivedUncodedDeactivationWhere(lead.temixCode)]),
                   ],
@@ -2316,7 +2341,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   `CROSSWALK:temix_code already recorded on ${codeOwner.nmwcCode}${codeOwner.deletedAt ? ' (archived — its Temix deactivation may be in flight)' : ''} — steward review`
                 );
               }
-              if (existing?.temixCode && existing.temixCode !== lead.temixCode) {
+              if (recordedCode && recordedCode !== lead.temixCode) {
                 throw new Error(
                   'CROSSWALK:temix_code conflicts with the code already recorded for this customer — steward review'
                 );
@@ -2372,25 +2397,88 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               !!existing &&
               !existing.deletedAt &&
               !!lead.temixCode &&
-              !!existing.temixCode &&
-              existing.temixCode === lead.temixCode;
+              !!recordedCode &&
+              recordedCode === lead.temixCode;
 
             if (
               existing &&
               !existing.deletedAt &&
               lead.temixCode &&
-              existing.temixCode &&
-              existing.temixCode !== lead.temixCode
+              recordedCode &&
+              recordedCode !== lead.temixCode
             ) {
               throw new Error(
                 'CROSSWALK:this customer is already crosswalked to a different Temix code — changing it is a deliberate re-crosswalk, not an import; steward review'
               );
             }
+            // Owner decision 2026-10-08, the backup match. The Accountant now types
+            // a new customer's Temix code at its last approval (lib/create-finalize.ts),
+            // but a customer created in the app before that has none, and the rule
+            // above can never give it one: so its refresh never landed and
+            // TEMIX_SYNC_ACKED (below) was never sent. For such a customer — live,
+            // no Temix code yet, CREATED IN THE APP AND SENT TO TEMIX SINCE — a row
+            // whose cust_code is its customer code exactly (the lock above found it
+            // by that unique code) and that carries a temix_code is its refresh.
+            // Created in the app: its customer code is one the app mints
+            // (NMWC-YYYY-NNNNNN) and the finalize that made it wrote its CREATE
+            // audit row (lib/create-finalize.ts). An approved new-customer request
+            // is not enough: a merge moves the loser's requests to the winner
+            // (services/duplicates.ts), so a seeded or imported winner would pass;
+            // audit rows are never moved. Sent to Temix: it was in an upload batch
+            // (or is UPLOADED or SYNCED); one never sent cannot have a Temix code
+            // yet, so a code in the sheet would be the sheet's alone.
+            // Everything else keeps the rule above: the seeded and imported
+            // customers still take the full lane (the go-live load depends on
+            // it); so does a group with a row the Steward fixed in the app, which
+            // is no word from Temix (its cust_code can be corrected there). The
+            // authority is again only this sheet, so the lane writes the code and
+            // nothing else the ERP owns: not the payment terms or credit figures,
+            // which came through the approval chain; the next refresh, now
+            // matching, applies Temix's. The code must be no other customer's,
+            // live or archived, nor a live branch's (lib/temix-code.ts, the rule
+            // finalize applies), under the lock a finalize takes; the guard above
+            // has already refused one that any customer holds as its Temix code,
+            // or that an archived one is deactivated under.
+            let firstTemixCode = false;
+            if (
+              !isRefresh &&
+              existing &&
+              !existing.deletedAt &&
+              !existing.temixCode &&
+              lead.temixCode &&
+              plainIdx.length > 0 &&
+              g.parsed.every((p) => p.fixedInApp !== true) &&
+              APP_CUSTOMER_CODE.test(custCode) &&
+              (existing.lastTemixUploadAt != null ||
+                existing.temixSyncState === 'UPLOADED' ||
+                existing.temixSyncState === 'SYNCED')
+            ) {
+              const createdByFinalize = await tx.auditLog.findFirst({
+                where: { action: 'CREATE', entityType: 'Customer', entityId: existing.id },
+                select: { id: true },
+              });
+              if (createdByFinalize) {
+                await lockTemixCode(tx, lead.temixCode);
+                const holder = await temixCodeHolder(tx, lead.temixCode, existing.id);
+                if (holder) {
+                  throw new Error(
+                    `CROSSWALK:${
+                      holder.branchCode
+                        ? `temix_code is the code of branch ${holder.branchCode} of live customer ${holder.nmwcCode}`
+                        : holder.archived
+                          ? `temix_code is held by archived ${holder.nmwcCode} — its Temix deactivation may be in flight`
+                          : `temix_code is already the Temix code of live customer ${holder.nmwcCode}`
+                    } — steward review`
+                  );
+                }
+                firstTemixCode = true;
+              }
+            }
             // The plain rows' lane: the refresh lane when their first row carries
-            // the customer's own Temix code, else the full lane. With no plain
-            // row, nothing about the customer is written at all.
-            const refreshLane = isRefresh && plainIdx.length > 0;
-            const fullLane = plainIdx.length > 0 && !isRefresh;
+            // the customer's own Temix code (or its first one, above), else the
+            // full lane. With no plain row, nothing about the customer is written.
+            const refreshLane = (isRefresh || firstTemixCode) && plainIdx.length > 0;
+            const fullLane = plainIdx.length > 0 && !isRefresh && !firstTemixCode;
             const fullIdx = fullLane ? plainIdx : [];
             const fullBranches = fullIdx.map((i) => resolvedBranches[i]);
             const fullParsed = fullIdx.map((i) => g.parsed[i]);
@@ -2452,23 +2540,29 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // figures apply only while the customer is (or becomes) CREDIT.
               const ptPresent = lead.paymentTermsPresent === true;
               const effectiveTerms = ptPresent ? pt : existing!.paymentTerms;
+              // The first code (owner decision 2026-10-08, above) writes the code only.
+              const erpOwned: Prisma.CustomerUpdateInput = firstTemixCode
+                ? {}
+                : {
+                    paymentTerms: ptPresent ? pt : undefined,
+                    creditLimit:
+                      effectiveTerms === 'CREDIT'
+                        ? (lead.creditLimit ?? undefined)
+                        : ptPresent
+                          ? null
+                          : undefined,
+                    paymentTermDays:
+                      effectiveTerms === 'CREDIT'
+                        ? (lead.paymentTermDays ?? undefined)
+                        : ptPresent
+                          ? null
+                          : undefined,
+                  };
               await tx.customer.update({
                 where: { id: existing!.id },
                 data: {
                   temixCode: lead.temixCode,
-                  paymentTerms: ptPresent ? pt : undefined,
-                  creditLimit:
-                    effectiveTerms === 'CREDIT'
-                      ? (lead.creditLimit ?? undefined)
-                      : ptPresent
-                        ? null
-                        : undefined,
-                  paymentTermDays:
-                    effectiveTerms === 'CREDIT'
-                      ? (lead.paymentTermDays ?? undefined)
-                      : ptPresent
-                        ? null
-                        : undefined,
+                  ...erpOwned,
                   lastEditedById: me.id,
                   // B-05: make the refresh visible to the optimistic lock so a
                   // concurrent edit-approve sees VERSION_CONFLICT, not a silent
@@ -2489,6 +2583,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               });
               // TEMIX_SYNC_ACKED: the ERP code just landed for the first time —
               // tell the originating submitter their customer is live in Temix.
+              // Reached only through the backup match (owner decision 2026-10-08):
+              // the refresh rule needs a recorded code. createdById is the
+              // salesman who sent the request (lib/create-finalize.ts).
+              if (firstTemixCode) {
+                firstTemixCodeOf = { customerId: existing!.id, temixCode: lead.temixCode! };
+              }
               if (!existing!.temixCode && lead.temixCode && existing!.createdById) {
                 await notifyUsers(tx, [existing!.createdById], {
                   kind: 'TEMIX_SYNC_ACKED',
@@ -2927,6 +3027,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         if (clearedSubChannelOf) {
           // Ids only: no name, phone or channel value.
           logger.info({ customerId: clearedSubChannelOf, batchId }, 'import.promote.subchannel_cleared');
+        }
+        if (firstTemixCodeOf) {
+          logger.info({ ...firstTemixCodeOf, batchId }, 'import.promote.first_temix_code');
         }
         // A full-lane row carries a note only when its customer's sub-channel
         // was cleared (F16, on the lead row).

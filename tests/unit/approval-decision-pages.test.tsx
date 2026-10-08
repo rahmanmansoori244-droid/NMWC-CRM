@@ -531,6 +531,32 @@ describe('the approval queue', () => {
     });
   });
 
+  it('owner decision 2026-10-08: a new-customer card at its last step is marked as needing its Temix code, and only it', async () => {
+    const update = {
+      ...createRow('CASH', 0),
+      id: 'u1',
+      process: 'UPDATE',
+      customerId: 'c1',
+      customer: { id: 'c1', legalName: 'Muscat Pearl', nmwcCode: 'NMWC-000123', completenessScore: 50, paymentTerms: 'CASH' },
+      customerDraft: null,
+      approvalChain: resolveChain(EditProcess.UPDATE, PaymentTerms.CASH),
+    };
+    const cards = await renderQueue([
+      { ...createRow('CASH', 0), id: 'cash-sup' },
+      { ...createRow('CASH', 1), id: 'cash-acc' },
+      { ...createRow('CREDIT', 2), id: 'credit-gm' },
+      { ...createRow('CREDIT', 3), id: 'credit-acc' },
+      update,
+    ]);
+    expect(Object.fromEntries(cards.map((c) => [c.id, c.needsTemixCode]))).toEqual({
+      'cash-sup': false,
+      'cash-acc': true,
+      'credit-gm': false,
+      'credit-acc': true,
+      u1: false,
+    });
+  });
+
   it("N01: each new-customer card binds its own request's live guarantees, read once for the page", async () => {
     h.attachments = [
       guarantee('g-a', 'e1'),
@@ -783,6 +809,30 @@ describe('launch fixes on the new-customer review page and queue card', () => {
     expect(screen.queryByText(/New customer request/)).toBeNull();
     expect(screen.getByText('NMWC-2026-000123', { selector: 'strong' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open profile' }).getAttribute('href')).toBe('/customers/c-new');
+  });
+
+  it('owner decision 2026-10-08: once created, it shows the Temix code the Accountant typed beside the customer code', async () => {
+    h.edit = createRow('CASH', 1, {
+      state: 'APPROVED',
+      customerId: 'c-new',
+      customer: {
+        id: 'c-new',
+        legalName: 'Al Noor Trading',
+        nmwcCode: 'NMWC-2026-000123',
+        temixCode: 'CAA0367',
+        crPhotoId: null,
+        branches: [],
+      },
+      reviewedBy: { fullName: 'Accountant One' },
+      reviewedAt: new Date('2026-10-08T08:00:00Z'),
+    });
+    const { default: Page } = await import('@/app/(app)/approvals/[id]/page');
+    render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+    // The line the Accountant has read since wave 1 is unchanged; the Temix code is its own line.
+    expect(screen.getByText('Created as customer', { exact: false }).textContent).toBe(
+      'Created as customer NMWC-2026-000123.'
+    );
+    expect(screen.getByText('CAA0367', { selector: 'strong' }).parentElement!.textContent).toBe('Temix code CAA0367.');
   });
 
   it("the queue card's ring scores the new customer from its drafts, not 0%", async () => {

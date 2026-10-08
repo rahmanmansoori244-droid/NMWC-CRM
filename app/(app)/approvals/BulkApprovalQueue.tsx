@@ -7,7 +7,11 @@ import { Lock } from 'lucide-react';
 import { CompletenessRing } from '@/components/nmwc/CompletenessRing';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 import { bulkApproveEditsAction, bulkRejectEditsAction } from '@/services/edits';
-import { BULK_DECISION_LIMIT, CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
+import {
+  BULK_DECISION_LIMIT,
+  CREDIT_BULK_REFUSED_MESSAGE,
+  TEMIX_CODE_BULK_REFUSED_MESSAGE,
+} from '@/lib/bulk-run';
 
 /**
  * B-11 (Senior-audit 2026-05-10): bulk-approval queue.
@@ -35,6 +39,11 @@ export type ApprovalQueueItem = {
   escalationLevel: number;
   /** Phase 1: net-new customer CREATE request (no customer row yet). */
   isCreate: boolean;
+  /**
+   * Owner decision 2026-10-08: a new-customer request at its last step (the
+   * Accountant's), approved only with the Temix code typed on its own page.
+   */
+  needsTemixCode: boolean;
   paymentTerms: 'CASH' | 'CREDIT' | null;
   /**
    * X-APPR-1: a new CREDIT customer's requested figures, shown on the card so a
@@ -78,8 +87,13 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
   // ticked into a bulk action; it is opened and approved on its own page. The
   // server refuses one inside a bulk approve too (CREDIT_BULK_REFUSED_MESSAGE).
   const isCreditCard = (i: ApprovalQueueItem) => i.isCreate && i.paymentTerms === 'CREDIT';
-  const allOnPage = items.filter((i) => !isCreditCard(i)).map((i) => i.id);
+  // Owner decision 2026-10-08: the same for any new customer at its last step,
+  // which needs its Temix code (TEMIX_CODE_BULK_REFUSED_MESSAGE). A credit card
+  // there keeps the credit lock: it is both, and either is reason enough.
+  const isTemixCard = (i: ApprovalQueueItem) => i.needsTemixCode && !isCreditCard(i);
+  const allOnPage = items.filter((i) => !isCreditCard(i) && !isTemixCard(i)).map((i) => i.id);
   const hasCredit = items.some(isCreditCard);
+  const hasTemix = items.some(isTemixCard);
   // Select all stops at the bulk limit, taking cards in the order shown (most
   // overdue first). It used to take every card on the page — up to 200 — and the
   // server refuses a list over the limit whole, so on a region-wide queue past
@@ -221,6 +235,12 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
           Credit applications are approved one at a time: open each card marked with a lock.
         </p>
       )}
+      {hasTemix && (
+        <p className="mx-4 mb-3 text-xs font-medium text-slate-600 sm:mx-6">
+          New customers at their last step are approved one at a time: open each card marked with a
+          lock and enter its Temix code.
+        </p>
+      )}
       {allOnPage.length > 0 && (
         <div className="mx-4 mb-3 flex items-center justify-between sm:mx-6">
           <label className="inline-flex items-center gap-2 text-sm text-slate-700">
@@ -257,6 +277,15 @@ export function BulkApprovalQueue({ items }: { items: ApprovalQueueItem[] }) {
                   className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-slate-400"
                   title={CREDIT_BULK_REFUSED_MESSAGE}
                   aria-label="Credit application: open it to decide"
+                  role="img"
+                >
+                  <Lock className="h-4 w-4" aria-hidden="true" />
+                </span>
+              ) : isTemixCard(e) ? (
+                <span
+                  className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-slate-400"
+                  title={TEMIX_CODE_BULK_REFUSED_MESSAGE}
+                  aria-label="Enter its Temix code: open it to approve"
                   role="img"
                 >
                   <Lock className="h-4 w-4" aria-hidden="true" />

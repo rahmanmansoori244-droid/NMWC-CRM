@@ -57,7 +57,7 @@ function tx(live: string[], guarantees: string[] = []) {
 
 describe('a removed photo or guarantee at the last step', () => {
   it('a photo: cannot be approved, and a reject steps back one approver at a time', async () => {
-    const err = await finalizeCreateInTx(tx(['p-cr']), edit('CASH'), env, new Date()).catch((e) => e);
+    const err = await finalizeCreateInTx(tx(['p-cr']), edit('CASH'), env, new Date(), 'CAA0367').catch((e) => e);
     expect(err).toMatchObject({ code: 'NEEDS_REUPLOAD' });
     expect(err.message).toBe(
       'A required photo on this request was removed after it was sent, so it cannot be approved. Reject it and say which photo is missing. It goes back one approver at a time; once it reaches the salesman, he can take the photo again.'
@@ -66,7 +66,7 @@ describe('a removed photo or guarantee at the last step', () => {
   });
 
   it('the guarantee: the same, for the document', async () => {
-    const err = await finalizeCreateInTx(tx(['p-cr', 'p-shop'], []), edit('CREDIT'), env, new Date()).catch((e) => e);
+    const err = await finalizeCreateInTx(tx(['p-cr', 'p-shop'], []), edit('CREDIT'), env, new Date(), 'CAA0367').catch((e) => e);
     expect(err).toMatchObject({ code: 'NEEDS_REUPLOAD' });
     expect(err.message).toBe(
       'The guarantee document was removed after it was sent, so it cannot be approved. Reject it and say the guarantee is missing. It goes back one approver at a time; once it reaches the salesman, he can attach it again.'
