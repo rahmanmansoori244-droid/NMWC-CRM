@@ -135,3 +135,13 @@ describe('the batch history keeps every batch reachable', () => {
     expect(screen.getByRole('link', { name: '← Newer' }).getAttribute('href')).toBe('/temix');
   });
 });
+
+describe('owner decision 2026-10-08: the Steward is told how to load a row with a Temix code', () => {
+  it('a row with a temix_code updates that Temix customer; a blank one is a customer Temix does not have yet', async () => {
+    const { container } = render(await TemixPage({ searchParams: Promise.resolve({}) }));
+    const text = (container.textContent ?? '').replace(/\s+/g, ' ');
+    expect(text).toContain(
+      'In Temix, load a row that has a temix_code as an update of that Temix customer, never as a new one: for a new customer it is the record the Accountant created in Temix before he approved it. A row with a blank temix_code is a customer Temix does not have yet.'
+    );
+  });
+});

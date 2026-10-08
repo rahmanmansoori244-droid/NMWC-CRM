@@ -4,9 +4,17 @@
  * The CRM aids Temix, never replaces it (owner-locked): approved master data
  * queues per-customer (temixSyncState) and a Steward carries it to Temix as an
  * Excel workbook. There is NO live API in v1 — the contract is
- * at-least-once-with-dedup: Temix upserts on the customer code, so re-sending
- * an unchanged row is a no-op, and every batch is regenerable from its
- * TemixSyncBatch.customerIds snapshot.
+ * at-least-once-with-dedup: each row is an upsert of one Temix customer, so
+ * re-sending an unchanged row is a no-op, and every batch is regenerable from
+ * its TemixSyncBatch.customerIds snapshot. Which Temix customer: the one whose
+ * code is the row's `temix_code`, when it has one (a migrated customer, one
+ * the Accountant created in Temix before he approved it, owner decision
+ * 2026-10-08, or one whose code a refresh recorded); otherwise the row is a
+ * customer Temix does not have yet, known by its `cust_code`. Whether the
+ * Steward's load into Temix keys on those columns that way is NOT confirmed
+ * (Q-temix-headers, docs/handover/04-PENDING-WORK.md A7): if it keyed every
+ * row on cust_code, a new customer's first row would make a second Temix
+ * record beside the one the Accountant made.
  *
  * Pure decision logic + row shaping live here (unit-tested); the Steward
  * actions live in services/temix.ts.
@@ -79,7 +87,9 @@ export type TemixExportRow = Record<string, string | number>;
  *
  * NOTE (Q-temix-headers, open): the exact header row Temix's importer accepts
  * is still unconfirmed — these are the CRM's export-contract names; remap
- * once the owner supplies the authoritative Temix template.
+ * once the owner supplies the authoritative Temix template. So is the column
+ * an UPSERT row is matched on in Temix (the module header): a row that carries
+ * a temix_code must be loaded as an update of that Temix customer.
  */
 export function buildTemixRows(
   customers: TemixExportCustomer[],
