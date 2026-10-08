@@ -27,7 +27,10 @@ import { useEffect, useReducer } from 'react';
  * one tiny state update of its own. React then retries the transition; the
  * data it waits for is already there, so it commits. A transition that is
  * merely still waiting for the server is retried for nothing and parks again;
- * that costs one render of the waiting tree per second.
+ * each retry costs one render of the waiting tree. So the same parked lanes are
+ * retried less and less often — 1, 2, 4, 8 s apart, then every 10 s — and left
+ * alone after MAX_NUDGES (about two minutes), so a transition that never ends
+ * is not re-rendered forever. Other lanes, or none, start over.
  *
  * It reads React's own root fields, which are not public: if they are not found
  * or not numbers, it does nothing. Remove it once the app runs on React >= 19.3
@@ -83,6 +86,22 @@ export function findReactRoot(container: object = document): RootLanes | null {
 
 export const CHECK_EVERY_MS = 500;
 
+/**
+ * The wait before each nudge of the same parked lanes after the first (which
+ * comes after two checks): 1, 2, 4 and 8 s, then every 10 s.
+ */
+export const NUDGE_GAPS_MS = [1_000, 2_000, 4_000, 8_000, 10_000] as const;
+
+/** Nudges for one parked set of lanes before it is left alone (about two minutes). */
+export const MAX_NUDGES = 15;
+
+/** Checks the same parked lanes must stay parked before nudge number `nudges + 1`. */
+export function checksBeforeNudge(nudges: number, checkEveryMs = CHECK_EVERY_MS): number {
+  if (nudges === 0) return 2;
+  const gap = NUDGE_GAPS_MS[Math.min(nudges, NUDGE_GAPS_MS.length) - 1];
+  return Math.max(1, Math.ceil(gap / checkEveryMs));
+}
+
 export function TransitionWatchdog({
   getRoot = findReactRoot,
   checkEveryMs = CHECK_EVERY_MS,
@@ -93,17 +112,38 @@ export function TransitionWatchdog({
 }): null {
   const [, nudge] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
+    // The transition lanes being woken, the nudges they have had, and the checks
+    // in a row they have stayed parked since the last one (or since parking).
+    let lanes = 0;
+    let nudges = 0;
     let parkedChecks = 0;
     const id = window.setInterval(() => {
-      if (document.visibilityState === 'hidden' || !transitionParked(getRoot())) {
+      if (document.visibilityState === 'hidden') {
+        parkedChecks = 0;
+        return;
+      }
+      const root = getRoot();
+      // Other transition lanes pending than the ones nudged (that transition
+      // ended, or another began): whatever parks next starts over. The same
+      // lanes, un-parked by a nudge's render and parked again, keep their count.
+      const pending =
+        typeof root?.pendingLanes === 'number' ? root.pendingLanes & TRANSITION_LANES : 0;
+      if (pending !== lanes) {
+        lanes = pending;
+        nudges = 0;
+        parkedChecks = 0;
+      }
+      if (!transitionParked(root)) {
         parkedChecks = 0;
         return;
       }
       parkedChecks += 1;
-      // Two checks in a row (500–1000 ms parked), so a transition React is about
-      // to wake by itself is left alone; then at most one update per second.
-      if (parkedChecks >= 2) {
+      // Two checks in a row (500–1000 ms parked) before the first, so a
+      // transition React is about to wake by itself is left alone; then further
+      // and further apart, and none after MAX_NUDGES.
+      if (nudges < MAX_NUDGES && parkedChecks >= checksBeforeNudge(nudges, checkEveryMs)) {
         parkedChecks = 0;
+        nudges += 1;
         nudge();
       }
     }, checkEveryMs);
