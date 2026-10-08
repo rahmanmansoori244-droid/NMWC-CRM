@@ -65,9 +65,15 @@ export type TemixExportRow = Record<string, string | number>;
  *
  * - UPSERT lane (live customers): one row per LIVE branch, mirroring the
  *   existing customer-master export contract so the sheet stays re-importable
- *   (services/exports.ts columns) + the sync columns. `temix_code` blank =
- *   "create in Temix" — Temix assigns the real ERP code, which returns via
- *   the inbound refresh.
+ *   (services/exports.ts columns) + the sync columns. A row with a
+ *   `temix_code` updates that Temix record. Since owner decision 2026-10-08 a
+ *   new customer has one from its last approval: the Accountant created it in
+ *   Temix and typed the code (lib/create-finalize.ts), so its first row here
+ *   fills in the record he made rather than creating a second one. `temix_code`
+ *   blank = "create in Temix", as before, for a customer with no Temix code on
+ *   record (created in the app before that decision, or imported without one);
+ *   for one created in the app, the inbound refresh records the code Temix
+ *   assigns (services/imports.ts, the backup match).
  * - DEACTIVATE lane (soft-deleted customers): one row per CUSTOMER with blank
  *   branch fields — Temix only needs the code + the action.
  *
