@@ -1297,10 +1297,13 @@ describe('Remove', () => {
     pick(view.container);
     await screen.findByRole('button', { name: /Retry upload/ });
     remove();
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toBe(PHOTO_CHANGED_MESSAGE);
-    // The upload failure is still where it was, and nothing told the form the photo went.
-    expect(screen.getByText('Could not get upload URL.')).toBeTruthy();
+    // Each on its own line, each read out: the refusal, and the upload failure
+    // still where it was. Nothing told the form the photo went.
+    await screen.findByText(PHOTO_CHANGED_MESSAGE);
+    expect(screen.getAllByRole('alert').map((a) => a.textContent)).toEqual([
+      PHOTO_CHANGED_MESSAGE,
+      'Could not get upload URL.',
+    ]);
     expect(onChange).not.toHaveBeenCalledWith(null);
   });
 
@@ -1437,5 +1440,27 @@ describe('a photo the phone cannot read says why on its slot, and he picks again
     const slot = view.container.firstElementChild!;
     expect(slot.className).toMatch(/(^|\s)min-h-32(\s|$)/);
     expect(slot.className).not.toMatch(/(^|\s)h-32(\s|$)/);
+  });
+});
+
+describe('a photo that fails is read out (launch browser suite follow-up)', () => {
+  // The slot's failures were plain text on it: a salesman with a screen reader
+  // took the photo and heard nothing when it did not go up.
+  it('a failed upload is an alert, beside Retry upload', async () => {
+    uploadable();
+    presignPlan = ['refuse'];
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    pick(view.container);
+    await screen.findByRole('button', { name: /Retry upload/ });
+    expect(screen.getByRole('alert').textContent).toBe('Could not get upload URL.');
+  });
+
+  it('a photo it cannot read is an alert', async () => {
+    decode = 'fail';
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    fireEvent.change(view.container.querySelector('input[type="file"]')!, {
+      target: { files: [new File(['x'], 'IMG_0001.heic', { type: 'image/heic' })] },
+    });
+    expect((await screen.findByRole('alert')).textContent).toBe(HEIC_PHOTO_MESSAGE);
   });
 });
