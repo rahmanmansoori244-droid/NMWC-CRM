@@ -10,16 +10,22 @@
  * code was never recorded, and TEMIX_SYNC_ACKED was never sent.
  *
  * Here:
- *   - A, created by an approved new-customer request, no Temix code, UPLOADED:
- *     a row with its customer code and a temix_code records the code (and nothing
- *     else: its branch and its name stay as the CRM has them), moves it to
- *     SYNCED and tells the salesman who sent the request — once; the next
- *     refresh is the ordinary one.
- *   - S, a seeded customer (no such request): the go-live style row (temix_code
- *     == cust_code) keeps the full lane, and no code is recorded — the security
- *     rule is unchanged for everything else.
+ *   - A, created in the app (an NMWC-YYYY-NNNNNN code and the CREATE audit row
+ *     its finalize wrote), no Temix code, UPLOADED: a row with its customer code
+ *     and a temix_code — in lower case here: the import folds it as the
+ *     Accountant's typed code is folded — records the code (and nothing else:
+ *     its branch and its name stay as the CRM has them), moves it to SYNCED and
+ *     tells the salesman who sent the request — once; the next refresh is the
+ *     ordinary one.
+ *   - S, a seeded customer: the go-live style row (temix_code == cust_code)
+ *     keeps the full lane, and no code is recorded — the security rule is
+ *     unchanged for everything else.
  *   - B, created in the app, offered S's customer code as its Temix code: refused
  *     on the row, naming S; nothing written.
+ *   - Review of the branch: M, the shape a merge leaves (an approved
+ *     new-customer request moved onto it, but no CREATE audit row of its own),
+ *     and Q, created in the app but never sent to Temix, keep the full lane: no
+ *     code is recorded for either.
  *
  *   RUN_IMPORT_TESTS=1 node scripts/qa/run-with-env.mjs vitest run \
  *     tests/integration/import-first-temix-code.test.ts
@@ -71,6 +77,8 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
   let imports: typeof import('@/services/imports');
   const tag = randomUUID().slice(0, 8).toUpperCase();
   const P = `ZZFTC-${tag}`;
+  // Customer codes in the shape the app mints, in a year no real code has.
+  const APP_P = `NMWC-1999-${String(parseInt(tag, 16)).padStart(10, '0')}`;
   const REGION = `ZZFTC${tag}R`;
   const ROUTE = `ZZFTC${tag}-RT`;
   const steward = `${P}-stew`;
@@ -98,16 +106,25 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
     batchIds.push(id);
     return id;
   };
-  /** A live customer with one branch; `fromRequest` = created by an approved new-customer request. */
-  const customer = async (code: string, fromRequest: boolean) => {
+  /**
+   * A live customer with one branch. `request`: an approved new-customer request
+   * points at it; `finalized`: the CREATE audit row a finalize writes; `sent`:
+   * it went out in an upload batch (UPLOADED), else it is still queued.
+   */
+  const customer = async (
+    code: string,
+    { request = false, finalized = false, sent = true }: { request?: boolean; finalized?: boolean; sent?: boolean } = {}
+  ) => {
+    const app = request || finalized;
     const c = await prisma.customer.create({
       data: {
         nmwcCode: code,
         legalName: `ZZ Stored ${code}`,
         contactPerson: 'ZZ Stored Contact',
         temixCode: null,
-        temixSyncState: fromRequest ? 'UPLOADED' : 'SYNCED',
-        createdById: fromRequest ? salesman : null,
+        temixSyncState: !app ? 'SYNCED' : sent ? 'UPLOADED' : 'PENDING_UPLOAD',
+        lastTemixUploadAt: app && sent ? new Date('2026-10-03T06:00:00Z') : null,
+        createdById: app ? salesman : null,
         version: 3,
       },
     });
@@ -121,7 +138,7 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
         routeId,
       },
     });
-    if (fromRequest) {
+    if (request) {
       await prisma.customerEdit.create({
         data: {
           process: 'CREATE',
@@ -133,6 +150,17 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
           reviewedAt: new Date('2026-10-02T06:00:00Z'),
           fieldChanges: [] as never,
           attachmentChanges: [] as never,
+        },
+      });
+    }
+    if (finalized) {
+      await prisma.auditLog.create({
+        data: {
+          actorId: salesman,
+          action: 'CREATE',
+          entityType: 'Customer',
+          entityId: c.id,
+          after: { nmwcCode: code, temixCode: null, legalName: c.legalName } as never,
         },
       });
     }
@@ -174,10 +202,13 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
   afterAll(async () => {
     if (!prisma) return;
     try {
-      const custs = await prisma.customer.findMany({ where: { nmwcCode: { startsWith: P } }, select: { id: true } });
+      const custs = await prisma.customer.findMany({
+        where: { OR: [{ nmwcCode: { startsWith: P } }, { nmwcCode: { startsWith: APP_P } }] },
+        select: { id: true },
+      });
       const ids = custs.map((c) => c.id);
       await purgeCustomerEdits(prisma, { where: { submittedById: salesman } });
-      await purgeAuditLog(prisma, { where: { actorId: steward } });
+      await purgeAuditLog(prisma, { where: { actorId: { in: [steward, salesman] } } });
       await prisma.notification.deleteMany({ where: { userId: { in: [steward, salesman] } } });
       await prisma.branch.deleteMany({ where: { customerId: { in: ids } } });
       await prisma.customer.deleteMany({ where: { id: { in: ids } } });
@@ -194,9 +225,9 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
   });
 
   it('A records its code — nothing else — and the salesman is told; S keeps the full lane; B is refused naming S', async () => {
-    const A = await customer(`${P}-A`, true);
-    const S = await customer(`${P}-S`, false);
-    const B = await customer(`${P}-B`, true);
+    const A = await customer(`${APP_P}1`, { request: true, finalized: true });
+    const S = await customer(`${P}-S`);
+    const B = await customer(`${APP_P}2`, { request: true, finalized: true });
     const beforeB = await stored(B.id);
 
     const batchId = await upload([
@@ -205,7 +236,8 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
         cust_name: 'ZZ Temix Name A',
         branch_code: `${A.nmwcCode}-01`,
         address: 'Way 9, Temix',
-        temix_code: TEMIX_A,
+        // As Temix might spell it: folded to TEMIX_A, as the Accountant's code is.
+        temix_code: ` ${TEMIX_A.toLowerCase()}`,
       },
       // The go-live master's shape: temix_code is the customer code.
       {
@@ -225,6 +257,7 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
     ]);
     const staged = await prisma.importRow.findMany({ where: { batchId }, orderBy: { rowNumber: 'asc' } });
     expect(staged.map((r) => r.state)).toEqual(['CLEAN', 'CLEAN', 'CLEAN']);
+    expect((staged[0]!.parsed as { temixCode: string }).temixCode).toBe(TEMIX_A);
 
     const totals = await promoteFully(imports, batchId);
     expect(totals).toMatchObject({ promoted: 2, failed: 1 });
@@ -261,7 +294,7 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
   });
 
   it('the next refresh of A is the ordinary one: no second acknowledgement', async () => {
-    const A = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: `${P}-A` } });
+    const A = await prisma.customer.findUniqueOrThrow({ where: { nmwcCode: `${APP_P}1` } });
     const batchId = await upload([
       {
         cust_code: A.nmwcCode,
@@ -274,5 +307,39 @@ describe.skipIf(!ENABLED)('owner decision 2026-10-08: the first Temix code of a 
     expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 1, failed: 0 });
     expect((await stored(A.id)).temixCode).toBe(TEMIX_A);
     expect(await acks()).toHaveLength(1);
+  });
+
+  it('M (a request moved onto it by a merge, no CREATE row of its own) and Q (never sent to Temix) keep the full lane: no code recorded', async () => {
+    const M = await customer(`${APP_P}3`, { request: true, finalized: false });
+    const Q = await customer(`${APP_P}4`, { request: true, finalized: true, sent: false });
+    const before = await acks();
+    const batchId = await upload([
+      {
+        cust_code: M.nmwcCode,
+        cust_name: 'ZZ Sheet M',
+        branch_code: `${M.nmwcCode}-01`,
+        address: 'Way 4, Sheet',
+        temix_code: `TXM${tag}`,
+      },
+      {
+        cust_code: Q.nmwcCode,
+        cust_name: 'ZZ Sheet Q',
+        branch_code: `${Q.nmwcCode}-01`,
+        address: 'Way 5, Sheet',
+        temix_code: `TXQ${tag}`,
+      },
+    ]);
+    expect(await promoteFully(imports, batchId)).toMatchObject({ promoted: 2, failed: 0 });
+    for (const [c, name, address] of [
+      [M, 'ZZ Sheet M', 'Way 4, Sheet'],
+      [Q, 'ZZ Sheet Q', 'Way 5, Sheet'],
+    ] as const) {
+      const s = await stored(c.id);
+      // The full lane: the sheet's name and branch, and no Temix code from it.
+      expect(s.temixCode, c.nmwcCode).toBeNull();
+      expect(s.legalName).toBe(name);
+      expect(s.branches).toEqual([{ branchCode: `${c.nmwcCode}-01`, address }]);
+    }
+    expect(await acks()).toHaveLength(before.length);
   });
 });

@@ -21,9 +21,12 @@
  *    the group transaction rescores the customer and every live branch,
  *    writing only the scores that differ (lib/rescore.ts).
  *  - Owner decision 2026-10-08, the backup match: a customer created in the app
- *    with no Temix code yet takes the refresh lane from a row whose cust_code is
+ *    (an app-minted code, its finalize's CREATE audit row) and sent to Temix,
+ *    with no Temix code yet, takes the refresh lane from a row whose cust_code is
  *    its customer code and that carries a temix_code — the code only, its
- *    acknowledgement to the salesman — and nothing else does.
+ *    acknowledgement to the salesman — and nothing else does. The temix_code is
+ *    compared upper case, and a new customer created with one takes the
+ *    finalize's lock.
  *
  * The same paths against Postgres, and an archive racing the promote on two
  * connections, are in tests/integration/import-archived-parent.test.ts and
@@ -247,6 +250,8 @@ let tx: Record<string, Record<string, Fn> | Fn>;
 let rejected: Array<{ where: unknown; data: { state: string; issues: Array<{ message: string }> } }>;
 /** The rescore's raw UPDATEs: the table, and the (id, score) pairs it was given. */
 let rescoreWrites: Array<{ table: string; sql: string; rows: Array<[unknown, unknown]> }>;
+/** The keys of the Temix-code advisory locks taken (lib/temix-code.ts lockTemixCode). */
+let temixLocks: unknown[];
 
 /** Other customers in the master, as the crosswalk guard's findFirst reads them. */
 type Other = {
@@ -258,7 +263,9 @@ type Other = {
 };
 
 function setup(
-  stored: (typeof STORED & { deletedAt: Date | null }) | null,
+  stored:
+    | (typeof STORED & { deletedAt: Date | null; temixSyncState?: string; lastTemixUploadAt?: Date | null })
+    | null,
   rows: Parsed[],
   others: Other[] = [],
   opts: SetupOptions = {}
@@ -267,6 +274,7 @@ function setup(
   lockSql = [];
   rejected = [];
   rescoreWrites = [];
+  temixLocks = [];
   h.info.mockClear();
   h.notify.mockClear();
   const w = (name: string, value: unknown = {}) =>
@@ -282,6 +290,11 @@ function setup(
     }),
     $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const q = Prisma.sql(strings, ...values);
+      if (/pg_advisory_xact_lock/.test(q.sql)) {
+        order.push('temix.lock');
+        temixLocks.push(...q.values);
+        return 1;
+      }
       const table = /^UPDATE "(\w+)"/.exec(q.sql)?.[1] ?? '?';
       order.push(`rescore.${table}`);
       const rows: Array<[unknown, unknown]> = [];
@@ -902,27 +915,38 @@ describe("promoteCustomerBatchAction — branch only: a branch it writes moves t
   });
 });
 
+
 describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Temix code of a customer created in the app', () => {
   // A customer the Accountant approved before the code was typed at approval:
-  // live, no Temix code, created by an approved new-customer request, UPLOADED
-  // in a batch. Temix's file names it by its customer code and carries the code
-  // Temix gave it.
-  const APP = { ...STORED, temixCode: null, paymentTerms: 'CASH', createdById: 'u-sales', deletedAt: null };
+  // live, no Temix code, a customer code the app minted, the CREATE audit row its
+  // finalize wrote, and sent to Temix in a batch (UPLOADED). Temix's file names
+  // it by its customer code and carries the code Temix gave it.
+  const CODE = 'NMWC-2026-000077';
+  const APP = {
+    ...STORED,
+    temixCode: null as string | null,
+    paymentTerms: 'CASH',
+    createdById: 'u-sales',
+    deletedAt: null,
+    temixSyncState: 'UPLOADED',
+    lastTemixUploadAt: new Date('2026-10-01T06:00:00Z') as Date | null,
+  };
   const row = (over: Parsed = {}) =>
     parsed({
+      custCode: CODE,
+      branchCode: `${CODE}-02`,
       temixCode: 'TX900',
       paymentTerms: 'CREDIT',
       creditLimit: 999999,
       paymentTermDays: 120,
       ...over,
     });
+  type Holder = { nmwcCode: string; archived: boolean; branchCode: string | null };
   let holderSql: string[];
-  let lockKeys: unknown[];
-  /** The request that created it (or none), and another live customer holding the code (or none). */
-  function app(created: boolean, holder: string | null = null) {
+  /** Its finalize's CREATE audit row (or none), and who else has the code (or no one). */
+  function app(created: boolean, holder: Holder | null = null) {
     holderSql = [];
-    lockKeys = [];
-    tx.customerEdit = { findFirst: vi.fn(async () => (created ? { id: 'edit-create' } : null)) };
+    tx.auditLog = { findFirst: vi.fn(async () => (created ? { id: 'audit-create' } : null)) };
     const lockByCode = tx.$queryRaw as Fn;
     tx.$queryRaw = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const q = strings.join('?');
@@ -930,20 +954,12 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
         order.push('temix.holder');
         holderSql.push(Prisma.sql(strings, ...values).text);
         expect(values).toEqual(['cust-1', 'cust-1', 'TX900', 'TX900']);
-        return holder ? [{ nmwcCode: holder }] : [];
+        return holder ? [{ nmwcCode: holder.nmwcCode }] : [];
       }
       return lockByCode(strings, ...values);
     });
-    const execute = tx.$executeRaw as Fn;
-    tx.$executeRaw = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
-      if (/pg_advisory_xact_lock/.test(strings.join('?'))) {
-        order.push('temix.lock');
-        lockKeys.push(...values);
-        return 1;
-      }
-      return execute(strings, ...values);
-    });
   }
+  const auditRead = () => (tx.auditLog as Record<string, Fn>).findFirst;
   const customerUpdate = () =>
     ((tx.customer as Record<string, Fn>).update.mock.calls[0]?.[0] ?? null) as {
       where: unknown;
@@ -951,14 +967,16 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
     } | null;
 
   it('records the code and nothing else the ERP owns; UPLOADED → SYNCED; the salesman is told; no full-lane write', async () => {
-    setup({ ...APP }, [row()], [], { branches: { 'ARC1-02': storedBranch({ address: 'Way 9, Muscat' }) } });
+    setup({ ...APP }, [row()], [], {
+      branches: { [`${CODE}-02`]: storedBranch({ customer: { nmwcCode: CODE }, address: 'Way 9, Muscat' }) },
+    });
     app(true);
     const out = await promote();
     expect(out).toMatchObject({ promoted: 1, failed: 0 });
     expect(rejected).toEqual([]);
-    // Found by its customer code, created by an approved new-customer request.
-    expect((tx.customerEdit as Record<string, Fn>).findFirst.mock.calls[0]![0]).toEqual({
-      where: { customerId: 'cust-1', process: 'CREATE', state: 'APPROVED' },
+    // Found by its customer code; created by a finalize: its own CREATE audit row.
+    expect(auditRead().mock.calls[0]![0]).toEqual({
+      where: { action: 'CREATE', entityType: 'Customer', entityId: 'cust-1' },
       select: { id: true },
     });
     // The code alone: not the payment terms, not the credit figures the row carries.
@@ -976,7 +994,7 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
       {
         kind: 'TEMIX_SYNC_ACKED',
         title: 'Customer landed in Temix',
-        body: 'Stored Name (ARC1) is now in Temix as TX900.',
+        body: `Stored Name (${CODE}) is now in Temix as TX900.`,
         customerId: 'cust-1',
       },
     ]);
@@ -994,51 +1012,86 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
     setup({ ...APP }, [row()]);
     app(true);
     await promote();
-    expect(lockKeys).toEqual(['nmwc:temix:TX900']);
+    expect(temixLocks).toEqual(['nmwc:temix:TX900']);
     expect(holderSql).toHaveLength(1);
     const i = (name: string) => order.indexOf(name);
     expect(i('temix.lock')).toBeLessThan(i('temix.holder'));
     expect(i('temix.holder')).toBeLessThan(i('customer.update'));
   });
 
-  it('a code another live customer has is reported on the row; nothing is written and nobody is told', async () => {
+  it.each([
+    [
+      'another live customer has it',
+      { nmwcCode: 'NMWC-2026-000012', archived: false, branchCode: null },
+      'temix_code is already the Temix code of live customer NMWC-2026-000012 — steward review',
+    ],
+  ])('%s: reported on the row; nothing is written and nobody is told', async (_label, holder, message) => {
     setup({ ...APP }, [row()]);
-    app(true, 'NMWC-2026-000012');
+    app(true, holder);
     const out = await promote();
     expect(out).toMatchObject({ promoted: 0, failed: 1 });
-    expect(rejected[0]!.data.issues[0]!.message).toBe(
-      'temix_code is already the Temix code of live customer NMWC-2026-000012 — steward review'
-    );
+    expect(rejected[0]!.data.issues[0]!.message).toBe(message);
     expect(order.filter((o) => WRITES.includes(o))).toEqual([]);
     expect(h.notify).not.toHaveBeenCalled();
   });
 
-  it('a customer no new-customer request created (seeded, imported) keeps the full lane: no code recorded, nobody told', async () => {
+  it('a customer its finalize did not create (no CREATE audit row: a seeded or imported merge winner holding an app request) keeps the full lane', async () => {
     setup({ ...APP, paymentTerms: 'CREDIT' }, [row()]);
     app(false);
     const out = await promote();
     expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(auditRead()).toHaveBeenCalledTimes(1);
     expect(order).toContain('customer.upsert');
     expect(order).not.toContain('temix.lock');
     expect(customerUpdate()?.data.temixCode).toBeUndefined();
     expect(h.notify).not.toHaveBeenCalled();
   });
 
-  it('a group with a row the Steward fixed in the app is no word from Temix: the full lane, and the request is not even asked', async () => {
+  it('a customer code the app did not mint (migrated, seeded): the full lane, and nothing is even asked', async () => {
+    setup({ ...APP, paymentTerms: 'CREDIT' }, [row({ custCode: 'ARC1', branchCode: 'ARC1-02' })]);
+    app(true);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(auditRead()).not.toHaveBeenCalled();
+    expect(order).toContain('customer.upsert');
+    expect(h.notify).not.toHaveBeenCalled();
+  });
+
+  it('a customer never sent to Temix (queued, never in a batch) cannot have a Temix code yet: the full lane, nothing asked', async () => {
+    setup({ ...APP, paymentTerms: 'CREDIT', temixSyncState: 'PENDING_UPLOAD', lastTemixUploadAt: null }, [row()]);
+    app(true);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(auditRead()).not.toHaveBeenCalled();
+    expect(order).toContain('customer.upsert');
+    expect(order).not.toContain('temix.lock');
+    expect(h.notify).not.toHaveBeenCalled();
+  });
+
+  it('one sent in a batch and changed since (queued again) is still matched: its code is recorded', async () => {
+    setup({ ...APP, temixSyncState: 'PENDING_UPLOAD' }, [row()]);
+    app(true);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(customerUpdate()!.data.temixCode).toBe('TX900');
+    expect(h.notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('a group with a row the Steward fixed in the app is no word from Temix: the full lane, and nothing is even asked', async () => {
     setup({ ...APP }, [row({ fixedInApp: true, paymentTerms: 'CASH' })]);
     app(true);
     const out = await promote();
     expect(out).toMatchObject({ promoted: 1, failed: 0 });
-    expect((tx.customerEdit as Record<string, Fn>).findFirst).not.toHaveBeenCalled();
+    expect(auditRead()).not.toHaveBeenCalled();
     expect(order).toContain('customer.upsert');
     expect(h.notify).not.toHaveBeenCalled();
   });
 
   it('a row with no temix_code is the full lane, as before', async () => {
-    setup({ ...APP }, [parsed()]);
+    setup({ ...APP }, [row({ temixCode: null, paymentTerms: 'CASH' })]);
     app(true);
     await promote();
-    expect((tx.customerEdit as Record<string, Fn>).findFirst).not.toHaveBeenCalled();
+    expect(auditRead()).not.toHaveBeenCalled();
     expect(order).toContain('customer.upsert');
   });
 
@@ -1047,7 +1100,7 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
     app(true);
     const out = await promote();
     expect(out).toMatchObject({ promoted: 1, failed: 0 });
-    expect((tx.customerEdit as Record<string, Fn>).findFirst).not.toHaveBeenCalled();
+    expect(auditRead()).not.toHaveBeenCalled();
     expect(customerUpdate()!.data).toMatchObject({
       temixCode: 'TX900',
       paymentTerms: 'CREDIT',
@@ -1055,5 +1108,57 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
       paymentTermDays: 120,
     });
     expect(h.notify).not.toHaveBeenCalled();
+  });
+
+  // Review of the branch: the import compared temix_code with exact case while
+  // finalize stores the code upper case and checks without regard to case.
+  it('a temix_code staged in lower case (a batch from before the upload folded it) is folded: TX900 is recorded', async () => {
+    setup({ ...APP }, [row({ temixCode: ' tx900​' })]);
+    app(true);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(temixLocks).toEqual(['nmwc:temix:TX900']);
+    expect(customerUpdate()!.data.temixCode).toBe('TX900');
+  });
+
+  it('a code an older import recorded in lower case is the same code: the ordinary refresh, recorded upper case', async () => {
+    setup({ ...APP, temixCode: 'tx900', paymentTerms: 'CREDIT' }, [row()]);
+    app(true);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(rejected).toEqual([]);
+    expect(customerUpdate()!.data).toMatchObject({ temixCode: 'TX900', creditLimit: 999999 });
+    expect(h.notify).not.toHaveBeenCalled();
+  });
+});
+
+describe('promoteCustomerBatchAction — owner decision 2026-10-08: a NEW customer created with a temix_code', () => {
+  // Finalize gives the code the Accountant typed under an advisory lock; the full
+  // lane creating a customer with the sheet's temix_code takes the same lock, so
+  // the two cannot both pass their checks for one code at the same moment.
+  it('takes the lock a finalize takes, before the crosswalk check and the create', async () => {
+    setup(null, [parsed({ custCode: 'NEW1', branchCode: 'NEW1-01', temixCode: 'c0900' })]);
+    const ownerRead = (tx.customer as Record<string, Fn>).findFirst;
+    (tx.customer as Record<string, Fn>).findFirst = vi.fn(async (a: unknown) => {
+      order.push('crosswalk.read');
+      return ownerRead(a);
+    });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(temixLocks).toEqual(['nmwc:temix:C0900']);
+    const i = (name: string) => order.indexOf(name);
+    expect(i('temix.lock')).toBeGreaterThan(i('lock'));
+    expect(i('temix.lock')).toBeLessThan(i('crosswalk.read'));
+    expect(i('crosswalk.read')).toBeLessThan(i('customer.upsert'));
+    const created = (tx.customer as Record<string, Fn>).upsert.mock.calls[0]![0] as { create: Record<string, unknown> };
+    expect(created.create).toMatchObject({ nmwcCode: 'NEW1', temixCode: 'C0900', temixSyncState: 'SYNCED' });
+  });
+
+  it('a customer that exists is never given a new code by the full lane: no lock', async () => {
+    setup({ ...STORED, deletedAt: null }, [parsed({ temixCode: 'C0900' })]);
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    expect(temixLocks).toEqual([]);
+    expect(order).toContain('customer.upsert');
   });
 });

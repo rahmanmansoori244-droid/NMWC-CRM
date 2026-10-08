@@ -10,6 +10,9 @@ export function formatCustomerCode(year: number, seq: number): string {
   return `NMWC-${year}-${String(seq).padStart(6, '0')}`;
 }
 
+/** A customer code formatCustomerCode made: a customer created in the app, not migrated or seeded. */
+export const APP_CUSTOMER_CODE = /^NMWC-\d{4}-\d{6,}$/;
+
 /**
  * Branch code: <PARENT>-<NN>
  */
