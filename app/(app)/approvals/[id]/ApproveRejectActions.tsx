@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
+import { unstable_rethrow, useRouter } from 'next/navigation';
 import { approveEditAction, approveEditAndGoAction, rejectEditAndGoAction } from '@/services/edits';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 
@@ -183,6 +183,11 @@ export function ApproveRejectActions({
         // token is one): the message goes at the top. STALE_VIEW lands there too.
         if (res && !res.ok) setErrors({ _form: res.message });
       } catch (err) {
+        // Launch fix: on success the action's redirect('/approvals') reaches
+        // here as a rejected promise carrying Next's NEXT_REDIRECT error, which
+        // printed "NEXT_REDIRECT" in red until the queue loaded. Next's own
+        // errors go back to Next, which completes the navigation.
+        unstable_rethrow(err);
         setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
       }
     });
@@ -204,6 +209,7 @@ export function ApproveRejectActions({
           else setErrors({ _form: res.message });
         }
       } catch (err) {
+        unstable_rethrow(err); // the success redirect, as in approve()
         setErrors({ _form: err instanceof Error ? err.message : 'Failed.' });
       }
     });

@@ -389,9 +389,9 @@ function putWithProgress(
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     // A stall watchdog (UPLOAD_STALL_MS), not xhr.timeout: that bounds the
-    // TOTAL time and would fail a slow upload that is still moving. The
-    // ontimeout handler that stood here never ran — xhr.timeout was never set,
-    // and 0 means no limit.
+    // TOTAL time and would fail a slow upload that is still moving. xhr.timeout
+    // stays 0, no limit, but the timeout event still fires: Chromium ends a
+    // connection that dies of ERR_TIMED_OUT with it (ontimeout, below).
     let stall: ReturnType<typeof setTimeout> | undefined;
     let bodyGone = false;
     const quiet = () => clearTimeout(stall);
@@ -449,6 +449,13 @@ function putWithProgress(
       reject(networkError());
     };
     xhr.onabort = () => {
+      quiet();
+      reject(networkError());
+    };
+    // Launch browser suite: unheard, a PUT ended this way was noticed only when
+    // the watchdog gave up on it, UPLOAD_STALL_MS a try — about 2 1/4 minutes
+    // for three, with Submit held. It is a dropped connection, like onerror.
+    xhr.ontimeout = () => {
       quiet();
       reject(networkError());
     };

@@ -18,7 +18,9 @@
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { Component, type ReactNode } from 'react';
+import { getRedirectError } from 'next/dist/client/components/redirect';
+import { isRedirectError, RedirectType } from 'next/dist/client/components/redirect-error';
 import { MISSING_TOKEN_MESSAGE, STALE_VIEW_MESSAGE } from '@/lib/decision-token';
 import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE, CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
 
@@ -38,7 +40,11 @@ vi.mock('@/services/edits', () => ({
   bulkApproveEditsAction: h.bulkApprove,
   bulkRejectEditsAction: h.bulkReject,
 }));
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), refresh: h.refresh }) }));
+vi.mock('next/navigation', async (importOriginal) => ({
+  // The real one: it decides which errors are Next's to handle.
+  unstable_rethrow: (await importOriginal<typeof import('next/navigation')>()).unstable_rethrow,
+  useRouter: () => ({ push: vi.fn(), refresh: h.refresh }),
+}));
 vi.mock('next/link', () => ({
   default: ({ href, children, className }: { href: string; children: ReactNode; className?: string }) => (
     <a href={href} className={className}>
@@ -147,6 +153,67 @@ describe('N01 — the single-request page sends its token with every decision', 
     await rejectWithReason();
     expect(await screen.findByText('Reason must be 5–1000 characters.')).toBeTruthy();
     expect(screen.queryByText('Validation failed')).toBeNull();
+  });
+});
+
+describe("launch fix — the redirect back to the queue is Next's to follow, not a message", () => {
+  // On success approveEditAndGoAction and rejectEditAndGoAction redirect('/approvals').
+  // Next 15.5's client rejects the awaited action with its NEXT_REDIRECT error so
+  // its RedirectBoundary finishes the move; the catch printed that error's
+  // message in red under the buttons until the queue loaded (launch browser suite).
+  let caught: unknown[] = [];
+  class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+    override state = { failed: false };
+    static getDerivedStateFromError() {
+      return { failed: true };
+    }
+    override componentDidCatch(error: unknown) {
+      caught.push(error);
+    }
+    override render() {
+      return this.state.failed ? null : this.props.children;
+    }
+  }
+  function renderInBoundary() {
+    return render(
+      <Boundary>
+        <ApproveRejectActions
+          editId="e1"
+          decisionToken={TOKEN}
+          outcome={{ kind: 'APPLY' }}
+          rejectOutcome={{ kind: 'TO_SALESMAN' }}
+        />
+      </Boundary>
+    );
+  }
+  beforeEach(() => {
+    caught = [];
+    // React reports the error it hands a boundary on console.error.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    ['approve', h.approve, approveThroughModal],
+    ['send back', h.reject, rejectWithReason],
+  ] as const)('%s: the redirect goes on to Next and "NEXT_REDIRECT" is never shown', async (_name, action, decide) => {
+    action.mockRejectedValue(getRedirectError('/approvals', RedirectType.push));
+    renderInBoundary();
+    await decide();
+    await waitFor(() => expect(caught).toHaveLength(1));
+    expect(isRedirectError(caught[0])).toBe(true);
+    expect(screen.queryByText(/NEXT_REDIRECT/)).toBeNull();
+  });
+
+  it.each([
+    ['approve', h.approve, approveThroughModal],
+    ['send back', h.reject, rejectWithReason],
+  ] as const)('%s: any other failure is still shown in place', async (_name, action, decide) => {
+    action.mockRejectedValue(new Error('The server did not answer.'));
+    renderInBoundary();
+    await decide();
+    expect(await screen.findByText('The server did not answer.')).toBeTruthy();
+    expect(caught).toHaveLength(0);
   });
 });
 
