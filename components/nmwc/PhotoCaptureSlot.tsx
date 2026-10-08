@@ -175,8 +175,15 @@ export const UPLOAD_NO_CONNECTION =
  * Presign's 429 (PHOTO_LIMIT: 120 an hour, one back every 30 s). A wait up to
  * this long is waited out and the step tried again, as a dropped connection is;
  * a longer one, or a third refusal, ends with how long to wait.
+ *
+ * A minute, not 30 s: the durable limiter charges the refused call too and
+ * floors the bucket at −1 (lib/rate-limit.ts), so an empty bucket owes two
+ * refills and every photo 429 asks for 31–60 s. At 30 s the countdown never
+ * ran: each 429 went straight to "Wait N seconds, then tap Retry upload"
+ * (launch browser suite). A try sooner than asked is refused, and charged,
+ * again.
  */
-export const RATE_LIMIT_MAX_WAIT_S = 30;
+export const RATE_LIMIT_MAX_WAIT_S = 60;
 /** Said on the slot while such a wait runs, second by second (below). */
 export function rateLimitWaitMessage(secondsLeft: number): string {
   return `Too many photos — trying again in ${secondsLeft} s`;
@@ -245,7 +252,10 @@ async function readRefusal(res: Response): Promise<{ code: string; message: stri
   }
 }
 
-/** A 429's wait, in seconds: the body's retryAfterSec, else Retry-After, else a refill. */
+/**
+ * A 429's wait, in seconds: the body's retryAfterSec, else Retry-After, else
+ * the longest a photo 429 asks for (one refill would be refused again).
+ */
 async function readRetryAfter(res: Response): Promise<number> {
   let sec: unknown;
   try {

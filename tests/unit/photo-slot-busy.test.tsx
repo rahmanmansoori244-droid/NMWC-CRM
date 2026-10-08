@@ -39,6 +39,10 @@ import {
 } from '@/components/nmwc/PhotoCaptureSlot';
 import { ALREADY_ATTACHED_MESSAGE, PHOTO_CHANGED_MESSAGE, PHOTO_GONE_MESSAGE, PRESIGN_EXPIRES_S } from '@/lib/photo-attach';
 import { PasswordChangeRequiredError } from '@/lib/errors';
+import { PHOTO_LIMIT } from '@/lib/rate-limit';
+
+// lib/rate-limit is read for PHOTO_LIMIT only: no bucket is ever charged here.
+vi.mock('@/lib/db', () => ({ prisma: {} }));
 
 let decode: 'never' | 'fail' | 'load' | 'held' = 'never';
 let held: FakeImage[] = [];
@@ -936,6 +940,34 @@ describe("presign's and finalize's refusals are answers too (launch review)", ()
       expect(rateLimitedMessage(25)).toMatch(/Wait 25 seconds/);
       expect(xhrs).toHaveLength(0);
     }));
+
+  // Launch browser suite: the durable limiter charges the refused call too and
+  // floors the bucket at −1 (lib/rate-limit.ts), so an empty photo bucket asks
+  // for 31–60 s. The slot sat through 30 s at most, so the countdown never ran.
+  it('a 429 asking for a whole minute, as an empty photo bucket does, is waited out too, then the photo goes up', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      presignPlan = [throttled(60)];
+      const onChange = vi.fn();
+      const view = render(<PhotoCaptureSlot kind="SHOP" onChange={onChange} />);
+      pick(view.container);
+      await settleUntil(() => screen.queryByText(rateLimitWaitMessage(60)) !== null);
+      expect(retryButton()).toBeNull();
+      await advance(59_999);
+      expect(screen.getByText(rateLimitWaitMessage(1))).toBeTruthy();
+      expect(count('/api/photos/presign')).toBe(1);
+      await advance(1);
+      await settleUntil(() => xhrs.length === 1);
+      expect(count('/api/photos/presign')).toBe(2);
+      act(() => xhrs[0]!.answer());
+      await settleUntil(() => onChange.mock.calls.length === 1);
+      expect(retryButton()).toBeNull();
+    }));
+
+  it('the longest wait the photo limit can ask for is one the slot sits through', () => {
+    // At worst a refused call leaves the bucket at −1: two tokens owed.
+    expect(Math.ceil(2 / PHOTO_LIMIT.refillPerSec)).toBeLessThanOrEqual(RATE_LIMIT_MAX_WAIT_S);
+  });
 
   it(`a wait longer than ${RATE_LIMIT_MAX_WAIT_S} s is not sat through: it says so at once`, async () => {
     uploadable();
