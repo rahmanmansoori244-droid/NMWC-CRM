@@ -1685,13 +1685,51 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
 
   // Kind is checked BEFORE the claim: an ACCOUNT batch must never be moved into
   // PROMOTING (a state the customer resume path owns) just to be rejected.
+  // The status and lease are read here too: the claim below only takes the batch
+  // as it was read, so a refusal after the claim can put back exactly this.
   const preflight = await prisma.importBatch.findUnique({
     where: { id: batchId },
-    select: { kind: true, uploadedAt: true },
+    select: {
+      kind: true,
+      uploadedAt: true,
+      status: true,
+      promoteLeaseBy: true,
+      promoteLeaseUntil: true,
+    },
   });
   if (!preflight) throw new ValidationError({ batchId: 'not found' });
   if (preflight.kind !== 'CUSTOMER')
     throw new ValidationError({ batchId: 'not a customer import' });
+
+  // RK-3: the lease serializes ONE batch, but the QA P-01 branch-steal guard is a
+  // read-then-upsert whose safety argument rests on promote being serialized across
+  // the whole master ("batch promote is serialized by the atomic claim"). Two
+  // DIFFERENT batches promoting at once would reopen that window — and RK-3 stretched
+  // it from a single request to minutes, while actively inviting the sequence that
+  // triggers it (upload a corrected sheet while the first batch is still resumable).
+  // So refuse to run a second concurrent promote; fail closed.
+  const otherLivePromote = () =>
+    prisma.importBatch.findFirst({
+      where: {
+        id: { not: batchId },
+        kind: 'CUSTOMER',
+        status: 'PROMOTING',
+        promoteLeaseUntil: { gt: new Date() },
+      },
+      select: { id: true, filename: true },
+    });
+  const anotherIsPromoting = (other: { filename: string }) =>
+    new ValidationError({
+      batchId: `Another customer import ("${other.filename}") is being promoted right now. Only one may run at a time — wait for it to finish, then resume this one.`,
+    });
+  // Checked BEFORE the claim, so the usual refusal never touches this batch: a
+  // claim taken only to be released used to leave a READY batch PROMOTING — the
+  // batch page said "Promote interrupted" and Work listed it "to resume" although
+  // nothing had run — and its momentary live lease could make the import that IS
+  // running refuse its own next slice. The check after the claim stays: it is the
+  // one that closes the race of two batches claimed at the same moment.
+  const otherBefore = await otherLivePromote();
+  if (otherBefore) throw anotherIsPromoting(otherBefore);
 
   const now = new Date();
   // The token identifies THIS slice, not merely this user — the same steward in two
@@ -1705,9 +1743,14 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
   // no live lease), and this run continuing to its own next slice (matching token,
   // which is why a run need not wait out the lease it just set). Two Stewards, a
   // double-click, or a stray retry cannot interleave: exactly one caller gets count=1.
+  // It also only takes the batch in the state the preflight read, so what the
+  // refusal below puts back is exactly what this claim replaced.
   const claim = await prisma.importBatch.updateMany({
     where: {
       id: batchId,
+      status: preflight.status,
+      promoteLeaseBy: preflight.promoteLeaseBy,
+      promoteLeaseUntil: preflight.promoteLeaseUntil,
       OR: [
         { status: 'READY' },
         // Nothing writes FAILED any more; accepting it lets a batch left behind by
@@ -1736,37 +1779,42 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         batchId: 'This batch is being promoted right now — wait for it to finish, then resume.',
       });
     }
+    // Still promotable, so it changed between the preflight read and the claim (a
+    // fix put a promoted batch back to READY, a lease was released): say so rather
+    // than name a state that CAN be promoted.
+    if (cur?.status === 'READY' || cur?.status === 'FAILED' || cur?.status === 'PROMOTING') {
+      throw new ValidationError({
+        batchId: 'This batch changed just as Promote started — try again.',
+      });
+    }
     throw new ValidationError({
       batchId: `Batch is in state ${cur?.status ?? '<missing>'} — only READY or interrupted batches can be promoted.`,
     });
   }
-  // RK-3: the lease serializes ONE batch, but the QA P-01 branch-steal guard is a
-  // read-then-upsert whose safety argument rests on promote being serialized across
-  // the whole master ("batch promote is serialized by the atomic claim"). Two
-  // DIFFERENT batches promoting at once would reopen that window — and RK-3 stretched
-  // it from a single request to minutes, while actively inviting the sequence that
-  // triggers it (upload a corrected sheet while the first batch is still resumable).
-  // So refuse to run a second concurrent promote; fail closed.
-  const otherLive = await prisma.importBatch.findFirst({
-    where: {
-      id: { not: batchId },
-      kind: 'CUSTOMER',
-      status: 'PROMOTING',
-      promoteLeaseUntil: { gt: new Date() },
-    },
-    select: { id: true, filename: true },
-  });
+  // The race: another batch was claimed between the check above and this claim.
+  // Each claim commits before its check runs, so of two batches claimed at once
+  // the later check always sees the other — at least one refuses (fail closed).
+  const otherLive = await otherLivePromote();
   if (otherLive) {
-    // Release the claim we just took so this batch is not left holding a lease.
+    // Undo the claim in ONE guarded write: status AND lease back to exactly what
+    // the claim replaced (a READY batch stays READY, not "interrupted"). Guarded
+    // by our token, so it can never undo anyone else's claim.
     await prisma.importBatch
       .updateMany({
         where: { id: batchId, promoteLeaseBy: leaseToken },
-        data: { promoteLeaseBy: null, promoteLeaseUntil: null },
+        data: {
+          status: preflight.status,
+          promoteLeaseBy: preflight.promoteLeaseBy,
+          promoteLeaseUntil: preflight.promoteLeaseUntil,
+        },
       })
-      .catch(() => {});
-    throw new ValidationError({
-      batchId: `Another customer import ("${otherLive.filename}") is being promoted right now. Only one may run at a time — wait for it to finish, then resume this one.`,
-    });
+      .catch((e) => {
+        logger.warn(
+          { err: (e as Error).message?.slice(0, 80), batchId },
+          'import.promote.unclaim_failed'
+        );
+      });
+    throw anotherIsPromoting(otherLive);
   }
   // final-hunt #23 (revised for RK-3): once claimed, any UNEXPECTED throw must not
   // leave the batch holding a lease nobody owns — it would be unresumable until the

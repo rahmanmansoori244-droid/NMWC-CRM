@@ -13,7 +13,9 @@
  *   2. resuming continues where it stopped — no row is promoted twice, none skipped;
  *   3. the final slice finalises the batch (PROMOTED) with accumulated counters;
  *   4. a live lease blocks a second, concurrent promote of the same batch;
- *   5. an EXPIRED lease does not — a killed worker can never strand a batch.
+ *   5. an EXPIRED lease does not — a killed worker can never strand a batch;
+ *   6. a promote refused because ANOTHER import is live leaves its batch exactly
+ *      as it was (READY, no lease), whether refused before or after its claim.
  *
  * The slice budget is forced to 1ms so every slice promotes exactly one customer,
  * making the multi-slice path deterministic instead of timing-dependent.
@@ -70,6 +72,8 @@ describe.skipIf(!ENABLED)('RK-3: promote is chunked and resumable', () => {
   let routeId = '';
   let batchId = '';
   let leaseBatchId = '';
+  let otherBatchId = '';
+  let readyBatchId = '';
   const prevBudget = process.env.PROMOTE_SLICE_BUDGET_MS;
 
   beforeAll(async () => {
@@ -104,7 +108,7 @@ describe.skipIf(!ENABLED)('RK-3: promote is chunked and resumable', () => {
     // Branches reference Customer/Region/Route; Customer references the batch.
     await prisma.branch.deleteMany({ where: { customer: { nmwcCode: { in: custCodes } } } });
     await prisma.customer.deleteMany({ where: { nmwcCode: { in: custCodes } } });
-    const ids = [batchId, leaseBatchId].filter(Boolean);
+    const ids = [batchId, leaseBatchId, otherBatchId, readyBatchId].filter(Boolean);
     if (ids.length) {
       await prisma.importRow.deleteMany({ where: { batchId: { in: ids } } });
       await prisma.importBatch.deleteMany({ where: { id: { in: ids } } });
@@ -286,5 +290,71 @@ describe.skipIf(!ENABLED)('RK-3: promote is chunked and resumable', () => {
     const resumed = await promoteOnce(leaseBatchId);
     expect(resumed.ok).toBe(true);
     expect((resumed as { ok: true; data: SliceResult }).data.done).toBe(true);
+  });
+
+  it('a promote refused because another import is live leaves its batch READY, with no lease', async () => {
+    const other = await prisma.importBatch.create({
+      data: {
+        filename: `zz-other-${tag}.xlsx`,
+        kind: 'CUSTOMER',
+        uploadedById: stewardId,
+        status: 'PROMOTING',
+        totalRows: 0,
+        promoteLeaseBy: `${stewardId}:other`,
+        promoteLeaseUntil: new Date(Date.now() + 60_000),
+      },
+    });
+    otherBatchId = other.id;
+    const ready = await prisma.importBatch.create({
+      data: {
+        filename: `zz-ready-${tag}.xlsx`,
+        kind: 'CUSTOMER',
+        uploadedById: stewardId,
+        status: 'READY',
+        totalRows: 0,
+      },
+    });
+    readyBatchId = ready.id;
+    const state = () =>
+      prisma.importBatch.findUniqueOrThrow({
+        where: { id: readyBatchId },
+        select: { status: true, promoteLeaseBy: true, promoteLeaseUntil: true },
+      });
+    const untouched = { status: 'READY', promoteLeaseBy: null, promoteLeaseUntil: null };
+
+    // The usual case: refused before the claim.
+    const refused = await promoteOnce(readyBatchId);
+    expect(refused.ok).toBe(false);
+    expect(JSON.stringify(refused)).toMatch(/Another customer import/);
+    expect(await state()).toEqual(untouched); // not "Promote interrupted."
+
+    // The race: the check before the claim misses the other import (it is claimed
+    // in between), so the check after the claim refuses and undoes the claim.
+    // (A spy's own fall-through to the real method returns undefined on a Prisma
+    // delegate, so the real query is called explicitly.)
+    const realFindFirst = prisma.importBatch.findFirst.bind(prisma.importBatch);
+    const spy = vi
+      .spyOn(prisma.importBatch, 'findFirst')
+      .mockImplementation(((args: never) =>
+        spy.mock.calls.length === 1 ? Promise.resolve(null) : realFindFirst(args)) as never);
+    try {
+      const raced = await promoteOnce(readyBatchId);
+      expect(raced.ok).toBe(false);
+      expect(JSON.stringify(raced)).toMatch(/Another customer import/);
+      expect(spy).toHaveBeenCalledTimes(2); // both checks ran
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await state()).toEqual(untouched);
+    // The live import's lease is untouched by either refusal.
+    const held = await prisma.importBatch.findUniqueOrThrow({
+      where: { id: otherBatchId },
+      select: { status: true, promoteLeaseBy: true },
+    });
+    expect(held).toEqual({ status: 'PROMOTING', promoteLeaseBy: `${stewardId}:other` });
+
+    // Release the fake live import at once: it would block every other promote
+    // on this shared database until its lease ran out.
+    await prisma.importBatch.deleteMany({ where: { id: { in: [otherBatchId, readyBatchId] } } });
   });
 });
