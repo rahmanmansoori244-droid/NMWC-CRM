@@ -131,13 +131,24 @@ export default async function AuditPage({
         method="get"
         className="grid grid-cols-1 gap-2 border-b border-slate-200 bg-white p-3 text-sm sm:grid-cols-4 sm:px-6"
       >
+        {/* Each filter named by a label a screen reader reads (a placeholder and
+            a first option are not names); hidden, so the bar looks as it did.
+            Fixed ids: the page has one filter form. */}
+        <label htmlFor="audit-q" className="sr-only">
+          Entity ID contains
+        </label>
         <input
+          id="audit-q"
           name="q"
           defaultValue={sp.q ?? ''}
           placeholder="Entity ID contains…"
           className="rounded-md border border-slate-300 px-3 py-2"
         />
+        <label htmlFor="audit-action" className="sr-only">
+          Action
+        </label>
         <select
+          id="audit-action"
           name="action"
           defaultValue={sp.action ?? ''}
           className="rounded-md border border-slate-300 px-2 py-2"
@@ -149,7 +160,11 @@ export default async function AuditPage({
             </option>
           ))}
         </select>
+        <label htmlFor="audit-entity-type" className="sr-only">
+          Entity type
+        </label>
         <select
+          id="audit-entity-type"
           name="entityType"
           defaultValue={sp.entityType ?? ''}
           className="rounded-md border border-slate-300 px-2 py-2"
