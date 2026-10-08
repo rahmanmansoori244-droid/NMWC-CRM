@@ -46,6 +46,7 @@ import {
   fakeHeic,
   fetchAs,
   hasR2,
+  notRunHere,
   hitTest,
   installLaunchHooks,
   notificationsFor,
@@ -566,7 +567,7 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
   });
 
   test('the visit-day job from the no-day list: setting the day holds only that shop to complete (critic; wave 2, decision 4)', async ({ browser }) => {
-    test.skip(FULL_GATE, CORE_ONLY);
+    notRunHere(FULL_GATE, CORE_ONLY);
     test.setTimeout(240_000);
     const page = await (await contextAs(browser, sa, { device: 'phone' })).newPage();
     const noday = world.customer('NODAY1');
@@ -589,7 +590,7 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
     await page.getByRole('button', { name: /^Capture GPS/ }).click();
     await expect(page.getByText(GPS_TEXT)).toBeVisible();
     await expect(missing).toHaveText('Cannot submit yet — missing: Branch 1 shop photo. Save as a draft and finish the rest before submitting.');
-    test.skip(!hasR2, 'the shop photo needs R2');
+    notRunHere(!hasR2, 'the shop photo needs R2');
     const shop = photoSlot(page, 'Shop front');
     await pickFile(shop, pngFile('shop'));
     await expect(retakeOf(shop)).toBeVisible({ timeout: 120_000 });
@@ -1244,7 +1245,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   // ── enrich ──────────────────────────────────────────────────────────────────
 
   test('enrich: a double tap writes one request; "Submitting…" then "Sent ✓"; Back skips the form; reopened, it is pending (SM-SUBMIT-DOUBLE-TAP)', async ({ browser }) => {
-    test.skip(FULL_GATE, CORE_ONLY);
+    notRunHere(FULL_GATE, CORE_ONLY);
     const { user, customer } = await addFieldSalesman(world, 'E1');
     await resetLimits({ users: [user] });
     const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
@@ -1279,7 +1280,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   });
 
   test('enrich: with no signal nothing is sent and nothing typed is lost; Try again sends it once (SM-SUBMIT-OFFLINE)', async ({ browser }) => {
-    test.skip(FULL_GATE, CORE_ONLY);
+    notRunHere(FULL_GATE, CORE_ONLY);
     const { user, customer } = await addFieldSalesman(world, 'E2');
     await resetLimits({ users: [user] });
     const ctx = await contextAs(browser, user, { device: 'phone' });
@@ -1301,7 +1302,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   });
 
   test('enrich: the reply is lost — "No answer"; Try again says "Already received" and nothing is written twice (SM-SUBMIT-NO-ANSWER)', async ({ browser }) => {
-    test.skip(FULL_GATE, CORE_ONLY);
+    notRunHere(FULL_GATE, CORE_ONLY);
     const { user, customer } = await addFieldSalesman(world, 'E3');
     await resetLimits({ users: [user] });
     const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
@@ -1325,7 +1326,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
 
   test('enrich: signed out mid-form — told to sign in elsewhere, a photo picked then says so; after signing in, Retry upload and Try again work (SM-SESSION-EXPIRY-MIDFORM, AUTH-EXPIRED-MID-FORM)', async ({ browser }) => {
     test.setTimeout(300_000);
-    test.skip(FULL_GATE, CORE_ONLY);
+    notRunHere(FULL_GATE, CORE_ONLY);
     const { user, customer } = await addFieldSalesman(world, 'E4');
     const ip = world.ip(4);
     await resetLimits({ users: [user], ips: [ip] });
@@ -1381,7 +1382,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   });
 
   test('enrich: signed out, a tap on Today goes to sign-in and then Today; the edit page brings back what he typed and the GPS point (SM-SESSION-EXPIRY-MIDFORM c)', async ({ browser }) => {
-    test.skip(FULL_GATE, CORE_ONLY);
+    notRunHere(FULL_GATE, CORE_ONLY);
     const { user, customer } = await addFieldSalesman(world, 'E5');
     const ip = world.ip(5);
     await resetLimits({ users: [user], ips: [ip] });
@@ -1410,7 +1411,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   });
 
   test('enrich: with the hourly submit bucket empty, Submit says "Slow down — try again in Ns." and sends nothing (SM-RATE-LIMITS)', async ({ browser }) => {
-    test.skip(FULL_GATE, CORE_ONLY);
+    notRunHere(FULL_GATE, CORE_ONLY);
     const { user, customer } = await addFieldSalesman(world, 'E6');
     await resetLimits({ users: [user] });
     await drainLimit(`edit:${user.id}`);
@@ -1430,7 +1431,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   // ── new customer ────────────────────────────────────────────────────────────
 
   test('new customer: a double tap writes one request; "Submitting…" then "Sent ✓"; Back skips the form; reopened, it is in review (SM-SUBMIT-DOUBLE-TAP)', async ({ browser }) => {
-    test.skip(!hasR2, 'the new-customer form needs three photos (R2)');
+    notRunHere(!hasR2, 'the new-customer form needs three photos (R2)');
     test.setTimeout(360_000);
     const { user } = await addFieldSalesman(world, 'C1');
     await resetLimits({ users: [user] });
@@ -1475,7 +1476,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   });
 
   test('new customer: no signal, then signed out — nothing sent, nothing lost; after signing in, Try again sends it once (SM-SUBMIT-OFFLINE, AUTH-EXPIRED-MID-FORM)', async ({ browser }) => {
-    test.skip(!hasR2, 'the new-customer form needs three photos (R2)');
+    notRunHere(!hasR2, 'the new-customer form needs three photos (R2)');
     test.setTimeout(360_000);
     const { user } = await addFieldSalesman(world, 'C2');
     const ip = world.ip(6);
@@ -1519,7 +1520,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   });
 
   test('new customer: the reply is lost and he reloads — "Your last send arrived after all", no call to rebuild; the receipt lookup is null before and the receipt after (SM-SUBMIT-NO-ANSWER)', async ({ browser }) => {
-    test.skip(!hasR2, 'the new-customer form needs three photos (R2)');
+    notRunHere(!hasR2, 'the new-customer form needs three photos (R2)');
     test.setTimeout(360_000);
     const { user } = await addFieldSalesman(world, 'C3');
     await resetLimits({ users: [user] });
@@ -1562,7 +1563,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   // ── close a shop ─────────────────────────────────────────────────────────────
 
   test('close: a double tap on "Submit closure" writes one request; reopened, the edit page says it waits (SM-SUBMIT-DOUBLE-TAP)', async ({ browser }) => {
-    test.skip(!hasR2, 'the closure needs a fresh evidence photo (R2)');
+    notRunHere(!hasR2, 'the closure needs a fresh evidence photo (R2)');
     test.setTimeout(300_000);
     const { user, customer } = await addFieldSalesman(world, 'X1');
     await resetLimits({ users: [user] });
@@ -1593,7 +1594,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   });
 
   test('close: with no signal nothing is sent and the reason stays; Try again sends it once (SM-SUBMIT-OFFLINE)', async ({ browser }) => {
-    test.skip(!hasR2, 'the closure needs a fresh evidence photo (R2)');
+    notRunHere(!hasR2, 'the closure needs a fresh evidence photo (R2)');
     test.setTimeout(300_000);
     const { user, customer } = await addFieldSalesman(world, 'X2');
     await resetLimits({ users: [user] });
@@ -1615,7 +1616,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
   });
 
   test('close: the reply is lost — Try again says "Already received" and the form closes (SM-SUBMIT-NO-ANSWER)', async ({ browser }) => {
-    test.skip(!hasR2, 'the closure needs a fresh evidence photo (R2)');
+    notRunHere(!hasR2, 'the closure needs a fresh evidence photo (R2)');
     test.setTimeout(300_000);
     const { user, customer } = await addFieldSalesman(world, 'X3');
     await resetLimits({ users: [user] });
@@ -1642,7 +1643,7 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
 test.describe('salesman phone: photos on a weak link and real camera files (SM-PHOTO-WEAK-NETWORK, UPLOAD-PHONE-REAL-PHOTOS)', { tag: ['@phone'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
-  test.skip(!hasR2, 'photo uploads need R2');
+  notRunHere(!hasR2, 'photo uploads need R2');
 
   let world: World;
   let since: Date;
@@ -1676,7 +1677,7 @@ test.describe('salesman phone: photos on a weak link and real camera files (SM-P
 
   test('every PUT dropped: three silent tries, then "Retry upload"; Submit is not held; once the link is back the kept photo goes up without a new pick', async ({ browser }) => {
     test.setTimeout(240_000);
-    test.skip(FULL_GATE, CORE_ONLY);
+    notRunHere(FULL_GATE, CORE_ONLY);
     const { user, customer } = await addFieldSalesman(world, 'P1');
     await resetLimits({ users: [user] });
     const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
@@ -1730,7 +1731,7 @@ test.describe('salesman phone: photos on a weak link and real camera files (SM-P
 
   test('a real camera JPEG on a slow phone (50 kbps up, 400 ms, 4× CPU): compressed to ≤1920 px and <3 MB, progress shown, Submit held, it arrives', async ({ browser }) => {
     test.setTimeout(600_000);
-    test.skip(FULL_GATE, CORE_ONLY);
+    notRunHere(FULL_GATE, CORE_ONLY);
     const { user, customer } = await addFieldSalesman(world, 'P3');
     await resetLimits({ users: [user] });
     const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();

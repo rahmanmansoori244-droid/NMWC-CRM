@@ -34,6 +34,18 @@ export {
   workingMinutesBetween,
 } from './oman';
 export { requireLaunchEnv, installLaunchHooks } from './guard';
+export { LAUNCH_FINAL, NOT_RUN_ON_UAT, notRunHere } from './not-run';
+export {
+  IN_PLACE_MS,
+  NAV_HANG,
+  SERVER_WORK_MS,
+  landsInPlace,
+  requestsOf,
+  shownInPlace,
+  trackRequests,
+  type RequestLog,
+  type ServerDone,
+} from './in-place';
 export { INITIAL_PASSWORD, MUSCAT, createWorld, standardWorld } from './world';
 export type {
   BranchSpec,
@@ -74,10 +86,12 @@ export {
   auditFor,
   expectCleanConsole,
   expectNoDataLeak,
+  expectNoRegionNotice,
   expectNoSideScroll,
   freshGoto,
   hitTest,
   mutePage,
+  noRegionNotice,
   notificationsFor,
   reloadUntil,
   snapshot,

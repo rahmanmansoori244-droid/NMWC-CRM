@@ -64,6 +64,7 @@ import {
   fetchAs,
   hasR2,
   installLaunchHooks,
+  notRunHere,
   notificationsFor,
   omanYearNow,
   postJson,
@@ -71,6 +72,7 @@ import {
   requireLaunchEnv,
   resetLimits,
   seedUpdateEdit,
+  shownInPlace,
   snapshot,
   submitCreateViaApi,
   TEMIX_CODE_BULK_REFUSED_MESSAGE,
@@ -83,6 +85,7 @@ import {
   temixCodeFor,
   temixCodeHolderMessage,
   temixCodeTakenMessage,
+  trackRequests,
   typeTemixCode,
   uniquePng,
   type CustomerSpec,
@@ -314,27 +317,26 @@ async function approveHere(page: Page, title: string, confirm: string): Promise<
  * the React that Next 15.5 ships). A page stuck like that now FAILS the test.
  */
 const STUCK_AFTER_CREATE = 'finalize page stuck on "Created — loading…" without the code (ApproveRejectActions router.refresh after approveEditAction)';
-/** How long the page may take to show the code once the finalize has landed in the database. */
-const CODE_IN_PLACE_MS = 30_000;
 
 /**
  * The Accountant's last step (owner decision 2026-10-08): types `temixCode` in the
  * "Temix code *" box, ✓ Approve → "Approve and create"; returns the NMWC code. The
- * server's outcome is read from the database; the page must then show both codes in
- * place, without a reload, within CODE_IN_PLACE_MS of the finalize landing.
+ * page must show the code in place, without a reload, IN_PLACE_MS after the server
+ * finished: the request first read APPROVED in the database (polled from the tap)
+ * and the page's own calls — the action, then its refresh — were answered
+ * (support/in-place.ts). The server gets SERVER_WORK_MS.
  */
 async function createHere(page: Page, editId: string, temixCode: string): Promise<string> {
+  // Before the tap: the page's own calls say when the server answered it.
+  trackRequests(page);
   await typeTemixCode(page, temixCode);
   await approveHere(page, 'Create this customer?', 'Approve and create');
-  await expect
-    .poll(async () => (await db.customerEdit.findUnique({ where: { id: editId }, select: { state: true } }))?.state, {
-      timeout: 90_000,
-      message: 'the finalize lands',
-    })
-    .toBe('APPROVED');
-  await expect(page.getByText(/^Created as customer NMWC-/), `the code on the page, in place (${STUCK_AFTER_CREATE} was fixed)`).toBeVisible({
-    timeout: CODE_IN_PLACE_MS,
-  });
+  await shownInPlace(
+    page,
+    `Approve and create: the code on the page, in place (${STUCK_AFTER_CREATE} was fixed)`,
+    (timeout) => expect(page.getByText(/^Created as customer NMWC-/)).toBeVisible({ timeout }),
+    async () => (await db.customerEdit.findUnique({ where: { id: editId }, select: { state: true } }))?.state === 'APPROVED'
+  );
   const row = await db.customerEdit.findUniqueOrThrow({
     where: { id: editId },
     select: { customer: { select: { nmwcCode: true, temixCode: true } } },
@@ -515,7 +517,7 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
   });
 
   test('the salesman sends a CASH customer from his phone: the form gate, Work, the frozen chain, who is told', async ({ browser }) => {
-    test.skip(!hasR2, 'the form uploads its photos to R2');
+    notRunHere(!hasR2, 'the form uploads its photos to R2');
     test.setTimeout(360_000);
     const sa = w.user('SA');
     await resetLimits({ users: [sa] });
@@ -644,6 +646,7 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
     expect(srcs).toHaveLength(3);
     for (const src of srcs) expect((await fetchAs(m2, src)).status, src).toBe(200);
     await expect(m2.getByRole('link', { name: 'Open in Maps' })).toBeVisible();
+    await expect(temixCodeBox(m2), 'the Temix code box is the Accountant’s alone, at the last step').toHaveCount(0);
 
     const before = await rowIds(A.id);
     const t0 = Date.now();
@@ -861,7 +864,7 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
   });
 
   test('the salesman applies for credit on his phone: the credit block, figures that count as missing, Arabic digits, a fresh guarantee slot', async ({ browser }) => {
-    test.skip(!hasR2, 'the form uploads its photos to R2');
+    notRunHere(!hasR2, 'the form uploads its photos to R2');
     test.setTimeout(360_000);
     const sa = w.user('SA');
     await resetLimits({ users: [sa] });
@@ -948,6 +951,7 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     await expect(card.getByRole('img', { name: CREDIT_LOCK })).toBeVisible();
     await expect(card.getByRole('checkbox')).toHaveCount(0);
     await openApproval(m1, K.id);
+    await expect(temixCodeBox(m1), 'the Temix code box is the Accountant’s alone, at the last step').toHaveCount(0);
     const before = await rowIds(K.id);
     const t0 = Date.now();
     await approveHere(m1, 'Send on to Finance Manager?', 'Approve and send on');
@@ -993,6 +997,7 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     const g = await db.attachment.findFirstOrThrow({ where: { editId: K.id, kind: 'GUARANTEE', deletedAt: null } });
     await expectPhotoServed(fm1, g.id, true);
     await expect(fm1.locator('main input, main textarea, main select'), 'nothing on the page can change the figures').toHaveCount(0);
+    await expect(temixCodeBox(fm1), 'the Temix code box is the Accountant’s alone, at the last step').toHaveCount(0);
 
     const before = await rowIds(K.id);
     const steps = await db.editApproval.count({ where: { editId: K.id } });
@@ -1032,6 +1037,7 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     await gm.goto('/approvals');
     await expect(queueCard(gm, K.name).getByRole('img', { name: CREDIT_LOCK })).toBeVisible();
     await openApproval(gm, K.id);
+    await expect(temixCodeBox(gm), 'the Temix code box is the Accountant’s alone, at the last step').toHaveCount(0);
     const before = await rowIds(K.id);
     const t0 = Date.now();
     await approveHere(gm, 'Send on to Accountant?', 'Approve and send on');
@@ -1118,7 +1124,7 @@ test.describe('an Accountant sees and decides only his own region', { tag: ['@de
   });
 
   test("another region's request never reaches ACC1, before or after it is created; ACC2 creates it; M5 is gated the same way", async ({ browser }) => {
-    test.skip(!hasR2, 'the requests carry R2 photos');
+    notRunHere(!hasR2, 'the requests carry R2 photos');
     test.setTimeout(300_000);
     const sb = await pageAs(browser, w.user('SB'), 'phone');
     await sb.goto('/today');
@@ -1189,7 +1195,7 @@ test.describe('a credit application, and a new customer at its last step, is nev
   });
 
   test("Select all leaves the credit card out; a crafted bulk approve carrying a credit id is refused at every step", async ({ browser }) => {
-    test.skip(!hasR2, 'the seeded requests carry R2 photos');
+    notRunHere(!hasR2, 'the seeded requests carry R2 photos');
     test.setTimeout(420_000);
     // At the Accountant: two cash, one credit. At the FM, the GM: one credit each. At the Supervisor: one credit, two cash.
     S.c1 = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: w.name('Bulk Cash One') });
@@ -1345,7 +1351,7 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
   });
 
   test('cash: the Accountant sends it back to the Supervisor step, then to the salesman; he corrects the same request; a page from the old round is refused', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     test.setTimeout(600_000);
     const [sa, m1, m3, acc1] = [w.user('SA'), w.user('M1'), w.user('M3'), w.user('ACC1')];
     // At the Accountant, approved by M2, with an escalation from a stage long gone (the next move must reset it).
@@ -1530,7 +1536,7 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
   });
 
   test('credit: each rejection moves it back exactly one step on a fresh clock; a stale FM page is refused; the GM’s second rejection goes to the salesman', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     test.setTimeout(600_000);
     const [m1, fm1, gm1] = [w.user('M1'), w.user('FM1'), w.user('GM1')];
     const Y = await seedCreateRequest(w, {
@@ -1626,7 +1632,7 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
   });
 
   test('credit at the Accountant: his rejection returns it to the GM step on a fresh clock', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     const Z = await seedCreateRequest(w, {
       submitter: 'SA',
       paymentTerms: 'CREDIT',
@@ -1666,7 +1672,7 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
   });
 
   test('two finalizes back to back: codes in order, branch codes in form order, the Temix queue, who can open it', async ({ browser }) => {
-    test.skip(!hasR2, 'the requests carry R2 photos');
+    notRunHere(!hasR2, 'the requests carry R2 photos');
     test.setTimeout(300_000);
     const f1 = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: w.name('Final One') });
     const f2 = await seedCreateRequest(w, {
@@ -1719,7 +1725,7 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     // Was an APP BUG (found 2026-10-08), fixed by 8e47bc6 — STUCK_AFTER_CREATE: after the action answered, the page's
     // router.refresh() was often parked by React and the page stayed on "Created — loading…" (no code until a
     // reload), about half of all finalizes here. Eight finalizes in a row must each show the code in place.
-    test.skip(!hasR2, 'the requests carry R2 photos');
+    notRunHere(!hasR2, 'the requests carry R2 photos');
     test.setTimeout(600_000);
     const page = await pageAs(browser, w.user('ACC1'), 'desktop');
     for (let i = 1; i <= 8; i++) {
@@ -1728,13 +1734,13 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
       await page.goto('/approvals');
       await queueCard(page, r.legalName).getByRole('link').click();
       await expect(page).toHaveURL(new RegExp(`/approvals/${r.id}$`));
-      // createHere fails when the code is not shown in place (CODE_IN_PLACE_MS after the finalize landed).
+      // createHere fails when the code is not shown in place (IN_PLACE_MS after the server finished).
       await test.step(`finalize ${i}`, () => createHere(page, r.id, temixCodeFor(w)));
     }
   });
 
   test('owner decision 8 Oct, the Temix code: required, its shape, never an NMWC code; one another customer (live or archived) or a live branch holds is refused under the box, naming it, with nothing written; one typed in lower case with Arabic digits is stored as Temix writes it', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     test.setTimeout(300_000);
     const d = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: w.name('Temix Code Shop') });
     const liveCode = temixCodeFor(w);
@@ -1793,7 +1799,7 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
   });
 
   test('a customer with the same CR that went live mid-chain blocks the last step; nothing is written', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     const d = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: w.name('Dup By Cr') });
     // As if an import promoted it while the request was in the chain — in another region.
     const live = await w.addCustomer({ key: 'LIVECR', crNumber: d.crNumber, phone: true, branches: [{ key: 'S', route: 'B' }] });
@@ -1819,7 +1825,7 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
   });
 
   test('the same shop (name with another case and a doubled space, same phone, same region) blocks it too; Reject returns it to the Supervisor step', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     const name = w.name('Al Noor Shop');
     const d = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: name });
     const live = await w.addCustomer({
@@ -1881,7 +1887,7 @@ test.describe("the salesman's new-customer form", { tag: ['@phone'] }, () => {
   });
 
   test('a draft is saved, comes back whole after a reload and from Work, and is sent as the same request', async ({ browser }) => {
-    test.skip(!hasR2, 'the form uploads its photos to R2');
+    notRunHere(!hasR2, 'the form uploads its photos to R2');
     test.setTimeout(420_000);
     const sa = w.user('SA');
     await resetLimits({ users: [sa] });
@@ -1958,7 +1964,7 @@ test.describe("the salesman's new-customer form", { tag: ['@phone'] }, () => {
   });
 
   test('validation: a bad phone even for a draft, ten branches at most, removing one keeps the others’ photos and GPS, a typed latitude outside Oman', async ({ browser }) => {
-    test.skip(!hasR2, 'the branches carry R2 photos');
+    notRunHere(!hasR2, 'the branches carry R2 photos');
     test.setTimeout(420_000);
     const sa = w.user('SA');
     const since = new Date(Date.now() - 10 * 60_000);
@@ -2019,7 +2025,7 @@ test.describe("the salesman's new-customer form", { tag: ['@phone'] }, () => {
   });
 
   test('duplicates at submit: a live CR on his route is named, another salesman’s open request blocks, the same shop is named; a phone-only match goes through and the approver is told', async ({ browser }) => {
-    test.skip(!hasR2, 'the form uploads its photos to R2');
+    notRunHere(!hasR2, 'the form uploads its photos to R2');
     test.setTimeout(480_000);
     const sa = w.user('SA');
     await resetLimits({ users: [sa] });
@@ -2080,7 +2086,7 @@ test.describe("the salesman's new-customer form", { tag: ['@phone'] }, () => {
   });
 
   test('the duplicate refusal never names a customer on another route; a withdrawn draft and a departed salesman’s draft stop blocking', async ({ browser }) => {
-    test.skip(!hasR2, 'the requests carry R2 photos');
+    notRunHere(!hasR2, 'the requests carry R2 photos');
     test.setTimeout(420_000);
     const liveB = w.customer('LIVEB');
     const withdrawMe = await seedCreateRequest(w, { submitter: 'SX', state: 'DRAFT', legalName: w.name('Withdraw Me') });
@@ -2139,7 +2145,7 @@ test.describe("the salesman's new-customer form", { tag: ['@phone'] }, () => {
   });
 
   test('a request in review opens read-only from Work, its GPS controls off too', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     const r = await seedCreateRequest(w, { submitter: 'SA', legalName: w.name('In Review Shop') });
     const page = await pageAs(browser, w.user('SA'), 'phone');
     await page.goto('/work');
@@ -2188,7 +2194,7 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
   });
 
   test('documents load for the Manager, the Finance Manager, the GM and the Accountant, on a desktop and at 412 px', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     test.setTimeout(420_000);
     const sa = await pageAs(browser, w.user('SA'), 'phone');
     await sa.goto('/today');
@@ -2289,7 +2295,7 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
   });
 
   test('two tabs of the Accountant create it at the same moment: exactly one customer', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     const r = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: w.name('Race Shop') });
     const ctx = await contextAs(browser, w.user('ACC1'), { device: 'desktop' });
     const [t1, t2] = [await ctx.newPage(), await ctx.newPage()];
@@ -2319,7 +2325,7 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
   });
 
   test('a photo removed mid-chain reads as removed at every step, and the last step refuses it; Reject steps back to the GM', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     test.setTimeout(300_000);
     const r = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', step: 1, approvedBy: ['M1'], legalName: w.name('Missing Photo Co') });
     // A shop photo gone after the request was sent (written in the database: a salesman can no longer remove one
@@ -2357,7 +2363,7 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
   });
 
   test('a guarantee removed while the Accountant’s page is open makes it stale; reloaded, it says none is on file; Reject steps back to the GM', async ({ browser }) => {
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     const r = await seedCreateRequest(w, {
       submitter: 'SA',
       paymentTerms: 'CREDIT',
@@ -2389,7 +2395,7 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
   test('a salesman cannot remove a photo of his request while it is in review', async ({ browser }) => {
     // Was a P2 (wave-1 not_fixed, bug 28 root cause), fixed by 628e541: services/photos.ts detachPhotoCore let the
     // submitter soft-delete a photo claimed by his SUBMITTED new-customer request. It is REFUSED now, in words.
-    test.skip(!hasR2, 'the request carries R2 photos');
+    notRunHere(!hasR2, 'the request carries R2 photos');
     const r = await seedCreateRequest(w, { submitter: 'SA', legalName: w.name('Keep My Photo') });
     const page = await pageAs(browser, w.user('SA'), 'phone');
     await page.goto('/work');
@@ -2426,7 +2432,7 @@ test.describe('twelve cash customers, from Select all at the Supervisor step to 
   });
 
   test('Select all, Approve 12 at the Supervisor step inside the function budget; the Accountant cannot bulk-approve them, and creates each from its own page with its own Temix code: unique codes in order, every salesman told both codes', async ({ browser }) => {
-    test.skip(!hasR2, 'the requests carry R2 photos');
+    notRunHere(!hasR2, 'the requests carry R2 photos');
     test.setTimeout(1_200_000);
     const seeded: SeededCreate[] = [];
     for (let i = 1; i <= 12; i++) {
@@ -2459,6 +2465,8 @@ test.describe('twelve cash customers, from Select all at the Supervisor step to 
       await expect(banner).toBeVisible({ timeout: 120_000 });
       const ms = Date.now() - started;
       test.info().annotations.push({ type: 'bulk-wall-time', description: `run ${runs}: ${ms} ms for ${left} (Vercel caps a function at 60 s)` });
+      // The app stops a run at its 40 s budget; from the click to the banner it must stay clear of Vercel's 60 s cap.
+      expect(ms, `run ${runs}: inside the function budget (under 55 s, Vercel caps a function at 60 s)`).toBeLessThan(55_000);
       const text = (await banner.textContent()) ?? '';
       const m = /^(\d+) processed(?:, (\d+) not attempted)?/.exec(text)!;
       expect(Number(m[1]) + Number(m[2] ?? 0), text).toBe(left);

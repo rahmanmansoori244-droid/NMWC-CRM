@@ -42,7 +42,6 @@ import { expect, test, type APIRequestContext, type Browser, type Page } from '@
 import type { Role } from '@prisma/client';
 import {
   BASE_URL,
-  KNOWN_BUGS,
   MUSCAT,
   actionIdFor,
   captureServerAction,
@@ -51,12 +50,14 @@ import {
   createWorld,
   db,
   expectNoDataLeak,
+  expectNoRegionNotice,
   fillSecret,
   hasR2,
   homePathFor,
   installLaunchHooks,
   mutePage,
   newId,
+  notRunHere,
   omanDateISO,
   postForm,
   postJson,
@@ -686,7 +687,7 @@ test.describe('access control: deep links and scope', { tag: ['@desktop'] }, () 
   });
 
   test('photos of another region’s customer answer 404 NOT_FOUND', async ({ browser }) => {
-    test.skip(!hasR2, 'the photos need R2');
+    notRunHere(!hasR2, 'the photos need R2');
     const bonly = world.customer('BONLY');
     const shop = bonly.photos.find((p) => p.wire === 'SHOP')!;
     const cr = bonly.photos.find((p) => p.wire === 'CR')!;
@@ -786,12 +787,15 @@ test.describe('access control: deep links and scope', { tag: ['@desktop'] }, () 
 
   test('a Manager with no regions is told why his approval and reactivation queues are empty', async ({ browser }) => {
     // Was KNOWN_BUGS.noRegionEmptyState (fixed, fd41184 / ea45750): the queues read "Nothing pending" /
-    // "No reactivation requests" as on a quiet day, without a word about the missing regions.
-    test.fail(KNOWN_BUGS.noRegionEmptyState.open, KNOWN_BUGS.noRegionEmptyState.title);
+    // "No reactivation requests" as on a quiet day, without a word about the missing regions. Now
+    // NoRegionNotice says it, word for word and once (e8e6bc9: not in the header as well).
     const page = await pageAs(browser, world.user('MNR'));
-    for (const path of ['/approvals', '/reactivations']) {
+    for (const [path, requests] of [
+      ['/approvals', 'approval requests'],
+      ['/reactivations', 'reactivation requests'],
+    ] as const) {
       await page.goto(path);
-      await expect(page.getByText(/no (managed )?regions/i).first(), `${path} explains the empty queue`).toBeVisible({ timeout: 15_000 });
+      await expectNoRegionNotice(page, requests, `MNR ${path}`);
     }
   });
 
@@ -1205,7 +1209,7 @@ test.describe('access control: route handlers', { tag: ['@desktop'] }, () => {
   });
 
   test('photo attach and remove refuse another route’s branch, another user’s photo and a credit customer’s CR document', async ({ browser }) => {
-    test.skip(!hasR2, 'uploads need R2');
+    notRunHere(!hasR2, 'uploads need R2');
     test.setTimeout(300_000);
     const sa = world.user('SA');
     const cred = world.customer('CRED');
@@ -1679,7 +1683,7 @@ test.describe('access control: server actions replayed by the wrong caller', { t
   });
 
   test('a reactivation is decided only by a Manager of the branch’s region', async ({ browser }) => {
-    test.skip(!hasR2, 'the reactivation request needs an evidence photo (R2)');
+    notRunHere(!hasR2, 'the reactivation request needs an evidence photo (R2)');
     test.setTimeout(300_000);
     const sa = world.user('SA');
     const m1 = world.user('M1');
@@ -1778,7 +1782,7 @@ test.describe('access control: the photo API contract', { tag: ['@desktop'] }, (
   });
 
   test.beforeEach(() => {
-    test.skip(!hasR2, 'the photo API needs R2');
+    notRunHere(!hasR2, 'the photo API needs R2');
   });
 
   const attachmentsBy = (userId: string) => db.attachment.count({ where: { capturedById: userId } });
@@ -2068,7 +2072,7 @@ test.describe('access control: a two-region customer’s request is decided by i
   });
 
   test('R1’s change to a chain customer: R2’s Manager neither queues, reads nor decides it; R1’s Manager approves it', async ({ browser }) => {
-    test.skip(!hasR2, "the gate needs A1's shop photo (R2)");
+    notRunHere(!hasR2, "the gate needs A1's shop photo (R2)");
     test.setTimeout(300_000);
     const chain = world.customer('CHAIN');
     const a1 = world.branch('CHAIN.A1');
@@ -2175,7 +2179,7 @@ test.describe('access control: Temix actions replayed by the wrong caller', { ta
         OR: [{ temixSyncState: 'PENDING_UPLOAD', deletedAt: null }, { temixSyncState: 'DEACTIVATE_PENDING' }],
       },
     });
-    test.skip(foreign > 0, `the UAT Temix queue holds ${foreign} customer(s) that are not this world's — run on a Neon branch`);
+    notRunHere(foreign > 0, `the UAT Temix queue holds ${foreign} customer(s) that are not this world's — run on a Neon branch`);
     const stw = world.user('STW');
     const tq = world.customer('TQ');
     const rows = { Customer: { id: tq.id }, TemixSyncBatch: { id: batchId } };

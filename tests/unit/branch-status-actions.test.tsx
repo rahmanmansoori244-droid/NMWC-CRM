@@ -50,6 +50,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// Under the full suite's parallel load the form's answer can take longer than Testing Library's 1 s
+// default: the refused-submit test failed there now and then and passed alone.
+const LOADED_MS = 10_000;
+// And the test itself, past vitest's 5 s default, so the wait above is the one that decides.
+const TEST_MS = 20_000;
+
 const reasonBox = () => screen.getByRole('textbox');
 const type = (value: string) => fireEvent.change(reasonBox(), { target: { value } });
 
@@ -66,12 +72,12 @@ describe('the reason is counted trimmed', () => {
     expect(submit).not.toBeDisabled();
   });
 
-  it('is sent trimmed', async () => {
+  it('is sent trimmed', { timeout: TEST_MS }, async () => {
     render(<BranchStatusActions branchId="b1" status="ACTIVE" />);
     fireEvent.click(screen.getByRole('button', { name: 'Mark closed' }));
     type('   Shop shut for good.  ');
     fireEvent.click(screen.getByRole('button', { name: 'Submit closure' }));
-    await waitFor(() => expect(h.sent).toHaveLength(1));
+    await waitFor(() => expect(h.sent).toHaveLength(1), { timeout: LOADED_MS });
     expect(h.sent[0]!.body).toMatchObject({ reason: 'Shop shut for good.', attachmentId: 'att-evidence' });
   });
 });
@@ -87,7 +93,7 @@ describe('the evidence photo is on no slot until the request is accepted', () =>
     for (const p of h.slotProps) expect(p.attachTo).toBeUndefined();
   });
 
-  it('a refused submit, then Cancel, sent nothing but the request itself', async () => {
+  it('a refused submit, then Cancel, sent nothing but the request itself', { timeout: TEST_MS }, async () => {
     h.replies.push({
       ok: false,
       code: 'VALIDATION_FAILED',
@@ -98,7 +104,7 @@ describe('the evidence photo is on no slot until the request is accepted', () =>
     fireEvent.click(screen.getByRole('button', { name: 'Mark closed' }));
     type('Shop shut for good.');
     fireEvent.click(screen.getByRole('button', { name: 'Submit closure' }));
-    expect(await screen.findByText('Photo is older than 24 hours — capture a fresh one.')).toBeTruthy();
+    expect(await screen.findByText('Photo is older than 24 hours — capture a fresh one.', {}, { timeout: LOADED_MS })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.getByRole('button', { name: 'Mark closed' })).toBeTruthy();
     expect(h.sent.map((s) => s.url)).toEqual(['/api/forms/branch-close']);
@@ -119,7 +125,7 @@ describe('launch browser suite — the form names its fields, and a refusal is r
     expect(within(group).getByText('photo')).toBeTruthy();
   });
 
-  it('what the server refused is an alert, beside the notice that says it was not sent', async () => {
+  it('what the server refused is an alert, beside the notice that says it was not sent', { timeout: TEST_MS }, async () => {
     h.replies.push({
       ok: false,
       code: 'VALIDATION_FAILED',
@@ -130,7 +136,7 @@ describe('launch browser suite — the form names its fields, and a refusal is r
     fireEvent.click(screen.getByRole('button', { name: 'Mark closed' }));
     type('Shop shut for good.');
     fireEvent.click(screen.getByRole('button', { name: 'Submit closure' }));
-    await screen.findByText('Photo is older than 24 hours — capture a fresh one.');
+    await screen.findByText('Photo is older than 24 hours — capture a fresh one.', {}, { timeout: LOADED_MS });
     expect(screen.getAllByRole('alert').map((a) => a.textContent)).toContain(
       'Photo is older than 24 hours — capture a fresh one.'
     );

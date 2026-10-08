@@ -26,9 +26,10 @@
  *
  * The new-customer form has no date input (only the /customers filters have,
  * and this Windows WebKit build renders type="date" as a plain text box), so no
- * date picker is tested here. Known gaps are test.fail, each in its own test
- * (none open now: the Arabic-digit count and the 14 px change-password boxes
- * were fixed in 1a4e8e1 and f7f240a, and their tests assert the fix).
+ * date picker is tested here. No test here is expected to fail: the two gaps
+ * found (the Arabic-digit count and the 14 px change-password boxes) were fixed
+ * in 1a4e8e1 and f7f240a, their test.fail markers are gone, and their tests
+ * assert the fix.
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts iphone --project=iphone
  */
@@ -48,6 +49,7 @@ import {
   fetchAs,
   fillSecret,
   hasR2,
+  notRunHere,
   hitTest,
   installLaunchHooks,
   omanDayAfter,
@@ -137,7 +139,7 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
     rawLanded: 'not probed',
   };
   const needsSession = () => {
-    test.skip(!webkit.ok, webkitSessionNote(webkit.landed));
+    notRunHere(!webkit.ok, webkitSessionNote(webkit.landed));
     if (webkit.bridged) test.info().annotations.push({ type: 'webkit-cookie-bridge', description: webkitBridgeNote(webkit.rawLanded) });
   };
 
@@ -197,7 +199,7 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
     // never sends it back there: a gap of the test machine, not of the app
     // (production is https). Then this property cannot be tested here — said so,
     // not passed — and the other tests run through the cookie bridge.
-    test.skip(webkit.bridged, webkitBridgeNote(webkit.rawLanded));
+    notRunHere(webkit.bridged, webkitBridgeNote(webkit.rawLanded));
     expect(webkit.ok, webkitSessionNote(webkit.landed)).toBe(true);
   });
 
@@ -326,9 +328,9 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
 
   test('Enrich: a camera-sized photo through WebKit’s file chooser is compressed by WebKit, PUT to R2 and attached', async ({ browser }) => {
     needsSession();
-    test.skip(!hasR2, 'the photo goes to R2');
+    notRunHere(!hasR2, 'the photo goes to R2');
     // The page PUTs straight to R2, whose CORS rule admits the origin http://localhost:3000 only.
-    test.skip(PORT !== 3000, 'R2 accepts browser PUTs from http://localhost:3000 only');
+    notRunHere(PORT !== 3000, 'R2 accepts browser PUTs from http://localhost:3000 only');
     test.setTimeout(240_000);
     const sa = world.user('SA');
     const en1 = world.customer('EN1');
@@ -429,7 +431,7 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
 
   test('Enrich: the sticky Submit bar stands above the tab bar, a tap submits, and the edit page says when in Oman time', async ({ browser }) => {
     needsSession();
-    test.skip(FULL_GATE && !hasR2, 'the FULL gate needs the seeded CR photo, which needs R2');
+    notRunHere(FULL_GATE && !hasR2, 'the FULL gate needs the seeded CR photo, which needs R2');
     test.setTimeout(240_000);
     const sa = world.user('SA');
     const en3 = world.customer('EN3');
@@ -480,8 +482,8 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
 
   test('a lost reply: Try again in the sticky bar answers "Already received at HH:MM", Oman time printed by WebKit', async ({ browser }) => {
     needsSession();
-    test.skip(FULL_GATE && !hasR2, 'the FULL gate needs the seeded CR photo, which needs R2');
-    test.skip(process.env.E2E_PAGE_REQUEST_OK !== '1', 'route.fetch needs the context’s session cookie (global setup did not prove page.request)');
+    notRunHere(FULL_GATE && !hasR2, 'the FULL gate needs the seeded CR photo, which needs R2');
+    notRunHere(process.env.E2E_PAGE_REQUEST_OK !== '1', 'route.fetch needs the context’s session cookie (global setup did not prove page.request)');
     const sa = world.user('SA');
     const en4 = world.customer('EN4');
     const page = await (await iphoneContext(browser, sa)).newPage();
@@ -520,7 +522,8 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
     const at = yesterdayUtcAt(21, 30);
     await seedNotification(world, { user: 'SA', kind: 'EDIT_APPROVED_FINAL', title, createdAt: at });
     const page = await (await iphoneContext(browser, world.user('SA'))).newPage();
-    // /notifications is on the launch allow-list for React #418 while that bug is open; asserted here directly.
+    // A hydration error fails every test now (KNOWN_BUGS.notificationsHydration is fixed, so nothing is
+    // allow-listed); asserted here directly as well, on both loads.
     const hydration = collectHydrationErrors(page);
     for (const load of ['first load', 'reload'] as const) {
       if (load === 'first load') await page.goto('/notifications');

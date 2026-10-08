@@ -41,14 +41,18 @@ import {
   hasR2,
   hitTest,
   installLaunchHooks,
+  landsInPlace,
+  notRunHere,
   notificationsFor,
   receiptEditId,
   requestReactivationViaApi,
+  requestsOf,
   requireLaunchEnv,
   seedPhoto,
   seedUpdateEdit,
   submitCreateViaApi,
   submitEnrichViaApi,
+  trackRequests,
   uniquePng,
   uploadPhotoViaApi,
   workingMinutesAgo,
@@ -133,13 +137,23 @@ const EVIDENCE_REMOVED =
 /**
  * Landing on /approvals: a decision's answer carries the queue rendered on the server
  * (approveEditAndGoAction / rejectEditAndGoAction redirect). From this PC, about 270 ms a
- * round trip to UAT's database, a close-shop approval took 18–20 s to come back.
+ * round trip to UAT's database, a close-shop approval took 18–20 s to come back. So the
+ * wait is timed from that answer, not a flat 90 s: the page's own calls are logged from
+ * the start (pageAs), the server gets SERVER_WORK_MS to answer, and the page must be on
+ * the queue IN_PLACE_MS after the answer — a page that is not fails with NAV_HANG
+ * (support/in-place.ts).
  */
-const BACK_TO_QUEUE = { timeout: 90_000 };
+async function backToQueue(page: Page, what: string): Promise<void> {
+  const calls = requestsOf(page);
+  if (!calls) throw new Error('backToQueue: open the page with pageAs, which logs its calls from the start');
+  await landsInPlace(page, /\/approvals(\?|$)/, what, calls);
+}
 
 async function pageAs(browser: Browser, w: World, key: string, device?: DeviceKind): Promise<Page> {
   const ctx = await contextAs(browser, w.user(key), device ? { device } : {});
-  return ctx.newPage();
+  const page = await ctx.newPage();
+  trackRequests(page);
+  return page;
 }
 
 /** ✓ Approve on /approvals/<id>, then the confirmation's own button. */
@@ -392,7 +406,7 @@ test.describe('approvals: the dashboard’s Pending approval equals the queue', 
     await expect(page.getByText(w.customer('R2U').legalName)).toHaveCount(0);
 
     await tile.getByRole('link', { name: 'Open the approval queue' }).click();
-    await expect(page).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(page, 'Open the approval queue');
     await expect(page.getByText('4 pending', { exact: true })).toBeVisible();
     await expect(page.getByText(w.customer('R2U').legalName)).toHaveCount(0);
 
@@ -406,7 +420,7 @@ test.describe('approvals: the dashboard’s Pending approval equals the queue', 
     // M3 approves the update (a region Manager may: owner decision 3).
     await page.goto(`/approvals/${update}`);
     await approveHere(page);
-    await expect(page).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(page, 'Approve (M3) → the queue');
     await expect(page.getByText('3 pending', { exact: true })).toBeVisible();
     expect(await stateOf(update)).toMatchObject({ state: 'APPROVED', reviewedById: w.user('M3').id });
     await page.goto('/dashboard');
@@ -449,7 +463,7 @@ test.describe('approvals: bulk approve and bulk reject', { tag: ['@desktop'] }, 
   });
 
   test('M1 approves an update, a close and a cash new customer at once; M2 decides the update first — only it fails', async ({ browser }) => {
-    test.skip(!hasR2, 'the close request is approved on its evidence photo, which needs R2');
+    notRunHere(!hasR2, 'the close request is approved on its evidence photo, which needs R2');
     test.setTimeout(240_000);
     const upd = (await seedUpdateEdit(w, { customer: 'U1', submitter: 'S1', patch: contact(w, 'Bulk contact') })).id;
     const close = await seedBranchRequest(w, { kind: 'close', branch: 'K1', submitter: 'S2' });
@@ -469,7 +483,7 @@ test.describe('approvals: bulk approve and bulk reject', { tag: ['@desktop'] }, 
     const m2 = await pageAs(browser, w, 'M2');
     await m2.goto(`/approvals/${upd}`);
     await approveHere(m2);
-    await expect(m2).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(m2, 'Approve (M2) → the queue');
 
     await m1.getByRole('button', { name: '✓ Approve 3' }).click();
     const dialog = m1.getByRole('dialog', { name: 'Approve 3 edits?' });
@@ -702,7 +716,7 @@ test.describe('approvals: two Managers on one request', { tag: ['@desktop'] }, (
     await m1.goto(`/approvals/${id}`);
     await m3.goto(`/approvals/${id}`);
     await approveHere(m1);
-    await expect(m1).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(m1, 'Approve (M1) → the queue');
 
     await approveHere(m3);
     await expect(m3.getByText('Edit is in state APPROVED.')).toBeVisible();
@@ -794,7 +808,7 @@ test.describe('approvals: two Managers on one request', { tag: ['@desktop'] }, (
   });
 
   test('a new-customer page opened before a send-back round is refused as changed, then decided after a reload', async ({ browser }) => {
-    test.skip(!hasR2, 'the salesman resends a complete request, whose photos need R2');
+    notRunHere(!hasR2, 'the salesman resends a complete request, whose photos need R2');
     test.setTimeout(300_000);
     const s1 = await pageAs(browser, w, 'S1');
     await s1.goto('/today');
@@ -807,7 +821,7 @@ test.describe('approvals: two Managers on one request', { tag: ['@desktop'] }, (
     const m2 = await pageAs(browser, w, 'M2');
     await m2.goto(`/approvals/${editId}`);
     await sendBackHere(m2, w.name('Recheck the signboard'));
-    await expect(m2).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(m2, 'Send back (M2) → the queue');
     expect((await stateOf(editId)).state).toBe('NEEDS_CORRECTION');
 
     const again = await submitCreateViaApi(s1, { ...body, editId }, { world: w });
@@ -821,7 +835,7 @@ test.describe('approvals: two Managers on one request', { tag: ['@desktop'] }, (
 
     await m1.reload();
     await approveHere(m1, /^Approve and send on$/);
-    await expect(m1).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(m1, 'Approve and send on (M1) → the queue');
     expect(await stateOf(editId)).toMatchObject({ state: 'SUBMITTED', cycle: 2, currentStepIndex: 1, pendingRole: 'ACCOUNTANT' });
     const steps = await db.editApproval.findMany({ where: { editId, cycle: 2 }, select: { actorId: true, decision: true, stepIndex: true } });
     expect(steps).toEqual([{ actorId: w.user('M1').id, decision: 'APPROVED', stepIndex: 0 }]);
@@ -839,7 +853,7 @@ test.describe('approvals: two Managers on one request', { tag: ['@desktop'] }, (
     expect((await stateOf(id)).state).toBe('SUBMITTED');
     expect(await db.editApproval.count({ where: { editId: id } })).toBe(0);
     await sendBackHere(page, w.name('Contact changed meanwhile, check it'));
-    await expect(page).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(page, 'Send back (M1) → the queue');
     expect((await stateOf(id)).state).toBe('NEEDS_CORRECTION');
   });
 
@@ -870,7 +884,7 @@ test.describe('approvals: two Managers on one request', { tag: ['@desktop'] }, (
       });
       if (how === 'approve') await approveHere(page);
       else await sendBackHere(page, w.name('Redirect check, please resend'));
-      await expect(page).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+      await backToQueue(page, `${how} → the queue`);
       const errors = await page.evaluate(() => (window as unknown as { __formErrors: string[] }).__formErrors);
       shown.push(...errors.map((e) => `${how}: ${e}`));
     }
@@ -889,7 +903,7 @@ test.describe('approvals: a close-shop request from the phone to the decision', 
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, 'the close form uploads its evidence photo to R2');
+  notRunHere(!hasR2, 'the close form uploads its evidence photo to R2');
 
   let w: World;
 
@@ -968,7 +982,7 @@ test.describe('approvals: a close-shop request from the phone to the decision', 
     await imagesLoaded(m1.locator(`img[src="/api/photos/${evidence.attachmentId}"]`));
     const clickedAt = Date.now();
     await approveHere(m1);
-    await expect(m1).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(m1, 'Approve the close (M1) → the queue');
     test.info().annotations.push({ type: 'close approve → back on /approvals', description: `${Date.now() - clickedAt} ms` });
 
     const branch = await db.branch.findUniqueOrThrow({ where: { id: c1.branch.id }, select: { status: true, lastStatusChangeAt: true } });
@@ -1049,7 +1063,7 @@ test.describe('approvals: a reactivation from the phone to the Manager’s decis
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, 'reactivation evidence is uploaded to R2');
+  notRunHere(!hasR2, 'reactivation evidence is uploaded to R2');
 
   let w: World;
   let approved: string;
@@ -1278,7 +1292,7 @@ test.describe('approvals: only the direct supervisor is told, every regional Man
     const m3 = await pageAs(browser, w, 'M3');
     await m3.goto(`/approvals/${update}`);
     await approveHere(m3);
-    await expect(m3).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(m3, 'Approve (M3) → the queue');
     const m1Row = (await notificationsFor({ editId: update, userId: w.user('M1').id }))[0]!;
     expect(m1Row.readAt, 'wave 1: a colleague’s decision settles the supervisor’s alert').not.toBeNull();
     const m1 = await pageAs(browser, w, 'M1');
@@ -1287,7 +1301,7 @@ test.describe('approvals: only the direct supervisor is told, every regional Man
   });
 
   test('S1’s close and reactivation: M1’s rows say what they are and land on the page that decides them', async ({ browser }) => {
-    test.skip(!hasR2, 'close and reactivation requests carry an evidence photo (R2)');
+    notRunHere(!hasR2, 'close and reactivation requests carry an evidence photo (R2)');
     const s1 = await pageAs(browser, w, 'S1');
     await s1.goto('/today');
     const p1 = await uploadPhotoViaApi(s1, w, { kind: 'FREE' });
@@ -1392,7 +1406,7 @@ test.describe('approvals: the whole approval loop on a 360 px phone', { tag: ['@
     await page.goto('/');
     await page.getByRole('button', { name: 'Open menu' }).click();
     await page.locator('#mobile-nav-drawer').getByRole('link', { name: 'Approvals' }).click();
-    await expect(page).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(page, 'the drawer’s Approvals link');
     await expect(page.getByRole('heading', { level: 1, name: 'Approval queue' })).toBeVisible();
     await expectNoSideScroll(page);
     for (const k of ['L1', 'L2']) await queueCard(page, w.customer(k).legalName).getByRole('checkbox').check();
@@ -1438,7 +1452,7 @@ test.describe('approvals: the whole approval loop on a 360 px phone', { tag: ['@
     await expect(page.locator('textarea[name="reason"]')).toHaveValue('Please re-verify and resubmit');
     await expectNoSideScroll(page);
     await page.getByRole('button', { name: '✗ Send back to salesman' }).click();
-    await expect(page).toHaveURL(/\/approvals(\?|$)/, BACK_TO_QUEUE);
+    await backToQueue(page, 'Send back to salesman → the queue');
     expect((await stateOf(longOne)).state).toBe('NEEDS_CORRECTION');
     await expectNoSideScroll(page);
   });
@@ -1573,7 +1587,7 @@ test.describe('approvals: photo-heavy pages stay under the photo rate limit', { 
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, 'the photos live in R2');
+  notRunHere(!hasR2, 'the photos live in R2');
 
   const KEYS = Array.from({ length: 25 }, (_, i) => `B${String(i + 1).padStart(2, '0')}`);
   let w: World;
@@ -1725,7 +1739,7 @@ test.describe('approvals: the SLA escalation sweep', { tag: ['@exclusive'] }, ()
   });
 
   test('before the sweep the queue pill reads OVERDUE 3h', async ({ browser }) => {
-    test.skip(blocked !== null, blocked ?? '');
+    notRunHere(blocked !== null, blocked ?? '');
     const page = await pageAs(browser, w!, 'M1');
     await page.goto('/approvals');
     await expect(queueCard(page, w!.customer('E1').legalName)).toContainText('OVERDUE 3h');
@@ -1734,7 +1748,7 @@ test.describe('approvals: the SLA escalation sweep', { tag: ['@exclusive'] }, ()
   });
 
   test('the sweep escalates each late step once, to the people who can open it, and queues the e-mail', async () => {
-    test.skip(blocked !== null, blocked ?? '');
+    notRunHere(blocked !== null, blocked ?? '');
     test.setTimeout(240_000);
     const ww = w!;
     const body = await sweep();
@@ -1795,7 +1809,7 @@ test.describe('approvals: the SLA escalation sweep', { tag: ['@exclusive'] }, ()
   });
 
   test('after the sweep: the ⚠ pill, links every recipient can open, nothing for M5 or the Steward, /status counts his region', async ({ browser }) => {
-    test.skip(blocked !== null, blocked ?? '');
+    notRunHere(blocked !== null, blocked ?? '');
     const ww = w!;
     const m1 = await pageAs(browser, ww, 'M1');
     await m1.goto('/approvals');

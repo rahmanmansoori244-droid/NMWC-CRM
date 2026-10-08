@@ -22,10 +22,11 @@
  * any case is refused; the GM's row has the e-mail button (owner decision 6);
  * the Steward's Edit account and the create form's regions (owner decision 8).
  * Fixed in the launch candidate and asserted as fixed (their test.fail markers
- * are off): the phone menu is a dialog that closes on its current page
+ * are gone): the phone menu is a dialog that closes on its current page
  * (KNOWN_BUGS.drawerA11y, ee81e93), a region-less Accountant is told why
- * /approvals is empty (KNOWN_BUGS.noRegionEmptyState, fd41184), and a reset
- * refused for a reused password says so once on /users (06763c2).
+ * /approvals is empty, in NoRegionNotice's exact words and once
+ * (KNOWN_BUGS.noRegionEmptyState, fd41184, e8e6bc9), and a reset refused for a
+ * reused password says so once on /users (06763c2).
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts accounts-auth --project=phone --project=desktop
  */
@@ -34,7 +35,6 @@ import type { Role } from '@prisma/client';
 import {
   BASE_URL,
   INITIAL_PASSWORD,
-  KNOWN_BUGS,
   SESSION_COOKIE,
   apiSignIn,
   auditFor,
@@ -43,6 +43,7 @@ import {
   db,
   drainLimit,
   expectNoDataLeak,
+  expectNoRegionNotice,
   expectNoSideScroll,
   fillSecret,
   installLaunchHooks,
@@ -497,7 +498,6 @@ test.describe('accounts: gaps fixed for launch', () => {
 
   test('the phone menu is a dialog, and tapping the page it is on closes it', { tag: ['@phone'] }, async ({ browser }) => {
     // KNOWN_BUGS.drawerA11y, fixed (ee81e93): the drawer had no dialog role or focus trap, and its current item left it open.
-    test.fail(KNOWN_BUGS.drawerA11y.open, KNOWN_BUGS.drawerA11y.title);
     const page = await (await contextAt(browser, world.user('M1'), world.ip(1), { device: 'phone' })).newPage();
     await page.goto('/dashboard');
     await settle(page);
@@ -509,11 +509,11 @@ test.describe('accounts: gaps fixed for launch', () => {
 
   test('an Accountant with no region is told so on /approvals instead of an empty queue', { tag: ['@desktop'] }, async ({ browser }) => {
     // KNOWN_BUGS.noRegionEmptyState, fixed (fd41184): a region-less approver saw "Nothing pending" with no hint why.
-    test.fail(KNOWN_BUGS.noRegionEmptyState.open, KNOWN_BUGS.noRegionEmptyState.title);
+    // NoRegionNotice says it now, word for word and once (e8e6bc9: not in the header as well).
     const page = await (await contextAt(browser, world.user('ACC0'), world.ip(2), { device: 'desktop' })).newPage();
     await page.goto('/approvals');
     await expect(page.getByRole('heading', { level: 1, name: 'Approval queue' })).toBeVisible();
-    await expect(page.getByRole('main').getByText(/no regions? (are |is )?assigned|ask a (Data )?Steward/i)).toBeVisible();
+    await expectNoRegionNotice(page, 'approval requests', 'ACC0 /approvals');
   });
 
   test('a reset refused for a reused password says so once on /users', { tag: ['@desktop'] }, async ({ browser }) => {

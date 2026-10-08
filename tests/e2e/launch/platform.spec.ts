@@ -40,7 +40,6 @@ import { expect, request as pwRequest, test, type Browser, type Locator, type Pa
 import type { Role } from '@prisma/client';
 import {
   BASE_URL,
-  KNOWN_BUGS,
   SERVER_MODE,
   clearSecretFields,
   contextAs,
@@ -52,6 +51,7 @@ import {
   homePathFor,
   installLaunchHooks,
   newId,
+  notRunHere,
   redact,
   requireLaunchEnv,
   seedNotification,
@@ -320,7 +320,7 @@ function nonceCheck(csp: string, html: string): { nonce: string | null; scripts:
 test.describe('platform: security headers and the CSP', { tag: ['@desktop'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
-  test.skip(SERVER_MODE === 'dev', 'next dev adds unsafe-eval and compiles on demand: the production policy is under test');
+  notRunHere(SERVER_MODE === 'dev', 'next dev adds unsafe-eval and compiles on demand: the production policy is under test');
 
   let world: World;
 
@@ -425,7 +425,7 @@ test.describe('platform: security headers and the CSP', { tag: ['@desktop'] }, (
     test('salesman on a phone: sign in, Today, Enrich, Capture GPS, a photo through R2, Submit — no CSP violation', async ({
       browser,
     }) => {
-      test.skip(!hasR2, 'the photo upload needs R2');
+      notRunHere(!hasR2, 'the photo upload needs R2');
       test.setTimeout(300_000);
       const sa = world.user('SA');
       const gold = world.customer('GOLD');
@@ -483,7 +483,8 @@ test.describe('platform: security headers and the CSP', { tag: ['@desktop'] }, (
     test('manager: the review page with photo thumbnails and the map links, then /notifications — no CSP violation', async ({
       browser,
     }) => {
-      test.skip(!editId, 'the salesman step did not submit (it needs R2)');
+      notRunHere(!hasR2, 'the salesman step uploads a photo to R2');
+      test.skip(!editId, 'the salesman step did not submit');
       const m1 = world.user('M1');
       const page = await (await contextAs(browser, m1)).newPage();
       const watch = watchProblems(page);
@@ -537,9 +538,9 @@ test.describe('platform: security headers and the CSP', { tag: ['@desktop'] }, (
     await stw.goto('/export');
     const xlsx = stw.getByRole('button', { name: 'Download .xlsx' });
     await waitForHydrated(xlsx);
-    // Only what changed today (the fixtures, a few real rows), not the whole UAT master.
-    // The label is not tied to its input, hence the sibling lookup the go-live walk uses.
-    await stw.locator('label:text-is("Updated since") + input').fill(today);
+    // Only what changed today (the fixtures, a few real rows), not the whole UAT master. Found by its label
+    // (claude/fix-small-7, 28e7075, ties the /export labels to their inputs).
+    await stw.getByLabel('Updated since', { exact: true }).fill(today);
     const answer = stw.waitForResponse((r) => new URL(r.url()).pathname === '/api/exports/customers', { timeout: 180_000 });
     const saved = stw.waitForEvent('download', { timeout: 180_000 });
     saved.catch(() => undefined);
@@ -830,7 +831,7 @@ test.describe('platform: every time on screen is Oman time while the server runs
 test.describe('platform: no hydration error on a full load of any menu page', { tag: ['@desktop'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
-  test.skip(SERVER_MODE === 'dev', 'next dev reports hydration differently; the production build is under test');
+  notRunHere(SERVER_MODE === 'dev', 'next dev reports hydration differently; the production build is under test');
 
   let world: World;
 
@@ -872,7 +873,7 @@ function skeletonThenPage(log: HeadingEntry[], t0: number, target: { path: strin
 test.describe('platform: loading skeletons on a slow phone link', { tag: ['@phone'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
-  test.skip(SERVER_MODE === 'dev', 'next dev compiles on demand: the production build is under test');
+  notRunHere(SERVER_MODE === 'dev', 'next dev compiles on demand: the production build is under test');
 
   let world: World;
   let pendingId: string;
@@ -1204,7 +1205,6 @@ test.describe('platform: layout for every role at 360, 412 and 768', { tag: ['@p
 
   test('the phone drawer closes when the current page is tapped', async ({ browser }) => {
     // KNOWN_BUGS.drawerA11y, fixed (ee81e93): the drawer closed only on a pathname change.
-    test.fail(KNOWN_BUGS.drawerA11y.open, KNOWN_BUGS.drawerA11y.title);
     const page = await (await contextAs(browser, world.user('M1'), { device: 'phone' })).newPage();
     await page.goto('/customers');
     await settle(page);
@@ -1377,6 +1377,35 @@ test.describe('platform: accessibility basics', { tag: ['@desktop'] }, () => {
     await expect(form.getByLabel(/^Phone/)).toHaveAttribute('name', 'phone');
   });
 
+  test('labels: every field on /export has a name, the filters included', async ({ browser }) => {
+    // Was an a11y gap (no KNOWN_BUGS entry): Min / Max completeness % and Updated since were bare <label>s beside
+    // bare inputs. Tied by claude/fix-small-7 (28e7075), which must be merged before this run.
+    const page = await (await contextAs(browser, world.user('STW'))).newPage();
+    await page.goto('/export');
+    await waitForHydrated(page.getByRole('button', { name: 'Download .xlsx' }));
+    expect(await unlabelledControls(page), 'unlabelled fields on /export').toEqual([]);
+    for (const name of ['Min completeness %', 'Max completeness %']) {
+      await expect(page.getByLabel(name, { exact: true }), name).toHaveAttribute('type', 'number');
+    }
+    await expect(page.getByLabel('Updated since', { exact: true })).toHaveAttribute('type', 'date');
+  });
+
+  test('labels: every field on /routes (Create region, Create route) has a name', async ({ browser }) => {
+    // The same gap, fixed by claude/fix-small-7 (d544585): Code, Name and Region were bare <label>s.
+    const page = await (await contextAs(browser, world.user('STW'))).newPage();
+    await page.goto('/routes');
+    await waitForHydrated(page.getByRole('button', { name: 'Create route' }));
+    expect(await unlabelledControls(page), 'unlabelled fields on /routes').toEqual([]);
+  });
+
+  test('labels: every filter on /audit has a name', async ({ browser }) => {
+    // The same gap, fixed by claude/fix-small-7 (19ff6e5): the search box and the Action and Entity selects had no label.
+    const page = await (await contextAs(browser, world.user('STW'))).newPage();
+    await page.goto('/audit');
+    await expect(page.getByRole('heading', { level: 1, name: 'Audit log' })).toBeVisible();
+    expect(await unlabelledControls(page), 'unlabelled fields on /audit').toEqual([]);
+  });
+
   test('errors use role=alert: a refused sign-in', async ({ browser }) => {
     const page = await (await contextAs(browser, null)).newPage();
     await signInViaUi(page, world.user('VW').username, 'not-the-right-password', { ip: world.ip(3) });
@@ -1423,7 +1452,8 @@ test.describe('platform: accessibility basics', { tag: ['@desktop'] }, () => {
   });
 
   test('images have alt text: the profile, the Enrich form and the review page', async ({ browser }) => {
-    test.skip(!fullEdit, 'the photos need R2');
+    notRunHere(!hasR2, 'the photos need R2');
+    test.skip(!fullEdit, 'the FULL request was not seeded');
     const full = world.customer('FULL');
     const sa = await (await contextAs(browser, world.user('SA'))).newPage();
     const m1 = await (await contextAs(browser, world.user('M1'))).newPage();
@@ -1443,7 +1473,6 @@ test.describe('platform: accessibility basics', { tag: ['@desktop'] }, () => {
 
   test('the phone drawer by keyboard: a dialog that takes the focus', async ({ browser }) => {
     // KNOWN_BUGS.drawerA11y, fixed (ee81e93): there was no role=dialog, no focus move, no focus trap.
-    test.fail(KNOWN_BUGS.drawerA11y.open, KNOWN_BUGS.drawerA11y.title);
     const page = await (await contextAs(browser, world.user('M1'), { device: 'phone' })).newPage();
     await page.goto('/dashboard');
     const open = page.getByRole('button', { name: 'Open menu' });
@@ -1577,7 +1606,7 @@ test.describe('platform: big lists and a slow phone', { tag: ['@phone'] }, () =>
   });
 
   test('/import/<batch>: the Promote button hydrates in German and Arabic browsers (fixed in wave 1)', async ({ browser }) => {
-    test.skip(SERVER_MODE === 'dev', 'next dev reports hydration differently');
+    notRunHere(SERVER_MODE === 'dev', 'next dev reports hydration differently');
     for (const locale of ['de-DE', 'ar-OM']) {
       const page = await (await contextAs(browser, world.user('STW'), { extra: { locale } })).newPage();
       const watch = watchProblems(page);
@@ -1591,7 +1620,7 @@ test.describe('platform: big lists and a slow phone', { tag: ['@phone'] }, () =>
   test('slow 4G and a 4x CPU: transferred JS and time to interactive per route are recorded; no server-only code reaches a chunk', async ({
     browser,
   }) => {
-    test.skip(SERVER_MODE === 'dev', 'next dev ships unminified development bundles');
+    notRunHere(SERVER_MODE === 'dev', 'next dev ships unminified development bundles');
     test.setTimeout(600_000);
     const first = world.customer(keys[0]!).id;
     const routes: Array<{ path: string; user: string | null; ready: (p: Page) => Locator }> = [
@@ -1688,7 +1717,7 @@ test.describe('platform: health probe, cron and ops endpoints, e-mail off', { ta
   });
 
   test('/api/health with the monitor bearer: db, R2 and heartbeats checked, alarms, commit and version', async () => {
-    test.skip(!monitorUsable, 'HEALTH_BEARER is not set (or shorter than 20) in this checkout’s .env');
+    notRunHere(!monitorUsable, 'HEALTH_BEARER is not set (or shorter than 20) in this checkout’s .env');
     const api = await pwRequest.newContext({ baseURL: BASE_URL });
     const res = await api.get('/api/health', { headers: { authorization: `Bearer ${monitor}` }, failOnStatusCode: false });
     expect([200, 503]).toContain(res.status());
@@ -1753,7 +1782,7 @@ test.describe('platform: health probe, cron and ops endpoints, e-mail off', { ta
   });
 
   test('keep-warm with the cron bearer answers {warm:true} and records its heartbeat', async () => {
-    test.skip(!cronSecret, 'CRON_SECRET is not set in this checkout’s .env: no authorized call can be made');
+    notRunHere(!cronSecret, 'CRON_SECRET is not set in this checkout’s .env: no authorized call can be made');
     const api = await pwRequest.newContext({ baseURL: BASE_URL });
     const since = new Date(Date.now() - 1_000);
     const res = await api.get('/api/cron/keep-warm', { headers: { authorization: `Bearer ${cronSecret}` }, failOnStatusCode: false });

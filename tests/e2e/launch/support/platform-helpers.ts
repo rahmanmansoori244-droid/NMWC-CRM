@@ -127,10 +127,10 @@ function scrubUrl(text: string): string {
 export type ProblemWatch = { hydration(): string[]; csp(): string[]; pageErrors(): string[] };
 
 /**
- * This spec's own watcher for one page, independent of the harness allow-list
- * (checks.ts still allow-lists /notifications #418 and the /import locale
- * mismatch while their KNOWN_BUGS entries say open — both were fixed in wave 1,
- * so here any hydration error fails).
+ * This spec's own watcher for one page, independent of the harness's. Any
+ * hydration error fails here, as it does in the harness now: the /notifications
+ * #418 and the /import locale mismatch were fixed in wave 1, so checks.ts
+ * allow-lists neither.
  */
 export function watchProblems(page: Page): ProblemWatch {
   const hydration: string[] = [];

@@ -26,11 +26,14 @@
  *
  * Fixed in the launch candidate and asserted as fixed (no test here is
  * test.fail): a result re-rendered in place (NAV_HANG, 8e47bc6) — shownInPlace
- * and landsInPlace FAIL on a hang instead of reloading; every streamed export
+ * and landsInPlace FAIL on a hang instead of reloading, timed from when the
+ * server finished (the database check polled from the tap, and the page's own
+ * calls, logged by openAs from the start: support/in-place.ts); every streamed export
  * downloads (81c936e); a promote refused for another live import leaves its
  * batch READY (49aa0d8); the inbound refresh records the first Temix code of a
  * customer the app created and sent (f73af5b); a workbook over the 4.2 MB cap
- * is refused in the app's words (7bf8fec, 81c37ce).
+ * is refused in the app's words, by the form (7bf8fec) and, replayed past the
+ * form, by the importer itself (81c37ce).
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts backoffice --project=desktop
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts backoffice --project=exclusive --workers=1
@@ -54,23 +57,29 @@ import {
   hasR2,
   installLaunchHooks,
   newId,
+  notRunHere,
   notificationsFor,
   omanDateISO,
   replayServerAction,
+  requestsOf,
   requireLaunchEnv,
   seedUpdateEdit,
   signInViaUi,
   snapshot,
+  trackRequests,
   type FixtureUser,
+  type RequestLog,
   type World,
 } from './support';
 import {
   IN_PLACE_MS,
+  MAX_IMPORT_BYTES,
   TEMIX_QUEUE_WHERE,
   XLSX_MIME,
   accountWorkbook,
   customerWorkbook,
   drainStewardImports,
+  importFileTooLarge,
   kpiValue,
   landsInPlace,
   liveCustomerPromotes,
@@ -115,8 +124,18 @@ function seeText(page: Page, text: string | RegExp, timeout = 120_000): Promise<
 async function openAs(browser: Browser, u: FixtureUser, path: string, device?: 'phone' | 'desktop'): Promise<Page> {
   const page = await (await contextAs(browser, u, device ? { device } : {})).newPage();
   acceptDialogs(page);
+  // Logged from the start, so every tap's own calls are seen: shownInPlace / landsInPlace time a
+  // result from when the server answered them (support/in-place.ts).
+  trackRequests(page);
   await page.goto(path);
   return page;
+}
+
+/** The calls a page opened with openAs has made: when the server answered a tap that changes only the address. */
+function callsOf(page: Page): RequestLog {
+  const log = requestsOf(page);
+  if (!log) throw new Error('callsOf: open the page with openAs, which logs its calls from the start');
+  return log;
 }
 
 /**
@@ -621,7 +640,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
   test('customer master: Promote loads the clean rows, and the salesman finds them on Today and in search', async ({ browser }) => {
     test.skip(!b1, 'needs the staged batch from the test before');
     const live = await liveCustomerPromotes();
-    test.skip(live > 0, `another customer import holds a live promote lease (${live}) — only one promote runs at a time`);
+    notRunHere(live > 0, `another customer import holds a live promote lease (${live}) — only one promote runs at a time`);
     test.setTimeout(300_000);
     const page = await openAs(browser, stw, `/import/${b1}`);
     const running = seeText(page, 'Promoting…');
@@ -758,7 +777,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
 
     // 4. Promote again.
     const live = await liveCustomerPromotes();
-    test.skip(live > 0, `another customer import holds a live promote lease (${live})`);
+    notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
     const done = seeText(page, '✓ Done — 2 rows promoted in this run.');
     await page.getByRole('button', { name: 'Promote 2 clean rows' }).click();
     await done;
@@ -807,7 +826,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     w.adopt.importBatch(b2);
 
     const live = await liveCustomerPromotes();
-    test.skip(live > 0, `another customer import holds a live promote lease (${live})`);
+    notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
     await page.goto(`/import/${b2}`);
     const done = seeText(page, '✓ Done — 1 rows promoted in this run · 1 customer(s) failed.');
     await page.getByRole('button', { name: 'Promote 2 clean rows' }).click();
@@ -820,7 +839,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     await expect(statValue(page, 'Rejected')).toHaveText('1');
     await expect(page.getByText('1 row(s) were rejected and are not in the master.')).toBeVisible();
     await page.getByRole('link', { name: 'See them with the reason' }).click();
-    await landsInPlace(page, /\?show=rejected$/, 'See them with the reason');
+    await landsInPlace(page, /\?show=rejected$/, 'See them with the reason', callsOf(page));
     await expect(batchRow(page, '#2')).toContainText(
       'Not loaded: customer is archived in the CRM, and an import does not bring an archived customer back — exclude the row; steward review'
     );
@@ -863,7 +882,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     await expect(workItem(work, b3)).toContainText('Promote interrupted — 0 of 3 rows loaded');
 
     const live = await liveCustomerPromotes();
-    test.skip(live > 0, `another customer import holds a live promote lease (${live})`);
+    notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
     const done = seeText(page, '✓ Done — 3 rows promoted in this run.');
     await resume.click();
     await done;
@@ -899,7 +918,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
       const id = await batchIdOf(msg);
       w.adopt.importBatch(id);
       const live = await liveCustomerPromotes();
-      test.skip(live > 0, `another customer import holds a live promote lease (${live})`);
+      notRunHere(live > 0, `another customer import holds a live promote lease (${live})`);
       await page.goto(`/import/${id}`);
       const done = seeText(page, '✓ Done — 1 rows promoted in this run.');
       await page.getByRole('button', { name: 'Promote 1 clean rows' }).click();
@@ -965,6 +984,29 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
       'File is too large (8704 KB). Maximum is 4.2 MB.'
     );
 
+    // The importer's own cap, behind the form's (81c37ce): the form never sends a bigger file (7bf8fec), so its
+    // upload action is captured with a small workbook (aborted in the browser: it never runs) and replayed by the
+    // Steward with the file 100 KB over the cap. Refused in the importer's words, and no batch.
+    const overName = `${w.sfx}-over-the-cap-replayed.xlsx`;
+    names.push(overName);
+    const small = await customerWorkbook([]);
+    await page.goto('/import');
+    const customers = page.locator('section').filter({ has: page.getByRole('heading', { level: 2, name: 'Customer master', exact: true }) });
+    await customers.locator('input[type="file"]').setInputFiles({ name: overName, mimeType: XLSX_MIME, buffer: small });
+    const captured = await captureServerAction(page, () => customers.getByRole('button', { name: 'Upload customer master' }).click());
+    await page.close();
+    const over = Buffer.alloc(MAX_IMPORT_BYTES + 100 * 1024, 0x41);
+    await resetStewardLimits(stw);
+    const replayed = await replayServerAction((await contextAs(browser, stw)).request, captured, {
+      mutateBody: (body) => {
+        const at = body.indexOf(small);
+        if (at < 0) throw new Error('the captured upload does not carry the workbook as it was picked');
+        return Buffer.concat([body.subarray(0, at), over, body.subarray(at + small.length)]);
+      },
+    });
+    expect(replayed.refused, replayed.text.slice(0, 300)).toBe(true);
+    expect(replayed.text, "the importer's own words").toContain(importFileTooLarge(over.length));
+
     expect(await db.importBatch.count({ where: { filename: { in: names } } }), 'no batch for a refused file').toBe(0);
     await resetStewardLimits(stw);
   });
@@ -1005,7 +1047,7 @@ test.describe('back office: only one customer promote runs at a time', { tag: ['
 
   test('a second batch is refused in words while another holds a live lease, holds no lease and loads nothing', async ({ browser }) => {
     const live = await liveCustomerPromotes();
-    test.skip(live > 0, `a real customer import holds a live promote lease (${live})`);
+    notRunHere(live > 0, `a real customer import holds a live promote lease (${live})`);
     test.setTimeout(300_000);
     const stw = w.user('STW');
     const [p1, p2] = await w.allocPhones(2);
@@ -1411,7 +1453,7 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
   });
 
   test.beforeEach(() => {
-    test.skip(
+    notRunHere(
       queuedBefore > 0,
       `${queuedBefore} real customer(s) are already queued for Temix on this database: Generate would take them. Run this on a Neon branch of UAT.`
     );
@@ -1458,12 +1500,19 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
     expect(sheet!.rows).toHaveLength(2);
 
     const r = batchRowOf(page, made.id);
-    await shownInPlace(page, 'Generate upload file', async (timeout) => {
-      await expect(temixTile(page, 'Pending upload')).toHaveText('0', { timeout });
-      await expect(temixTile(page, 'Pending deactivation')).toHaveText('0', { timeout });
-      await expect(temixTile(page, 'Uploaded — awaiting Temix')).toHaveText(String(uploadedBefore + 2), { timeout });
-      await expect(r).toContainText('awaiting confirm', { timeout });
-    });
+    // The server had done it before the download was read: the batch row is above. The page must show it
+    // IN_PLACE_MS after its own calls were answered.
+    await shownInPlace(
+      page,
+      'Generate upload file',
+      async (timeout) => {
+        await expect(temixTile(page, 'Pending upload')).toHaveText('0', { timeout });
+        await expect(temixTile(page, 'Pending deactivation')).toHaveText('0', { timeout });
+        await expect(temixTile(page, 'Uploaded — awaiting Temix')).toHaveText(String(uploadedBefore + 2), { timeout });
+        await expect(r).toContainText('awaiting confirm', { timeout });
+      },
+      async () => true
+    );
     await expect(r.locator('td').nth(2)).toHaveText('2');
     const states = await db.customer.findMany({
       where: { id: { in: [A.id, B.id] } },
@@ -1574,7 +1623,7 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
     const D = await world.addCustomer({ key: 'D', phone: true, archived: true, temixCode: null, temixSyncState: 'DEACTIVATE_PENDING', branches: [{ key: 'S', route: 'A' }] });
     await world.addCustomer({ key: 'E', phone: true, temixCode: D.code, branches: [{ key: 'S', route: 'A' }] });
     const otherQueued = await db.customer.count({ where: { AND: [TEMIX_QUEUE_WHERE, { id: { not: D.id } }] } });
-    test.skip(otherQueued > 0, `${otherQueued} other customer(s) joined the Temix queue meanwhile`);
+    notRunHere(otherQueued > 0, `${otherQueued} other customer(s) joined the Temix queue meanwhile`);
     const batches = () => db.temixSyncBatch.count({ where: { createdById: stw.id } });
     const before = await batches();
 
@@ -1822,7 +1871,7 @@ test.describe('back office: Excel exports', { tag: ['@desktop'] }, () => {
 
   test('a /customers export over 5,000 rows asks for narrower filters', async ({ browser }) => {
     const live = await db.customer.count({ where: { deletedAt: null } });
-    test.skip(live <= 5000, `UAT holds ${live} live customers: no filter matches more than 5,000`);
+    notRunHere(live <= 5000, `UAT holds ${live} live customers: no filter matches more than 5,000`);
     const page = await openAs(browser, w.user('STW'), '/customers');
     await page.getByRole('button', { name: 'Export filtered' }).click();
     await expect(page.locator('span[role="alert"]').filter({ hasText: /^Result is \d+ rows/ })).toHaveText(
@@ -2113,7 +2162,7 @@ test.describe('back office: audit log', { tag: ['@desktop'] }, () => {
     await expect(page.getByText('Page 1 of 2')).toBeVisible();
     const next = page.getByRole('link', { name: 'Next →' });
     await next.click();
-    await landsInPlace(page, /[?&]page=2/, 'Next →');
+    await landsInPlace(page, /[?&]page=2/, 'Next →', callsOf(page));
     await expect(page).toHaveURL(new RegExp(`[?&]q=${c1}`));
     await expect(page).toHaveURL(/[?&]action=UPDATE/);
     await expect(page.getByText('Page 2 of 2')).toBeVisible();
@@ -2306,7 +2355,7 @@ test.describe('back office: dashboards and service status', { tag: ['@desktop'] 
     const clear = page.getByRole('link', { name: 'Clear filters' });
     await expect(clear).toHaveAttribute('href', '/dashboard?period=7d');
     await clear.click();
-    await landsInPlace(page, /\/dashboard\?period=7d$/, 'Clear filters');
+    await landsInPlace(page, /\/dashboard\?period=7d$/, 'Clear filters', callsOf(page));
     await expect(pageSubtitle(page)).toHaveText(/^Whole organisation · /);
   });
 
@@ -2326,7 +2375,7 @@ test.describe('back office: dashboards and service status', { tag: ['@desktop'] 
     await expect(pageSubtitle(page)).toHaveText(/^Whole organisation · /, { timeout: 20_000 });
     await expectNoSideScroll(page);
     await page.getByRole('group', { name: 'Period' }).getByRole('button', { name: '90 days' }).click();
-    await landsInPlace(page, /[?&]period=90d/, 'the 90 days button');
+    await landsInPlace(page, /[?&]period=90d/, 'the 90 days button', callsOf(page));
     await expect(pageSubtitle(page)).toHaveText(/^Whole organisation · /);
     await expectNoSideScroll(page);
   });

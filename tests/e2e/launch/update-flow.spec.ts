@@ -27,10 +27,12 @@
  *       write (a customer follows its shops);
  *   critic P0  what changed after a request was sent: STALE_BEFORE, NEEDS_REUPLOAD,
  *       a shop deleted meanwhile;
- *   critic P2  a route switched off mid-week: his enrichment and his close request
- *       are refused in the route's words (fixed for launch, 804bda1).
+ *   critic P2  a route switched off mid-week: his enrichment, his close request,
+ *       his reactivation request (804bda1) and a photo attach (5e8929b) are
+ *       refused in the route's words, and nothing is written.
  *
- * R2 is required (every enrichment carries photos): those describes skip without it.
+ * R2 is required (every enrichment carries photos): those describes skip without
+ * it, listed as NOT RUN ON UAT (notRunHere).
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts update-flow --project=phone --project=desktop
  */
@@ -48,10 +50,12 @@ import {
   installLaunchHooks,
   mintSessionCookie,
   mintingProven,
+  notRunHere,
   notificationsFor,
   postForm,
   postJson,
   receiptEditId,
+  requestReactivationViaApi,
   requireLaunchEnv,
   seedUpdateEdit,
   signInViaUi,
@@ -63,6 +67,7 @@ import {
   type World,
 } from './support';
 import {
+  ROUTE_INACTIVE_MESSAGE,
   activityLine,
   bell,
   branchSection,
@@ -149,8 +154,8 @@ test.describe('update flow: a salesman enriches a customer, a Manager who is not
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(!hasR2, R2_SKIP);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
   let since: Date;
@@ -413,8 +418,8 @@ test.describe('update flow: the submit gate and the locked fields', { tag: ['@ph
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(!hasR2, R2_SKIP);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
   let since: Date;
@@ -619,8 +624,8 @@ test.describe('update flow: a customer with shops on two routes', { tag: ['@phon
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(!hasR2, R2_SKIP);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
   let since: Date;
@@ -723,8 +728,8 @@ test.describe('update flow: GPS — the accuracy standard, a typed point, a move
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(!hasR2, R2_SKIP);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
   let since: Date;
@@ -967,8 +972,8 @@ test.describe('update flow: GPS and photo evidence on the decision page', { tag:
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(!hasR2, R2_SKIP);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
   let since: Date;
@@ -1081,8 +1086,8 @@ test.describe('update flow: photos go live the moment they are up', { tag: ['@ph
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(!hasR2, R2_SKIP);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
   let since: Date;
@@ -1180,8 +1185,8 @@ test.describe('update flow: drafts on the phone and on the server', { tag: ['@ph
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(!hasR2, R2_SKIP);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
   let since: Date;
@@ -1320,8 +1325,8 @@ test.describe('update flow: sent back, fixed, sent again', { tag: ['@phone'] }, 
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(!hasR2, R2_SKIP);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
   let since: Date;
@@ -1516,7 +1521,7 @@ test.describe('update flow: direct edits by a Manager and the Data Steward', { t
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
+  notRunHere(!hasR2, R2_SKIP);
 
   let world: World;
   let since: Date;
@@ -1689,8 +1694,8 @@ test.describe('update flow: what changed after a request was sent', { tag: ['@de
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
-  test.skip(!hasR2, R2_SKIP);
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(!hasR2, R2_SKIP);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
   let since: Date;
@@ -1781,7 +1786,7 @@ test.describe('update flow: what changed after a request was sent', { tag: ['@de
 test.describe('update flow: a route switched off mid-week', { tag: ['@phone'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
-  test.skip(FULL_GATE, CORE_ONLY);
+  notRunHere(FULL_GATE, CORE_ONLY);
 
   let world: World;
 
@@ -1794,7 +1799,11 @@ test.describe('update flow: a route switched off mid-week', { tag: ['@phone'] },
         { key: 'M', role: 'MANAGER', regions: ['R'] },
         { key: 'S', role: 'SALESMAN', route: 'OFF', supervisor: 'M' },
       ],
-      customers: [{ key: 'C', phone: true, contact: 'Rashid Al Maskari', branches: [{ key: 'S', route: 'OFF' }] }],
+      customers: [
+        { key: 'C', phone: true, contact: 'Rashid Al Maskari', branches: [{ key: 'S', route: 'OFF' }] },
+        // A shop on the same route, closed yesterday: what a reactivation request would be about.
+        { key: 'CL', phone: true, branches: [{ key: 'S', route: 'OFF', status: 'CLOSED', lastStatusChangeAt: new Date(Date.now() - 86_400_000) }] },
+      ],
     });
   });
 
@@ -1803,15 +1812,18 @@ test.describe('update flow: a route switched off mid-week', { tag: ['@phone'] },
     await world?.cleanup();
   });
 
-  test('an enrichment on a switched-off route is refused, as New customer refuses one; so is a close request; nothing is written', async ({ browser }) => {
+  const REFUSED = { ok: false, code: 'FORBIDDEN', message: ROUTE_INACTIVE_MESSAGE };
+
+  test('an enrichment, a close request and a reactivation request on a switched-off route are refused, as New customer refuses one; nothing is written', async ({ browser }) => {
     // Was a P2 (critic), fixed by 804bda1: services/edits.ts never checked route.isActive, so this submit went through.
     // Enrichments, closes and reactivations are refused now in New customer's words (lib/errors.ts ROUTE_INACTIVE_MESSAGE).
     const c = world.customer('C');
+    const cl = world.customer('CL');
     const s = world.user('S');
     const page = await (await contextAs(browser, s)).newPage();
     await page.goto('/today');
     const sent = await submitEnrichViaApi(page, { customerId: c.id, customer: { contactPerson: world.name('New contact') } }, { world });
-    expect(sent, JSON.stringify(sent)).toMatchObject({ ok: false, code: 'FORBIDDEN', message: 'Your route is inactive — ask your supervisor.' });
+    expect(sent, JSON.stringify(sent)).toMatchObject(REFUSED);
     // A close request: the route is the first refusal, before its evidence photo is even looked at.
     const close = await postForm(page, 'branch-close', {
       submissionId: randomUUID(),
@@ -1819,8 +1831,40 @@ test.describe('update flow: a route switched off mid-week', { tag: ['@phone'] },
       reason: 'The shop has shut for good.',
       attachmentId: randomUUID(),
     });
-    expect(close, JSON.stringify(close)).toMatchObject({ ok: false, code: 'FORBIDDEN', message: 'Your route is inactive — ask your supervisor.' });
+    expect(close, JSON.stringify(close)).toMatchObject(REFUSED);
+    // A reactivation request for his closed shop (services/reactivations.ts): refused on the route, before the
+    // evidence photo is looked at.
+    const reopen = await requestReactivationViaApi(
+      page,
+      { branchId: cl.branch.id, reason: 'The shop has opened again.', attachmentId: randomUUID() },
+      world
+    );
+    expect(reopen, JSON.stringify(reopen)).toMatchObject(REFUSED);
     expect(await db.customerEdit.count({ where: { submittedById: s.id, state: { not: 'DRAFT' } } }), 'no request was filed').toBe(0);
     expect((await db.customer.findUniqueOrThrow({ where: { id: c.id }, select: { contactPerson: true } })).contactPerson).toBe('Rashid Al Maskari');
+    expect(await db.branch.findUniqueOrThrow({ where: { id: c.branch.id }, select: { status: true } }), 'the open shop stays open').toEqual({ status: 'ACTIVE' });
+    expect(await db.branch.findUniqueOrThrow({ where: { id: cl.branch.id }, select: { status: true } }), 'the closed shop stays closed').toEqual({ status: 'CLOSED' });
+  });
+
+  test('a photo attached to his shop on a switched-off route is refused; the slot and the photo are untouched', async ({ browser }) => {
+    // 5e8929b: the attach route refuses a salesman on a switched-off route, after the answer to a re-sent attach that
+    // already landed and before anything is written. The upload itself (presign, R2, finalize) is not route-checked.
+    notRunHere(!hasR2, 'the photo goes up through R2 before its attach is refused');
+    const c = world.customer('C');
+    const s = world.user('S');
+    const page = await (await contextAs(browser, s)).newPage();
+    await page.goto('/today');
+    const slotBefore = await db.branch.findUniqueOrThrow({ where: { id: c.branch.id }, select: { shopPhotoId: true, signboardPhotoId: true } });
+    const up = await uploadPhotoViaApi(page, world, { kind: 'SHOP' });
+    const attached = await postJson(page, '/api/photos/attach', { attachmentId: up.attachmentId, branchId: c.branch.id, slot: 'SHOP' });
+    expect(attached.status(), 'the attach route answers with the refusal (200)').toBe(200);
+    const answer = (await attached.json()) as unknown;
+    expect(answer, JSON.stringify(answer)).toMatchObject(REFUSED);
+    expect(await db.branch.findUniqueOrThrow({ where: { id: c.branch.id }, select: { shopPhotoId: true, signboardPhotoId: true } }), 'the slot is untouched').toEqual(slotBefore);
+    expect(
+      await db.attachment.findUniqueOrThrow({ where: { id: up.attachmentId }, select: { customerId: true, branchId: true, branchExtraId: true, editId: true } }),
+      'the photo is on no slot'
+    ).toEqual({ customerId: null, branchId: null, branchExtraId: null, editId: null });
+    expect(await auditFor({ entityId: c.branch.id, actorId: s.id }), 'no audit row: the attach did not happen').toEqual([]);
   });
 });

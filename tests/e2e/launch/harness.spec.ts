@@ -34,6 +34,7 @@ import {
   db,
   fetchAs,
   hasR2,
+  notRunHere,
   homePathFor,
   installLaunchHooks,
   mintingProven,
@@ -109,7 +110,7 @@ test.describe('launch harness', { tag: ['@phone', '@desktop'] }, () => {
   });
 
   test('a minted session opens every fixture user’s home without a sign-in', async ({ browser }) => {
-    test.skip(!mintingProven(), 'global setup could not prove minted cookies on this server');
+    notRunHere(!mintingProven(), 'global setup could not prove minted cookies on this server');
     test.setTimeout(300_000);
     for (const u of world.users()) {
       const ctx = await contextAs(browser, u, { auth: 'mint' });
@@ -152,7 +153,7 @@ test.describe('launch harness', { tag: ['@phone', '@desktop'] }, () => {
   });
 
   test('a seeded photo streams back through /api/photos/<id>, scope-checked', async ({ browser }) => {
-    test.skip(!hasR2, 'R2 is not configured');
+    notRunHere(!hasR2, 'R2 is not configured');
     const full = world.customer('FULL');
     expect(full.photos.map((p) => p.wire).sort()).toEqual(['CR', 'SHOP', 'SIGNBOARD']);
     const shop = full.photos.find((p) => p.wire === 'SHOP')!;
@@ -184,7 +185,7 @@ test.describe('launch harness', { tag: ['@phone', '@desktop'] }, () => {
   });
 
   test('a seeded update request matches the live row: it plans clean and the supervisor approves it', async ({ browser }) => {
-    test.skip(!hasR2, 'the approval gate needs FULL’s shop photo, which needs R2');
+    notRunHere(!hasR2, 'the approval gate needs FULL’s shop photo, which needs R2');
     const contact = world.name('Contact');
     const { id, fieldChanges } = await seedUpdateEdit(world, {
       customer: 'FULL',
@@ -223,7 +224,7 @@ test.describe('launch harness', { tag: ['@phone', '@desktop'] }, () => {
   });
 
   test('the API helpers upload a photo and send an enrich request; a captured approval replays as the right user only', async ({ browser }) => {
-    test.skip(!hasR2, 'the upload and the approval gate need R2');
+    notRunHere(!hasR2, 'the upload and the approval gate need R2');
     test.setTimeout(300_000);
     const sa = world.user('SA');
     const m1 = world.user('M1');

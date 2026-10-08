@@ -3,12 +3,11 @@
  *
  * watchPage() is attached by contextAs() to every page. A page error, a React
  * hydration error (#418/#423/#425, "Hydration failed", "did not match") or a CSP
- * refusal fails the test in its afterEach (installLaunchHooks), unless it is a
- * KNOWN bug on an allow-listed URL. The allow-list is by URL, not opted into per
- * test: many specs load /notifications, and #418 fires there on every full load
- * until the bug is fixed. When a bug is fixed, set `open: false` — its
- * allow-list entry then stops applying and its test.fail() marker shows the fix
- * as an unexpected pass.
+ * refusal fails the test in its afterEach (installLaunchHooks), unless it is an
+ * OPEN known bug on an allow-listed URL (by URL, not opted into per test). On the
+ * launch build every KNOWN_BUGS entry is fixed (open: false), so the allow-list
+ * excuses nothing: a hydration error on /notifications or /import fails the test
+ * like any other.
  */
 import { createHash } from 'node:crypto';
 import { expect, test, type Locator, type Page } from '@playwright/test';
@@ -51,12 +50,13 @@ export type KnownBugId =
 type Bug = { open: boolean; title: string; where: string; fixed?: string };
 
 /**
- * Defects the inventory found, asserted in their own tests:
- * test.fail(KNOWN_BUGS.x.open, KNOWN_BUGS.x.title). Every one is fixed in the
- * launch candidate (claude/launch-candidate, 8 Oct): all are open: false, so
- * their tests must pass and their allow-list entries below no longer excuse a
- * hydration error. A bug found open again goes back to open: true only with the
- * owner's word that it is left for after launch.
+ * Defects the inventory found, each asserted in its own test. Every one is fixed
+ * in the launch candidate (claude/launch-candidate, 8 Oct): all are open: false,
+ * their tests assert the fix and carry no test.fail marker any more, and their
+ * allow-list entries below no longer excuse a hydration error. A bug found open
+ * again goes back to open: true — with test.fail(KNOWN_BUGS.x.open,
+ * KNOWN_BUGS.x.title) in its test — only with the owner's word that it is left
+ * for after launch.
  */
 export const KNOWN_BUGS: Record<KnownBugId, Bug> = {
   needsCorrectionNeverClears: {
@@ -319,6 +319,31 @@ export function expectCleanConsole(): void {
     test.info().annotations.push({ type: 'known-bug-console', description: `${known.length} allow-listed console error(s)` });
   }
   expect(problems.map((p) => `${p.kind} on ${p.url}: ${p.text.slice(0, 300)}`), 'page errors / hydration / CSP').toEqual([]);
+}
+
+/**
+ * NoRegionNotice's one sentence (components/nmwc/NoRegionNotice.tsx; copied: it is
+ * a React component), shown in place of a region-scoped approver's empty queue —
+ * `requests` is 'approval requests' on /approvals, 'reactivation requests' on
+ * /reactivations. Was KNOWN_BUGS.noRegionEmptyState (fd41184, ea45750).
+ */
+export function noRegionNotice(requests: 'approval requests' | 'reactivation requests'): string {
+  return `No regions are assigned to this account, so no ${requests} can reach it. Ask the Data Steward to assign one: the Steward does it with Edit on your row of the Users page.`;
+}
+
+/**
+ * The region-less queue says why it is empty in NoRegionNotice's words, exactly
+ * once, and names the missing region nowhere else on the page (e8e6bc9: the
+ * header once said it too). A changed sentence or a second notice fails.
+ */
+export async function expectNoRegionNotice(
+  page: Page,
+  requests: 'approval requests' | 'reactivation requests',
+  what = page.url()
+): Promise<void> {
+  const main = page.getByRole('main');
+  await expect(main.getByText(noRegionNotice(requests), { exact: true }), `${what}: NoRegionNotice, word for word, once`).toHaveCount(1);
+  await expect(main.getByText(/no regions? (are |is )?assigned|no (managed )?regions/i), `${what}: the missing region is named in one place`).toHaveCount(1);
 }
 
 /** No horizontal scroll at the current viewport. */

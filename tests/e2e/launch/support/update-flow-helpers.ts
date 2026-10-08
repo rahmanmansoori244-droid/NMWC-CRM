@@ -20,6 +20,8 @@ import { db } from './env';
 import type { World } from './types';
 
 export { omanDateTime, omanWhen };
+/** lib/errors.ts: what a salesman on a switched-off route is told (enrichment, close, reactivation, photo attach). */
+export { ROUTE_INACTIVE_MESSAGE } from '../../../../lib/errors';
 
 /** Escapes a value for use inside a RegExp. */
 export function esc(s: string): string {

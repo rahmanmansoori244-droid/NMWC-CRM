@@ -52,10 +52,10 @@ export function utcYmd(at: Date = new Date()): string {
 /**
  * True between 20:00 and 24:00 UTC, when Oman is already on the next calendar
  * day but the server (TZ=UTC, like Vercel) is not. Only then can a server date
- * formatted without a time zone (KNOWN_BUGS.utcTimes) show the wrong DAY, so a
- * test.fail marker about a wrong date must be gated on this, or it "passes
- * unexpectedly" the other 20 hours:
- *   test.fail(KNOWN_BUGS.utcTimes.open && utcDateBehindOman(), KNOWN_BUGS.utcTimes.title)
+ * formatted without a time zone (KNOWN_BUGS.utcTimes, fixed in wave 1) show the
+ * wrong DAY. No spec carries a test.fail now; should a date bug be reopened with
+ * the owner's word, its marker must be gated on this, or it "passes
+ * unexpectedly" the other 20 hours.
  */
 export function utcDateBehindOman(at: Date = new Date()): boolean {
   return omanDateISO(at) !== at.toISOString().slice(0, 10);

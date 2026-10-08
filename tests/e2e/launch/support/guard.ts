@@ -23,8 +23,9 @@ export function requireLaunchEnv(): void {
 }
 
 /**
- * After each test: fail on page errors / hydration / CSP refusals (allow-listed
- * known bugs excepted), then close every context contextAs() opened.
+ * After each test: fail on page errors / hydration / CSP refusals (an OPEN known
+ * bug's allow-listed error excepted — none is open on the launch build), then
+ * close every context contextAs() opened.
  */
 export function installLaunchHooks(): void {
   test.afterEach(async () => {

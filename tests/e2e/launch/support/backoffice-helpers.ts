@@ -12,13 +12,15 @@
  */
 import ExcelJS from 'exceljs';
 import { randomBytes } from 'node:crypto';
-import { expect, test, type Download, type Locator, type Page } from '@playwright/test';
+import type { Download, Locator, Page } from '@playwright/test';
 import { db } from './env';
 import { FIXTURE_PASSWORD_SHAPE } from './secret-scan';
 import type { FixtureUser } from './types';
 
 export { omanDate, omanDateTime } from '../../../../lib/tz';
 export { TEMIX_QUEUE_WHERE } from '../../../../lib/temix';
+/** One cap for the import form and the importer (81c37ce): 4,300 KB, and the words a bigger file is told. */
+export { MAX_IMPORT_BYTES, importFileTooLarge } from '../../../../lib/import-file-size';
 
 export const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -200,77 +202,6 @@ export function pageSubtitle(page: Page): Locator {
   return page.locator('h1').first().locator('xpath=following-sibling::p[1]');
 }
 
-// ── App bugs this spec met, fixed in the launch candidate ────────────────────
+// ── Results shown in place (NAV_HANG, fixed by 8e47bc6): see in-place.ts ─────
 
-/**
- * Was an APP BUG (found by the salesman-phone run of 8 Oct), FIXED in the launch
- * candidate by 8e47bc6 (components/nmwc/TransitionWatchdog.tsx; back-off and
- * tripwire in dc134cd / a39a502): a client transition that re-renders the page in
- * place — router.refresh() after a server action (import row Correct / Release /
- * Exclude, Mark distinct, Mark loaded), the revalidated answer of a server action
- * (Create region / route, Disable / Enable), a link or button that changes only
- * the query string (Clear filters, a period button, Next →) — was often parked by
- * the React that Next 15.5 ships and never shown until a reload. The helpers below
- * used to reload on such a hang; now a hang FAILS the test.
- */
-export const NAV_HANG =
-  'A page re-rendered in place (router.refresh after an action, a revalidated action answer, a link that changes only the query string) is not shown until a reload';
-
-/** How long a page may take to show an action's result in place once the server has done it. */
-export const IN_PLACE_MS = 15_000;
-/** How long a slow server (UAT's database, shared with other runs) is given to do the work itself. */
-const SERVER_WORK_MS = 120_000;
-
-/**
- * An action's result that must show on the page, in place: `check(timeout)` is the
- * assertion. Shown within IN_PLACE_MS: done. Not yet: when `serverDid` (read from
- * the database) is given, the server gets up to SERVER_WORK_MS to do the work, and
- * the page must then show it within IN_PLACE_MS; without it, the page gets
- * SERVER_WORK_MS in all. A slow answer is recorded; a page that never shows what
- * the server did (NAV_HANG) fails — there is no reload any more.
- */
-export async function shownInPlace(
-  page: Page,
-  what: string,
-  check: (timeout: number) => Promise<unknown>,
-  serverDid?: () => Promise<boolean>
-): Promise<void> {
-  const start = Date.now();
-  const inPlace = await check(IN_PLACE_MS).then(
-    () => true,
-    () => false
-  );
-  if (inPlace) return;
-  if (serverDid) await expect.poll(serverDid, { message: `${what}: the server did it`, timeout: SERVER_WORK_MS }).toBe(true);
-  const late = await check(serverDid ? IN_PLACE_MS : SERVER_WORK_MS - IN_PLACE_MS).then(
-    () => null,
-    (e: unknown) => e
-  );
-  if (late === null) {
-    test.info().annotations.push({ type: 'slow in-place result', description: `${what}: shown after ${Date.now() - start} ms` });
-    return;
-  }
-  const at = new URL(page.url());
-  throw new Error(
-    `${what}: not shown in place at ${at.pathname}${at.search} — ` +
-      (serverDid
-        ? `the server did it, and the page did not show it ${IN_PLACE_MS / 1000} s later (${NAV_HANG})`
-        : `not after ${SERVER_WORK_MS / 1000} s (${NAV_HANG}, or the action was refused)`) +
-      `\n${String((late as Error)?.message ?? late).slice(0, 600)}`
-  );
-}
-
-/**
- * A tap that must land on `url` in the app: within IN_PLACE_MS, or, when
- * `serverDid` is given and the server is slow, within IN_PLACE_MS of the server
- * having done the work (up to SERVER_WORK_MS). A tap that never lands (NAV_HANG)
- * fails — the URL is not loaded for it any more.
- */
-export async function landsInPlace(
-  page: Page,
-  url: RegExp,
-  what: string,
-  serverDid?: () => Promise<boolean>
-): Promise<void> {
-  await shownInPlace(page, what, (timeout) => page.waitForURL(url, { timeout, waitUntil: 'commit' }), serverDid);
-}
+export { IN_PLACE_MS, NAV_HANG, SERVER_WORK_MS, landsInPlace, shownInPlace, trackRequests, type ServerDone } from './in-place';

@@ -8,6 +8,9 @@
  *   bash:  RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts --project=phone --project=desktop
  *   then:  … --project=exclusive --workers=1
  *   iPhone (WebKit, @iphone): … --project=iphone   (once: npx playwright install webkit)
+ *   The final run of the launch build: add LAUNCH_FINAL=1 to each step — the
+ *   "not run on UAT" summary (test-results/launch-not-run.json) is then always
+ *   printed, so every test the environment kept from running is named.
  *
  * This file runs in the runner AND again in every worker, so run-wide values
  * are set with `??=` (a plain Date.now() would give every worker its own run).
@@ -156,7 +159,24 @@ function preflight(): void {
 
 /** The first app source file changed after `since`, or null. */
 function newestSource(since: number): string | null {
-  const roots = ['app', 'components', 'lib', 'services', 'prisma/schema.prisma', 'middleware.ts', 'auth.config.ts', 'next.config.ts', 'instrumentation.ts', 'instrumentation-client.ts', 'package-lock.json'];
+  const roots = [
+    'app',
+    'components',
+    'lib',
+    'services',
+    'prisma/schema.prisma',
+    'middleware.ts',
+    'auth.config.ts',
+    'next.config.ts',
+    'instrumentation.ts',
+    'instrumentation-client.ts',
+    'package-lock.json',
+    // Build inputs outside the source folders: styles, the server/edge Sentry set-up, compiler options.
+    'tailwind.config.ts',
+    'postcss.config.mjs',
+    'tsconfig.json',
+    ...fs.readdirSync(REPO_ROOT).filter((f) => /^sentry\.[a-z]+\.config\.ts$/.test(f)),
+  ];
   const stack = roots.map((r) => path.join(REPO_ROOT, r)).filter((p) => fs.existsSync(p));
   while (stack.length) {
     const p = stack.pop()!;
@@ -212,9 +232,12 @@ export default defineConfig({
   globalTimeout: 3 * 60 * 60 * 1000,
   expect: { timeout: 20_000 },
   // The secret scan runs last: reporters end in this order, so the HTML report is on disk by then.
+  // Before it, the "not run on UAT" summary: every test the environment kept from running
+  // (notRunHere), in test-results/launch-not-run.json and at the end of the run.
   reporter: [
     ['list'],
     ['html', { outputFolder: `playwright-report/launch-${STEP}`, open: 'never' }],
+    ['./tests/e2e/launch/support/not-run-reporter.ts'],
     ['./tests/e2e/launch/support/secret-scan-reporter.ts'],
   ],
   globalSetup: './tests/e2e/launch/support/global-setup.ts',

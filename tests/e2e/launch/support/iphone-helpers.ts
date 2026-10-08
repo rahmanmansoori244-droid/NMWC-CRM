@@ -564,7 +564,7 @@ export async function fieldsUnder16px(root: Locator): Promise<string[]> {
   });
 }
 
-/** Collects React hydration errors and page errors of one page (the launch allow-list hides /notifications'). */
+/** Collects React hydration errors and page errors of one page, for a test that asserts on them itself. */
 export function collectHydrationErrors(page: Page): () => string[] {
   const seen: string[] = [];
   const HYDRATION = /#418|#423|#425|Hydration|did not match/i;

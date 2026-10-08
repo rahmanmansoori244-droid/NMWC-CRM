@@ -1,16 +1,19 @@
 /**
- * Helpers for tests/e2e/launch/salesman-phone.spec.ts only (its author's file;
- * nothing else in support/ imports it). Additive: no existing support module is
- * changed. Every write here touches the world's own rows only — a request the
- * world's salesman sent through the app's own route, then moved to the state a
- * test needs; a reactivation row on a world branch; buckets of world users.
+ * Helpers for tests/e2e/launch/salesman-phone.spec.ts (its author's file). The
+ * page's request log and the in-place timing it once kept are shared now
+ * (in-place.ts), and so are PhotoCaptureSlot's words (photo-slot-words.ts);
+ * both are re-exported here. Every write here touches the world's own rows
+ * only — a request the world's salesman sent through the app's own route, then
+ * moved to the state a test needs; a reactivation row on a world branch;
+ * buckets of world users.
  */
-import { expect, test, type CDPSession, type Locator, type Page, type Request } from '@playwright/test';
+import { expect, type CDPSession, type Locator, type Page } from '@playwright/test';
 import type { DayOfWeek, PaymentTerms, Prisma, Role } from '@prisma/client';
 import { resolveChain, stepDeadline } from '../../../../lib/approval-chains';
 import { db } from './env';
 import { newId } from './ids';
 import { submitCreateViaApi, receiptEditId } from './api';
+import { describeMiss, serverClock, untilShown, type RequestLog } from './in-place';
 import { uniquePng } from './media';
 import type { BranchSpec, FixtureCustomer, FixtureRoute, FixtureUser, World } from './types';
 
@@ -25,29 +28,16 @@ export {
 } from '../../../../lib/submission';
 export { CR_DOCUMENT_LOCKED_MESSAGE } from '../../../../lib/permissions';
 
-/*
- * PhotoCaptureSlot's words. Copied, not imported: that module is a 'use client'
- * React component (JSX, lucide icons), which the Playwright runner should not
- * load. Each line names the constant it mirrors in components/nmwc/PhotoCaptureSlot.tsx.
- */
-/** ATTACH_NO_ANSWER */
-export const ATTACH_NO_ANSWER = 'The photo is up, but attaching it got no answer. Tap Retry upload.';
-/** UPLOAD_SIGNED_OUT */
-export const UPLOAD_SIGNED_OUT =
-  'You need to sign in again, so the photo is not sent yet. Keep this page open, sign in in another tab, then tap Retry upload.';
-/** SLOW_LINK_MESSAGE */
-export const SLOW_LINK_MESSAGE =
-  'The connection is too slow to finish sending this photo. Move to better signal, then tap Retry upload.';
-/** UPLOAD_NO_CONNECTION (f960612): a step that got no answer on all three tries, in the app's words. */
-export const UPLOAD_NO_CONNECTION =
-  'No connection, so the photo is not sent yet. Keep this page open: the photo is held here until it is sent. Check the signal, then tap Retry upload.';
-/** HEIC_PHOTO_MESSAGE: compressImage's HEIC refusal (NEW-PHOTO-012). */
-export const HEIC_MESSAGE =
-  "Your phone is sending HEIC photos. Open Settings → Camera → Formats and switch to 'Most Compatible' (JPEG).";
-/** PHOTO_UNREADABLE_MESSAGE (287bdc0): any other photo the phone could not read or re-encode. */
-export const UNREADABLE_PHOTO_MESSAGE = 'This phone could not read this photo. Take it again, or pick another photo.';
-/** rateLimitWaitMessage(n), as a pattern. */
-export const RATE_WAIT = /Too many photos — trying again in \d+ s/;
+// PhotoCaptureSlot's words, defined once for every spec (photo-slot-words.ts).
+export {
+  ATTACH_NO_ANSWER,
+  HEIC_MESSAGE,
+  RATE_WAIT,
+  SLOW_LINK_MESSAGE,
+  UNREADABLE_PHOTO_MESSAGE,
+  UPLOAD_NO_CONNECTION,
+  UPLOAD_SIGNED_OUT,
+} from './photo-slot-words';
 
 /** The R2 host the browser PUTs a photo to (the presigned URL itself is never printed). */
 export const R2_HOST = /^https:\/\/[^/]*\.r2\.cloudflarestorage\.com\//;
@@ -94,110 +84,10 @@ export function retakeOf(slot: Locator): Locator {
   return slot.locator('label[aria-label="Retake photo"]');
 }
 
-/** What a page has asked the server for: the requests still open, and the last ones that ended. */
-export type RequestLog = {
-  summary(): string;
-  /** The app navigations (RSC requests, not prefetches) sent at or after `since` (Date.now()), as path + query. */
-  navigationsSince(since: number): string[];
-  /**
-   * The app's own calls sent at or after `since` — navigations, refreshes and
-   * server actions, not prefetches: how many are still unanswered, and when the
-   * last of the others ended (0 if none).
-   */
-  answeringSince(since: number): { open: number; lastEnd: number };
-};
-
-/**
- * Logs every request a page makes, for the message of a navigation that does
- * not land. App requests are named by path and query (the _rsc cache-buster
- * dropped) and by kind (rsc / prefetch / document …); anything else is only
- * "<external>" — the R2 PUT carries a presigned URL, which is never printed.
- */
-export function trackRequests(page: Page): RequestLog {
-  const t0 = Date.now();
-  const open = new Map<Request, number>();
-  const headersAt = new Map<Request, number>();
-  const ended: string[] = [];
-  const navigations: Array<{ at: number; url: string }> = [];
-  const appCalls = new Map<Request, { sent: number; ended: number }>();
-  const isLocal = (r: Request) => {
-    try {
-      const u = new URL(r.url());
-      return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
-    } catch {
-      return false;
-    }
-  };
-  const name = (r: Request): string => {
-    let u: URL;
-    try {
-      u = new URL(r.url());
-    } catch {
-      return `${r.method()} <unparsable>`;
-    }
-    if (u.hostname !== 'localhost' && u.hostname !== '127.0.0.1') return `${r.method()} <external> [${r.resourceType()}]`;
-    u.searchParams.delete('_rsc');
-    const h = r.headers();
-    const kind = h['next-router-prefetch'] ? 'prefetch' : h['rsc'] ? 'rsc' : r.resourceType();
-    return `${r.method()} ${u.pathname}${u.search} [${kind}]`;
-  };
-  const end = (r: Request, how: string) => {
-    const s = open.get(r);
-    open.delete(r);
-    const call = appCalls.get(r);
-    if (call) call.ended = Date.now();
-    if (s === undefined) return;
-    ended.push(`${name(r)} ${how} in ${Date.now() - s} ms (sent at +${s - t0} ms)`);
-    if (ended.length > 40) ended.shift();
-  };
-  page.on('request', (r) => {
-    open.set(r, Date.now());
-    const h = r.headers();
-    if (isLocal(r) && ((h['rsc'] && !h['next-router-prefetch']) || h['next-action'])) appCalls.set(r, { sent: Date.now(), ended: 0 });
-    if (h['rsc'] && !h['next-router-prefetch']) {
-      try {
-        const u = new URL(r.url());
-        if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') {
-          u.searchParams.delete('_rsc');
-          navigations.push({ at: Date.now(), url: `${u.pathname}${u.search}` });
-        }
-      } catch {
-        /* not an app URL */
-      }
-    }
-  });
-  page.on('response', (res) => headersAt.set(res.request(), Date.now()));
-  page.on('requestfinished', (r) => end(r, 'finished'));
-  page.on('requestfailed', (r) => end(r, `failed (${r.failure()?.errorText ?? '?'})`));
-  return {
-    summary() {
-      const now = Date.now();
-      const pending = [...open.entries()].map(([r, s]) => {
-        const h = headersAt.get(r);
-        return `  ${name(r)} open for ${now - s} ms (sent at +${s - t0} ms, ${h === undefined ? 'no answer yet' : `answer began after ${h - s} ms`})`;
-      });
-      return [
-        `still open (${pending.length}):`,
-        ...pending,
-        `last ended (${Math.min(ended.length, 15)}):`,
-        ...ended.slice(-15).map((l) => `  ${l}`),
-      ].join('\n');
-    },
-    navigationsSince(since) {
-      return navigations.filter((n) => n.at >= since).map((n) => n.url);
-    },
-    answeringSince(since) {
-      let openCalls = 0;
-      let lastEnd = 0;
-      for (const c of appCalls.values()) {
-        if (c.sent < since) continue;
-        if (c.ended === 0) openCalls += 1;
-        else lastEnd = Math.max(lastEnd, c.ended);
-      }
-      return { open: openCalls, lastEnd };
-    },
-  };
-}
+// The page's own calls, and the shared "in place" timing (in-place.ts): a tap's
+// result must show IN_PLACE_MS after the server answered; the server gets
+// SERVER_WORK_MS from the tap. Both are hard limits.
+export { trackRequests, type RequestLog } from './in-place';
 
 /** The page's stylesheets as React's commit sees them: path, precedence, and whether the sheet is loaded. */
 async function stylesheetState(page: Page): Promise<string> {
@@ -210,42 +100,14 @@ async function stylesheetState(page: Page): Promise<string> {
     .catch((e: unknown) => `(could not read: ${String((e as Error)?.message ?? e).slice(0, 80)})`);
 }
 
-/** A tap inside the app that should land on another URL at once — counted from the server's answer. */
-export const PROMPT_LANDING_MS = 15_000;
-/** How long a slow server answer is waited for before the tap's own PROMPT_LANDING_MS starts. */
-const SERVER_ANSWER_MS = 120_000;
-
-/**
- * Waits until `shown` holds: within PROMPT_LANDING_MS of the tap, or, while the
- * app's own calls sent since the tap are still unanswered (a slow UAT database,
- * other runs sharing it), within PROMPT_LANDING_MS of the last of them ending.
- * A slow answer is recorded, not failed; a page that does not show what it was
- * answered is a failure (false).
- */
-async function promptly(log: RequestLog, start: number, what: string, shown: (timeout: number) => Promise<boolean>): Promise<boolean> {
-  const since = start - 1_000;
-  for (;;) {
-    const now = Date.now();
-    const { open, lastEnd } = log.answeringSince(since);
-    const deadline = open > 0 ? Math.min(start + SERVER_ANSWER_MS, now + 1_000) : Math.max(start, lastEnd) + PROMPT_LANDING_MS;
-    if (deadline <= now) return false;
-    if (await shown(Math.min(deadline - now, 1_000))) {
-      const took = Date.now() - start;
-      if (lastEnd - start > PROMPT_LANDING_MS) {
-        test.info().annotations.push({ type: 'slow server answer', description: `${what}: answered after ${lastEnd - start} ms` });
-      } else if (took > 5_000) {
-        test.info().annotations.push({ type: 'slow navigation', description: `${what}: ${took} ms` });
-      }
-      return true;
-    }
-  }
-}
-
 /**
  * Waits until the page's URL matches, after a tap that navigates inside the app
- * (call it right after the tap: `since` is when the tap was made). A tap that
- * has not landed PROMPT_LANDING_MS after the server answered fails the test,
- * saying what the app asked the server for and which requests were still open.
+ * (call it right after the tap: `since` is when the tap was made). The server
+ * answered when the last of the app's calls since the tap ended (`log`, from
+ * trackRequests before the tap). A tap that has not landed IN_PLACE_MS after
+ * that fails (NAV_HANG), and so does a server still not answering
+ * SERVER_WORK_MS after the tap; the failure says what the app asked the server
+ * for and which requests were still open.
  *
  * Fixed 8 Oct (components/nmwc/TransitionWatchdog.tsx): a tap that changed only
  * the query string of /today or /customers often never landed — the RSC answer
@@ -262,44 +124,29 @@ export async function landsOn(
   o: { since?: number } = {}
 ): Promise<void> {
   const start = o.since ?? Date.now();
-  const landed = await promptly(log, start, what, (timeout) =>
-    page.waitForURL(url, { timeout, waitUntil: 'commit' }).then(
-      () => true,
-      () => false
-    )
-  );
-  if (landed) return;
+  const miss = await untilShown(start, what, serverClock(log, start), (timeout) => page.waitForURL(url, { timeout, waitUntil: 'commit' }));
+  if (!miss) return;
   const at = new URL(page.url());
   const asked = log.navigationsSince(start - 1_000);
   throw new Error(
-    `${what}: not landed ${PROMPT_LANDING_MS / 1000} s after the server answered — still at ${at.pathname}${at.search}; ` +
+    `${what}: not landed — ${describeMiss(miss)}; still at ${at.pathname}${at.search}; ` +
       `the app asked the server for: ${asked.join(', ') || 'nothing'}\nstylesheets: ${await stylesheetState(page)}\n${log.summary()}`
   );
 }
 
 /**
  * After an action that ends in router.refresh(): what it shows, within
- * PROMPT_LANDING_MS of the server's answer (as landsOn). The refresh is the same
- * client transition as a tap; when it does not show, the failure says whether
- * the server did the work (`done`), which separates a page that was never
- * refreshed from a refused action.
+ * IN_PLACE_MS of the server finishing — the later of `done` first reading true
+ * (polled from the tap) and the last of the page's calls being answered (`log`).
+ * The refresh is the same client transition as a tap; the failure says whether
+ * the server did the work, which separates a page that was never refreshed
+ * from a refused action.
  */
 export async function shownAfterRefresh(log: RequestLog, shown: Locator, what: string, done: () => Promise<boolean>): Promise<void> {
-  const ok = await promptly(log, Date.now(), what, (timeout) =>
-    expect(shown)
-      .toBeVisible({ timeout })
-      .then(
-        () => true,
-        () => false
-      )
-  );
-  if (ok) return;
-  const serverDidIt = await done();
-  throw new Error(
-    `${what}: not shown ${PROMPT_LANDING_MS / 1000} s after the server answered — ` +
-      (serverDidIt ? 'the server did the work, the page was never refreshed' : 'the server did not do it either') +
-      `\n${log.summary()}`
-  );
+  const start = Date.now();
+  const miss = await untilShown(start, what, serverClock(done, start, log), (timeout) => expect(shown).toBeVisible({ timeout }));
+  if (!miss) return;
+  throw new Error(`${what}: not shown — ${describeMiss(miss)}\n${log.summary()}`);
 }
 
 /**

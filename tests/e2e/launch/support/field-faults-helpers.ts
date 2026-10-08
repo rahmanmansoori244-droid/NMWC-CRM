@@ -23,21 +23,13 @@ import { uniquePng } from './media';
 export { OFFLINE_MESSAGE, PHOTO_UPLOADING_MESSAGE, UNCONFIRMED_MESSAGE } from '../../../../lib/submission';
 export { SUBMIT_TIMEOUT_MS } from '../../../../lib/submit-client';
 
+// PhotoCaptureSlot's words and limits, defined once for every spec (photo-slot-words.ts).
+export { PHOTO_TRIES, UPLOAD_NO_CONNECTION, UPLOAD_STALL_MS } from './photo-slot-words';
+
 /*
  * Copied, not imported: these live in 'use client' React components (JSX, lucide
  * icons) that the Playwright runner should not load. Each line names its source.
  */
-/** components/nmwc/PhotoCaptureSlot.tsx UPLOAD_STALL_MS: how long the PUT may go without a sign of life. */
-export const UPLOAD_STALL_MS = 45_000;
-/** components/nmwc/PhotoCaptureSlot.tsx RETRY_DELAYS.length: tries per step before "Retry upload". */
-export const PHOTO_TRIES = 3;
-/**
- * PhotoCaptureSlot's UPLOAD_NO_CONNECTION (f960612, da545ac): what a slot says when a photo step got no
- * answer on all three tries — a dropped connection of any kind, the R2 PUT's ERR_TIMED_OUT included.
- * Copied, not imported: that module is a 'use client' React component.
- */
-export const UPLOAD_NO_CONNECTION =
-  'No connection, so the photo is not sent yet. Keep this page open: the photo is held here until it is sent. Check the signal, then tap Retry upload.';
 /** components/nmwc/GpsCaptureButton.tsx: the error line for each GeolocationPositionError code. */
 export const GPS_DENIED = 'Location permission denied. Tap below to enter coordinates manually.';
 export const GPS_UNAVAILABLE = 'Location unavailable. Tap below to enter coordinates manually.';

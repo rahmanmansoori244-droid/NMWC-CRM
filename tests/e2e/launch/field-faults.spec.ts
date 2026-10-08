@@ -31,6 +31,7 @@ import {
   db,
   fetchAs,
   hasR2,
+  notRunHere,
   installLaunchHooks,
   listFixturePrefix,
   notificationsFor,
@@ -270,7 +271,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
 
     test('held 70 s, then let go: "No answer" at 30 s and never "saved"; at most one request lands; Try again ends with exactly one', async ({ browser }) => {
       test.setTimeout(300_000);
-      test.skip(FULL_GATE, CORE_ONLY);
+      notRunHere(FULL_GATE, CORE_ONLY);
       const { customer, page } = await phoneOf(browser, 'H1');
       const posts = countRequests(page, pathIs(FORM_PATH));
       const submit = await openEnrich(page, customer.id);
@@ -308,7 +309,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
 
     test('held 70 s, then timed out: "No answer" (the phone cannot know), nothing written; Try again sends it once under the same id', async ({ browser }) => {
       test.setTimeout(300_000);
-      test.skip(FULL_GATE, CORE_ONLY);
+      notRunHere(FULL_GATE, CORE_ONLY);
       const { customer, page } = await phoneOf(browser, 'H2');
       const posts = countRequests(page, pathIs(FORM_PATH));
       const submit = await openEnrich(page, customer.id);
@@ -336,7 +337,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
 
     test('read at once, its reply held 70 s: "No answer", not "saved"; Try again during the stall says "Already received"; the late reply changes nothing', async ({ browser }) => {
       test.setTimeout(300_000);
-      test.skip(FULL_GATE, CORE_ONLY);
+      notRunHere(FULL_GATE, CORE_ONLY);
       const { customer, page } = await phoneOf(browser, 'H3');
       const posts = countRequests(page, pathIs(FORM_PATH));
       const submit = await openEnrich(page, customer.id);
@@ -378,7 +379,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
   test.describe('(b) dropped connections', () => {
     for (const [i, code] of FIELD_ABORTS.entries()) {
       test(`submit, ${code}: "No answer" at once, nothing written, no resend behind his back; Try again sends it once under the same id`, async ({ browser }) => {
-        test.skip(FULL_GATE, CORE_ONLY);
+        notRunHere(FULL_GATE, CORE_ONLY);
         const { customer, page } = await phoneOf(browser, `D${i}`);
         const posts = countRequests(page, pathIs(FORM_PATH));
         const sids = submissionIdsSent(page);
@@ -448,7 +449,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
 
     for (const [i, step] of (['presign', 'R2 PUT', 'finalize'] as const).entries()) {
       test(`photo, ${step} dropped (${STEPS[step].codes.join(', ')}): three silent tries, then "Retry upload" with the photo kept; Retry attaches it once; a single drop is retried without a word`, async ({ browser }) => {
-        test.skip(!hasR2, 'photo uploads need R2');
+        notRunHere(!hasR2, 'photo uploads need R2');
         test.setTimeout(300_000);
         const s = STEPS[step];
         const { user, customer, page } = await phoneOf(browser, `P${i}`);
@@ -530,7 +531,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
       // error, abort and load events only. Chromium reports a PUT that fails with net::ERR_TIMED_OUT as the XHR
       // "timeout" event (even with xhr.timeout unset), so each try was ended only by the 45 s stall watchdog: three
       // tries took about 2¼ minutes of "Uploading… 0%" with Submit held. It has an ontimeout now: noticed at once.
-      test.skip(!hasR2, 'photo uploads need R2');
+      notRunHere(!hasR2, 'photo uploads need R2');
       test.setTimeout(300_000);
       const s = STEPS['R2 PUT'];
       const { user, customer, page } = await phoneOf(browser, 'PT');
@@ -574,7 +575,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
     test('a presign or finalize that cannot be reached is worded for the salesman, not with the browser’s own "Failed to fetch"', async ({ browser }) => {
       // Was a bug (PhotoCaptureSlot showed fetch's own "Failed to fetch"); fixed in the launch candidate:
       // a dropped connection, three times, now reads UPLOAD_NO_CONNECTION (components/nmwc/PhotoCaptureSlot.tsx uploadChain's catch).
-      test.skip(!hasR2, 'photo uploads need R2');
+      notRunHere(!hasR2, 'photo uploads need R2');
       const { customer, page } = await phoneOf(browser, 'PW');
       await openEnrich(page, customer.id);
       const said: string[] = [];
@@ -604,7 +605,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
     const CRAWL_S = 60;
 
     test('"Uploading… n%" climbs while Submit waits and the slot takes no second pick; one presign, one PUT, one Attachment, one R2 object', async ({ browser }) => {
-      test.skip(!hasR2, 'photo uploads need R2');
+      notRunHere(!hasR2, 'photo uploads need R2');
       test.setTimeout(480_000);
       const { user, customer, page } = await phoneOf(browser, 'CR1');
       const counts = chainCounter(page);
@@ -661,7 +662,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
 
   test.describe('(d) offline mid-form', () => {
     test('he types on with no signal and the phone copy keeps it; the photo and Submit both say so; back online, Retry upload and Try again each send once', async ({ browser }) => {
-      test.skip(FULL_GATE, CORE_ONLY);
+      notRunHere(FULL_GATE, CORE_ONLY);
       test.setTimeout(240_000);
       const { user, customer, ctx, page } = await phoneOf(browser, 'O1');
       const posts = countRequests(page, pathIs(FORM_PATH));
@@ -713,7 +714,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
     });
 
     test('the tab reloaded with no signal (the phone dropped it): back online, the form brings back what he typed and Submit sends it once', async ({ browser }) => {
-      test.skip(FULL_GATE, CORE_ONLY);
+      notRunHere(FULL_GATE, CORE_ONLY);
       const { user, customer, ctx, page } = await phoneOf(browser, 'O2');
       await openEnrich(page, customer.id);
       const contact = world.name('Khalfan Al Wahaibi');
@@ -956,7 +957,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
     });
 
     test('the enrich form: open, type, the phone copy saved, Submit answered — timed', async ({ browser }) => {
-      test.skip(FULL_GATE, CORE_ONLY);
+      notRunHere(FULL_GATE, CORE_ONLY);
       test.setTimeout(300_000);
       const page = await (await contextAs(browser, sl.user, { device: 'phone' })).newPage();
       const { cdp, cores } = await slowPhone(page);
@@ -996,7 +997,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
     });
 
     test('a 12 MP camera photo: compression and upload, timed', async ({ browser }) => {
-      test.skip(!hasR2, 'photo uploads need R2');
+      notRunHere(!hasR2, 'photo uploads need R2');
       test.setTimeout(480_000);
       const page = await (await contextAs(browser, sl.user, { device: 'phone' })).newPage();
       noteR2CorsRefusal(page);
@@ -1061,7 +1062,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
     }
 
     test('frozen 20 s (the camera app in front), then resumed: the upload finishes by itself; one Attachment, nothing to retry', async ({ browser }) => {
-      test.skip(!hasR2, 'photo uploads need R2');
+      notRunHere(!hasR2, 'photo uploads need R2');
       test.setTimeout(420_000);
       const { user, customer, page } = await phoneOf(browser, 'FZ1');
       const counts = chainCounter(page);
@@ -1092,7 +1093,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
     });
 
     test('frozen 60 s — past the 45 s stall limit — then resumed: never stuck "Uploading…"; one Attachment; reloaded, what he typed and the photo are back', async ({ browser }) => {
-      test.skip(!hasR2, 'photo uploads need R2');
+      notRunHere(!hasR2, 'photo uploads need R2');
       test.setTimeout(480_000);
       const { user, customer, page } = await phoneOf(browser, 'FZ2');
       const counts = chainCounter(page);

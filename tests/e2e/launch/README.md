@@ -45,8 +45,23 @@ suite refuses that folder and any URL containing `ep-sweet-haze`).
    These touch org-wide state (Temix Generate moves the whole queue; the SLA
    sweep escalates every overdue request). Each first checks that only its own
    fixtures would be affected and skips, with the counts, when real UAT rows
-   would be — which on UAT is likely. Their real home is a Neon branch of UAT
-   with its own server (set `DATABASE_URL`/`DIRECT_URL` to the branch for that run).
+   would be — which on UAT is likely. Such a skip is never quiet: it is listed
+   as NOT RUN ON UAT (below). Their real home is a Neon branch of UAT with its
+   own server (set `DATABASE_URL`/`DIRECT_URL` to the branch for that run).
+   The suite never puts data into the real Temix queue to make them runnable.
+
+4. The final run of the launch build: run both steps (and `--project=iphone`)
+   with `LAUNCH_FINAL=1` as well (PowerShell: `$env:LAUNCH_FINAL = '1'`).
+   Every test the environment keeps from running — no R2, real customers in
+   the UAT Temix queue, a real overdue request in the SLA sweep's way, another
+   live import holding the promote lease, the FULL submit gate, a WebKit that
+   cannot keep the session — is skipped with `notRunHere()`
+   (`support/not-run.ts`): its reason starts with `NOT RUN ON UAT:`, and the
+   `support/not-run-reporter.ts` reporter lists it, with its project and why,
+   in `test-results/launch-not-run.json` (one entry per step, so step 2 keeps
+   step 1's) and at the end of the run. With `LAUNCH_FINAL=1` that summary is
+   printed even when it is empty. A test on that list is **not verified** by
+   the run, whatever the pass count says: report it next to the counts.
 
 PowerShell: set the variable first, then run the same command without the
 prefix — `$env:RUN_LAUNCH_E2E = '1'; node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts --project=phone --project=desktop`.
@@ -56,8 +71,10 @@ alternation, a path with spaces): put it in the config or in an env variable.
 
 Reports: `playwright-report/launch-<step>/`, screenshots and error context of
 failures in `test-results/launch-<step>/` (one folder per step, so step 2 keeps
-step 1's). The server's own output goes to `.e2e-launch/server-<step>.log` —
-never to the console, because a server error can quote a connection string.
+step 1's); the tests that could not run here in
+`test-results/launch-not-run.json`. The server's own output goes to
+`.e2e-launch/server-<step>.log` — never to the console, because a server error
+can quote a connection string.
 
 **No traces, and a secret scan.** Every context carries a session cookie, some
 type a password, and the photo upload uses a presigned R2 URL (the account id,
@@ -91,8 +108,8 @@ RUN_LAUNCH_E2E=1 E2E_WORKERS=10 E2E_RUN_BUDGET_MIN=180 node scripts/qa/run-with-
   production's `connection_limit` to load it as production is loaded. Each
   worker holds up to 5 connections of its own (3 test, 2 owner), so ten workers
   and the server need about 60 from the UAT compute — check its limit first.
-- `E2E_RUN_BUDGET_MIN` is the run's real length: the clock guard refuses a
-  start whose budget crosses Oman midnight (20:00 UTC).
+- `E2E_RUN_BUDGET_MIN` is the run's real length: with `E2E_CLOCK_GUARD=on` the
+  clock guard refuses a start whose budget crosses Oman midnight (20:00 UTC).
 - Afterwards: search `.e2e-launch/server-main.log` for `P2024`, `pool timeout`
   and `DB_UNAVAILABLE` (a test that failed on one of those failed on the pool,
   not on the app — report it as such), then run `sweep-cli.ts --check` (zero
@@ -112,13 +129,19 @@ The config checks, before the server starts:
 
 - `DATABASE_URL`/`DIRECT_URL` set, not production; not the Desktop clone;
 - no `.env.local`, `.env.production`, `.env.development` (`next start` would read them over the UAT `.env`);
-- the clock: no Oman midnight (20:00 UTC) inside the run's budget
+- the clock, only with `E2E_CLOCK_GUARD=on` (owner decision 8 Oct: off by
+  default — the app shows Oman time everywhere, so a run across 20:00–24:00 UTC
+  tests that fix; re-run a date failure after Oman midnight before reporting
+  it as an app bug): no Oman midnight (20:00 UTC) inside the run's budget
   (`E2E_RUN_BUDGET_MIN`, default 120 minutes) and no start in the four hours
   after it, while the server's UTC date is still a day behind Oman's — with the
   default budget, no start between 18:00 and 24:00 UTC — and no overlap with
   Neon's compute-update window (Thursday 23:00–24:00 UTC);
 - a production build exists, is newer than every file in `app/`,
-  `components/`, `lib/`, `services/`, the schema and the root configs, and has
+  `components/`, `lib/`, `services/`, the schema and the root configs
+  (`next.config.ts`, `middleware.ts`, `auth.config.ts`, the instrumentation
+  files, `tailwind.config.ts`, `postcss.config.mjs`, `sentry.*.config.ts`,
+  `tsconfig.json`, `package-lock.json`), and has
   no Sentry DSN inlined in `.next/static` or `.next/server`;
 - `prisma migrate status` (read-only) says UAT is up to date with this checkout;
 - this Node honours `TZ=UTC`.
@@ -144,7 +167,9 @@ streams back through `/api/photos/<id>`; a **minted** cookie opens a home page;
 | `E2E_SERVER` | prod | `dev` = `next dev` while authoring (CSP/hydration/perf tests skip themselves) |
 | `E2E_SERVER_DB_CONNECTIONS` | 10 | the server's Prisma pool (`connection_limit`, with `pool_timeout=30`) |
 | `E2E_RUN_BUDGET_MIN` | 120 | how long the run may take, for the clock guard |
+| `E2E_CLOCK_GUARD` | off | `on` brings back the clock guard's refusal (Oman midnight, Neon's update window) |
 | `E2E_RUN_ID` | generated | set by the config with `??=`; set it yourself only to resume a run's naming |
+| `LAUNCH_FINAL` | — | `1` on the final run of the launch build: the "not run on UAT" summary is always printed |
 
 The server listens on `127.0.0.1` only (`-H 127.0.0.1`): it holds the UAT
 database URL, `AUTH_SECRET` and production's R2 keys and trusts
@@ -284,16 +309,34 @@ test.describe('today', { tag: ['@phone'] }, () => {
 - Read-backs: `notificationsFor`, `auditFor`, `snapshot(tables, where)` (a hash
   for "nothing changed"). Media: `tinyJpeg`, `uniquePng` (unique after browser
   compression), `jpegInBrowser` (big camera JPEG), `fakeHeic`, `tinyPdf`, `textFile`.
-- Known bugs: `test.fail(KNOWN_BUGS.x.open, KNOWN_BUGS.x.title)` in their own
-  non-serial tests; set `open: false` when fixed. `/notifications` #418 is
-  allow-listed by URL for every test while it is open. A marker about a wrong
-  server DATE only holds between 20:00 and 24:00 UTC: gate it with
-  `utcDateBehindOman()`, or it "passes unexpectedly" the rest of the day.
-  On the final launch build (8 Oct) every KNOWN_BUGS entry is fixed
-  (`open: false`, with `fixed` naming where) and no spec carries a `test.fail`:
-  every test must pass. The in-place helpers (`landsOn`, `shownAfterRefresh`,
-  `shownInPlace`, `landsInPlace`, create-chains' `createHere`) FAIL on a
-  navigation hang; they no longer reload or load the URL for it.
+- Known bugs: on the final launch build (8 Oct) every KNOWN_BUGS entry is
+  fixed (`open: false`, with `fixed` naming where), no spec carries a
+  `test.fail` and the console allow-list (support/checks.ts) excuses nothing —
+  a hydration error on `/notifications` or `/import` fails like any other:
+  every test must pass. A bug reopened with the owner's word that it waits for
+  after launch goes back to `open: true` with
+  `test.fail(KNOWN_BUGS.x.open, KNOWN_BUGS.x.title)` in its own non-serial test
+  (a marker about a wrong server DATE only holds between 20:00 and 24:00 UTC:
+  gate it with `utcDateBehindOman()`).
+- Results shown in place (`support/in-place.ts`; NAV_HANG was fixed by
+  8e47bc6): `shownInPlace`, `landsInPlace`, salesman-phone's `landsOn` /
+  `shownAfterRefresh`, create-chains' `createHere` and approvals-queue's
+  `backToQueue` FAIL on a hang — nothing reloads or loads the URL for it. They
+  time the page from when the SERVER finished, measured, never guessed: a
+  database check polled from the tap (it finished when the check first reads
+  true) and/or the page's own calls since the tap (`trackRequests(page)`,
+  installed before the tap; it finished when the last navigation, refresh or
+  server action was answered). The server gets `SERVER_WORK_MS` (120 s) from the
+  tap, the page then `IN_PLACE_MS` (15 s); both are hard limits. A slow result
+  that made it is recorded (`slow in-place result`), a late one fails.
+- Environment skips: `notRunHere(condition, why)` instead of `test.skip` for
+  anything this database or this machine decides (R2, real rows in the way, a
+  live lease, the submit gate, the WebKit build) — see step 4 above.
+- Labels: find a field by its label (`getByLabel`), not by a sibling lookup;
+  `unlabelledControls(page)` (support/platform-helpers.ts) fails a page with a
+  field that has no name (checked on /login, change password, Enrich, New
+  customer, the approval page, /users, /export, /routes and /audit — the last
+  three need claude/fix-small-7 merged).
 - Temix code (owner decision 8 Oct): a test that approves a new customer at
   its last step types a code first — `typeTemixCode(page, temixCodeFor(w))`
   (support/temix-codes.ts: `TX<SFX><n>`, unique to the world). Approve does not
@@ -306,11 +349,12 @@ test.describe('today', { tag: ['@phone'] }, () => {
   pre-drains the bucket with `drainLimit('login:user:<name>')` instead of racing
   the refill. `resetLimits({ users, ips })` gives a heavy test full buckets.
 
-Not built yet (ask the support owner rather than writing them in a spec):
-page objects (`pages.ts`), `seedCreateRequest` (a CREATE request at a given
-step, mirroring services/creates.ts) and the account/customer import workbooks.
-Until then, drive the UI with the go-live spec's `label:text-is("X") + input`
-lookup and create requests through `submitCreateViaApi`.
+Not built (ask the support owner rather than writing them in a spec): page
+objects (`pages.ts`). Built since: `seedCreateRequest` (a CREATE request at a
+given step, support/create-chains-helpers.ts) and the account/customer import
+workbooks (support/backoffice-helpers.ts). Drive the UI by role and label
+(`getByRole`, `getByLabel`), and create requests through `submitCreateViaApi`
+or `seedCreateRequest`.
 - After a change made in another context, use `page.goto`/`page.reload`
   (`freshGoto`): the router cache reuses pages for 30 s. Filter dropdowns can
   lag fixtures by 5 minutes — assert through URL parameters and rows.
