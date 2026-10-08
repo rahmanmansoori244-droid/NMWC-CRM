@@ -242,6 +242,14 @@ describe('UserRowActions — Reset password twice', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reset password' }));
   }
 
+  it('launch browser suite follow-up: both boxes are named for the account, as the e-mail box is', () => {
+    // They had a placeholder and no name: once typed in, a screen reader read
+    // two unnamed password boxes on a row of the users table.
+    open();
+    expect(screen.getByLabelText('New password for someone')).toBe(box('New password (12+ chars)'));
+    expect(screen.getByLabelText('Confirm new password for someone')).toBe(box('Confirm new password'));
+  });
+
   it('a mismatch never calls the action, says so, and keeps what was typed', () => {
     open();
     type(box('New password (12+ chars)'), TYPED);
