@@ -19,8 +19,10 @@
  *     with its last open shop and is active again when one reopens; late
  *     requests go to the e-mail outbox (e-mail itself stays off in the run).
  *
- * Known app bug, asserted as it should be and marked test.fail: after a successful approve
- * or send-back on /approvals/[id] the page prints "NEXT_REDIRECT" in red until the queue loads.
+ * Fixed in the launch candidate and asserted as fixed (no test here is test.fail): after a
+ * successful approve or send-back on /approvals/[id] the page no longer prints "NEXT_REDIRECT" in
+ * red until the queue loads (aad7065). Owner decision 8 Oct (the Temix code at a new customer's
+ * last step) changes nothing here: no test approves a new customer at the Accountant's step.
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts approvals-queue --project=phone --project=desktop
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts approvals-queue --project=exclusive --workers=1
@@ -842,11 +844,9 @@ test.describe('approvals: two Managers on one request', { tag: ['@desktop'] }, (
   });
 
   test('a decision that succeeds never shows the approver an error on its way back to the queue', async ({ browser }) => {
-    // APP BUG (P2, minor): app/(app)/approvals/[id]/ApproveRejectActions.tsx catches the redirect
-    // that approveEditAndGoAction / rejectEditAndGoAction throw on success and prints its message,
-    // "NEXT_REDIRECT", in red under the buttons until /approvals has rendered. Kept last in this
-    // serial describe, so its expected failure never skips another test.
-    test.fail(true, 'NEXT_REDIRECT shown as an error after a successful approve or send-back on /approvals/[id]');
+    // Was an APP BUG (P2, minor), fixed by aad7065: ApproveRejectActions caught the redirect that
+    // approveEditAndGoAction / rejectEditAndGoAction throw on success and printed its message,
+    // "NEXT_REDIRECT", in red under the buttons until /approvals had rendered. It rethrows it now.
     const approved = (await seedUpdateEdit(w, { customer: 'NR1', submitter: 'S1', patch: contact(w, 'Redirect approve') })).id;
     const sentBack = (await seedUpdateEdit(w, { customer: 'NR2', submitter: 'S1', patch: contact(w, 'Redirect reject') })).id;
     const page = await pageAs(browser, w, 'M1');

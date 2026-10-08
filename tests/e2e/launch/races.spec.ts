@@ -14,8 +14,9 @@
  *         Reject, three rounds — one decision, one audit row, the salesman told
  *         once, the other told it was already decided;
  *     (d) two Accountants, and one Accountant in two tabs, press Approve and
- *         create together; one presses it twice and keeps tapping — one
- *         customer, one NMWC code;
+ *         create together, each having typed the same Temix code (owner
+ *         decision 2026-10-08); one presses it twice and keeps tapping — one
+ *         customer, one NMWC code, the Temix code on it once;
  *     (e) a bulk approve and a colleague's single approve of one of its
  *         requests — decided once, reported once.
  *   the salesman (@phone; the Steward on a desktop)
@@ -43,6 +44,8 @@ import {
   requireLaunchEnv,
   resetLimits,
   seedUpdateEdit,
+  temixCodeFor,
+  typeTemixCode,
   type DeviceKind,
   type World,
 } from './support';
@@ -90,11 +93,15 @@ async function pageAs(browser: Browser, w: World, key: string, device?: DeviceKi
   return ctx.newPage();
 }
 
-/** /approvals/<id>, ✓ Approve, the confirmation open: returns its confirm button (not yet pressed). */
-async function approveDialog(page: Page, id: string, title: string, confirm: string): Promise<Locator> {
+/**
+ * /approvals/<id>, ✓ Approve, the confirmation open: returns its confirm button (not yet pressed).
+ * `temixCode`: typed first, as the Accountant must at a new customer's last step.
+ */
+async function approveDialog(page: Page, id: string, title: string, confirm: string, temixCode?: string): Promise<Locator> {
   await page.goto(`/approvals/${id}`);
   const approve = page.getByRole('button', { name: '✓ Approve', exact: true });
   await waitHydrated(approve);
+  if (temixCode) await typeTemixCode(page, temixCode);
   await approve.click();
   const dialog = page.getByRole('dialog', { name: title });
   await expect(dialog).toBeVisible();
@@ -284,13 +291,15 @@ test.describe('races: approvers deciding the same request at the same instant', 
   // ── (d) the Accountant's final step ───────────────────────────────────────
 
   /**
-   * Fires "Approve and create" on every page at once and checks that exactly one
-   * customer, with one NMWC code, came of it. `who` names each page's user key.
+   * Fires "Approve and create" on every page at once, each having typed the same
+   * Temix code, and checks that exactly one customer, with one NMWC code and that
+   * Temix code, came of it. `who` names each page's user key.
    */
   async function createRace(r: { id: string; legalName: string; crNumberNorm: string }, pages: Record<string, Page>, who: Record<string, string>): Promise<void> {
     const names = Object.keys(pages);
+    const temix = temixCodeFor(w);
     const confirms: Record<string, Locator> = {};
-    for (const n of names) confirms[n] = await approveDialog(pages[n]!, r.id, 'Create this customer?', 'Approve and create');
+    for (const n of names) confirms[n] = await approveDialog(pages[n]!, r.id, 'Create this customer?', 'Approve and create', temix);
     const posts = names.map((n) => trackPosts(pages[n]!, n, `/approvals/${r.id}`));
     await clickTogether(names.map((n) => ({ name: n, target: confirms[n]! })));
     await expectOverlap(posts);
@@ -303,11 +312,13 @@ test.describe('races: approvers deciding the same request at the same instant', 
     const loser = names.find((n) => n !== winner)!;
     test.info().annotations.push({ type: 'race', description: `${winner} created it; ${loser} was told` });
 
-    const made = await db.customer.findMany({ where: { legalName: r.legalName }, select: { id: true, nmwcCode: true } });
+    const made = await db.customer.findMany({ where: { legalName: r.legalName }, select: { id: true, nmwcCode: true, temixCode: true, temixSyncState: true } });
     for (const c of made) w.adopt.customer(c.id);
     expect(made.length, 'exactly one customer').toBe(1);
     const { id: customerId, nmwcCode: code } = made[0]!;
     expect(code).toMatch(new RegExp(`^NMWC-${omanYearNow()}-\\d{6}$`));
+    expect(made[0], 'created under the Temix code he typed, queued for the next Temix batch').toMatchObject({ temixCode: temix, temixSyncState: 'PENDING_UPLOAD' });
+    expect(await db.customer.count({ where: { temixCode: temix } }), 'one customer holds the Temix code').toBe(1);
     expect(await db.customer.count({ where: { crNumberNorm: r.crNumberNorm } }), 'one customer holds the CR number').toBe(1);
     const acc = w.user(who[winner]!);
     expect(await db.customerEdit.findUniqueOrThrow({ where: { id: r.id }, select: { state: true, customerId: true, reviewedById: true } })).toEqual({
@@ -320,9 +331,10 @@ test.describe('races: approvers deciding the same request at the same instant', 
     expect((await auditFor({ entityId: r.id, action: 'FINALIZE' })).map((a) => a.actorId), 'one FINALIZE').toEqual([acc.id]);
     expect((await auditFor({ entityId: customerId, action: 'CREATE' })).length, 'one CREATE of the customer').toBe(1);
     const told = (await notificationsFor({ editId: r.id, userId: w.user('SA').id })).filter((n) => n.kind === 'EDIT_APPROVED_FINAL');
-    expect(told.map((n) => n.body), 'the salesman is told once, with the code').toEqual([`${r.legalName} is now live as ${code}.`]);
+    expect(told.map((n) => n.body), 'the salesman is told once, with both codes').toEqual([`${r.legalName} is now live as ${code}, Temix code ${temix}.`]);
 
     await expect(pages[winner]!.getByText(`Created as customer ${code}.`)).toBeVisible();
+    await expect(pages[winner]!.getByText(`Temix code ${temix}.`, { exact: true })).toBeVisible();
     // The other was told on the page; reloaded, it shows the same, single customer.
     await expect(pages[loser]!).toHaveURL(new RegExp(`/approvals/${r.id}$`));
     await pages[loser]!.reload();
@@ -348,6 +360,8 @@ test.describe('races: approvers deciding the same request at the same instant', 
     await page.goto(`/approvals/${r.id}`);
     const approve = page.getByRole('button', { name: '✓ Approve', exact: true });
     await waitHydrated(approve);
+    const temix = temixCodeFor(w);
+    await typeTemixCode(page, temix);
     const thumb = (await approve.elementHandle())!;
     await approve.click();
     const dialog = page.getByRole('dialog', { name: 'Create this customer?' });
@@ -364,10 +378,12 @@ test.describe('races: approvers deciding the same request at the same instant', 
     await expect(page.getByText(DECIDED), 'no "already decided" after a successful create').toHaveCount(0);
     await expect(dialog).toHaveCount(0);
 
-    const made = await db.customer.findMany({ where: { legalName: r.legalName }, select: { id: true, nmwcCode: true } });
+    const made = await db.customer.findMany({ where: { legalName: r.legalName }, select: { id: true, nmwcCode: true, temixCode: true } });
     for (const c of made) w.adopt.customer(c.id);
     expect(made.length, 'exactly one customer').toBe(1);
+    expect(made[0]!.temixCode).toBe(temix);
     await expect(page.getByText(`Created as customer ${made[0]!.nmwcCode}.`)).toBeVisible();
+    await expect(page.getByText(`Temix code ${temix}.`, { exact: true })).toBeVisible();
     expect(await db.editApproval.count({ where: { editId: r.id, stepIndex: 1 } })).toBe(1);
     expect((await auditFor({ entityId: r.id, action: 'FINALIZE' })).length).toBe(1);
   });

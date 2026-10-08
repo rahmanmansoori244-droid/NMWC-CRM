@@ -31,6 +31,13 @@ export { SUBMIT_TIMEOUT_MS } from '../../../../lib/submit-client';
 export const UPLOAD_STALL_MS = 45_000;
 /** components/nmwc/PhotoCaptureSlot.tsx RETRY_DELAYS.length: tries per step before "Retry upload". */
 export const PHOTO_TRIES = 3;
+/**
+ * PhotoCaptureSlot's UPLOAD_NO_CONNECTION (f960612, da545ac): what a slot says when a photo step got no
+ * answer on all three tries — a dropped connection of any kind, the R2 PUT's ERR_TIMED_OUT included.
+ * Copied, not imported: that module is a 'use client' React component.
+ */
+export const UPLOAD_NO_CONNECTION =
+  'No connection, so the photo is not sent yet. Keep this page open: the photo is held here until it is sent. Check the signal, then tap Retry upload.';
 /** components/nmwc/GpsCaptureButton.tsx: the error line for each GeolocationPositionError code. */
 export const GPS_DENIED = 'Location permission denied. Tap below to enter coordinates manually.';
 export const GPS_UNAVAILABLE = 'Location unavailable. Tap below to enter coordinates manually.';

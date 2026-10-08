@@ -19,12 +19,17 @@
  * time, the Needs-correction tile and Work link to /rejected, 'Sent to a Manager'
  * for a reactivation, 'Sent back by', returned updates prefilled, the salesman's
  * red bell counting returned work only, the signed-out / throttled photo upload
- * saying so, the close form's trimmed reason. Known gaps are test.fail, each in a
- * non-serial describe with a one-line comment naming the bug: a tap that changes
- * only the query string of /today or /customers that never lands (landsOn records
- * each such hang elsewhere and loads the URL the tap asked for), list pages wider
- * than the phone with long customer names, a switched-off route's Today (P2), a
- * photo the phone cannot decode, and the photo-limit countdown that never runs.
+ * saying so, the close form's trimmed reason. The gaps this file found are
+ * FIXED in the launch candidate and asserted as fixed (no test here is
+ * test.fail): list pages fit the phone with long customer names (da59a76); a
+ * switched-off route's Today says so, and its forms lock their photo slots up
+ * front (804bda1, 38e530a); a photo the phone cannot read says why on its slot,
+ * the HEIC hint for a HEIC (287bdc0); the photo-limit countdown runs, for a wait
+ * of up to a minute (fa80408); a dropped upload is said in the app's words
+ * (f960612). Fixed 8 Oct and asserted everywhere: an in-app tap that changes only the query
+ * string of /today or /customers, and router.refresh(), land within 15 s of the
+ * server's answer (landsOn / shownAfterRefresh fail on a hang; they used to load
+ * the URL instead).
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts salesman-phone --project=phone
  */
@@ -67,6 +72,8 @@ import {
   RETURNED_CLEARED_REASON,
   SIGNED_OUT_MESSAGE,
   UNCONFIRMED_MESSAGE,
+  UNREADABLE_PHOTO_MESSAGE,
+  UPLOAD_NO_CONNECTION,
   UPLOAD_SIGNED_OUT,
   addFieldSalesman,
   adoptSalesmanWork,
@@ -215,7 +222,6 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
   });
 
   test("Today: his route's visits for today's Oman day, the stats, the cards and the no-day list (SM-TODAY-LIST)", async ({ browser }) => {
-    // Each in-app tap may meet the reported navigation hang, which landsOn waits out (up to ~105 s).
     test.setTimeout(600_000);
     const page = await (await contextAs(browser, sa, { device: 'phone' })).newPage();
     const net = trackRequests(page);
@@ -280,7 +286,7 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
     await page.goto('/today');
     expect(undated, 'GAPS, CRED, MULTI ×2, CLOSEDB, NODAY1, NODAY2').toBe(7);
     await main.getByRole('link', { name: `Branches with no visit day (${undated})`, exact: true }).click();
-    await landsOn(page, net, /\/today\?view=no-day$/, 'the no-day link', { fallback: '/today?view=no-day' });
+    await landsOn(page, net, /\/today\?view=no-day$/, 'the no-day link');
     await expect(page.getByRole('heading', { level: 2, name: `Branches with no visit day (${undated})`, exact: true })).toBeVisible();
     await expect(
       main.getByText(
@@ -295,14 +301,15 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
     await expect(page.getByRole('heading', { level: 3, name: world.customer('MULTI').legalName, exact: true }), 'one card per branch').toHaveCount(2);
     await expect(main.getByText(due1.legalName)).toHaveCount(0);
     await main.getByRole('link', { name: `Today's visits (${scheduled})`, exact: true }).click();
-    await landsOn(page, net, /\/today$/, "the Today's visits link", { fallback: '/today' });
+    await landsOn(page, net, /\/today$/, "the Today's visits link");
     await main.getByRole('link', { name: 'All my customers', exact: true }).click();
-    await landsOn(page, net, /\/customers$/, 'the All my customers link', { fallback: '/customers' });
+    await landsOn(page, net, /\/customers$/, 'the All my customers link');
   });
 
   test('a tap that changes only the query string lands at once: Today and the no-day list, four times each way', async ({ browser }) => {
-    // BUG (runs of 8 Oct): such a tap on /today or /customers sometimes never lands — the RSC answer arrives, nothing is pending, the page stays (Filter stays "Filtering…").
-    test.fail(true, 'An in-app tap that changes only the query string of /today or /customers sometimes does not land');
+    // Fixed 8 Oct (TransitionWatchdog): such a tap on /today or /customers used to hang for good — the RSC answer
+    // arrived, nothing was pending, the page stayed (Filter stayed "Filtering…"). The first no-day tap after a fresh
+    // load of /today hung in 4 of 4 runs.
     test.setTimeout(600_000);
     const page = await (await contextAs(browser, sa, { device: 'phone' })).newPage();
     const net = trackRequests(page);
@@ -310,14 +317,14 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
     await page.goto('/today');
     for (let i = 1; i <= 4; i++) {
       await main.getByRole('link', { name: /^Branches with no visit day \(\d+\)$/ }).click();
-      await landsOn(page, net, /\/today\?view=no-day$/, `hop ${2 * i - 1}: the no-day link`, { strict: true });
+      await landsOn(page, net, /\/today\?view=no-day$/, `hop ${2 * i - 1}: the no-day link`);
       await main.getByRole('link', { name: /^Today's visits \(\d+\)$/ }).click();
-      await landsOn(page, net, /\/today$/, `hop ${2 * i}: the Today's visits link`, { strict: true });
+      await landsOn(page, net, /\/today$/, `hop ${2 * i}: the Today's visits link`);
     }
   });
 
   test('search finds his customers by name, code, phone, branch name and branch code — never route B (SM-SEARCH)', async ({ browser }) => {
-    // Seventeen Filter taps; each may meet the reported navigation hang, which landsOn waits out.
+    // Seventeen Filter taps, each a query-string-only navigation that must land (landsOn).
     test.setTimeout(600_000);
     const page = await (await contextAs(browser, sa, { device: 'phone' })).newPage();
     const net = trackRequests(page);
@@ -385,7 +392,7 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
     await search(full.code);
     await expect(page.getByRole('button', { name: `Remove filter Search: ${full.code}`, exact: true })).toBeVisible();
     await page.getByRole('link', { name: 'Clear', exact: true }).click();
-    await landsOn(page, net, /\/customers$/, 'Clear', { fallback: '/customers' });
+    await landsOn(page, net, /\/customers$/, 'Clear');
     await expect(box).toHaveValue('');
     await expect(page.getByRole('button', { name: /^Remove filter / })).toHaveCount(0);
     await expect(cards).toHaveCount(mine);
@@ -454,19 +461,19 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
     await save.getByRole('button', { name: 'Save', exact: true }).click();
     const menu = page.getByRole('button', { name: /^Saved views \(1\)/ });
     const views = () => db.savedView.count({ where: { userId: sa.id } });
-    await shownAfterRefresh(page, menu, 'Save view', async () => (await views()) === 1);
+    await shownAfterRefresh(net, menu, 'Save view', async () => (await views()) === 1);
     expect(await db.savedView.findMany({ where: { userId: sa.id }, select: { name: true, urlParams: true } })).toEqual([
       { name: 'Low scores', urlParams: params },
     ]);
     await page.getByRole('link', { name: 'Clear', exact: true }).click();
-    await landsOn(page, net, /\/customers$/, 'Clear', { fallback: '/customers' });
+    await landsOn(page, net, /\/customers$/, 'Clear');
     await menu.click();
     await page.getByRole('menuitem', { name: 'Low scores', exact: true }).click();
     await landsOn(page, net, (u) => u.search === `?${params}`, 'the saved view');
     await expect(page.getByRole('button', { name: 'Remove filter Payment: Credit', exact: true })).toBeVisible();
     await menu.click();
     await page.getByRole('button', { name: 'Delete saved view Low scores', exact: true }).click();
-    await shownAfterRefresh(page, page.getByText('No saved views', { exact: true }), 'Delete saved view', async () => (await views()) === 0);
+    await shownAfterRefresh(net, page.getByText('No saved views', { exact: true }), 'Delete saved view', async () => (await views()) === 0);
     expect(await views()).toBe(0);
 
     // Tampered URLs never show route B: empty, and no chip prints a database id.
@@ -687,8 +694,8 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
   });
 
   test('his lists fit the phone with real-length customer names: no side scroll at 412 and 360 px (SM-TABBAR-STICKY, MOBILE-LAYOUT)', async ({ browser }) => {
-    // BUG (runs of 8 Oct): the list pages put their cards in a `grid` with an auto column, which no card's truncated (nowrap) name may undercut — a name over ~25 characters makes the page wider than the phone.
-    test.fail(true, 'A long customer name makes /customers, /today and /work wider than the phone (the grid column takes the nowrap name width)');
+    // Was a BUG (runs of 8 Oct), fixed by da59a76: the list pages put their cards in a `grid` with an auto column, which no
+    // card's truncated (nowrap) name could undercut — a name over ~25 characters made the page wider than the phone.
     test.setTimeout(240_000);
     for (const device of ['phone', 'phone360'] as const) {
       const page = await (await contextAs(browser, sa, { device })).newPage();
@@ -705,7 +712,7 @@ test.describe('salesman phone: Today, search, filters, the customer page and the
 
 // ════════════════════════════════════════════════════════════════════════════
 // 2. Edges: no route, a switched-off route, more than 200 visits (P2) — and the
-//    known gaps, each in its own test (not serial)
+//    gaps found before launch (fixed), each in its own test (not serial)
 // ════════════════════════════════════════════════════════════════════════════
 
 test.describe('salesman phone: no route, a switched-off route, 201 visits (SM-TODAY-EDGES)', { tag: ['@phone'] }, () => {
@@ -775,13 +782,37 @@ test.describe('salesman phone: no route, a switched-off route, 201 visits (SM-TO
     await expect(page.getByRole('button', { name: SUBMIT })).toHaveCount(0);
   });
 
-  test('a switched-off route: Today tells him so', async ({ browser }) => {
-    // P2 left for after launch (critic, route switched off mid-week): /today lists an inactive route's branches with no notice; only /customers/new refuses.
-    test.fail(true, 'P2: /today gives no notice that the salesman’s route is switched off');
+  test('a switched-off route: Today tells him so, and the enrich form locks its photo slots up front', async ({ browser }) => {
+    // Was a P2 (critic, route switched off mid-week), fixed by 804bda1 / 9a0e253 / 38e530a: /today listed an inactive
+    // route's branches with no notice, and only /customers/new refused.
     const page = await (await contextAs(browser, world.user('SOFF'), { device: 'phone' })).newPage();
     await page.goto('/today');
     await expect(page.getByRole('heading', { level: 3, name: world.customer('OFF1').legalName, exact: true })).toBeVisible();
-    await expect(page.locator('main').getByText(/route is (inactive|switched off)/i)).toBeVisible({ timeout: 5_000 });
+    await expect(
+      page
+        .locator('main')
+        .getByText(
+          'Your route is inactive — ask your supervisor. Until it is active again, you cannot submit an enrichment, add or remove photos, mark a shop closed, request a reactivation or register a new customer. An enrichment you start stays saved on this phone.',
+          { exact: true }
+        )
+    ).toBeVisible();
+    // New customer is shown switched off too, not as a link to a form that would refuse him.
+    await expect(page.locator('main').getByRole('button', { name: 'New customer' })).toBeDisabled();
+    await expect(page.locator('main').getByRole('link', { name: 'New customer' })).toHaveCount(0);
+
+    // The enrich form says so before he fills it, and no photo slot offers a capture, a retake or Remove.
+    await page.goto(`/customers/${world.customer('OFF1').id}/edit`);
+    await settled(page);
+    await expect(
+      page.getByText(
+        'Your route is inactive — ask your supervisor. You can save a draft, but you cannot add or remove photos or submit until the route is active again.',
+        { exact: true }
+      )
+    ).toBeVisible();
+    await expect(photoSlot(page, 'Shop front')).toBeVisible();
+    await expect(page.locator('label[aria-label="Capture photo"], label[aria-label="Retake photo"]')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Remove photo' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save draft' })).toBeEnabled();
   });
 
   test('201 visits today: 200 cards on page 1, Next and Previous work; Customers pages 50 at a time', async ({ browser }) => {
@@ -796,11 +827,11 @@ test.describe('salesman phone: no route, a switched-off route, 201 visits (SM-TO
     const nav = page.getByRole('navigation', { name: 'Visit pages' });
     await expect(nav.getByRole('link', { name: 'Previous', exact: true })).toHaveCount(0);
     await nav.getByRole('link', { name: 'Next', exact: true }).click();
-    await landsOn(page, net, /\/today\?page=2$/, 'Next', { fallback: '/today?page=2' });
+    await landsOn(page, net, /\/today\?page=2$/, 'Next');
     await expect(page.getByText('Showing 1 of 201 visits · Page 2 of 2', { exact: true })).toBeVisible();
     await expect(cards).toHaveCount(1);
     await nav.getByRole('link', { name: 'Previous', exact: true }).click();
-    await landsOn(page, net, /\/today\?page=1$/, 'Previous', { fallback: '/today?page=1' });
+    await landsOn(page, net, /\/today\?page=1$/, 'Previous');
     await expect(cards).toHaveCount(200);
 
     await page.goto('/customers');
@@ -808,23 +839,29 @@ test.describe('salesman phone: no route, a switched-off route, 201 visits (SM-TO
     await expect(cards).toHaveCount(50);
     await expect(page.getByText('Page 1 of 2', { exact: true })).toBeVisible();
     await page.getByRole('link', { name: 'Next →', exact: true }).click();
-    await landsOn(page, net, (u) => u.pathname === '/customers' && u.searchParams.get('page') === '2', 'Next → on Customers', { fallback: '/customers?page=2' });
+    await landsOn(page, net, (u) => u.pathname === '/customers' && u.searchParams.get('page') === '2', 'Next → on Customers');
     await expect(page.getByText('Page 2 of 2', { exact: true })).toBeVisible();
     await expect(cards).toHaveCount(1);
   });
 
-  test('a photo the phone cannot decode (HEIC, a broken JPEG) says why on its slot', async ({ browser }) => {
-    // BUG (found by static read, 7 Oct): PhotoCaptureSlot renders `error` only while progress !== 'error' or with a retained blob, so a decode failure leaves a red slot with no words.
-    test.fail(true, 'PhotoCaptureSlot never shows a compress/decode error (the HEIC hint, "Image decode failed.")');
+  test('a photo the phone cannot decode (HEIC, a broken JPEG) says why on its slot, and he can pick again', async ({ browser }) => {
+    // Was a BUG (found by static read, 7 Oct), fixed by 287bdc0 / 41d81ec: PhotoCaptureSlot rendered `error` only while
+    // progress !== 'error' or with a retained blob, so a decode failure left a red slot with no words. A HEIC gets the
+    // HEIC hint; any other photo it cannot read gets one sentence of what to do; both are read out (role=alert).
     const u = world.user('SK');
     const page = await (await contextAs(browser, u, { device: 'phone' })).newPage();
     await openEnrich(page, world.customer('K1').id);
     const shop = photoSlot(page, 'Shop front');
     await pickFile(shop, { name: 'IMG_0001.heic', mimeType: 'image/heic', buffer: fakeHeic() });
-    await expect(shop.getByText(HEIC_MESSAGE, { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(shop.getByRole('alert').filter({ hasText: HEIC_MESSAGE })).toHaveText(HEIC_MESSAGE, { timeout: 10_000 });
     const sign = photoSlot(page, 'Signboard');
     await pickFile(sign, { name: 'broken.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('not really a jpeg') });
-    await expect(sign.getByText('Image decode failed.', { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(sign.getByRole('alert').filter({ hasText: UNREADABLE_PHOTO_MESSAGE })).toHaveText(UNREADABLE_PHOTO_MESSAGE, { timeout: 10_000 });
+    // No Retry upload for a photo that never went up: he picks again from the same slot.
+    for (const slot of [shop, sign]) {
+      await expect(slot.getByRole('button', { name: 'Retry upload' })).toHaveCount(0);
+      await expect(slot.locator('label[aria-label="Capture photo"]')).toBeVisible();
+    }
     expect(await db.attachment.count({ where: { capturedById: u.id } }), 'nothing was uploaded').toBe(0);
   });
 });
@@ -1653,7 +1690,8 @@ test.describe('salesman phone: photos on a weak link and real camera files (SM-P
     await pickFile(shop, pngFile('shop'));
     await expect(submit, 'held while the photo is going up').toBeDisabled();
     await expect(page.getByText(PHOTO_UPLOADING_MESSAGE, { exact: true })).toBeVisible();
-    await expect(shop.getByText('Network error', { exact: true })).toBeVisible({ timeout: 60_000 });
+    // f960612: in the app's words, not the XHR's "Network error".
+    await expect(shop.getByText(UPLOAD_NO_CONNECTION, { exact: true })).toBeVisible({ timeout: 60_000 });
     const retry = shop.getByRole('button', { name: 'Retry upload', exact: true });
     await expect(retry).toBeVisible();
     expect(presigns.count, 'three tries, each on a URL of its own').toBe(3);
@@ -1753,8 +1791,9 @@ test.describe('salesman phone: photos on a weak link and real camera files (SM-P
   });
 
   test('with the photo bucket empty the slot counts down, then uploads by itself (SM-RATE-LIMITS, wave 1)', async ({ browser }) => {
-    // BUG (run 8 Oct): a refused presign always answers 31–60 s (lib/rate-limit.ts debits a refused call to −1 token), more than the 30 s PhotoCaptureSlot waits out, so the countdown never runs.
-    test.fail(true, 'The photo-limit countdown never runs: every presign 429 asks for more than the 30 s the slot waits out');
+    // Was a BUG (run 8 Oct), fixed by fa80408: a refused presign always answers 31–60 s (lib/rate-limit.ts debits a
+    // refused call to −1 token), more than the 30 s PhotoCaptureSlot waited out, so the countdown never ran. The slot
+    // now waits out up to 60 s, counting down, then sends the photo itself.
     test.setTimeout(240_000);
     const { user, customer } = await addFieldSalesman(world, 'P6');
     await resetLimits({ users: [user] });
@@ -1764,8 +1803,13 @@ test.describe('salesman phone: photos on a weak link and real camera files (SM-P
       await openEnrich(page, customer.id);
       const shop = photoSlot(page, 'Shop front');
       await pickFile(shop, pngFile('shop'));
-      await expect(shop.getByText(RATE_WAIT)).toBeVisible({ timeout: 30_000 });
+      const countdown = shop.getByRole('status').filter({ hasText: RATE_WAIT });
+      await expect(countdown).toBeVisible({ timeout: 30_000 });
+      const left = Number(/in (\d+) s/.exec((await countdown.textContent()) ?? '')?.[1]);
+      expect(left, 'the wait is counted down, and it is at most a minute').toBeGreaterThan(0);
+      expect(left).toBeLessThanOrEqual(60);
       await expect(retakeOf(shop)).toBeVisible({ timeout: 120_000 });
+      await expect(shop.getByText(/then tap Retry upload/), 'never told to wait and tap Retry upload himself').toHaveCount(0);
       expect(await shopPhotoOf(customer.branch.id)).not.toBeNull();
     } finally {
       await resetLimits({ users: [user] });

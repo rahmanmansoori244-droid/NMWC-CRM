@@ -21,7 +21,11 @@
  * offered to every role /export admits; e-mail is lower-cased and a clash in
  * any case is refused; the GM's row has the e-mail button (owner decision 6);
  * the Steward's Edit account and the create form's regions (owner decision 8).
- * Still open, as test.fail: KNOWN_BUGS.drawerA11y, KNOWN_BUGS.noRegionEmptyState.
+ * Fixed in the launch candidate and asserted as fixed (their test.fail markers
+ * are off): the phone menu is a dialog that closes on its current page
+ * (KNOWN_BUGS.drawerA11y, ee81e93), a region-less Accountant is told why
+ * /approvals is empty (KNOWN_BUGS.noRegionEmptyState, fd41184), and a reset
+ * refused for a reused password says so once on /users (06763c2).
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts accounts-auth --project=phone --project=desktop
  */
@@ -462,10 +466,11 @@ test.describe('accounts: each role’s menu', { tag: ['@phone', '@desktop'] }, (
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Known gaps left for after launch (their own non-serial tests)
+// Gaps found before launch and fixed in the launch candidate (their own
+// non-serial tests; they were test.fail until the fixes merged)
 // ═════════════════════════════════════════════════════════════════════════════
 
-test.describe('accounts: known gaps left for after launch', () => {
+test.describe('accounts: gaps fixed for launch', () => {
   requireLaunchEnv();
   installLaunchHooks();
 
@@ -491,7 +496,7 @@ test.describe('accounts: known gaps left for after launch', () => {
   });
 
   test('the phone menu is a dialog, and tapping the page it is on closes it', { tag: ['@phone'] }, async ({ browser }) => {
-    // KNOWN_BUGS.drawerA11y (P2 after launch): the drawer has no dialog role or focus trap, and its current item leaves it open.
+    // KNOWN_BUGS.drawerA11y, fixed (ee81e93): the drawer had no dialog role or focus trap, and its current item left it open.
     test.fail(KNOWN_BUGS.drawerA11y.open, KNOWN_BUGS.drawerA11y.title);
     const page = await (await contextAt(browser, world.user('M1'), world.ip(1), { device: 'phone' })).newPage();
     await page.goto('/dashboard');
@@ -503,7 +508,7 @@ test.describe('accounts: known gaps left for after launch', () => {
   });
 
   test('an Accountant with no region is told so on /approvals instead of an empty queue', { tag: ['@desktop'] }, async ({ browser }) => {
-    // KNOWN_BUGS.noRegionEmptyState (P2 after launch): a region-less approver sees "Nothing pending" with no hint why.
+    // KNOWN_BUGS.noRegionEmptyState, fixed (fd41184): a region-less approver saw "Nothing pending" with no hint why.
     test.fail(KNOWN_BUGS.noRegionEmptyState.open, KNOWN_BUGS.noRegionEmptyState.title);
     const page = await (await contextAt(browser, world.user('ACC0'), world.ip(2), { device: 'desktop' })).newPage();
     await page.goto('/approvals');
@@ -512,9 +517,9 @@ test.describe('accounts: known gaps left for after launch', () => {
   });
 
   test('a reset refused for a reused password says so once on /users', { tag: ['@desktop'] }, async ({ browser }) => {
-    // Bug (minor, P2 after launch): lib/password-policy.ts assertPasswordNotReused puts the same sentence on
-    // `password` and `newPassword`, and UserRowActions refusalText joins every field, so the refusal reads twice.
-    test.fail(true, 'The /users reused-password refusal repeats its sentence');
+    // Fixed (06763c2): lib/password-policy.ts assertPasswordNotReused puts the same sentence on `password` and
+    // `newPassword`, and UserRowActions refusalText joined every field, so the refusal read twice. It keeps each
+    // distinct sentence once now.
     const stw = world.user('STW');
     const vr = world.user('VR');
     const page = await (await contextAt(browser, stw, world.ip(3), { device: 'desktop' })).newPage();

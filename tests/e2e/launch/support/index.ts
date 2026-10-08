@@ -103,4 +103,17 @@ export { actionIdFor, captureServerAction, replayServerAction, type CapturedActi
 export { assertFixtureKey, listFixturePrefix, r2BucketName } from './r2';
 export { cleanupRegistry, residue, sweepRun, sweepStale, totalOf, type CleanupResult, type Residue } from './cleanup';
 export { newId } from './ids';
+export {
+  TEMIX_CODE_BULK_REFUSED_MESSAGE,
+  TEMIX_CODE_CRM_MESSAGE,
+  TEMIX_CODE_REQUIRED_MESSAGE,
+  TEMIX_LOCK_LABEL,
+  TEMIX_LOCK_NOTE,
+  normalizeTemixCode,
+  temixCodeBox,
+  temixCodeFor,
+  temixCodeHolderMessage,
+  temixCodeTakenMessage,
+  typeTemixCode,
+} from './temix-codes';
 export { FIXTURE_PASSWORD_SHAPE, describeHit, launchArtifactRoots, scanForSecrets, type ScanResult, type SecretHit } from './secret-scan';

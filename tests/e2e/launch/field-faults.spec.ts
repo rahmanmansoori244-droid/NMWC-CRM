@@ -58,6 +58,7 @@ import {
   PHOTO_TRIES,
   PHOTO_UPLOADING_MESSAGE,
   PRESIGN_PATH,
+  UPLOAD_NO_CONNECTION,
   SLOW_PHONE,
   SUBMIT,
   SUBMIT_TIMEOUT_MS,
@@ -411,8 +412,8 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
 
     /**
      * Each photo step, as the page.route fault matches it, and the drops it is
-     * tested with. The R2 PUT's "timedout" has a test of its own below (a known
-     * bug), so that the PUT's other drops are still checked while it is open.
+     * tested with. The R2 PUT's "timedout" has a test of its own below (it was a
+     * bug, fixed by da545ac: it must now fail over as fast as the other drops).
      */
     const STEPS: Record<'presign' | 'R2 PUT' | 'finalize', { match: UrlMatch; method: string; codes: readonly FieldAbort[]; failed: Chain; once: Chain }> = {
       // presign and the PUT are retried together (each try gets a URL of its own).
@@ -470,7 +471,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
             .toMatch(/^retry /);
           const msg = await slotMessage(slot);
           words.push(`${code}: "${msg}"`);
-          expect(msg, `${code}: the slot says why`).not.toBe('');
+          expect(msg, `${code}: the slot says why, in the app's words (f960612)`).toBe(UPLOAD_NO_CONNECTION);
           expect(minus(counts(), before), `${code}: ${PHOTO_TRIES} tries, then it stops`).toEqual(s.failed);
           await expect(page.getByText(PHOTO_UPLOADING_MESSAGE, { exact: true }), `${code}: the slot is no longer busy`).toHaveCount(0);
           await expect(submit, `${code}: a failed photo does not hold Submit`).toBeEnabled();
@@ -525,12 +526,10 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
     }
 
     test('photo, R2 PUT timed out (net::ERR_TIMED_OUT): three tries at once — not each after 45 s of silence — then "Retry upload"; Retry attaches it once', async ({ browser }) => {
-      // BUG (new, field-faults): PhotoCaptureSlot's putWithProgress listens for the XHR's error, abort and load
-      // events only. Chromium reports a PUT that fails with net::ERR_TIMED_OUT as the XHR "timeout" event (even
-      // with xhr.timeout unset), so the try is ended only by the 45 s stall watchdog: three tries take about
-      // 2¼ minutes of "Uploading… 0%" with Submit held, and every Retry upload the same, instead of seconds.
-      // components/nmwc/PhotoCaptureSlot.tsx putWithProgress (xhr.onerror / xhr.onabort, no xhr.ontimeout).
-      test.fail(true, 'PhotoCaptureSlot putWithProgress ignores the XHR timeout event: a timed-out R2 PUT waits 45 s per try');
+      // Was a BUG (found by this file), fixed by da545ac: PhotoCaptureSlot's putWithProgress listened for the XHR's
+      // error, abort and load events only. Chromium reports a PUT that fails with net::ERR_TIMED_OUT as the XHR
+      // "timeout" event (even with xhr.timeout unset), so each try was ended only by the 45 s stall watchdog: three
+      // tries took about 2¼ minutes of "Uploading… 0%" with Submit held. It has an ontimeout now: noticed at once.
       test.skip(!hasR2, 'photo uploads need R2');
       test.setTimeout(300_000);
       const s = STEPS['R2 PUT'];
@@ -550,7 +549,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
         .toMatch(/^retry /);
       const msg = await slotMessage(slot);
       note('what the slot said', `timedout: "${msg}"`);
-      expect(msg, 'the slot says why').not.toBe('');
+      expect(msg, 'the slot says why, as for any dropped connection').toBe(UPLOAD_NO_CONNECTION);
       expect(minus(counts(), before), `${PHOTO_TRIES} tries, then it stops`).toEqual(s.failed);
       await expect(page.getByText(PHOTO_UPLOADING_MESSAGE, { exact: true }), 'the slot is no longer busy').toHaveCount(0);
       await expect(submit, 'a failed photo does not hold Submit').toBeEnabled();
@@ -592,6 +591,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
       }
       note('what the slots said', said.join(' · '));
       for (const s of said) expect(s, 'in the app’s own words (what happened, what to do), not the browser’s').not.toMatch(/failed to fetch|load failed|networkerror|typeerror/i);
+      expect(said).toEqual([`${PRESIGN_PATH}: "${UPLOAD_NO_CONNECTION}"`, `${FINALIZE_PATH}: "${UPLOAD_NO_CONNECTION}"`]);
     });
   });
 

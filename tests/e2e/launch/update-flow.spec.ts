@@ -27,12 +27,14 @@
  *       write (a customer follows its shops);
  *   critic P0  what changed after a request was sent: STALE_BEFORE, NEEDS_REUPLOAD,
  *       a shop deleted meanwhile;
- *   critic P2  a route switched off mid-week (test.fail, left for after launch).
+ *   critic P2  a route switched off mid-week: his enrichment and his close request
+ *       are refused in the route's words (fixed for launch, 804bda1).
  *
  * R2 is required (every enrichment carries photos): those describes skip without it.
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts update-flow --project=phone --project=desktop
  */
+import { randomUUID } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import {
   MUSCAT,
@@ -47,6 +49,7 @@ import {
   mintSessionCookie,
   mintingProven,
   notificationsFor,
+  postForm,
   postJson,
   receiptEditId,
   requireLaunchEnv,
@@ -1774,8 +1777,8 @@ test.describe('update flow: what changed after a request was sent', { tag: ['@de
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Known gaps left for after launch: one non-serial test each, marked test.fail.
-test.describe('update flow: known gaps left for after launch', { tag: ['@phone'] }, () => {
+// A gap the critic found (P2), fixed in the launch candidate: its own non-serial test.
+test.describe('update flow: a route switched off mid-week', { tag: ['@phone'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
   test.skip(FULL_GATE, CORE_ONLY);
@@ -1800,13 +1803,24 @@ test.describe('update flow: known gaps left for after launch', { tag: ['@phone']
     await world?.cleanup();
   });
 
-  test('an enrichment on a switched-off route is refused, as New customer refuses one', async ({ browser }) => {
-    // P2 (critic, not fixed in waves 1–2): services/edits.ts never checks route.isActive, so this submit goes through.
-    test.fail(true, 'P2: an enrichment on a switched-off route is accepted (services/edits.ts never checks route.isActive)');
+  test('an enrichment on a switched-off route is refused, as New customer refuses one; so is a close request; nothing is written', async ({ browser }) => {
+    // Was a P2 (critic), fixed by 804bda1: services/edits.ts never checked route.isActive, so this submit went through.
+    // Enrichments, closes and reactivations are refused now in New customer's words (lib/errors.ts ROUTE_INACTIVE_MESSAGE).
     const c = world.customer('C');
-    const page = await (await contextAs(browser, world.user('S'))).newPage();
+    const s = world.user('S');
+    const page = await (await contextAs(browser, s)).newPage();
     await page.goto('/today');
     const sent = await submitEnrichViaApi(page, { customerId: c.id, customer: { contactPerson: world.name('New contact') } }, { world });
-    expect(sent.ok, JSON.stringify(sent)).toBe(false);
+    expect(sent, JSON.stringify(sent)).toMatchObject({ ok: false, code: 'FORBIDDEN', message: 'Your route is inactive — ask your supervisor.' });
+    // A close request: the route is the first refusal, before its evidence photo is even looked at.
+    const close = await postForm(page, 'branch-close', {
+      submissionId: randomUUID(),
+      branchId: c.branch.id,
+      reason: 'The shop has shut for good.',
+      attachmentId: randomUUID(),
+    });
+    expect(close, JSON.stringify(close)).toMatchObject({ ok: false, code: 'FORBIDDEN', message: 'Your route is inactive — ask your supervisor.' });
+    expect(await db.customerEdit.count({ where: { submittedById: s.id, state: { not: 'DRAFT' } } }), 'no request was filed').toBe(0);
+    expect((await db.customer.findUniqueOrThrow({ where: { id: c.id }, select: { contactPerson: true } })).contactPerson).toBe('Rashid Al Maskari');
   });
 });

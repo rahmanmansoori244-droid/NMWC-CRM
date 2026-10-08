@@ -27,6 +27,20 @@
  *     the SLA sweep's, an exclusive-phase job); a stale view is refused only when
  *     the reviewer can still act on the current step — otherwise he is told he
  *     is not authorized.
+ *   - owner decision of 8 Oct (Temix code at approval): the Accountant creates
+ *     the customer in Temix first and types its code in "Temix code *" before
+ *     Approve and create — required, checked in the page (shape, never an NMWC
+ *     code) and on the server (no other customer, live or archived, nor a live
+ *     branch, holds it; refused under the box, naming the holder, nothing
+ *     written); the customer is created with it (upper case, Western digits); the
+ *     salesman's and the Steward's messages and the request page name both
+ *     codes; a new customer at the Accountant's step is never bulk-approved (a
+ *     lock, as for credit). Every test that creates a customer types a code of
+ *     its own (temixCodeFor).
+ *   - launch fixes: after Approve and create the page shows the code IN PLACE —
+ *     no reload stands in for it (it stalled on "Created — loading…", fixed by
+ *     the TransitionWatchdog, 8e47bc6); a salesman cannot remove a photo of his
+ *     request while it is with the approvers (628e541).
  *
  * Each describe builds its own world (one tag each: the salesman's form on the
  * phone project; the multi-role chains on the desktop project with explicit
@@ -59,6 +73,17 @@ import {
   seedUpdateEdit,
   snapshot,
   submitCreateViaApi,
+  TEMIX_CODE_BULK_REFUSED_MESSAGE,
+  TEMIX_CODE_CRM_MESSAGE,
+  TEMIX_CODE_REQUIRED_MESSAGE,
+  TEMIX_LOCK_LABEL,
+  TEMIX_LOCK_NOTE,
+  normalizeTemixCode,
+  temixCodeBox,
+  temixCodeFor,
+  temixCodeHolderMessage,
+  temixCodeTakenMessage,
+  typeTemixCode,
   uniquePng,
   type CustomerSpec,
   type DeviceKind,
@@ -282,24 +307,24 @@ async function approveHere(page: Page, title: string, confirm: string): Promise<
 }
 
 /**
- * APP BUG found by this file (2026-10-08): after "Approve and create" the action
- * answers ok and the customer exists, but about half the time the page stays on
- * "Created — loading…" and never shows the code until a reload
- * (app/(app)/approvals/[id]/ApproveRejectActions.tsx:174: router.refresh() while the
- * revalidating approveEditAction's own page payload is still streaming; when the
- * refresh completes first, the action's stream is cancelled and nothing commits).
+ * Was an APP BUG found by this file (2026-10-08), FIXED by 8e47bc6 (TransitionWatchdog):
+ * after "Approve and create" the action answered ok and the customer existed, but about
+ * half the time the page stayed on "Created — loading…" and never showed the code until
+ * a reload (ApproveRejectActions' router.refresh() after approveEditAction was parked by
+ * the React that Next 15.5 ships). A page stuck like that now FAILS the test.
  */
 const STUCK_AFTER_CREATE = 'finalize page stuck on "Created — loading…" without the code (ApproveRejectActions router.refresh after approveEditAction)';
-const CREATED_LOADING = 'Created — loading…';
+/** How long the page may take to show the code once the finalize has landed in the database. */
+const CODE_IN_PLACE_MS = 30_000;
 
 /**
- * ✓ Approve → "Approve and create" at the last step; returns the code. The server's
- * outcome is read from the database; the page must then show the code. The in-place
- * display (wave 1) is asserted on its own by the "without a reload" test (test.fail
- * for the bug above); here a page stuck on "Created — loading…" is annotated and
- * reloaded, and the code is asserted on what the reload shows.
+ * The Accountant's last step (owner decision 2026-10-08): types `temixCode` in the
+ * "Temix code *" box, ✓ Approve → "Approve and create"; returns the NMWC code. The
+ * server's outcome is read from the database; the page must then show both codes in
+ * place, without a reload, within CODE_IN_PLACE_MS of the finalize landing.
  */
-async function createHere(page: Page, editId: string): Promise<string> {
+async function createHere(page: Page, editId: string, temixCode: string): Promise<string> {
+  await typeTemixCode(page, temixCode);
   await approveHere(page, 'Create this customer?', 'Approve and create');
   await expect
     .poll(async () => (await db.customerEdit.findUnique({ where: { id: editId }, select: { state: true } }))?.state, {
@@ -307,19 +332,21 @@ async function createHere(page: Page, editId: string): Promise<string> {
       message: 'the finalize lands',
     })
     .toBe('APPROVED');
-  const shown = page.getByText(/^Created as customer NMWC-/);
-  const inPlace = await shown.waitFor({ timeout: 30_000 }).then(
-    () => true,
-    () => false
-  );
-  if (!inPlace) {
-    await expect(page.getByRole('button', { name: CREATED_LOADING, exact: true }), 'the action answered ok').toBeVisible();
-    test.info().annotations.push({ type: 'app-bug', description: `${STUCK_AFTER_CREATE} — reloaded to read the code` });
-    await page.reload();
-  }
-  await expect(shown).toBeVisible();
-  const row = await db.customerEdit.findUniqueOrThrow({ where: { id: editId }, select: { customer: { select: { nmwcCode: true } } } });
+  await expect(page.getByText(/^Created as customer NMWC-/), `the code on the page, in place (${STUCK_AFTER_CREATE} was fixed)`).toBeVisible({
+    timeout: CODE_IN_PLACE_MS,
+  });
+  const row = await db.customerEdit.findUniqueOrThrow({
+    where: { id: editId },
+    select: { customer: { select: { nmwcCode: true, temixCode: true } } },
+  });
+  expect(row.customer!.temixCode, 'created under the Temix code he typed, as Temix writes it').toBe(normalizeTemixCode(temixCode));
+  await expect(page.getByText(`Temix code ${row.customer!.temixCode}.`, { exact: true }), 'the Temix code on the page').toBeVisible();
   return row.customer!.nmwcCode;
+}
+
+/** The Temix code box's own refusal (role=alert under the box). */
+function temixCodeError(page: Page): Locator {
+  return page.locator('#temix-code-error');
 }
 
 /** ✗ Reject with the form's own words for where it goes. */
@@ -476,7 +503,7 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
   test.describe.configure({ mode: 'serial' });
 
   let w: World;
-  const A = { id: '', name: '', cr: '', phone: '', customerId: '', code: '' };
+  const A = { id: '', name: '', cr: '', phone: '', customerId: '', code: '', temix: '' };
 
   test.beforeAll(async () => {
     test.setTimeout(300_000);
@@ -694,9 +721,14 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
 
     const before = await rowIds(A.id);
     const seqBefore = await codeSequenceNext();
+    // Owner decision 8 Oct: the last step asks for the Temix code, and only there.
+    await expect(temixCodeBox(page), 'a labelled, required box').toHaveAttribute('aria-required', 'true');
+    await expect(page.getByText('Create the customer in Temix first, then type the code Temix gave it.', { exact: true })).toBeVisible();
     // Wave 1: he stays on the request, which shows the code he created (see createHere).
-    await createHere(page, A.id);
+    A.temix = temixCodeFor(w);
+    await createHere(page, A.id, A.temix);
     await expect(page).toHaveURL(new RegExp(`/approvals/${A.id}$`));
+    await expect(temixCodeBox(page), 'no box once it is decided').toHaveCount(0);
     const edit = await db.customerEdit.findUniqueOrThrow({ where: { id: A.id } });
     expect(edit).toMatchObject({ state: 'APPROVED', pendingRole: null, reviewedById: acc1.id });
     expect(edit.customerId).not.toBeNull();
@@ -715,8 +747,10 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
       creditLimit: null,
       paymentTermDays: null,
       status: 'ACTIVE',
+      // Owner decision 8 Oct: created under the Temix code typed at the last step, and still queued for the
+      // next Temix workbook (an UPSERT of the record the Accountant made).
       temixSyncState: 'PENDING_UPLOAD',
-      temixCode: null,
+      temixCode: A.temix,
       createdById: w.user('SA').id,
       lastEditedById: acc1.id,
       crNumber: A.cr,
@@ -735,8 +769,12 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
     expect(atts.find((a) => a.kind === 'CR')).toMatchObject({ id: customer.crPhotoId, customerId: customer.id });
     expect(atts.find((a) => a.kind === 'SHOP')).toMatchObject({ id: branch.shopPhotoId, branchId: branch.id });
     expect(atts.find((a) => a.kind === 'SIGNBOARD')).toMatchObject({ id: branch.signboardPhotoId, branchId: branch.id });
-    expect((await auditFor({ entityId: A.id, action: 'FINALIZE' })).map((a) => a.actorId)).toEqual([acc1.id]);
-    expect((await auditFor({ entityId: customer.id, action: 'CREATE' })).map((a) => a.actorId)).toEqual([acc1.id]);
+    const finalize = await auditFor({ entityId: A.id, action: 'FINALIZE' });
+    expect(finalize.map((a) => a.actorId)).toEqual([acc1.id]);
+    expect(finalize[0]!.after, 'the FINALIZE row records both codes').toMatchObject({ nmwcCode: A.code, temixCode: A.temix });
+    const created = await auditFor({ entityId: customer.id, action: 'CREATE' });
+    expect(created.map((a) => a.actorId)).toEqual([acc1.id]);
+    expect(created[0]!.after).toMatchObject({ nmwcCode: A.code, temixCode: A.temix });
     const steps = await db.editApproval.findMany({ where: { editId: A.id }, orderBy: { at: 'asc' } });
     expect(steps.map((s) => [s.stepIndex, s.role, s.decision])).toEqual([
       [0, 'SUPERVISOR', 'APPROVED'],
@@ -747,11 +785,16 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
     const fresh = await newRows(A.id, before);
     const toSa = fresh.filter((r) => r.userId === w.user('SA').id);
     expect(toSa.map((r) => [r.kind, r.title, r.body, r.customerId])).toEqual([
-      ['EDIT_APPROVED_FINAL', 'New customer approved', `${A.name} is now live as ${A.code}.`, customer.id],
+      ['EDIT_APPROVED_FINAL', 'New customer approved', `${A.name} is now live as ${A.code}, Temix code ${A.temix}.`, customer.id],
     ]);
     const toStw = fresh.filter((r) => r.userId === w.user('STW').id);
     expect(toStw.map((r) => [r.kind, r.title, r.body, r.customerId])).toEqual([
-      ['EDIT_APPROVED_FINAL', 'Ready for Temix upload', `${A.name} (${A.code}) was approved and is queued for the next Temix batch.`, customer.id],
+      [
+        'EDIT_APPROVED_FINAL',
+        'Ready for Temix upload',
+        `${A.name} (${A.code}, Temix code ${A.temix}) was approved and is queued for the next Temix batch.`,
+        customer.id,
+      ],
     ]);
     for (const k of ['M1', 'M2', 'M3', 'ACC2', 'FM1', 'GM1']) expect(recipients(fresh), `${k} is not told`).not.toContain(w.user(k).id);
     const accRows = (await notificationsFor({ editId: A.id })).filter((r) => r.userId === acc1.id && r.kind === 'EDIT_STAGE_ADVANCED');
@@ -772,6 +815,8 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
     await expect(page.getByText('2 for information', { exact: true })).toBeVisible();
     const approved = page.getByRole('link').filter({ hasText: 'New customer approved' }).filter({ hasText: A.name });
     await expect(approved).toHaveAttribute('href', `/customers/${A.customerId}`);
+    // Owner decision 8 Oct: he is told both codes.
+    await expect(approved).toContainText(`${A.name} is now live as ${A.code}, Temix code ${A.temix}.`);
     // Written while there was no customer yet: it opens Work.
     await expect(page.getByRole('link').filter({ hasText: 'Request advanced' }).filter({ hasText: A.name })).toHaveAttribute('href', '/work');
     await approved.click();
@@ -1008,13 +1053,14 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     const page = await pageAs(browser, acc1, 'desktop');
     await openApproval(page, K.id);
     const before = await rowIds(K.id);
-    await createHere(page, K.id);
+    const temix = temixCodeFor(w);
+    await createHere(page, K.id, temix);
     const edit = await db.customerEdit.findUniqueOrThrow({ where: { id: K.id } });
     expect(edit).toMatchObject({ state: 'APPROVED', pendingRole: null });
     const customer = await db.customer.findUniqueOrThrow({ where: { id: edit.customerId! } });
     K.customerId = customer.id;
     expect(customer.nmwcCode).toMatch(codeRe());
-    expect(customer).toMatchObject({ paymentTerms: 'CREDIT', paymentTermDays: 45, temixSyncState: 'PENDING_UPLOAD' });
+    expect(customer).toMatchObject({ paymentTerms: 'CREDIT', paymentTermDays: 45, temixSyncState: 'PENDING_UPLOAD', temixCode: temix });
     expect(Number(customer.creditLimit), 'exactly as requested, never amended').toBe(1234.5);
     const g = await db.attachment.findFirstOrThrow({ where: { editId: K.id, kind: 'GUARANTEE' } });
     expect(g.customerId, 'the guarantee is bound to the customer').toBe(customer.id);
@@ -1030,7 +1076,7 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     expect(fresh.find((r) => r.userId === w.user('SA').id)).toMatchObject({
       kind: 'EDIT_APPROVED_FINAL',
       title: 'New customer approved',
-      body: `${K.name} is now live as ${customer.nmwcCode}.`,
+      body: `${K.name} is now live as ${customer.nmwcCode}, Temix code ${temix}.`,
     });
     expect(fresh.find((r) => r.userId === w.user('STW').id)).toMatchObject({ kind: 'EDIT_APPROVED_FINAL', title: 'Ready for Temix upload' });
     expectNoPii(await notificationsFor({ editId: K.id }), [K.phone, K.cr]);
@@ -1107,7 +1153,7 @@ test.describe('an Accountant sees and decides only his own region', { tag: ['@de
     await acc2.goto('/approvals');
     await queueCard(acc2, nameB).getByRole('link').click();
     await expect(acc2).toHaveURL(new RegExp(`/approvals/${idB}$`));
-    await createHere(acc2, idB);
+    await createHere(acc2, idB, temixCodeFor(w));
     const customerB = await db.customer.findFirstOrThrow({ where: { legalName: nameB }, include: { branches: true } });
     expect(customerB.branches.map((b) => b.regionId)).toEqual([w.region('R2').id]);
 
@@ -1122,10 +1168,10 @@ test.describe('an Accountant sees and decides only his own region', { tag: ['@de
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 4. Credit is never bulk-approved
+// 4. Credit, and a new customer at the Accountant step, is never bulk-approved
 // ═════════════════════════════════════════════════════════════════════════════
 
-test.describe('a credit application is never bulk-approved', { tag: ['@desktop'] }, () => {
+test.describe('a credit application, and a new customer at its last step, is never bulk-approved', { tag: ['@desktop'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
@@ -1224,28 +1270,58 @@ test.describe('a credit application is never bulk-approved', { tag: ['@desktop']
     expect(await snapshot(['CustomerEdit'], { id: S.k2!.id })).toBe(frozen);
   });
 
-  test('the Accountant bulk-approves the two cash requests: two customers, codes in order; the credit stays at his step', async ({ browser }) => {
+  test('owner decision 8 Oct: the Accountant cannot bulk-approve the two cash requests either — a lock on each, a crafted bulk approve is refused; each is created from its own page with its own Temix code, codes in order; the credit stays at his step', async ({ browser }) => {
     test.skip(!S.k1, 'needs the seeded requests');
-    test.setTimeout(240_000);
+    test.setTimeout(300_000);
     const acc1 = await pageAs(browser, w.user('ACC1'), 'desktop');
     await acc1.goto('/approvals');
-    await expect(queueCard(acc1, S.k1!.legalName).getByRole('checkbox')).toHaveCount(0);
-    await acc1.getByLabel('Select up to 50 on this page').check();
-    await expect(acc1.getByText('2 selected', { exact: true }).first()).toBeVisible();
-    const seqBefore = await codeSequenceNext();
-    await acc1.getByRole('button', { name: '✓ Approve 2' }).click();
-    await acc1.getByRole('dialog', { name: 'Approve 2 edits?' }).getByRole('button', { name: 'Approve 2', exact: true }).click();
-    await expect(acc1.getByText('2 processed.', { exact: true })).toBeVisible({ timeout: 90_000 });
-    const seqAfter = await codeSequenceNext();
-    const done = await db.customerEdit.findMany({
-      where: { id: { in: [S.c1!.id, S.c2!.id] } },
-      select: { state: true, reviewedAt: true, customer: { select: { nmwcCode: true } } },
-      orderBy: { reviewedAt: 'asc' },
+    await expect(queueCard(acc1, S.k1!.legalName).getByRole('img', { name: CREDIT_LOCK })).toBeVisible();
+    for (const k of ['c1', 'c2']) {
+      const card = queueCard(acc1, S[k]!.legalName);
+      const lock = card.getByRole('img', { name: TEMIX_LOCK_LABEL });
+      await expect(lock, `${k}: a lock instead of a tick box`).toBeVisible();
+      await expect(lock).toHaveAttribute('title', TEMIX_CODE_BULK_REFUSED_MESSAGE);
+      await expect(card.getByRole('checkbox')).toHaveCount(0);
+    }
+    await expect(acc1.getByText(TEMIX_LOCK_NOTE, { exact: true })).toBeVisible();
+    await expect(acc1.getByLabel('Select up to 50 on this page'), 'every card at his step is locked: no Select all').toHaveCount(0);
+
+    // A bulk approve captured from M1's queue (two cash requests at the Supervisor step; aborted in the browser),
+    // replayed by ACC1 with ONE cash id at his step and its fresh token: refused, nothing written.
+    const m1 = await pageAs(browser, w.user('M1'), 'desktop');
+    await m1.goto('/approvals');
+    await m1.getByLabel('Select up to 50 on this page').check();
+    await m1.getByRole('button', { name: '✓ Approve 2' }).click();
+    const action = await captureServerAction(m1, () =>
+      m1.getByRole('dialog', { name: 'Approve 2 edits?' }).getByRole('button', { name: 'Approve 2', exact: true }).click()
+    );
+    await m1.close();
+    const ids = Object.values(S).map((s) => s.id);
+    const untouched = await snapshot(['CustomerEdit'], { id: { in: ids } });
+    const ledger = await db.editApproval.count({ where: { editId: { in: ids } } });
+    const decisions = JSON.stringify([{ editId: S.c1!.id, decisionToken: await decisionTokenNow(S.c1!.id) }]);
+    const ctx = await contextAs(browser, w.user('ACC1'), { device: 'desktop' });
+    const r = await replayServerAction(ctx.request, action, {
+      mutateBody: (b) => rewriteActionForm(b, action.headers['content-type'] ?? '', { set: { decisions } }),
     });
-    expect(done.map((d) => d.state)).toEqual(['APPROVED', 'APPROVED']);
-    const codes = done.map((d) => d.customer!.nmwcCode);
-    expectCodesInOrder(codes, seqBefore, seqAfter);
+    expect(r.notFound, r.text.slice(0, 300)).toBe(false);
+    expect(r.text, 'ACC1 at c1’s step').toContain(TEMIX_CODE_BULK_REFUSED_MESSAGE);
+    expect(await snapshot(['CustomerEdit'], { id: { in: ids } }), 'no state changed').toBe(untouched);
+    expect(await db.editApproval.count({ where: { editId: { in: ids } } }), 'no decision row').toBe(ledger);
+    expect(await db.customer.count({ where: { legalName: { in: [S.c1!.legalName, S.c2!.legalName] } } }), 'no customer').toBe(0);
+
+    // One at a time, each from its own page with its own Temix code.
+    const seqBefore = await codeSequenceNext();
+    const codes: string[] = [];
+    for (const k of ['c1', 'c2']) {
+      await acc1.goto('/approvals');
+      await queueCard(acc1, S[k]!.legalName).getByRole('link').click();
+      await expect(acc1).toHaveURL(new RegExp(`/approvals/${S[k]!.id}$`));
+      codes.push(await createHere(acc1, S[k]!.id, temixCodeFor(w)));
+    }
+    expectCodesInOrder(codes, seqBefore, await codeSequenceNext());
     expect(await stageOf(S.k1!.id)).toMatchObject({ state: 'SUBMITTED', currentStepIndex: 3, pendingRole: 'ACCOUNTANT', customerId: null });
+    await acc1.goto('/approvals');
     await expect(queueCard(acc1, S.k1!.legalName)).toBeVisible();
   });
 });
@@ -1426,6 +1502,8 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
 
       const frozen = await snapshot(['CustomerEdit'], { id: X.id });
       const ledger = await db.editApproval.count({ where: { editId: X.id } });
+      // The round-1 page, with a valid Temix code typed: still refused as stale, nothing written.
+      await typeTemixCode(stale, temixCodeFor(w));
       await approveHere(stale, 'Create this customer?', 'Approve and create');
       await expect(stale.getByText(STALE_VIEW, { exact: true })).toBeVisible();
       expect(await snapshot(['CustomerEdit'], { id: X.id })).toBe(frozen);
@@ -1433,6 +1511,7 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
 
       const capture = await accCtx.newPage();
       await openApproval(capture, X.id);
+      await typeTemixCode(capture, temixCodeFor(w));
       await capture.getByRole('button', { name: '✓ Approve', exact: true }).click();
       const dialog = capture.getByRole('dialog', { name: 'Create this customer?' });
       const action = await captureServerAction(capture, () => dialog.getByRole('button', { name: 'Approve and create', exact: true }).click());
@@ -1445,7 +1524,7 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
 
       const fresh = await accCtx.newPage();
       await openApproval(fresh, X.id);
-      await createHere(fresh, X.id);
+      await createHere(fresh, X.id, temixCodeFor(w));
       expect(await stageOf(X.id)).toMatchObject({ state: 'APPROVED' });
     });
   });
@@ -1601,11 +1680,13 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     const page = await pageAs(browser, acc1, 'desktop');
     const seqBefore = await codeSequenceNext();
     const codes: string[] = [];
+    const temix: string[] = [];
     for (const f of [f1, f2]) {
       await openApproval(page, f.id);
       await expect(page.getByText(/^New customer request · submitted by/)).toBeVisible();
-      // Wave 1: the Accountant sees the code he has just created (see createHere).
-      const code = await createHere(page, f.id);
+      // Wave 1: the Accountant sees the code he has just created (see createHere); each with its own Temix code.
+      temix.push(temixCodeFor(w));
+      const code = await createHere(page, f.id, temix.at(-1)!);
       codes.push(code);
       await expect(page.getByText(`New customer ${code} · submitted by`, { exact: false })).toBeVisible();
       await expect(page.getByText(`Created as customer ${code}.`, { exact: true })).toBeVisible();
@@ -1623,6 +1704,7 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     expect(c2.completenessScore).toBeGreaterThan(0);
     for (const b of c2.branches) expect(b.completenessScore).toBeGreaterThan(0);
     expect(c2.temixSyncState).toBe('PENDING_UPLOAD');
+    expect(c2.temixCode, 'its own Temix code').toBe(temix[1]);
     expect(c2.temixSyncPendingSince).not.toBeNull();
     expect((await db.customerEdit.findUniqueOrThrow({ where: { id: f2.id } })).customerId).toBe(c2.id);
 
@@ -1634,12 +1716,9 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
   });
 
   test('wave 1: the code shows on the page itself after Approve and create, without a reload', async ({ browser }) => {
-    // APP BUG (found 2026-10-08) — STUCK_AFTER_CREATE: ApproveRejectActions.tsx:174 calls router.refresh() while
-    // approveEditAction's own revalidated page is still streaming; when the refresh's answer completes first, the
-    // router cancels the action's stream and the page stays on "Created — loading…" (no code until a reload).
-    // A race, about half of all finalizes here, so this test finalizes up to eight in a row and fails at the
-    // first one stuck. (Held back 10 s, the refresh always lost the race and the code always showed.)
-    test.fail(true, STUCK_AFTER_CREATE);
+    // Was an APP BUG (found 2026-10-08), fixed by 8e47bc6 — STUCK_AFTER_CREATE: after the action answered, the page's
+    // router.refresh() was often parked by React and the page stayed on "Created — loading…" (no code until a
+    // reload), about half of all finalizes here. Eight finalizes in a row must each show the code in place.
     test.skip(!hasR2, 'the requests carry R2 photos');
     test.setTimeout(600_000);
     const page = await pageAs(browser, w.user('ACC1'), 'desktop');
@@ -1649,14 +1728,68 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
       await page.goto('/approvals');
       await queueCard(page, r.legalName).getByRole('link').click();
       await expect(page).toHaveURL(new RegExp(`/approvals/${r.id}$`));
-      await approveHere(page, 'Create this customer?', 'Approve and create');
-      await expect
-        .poll(async () => (await db.customerEdit.findUnique({ where: { id: r.id }, select: { state: true } }))?.state, { timeout: 90_000 })
-        .toBe('APPROVED');
-      await expect(page.getByText(/^Created as customer NMWC-/), `finalize ${i}: the code on the page, with no reload`).toBeVisible({
-        timeout: 45_000,
-      });
+      // createHere fails when the code is not shown in place (CODE_IN_PLACE_MS after the finalize landed).
+      await test.step(`finalize ${i}`, () => createHere(page, r.id, temixCodeFor(w)));
     }
+  });
+
+  test('owner decision 8 Oct, the Temix code: required, its shape, never an NMWC code; one another customer (live or archived) or a live branch holds is refused under the box, naming it, with nothing written; one typed in lower case with Arabic digits is stored as Temix writes it', async ({ browser }) => {
+    test.skip(!hasR2, 'the request carries R2 photos');
+    test.setTimeout(300_000);
+    const d = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: w.name('Temix Code Shop') });
+    const liveCode = temixCodeFor(w);
+    const live = await w.addCustomer({ key: 'TXLIVE', phone: true, temixCode: liveCode, branches: [{ key: 'S', route: 'B' }] });
+    const archivedCode = temixCodeFor(w);
+    const archived = await w.addCustomer({ key: 'TXARCH', phone: true, archived: true, temixCode: archivedCode, branches: [{ key: 'S', route: 'B' }] });
+    const frozen = await snapshot(['CustomerEdit'], { id: d.id });
+    const ledger = await db.editApproval.count({ where: { editId: d.id } });
+    const notes = await rowIds(d.id);
+    const seqBefore = await codeSequenceNext();
+    const since = new Date(Date.now() - 60_000);
+    const page = await pageAs(browser, w.user('ACC1'), 'desktop');
+    await openApproval(page, d.id);
+    const approve = page.getByRole('button', { name: '✓ Approve', exact: true });
+    const dialog = page.getByRole('dialog', { name: 'Create this customer?' });
+
+    // In the page: no code, or an NMWC code, and the confirmation never opens.
+    await approve.click();
+    await expect(temixCodeError(page)).toHaveText(TEMIX_CODE_REQUIRED_MESSAGE);
+    await expect(temixCodeError(page)).toHaveAttribute('role', 'alert');
+    await expect(temixCodeBox(page)).toHaveAttribute('aria-invalid', 'true');
+    await expect(dialog).toHaveCount(0);
+    await typeTemixCode(page, 'nmwc-2026-000123');
+    await approve.click();
+    await expect(temixCodeError(page)).toHaveText(TEMIX_CODE_CRM_MESSAGE);
+    await expect(dialog).toHaveCount(0);
+
+    // On the server: a code someone already holds is refused under the box, naming the holder; nothing is written.
+    const refusals: Array<[string, string]> = [
+      // Typed in lower case: compared as stored.
+      [liveCode.toLowerCase(), temixCodeTakenMessage(liveCode, live.code)],
+      [archivedCode, temixCodeHolderMessage(archivedCode, { nmwcCode: archived.code, archived: true, branchCode: null })],
+      [live.branch.code, temixCodeHolderMessage(live.branch.code, { nmwcCode: live.code, archived: false, branchCode: live.branch.code })],
+    ];
+    for (const [typed, refusal] of refusals) {
+      await typeTemixCode(page, typed);
+      await approve.click();
+      await expect(dialog).toContainText(`with Temix code ${typed.toUpperCase()}`);
+      await dialog.getByRole('button', { name: 'Approve and create', exact: true }).click();
+      await expect(temixCodeError(page), typed).toHaveText(refusal, { timeout: 60_000 });
+      await expect(page).toHaveURL(new RegExp(`/approvals/${d.id}$`));
+    }
+    expect(await snapshot(['CustomerEdit'], { id: d.id }), 'the request is unchanged').toBe(frozen);
+    expect(await db.editApproval.count({ where: { editId: d.id } })).toBe(ledger);
+    expect(await rowIds(d.id), 'nobody was told anything').toEqual(notes);
+    expect(await db.customer.count({ where: { legalName: d.legalName } })).toBe(0);
+    expect((await codeSequenceNext()) - seqBefore, 'no NMWC code handed out (rolled back)').toBe(await codesMintedByOthers(since, [d.legalName]));
+
+    // A fresh code, typed in lower case with Arabic-Indic digits: created under it as Temix writes it.
+    const fresh = temixCodeFor(w);
+    const arabic = fresh.toLowerCase().replace(/\d/g, (c) => String.fromCharCode(0x0660 + Number(c)));
+    const code = await createHere(page, d.id, arabic);
+    expect((await db.customer.findFirstOrThrow({ where: { legalName: d.legalName }, select: { temixCode: true } })).temixCode).toBe(fresh);
+    const told = (await notificationsFor({ editId: d.id, userId: w.user('SA').id })).filter((n) => n.kind === 'EDIT_APPROVED_FINAL');
+    expect(told.map((n) => n.body), 'the salesman is told both codes').toEqual([`${d.legalName} is now live as ${code}, Temix code ${fresh}.`]);
   });
 
   test('a customer with the same CR that went live mid-chain blocks the last step; nothing is written', async ({ browser }) => {
@@ -1669,6 +1802,8 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     const notes = await rowIds(d.id);
     const page = await pageAs(browser, w.user('ACC1'), 'desktop');
     await openApproval(page, d.id);
+    // A valid Temix code no one holds: the duplicate is refused for itself.
+    await typeTemixCode(page, temixCodeFor(w));
     await approveHere(page, 'Create this customer?', 'Approve and create');
     await expect(
       page.getByText(
@@ -1699,6 +1834,7 @@ test.describe('the last step mints the code and re-checks duplicates', { tag: ['
     const since = new Date(Date.now() - 60_000);
     const page = await pageAs(browser, w.user('ACC1'), 'desktop');
     await openApproval(page, d.id);
+    await typeTemixCode(page, temixCodeFor(w));
     await approveHere(page, 'Create this customer?', 'Approve and create');
     await expect(
       page.getByText(
@@ -2157,28 +2293,28 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
     const r = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: w.name('Race Shop') });
     const ctx = await contextAs(browser, w.user('ACC1'), { device: 'desktop' });
     const [t1, t2] = [await ctx.newPage(), await ctx.newPage()];
+    // The same Temix code in both tabs, as the one Accountant would type it twice.
+    const temix = temixCodeFor(w);
     for (const t of [t1, t2]) {
       await openApproval(t, r.id);
+      await typeTemixCode(t, temix);
       await t.getByRole('button', { name: '✓ Approve', exact: true }).click();
       await expect(t.getByRole('dialog', { name: 'Create this customer?' })).toBeVisible();
     }
     await Promise.all(
       [t1, t2].map((t) => t.getByRole('dialog', { name: 'Create this customer?' }).getByRole('button', { name: 'Approve and create', exact: true }).click())
     );
-    // The winner's action answered ok: its page shows the code, or — the STUCK_AFTER_CREATE bug, asserted on its
-    // own in "without a reload" — sits on "Created — loading…", a label set only on an ok answer.
+    // The winner's page shows the code in place (no "Created — loading…" stand-in any more: STUCK_AFTER_CREATE
+    // was fixed); the other is told it was decided.
     await expect
       .poll(async () => {
-        const won: number[] = await Promise.all(
-          [t1, t2].map(async (t) =>
-            (await t.getByText(/^Created as customer NMWC-/).count()) + (await t.getByRole('button', { name: CREATED_LOADING, exact: true }).count()) > 0 ? 1 : 0
-          )
-        );
+        const won = await Promise.all([t1, t2].map((t) => t.getByText(/^Created as customer NMWC-/).count()));
         const lost = await Promise.all([t1, t2].map((t) => t.getByText(DECIDED_ELSEWHERE).count()));
         return `${won.reduce((a, b) => a + b, 0)} won, ${lost.reduce((a, b) => a + b, 0)} told`;
       }, { timeout: 60_000 })
       .toBe('1 won, 1 told');
-    expect(await db.customer.count({ where: { legalName: r.legalName } }), 'exactly one customer').toBe(1);
+    const made = await db.customer.findMany({ where: { legalName: r.legalName }, select: { temixCode: true } });
+    expect(made, 'exactly one customer, with the Temix code').toEqual([{ temixCode: temix }]);
     expect(await db.editApproval.count({ where: { editId: r.id, stepIndex: 1 } })).toBe(1);
   });
 
@@ -2186,7 +2322,9 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
     test.skip(!hasR2, 'the request carries R2 photos');
     test.setTimeout(300_000);
     const r = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', step: 1, approvedBy: ['M1'], legalName: w.name('Missing Photo Co') });
-    // The salesman removed his shop photo after sending it (the removal itself is test.fail below).
+    // A shop photo gone after the request was sent (written in the database: a salesman can no longer remove one
+    // from a request in review, 628e541 — asserted below — but a request sent before that fix, or a Steward's
+    // clean-up, can still leave one missing).
     await db.attachment.update({ where: { id: r.photos.branches[0]!.shop!.id }, data: { deletedAt: new Date(), hash: null } });
     const early = '1 photo was removed since the request was sent — it will be refused at the last step; reject it and say which photo is missing.';
     const fm = await pageAs(browser, w.user('FM1'), 'desktop');
@@ -2205,6 +2343,8 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
     ).toBeVisible();
     const frozen = await snapshot(['CustomerEdit'], { id: r.id });
     const ledger = await db.editApproval.count({ where: { editId: r.id } });
+    // With a valid Temix code: the photo check runs first and still refuses it.
+    await typeTemixCode(acc, temixCodeFor(w));
     await approveHere(acc, 'Create this customer?', 'Approve and create');
     await expect(acc.getByText(PHOTO_REMOVED_AT_FINAL, { exact: true })).toBeVisible();
     expect(await snapshot(['CustomerEdit'], { id: r.id })).toBe(frozen);
@@ -2230,6 +2370,7 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
     await expect(acc.getByText('Guarantee documents (1)', { exact: true })).toBeVisible();
     await db.attachment.update({ where: { id: r.photos.guarantees[0]!.id }, data: { deletedAt: new Date(), hash: null } });
     const frozen = await snapshot(['CustomerEdit'], { id: r.id });
+    await typeTemixCode(acc, temixCodeFor(w));
     await approveHere(acc, 'Create this customer?', 'Approve and create');
     await expect(acc.getByText(STALE_VIEW, { exact: true })).toBeVisible();
     expect(await snapshot(['CustomerEdit'], { id: r.id })).toBe(frozen);
@@ -2246,25 +2387,31 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
   });
 
   test('a salesman cannot remove a photo of his request while it is in review', async ({ browser }) => {
-    // Known P2 left for after launch (wave-1 not_fixed, bug 28 root cause): services/photos.ts detachPhotoCore lets
-    // the submitter soft-delete a photo claimed by his SUBMITTED new-customer request.
-    test.fail(true, 'services/photos.ts lets a photo of a pending new-customer request be removed (P2, after launch)');
+    // Was a P2 (wave-1 not_fixed, bug 28 root cause), fixed by 628e541: services/photos.ts detachPhotoCore let the
+    // submitter soft-delete a photo claimed by his SUBMITTED new-customer request. It is REFUSED now, in words.
     test.skip(!hasR2, 'the request carries R2 photos');
     const r = await seedCreateRequest(w, { submitter: 'SA', legalName: w.name('Keep My Photo') });
     const page = await pageAs(browser, w.user('SA'), 'phone');
     await page.goto('/work');
     const res = await postJson(page, '/api/photos/detach', { attachmentId: r.photos.branches[0]!.shop!.id });
-    const out = (await res.json()) as { ok: boolean };
-    expect(out.ok, 'refused while the request is in review').toBe(false);
+    const out = (await res.json()) as { ok: boolean; code?: string; message?: string };
+    expect(out, 'refused while the request is in review').toMatchObject({
+      ok: false,
+      code: 'FORBIDDEN',
+      message:
+        'This photo is on your new-customer request, which is with the approvers, so it cannot be removed now. If it must change, ask them to send the request back.',
+    });
     expect((await db.attachment.findUniqueOrThrow({ where: { id: r.photos.branches[0]!.shop!.id } })).deletedAt).toBeNull();
   });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 9. Bulk-creating twelve cash customers inside the time budget
+// 9. Twelve cash customers: bulk at the Supervisor step inside the time budget,
+//    then one Temix code each at the Accountant (owner decision 8 Oct: no bulk
+//    approve of a new customer at its last step)
 // ═════════════════════════════════════════════════════════════════════════════
 
-test.describe('bulk-creating twelve cash customers', { tag: ['@desktop'] }, () => {
+test.describe('twelve cash customers, from Select all at the Supervisor step to twelve codes', { tag: ['@desktop'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
 
@@ -2278,40 +2425,37 @@ test.describe('bulk-creating twelve cash customers', { tag: ['@desktop'] }, () =
     await w?.cleanup();
   });
 
-  test('Select all, Approve 12: every one created with a unique code in order, inside the function budget, and every salesman told', async ({ browser }) => {
+  test('Select all, Approve 12 at the Supervisor step inside the function budget; the Accountant cannot bulk-approve them, and creates each from its own page with its own Temix code: unique codes in order, every salesman told both codes', async ({ browser }) => {
     test.skip(!hasR2, 'the requests carry R2 photos');
-    test.setTimeout(900_000);
+    test.setTimeout(1_200_000);
     const seeded: SeededCreate[] = [];
     for (let i = 1; i <= 12; i++) {
       seeded.push(
         await seedCreateRequest(w, {
           submitter: i % 2 ? 'SA' : 'SA2',
-          step: 1,
-          approvedBy: [i % 2 ? 'M1' : 'M2'],
           legalName: w.name(`Bulk Twelve ${String(i).padStart(2, '0')}`),
         })
       );
     }
-    const acc1 = await pageAs(browser, w.user('ACC1'), 'desktop');
-    await acc1.goto('/approvals');
-    expect(await pendingCount(acc1)).toBe(12);
-    const seqBefore = await codeSequenceNext();
+    // M3 — a Manager of the region who supervises neither salesman — sends all twelve on at once.
+    const m3 = await pageAs(browser, w.user('M3'), 'desktop');
+    await m3.goto('/approvals');
+    expect(await pendingCount(m3)).toBe(12);
     let left = 12;
     let runs = 0;
-    // Each run stops at the 40 s budget and says how many it did not attempt; on UAT from here a finalize
-    // takes 8-14 s, so twelve need three or four runs. Every run must make progress.
+    // Each run stops at the 40 s budget and says how many it did not attempt. Every run must make progress.
     while (left > 0 && runs < 8) {
       runs++;
-      await acc1.getByLabel('Select up to 50 on this page').check();
-      await expect(acc1.getByText(`${left} selected`, { exact: true }).first()).toBeVisible();
-      await acc1.getByRole('button', { name: `✓ Approve ${left}` }).click();
+      await m3.getByLabel('Select up to 50 on this page').check();
+      await expect(m3.getByText(`${left} selected`, { exact: true }).first()).toBeVisible();
+      await m3.getByRole('button', { name: `✓ Approve ${left}` }).click();
       const started = Date.now();
       // The dialog's own words: "Approve 1 edit?" for a single one left by the budget.
-      await acc1
+      await m3
         .getByRole('dialog', { name: `Approve ${left} edit${left === 1 ? '' : 's'}?` })
         .getByRole('button', { name: `Approve ${left}`, exact: true })
         .click();
-      const banner = acc1.getByText(/^\d+ processed.*\.$/);
+      const banner = m3.getByText(/^\d+ processed.*\.$/);
       await expect(banner).toBeVisible({ timeout: 120_000 });
       const ms = Date.now() - started;
       test.info().annotations.push({ type: 'bulk-wall-time', description: `run ${runs}: ${ms} ms for ${left} (Vercel caps a function at 60 s)` });
@@ -2319,14 +2463,33 @@ test.describe('bulk-creating twelve cash customers', { tag: ['@desktop'] }, () =
       const m = /^(\d+) processed(?:, (\d+) not attempted)?/.exec(text)!;
       expect(Number(m[1]) + Number(m[2] ?? 0), text).toBe(left);
       expect(text, 'nothing failed').not.toContain('failed');
-      expect(Number(m[1]), `run ${runs} created at least one`).toBeGreaterThan(0);
+      expect(Number(m[1]), `run ${runs} sent at least one on`).toBeGreaterThan(0);
       left = Number(m[2] ?? 0);
-      if (left > 0) await acc1.reload();
+      if (left > 0) await m3.reload();
     }
-    expect(left, 'all twelve done, re-running what the budget left').toBe(0);
+    expect(left, 'all twelve sent on, re-running what the budget left').toBe(0);
+    for (const s of seeded) expect(await stageOf(s.id)).toMatchObject({ state: 'SUBMITTED', currentStepIndex: 1, pendingRole: 'ACCOUNTANT', customerId: null });
+
+    // At the Accountant: twelve locks, no Select all.
+    const acc1 = await pageAs(browser, w.user('ACC1'), 'desktop');
+    await acc1.goto('/approvals');
+    expect(await pendingCount(acc1)).toBe(12);
+    await expect(acc1.getByRole('img', { name: TEMIX_LOCK_LABEL })).toHaveCount(12);
+    await expect(acc1.getByLabel('Select up to 50 on this page')).toHaveCount(0);
+
+    // One at a time, in queue order, each with its own Temix code.
+    const seqBefore = await codeSequenceNext();
+    const temix = new Map<string, string>();
+    for (const s of seeded) {
+      await openApproval(acc1, s.id);
+      temix.set(s.id, temixCodeFor(w));
+      const started = Date.now();
+      await createHere(acc1, s.id, temix.get(s.id)!);
+      test.info().annotations.push({ type: 'finalize-wall-time', description: `${s.legalName}: ${Date.now() - started} ms` });
+    }
     const done = await db.customerEdit.findMany({
       where: { id: { in: seeded.map((s) => s.id) } },
-      select: { id: true, state: true, reviewedAt: true, submittedById: true, customer: { select: { nmwcCode: true } } },
+      select: { id: true, state: true, reviewedAt: true, submittedById: true, customer: { select: { nmwcCode: true, temixCode: true, legalName: true } } },
       orderBy: { reviewedAt: 'asc' },
     });
     expect(done.every((d) => d.state === 'APPROVED' && d.customer)).toBe(true);
@@ -2334,8 +2497,11 @@ test.describe('bulk-creating twelve cash customers', { tag: ['@desktop'] }, () =
     expect(new Set(codes).size, 'twelve different codes').toBe(12);
     expectCodesInOrder(codes, seqBefore, await codeSequenceNext());
     for (const d of done) {
+      expect(d.customer!.temixCode, 'its own Temix code').toBe(temix.get(d.id));
       const final = (await notificationsFor({ editId: d.id })).filter((n) => n.userId === d.submittedById && n.kind === 'EDIT_APPROVED_FINAL');
-      expect(final, 'the salesman of each is told').toHaveLength(1);
+      expect(final.map((n) => n.body), 'the salesman of each is told both codes').toEqual([
+        `${d.customer!.legalName} is now live as ${d.customer!.nmwcCode}, Temix code ${temix.get(d.id)}.`,
+      ]);
     }
   });
 });

@@ -20,21 +20,21 @@
  *   6. layout at 360, 412 and 768 for every role; the drawer (wave 1 added
  *      Change password to every menu and Export to Supervisor/Manager/Viewer);
  *      Needs correction reachable from Today and Work (wave 1) (MOBILE-LAYOUT);
- *   7. accessibility basics (A11Y-BASICS; the axe scan waits for the owner);
+ *   7. accessibility basics (A11Y-BASICS; the axe scan is a11y.spec.ts);
  *   8. big lists and the slow-phone numbers (PERF-SLOW-PHONE);
  *   9. health and cron endpoints, e-mail off (OPS-HEALTH, OPS-CRON-AUTH,
  *      FIN-20-EMAIL-OFF steps 1-2).
  *
- * Still knowingly broken (P2 after launch): KNOWN_BUGS.drawerA11y — marked
- * test.fail in its own tests. Desktop unless a describe says @phone.
+ * Desktop unless a describe says @phone.
  *
- * App bugs found by the 8 Oct run of THIS build (claude/launch-e2e), each in its
- * own test.fail test naming the cause: the master export and the field-update
- * report answer 500 (fixed on claude/launch-candidate 81c936e — drop those two
- * markers once it is merged here); a query-only tap on Today never lands
- * (fixed on claude/fix-nav-hang 8105b00); /dashboard at 768 scrolls sideways;
- * unlabelled fields on the reject form and the Create user form; 'Current
- * password incorrect.' without role=alert.
+ * App bugs found by the 8 Oct run, all FIXED in the launch candidate and asserted
+ * as fixed (no test here is expected to fail): the phone drawer is a dialog that
+ * takes the focus and closes on its current page (KNOWN_BUGS.drawerA11y,
+ * ee81e93); the master export and the field-update report download (81c936e); a
+ * query-only tap on Today lands (8e47bc6, TransitionWatchdog); /dashboard at 768
+ * does not scroll sideways (f52222a), so it is back in every role's layout
+ * loop; the reject form and the Create user form name their fields (cf148e5,
+ * 140eed9); 'Current password incorrect.' is read out (8642d85).
  */
 import { expect, request as pwRequest, test, type Browser, type Locator, type Page } from '@playwright/test';
 import type { Role } from '@prisma/client';
@@ -216,7 +216,7 @@ async function visitPages(
   o: {
     devices: DeviceKind[];
     layout: boolean;
-    /** Width checks asserted in their own test.fail test instead (a known app bug); everything else still runs. */
+    /** Width checks to leave out (asserted in a test of their own); everything else still runs. None today. */
     skipLayout?: Array<{ device: DeviceKind; path: string }>;
   }
 ): Promise<string[]> {
@@ -527,9 +527,8 @@ test.describe('platform: security headers and the CSP', { tag: ['@desktop'] }, (
   });
 
   test("blob download: the Steward's /export 'Download .xlsx' saves the master under the Oman date", async ({ browser }) => {
-    // APP BUG (blocker, fixed on claude/launch-candidate 81c936e, not in this build): GET /api/exports/customers
-    // answers 500 "Export failed" (export.fail "b is not a constructor") — lib/excel.ts:210 PassThrough is undefined in the webpack server build.
-    test.fail(true, 'master export 500: lib/excel.ts openStreamedWorkbook PassThrough undefined in the production build');
+    // Was an APP BUG (blocker), fixed by 81c936e: GET /api/exports/customers answered 500 "Export failed"
+    // (export.fail "b is not a constructor") — lib/excel.ts PassThrough was undefined in the webpack server build.
     test.setTimeout(300_000);
     const today = isoOf(omanText(new Date()).date);
 
@@ -555,9 +554,8 @@ test.describe('platform: security headers and the CSP', { tag: ['@desktop'] }, (
   });
 
   test("blob download: the Steward's field-update report saves under the Oman date", async ({ browser }) => {
-    // APP BUG (blocker, fixed on claude/launch-candidate 81c936e, not in this build): GET /api/exports/changes
-    // fails the same way — lib/change-report.ts:524 calls the same lib/excel.ts openStreamedWorkbook.
-    test.fail(true, 'field-update report 500: lib/excel.ts openStreamedWorkbook PassThrough undefined in the production build');
+    // Was an APP BUG (blocker), fixed by 81c936e: GET /api/exports/changes failed the same way (the same
+    // lib/excel.ts openStreamedWorkbook).
     test.setTimeout(300_000);
     const today = isoOf(omanText(new Date()).date);
     const stw = await (await contextAs(browser, world.user('STW'))).newPage();
@@ -1073,9 +1071,6 @@ test.describe('platform: layout for every role at 360, 412 and 768', { tag: ['@p
     await world?.cleanup();
   });
 
-  /** The insights dashboard at 768 is asserted in its own test.fail test below (app bug); every other check runs. */
-  const DASHBOARD_AT_768 = [{ device: 'tablet' as const, path: '/dashboard' }];
-
   for (const { key, role } of ONE_PER_ROLE) {
     test(`${role}: no sideways scroll and no hydration error on any menu page at 360, 412 and 768`, async ({ browser }) => {
       test.setTimeout(900_000);
@@ -1084,17 +1079,16 @@ test.describe('platform: layout for every role at 360, 412 and 768', { tag: ['@p
       const bad = await visitPages(browser, world.user(key), pagesFor(role, extra), {
         devices: ['phone360', 'phone', 'tablet'],
         layout: true,
-        skipLayout: DASHBOARD_AT_768,
       });
       expect(bad, `${role}: layout problems`).toEqual([]);
     });
   }
 
   test('the insights dashboard at 768 has no sideways scroll (Manager, Steward, Viewer)', async ({ browser }) => {
-    // APP BUG (minor, layout): at 768 px (sidebar shown) /dashboard scrolls 3 px sideways for every dashboard role. The
-    // "Where the located branches are" card's grid (app/(app)/dashboard/cards.tsx:731, md:grid-cols-[minmax(0,26rem)_minmax(0,1fr)])
-    // gives the map its full 26rem in a ~456 px card, leaving the coverage column ~16 px: its "GPS coverage by …" heading spills out.
-    test.fail(true, '/dashboard at 768: the GPS coverage column is squeezed and spills 3 px past the screen');
+    // Was an APP BUG (minor, layout), fixed by f52222a: at 768 px (sidebar shown) /dashboard scrolled 3 px sideways
+    // for every dashboard role — the "Where the located branches are" card put the map and the coverage side by side
+    // from md, leaving the coverage column ~16 px. They stack below lg now. /dashboard at 768 is also back in each
+    // role's layout loop above; this test names the three dashboard roles on their own.
     test.setTimeout(300_000);
     const bad: string[] = [];
     for (const key of ['M1', 'STW', 'VW']) {
@@ -1209,7 +1203,7 @@ test.describe('platform: layout for every role at 360, 412 and 768', { tag: ['@p
   });
 
   test('the phone drawer closes when the current page is tapped', async ({ browser }) => {
-    // KNOWN BUG drawerA11y (P2, after launch): the drawer closes only on a pathname change.
+    // KNOWN_BUGS.drawerA11y, fixed (ee81e93): the drawer closed only on a pathname change.
     test.fail(KNOWN_BUGS.drawerA11y.open, KNOWN_BUGS.drawerA11y.title);
     const page = await (await contextAs(browser, world.user('M1'), { device: 'phone' })).newPage();
     await page.goto('/customers');
@@ -1356,9 +1350,8 @@ test.describe('platform: accessibility basics', { tag: ['@desktop'] }, () => {
   });
 
   test('labels: every field on the approval page, the reject form open, has a name', async ({ browser }) => {
-    // APP BUG (minor, a11y): the reject form's Category <select> and reason <textarea> have <label>s with no htmlFor/id
-    // (app/(app)/approvals/[id]/ApproveRejectActions.tsx:244-245 and :280-283), so neither field has a name.
-    test.fail(true, 'approval page: the reject form Category and reason fields are unlabelled');
+    // Was an APP BUG (minor, a11y), fixed by cf148e5: the reject form's Category <select> and reason <textarea> had
+    // <label>s with no htmlFor/id, so neither field had a name.
     const page = await (await contextAs(browser, world.user('M1'))).newPage();
     await page.goto(`/approvals/${gapsEdit}`);
     const reject = page.getByRole('button', { name: '✗ Reject' });
@@ -1366,16 +1359,22 @@ test.describe('platform: accessibility basics', { tag: ['@desktop'] }, () => {
     await reject.click();
     await expect(page.getByRole('heading', { name: 'Reject this submission' })).toBeVisible();
     expect(await unlabelledControls(page), 'unlabelled fields on the approval page').toEqual([]);
+    // getByLabel finds each field by its words.
+    await expect(page.getByLabel('Category', { exact: true })).toHaveAttribute('name', 'category');
+    await expect(page.getByLabel(/^Reason for the /)).toHaveAttribute('name', 'reason');
   });
 
   test('labels: every field on /users (the Create user form) has a name', async ({ browser }) => {
-    // APP BUG (minor, a11y): no Create user label is tied to its field — the Field helper (app/(app)/users/CreateUserForm.tsx:251-255),
-    // Role (:125), Supervisor (:144) and Route (:161) render <label> without htmlFor and the inputs without id.
-    test.fail(true, '/users: the Create user form fields are unlabelled');
+    // Was an APP BUG (minor, a11y), fixed by 140eed9: no Create user label was tied to its field (the Field helper,
+    // Role, Supervisor and Route rendered <label> without htmlFor and the inputs without id).
     const page = await (await contextAs(browser, world.user('STW'))).newPage();
     await page.goto('/users');
     await waitForHydrated(page.getByRole('button', { name: 'Create user' }));
     expect(await unlabelledControls(page), 'unlabelled fields on /users').toEqual([]);
+    const form = page.locator('form').filter({ has: page.getByRole('button', { name: 'Create user' }) });
+    await expect(form.getByLabel(/^Full name/)).toHaveAttribute('name', 'fullName');
+    await expect(form.getByLabel('Role', { exact: true })).toHaveAttribute('name', 'role');
+    await expect(form.getByLabel(/^Phone/)).toHaveAttribute('name', 'phone');
   });
 
   test('errors use role=alert: a refused sign-in', async ({ browser }) => {
@@ -1405,9 +1404,8 @@ test.describe('platform: accessibility basics', { tag: ['@desktop'] }, () => {
   });
 
   test('errors use role=alert: change password — the current password is wrong', async ({ browser }) => {
-    // APP BUG (minor, a11y): the server's field error 'Current password incorrect.' is a plain <p>, not role=alert
-    // (app/(app)/profile/change-password/ChangePasswordForm.tsx:120-122); only the mismatch error carries role=alert.
-    test.fail(true, "change password: 'Current password incorrect.' is not announced (no role=alert)");
+    // Was an APP BUG (minor, a11y), fixed by 8642d85: the server's field error 'Current password incorrect.' was a
+    // plain <p>, not role=alert; only the mismatch error carried role=alert.
     const page = await (await contextAs(browser, world.user('ACC1'))).newPage();
     await page.goto('/profile/change-password');
     const submit = page.getByRole('button', { name: 'Change password' });
@@ -1444,7 +1442,7 @@ test.describe('platform: accessibility basics', { tag: ['@desktop'] }, () => {
   });
 
   test('the phone drawer by keyboard: a dialog that takes the focus', async ({ browser }) => {
-    // KNOWN BUG drawerA11y (P2, after launch): no role=dialog, no focus move, no focus trap.
+    // KNOWN_BUGS.drawerA11y, fixed (ee81e93): there was no role=dialog, no focus move, no focus trap.
     test.fail(KNOWN_BUGS.drawerA11y.open, KNOWN_BUGS.drawerA11y.title);
     const page = await (await contextAs(browser, world.user('M1'), { device: 'phone' })).newPage();
     await page.goto('/dashboard');
@@ -1457,9 +1455,7 @@ test.describe('platform: accessibility basics', { tag: ['@desktop'] }, () => {
     expect(await page.evaluate(() => !!document.activeElement?.closest('#mobile-nav-drawer')), 'focus moved into the drawer').toBe(true);
   });
 
-  test('axe scan of the main screens', async () => {
-    test.skip(true, '@axe-core/playwright is not a devDependency; adding it needs the owner’s approval (A11Y-BASICS)');
-  });
+  // The axe scan of the main screens is a11y.spec.ts (@axe-core/playwright 4.13.0, added 8 Oct with the owner's word).
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1535,9 +1531,8 @@ test.describe('platform: big lists and a slow phone', { tag: ['@phone'] }, () =>
   });
 
   test("Today: a tap on 'Next' lands on page 2", async ({ browser }) => {
-    // APP BUG (major, fixed on claude/fix-nav-hang 8105b00, not in this build): a tap that changes only the query string
-    // often never lands — the React canary inside Next 15.5 drops a ping and parks the render (URL stays /today).
-    test.fail(true, "query-only navigation hang: Today's Next tap does not land");
+    // Was an APP BUG (major), fixed by 8e47bc6 (TransitionWatchdog): a tap that changes only the query string often
+    // never landed — the React canary inside Next 15.5 drops a ping and parks the render (URL stayed /today).
     test.setTimeout(120_000);
     const page = await (await contextAs(browser, world.user('SP'))).newPage();
     await page.goto('/today');

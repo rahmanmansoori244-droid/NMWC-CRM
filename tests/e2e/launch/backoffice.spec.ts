@@ -24,6 +24,14 @@
  *   - dashboards (organisation, a fixture region, a Manager's hand-made URLs),
  *     service status, and the Steward's Work items.
  *
+ * Fixed in the launch candidate and asserted as fixed (no test here is
+ * test.fail): a result re-rendered in place (NAV_HANG, 8e47bc6) — shownInPlace
+ * and landsInPlace FAIL on a hang instead of reloading; every streamed export
+ * downloads (81c936e); a promote refused for another live import leaves its
+ * batch READY (49aa0d8); the inbound refresh records the first Temix code of a
+ * customer the app created and sent (f73af5b); a workbook over the 4.2 MB cap
+ * is refused in the app's words (7bf8fec, 81c37ce).
+ *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts backoffice --project=desktop
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts backoffice --project=exclusive --workers=1
  */
@@ -58,15 +66,13 @@ import {
 } from './support';
 import {
   IN_PLACE_MS,
-  NAV_HANG,
-  STREAMED_EXPORT_BUG,
   TEMIX_QUEUE_WHERE,
   XLSX_MIME,
   accountWorkbook,
   customerWorkbook,
   drainStewardImports,
   kpiValue,
-  landsOrGo,
+  landsInPlace,
   liveCustomerPromotes,
   newSecretPassword,
   omanDate,
@@ -74,7 +80,7 @@ import {
   pageSubtitle,
   readDownload,
   resetStewardLimits,
-  shownOrReload,
+  shownInPlace,
   statValue,
   temixTile,
   xlsxBuffer,
@@ -682,7 +688,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     // The row's own result line (the action's answer, shown before the page refreshes).
     await expect(batchRow(page, '#7')).toContainText('Ready to promote (1 row). Promote the batch to load it.');
     // On "All rows" the row stays after the refresh, marked fixed; a promoted batch with a fixed row is promotable again.
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Correct… on row #7',
       async (timeout) => {
@@ -697,7 +703,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     await page.locator(`#release-${idOf(5)}`).fill(RELEASE_REASON);
     await batchRow(page, '#5').getByRole('button', { name: 'Release and re-check' }).click();
     await expect(batchRow(page, '#5')).toContainText('Ready to promote (1 row). Promote the batch to load it.');
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Release shared phone… on row #5',
       async (timeout) => {
@@ -711,7 +717,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     await batchRow(page, '#6').getByRole('button', { name: 'Exclude…' }).click();
     await page.locator(`#exclude-${idOf(6)}`).fill('Waiting for the owner to confirm');
     await batchRow(page, '#6').getByRole('button', { name: 'Exclude this row' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Exclude… on row #6',
       async (timeout) => {
@@ -721,7 +727,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
       async () => (await stored(6)).excludedAt !== null
     );
     await batchRow(page, '#6').getByRole('button', { name: 'Include again' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Include again on row #6',
       async (timeout) => {
@@ -740,7 +746,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     await batchRow(page, '#6').getByRole('button', { name: 'Exclude…' }).click();
     await page.locator(`#exclude-${idOf(6)}`).fill(EXCLUDE_REASON);
     await batchRow(page, '#6').getByRole('button', { name: 'Exclude this row' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Exclude… on row #6, for good',
       (timeout) => expect(batchRow(page, '#6')).toContainText(`Excluded by ${stw.fullName}: ${EXCLUDE_REASON}`, { timeout }),
@@ -814,7 +820,7 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     await expect(statValue(page, 'Rejected')).toHaveText('1');
     await expect(page.getByText('1 row(s) were rejected and are not in the master.')).toBeVisible();
     await page.getByRole('link', { name: 'See them with the reason' }).click();
-    await landsOrGo(page, /\?show=rejected$/, `/import/${b2}?show=rejected`, 'See them with the reason');
+    await landsInPlace(page, /\?show=rejected$/, 'See them with the reason');
     await expect(batchRow(page, '#2')).toContainText(
       'Not loaded: customer is archived in the CRM, and an import does not bring an archived customer back — exclude the row; steward review'
     );
@@ -928,8 +934,13 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     await expect(await attempt(`${w.sfx}-not-a-workbook.xlsx`, Buffer.from('this is a text file renamed to .xlsx\n'))).toHaveText(
       /^Could not read \.xlsx: \S/
     );
+    // One cap for the form and the importer (81c37ce, lib/import-file-size.ts): 4.2 MB, just under Vercel's
+    // 4.5 MB request body. The form refuses a bigger file before it sends anything (7bf8fec).
     await expect(await attempt(`${w.sfx}-six-mb.xlsx`, Buffer.alloc(6 * 1024 * 1024, 0x41))).toHaveText(
-      'File is too large (6144 KB). Maximum is 5 MB.'
+      'File is too large (6144 KB). Maximum is 4.2 MB.'
+    );
+    await expect(await attempt(`${w.sfx}-four-and-a-half-mb.xlsx`, Buffer.alloc(Math.round(4.5 * 1024 * 1024), 0x41))).toHaveText(
+      'File is too large (4608 KB). Maximum is 4.2 MB.'
     );
     await expect(await attempt(`${w.sfx}-headers-only.xlsx`, await customerWorkbook([]))).toHaveText('Workbook is empty.');
     const twice = await xlsxBuffer([
@@ -947,11 +958,12 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     await drainStewardImports(stw);
     await expect(await attempt(`${w.sfx}-burst-4.xlsx`, await customerWorkbook([]), false)).toHaveText(/^Wait \d+s before another import\.$/);
 
-    // 8.5 MB is over Next's 8 MB server-action body limit: refused before the app's own 5 MB check.
-    const big = await attempt(`${w.sfx}-eight-mb.xlsx`, Buffer.alloc(Math.round(8.5 * 1024 * 1024), 0x41));
-    const bigText = (await big.textContent()) ?? '';
-    test.info().annotations.push({ type: 'recorded', description: `8.5 MB upload answer: ${bigText.slice(0, 200)}` });
-    expect(bigText).not.toMatch(/^Uploaded/);
+    // 8.5 MB is over Next's 8 MB server-action body limit (and Vercel's 4.5 MB): it used to get Next's generic
+    // "An error occurred in the Server Components render…" (recorded, not failed). Fixed by 7bf8fec: the form
+    // says so in the importer's words and sends nothing.
+    await expect(await attempt(`${w.sfx}-eight-mb.xlsx`, Buffer.alloc(Math.round(8.5 * 1024 * 1024), 0x41))).toHaveText(
+      'File is too large (8704 KB). Maximum is 4.2 MB.'
+    );
 
     expect(await db.importBatch.count({ where: { filename: { in: names } } }), 'no batch for a refused file').toBe(0);
     await resetStewardLimits(stw);
@@ -1055,16 +1067,20 @@ test.describe('back office: only one customer promote runs at a time', { tag: ['
   });
 
   test('the refused batch is left READY, not looking like an interrupted promote', async ({ browser }) => {
-    // APP BUG (found authoring this spec): promoteCustomerBatchCore claims the batch (READY →
-    // PROMOTING) BEFORE it checks for another live promote, and on that refusal releases only the
-    // lease — so the refused batch stays PROMOTING with no lease: its page shows "Promote
-    // interrupted." with a Resume button, and Work lists it under "Import to resume".
-    test.fail(true, 'A promote refused for another live promote leaves its batch PROMOTING, shown as interrupted (services/imports.ts otherLive release)');
+    // Was an APP BUG (found authoring this spec), fixed by 49aa0d8 / de4f994 / 6208126: promoteCustomerBatchCore
+    // claimed the batch (READY → PROMOTING) BEFORE it checked for another live promote, and on that refusal
+    // released only the lease — so the refused batch stayed PROMOTING with no lease: its page showed "Promote
+    // interrupted." with a Resume button, and Work listed it under "Import to resume". The check now runs before
+    // the claim, so a refused batch is never written to.
     test.skip(!refusedBatch, 'needs the refused batch from the test before');
-    expect((await db.importBatch.findUniqueOrThrow({ where: { id: refusedBatch }, select: { status: true } })).status).toBe('READY');
+    expect(
+      await db.importBatch.findUniqueOrThrow({ where: { id: refusedBatch }, select: { status: true, promoteLeaseBy: true, promoteLeaseUntil: true } })
+    ).toEqual({ status: 'READY', promoteLeaseBy: null, promoteLeaseUntil: null });
     const page = await openAs(browser, w.user('STW'), `/import/${refusedBatch}`);
     await expect(page.getByText('Promote interrupted.')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Promote 1 clean rows' })).toBeVisible();
+    const work = await openAs(browser, w.user('STW'), '/work');
+    await expect(workItem(work, refusedBatch).filter({ hasText: 'Import to resume' }), 'Work does not list it as an import to resume').toHaveCount(0);
   });
 });
 
@@ -1135,7 +1151,7 @@ test.describe('back office: routes and regions', { tag: ['@desktop'] }, () => {
     await regionForm(page).locator('input[name="code"]').fill(regionCode.toLowerCase());
     await regionForm(page).locator('input[name="name"]').fill(w.name('Steward Region'));
     await regionForm(page).getByRole('button', { name: 'Create region' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Create region',
       (timeout) => expect(page.getByRole('heading', { level: 2, name: new RegExp(regionCode) })).toBeVisible({ timeout }),
@@ -1152,7 +1168,7 @@ test.describe('back office: routes and regions', { tag: ['@desktop'] }, () => {
     await routeForm(page).locator('select[name="regionId"]').selectOption(region.id);
     await routeForm(page).getByRole('button', { name: 'Create route' }).click();
     const r = routeRow(page, routeCode);
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Create route',
       async (timeout) => {
@@ -1194,7 +1210,7 @@ test.describe('back office: routes and regions', { tag: ['@desktop'] }, () => {
 
     const routeActive = async () => (await db.route.findUniqueOrThrow({ where: { id: routeId } })).isActive;
     await routeRow(page, routeCode).getByRole('button', { name: 'Disable' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Disable route',
       (timeout) => expect(routeRow(page, routeCode)).toContainText('Disabled', { timeout }),
@@ -1207,7 +1223,7 @@ test.describe('back office: routes and regions', { tag: ['@desktop'] }, () => {
 
     await page.reload();
     await routeRow(page, routeCode).getByRole('button', { name: 'Enable' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Enable route',
       (timeout) => expect(routeRow(page, routeCode)).toContainText('Active', { timeout }),
@@ -1223,7 +1239,7 @@ test.describe('back office: routes and regions', { tag: ['@desktop'] }, () => {
     const page = await openAs(browser, w.user('STW'), '/routes');
     const regionActive = async () => (await db.region.findUniqueOrThrow({ where: { id: regionId } })).isActive;
     await regionHeader(page, regionCode).getByRole('button', { name: 'Disable' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Disable region',
       (timeout) => expect(regionHeader(page, regionCode).getByRole('button', { name: 'Enable' })).toBeVisible({ timeout }),
@@ -1231,7 +1247,7 @@ test.describe('back office: routes and regions', { tag: ['@desktop'] }, () => {
     );
     expect(await regionActive()).toBe(false);
     await regionHeader(page, regionCode).getByRole('button', { name: 'Enable' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Enable region',
       (timeout) => expect(regionHeader(page, regionCode).getByRole('button', { name: 'Disable' })).toBeVisible({ timeout }),
@@ -1298,7 +1314,7 @@ test.describe('back office: routes and regions', { tag: ['@desktop'] }, () => {
     const bActive = async () => (await db.route.findUniqueOrThrow({ where: { id: B.id } })).isActive;
     const page = await openAs(browser, w.user('M5'), '/routes');
     await routeRow(page, B.code).getByRole('button', { name: 'Disable' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Manager disables route B',
       (timeout) => expect(routeRow(page, B.code)).toContainText('Disabled', { timeout }),
@@ -1306,7 +1322,7 @@ test.describe('back office: routes and regions', { tag: ['@desktop'] }, () => {
     );
     await page.reload();
     await routeRow(page, B.code).getByRole('button', { name: 'Enable' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Manager enables route B',
       (timeout) => expect(routeRow(page, B.code)).toContainText('Active', { timeout }),
@@ -1319,12 +1335,10 @@ test.describe('back office: routes and regions', { tag: ['@desktop'] }, () => {
     ]);
   });
 
-  // Last in this serial describe: an unexpected pass would skip nothing after it.
   test('a Steward action’s result shows in place, without a reload: route A2 switched off and on three times', async ({ browser }) => {
-    // APP BUG (NAV_HANG, open in this build; fix in progress on claude/fix-nav-hang): the
-    // revalidated answer of the Disable / Enable action is often parked by React — the row keeps
-    // its old status and the button stays disabled until a reload. Six switches make it certain.
-    test.fail(true, NAV_HANG);
+    // Was an APP BUG (NAV_HANG), fixed by 8e47bc6 (TransitionWatchdog): the revalidated answer of the
+    // Disable / Enable action was often parked by React — the row kept its old status and the button
+    // stayed disabled until a reload. Six switches in a row must each show in place.
     test.setTimeout(240_000);
     const A2 = w.route('A2');
     const page = await openAs(browser, w.user('STW'), '/routes');
@@ -1374,9 +1388,21 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
     w = world;
     await world.addCustomer({ key: 'A', phone: true, contact: 'Ali Al Abri', branches: [{ key: 'S', route: 'A' }] });
     await world.addCustomer({ key: 'B', phone: true, archived: true, temixSyncState: 'DEACTIVATE_PENDING', branches: [{ key: 'S', route: 'A' }] });
-    // C: created by the CASH chain (its salesman), sent in an earlier batch, no Temix code yet.
-    await world.addCustomer({ key: 'C', phone: true, temixCode: null, temixSyncState: 'UPLOADED', branches: [{ key: 'S', route: 'A' }] });
-    await db.customer.update({ where: { id: world.customer('C').id }, data: { createdById: world.user('SA').id } });
+    // C: created by the CASH chain (its salesman) before the Accountant typed Temix codes, sent in an earlier
+    // batch, no Temix code yet. What the inbound refresh's backup match (services/imports.ts, f73af5b) needs to
+    // know it for a customer the app made and sent: a code the app mints (NMWC-YYYY-NNNNNN; 1999 is a year the
+    // app never mints, so it is no real customer's), the CREATE audit row its finalize wrote, and UPLOADED.
+    await world.addCustomer({
+      key: 'C',
+      code: `NMWC-1999-${String(Date.now()).slice(-9)}`,
+      phone: true,
+      temixCode: null,
+      temixSyncState: 'UPLOADED',
+      branches: [{ key: 'S', route: 'A' }],
+    });
+    const cId = world.customer('C').id;
+    await db.customer.update({ where: { id: cId }, data: { createdById: world.user('SA').id, lastTemixUploadAt: new Date() } });
+    await db.auditLog.create({ data: { actorId: world.user('M1').id, action: 'CREATE', entityType: 'Customer', entityId: cId, reason: 'e2e: as finalize writes it' } });
     // A: linked to Temix as T<SFX>, re-queued by an approved correction.
     await db.customer.update({
       where: { id: world.customer('A').id },
@@ -1432,7 +1458,7 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
     expect(sheet!.rows).toHaveLength(2);
 
     const r = batchRowOf(page, made.id);
-    await shownOrReload(page, 'Generate upload file', async (timeout) => {
+    await shownInPlace(page, 'Generate upload file', async (timeout) => {
       await expect(temixTile(page, 'Pending upload')).toHaveText('0', { timeout });
       await expect(temixTile(page, 'Pending deactivation')).toHaveText('0', { timeout });
       await expect(temixTile(page, 'Uploaded — awaiting Temix')).toHaveText(String(uploadedBefore + 2), { timeout });
@@ -1462,7 +1488,7 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
     await r.getByRole('button', { name: 'Mark loaded' }).click();
     await expect(page.getByRole('dialog')).toContainText('Confirm this batch is loaded into Temix?');
     await page.getByRole('dialog').getByRole('button', { name: 'Yes, it is loaded' }).click();
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Mark loaded',
       async (timeout) => {
@@ -1521,11 +1547,11 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
   });
 
   test('the inbound refresh back-fills the Temix code of a chain-created customer and tells its salesman', async () => {
-    // APP BUG (found authoring this spec): the refresh lane needs a Temix code ALREADY on record
-    // (services/imports.ts isRefresh requires existing.temixCode), so a customer created by the
-    // approval chain — which has none until Temix answers — never gets its code: the row takes the
-    // full lane (rejected without a branch_code) and TEMIX_SYNC_ACKED is unreachable code.
-    test.fail(true, 'Inbound refresh never records the Temix code of a customer that has none (services/imports.ts isRefresh)');
+    // Was an APP BUG (found authoring this spec), fixed by fa5199b / f73af5b (owner decision 2026-10-08, the
+    // backup match): the refresh lane needed a Temix code ALREADY on record (isRefresh requires
+    // existing.temixCode), so a customer created by the approval chain before the Accountant typed codes never
+    // got its code, and TEMIX_SYNC_ACKED was unreachable. Now a row whose cust_code is such a customer's own app
+    // code records its first Temix code, settles it and tells its salesman once.
     test.skip(!refreshed, 'needs the refresh upload from the test before');
     const world = w!;
     const C = world.customer('C');
@@ -1534,7 +1560,9 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
       temixCode: `TC${world.SFX}`,
     });
     const acked = (await notificationsFor({ userId: world.user('SA').id })).filter((n) => n.kind === 'TEMIX_SYNC_ACKED');
-    expect(acked.map((n) => n.title)).toEqual(['Customer landed in Temix']);
+    expect(acked.map((n) => [n.title, n.body])).toEqual([
+      ['Customer landed in Temix', `${C.legalName} (${C.code}) is now in Temix as TC${world.SFX}.`],
+    ]);
   });
 
   test('refusals in words: a held-back deactivation alone is not sent; with other rows the file goes out without it; a fourth download in a minute waits', async ({ browser }) => {
@@ -1644,9 +1672,8 @@ test.describe('back office: Excel exports', { tag: ['@desktop'] }, () => {
   const regionBox = (page: Page) => page.getByRole('checkbox', { name: w.region('R1').name, exact: true });
 
   test('the Steward downloads the master for a region: one row per branch, names not ids, photos as yes/blank, audited', async ({ browser }) => {
-    // APP BUG (STREAMED_EXPORT_BUG, blocker, open in this build — fixed on claude/launch-candidate by
-    // 81c936e): /api/exports/customers answers 500, so the page says "The export failed on the server".
-    test.fail(true, STREAMED_EXPORT_BUG);
+    // Was STREAMED_EXPORT_BUG (blocker), fixed by 81c936e: /api/exports/customers answered 500, so the page
+    // said "The export failed on the server". The download must work now.
     test.setTimeout(240_000);
     const stw = w.user('STW');
     const page = await openAs(browser, stw, '/export');
@@ -1685,9 +1712,7 @@ test.describe('back office: Excel exports', { tag: ['@desktop'] }, () => {
   });
 
   test('the Steward downloads the field-update report: the approved change is highlighted, with every sheet and the count headers', async ({ browser }) => {
-    // APP BUG (STREAMED_EXPORT_BUG, open in this build — fixed on claude/launch-candidate by 81c936e):
-    // /api/exports/changes answers 500 ("b is not a constructor").
-    test.fail(true, STREAMED_EXPORT_BUG);
+    // Was STREAMED_EXPORT_BUG, fixed by 81c936e: /api/exports/changes answered 500 ("b is not a constructor").
     test.setTimeout(240_000);
     const stw = w.user('STW');
     const page = await openAs(browser, stw, '/export');
@@ -1755,8 +1780,7 @@ test.describe('back office: Excel exports', { tag: ['@desktop'] }, () => {
   });
 
   test('the Viewer downloads the master and the field-update report from /export, every download audited', async ({ browser }) => {
-    // APP BUG (STREAMED_EXPORT_BUG, open in this build — fixed on claude/launch-candidate by 81c936e).
-    test.fail(true, STREAMED_EXPORT_BUG);
+    // Was STREAMED_EXPORT_BUG, fixed by 81c936e.
     test.setTimeout(240_000);
     const vw = w.user('VW');
     const page = await openAs(browser, vw, '/export');
@@ -1886,7 +1910,7 @@ test.describe('back office: duplicate review', { tag: ['@desktop'] }, () => {
     const marked = seeText(page, 'Marked as distinct.');
     await pair(page, 'P', 'Q').getByRole('button', { name: 'Mark distinct' }).click();
     await marked;
-    await shownOrReload(
+    await shownInPlace(
       page,
       'Mark distinct',
       (timeout) => expect(pair(page, 'P', 'Q')).toHaveCount(0, { timeout }),
@@ -2067,8 +2091,8 @@ test.describe('back office: audit log', { tag: ['@desktop'] }, () => {
     await page.goto(`/audit?entityType=ImportBatch&q=${importBatch}`);
     await expect(logRow(page, 'ImportBatch', importBatch)).toContainText('IMPORT');
 
-    // An EXPORT the Steward really makes (the /customers list of one region: the streamed
-    // /export downloads answer 500 in this build, STREAMED_EXPORT_BUG), then his actions only.
+    // An EXPORT the Steward really makes (the /customers list of one region; the streamed /export
+    // downloads have their own tests above), then his actions only.
     await page.goto(`/customers?region=${w.region('R1').id}`);
     const dl = page.waitForEvent('download', { timeout: 60_000 });
     await page.getByRole('button', { name: 'Export filtered' }).click();
@@ -2088,9 +2112,8 @@ test.describe('back office: audit log', { tag: ['@desktop'] }, () => {
     await expect(pageSubtitle(page)).toHaveText('51 matching events');
     await expect(page.getByText('Page 1 of 2')).toBeVisible();
     const next = page.getByRole('link', { name: 'Next →' });
-    const href = (await next.getAttribute('href')) ?? '';
     await next.click();
-    await landsOrGo(page, /[?&]page=2/, href.startsWith('/') ? href : `/audit${href}`, 'Next →');
+    await landsInPlace(page, /[?&]page=2/, 'Next →');
     await expect(page).toHaveURL(new RegExp(`[?&]q=${c1}`));
     await expect(page).toHaveURL(/[?&]action=UPDATE/);
     await expect(page.getByText('Page 2 of 2')).toBeVisible();
@@ -2105,7 +2128,7 @@ test.describe('back office: audit log', { tag: ['@desktop'] }, () => {
     await page.getByRole('button', { name: /✗ Reject/ }).click();
     await page.locator('textarea[name="reason"]').fill('The contact name is spelt differently on the CR.');
     await page.getByRole('button', { name: '✗ Send back to salesman' }).click();
-    await landsOrGo(page, /\/approvals(\?|$)/, '/approvals', 'Send back to salesman', async () => {
+    await landsInPlace(page, /\/approvals(\?|$)/, 'Send back to salesman', async () => {
       const edit = await db.customerEdit.findUniqueOrThrow({ where: { id: e.E1 }, select: { state: true } });
       return edit.state !== 'SUBMITTED';
     });
@@ -2283,7 +2306,7 @@ test.describe('back office: dashboards and service status', { tag: ['@desktop'] 
     const clear = page.getByRole('link', { name: 'Clear filters' });
     await expect(clear).toHaveAttribute('href', '/dashboard?period=7d');
     await clear.click();
-    await landsOrGo(page, /\/dashboard\?period=7d$/, '/dashboard?period=7d', 'Clear filters');
+    await landsInPlace(page, /\/dashboard\?period=7d$/, 'Clear filters');
     await expect(pageSubtitle(page)).toHaveText(/^Whole organisation · /);
   });
 
@@ -2303,7 +2326,7 @@ test.describe('back office: dashboards and service status', { tag: ['@desktop'] 
     await expect(pageSubtitle(page)).toHaveText(/^Whole organisation · /, { timeout: 20_000 });
     await expectNoSideScroll(page);
     await page.getByRole('group', { name: 'Period' }).getByRole('button', { name: '90 days' }).click();
-    await landsOrGo(page, /[?&]period=90d/, '/dashboard?period=90d', 'the 90 days button');
+    await landsInPlace(page, /[?&]period=90d/, 'the 90 days button');
     await expect(pageSubtitle(page)).toHaveText(/^Whole organisation · /);
     await expectNoSideScroll(page);
   });

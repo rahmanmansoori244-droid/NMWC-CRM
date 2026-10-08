@@ -25,15 +25,15 @@
  *      decided on 7 Oct (decision 3): only a Manager of every branch it changes
  *      sees it in his queue and may decide it.
  *
- * Launch-candidate behaviour asserted (wave 1 + wave 2 are FIXED, never test.fail):
+ * Launch-candidate behaviour asserted (wave 1, wave 2 and the small batches are FIXED, never test.fail):
  *   every role's menu ends with "Change password", Export is in the Supervisor's,
  *   Manager's and Viewer's menus; /export lists only what that role may export;
  *   presign/finalize refusals carry a message; a Manager decides only his own
  *   regions' branches; region on/off is Steward-only; the CR document of a CREDIT
- *   customer is locked for a salesman; only the Steward edits an account.
- * Still open (test.fail with the bug named): a region-less Manager's empty
- *   queues say nothing about the missing regions (noRegionEmptyState); every
- *   streamed export answers 500 (STREAMED_EXPORT_BUG, found by this file's first run).
+ *   customer is locked for a salesman; only the Steward edits an account; a
+ *   region-less Manager's empty queues say why (noRegionEmptyState, fd41184 /
+ *   ea45750); every streamed export downloads (STREAMED_EXPORT_BUG, found by this
+ *   file's first run, fixed by 81c936e). No test here is expected to fail.
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts access-control --project=phone --project=desktop
  */
@@ -104,13 +104,13 @@ const ERROR_CARD = 'This page could not load.';
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 /**
- * Found by this file's first run (7 Oct), not in KNOWN_BUGS: /api/exports/customers and
- * /api/exports/changes answer 500 "Export failed" for every role allowed to export.
- * lib/excel.ts openStreamedWorkbook() does `await import('node:stream')`; webpack's
- * fake-namespace helper copies no named export from a module whose value is a function
- * (Stream), so `PassThrough` is undefined and the server logs "b is not a constructor".
+ * Found by this file's first run (7 Oct), not in KNOWN_BUGS, and FIXED in the launch
+ * candidate (81c936e): /api/exports/customers and /api/exports/changes answered 500
+ * "Export failed" for every role allowed to export. lib/excel.ts openStreamedWorkbook()
+ * did `await import('node:stream')`; webpack's fake-namespace helper copies no named
+ * export from a module whose value is a function (Stream), so `PassThrough` was
+ * undefined ("b is not a constructor"). The export tests below must pass.
  */
-const STREAMED_EXPORT_BUG = 'Every streamed export (customer master, field-update report) answers 500: PassThrough lost by lib/excel.ts openStreamedWorkbook';
 
 /** The h1 each role's landing page shows (lib/role-home.ts). Fixture salesmen are "Salim …". */
 const HOME_HEADING: Record<Role, string> = {
@@ -785,8 +785,8 @@ test.describe('access control: deep links and scope', { tag: ['@desktop'] }, () 
   });
 
   test('a Manager with no regions is told why his approval and reactivation queues are empty', async ({ browser }) => {
-    // Known bug, still open: the queues read "Nothing pending" / "No reactivation
-    // requests" as on a quiet day, without a word about the missing regions.
+    // Was KNOWN_BUGS.noRegionEmptyState (fixed, fd41184 / ea45750): the queues read "Nothing pending" /
+    // "No reactivation requests" as on a quiet day, without a word about the missing regions.
     test.fail(KNOWN_BUGS.noRegionEmptyState.open, KNOWN_BUGS.noRegionEmptyState.title);
     const page = await pageAs(browser, world.user('MNR'));
     for (const path of ['/approvals', '/reactivations']) {
@@ -923,9 +923,7 @@ test.describe('access control: route handlers', { tag: ['@desktop'] }, () => {
   });
 
   test('exports: a workbook for the Viewer, the Steward, the Manager and the Supervisor', async ({ browser }) => {
-    // APP BUG (blocker, still open): every streamed export answers 500 "Export failed" — the server logs
-    // "b is not a constructor": lib/excel.ts openStreamedWorkbook's `await import('node:stream')` loses PassThrough in the webpack build.
-    test.fail(true, STREAMED_EXPORT_BUG);
+    // Was the STREAMED_EXPORT_BUG blocker (every streamed export answered 500), fixed by 81c936e.
     test.setTimeout(300_000);
     const paths = exportPaths();
     for (const key of ['VW', 'STW', 'M1', 'SUP']) {
@@ -948,8 +946,7 @@ test.describe('access control: route handlers', { tag: ['@desktop'] }, () => {
   });
 
   test('a Manager’s export holds his regions only', async ({ browser }) => {
-    // APP BUG (blocker, still open): the workbook is never built — 500 "b is not a constructor" (lib/excel.ts openStreamedWorkbook).
-    test.fail(true, STREAMED_EXPORT_BUG);
+    // Was the STREAMED_EXPORT_BUG blocker (500 "b is not a constructor"), fixed by 81c936e.
     test.setTimeout(300_000);
     const ctx = await contextAs(browser, world.user('M1'), { device: 'desktop' });
     const res = await ctx.request.get('/api/exports/customers', { failOnStatusCode: false });

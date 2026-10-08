@@ -38,9 +38,14 @@ export const UPLOAD_SIGNED_OUT =
 /** SLOW_LINK_MESSAGE */
 export const SLOW_LINK_MESSAGE =
   'The connection is too slow to finish sending this photo. Move to better signal, then tap Retry upload.';
-/** compressImage's HEIC refusal (NEW-PHOTO-012). */
+/** UPLOAD_NO_CONNECTION (f960612): a step that got no answer on all three tries, in the app's words. */
+export const UPLOAD_NO_CONNECTION =
+  'No connection, so the photo is not sent yet. Keep this page open: the photo is held here until it is sent. Check the signal, then tap Retry upload.';
+/** HEIC_PHOTO_MESSAGE: compressImage's HEIC refusal (NEW-PHOTO-012). */
 export const HEIC_MESSAGE =
   "Your phone is sending HEIC photos. Open Settings → Camera → Formats and switch to 'Most Compatible' (JPEG).";
+/** PHOTO_UNREADABLE_MESSAGE (287bdc0): any other photo the phone could not read or re-encode. */
+export const UNREADABLE_PHOTO_MESSAGE = 'This phone could not read this photo. Take it again, or pick another photo.';
 /** rateLimitWaitMessage(n), as a pattern. */
 export const RATE_WAIT = /Too many photos — trying again in \d+ s/;
 
@@ -94,6 +99,12 @@ export type RequestLog = {
   summary(): string;
   /** The app navigations (RSC requests, not prefetches) sent at or after `since` (Date.now()), as path + query. */
   navigationsSince(since: number): string[];
+  /**
+   * The app's own calls sent at or after `since` — navigations, refreshes and
+   * server actions, not prefetches: how many are still unanswered, and when the
+   * last of the others ended (0 if none).
+   */
+  answeringSince(since: number): { open: number; lastEnd: number };
 };
 
 /**
@@ -105,8 +116,18 @@ export type RequestLog = {
 export function trackRequests(page: Page): RequestLog {
   const t0 = Date.now();
   const open = new Map<Request, number>();
+  const headersAt = new Map<Request, number>();
   const ended: string[] = [];
   const navigations: Array<{ at: number; url: string }> = [];
+  const appCalls = new Map<Request, { sent: number; ended: number }>();
+  const isLocal = (r: Request) => {
+    try {
+      const u = new URL(r.url());
+      return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    } catch {
+      return false;
+    }
+  };
   const name = (r: Request): string => {
     let u: URL;
     try {
@@ -123,6 +144,8 @@ export function trackRequests(page: Page): RequestLog {
   const end = (r: Request, how: string) => {
     const s = open.get(r);
     open.delete(r);
+    const call = appCalls.get(r);
+    if (call) call.ended = Date.now();
     if (s === undefined) return;
     ended.push(`${name(r)} ${how} in ${Date.now() - s} ms (sent at +${s - t0} ms)`);
     if (ended.length > 40) ended.shift();
@@ -130,6 +153,7 @@ export function trackRequests(page: Page): RequestLog {
   page.on('request', (r) => {
     open.set(r, Date.now());
     const h = r.headers();
+    if (isLocal(r) && ((h['rsc'] && !h['next-router-prefetch']) || h['next-action'])) appCalls.set(r, { sent: Date.now(), ended: 0 });
     if (h['rsc'] && !h['next-router-prefetch']) {
       try {
         const u = new URL(r.url());
@@ -142,12 +166,16 @@ export function trackRequests(page: Page): RequestLog {
       }
     }
   });
+  page.on('response', (res) => headersAt.set(res.request(), Date.now()));
   page.on('requestfinished', (r) => end(r, 'finished'));
   page.on('requestfailed', (r) => end(r, `failed (${r.failure()?.errorText ?? '?'})`));
   return {
     summary() {
       const now = Date.now();
-      const pending = [...open.entries()].map(([r, s]) => `  ${name(r)} open for ${now - s} ms (sent at +${s - t0} ms)`);
+      const pending = [...open.entries()].map(([r, s]) => {
+        const h = headersAt.get(r);
+        return `  ${name(r)} open for ${now - s} ms (sent at +${s - t0} ms, ${h === undefined ? 'no answer yet' : `answer began after ${h - s} ms`})`;
+      });
       return [
         `still open (${pending.length}):`,
         ...pending,
@@ -157,6 +185,16 @@ export function trackRequests(page: Page): RequestLog {
     },
     navigationsSince(since) {
       return navigations.filter((n) => n.at >= since).map((n) => n.url);
+    },
+    answeringSince(since) {
+      let openCalls = 0;
+      let lastEnd = 0;
+      for (const c of appCalls.values()) {
+        if (c.sent < since) continue;
+        if (c.ended === 0) openCalls += 1;
+        else lastEnd = Math.max(lastEnd, c.ended);
+      }
+      return { open: openCalls, lastEnd };
     },
   };
 }
@@ -172,83 +210,96 @@ async function stylesheetState(page: Page): Promise<string> {
     .catch((e: unknown) => `(could not read: ${String((e as Error)?.message ?? e).slice(0, 80)})`);
 }
 
-/** A tap inside the app that should land on another URL at once. */
+/** A tap inside the app that should land on another URL at once — counted from the server's answer. */
 export const PROMPT_LANDING_MS = 15_000;
+/** How long a slow server answer is waited for before the tap's own PROMPT_LANDING_MS starts. */
+const SERVER_ANSWER_MS = 120_000;
+
+/**
+ * Waits until `shown` holds: within PROMPT_LANDING_MS of the tap, or, while the
+ * app's own calls sent since the tap are still unanswered (a slow UAT database,
+ * other runs sharing it), within PROMPT_LANDING_MS of the last of them ending.
+ * A slow answer is recorded, not failed; a page that does not show what it was
+ * answered is a failure (false).
+ */
+async function promptly(log: RequestLog, start: number, what: string, shown: (timeout: number) => Promise<boolean>): Promise<boolean> {
+  const since = start - 1_000;
+  for (;;) {
+    const now = Date.now();
+    const { open, lastEnd } = log.answeringSince(since);
+    const deadline = open > 0 ? Math.min(start + SERVER_ANSWER_MS, now + 1_000) : Math.max(start, lastEnd) + PROMPT_LANDING_MS;
+    if (deadline <= now) return false;
+    if (await shown(Math.min(deadline - now, 1_000))) {
+      const took = Date.now() - start;
+      if (lastEnd - start > PROMPT_LANDING_MS) {
+        test.info().annotations.push({ type: 'slow server answer', description: `${what}: answered after ${lastEnd - start} ms` });
+      } else if (took > 5_000) {
+        test.info().annotations.push({ type: 'slow navigation', description: `${what}: ${took} ms` });
+      }
+      return true;
+    }
+  }
+}
 
 /**
  * Waits until the page's URL matches, after a tap that navigates inside the app
- * (call it right after the tap: `since` is when the tap was made).
+ * (call it right after the tap: `since` is when the tap was made). A tap that
+ * has not landed PROMPT_LANDING_MS after the server answered fails the test,
+ * saying what the app asked the server for and which requests were still open.
  *
- * Known app bug (runs of 8 Oct, reported): a tap that changes only the query
- * string of /today or /customers often never lands — the app's request for the
- * new URL is answered, nothing is pending, and the page stays (Filter reads
- * "Filtering…" for good). It is pinned by its own test ('a tap that changes only
- * the query string lands at once'), which passes `strict: true`. Everywhere else
- * a tap that has not landed after PROMPT_LANDING_MS must at least have asked the
- * server for the right URL; the hang is recorded as an annotation, and that URL
- * is then loaded — as the salesman would by reloading — so the test goes on to
- * check what it is about.
+ * Fixed 8 Oct (components/nmwc/TransitionWatchdog.tsx): a tap that changed only
+ * the query string of /today or /customers often never landed — the RSC answer
+ * arrived, nothing was pending, the page stayed ("Filtering…" for good). Next
+ * 15.5's own React drops a ping that fires during its render, and the
+ * transition stayed parked. These helpers used to record such a hang and load
+ * the URL instead; now a hang is a failure.
  */
 export async function landsOn(
   page: Page,
   log: RequestLog,
   url: RegExp | ((u: URL) => boolean),
   what: string,
-  o: { strict?: boolean; since?: number; fallback?: string } = {}
+  o: { since?: number } = {}
 ): Promise<void> {
   const start = o.since ?? Date.now();
-  const matches = (href: string) => {
-    const u = new URL(href, page.url());
-    return typeof url === 'function' ? url(u) : url.test(u.href);
-  };
-  const landed = await page.waitForURL(url, { timeout: PROMPT_LANDING_MS, waitUntil: 'commit' }).then(
-    () => true,
-    () => false
+  const landed = await promptly(log, start, what, (timeout) =>
+    page.waitForURL(url, { timeout, waitUntil: 'commit' }).then(
+      () => true,
+      () => false
+    )
   );
-  if (landed) {
-    const took = Date.now() - start;
-    if (took > 5_000) test.info().annotations.push({ type: 'slow navigation', description: `${what}: ${took} ms` });
-    return;
-  }
+  if (landed) return;
   const at = new URL(page.url());
   const asked = log.navigationsSince(start - 1_000);
-  const stuck =
-    `${what}: not landed after ${PROMPT_LANDING_MS / 1000} s — still at ${at.pathname}${at.search}; ` +
-    `the app asked the server for: ${asked.join(', ') || 'nothing'}\nstylesheets: ${await stylesheetState(page)}\n${log.summary()}`;
-  if (o.strict) throw new Error(stuck);
-  // A link's own href (`fallback`) stands in when the router asked nothing (it may answer from its cache).
-  const askedFor = asked.filter(matches).pop();
-  const target = askedFor ?? (o.fallback && matches(o.fallback) ? o.fallback : undefined);
-  if (!target) throw new Error(`${stuck}\n…and none of those is the URL this tap must open`);
-  test.info().annotations.push({
-    type: 'navigation hang (app bug)',
-    description: `${what}: ${askedFor ? `asked for ${askedFor}` : `asked nothing (link to ${target})`}, still at ${at.pathname}${at.search} after ${PROMPT_LANDING_MS / 1000} s — loaded it instead`,
-  });
-  await page.goto(target);
-  await expect(page).toHaveURL(url);
+  throw new Error(
+    `${what}: not landed ${PROMPT_LANDING_MS / 1000} s after the server answered — still at ${at.pathname}${at.search}; ` +
+      `the app asked the server for: ${asked.join(', ') || 'nothing'}\nstylesheets: ${await stylesheetState(page)}\n${log.summary()}`
+  );
 }
 
 /**
- * After an action that ends in router.refresh(): what it shows. The refresh is
- * the same client transition as the navigation hang above (landsOn); when it
- * does not show within PROMPT_LANDING_MS, `done` must say the server did the
- * work, the hang is recorded, and a reload shows it.
+ * After an action that ends in router.refresh(): what it shows, within
+ * PROMPT_LANDING_MS of the server's answer (as landsOn). The refresh is the same
+ * client transition as a tap; when it does not show, the failure says whether
+ * the server did the work (`done`), which separates a page that was never
+ * refreshed from a refused action.
  */
-export async function shownAfterRefresh(page: Page, shown: Locator, what: string, done: () => Promise<boolean>): Promise<void> {
-  const ok = await expect(shown)
-    .toBeVisible({ timeout: PROMPT_LANDING_MS })
-    .then(
-      () => true,
-      () => false
-    );
+export async function shownAfterRefresh(log: RequestLog, shown: Locator, what: string, done: () => Promise<boolean>): Promise<void> {
+  const ok = await promptly(log, Date.now(), what, (timeout) =>
+    expect(shown)
+      .toBeVisible({ timeout })
+      .then(
+        () => true,
+        () => false
+      )
+  );
   if (ok) return;
-  expect(await done(), `${what}: the server did it`).toBe(true);
-  test.info().annotations.push({
-    type: 'navigation hang (app bug)',
-    description: `${what}: done on the server, page not refreshed after ${PROMPT_LANDING_MS / 1000} s — reloaded`,
-  });
-  await page.reload();
-  await expect(shown).toBeVisible();
+  const serverDidIt = await done();
+  throw new Error(
+    `${what}: not shown ${PROMPT_LANDING_MS / 1000} s after the server answered — ` +
+      (serverDidIt ? 'the server did the work, the page was never refreshed' : 'the server did not do it either') +
+      `\n${log.summary()}`
+  );
 }
 
 /**

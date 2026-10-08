@@ -47,157 +47,195 @@ export type KnownBugId =
   | 'drawerA11y'
   | 'promoteLocale';
 
-type Bug = { open: boolean; title: string; where: string };
+/** `fixed`: where the launch candidate fixed it (open: false). */
+type Bug = { open: boolean; title: string; where: string; fixed?: string };
 
-/** Open defects, asserted only in their own tests: test.fail(KNOWN_BUGS.x.open, KNOWN_BUGS.x.title). */
+/**
+ * Defects the inventory found, asserted in their own tests:
+ * test.fail(KNOWN_BUGS.x.open, KNOWN_BUGS.x.title). Every one is fixed in the
+ * launch candidate (claude/launch-candidate, 8 Oct): all are open: false, so
+ * their tests must pass and their allow-list entries below no longer excuse a
+ * hydration error. A bug found open again goes back to open: true only with the
+ * owner's word that it is left for after launch.
+ */
 export const KNOWN_BUGS: Record<KnownBugId, Bug> = {
   needsCorrectionNeverClears: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, returned work: lib/returned-work.ts (a sent-back row is answered by a later submit)',
     title: 'Returned work never leaves the Needs-correction lists after a resubmit',
     where: 'services/edits.ts (new row per resubmit); today/work/rejected pages count by submitter',
   },
   utcTimes: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, times: every server-rendered date and time is Oman time (lib/tz.ts)',
     title: 'Server-rendered dates and times are in UTC, four hours behind Oman',
     where: 'toLocale*String without timeZone on approvals/[id], audit, customers/[id], import, profile, rejected, team, temix, users, work, today header',
   },
   notificationsHydration: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, times: NotificationList formats with omanDayTime',
     title: '/notifications throws React #418 on every full load (createdAt formatted without timeZone)',
     where: 'app/(app)/notifications/NotificationList.tsx',
   },
   reactivationSilent: {
-    open: true,
+    open: false,
+    fixed: "wave 1, notify: 'Reactivation approved' and kept-closed notifications",
     title: 'The salesman is never told the outcome of a reactivation request',
     where: 'services/reactivations.ts approve / keep closed',
   },
   reactivationReasonOverwritten: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, notify: a Keep closed no longer writes decisionReason',
     title: "'Keep closed' overwrites the salesman's own reason",
     where: 'services/reactivations.ts decisionReason',
   },
   closureLeavesCustomerActive: {
-    open: true,
+    open: false,
+    fixed: 'wave 2, owner decision 7: lib/customer-status.ts (the last open shop closing closes the customer)',
     title: "Closing a customer's only branch leaves the customer ACTIVE",
     where: 'services/edits.ts applyEditChanges',
   },
   rawSupervisorAudience: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, notify: lib/notifications.ts resolveStepAudience',
     title: 'An update / create request alerts submittedBy.supervisorId as stored (nobody when null or inactive)',
     where: 'lib/notifications.ts resolveStepAudience',
   },
   noRegionEmptyState: {
-    open: true,
+    open: false,
+    fixed: 'small batch 1: fd41184, e8e6bc9, ea45750 (NoRegionNotice on /approvals and /reactivations)',
     title: "A region-less Manager/Accountant sees 'Nothing pending' instead of a missing-region warning",
     where: 'app/(app)/approvals/page.tsx, reactivations/page.tsx; /users cannot set regions',
   },
   usersGreenRefusals: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, admin: c9f5918',
     title: 'Refused password resets and disables are shown in success green',
     where: 'app/(app)/users/UserRowActions.tsx',
   },
   ownRowActions: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, admin: c9f5918',
     title: "Disable and Reset are offered on the viewer's own row and always fail",
     where: 'app/(app)/users/page.tsx',
   },
   managerAuditScope: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, admin: a3b306b (lib/audit-scope.ts)',
     title: "A Manager's audit log hides his region's decisions and shows every region's user/import events",
     where: 'app/(app)/audit/page.tsx',
   },
   mustActNotCleared: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, notify: settleRequestAlerts',
     title: "A request decided by another manager still counts in the direct supervisor's red bell",
     where: 'services/notifications-actions.ts (only readAt writer)',
   },
   presignGeneric: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, field: presign/finalize refusals are read out (readRefusal); f960612 words a lost connection',
     title: "A signed-out or rate-limited photo upload shows a generic 'Could not get upload URL.'",
     where: 'app/api/photos/presign + finalize; components/nmwc/PhotoCaptureSlot.tsx',
   },
   returnedUpdateNotPrefilled: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, returned work: the edit page prefills ?returned',
     title: 'A returned update makes the salesman re-type everything (no reason, no returned values)',
     where: 'app/(app)/customers/[id]/edit/page.tsx',
   },
   draftRows: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, returned work: one draft per person per customer (saveUpdateDraft)',
     title: "'Save draft' inserts a DRAFT row per save, shown as 'submitted N change(s)'",
     where: 'services/edits.ts; customers/[id] activity list',
   },
   temixValidationFailed: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, admin: d13c252',
     title: "Temix refusals all read 'Validation failed'",
     where: 'services/temix.ts; app/(app)/temix/TemixActions.tsx',
   },
   gmEscalationBroadcast: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, notify: lib/escalation.ts (and wave 2: a late GM step e-mails the GM only)',
     title: 'A late GM step notifies every active Manager in the company',
     where: 'lib/escalation.ts',
   },
   stewardEscalationLink: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, notify: escalations go only to people who can open the request',
     title: 'Stewards escalated on a new-customer request are linked to /work, which does not list it',
     where: 'lib/notification-links.ts',
   },
   importGreen: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, admin: f09bf23',
     title: 'An import where every row was refused still reports in green',
     where: 'app/(app)/import/forms.tsx',
   },
   untrimmedReason: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, field: BranchStatusActions trims the reason',
     title: 'The close-shop form accepts five spaces as a reason (the server then refuses)',
     where: 'components/nmwc/BranchStatusActions.tsx',
   },
   strayEvidencePhoto: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, field: the evidence photo is sent with the request, not attached live',
     title: 'The close-shop evidence photo is attached live before submit and stays after Cancel',
     where: 'components/nmwc/BranchStatusActions.tsx',
   },
   finalCodeNotShown: {
-    open: true,
+    open: false,
+    fixed: "wave 1, returned work (the request page shows the code) + 8e47bc6 TransitionWatchdog (the refresh no longer stalls on 'Created — loading…')",
     title: 'The Accountant never sees the NMWC code he has just created',
     where: 'services/edits.ts approveEditAndGoAction; approvals/[id] subtitle',
   },
   createReadonlyGps: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, returned work: the GPS controls follow readOnly',
     title: "A request in review still lets the salesman 'fix' its GPS chip",
     where: 'app/(app)/customers/new/CreateCustomerForm.tsx GpsCaptureButton',
   },
   noProfileLink: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, admin: 5b4094c',
     title: 'Only salesmen can reach Change password (no profile link for other roles)',
     where: 'components/nmwc/Sidebar.tsx, TopBar.tsx',
   },
   exportNotInMenu: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, admin: 5b4094c',
     title: 'Only the Steward menu offers Export, though Managers, Viewers and Supervisors may use it',
     where: 'components/nmwc/Sidebar.tsx; lib/permissions.ts',
   },
   rejectedUnreachableOnPhone: {
-    open: true,
+    open: false,
+    fixed: "wave 1, returned work: Today's Needs-correction tile and Work link to /rejected",
     title: 'On a phone a salesman cannot reach /rejected',
     where: 'components/nmwc/Sidebar.tsx tab bar; today Needs-correction tile',
   },
   reactivationWording: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, returned work: /rejected and Work say a Manager decides it',
     title: "Reactivations are described as going to the supervisor (a Manager decides them)",
     where: 'app/(app)/rejected/page.tsx, work/page.tsx',
   },
   exportRawJson: {
-    open: true,
+    open: false,
+    fixed: 'wave 1, admin: 6110c66',
     title: 'The export page leaves the app with raw JSON on an error',
     where: 'app/(app)/export/ExportFiltersForm.tsx',
   },
   drawerA11y: {
-    open: true,
+    open: false,
+    fixed: 'small batch 1: ee81e93, a395de0 (the drawer is a dialog and closes on its current item)',
     title: 'The phone menu drawer has no dialog role, focus trap or close-on-current-item',
     where: 'components/nmwc/Sidebar.tsx MobileNavDrawer',
   },
   promoteLocale: {
-    open: true,
+    open: false,
+    fixed: "wave 1, times: PromoteButton formats numbers in 'en-US'",
     title: 'The Promote button breaks hydration in non-English browsers (toLocaleString without a locale)',
     where: 'app/(app)/import/[batchId]/PromoteButton.tsx',
   },

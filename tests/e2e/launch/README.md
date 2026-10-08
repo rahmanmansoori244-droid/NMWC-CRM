@@ -289,6 +289,16 @@ test.describe('today', { tag: ['@phone'] }, () => {
   allow-listed by URL for every test while it is open. A marker about a wrong
   server DATE only holds between 20:00 and 24:00 UTC: gate it with
   `utcDateBehindOman()`, or it "passes unexpectedly" the rest of the day.
+  On the final launch build (8 Oct) every KNOWN_BUGS entry is fixed
+  (`open: false`, with `fixed` naming where) and no spec carries a `test.fail`:
+  every test must pass. The in-place helpers (`landsOn`, `shownAfterRefresh`,
+  `shownInPlace`, `landsInPlace`, create-chains' `createHere`) FAIL on a
+  navigation hang; they no longer reload or load the URL for it.
+- Temix code (owner decision 8 Oct): a test that approves a new customer at
+  its last step types a code first — `typeTemixCode(page, temixCodeFor(w))`
+  (support/temix-codes.ts: `TX<SFX><n>`, unique to the world). Approve does not
+  open its confirmation without one, and a new customer at the Accountant's
+  step is never in a bulk approve.
 - SLA seeds ("OVERDUE 3h") are in WORKING minutes: `workingMinutesAgo(180)`,
   `slaDeadline`, `workingMinutesBetween` — never `Date.now() - 3h`.
 - Login throttles: the per-user bucket is 5 tokens refilling one per 12 s and

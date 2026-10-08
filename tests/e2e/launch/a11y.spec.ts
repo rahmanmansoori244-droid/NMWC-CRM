@@ -266,7 +266,8 @@ test.describe('a11y report: the main screens, each signed in as its role', { tag
     });
 
     await scans.page('notifications', async () => {
-      // React #418 on this page is a known, allow-listed bug (KNOWN_BUGS.notificationsHydration).
+      // React #418 here was KNOWN_BUGS.notificationsHydration, fixed in wave 1: no longer allow-listed, so a
+      // hydration error on this page fails the test (installLaunchHooks).
       await page.goto('/notifications');
       await expect(page.getByText(world.name('Sent back for correction')).first()).toBeVisible();
       await scanPage(page, 'notifications', { heading: 'Notifications' });

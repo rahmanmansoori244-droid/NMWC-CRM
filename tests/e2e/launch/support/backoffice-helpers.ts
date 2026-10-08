@@ -200,86 +200,77 @@ export function pageSubtitle(page: Page): Locator {
   return page.locator('h1').first().locator('xpath=following-sibling::p[1]');
 }
 
-// ── Known app bugs this spec meets (open in the build under test) ────────────
+// ── App bugs this spec met, fixed in the launch candidate ────────────────────
 
 /**
- * APP BUG, open in this build (found by the salesman-phone run of 8 Oct; a fix is
- * being made on claude/fix-nav-hang, components/nmwc/TransitionWatchdog.tsx, not
- * merged): a client transition that re-renders the page in place — router.refresh()
- * after a server action (import row Correct / Release / Exclude, Mark distinct,
- * Mark loaded), the revalidated answer of a server action (Create region / route,
- * Disable / Enable), a link or button that changes only the query string (Clear
- * filters, a period button, Next →) — is often parked by React and never shown:
- * the old screen stays, its buttons stay disabled, until a reload.
+ * Was an APP BUG (found by the salesman-phone run of 8 Oct), FIXED in the launch
+ * candidate by 8e47bc6 (components/nmwc/TransitionWatchdog.tsx; back-off and
+ * tripwire in dc134cd / a39a502): a client transition that re-renders the page in
+ * place — router.refresh() after a server action (import row Correct / Release /
+ * Exclude, Mark distinct, Mark loaded), the revalidated answer of a server action
+ * (Create region / route, Disable / Enable), a link or button that changes only
+ * the query string (Clear filters, a period button, Next →) — was often parked by
+ * the React that Next 15.5 ships and never shown until a reload. The helpers below
+ * used to reload on such a hang; now a hang FAILS the test.
  */
 export const NAV_HANG =
-  'A page re-rendered in place (router.refresh after an action, a revalidated action answer, a link that changes only the query string) is often never shown until a reload';
+  'A page re-rendered in place (router.refresh after an action, a revalidated action answer, a link that changes only the query string) is not shown until a reload';
 
-/**
- * APP BUG, open in this build (found by access-control.spec.ts on 7 Oct; fixed on
- * claude/launch-candidate by 81c936e, which is not in this branch): lib/excel.ts
- * openStreamedWorkbook reads `PassThrough` from `await import('node:stream')`; the
- * webpack server build gives that import a namespace with only `default`, so every
- * streamed export — the customer master (/api/exports/customers) and the
- * field-update report (/api/exports/changes) — answers 500, "b is not a constructor".
- */
-export const STREAMED_EXPORT_BUG =
-  'Every streamed export (customer master, field-update report) answers 500: PassThrough lost by lib/excel.ts openStreamedWorkbook';
-
-/** How long a page may take to show an action's result in place before the hang is assumed. */
+/** How long a page may take to show an action's result in place once the server has done it. */
 export const IN_PLACE_MS = 15_000;
+/** How long a slow server (UAT's database, shared with other runs) is given to do the work itself. */
+const SERVER_WORK_MS = 120_000;
 
 /**
- * An action's result that must show on the page: `check(timeout)` is the
- * assertion. When it is not shown in place within IN_PLACE_MS (NAV_HANG), the
- * server must have done the work (`serverDid`, read from the database), the hang
- * is recorded as an annotation, and the same assertion must then hold on a
- * reload — the test goes on to what it is about. The in-place display itself is
- * pinned by its own test.fail test.
+ * An action's result that must show on the page, in place: `check(timeout)` is the
+ * assertion. Shown within IN_PLACE_MS: done. Not yet: when `serverDid` (read from
+ * the database) is given, the server gets up to SERVER_WORK_MS to do the work, and
+ * the page must then show it within IN_PLACE_MS; without it, the page gets
+ * SERVER_WORK_MS in all. A slow answer is recorded; a page that never shows what
+ * the server did (NAV_HANG) fails — there is no reload any more.
  */
-export async function shownOrReload(
+export async function shownInPlace(
   page: Page,
   what: string,
   check: (timeout: number) => Promise<unknown>,
   serverDid?: () => Promise<boolean>
 ): Promise<void> {
+  const start = Date.now();
   const inPlace = await check(IN_PLACE_MS).then(
     () => true,
     () => false
   );
   if (inPlace) return;
-  if (serverDid) await expect.poll(serverDid, { message: `${what}: the server did it`, timeout: 15_000 }).toBe(true);
-  test.info().annotations.push({
-    type: 'navigation hang (app bug)',
-    description: `${what}: not shown in place after ${IN_PLACE_MS / 1000} s — reloaded`,
-  });
-  await page.reload();
-  await check(20_000);
+  if (serverDid) await expect.poll(serverDid, { message: `${what}: the server did it`, timeout: SERVER_WORK_MS }).toBe(true);
+  const late = await check(serverDid ? IN_PLACE_MS : SERVER_WORK_MS - IN_PLACE_MS).then(
+    () => null,
+    (e: unknown) => e
+  );
+  if (late === null) {
+    test.info().annotations.push({ type: 'slow in-place result', description: `${what}: shown after ${Date.now() - start} ms` });
+    return;
+  }
+  const at = new URL(page.url());
+  throw new Error(
+    `${what}: not shown in place at ${at.pathname}${at.search} — ` +
+      (serverDid
+        ? `the server did it, and the page did not show it ${IN_PLACE_MS / 1000} s later (${NAV_HANG})`
+        : `not after ${SERVER_WORK_MS / 1000} s (${NAV_HANG}, or the action was refused)`) +
+      `\n${String((late as Error)?.message ?? late).slice(0, 600)}`
+  );
 }
 
 /**
- * A tap that must land on `url`. When the page has not moved within IN_PLACE_MS
- * (NAV_HANG), the server must have done the work (`serverDid`), the hang is
- * recorded, and `href` — what the tap asked for — is loaded, as the user would
- * by reloading.
+ * A tap that must land on `url` in the app: within IN_PLACE_MS, or, when
+ * `serverDid` is given and the server is slow, within IN_PLACE_MS of the server
+ * having done the work (up to SERVER_WORK_MS). A tap that never lands (NAV_HANG)
+ * fails — the URL is not loaded for it any more.
  */
-export async function landsOrGo(
+export async function landsInPlace(
   page: Page,
   url: RegExp,
-  href: string,
   what: string,
   serverDid?: () => Promise<boolean>
 ): Promise<void> {
-  const landed = await page.waitForURL(url, { timeout: IN_PLACE_MS, waitUntil: 'commit' }).then(
-    () => true,
-    () => false
-  );
-  if (landed) return;
-  if (serverDid) await expect.poll(serverDid, { message: `${what}: the server did it`, timeout: 15_000 }).toBe(true);
-  test.info().annotations.push({
-    type: 'navigation hang (app bug)',
-    description: `${what}: still at ${new URL(page.url()).pathname}${new URL(page.url()).search} after ${IN_PLACE_MS / 1000} s — loaded ${href}`,
-  });
-  await page.goto(href);
-  await expect(page).toHaveURL(url);
+  await shownInPlace(page, what, (timeout) => page.waitForURL(url, { timeout, waitUntil: 'commit' }), serverDid);
 }
