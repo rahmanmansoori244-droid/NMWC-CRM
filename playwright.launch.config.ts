@@ -96,7 +96,12 @@ function preflight(): void {
   if (found.length) fail(`${found.join(', ')} exist in this checkout — the server would read them instead of the UAT .env. Remove them.`);
 
   const budget = Number(process.env.E2E_RUN_BUDGET_MIN ?? 120);
-  const why = clockGuard(new Date(), budget);
+  // Owner decision 2026-10-08: no overnight pause. The app now shows Oman time
+  // everywhere (wave-1 times fix), so running across 20:00-24:00 UTC is a test of
+  // that fix, not a hazard. A run that straddles Oman midnight can still flip the
+  // DUE fixtures mid-run: re-run date-related failures after midnight instead of
+  // reporting them as app bugs. E2E_CLOCK_GUARD=on restores the old refusal.
+  const why = process.env.E2E_CLOCK_GUARD === 'on' ? clockGuard(new Date(), budget) : null;
   if (why) fail(`refusing to start: ${why}.`);
 
   if (!DEV) {
