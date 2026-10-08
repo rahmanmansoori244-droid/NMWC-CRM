@@ -131,6 +131,8 @@ export default async function ReactivationsPage() {
                                       <img
                                         key={id}
                                         src={`/api/photos/${id}`}
+                                        loading="lazy"
+                                        decoding="async"
                                         alt="Reactivation evidence"
                                         className="h-24 w-full rounded-md object-cover ring-2 ring-emerald-300"
                                       />
@@ -147,6 +149,11 @@ export default async function ReactivationsPage() {
                             )}
                           </div>
                           {(e.branch?.shopPhotoId || e.branch?.signboardPhotoId) && (
+                            // Launch fix (2026-10-09): loading="lazy" on these images. Without it the
+                            // browser fetched every card's on-file photos at once, though the
+                            // section is closed, and a busy queue used up the Manager's photo
+                            // limit (60 at once, 1 a second), so later photos failed. A lazy image
+                            // in a closed <details> is fetched only when the section is opened.
                             <details className="text-xs text-slate-500">
                               <summary className="cursor-pointer">Photos on file (for comparison)</summary>
                               <div className="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -154,6 +161,8 @@ export default async function ReactivationsPage() {
                                   // eslint-disable-next-line @next/next/no-img-element
                                   <img
                                     src={`/api/photos/${e.branch.shopPhotoId}`}
+                                    loading="lazy"
+                                    decoding="async"
                                     alt="On-file shop"
                                     className="h-24 w-full rounded-md object-cover"
                                   />
@@ -162,6 +171,8 @@ export default async function ReactivationsPage() {
                                   // eslint-disable-next-line @next/next/no-img-element
                                   <img
                                     src={`/api/photos/${e.branch.signboardPhotoId}`}
+                                    loading="lazy"
+                                    decoding="async"
                                     alt="On-file signboard"
                                     className="h-24 w-full rounded-md object-cover"
                                   />
