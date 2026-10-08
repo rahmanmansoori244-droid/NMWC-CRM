@@ -7,6 +7,7 @@
  *
  *   bash:  RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts --project=phone --project=desktop
  *   then:  … --project=exclusive --workers=1
+ *   iPhone (WebKit, @iphone): … --project=iphone   (once: npx playwright install webkit)
  *
  * This file runs in the runner AND again in every worker, so run-wide values
  * are set with `??=` (a plain Date.now() would give every worker its own run).
@@ -43,7 +44,11 @@ function stepFromArgv(argv: string[]): string {
   const a = argv.join(' ');
   const exclusive = /--project[= ]exclusive\b/.test(a);
   const main = /--project[= ](phone|desktop)\b/.test(a);
-  return exclusive && main ? 'mixed' : exclusive ? 'exclusive' : 'main';
+  // The iPhone (WebKit) project run on its own keeps its own report and results
+  // folders, so it does not wipe step 1's (Playwright empties outputDir per run).
+  const iphone = /--project[= ]iphone\b/.test(a);
+  if (exclusive) return main || iphone ? 'mixed' : 'exclusive';
+  return iphone && !main ? 'iphone' : 'main';
 }
 
 // ── run-wide values, shared by the runner and every worker ───────────────────
@@ -243,6 +248,27 @@ export default defineConfig({
     },
     { name: 'desktop', grep: /@desktop/, grepInvert: /@exclusive/, use: desktop },
     { name: 'exclusive', grep: /@exclusive/, use: desktop },
+    {
+      // iPhone / Safari: Playwright's WebKit with the iPhone 15 profile (393×659,
+      // touch, Safari UA), GPS at Muscat — tests tagged @iphone
+      // (tests/e2e/launch/iphone.spec.ts). Needs `npx playwright install webkit`.
+      // Run alone: … -c playwright.launch.config.ts --project=iphone
+      //
+      // launchOptions: {} is REQUIRED. `use` is merged per key, not deeply, so this
+      // empty object REPLACES the top-level launchOptions, whose executablePath is
+      // a Chromium binary (E2E_CHROMIUM, else the newest installed headless shell,
+      // support/base.ts chromiumExecutable): WebKit cannot launch with it. An
+      // `undefined` here would be skipped by the merge and keep the Chromium path.
+      name: 'iphone',
+      grep: /@iphone/,
+      grepInvert: /@exclusive|@cdp/,
+      use: {
+        ...devices['iPhone 15'],
+        geolocation: MUSCAT,
+        permissions: ['geolocation'],
+        launchOptions: {},
+      },
+    },
   ],
   webServer: enabled
     ? {

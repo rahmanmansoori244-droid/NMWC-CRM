@@ -74,6 +74,38 @@ value of a secret env variable. A file that holds one is deleted and the run
 fails, naming the file and the kind of secret, never the value. By hand,
 read-only: `… sweep-cli.ts --scan`.
 
+### Under load
+
+Correctness under concurrency, not capacity (an overloaded laptop's latency
+means nothing). Two passes, once step 1 is clean at the default 4 workers:
+
+```bash
+# all of step 1, ten workers
+RUN_LAUNCH_E2E=1 E2E_WORKERS=10 E2E_RUN_BUDGET_MIN=180 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts --project=phone --project=desktop
+# the three busiest specs, three times over, ten at a time
+RUN_LAUNCH_E2E=1 E2E_WORKERS=10 E2E_RUN_BUDGET_MIN=180 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts --project=phone --project=desktop --repeat-each=3 salesman-phone update-flow approvals-queue
+```
+
+- Every repeat builds its own world (the suffix takes a counter), and cleans it.
+- `E2E_SERVER_DB_CONNECTIONS` (default 10) is the server's pool: set it to
+  production's `connection_limit` to load it as production is loaded. Each
+  worker holds up to 5 connections of its own (3 test, 2 owner), so ten workers
+  and the server need about 60 from the UAT compute — check its limit first.
+- `E2E_RUN_BUDGET_MIN` is the run's real length: the clock guard refuses a
+  start whose budget crosses Oman midnight (20:00 UTC).
+- Afterwards: search `.e2e-launch/server-main.log` for `P2024`, `pool timeout`
+  and `DB_UNAVAILABLE` (a test that failed on one of those failed on the pool,
+  not on the app — report it as such), then run `sweep-cli.ts --check` (zero
+  residue).
+- `races.spec.ts` is the deliberate half — two people, or two taps, at one
+  instant through the UI. Its barrier (`support/races-helpers.ts`) clicks every
+  racer at one wall-clock instant and fails with "the barrier did not hold" when
+  they land more than 250 ms apart, or "in flight together" when the POSTs did
+  not overlap: on a machine that busy, run it alone (`races` after the config).
+
+PowerShell: set each variable first (`$env:E2E_WORKERS = '10'` …), then the same
+command without the prefix.
+
 ### What the run refuses to do
 
 The config checks, before the server starts:
