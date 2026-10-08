@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { omanDateISO } from '@/lib/tz';
 
 type Region = { id: string; name: string; code: string };
@@ -49,6 +49,9 @@ export function ExportFiltersForm({
   // refusal is shown here, and the filters stay as they were.
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Each label tied to its field: a bare <label> beside a bare input names
+  // nothing for a screen reader, and a tap on it focuses nothing.
+  const uid = useId();
 
   async function download(href: string) {
     setError(null);
@@ -213,10 +216,11 @@ export function ExportFiltersForm({
 
       <div className="grid gap-3 sm:grid-cols-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-700">
+          <label htmlFor={`${uid}-min`} className="mb-1 block text-xs font-medium text-slate-700">
             Min completeness %
           </label>
           <input
+            id={`${uid}-min`}
             type="number"
             min={0}
             max={100}
@@ -226,10 +230,11 @@ export function ExportFiltersForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-700">
+          <label htmlFor={`${uid}-max`} className="mb-1 block text-xs font-medium text-slate-700">
             Max completeness %
           </label>
           <input
+            id={`${uid}-max`}
             type="number"
             min={0}
             max={100}
@@ -239,8 +244,11 @@ export function ExportFiltersForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-700">Updated since</label>
+          <label htmlFor={`${uid}-updated-since`} className="mb-1 block text-xs font-medium text-slate-700">
+            Updated since
+          </label>
           <input
+            id={`${uid}-updated-since`}
             type="date"
             value={updatedSince}
             onChange={(e) => setUpdatedSince(e.currentTarget.value)}
