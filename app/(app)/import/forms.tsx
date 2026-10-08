@@ -44,6 +44,19 @@ function uploadOutcome(data: UploadOk): { tone: Tone; message: string } {
   return { tone: 'ok', message: `Uploaded — ${summary}` };
 }
 
+/**
+ * The largest workbook the browser sends. The upload travels as a server action,
+ * and on Vercel a function's request body is capped at 4.5 MB by the platform: a
+ * bigger body is refused before the app runs, so the Steward saw Next's generic
+ * "An error occurred in the Server Components render…" instead of a reason. The
+ * importer's own cap (MAX_IMPORT_BYTES, 5 MB, services/imports.ts) and the
+ * 8mb bodySizeLimit in next.config.ts both sit above that and never got to speak.
+ * 4 MB leaves the multipart wrapping room under 4.5 MB (the real customer master
+ * is about 1.7 MB). Checked here before the action is called; the server keeps
+ * its own check.
+ */
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+
 function UploadForm({
   label,
   action,
@@ -57,6 +70,16 @@ function UploadForm({
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setResult(null);
+    const input = e.currentTarget.elements.namedItem('file');
+    const file = input instanceof HTMLInputElement ? input.files?.[0] : undefined;
+    if (file && file.size > MAX_UPLOAD_BYTES) {
+      // The app's own words, in the importer's format — not Next's generic error.
+      setResult({
+        tone: 'fail',
+        message: `File is too large (${Math.round(file.size / 1024)} KB). Maximum is 4 MB.`,
+      });
+      return;
+    }
     const fd = new FormData(e.currentTarget);
     start(async () => {
       try {
