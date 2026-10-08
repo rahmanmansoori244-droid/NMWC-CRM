@@ -17,6 +17,14 @@
  * media.ts jpegInBrowser cannot run here — cameraJpeg below uses a <canvas>);
  * <input type="date"> falls back to a text box (no date picker to test); an
  * Arabic-Indic digit typed into <input type="number"> leaves value ''.
+ *
+ * And (run 2026-10-08, production build on http://localhost): this WebKit
+ * STORES a Secure cookie that arrives over plain http (addCookies or the
+ * server's Set-Cookie) but never SENDS it there, so the production build's
+ * Secure __Host- session never reaches the server. When the probe sees that,
+ * every iPhone context reaches the app through installCookieBridge() below
+ * (requests sent from Node with the context's own cookie store, answers handed
+ * back to WebKit with route.fulfill).
  */
 import { randomBytes } from 'node:crypto';
 import {
@@ -27,9 +35,10 @@ import {
   type BrowserContextOptions,
   type Locator,
   type Page,
+  type Route,
 } from '@playwright/test';
-import { db } from './env';
-import { contextAs, MUSCAT_GEO } from './sessions';
+import { BASE_URL, db } from './env';
+import { clearSecretFields, contextAs, fillSecret, mintSessionCookie, mintingProven, MUSCAT_GEO } from './sessions';
 import type { FixtureUser, World } from './types';
 
 // The app's own words and formats, where the module is plain TypeScript.
@@ -41,10 +50,18 @@ export { UNCONFIRMED_MESSAGE } from '../../../../lib/submission';
 export const IPHONE = devices['iPhone 15'];
 
 /**
+ * Whether this worker's iPhone contexts reach the app through the cookie
+ * bridge. Set by probeWebKitSession() only: on when WebKit's own cookie
+ * store will not carry the session and the bridge does.
+ */
+let cookieBridge = false;
+
+/**
  * A browser context on the iPhone, signed in as `u` (null = signed out),
  * through contextAs(): minted cookie by default, every page watched, closed
  * after the test. GPS at Muscat (±9 m) with the permission granted, unless
- * `geolocation: null`.
+ * `geolocation: null`. With the cookie bridge on (see probeWebKitSession), the
+ * bridge is installed BEFORE the session is minted or signed in.
  */
 export async function iphoneContext(
   browser: Browser,
@@ -56,27 +73,273 @@ export async function iphoneContext(
     extra?: BrowserContextOptions;
   } = {}
 ): Promise<BrowserContext> {
-  return contextAs(browser, u, {
-    device: 'desktop',
+  const base = {
+    device: 'desktop' as const,
     geolocation: o.geolocation === undefined ? MUSCAT_GEO : o.geolocation,
-    auth: o.auth,
     ip: o.ip,
     extra: { ...IPHONE, ...o.extra },
-  });
+  };
+  if (!cookieBridge) return contextAs(browser, u, { ...base, auth: o.auth });
+  const ctx = await contextAs(browser, null, base);
+  await installCookieBridge(ctx, o.extra?.extraHTTPHeaders);
+  if (u) {
+    if ((o.auth ?? (mintingProven() ? 'mint' : 'ui')) === 'mint') {
+      await ctx.addCookies([await mintSessionCookie(u)]);
+    } else {
+      const page = await ctx.newPage();
+      await signInOnIphone(page, u.username, u.password, { ip: o.ip });
+      await expect(page).not.toHaveURL(/\/login(\?|$)/);
+      await page.close();
+    }
+  }
+  return ctx;
+}
+
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+/**
+ * Request headers the bridge never forwards: the cookie (read from the context's
+ * store instead), conditionals (a 304 cannot be handed back), and what the
+ * HTTP client sets itself.
+ */
+const BRIDGE_DROP_REQUEST = new Set([
+  'cookie',
+  'host',
+  'connection',
+  'keep-alive',
+  'content-length',
+  'transfer-encoding',
+  'expect',
+  'accept-encoding',
+  'if-none-match',
+  'if-modified-since',
+  'if-match',
+  'if-unmodified-since',
+  'if-range',
+  'range',
+]);
+/** Response headers the bridge never hands WebKit: the body is already decoded and whole, and Set-Cookie is already in the store. */
+const BRIDGE_DROP_RESPONSE = new Set(['set-cookie', 'content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
+
+/** What the bridge did, as paths and statuses only (no query, no header, no other origin's address): for a failing test's report. */
+const bridgeLines: string[] = [];
+function trace(line: string): void {
+  if (bridgeLines.length < 600) bridgeLines.push(`${new Date().toISOString().slice(11, 23)} ${line}`);
+}
+/** The bridge's trace since the last call, emptied. */
+export function takeBridgeTrace(): string[] {
+  return bridgeLines.splice(0, bridgeLines.length);
+}
+
+type SetCookie = { name: string; value: string; path: string; expires: number; httpOnly: boolean; secure: boolean; sameSite: 'Strict' | 'Lax' | 'None'; gone: boolean };
+
+/** One Set-Cookie line, read as a browser would for a host-only cookie of localhost. */
+function parseSetCookie(line: string): SetCookie | null {
+  const [pair, ...attrs] = line.split(';');
+  const eq = pair!.indexOf('=');
+  if (eq <= 0) return null;
+  const c: SetCookie = {
+    name: pair!.slice(0, eq).trim(),
+    value: pair!.slice(eq + 1).trim(),
+    path: '/',
+    expires: -1,
+    httpOnly: false,
+    secure: false,
+    sameSite: 'Lax',
+    gone: false,
+  };
+  let maxAge: number | null = null;
+  let expiresAt: number | null = null;
+  for (const a of attrs) {
+    const i = a.indexOf('=');
+    const k = (i < 0 ? a : a.slice(0, i)).trim().toLowerCase();
+    const v = i < 0 ? '' : a.slice(i + 1).trim();
+    if (k === 'path' && v.startsWith('/')) c.path = v;
+    else if (k === 'httponly') c.httpOnly = true;
+    else if (k === 'secure') c.secure = true;
+    else if (k === 'samesite') c.sameSite = /^strict$/i.test(v) ? 'Strict' : /^none$/i.test(v) ? 'None' : 'Lax';
+    else if (k === 'max-age' && /^-?\d+$/.test(v)) maxAge = Number(v);
+    else if (k === 'expires' && !Number.isNaN(Date.parse(v))) expiresAt = Date.parse(v);
+  }
+  const now = Date.now();
+  if (maxAge !== null) {
+    c.gone = maxAge <= 0;
+    c.expires = Math.floor(now / 1000) + maxAge;
+  } else if (expiresAt !== null) {
+    c.gone = expiresAt <= now;
+    c.expires = Math.floor(expiresAt / 1000);
+  }
+  return c;
+}
+
+/** Applies a response's Set-Cookie lines to the context's store (deletions included). */
+async function storeCookies(ctx: BrowserContext, lines: string[]): Promise<void> {
+  for (const line of lines) {
+    const c = parseSetCookie(line);
+    if (!c) continue;
+    if (c.gone) {
+      await ctx.clearCookies({ name: c.name });
+    } else {
+      await ctx.addCookies([
+        { name: c.name, value: c.value, domain: 'localhost', path: c.path, expires: c.expires, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite },
+      ]);
+    }
+  }
 }
 
 /**
- * Whether WebKit keeps a signed-in session on this server. The production
- * build sets a Secure `__Host-` cookie, and the suite serves it over plain
- * http://localhost: Chromium treats localhost as a secure origin for cookies,
- * and this probe says whether this WebKit build does. Never throws.
+ * Sends one browser request from Node (fetch), with the context's cookies for
+ * the app, and stores what the app sets. `follow`: follow redirects (a
+ * fetch/XHR) or stop at the first answer (a page load). Never goes through a
+ * Playwright API call, so no report step or call log holds a header.
  */
-export async function probeWebKitSession(browser: Browser, u: FixtureUser): Promise<{ ok: boolean; landed: string }> {
+async function sendFromNode(
+  ctx: BrowserContext,
+  req: ReturnType<Route['request']>,
+  o: { follow: boolean; extraHeaders?: Record<string, string> }
+): Promise<{ status: number; headers: Array<[string, string]>; body: Buffer; location: string | null }> {
+  const appOrigin = new URL(BASE_URL).origin;
+  const sent: Record<string, string> = {};
+  for (const [k, v] of Object.entries({ ...(o.extraHeaders ?? {}), ...req.headers() })) {
+    if (!BRIDGE_DROP_REQUEST.has(k.toLowerCase())) sent[k.toLowerCase()] = v;
+  }
+  let url = req.url();
+  let method = req.method();
+  let body: Buffer | null = req.postDataBuffer();
+  for (let hop = 0; hop <= 20; hop++) {
+    const target = new URL(url);
+    const own = target.origin === appOrigin;
+    const headers: Record<string, string> = own ? { ...sent } : { 'user-agent': sent['user-agent'] ?? '', accept: '*/*' };
+    if (own) {
+      const jar = await ctx.cookies(url);
+      if (jar.length) headers['cookie'] = jar.map((c) => `${c.name}=${c.value}`).join('; ');
+    }
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: method === 'GET' || method === 'HEAD' || !body ? undefined : new Uint8Array(body),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (own) await storeCookies(ctx, res.headers.getSetCookie());
+    const location = res.headers.get('location');
+    trace(`${hop ? '  ↳ ' : ''}${method} ${own ? target.pathname : '(another origin)'} → ${res.status}${location ? ` → ${new URL(location, url).origin === appOrigin ? new URL(location, url).pathname : '(another origin)'}` : ''}`);
+    if (!o.follow || !REDIRECT_STATUS.has(res.status) || !location) {
+      const headersOut: Array<[string, string]> = [];
+      res.headers.forEach((v, k) => {
+        if (!BRIDGE_DROP_RESPONSE.has(k.toLowerCase())) headersOut.push([k, v]);
+      });
+      return { status: res.status, headers: headersOut, body: Buffer.from(await res.arrayBuffer()), location };
+    }
+    await res.arrayBuffer().catch(() => undefined);
+    if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) {
+      if (method !== 'HEAD') method = 'GET';
+      body = null;
+      delete sent['content-type'];
+    }
+    url = new URL(location, url).toString();
+  }
+  throw new Error('the bridge followed more than 20 redirects');
+}
+
+/**
+ * The cookie bridge — a TEST-ENVIRONMENT workaround, not app behaviour. This
+ * Windows WebKit stores the production build's Secure __Host- session cookie
+ * but never sends it over plain http://localhost (production is https, where
+ * it does). Every request to the app (but /_next/static, which needs no
+ * cookie) is therefore sent from Node (sendFromNode: the context's own cookie
+ * store, read and written through ctx.cookies/addCookies) and its answer
+ * handed back to WebKit:
+ *   - a page load the server redirects (WebKit cannot be fulfilled with a 3xx)
+ *     gets a one-line page that location.replace()s to the target, so the
+ *     address bar ends where a browser would;
+ *   - a fetch/XHR follows its redirects in Node (the page sees the final
+ *     answer, not `redirected`);
+ *   - a server action's redirect (303, no Location, x-action-redirect) is
+ *     handed over as 200: Next.js reads x-action-redirect, not the status.
+ * Not route.fetch: Playwright keeps the call log of a failed API call — every
+ * request and response header, the session cookie and a presigned R2 address
+ * among them — in the report, which the secret scan then refuses.
+ * What WebKit itself still does: rendering, layout, touch, the keyboard, its
+ * file chooser, canvas, geolocation, Intl, localStorage and the R2 PUT (not
+ * bridged: another origin). What it no longer does: send its own cookie.
+ */
+export async function installCookieBridge(ctx: BrowserContext, extraHeaders?: Record<string, string>): Promise<void> {
+  const origin = new URL(BASE_URL).origin;
+  await ctx.route(
+    (url) => url.origin === origin && !url.pathname.startsWith('/_next/static/'),
+    async (route) => {
+      const req = route.request();
+      try {
+        const nav = req.isNavigationRequest();
+        const res = await sendFromNode(ctx, req, { follow: !nav, extraHeaders });
+        if (nav && REDIRECT_STATUS.has(res.status) && res.location) {
+          const to = new URL(res.location, req.url()).toString();
+          await route.fulfill({
+            status: 200,
+            contentType: 'text/html; charset=utf-8',
+            body: `<!doctype html><meta charset="utf-8"><title>Redirecting</title><script>location.replace(${JSON.stringify(to)})</script>`,
+          });
+          return;
+        }
+        const headers: Record<string, string> = {};
+        for (const [k, v] of res.headers) headers[k] = headers[k] ? `${headers[k]}, ${v}` : v;
+        await route.fulfill({ status: res.status >= 300 && res.status < 400 ? 200 : res.status, headers, body: res.body });
+      } catch (err) {
+        // The page or context closed mid-request, or the server dropped it: the page sees a network failure.
+        trace(`${req.method()} ${new URL(req.url()).pathname} ✗ ${String((err as Error)?.name ?? 'error')}: ${String((err as Error)?.message ?? err).split('\n')[0]!.slice(0, 120)}`);
+        await route.abort('failed').catch(() => undefined);
+      }
+    }
+  );
+}
+
+/**
+ * The real login page, as signInViaUi() (sessions.ts) does it, but the sign-in
+ * POST's x-forwarded-for is set with route.fallback(), so the POST still goes
+ * through the cookie bridge (signInViaUi's route.continue() would send it past
+ * the bridge, and WebKit would take the session cookie natively).
+ */
+export async function signInOnIphone(page: Page, username: string, password: string, o: { ip?: string; expectUrl?: RegExp } = {}): Promise<void> {
+  const handler = async (route: Route) => {
+    const req = route.request();
+    if (req.method() === 'POST' && o.ip) await route.fallback({ headers: { ...req.headers(), 'x-forwarded-for': o.ip } });
+    else await route.fallback();
+  };
+  if (o.ip) await page.route('**/login', handler);
+  try {
+    await page.goto('/login');
+    await page.locator('form[data-hydrated="1"]').waitFor({ timeout: 60_000 });
+    await page.getByLabel('Username').fill(username);
+    await fillSecret(page.getByLabel('Password'), password);
+    await page.getByRole('button', { name: /sign in/i }).click();
+    try {
+      await Promise.race([
+        page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 60_000 }),
+        page.getByRole('alert').waitFor({ timeout: 60_000 }),
+      ]);
+    } finally {
+      await clearSecretFields(page);
+    }
+    if (o.expectUrl) await expect(page).toHaveURL(o.expectUrl);
+  } finally {
+    if (o.ip) await page.unroute('**/login', handler).catch(() => undefined);
+  }
+}
+
+/** Whether the iPhone contexts of this worker go through installCookieBridge(). */
+export function cookieBridgeOn(): boolean {
+  return cookieBridge;
+}
+
+/** Where a signed-in iPhone lands on /today: the path once the app (not a redirect page) is on screen. */
+async function landedOnToday(browser: Browser, u: FixtureUser): Promise<{ ok: boolean; landed: string }> {
   let ctx: BrowserContext | null = null;
   try {
     ctx = await iphoneContext(browser, u);
     const page = await ctx.newPage();
     await page.goto('/today');
+    // The bridge's redirect page carries no route announcer; the app's pages do.
+    await page.locator('next-route-announcer').waitFor({ state: 'attached', timeout: 60_000 }).catch(() => undefined);
     const landed = new URL(page.url()).pathname;
     return { ok: landed === '/today', landed };
   } catch (err) {
@@ -86,12 +349,43 @@ export async function probeWebKitSession(browser: Browser, u: FixtureUser): Prom
   }
 }
 
-/** Why the iPhone tests cannot run when the probe above fails. */
+/**
+ * Whether WebKit keeps a signed-in session on this server. The production
+ * build sets a Secure `__Host-` cookie, and the suite serves it over plain
+ * http://localhost: Chromium treats localhost as a secure origin for cookies;
+ * the first probe says whether this WebKit build does (`raw`). When it does
+ * not, the second probe tries the cookie bridge and, when that carries the
+ * session, turns it on for every iPhone context of this worker. Never throws.
+ */
+export async function probeWebKitSession(
+  browser: Browser,
+  u: FixtureUser
+): Promise<{ ok: boolean; landed: string; bridged: boolean; rawLanded: string }> {
+  cookieBridge = false;
+  const raw = await landedOnToday(browser, u);
+  if (raw.ok) return { ok: true, landed: raw.landed, bridged: false, rawLanded: raw.landed };
+  cookieBridge = true;
+  const bridged = await landedOnToday(browser, u);
+  if (!bridged.ok) cookieBridge = false;
+  return { ok: bridged.ok, landed: bridged.landed, bridged: bridged.ok, rawLanded: raw.landed };
+}
+
+/** Why the iPhone tests cannot run when both probes fail. */
 export function webkitSessionNote(landed: string): string {
   return (
-    `WebKit did not keep the signed-in session (/today landed on ${landed}). This Windows WebKit build ` +
-    'appears not to send the Secure __Host- session cookie over plain http://localhost (production is https). ' +
-    'Run the iphone project against a dev server (E2E_SERVER=dev, plain cookie) or an https origin.'
+    `WebKit did not keep the signed-in session, not even through the cookie bridge (/today landed on ${landed}). ` +
+    'This Windows WebKit build does not send the Secure __Host- session cookie over plain http://localhost ' +
+    '(production is https). Run the iphone project against a dev server (E2E_SERVER=dev, plain cookie) or an https origin.'
+  );
+}
+
+/** Why WebKit's own cookie handling is not tested on this machine (the probe needed the bridge). */
+export function webkitBridgeNote(rawLanded: string): string {
+  return (
+    `This Windows WebKit build stores the production build's Secure __Host- session cookie but never sends it over ` +
+    `plain http://localhost (/today landed on ${rawLanded}) — a gap of this test machine, not of the app (production is https). ` +
+    'The other iPhone tests reach the app through the cookie bridge (iphone-helpers.ts installCookieBridge): ' +
+    'WebKit’s own Secure-cookie handling is NOT tested here; run on an https origin to test it.'
   );
 }
 
@@ -220,7 +514,9 @@ export function jpegSize(buf: Buffer): { width: number; height: number } | null 
 /**
  * The first POST to `path` reaches the server (route.fetch) and its answer is
  * then lost on the way back (route.abort) — "it arrived, the phone never
- * heard". Later POSTs pass untouched. Returns what the server answered.
+ * heard". Later POSTs pass untouched — through route.fallback(), so they still
+ * reach the context's cookie bridge when it is on (route.continue() would send
+ * them past it, without the session). Returns what the server answered.
  */
 export async function loseFirstReply(page: Page, path: string): Promise<{ status: number | null; error: string | null }> {
   const seen: { status: number | null; error: string | null } = { status: null, error: null };
@@ -229,12 +525,14 @@ export async function loseFirstReply(page: Page, path: string): Promise<{ status
     (url) => url.pathname === path,
     async (route) => {
       if (route.request().method() !== 'POST' || !first) {
-        await route.continue();
+        await route.fallback();
         return;
       }
       first = false;
       try {
-        seen.status = (await route.fetch()).status();
+        // From Node with the context's cookies (sendFromNode), not route.fetch(): a failed route.fetch keeps
+        // every header — the session cookie — in the report's call log.
+        seen.status = (await sendFromNode(page.context(), route.request(), { follow: true })).status;
       } catch (err) {
         seen.error = String((err as Error)?.message ?? err).split('\n')[0]!.slice(0, 200);
       }

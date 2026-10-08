@@ -5,8 +5,13 @@
  *
  * Only the paths where WebKit differs from the Chromium phone project:
  *   - the session cookie: the production build's Secure __Host- cookie over
- *     http://localhost (a probe first; every other test skips, saying why, when
- *     this WebKit build will not keep it);
+ *     http://localhost (a probe first). This Windows WebKit stores that cookie
+ *     but never sends it over plain http, so the probe then tries the cookie
+ *     bridge (iphone-helpers.ts installCookieBridge: each request to the app is
+ *     sent from Node with the context's cookies, WebKit does everything else);
+ *     the cookie test skips, saying why, and the others run through the
+ *     bridge, annotated. When the bridge fails too, every other test skips,
+ *     saying why;
  *   - the login form an iPhone keyboard types into (no auto-capital, no
  *     autocorrect, 16 px fields so Safari does not zoom), and the forced change;
  *   - Today, the Search key of the keyboard, opening a customer, touch taps;
@@ -21,7 +26,9 @@
  *
  * The new-customer form has no date input (only the /customers filters have,
  * and this Windows WebKit build renders type="date" as a plain text box), so no
- * date picker is tested here. Known gaps are test.fail, each in its own test.
+ * date picker is tested here. Known gaps are test.fail, each in its own test
+ * (none open now: the Arabic-digit count and the 14 px change-password boxes
+ * were fixed in 1a4e8e1 and f7f240a, and their tests assert the fix).
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts iphone --project=iphone
  */
@@ -47,7 +54,6 @@ import {
   requireLaunchEnv,
   resetLimits,
   seedNotification,
-  signInViaUi,
   type World,
 } from './support';
 import {
@@ -77,10 +83,13 @@ import {
   retakeOf,
   scrollPage,
   settled,
+  signInOnIphone,
   signOutDraftsQuestion,
   standsAboveTabBar,
   tabBar,
+  takeBridgeTrace,
   utcStamp,
+  webkitBridgeNote,
   webkitSessionNote,
   yesterdayUtcAt,
 } from './support/iphone-helpers';
@@ -120,9 +129,17 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
 
   let world: World;
   let since: Date;
-  /** Whether WebKit keeps a signed-in session on this server (probed once per worker). */
-  let webkit: { ok: boolean; landed: string } = { ok: false, landed: 'not probed' };
-  const needsSession = () => test.skip(!webkit.ok, webkitSessionNote(webkit.landed));
+  /** Whether WebKit keeps a signed-in session on this server, on its own or through the cookie bridge (probed once per worker). */
+  let webkit: { ok: boolean; landed: string; bridged: boolean; rawLanded: string } = {
+    ok: false,
+    landed: 'not probed',
+    bridged: false,
+    rawLanded: 'not probed',
+  };
+  const needsSession = () => {
+    test.skip(!webkit.ok, webkitSessionNote(webkit.landed));
+    if (webkit.bridged) test.info().annotations.push({ type: 'webkit-cookie-bridge', description: webkitBridgeNote(webkit.rawLanded) });
+  };
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(300_000);
@@ -158,7 +175,12 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
     webkit = await probeWebKitSession(browser, world.user('SA'));
   });
 
-  test.afterEach(async () => {
+  test.afterEach(async ({}, testInfo) => {
+    // What the cookie bridge sent and got (paths and statuses only), for a failure's report.
+    const lines = takeBridgeTrace();
+    if (lines.length && testInfo.status !== testInfo.expectedStatus) {
+      await testInfo.attach('cookie-bridge-trace', { body: lines.join('\n'), contentType: 'text/plain' });
+    }
     if (world) await adoptSalesmanWork(world, since);
   });
 
@@ -171,6 +193,11 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
   });
 
   test('WebKit keeps the signed-in session on this server (the Secure __Host- cookie over http://localhost)', async () => {
+    // This Windows WebKit stores a Secure cookie that arrives over plain http but
+    // never sends it back there: a gap of the test machine, not of the app
+    // (production is https). Then this property cannot be tested here — said so,
+    // not passed — and the other tests run through the cookie bridge.
+    test.skip(webkit.bridged, webkitBridgeNote(webkit.rawLanded));
     expect(webkit.ok, webkitSessionNote(webkit.landed)).toBe(true);
   });
 
@@ -599,8 +626,7 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
     await coolers.selectText();
     await coolers.pressSequentially('7');
     await expect(coolers).toHaveValue('7');
-    // Bug: StepperInput keeps only ASCII 0-9 (components/nmwc/StepperInput.tsx, no lib/digits fold) — a typed ٣ is saved as 0.
-    test.fail(true, 'StepperInput drops Arabic-Indic digits: a count typed as ٣ becomes 0');
+    // Was a known bug (a typed ٣ became 0); fixed in 1a4e8e1: StepperInput is type="text" and folds digits with lib/digits.
     const stands = page.getByRole('spinbutton', { name: 'Stands', exact: true });
     await stands.selectText();
     await stands.pressSequentially(arabicDigits('3'));
@@ -613,8 +639,7 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
     await page.goto('/profile/change-password');
     const form = page.locator('form').filter({ has: page.locator('input[name="currentPassword"]') });
     await expect(form).toBeVisible();
-    // Bug: ChangePasswordForm sets text-sm on the form and its inputs inherit 14 px (no text-base), so iOS Safari zooms in on a tap.
-    test.fail(true, 'the change-password inputs are 14 px: iOS Safari zooms the page when one is tapped');
+    // Was a known bug (14 px inputs, so iOS Safari zoomed in); fixed in f7f240a: each input is text-base below sm.
     expect(await fieldsUnder16px(form), 'Safari zooms into a field under 16 px').toEqual([]);
   });
 
@@ -660,8 +685,17 @@ test.describe('iphone: the salesman’s critical path in WebKit', { tag: ['@ipho
     expect(JSON.stringify(left)).not.toContain(typedName);
     await expect.poll(async () => (await auditFor({ actorId: so.id, action: 'LOGOUT' })).length, { message: 'one LOGOUT row' }).toBe(1);
 
-    // He signs in again on this phone: nothing he typed comes back.
-    await signInViaUi(page, so.username, so.password, { ip, expectUrl: /\/today(\?|$)/ });
+    // He signs in again on this phone: nothing he typed comes back. Today loads
+    // in full first, as it does before he can tap anything (run 2: a goto issued
+    // the moment the address said /today was cut off by Today's own load).
+    const navigations: string[] = [];
+    page.on('framenavigated', (f) => {
+      if (f === page.mainFrame()) navigations.push(new URL(f.url()).pathname);
+    });
+    await signInOnIphone(page, so.username, so.password, { ip, expectUrl: /\/today(\?|$)/ });
+    await settled(page);
+    await expect(page.getByRole('heading', { level: 1, name: `Good day, ${so.fullName.split(' ')[0]}`, exact: true })).toBeVisible();
+    test.info().annotations.push({ type: 'navigations from sign-in to Today', description: navigations.join(' → ') });
     await page.goto(`/customers/${oc1.id}/edit`);
     await settled(page);
     await expect(page.getByLabel('Contact person *', { exact: true })).toHaveValue('Majid Al Shukaili');

@@ -194,6 +194,40 @@ export async function slotMessage(slot: Locator): Promise<string> {
   return ((await retryOf(slot).locator('xpath=preceding-sibling::span[1]').textContent()) ?? '').trim();
 }
 
+/**
+ * Where a slot stands: 'attached' (its photo is in), 'retry' (Retry upload is
+ * offered), else 'busy: "<what it says>"' while it compresses or uploads, or
+ * 'idle: "<what it says>"'.
+ */
+export async function slotState(slot: Locator): Promise<string> {
+  if ((await retakeOf(slot).count()) > 0) return 'attached';
+  if ((await retryOf(slot).count()) > 0) return 'retry';
+  const text = ((await slot.textContent().catch(() => '')) ?? '').replace(/\s+/g, ' ').trim();
+  const busy = /Compressing…|Uploading…|Too many photos — trying again/.test(text);
+  return `${busy ? 'busy' : 'idle'}: "${text.slice(0, 80)}"`;
+}
+
+/**
+ * Notes, once per page, that R2 refused the browser's photo PUT for this
+ * origin (the bucket's CORS allows the suite's default http://localhost:3000
+ * only): on another E2E_PORT every browser upload fails as "No connection".
+ * The console line quotes the presigned URL: it is matched, never kept.
+ */
+export function noteR2CorsRefusal(page: Page): void {
+  let said = false;
+  page.on('console', (msg) => {
+    if (said || msg.type() !== 'error') return;
+    const text = msg.text();
+    if (!/blocked by CORS policy/i.test(text) || !/\.r2\.cloudflarestorage\.com/.test(text)) return;
+    said = true;
+    try {
+      note('R2 CORS', `R2 refused the browser's photo PUT from ${new URL(page.url()).origin} — browser uploads need E2E_PORT=3000`);
+    } catch {
+      /* the test has ended */
+    }
+  });
+}
+
 /** The slot's upload progress, or null when it is not uploading. */
 export async function uploadPct(slot: Locator): Promise<number | null> {
   const text = (await slot.textContent().catch(() => '')) ?? '';
@@ -261,12 +295,42 @@ export type HeldPost = {
   error: string | null;
 };
 
+/** Hop-by-hop and pseudo headers Node's fetch must set itself (or refuses). */
+const NOT_FORWARDED = new Set(['host', 'connection', 'content-length', 'transfer-encoding', 'keep-alive', 'upgrade', 'expect', 'te', 'trailer']);
+
+/**
+ * Sends the page's request to the server from Node, with the page's own headers
+ * (its session cookie, its Origin), and returns only what the page needs back.
+ * Not route.fetch(): Playwright's request client writes every request header —
+ * the session cookie included — into its call log, and a failed or cut-off
+ * call puts that log into the HTML report (the secret scan then deletes it and
+ * fails the run). Node's fetch is not a reported step, and its errors carry no
+ * headers.
+ */
+async function serverAnswers(req: ReturnType<Route['request']>): Promise<{ status: number; contentType: string; body: Buffer }> {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(await req.allHeaders())) {
+    if (!k.startsWith(':') && !NOT_FORWARDED.has(k.toLowerCase())) headers[k] = v;
+  }
+  const res = await fetch(req.url(), {
+    method: req.method(),
+    headers,
+    // The field forms post JSON text.
+    body: req.postData() ?? undefined,
+    redirect: 'manual',
+    signal: AbortSignal.timeout(60_000),
+  });
+  return { status: res.status, contentType: res.headers.get('content-type') ?? '', body: Buffer.from(await res.arrayBuffer()) };
+}
+
 /**
  * Holds the FIRST POST to `path` for `holdMs`, then:
  *   'continue'   — lets it go on to the server (if the page still wants it);
  *   'abort'      — fails it with `abortCode`, so it never reaches the server;
- *   'answerLate' — the server reads and answers it AT ONCE (route.fetch), and the
- *                  answer is held instead: it reaches the page only after the hold.
+ *   'answerLate' — the server reads and answers it AT ONCE (from Node, see
+ *                  serverAnswers), and the answer is held instead: it reaches
+ *                  the page only after the hold (status, content type and body;
+ *                  no Set-Cookie).
  * Later POSTs pass untouched. Nothing is un-routed while the request is held
  * (README: un-routing a paused request makes Chromium send it on).
  */
@@ -294,10 +358,10 @@ export async function holdFirstPost(
     try {
       held.body = (req.postDataJSON() as Record<string, unknown> | null) ?? null;
       if (o.then === 'answerLate') {
-        const res = await route.fetch({ timeout: 60_000 });
-        held.serverStatus = res.status();
+        const res = await serverAnswers(req);
+        held.serverStatus = res.status;
         await sleepWhileOpen(page, o.holdMs);
-        await route.fulfill({ response: res });
+        await route.fulfill({ status: res.status, contentType: res.contentType, body: res.body });
       } else {
         await sleepWhileOpen(page, o.holdMs);
         if (o.then === 'abort') await route.abort(o.abortCode ?? 'timedout');

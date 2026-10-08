@@ -84,6 +84,7 @@ import {
   jpegSize,
   neverFixGeolocation,
   note,
+  noteR2CorsRefusal,
   notesBox,
   openEnrich,
   pageTimings,
@@ -101,11 +102,13 @@ import {
   settled,
   sleep,
   slotMessage,
+  slotState,
   slowPhone,
   tryAgain,
   uploadPct,
   watchSavedClaims,
   ymdOf,
+  type FieldAbort,
   type UrlMatch,
 } from './support/field-faults-helpers';
 
@@ -184,7 +187,9 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
     const s = await addFieldSalesman(world, key, { branch });
     await resetLimits({ users: [s.user] });
     const ctx = await contextAs(browser, s.user, { device: 'phone' });
-    return { ...s, ctx, page: await ctx.newPage() };
+    const page = await ctx.newPage();
+    noteR2CorsRefusal(page);
+    return { ...s, ctx, page };
   }
 
   /** Every request notifies exactly its audience, once each — a replayed submit never notifies twice. */
@@ -342,7 +347,8 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
       const t0 = Date.now();
       await submit.click();
       await expect.poll(() => editsOf(customer.id), { timeout: 20_000, message: 'the server read it at once' }).toBe(1);
-      expect(held.serverStatus, 'and answered').toBe(200);
+      // The row is committed a moment before the answer reaches the hold: wait for the answer itself.
+      await expect.poll(() => held.serverStatus, { timeout: 20_000, message: 'and answered' }).toBe(200);
       await expect(page.getByRole('button', { name: 'Submitting…', exact: true }), 'saved on the server; the phone has heard nothing').toBeVisible();
       await outwait(page, t0);
       expect(await claims(), 'the phone does not know, so it does not say "saved"').toEqual([]);
@@ -403,46 +409,65 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
       });
     }
 
-    /** Each photo step, as the page.route fault matches it. */
-    const STEPS: Record<'presign' | 'R2 PUT' | 'finalize', { match: UrlMatch; method: string; failed: Chain; once: Chain }> = {
+    /**
+     * Each photo step, as the page.route fault matches it, and the drops it is
+     * tested with. The R2 PUT's "timedout" has a test of its own below (a known
+     * bug), so that the PUT's other drops are still checked while it is open.
+     */
+    const STEPS: Record<'presign' | 'R2 PUT' | 'finalize', { match: UrlMatch; method: string; codes: readonly FieldAbort[]; failed: Chain; once: Chain }> = {
       // presign and the PUT are retried together (each try gets a URL of its own).
       presign: {
         match: pathIs(PRESIGN_PATH),
         method: 'POST',
+        codes: FIELD_ABORTS,
         failed: { presign: PHOTO_TRIES, put: 0, finalize: 0, attach: 0 },
         once: { presign: 2, put: 1, finalize: 1, attach: 1 },
       },
       'R2 PUT': {
         match: isR2,
         method: 'PUT',
+        codes: FIELD_ABORTS.filter((c) => c !== 'timedout'),
         failed: { presign: PHOTO_TRIES, put: PHOTO_TRIES, finalize: 0, attach: 0 },
         once: { presign: 2, put: 2, finalize: 1, attach: 1 },
       },
       finalize: {
         match: pathIs(FINALIZE_PATH),
         method: 'POST',
+        codes: FIELD_ABORTS,
         failed: { presign: 1, put: 1, finalize: PHOTO_TRIES, attach: 0 },
         once: { presign: 1, put: 1, finalize: 2, attach: 1 },
       },
     };
+    /** The slot each drop is tried on, in order, and its kind. */
+    const DROP_SLOTS = [
+      { label: 'Shop front', nth: 0, kind: 'SHOP' },
+      { label: 'Signboard', nth: 0, kind: 'SIGNBOARD' },
+      { label: 'Other', nth: 0, kind: 'FREE' },
+    ] as const;
 
     for (const [i, step] of (['presign', 'R2 PUT', 'finalize'] as const).entries()) {
-      test(`photo, ${step} dropped (${FIELD_ABORTS.join(', ')}): three silent tries, then "Retry upload" with the photo kept; Retry attaches it once; a single drop is retried without a word`, async ({ browser }) => {
+      test(`photo, ${step} dropped (${STEPS[step].codes.join(', ')}): three silent tries, then "Retry upload" with the photo kept; Retry attaches it once; a single drop is retried without a word`, async ({ browser }) => {
         test.skip(!hasR2, 'photo uploads need R2');
         test.setTimeout(300_000);
         const s = STEPS[step];
         const { user, customer, page } = await phoneOf(browser, `P${i}`);
         const counts = chainCounter(page);
         const submit = await openEnrich(page, customer.id);
-        const slots = [photoSlot(page, 'Shop front'), photoSlot(page, 'Signboard'), photoSlot(page, 'Other', 0)];
+        const used = DROP_SLOTS.slice(0, s.codes.length);
         const words: string[] = [];
 
-        for (const [k, code] of FIELD_ABORTS.entries()) {
-          const slot = slots[k]!;
+        for (const [k, code] of s.codes.entries()) {
+          const slot = photoSlot(page, used[k]!.label, used[k]!.nth);
           const fault = await failRequests(page, { match: s.match, method: s.method, code });
           const before = counts();
           await pickFile(slot, pngFile(`${step.replace(' ', '-')}-${code}`));
-          await expect(retryOf(slot), `${code}: Retry upload once the last try failed`).toBeVisible({ timeout: 90_000 });
+          // As a poll, so a slot that never gets there says where it stood and what was sent.
+          await expect
+            .poll(async () => `${await slotState(slot)} · sent ${JSON.stringify(minus(counts(), before))} · faulted ${fault.aborted}`, {
+              timeout: 90_000,
+              message: `${code}: Retry upload once the last try failed`,
+            })
+            .toMatch(/^retry /);
           const msg = await slotMessage(slot);
           words.push(`${code}: "${msg}"`);
           expect(msg, `${code}: the slot says why`).not.toBe('');
@@ -454,7 +479,12 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
           await fault.stop();
           const again = counts();
           await retryOf(slot).click();
-          await expect(retakeOf(slot), `${code}: Retry upload sends the kept photo — no new pick`).toBeVisible({ timeout: 90_000 });
+          await expect
+            .poll(async () => `${await slotState(slot)} · sent ${JSON.stringify(minus(counts(), again))}`, {
+              timeout: 90_000,
+              message: `${code}: Retry upload sends the kept photo — no new pick`,
+            })
+            .toMatch(/^attached /);
           expect(minus(counts(), again), `${code}: one clean chain`).toEqual(ONE_CLEAN_CHAIN);
           expect(await photosBy(user.id), `${code}: one Attachment more`).toHaveLength(k + 1);
         }
@@ -471,13 +501,16 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
         expect(minus(counts(), before), 'the dropped step tried once more').toEqual(s.once);
         await once.stop();
 
-        // Four photos, each on its slot once.
+        // One photo per drop and the single drop's, each on its slot once.
         const photos = await photosBy(user.id);
-        expect(photos.map((p) => p.kind).sort()).toEqual(['FREE', 'FREE', 'SHOP', 'SIGNBOARD']);
+        const kinds: string[] = [...used.map((u) => u.kind), 'FREE'];
+        expect(photos.map((p) => p.kind).sort()).toEqual(kinds.sort());
         const b = await db.branch.findUniqueOrThrow({ where: { id: customer.branch.id }, select: { shopPhotoId: true, signboardPhotoId: true } });
         expect(b.shopPhotoId).toBe(photos.find((p) => p.kind === 'SHOP')!.id);
         expect(b.signboardPhotoId).toBe(photos.find((p) => p.kind === 'SIGNBOARD')!.id);
-        expect(photos.filter((p) => p.kind === 'FREE').map((p) => p.branchExtraId)).toEqual([customer.branch.id, customer.branch.id]);
+        expect(photos.filter((p) => p.kind === 'FREE').map((p) => p.branchExtraId)).toEqual(
+          kinds.filter((k) => k === 'FREE').map(() => customer.branch.id)
+        );
         const objects = await r2ObjectsOf(user.id, photos.map((p) => p.r2Key));
         expect(objects).toEqual(expect.arrayContaining(photos.map((p) => p.r2Key)));
         note(
@@ -491,9 +524,57 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
       });
     }
 
+    test('photo, R2 PUT timed out (net::ERR_TIMED_OUT): three tries at once — not each after 45 s of silence — then "Retry upload"; Retry attaches it once', async ({ browser }) => {
+      // BUG (new, field-faults): PhotoCaptureSlot's putWithProgress listens for the XHR's error, abort and load
+      // events only. Chromium reports a PUT that fails with net::ERR_TIMED_OUT as the XHR "timeout" event (even
+      // with xhr.timeout unset), so the try is ended only by the 45 s stall watchdog: three tries take about
+      // 2¼ minutes of "Uploading… 0%" with Submit held, and every Retry upload the same, instead of seconds.
+      // components/nmwc/PhotoCaptureSlot.tsx putWithProgress (xhr.onerror / xhr.onabort, no xhr.ontimeout).
+      test.fail(true, 'PhotoCaptureSlot putWithProgress ignores the XHR timeout event: a timed-out R2 PUT waits 45 s per try');
+      test.skip(!hasR2, 'photo uploads need R2');
+      test.setTimeout(300_000);
+      const s = STEPS['R2 PUT'];
+      const { user, customer, page } = await phoneOf(browser, 'PT');
+      const counts = chainCounter(page);
+      const submit = await openEnrich(page, customer.id);
+      const slot = photoSlot(page, 'Shop front');
+      const fault = await failRequests(page, { match: s.match, method: s.method, code: 'timedout' });
+      const before = counts();
+      await pickFile(slot, pngFile('R2-PUT-timedout'));
+      // The same budget as every other drop: three tries and their 0.5 s + 1.5 s backoff.
+      await expect
+        .poll(async () => `${await slotState(slot)} · sent ${JSON.stringify(minus(counts(), before))} · faulted ${fault.aborted}`, {
+          timeout: 90_000,
+          message: 'timedout: Retry upload once the last try failed',
+        })
+        .toMatch(/^retry /);
+      const msg = await slotMessage(slot);
+      note('what the slot said', `timedout: "${msg}"`);
+      expect(msg, 'the slot says why').not.toBe('');
+      expect(minus(counts(), before), `${PHOTO_TRIES} tries, then it stops`).toEqual(s.failed);
+      await expect(page.getByText(PHOTO_UPLOADING_MESSAGE, { exact: true }), 'the slot is no longer busy').toHaveCount(0);
+      await expect(submit, 'a failed photo does not hold Submit').toBeEnabled();
+      expect(await photosBy(user.id), 'nothing was finalized').toHaveLength(0);
+
+      await fault.stop();
+      const again = counts();
+      await retryOf(slot).click();
+      await expect
+        .poll(async () => `${await slotState(slot)} · sent ${JSON.stringify(minus(counts(), again))}`, {
+          timeout: 90_000,
+          message: 'Retry upload sends the kept photo — no new pick',
+        })
+        .toMatch(/^attached /);
+      expect(minus(counts(), again), 'one clean chain').toEqual(ONE_CLEAN_CHAIN);
+      const photos = await photosBy(user.id);
+      expect(photos, 'one Attachment').toHaveLength(1);
+      const b = await db.branch.findUniqueOrThrow({ where: { id: customer.branch.id }, select: { shopPhotoId: true } });
+      expect(b.shopPhotoId).toBe(photos[0]!.id);
+    });
+
     test('a presign or finalize that cannot be reached is worded for the salesman, not with the browser’s own "Failed to fetch"', async ({ browser }) => {
-      // BUG (new, field-faults): PhotoCaptureSlot shows fetch's raw TypeError text ("Failed to fetch") after three dropped presigns or finalizes.
-      test.fail(true, 'PhotoCaptureSlot shows the browser’s "Failed to fetch" when presign or finalize cannot be reached');
+      // Was a bug (PhotoCaptureSlot showed fetch's own "Failed to fetch"); fixed in the launch candidate:
+      // a dropped connection, three times, now reads UPLOAD_NO_CONNECTION (components/nmwc/PhotoCaptureSlot.tsx uploadChain's catch).
       test.skip(!hasR2, 'photo uploads need R2');
       const { customer, page } = await phoneOf(browser, 'PW');
       await openEnrich(page, customer.id);
@@ -544,7 +625,8 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
         await expect(submit, 'Submit waits for the photo').toBeDisabled();
         await expect(page.getByText(PHOTO_UPLOADING_MESSAGE, { exact: true })).toBeVisible();
         const deadline = Date.now() + 360_000;
-        while (Date.now() < deadline && (await retakeOf(slot).count()) === 0) {
+        // Until it is attached — or failed: a Retry upload is no crawl any more, so stop watching (asserted below).
+        while (Date.now() < deadline && (await retakeOf(slot).count()) === 0 && (await retryOf(slot).count()) === 0) {
           const pct = await uploadPct(slot);
           if (pct !== null && seen[seen.length - 1] !== pct) seen.push(pct);
           if (pct !== null && pct > 0 && pct < 100) {
@@ -553,7 +635,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
           }
           await sleep(1_000);
         }
-        await expect(retakeOf(slot), 'it arrives by itself').toBeVisible({ timeout: 5_000 });
+        expect(await slotState(slot), 'it arrives by itself').toBe('attached');
         tookMs = Date.now() - t0;
       } finally {
         await restoreDevice(cdp);
@@ -917,6 +999,7 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
       test.skip(!hasR2, 'photo uploads need R2');
       test.setTimeout(480_000);
       const page = await (await contextAs(browser, sl.user, { device: 'phone' })).newPage();
+      noteR2CorsRefusal(page);
       await page.goto('/today');
       // Made before the CPU is slowed: the camera hands over a finished file.
       const camera = await cameraJpeg(page, 4000, 3000);
@@ -935,7 +1018,9 @@ test.describe('field faults on a phone', { tag: ['@phone'] }, () => {
         await pickFile(slot, { name: 'IMG_20261008_101500.jpg', mimeType: 'image/jpeg', buffer: camera });
         await expect(slot.getByText(/^Uploading… \d+%$/), 'compressed and hashed: the upload starts').toBeVisible({ timeout: BUDGET.compressMs + 60_000 });
         compress = Date.now() - t0;
-        await expect(retakeOf(slot)).toBeVisible({ timeout: BUDGET.photoMs + 60_000 });
+        // Until it is up — or has failed, which no longer waiting changes.
+        await expect.poll(() => slotState(slot), { timeout: BUDGET.photoMs + 60_000, message: 'the upload ends' }).not.toMatch(/^busy/);
+        expect(await slotState(slot), 'up and attached').toBe('attached');
         total = Date.now() - t0;
         await expect(retryOf(slot)).toHaveCount(0);
       } finally {
