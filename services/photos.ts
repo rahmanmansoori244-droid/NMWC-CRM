@@ -232,6 +232,9 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
   // Keep the existing actor-scope policy; recheck the target under its lock.
   const managerScope = session.user.role === Role.MANAGER ? await loadScope(session.user.id) : null;
   let ownedRouteId: string | null = null;
+  // His route switched off: refused below, but only after the answer to a
+  // re-sent attach that already landed (see `wired`).
+  let routeOff = false;
 
   if ('customerId' in data) {
     const c = await prisma.customer.findFirst({
@@ -251,7 +254,7 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       // Launch browser suite: a switched-off route takes no photo from him onto a
       // live customer or branch, as it takes no enrichment, close or reactivation
       // (ROUTE_INACTIVE_MESSAGE). A Manager or the Steward still writes them.
-      if (me.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
+      routeOff = me.ownedRoute?.isActive === false;
       // Owner decision 2 (2026-10-07): the CR document of a CREDIT customer
       // follows its finance-locked CR number. An attach goes live at once and
       // an update request cannot carry a photo for approval, so a salesman's is
@@ -277,6 +280,9 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.attach.already_on_slot');
       return { ok: true as const };
     }
+    // After that answer: a re-send of an attach that landed before the route
+    // was switched off is told it landed, not refused. Before anything is written.
+    if (routeOff) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
     // DG-06: capture the request envelope before opening the transaction.
     const env = await getAuditEnvelope(session.user.id);
     const claimed = await prisma.$transaction(async (tx) => {
@@ -370,7 +376,7 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         throw new ForbiddenError('Branch not on your route.');
       }
       // A switched-off route: as for the CR photo above.
-      if (me.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
+      routeOff = me.ownedRoute?.isActive === false;
     } else if (session.user.role === Role.MANAGER) {
       // SEC-H1 (completeness): region-scope the Manager branch-photo attach too,
       // via the branch's owning customer. Fail-closed for empty managedRegions.
@@ -392,6 +398,8 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.attach.already_on_slot');
       return { ok: true as const };
     }
+    // As on the CR path: after the answer to a re-send that already landed.
+    if (routeOff) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
 
     // DG-06: same as the CR branch — envelope before the transaction.
     const env = await getAuditEnvelope(session.user.id);
@@ -553,16 +561,6 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   if (session.user.role === Role.SALESMAN && att.capturedById !== session.user.id) {
     throw new ForbiddenError('You can only remove photos you captured.');
   }
-  // Launch browser suite: nor one on a live customer or branch while his route
-  // is switched off, as attach refuses. A photo of a new-customer request not
-  // yet approved is on neither: New customer's own refusal covers that request.
-  if (session.user.role === Role.SALESMAN && (att.customerId || att.branchId || att.branchExtraId)) {
-    const me = await prisma.user.findUniqueOrThrow({
-      where: { id: session.user.id },
-      select: { ownedRoute: { select: { isActive: true } } },
-    });
-    if (me.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
-  }
   // Owner decision 2 (2026-10-07): nor the CR document of a credit customer,
   // even one he took — removing it changes it as much as replacing it does.
   // Checked again under the lock below.
@@ -582,6 +580,18 @@ async function detachPhotoCore(input: { attachmentId: string }) {
   // and then the slot showed a photo removed that the server kept. Removed
   // already has its own code now, and the slot clears on that one alone.
   if (att.deletedAt) throw new ConflictError('PHOTO_GONE', PHOTO_GONE_MESSAGE);
+  // Launch browser suite: nor one on a live customer or branch while his route
+  // is switched off, as attach refuses. A photo of a new-customer request not
+  // yet approved is on neither: New customer's own refusal covers that request.
+  // After PHOTO_GONE: a re-sent Remove that already landed is told the photo is
+  // gone — the answer its slot clears on — not refused.
+  if (session.user.role === Role.SALESMAN && (att.customerId || att.branchId || att.branchExtraId)) {
+    const me = await prisma.user.findUniqueOrThrow({
+      where: { id: session.user.id },
+      select: { ownedRoute: { select: { isActive: true } } },
+    });
+    if (me.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
+  }
 
   // NEW-PHOTO-002: only blank the slot on the customer/branch that this
   // attachment is *currently* attached to (not "every customer that ever

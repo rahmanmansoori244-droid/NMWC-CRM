@@ -861,6 +861,22 @@ describe.skipIf(!ENABLED)('photos on a switched-off route', () => {
     expect(live).toBe(3);
   });
 
+  // The slot re-sends an attach or Remove that got no answer. One that landed
+  // before the switch-off is told so — not refused for the route.
+  it('a re-send of his attach or Remove that already landed gets the answer it would on a live route', async () => {
+    const { PHOTO_GONE_MESSAGE } = await import('@/lib/photo-attach');
+    const shop = await photo('SHOP');
+    const cr = await photo('CR');
+    expect(await photos.attachPhotoAction({ attachmentId: shop, branchId: ids.branch, slot: 'SHOP' })).toEqual({ ok: true });
+    expect(await photos.attachPhotoAction({ attachmentId: cr, customerId: ids.cust, slot: 'CR' })).toEqual({ ok: true });
+    expect(await photos.detachPhotoAction({ attachmentId: cr })).toEqual({ ok: true });
+    await switchOff();
+    expect(await photos.attachPhotoAction({ attachmentId: shop, branchId: ids.branch, slot: 'SHOP' })).toEqual({ ok: true });
+    expect(await photos.detachPhotoAction({ attachmentId: cr })).toEqual({ ok: false, code: 'PHOTO_GONE', message: PHOTO_GONE_MESSAGE });
+    expect((await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } })).shopPhotoId).toBe(shop);
+    expect((await prisma.customer.findUniqueOrThrow({ where: { id: ids.cust } })).crPhotoId).toBeNull();
+  });
+
   it('a Manager still attaches and removes there', async () => {
     await switchOff();
     current = { id: ids.manager, role: 'MANAGER', username: ids.manager };

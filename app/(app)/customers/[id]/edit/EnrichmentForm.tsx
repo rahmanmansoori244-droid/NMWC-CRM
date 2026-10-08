@@ -124,6 +124,7 @@ export function EnrichmentForm({
   userRole,
   canSubmit,
   submitHeldTitle = 'Pending edit already in review',
+  photosHeld = false,
   pendingReplacesDraft = false,
   sessionUserId,
   gate: gateProp,
@@ -139,6 +140,12 @@ export function EnrichmentForm({
   canSubmit: boolean;
   /** Why Submit is held when canSubmit is false: a request in review, or his route switched off. */
   submitHeldTitle?: string;
+  /**
+   * No photo slot takes, replaces or removes a photo: his route is switched off,
+   * and services/photos.ts refuses his attach and Remove there. Locked from the
+   * start, so no photo goes up only to be refused once it has.
+   */
+  photosHeld?: boolean;
   /**
    * Item 22: approving this customer's pending request changes the values this
    * draft started from, which then replaces the draft — a pending update, or a
@@ -259,7 +266,8 @@ export function EnrichmentForm({
   // …and no NEW photo once a submit is on its way. Submit is held while a photo
   // uploads, but a photo started after the tap would still be cut off by the
   // page load that follows the answer — silently, beside "It arrived".
-  const photosLocked = sending || arrived;
+  // …nor any while his route is switched off (photosHeld).
+  const photosLocked = sending || arrived || photosHeld;
 
   // Owner decision 2 (2026-10-07): a salesman cannot change the CR document of
   // a CREDIT customer (services/photos.ts refuses it); a Manager or the Steward does.

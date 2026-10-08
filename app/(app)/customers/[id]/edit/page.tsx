@@ -111,7 +111,8 @@ export default async function EditCustomerPage({
     const onMyRoute = customer.branches.some((b) => b.routeId === me.ownedRouteId);
     if (!onMyRoute) redirect(`/customers/${customer.id}`);
     // Launch review: his route switched off refuses the submit
-    // (services/edits.ts); say so before he fills the form. A draft still saves.
+    // (services/edits.ts) and his photo attach and Remove (services/photos.ts);
+    // say so before he fills the form, and lock the photo slots. A draft still saves.
     routeOff = me.ownedRoute?.isActive === false;
   }
 
@@ -207,8 +208,8 @@ export default async function EditCustomerPage({
 
       {routeOff && (
         <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
-          {ROUTE_INACTIVE_MESSAGE} You can save a draft, but you cannot submit it until the route is
-          active again.
+          {ROUTE_INACTIVE_MESSAGE} You can save a draft, but you cannot add or remove photos or
+          submit until the route is active again.
         </div>
       )}
 
@@ -280,6 +281,7 @@ export default async function EditCustomerPage({
         userRole={session.user.role}
         canSubmit={!pending && !routeOff}
         submitHeldTitle={routeOff ? ROUTE_INACTIVE_MESSAGE : undefined}
+        photosHeld={routeOff}
         // A reactivation replaces the draft too, when it turns the customer
         // ACTIVE (item 22 review) — the rule lives in the helper.
         pendingReplacesDraft={pendingReplacesDraft(pending ? requestKindOf(pending) : null, customer.status)}
