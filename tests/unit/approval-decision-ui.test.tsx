@@ -12,15 +12,31 @@
  *   Reject   the reject form says where rejecting this step sends the request:
  *            back one step to the previous approver, or to the salesman; the
  *            bulk dialog, deciding many at once, words both rules.
+ *   Temix    owner decision 2026-10-08: the last step of a new-customer request
+ *            asks for the Temix code the Accountant gave it in Temix, sends it,
+ *            and its card in the queue is locked like a credit card.
  *
  * The pages that render the tokens are in approval-decision-pages.test.tsx; the
  * services that check them are in decision-token.test.ts.
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { Component, type ReactNode } from 'react';
+import { getRedirectError } from 'next/dist/client/components/redirect';
+import { isRedirectError, RedirectType } from 'next/dist/client/components/redirect-error';
 import { MISSING_TOKEN_MESSAGE, STALE_VIEW_MESSAGE } from '@/lib/decision-token';
-import { BULK_DECISION_LIMIT, BULK_DECISION_LIMIT_MESSAGE, CREDIT_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
+import {
+  BULK_DECISION_LIMIT,
+  BULK_DECISION_LIMIT_MESSAGE,
+  CREDIT_BULK_REFUSED_MESSAGE,
+  TEMIX_CODE_BULK_REFUSED_MESSAGE,
+} from '@/lib/bulk-run';
+import {
+  TEMIX_CODE_CRM_MESSAGE,
+  TEMIX_CODE_REQUIRED_MESSAGE,
+  TEMIX_CODE_SHAPE_MESSAGE,
+  TEMIX_CODE_SPACES_MESSAGE,
+} from '@/lib/temix-code';
 
 const h = vi.hoisted(() => ({
   approve: vi.fn(),
@@ -38,7 +54,11 @@ vi.mock('@/services/edits', () => ({
   bulkApproveEditsAction: h.bulkApprove,
   bulkRejectEditsAction: h.bulkReject,
 }));
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), refresh: h.refresh }) }));
+vi.mock('next/navigation', async (importOriginal) => ({
+  // The real one: it decides which errors are Next's to handle.
+  unstable_rethrow: (await importOriginal<typeof import('next/navigation')>()).unstable_rethrow,
+  useRouter: () => ({ push: vi.fn(), refresh: h.refresh }),
+}));
 vi.mock('next/link', () => ({
   default: ({ href, children, className }: { href: string; children: ReactNode; className?: string }) => (
     <a href={href} className={className}>
@@ -150,8 +170,115 @@ describe('N01 — the single-request page sends its token with every decision', 
   });
 });
 
+describe('launch browser suite — the reject form names its fields, and its errors are announced', () => {
+  // The Category and reason labels had no htmlFor and the fields no id: a screen
+  // reader read two unnamed fields, and getByLabel found neither.
+  it('Category and the reason are found by their labels', () => {
+    renderActions();
+    fireEvent.click(screen.getByRole('button', { name: '✗ Reject' }));
+    expect(screen.getByLabelText('Category').tagName).toBe('SELECT');
+    expect(screen.getByRole('combobox', { name: 'Category' })).toBeTruthy();
+    expect(screen.getByLabelText('Reason for the salesman *').tagName).toBe('TEXTAREA');
+  });
+
+  it('a step back names the reason for the approver it goes to', () => {
+    renderActions({ kind: 'APPLY' }, { kind: 'STEP_BACK', toRole: 'SUPERVISOR' });
+    fireEvent.click(screen.getByRole('button', { name: '✗ Reject' }));
+    expect(screen.getByRole('textbox', { name: 'Reason for the Supervisor *' })).toBeTruthy();
+  });
+
+  it('a reason error is announced and tied to the reason box', async () => {
+    h.reject.mockResolvedValue({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      message: 'Validation failed',
+      fields: { reason: 'Reason must be 5–1000 characters.' },
+    });
+    renderActions();
+    await rejectWithReason();
+    expect((await screen.findByRole('alert')).textContent).toBe('Reason must be 5–1000 characters.');
+    const box = screen.getByLabelText('Reason for the salesman *');
+    expect(box).toHaveAttribute('aria-invalid', 'true');
+    expect(box).toHaveAccessibleDescription('Reason must be 5–1000 characters.');
+  });
+
+  it('a refusal of the whole decision is announced', async () => {
+    h.approve.mockResolvedValue({ ok: false, code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE });
+    renderActions();
+    await approveThroughModal();
+    expect((await screen.findByRole('alert')).textContent).toBe(STALE_VIEW_MESSAGE);
+  });
+});
+
+describe("launch fix — the redirect back to the queue is Next's to follow, not a message", () => {
+  // On success approveEditAndGoAction and rejectEditAndGoAction redirect('/approvals').
+  // Next 15.5's client rejects the awaited action with its NEXT_REDIRECT error so
+  // its RedirectBoundary finishes the move; the catch printed that error's
+  // message in red under the buttons until the queue loaded (launch browser suite).
+  let caught: unknown[] = [];
+  class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+    override state = { failed: false };
+    static getDerivedStateFromError() {
+      return { failed: true };
+    }
+    override componentDidCatch(error: unknown) {
+      caught.push(error);
+    }
+    override render() {
+      return this.state.failed ? null : this.props.children;
+    }
+  }
+  function renderInBoundary() {
+    return render(
+      <Boundary>
+        <ApproveRejectActions
+          editId="e1"
+          decisionToken={TOKEN}
+          outcome={{ kind: 'APPLY' }}
+          rejectOutcome={{ kind: 'TO_SALESMAN' }}
+        />
+      </Boundary>
+    );
+  }
+  beforeEach(() => {
+    caught = [];
+    // React reports the error it hands a boundary on console.error.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    ['approve', h.approve, approveThroughModal],
+    ['send back', h.reject, rejectWithReason],
+  ] as const)('%s: the redirect goes on to Next and "NEXT_REDIRECT" is never shown', async (_name, action, decide) => {
+    action.mockRejectedValue(getRedirectError('/approvals', RedirectType.push));
+    renderInBoundary();
+    await decide();
+    await waitFor(() => expect(caught).toHaveLength(1));
+    expect(isRedirectError(caught[0])).toBe(true);
+    expect(screen.queryByText(/NEXT_REDIRECT/)).toBeNull();
+  });
+
+  it.each([
+    ['approve', h.approve, approveThroughModal],
+    ['send back', h.reject, rejectWithReason],
+  ] as const)('%s: any other failure is still shown in place', async (_name, action, decide) => {
+    action.mockRejectedValue(new Error('The server did not answer.'));
+    renderInBoundary();
+    await decide();
+    expect(await screen.findByText('The server did not answer.')).toBeTruthy();
+    expect(caught).toHaveLength(0);
+  });
+});
+
+/** Owner decision 2026-10-08: the Accountant types the Temix code he created the customer under. */
+function typeTemixCode(value: string) {
+  fireEvent.change(screen.getByLabelText('Temix code *'), { target: { value } });
+}
+
 describe('launch fix — "Approve and create" stays on the request, which then shows the new code', () => {
   async function confirm() {
+    typeTemixCode('CAA0367');
     fireEvent.click(screen.getByRole('button', { name: '✓ Approve' }));
     const dialog = screen.getByRole('dialog');
     const buttons = within(dialog).getAllByRole('button');
@@ -162,7 +289,7 @@ describe('launch fix — "Approve and create" stays on the request, which then s
     renderActions({ kind: 'CREATE' });
     await confirm();
     await waitFor(() => expect(h.approveStay).toHaveBeenCalledTimes(1));
-    expect(formOf(h.approveStay)).toEqual({ editId: 'e1', decisionToken: TOKEN });
+    expect(formOf(h.approveStay)).toEqual({ editId: 'e1', decisionToken: TOKEN, temixCode: 'CAA0367' });
     expect(h.approve).not.toHaveBeenCalled();
     await waitFor(() => expect(h.refresh).toHaveBeenCalledTimes(1));
     // Until the refreshed page lands, nothing can be tapped again: a second
@@ -201,6 +328,7 @@ describe('X-APPR-2 — the approve confirmation says what this step does', () =>
 
   it.each(cases)('%j', (outcome, title, message) => {
     renderActions(outcome);
+    if (outcome.kind === 'CREATE') typeTemixCode('CAA0367');
     fireEvent.click(screen.getByRole('button', { name: '✓ Approve' }));
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByRole('heading').textContent).toMatch(title);
@@ -212,6 +340,89 @@ describe('X-APPR-2 — the approve confirmation says what this step does', () =>
       const copy = approveConfirmCopy(outcome);
       expect(/go live/i.test(`${copy.title} ${copy.message}`), JSON.stringify(outcome)).toBe(outcome.kind === 'APPLY');
     }
+  });
+});
+
+describe('owner decision 2026-10-08 — the Temix code at the last step of a new-customer request', () => {
+  function openConfirm() {
+    fireEvent.click(screen.getByRole('button', { name: '✓ Approve' }));
+    return screen.queryByRole('dialog');
+  }
+  async function confirmCreate() {
+    const dialog = openConfirm()!;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Approve and create' }));
+    await waitFor(() => expect(h.approveStay).toHaveBeenCalledTimes(1));
+  }
+
+  it('only the last step of a new-customer request asks for it', () => {
+    renderActions({ kind: 'CREATE' });
+    const box = screen.getByLabelText('Temix code *');
+    expect(box.getAttribute('aria-describedby')).toBe('temix-code-help');
+    expect(screen.getByText('Create the customer in Temix first, then type the code Temix gave it.')).toBeTruthy();
+    for (const outcome of [{ kind: 'APPLY' }, { kind: 'ADVANCE', nextRole: 'ACCOUNTANT' }] as const) {
+      cleanup();
+      renderActions(outcome);
+      expect(screen.queryByLabelText('Temix code *')).toBeNull();
+    }
+  });
+
+  it('without one, Approve says it is needed and asks nothing else', () => {
+    renderActions({ kind: 'CREATE' });
+    expect(openConfirm()).toBeNull();
+    expect(screen.getByText(TEMIX_CODE_REQUIRED_MESSAGE)).toBeTruthy();
+    const box = screen.getByLabelText('Temix code *');
+    expect(box.getAttribute('aria-invalid')).toBe('true');
+    // Read out with the box: the message is one of what describes it.
+    expect(box.getAttribute('aria-describedby')).toBe('temix-code-help temix-code-error');
+    expect(document.getElementById('temix-code-error')!.textContent).toBe(TEMIX_CODE_REQUIRED_MESSAGE);
+    expect(h.approveStay).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['CAA 0367', TEMIX_CODE_SPACES_MESSAGE],
+    ['=CAA0367', TEMIX_CODE_SHAPE_MESSAGE],
+    // The new customer's own NMWC code, or any other code of this CRM.
+    ['nmwc-2026-000123', TEMIX_CODE_CRM_MESSAGE],
+  ])('%j is refused under the box before anything is sent', (typed, message) => {
+    renderActions({ kind: 'CREATE' });
+    typeTemixCode(typed);
+    expect(openConfirm()).toBeNull();
+    expect(screen.getByText(message)).toBeTruthy();
+    // Typing again clears it.
+    typeTemixCode('CAA0367');
+    expect(screen.queryByText(message)).toBeNull();
+  });
+
+  it('the confirmation names the code, and the code is sent as Temix codes are stored', async () => {
+    renderActions({ kind: 'CREATE' });
+    typeTemixCode(' caa\u0660367 ');
+    const dialog = openConfirm()!;
+    expect(dialog.textContent).toMatch(/created in the customer master now, as shown on this page, with Temix code CAA0367\./);
+    await confirmCreate();
+    expect(formOf(h.approveStay)).toEqual({ editId: 'e1', decisionToken: TOKEN, temixCode: 'CAA0367' });
+  });
+
+  it("the server's refusal of the code (a customer has it) is shown under the box, not at the top", async () => {
+    const taken = 'Temix code CAA0367 already belongs to customer NMWC-2026-000012. Check the code in Temix: every customer has its own.';
+    h.approveStay.mockResolvedValue({ ok: false, code: 'TEMIX_CODE_TAKEN', message: taken, fields: { temixCode: taken } });
+    renderActions({ kind: 'CREATE' });
+    typeTemixCode('CAA0367');
+    await confirmCreate();
+    const shown = await screen.findByText(taken);
+    expect(shown.previousElementSibling!.id).toBe('temix-code-help');
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it('every other approval sends no code', async () => {
+    renderActions({ kind: 'ADVANCE', nextRole: 'ACCOUNTANT' });
+    await approveThroughModal();
+    expect(formOf(h.approve)).toEqual({ editId: 'e1', decisionToken: TOKEN });
+  });
+
+  it('the confirmation copy without a code is unchanged for every outcome', () => {
+    expect(approveConfirmCopy({ kind: 'CREATE' }).message).toBe(
+      'This is the final approval: the new customer is created in the customer master now, as shown on this page. This cannot be undone.'
+    );
   });
 });
 
@@ -272,6 +483,7 @@ describe('the bulk queue', () => {
     sla: null,
     escalationLevel: 0,
     isCreate: true,
+    needsTemixCode: false,
     paymentTerms: 'CASH',
     credit: null,
     customer: { legalName: `Shop ${id}`, nmwcCode: 'NEW', completenessScore: 0 },
@@ -308,6 +520,45 @@ describe('the bulk queue', () => {
     expect(card.querySelector('a')!.getAttribute('href')).toBe('/approvals/c1');
     fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
     expect(screen.getByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
+  });
+
+  it('owner decision 2026-10-08: a new customer at its last step has a lock instead of a tick box, and Select all leaves it out', () => {
+    const items = [item('k-last', { needsTemixCode: true }), item('k-sup'), ITEMS[2]!];
+    render(<BulkApprovalQueue items={items} />);
+    expect(screen.queryByLabelText('Select edit for Shop k-last')).toBeNull();
+    const lock = screen.getByRole('img', { name: 'Enter its Temix code: open it to approve' });
+    expect(lock.getAttribute('title')).toBe(TEMIX_CODE_BULK_REFUSED_MESSAGE);
+    const card = lock.closest('li')!;
+    expect(card.textContent).toContain('Shop k-last');
+    expect(card.querySelector('a')!.getAttribute('href')).toBe('/approvals/k-last');
+    // A cash request at the Supervisor step keeps its tick box.
+    expect(screen.getByLabelText('Select edit for Shop k-sup')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'New customers at their last step are approved one at a time: open each card marked with a lock and enter its Temix code.'
+      )
+    ).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+    expect(screen.getByRole('button', { name: '✓ Approve 2' })).toBeTruthy();
+  });
+
+  it("an Accountant's queue — every card at its last step — shows no dead Select all; a credit card there keeps the credit lock", () => {
+    render(
+      <BulkApprovalQueue
+        items={[
+          item('k1', { needsTemixCode: true }),
+          item('c9', { needsTemixCode: true, paymentTerms: 'CREDIT', credit: { limit: '500.000', termDays: 30 } }),
+        ]}
+      />
+    );
+    expect(screen.queryByLabelText('Select up to 50 on this page')).toBeNull();
+    expect(screen.getAllByRole('img', { name: 'Enter its Temix code: open it to approve' })).toHaveLength(1);
+    expect(screen.getAllByRole('img', { name: 'Credit application: open it to decide' })).toHaveLength(1);
+  });
+
+  it('no card at its last step, no Temix note', () => {
+    render(<BulkApprovalQueue items={ITEMS} />);
+    expect(screen.queryByText(/enter its Temix code/)).toBeNull();
   });
 
   it('a page with credit cards says, in words, that they are decided one at a time', () => {
@@ -387,6 +638,43 @@ describe('the bulk queue', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
     expect(await screen.findByText(/1 processed, 1 failed/)).toBeTruthy();
     expect(screen.getByText(new RegExp(STALE_VIEW_MESSAGE.slice(0, 30)))).toBeTruthy();
+  });
+
+  describe('launch browser suite follow-up: what a bulk decision did is read out', () => {
+    const approveBoth = () => {
+      render(<BulkApprovalQueue items={ITEMS} />);
+      fireEvent.click(screen.getByLabelText('Select up to 50 on this page'));
+      fireEvent.click(screen.getByRole('button', { name: '✓ Approve 2' }));
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
+    };
+
+    it('all done: a status', async () => {
+      h.bulkApprove.mockResolvedValue({ ok: true, data: { successes: ['c2', 'u1'], failures: [], notAttempted: [] } });
+      approveBoth();
+      expect((await screen.findByRole('status')).textContent).toBe('2 processed.');
+    });
+
+    it('one failed: an alert, with its message', async () => {
+      h.bulkApprove.mockResolvedValue({
+        ok: true,
+        data: { successes: ['c2'], failures: [{ editId: 'u1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }], notAttempted: [] },
+      });
+      approveBoth();
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toMatch(/^1 processed, 1 failed\./);
+      expect(alert.textContent).toContain(STALE_VIEW_MESSAGE);
+    });
+
+    it('the whole action refused: an alert', async () => {
+      h.bulkApprove.mockResolvedValue({
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        message: BULK_DECISION_LIMIT_MESSAGE,
+        fields: { decisions: BULK_DECISION_LIMIT_MESSAGE },
+      });
+      approveBoth();
+      expect((await screen.findByRole('alert')).textContent).toBe(`Nothing was processed.${BULK_DECISION_LIMIT_MESSAGE}`);
+    });
   });
 
   describe('Select all stops at the bulk limit', () => {

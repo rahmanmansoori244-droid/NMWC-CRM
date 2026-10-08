@@ -659,7 +659,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
             <select
               value={status}
               onChange={(e) => setStatus(e.currentTarget.value)}
-              className="h-full max-w-[9rem] border-0 bg-transparent py-0 pl-0 pr-1 text-sm font-medium text-slate-900 focus:outline-none focus:ring-0"
+              className="h-full max-w-[9rem] border-0 bg-transparent py-0 pl-0 pr-1 text-base font-medium text-slate-900 focus:outline-none focus:ring-0 sm:text-sm"
             >
               <option value="">All</option>
               <option value="ACTIVE">Active</option>
@@ -708,7 +708,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
               onBlur={(e) => setMinScore(clampScore(e.currentTarget.value))}
               placeholder="0"
               aria-label="Minimum completeness score"
-              className="w-12 rounded border-0 bg-transparent p-0 text-sm font-medium text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              className="w-12 rounded border-0 bg-transparent p-0 text-base font-medium text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 sm:text-sm"
             />
             <span className="text-slate-400" aria-hidden="true">
               –
@@ -722,7 +722,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
               onBlur={(e) => setMaxScore(clampScore(e.currentTarget.value))}
               placeholder="100"
               aria-label="Maximum completeness score"
-              className="w-12 rounded border-0 bg-transparent p-0 text-sm font-medium text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              className="w-12 rounded border-0 bg-transparent p-0 text-base font-medium text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 sm:text-sm"
             />
           </div>
 
@@ -777,7 +777,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
         {showMore && (
           <div
             id="customer-more-filters"
-            className="mt-3 grid gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2 lg:grid-cols-4"
+            className="mt-3 grid grid-cols-1 gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2 lg:grid-cols-4"
           >
             <MultiSelectFilter
               label="Sub-channels"
@@ -802,7 +802,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
                   id="cf-supervisor"
                   value={supervisor}
                   onChange={(e) => setSupervisor(e.currentTarget.value)}
-                  className="block h-10 w-full rounded-md border border-slate-300 px-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="block h-10 w-full rounded-md border border-slate-300 px-3 text-base focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500 sm:text-sm"
                 >
                   <option value="">Any supervisor</option>
                   {props.supervisors.map((u) => (
@@ -825,7 +825,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
                   id="cf-salesman"
                   value={salesman}
                   onChange={(e) => setSalesman(e.currentTarget.value)}
-                  className="block h-10 w-full rounded-md border border-slate-300 px-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="block h-10 w-full rounded-md border border-slate-300 px-3 text-base focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500 sm:text-sm"
                 >
                   <option value="">Any salesman</option>
                   {props.salesmen.map((u) => (
@@ -847,7 +847,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
                 id="cf-paymentTerms"
                 value={paymentTerms}
                 onChange={(e) => setPaymentTerms(e.currentTarget.value)}
-                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-base focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500 sm:text-sm"
               >
                 <option value="">All</option>
                 <option value="CASH">Cash</option>
@@ -866,7 +866,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
                 type="date"
                 value={createdAfter}
                 onChange={(e) => setCreatedAfter(e.currentTarget.value)}
-                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-base focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500 sm:text-sm"
               />
             </div>
             <div>
@@ -881,7 +881,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
                 type="date"
                 value={createdBefore}
                 onChange={(e) => setCreatedBefore(e.currentTarget.value)}
-                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-base focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500 sm:text-sm"
               />
             </div>
             <div>
@@ -896,7 +896,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
                 type="date"
                 value={editedAfter}
                 onChange={(e) => setEditedAfter(e.currentTarget.value)}
-                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-base focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500 sm:text-sm"
               />
             </div>
             <div>
@@ -911,7 +911,7 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
                 type="date"
                 value={editedBefore}
                 onChange={(e) => setEditedBefore(e.currentTarget.value)}
-                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                className="block h-10 w-full rounded-md border border-slate-300 px-3 text-base focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500 sm:text-sm"
               />
             </div>
           </div>
@@ -1105,7 +1105,7 @@ function SaveViewModal({
           value={name}
           onChange={(e) => onNameChange(e.currentTarget.value)}
           placeholder="e.g. North Muscat low-completeness"
-          className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
+          className="block w-full rounded-md border border-slate-300 px-3 py-2 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500 sm:text-sm"
           maxLength={60}
         />
         {error && (

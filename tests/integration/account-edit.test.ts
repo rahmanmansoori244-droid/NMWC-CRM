@@ -27,6 +27,9 @@
  *   • his request in review stays with the region it was sent from: a Manager
  *     of his NEW region cannot decide it, another Manager of the old (shared)
  *     region can; a Supervisor-role supervisor change is said;
+ *   • security review: that request, sent back to him after the move, cannot be
+ *     saved or sent again from his new route (it was re-filed there); he
+ *     withdraws it, and the Steward was told so when he moved him;
  *   • a shared region: a salesman moves between its Managers freely;
  *   • a switched-off route or region is refused on the server; region codes
  *     with "_" do not read as a change; a Manager keeps a supervisor an import
@@ -887,6 +890,13 @@ describe.skipIf(!ENABLED)(
       expect(res.ok, JSON.stringify(res)).toBe(true);
       const notes = res.ok ? res.data.notes.join(' ') : '';
       expect(notes).toMatch(/1 request\(s\) in review\. They stay with the same approvers/);
+      // Security review: the one in review is a new customer; sent back after
+      // the move, he cannot send it again from B1, and the Steward is told so.
+      expect(notes).toMatch(
+        new RegExp(
+          `New-customer requests among them \\(1\\): if one is sent back to him, he cannot send it again from his new route — he opens it from Needs correction and withdraws it at the bottom of its page, and the salesman of ${code('A3')} adds the shop afresh\\.`
+        )
+      );
       expect(notes).toMatch(
         /2 new-customer request\(s\) Busy Salesman had started on route .* were withdrawn/
       );
@@ -960,6 +970,63 @@ describe.skipIf(!ENABLED)(
           select: { state: true, pendingRole: true },
         })
       ).toEqual({ state: 'SUBMITTED', pendingRole: 'ACCOUNTANT' });
+    });
+
+    // Security review (launch candidate): that request, sent back to him after
+    // the move, was rebuilt on route B1 when he sent it again, so region B's
+    // approvers decided it and finalize put the shop on B1. Now it is refused,
+    // its drafts stay on A3, and he withdraws it.
+    it('review: his new-customer request sent back after the move cannot be sent again from his new route; he withdraws it', async () => {
+      const edits = await import('@/services/edits');
+      const reject = async () => {
+        const f = new FormData();
+        f.set('editId', create.inReview);
+        f.set('reason', 'The shop photo is blurred, take it again.');
+        f.set('decisionToken', await freshDecisionToken(prisma, create.inReview));
+        return edits.rejectEditAction(f);
+      };
+      const row = () =>
+        prisma.customerEdit.findUniqueOrThrow({
+          where: { id: create.inReview },
+          select: { state: true, branchDrafts: { select: { routeId: true } } },
+        });
+      // Region A's Accountant sends it back a step, and a Manager of A on to him.
+      const accA2 = await prisma.user.findUniqueOrThrow({ where: { username: `acca2.${sfx}` } });
+      as(accA2.id, 'ACCOUNTANT');
+      const toSupervisor = await reject();
+      expect(toSupervisor.ok, JSON.stringify(toSupervisor)).toBe(true);
+      as(ids.mS, 'MANAGER');
+      const toHim = await reject();
+      expect(toHim.ok, JSON.stringify(toHim)).toBe(true);
+      expect(await row()).toEqual({
+        state: 'NEEDS_CORRECTION',
+        branchDrafts: [{ routeId: ids.A3 }],
+      });
+      expect((await user(ids.busy)).ownedRouteId).toBe(ids.B1);
+
+      // Sent again, or saved as a draft, from route B1: refused, and nothing moves.
+      for (const isDraft of [false, true]) {
+        const res = await newCustomer(1, isDraft, create.inReview);
+        expect(res, JSON.stringify(res)).toMatchObject({ ok: false, code: 'EDIT_LOCKED' });
+        expect(res.ok ? '' : res.message).toMatch(
+          new RegExp(`started on route ${code('A3')}, and you now work route ${code('B1')}`)
+        );
+      }
+      expect(await row()).toEqual({
+        state: 'NEEDS_CORRECTION',
+        branchDrafts: [{ routeId: ids.A3 }],
+      });
+      expect(
+        await prisma.editBranchDraft.count({
+          where: { routeId: ids.B1, edit: { submittedById: ids.busy } },
+        })
+      ).toBe(0);
+
+      // Withdraw still works from Needs correction, so he is not stuck with it.
+      const creates = await import('@/services/creates');
+      const gone = await creates.withdrawCreateAction({ editId: create.inReview });
+      expect(gone, JSON.stringify(gone)).toMatchObject({ ok: true });
+      expect((await row()).state).toBe('REJECTED');
     });
 
     it('review: a shared region — a salesman moves between its two Managers, and the first may then give the region up', async () => {

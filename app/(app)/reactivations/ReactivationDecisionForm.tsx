@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useId, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { approveReactivationAction, rejectReactivationAction } from '@/services/reactivations';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
@@ -13,6 +13,9 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
   const [err, setErr] = useState<string | null>(null);
   // B-14: replace window.confirm() with the accessible modal.
   const [confirmingApprove, setConfirmingApprove] = useState(false);
+  // The reason box had only a placeholder: no name for a screen reader once
+  // typing hid it, and a refusal was plain text, never read out.
+  const uid = useId();
 
   function approve() {
     setConfirmingApprove(false);
@@ -59,7 +62,11 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
 
   return (
     <div className="flex flex-col items-end gap-2">
-      {err && <p className="text-xs font-medium text-red-600">{err}</p>}
+      {err && (
+        <p role="alert" className="text-xs font-medium text-red-600">
+          {err}
+        </p>
+      )}
       {!showReject ? (
         <div className="flex gap-2">
           <button
@@ -81,7 +88,11 @@ export function ReactivationDecisionForm({ editId }: { editId: string }) {
         </div>
       ) : (
         <form onSubmit={reject} className="flex flex-col items-end gap-2">
+          <label htmlFor={`${uid}-reason`} className="sr-only">
+            Reason for keeping it closed
+          </label>
           <textarea
+            id={`${uid}-reason`}
             name="reason"
             rows={2}
             minLength={5}

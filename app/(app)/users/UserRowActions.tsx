@@ -58,9 +58,12 @@ export function UsersFeedback({
 }
 
 /** A refusal's words: the field messages when there are any (a ValidationError's
- * message is only "Validation failed"), else the message. */
+ * message is only "Validation failed"), else the message. Each sentence once: a
+ * reused password is refused on `password` and `newPassword` alike
+ * (lib/password-policy.ts, for the two forms that each show one), and joined
+ * whole it read twice. */
 function refusalText(res: { message: string; fields?: Record<string, string> }): string {
-  return res.fields ? Object.values(res.fields).join(' ') : res.message;
+  return res.fields ? [...new Set(Object.values(res.fields))].join(' ') : res.message;
 }
 
 export function UserRowActions({
@@ -274,6 +277,7 @@ export function UserRowActions({
               type={showResetPassword ? 'text' : 'password'}
               name="password"
               autoComplete="new-password"
+              aria-label={`New password for ${username}`}
               placeholder="New password (12+ chars)"
               minLength={12}
               required
@@ -284,6 +288,7 @@ export function UserRowActions({
               type={showResetPassword ? 'text' : 'password'}
               name="confirmPassword"
               autoComplete="new-password"
+              aria-label={`Confirm new password for ${username}`}
               placeholder="Confirm new password"
               required
               {...AS_TYPED}

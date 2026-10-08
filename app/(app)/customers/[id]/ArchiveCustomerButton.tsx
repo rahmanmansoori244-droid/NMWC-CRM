@@ -77,7 +77,11 @@ export function ArchiveCustomerButton({
                 className="mt-1 block w-full rounded-md border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
               />
             </label>
-            {error && <p className="mt-2 text-xs font-medium text-red-600">{error}</p>}
+            {error && (
+              <p role="alert" className="mt-2 text-xs font-medium text-red-600">
+                {error}
+              </p>
+            )}
             <div className="mt-5 flex items-center justify-end gap-2">
               <button
                 type="button"

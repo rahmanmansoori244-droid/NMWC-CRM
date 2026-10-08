@@ -4,9 +4,17 @@
  * The CRM aids Temix, never replaces it (owner-locked): approved master data
  * queues per-customer (temixSyncState) and a Steward carries it to Temix as an
  * Excel workbook. There is NO live API in v1 — the contract is
- * at-least-once-with-dedup: Temix upserts on the customer code, so re-sending
- * an unchanged row is a no-op, and every batch is regenerable from its
- * TemixSyncBatch.customerIds snapshot.
+ * at-least-once-with-dedup: each row is an upsert of one Temix customer, so
+ * re-sending an unchanged row is a no-op, and every batch is regenerable from
+ * its TemixSyncBatch.customerIds snapshot. Which Temix customer: the one whose
+ * code is the row's `temix_code`, when it has one (a migrated customer, one
+ * the Accountant created in Temix before he approved it, owner decision
+ * 2026-10-08, or one whose code a refresh recorded); otherwise the row is a
+ * customer Temix does not have yet, known by its `cust_code`. Whether the
+ * Steward's load into Temix keys on those columns that way is NOT confirmed
+ * (Q-temix-headers, docs/handover/04-PENDING-WORK.md A7): if it keyed every
+ * row on cust_code, a new customer's first row would make a second Temix
+ * record beside the one the Accountant made.
  *
  * Pure decision logic + row shaping live here (unit-tested); the Steward
  * actions live in services/temix.ts.
@@ -65,15 +73,23 @@ export type TemixExportRow = Record<string, string | number>;
  *
  * - UPSERT lane (live customers): one row per LIVE branch, mirroring the
  *   existing customer-master export contract so the sheet stays re-importable
- *   (services/exports.ts columns) + the sync columns. `temix_code` blank =
- *   "create in Temix" — Temix assigns the real ERP code, which returns via
- *   the inbound refresh.
+ *   (services/exports.ts columns) + the sync columns. A row with a
+ *   `temix_code` updates that Temix record. Since owner decision 2026-10-08 a
+ *   new customer has one from its last approval: the Accountant created it in
+ *   Temix and typed the code (lib/create-finalize.ts), so its first row here
+ *   fills in the record he made rather than creating a second one. `temix_code`
+ *   blank = "create in Temix", as before, for a customer with no Temix code on
+ *   record (created in the app before that decision, or imported without one);
+ *   for one created in the app, the inbound refresh records the code Temix
+ *   assigns (services/imports.ts, the backup match).
  * - DEACTIVATE lane (soft-deleted customers): one row per CUSTOMER with blank
  *   branch fields — Temix only needs the code + the action.
  *
  * NOTE (Q-temix-headers, open): the exact header row Temix's importer accepts
  * is still unconfirmed — these are the CRM's export-contract names; remap
- * once the owner supplies the authoritative Temix template.
+ * once the owner supplies the authoritative Temix template. So is the column
+ * an UPSERT row is matched on in Temix (the module header): a row that carries
+ * a temix_code must be loaded as an update of that Temix customer.
  */
 export function buildTemixRows(
   customers: TemixExportCustomer[],

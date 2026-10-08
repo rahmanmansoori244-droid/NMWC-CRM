@@ -46,7 +46,8 @@ export default async function RejectedPage() {
         {items.length === 0 ? (
           <EmptyState title="Nothing to correct" description="Nothing you sent is waiting on you." />
         ) : (
-          <ul className="grid gap-3">
+          // grid-cols-1: one column no wider than the phone, whatever a card holds.
+          <ul className="grid grid-cols-1 gap-3">
             {items.map((e) => (
               <li key={e.id} className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200 hover:shadow-md">
                 <Link

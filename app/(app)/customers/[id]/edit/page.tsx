@@ -15,6 +15,7 @@ import { omanWhen } from '@/lib/submission';
 import { openReturnedIds } from '@/lib/returned-work';
 import { returnedPrefill } from './returned';
 import { ClearReturned } from '../../../rejected/ClearReturned';
+import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 
 export const metadata = { title: 'Enrich · NMWC' };
 // UXI-005: never serve a stale cached form. Without this, hitting Back after
@@ -101,13 +102,18 @@ export default async function EditCustomerPage({
     redirect(`/customers/${customer.id}`);
   }
   // Salesman scope check
+  let routeOff = false;
   if (session.user.role === Role.SALESMAN) {
     const me = await prisma.user.findUniqueOrThrow({
       where: { id: session.user.id },
-      select: { ownedRouteId: true },
+      select: { ownedRouteId: true, ownedRoute: { select: { isActive: true } } },
     });
     const onMyRoute = customer.branches.some((b) => b.routeId === me.ownedRouteId);
     if (!onMyRoute) redirect(`/customers/${customer.id}`);
+    // Launch review: his route switched off refuses the submit
+    // (services/edits.ts) and his photo attach and Remove (services/photos.ts);
+    // say so before he fills the form, and lock the photo slots. A draft still saves.
+    routeOff = me.ownedRoute?.isActive === false;
   }
 
   // RBAC-05-022: filter the branches array to the caller's scope BEFORE
@@ -200,6 +206,13 @@ export default async function EditCustomerPage({
         }
       />
 
+      {routeOff && (
+        <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
+          {ROUTE_INACTIVE_MESSAGE} You can save a draft, but you cannot add or remove photos or
+          submit until the route is active again.
+        </div>
+      )}
+
       {returnedId && returnedEdit && (
         <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 [overflow-wrap:anywhere] sm:mx-6">
           <p>
@@ -266,7 +279,9 @@ export default async function EditCustomerPage({
         lockName={lockName}
         lockCr={lockCr}
         userRole={session.user.role}
-        canSubmit={!pending}
+        canSubmit={!pending && !routeOff}
+        submitHeldTitle={routeOff ? ROUTE_INACTIVE_MESSAGE : undefined}
+        photosHeld={routeOff}
         // A reactivation replaces the draft too, when it turns the customer
         // ACTIVE (item 22 review) — the rule lives in the helper.
         pendingReplacesDraft={pendingReplacesDraft(pending ? requestKindOf(pending) : null, customer.status)}

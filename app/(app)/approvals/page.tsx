@@ -4,12 +4,14 @@ import { prisma } from '@/lib/db';
 import { Role, type Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { EmptyState } from '@/components/nmwc/EmptyState';
+import { NoRegionNotice } from '@/components/nmwc/NoRegionNotice';
 import { loadScope } from '@/lib/access';
 import { managerQueueWhere } from '@/lib/manager-queue';
 import { formatSlaStatus } from '@/lib/working-hours';
 import { countFieldChanges, hasManualGps } from '@/lib/gps-manual';
 import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
 import { draftScores } from '@/lib/create-score';
+import { isFinalStep, parseChain } from '@/lib/approval-chains';
 import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
 
 export const metadata = { title: 'Approvals · NMWC' };
@@ -55,6 +57,9 @@ export default async function ApprovalsPage() {
   ];
   const role = session.user.role;
   let where: Prisma.CustomerEditWhereInput;
+  // A region-scoped approver (Manager, Accountant) with no region: nothing can
+  // ever reach him, so the page says why instead of "Nothing pending".
+  let noRegion = false;
   if (role === Role.SUPERVISOR) {
     where = {
       state: 'SUBMITTED',
@@ -69,6 +74,7 @@ export default async function ApprovalsPage() {
     if (scope.managedRegionIds.length === 0) {
       // RBAC-05-003 / RBAC-05-012: fail-closed empty queue.
       where = { state: 'SUBMITTED', id: '__none__' };
+      noRegion = true;
     } else if (role === Role.MANAGER) {
       // Owner decision 3 (2026-10-07): lib/manager-queue.ts.
       where = await managerQueueWhere(prisma, scope.managedRegionIds, supervisorStepOr);
@@ -114,6 +120,9 @@ export default async function ApprovalsPage() {
       cycle: true,
       currentStepIndex: true,
       stageEnteredAt: true,
+      // Owner decision 2026-10-08: whether a new-customer request is at its last
+      // step, where it needs its Temix code and cannot be bulk-approved.
+      approvalChain: true,
       // X-APPR-1: a credit application's figures are on its card, and bound
       // into its token, so a bulk decision is made on the numbers shown.
       requestedCreditLimit: true,
@@ -209,6 +218,7 @@ export default async function ApprovalsPage() {
       changesCount,
       manualGps: hasManualGps(e.fieldChanges),
       isCreate,
+      needsTemixCode: isCreate && isFinalStep(parseChain(e.approvalChain), e.currentStepIndex),
       paymentTerms,
       // The same formatter the token uses: the figures bound are the figures shown.
       credit:
@@ -251,7 +261,15 @@ export default async function ApprovalsPage() {
       />
 
       <div className="pt-4 sm:pt-6">
-        {items.length === 0 ? (
+        {noRegion ? (
+          // Launch browser suite (2026-10-07): it read "Nothing pending", which an
+          // Accountant takes for a quiet day. FINANCE_MANAGER and GM are org-wide
+          // (lib/permissions.ts canActOnStep GLOBAL) and never see this. The header
+          // line still reads "0 pending": true, and the browser suite reads it.
+          <div className="px-4 sm:px-6">
+            <NoRegionNotice requests="approval requests" />
+          </div>
+        ) : items.length === 0 ? (
           <div className="px-4 sm:px-6">
             <EmptyState
               title="Nothing pending"

@@ -55,6 +55,16 @@ export const PHOTO_TARGET_CHANGED_MESSAGE =
 export const PHOTO_GONE_MESSAGE = 'This photo was already removed.';
 
 /**
+ * The Remove refusal, to the salesman, of a photo of his own new-customer
+ * request while the request is with the approvers (SUBMITTED): removed, the
+ * approvers were left reviewing a removed photo (launch browser suite). He may
+ * still remove one while the request is a draft or sent back to him; the
+ * approvers and the Steward are not refused.
+ */
+export const PHOTO_IN_REVIEW_MESSAGE =
+  'This photo is on your new-customer request, which is with the approvers, so it cannot be removed now. If it must change, ask them to send the request back.';
+
+/**
  * Presign and finalize's refusal of a role that cannot attach a photo, or of a
  * GUARANTEE document from anyone but a salesman (ENH-3; lib/permissions.ts
  * canUploadPhoto). No screen offers a photo slot to those roles or that kind,

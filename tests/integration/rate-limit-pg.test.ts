@@ -91,6 +91,33 @@ describe.skipIf(!ENABLED)('checkLimitPg — durable Postgres token bucket', () =
     expect(later.retryAfterSec).toBeLessThanOrEqual(Math.ceil(2 / cfg.refillPerSec));
   });
 
+  // Launch browser suite: PhotoCaptureSlot waits out a presign 429 of up to
+  // RATE_LIMIT_MAX_WAIT_S, counting down, then tries again by itself. That
+  // was 30 s, under every wait an empty photo bucket asks for, so the
+  // countdown never ran.
+  it('an empty photo bucket asks for 31–60 s, which the photo slot waits out, and the try after it is granted', async () => {
+    const { PHOTO_LIMIT } = await import('@/lib/rate-limit');
+    const { RATE_LIMIT_MAX_WAIT_S } = await import('@/components/nmwc/PhotoCaptureSlot');
+    // As the launch suite's drainLimit leaves it: no token, refilled just now
+    // (by the database's clock).
+    await prisma.$executeRaw`
+      INSERT INTO "RateLimit" ("key", "tokens", "lastRefill", "updatedAt") VALUES (${key}, 0, NOW(), NOW())`;
+    const refused = await checkLimit(key, PHOTO_LIMIT);
+    expect(refused.ok).toBe(false);
+    expect(refused.retryAfterSec).toBeGreaterThan(30);
+    expect(refused.retryAfterSec).toBeLessThanOrEqual(RATE_LIMIT_MAX_WAIT_S);
+    // The slot's wait, on the database's clock: what was asked, not one refill.
+    const waited = async (s: number) =>
+      prisma.$executeRaw`
+        UPDATE "RateLimit" SET "lastRefill" = "lastRefill" - make_interval(secs => ${s}::float8)
+        WHERE "key" = ${key}`;
+    await waited(30);
+    expect((await checkLimit(key, PHOTO_LIMIT)).ok, 'a try after one refill is refused again').toBe(false);
+    const again = await checkLimit(key, PHOTO_LIMIT);
+    await waited(again.retryAfterSec);
+    expect((await checkLimit(key, PHOTO_LIMIT)).ok).toBe(true);
+  });
+
   // X-AUTH-2: refundLimit, which authorize() calls on the per-network login
   // bucket when a sign-in succeeds.
   it('a refund gives back exactly one token', async () => {

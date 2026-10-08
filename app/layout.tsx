@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
+import { TransitionWatchdog } from '@/components/nmwc/TransitionWatchdog';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -24,6 +25,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en" className="h-full" data-nonce={nonce ?? undefined}>
       <body className="h-full bg-slate-50 font-sans text-slate-900 antialiased">
         {children}
+        {/* Launch fix 2026-10-08: wakes a client navigation or refresh that React
+            parked and forgot (Next 15.5's React drops that ping) — see the file. */}
+        <TransitionWatchdog />
       </body>
     </html>
   );

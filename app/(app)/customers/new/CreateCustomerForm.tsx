@@ -33,7 +33,7 @@ import {
 } from '@/lib/submission';
 import { SubmitNoticeBox } from '@/components/nmwc/SubmitNoticeBox';
 import { hardReplace } from '@/lib/navigate';
-import { LabeledField as Field } from '@/components/nmwc/LabeledField';
+import { LabeledField as Field, errorTiedTo, groupNamedBy } from '@/components/nmwc/LabeledField';
 import { typedNumber } from '@/lib/digits';
 import { onSignOut } from '@/lib/device-drafts';
 
@@ -170,10 +170,17 @@ export function CreateCustomerForm({
   channels,
   initial,
   sessionUserId,
+  startedOnOtherRoute = false,
 }: {
   channels: ChannelWithSubs[];
   initial: CreateFormInitial | null;
   sessionUserId: string;
+  /**
+   * A draft or sent-back request started on a route he no longer works:
+   * services/creates.ts refuses to save or send it, so it is shown read-only.
+   * The page says why above the form and offers Withdraw below it.
+   */
+  startedOnOtherRoute?: boolean;
 }) {
   // UAT-07: one id prefix per form instance, so the labels on the inline
   // selects can point at their controls. Branch rows append their own key.
@@ -222,9 +229,10 @@ export function CreateCustomerForm({
   }, []);
 
   // A SUBMITTED request is read-only for the salesman until it is decided; a
-  // withdrawn one (launch fix: REJECTED, services/creates.ts) for good.
+  // withdrawn one (launch fix: REJECTED, services/creates.ts) for good; and one
+  // started on a route he has left, which he can only withdraw.
   const closed = initial?.state === 'REJECTED';
-  const readOnly = initial?.state === 'SUBMITTED' || closed;
+  const readOnly = initial?.state === 'SUBMITTED' || closed || startedOnOtherRoute;
 
   const ic = initial?.customer;
   const [legalName, setLegalName] = useState(ic?.legalName ?? '');
@@ -697,7 +705,7 @@ export function CreateCustomerForm({
           This request was withdrawn and is closed. Start a new request if the shop still needs adding.
         </div>
       )}
-      {readOnly && !closed && (
+      {initial?.state === 'SUBMITTED' && (
         <div className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 ring-1 ring-sky-200">
           This request is in review — current step:{' '}
           <strong>{initial?.pendingRole?.replace('_', ' ') ?? '…'}</strong>. You will be notified
@@ -764,12 +772,14 @@ export function CreateCustomerForm({
             disabled={readOnly}
             maxLength={50}
           />
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">
+          <div {...groupNamedBy(`${uid}-crphoto`, errors['customer.crPhoto'])}>
+            <p id={`${uid}-crphoto`} className="mb-1 block text-sm font-medium text-slate-700">
               CR document photo *
-            </label>
+            </p>
             {errors['customer.crPhoto'] && (
-              <p className="mb-1 text-xs font-medium text-red-600">{errors['customer.crPhoto']}</p>
+              <p id={`${uid}-crphoto-error`} className="mb-1 text-xs font-medium text-red-600">
+                {errors['customer.crPhoto']}
+              </p>
             )}
             <div className="w-48">
               <PhotoCaptureSlot
@@ -813,6 +823,7 @@ export function CreateCustomerForm({
                 setSubChannelId('');
               }}
               disabled={readOnly}
+              {...errorTiedTo(`${uid}-channel`, errors['customer.channelId'])}
               className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm disabled:bg-slate-100"
             >
               <option value="">— Pick a channel —</option>
@@ -823,7 +834,7 @@ export function CreateCustomerForm({
               ))}
             </select>
             {errors['customer.channelId'] && (
-              <p className="mt-0.5 text-xs font-medium text-red-600">
+              <p id={`${uid}-channel-error`} className="mt-0.5 text-xs font-medium text-red-600">
                 {errors['customer.channelId']}
               </p>
             )}
@@ -835,6 +846,7 @@ export function CreateCustomerForm({
               value={subChannelId}
               onChange={(e) => setSubChannelId(e.currentTarget.value)}
               disabled={!channelId || readOnly}
+              {...errorTiedTo(`${uid}-subchannel`, errors['customer.subChannelId'])}
               className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm disabled:bg-slate-100"
             >
               <option value="">— Pick a sub-channel —</option>
@@ -845,7 +857,7 @@ export function CreateCustomerForm({
               ))}
             </select>
             {errors['customer.subChannelId'] && (
-              <p className="mt-0.5 text-xs font-medium text-red-600">
+              <p id={`${uid}-subchannel-error`} className="mt-0.5 text-xs font-medium text-red-600">
                 {errors['customer.subChannelId']}
               </p>
             )}
@@ -922,12 +934,14 @@ export function CreateCustomerForm({
               inputMode="numeric"
             />
           </div>
-          <div className="mt-3">
-            <label className="mb-1 block text-sm font-medium text-slate-700">
+          <div className="mt-3" {...groupNamedBy(`${uid}-guarantee`, errors['guarantee'])}>
+            <p id={`${uid}-guarantee`} className="mb-1 block text-sm font-medium text-slate-700">
               Guarantee / security documents * (at least one)
-            </label>
+            </p>
             {errors['guarantee'] && (
-              <p className="mb-1 text-xs font-medium text-red-600">{errors['guarantee']}</p>
+              <p id={`${uid}-guarantee-error`} className="mb-1 text-xs font-medium text-red-600">
+                {errors['guarantee']}
+              </p>
             )}
             <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
               {guaranteeIds.map((gid) => (
@@ -1018,12 +1032,12 @@ export function CreateCustomerForm({
               />
             </div>
 
-            <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700">
+            <div {...groupNamedBy(`${uid}-gps-${idx}`, errors[`branch.${idx}.gps`])}>
+              <p id={`${uid}-gps-${idx}`} className="mb-1 block text-sm font-medium text-slate-700">
                 Location * (required to submit)
-              </label>
+              </p>
               {errors[`branch.${idx}.gps`] && (
-                <p className="mb-1 text-xs font-medium text-red-600">
+                <p id={`${uid}-gps-${idx}-error`} className="mb-1 text-xs font-medium text-red-600">
                   {errors[`branch.${idx}.gps`]}
                 </p>
               )}
@@ -1056,6 +1070,7 @@ export function CreateCustomerForm({
                     setBranch(s.key, { dayOfVisit: e.currentTarget.value as DayOfWeek | '' })
                   }
                   disabled={readOnly}
+                  {...errorTiedTo(`${uid}-day-${idx}`, errors[`branch.${idx}.dayOfVisit`])}
                   className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm disabled:bg-slate-100"
                 >
                   <option value="">—</option>
@@ -1066,7 +1081,7 @@ export function CreateCustomerForm({
                   ))}
                 </select>
                 {errors[`branch.${idx}.dayOfVisit`] && (
-                  <p className="mt-0.5 text-xs font-medium text-red-600">
+                  <p id={`${uid}-day-${idx}-error`} className="mt-0.5 text-xs font-medium text-red-600">
                     {errors[`branch.${idx}.dayOfVisit`]}
                   </p>
                 )}
@@ -1091,10 +1106,13 @@ export function CreateCustomerForm({
               />
             </div>
 
-            <div>
-              <label className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500">
+            <div {...groupNamedBy(`${uid}-equipment-${idx}`)}>
+              <p
+                id={`${uid}-equipment-${idx}`}
+                className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500"
+              >
                 Equipment at the shop
-              </label>
+              </p>
               <div className="grid gap-2 lg:grid-cols-3">
                 <StepperInput
                   name={`coolers-${s.key}`}
@@ -1121,15 +1139,23 @@ export function CreateCustomerForm({
               </div>
             </div>
 
-            <div>
-              <label className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500">
+            <div
+              {...groupNamedBy(
+                `${uid}-photos-${idx}`,
+                errors[`branch.${idx}.shopPhoto`] ?? errors[`branch.${idx}.signboardPhoto`]
+              )}
+            >
+              <p
+                id={`${uid}-photos-${idx}`}
+                className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500"
+              >
                 Photos
-              </label>
+              </p>
               <p className="mb-2 text-xs text-slate-500">
                 Required: shop front, signboard. Up to 2 extra photos optional.
               </p>
               {(errors[`branch.${idx}.shopPhoto`] || errors[`branch.${idx}.signboardPhoto`]) && (
-                <p className="mb-1 text-xs font-medium text-red-600">
+                <p id={`${uid}-photos-${idx}-error`} className="mb-1 text-xs font-medium text-red-600">
                   {errors[`branch.${idx}.shopPhoto`] ?? errors[`branch.${idx}.signboardPhoto`]}
                 </p>
               )}

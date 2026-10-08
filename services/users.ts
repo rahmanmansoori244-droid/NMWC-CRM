@@ -937,15 +937,18 @@ async function updateUserRoleCore(formData: FormData) {
  *     from — or org-wide, never from the salesman's route. The one exception is
  *     a SUPERVISOR-role supervisor, whose Supervisor step follows the salesman's
  *     current supervisorId (supervisorStepNotes), with the region's Managers
- *     able to decide it either way;
+ *     able to decide it either way. A new-customer request among them that is
+ *     sent back after the move cannot be sent again from his new route
+ *     (services/creates.ts refuses it): he withdraws it, and the Steward is
+ *     told so (inReviewCreates);
  *   - sent-back updates stay his; one on a customer he can no longer open he
  *     clears on Needs correction;
- *   - new-customer requests not in review (drafts, or sent back) would be filed
- *     under his NEW route when sent again (services/creates.ts builds every
- *     branch draft from the route he has then). So the change is refused while
- *     he has any started on another route (strandedCreatesIssue), unless the
- *     Steward ticks `withdrawCreates`: they are then withdrawn in the same
- *     transaction, as he could withdraw them himself (withdrawCreateAction).
+ *   - new-customer requests not in review (drafts, or sent back) cannot be sent
+ *     again from his NEW route (services/creates.ts refuses one started on
+ *     another route). So the change is refused while he has any started on
+ *     another route (strandedCreatesIssue), unless the Steward ticks
+ *     `withdrawCreates`: they are then withdrawn in the same transaction, as he
+ *     could withdraw them himself (withdrawCreateAction).
  */
 const editAccountSchema = z.object({
   userId: z.string().cuid(),
@@ -1100,10 +1103,10 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
 
   // His new-customer requests that are not in review and were started on
   // another route than the one he now gets (none, for a role with no route):
-  // sent again, they would be filed under the new route (services/creates.ts).
-  // Refused, unless the Steward withdraws them with this change. A disabled
-  // account sends nothing again, and its drafts hold no shop
-  // (lib/create-guards.ts), so his are left as they are.
+  // services/creates.ts would refuse to send them again, so he could only
+  // withdraw them. Refused, unless the Steward withdraws them with this
+  // change. A disabled account sends nothing again, and its drafts hold no
+  // shop (lib/create-guards.ts), so his are left as they are.
   const strandedCreates =
     target.isActive && routeChanged
       ? await prisma.customerEdit.findMany({
@@ -1285,10 +1288,29 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
   if (handover && route) notes.push(...(await handOverNotes(handover, route.code, retired)));
   if (routeChanged && (target.ownedRoute || strandedCreates.length > 0)) {
     const withdrawn = new Set(strandedCreates.map((e) => e.id));
-    const [inReview, sentBackIds] = await Promise.all([
+    const [inReview, inReviewCreates, sentBackIds] = await Promise.all([
       prisma.customerEdit.count({
         where: { submittedById: target.id, state: EditState.SUBMITTED },
       }),
+      // Security review: in review, a new customer stays with its route's
+      // approvers; sent back after the move, he cannot send it again. The
+      // routes they were started on are named: not always the one he leaves.
+      route
+        ? prisma.customerEdit.findMany({
+            where: {
+              submittedById: target.id,
+              process: EditProcess.CREATE,
+              state: EditState.SUBMITTED,
+              branchDrafts: { some: { routeId: { not: route.id } } },
+            },
+            select: {
+              branchDrafts: {
+                where: { routeId: { not: route.id } },
+                select: { route: { select: { code: true } } },
+              },
+            },
+          })
+        : [],
       openReturnedIds(prisma, target.id),
     ]);
     notes.push(
@@ -1296,8 +1318,15 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
         who: target.fullName,
         fromRoute: target.ownedRoute?.code ?? strandedFrom.join(', '),
         inReview,
+        inReviewCreates: {
+          count: inReviewCreates.length,
+          routes: [
+            ...new Set(inReviewCreates.flatMap((e) => e.branchDrafts.map((b) => b.route.code))),
+          ].sort(compareCodes),
+        },
         sentBack: sentBackIds.filter((id) => !withdrawn.has(id)).length,
         withdrawn: withdrawn.size,
+        withdrawnRoutes: strandedFrom,
         leaver: !route,
       })
     );
@@ -1355,7 +1384,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
             reviewedById: me.id,
             reviewedAt: now,
             decisionReason: route
-              ? `Withdrawn by the Data Steward when your route changed to ${route.code}: sent again, it would have been filed under that route. The salesman of the shop's route adds it afresh.`
+              ? `Withdrawn by the Data Steward when your route changed to ${route.code}: it could not be sent again from that route. The salesman of the shop's route adds it afresh.`
               : 'Withdrawn by the Data Steward when your role changed: it can no longer be sent. The salesman of the shop’s route adds it afresh.',
             decisionCategory: 'withdrawn',
           },

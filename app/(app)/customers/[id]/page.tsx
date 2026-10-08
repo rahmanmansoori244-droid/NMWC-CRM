@@ -16,6 +16,7 @@ import { activityLine } from './activity';
 import { openReturnedIds } from '@/lib/returned-work';
 import { omanWhen } from '@/lib/submission';
 import { ArchiveCustomerButton } from './ArchiveCustomerButton';
+import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil } from 'lucide-react';
 
 export const metadata = { title: 'Customer · NMWC' };
@@ -232,9 +233,15 @@ export default async function CustomerProfilePage({
                 </div>
                 <div className="mt-3 flex items-center justify-between gap-2">
                   <StatusBadge status={b.status} />
-                  {/* QA-008/009 — branch-level close/reactivation buttons (Salesman only) */}
+                  {/* QA-008/009 — branch-level close/reactivation buttons (Salesman only).
+                      His branches are on his own route; switched off, it takes
+                      no close or reactivation (services/reactivations.ts). */}
                   {session.user.role === Role.SALESMAN && (
-                    <BranchStatusActions branchId={b.id} status={b.status} />
+                    <BranchStatusActions
+                      branchId={b.id}
+                      status={b.status}
+                      blocked={b.route.isActive === false ? ROUTE_INACTIVE_MESSAGE : undefined}
+                    />
                   )}
                 </div>
               </article>

@@ -67,9 +67,11 @@ import {
   PHOTO_CHANGED_MESSAGE,
   PHOTO_CONFLICT_MESSAGE,
   PHOTO_GONE_MESSAGE,
+  PHOTO_IN_REVIEW_MESSAGE,
   PHOTO_TARGET_CHANGED_MESSAGE,
 } from '@/lib/photo-attach';
 import { CR_DOCUMENT_LOCKED_MESSAGE, PHOTO_WRITER_ROLES } from '@/lib/permissions';
+import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 
 const HOST = 'nmwc.example';
 async function call(handler: (req: NextRequest) => Promise<Response>, name: string, body: unknown) {
@@ -123,6 +125,10 @@ const customer = (over: Record<string, unknown> = {}) => ({
   branches: [{ id: B1, routeId: 'r1', regionId: 'g1', deletedAt: null }],
   ...over,
 });
+
+/** The customer row locks taken (lib/locks.ts), by the SQL each sent. */
+const customerLocks = () =>
+  db.$queryRaw.mock.calls.filter(([sql]) => (sql as TemplateStringsArray).join('?').includes('"Customer" '));
 
 const wrote = () =>
   db.$transaction.mock.calls.length +
@@ -832,8 +838,71 @@ describe('Remove of CREATE-draft photos preserves its existing scope and no-cust
       expect(db.attachment.updateMany).toHaveBeenCalledOnce();
       expect(audit.writeAudit).toHaveBeenCalledOnce();
     }
-    expect(db.$queryRaw).not.toHaveBeenCalled();
+    // No customer lock: the request has no customer yet. (A salesman's Remove
+    // locks the request's own row: see the next describe.)
+    expect(customerLocks()).toEqual([]);
     expect(db.customer.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+// Launch browser suite: a salesman removed a photo of his own new-customer
+// request while it was with the approvers (SUBMITTED); it got deletedAt, and the
+// approvers then reviewed a removed photo. A draft's or a sent-back request's
+// photo he may still remove; the approvers and the Steward are not refused.
+describe("Remove of a photo on his new-customer request that is with the approvers", () => {
+  const EDIT = 'ckedit00000000000000000001';
+  let state = 'SUBMITTED';
+  beforeEach(() => {
+    state = 'SUBMITTED';
+    s.scope = { ownedRouteId: 'r1', teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.attachment.findFirst.mockResolvedValue(photo({ editId: EDIT }));
+    db.customerEdit.findUnique.mockResolvedValue({
+      customerId: null,
+      branchDrafts: [{ routeId: 'r1', route: { regionId: 'g1' } }],
+    });
+    db.$queryRaw.mockImplementation(async (sql: TemplateStringsArray) =>
+      sql.join('?').includes('"CustomerEdit"') ? [{ state }] : []
+    );
+  });
+  const requestLocks = () =>
+    db.$queryRaw.mock.calls.filter(([sql]) => (sql as TemplateStringsArray).join('?').includes('"CustomerEdit"'));
+
+  it('the salesman is refused, with what to do, and nothing is removed', async () => {
+    expect(await detach({ attachmentId: ATT })).toEqual({
+      ok: false,
+      code: 'FORBIDDEN',
+      message: PHOTO_IN_REVIEW_MESSAGE,
+    });
+    expect(PHOTO_IN_REVIEW_MESSAGE).toMatch(/send the request back/);
+    expect(db.attachment.updateMany).not.toHaveBeenCalled();
+    expect(audit.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("the request's row is read locked, under the transaction, before the soft-delete", async () => {
+    state = 'DRAFT';
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    const locks = requestLocks();
+    expect(locks).toHaveLength(1);
+    const [sql, id] = locks[0] as [TemplateStringsArray, string];
+    expect(sql.join('?')).toMatch(/FOR UPDATE$/);
+    expect(id).toBe(EDIT);
+    const lockAt = db.$queryRaw.mock.invocationCallOrder[db.$queryRaw.mock.calls.indexOf(locks[0]!)]!;
+    expect(lockAt).toBeGreaterThan(db.attachment.findFirst.mock.invocationCallOrder[1]!);
+    expect(db.attachment.updateMany.mock.invocationCallOrder[0]).toBeGreaterThan(lockAt);
+  });
+
+  it.each(['DRAFT', 'NEEDS_CORRECTION'])('a %s request: he removes it, as before', async (now) => {
+    state = now;
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    expect(db.attachment.updateMany).toHaveBeenCalledOnce();
+    expect(audit.writeAudit).toHaveBeenCalledOnce();
+  });
+
+  it.each(['MANAGER', 'STEWARD'])('a %s is not refused', async (role) => {
+    s.user = { id: 'x2', role, username: 'x2' };
+    db.attachment.findFirst.mockResolvedValue(photo({ editId: EDIT, capturedById: 'u1' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    expect(requestLocks()).toEqual([]);
   });
 });
 
@@ -913,6 +982,91 @@ describe('owner decision 2: the CR document of a credit customer', () => {
     s.user = { id: 'x2', role: 'MANAGER', username: 'x2' };
     s.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: ['g1'] };
     db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+  });
+});
+
+// Launch browser suite: on a switched-off route his enrichments, closes and
+// reactivations are refused (ROUTE_INACTIVE_MESSAGE), but he could still attach
+// or remove the photos of a live branch, and the CR photo of a CASH customer,
+// which write the slots directly. A photo of his new-customer request is on no
+// customer yet; New customer refuses that request. Managers and the Steward are
+// not asked.
+describe('a salesman on a switched-off route', () => {
+  const EDIT = 'ckedit00000000000000000001';
+  beforeEach(() => {
+    db.user.findUniqueOrThrow.mockResolvedValue({ ownedRouteId: 'r1', ownedRoute: { isActive: false } });
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+  });
+  const refused = (res: Awaited<ReturnType<typeof attach>>) => {
+    expect(res).toEqual({ ok: false, code: 'FORBIDDEN', message: ROUTE_INACTIVE_MESSAGE });
+    expect(wrote()).toBe(0);
+  };
+
+  it.each([
+    ['a shop photo', photo(), { branchId: B1, slot: 'SHOP' }],
+    ['a signboard photo', photo({ kind: 'SIGNBOARD' }), { branchId: B1, slot: 'SIGNBOARD' }],
+    ['an extra photo', photo({ kind: 'FREE' }), { branchId: B1, slot: 'FREE' }],
+    ["a CASH customer's CR photo", photo({ kind: 'CR' }), { customerId: CUST, slot: 'CR' }],
+  ])('cannot attach %s', async (_n, att, target) => {
+    db.attachment.findUnique.mockResolvedValue(att);
+    refused(await attach({ attachmentId: ATT, ...target }));
+  });
+
+  it.each([
+    ['a shop photo', photo({ branchId: B1 })],
+    ['an extra photo', photo({ kind: 'FREE', branchId: B1, branchExtraId: B1 })],
+    ["a CASH customer's CR photo", photo({ kind: 'CR', customerId: CUST })],
+  ])('cannot remove %s', async (_n, att) => {
+    db.attachment.findFirst.mockResolvedValue(att);
+    db.branch.findUnique.mockResolvedValue(branch());
+    refused(await detach({ attachmentId: ATT }));
+  });
+
+  // A re-send of a request that already landed (the slot re-sends one that got
+  // no answer) is told so, as on a live route — not refused for the route.
+  it.each([
+    ['the shop slot', photo({ branchId: B1 }), { branchId: B1, slot: 'SHOP' }, () => db.branch.findFirst.mockResolvedValue(branch({ shopPhotoId: ATT }))],
+    ['an extra photo', photo({ kind: 'FREE', branchId: B1, branchExtraId: B1 }), { branchId: B1, slot: 'FREE' }, () => db.branch.findFirst.mockResolvedValue(branch())],
+    ["a CASH customer's CR slot", photo({ kind: 'CR', customerId: CUST }), { customerId: CUST, slot: 'CR' }, () =>
+      db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CASH', crPhotoId: ATT }))],
+  ] as const)('a re-sent attach already on %s is ok, and writes nothing', async (_n, att, target, slotHoldsIt) => {
+    db.attachment.findUnique.mockResolvedValue(att);
+    slotHoldsIt();
+    expect(await attach({ attachmentId: ATT, ...target })).toEqual({ ok: true });
+    expect(wrote()).toBe(0);
+  });
+
+  it('a re-sent Remove of a photo already removed is PHOTO_GONE, the answer its slot clears on', async () => {
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1, deletedAt: new Date() }));
+    db.branch.findUnique.mockResolvedValue(branch());
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: false, code: 'PHOTO_GONE', message: PHOTO_GONE_MESSAGE });
+    expect(wrote()).toBe(0);
+  });
+
+  it('a photo of his new-customer request, or one on no slot yet, is not refused here', async () => {
+    db.customerEdit.findUnique.mockResolvedValue({ customerId: null, branchDrafts: [{ routeId: 'r1', route: { regionId: 'g1' } }] });
+    for (const att of [photo({ editId: EDIT }), photo()]) {
+      db.attachment.findFirst.mockResolvedValue(att);
+      expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    }
+  });
+
+  it('on a live route, as before', async () => {
+    db.user.findUniqueOrThrow.mockResolvedValue({ ownedRouteId: 'r1', ownedRoute: { isActive: true } });
+    db.attachment.findUnique.mockResolvedValue(photo());
+    expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toEqual({ ok: true });
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1 }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+  });
+
+  it.each(['MANAGER', 'STEWARD'])('a %s still attaches and removes there', async (role) => {
+    s.user = { id: 'x2', role, username: 'x2' };
+    s.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.attachment.findUnique.mockResolvedValue(photo({ capturedById: 'x2' }));
+    expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toEqual({ ok: true });
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1 }));
     expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
   });
 });

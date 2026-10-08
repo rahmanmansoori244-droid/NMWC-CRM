@@ -16,11 +16,19 @@ concurrency:
   # cancelled (the deploy decision is taken from its result).
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# Launch hardening (2026-10-08): every job only reads the repository. Without this
+# block GITHUB_TOKEN gets the repository's default scope in jobs that also hold
+# secrets; nothing here pushes, comments or writes a release.
+permissions:
+  contents: read
+
 jobs:
   lint-test-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
@@ -99,6 +107,8 @@ jobs:
       NODE_ENV: test
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
@@ -109,6 +119,14 @@ jobs:
           echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
           echo "NEXTAUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
       - run: npx prisma migrate deploy
+      # Launch hardening (2026-10-08): schema.prisma and prisma/migrations must
+      # describe the same database. A model change without its migration passes
+      # typecheck and unit tests and only breaks in production. Exit 2 = drift.
+      # (Checked against UAT on 2026-10-08: its live schema equals the datamodel.)
+      - name: Schema matches the migrations
+        run: |
+          psql "postgresql://ci:ci@localhost:5432/nmwc_ci" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nmwc_shadow'
+          npx prisma migrate diff             --from-migrations prisma/migrations             --to-schema-datamodel prisma/schema.prisma             --shadow-database-url postgresql://ci:ci@localhost:5432/nmwc_shadow             --exit-code
       - run: npm run db:seed
       # B4: prove the least-privilege runtime role on every run — create it,
       # apply the grants, then connect AS the role and check that reads/writes
@@ -216,6 +234,8 @@ jobs:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
@@ -314,6 +334,8 @@ jobs:
       NODE_ENV: test
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
@@ -506,6 +528,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -562,6 +585,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '22'

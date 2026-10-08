@@ -20,7 +20,7 @@ import { draftIsStale, enrichmentBase } from '@/lib/enrichment-draft';
 import { isRequired, type SubmitGate } from '@/lib/submit-gate';
 import { gateScopeOf } from '@/lib/validation/gate-scope';
 import { CR_DOCUMENT_LOCKED_MESSAGE, isFieldLocked } from '@/lib/permissions';
-import { LabeledField as Field } from '@/components/nmwc/LabeledField';
+import { LabeledField as Field, groupNamedBy } from '@/components/nmwc/LabeledField';
 import { onSignOut } from '@/lib/device-drafts';
 import { EDIT_PAYLOAD_VERSION, fieldLabel, type BaseValue } from '@/lib/edit-values';
 import {
@@ -123,6 +123,8 @@ export function EnrichmentForm({
   lockCr,
   userRole,
   canSubmit,
+  submitHeldTitle = 'Pending edit already in review',
+  photosHeld = false,
   pendingReplacesDraft = false,
   sessionUserId,
   gate: gateProp,
@@ -136,6 +138,14 @@ export function EnrichmentForm({
   lockCr: boolean;
   userRole: Role;
   canSubmit: boolean;
+  /** Why Submit is held when canSubmit is false: a request in review, or his route switched off. */
+  submitHeldTitle?: string;
+  /**
+   * No photo slot takes, replaces or removes a photo: his route is switched off,
+   * and services/photos.ts refuses his attach and Remove there. Locked from the
+   * start, so no photo goes up only to be refused once it has.
+   */
+  photosHeld?: boolean;
   /**
    * Item 22: approving this customer's pending request changes the values this
    * draft started from, which then replaces the draft — a pending update, or a
@@ -256,7 +266,8 @@ export function EnrichmentForm({
   // …and no NEW photo once a submit is on its way. Submit is held while a photo
   // uploads, but a photo started after the tap would still be cut off by the
   // page load that follows the answer — silently, beside "It arrived".
-  const photosLocked = sending || arrived;
+  // …nor any while his route is switched off (photosHeld).
+  const photosLocked = sending || arrived || photosHeld;
 
   // Owner decision 2 (2026-10-07): a salesman cannot change the CR document of
   // a CREDIT customer (services/photos.ts refuses it); a Manager or the Steward does.
@@ -314,7 +325,7 @@ export function EnrichmentForm({
     unresolved.length > 0 ||
     (userRole === Role.SALESMAN && missingMandatory.length > 0);
   const submitTitle = !canSubmit
-    ? 'Pending edit already in review'
+    ? submitHeldTitle
     : uploading > 0
       ? PHOTO_UPLOADING_MESSAGE
       : unresolved.length > 0
@@ -711,10 +722,10 @@ export function EnrichmentForm({
             disabled={lockCr}
           />
           <Field label="NMWC code" value={customer.nmwcCode} onChange={() => {}} disabled mono />
-          <div>
-            <label className="mb-1 block text-sm font-medium text-slate-700">
+          <div {...groupNamedBy(`${uid}-crphoto`)}>
+            <p id={`${uid}-crphoto`} className="mb-1 block text-sm font-medium text-slate-700">
               CR document photo{lockCrPhoto ? '' : star('crPhoto')}
-            </label>
+            </p>
             <div className="w-48">
               <PhotoCaptureSlot
                 kind="CR"
@@ -868,10 +879,10 @@ export function EnrichmentForm({
                 />
               </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">
+              <div {...groupNamedBy(`${uid}-gps-${b.id}`, errors[`branch.${b.id}.gps`])}>
+                <p id={`${uid}-gps-${b.id}`} className="mb-1 block text-sm font-medium text-slate-700">
                   Location * (required to submit)
-                </label>
+                </p>
                 <GpsCaptureButton
                   key={`${restoreGeneration}:${gpsGeneration[b.id] ?? 0}`}
                   disabled={sending || arrived}
@@ -881,7 +892,9 @@ export function EnrichmentForm({
                   required
                 />
                 {errors[`branch.${b.id}.gps`] && (
-                  <p className="mt-1 text-sm font-medium text-red-600">{errors[`branch.${b.id}.gps`]}</p>
+                  <p id={`${uid}-gps-${b.id}-error`} className="mt-1 text-sm font-medium text-red-600">
+                    {errors[`branch.${b.id}.gps`]}
+                  </p>
                 )}
               </div>
 
@@ -920,10 +933,13 @@ export function EnrichmentForm({
                 />
               </div>
 
-              <div>
-                <label className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500">
+              <div {...groupNamedBy(`${uid}-equipment-${b.id}`)}>
+                <p
+                  id={`${uid}-equipment-${b.id}`}
+                  className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500"
+                >
                   Equipment at the shop
-                </label>
+                </p>
                 <div className="grid gap-2 lg:grid-cols-3">
                   <StepperInput
                     name={`coolers-${b.id}`}
@@ -966,10 +982,13 @@ export function EnrichmentForm({
                 )}
               </div>
 
-              <div>
-                <label className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500">
+              <div {...groupNamedBy(`${uid}-photos-${b.id}`)}>
+                <p
+                  id={`${uid}-photos-${b.id}`}
+                  className="mb-2 block text-sm font-semibold uppercase tracking-wide text-slate-500"
+                >
                   Photos
-                </label>
+                </p>
                 <p className="mb-2 text-xs text-slate-500">
                   Tap each slot to capture from your camera.{' '}
                   {req('signboardPhoto')

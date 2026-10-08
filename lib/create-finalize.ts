@@ -20,6 +20,14 @@
  * Owner-confirmed: finalize copies the REQUESTED credit figures verbatim
  * (FM/GM approve or reject, never amend) and sets temixSyncState =
  * PENDING_UPLOAD for the Steward's next Temix batch.
+ *
+ * Owner decision 2026-10-08: the Accountant creates the customer in Temix
+ * before he approves and types the Temix code it got (lib/temix-code.ts). The
+ * customer is created with that code, refused if any other customer holds it
+ * (an archived one included) or it is a live branch's code, and stays
+ * PENDING_UPLOAD: the next batch sends the full record (branches,
+ * GPS, phones) as an UPSERT keyed by that temix_code — an update of the Temix
+ * record he made, not a second one (lib/temix.ts buildTemixRows).
  */
 import {
   CustomerStatus,
@@ -30,13 +38,14 @@ import {
   type EditCustomerDraft,
   type Prisma,
 } from '@prisma/client';
-import { ConflictError } from './errors';
+import { AppError, ConflictError } from './errors';
 import { formatCustomerCode, formatBranchCode } from './codes';
 import { omanYear } from './tz';
 import { draftScores } from './create-score';
 import { lockCreateIdentity, assertNoExactCreateDuplicate } from './create-guards';
 import { writeAudit, type AuditEnvelope } from './audit';
 import { UNWIRED_LIVE } from './photo-attach';
+import { lockTemixCode, temixCodeHolder, temixCodeHolderMessage } from './temix-code';
 
 type Tx = Prisma.TransactionClient;
 
@@ -112,13 +121,17 @@ async function allocateCustomerCode(tx: Tx, year: number): Promise<string> {
  * at runtime to complain. approveEditCore builds it before opening the
  * transaction and hands it down. `env.actorId` is the approving Accountant and
  * replaces the old `actorId` parameter.
+ *
+ * `temixCode` is the code the Accountant typed, already normalized and checked
+ * for shape by the caller (services/edits.ts, lib/temix-code.ts).
  */
 export async function finalizeCreateInTx(
   tx: Tx,
   edit: FinalizableEdit,
   env: AuditEnvelope,
-  finalizedAt: Date
-): Promise<{ customerId: string; nmwcCode: string; legalName: string }> {
+  finalizedAt: Date,
+  temixCode: string
+): Promise<{ customerId: string; nmwcCode: string; legalName: string; temixCode: string }> {
   const draft = edit.customerDraft;
   const isCredit = draft.paymentTerms === 'CREDIT';
 
@@ -203,6 +216,19 @@ export async function finalizeCreateInTx(
     );
   }
 
+  // 3b. Owner decision 2026-10-08: the Temix code is this customer's alone.
+  //     After the photo checks, which no code typed here can fix. Locked first,
+  //     so two finalizes typing the same code (or a finalize and an import
+  //     recording it, services/imports.ts) cannot both pass the check. An
+  //     archived customer's code is refused as the customer import refuses it:
+  //     given to this customer, every inbound refresh of it would be rejected.
+  await lockTemixCode(tx, temixCode);
+  const holder = await temixCodeHolder(tx, temixCode);
+  if (holder) {
+    const message = temixCodeHolderMessage(temixCode, holder);
+    throw new AppError('TEMIX_CODE_TAKEN', message, 409, { temixCode: message });
+  }
+
   // 4. Code + Customer.
   // final-hunt #27/#36: derive the NMWC-YYYY year (and its CodeSequence scope)
   // from the Oman wall-clock, not raw UTC — otherwise a customer minted in the
@@ -227,8 +253,9 @@ export async function finalizeCreateInTx(
       // No amendment: the approved figures ARE the requested figures.
       creditLimit: isCredit ? edit.requestedCreditLimit : null,
       paymentTermDays: isCredit ? edit.requestedPaymentTermDays : null,
-      // Real ERP code arrives via the inbound Temix refresh after upload.
-      temixCode: null,
+      // Owner decision 2026-10-08: the code the Accountant created it under in
+      // Temix. Still queued: the next batch updates that record with all of it.
+      temixCode,
       temixSyncState: TemixSyncState.PENDING_UPLOAD,
       temixSyncPendingSince: finalizedAt,
       createdById: edit.submittedById,
@@ -354,6 +381,7 @@ export async function finalizeCreateInTx(
     after: {
       customerId: customer.id,
       nmwcCode,
+      temixCode,
       branches: branches.length,
       paymentTerms: draft.paymentTerms,
       cycle: edit.cycle,
@@ -365,6 +393,7 @@ export async function finalizeCreateInTx(
     entityId: customer.id,
     after: {
       nmwcCode,
+      temixCode,
       legalName: draft.legalName,
       paymentTerms: draft.paymentTerms,
       branches: branches.length,
@@ -372,7 +401,7 @@ export async function finalizeCreateInTx(
     } as unknown as Prisma.InputJsonValue,
   });
 
-  return { customerId: customer.id, nmwcCode, legalName: draft.legalName };
+  return { customerId: customer.id, nmwcCode, legalName: draft.legalName, temixCode };
 }
 
 /** What an approver at a later step does about a photo removed after the request was sent. */

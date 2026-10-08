@@ -229,12 +229,18 @@ export function GpsCaptureButton({
           )}
         </div>
       )}
+      {/* Read out when they appear: a capture that failed or came back too
+          rough was said only in text a screen reader never reached. */}
       {advice && (
-        <p className={`text-sm font-medium ${band === 'poor' ? 'text-red-700' : 'text-amber-800'}`}>
+        <p role="status" className={`text-sm font-medium ${band === 'poor' ? 'text-red-700' : 'text-amber-800'}`}>
           {advice}
         </p>
       )}
-      {error && <p className="text-sm font-medium text-red-600">{error}</p>}
+      {error && (
+        <p role="alert" className="text-sm font-medium text-red-600">
+          {error}
+        </p>
+      )}
 
       {/* B-07: manual fallback UI. Tertiary trigger always available so a user
           who knows the GPS chip is broken can skip the wait. */}
@@ -296,7 +302,11 @@ export function GpsCaptureButton({
               className="block w-full rounded-md border-slate-300 px-3 py-2.5 text-base shadow-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500"
             />
           </label>
-          {manualErr && <p className="mt-1 text-sm font-medium text-red-600">{manualErr}</p>}
+          {manualErr && (
+            <p role="alert" className="mt-1 text-sm font-medium text-red-600">
+              {manualErr}
+            </p>
+          )}
           <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
             <button
               type="button"

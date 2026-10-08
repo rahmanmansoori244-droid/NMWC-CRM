@@ -21,7 +21,7 @@
  * fetch serves every step.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react';
 
 import {
   PhotoCaptureSlot,
@@ -30,7 +30,13 @@ import {
   SLOW_LINK_MESSAGE,
   ATTACH_NO_ANSWER,
   UPLOAD_SIGNED_OUT,
+  UPLOAD_NO_CONNECTION,
+  HEIC_PHOTO_MESSAGE,
+  PHOTO_UNREADABLE_MESSAGE,
+  PHOTO_KEPT_NOTE,
   RATE_LIMIT_MAX_WAIT_S,
+  PHOTO_REFILL_S,
+  resetPhotoLimitClock,
   rateLimitedMessage,
   rateLimitWaitMessage,
   postBodyDeadlineMs,
@@ -38,6 +44,10 @@ import {
 } from '@/components/nmwc/PhotoCaptureSlot';
 import { ALREADY_ATTACHED_MESSAGE, PHOTO_CHANGED_MESSAGE, PHOTO_GONE_MESSAGE, PRESIGN_EXPIRES_S } from '@/lib/photo-attach';
 import { PasswordChangeRequiredError } from '@/lib/errors';
+import { PHOTO_LIMIT } from '@/lib/rate-limit';
+
+// lib/rate-limit is read for PHOTO_LIMIT only: no bucket is ever charged here.
+vi.mock('@/lib/db', () => ({ prisma: {} }));
 
 let decode: 'never' | 'fail' | 'load' | 'held' = 'never';
 let held: FakeImage[] = [];
@@ -103,7 +113,7 @@ class FakeXHR {
  */
 /** A reply of the test's own: presign's or finalize's refusals (`{ error, message }`). */
 type Answer = { status: number; body: unknown; headers?: Record<string, string> };
-type Step = 'answer' | 'stall' | 'stallBody' | 'refuse' | Answer;
+type Step = 'answer' | 'stall' | 'stallBody' | 'refuse' | 'drop' | Answer;
 type Reply = { ok: boolean; code?: string; message?: string; fields?: Record<string, string> };
 type RouteRefusal = { status: number; refusal: { ok: false; code: string; message: string } };
 let presignPlan: Step[] = [];
@@ -114,6 +124,29 @@ let seen: string[] = [];
 let signals: Array<AbortSignal | null | undefined> = [];
 let sent: Array<{ url: string; body: unknown; signal: AbortSignal | null | undefined }> = [];
 let presigned = 0;
+/**
+ * The user's photo bucket as presign charges it, when a test sets one: the
+ * durable limiter's formula (lib/rate-limit.ts checkLimitPg) on the test's
+ * clock, in ms of refill, so it adds up exactly. A refused call is charged
+ * too, down to −1 photo, and is answered with presign's own 429.
+ */
+const MS_PER_PHOTO = Math.round(1000 / PHOTO_LIMIT.refillPerSec);
+let bucket: { units: number; at: number } | null = null;
+let refusedAt: number[] = [];
+const charge = (): Response | null => {
+  if (!bucket) return null;
+  const now = Date.now();
+  const refilled = Math.min(PHOTO_LIMIT.capacity * MS_PER_PHOTO, bucket.units + (now - bucket.at));
+  bucket = { units: Math.max(-MS_PER_PHOTO, refilled - MS_PER_PHOTO), at: now };
+  if (bucket.units >= 0) return null;
+  refusedAt.push(now);
+  // (1 − tokens) / refillPerSec, in ms of refill.
+  const retryAfterSec = Math.max(1, Math.ceil((MS_PER_PHOTO - bucket.units) / 1000));
+  return new Response(
+    JSON.stringify({ error: 'RATE_LIMITED', retryAfterSec, message: `Try again in ${retryAfterSec} seconds.` }),
+    { status: 429, headers: { ...JSON_HEADERS, 'Retry-After': String(retryAfterSec) } }
+  );
+};
 const JSON_HEADERS = { 'content-type': 'application/json' };
 const abortError = () => new DOMException('The operation was aborted.', 'AbortError');
 const ATTACH = '/api/photos/attach';
@@ -138,9 +171,13 @@ const serveChain = () =>
       return new Response(JSON.stringify(next), { status: 200, headers: JSON_HEADERS });
     }
     const isPresign = url === '/api/photos/presign';
+    const refused = isPresign ? charge() : null;
+    if (refused) return refused;
     const step = (isPresign ? presignPlan : finalizePlan).shift() ?? 'answer';
     if (step === 'stall') return stall();
     if (step === 'refuse') return new Response('{}', { status: 400, headers: JSON_HEADERS });
+    // No network: fetch rejects with the browser's own TypeError.
+    if (step === 'drop') throw new TypeError('Failed to fetch');
     if (typeof step === 'object') {
       return new Response(JSON.stringify(step.body), { status: step.status, headers: { ...JSON_HEADERS, ...step.headers } });
     }
@@ -177,6 +214,10 @@ beforeEach(() => {
   signals = [];
   sent = [];
   presigned = 0;
+  bucket = null;
+  refusedAt = [];
+  // The slots' shared photo clock is the page's: each test is a fresh page.
+  resetPhotoLimitClock();
   serveChain();
   vi.stubGlobal('Image', FakeImage);
   vi.stubGlobal('XMLHttpRequest', FakeXHR);
@@ -248,7 +289,8 @@ const advance = (ms: number) =>
     await vi.advanceTimersByTimeAsync(ms);
   });
 const withFakeTimers = async (body: () => Promise<void>) => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  // Date too: the slots' photo clock reads it.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
   try {
     await body();
   } finally {
@@ -934,6 +976,34 @@ describe("presign's and finalize's refusals are answers too (launch review)", ()
       expect(xhrs).toHaveLength(0);
     }));
 
+  // Launch browser suite: the durable limiter charges the refused call too and
+  // floors the bucket at −1 (lib/rate-limit.ts), so an empty photo bucket asks
+  // for 31–60 s. The slot sat through 30 s at most, so the countdown never ran.
+  it('a 429 asking for a whole minute, as an empty photo bucket does, is waited out too, then the photo goes up', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      presignPlan = [throttled(60)];
+      const onChange = vi.fn();
+      const view = render(<PhotoCaptureSlot kind="SHOP" onChange={onChange} />);
+      pick(view.container);
+      await settleUntil(() => screen.queryByText(rateLimitWaitMessage(60)) !== null);
+      expect(retryButton()).toBeNull();
+      await advance(59_999);
+      expect(screen.getByText(rateLimitWaitMessage(1))).toBeTruthy();
+      expect(count('/api/photos/presign')).toBe(1);
+      await advance(1);
+      await settleUntil(() => xhrs.length === 1);
+      expect(count('/api/photos/presign')).toBe(2);
+      act(() => xhrs[0]!.answer());
+      await settleUntil(() => onChange.mock.calls.length === 1);
+      expect(retryButton()).toBeNull();
+    }));
+
+  it('the longest wait the photo limit can ask for is one the slot sits through', () => {
+    // At worst a refused call leaves the bucket at −1: two tokens owed.
+    expect(Math.ceil(2 / PHOTO_LIMIT.refillPerSec)).toBeLessThanOrEqual(RATE_LIMIT_MAX_WAIT_S);
+  });
+
   it(`a wait longer than ${RATE_LIMIT_MAX_WAIT_S} s is not sat through: it says so at once`, async () => {
     uploadable();
     presignPlan = [throttled(600)];
@@ -943,6 +1013,188 @@ describe("presign's and finalize's refusals are answers too (launch review)", ()
     expect(rateLimitedMessage(600)).toMatch(/Wait 10 minutes/);
     expect(count('/api/photos/presign')).toBe(1);
   });
+
+  // Launch review: each slot waited out its own 429, and the photo bucket is
+  // the salesman's. With SHOP and SIGNBOARD picked 5 s apart near the limit,
+  // the second slot's try spent the refill the first was waiting for, so every
+  // retry was refused and charged again: five refusals, and after about two
+  // minutes both slots said "Wait 60 seconds, then tap Retry upload".
+  const twoSlots = (onShop: () => void, onSign: () => void) => {
+    const view = render(
+      <>
+        <PhotoCaptureSlot kind="SHOP" attachTo={shopOfB1} onChange={onShop} />
+        <PhotoCaptureSlot
+          kind="SIGNBOARD"
+          attachTo={{ kind: 'branch', branchId: 'b1', slot: 'SIGNBOARD' }}
+          onChange={onSign}
+        />
+      </>
+    );
+    return Array.from(view.container.children) as HTMLElement[];
+  };
+
+  it('two slots near the photo limit share one clock: one refusal, then each goes when the bucket has a photo for it, and both attach with no Retry upload', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      const start = Date.now();
+      bucket = { units: 0.2 * MS_PER_PHOTO, at: start };
+      const onShop = vi.fn();
+      const onSign = vi.fn();
+      const [shop, sign] = twoSlots(onShop, onSign);
+
+      pick(shop!);
+      await settleUntil(() => within(shop!).queryByText(rateLimitWaitMessage(54)) !== null);
+      expect(refusedAt).toEqual([start]);
+
+      await advance(5_000);
+      pick(sign!);
+      // It waits for the same time, counting down, and does not call.
+      await settleUntil(() => within(sign!).queryByText(rateLimitWaitMessage(49)) !== null);
+      expect(count('/api/photos/presign')).toBe(1);
+
+      await advance(49_000); // 54 s: the bucket has a photo again — for one of them
+      await settleUntil(() => xhrs.length === 1);
+      act(() => xhrs[0]!.answer());
+      await settleUntil(() => onShop.mock.calls.length === 1);
+      // The other waits one more refill instead of being refused and charged.
+      expect(within(sign!).getByText(rateLimitWaitMessage(PHOTO_REFILL_S))).toBeTruthy();
+      expect(count('/api/photos/presign')).toBe(2);
+
+      await advance(PHOTO_REFILL_S * 1000); // 84 s
+      await settleUntil(() => xhrs.length === 2);
+      act(() => xhrs[1]!.answer());
+      await settleUntil(() => onSign.mock.calls.length === 1);
+
+      expect(refusedAt).toEqual([start]);
+      expect(count('/api/photos/presign')).toBe(3);
+      expect(retryButton()).toBeNull();
+      expect(screen.queryByRole('status')).toBeNull();
+      expect(Date.now() - start).toBe(84_000);
+    }));
+
+  it('clear of the limit nothing waits: two photos picked together both go at once', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      bucket = { units: 3 * MS_PER_PHOTO, at: Date.now() };
+      const [shop, sign] = twoSlots(vi.fn(), vi.fn());
+      pick(shop!);
+      pick(sign!);
+      await settleUntil(() => xhrs.length === 2);
+      expect(count('/api/photos/presign')).toBe(2);
+      expect(refusedAt).toEqual([]);
+      expect(screen.queryByRole('status')).toBeNull();
+    }));
+
+  it('a Retry upload tapped before the wait is up counts down the rest; it does not call and be refused again', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      presignPlan = [throttled(30), throttled(30), throttled(25)];
+      const onChange = vi.fn();
+      const view = render(<PhotoCaptureSlot kind="SHOP" onChange={onChange} />);
+      pick(view.container);
+      await settleUntil(() => count('/api/photos/presign') === 1);
+      await advance(30_000);
+      await settleUntil(() => count('/api/photos/presign') === 2);
+      await advance(30_000);
+      await settleUntil(() => retryButton() !== null);
+      expect(count('/api/photos/presign')).toBe(3);
+
+      await advance(5_000);
+      fireEvent.click(retryButton()!);
+      // The third try took the refill after it (until 90 s); 65 s now.
+      await settleUntil(() => screen.queryByText(rateLimitWaitMessage(25)) !== null);
+      expect(count('/api/photos/presign')).toBe(3);
+      await advance(25_000);
+      await settleUntil(() => xhrs.length === 1);
+      expect(count('/api/photos/presign')).toBe(4);
+      act(() => xhrs[0]!.answer());
+      await settleUntil(() => onChange.mock.calls.length === 1);
+    }));
+});
+
+describe("a connection that drops at presign or finalize says so in the app's own words", () => {
+  // fetch rejects a request with no network with the browser's own TypeError,
+  // and after the third try the slot showed its text: "Failed to fetch" on
+  // Chrome, "Load failed" on Safari. Nothing in it says the photo is kept or
+  // what to do.
+  it.each(['presign', 'finalize'] as const)(
+    '%s: three drops end in the no-connection line, and Retry upload sends the kept photo',
+    (step) =>
+      withFakeTimers(async () => {
+        uploadable();
+        if (step === 'presign') presignPlan = ['drop', 'drop', 'drop'];
+        else finalizePlan = ['drop', 'drop', 'drop'];
+        const onChange = vi.fn();
+        const view = render(<PhotoCaptureSlot kind="SHOP" onChange={onChange} />);
+        pick(view.container);
+        if (step === 'finalize') {
+          await settleUntil(() => xhrs.length === 1);
+          act(() => xhrs[0]!.answer());
+        }
+        await settleUntil(() => count(`/api/photos/${step}`) === 1);
+        await advance(500);
+        await settleUntil(() => count(`/api/photos/${step}`) === 2);
+        await advance(1500);
+        await settleUntil(() => count(`/api/photos/${step}`) === 3);
+        await settleUntil(() => retryButton() !== null);
+        expect(screen.getByText(UPLOAD_NO_CONNECTION)).toBeTruthy();
+        expect(screen.queryByText(/Failed to fetch/)).toBeNull();
+        // The photo lives only in this page's memory: leaving or reloading loses it.
+        expect(UPLOAD_NO_CONNECTION).toMatch(/Keep this page open/);
+        expect(UPLOAD_NO_CONNECTION).not.toMatch(/kept on this phone/);
+        expect(UPLOAD_NO_CONNECTION).toMatch(/tap Retry upload\.$/);
+
+        fireEvent.click(retryButton()!);
+        const put = step === 'presign' ? 0 : 1;
+        await settleUntil(() => xhrs.length === put + 1);
+        act(() => xhrs[put]!.answer());
+        await settleUntil(() => onChange.mock.calls.length === 1);
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: `att-${put + 1}` }));
+        expect(screen.queryByText(UPLOAD_NO_CONNECTION)).toBeNull();
+      })
+  );
+
+  it('the same for a PUT whose connection drops three times', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      const view = render(<PhotoCaptureSlot kind="SHOP" />);
+      pick(view.container);
+      for (const [i, backoff] of [[0, 500], [1, 1500], [2, 0]] as const) {
+        await settleUntil(() => xhrs.length === i + 1);
+        act(() => xhrs[i]!.onerror?.());
+        await advance(backoff);
+      }
+      await settleUntil(() => retryButton() !== null);
+      expect(screen.getByText(UPLOAD_NO_CONNECTION)).toBeTruthy();
+      expect(screen.queryByText('Network error')).toBeNull();
+    }));
+
+  // Launch browser suite: Chromium ends a PUT whose connection dies of
+  // ERR_TIMED_OUT with the XHR's timeout event, though xhr.timeout is 0. Unheard,
+  // each try sat until the stall watchdog gave up on it: about 2 1/4 minutes for
+  // three, with Submit held.
+  it('a PUT the browser ends as timed out is a dropped connection at once: tried again after the backoff, not the stall limit', () =>
+    withFakeTimers(async () => {
+      uploadable();
+      const calls: boolean[] = [];
+      const view = render(<PhotoCaptureSlot kind="SHOP" onBusyChange={(b) => calls.push(b)} />);
+      const start = Date.now();
+      pick(view.container);
+      for (const [i, backoff] of [[0, 500], [1, 1500], [2, 0]] as const) {
+        await settleUntil(() => xhrs.length === i + 1);
+        act(() => xhrs[i]!.ontimeout?.());
+        await advance(backoff);
+      }
+      await settleUntil(() => retryButton() !== null);
+      expect(Date.now() - start).toBeLessThan(UPLOAD_STALL_MS);
+      expect(screen.getByText(UPLOAD_NO_CONNECTION)).toBeTruthy();
+      await settleUntil(() => calls.length === 2);
+      expect(calls).toEqual([true, false]);
+      // Each try's watchdog was stopped with it: nothing goes off later.
+      await advance(UPLOAD_STALL_MS);
+      expect(xhrs.map((x) => x.aborted)).toEqual([false, false, false]);
+      expect(xhrs).toHaveLength(3);
+    }));
 });
 
 describe('Remove', () => {
@@ -1045,10 +1297,13 @@ describe('Remove', () => {
     pick(view.container);
     await screen.findByRole('button', { name: /Retry upload/ });
     remove();
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toBe(PHOTO_CHANGED_MESSAGE);
-    // The upload failure is still where it was, and nothing told the form the photo went.
-    expect(screen.getByText('Could not get upload URL.')).toBeTruthy();
+    // Each on its own line, each read out: the refusal, and the upload failure
+    // still where it was. Nothing told the form the photo went.
+    await screen.findByText(PHOTO_CHANGED_MESSAGE);
+    expect(screen.getAllByRole('alert').map((a) => a.textContent)).toEqual([
+      PHOTO_CHANGED_MESSAGE,
+      'Could not get upload URL.',
+    ]);
     expect(onChange).not.toHaveBeenCalledWith(null);
   });
 
@@ -1088,5 +1343,124 @@ describe('a locked slot starts nothing (a submit is on its way)', () => {
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Remove photo' })).toBeTruthy();
     expect(requests(DETACH)).toHaveLength(0);
+  });
+});
+
+describe('a photo the phone cannot read says why on its slot, and he picks again (launch browser suite)', () => {
+  // A decode failure set 'error' with no photo kept. The slot showed its
+  // message only outside 'error', or beside Retry upload, which needs a kept
+  // photo: a red slot with no words.
+  const pickFile = (container: HTMLElement, file: File) =>
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+  const heic = () => new File(['x'], 'IMG_0001.heic', { type: 'image/heic' });
+  const broken = () => new File(['not really a jpeg'], 'broken.jpg', { type: 'image/jpeg' });
+  const camera = (container: HTMLElement) => container.querySelector('label[aria-label="Capture photo"]');
+
+  it('a HEIC photo: the hint, no Retry upload, the camera still there, and nothing sent', async () => {
+    decode = 'fail';
+    const calls: boolean[] = [];
+    const view = render(<PhotoCaptureSlot kind="SHOP" required onBusyChange={(b) => calls.push(b)} />);
+    pickFile(view.container, heic());
+    expect(await screen.findByText(HEIC_PHOTO_MESSAGE)).toBeTruthy();
+    expect(retryButton()).toBeNull();
+    expect(camera(view.container)).not.toBeNull();
+    expect(calls).toEqual([true, false]);
+    expect(seen).toEqual([]);
+  });
+
+  it('a broken JPEG: "could not read this photo"; the next pick is read afresh and goes up', async () => {
+    decode = 'fail';
+    const onChange = vi.fn();
+    const view = render(<PhotoCaptureSlot kind="SIGNBOARD" onChange={onChange} />);
+    pickFile(view.container, broken());
+    expect(await screen.findByText(PHOTO_UNREADABLE_MESSAGE)).toBeTruthy();
+    expect(retryButton()).toBeNull();
+    uploadable();
+    pickFile(view.container, new File(['x'], 'sign.jpg', { type: 'image/jpeg' }));
+    await waitFor(() => expect(xhrs).toHaveLength(1));
+    expect(screen.queryByText(PHOTO_UNREADABLE_MESSAGE)).toBeNull();
+    act(() => xhrs[0]!.answer());
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: 'att-1' })));
+  });
+
+  it('a failed hash says the same, not its own words', async () => {
+    decode = 'load';
+    compressible();
+    vi.stubGlobal('crypto', { subtle: { digest: () => Promise.reject(new Error('Hashing failed.')) } });
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    pickFile(view.container, new File(['x'], 'shop.jpg', { type: 'image/jpeg' }));
+    expect(await screen.findByText(PHOTO_UNREADABLE_MESSAGE)).toBeTruthy();
+    expect(screen.queryByText('Hashing failed.')).toBeNull();
+  });
+
+  it('after a failed upload, a photo it cannot read says so, and Retry upload no longer offers the earlier photo', async () => {
+    uploadable();
+    presignPlan = ['refuse'];
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    pick(view.container);
+    await screen.findByRole('button', { name: /Retry upload/ });
+    decode = 'fail';
+    pickFile(view.container, broken());
+    expect(await screen.findByText(PHOTO_UNREADABLE_MESSAGE)).toBeTruthy();
+    expect(retryButton()).toBeNull();
+    expect(screen.queryByText('Could not get upload URL.')).toBeNull();
+  });
+
+  // Launch review: a Retake it could not read turned a filled slot red over
+  // the earlier photo, which is still attached and counted by the form.
+  it('a Retake it cannot read keeps the slot done: the earlier photo stays, and the slot says so', async () => {
+    decode = 'fail';
+    const onChange = vi.fn();
+    const view = render(
+      <PhotoCaptureSlot
+        kind="SHOP"
+        required
+        attachTo={shopOfB1}
+        initial={{ attachmentId: 'att-0', remoteUrl: '/photo/att-0' }}
+        onChange={onChange}
+      />
+    );
+    pickFile(view.container, broken());
+    expect(await screen.findByText(`${PHOTO_UNREADABLE_MESSAGE} ${PHOTO_KEPT_NOTE}`)).toBeTruthy();
+    const slot = view.container.firstElementChild!;
+    expect(slot.className).toMatch(/border-emerald-300/);
+    expect(slot.className).not.toMatch(/border-red-300/);
+    expect(view.container.querySelector('label[aria-label="Retake photo"]')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Remove photo' })).toBeTruthy();
+    expect(retryButton()).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(seen).toEqual([]);
+
+    pickFile(view.container, heic());
+    expect(await screen.findByText(`${HEIC_PHOTO_MESSAGE} ${PHOTO_KEPT_NOTE}`)).toBeTruthy();
+  });
+
+  it('the slot is at least h-32, not exactly: the HEIC hint grows a half-width slot rather than being cut off', () => {
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    const slot = view.container.firstElementChild!;
+    expect(slot.className).toMatch(/(^|\s)min-h-32(\s|$)/);
+    expect(slot.className).not.toMatch(/(^|\s)h-32(\s|$)/);
+  });
+});
+
+describe('a photo that fails is read out (launch browser suite follow-up)', () => {
+  // The slot's failures were plain text on it: a salesman with a screen reader
+  // took the photo and heard nothing when it did not go up.
+  it('a failed upload is an alert, beside Retry upload', async () => {
+    uploadable();
+    presignPlan = ['refuse'];
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    pick(view.container);
+    await screen.findByRole('button', { name: /Retry upload/ });
+    expect(screen.getByRole('alert').textContent).toBe('Could not get upload URL.');
+  });
+
+  it('a photo it cannot read is an alert', async () => {
+    decode = 'fail';
+    const view = render(<PhotoCaptureSlot kind="SHOP" />);
+    fireEvent.change(view.container.querySelector('input[type="file"]')!, {
+      target: { files: [new File(['x'], 'IMG_0001.heic', { type: 'image/heic' })] },
+    });
+    expect((await screen.findByRole('alert')).textContent).toBe(HEIC_PHOTO_MESSAGE);
   });
 });

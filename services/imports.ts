@@ -23,8 +23,9 @@ import {
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { duplicateHeadingIssue, parseWorkbook } from '@/lib/excel';
 import { normalizeCR } from '@/lib/cr';
-import { formatCustomerCode, formatBranchCode } from '@/lib/codes';
+import { APP_CUSTOMER_CODE, formatCustomerCode, formatBranchCode } from '@/lib/codes';
 import { checkLimit } from '@/lib/rate-limit';
+import { MAX_IMPORT_BYTES, importFileTooLarge } from '@/lib/import-file-size';
 import { rescoreCustomerTx } from '@/lib/rescore';
 import { subChannelClearedByChannelChange } from '@/lib/channel-pair';
 import bcrypt from 'bcryptjs';
@@ -67,6 +68,7 @@ import { fixTarget, masterCollisionMaps, newerUploadsCarrying } from '@/lib/impo
 import { lockCustomerRowByCode } from '@/lib/locks';
 import { branchStatusEvents, followBranchStatus, liveBranchStatuses } from '@/lib/customer-status';
 import { archivedUncodedDeactivationWhere } from '@/lib/temix';
+import { lockTemixCode, normalizeTemixCode, temixCodeHolder } from '@/lib/temix-code';
 import {
   branchOnlyNote,
   composeBranchCode,
@@ -127,9 +129,6 @@ function uc(v: unknown): string {
     .trim()
     .toUpperCase();
 }
-
-// QA-012: hard cap on uploaded xlsx (zip-bomb defense)
-const MAX_IMPORT_BYTES = 5 * 1024 * 1024; // 5 MB
 
 /**
  * The shortest address the DATABASE will accept for a branch.
@@ -196,10 +195,9 @@ async function uploadAccountMasterCore(
   }
   const file = formData.get('file');
   if (!(file instanceof File)) throw new ValidationError({ file: 'No file uploaded.' });
+  // QA-012: hard cap on uploaded xlsx (zip-bomb defense), the same the form checks.
   if (file.size > MAX_IMPORT_BYTES) {
-    throw new ValidationError({
-      file: `File is too large (${Math.round(file.size / 1024)} KB). Maximum is 5 MB.`,
-    });
+    throw new ValidationError({ file: importFileTooLarge(file.size) });
   }
   const buf = Buffer.from(await file.arrayBuffer());
 
@@ -764,8 +762,9 @@ async function uploadAccountMasterCore(
         }
         // (4) His new-customer requests that are not in review (drafts, or sent
         // back) and were started on another route than the one this row leaves
-        // him with: sent again, services/creates.ts would file them under the new
-        // route. /users can withdraw them with the change; the import cannot.
+        // him with: services/creates.ts refuses to save or send one again from
+        // another route, so after the move he could only withdraw them. /users
+        // can withdraw them with the change; the import cannot.
         if (existing?.isActive && (existing.ownedRouteId ?? null) !== ownedRouteId) {
           const stranded = await prisma.customerEdit.count({
             where: {
@@ -1273,10 +1272,9 @@ async function uploadCustomerMasterCore(
   }
   const file = formData.get('file');
   if (!(file instanceof File)) throw new ValidationError({ file: 'No file uploaded.' });
+  // QA-012: hard cap on uploaded xlsx (zip-bomb defense), the same the form checks.
   if (file.size > MAX_IMPORT_BYTES) {
-    throw new ValidationError({
-      file: `File is too large (${Math.round(file.size / 1024)} KB). Maximum is 5 MB.`,
-    });
+    throw new ValidationError({ file: importFileTooLarge(file.size) });
   }
   const buf = Buffer.from(await file.arrayBuffer());
 
@@ -1684,13 +1682,54 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
 
   // Kind is checked BEFORE the claim: an ACCOUNT batch must never be moved into
   // PROMOTING (a state the customer resume path owns) just to be rejected.
+  // The status and lease are read here too: the claim below only takes the batch
+  // as it was read, so a refusal after the claim can put back exactly this.
   const preflight = await prisma.importBatch.findUnique({
     where: { id: batchId },
-    select: { kind: true, uploadedAt: true },
+    select: {
+      kind: true,
+      uploadedAt: true,
+      status: true,
+      promoteLeaseBy: true,
+      promoteLeaseUntil: true,
+    },
   });
   if (!preflight) throw new ValidationError({ batchId: 'not found' });
   if (preflight.kind !== 'CUSTOMER')
     throw new ValidationError({ batchId: 'not a customer import' });
+
+  // RK-3: the lease serializes ONE batch, but the QA P-01 branch-steal guard is a
+  // read-then-upsert whose safety argument rests on promote being serialized across
+  // the whole master ("batch promote is serialized by the atomic claim"). Two
+  // DIFFERENT batches promoting at once would reopen that window — and RK-3 stretched
+  // it from a single request to minutes, while actively inviting the sequence that
+  // triggers it (upload a corrected sheet while the first batch is still resumable).
+  // So refuse to run a second concurrent promote; fail closed.
+  const otherLivePromote = () =>
+    prisma.importBatch.findFirst({
+      where: {
+        id: { not: batchId },
+        kind: 'CUSTOMER',
+        status: 'PROMOTING',
+        promoteLeaseUntil: { gt: new Date() },
+      },
+      select: { id: true, filename: true },
+    });
+  const anotherIsPromoting = (other: { filename: string }) =>
+    new ValidationError({
+      batchId: `Another customer import ("${other.filename}") is being promoted right now. Only one may run at a time — wait for it to finish, then resume this one.`,
+    });
+  // Checked BEFORE the claim, so the usual refusal never touches this batch: a
+  // claim taken only to be released used to leave a READY batch PROMOTING — the
+  // batch page said "Promote interrupted" and Work listed it "to resume" although
+  // nothing had run — and its momentary live lease could make the import that IS
+  // running refuse its own next slice. The check after the claim stays: it is the
+  // one that closes the race of two batches claimed at the same moment. Only a
+  // batch the claim could take is checked: one that cannot be promoted (PROMOTED,
+  // still PARSING) is told its own state by the claim below, not "another import".
+  const promotable = ['READY', 'FAILED', 'PROMOTING'].includes(preflight.status);
+  const otherBefore = promotable ? await otherLivePromote() : null;
+  if (otherBefore) throw anotherIsPromoting(otherBefore);
 
   const now = new Date();
   // The token identifies THIS slice, not merely this user — the same steward in two
@@ -1704,9 +1743,14 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
   // no live lease), and this run continuing to its own next slice (matching token,
   // which is why a run need not wait out the lease it just set). Two Stewards, a
   // double-click, or a stray retry cannot interleave: exactly one caller gets count=1.
+  // It also only takes the batch in the state the preflight read, so what the
+  // refusal below puts back is exactly what this claim replaced.
   const claim = await prisma.importBatch.updateMany({
     where: {
       id: batchId,
+      status: preflight.status,
+      promoteLeaseBy: preflight.promoteLeaseBy,
+      promoteLeaseUntil: preflight.promoteLeaseUntil,
       OR: [
         { status: 'READY' },
         // Nothing writes FAILED any more; accepting it lets a batch left behind by
@@ -1735,37 +1779,49 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         batchId: 'This batch is being promoted right now — wait for it to finish, then resume.',
       });
     }
+    // Still promotable, so it changed between the preflight read and the claim (a
+    // fix put a promoted batch back to READY, a lease was released): say so rather
+    // than name a state that CAN be promoted.
+    if (cur?.status === 'READY' || cur?.status === 'FAILED' || cur?.status === 'PROMOTING') {
+      throw new ValidationError({
+        batchId: 'This batch changed just as Promote started — try again.',
+      });
+    }
     throw new ValidationError({
       batchId: `Batch is in state ${cur?.status ?? '<missing>'} — only READY or interrupted batches can be promoted.`,
     });
   }
-  // RK-3: the lease serializes ONE batch, but the QA P-01 branch-steal guard is a
-  // read-then-upsert whose safety argument rests on promote being serialized across
-  // the whole master ("batch promote is serialized by the atomic claim"). Two
-  // DIFFERENT batches promoting at once would reopen that window — and RK-3 stretched
-  // it from a single request to minutes, while actively inviting the sequence that
-  // triggers it (upload a corrected sheet while the first batch is still resumable).
-  // So refuse to run a second concurrent promote; fail closed.
-  const otherLive = await prisma.importBatch.findFirst({
-    where: {
-      id: { not: batchId },
-      kind: 'CUSTOMER',
-      status: 'PROMOTING',
-      promoteLeaseUntil: { gt: new Date() },
-    },
-    select: { id: true, filename: true },
-  });
+  // The race: another batch was claimed between the check above and this claim.
+  // Each claim commits before its check runs, so of two batches claimed at once
+  // the later check always sees the other — at least one refuses (fail closed).
+  const otherLive = await otherLivePromote();
   if (otherLive) {
-    // Release the claim we just took so this batch is not left holding a lease.
-    await prisma.importBatch
-      .updateMany({
+    // Undo the claim in ONE guarded write: status AND lease back to exactly what
+    // the claim replaced (a READY batch stays READY, not "interrupted"). Guarded
+    // by our token, so it can never undo anyone else's claim. It is a separate
+    // write on purpose: in one transaction with the claim, each claim would be
+    // hidden from the other batch's check and both could run. So it is tried
+    // twice; an undo that still cannot be written leaves the batch PROMOTING
+    // under this promote's lease, blocking other promotes until that runs out
+    // (PROMOTE_LEASE_MS), after which it reads interrupted and can be resumed.
+    const unclaim = () =>
+      prisma.importBatch.updateMany({
         where: { id: batchId, promoteLeaseBy: leaseToken },
-        data: { promoteLeaseBy: null, promoteLeaseUntil: null },
-      })
-      .catch(() => {});
-    throw new ValidationError({
-      batchId: `Another customer import ("${otherLive.filename}") is being promoted right now. Only one may run at a time — wait for it to finish, then resume this one.`,
-    });
+        data: {
+          status: preflight.status,
+          promoteLeaseBy: preflight.promoteLeaseBy,
+          promoteLeaseUntil: preflight.promoteLeaseUntil,
+        },
+      });
+    await unclaim()
+      .catch(() => unclaim())
+      .catch((e) => {
+        logger.warn(
+          { err: (e as Error).message?.slice(0, 80), batchId },
+          'import.promote.unclaim_failed'
+        );
+      });
+    throw anotherIsPromoting(otherLive);
   }
   // final-hunt #23 (revised for RK-3): once claimed, any UNEXPECTED throw must not
   // leave the batch holding a lease nobody owns — it would be unresumable until the
@@ -1840,6 +1896,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     for (const row of cleanRows) {
       const p = row.parsed as unknown as ParsedShape | null;
       if (!p?.custCode) continue;
+      // Folded as the upload now folds it (lib/import-row-check.ts), for a batch
+      // staged before it did: every comparison below reads one spelling.
+      if (p.temixCode) p.temixCode = normalizeTemixCode(p.temixCode) || null;
       const g = groups.get(p.custCode) ?? { rowIds: [], parsed: [], corrections: [] };
       g.rowIds.push(row.id);
       g.parsed.push(p);
@@ -2149,6 +2208,11 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // F16: the full lane cleared the customer's sub-channel (logged once
         // the group has committed, never for a rolled-back one).
         let clearedSubChannelOf: string | null = null;
+        // Owner decision 2026-10-08: the customer whose first Temix code this
+        // group recorded (the backup match below), logged once committed.
+        // (Typed with `as`: it is assigned inside the transaction's callback,
+        // which TypeScript's narrowing of a `let` does not see.)
+        let firstTemixCodeOf = null as { customerId: string; temixCode: string } | null;
         // final-hunt #32, extended to promote: this interactive transaction makes
         // ~9 sequential round trips (customer read + upsert, per-branch ownership
         // check + upsert, row state, completeness). Prisma's DEFAULT 5s ceiling is
@@ -2159,6 +2223,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
           async (tx) => {
             rowNotes = g.rowIds.map(() => ({ note: null, written: false }));
             clearedSubChannelOf = null;
+            firstTemixCodeOf = null;
             // N03: the customer's row lock FIRST, then the read, on every lane —
             // lib/locks.ts order, customer before branch. The read used to come
             // unlocked, so an archive committing after it was not seen and the
@@ -2170,6 +2235,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   select: {
                     id: true,
                     temixCode: true,
+                    // Owner decision 2026-10-08, the backup match (below): whether
+                    // it was ever sent to Temix.
+                    temixSyncState: true,
+                    lastTemixUploadAt: true,
                     paymentTerms: true,
                     deletedAt: true,
                     createdById: true,
@@ -2190,6 +2259,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   },
                 })
               : null;
+            // The Temix code on record, as the sheet's is now spelled (upper
+            // case, lib/temix-code.ts): an older row may hold it as its sheet had it.
+            const recordedCode = existing?.temixCode ? normalizeTemixCode(existing.temixCode) : null;
             // N03: an archived customer is refused before any lane is chosen,
             // whatever the rows carry. This check sat inside `if (lead.temixCode)`,
             // so a row with a blank temix_code took the full lane: the upsert
@@ -2231,6 +2303,14 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // so a code landing on a different customer, or disagreeing with an
             // already-recorded code, is Steward-review territory.
             if (lead.temixCode) {
+              // Owner decision 2026-10-08: a NEW customer is created below with
+              // this code as its Temix code, so the check and the write hold the
+              // lock a finalize takes for the code the Accountant typed
+              // (lib/create-finalize.ts): two customers given one code at the same
+              // moment, one by each path, would otherwise both pass. The backup
+              // match below takes it too; a customer that exists is otherwise
+              // never given a new code here.
+              if (!existing) await lockTemixCode(tx, lead.temixCode);
               // NO deletedAt filter (adversarial-review CONFIRMED fix): an
               // ARCHIVED customer holding this code has a DEACTIVATE for it
               // queued/in-flight — re-attaching the code to a live customer
@@ -2244,7 +2324,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   nmwcCode: { not: custCode },
                   OR: [
                     { temixCode: lead.temixCode },
-                    ...(existing?.temixCode === lead.temixCode
+                    ...(recordedCode === lead.temixCode
                       ? []
                       : [archivedUncodedDeactivationWhere(lead.temixCode)]),
                   ],
@@ -2261,7 +2341,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   `CROSSWALK:temix_code already recorded on ${codeOwner.nmwcCode}${codeOwner.deletedAt ? ' (archived — its Temix deactivation may be in flight)' : ''} — steward review`
                 );
               }
-              if (existing?.temixCode && existing.temixCode !== lead.temixCode) {
+              if (recordedCode && recordedCode !== lead.temixCode) {
                 throw new Error(
                   'CROSSWALK:temix_code conflicts with the code already recorded for this customer — steward review'
                 );
@@ -2317,25 +2397,88 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               !!existing &&
               !existing.deletedAt &&
               !!lead.temixCode &&
-              !!existing.temixCode &&
-              existing.temixCode === lead.temixCode;
+              !!recordedCode &&
+              recordedCode === lead.temixCode;
 
             if (
               existing &&
               !existing.deletedAt &&
               lead.temixCode &&
-              existing.temixCode &&
-              existing.temixCode !== lead.temixCode
+              recordedCode &&
+              recordedCode !== lead.temixCode
             ) {
               throw new Error(
                 'CROSSWALK:this customer is already crosswalked to a different Temix code — changing it is a deliberate re-crosswalk, not an import; steward review'
               );
             }
+            // Owner decision 2026-10-08, the backup match. The Accountant now types
+            // a new customer's Temix code at its last approval (lib/create-finalize.ts),
+            // but a customer created in the app before that has none, and the rule
+            // above can never give it one: so its refresh never landed and
+            // TEMIX_SYNC_ACKED (below) was never sent. For such a customer — live,
+            // no Temix code yet, CREATED IN THE APP AND SENT TO TEMIX SINCE — a row
+            // whose cust_code is its customer code exactly (the lock above found it
+            // by that unique code) and that carries a temix_code is its refresh.
+            // Created in the app: its customer code is one the app mints
+            // (NMWC-YYYY-NNNNNN) and the finalize that made it wrote its CREATE
+            // audit row (lib/create-finalize.ts). An approved new-customer request
+            // is not enough: a merge moves the loser's requests to the winner
+            // (services/duplicates.ts), so a seeded or imported winner would pass;
+            // audit rows are never moved. Sent to Temix: it was in an upload batch
+            // (or is UPLOADED or SYNCED); one never sent cannot have a Temix code
+            // yet, so a code in the sheet would be the sheet's alone.
+            // Everything else keeps the rule above: the seeded and imported
+            // customers still take the full lane (the go-live load depends on
+            // it); so does a group with a row the Steward fixed in the app, which
+            // is no word from Temix (its cust_code can be corrected there). The
+            // authority is again only this sheet, so the lane writes the code and
+            // nothing else the ERP owns: not the payment terms or credit figures,
+            // which came through the approval chain; the next refresh, now
+            // matching, applies Temix's. The code must be no other customer's,
+            // live or archived, nor a live branch's (lib/temix-code.ts, the rule
+            // finalize applies), under the lock a finalize takes; the guard above
+            // has already refused one that any customer holds as its Temix code,
+            // or that an archived one is deactivated under.
+            let firstTemixCode = false;
+            if (
+              !isRefresh &&
+              existing &&
+              !existing.deletedAt &&
+              !existing.temixCode &&
+              lead.temixCode &&
+              plainIdx.length > 0 &&
+              g.parsed.every((p) => p.fixedInApp !== true) &&
+              APP_CUSTOMER_CODE.test(custCode) &&
+              (existing.lastTemixUploadAt != null ||
+                existing.temixSyncState === 'UPLOADED' ||
+                existing.temixSyncState === 'SYNCED')
+            ) {
+              const createdByFinalize = await tx.auditLog.findFirst({
+                where: { action: 'CREATE', entityType: 'Customer', entityId: existing.id },
+                select: { id: true },
+              });
+              if (createdByFinalize) {
+                await lockTemixCode(tx, lead.temixCode);
+                const holder = await temixCodeHolder(tx, lead.temixCode, existing.id);
+                if (holder) {
+                  throw new Error(
+                    `CROSSWALK:${
+                      holder.branchCode
+                        ? `temix_code is the code of branch ${holder.branchCode} of live customer ${holder.nmwcCode}`
+                        : holder.archived
+                          ? `temix_code is held by archived ${holder.nmwcCode} — its Temix deactivation may be in flight`
+                          : `temix_code is already the Temix code of live customer ${holder.nmwcCode}`
+                    } — steward review`
+                  );
+                }
+                firstTemixCode = true;
+              }
+            }
             // The plain rows' lane: the refresh lane when their first row carries
-            // the customer's own Temix code, else the full lane. With no plain
-            // row, nothing about the customer is written at all.
-            const refreshLane = isRefresh && plainIdx.length > 0;
-            const fullLane = plainIdx.length > 0 && !isRefresh;
+            // the customer's own Temix code (or its first one, above), else the
+            // full lane. With no plain row, nothing about the customer is written.
+            const refreshLane = (isRefresh || firstTemixCode) && plainIdx.length > 0;
+            const fullLane = plainIdx.length > 0 && !isRefresh && !firstTemixCode;
             const fullIdx = fullLane ? plainIdx : [];
             const fullBranches = fullIdx.map((i) => resolvedBranches[i]);
             const fullParsed = fullIdx.map((i) => g.parsed[i]);
@@ -2397,23 +2540,29 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // figures apply only while the customer is (or becomes) CREDIT.
               const ptPresent = lead.paymentTermsPresent === true;
               const effectiveTerms = ptPresent ? pt : existing!.paymentTerms;
+              // The first code (owner decision 2026-10-08, above) writes the code only.
+              const erpOwned: Prisma.CustomerUpdateInput = firstTemixCode
+                ? {}
+                : {
+                    paymentTerms: ptPresent ? pt : undefined,
+                    creditLimit:
+                      effectiveTerms === 'CREDIT'
+                        ? (lead.creditLimit ?? undefined)
+                        : ptPresent
+                          ? null
+                          : undefined,
+                    paymentTermDays:
+                      effectiveTerms === 'CREDIT'
+                        ? (lead.paymentTermDays ?? undefined)
+                        : ptPresent
+                          ? null
+                          : undefined,
+                  };
               await tx.customer.update({
                 where: { id: existing!.id },
                 data: {
                   temixCode: lead.temixCode,
-                  paymentTerms: ptPresent ? pt : undefined,
-                  creditLimit:
-                    effectiveTerms === 'CREDIT'
-                      ? (lead.creditLimit ?? undefined)
-                      : ptPresent
-                        ? null
-                        : undefined,
-                  paymentTermDays:
-                    effectiveTerms === 'CREDIT'
-                      ? (lead.paymentTermDays ?? undefined)
-                      : ptPresent
-                        ? null
-                        : undefined,
+                  ...erpOwned,
                   lastEditedById: me.id,
                   // B-05: make the refresh visible to the optimistic lock so a
                   // concurrent edit-approve sees VERSION_CONFLICT, not a silent
@@ -2434,6 +2583,12 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               });
               // TEMIX_SYNC_ACKED: the ERP code just landed for the first time —
               // tell the originating submitter their customer is live in Temix.
+              // Reached only through the backup match (owner decision 2026-10-08):
+              // the refresh rule needs a recorded code. createdById is the
+              // salesman who sent the request (lib/create-finalize.ts).
+              if (firstTemixCode) {
+                firstTemixCodeOf = { customerId: existing!.id, temixCode: lead.temixCode! };
+              }
               if (!existing!.temixCode && lead.temixCode && existing!.createdById) {
                 await notifyUsers(tx, [existing!.createdById], {
                   kind: 'TEMIX_SYNC_ACKED',
@@ -2872,6 +3027,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         if (clearedSubChannelOf) {
           // Ids only: no name, phone or channel value.
           logger.info({ customerId: clearedSubChannelOf, batchId }, 'import.promote.subchannel_cleared');
+        }
+        if (firstTemixCodeOf) {
+          logger.info({ ...firstTemixCodeOf, batchId }, 'import.promote.first_temix_code');
         }
         // A full-lane row carries a note only when its customer's sub-channel
         // was cleared (F16, on the lead row).

@@ -15,7 +15,7 @@ export function loadExcelJS(): Promise<typeof ExcelJSNS> {
   return excelJsPromise;
 }
 
-// Defence-in-depth against a decompression-bomb / oversized workbook: the 5 MB
+// Defence-in-depth against a decompression-bomb / oversized workbook: the 4.2 MB
 // upload cap bounds only the COMPRESSED bytes, but a crafted .xlsx inflates to
 // far more rows. Cap total parsed data rows so the per-row DB loops downstream
 // (import promote) cannot be driven into a multi-hundred-thousand-query DoS.
@@ -207,7 +207,16 @@ export async function buildWorkbook(rows: Record<string, unknown>[], sheetName =
  */
 export async function openStreamedWorkbook() {
   const ExcelJS = await loadExcelJS();
-  const { PassThrough } = await import('node:stream');
+  // Launch fix (2026-10-08): in the production build, webpack's server runtime
+  // turns this dynamic import of a CommonJS module whose export is a FUNCTION
+  // (Node's Stream) into a namespace holding only `default`, so a destructured
+  // PassThrough was undefined and every streamed export answered 500 "Export
+  // failed". Unit tests run plain Node, where the named export exists. Read it
+  // from either shape.
+  const streamModule = await import('node:stream');
+  const PassThrough =
+    streamModule.PassThrough ??
+    (streamModule as unknown as { default: typeof import('node:stream') }).default.PassThrough;
   const sink = new PassThrough();
   const chunks: Buffer[] = [];
   sink.on('data', (c: Buffer) => chunks.push(c));

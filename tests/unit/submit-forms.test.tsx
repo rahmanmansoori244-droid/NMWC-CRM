@@ -476,6 +476,29 @@ describe('the customer update form', () => {
     expect(screen.getByRole('status').textContent).toBe('✓ Submitted for approval. It arrived — nothing more to do.');
   });
 
+  // His route switched off: services/photos.ts refuses his attach and Remove, so
+  // every slot — CR included — is locked from the start; a draft still saves.
+  it('on a switched-off route (photosHeld) every slot is locked from the start', async () => {
+    render(
+      <EnrichmentForm
+        customer={customer}
+        channels={[]}
+        lockName
+        lockCr={false}
+        userRole="SALESMAN"
+        canSubmit={false}
+        submitHeldTitle="Your route is inactive — ask your supervisor."
+        photosHeld
+        sessionUserId="u1"
+        gate="CORE"
+      />
+    );
+    const locks = () => [...document.querySelectorAll('[data-slot]')].map((e) => e.getAttribute('data-locked'));
+    expect(locks()).toHaveLength(5);
+    expect(new Set(locks())).toEqual(new Set(['yes']));
+    expect(screen.getByRole('button', { name: 'Save draft' })).not.toBeDisabled();
+  });
+
   it('no slot takes a new photo while a submit is on its way, or once it has arrived', async () => {
     // Submit is held while a photo uploads — but a photo STARTED after the tap
     // would be cut off by the page load that follows the answer (item 22 review).

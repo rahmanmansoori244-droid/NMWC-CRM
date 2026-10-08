@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/nmwc/EmptyState';
 import { Role, type Prisma } from '@prisma/client';
 import { omanDayOfWeek, omanLongDate } from '@/lib/tz';
 import { countOpenReturned } from '@/lib/returned-work';
+import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 
 export const metadata = { title: 'Today · NMWC' };
 
@@ -51,7 +52,12 @@ export default async function TodayPage({
   const [me, pending, rejected] = await Promise.all([
     prisma.user.findUniqueOrThrow({
       where: { id: session.user.id },
-      select: { id: true, fullName: true, ownedRouteId: true },
+      select: {
+        id: true,
+        fullName: true,
+        ownedRouteId: true,
+        ownedRoute: { select: { isActive: true } },
+      },
     }),
     prisma.customerEdit.count({ where: { submittedById: session.user.id, state: 'SUBMITTED' } }),
     // Launch fix: a sent-back update he has since sent again no longer waits
@@ -132,15 +138,40 @@ export default async function TodayPage({
           // Owner decision 2026-09-25: a salesman on a phone had no way to start
           // a new customer. The only link to a blank form was in the sidebar,
           // which is hidden below the md breakpoint, and the bottom bar has none.
-          <Link
-            href="/customers/new"
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-brand-600 px-4 text-base font-semibold text-white hover:bg-brand-700"
-          >
-            <UserPlus className="h-4 w-4" aria-hidden />
-            New customer
-          </Link>
+          // On a switched-off route it is shown switched off too: live above
+          // the notice below, it said he could register one (launch review).
+          me.ownedRoute?.isActive === false ? (
+            <button
+              type="button"
+              disabled
+              className="inline-flex min-h-11 cursor-not-allowed items-center gap-1.5 rounded-md bg-slate-200 px-4 text-base font-semibold text-slate-500"
+            >
+              <UserPlus className="h-4 w-4" aria-hidden />
+              New customer
+            </button>
+          ) : (
+            <Link
+              href="/customers/new"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-md bg-brand-600 px-4 text-base font-semibold text-white hover:bg-brand-700"
+            >
+              <UserPlus className="h-4 w-4" aria-hidden />
+              New customer
+            </Link>
+          )
         }
       />
+
+      {/* Launch fix (P2): a route switched off mid-week still lists its visits,
+          but nothing he sends on it is accepted (services/creates.ts, edits.ts,
+          reactivations.ts, photos.ts): say so before he works a shop. The refusals say
+          the first sentence too. */}
+      {me.ownedRoute?.isActive === false && (
+        <div className="mx-4 mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:mx-6">
+          {ROUTE_INACTIVE_MESSAGE} Until it is active again, you cannot submit an enrichment, add or
+          remove photos, mark a shop closed, request a reactivation or register a new customer. An
+          enrichment you start stays saved on this phone.
+        </div>
+      )}
 
       <div className="grid grid-cols-3 gap-2 px-4 pt-4 sm:gap-3 sm:px-6">
         {/* It counts branches: /customers counts customers, and one customer
@@ -230,7 +261,9 @@ export default async function TodayPage({
             }
           />
         ) : (
-          <div className="grid gap-3">
+          // grid-cols-1: one column no wider than the phone. An auto column took
+          // the width of a card's whole name, which `truncate` keeps on one line.
+          <div className="grid grid-cols-1 gap-3">
             {branches.map((b) => (
               <CustomerCard
                 key={b.id}

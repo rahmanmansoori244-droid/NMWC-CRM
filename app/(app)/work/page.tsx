@@ -299,7 +299,9 @@ export default async function WorkPage() {
         {items.length === 0 ? (
           <EmptyState title="All clear" description="Nothing is waiting on you right now." />
         ) : (
-          <ul className="grid gap-3">
+          // grid-cols-1: one column no wider than the phone. An auto column took
+          // the width of a whole title, which `truncate` keeps on one line.
+          <ul className="grid grid-cols-1 gap-3">
             {items.map((it) => (
               <li key={it.id}>
                 <Link

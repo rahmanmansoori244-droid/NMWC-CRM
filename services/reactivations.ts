@@ -17,6 +17,7 @@ import {
   ValidationError,
   NotFoundError,
   ConflictError,
+  ROUTE_INACTIVE_MESSAGE,
   runAction,
   type SafeAction,
 } from '@/lib/errors';
@@ -185,8 +186,12 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   const meRow = await prisma.user.findUniqueOrThrow({
     where: { id: me.id },
     // supervisorId: F1, who is told of this request (lib/notify-hierarchy.ts).
-    select: { ownedRouteId: true, supervisorId: true },
+    select: { ownedRouteId: true, supervisorId: true, ownedRoute: { select: { isActive: true } } },
   });
+  // Launch fix (P2): a switched-off route takes no new request from him, as New
+  // customer already refused (services/creates.ts). A Manager still decides the
+  // requests already open on it.
+  if (meRow.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
   if (branch.routeId !== meRow.ownedRouteId) {
     throw new ForbiddenError('Branch is not on your route.');
   }
@@ -323,8 +328,10 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
   const meRow = await prisma.user.findUniqueOrThrow({
     where: { id: me.id },
     // supervisorId: F1, who is told of this request (lib/notify-hierarchy.ts).
-    select: { ownedRouteId: true, supervisorId: true },
+    select: { ownedRouteId: true, supervisorId: true, ownedRoute: { select: { isActive: true } } },
   });
+  // Launch fix (P2): as for a reactivation (above).
+  if (meRow.ownedRoute?.isActive === false) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
   if (branch.routeId !== meRow.ownedRouteId) {
     throw new ForbiddenError('Branch is not on your route.');
   }

@@ -552,6 +552,39 @@ describe('Create user — regions, and the route code as the username', () => {
     ).toEqual(['—', 'Manager GT (mct-gt) · Manager']);
   });
 
+  it('launch browser suite: every field is found by its label', () => {
+    // No label was tied to its field (no htmlFor, no id): a screen reader read
+    // eight unnamed fields, and getByLabel found none of them.
+    renderCreate();
+    const fields: [string | RegExp, string][] = [
+      [/^Full name/, 'INPUT'],
+      [/^Username/, 'INPUT'],
+      ['Role', 'SELECT'],
+      ['Supervisor', 'SELECT'],
+      ['Route (must be unassigned)', 'SELECT'],
+      ['Email (optional)', 'INPUT'],
+      ['Phone (optional)', 'INPUT'],
+      [/^Password/, 'INPUT'],
+    ];
+    for (const [label, tag] of fields) expect(screen.getByLabelText(label).tagName, String(label)).toBe(tag);
+    expect(screen.getByRole('combobox', { name: 'Role' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'MANAGER' } });
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    expect(screen.getByRole('group', { name: /^Regions/ })).toBeTruthy();
+  });
+
+  it('launch browser suite: a refusal under a field is announced', async () => {
+    h.create.mockResolvedValue({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      message: 'Validation failed',
+      fields: { username: 'That username is taken.' },
+    });
+    const { container } = renderCreate();
+    fireEvent.submit(container.querySelector('form')!);
+    expect((await screen.findByRole('alert')).textContent).toBe('That username is taken.');
+  });
+
   it('what the create says about a hand-over is shown with "User created."', async () => {
     h.create.mockResolvedValue({
       ok: true,

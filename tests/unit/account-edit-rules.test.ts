@@ -262,6 +262,58 @@ describe('what the Steward is told about open requests (routeMoveNotes)', () => 
   it('says nothing when there is nothing open', () => {
     expect(routeMoveNotes({ who: 'Ali', fromRoute: 'C4', inReview: 0, sentBack: 0 })).toEqual([]);
   });
+
+  // Security review: a new-customer request in review stays with its approvers,
+  // but one sent back after the move cannot be sent again from his new route
+  // (services/creates.ts refuses it); he withdraws it.
+  it('new-customer requests in review: one sent back cannot be sent again from his new route', () => {
+    const notes = routeMoveNotes({
+      who: 'Ali',
+      fromRoute: 'C4',
+      inReview: 3,
+      inReviewCreates: { count: 2, routes: ['C4'] },
+      sentBack: 0,
+    });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatch(/3 request\(s\) in review\. They stay with the same approvers/);
+    expect(notes[0]).toMatch(
+      /New-customer requests among them \(2\): if one is sent back to him, he cannot send it again from his new route — he opens it from Needs correction and withdraws it at the bottom of its page, and the salesman of C4 adds the shop afresh\./
+    );
+    // Updates only: nothing about new-customer requests.
+    expect(
+      routeMoveNotes({
+        who: 'Ali',
+        fromRoute: 'C4',
+        inReview: 1,
+        inReviewCreates: { count: 0, routes: [] },
+        sentBack: 0,
+      })[0]
+    ).not.toMatch(/new-customer/);
+  });
+
+  // A salesman moved twice: requests sent from his first route (C2) are still in
+  // review when he leaves his second (C4). The count covers creates on any route
+  // but the new one, so the route named must be theirs, not the one he leaves.
+  it('names the routes the new-customer requests were started on, not the route he leaves', () => {
+    const [note] = routeMoveNotes({
+      who: 'Ali',
+      fromRoute: 'C4',
+      inReview: 3,
+      inReviewCreates: { count: 3, routes: ['C2', 'C4'] },
+      sentBack: 0,
+    });
+    expect(note).toMatch(/New-customer requests among them \(3\):/);
+    expect(note).toMatch(/the salesman of C2 or C4 adds the shop afresh\./);
+    const [one] = routeMoveNotes({
+      who: 'Ali',
+      fromRoute: 'C4',
+      inReview: 1,
+      inReviewCreates: { count: 1, routes: ['C2'] },
+      sentBack: 0,
+    });
+    expect(one).toMatch(/the salesman of C2 adds the shop afresh\./);
+    expect(one).not.toMatch(/C4/);
+  });
 });
 
 describe('reviewer fixes (2026-10-07)', () => {
@@ -298,7 +350,15 @@ describe('reviewer fixes (2026-10-07)', () => {
     expect(moved).toMatch(
       /Ali has 2 new-customer request\(s\) started on route C4 that are not in review/
     );
-    expect(moved).toMatch(/filed under route C5/);
+    // Security review: sent again from C5 they are refused, not filed under it;
+    // and one sent first stays with C4's approvers only while it is in review.
+    expect(moved).toMatch(
+      /After the move he cannot send them again from route C5, only withdraw them\./
+    );
+    expect(moved).not.toMatch(/filed under/);
+    expect(moved).toMatch(
+      /in review they stay with the approvers of route C4, but if one is sent back after the move he cannot send it again and withdraws it/
+    );
     expect(moved).toMatch(/Withdraw them with this change/);
     expect(
       strandedCreatesIssue({
@@ -324,6 +384,9 @@ describe('reviewer fixes (2026-10-07)', () => {
     expect(strandedCreatesImportIssue('c4', 2)).toMatch(
       /"c4" has 2 new-customer request\(s\).*Nothing was written/
     );
+    expect(strandedCreatesImportIssue('c4', 2)).toMatch(
+      /Afterwards he could not send them again from his new route, only withdraw them\./
+    );
   });
 
   it('the notes count withdrawn new-customer requests apart from sent-back updates', () => {
@@ -334,6 +397,20 @@ describe('reviewer fixes (2026-10-07)', () => {
         /^2 new-customer request\(s\) Ali had started on route C4 .* were withdrawn/
       ),
     ]);
+  });
+
+  it('a salesman moved twice: the withdrawn note names the routes the requests were started on, not his last one', () => {
+    const [note] = routeMoveNotes({
+      who: 'Ali',
+      fromRoute: 'C9',
+      inReview: 0,
+      sentBack: 0,
+      withdrawn: 1,
+      withdrawnRoutes: ['C4'],
+    });
+    expect(note).toMatch(/started on route C4 /);
+    expect(note).toMatch(/The salesman of C4 adds/);
+    expect(note).not.toMatch(/C9/);
   });
 
   it('a supervisor change moves the Supervisor step only when a Supervisor-role account is involved', () => {

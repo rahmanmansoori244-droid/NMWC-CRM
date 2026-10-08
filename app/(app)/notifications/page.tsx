@@ -68,7 +68,9 @@ export default async function NotificationsPage() {
             description="Approvals, rejections and SLA alerts for you will show up here."
           />
         ) : (
-          <ul className="grid gap-2">
+          // grid-cols-1: one column no wider than the phone. An auto column took
+          // the width of a whole title, which `truncate` keeps on one line.
+          <ul className="grid grid-cols-1 gap-2">
             {notifications.map((n) => (
               <li key={n.id}>
                 <Link href={hrefFor(n, session.user.role)} className="block">

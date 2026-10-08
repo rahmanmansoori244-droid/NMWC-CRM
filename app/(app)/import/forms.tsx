@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import Link from 'next/link';
 import { uploadAccountMasterAction, uploadCustomerMasterAction } from '@/services/imports';
 import type { ActionResult } from '@/lib/errors';
+import { MAX_IMPORT_BYTES, importFileTooLarge } from '@/lib/import-file-size';
 
 type UploadOk = Record<string, string | number>;
 
@@ -57,6 +58,16 @@ function UploadForm({
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setResult(null);
+    const input = e.currentTarget.elements.namedItem('file');
+    const file = input instanceof HTMLInputElement ? input.files?.[0] : undefined;
+    // A workbook over the cap would be refused by Vercel (4.5 MB request body)
+    // before the importer runs, and the Steward would see Next's generic "An error
+    // occurred in the Server Components render…": say so here, in the importer's
+    // words, and send nothing. The importer keeps its own check (lib/import-file-size.ts).
+    if (file && file.size > MAX_IMPORT_BYTES) {
+      setResult({ tone: 'fail', message: importFileTooLarge(file.size) });
+      return;
+    }
     const fd = new FormData(e.currentTarget);
     start(async () => {
       try {

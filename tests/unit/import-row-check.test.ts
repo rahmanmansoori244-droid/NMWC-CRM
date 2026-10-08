@@ -119,6 +119,17 @@ describe('checkCustomerRow — why a row is held back', () => {
     const { parsed } = checkCustomerRow(ok, ctx());
     expect([parsed.paymentTerms, parsed.paymentTermsPresent]).toEqual(['CASH', false]);
   });
+
+  // Owner decision 2026-10-08 (review): the Accountant's typed Temix code is
+  // stored upper case and compared without regard to case; the import compared a
+  // sheet's temix_code with exact case, so a lower-case cell missed its customer.
+  it.each([
+    [' caa0367 ', 'CAA0367'],
+    ['‏tx٩٠٠', 'TX900'],
+    ['  ', null],
+  ])('temix_code %j is folded as the Accountant\'s code is: %j', (cell, folded) => {
+    expect(checkCustomerRow({ ...ok, temix_code: cell }, ctx()).parsed.temixCode).toBe(folded);
+  });
 });
 
 describe('the helpers it is built from', () => {

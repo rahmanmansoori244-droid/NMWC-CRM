@@ -6,6 +6,7 @@ import {
   BULK_DECISION_LIMIT_MESSAGE,
   BULK_RUN_FIELD,
   CREDIT_BULK_REFUSED_MESSAGE,
+  TEMIX_CODE_BULK_REFUSED_MESSAGE,
   runBulk,
   type BulkOutcome,
 } from '@/lib/bulk-run';
@@ -19,6 +20,7 @@ import {
   RateLimitError,
   FormOutdatedError,
   StaleFieldsError,
+  ROUTE_INACTIVE_MESSAGE,
   runAction,
   type SafeAction,
 } from '@/lib/errors';
@@ -108,6 +110,7 @@ import {
 } from '@/lib/notifications';
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
+import { normalizeTemixCode, temixCodeProblem } from '@/lib/temix-code';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
 import { openReturnedIds, RETURNED_CLEARED_REASON } from '@/lib/returned-work';
 
@@ -446,7 +449,13 @@ async function submitEditOnce(
   // Salesman scope: at least one branch must belong to his route
   const me = await prisma.user.findUniqueOrThrow({
     where: { id: session.id },
-    select: { id: true, ownedRouteId: true, role: true, supervisorId: true },
+    select: {
+      id: true,
+      ownedRouteId: true,
+      role: true,
+      supervisorId: true,
+      ownedRoute: { select: { isActive: true } },
+    },
   });
   // final-hunt #17: a Manager's customer-level authorization (assertCanEditCustomer)
   // is any-branch-overlap — it passes if ANY branch is in a region they manage. On a
@@ -455,6 +464,13 @@ async function submitEditOnce(
   // the branch loop below. STEWARD stays unrestricted (data-ops role).
   let managerRegionIds: string[] | null = null;
   if (me.role === Role.SALESMAN) {
+    // Launch fix (P2): a switched-off route takes no new request from him, as
+    // New customer already refused (services/creates.ts). A draft is still
+    // saved: nothing of it goes for approval. A Manager's or Steward's direct
+    // write below does not ask.
+    if (!isDraft && me.ownedRoute?.isActive === false) {
+      throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
+    }
     const onMyRoute = customer.branches.some((b) => b.routeId === me.ownedRouteId);
     if (!onMyRoute) throw new ForbiddenError('This customer is not on your route.');
   } else if (me.role === Role.STEWARD || me.role === Role.MANAGER) {
@@ -1425,6 +1441,18 @@ async function approveEditCore(formData: FormData) {
   ) {
     throw new ValidationError({ decisions: CREDIT_BULK_REFUSED_MESSAGE }, CREDIT_BULK_REFUSED_MESSAGE);
   }
+  // Owner decision 2026-10-08: the last step of a new-customer request needs the
+  // Temix code the Accountant typed for it, which a bulk approve does not carry.
+  if (
+    formData.get(BULK_RUN_FIELD) === '1' &&
+    isCreate &&
+    isFinalStep(parseChain(edit.approvalChain), edit.currentStepIndex)
+  ) {
+    throw new ValidationError(
+      { decisions: TEMIX_CODE_BULK_REFUSED_MESSAGE },
+      TEMIX_CODE_BULK_REFUSED_MESSAGE
+    );
+  }
   if (isCreate) {
     // Integrity: a CREATE row must have its draft payload (written atomically
     // at submit). Fails closed with an actionable code if not.
@@ -1597,6 +1625,12 @@ async function approveEditCore(formData: FormData) {
   // ── FINAL step, CREATE process: materialize the drafts into a real
   // Customer + Branch[] (all-or-nothing, same tx as the claim). ──
   if (isCreate) {
+    // Owner decision 2026-10-08: the Accountant created the customer in Temix
+    // himself and typed its code on this page. Required, in the shape Temix codes
+    // are stored (lib/temix-code.ts); finalize refuses one a live customer holds.
+    const temixCode = normalizeTemixCode(formData.get('temixCode'));
+    const temixCodeIssue = temixCodeProblem(temixCode);
+    if (temixCodeIssue) throw new ValidationError({ temixCode: temixCodeIssue }, temixCodeIssue);
     const finalizedAt = new Date();
     // DG-06: finalizeCreateInTx writes the FINALIZE + CREATE audit rows from
     // inside the transaction below, so it cannot read the request context
@@ -1654,15 +1688,18 @@ async function approveEditCore(formData: FormData) {
             branchDrafts: edit.branchDrafts,
           },
           finalizeEnv,
-          finalizedAt
+          finalizedAt,
+          temixCode
         );
         await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
-        // Submitter learns their customer is live; Stewards get the
-        // Temix-upload-ready signal (temixSyncState is now PENDING_UPLOAD).
+        // Submitter learns their customer is live, under both codes (owner
+        // decision 2026-10-08); Stewards get the Temix-upload-ready signal
+        // (temixSyncState is now PENDING_UPLOAD: the next batch updates the
+        // Temix record the Accountant made with the full record).
         await notifyUsers(tx, [edit.submittedById], {
           kind: 'EDIT_APPROVED_FINAL',
           title: 'New customer approved',
-          body: `${finalized.legalName} is now live as ${finalized.nmwcCode}.`,
+          body: `${finalized.legalName} is now live as ${finalized.nmwcCode}, Temix code ${finalized.temixCode}.`,
           editId,
           customerId: finalized.customerId,
         });
@@ -1670,7 +1707,7 @@ async function approveEditCore(formData: FormData) {
         await notifyUsers(tx, stewards, {
           kind: 'EDIT_APPROVED_FINAL',
           title: 'Ready for Temix upload',
-          body: `${finalized.legalName} (${finalized.nmwcCode}) was approved and is queued for the next Temix batch.`,
+          body: `${finalized.legalName} (${finalized.nmwcCode}, Temix code ${finalized.temixCode}) was approved and is queued for the next Temix batch.`,
           editId,
           customerId: finalized.customerId,
         });
@@ -1682,7 +1719,13 @@ async function approveEditCore(formData: FormData) {
       { timeout: 30_000, maxWait: 10_000 }
     );
     logger.info(
-      { editId, by: session.id, customerId: result.customerId, nmwcCode: result.nmwcCode },
+      {
+        editId,
+        by: session.id,
+        customerId: result.customerId,
+        nmwcCode: result.nmwcCode,
+        temixCode: result.temixCode,
+      },
       'create.finalize'
     );
     revalidatePath('/approvals');
