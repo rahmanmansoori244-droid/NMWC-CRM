@@ -19,7 +19,11 @@
  *     with its last open shop and is active again when one reopens; late
  *     requests go to the e-mail outbox (e-mail itself stays off in the run).
  *
- * Fixed in the launch candidate and asserted as fixed (no test here is test.fail): after a
+ * Open on the launch build, one test.fail (section 11, the photo burst): /reactivations loads the
+ * on-file photos hidden in its closed comparison <details> at once, and spends a Manager's
+ * 60-photo burst; the next photo-heavy page answers 429.
+ *
+ * Fixed in the launch candidate and asserted as fixed: after a
  * successful approve or send-back on /approvals/[id] the page no longer prints "NEXT_REDIRECT" in
  * red until the queue loads (aad7065). Owner decision 8 Oct (the Temix code at a new customer's
  * last step) changes nothing here: no test approves a new customer at the Accountant's step.
@@ -70,6 +74,7 @@ import {
   kpiValue,
   queueCard,
   queueOrder,
+  relayR2Puts,
   seedBranchRequest,
   seedCreateRequest,
   slaBudgetMin,
@@ -215,8 +220,13 @@ async function openStatusForm(page: Page, opener: 'Mark closed' | 'Request react
   return form;
 }
 
-/** Takes the evidence photo in the form: the camera input, compressed and uploaded by the page. */
+/**
+ * Takes the evidence photo in the form: the camera input, compressed and uploaded by the page.
+ * On a lane's own E2E_PORT the page's PUT to R2 is relayed (relayR2Puts: the bucket's CORS
+ * admits http://localhost:3000 only); on 3000 the browser PUTs to R2 itself.
+ */
 async function takeEvidence(form: Locator): Promise<void> {
+  await relayR2Puts(form.page());
   await form.locator('input[type="file"]').setInputFiles({ name: 'evidence.png', mimeType: 'image/png', buffer: uniquePng() });
   // PhotoCaptureSlot offers "Retake photo" once the upload is finished and attached to the form.
   await expect(form.locator('label[aria-label="Retake photo"]')).toBeVisible({ timeout: 90_000 });
@@ -1611,6 +1621,17 @@ test.describe('approvals: photo-heavy pages stay under the photo rate limit', { 
   });
 
   test('25 reactivations and a 10-branch new customer: every photo answers 200, none 429', async ({ browser }) => {
+    // OPEN BUG (launch build; failed 4 runs of 4 on 9 Oct, lane B): /reactivations spends the
+    // per-user photo burst on photos nobody sees. Every card's on-file shop and signboard photos sit
+    // in a closed "Photos on file (for comparison)" <details>, yet load at once (no loading="lazy":
+    // app/(app)/reactivations/page.tsx:155 and :163; nor the evidence at :131, nor the request's
+    // photos at app/(app)/approvals/[id]/page.tsx:959). 25 requests fetched 75 photos against a
+    // burst of 60, then 1 a second (app/api/photos/[id]/route.ts:35), so the 10-branch request
+    // opened next answered 10-11 of its 31 photos 429 and drew them broken. The assertions stay
+    // as they are: no 429. It passed once (the 8 Oct final run, with another lane on the same
+    // machine): photos answered slowly enough let the 1/s refill keep up. A pass here then reads
+    // "expected to fail" — check the photo tallies in the annotations before flipping it.
+    test.fail(true, 'OPEN BUG: /reactivations loads its hidden on-file photos eagerly and spends the 60-photo burst');
     test.setTimeout(300_000);
     const page = await pageAs(browser, w, 'M1');
     const tally = tallyPhotoResponses(page);
