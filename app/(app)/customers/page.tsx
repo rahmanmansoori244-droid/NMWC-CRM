@@ -198,6 +198,8 @@ export default async function CustomersPage({
       select: {
         id: true,
         nmwcCode: true,
+        // The card's "Temix code" line, when it differs (owner request 2026-10-10).
+        temixCode: true,
         legalName: true,
         paymentTerms: true,
         status: true,

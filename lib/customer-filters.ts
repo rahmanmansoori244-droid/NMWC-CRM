@@ -11,6 +11,7 @@
  */
 import { Prisma, Role } from '@prisma/client';
 import { normalizePhone } from './phone';
+import { normalizeTemixCode } from './temix-code';
 
 /** Raw URL search params accepted on /customers. */
 export type CustomerFilterParams = {
@@ -156,6 +157,35 @@ export function customerListBranchScope(
 }
 
 /**
+ * The search box's text as the start of a Temix code, ready for Prisma's
+ * `startsWith` (owner request 2026-10-10), or '' when it cannot start one.
+ *
+ * Folded as lib/temix-code.ts folds a code before it is stored (Arabic-Indic
+ * and Persian digits made ASCII, invisible characters dropped, upper case), so
+ * `caa٠٣٦` finds CAA0367; the match is still made without regard to case,
+ * because an older import may have stored a code as its sheet spelled it. A
+ * Temix code has no spaces, so text with one inside ("Al Noor") is no code and
+ * adds nothing. Prisma passes the value to LIKE unescaped, and `_` (allowed
+ * inside a Temix code) and `%` are LIKE's wildcards: both are escaped here so
+ * `CAA_1` means the characters typed, not "CAA, any character, 1".
+ *
+ * Cheap without an index of its own (no schema change for this): the search's
+ * OR also holds the branch arm, a subquery, so Postgres never answers it from
+ * indexes alone. It filters the customers that `deletedAt` and the role scope
+ * leave, one row at a time, and this is one more comparison of a short code on
+ * each of them, beside the substring match on the legal name it already makes.
+ * Checked 2026-10-10 with EXPLAIN ANALYZE on UAT: the plans are unchanged, the
+ * arm joins the same row filter. Over as many synthetic rows as production
+ * holds customers it added at most about 3 ms, when nothing matches (every arm
+ * is then read); a salesman's search filters only his route's customers.
+ */
+export function temixCodeSearchPrefix(q: string): string {
+  const code = normalizeTemixCode(q);
+  if (!code || /\s/.test(code)) return '';
+  return code.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/**
  * Compose the URL filters onto an existing role-scoped `where` and
  * `branchSomeBase` (the role-based branch predicate). Returns a new
  * `Prisma.CustomerWhereInput` — does not mutate the input.
@@ -181,10 +211,20 @@ export function applyCustomerFilters(
     // user's input via the same `normalizePhone` helper that ingestion
     // uses so "+96891234567" and "96891234567" both find the same row.
     const phoneNorm = normalizePhone(filters.q);
+    const temixPrefix = temixCodeSearchPrefix(filters.q);
+    // `where.OR` sits beside the role scope (`where.branches`, or `id:
+    // '__none__'`), never around it: Prisma ANDs the keys of one object, so no
+    // arm of the search, the Temix code's included, can bring in a customer the
+    // scope leaves out.
     where.OR = [
       { legalName: { contains: filters.q, mode: 'insensitive' } },
       { nmwcCode: { contains: filters.q, mode: 'insensitive' } },
       ...(phoneNorm ? [{ primaryPhoneNorm: { contains: phoneNorm } }] : []),
+      // Owner request 2026-10-10: the Temix code the Accountant types at a new
+      // customer's last approval differs from its NMWC code, and once the
+      // "New customer approved" alert is gone the salesman had nowhere to find
+      // it. The whole code or its start finds the customer (temixCodeSearchPrefix).
+      ...(temixPrefix ? [{ temixCode: { startsWith: temixPrefix, mode: 'insensitive' as const } }] : []),
       // Go-live: the master carries the Timix branch code (`CAK0240-AK2`) and a
       // shop/branch name that often differs from the legal name — salesmen know
       // shops by those. The branch predicate is intersected with the caller's

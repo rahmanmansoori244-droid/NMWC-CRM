@@ -37,6 +37,11 @@
  *     codes; a new customer at the Accountant's step is never bulk-approved (a
  *     lock, as for credit). Every test that creates a customer types a code of
  *     its own (temixCodeFor).
+ *   - owner request of 10 Oct (the Temix code visible): the customer page
+ *     shows "Temix code" beside the NMWC code; the salesman finds the customer
+ *     by its Temix code typed in lower case, or by its start, and its card
+ *     names the code; a salesman of another route or region finds nothing for
+ *     it, as for a code nobody holds.
  *   - launch fixes: after Approve and create the page shows the code IN PLACE —
  *     no reload stands in for it (it stalled on "Created — loading…", fixed by
  *     the TransitionWatchdog, 8e47bc6); a salesman cannot remove a photo of his
@@ -363,6 +368,11 @@ async function rejectHere(
   if (o.quick) await page.getByRole('button', { name: o.quick, exact: true }).click();
   if (o.reason) await page.locator('textarea[name="reason"]').fill(o.reason);
   await page.getByRole('button', { name: o.button, exact: true }).click();
+}
+
+/** A labelled value on the customer page ("NMWC code", "Temix code", …): the <dd> beside its <dt>. */
+function customerRow(page: Page, label: string): Locator {
+  return page.locator('dt', { hasText: new RegExp(`^${label}$`) }).locator('xpath=following-sibling::dd[1]');
 }
 
 async function expect404(page: Page, url: string): Promise<void> {
@@ -813,7 +823,7 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
     expectNoPii(fresh, [A.phone, A.cr]);
   });
 
-  test('the salesman sees it live: muted bell, the approval opens the customer, search, Today, Recent activity; the Steward is linked to it', async ({ browser }) => {
+  test('the salesman sees it live: muted bell, the approval opens the customer, its Temix code on its page and in search, Today, Recent activity; the Steward is linked to it', async ({ browser }) => {
     test.skip(!A.customerId, 'needs the customer the Accountant created');
     const sa = w.user('SA');
     const page = await pageAs(browser, sa, 'phone');
@@ -834,6 +844,10 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
     await expect(page).toHaveURL(new RegExp(`/customers/${A.customerId}$`));
     await expect(page.getByRole('heading', { level: 1, name: A.name })).toBeVisible();
     await expect(page.getByText(A.code, { exact: true }).first()).toBeVisible();
+    // Owner request 10 Oct: the Temix code is on the customer page too, labelled, beside the NMWC code — not
+    // only in the alert, which is gone once read.
+    await expect(customerRow(page, 'NMWC code')).toHaveText(A.code);
+    await expect(customerRow(page, 'Temix code'), 'Temix code <code> on the customer page').toHaveText(A.temix);
     // Critic / wave 1: a chain-created customer reads "requested this new customer", never "submitted 0 change(s)".
     await expect(page.getByText(`${sa.fullName} requested this new customer`, { exact: true })).toBeVisible();
     await expect(page.getByText(/submitted 0 change/)).toHaveCount(0);
@@ -841,12 +855,52 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
     await page.goto(`/customers?q=${encodeURIComponent(A.name)}`);
     await expect(page.getByRole('link', { name: new RegExp(A.name) }).first()).toBeVisible();
 
+    // Owner request 10 Oct: he finds it by its Temix code, typed into the search box as a phone keyboard types it
+    // (lower case), and by the start of it. Neither its name nor its NMWC code holds the code: the Temix code finds it.
+    expect(A.name.toUpperCase(), 'the name alone cannot match the Temix code').not.toContain(A.temix);
+    expect(A.code, 'nor can the NMWC code').not.toContain(A.temix);
+    // Typed over a search that finds nothing (the code with more after it is no start of it): A is the only
+    // customer on his route, so an unfiltered or not-yet-updated list would show the same card.
+    await page.goto(`/customers?q=${encodeURIComponent(`${A.temix}ZZ`)}`);
+    await expect(page.getByText('No customers match', { exact: true })).toBeVisible();
+    await page.getByRole('searchbox', { name: 'Search customers' }).fill(A.temix.toLowerCase());
+    await page.getByRole('button', { name: 'Filter', exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get('q'), 'searched the typed code').toBe(A.temix.toLowerCase());
+    const found = page.locator('main article').filter({ has: page.getByRole('heading', { level: 3, name: A.name, exact: true }) });
+    await expect(found, 'found by its Temix code').toHaveCount(1);
+    // The card says which code found it: it differs from the NMWC code.
+    await expect(found.getByText(`Temix code ${A.temix}`, { exact: true })).toBeVisible();
+    await expect(found.getByRole('link').first()).toHaveAttribute('aria-label', `${A.name} · ${A.code} · Temix code ${A.temix}`);
+    await page.goto(`/customers?q=${encodeURIComponent(A.temix.slice(0, -1))}`);
+    await expect(
+      page.locator('main article').filter({ has: page.getByRole('heading', { level: 3, name: A.name, exact: true }) }),
+      'found by the start of its Temix code'
+    ).toHaveCount(1);
+
     // The Steward's row: EDIT_APPROVED_FINAL with the customer, so it opens the customer (red bell, not /temix).
     const stw = await pageAs(browser, w.user('STW'), 'desktop');
     await stw.goto('/notifications');
     const ready = stw.getByRole('link').filter({ hasText: 'Ready for Temix upload' }).filter({ hasText: A.name });
     await expect(ready).toHaveAttribute('href', `/customers/${A.customerId}`);
     await expect(stw.getByRole('link', { name: /^Notifications/ })).toHaveAttribute('aria-label', /\d+ unread/);
+  });
+
+  test('a salesman of another route searching its Temix code finds nothing, as for a code nobody holds', async ({ browser }) => {
+    test.skip(!A.customerId, 'needs the customer the Accountant created');
+    // Owner request 10 Oct: the Temix code is searched INSIDE the role scope. SA2 is on another route of the
+    // same region, SB in the other region: the code must neither show them the customer nor tell them it exists.
+    for (const key of ['SA2', 'SB']) {
+      const page = await pageAs(browser, w.user(key), 'phone');
+      for (const q of [A.temix, `${A.temix}ZZ`]) {
+        await page.goto(`/customers?q=${encodeURIComponent(q)}`);
+        await expect(page.getByRole('searchbox', { name: 'Search customers' }), `${key} searched ${q}`).toHaveValue(q);
+        await expect(page.getByText('No customers match', { exact: true }), `${key}: nothing for ${q}`).toBeVisible();
+        await expect(page.getByText('0 total', { exact: true })).toBeVisible();
+        await expect(page.locator('main article')).toHaveCount(0);
+      }
+      await expect404(page, `/customers/${A.customerId}`);
+      await page.context().close();
+    }
   });
 });
 

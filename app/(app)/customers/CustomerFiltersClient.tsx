@@ -607,12 +607,15 @@ export function CustomerFiltersClient(props: CustomerFiltersClientProps) {
               className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
               aria-hidden="true"
             />
+            {/* The Temix code is searched too (owner request 2026-10-10). The
+                words "Search by" made way for it: the box is about 210 px of
+                text on a 375 px phone, and its name stays "Search customers". */}
             <input
               type="search"
               name="q"
               value={q}
               onChange={(e) => setQ(e.currentTarget.value)}
-              placeholder="Search by name, code, phone…"
+              placeholder="Name, code, Temix code, phone…"
               aria-label="Search customers"
               className="h-10 w-full rounded-md border border-slate-300 pl-9 pr-3 text-base shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
             />

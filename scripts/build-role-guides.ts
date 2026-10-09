@@ -324,7 +324,7 @@ const SALESMAN_EN: Guide = {
           img: '02-salesman-today.png',
         },
         {
-          html: "If the shop is not on today's list, tap <strong>Customers</strong> and search by name or NMWC code.",
+          html: "If the shop is not on today's list, tap <strong>Customers</strong> and search by name, NMWC code or Temix code (the shop's page shows its Temix code too).",
           img: '03-salesman-customers-list.png',
         },
         { html: "Tap any row to open that shop's profile." },
@@ -1011,7 +1011,7 @@ const STEWARD_EN: Guide = {
           html: 'You see every customer in every region. Filter by region, channel, payment terms, or completeness score.',
         },
         {
-          html: 'The search box runs on legal name, NMWC code, or primary phone — partial matches work (e.g. "lulu" finds every Lulu branch).',
+          html: 'The search box runs on legal name, NMWC code, Temix code (the whole code or its start), or primary phone — partial matches work (e.g. "lulu" finds every Lulu branch).',
         },
         {
           html: 'Click any row to open the customer profile and see the full record + branches + edit history + audit trail.',
@@ -1458,7 +1458,7 @@ const SALESMAN_AR: Guide = {
           img: '02-salesman-today.png',
         },
         {
-          html: 'إذا لم يكن المحل في قائمة اليوم، اضغط على <strong>العملاء</strong> وابحث بالاسم أو برقم NMWC.',
+          html: 'إذا لم يكن المحل في قائمة اليوم، اضغط على <strong>العملاء</strong> وابحث بالاسم أو برقم NMWC أو برمز Temix (وتعرض صفحة المحل رمز Temix أيضًا).',
           img: '03-salesman-customers-list.png',
         },
         { html: 'اضغط على أي صف لفتح ملف ذلك المحل.' },

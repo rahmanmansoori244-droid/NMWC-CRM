@@ -19,12 +19,27 @@ type CardProps<T extends string> = {
   customer: Pick<
     Customer,
     'id' | 'nmwcCode' | 'legalName' | 'paymentTerms' | 'status' | 'completenessScore' | 'primaryPhone'
-  >;
+  > &
+    // Optional: /customers selects it, Today does not show it.
+    Partial<Pick<Customer, 'temixCode'>>;
   primaryBranch?: Pick<Branch, 'branchName' | 'address' | 'gpsLat' | 'gpsLng'> | null;
   href?: Route<T>;
 };
 
+/**
+ * The Temix code to show under the NMWC code, or null (owner request
+ * 2026-10-10: a salesman who found a new customer by its Temix code sees which
+ * one). Only when it differs: a migrated customer's NMWC code IS its Temix code,
+ * and a second line repeating it on almost every card is noise. Compared without
+ * regard to case, as an older import may have stored it in lower case.
+ */
+export function cardTemixCode(c: { nmwcCode: string; temixCode?: string | null }): string | null {
+  if (!c.temixCode || c.temixCode.toUpperCase() === c.nmwcCode.toUpperCase()) return null;
+  return c.temixCode;
+}
+
 export function CustomerCard<T extends string>({ customer, primaryBranch, href }: CardProps<T>) {
+  const temixCode = cardTemixCode(customer);
   const identity = (
     <div className="flex items-start gap-3 p-4">
       <CompletenessRing value={customer.completenessScore} size={44} />
@@ -33,6 +48,10 @@ export function CustomerCard<T extends string>({ customer, primaryBranch, href }
           <div className="min-w-0 flex-1">
             <h3 className="truncate text-base font-semibold text-slate-900">{customer.legalName}</h3>
             <p className="truncate text-sm text-slate-500">{customer.nmwcCode}</p>
+            {/* Its own line, labelled: beside the NMWC code it would not fit the
+                ~200 px a 375 px phone leaves here, and `truncate` would cut the
+                Temix code off. */}
+            {temixCode && <p className="truncate text-sm text-slate-500">Temix code {temixCode}</p>}
           </div>
           <PaymentTermsPill terms={customer.paymentTerms as PaymentTerms} />
         </div>
@@ -64,7 +83,11 @@ export function CustomerCard<T extends string>({ customer, primaryBranch, href }
         // content stops at the structure), so screen readers announced a bare
         // "link" and the browser walk could not address the card by customer name.
         // It stays FIRST in the card, so `getByRole('link', { name }).first()` is it.
-        <Link href={href} className="block rounded-lg" aria-label={`${customer.legalName} · ${customer.nmwcCode}`}>
+        <Link
+          href={href}
+          className="block rounded-lg"
+          aria-label={`${customer.legalName} · ${customer.nmwcCode}${temixCode ? ` · Temix code ${temixCode}` : ''}`}
+        >
           {identity}
         </Link>
       ) : (

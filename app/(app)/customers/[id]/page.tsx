@@ -154,6 +154,19 @@ export default async function CustomerProfilePage({
         <Section title="Identity">
           <Row label="Legal name" value={customer.legalName} />
           <Row label="NMWC code" value={customer.nmwcCode} mono />
+          {/* Owner request 2026-10-10: a customer made in the CRM gets a Temix
+              code from the Accountant at its last approval, unlike its NMWC code,
+              and only the salesman's "New customer approved" alert named it.
+              Shown to everyone who can open the page — no new exposure: a
+              migrated customer's NMWC code already IS its Temix code (shown here
+              too). None on record is said in words, but not "Not in Temix": the
+              seeded customers are in Temix under their NMWC code, with no Temix
+              code recorded. */}
+          <Row
+            label="Temix code"
+            value={customer.temixCode || <span className="text-slate-500">None recorded yet</span>}
+            mono={!!customer.temixCode}
+          />
           <Row label="Payment terms" value={customer.paymentTerms} />
           <Row label="CR number" value={customer.crNumber ?? '—'} mono />
           <Row label="Notes" value={customer.notes ?? '—'} />
