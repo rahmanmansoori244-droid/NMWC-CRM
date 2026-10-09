@@ -141,10 +141,17 @@ async function main(): Promise<number> {
   const prisma = new PrismaClient({ datasourceUrl: url });
   try {
     await connectWaking(prisma);
-    const rows = await prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
-      return readDrift(tx);
-    });
+    // Production check 2026-10-09: the default 5 s interactive-transaction budget
+    // ran out (P2028) reading every live customer with its branches (about 14,000)
+    // from Oman, though UAT's few hundred fit. A read-only scan holds no locks, so
+    // a long budget costs nothing.
+    const rows = await prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
+        return readDrift(tx);
+      },
+      { maxWait: 30_000, timeout: 180_000 }
+    );
     const counts = driftCounts(rows);
     console.log(`\nCustomer status against its shops (owner decision 7)\nTarget: ${host}\n`);
     console.log(`  close   every shop closed, the customer not:          ${counts.close}`);
