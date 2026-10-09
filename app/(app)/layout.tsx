@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { TopBar } from '@/components/nmwc/TopBar';
 import { splitBellCounts } from '@/lib/notification-bell';
 import { Sidebar, MobileTabBar } from '@/components/nmwc/Sidebar';
+import { RouteSlot } from '@/components/nmwc/RouteSlot';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
@@ -46,7 +47,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div
           className={`flex-1 ${session.user.role === 'SALESMAN' ? 'pb-16 md:pb-0 [--nmwc-tabbar-h:3.5rem] md:[--nmwc-tabbar-h:0px]' : ''}`}
         >
-          {children}
+          {/* Never {children} straight inside a host element: on a cold or busy
+              load React 19.2 (Next's copy) can replay this <div> mid-hydration
+              and throw #418, clearing the page — components/nmwc/RouteSlot.tsx. */}
+          <RouteSlot>{children}</RouteSlot>
         </div>
       </div>
       <MobileTabBar role={session.user.role} />
