@@ -167,7 +167,10 @@ export function customerListBranchScope(
  * Temix code has no spaces, so text with one inside ("Al Noor") is no code and
  * adds nothing. Prisma passes the value to LIKE unescaped, and `_` (allowed
  * inside a Temix code) and `%` are LIKE's wildcards: both are escaped here so
- * `CAA_1` means the characters typed, not "CAA, any character, 1".
+ * `CAA_1` means the characters typed, not "CAA, any character, 1". Prisma does
+ * not document that it leaves the value unescaped; a Prisma that began escaping
+ * it would double the escape and `cad_` would find nothing, so
+ * tests/integration/customer-search-temix.test.ts holds it on Postgres in CI.
  *
  * Cheap without an index of its own (no schema change for this): the search's
  * OR also holds the branch arm, a subquery, so Postgres never answers it from

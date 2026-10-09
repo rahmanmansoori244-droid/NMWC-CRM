@@ -23,7 +23,9 @@
  * is ever OR-ed around the scope (the last test proves they can). Its LIKE
  * follows what Prisma sends (checked on UAT 2026-10-10): `startsWith` and
  * `contains` reach ILIKE as `value%` / `%value%`, unescaped, and Postgres reads
- * `\` as the escape.
+ * `\` as the escape. That is the code's own assumption, so these tests cannot
+ * catch Prisma changing it: the Postgres suite of the same name
+ * (tests/integration, RUN_EXPORT_TESTS, run by CI) does.
  */
 import { describe, it, expect } from 'vitest';
 import { Prisma, Role } from '@prisma/client';

@@ -49,9 +49,16 @@ export function CustomerCard<T extends string>({ customer, primaryBranch, href }
             <h3 className="truncate text-base font-semibold text-slate-900">{customer.legalName}</h3>
             <p className="truncate text-sm text-slate-500">{customer.nmwcCode}</p>
             {/* Its own line, labelled: beside the NMWC code it would not fit the
-                ~200 px a 375 px phone leaves here, and `truncate` would cut the
-                Temix code off. */}
-            {temixCode && <p className="truncate text-sm text-slate-500">Temix code {temixCode}</p>}
+                ~200 px a 375 px phone leaves here. It wraps instead of
+                truncating (owner request 2026-10-10): a Temix code may be 30
+                characters (lib/temix-code.ts) and only about 13 fit after
+                "Temix code " there, so `truncate` would hide the end of the code
+                the salesman searched by. `overflow-wrap:anywhere` breaks inside
+                the code only when it cannot have a line of its own, so the card
+                still never scrolls sideways. */}
+            {temixCode && (
+              <p className="text-sm text-slate-500 [overflow-wrap:anywhere]">Temix code {temixCode}</p>
+            )}
           </div>
           <PaymentTermsPill terms={customer.paymentTerms as PaymentTerms} />
         </div>

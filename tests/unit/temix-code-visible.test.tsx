@@ -16,6 +16,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { Role } from '@prisma/client';
 import { CustomerCard, cardTemixCode } from '@/components/nmwc/CustomerCard';
+import { TEMIX_CODE_MAX } from '@/lib/temix-code';
 
 const h = vi.hoisted(() => ({
   role: 'SALESMAN',
@@ -168,10 +169,22 @@ describe('the /customers card shows the Temix code when it differs', () => {
     render(<CustomerCard customer={{ ...card, temixCode: 'CAA0367' }} href="/customers/c1" />);
     const line = screen.getByText('Temix code CAA0367');
     expect(line.tagName).toBe('P');
-    expect(line.className).toContain('truncate');
     expect(screen.getByRole('link').getAttribute('aria-label')).toBe(
       'Al Noor Trading · NMWC-2026-000123 · Temix code CAA0367'
     );
+  });
+
+  it('a long code wraps, never cut off by an ellipsis (30 characters is allowed)', () => {
+    // The longest Temix code lib/temix-code.ts accepts: on a 375 px phone only
+    // about 13 characters fit after "Temix code ", so a `truncate` line hid the rest.
+    const code = 'CAA0367-ABCDEFGHIJKLMNOPQRSTUV';
+    expect(code).toHaveLength(TEMIX_CODE_MAX);
+    render(<CustomerCard customer={{ ...card, temixCode: code }} href="/customers/c1" />);
+    const line = screen.getByText(`Temix code ${code}`);
+    expect(line.className).not.toMatch(/\b(truncate|line-clamp-\d|whitespace-nowrap)\b/);
+    // Wrapping inside the code when it cannot have a line of its own keeps the
+    // card from scrolling sideways.
+    expect(line.className).toContain('[overflow-wrap:anywhere]');
   });
 
   it.each([
