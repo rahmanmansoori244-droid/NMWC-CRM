@@ -383,19 +383,30 @@ class WorldImpl implements World {
   }
 
   // ── customers ──
+  /** Numbers a batch found free but did not hand out; the next call checks them again first. */
+  private sparePhones: string[] = [];
+
+  /**
+   * `n` numbers no customer on the database has. A batch takes five more than
+   * it needs (some may be taken) and keeps the free ones it did not hand out
+   * for the next call. It used to drop them, so each one-customer addCustomer
+   * spent six of the world's 100 numbers: field-faults.spec.ts adds 24 phone
+   * customers to one world, and its (f) beforeAll ran out at the 17th.
+   */
   async allocPhones(n: number): Promise<string[]> {
     const out: string[] = [];
     while (out.length < n) {
       const want = n - out.length;
-      const batch: string[] = [];
-      for (let i = 0; i < want + 5; i++) {
-        const seq = this.counters.phone++;
-        if (seq > 99) throw new Error('world phone counter exhausted (100 per world)');
-        batch.push(`+968${this.phoneBase}${String(seq).padStart(2, '0')}`);
+      const batch = this.sparePhones.splice(0);
+      while (batch.length < want + 5 && this.counters.phone <= 99) {
+        batch.push(`+968${this.phoneBase}${String(this.counters.phone++).padStart(2, '0')}`);
       }
+      if (batch.length === 0) throw new Error('world phone counter exhausted (100 per world)');
       const used = await db.customer.findMany({ where: { primaryPhoneNorm: { in: batch } }, select: { primaryPhoneNorm: true } });
       const usedSet = new Set(used.map((u) => u.primaryPhoneNorm));
-      out.push(...batch.filter((p) => !usedSet.has(p)).slice(0, want));
+      const free = batch.filter((p) => !usedSet.has(p));
+      out.push(...free.slice(0, want));
+      this.sparePhones.push(...free.slice(want));
     }
     return out;
   }

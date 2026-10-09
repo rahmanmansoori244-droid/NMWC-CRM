@@ -507,10 +507,21 @@ export async function crawlUplink(cdp: CDPSession, bytes: number, seconds: numbe
 }
 
 /**
- * Freezes the tab for `ms`, as Android does to a tab behind the camera app
- * (Page.setWebLifecycleState frozen, which also hides it), then makes it active
- * again. `beats` counts a 250 ms page timer during the freeze — about 0 when the
- * freeze took (an unfrozen hidden tab still ticks about once a second).
+ * Freezes the tab's JavaScript for `ms`, as Android does to a tab behind the
+ * camera app, then lets it run again. The network goes on (the R2 PUT's bytes
+ * leave from the browser's network process), but nothing of the page's runs:
+ * no timer, the upload's stall watchdog included, and no progress or load
+ * event. Those are delivered after the resume, as on the phone.
+ *
+ * The page is paused in the debugger: Debugger.pause stops it at its next
+ * statement, and nothing of it runs until Debugger.resume. It is not
+ * Page.setWebLifecycleState 'frozen'. chrome-headless-shell 147, the suite's
+ * Chromium, accepts that command and does nothing: no freeze event, the page
+ * stays visible, and a 250 ms timer ticks 20 times in 5 s (scratch probe,
+ * 9 Oct). The final run's two freezes counted 80 ticks in 20 s and 240 in
+ * 60 s. So the tab is not hidden either: `visibility` stays 'visible'.
+ * `beats` counts a 250 ms page timer during the freeze. It is about 0 when the
+ * freeze took.
  */
 export async function freezeFor(page: Page, cdp: CDPSession, ms: number): Promise<{ beats: number; visibility: string }> {
   const beatsNow = () =>
@@ -523,9 +534,15 @@ export async function freezeFor(page: Page, cdp: CDPSession, ms: number): Promis
       return w.__nmwcBeats ?? 0;
     });
   const before = await beatsNow();
-  await cdp.send('Page.setWebLifecycleState', { state: 'frozen' });
-  await sleepWhileOpen(page, ms);
-  await cdp.send('Page.setWebLifecycleState', { state: 'active' });
+  await cdp.send('Debugger.enable');
+  await cdp.send('Debugger.pause');
+  try {
+    await sleepWhileOpen(page, ms);
+  } finally {
+    // Not paused yet (no statement ran) makes resume refuse; disable then drops the pending pause.
+    await cdp.send('Debugger.resume').catch(() => undefined);
+    await cdp.send('Debugger.disable').catch(() => undefined);
+  }
   const after = await beatsNow();
   const visibility = await page.evaluate(() => document.visibilityState);
   return { beats: after - before, visibility };
