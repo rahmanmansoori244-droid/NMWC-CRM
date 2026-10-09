@@ -199,6 +199,10 @@ export function UserRowActions({
     );
   }
 
+  // Production walk 2026-10-09 (the table's width, page.tsx NAME_CELL): the row
+  // wraps between buttons, never inside one; an open e-mail or reset box takes a
+  // line of its own and fits the column rather than a fixed 224 px, so opening one
+  // no longer widens the table and pushes Save past its right edge.
   return (
     <div className="flex flex-wrap justify-end gap-2 text-xs">
       {children}
@@ -210,7 +214,7 @@ export function UserRowActions({
             setShowEmail((s) => !s);
             setEmailMsg(null);
           }}
-          className="rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          className="whitespace-nowrap rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
         >
           {hasEmail ? 'Change e-mail' : 'Add e-mail'}
         </button>
@@ -219,7 +223,7 @@ export function UserRowActions({
         <form
           onSubmit={saveEmail}
           autoComplete="off"
-          className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1"
+          className="flex w-full flex-wrap items-center justify-end gap-1 rounded-md border border-slate-300 bg-white px-2 py-1"
         >
           <input
             type="text"
@@ -230,7 +234,7 @@ export function UserRowActions({
             aria-label={`New e-mail for ${username}`}
             placeholder={hasEmail ? 'New address (empty clears it)' : 'name@company.com'}
             {...AS_TYPED}
-            className="w-56 rounded-md border-slate-200 px-2 py-1 text-xs"
+            className="w-full min-w-[7rem] flex-1 rounded-md border-slate-200 px-2 py-1 text-xs"
           />
           <button
             type="submit"
@@ -250,7 +254,7 @@ export function UserRowActions({
         type="button"
         disabled={pending}
         onClick={toggle}
-        className="rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+        className="whitespace-nowrap rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
       >
         {isActive ? 'Disable' : 'Enable'}
       </button>
@@ -263,16 +267,16 @@ export function UserRowActions({
           setResetMismatch(false);
           setShowResetPassword(false);
         }}
-        className="rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+        className="whitespace-nowrap rounded-md border border-slate-300 px-2 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
       >
         Reset password
       </button>
       {showReset && (
         <form
           onSubmit={reset}
-          className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1"
+          className="flex w-full flex-wrap items-center justify-end gap-1 rounded-md border border-slate-300 bg-white px-2 py-1"
         >
-          <div className="grid gap-1">
+          <div className="grid min-w-[7rem] flex-1 gap-1">
             <input
               type={showResetPassword ? 'text' : 'password'}
               name="password"
@@ -282,7 +286,7 @@ export function UserRowActions({
               minLength={12}
               required
               {...AS_TYPED}
-              className="rounded-md border-slate-200 px-2 py-1 text-xs"
+              className="w-full min-w-0 rounded-md border-slate-200 px-2 py-1 text-xs"
             />
             <input
               type={showResetPassword ? 'text' : 'password'}
@@ -292,7 +296,7 @@ export function UserRowActions({
               placeholder="Confirm new password"
               required
               {...AS_TYPED}
-              className="rounded-md border-slate-200 px-2 py-1 text-xs"
+              className="w-full min-w-0 rounded-md border-slate-200 px-2 py-1 text-xs"
             />
             {resetMismatch && (
               <span role="alert" className="text-left text-red-600">

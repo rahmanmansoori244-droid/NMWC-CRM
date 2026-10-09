@@ -1,3 +1,5 @@
+import { Fragment } from 'react';
+import { ArrowDown } from 'lucide-react';
 import { TableScroll } from '@/components/nmwc/TableScroll';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -101,6 +103,43 @@ function PasswordClaimBadge({ claim }: { claim: keyof typeof PASSWORD_CLAIM | nu
       {badge.label}
     </span>
   );
+}
+
+// Production walk 2026-10-09: beside the Create user panel the table's box was
+// 888 px wide at 1920 (the layout stops growing at 1536), the table 958 px, and
+// Edit, Enable and Reset password sat past the box's right edge — the owner could
+// not find Enable without scrolling the table sideways. Nine readable columns do
+// not fit 888 px, so the panel now sits below the table (the grid below), and no
+// value may make the table wider than its box. A long name, username or code
+// wraps inside its cell (overflow-wrap:anywhere also lowers the width the table
+// must give the column), but not below a floor that keeps an ordinary one whole:
+// the browser shares spare width out in proportion to how much more each column
+// could use, so a cell with no floor is squeezed first and breaks a short name in
+// the middle. What gives way at the floor is the long tail — the launch e2e
+// worlds' 16-character suffixes and 20-character route codes.
+//
+// Measured in Chromium on this page's markup and compiled CSS: the table needs
+// 920 px at the least (948 with a reset or e-mail box open) and its box is 991 px
+// at 1280 (1264 from 1536 up), so every row's actions show without scrolling at
+// 1280, 1366, 1440 and 1920. The floors and px-3 are what keep it under 991 —
+// widen one and measure again. The floors are border-box: padding included.
+const NAME_CELL = 'min-w-[7rem] [overflow-wrap:anywhere]';
+const USERNAME_CELL = 'min-w-[8rem] [overflow-wrap:anywhere]';
+const CODE_CELL = 'min-w-[4.5rem] [overflow-wrap:anywhere]';
+
+/**
+ * `text` with a line-break opportunity after each `.`, `-` and `_` — a <wbr>,
+ * so the text itself (what a screen reader, a copy or a test reads) is unchanged.
+ * FINANCE_MANAGER then needs the width of FINANCE_ rather than the whole word, and
+ * a long username breaks at its dot rather than mid-word.
+ */
+function breakAfterSeparators(text: string): React.ReactNode {
+  return text.split(/(?<=[._-])/).map((part, i) => (
+    <Fragment key={i}>
+      {i > 0 && <wbr />}
+      {part}
+    </Fragment>
+  ));
 }
 
 export default async function UsersPage({ searchParams }: { searchParams: Promise<Search> }) {
@@ -305,7 +344,21 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
 
   return (
     <main>
-      <PageHeader title="Users" subtitle={subtitle} />
+      <PageHeader
+        title="Users"
+        subtitle={subtitle}
+        actions={
+          // The Create user panel sits below the whole roster since the production
+          // walk of 2026-10-09 (see NAME_CELL); this stands where it used to be.
+          <a
+            href="#create-user"
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+          >
+            <ArrowDown className="h-4 w-4" aria-hidden="true" />
+            Create user
+          </a>
+        }
+      />
 
       <nav
         aria-label="Filter accounts by status"
@@ -328,9 +381,9 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
         ))}
       </nav>
 
-      {/* Above the grid rather than in it: a grid child takes a cell and pushes the
-          table into the Create-user column (see the banner below). Same scope as
-          the table — the counts are over `users`. */}
+      {/* Above the grid rather than in it, as the banner below: a full-width strip,
+          not a card in the grid. Same scope as the table — the counts are over
+          `users`. */}
       {users.length > 0 && (
         <p className="border-b border-slate-200 bg-white px-6 py-2 text-sm text-slate-600">
           Of {users.length} {noun} shown: {notSignedInCount} not signed in yet ·{' '}
@@ -338,39 +391,48 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
         </p>
       )}
 
-      {/* The banner lives outside the grid so it cannot take a grid cell and push
-          the table into the Create-user column. */}
+      {/* The banner lives outside the grid so it never takes a grid cell (beside
+          the Create user panel, a cell once pushed the table into its column). */}
       <UsersFeedback editOptions={isManager ? undefined : editOptions}>
-        <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-[1fr_360px]">
+        {/* One column at every width, the Create user panel below the table
+            (production walk 2026-10-09): beside it the table's box was 888 px at
+            most and the rows' actions fell past its edge — see NAME_CELL. */}
+        <div className="grid gap-4 p-4 sm:p-6">
           <TableScroll label="Accounts" className="rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-600">
                 <tr>
-                  <th className="px-4 py-3 font-medium">Name</th>
-                  <th className="px-4 py-3 font-medium">Username</th>
-                  <th className="px-4 py-3 font-medium">Role</th>
-                  <th className="px-4 py-3 font-medium">Reports to</th>
-                  <th className="px-4 py-3 font-medium">Route</th>
-                  <th className="px-4 py-3 font-medium">Regions</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Last login</th>
-                  <th className="px-4 py-3 font-medium"></th>
+                  <th className="px-3 py-3 font-medium">Name</th>
+                  <th className="px-3 py-3 font-medium">Username</th>
+                  <th className="px-3 py-3 font-medium">Role</th>
+                  <th className="px-3 py-3 font-medium">Reports to</th>
+                  <th className="px-3 py-3 font-medium">Route</th>
+                  <th className="px-3 py-3 font-medium">Regions</th>
+                  <th className="px-3 py-3 font-medium">Status</th>
+                  <th className="px-3 py-3 font-medium">Last login</th>
+                  <th className="px-3 py-3 font-medium"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {users.map((u) => (
                   <tr key={u.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-2 font-medium text-slate-900">{u.fullName}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-slate-700">{u.username}</td>
-                    <td className="px-4 py-2">{u.role}</td>
-                    <td className="px-4 py-2 text-slate-600">{u.supervisor?.fullName ?? '—'}</td>
-                    <td className="px-4 py-2 text-slate-600">
+                    <td className={`px-3 py-2 font-medium text-slate-900 ${NAME_CELL}`}>
+                      {u.fullName}
+                    </td>
+                    <td className={`px-3 py-2 font-mono text-xs text-slate-700 ${USERNAME_CELL}`}>
+                      {breakAfterSeparators(u.username)}
+                    </td>
+                    <td className="px-3 py-2">{breakAfterSeparators(u.role)}</td>
+                    <td className={`px-3 py-2 text-slate-600 ${NAME_CELL}`}>
+                      {u.supervisor?.fullName ?? '—'}
+                    </td>
+                    <td className={`px-3 py-2 text-slate-600 ${CODE_CELL}`}>
                       {u.ownedRoute ? `${u.ownedRoute.code}` : '—'}
                     </td>
-                    <td className="px-4 py-2 text-slate-600">
+                    <td className={`px-3 py-2 text-slate-600 ${CODE_CELL}`}>
                       <RegionsCell user={u} />
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-3 py-2">
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
                           u.isActive
@@ -391,10 +453,10 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                       <PasswordClaimBadge claim={passwordClaim(u)} />
                       <EmailBadge role={u.role} email={u.email} />
                     </td>
-                    <td className="px-4 py-2 text-xs text-slate-500">
+                    <td className="px-3 py-2 text-xs text-slate-500">
                       {u.lastLoginAt ? omanDate(u.lastLoginAt) : 'never'}
                     </td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-3 py-2 text-right">
                       <UserRowActions
                         userId={u.id}
                         username={u.username}
@@ -428,7 +490,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                 ))}
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="px-4 py-6 text-center text-slate-400">
+                    <td colSpan={9} className="px-3 py-6 text-center text-slate-400">
                       No {status === 'all' ? '' : `${status} `}accounts to show.
                     </td>
                   </tr>
@@ -437,7 +499,10 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
             </table>
           </TableScroll>
 
-          <aside className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200">
+          <aside
+            id="create-user"
+            className="max-w-xl scroll-mt-4 rounded-lg bg-white p-5 shadow-sm ring-1 ring-slate-200"
+          >
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
               Create user
             </h2>
