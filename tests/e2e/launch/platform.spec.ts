@@ -100,6 +100,7 @@ import {
   watchProblems,
   type HeadingEntry,
 } from './support/platform-helpers';
+import { relayR2Puts } from './support/approvals-queue-helpers';
 
 // ── shared expectations ───────────────────────────────────────────────────────
 
@@ -447,6 +448,10 @@ test.describe('platform: security headers and the CSP', { tag: ['@desktop'] }, (
       await expect(page.getByRole('button', { name: 'Recapture GPS' })).toBeVisible();
 
       // The shop photo: compressed in the browser, PUT straight to R2 (connect-src), finalized, attached live.
+      // The bucket's CORS rule admits the browser's PUT from http://localhost:3000 only: on a lane's own
+      // E2E_PORT the PUT is relayed from Node (relayR2Puts; nothing is routed on 3000). The CSP is still
+      // the browser's: connect-src is checked in the page before the request reaches the route.
+      await relayR2Puts(page);
       const shopSlot = page.getByText(/^Shop front( \*)?$/).locator('xpath=ancestor::div[.//input[@type="file"]][1]');
       const put = page.waitForResponse(
         (r) => r.request().method() === 'PUT' && new URL(r.url()).hostname.endsWith('.r2.cloudflarestorage.com'),
