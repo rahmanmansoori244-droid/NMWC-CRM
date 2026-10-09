@@ -1624,8 +1624,17 @@ test.describe('approvals: photo-heavy pages stay under the photo rate limit', { 
     const tally = tallyPhotoResponses(page);
     await page.goto('/reactivations');
     await expect(page.getByText(`${KEYS.length} closed shops requesting reactivation`, { exact: true })).toBeVisible();
-    await expect(page.getByRole('img', { name: 'Reactivation evidence' })).toHaveCount(KEYS.length);
+    const evidence = page.getByRole('img', { name: 'Reactivation evidence' });
+    await expect(evidence).toHaveCount(KEYS.length);
+    // Lazy images load as they come into view (8f93cea): scroll through the list as a Manager would.
+    for (let i = 0; i < KEYS.length; i++) await evidence.nth(i).scrollIntoViewIfNeeded();
+    await imagesLoaded(evidence);
     await page.waitForLoadState('networkidle');
+    // The on-file comparison photos sit in a closed <details>: they are fetched only once it is opened.
+    const beforeOpen = tally.total();
+    await page.getByText('Photos on file (for comparison)', { exact: true }).first().click();
+    await imagesLoaded(page.locator('details[open] img[src^="/api/photos/"]'));
+    expect(tally.total(), 'opening a comparison section fetches its photos').toBeGreaterThan(beforeOpen);
     test.info().annotations.push({ type: '/reactivations photo responses', description: JSON.stringify(tally.byStatus()) });
 
     await page.goto(`/approvals/${create.id}`);
