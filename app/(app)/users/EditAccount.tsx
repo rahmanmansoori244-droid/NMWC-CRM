@@ -98,11 +98,12 @@ export function AccountEditor({
 export function EditAccountButton({ account }: { account: EditableRow }) {
   const open = useContext(EditorContext);
   if (!open) return null;
+  // whitespace-nowrap: one line, as the row's other actions (UserRowActions.tsx).
   return (
     <button
       type="button"
       onClick={() => open(account)}
-      className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+      className="whitespace-nowrap rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
     >
       Edit
     </button>

@@ -10,7 +10,8 @@
  *   - sign-out, a voluntary change, and how fast other sessions end
  *     (disable, reset, role change);
  *   - /users for the Steward (create, reset, disable, F1 e-mail, claim badges,
- *     Edit account and the leaver/joiner hand-over) and for a Manager;
+ *     Edit account and the leaver/joiner hand-over, every row's actions on
+ *     screen at desktop widths) and for a Manager;
  *   - an approver created with his regions; Me (/profile).
  *
  * Launch behaviour asserted (fixed, so no test.fail): after a password change
@@ -2648,5 +2649,121 @@ test.describe('accounts: a new Manager or Accountant works in the regions he is 
     const p = await signIn(browser, mgx, world.ip(6));
     await expectHome(p, 'MANAGER');
     await expect(pageSubtitle(p)).toHaveText(/^Your regions/);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 20. /users, the Steward: every row's actions on screen at desktop widths
+//     (production walk 2026-10-09: Enable sat past the table's right edge)
+// ═════════════════════════════════════════════════════════════════════════════
+
+test.describe('accounts: /users shows every row’s actions without sideways scrolling', { tag: ['@desktop'] }, () => {
+  requireLaunchEnv();
+  installLaunchHooks();
+
+  let world: World;
+  // Read-only: nothing here changes an account, so the rows stay on their tabs.
+  const ACTIVE = ['M1', 'SA'];
+  const DISABLED = ['FMX', 'SD'];
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    world = await createWorld('auw', {
+      regions: [{ key: 'R1' }],
+      routes: [
+        { key: 'A', region: 'R1' },
+        { key: 'A2', region: 'R1' },
+      ],
+      users: [
+        { key: 'STW', role: 'STEWARD' },
+        // The world's suffix makes every name, username and code as long as the
+        // suite's longest; FINANCE_MANAGER is the widest role, and e-mailed, so
+        // its row carries Add e-mail as well — four buttons.
+        { key: 'M1', role: 'MANAGER', regions: ['R1'], mustChangePassword: true },
+        { key: 'SA', role: 'SALESMAN', route: 'A', supervisor: 'M1' },
+        { key: 'FMX', role: 'FINANCE_MANAGER', isActive: false },
+        { key: 'SD', role: 'SALESMAN', route: 'A2', supervisor: 'M1', isActive: false },
+      ],
+    });
+  });
+
+  test.afterAll(async () => {
+    test.setTimeout(300_000);
+    if (world) await world.cleanup();
+  });
+
+  /** Edit and Enable/Disable of `key`'s row lie inside the table box's visible rect, unscrolled. */
+  async function actionsInsideBox(page: import('@playwright/test').Page, key: string, what: string): Promise<void> {
+    const u = world.user(key);
+    const row = usersRow(page, u.username);
+    await expect(row, `${what}: ${key}'s row`).toHaveCount(1);
+    const box = page.getByRole('region', { name: 'Accounts' });
+    const view = await box.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const left = r.left + el.clientLeft;
+      const top = r.top + el.clientTop;
+      return {
+        scrollLeft: el.scrollLeft,
+        overflow: el.scrollWidth - el.clientWidth,
+        left,
+        top,
+        right: left + el.clientWidth,
+        bottom: top + el.clientHeight,
+      };
+    });
+    expect(view.scrollLeft, `${what}: the table is not scrolled sideways`).toBe(0);
+    // No column hidden either: the whole table fits its box.
+    expect(view.overflow, `${what}: the table is wider than its box by`).toBeLessThanOrEqual(1);
+    const toggle = DISABLED.includes(key) ? 'Enable' : 'Disable';
+    for (const name of ['Edit', toggle]) {
+      const b = await row.getByRole('button', { name, exact: true }).boundingBox();
+      expect(b, `${what}: ${key} ${name} is rendered`).not.toBeNull();
+      expect(b!.x, `${what}: ${key} ${name} left edge`).toBeGreaterThanOrEqual(view.left - 0.5);
+      expect(b!.x + b!.width, `${what}: ${key} ${name} right edge (box ends at ${view.right})`).toBeLessThanOrEqual(view.right + 0.5);
+      expect(b!.y, `${what}: ${key} ${name} top edge`).toBeGreaterThanOrEqual(view.top - 0.5);
+      expect(b!.y + b!.height, `${what}: ${key} ${name} bottom edge`).toBeLessThanOrEqual(view.bottom + 0.5);
+    }
+  }
+
+  test('at 1280×800, 1366×768 and 1920×1080, Edit and Enable/Disable sit inside the table box on Active, Disabled and All', async ({ browser }) => {
+    test.setTimeout(300_000);
+    const page = await (await contextAt(browser, world.user('STW'), world.ip(1))).newPage();
+    const tabs: [string, string[]][] = [
+      ['active', ACTIVE],
+      ['disabled', DISABLED],
+      ['all', [...ACTIVE, ...DISABLED]],
+    ];
+    for (const [width, height] of [
+      [1280, 800],
+      [1366, 768],
+      [1920, 1080],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      for (const [status, keys] of tabs) {
+        await page.goto(`/users?status=${status}`);
+        await settle(page);
+        for (const key of keys) await actionsInsideBox(page, key, `${width}px, ${status}`);
+        await expectNoSideScroll(page);
+      }
+    }
+
+    // The Create user panel is below the table now; the header link takes the Steward to it.
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('/users');
+    await settle(page);
+    await page.getByRole('link', { name: 'Create user', exact: true }).click();
+    await expect(page).toHaveURL(/#create-user$/);
+    await expect(page.getByRole('heading', { name: 'Create user', exact: true })).toBeInViewport();
+    await expect(createForm(page).locator('input[name="fullName"]')).toBeInViewport();
+  });
+
+  test('at 375 px the page does not scroll sideways; the table scrolls inside its own box', async ({ browser }) => {
+    const page = await (await contextAt(browser, world.user('STW'), world.ip(2))).newPage();
+    await page.setViewportSize({ width: 375, height: 812 });
+    for (const status of ['active', 'disabled', 'all']) {
+      await page.goto(`/users?status=${status}`);
+      await settle(page);
+      await expectNoSideScroll(page);
+    }
   });
 });
