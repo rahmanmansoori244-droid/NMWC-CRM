@@ -123,10 +123,22 @@ jobs:
       # describe the same database. A model change without its migration passes
       # typecheck and unit tests and only breaks in production. Exit 2 = drift.
       # (Checked against UAT on 2026-10-08: its live schema equals the datamodel.)
+      # Four indexes are created by migrations on purpose and are not in schema.prisma:
+      # two GIN trigram search indexes Prisma cannot express, and two btree indexes
+      # (20260509150000_qa_remediation, 20260510120000_senior_audit_remediation). The
+      # diff would drop them, so they are allowed by name; any other difference fails.
       - name: Schema matches the migrations
         run: |
           psql "postgresql://ci:ci@localhost:5432/nmwc_ci" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE nmwc_shadow'
-          npx prisma migrate diff             --from-migrations prisma/migrations             --to-schema-datamodel prisma/schema.prisma             --shadow-database-url postgresql://ci:ci@localhost:5432/nmwc_shadow             --exit-code
+          npx prisma migrate diff             --from-migrations prisma/migrations             --to-schema-datamodel prisma/schema.prisma             --shadow-database-url postgresql://ci:ci@localhost:5432/nmwc_shadow             --script > drift.sql
+          ALLOWED='Branch_routeId_dayOfVisit_deletedAt_idx|Customer_deletedAt_idx|Customer_legalName_trgm_idx|Customer_nmwcCode_trgm_idx'
+          REST=$(grep -v -E '^[[:space:]]*(--.*)?$' drift.sql | grep -v -E "^DROP INDEX \"($ALLOWED)\";$" || true)
+          if [ -n "$REST" ]; then
+            echo "schema.prisma and prisma/migrations disagree:"
+            echo "$REST"
+            exit 1
+          fi
+          echo "schema.prisma matches prisma/migrations (apart from the four raw-SQL indexes kept on purpose)"
       - run: npm run db:seed
       # B4: prove the least-privilege runtime role on every run — create it,
       # apply the grants, then connect AS the role and check that reads/writes
