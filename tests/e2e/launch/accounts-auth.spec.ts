@@ -31,7 +31,7 @@
  *
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts accounts-auth --project=phone --project=desktop
  */
-import { expect, request as pwRequest, test } from '@playwright/test';
+import { expect, request as pwRequest, test, type Locator, type Page } from '@playwright/test';
 import type { Role } from '@prisma/client';
 import {
   BASE_URL,
@@ -2692,17 +2692,23 @@ test.describe('accounts: /users shows every row’s actions without sideways scr
     if (world) await world.cleanup();
   });
 
-  /** Edit and Enable/Disable of `key`'s row lie inside the table box's visible rect, unscrolled. */
-  async function actionsInsideBox(page: import('@playwright/test').Page, key: string, what: string): Promise<void> {
-    const u = world.user(key);
-    const row = usersRow(page, u.username);
-    await expect(row, `${what}: ${key}'s row`).toHaveCount(1);
-    const box = page.getByRole('region', { name: 'Accounts' });
-    const view = await box.evaluate((el) => {
+  // Playwright's headless Chromium hides scrollbars, so a 1280 px viewport lays
+  // the page out 1280 px wide and the table's box is 1008 px; on Windows a
+  // classic scrollbar takes 17 px of the screen and the box is 991 px (review of
+  // the production walk 2026-10-09 fix). So each screen width is measured less
+  // that scrollbar. A 1263 px viewport falls below Tailwind's xl breakpoint
+  // (1280), which the real 1280 screen does not; nothing on /users uses xl:, so
+  // that changes no layout here.
+  const CLASSIC_SCROLLBAR = 17;
+
+  /** The Accounts scroll box: its inner (client) rect, how it overflows and how far it is scrolled. */
+  function accountsBox(page: Page) {
+    return page.getByRole('region', { name: 'Accounts' }).evaluate((el) => {
       const r = el.getBoundingClientRect();
       const left = r.left + el.clientLeft;
       const top = r.top + el.clientTop;
       return {
+        overflowX: getComputedStyle(el).overflowX,
         scrollLeft: el.scrollLeft,
         overflow: el.scrollWidth - el.clientWidth,
         left,
@@ -2711,21 +2717,34 @@ test.describe('accounts: /users shows every row’s actions without sideways scr
         bottom: top + el.clientHeight,
       };
     });
+  }
+
+  /** `button` lies inside `view`, the box's client rect. */
+  async function expectInsideBox(button: Locator, view: Awaited<ReturnType<typeof accountsBox>>, what: string): Promise<void> {
+    const b = await button.boundingBox();
+    expect(b, `${what} is rendered`).not.toBeNull();
+    expect(b!.x, `${what} left edge`).toBeGreaterThanOrEqual(view.left - 0.5);
+    expect(b!.x + b!.width, `${what} right edge (box ends at ${view.right})`).toBeLessThanOrEqual(view.right + 0.5);
+    expect(b!.y, `${what} top edge`).toBeGreaterThanOrEqual(view.top - 0.5);
+    expect(b!.y + b!.height, `${what} bottom edge`).toBeLessThanOrEqual(view.bottom + 0.5);
+  }
+
+  /** Edit and Enable/Disable of `key`'s row lie inside the table box's visible rect, unscrolled. */
+  async function actionsInsideBox(page: Page, key: string, what: string): Promise<void> {
+    const u = world.user(key);
+    const row = usersRow(page, u.username);
+    await expect(row, `${what}: ${key}'s row`).toHaveCount(1);
+    const view = await accountsBox(page);
     expect(view.scrollLeft, `${what}: the table is not scrolled sideways`).toBe(0);
     // No column hidden either: the whole table fits its box.
     expect(view.overflow, `${what}: the table is wider than its box by`).toBeLessThanOrEqual(1);
     const toggle = DISABLED.includes(key) ? 'Enable' : 'Disable';
     for (const name of ['Edit', toggle]) {
-      const b = await row.getByRole('button', { name, exact: true }).boundingBox();
-      expect(b, `${what}: ${key} ${name} is rendered`).not.toBeNull();
-      expect(b!.x, `${what}: ${key} ${name} left edge`).toBeGreaterThanOrEqual(view.left - 0.5);
-      expect(b!.x + b!.width, `${what}: ${key} ${name} right edge (box ends at ${view.right})`).toBeLessThanOrEqual(view.right + 0.5);
-      expect(b!.y, `${what}: ${key} ${name} top edge`).toBeGreaterThanOrEqual(view.top - 0.5);
-      expect(b!.y + b!.height, `${what}: ${key} ${name} bottom edge`).toBeLessThanOrEqual(view.bottom + 0.5);
+      await expectInsideBox(row.getByRole('button', { name, exact: true }), view, `${what}: ${key} ${name}`);
     }
   }
 
-  test('at 1280×800, 1366×768 and 1920×1080, Edit and Enable/Disable sit inside the table box on Active, Disabled and All', async ({ browser }) => {
+  test('at 1280×800, 1366×768 and 1920×1080 with a classic scrollbar, Edit and Enable/Disable sit inside the table box on Active, Disabled and All', async ({ browser }) => {
     test.setTimeout(300_000);
     const page = await (await contextAt(browser, world.user('STW'), world.ip(1))).newPage();
     const tabs: [string, string[]][] = [
@@ -2738,11 +2757,11 @@ test.describe('accounts: /users shows every row’s actions without sideways scr
       [1366, 768],
       [1920, 1080],
     ] as const) {
-      await page.setViewportSize({ width, height });
+      await page.setViewportSize({ width: width - CLASSIC_SCROLLBAR, height });
       for (const [status, keys] of tabs) {
         await page.goto(`/users?status=${status}`);
         await settle(page);
-        for (const key of keys) await actionsInsideBox(page, key, `${width}px, ${status}`);
+        for (const key of keys) await actionsInsideBox(page, key, `${width}px less a scrollbar, ${status}`);
         await expectNoSideScroll(page);
       }
     }
@@ -2760,10 +2779,31 @@ test.describe('accounts: /users shows every row’s actions without sideways scr
   test('at 375 px the page does not scroll sideways; the table scrolls inside its own box', async ({ browser }) => {
     const page = await (await contextAt(browser, world.user('STW'), world.ip(2))).newPage();
     await page.setViewportSize({ width: 375, height: 812 });
-    for (const status of ['active', 'disabled', 'all']) {
+    for (const [status, key] of [
+      ['active', 'SA'],
+      ['disabled', 'SD'],
+      ['all', 'FMX'],
+    ] as const) {
+      const what = `375px, ${status}`;
       await page.goto(`/users?status=${status}`);
       await settle(page);
       await expectNoSideScroll(page);
+      const before = await accountsBox(page);
+      expect(before.overflow, `${what}: the table is wider than its box by`).toBeGreaterThan(1);
+      // A clipping box (overflow-hidden) also leaves scrollWidth above
+      // clientWidth; that is how this table once hid its actions
+      // (components/nmwc/TableScroll.tsx), so the box must scroll as well.
+      expect(before.overflowX, `${what}: the box scrolls sideways`).toMatch(/^(auto|scroll)$/);
+      // And the row's actions are reached that way: brought into view, Edit lies
+      // inside the box because the box scrolled, not the page.
+      const row = usersRow(page, world.user(key).username);
+      await expect(row, `${what}: ${key}'s row`).toHaveCount(1);
+      const edit = row.getByRole('button', { name: 'Edit', exact: true });
+      await edit.scrollIntoViewIfNeeded();
+      const after = await accountsBox(page);
+      expect(after.scrollLeft, `${what}: the box scrolled to ${key}'s Edit`).toBeGreaterThan(0);
+      expect(await page.evaluate(() => window.scrollX), `${what}: the page did not scroll sideways`).toBeLessThanOrEqual(1);
+      await expectInsideBox(edit, after, `${what}: ${key} Edit`);
     }
   });
 });
