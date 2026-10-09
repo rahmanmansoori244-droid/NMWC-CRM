@@ -68,6 +68,7 @@ import {
   PHOTO_CONFLICT_MESSAGE,
   PHOTO_GONE_MESSAGE,
   PHOTO_IN_REVIEW_MESSAGE,
+  PHOTO_OTHER_SLOT_MESSAGE,
   PHOTO_TARGET_CHANGED_MESSAGE,
 } from '@/lib/photo-attach';
 import { CR_DOCUMENT_LOCKED_MESSAGE, PHOTO_WRITER_ROLES } from '@/lib/permissions';
@@ -211,11 +212,12 @@ describe('attach, through the route: every check still refuses before a write', 
     expect(wrote()).toBe(0);
   });
 
-  it('a photo of one kind does not go into a slot of another', async () => {
+  it('a photo of one kind does not go into a slot of another — said in his words (production walk 2026-10-09)', async () => {
     db.attachment.findUnique.mockResolvedValue(photo({ kind: 'SIGNBOARD' }));
     const res = await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' });
     expect(res).toMatchObject({ ok: false, code: 'VALIDATION_FAILED' });
-    expect(res.fields?.attachmentId).toMatch(/^Slot SHOP requires a SHOP photo/);
+    expect(res.fields?.attachmentId).toBe(PHOTO_OTHER_SLOT_MESSAGE);
+    expect(PHOTO_OTHER_SLOT_MESSAGE).toBe('This photo was taken for a different slot. Take it again here.');
     expect(wrote()).toBe(0);
   });
 
@@ -288,6 +290,15 @@ describe('a photo on ANY other slot is still refused as already attached, and no
     expect(res.fields?.attachmentId).toBe(ALREADY_ATTACHED_MESSAGE);
     expect(wrote()).toBe(0);
   };
+
+  // Production walk 2026-10-09: it said "Attachment already wired to a slot."
+  // Retry upload sends the photo again, and finalize gives a photo on a slot or
+  // a request a row of its own, which this slot can take: so it says that.
+  it('the refusal tells him what to do', () => {
+    expect(ALREADY_ATTACHED_MESSAGE).toBe(
+      'This photo is already used elsewhere. Tap Retry upload to send it again as a new photo.'
+    );
+  });
 
   it("another branch's shop slot", () => refused(photo({ branchId: B2 }), { branchId: B1, slot: 'SHOP' }));
   it('the same branch, as an extra photo, sent for its shop slot', () =>

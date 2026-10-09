@@ -114,6 +114,15 @@ function evidenceUnwired(att: Attachment, branchId: string): boolean | null {
 }
 
 /**
+ * The refusal of evidence that evidenceUnwired finds on another slot or request.
+ * It said "Photo is not attached to this branch.", which told the salesman
+ * nothing to do: finalize used to hand a re-picked photo back as its old row,
+ * wherever that was. It no longer does (production walk 2026-10-09), so a photo
+ * picked again goes up as a new one; this stays as the safety net.
+ */
+const EVIDENCE_USED_ELSEWHERE_MESSAGE = 'This photo is already used elsewhere. Take a new photo of the shop.';
+
+/**
  * The photo onto the branch as one of its extra photos, written as the FREE
  * slot's attach writes it (services/photos.ts), audit row included. The claim
  * re-asserts "live, on no slot, not claimed by a new-customer request, his own"
@@ -227,9 +236,7 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   // On this branch already, or on no slot yet: wired below, with the request.
   const unwired = evidenceUnwired(att, branch.id);
   if (unwired === null) {
-    throw new ValidationError({
-      attachmentId: 'Photo is not attached to this branch.',
-    });
+    throw new ValidationError({ attachmentId: EVIDENCE_USED_ELSEWHERE_MESSAGE });
   }
   const env = unwired ? await getAuditEnvelope(me.id) : null;
 
@@ -367,9 +374,7 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
   // On this branch already, or on no slot yet: wired below, with the request.
   const unwired = evidenceUnwired(att, branch.id);
   if (unwired === null) {
-    throw new ValidationError({
-      attachmentId: 'Photo is not attached to this branch.',
-    });
+    throw new ValidationError({ attachmentId: EVIDENCE_USED_ELSEWHERE_MESSAGE });
   }
   const env = unwired ? await getAuditEnvelope(me.id) : null;
 

@@ -59,6 +59,7 @@ import {
   collectMissingForCreate,
   collectAttachmentIds,
   resolveCycleOnSubmit,
+  type CreatePhotoRef,
   type SubmitCreateInput,
   type ParsedSubmitCreate,
 } from '@/lib/validation/create';
@@ -74,6 +75,15 @@ import { UNWIRED_LIVE } from '@/lib/photo-attach';
 async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
 }
+
+/** A photo slot of the new-customer form, as its refusals name it (production walk 2026-10-09). */
+const PHOTO_SLOT_LABEL: Record<CreatePhotoRef['expect'], string> = {
+  CR: 'CR document',
+  GUARANTEE: 'guarantee document',
+  SHOP: 'shop front',
+  SIGNBOARD: 'signboard',
+  FREE: 'extra',
+};
 
 /**
  * Map Zod issues to the create form's error keys (`customer.x`, `branch.<i>.x`,
@@ -289,9 +299,19 @@ async function submitCreateOnce(
 
   // Referenced attachments: exist, live, captured by me, kind matches slot,
   // never wired to a real slot, and not claimed by a DIFFERENT edit.
+  // Production walk 2026-10-09: each refusal he can meet says, beside the slot
+  // (ref.field), which photo and what to do. They read "A referenced photo is
+  // already wired to a customer." / "Photo kind mismatch: expected SHOP, got
+  // SIGNBOARD.", at the top of the form. Finalize no longer hands back such a
+  // photo for a picture picked again; these stay as the safety net.
   const { all: attachmentIds, byKind } = collectAttachmentIds(data);
-  if (new Set(attachmentIds).size !== attachmentIds.length) {
-    throw new ValidationError({ _form: 'The same photo is referenced twice.' });
+  const twice = byKind.find((ref, i) => byKind.findIndex((r) => r.id === ref.id) !== i);
+  if (twice) {
+    // Finalize hands one free photo to every slot of its kind the same picture
+    // is picked in: two shop fronts, two extra photos.
+    throw new ValidationError({
+      _form: `The same ${PHOTO_SLOT_LABEL[twice.expect]} photo is in two places on this form. Take a different photo for one of them.`,
+    });
   }
   const atts = attachmentIds.length
     ? await prisma.attachment.findMany({
@@ -311,19 +331,28 @@ async function submitCreateOnce(
   const attById = new Map(atts.map((a) => [a.id, a]));
   for (const ref of byKind) {
     const a = attById.get(ref.id);
-    if (!a || a.deletedAt) throw new NotFoundError('A referenced photo no longer exists.');
+    const label = PHOTO_SLOT_LABEL[ref.expect];
+    if (!a || a.deletedAt) {
+      throw new ValidationError({ [ref.field]: `The ${label} photo was removed. Take it again.` });
+    }
     if (a.capturedById !== session.id) {
       throw new ForbiddenError('You can only use photos you captured yourself.');
     }
     if (a.customerId || a.branchId || a.branchExtraId) {
-      throw new ValidationError({ _form: 'A referenced photo is already wired to a customer.' });
+      throw new ValidationError({
+        [ref.field]: `This ${label} photo is already on another customer's record. Take it again.`,
+      });
     }
     if (a.editId && a.editId !== existing?.id) {
-      throw await photoClaimedConflict(a.editId, session.id);
+      throw await photoClaimedConflict(a.editId, session.id, ref.field, label);
     }
     if (a.kind !== (AttachmentKind[ref.expect] as AttachmentKind)) {
+      logger.info(
+        { attachmentId: a.id, expect: ref.expect, kind: a.kind, by: session.id },
+        'create.photo_kind_mismatch'
+      );
       throw new ValidationError({
-        _form: `Photo kind mismatch: expected ${ref.expect}, got ${a.kind}.`,
+        [ref.field]: `The ${label} photo was taken for a different slot. Take it again here.`,
       });
     }
   }
@@ -723,17 +752,32 @@ async function withdrawCreateCore(input: { editId: string }): Promise<{ editId: 
  * retry changed something, so it carries a new id), say where his work went —
  * the old message read like somebody else had his photos. A conflict, not a
  * field error: it has no field, and the form says it beside the button.
+ *
+ * Production walk 2026-10-09: a request he withdrew keeps its photos
+ * (withdrawCreateCore), and one approved has put them on its customer; neither
+ * is where this form's work went. Those, and another's request, are said beside
+ * the photo's slot (`field`), with what to do.
  */
 async function photoClaimedConflict(
   editId: string,
-  meId: string
+  meId: string,
+  field: string,
+  label: string
 ): Promise<ValidationError | ConflictError> {
   const other = await prisma.customerEdit.findUnique({
     where: { id: editId },
     select: { submittedById: true, state: true, submittedAt: true, updatedAt: true },
   });
   if (!other || other.submittedById !== meId) {
-    return new ValidationError({ _form: 'A referenced photo belongs to another request.' });
+    return new ValidationError({ [field]: `This ${label} photo is on another request. Take it again.` });
+  }
+  if (other.state === EditState.REJECTED) {
+    return new ValidationError({ [field]: `This ${label} photo is on a request you withdrew. Take it again.` });
+  }
+  if (other.state === EditState.APPROVED) {
+    return new ValidationError({
+      [field]: `This ${label} photo is already on another customer's record. Take it again.`,
+    });
   }
   const when = omanWhen(shownTime(other));
   return new ConflictError(

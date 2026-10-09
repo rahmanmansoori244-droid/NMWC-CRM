@@ -375,13 +375,15 @@ describe('collectAttachmentIds', () => {
     if (!parsed.success) return;
     const { all, byKind } = collectAttachmentIds(parsed.data);
     expect(all).toHaveLength(5); // cr + guarantee + shop + signboard + extra
+    // Each with the form's error key for its slot, so a refusal of the photo is
+    // said beside it (production walk 2026-10-09); an extra photo has none.
     expect(byKind).toEqual(
       expect.arrayContaining([
-        { id: CUID3, expect: 'CR' },
-        { id: 'ckaaaaaaaa0000aaaaaaaaaaaa', expect: 'GUARANTEE' },
-        { id: 'ckbbbbbbbb0000bbbbbbbbbbbb', expect: 'SHOP' },
-        { id: 'ckcccccccc0000cccccccccccc', expect: 'SIGNBOARD' },
-        { id: 'ckdddddddd0000dddddddddddd', expect: 'FREE' },
+        { id: CUID3, expect: 'CR', field: 'customer.crPhoto' },
+        { id: 'ckaaaaaaaa0000aaaaaaaaaaaa', expect: 'GUARANTEE', field: 'guarantee' },
+        { id: 'ckbbbbbbbb0000bbbbbbbbbbbb', expect: 'SHOP', field: 'branch.0.shopPhoto' },
+        { id: 'ckcccccccc0000cccccccccccc', expect: 'SIGNBOARD', field: 'branch.0.signboardPhoto' },
+        { id: 'ckdddddddd0000dddddddddddd', expect: 'FREE', field: '_form' },
       ])
     );
   });

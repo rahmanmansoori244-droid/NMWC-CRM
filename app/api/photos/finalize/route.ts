@@ -7,7 +7,7 @@ import { prisma } from '@/lib/db';
 import { AttachmentKind } from '@prisma/client';
 import { logger } from '@/lib/logger';
 import { canUploadPhoto } from '@/lib/permissions';
-import { PHOTO_ROLE_REFUSED_MESSAGE } from '@/lib/photo-attach';
+import { PHOTO_ROLE_REFUSED_MESSAGE, UNWIRED_LIVE } from '@/lib/photo-attach';
 
 /**
  * Build the expected key prefix that this user's presign would have issued.
@@ -165,15 +165,37 @@ export async function POST(req: NextRequest) {
   // dedupe was a confirmation oracle ("does this exact JPEG already exist in
   // any customer's master?") and tangled multiple customers' slots into a
   // single Attachment row.
-  const existing = await prisma.attachment.findFirst({
-    where: { hash, capturedById: session.user.id, deletedAt: null },
+  // Production walk 2026-10-09: and ONLY to a photo he can still use — live, of
+  // this kind, on no slot and claimed by no request (the condition every claim
+  // of a photo re-asserts). Any match was handed back before, so a photo he had
+  // sent already — for another customer, on a request he withdrew, or in
+  // another slot — came back as that old row, and Submit refused it ("already
+  // wired", "belongs to another request", "kind mismatch") with nothing he
+  // could do. Such a match now gets a row of its own, for the object just
+  // uploaded, as new bytes do.
+  const reusable = await prisma.attachment.findFirst({
+    where: { hash, capturedById: session.user.id, kind, ...UNWIRED_LIVE, editId: null },
+    select: { id: true },
   });
-  if (existing) {
-    return NextResponse.json({ attachmentId: existing.id, deduped: true });
+  if (reusable) {
+    return NextResponse.json({ attachmentId: reusable.id, deduped: true });
   }
 
-  // NEW-PHOTO-007: capturedAt is the R2 upload time, not a client claim.
-  const capturedAt = head.LastModified ?? new Date();
+  // NEW-PHOTO-007: capturedAt is the R2 upload time, not a client claim —
+  // except that bytes this uploader sent before keep the time they first
+  // arrived. Close and reopen evidence must be newer than the shop's last
+  // status change (services/reactivations.ts, EL-11/EL-12). The old dedupe
+  // answered with the old row, its time included, so a photo sent before the
+  // closure could not prove the reopening; the row of its own made above must
+  // not undo that (production walk 2026-10-09).
+  const uploadedAt = head.LastModified ?? new Date();
+  const firstSent = await prisma.attachment.findFirst({
+    where: { hash, capturedById: session.user.id, deletedAt: null },
+    orderBy: { capturedAt: 'asc' },
+    select: { capturedAt: true },
+  });
+  const capturedAt =
+    firstSent && firstSent.capturedAt.getTime() < uploadedAt.getTime() ? firstSent.capturedAt : uploadedAt;
 
   const att = await prisma.attachment.create({
     data: {

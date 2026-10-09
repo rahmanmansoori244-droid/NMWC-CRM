@@ -163,7 +163,7 @@ describe.skipIf(!ENABLED)('imported customer branch can be closed (final-hunt #1
     current = { id: ids.sales, role: 'SALESMAN', username: ids.sales };
     const att = await prisma.attachment.create({ data: { kind: 'FREE', r2Key: `uat/close-${tag}-other.jpg`, mimeType: 'image/jpeg', bytes: 1000, capturedById: ids.sales, capturedAt: new Date(), branchId: ids.branch, branchExtraId: ids.branch } });
     const res = await closeWith(ids.branch2, att.id);
-    expect(res).toMatchObject({ ok: false, fields: { attachmentId: 'Photo is not attached to this branch.' } });
+    expect(res).toMatchObject({ ok: false, fields: { attachmentId: 'This photo is already used elsewhere. Take a new photo of the shop.' } });
     expect(await wiring(att.id)).toMatchObject({ branchId: ids.branch, branchExtraId: ids.branch });
   });
 
@@ -172,7 +172,7 @@ describe.skipIf(!ENABLED)('imported customer branch can be closed (final-hunt #1
     const create = await prisma.customerEdit.create({ data: { target: 'CUSTOMER', process: 'CREATE', state: 'DRAFT', submittedById: ids.sales, fieldChanges: [], attachmentChanges: [] } });
     const att = await prisma.attachment.create({ data: { kind: 'SHOP', r2Key: `uat/close-${tag}-claimed.jpg`, mimeType: 'image/jpeg', bytes: 1000, capturedById: ids.sales, capturedAt: new Date(), editId: create.id } });
     const res = await closeWith(ids.branch2, att.id);
-    expect(res).toMatchObject({ ok: false, fields: { attachmentId: 'Photo is not attached to this branch.' } });
+    expect(res).toMatchObject({ ok: false, fields: { attachmentId: 'This photo is already used elsewhere. Take a new photo of the shop.' } });
     expect(
       await prisma.attachment.findUniqueOrThrow({ where: { id: att.id }, select: { branchId: true, branchExtraId: true, editId: true, kind: true } })
     ).toEqual({ branchId: null, branchExtraId: null, editId: create.id, kind: 'SHOP' });

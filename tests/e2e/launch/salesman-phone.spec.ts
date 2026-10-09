@@ -13,6 +13,7 @@
  *   SM-SUBMIT-DOUBLE-TAP / -OFFLINE / -NO-ANSWER, SM-SESSION-EXPIRY-MIDFORM, AUTH-EXPIRED-MID-FORM
  *                                            on the enrich, new-customer and close forms
  *   SM-PHOTO-WEAK-NETWORK, UPLOAD-PHONE-REAL-PHOTOS, SM-RATE-LIMITS
+ *   + production walk 2026-10-09: pictures he sent before, picked again for another new customer
  *   + critic: the visit-day job from the no-day list (wave 2, decision 4), a route switched off mid-week (P2)
  *
  * Fixed in wave 1 and asserted as fixed (no test.fail): the Today header in Oman
@@ -108,6 +109,8 @@ import {
   unthrottle,
   watchTexts,
 } from './support/salesman-phone-helpers';
+import { fastForwardCreate } from './support/create-chains-helpers';
+import { temixCodeFor, typeTemixCode } from './support/temix-codes';
 
 /**
  * The salesman's submit gate the server runs with (lib/submit-gate.ts): CORE, the
@@ -1815,5 +1818,99 @@ test.describe('salesman phone: photos on a weak link and real camera files (SM-P
     } finally {
       await resetLimits({ users: [user] });
     }
+  });
+
+  // Production walk 2026-10-09: finalize handed a picture he had sent before back
+  // as its old photo, wherever that photo was, and Submit refused the request:
+  // "A referenced photo is already wired to a customer." (here: the customer his
+  // first request created), "Photo kind mismatch" (a picture used in another
+  // slot). Now such a picture goes up as a photo of its own.
+  test('the same pictures picked again for another new customer, after the first was approved, two in swapped slots: fresh photos, and it is sent (production walk 2026-10-09)', async ({ browser }) => {
+    test.setTimeout(600_000);
+    const { user } = await addFieldSalesman(world, 'P7');
+    await resetLimits({ users: [user] });
+    const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
+    const ch = await channelWithSubs();
+    const [phoneA, phoneB] = await world.allocPhones(2);
+    // The three pictures on his phone, picked for both requests.
+    const pictures = { cr: pngFile('cr'), shop: pngFile('shop'), sign: pngFile('sign') };
+    const photosOf = (editId: string) =>
+      db.attachment.findMany({
+        where: { editId },
+        select: { id: true, kind: true, hash: true, capturedAt: true, customerId: true, branchId: true, editId: true, deletedAt: true },
+      });
+    const byKind = <T extends { kind: string }>(rows: T[]) => Object.fromEntries(rows.map((r) => [r.kind, r])) as Record<string, T>;
+
+    // 1. The first shop, sent, then approved: the customer is created, with these photos on it.
+    await fillCreateForm(page, {
+      legalName: world.name('Al Noor Grocery'),
+      crNumber: `CR${world.SFX}P7A`,
+      phone: phoneA!,
+      contact: 'Saleh Al Rashdi',
+      channelLabel: ch.label,
+      day: OMAN_TODAY,
+      address: world.name('Way 4410, Al Hail South, Seeb'),
+      photos: pictures,
+    });
+    await page.getByRole('button', { name: SUBMIT, exact: true }).click();
+    await expect(page).toHaveURL(/\/work$/, { timeout: 30_000 });
+    const firstId = (await db.customerEdit.findFirstOrThrow({ where: { submittedById: user.id, process: 'CREATE' }, select: { id: true } })).id;
+    // The Supervisor step as its approval leaves it; the Accountant creates it on the page.
+    await fastForwardCreate(world, firstId, 1, ['M1']);
+    const acc = await (await contextAs(browser, world.user('ACC1'), { device: 'desktop' })).newPage();
+    await acc.goto(`/approvals/${firstId}`);
+    await typeTemixCode(acc, temixCodeFor(world));
+    await acc.getByRole('button', { name: '✓ Approve', exact: true }).click();
+    const dialog = acc.getByRole('dialog', { name: 'Create this customer?' });
+    await dialog.getByRole('button', { name: 'Approve and create', exact: true }).click();
+    await expect
+      .poll(async () => (await db.customerEdit.findUniqueOrThrow({ where: { id: firstId }, select: { state: true } })).state, {
+        timeout: 120_000,
+        message: 'the first request is approved',
+      })
+      .toBe('APPROVED');
+    const first = byKind(await photosOf(firstId));
+    expect(Object.keys(first).sort()).toEqual(['CR', 'SHOP', 'SIGNBOARD']);
+    for (const p of Object.values(first)) {
+      expect(Boolean(p.customerId || p.branchId), `the first ${p.kind} photo is on the new customer`).toBe(true);
+    }
+
+    // 2. Another shop, the same pictures — the shop-front and signboard pictures in each other's slot.
+    await fillCreateForm(page, {
+      legalName: world.name('Al Huda Stores'),
+      crNumber: `CR${world.SFX}P7B`,
+      phone: phoneB!,
+      contact: 'Saleh Al Rashdi',
+      channelLabel: ch.label,
+      day: OMAN_TODAY,
+      address: world.name('Way 1520, Bowsher'),
+      photos: { cr: pictures.cr, shop: pictures.sign, sign: pictures.shop },
+    });
+    await page.getByRole('button', { name: SUBMIT, exact: true }).click();
+    await expect(page, 'sent: no photo refused').toHaveURL(/\/work$/, { timeout: 30_000 });
+    const second = await db.customerEdit.findFirstOrThrow({
+      where: { submittedById: user.id, process: 'CREATE', id: { not: firstId } },
+      select: { id: true, state: true },
+    });
+    expect(second.state).toBe('SUBMITTED');
+
+    // Photos of their own: new rows of the same bytes, claimed by the new request,
+    // on no slot; each keeps the time its picture first arrived.
+    const again = byKind(await photosOf(second.id));
+    expect(Object.keys(again).sort()).toEqual(['CR', 'SHOP', 'SIGNBOARD']);
+    for (const [kind, sameBytesAs] of [
+      ['CR', 'CR'],
+      ['SHOP', 'SIGNBOARD'],
+      ['SIGNBOARD', 'SHOP'],
+    ] as const) {
+      const now = again[kind]!;
+      const before = first[sameBytesAs]!;
+      expect(now.hash, `the ${kind} photo is the picture first sent as the ${sameBytesAs} photo`).toBe(before.hash);
+      expect(now.id, `the ${kind} photo is a photo of its own`).not.toBe(before.id);
+      expect(now).toMatchObject({ customerId: null, branchId: null, editId: second.id, deletedAt: null });
+      expect(now.capturedAt.getTime()).toBe(before.capturedAt.getTime());
+    }
+    // The first customer's photos are as the approval left them.
+    expect(byKind(await photosOf(firstId))).toEqual(first);
   });
 });

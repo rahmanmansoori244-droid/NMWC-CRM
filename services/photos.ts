@@ -25,6 +25,7 @@ import {
   PHOTO_CONFLICT_MESSAGE,
   PHOTO_GONE_MESSAGE,
   PHOTO_IN_REVIEW_MESSAGE,
+  PHOTO_OTHER_SLOT_MESSAGE,
   PHOTO_TARGET_CHANGED_MESSAGE,
   UNWIRED_LIVE,
 } from '@/lib/photo-attach';
@@ -214,7 +215,9 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     throw new ValidationError({ attachmentId: ALREADY_ATTACHED_MESSAGE });
   }
   // NEW-PHOTO-001: slot must match the attachment.kind, except FREE which
-  // accepts anything (it's a generic extra-photo bucket).
+  // accepts anything (it's a generic extra-photo bucket). Said in his words
+  // (production walk 2026-10-09): "Slot SHOP requires a SHOP photo (this one
+  // is SIGNBOARD)" told him nothing to do.
   const expectedKindForSlot: Record<string, AttachmentKind> = {
     CR: AttachmentKind.CR,
     SHOP: AttachmentKind.SHOP,
@@ -223,9 +226,11 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
   if (data.slot !== 'FREE') {
     const expected = expectedKindForSlot[data.slot];
     if (expected && att.kind !== expected) {
-      throw new ValidationError({
-        attachmentId: `Slot ${data.slot} requires a ${expected} photo (this one is ${att.kind}).`,
-      });
+      logger.info(
+        { attachmentId: att.id, slot: data.slot, kind: att.kind, by: session.user.id },
+        'photo.attach.kind_mismatch'
+      );
+      throw new ValidationError({ attachmentId: PHOTO_OTHER_SLOT_MESSAGE });
     }
   }
 

@@ -1,8 +1,10 @@
 /**
  * Test images. Every image the suite stores must have UNIQUE bytes: the photo
- * finalize dedupes on (sha256, uploader) whatever the slot, so a reused image
- * comes back as the old attachment (a wrong-kind attach, a "retake" that
- * replaces nothing, an orphan object in R2).
+ * finalize dedupes on (sha256, uploader, kind) to a photo of his still on no
+ * slot and claimed by no request, so a reused image can come back as an older
+ * attachment (two slots holding one photo, an orphan object in R2). A reused
+ * image whose earlier photo IS on a slot or a request gets a row of its own,
+ * keeping the earlier capture time (production walk 2026-10-09).
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { deflateSync } from 'node:zlib';

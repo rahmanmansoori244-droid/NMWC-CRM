@@ -139,8 +139,9 @@ export type UploadedPhoto = {
  * world's fixture users and written to the crash registry BEFORE the PUT, so
  * only a fixture user's folder is ever written and the sweep can always find it.
  *
- * `bytes` defaults to a unique ~2 KB JPEG: finalize dedupes on (sha256, uploader),
- * so a reused image would come back as an older attachment (`deduped: true`).
+ * `bytes` defaults to a unique ~2 KB JPEG: finalize dedupes on (sha256, uploader,
+ * kind) to a photo still on no slot and claimed by no request, so a reused image
+ * can come back as an older attachment (`deduped: true`).
  * Throws when a step before the attach refuses; the attach's refusal is returned.
  */
 export async function uploadPhotoViaApi(

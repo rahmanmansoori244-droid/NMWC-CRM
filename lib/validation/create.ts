@@ -235,23 +235,36 @@ export function resolveCycleOnSubmit(
   return prior.submittedAt ? prior.cycle + 1 : prior.cycle;
 }
 
+/**
+ * One photo a create payload refers to: its id, the kind its slot takes, and the
+ * form's error key for that slot (the keys services/creates.ts zodIssuesToFields
+ * maps to), so a refusal of the photo is said beside it. An extra photo has no
+ * error slot of its own on the form: `_form`.
+ */
+export type CreatePhotoRef = {
+  id: string;
+  expect: 'CR' | 'SHOP' | 'SIGNBOARD' | 'FREE' | 'GUARANTEE';
+  field: string;
+};
+
 /** Collect every attachment id referenced by a create payload (deduped check is the caller's). */
 export function collectAttachmentIds(input: ParsedSubmitCreate): {
   all: string[];
-  byKind: Array<{ id: string; expect: 'CR' | 'SHOP' | 'SIGNBOARD' | 'FREE' | 'GUARANTEE' }>;
+  byKind: CreatePhotoRef[];
 } {
-  const byKind: Array<{ id: string; expect: 'CR' | 'SHOP' | 'SIGNBOARD' | 'FREE' | 'GUARANTEE' }> =
-    [];
+  const byKind: CreatePhotoRef[] = [];
   if (input.customer.crPhotoAttachmentId) {
-    byKind.push({ id: input.customer.crPhotoAttachmentId, expect: 'CR' });
+    byKind.push({ id: input.customer.crPhotoAttachmentId, expect: 'CR', field: 'customer.crPhoto' });
   }
-  for (const g of input.guaranteeAttachmentIds) byKind.push({ id: g, expect: 'GUARANTEE' });
-  for (const b of input.branches) {
-    if (b.shopPhotoAttachmentId) byKind.push({ id: b.shopPhotoAttachmentId, expect: 'SHOP' });
-    if (b.signboardPhotoAttachmentId) {
-      byKind.push({ id: b.signboardPhotoAttachmentId, expect: 'SIGNBOARD' });
+  for (const g of input.guaranteeAttachmentIds) byKind.push({ id: g, expect: 'GUARANTEE', field: 'guarantee' });
+  input.branches.forEach((b, i) => {
+    if (b.shopPhotoAttachmentId) {
+      byKind.push({ id: b.shopPhotoAttachmentId, expect: 'SHOP', field: `branch.${i}.shopPhoto` });
     }
-    for (const x of b.extraPhotoAttachmentIds) byKind.push({ id: x, expect: 'FREE' });
-  }
+    if (b.signboardPhotoAttachmentId) {
+      byKind.push({ id: b.signboardPhotoAttachmentId, expect: 'SIGNBOARD', field: `branch.${i}.signboardPhoto` });
+    }
+    for (const x of b.extraPhotoAttachmentIds) byKind.push({ id: x, expect: 'FREE', field: '_form' });
+  });
   return { all: byKind.map((e) => e.id), byKind };
 }

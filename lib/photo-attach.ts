@@ -11,7 +11,10 @@ import type { Prisma } from '@prisma/client';
  * (services/creates.ts) and that request's bind at its final approval
  * (lib/create-finalize.ts). A check read before the write is not enough: in
  * the gap a Remove can soft-delete the photo or another claim can take it
- * (N06). Each caller adds its own `editId` condition.
+ * (N06). Each caller adds its own `editId` condition. Finalize's hash dedupe
+ * (app/api/photos/finalize) hands back only a photo that meets it, with
+ * `editId: null`, so what it answers is one these claims can take (production
+ * walk 2026-10-09).
  */
 export const UNWIRED_LIVE = {
   deletedAt: null,
@@ -81,8 +84,23 @@ export const PHOTO_ROLE_REFUSED_MESSAGE = 'Your role cannot upload this photo.';
  * refused: it is answered ok and writes nothing, so the slot's re-send of an
  * attach that got no answer learns that the first one landed (post-merge review
  * of 30ec23a). The slot shows this refusal as a failure, whatever try it was.
+ *
+ * Production walk 2026-10-09: it said "Attachment already wired to a slot." and
+ * left him nothing to do. Retry upload sends the photo again, and finalize now
+ * gives a photo that is on a slot or a request a row of its own, which this
+ * slot can take — so that is what it tells him.
  */
-export const ALREADY_ATTACHED_MESSAGE = 'Attachment already wired to a slot.';
+export const ALREADY_ATTACHED_MESSAGE =
+  'This photo is already used elsewhere. Tap Retry upload to send it again as a new photo.';
+
+/**
+ * The attach refusal for a photo of another kind than the slot (NEW-PHOTO-001:
+ * a signboard photo cannot stand in the shop-front slot). Finalize no longer
+ * hands back a photo of another kind for the same picture (production walk
+ * 2026-10-09), so a slot meets this only through a client that is not the app's
+ * own; said plainly all the same, as the check stays.
+ */
+export const PHOTO_OTHER_SLOT_MESSAGE = 'This photo was taken for a different slot. Take it again here.';
 
 /**
  * How long a presigned upload URL is valid (app/api/photos/presign). The slot's

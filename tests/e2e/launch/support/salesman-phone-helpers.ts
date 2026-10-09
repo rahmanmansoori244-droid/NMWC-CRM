@@ -549,10 +549,21 @@ export function todayStat(page: Page, label: string): Locator {
  * identity, a channel with its sub-channel, contact, the branch's address, a
  * GPS fix from the phone, its visit day, and the three photos (CR document,
  * shop front, signboard) through the camera input. Waits until Submit is enabled.
+ * `photos`: the files to pick (a picture picked again, production walk
+ * 2026-10-09); a fresh PNG for each slot otherwise.
  */
 export async function fillCreateForm(
   page: Page,
-  o: { legalName: string; crNumber: string; phone: string; contact: string; channelLabel: string; day: DayOfWeek; address: string }
+  o: {
+    legalName: string;
+    crNumber: string;
+    phone: string;
+    contact: string;
+    channelLabel: string;
+    day: DayOfWeek;
+    address: string;
+    photos?: { cr: PickedFile; shop: PickedFile; sign: PickedFile };
+  }
 ): Promise<void> {
   await page.goto('/customers/new');
   await settled(page);
@@ -574,7 +585,7 @@ export async function fillCreateForm(
     ['Signboard', 'sign'],
   ] as const) {
     const slot = photoSlot(page, label);
-    await pickFile(slot, pngFile(name));
+    await pickFile(slot, o.photos?.[name] ?? pngFile(name));
     await expect(retakeOf(slot), `${label} photo is in`).toBeVisible({ timeout: 120_000 });
   }
   await expect(page.getByRole('button', { name: 'Submit for approval ▶' })).toBeEnabled({ timeout: 30_000 });
