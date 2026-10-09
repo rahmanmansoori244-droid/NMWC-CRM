@@ -33,6 +33,11 @@ vi.mock('next/link', () => ({
 
 import { UserRowActions, UsersFeedback } from '@/app/(app)/users/UserRowActions';
 
+// The full unit suite runs ~290 files in parallel on Windows; the default 1 s waits
+// flaked under that load (2026-10-09). The UI under test is unchanged.
+const SLOW = { timeout: 10_000 };
+vi.setConfig({ testTimeout: 30_000 });
+
 const PASSWORD = 'A-long-password-1';
 const type = (el: HTMLElement, value: string) => fireEvent.change(el, { target: { value } });
 
@@ -68,7 +73,7 @@ describe('UserRowActions — refusals read as errors', () => {
     h.reset.mockResolvedValue(result);
     render(<UserRowActions userId="u-target" username="someone" isActive />);
     resetWith();
-    const alert = await screen.findByRole('alert');
+    const alert = await screen.findByRole('alert', {}, SLOW);
     expect(alert.textContent).toBe(reason);
     expect(alert.className).toContain('text-red-600');
     expect(alert.className).not.toContain('emerald');
@@ -84,7 +89,7 @@ describe('UserRowActions — refusals read as errors', () => {
     });
     render(<UserRowActions userId="u-mgr" username="the.manager" isActive />);
     fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
-    const alert = await screen.findByRole('alert');
+    const alert = await screen.findByRole('alert', {}, SLOW);
     expect(alert.textContent).toBe('Cannot disable the only active Manager. Promote another user to Manager first.');
     expect(alert.className).toContain('text-red-600');
   });
@@ -98,9 +103,9 @@ describe('UserRowActions — refusals read as errors', () => {
       </UsersFeedback>
     );
     fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
-    await screen.findByRole('alert');
+    await screen.findByRole('alert', {}, SLOW);
     fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
-    await screen.findByText(/^Disabled "someone"/);
+    await screen.findByText(/^Disabled "someone"/, {}, SLOW);
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText('That account is outside the regions you manage.')).toBeNull();
   });
@@ -109,7 +114,7 @@ describe('UserRowActions — refusals read as errors', () => {
     h.reset.mockRejectedValue(new Error('Network down'));
     render(<UserRowActions userId="u-target" username="someone" isActive />);
     resetWith();
-    const alert = await screen.findByRole('alert');
+    const alert = await screen.findByRole('alert', {}, SLOW);
     expect(alert.textContent).toBe('Network down');
     expect(alert.className).toContain('text-red-600');
   });
@@ -118,7 +123,7 @@ describe('UserRowActions — refusals read as errors', () => {
     h.reset.mockResolvedValue({ ok: true, data: undefined });
     render(<UserRowActions userId="u-target" username="someone" isActive />);
     resetWith();
-    const done = await screen.findByText('Password updated.');
+    const done = await screen.findByText('Password updated.', {}, SLOW);
     expect(done.className).toContain('text-emerald-600');
     expect(done.getAttribute('role')).toBe('status');
     expect(screen.queryByRole('alert')).toBeNull();
@@ -129,11 +134,11 @@ describe('UserRowActions — refusals read as errors', () => {
     h.reset.mockResolvedValueOnce({ ok: false, code: 'FORBIDDEN', message: 'Use /profile to change your own account.' });
     render(<UserRowActions userId="u-target" username="someone" isActive />);
     resetWith();
-    await screen.findByText('Password updated.');
+    await screen.findByText('Password updated.', {}, SLOW);
     // The form closes itself after a success; open it again.
-    await waitFor(() => expect(screen.queryByPlaceholderText('Confirm new password')).toBeNull(), { timeout: 3000 });
+    await waitFor(() => expect(screen.queryByPlaceholderText('Confirm new password')).toBeNull(), SLOW);
     resetWith();
-    const alert = await screen.findByRole('alert');
+    const alert = await screen.findByRole('alert', {}, SLOW);
     expect(alert.textContent).toBe('Use /profile to change your own account.');
     expect(screen.queryByText('Password updated.')).toBeNull();
   });
