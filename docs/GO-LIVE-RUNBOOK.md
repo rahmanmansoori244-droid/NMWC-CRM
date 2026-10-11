@@ -132,7 +132,7 @@ importer enforces most of the order, but not all of it.
    Then check what **else** can sign in:
 
    ```bash
-   DIRECT_URL='<the OWNER connection string>' npx tsx scripts/golive/audit-accounts.ts
+   DIRECT_URL='<the OWNER connection string>' npx tsx scripts/golive/audit-accounts.ts --expect-host ep-sweet-haze
    ```
 
    Nothing in this load removes an account. Step 1 skips a username that already
@@ -156,7 +156,7 @@ importer enforces most of the order, but not all of it.
 6a. **Verify the data, not just the batch.**
 
    ```bash
-   DIRECT_URL='<the OWNER connection string>' npm run verify:load -- \
+   DIRECT_URL='<the OWNER connection string>' npm run verify:load -- --expect-host ep-sweet-haze \
      --expected-branches "$EXPECTED_BRANCHES" --expected-visit-days "$EXPECTED_VISIT_DAYS"
    ```
 

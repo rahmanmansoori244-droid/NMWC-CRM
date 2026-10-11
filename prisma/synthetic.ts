@@ -27,6 +27,7 @@ import { normalizePhone } from '../lib/phone';
 import { normalizeCR } from '../lib/cr';
 import { scoreCustomer, scoreBranch } from '../lib/completeness';
 import { formatCustomerCode, formatBranchCode } from '../lib/codes';
+import { assertNotProduction, withoutExpectHost } from '../scripts/lib/assert-not-production';
 
 const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
 
@@ -49,7 +50,9 @@ if (PROD_ENDPOINTS.some((e) => SEED_URL.includes(e)) && process.env.ALLOW_PROD_S
 
 const prisma = new PrismaClient({
   // Long-running seed: use the DIRECT (unpooled) URL to avoid pgBouncer idle timeouts.
-  datasourceUrl: SEED_URL || undefined,
+  // And the shared guard on top of the abort above (data audit 2026-10-10, owner
+  // decision 2026-10-11): production would need ALLOW_PROD_SEED=1 AND --expect-host.
+  datasourceUrl: assertNotProduction(SEED_URL),
 });
 
 // Stable seed so re-runs produce same data
@@ -562,7 +565,8 @@ function pickShopName(channelKey: string): string {
 }
 
 async function main() {
-  const arg = process.argv[2];
+  // `--expect-host <host>` taken out first, so it can never displace --reset / --clear-only.
+  const arg = withoutExpectHost(process.argv.slice(2))[0];
   if (arg === '--reset') {
     console.log('▸ Resetting synthetic data…');
     await clearSyntheticData();

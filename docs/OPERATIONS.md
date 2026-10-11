@@ -140,7 +140,7 @@ The application no longer runs as the database owner. Two credentials exist:
 
 | Variable | Role | Used by | May |
 |---|---|---|---|
-| `DIRECT_URL` | `neondb_owner` (direct endpoint) | `prisma migrate deploy` in the Vercel build, the nightly backup, Steward maintenance scripts (`scripts/wipe-synthetic-data.ts`, `prisma/synthetic.ts --reset`, `scripts/ops/app-role.ts`) | everything |
+| `DIRECT_URL` | `neondb_owner` (direct endpoint) | `prisma migrate deploy` in the Vercel build, the nightly backup, Steward maintenance scripts (`prisma/synthetic.ts --reset`, `scripts/ops/app-role.ts`; every script that opens a database refuses production unless `--expect-host` names it, §5j) | everything |
 | `DATABASE_URL` | `nmwc_app` (pooled endpoint) | the running app | read/write application tables; **insert-only** on `AuditLog` and `EditApproval`; no DDL; no access to `_prisma_migrations` |
 
 `AuditLog` and `EditApproval` are also protected by a database trigger (migrations `20260914150000_audit_immutability` + `20260914160000_audit_maintenance_owner_only`): UPDATE / DELETE / TRUNCATE raise `B4: … append-only` for every connection, including the owner, unless the statement runs inside a transaction that first executed `SET LOCAL nmwc.audit_maintenance = 'on'` **and the session logged in as the table owner** (`session_user`, which FK cascades cannot change). The maintenance scripts and the test clean-ups do exactly that on `DIRECT_URL`; the app role has no DELETE privilege on the ledgers or on `CustomerEdit` (the cascade path), and the trigger ignores its override anyway.
@@ -183,12 +183,14 @@ NMWC_APP_URL='postgresql://nmwc_app:<password>@<host>-pooler.../neondb?sslmode=r
 # 5. curl -H "Authorization: Bearer $HEALTH_BEARER" https://<host>/api/health   → checks.db ok
 ```
 
-Against production the scripts refuse to run unless `ALLOW_PRODUCTION=1` is set — the owner runs steps 1–3 deliberately, and because `run-with-env.mjs` only fills variables that are *unset*, the production owner URL must be passed explicitly or the commands act on whatever `.env` holds (UAT):
+Against production the scripts refuse to run unless `ALLOW_PRODUCTION=1` is set **and** the command line names the database with `--expect-host ep-sweet-haze` (§5j) — the owner runs steps 1–3 deliberately. `run-with-env.mjs` refuses a production connection string since 2026-10-11 (§5j), so these run with `npx tsx` directly, with the production URL passed explicitly. This `DIRECT_URL='…'` form is one of those still waiting to be rewritten for `scripts/dev/prod-run.cjs` (§5j):
 
 ```bash
-ALLOW_PRODUCTION=1 DIRECT_URL='<production owner URL, direct host>' NMWC_APP_PASSWORD='<strong password>' \n  npx tsx scripts/ops/app-role.ts create
-ALLOW_PRODUCTION=1 DIRECT_URL='<production owner URL, direct host>' npx tsx scripts/ops/app-role.ts grant
-ALLOW_PRODUCTION=1 NMWC_APP_URL='postgresql://nmwc_app:<password>@<production pooled host>/neondb?sslmode=require' \n  npx tsx scripts/ops/app-role.ts verify
+ALLOW_PRODUCTION=1 DIRECT_URL='<production owner URL, direct host>' NMWC_APP_PASSWORD='<strong password>' \
+  npx tsx scripts/ops/app-role.ts create --expect-host ep-sweet-haze
+ALLOW_PRODUCTION=1 DIRECT_URL='<production owner URL, direct host>' npx tsx scripts/ops/app-role.ts grant --expect-host ep-sweet-haze
+ALLOW_PRODUCTION=1 NMWC_APP_URL='postgresql://nmwc_app:<password>@<production pooled host>/neondb?sslmode=require' \
+  npx tsx scripts/ops/app-role.ts verify --expect-host ep-sweet-haze
 ```
  CI performs the same create → grant → verify on every run against its throw-away Postgres, so a migration that breaks the privilege set is caught before it ships. Verified on the Neon UAT branch on 2026-09-14 (Neon allows `CREATE ROLE` via SQL for the owner; the role is not shown in the Neon console but works).
 
@@ -358,6 +360,31 @@ Never e-mailed: a Steward, a Viewer or a salesman (an allowlist of roles, checke
 **When `email-drain` fails** (a warning-tier `cron.failed`): `configErrors` means the switch is on but a setting is unusable — a Gmail variable missing, or `EMAIL_REDIRECT_TO` / `EMAIL_LINK_ORIGIN` not an address / an https origin (the run's `reason` says which); nothing is sent until it is fixed and redeployed. `authErrors` means Gmail refused the login — the app password was revoked (changing the Google account's password revokes them all) or mistyped. Issue a new one (SECRETS-INVENTORY.md section 5, CREDENTIAL-ROTATION.md); nothing is lost meanwhile, since every unsent row is handed back and retried for 24 hours. Every run in the window tries the login again, so fix it promptly: Google may treat a stream of refused logins as suspicious. `accountErrors` means Gmail accepted the login but refused the sending account itself — most often its daily sending limit, which the owner's own mail counts against too, so the app's 400 a day cannot prevent it; or the account is blocked. The run stops at the first such refusal and hands every row back, nothing is marked `FAILED`, and each run tries once more until Google lifts it (usually within 24 hours; rows older than 24 hours are then dropped, the in-app rows stay). Check the mailbox in a browser for a notice from Google. Two different recipients refused one after the other count the same way: the first is marked `FAILED`, the run stops and the rest go back. `sendErrors` with `errorLabels` such as `ETIMEDOUT` / `ECONNECTION` / `SMTP_4XX` is the network or Gmail saying "not now" — those rows retry after their 5-minute lease; `SMTP_5XX` / `EENVELOPE` in `sendErrors` means Gmail refused that one recipient for good (his digest's rows are marked `FAILED`). The labels are all the app records about a failure: never the error text, never an address.
 
 **What this does not cover.** A run killed between a send and its record can send that e-mail twice. The lease keeps two overlapping runs (a manual bearer call during a scheduled one) from sending the same row, but they can each claim a different row for the same person and each send him a digest: the 30-minute gap is read before sending, not reserved. Both are rare; neither loses anything. The sending mailbox's Sent folder keeps a copy of every e-mail, and each recipient's mailbox keeps another, outside the app's retention (DATA-RETENTION-SCHEDULE.md). `scripts/ops/smoke.ts` does not yet check that `/api/cron/email-drain` refuses an anonymous call: add `'email-drain'` to its unauthenticated-cron list after the route is live on production, since adding it earlier makes the pre-merge smoke against the old production fail.
+
+## 5j. Scripts and tools against production (data audit 2026-10-10, owner decision 2026-10-11)
+
+**Why.** The data audit of 2026-10-10 found that scripts in this repository could delete or rewrite history on production and nothing stopped them: two clean-up scripts opened the audit maintenance switch (`nmwc.audit_maintenance`, §5e) and deleted history, users and customers, others rewrote customers, and none checked which database it had been pointed at. On 2026-10-11 the owner decided to delete them from the repository (git history keeps them): `scripts/wipe-synthetic-data.ts`, `scripts/cleanup-synthetic-test.ts`, `scripts/flatten-customer-branches.ts`, `scripts/seed-demo-edit.ts`, `prisma/inject-test-edits.ts` and every `prisma/test-*.ts`.
+
+**The rules.**
+
+1. **Only the audited operator scripts in `scripts/ops/` run against production**, always through `scripts/dev/prod-run.cjs` (HANDOVER §5), and always with `--expect-host ep-sweet-haze` on the command line — for a dry run too:
+
+   ```bash
+   npm run smoke
+   NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs \
+     scripts/ops/<script>.ts --expect-host ep-sweet-haze [the script's own flags]
+   npm run smoke
+   ```
+
+   Some commands in this repository still show the older form, `DIRECT_URL='…' npx tsx …` or `DIRECT_URL='…' npm run …` with the connection string on the command line: §5c (`app-role.ts`), §7 (`ops:requeue-untracked`, `ops:visit-days`, `ops:rescore-completeness`) and GO-LIVE-RUNBOOK steps 1, 3 and 6a. They are waiting to be rewritten for `prod-run.cjs` ([04-PENDING-WORK](handover/04-PENDING-WORK.md), "Production commands in the runbooks"). Until then this rule is what to follow, and HANDOVER §5 says never to put the connection string on a command line. Each of those scripts still refuses production without `--expect-host ep-sweet-haze`. `prod-run.cjs` itself checks only that its env file is production, not that `--expect-host` is on the command line; the scripts under `scripts/ops/` check that themselves.
+
+2. **Every script under `scripts/` and `prisma/` that opens a database checks which one first.** It calls `scripts/lib/assert-not-production.ts` before it connects (the ops scripts through `requireExpectedHost`, which ends in it). The guard refuses a host that starts with `ep-sweet-haze` unless `--expect-host` names it with a value that itself starts with `ep-sweet-haze`; refuses any host that a given `--expect-host` does not match; refuses a connection string it cannot read; and prints the host it is about to use before anything connects — never the user, the password or the rest of the URL, and a production host only as `ep-sweet-haze… (PRODUCTION)`. A refusal prints its reason and writes nothing. `tests/unit/scripts-production-guard.test.ts` fails CI when a script builds a database client without it. Scripts that are meant never to touch production keep their own refusals on top (`app-role.ts` and `restore-verify.ts` still need `ALLOW_PRODUCTION=1`; `prisma/synthetic.ts` and `prisma/seed-muscat-pilot.ts` still need `ALLOW_PROD_SEED=1`; `scripts/qa/probe-db.ts` and `constraint-smoke.ts` abort outright). `prisma/seed.ts` refuses production the same way, and never renames an existing region, channel or sub-channel: it only inserts the missing ones and lists, by key, any whose stored name differs from its own.
+
+3. **Opening Prisma Studio (`npm run db:studio`, `npx prisma studio`) or `psql` against production counts as maintenance** and needs an entry in the operations log. Neither tool is a script in this repository, so the guard cannot see them; this rule is procedural. **Where that log is kept is not settled** (open owner question, 2026-10-11). The repository says two different things: §5e names `docs/compliance/maintenance-log.md`, inside this public repository (created on first use; it does not exist yet), for audit-maintenance windows; GO-LIVE-RUNBOOK §6a and [03 §4.2](handover/03-OPERATIONS-AND-DEPLOYMENT.md) refer to a private operations log or record whose location the repository does not give; and [03 §7.3](handover/03-OPERATIONS-AND-DEPLOYMENT.md) step 8 says what an operator script ran goes in that **private** record, "never in this repository".
+
+**Still open with the owner (2026-10-11).** Rule 1 names `scripts/ops/` only, but some runbooks tell the owner to run scripts from elsewhere against production: `scripts/golive/audit-accounts.ts` (GO-LIVE-RUNBOOK step 3), `scripts/golive/bootstrap-accounts.ts`, `scripts/bulk-reset-credentials.ts` ([02 §4](handover/02-ACCESS-ACCOUNTS-AND-SECRETS.md)), the read-only question scripts of HANDOVER §5 and the private-pack scripts of [03 §7](handover/03-OPERATIONS-AND-DEPLOYMENT.md). Whether each moves into `scripts/ops/`, is named as an exception, or stops being run there is the owner's decision. Until then, every one of them that lives in this repository refuses production unless `--expect-host ep-sweet-haze` is on its command line; a private-pack copy (`*.tmp.ts` at a checkout's root) is not checked by the guard test. Two more are open with the owner. `scripts/synthetic-launch-test.ts` signs in to the live site and uploads a photo there whatever database it is given, so it refuses to start without `--expect-host ep-sweet-haze`, and then also refuses unless its database is production; whether it stays in the repository is undecided. `scripts/ops/restore-load.sh` is a shell script, so it cannot call the guard and has no production check of its own.
+
+**Also guarded since 2026-10-11 (review of the first guard).** `scripts/qa/run-with-env.mjs` refuses to start anything when `DATABASE_URL`, `DIRECT_URL` or any other connection string it holds points at production, percent-escaped or not. It has no opt-in: everything it is documented for runs on UAT or CI. Whether an explicit opt-in is wanted is an open owner question. The guard also treats a percent-escaped marker as production, and no longer prints a full endpoint id given as `--expect-host`. The guard test now parses each script and traces the URL each client is given back to the guard: an aliased `PrismaClient`, a client given a different variable from the one checked, and an import that reaches the app's own client (`lib/db.ts`) all fail it.
 
 ## 6. Backups, recovery, and what they are actually worth
 
@@ -751,7 +778,7 @@ DIRECT_URL='<owner connection>' npm run ops:requeue-untracked -- --expect-host e
 # read the counts, then:
 DIRECT_URL='<owner connection>' npm run ops:requeue-untracked -- --expect-host ep-sweet-haze --apply
 npm run smoke                       # and after
-npm run verify:load -- \
+npm run verify:load -- --expect-host ep-sweet-haze \
   --expected-branches "$EXPECTED_BRANCHES" --expected-visit-days "$EXPECTED_VISIT_DAYS"
 ```
 
@@ -790,7 +817,7 @@ DIRECT_URL='<owner connection>' npm run ops:visit-days -- --expect-host ep-sweet
 DIRECT_URL='<owner connection>' npm run ops:visit-days -- --expect-host ep-sweet-haze --apply
 npm run smoke
 # Use the privately reconciled expectations; do not add the days this quarantine fill restores.
-npm run verify:load -- \
+npm run verify:load -- --expect-host ep-sweet-haze \
   --expected-branches "$EXPECTED_BRANCHES" --expected-visit-days "$EXPECTED_VISIT_DAYS"
 ```
 
@@ -923,7 +950,10 @@ procedural, and this is the procedure:
 4. Record the row counts before and after in the same log entry.
 
 Legitimate uses so far: test-fixture clean-up on isolated branches
-(`tests/support/audit.ts`) and the synthetic-data wipe scripts. An erasure
+(`tests/support/audit.ts`) and the synthetic-data wipe scripts. Of those scripts only
+`prisma/synthetic.ts` (`--reset`, `--clear-only`) is left: `scripts/wipe-synthetic-data.ts`
+and `scripts/cleanup-synthetic-test.ts` were deleted on 2026-10-11 (owner decision, data
+audit 2026-10-10; §5j). An erasure
 request is **not** yet a legitimate use — see `docs/compliance/PDPL-ASSESSMENT.md`
 Q4, which is open with counsel.
 

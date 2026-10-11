@@ -23,7 +23,10 @@ name: Provision app role
 # SAFETY: it is manual-dispatch only, it requires the operator to type the
 # database host they intend to touch, and `scripts/ops/app-role.ts` itself
 # refuses a production host unless ALLOW_PRODUCTION=1, which this workflow sets
-# deliberately and visibly.
+# deliberately and visibly. The typed host is also passed to every app-role.ts
+# step as --expect-host: the shared guard (scripts/lib/assert-not-production.ts,
+# data audit 2026-10-10) refuses production unless the command line names it,
+# with a value that starts with ep-sweet-haze.
 #
 # Prerequisite: repository secret `NMWC_APP_PASSWORD` (24+ characters, no single
 # quote). Keep the same value for the Vercel `DATABASE_URL` in step 2.
@@ -92,19 +95,19 @@ jobs:
           echo "NMWC_APP_URL=${APP_URL}" >> "$GITHUB_ENV"
 
       - name: Report the current state (read-only)
-        run: npx tsx scripts/ops/app-role.ts status
+        run: npx tsx scripts/ops/app-role.ts status --expect-host "$CONFIRM_HOST"
 
       - name: Create the role
         if: ${{ !inputs.dry_run }}
-        run: npx tsx scripts/ops/app-role.ts create
+        run: npx tsx scripts/ops/app-role.ts create --expect-host "$CONFIRM_HOST"
 
       - name: Apply the privilege set
         if: ${{ !inputs.dry_run }}
-        run: npx tsx scripts/ops/app-role.ts grant
+        run: npx tsx scripts/ops/app-role.ts grant --expect-host "$CONFIRM_HOST"
 
       - name: Prove it, connected AS the role
         if: ${{ !inputs.dry_run }}
-        run: npx tsx scripts/ops/app-role.ts verify
+        run: npx tsx scripts/ops/app-role.ts verify --expect-host "$CONFIRM_HOST"
 
       - name: Next step
         if: ${{ !inputs.dry_run && success() }}

@@ -1,8 +1,10 @@
 /**
  * Did the customer-master load actually land? Read-only, one command.
  *
- *   DIRECT_URL='<owner connection>' npx tsx scripts/ops/verify-load.ts
+ *   NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs scripts/ops/verify-load.ts \
+ *     --expect-host ep-sweet-haze
  *   Optional: --expected-branches N --expected-visit-days N
+ *   --expect-host is required on production (scripts/lib/assert-not-production.ts).
  *   Defaults come from load-manifest.json. Reconcile its counts with the recorded
  *   pre-load baseline and approved cleanup/journey-plan changes (runbook §6a);
  *   both flags avoid manifest IO. Expectations cover all live branches, not just the load.
@@ -30,6 +32,7 @@ import { GOLIVE_REGION_CODES } from '../../lib/ops/golive-accounts';
 import { isDemoAccount } from '../../lib/demo-accounts';
 import { canApproveSpecificEdit } from '../../lib/permissions';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
+import { assertNotProduction } from '../lib/assert-not-production';
 
 type LoadExpectations = { branches: number; visitDays: number };
 
@@ -48,8 +51,21 @@ export function loadExpectations(
   env: { GOLIVE_DIR?: string } = { GOLIVE_DIR: process.env.GOLIVE_DIR }
 ): LoadExpectations {
   const overrides = new Map<string, number>();
+  let expectHostSeen = false;
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i];
+    // --expect-host names the database for the production guard in main() (data
+    // audit 2026-10-10, owner decision 2026-10-11): this check runs on production,
+    // so it has to accept the flag. Its value is the guard's to judge; here it only
+    // has to be present, once.
+    if (flag === '--expect-host' && !expectHostSeen) {
+      const host = args[i + 1];
+      if (!host || host.startsWith('--')) {
+        throw new OperatorRefusal('--expect-host needs the host marker, e.g. --expect-host ep-sweet-haze.');
+      }
+      expectHostSeen = true;
+      continue;
+    }
     if (!['--expected-branches', '--expected-visit-days'].includes(flag) || overrides.has(flag)) {
       throw new OperatorRefusal('Use --expected-branches N and/or --expected-visit-days N, once each. ' + expectationSource);
     }
@@ -572,10 +588,12 @@ export async function runChecks(checks: Check[]): Promise<number> {
 }
 
 async function main(): Promise<number> {
-  const expected = loadExpectations(process.argv.slice(2));
-  const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+  const args = process.argv.slice(2);
+  // Production only with --expect-host ep-sweet-haze (scripts/lib/assert-not-production.ts).
+  const url = assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL, args);
+  const expected = loadExpectations(args);
   let host = '?';
-  try { host = new URL(url ?? '').hostname; } catch { /* The client reports invalid configuration. */ }
+  try { host = new URL(url).hostname; } catch { /* The guard above has already parsed it. */ }
   const prisma = new PrismaClient({
     datasourceUrl: url,
   });

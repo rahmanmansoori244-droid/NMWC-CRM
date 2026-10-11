@@ -113,7 +113,7 @@ Photos:
 |---|---|---|---|---|
 | 1 | Photo upload | Inject canvas JPEG → presign → R2 PUT → finalize → DB row | PASS | 4 hops all 200; live DB row written |
 | 2 | Branch close UI | Salesman fills form, submits | PASS | CustomerEdit{state=SUBMITTED, target=BRANCH} live |
-| 3 | Supervisor approve UI | Click "Approve" via Chrome MCP | PARTIAL — UI freezes on `window.confirm()`; backing transaction verified via direct script | `prisma/test-approve-as-supervisor.ts` |
+| 3 | Supervisor approve UI | Click "Approve" via Chrome MCP | PARTIAL — UI freezes on `window.confirm()`; backing transaction verified via direct script | `prisma/test-approve-as-supervisor.ts` (deleted 2026-10-11) |
 | 4 | Reactivation UI | Salesman submits, manager approves | PASS | Branch.status flipped CLOSED → ACTIVE; audit log REACTIVATE by `pilot.manager` |
 | 5 | SafeAction error contract | Trigger conflict; observe message | PASS | "This value conflicts with an existing record. Refresh and try again." rendered in form |
 | 6 | EL-01 customer.status bypass | Inject malicious edit, attempt approve | PASS | Throws `ConflictError('STATUS_BYPASS')` |
@@ -544,7 +544,7 @@ Photos:
 
 ## 13. UNCERTAINTIES & WHAT I COULD NOT TEST
 
-- **Headless Chrome MCP froze on `window.confirm()` mid-server-action.** I verified the underlying Prisma transactions via direct script (`prisma/test-approve-as-supervisor.ts`); a real human user has no issue.
+- **Headless Chrome MCP froze on `window.confirm()` mid-server-action.** I verified the underlying Prisma transactions via direct script (`prisma/test-approve-as-supervisor.ts` (deleted 2026-10-11)); a real human user has no issue.
 - **Customer search performance at 100k rows:** code review only. The bottleneck is plain `LIKE %q%` on a B-tree.
 - **Export flow:** I did not drive a `.xlsx` export to completion. Schema has `ExportJob` model.
 - **Cross-region scrub on duplicate phone:** code path verified at the unit level (`access.test.ts`); not driven through live UI.

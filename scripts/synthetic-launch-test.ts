@@ -13,28 +13,52 @@
  * SAFETY:
  *   - Before any agent runs, snapshot the 6 test customers' state into
  *     `docs/audit/synthetic-test-snapshot-<DATE>.json`.
- *   - Each agent records what it created via console logs so the cleanup
- *     phase knows what to delete.
- *   - After the test, run `cleanup-synthetic-test.ts` which:
- *       a. Reverts the 6 test customers to their snapshot state.
- *       b. Soft-deletes all CustomerEdits created during the test.
- *       c. Soft-deletes all Attachments captured during the test.
- *       d. Deletes AuditLog rows authored by synthetic users during the test
- *          window.
+ *   - Each agent records what it created via console logs, and the report
+ *     lists what the run produced.
+ *   - There is NO clean-up script in the repository any more. Its pair,
+ *     scripts/cleanup-synthetic-test.ts, reverted the customers and deleted
+ *     audit rows under the maintenance switch; the owner deleted it on
+ *     2026-10-11 (data audit 2026-10-10, gap 3; git history keeps it). What a
+ *     run leaves behind is listed in the report and stays until someone decides
+ *     what to do with it.
  *
  * Output: docs/audit/synthetic-test-report-<DATE>.json with timings, errors,
- * and the cleanup manifest.
+ * and what the run produced.
  *
- * Run:  npx tsx scripts/synthetic-launch-test.ts
- * Cleanup: npx tsx scripts/cleanup-synthetic-test.ts <snapshot-file>
+ * Run:  npx tsx scripts/synthetic-launch-test.ts --expect-host ep-sweet-haze
+ *
+ * THE BROWSER PART ALWAYS ACTS ON PRODUCTION. BASE below is the live site,
+ * whatever database this process was given: each of the four sign-ins writes a
+ * LOGIN audit row there, and the "Mark closed" step uploads a photo through the
+ * live form. So the script refuses to start unless the command line names
+ * production with --expect-host ep-sweet-haze, and the shared guard
+ * (scripts/lib/assert-not-production.ts) then refuses unless the database it
+ * snapshots is production too. Before review of d02cb27 a UAT .env passed the
+ * guard and the browser still signed in to production (data audit 2026-10-10,
+ * gap 3). It is not a scripts/ops/ script, so docs/OPERATIONS.md §5j rule 1 does
+ * not cover running it on production; whether it may run there, or stays in the
+ * repository at all, is an open owner question (2026-10-11).
  */
 import { chromium, type Page, type BrowserContext } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
+import { PRODUCTION_HOST_PREFIX, assertNotProduction, expectHostArg } from './lib/assert-not-production';
+
+// Before the client and before Chromium: nothing is read or signed in to unless
+// the operator has named production, because that is where BASE always points.
+const named = expectHostArg(process.argv.slice(2));
+if (named === null || !named.toLowerCase().startsWith(PRODUCTION_HOST_PREFIX)) {
+  console.error(
+    '[synthetic] refusing: this script signs in to the PRODUCTION site and uploads a photo there,\n' +
+      '  whatever database it is given. Run it only on purpose, with\n' +
+      `  --expect-host ${PRODUCTION_HOST_PREFIX} and a production DIRECT_URL. Nothing was read or written.`
+  );
+  process.exit(2);
+}
 
 const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
 });
 
 const BASE = 'https://nmwc-cm.vercel.app';
@@ -352,7 +376,7 @@ async function main() {
     for (const e of r.errors) console.log(`    ERROR: ${e.slice(0, 200)}`);
   }
 
-  // Identify any rows produced during the test for cleanup
+  // Identify any rows produced during the test, for the report
   const editsCreated = await prisma.customerEdit.findMany({
     where: { createdAt: { gte: STARTED_AT } },
     select: { id: true, customerId: true, branchId: true, state: true, submittedBy: { select: { username: true } } },
@@ -390,8 +414,9 @@ async function main() {
     )
   );
   console.log(`\nReport saved: ${reportPath}`);
-  console.log(`\nNext: review the report, then run cleanup with:`);
-  console.log(`  npx tsx scripts/cleanup-synthetic-test.ts ${reportPath}`);
+  // The clean-up script this used to name was deleted on 2026-10-11 (owner decision).
+  console.log('\nNext: review the report. There is no clean-up script in the repository;');
+  console.log('what this run produced stays until someone decides what to do with it.');
 
   await prisma.$disconnect();
 }

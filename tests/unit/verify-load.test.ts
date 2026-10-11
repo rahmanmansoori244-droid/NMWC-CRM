@@ -47,6 +47,24 @@ describe('verify-load expected counts', () => {
     expect(() => loadExpectations(args, env)).toThrow();
   });
 
+  it('accepts --expect-host, which the production guard reads, anywhere and once', () => {
+    // Data audit 2026-10-10: verify:load runs on production, and the shared guard
+    // refuses production unless the command names it. Rejecting the flag as unknown
+    // would have made the check impossible to run where it matters.
+    expect(loadExpectations(['--expect-host', 'ep-sweet-haze'], env)).toEqual({ branches: 500, visitDays: 200 });
+    expect(
+      loadExpectations(['--expected-branches', '400', '--expect-host', 'ep-sweet-haze', '--expected-visit-days', '0'], env)
+    ).toEqual({ branches: 400, visitDays: 0 });
+  });
+
+  it.each([
+    [['--expect-host']],
+    [['--expect-host', '--expected-branches', '400']],
+    [['--expect-host', 'ep-sweet-haze', '--expect-host', 'ep-sweet-haze']],
+  ])('refuses a malformed --expect-host %j', (args) => {
+    expect(() => loadExpectations(args, env)).toThrow();
+  });
+
   it('refuses a missing manifest instead of reporting an unverified pass', () => {
     files.exists.mockReturnValue(false);
     expect(() => loadExpectations([], env)).toThrow('supply both --expected-branches');

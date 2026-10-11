@@ -26,6 +26,7 @@
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { readFileSync } from 'node:fs';
+import { assertNotProduction, withoutExpectHost } from '../lib/assert-not-production';
 
 type Cfg = {
   steward: { username: string; fullName: string; password: string };
@@ -50,7 +51,9 @@ async function main() {
   const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
   if (!url) throw new Error('set DIRECT_URL (preferred) or DATABASE_URL');
   const args = process.argv.slice(2);
-  const file = args.find((a) => !a.startsWith('--')) ?? 'golive-data/managers.json';
+  // The value after --expect-host is not a positional argument: without this,
+  // leaving the file out made `ep-sweet-haze` the managers file.
+  const file = withoutExpectHost(args).find((a) => !a.startsWith('--')) ?? 'golive-data/managers.json';
   const cfg = JSON.parse(readFileSync(file, 'utf8')) as Cfg;
   const host = (/@([^/?]+)/.exec(url) ?? [])[1] ?? '?';
 
@@ -101,7 +104,10 @@ async function main() {
         '  Nothing has been written.'
     );
   }
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  // The shared production guard as well (data audit 2026-10-10, owner decision
+  // 2026-10-11): on production the name must start with ep-sweet-haze, not just
+  // be some part of the host.
+  const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(url, args) });
   const created: string[] = [];
   const skipped: string[] = [];
 

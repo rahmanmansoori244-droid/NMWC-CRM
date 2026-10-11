@@ -105,10 +105,10 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Retention** | Rate-limit rows 1 day; dumps 30 days; Sentry per its own org setting **[OWNER]**; Vercel logs 30 days with Observability Plus since the Pro upgrade on 2026-09-27 (request paths, including search terms, are not scrubbed: DATA-RETENTION-SCHEDULE.md). |
 | **Lawful basis** | **[COUNSEL]** |
 
-**The rows the ledger cannot attribute to a device.** Thirteen maintenance scripts write
-`AuditLog` directly: the bulk credential reset, the synthetic-data wipe and its
-cleanup, the branch flatten, the go-live account bootstrap, the least-privilege role
-probe (whose insert is rolled back and is not an audit record at all), and six
+**The rows the ledger cannot attribute to a device.** Ten maintenance scripts write
+`AuditLog` directly: the bulk credential reset, the go-live account bootstrap, the
+least-privilege role probe (whose insert is rolled back and is not an audit record at
+all), and six
 go-live corrections that each write a STARTING row before their first chunk and a
 COMPLETED row after their last, so an interrupted run is visible as a STARTING with no
 COMPLETED beside it — the Temix requeue (`scripts/ops/requeue-untracked.ts`), the
@@ -119,7 +119,10 @@ rescore (`scripts/ops/rescore-completeness.ts`, auditor recheck F21) and the
 visit-day sheet load (`scripts/ops/visitdays-from-sheets.ts`); and the customer-status
 drift fix (`scripts/ops/customer-status-drift.ts`, owner decision 7, 2026-10-07), which
 writes one `CLOSE` or `REACTIVATE` row on each customer it moves, in that customer's own
-transaction. An operator runs
+transaction. Three more — the synthetic-data wipe, its clean-up and the branch flatten —
+wrote rows of the same class until the owner removed them from the repository on
+2026-10-11 (data audit 2026-10-10; git history keeps them), so rows of this class from
+them can already be in the ledger. An operator runs
 these by hand against the database rather than through the application, so there is
 no request to read an address or a device string from. On those rows `ip` and
 `userAgent` are null **by construction, not by omission**, and a reader of the ledger

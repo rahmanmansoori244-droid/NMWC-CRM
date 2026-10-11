@@ -759,9 +759,9 @@ Read a script's header before you run it.
 | Rescore completeness | `rescore-completeness.ts` (`ops:rescore-completeness`) | With `--apply --actor` | `CompletenessRescore` | OPERATIONS §7 |
 | Recompute normalized CR numbers | `recompute-cr-norm.ts` (`ops:recompute-cr-norm`) | With `--apply` | `CrNormRecompute` (and `CustomerPair` rows) | Script header; HANDOVER §6.2 |
 | Load the visit days the Managers filled into the per-region sheets | `visitdays-from-sheets.ts` (`ops:visitdays-from-sheets`) | With `--apply`, of the reviewed set named by `--set` and `--set-sha`. `--reverse <runId> --confirm` undoes a run | `VisitDaysFromSheets`, plus one `Branch` row per day carrying the run id | Script header; OPERATIONS §7 |
-| Verify the customer-master load | `verify-load.ts` (`verify:load`) | No. Reads `golive-data/` unless both expectation flags are given | — | OPERATIONS §7, GO-LIVE-RUNBOOK |
+| Verify the customer-master load | `verify-load.ts` (`verify:load`) | No. Reads `golive-data/` unless both expectation flags are given. Needs `--expect-host` on production (OPERATIONS §5j) | — | OPERATIONS §7, GO-LIVE-RUNBOOK |
 | Export the CRM's payment terms for the master builder | `export-crm-terms.ts` (`ops:export-crm-terms`) | Writes a CSV of customer data into `golive-data/` (private) | — | Script header |
-| The least-privilege app role | `app-role.ts` | Yes. Refuses production unless `ALLOW_PRODUCTION=1` | — | OPERATIONS §5c (prefer the **Provision app role** workflow) |
+| The least-privilege app role | `app-role.ts` | Yes. Refuses production unless `ALLOW_PRODUCTION=1` and `--expect-host` | — | OPERATIONS §5c (prefer the **Provision app role** workflow) |
 | Verify a restored database | `restore-verify.ts` | No. Refuses production | — | OPERATIONS §6.4–6.5 |
 | Load a dump into an **empty** target | `restore-load.sh` | Yes, into the target it is given | — | OPERATIONS §6.5 |
 | Backup-bucket retention | `r2-backups-lifecycle.ts` | **Yes, without `--check`**: it writes the bucket's lifecycle rules. Only `--check` is read-only | — | OPERATIONS §6.9 |
@@ -769,16 +769,19 @@ Read a script's header before you run it.
 | cron-job.org jobs | `cron-scheduler.ts` | Writes to cron-job.org in `apply` mode. It runs inside the **External cron scheduler** workflow. Do not run `apply` again ([§9](#9-scheduled-jobs)) | — | OPERATIONS §5d |
 
 **Scripts outside `scripts/ops/` that write to a database.** Each one is dangerous
-against production:
+against production. Since 2026-10-11 every script in `scripts/` and `prisma/` that opens
+a database refuses production unless `--expect-host` names it (OPERATIONS §5j), and the
+synthetic-data wipe, its clean-up, the branch flatten, `seed-demo-edit.ts`,
+`prisma/inject-test-edits.ts` and `prisma/test-*.ts` are gone (owner decision; git
+history keeps them):
 
 | File | What to know |
 |---|---|
 | [`scripts/golive/bootstrap-accounts.ts`](../../scripts/golive/bootstrap-accounts.ts) | Creates the first Steward and the Managers from `golive-data/managers.json`. Requires `--expect-host`. |
-| [`scripts/bulk-reset-credentials.ts`](../../scripts/bulk-reset-credentials.ts) | Writes only with `CONFIRM_CREDENTIAL_RESET=yes`. **It prints the generated passwords to stdout.** Never run it where its output reaches a transcript, a log or a shared screen. It has no production-host check. |
-| [`scripts/wipe-synthetic-data.ts`](../../scripts/wipe-synthetic-data.ts) | Deletes data. It has no production-host check. |
+| [`scripts/bulk-reset-credentials.ts`](../../scripts/bulk-reset-credentials.ts) | Writes only with `CONFIRM_CREDENTIAL_RESET=yes`. **It prints the generated passwords to stdout.** Never run it where its output reaches a transcript, a log or a shared screen. On production it needs `--expect-host`. |
 | [`prisma/seed-muscat-pilot.ts`](../../prisma/seed-muscat-pilot.ts) | Refuses production. Its upsert sets `isActive: true`, so on production it would **revive deactivated accounts** with passwords that are written in the file (`CLAUDE.md`, "Safety"). |
 | [`prisma/synthetic.ts`](../../prisma/synthetic.ts) (`npm run db:synthetic`) | Truncates core tables. Refuses `ep-sweet-haze`. |
-| [`prisma/seed.ts`](../../prisma/seed.ts) (`npm run db:seed`) | Does **not** refuse production ([`AGENTS.md`](../../AGENTS.md) "Before you start" 4). |
+| [`prisma/seed.ts`](../../prisma/seed.ts) (`npm run db:seed`) | Refuses production unless `--expect-host` names it. Inserts missing channels, sub-channels and regions only: it never renames an existing one (2026-10-11). |
 
 Other scripts in `scripts/` and `scripts/golive/` open a database too. Treat any script
 that builds a `PrismaClient` as able to write until you have read it. The output of the

@@ -50,10 +50,11 @@ export default [
     // conversion would change no stored row and would couple operator tooling to
     // the request runtime.
     //
-    // Six scripts write the ledger directly — bulk-reset-credentials,
-    // cleanup-synthetic-test, flatten-customer-branches, wipe-synthetic-data,
-    // golive/bootstrap-accounts and ops/requeue-untracked. Their rows are blank in
-    // `ip` and `userAgent` BY
+    // Operator scripts write the ledger directly — bulk-reset-credentials,
+    // golive/bootstrap-accounts and the scripts/ops writers that
+    // tests/unit/audit-guard.test.ts lists. (The synthetic-data wipe, its clean-up
+    // and the branch flatten did too, until the owner deleted them on 2026-10-11.)
+    // Their rows are blank in `ip` and `userAgent` BY
     // CONSTRUCTION, and that class is named in §A6 of
     // docs/compliance/RECORDS-OF-PROCESSING.md so a reader of the ledger can tell
     // "acted outside any session" apart from "device not recorded".

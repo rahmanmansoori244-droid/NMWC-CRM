@@ -17,9 +17,12 @@
  */
 import { PrismaClient } from '@prisma/client';
 import ExcelJS from 'exceljs';
+import { assertNotProduction } from '../scripts/lib/assert-not-production';
 
+// It rewrites customers' payment terms, so production only with --expect-host
+// (data audit 2026-10-10, owner decision 2026-10-11).
 const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
 });
 
 const SOURCE_FILE = 'C:/Users/rahma/Downloads/GT-MUSCAT-PILOT.xlsx';

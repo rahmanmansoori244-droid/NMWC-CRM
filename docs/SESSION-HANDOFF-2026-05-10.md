@@ -128,7 +128,7 @@ End state in `docs/guide/`:
 
 **Build pipeline (re-runnable):**
 - `scripts/capture-guide-screenshots.ts` (mobile viewport 390×844) + `scripts/capture-steward-screenshots.ts` (desktop 1280×800) — Playwright logs in as each role and captures the key screens.
-- `scripts/seed-demo-edit.ts` — idempotently creates one SUBMITTED CustomerEdit so the supervisor screenshots show populated state.
+- `scripts/seed-demo-edit.ts` (deleted 2026-10-11) — idempotently creates one SUBMITTED CustomerEdit so the supervisor screenshots show populated state.
 - `scripts/build-role-guides.ts` — typed-content generator. Each guide is a `Guide` literal (cover, sections with steps + callouts + tables, reference card). Shared `renderHtml()` template with NMWC branding (blue / emerald / amber / indigo per role) + RTL flip for Arabic.
 - `scripts/guide-html-to-pdf.ts` — Playwright PDF export with per-page footer.
 
@@ -238,7 +238,7 @@ These can't be automated because they're UI clicks in third-party dashboards (Cl
 |---|---|---|
 | Demo customer for screenshots | `cmozfay5m0003tvfkupla658l` | MASHARA JIBAL (JIDAN HADEESA) on Route C1 |
 | Demo branch | `cmozfayck0005tvfk1oqws6bb` | CAA0367-01 |
-| Demo seeded SUBMITTED edit | created by `npx tsx scripts/seed-demo-edit.ts` | idempotent |
+| Demo seeded SUBMITTED edit | created by `npx tsx scripts/seed-demo-edit.ts` (deleted 2026-10-11) | idempotent |
 
 ### 6.3 Common script invocations
 
@@ -264,9 +264,9 @@ npm run guide:pdf                  # render combined guide
 npm run guide:roles                # render all 7 role-specific guides
 
 # Tests / probes
-npx tsx prisma/test-prod-001-race.ts                       # 5x atomic-claim race
+npx tsx prisma/test-prod-001-race.ts                       # 5x atomic-claim race (deleted 2026-10-11)
 npx tsx prisma/inspect-pending-edit.ts <customerId>        # see edits per customer
-npx tsx prisma/test-approve-as-supervisor.ts <editId>      # bypass UI for approve
+npx tsx prisma/test-approve-as-supervisor.ts <editId>      # bypass UI for approve (deleted 2026-10-11)
 ```
 
 ### 6.4 Key lessons (don't relearn these)

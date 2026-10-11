@@ -14,7 +14,7 @@ prefixed OLD. Confidence: **[Confirmed]** read in code · **[Proposed]** my desi
 - **[Confirmed]** Real customer creation happens ONLY via Steward Excel import → promote:
   `promoteCustomerBatchCore` upserts `Customer` + `Branch` grouped by `custCode`
   (`services/imports.ts:700-923`, upsert at `:820-868`). `prisma.customer.create` otherwise appears only in
-  `prisma/synthetic.ts:317` (seed) and `scripts/flatten-customer-branches.ts:137`.
+  `prisma/synthetic.ts:317` (seed) and `scripts/flatten-customer-branches.ts:137` (deleted 2026-10-11).
 - **[Confirmed]** There is NO `create` page/route. `app/(app)/customers/` has only `page.tsx` (list),
   `[id]/page.tsx` (read), `[id]/edit/page.tsx` + `EnrichmentForm.tsx` (enrich). No nav entry to create in
   `components/nmwc/Sidebar.tsx:29-34` (SALESMAN nav = Today / Customers / Work / Needs correction).

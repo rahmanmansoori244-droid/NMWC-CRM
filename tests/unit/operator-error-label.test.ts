@@ -59,8 +59,17 @@ const compiled = new Map(
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }
   ).outputText])
 );
+// requireExpectedHost ends in the shared production guard (data audit 2026-10-10),
+// so requeue-untracked imports it; it is loaded the same way, with no real I/O.
+compiled.set('../lib/assert-not-production', ts.transpileModule(
+  readFileSync('scripts/lib/assert-not-production.ts', 'utf8'),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }
+).outputText);
 
 /** Run the actual CLI entry point, with no real client, process environment or file access. */
+/** What the last runCli printed on stdout, line by line. */
+let lastLogLines: string[] = [];
+
 async function runCli(script: Script, args: string[], guardError?: Error) {
   const output = { log: vi.fn(), error: vi.fn(), warn: vi.fn() };
   let finish!: (code: number) => void;
@@ -99,9 +108,13 @@ async function runCli(script: Script, args: string[], guardError?: Error) {
       },
       process: processStub,
       console: output,
+      // The production guard parses the connection string with the WHATWG parser.
+      URL,
     });
     return exports;
   };
+  modules['../ops/error-label'] = modules['./error-label'];
+  modules['../lib/assert-not-production'] = load('../lib/assert-not-production');
   const guards = load('requeue-untracked');
   const requireExpectedHost = vi.fn(guards.requireExpectedHost as (...values: unknown[]) => void);
   if (guardError) requireExpectedHost.mockImplementation(() => { throw guardError; });
@@ -113,17 +126,21 @@ async function runCli(script: Script, args: string[], guardError?: Error) {
   expect(client).not.toHaveBeenCalled();
   expect(readEnv).not.toHaveBeenCalled();
   expect(output.error).toHaveBeenCalledOnce();
-  expect(output.log).not.toHaveBeenCalled();
+  // Nothing reaches stdout before a refusal except the production guard's host line
+  // (scripts/lib/assert-not-production.ts), printed once the named host has matched.
+  for (const [line] of output.log.mock.calls) expect(line).toBe('[db-guard] database host: uat.invalid');
   expect(output.warn).not.toHaveBeenCalled();
   const recorded = JSON.stringify(Object.values(output).flatMap((spy) => spy.mock.calls));
   expect(recorded).not.toContain(PRIVATE_DETAIL);
   expect(recorded).not.toContain(processStub.env.DIRECT_URL);
+  lastLogLines = output.log.mock.calls.map((call) => call[0] as string);
   return output.error.mock.calls[0][0] as string;
 }
 
 describe.each(SCRIPT_NAMES)('%s CLI entry point', (script) => {
   it('prints the actual missing --expect-host refusal and exits 2 before opening a client', async () => {
     const message = await runCli(script, []);
+    expect(lastLogLines).toEqual([]);
     expect(message).toContain('FAILED: refusing to run without --expect-host.');
     expect(message).toContain('Name the database you intend');
     expect(message).toContain('This connects to uat.invalid.');
@@ -140,6 +157,8 @@ describe.each(SCRIPT_NAMES)('%s CLI entry point', (script) => {
 
 it('prints rescore --apply without --actor guidance and exits 2 before opening a client', async () => {
   const message = await runCli('rescore-completeness', ['--expect-host', 'uat.invalid', '--apply']);
+  // The host check passed, so the shared guard ran and named the host it let through.
+  expect(lastLogLines).toEqual(['[db-guard] database host: uat.invalid']);
   expect(message).toContain('FAILED: --apply needs --actor <steward username>');
   expect(message).toContain('accountable for the change');
 });

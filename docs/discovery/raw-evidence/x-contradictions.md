@@ -186,7 +186,7 @@
 - **(2) Area:** Entity relationships.
 - **(3) OLD behavior:** No `Branch` model. A branch is a separate `CustomerRequest` of type `NEW_BRANCH` linked to its parent only via the **`parentTemixCode` string** (no FK). [Confirmed — old-functional.md §6, old-data.md §4]
 - **(4) NEW behavior:** `Branch` is a first-class model (`schema.prisma:294-349`) with FK `customerId` (RESTRICT), own region/route/GPS/photos/status. Schema permits 1:N, **but P1.2 flattened production data to 1:1** (3308 customers = 3308 branches); `services/duplicates.ts` now assumes `branches[0]`. [Confirmed — new-data.md, new-docs.md §3 P1.2, §4 #5]
-- **(5) Evidence:** OLD `constants.ts:200-205`, `lib/validators/request.ts:65-71`; NEW `schema.prisma:294-349`, `scripts/flatten-customer-branches.ts:137`, `services/duplicates.ts:61,137`.
+- **(5) Evidence:** OLD `constants.ts:200-205`, `lib/validators/request.ts:65-71`; NEW `schema.prisma:294-349`, `scripts/flatten-customer-branches.ts:137` (deleted 2026-10-11), `services/duplicates.ts:61,137`.
 - **(6) Business impact:** OLD supports multi-branch customers via parent linkage; NEW's *schema* supports 1:N but its *data + code* now assume 1:1. Whether a customer can have multiple branches going forward is unresolved.
 - **(7) Technical impact:** NEW code paths (dedupe `branches[0]`, completeness averaging) assume one branch — re-introducing multi-branch data could break these assumptions.
 - **(8) Data-migration impact:** HIGH. OLD parent+branch requests must be collapsed into NEW's Customer(1)→Branch(1..N) shape, but NEW currently expects 1:1 — a conflict if OLD has true multi-branch customers.
