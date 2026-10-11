@@ -574,8 +574,9 @@ PowerShell, `$env:RUN_<FLAG>` stays set for the rest of that window.
   `npx playwright install --with-deps chromium` ([ci.yml](../../.github/workflows/ci.yml)).
 - To reuse a Chromium that is already installed, set `E2E_CHROMIUM` to its path for the
   tests ([playwright.config.ts](../../playwright.config.ts)), or `GUIDE_CHROMIUM` for
-  `npm run guide:roles` and the role guides of `npm run guide:build`
-  ([scripts/build-role-guides.ts](../../scripts/build-role-guides.ts)).
+  `npm run guide:roles`, `guide:pdf` and `guide:build`
+  ([scripts/build-role-guides.ts](../../scripts/build-role-guides.ts),
+  [scripts/guide-html-to-pdf.ts](../../scripts/guide-html-to-pdf.ts)).
 - `npm run test:e2e` starts `npm run dev` against whatever `.env.local` or `.env` names,
   unless `E2E_BASE_URL` is set. Run `env-check.cjs` first.
 - `npm run guide:pdf` renders `docs/guide/NMWC-CRM-USER-GUIDE.html` to PDF on your

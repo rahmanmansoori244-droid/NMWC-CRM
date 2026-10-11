@@ -1,4 +1,4 @@
-# docs/guide: the PDFs are older than the HTML
+# docs/guide: each PDF matches its HTML; the set as a whole is stale
 
 This folder is stale as a whole. On 2026-10-04 users were given a newer English and Arabic
 guide set, which is in the private pack. Whether that set replaces this folder is still
@@ -13,24 +13,22 @@ without rewriting the HTML (owner item 21, 2026-10-11). The screenshots in `img/
 `npm run guide:capture` and `guide:capture:steward`, which sign in to the live production
 site and need `--expect-host ep-sweet-haze`; `guide:build` no longer runs them.
 
-**Where a PDF and its HTML disagree, the HTML has the corrected text.** These PDFs were
-not rendered again after their HTML changed (state on 2026-10-11):
+**State on 2026-10-11: every PDF was rendered from the HTML committed beside it.** The
+Salesman and Supervisor PDFs were rendered with the credit flow (`3f30dca`). The Manager
+EN and AR PDFs, the Steward PDF and `NMWC-CRM-USER-GUIDE.pdf` were rendered again with
+`npm run guide:build` after the credit flow and the audit follow-ups were merged, so they
+now carry what the HTML says: a Manager's audit log never shows who opened a photo or
+document (only the Data Steward sees those rows), and the Steward's Photo views and
+Customer code filters, which also find who printed a customer's printouts.
+`NMWC-CRM-USER-GUIDE.pdf` had not been rendered since May 2026 (`f719362`).
+`git log -1 -- <file>` shows when any file here last changed. If a PDF and its HTML ever
+disagree, the HTML has the corrected text: render the PDF again with `npm run guide:build`.
 
-| PDF | Rendered in | HTML changed since in |
-|---|---|---|
-| `NMWC-CRM-USER-GUIDE.pdf` | `f719362` (2026-05-11) | `8e5a516` (2026-10-04), `1912eea` (2026-10-11) |
-| `NMWC-Manager-Guide-EN.pdf`, `NMWC-Manager-Guide-AR.pdf` | `4275f9f` (2026-09-27) | `1912eea` (2026-10-11) |
-| `NMWC-Steward-Guide-EN.pdf` | `883235a` (2026-09-29) | `ef3de0d` (2026-10-10), `1912eea` (2026-10-11) |
-| `NMWC-Salesman-Guide-EN.pdf`, `NMWC-Salesman-Guide-AR.pdf` | `b7d9041` (2026-09-25), `6d7fe64` (2026-09-23) | `ef3de0d` (2026-10-10) |
+What is still old is the content, not the rendering: the guides describe some controls
+that differ from the app (B1.6), the Arabic text is older than the English (re-benchmark
+item 26), and the screenshots in `img/` were captured from production during the May 2026
+pilot (AUDITOR-BRIEF §14).
 
-`git log -1 -- <file>` shows the same for any file here.
-
-In particular, the two Manager PDFs and `NMWC-CRM-USER-GUIDE.pdf` still say that the audit
-log shows every action in the Manager's region. Since the owner decisions of 2026-10-11 the
-HTML says what the app does: who opened a photo or document is recorded, but only the Data
-Steward sees those rows (`lib/audit-scope.ts`). The Steward PDF lacks the paragraph on photo
-views and the Customer code filter.
-
-To render them again, see "Rebuilding the guides in `docs/guide/`" under B1.6. Note that
+To rebuild, see "Rebuilding the guides in `docs/guide/`" under B1.6. Note that
 `npm run guide:roles` writes every role guide's HTML from the script before it renders the
 PDFs, so review the HTML diff it leaves, not only the PDFs.

@@ -22,7 +22,11 @@ async function main() {
     process.exit(1);
   }
   console.log(`Rendering ${HTML_REL} → ${PDF_REL}`);
-  const browser = await chromium.launch();
+  // GUIDE_CHROMIUM, as in scripts/build-role-guides.ts: a machine whose Playwright
+  // browser build differs renders with the Chromium it has, without a download.
+  const browser = await chromium.launch(
+    process.env.GUIDE_CHROMIUM ? { executablePath: process.env.GUIDE_CHROMIUM } : {}
+  );
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   await page.goto(`file://${htmlAbs.replace(/\\/g, '/')}`, { waitUntil: 'networkidle' });
