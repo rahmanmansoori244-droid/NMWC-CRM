@@ -56,11 +56,6 @@ prisma/*.db-journal
 .r2-cache
 .claude/
 
-# A generated knowledge graph of this repository is not kept in it (owner decisions
-# 2026-10-11): a local graphify run stays local.
-/graphify-corpus/
-/graphify-out/
-
 # Go-live master data built from the real Temix/RoutePro/dashboard sources.
 # Contains customer PII and generated credentials — NEVER commit.
 /golive-data/

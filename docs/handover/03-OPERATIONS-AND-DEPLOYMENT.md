@@ -806,7 +806,15 @@ with scripts kept only in the private pack, among them `temix-link-apply.ts`,
    checkout's root as
    `NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs <name>.tmp.ts --expect-host ep-sweet-haze`.
    Its flags may differ from those of the scripts above.
-3. Delete the copy afterwards.
+3. **Check how it reads its arguments before its first run since 2026-10-11.** `prod-run.cjs`
+   now hands every script `--expect-host ep-sweet-haze` ([§7.2](#72-the-runner-scriptsdevprod-runcjs)),
+   and nobody has checked the pack's scripts against that (they are only in the private
+   pack). A script that refuses an argument it does not know stops at once; one that
+   takes plain words as arguments (a file, a run id) could read `ep-sweet-haze` as one
+   of them. Make such a script accept the flag, better still check the host with it as
+   [`scripts/lib/assert-not-production.ts`](../../scripts/lib/assert-not-production.ts)
+   does, and do this in the pack's copy too.
+4. Delete the copy afterwards.
 
 They were run on one pattern: a dry run, an independent check of its counts, a rehearsal
 (rolled back) where the script has a `--rehearse` mode, then the apply, with
