@@ -235,10 +235,10 @@ const NEVER_CONNECTS: Record<string, string> = {};
 const SHELL_OUTSIDE_GUARD: Record<string, string> = {
   'scripts/ops/restore-load.sh':
     'Loads a backup into RESTORE_TARGET_URL with psql (CI, the restore drill, OPERATIONS §6.5). ' +
-    'It has no production check of its own. The dump is plain, made without --clean ' +
-    '(db-backup.yml), and psql runs with ON_ERROR_STOP=1. OPERATIONS §6.5 loads only into a ' +
-    'new, emptied branch. Whether it should also refuse the production marker is an open ' +
-    'owner question (2026-10-11).',
+    'Owner decisions 2026-10-11: it refuses, before psql or pg_restore starts, a target with the ' +
+    'production marker anywhere in it (raw or percent-decoded) and a PGHOST / PGHOSTADDR with ' +
+    'it; tests/unit/restore-load-guard.test.ts executes that. The dump is plain, made without ' +
+    '--clean (db-backup.yml), and psql runs with ON_ERROR_STOP=1.',
 };
 
 function walk(dir: string, ext: RegExp = EXT): string[] {

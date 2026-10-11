@@ -771,7 +771,7 @@ Read a script's header before you run it.
 | Export the CRM's payment terms for the master builder | `export-crm-terms.ts` (`ops:export-crm-terms`) | Writes a CSV of customer data into `golive-data/` (private) | — | Script header |
 | The least-privilege app role | `app-role.ts` | Yes. Refuses production unless `ALLOW_PRODUCTION=1` and `--expect-host` | — | OPERATIONS §5c (prefer the **Provision app role** workflow) |
 | Verify a restored database | `restore-verify.ts` | No. Refuses production | — | OPERATIONS §6.4–6.5 |
-| Load a dump into an **empty** target | `restore-load.sh` | Yes, into the target it is given | — | OPERATIONS §6.5 |
+| Load a dump into an **empty** target | `restore-load.sh` | Yes, into the target it is given; it refuses a production target (2026-10-11) | — | OPERATIONS §6.5 |
 | Backup-bucket retention | `r2-backups-lifecycle.ts` | **Yes, without `--check`**: it writes the bucket's lifecycle rules. Only `--check` is read-only | — | OPERATIONS §6.9 |
 | Photo-bucket versioning check | `r2-photos-versioning.ts` | No. It is a checker only (`--check`) | — | OPERATIONS §6.13 |
 | cron-job.org jobs | `cron-scheduler.ts` | Writes to cron-job.org in `apply` mode. It runs inside the **External cron scheduler** workflow. Do not run `apply` again ([§9](#9-scheduled-jobs)) | — | OPERATIONS §5d |

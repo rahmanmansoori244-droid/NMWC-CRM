@@ -34,6 +34,37 @@
 set -euo pipefail
 
 : "${RESTORE_TARGET_URL:?RESTORE_TARGET_URL is not set}"
+
+# Owner decisions 2026-10-11: never load into production. A RESTORE_TARGET_URL with
+# the production marker anywhere in it — its host or any other part, in any case,
+# as written or percent-decoded (libpq decodes the URL, and a `host` parameter in
+# its query overrides the host before the `@`) — is refused here, before psql or
+# pg_restore is started and before anything is written. So are PGHOST and
+# PGHOSTADDR, which psql uses when the URL names no host. Nothing of the URL is
+# printed. tests/unit/restore-load-guard.test.ts runs this with production-looking
+# URLs and a psql that records whether it was called.
+PRODUCTION_MARKER='ep-sweet-haze'
+percent_decoded() {
+  # One %XX at a time, as libpq decodes: only a well-formed escape is decoded, and
+  # nothing else in the URL is read as an escape (printf %b would also act on a `\c`
+  # in it and stop early, hiding the rest).
+  local rest="$1" out='' ch
+  while [[ $rest =~ %([0-9A-Fa-f]{2}) ]]; do
+    out+="${rest%%"${BASH_REMATCH[0]}"*}"
+    printf -v ch "\\x${BASH_REMATCH[1]}"
+    out+="$ch"
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+  done
+  printf '%s' "$out$rest"
+}
+for CANDIDATE in "$RESTORE_TARGET_URL" "$(percent_decoded "$RESTORE_TARGET_URL")" "${PGHOST:-}" "${PGHOSTADDR:-}"; do
+  case "$(printf '%s' "$CANDIDATE" | tr '[:upper:]' '[:lower:]')" in
+    *"$PRODUCTION_MARKER"*)
+      echo "::error::refusing: RESTORE_TARGET_URL (or PGHOST) points at PRODUCTION (${PRODUCTION_MARKER}…). This script loads only into an empty database that is not production (owner decisions 2026-10-11; OPERATIONS §6.5). Nothing was loaded." >&2
+      exit 2
+      ;;
+  esac
+done
 case "${BASH_SOURCE[0]}" in */*) SELF_DIR="${BASH_SOURCE[0]%/*}" ;; *) SELF_DIR=. ;; esac
 ROOT="$(cd "$SELF_DIR/../.." && pwd)"
 DUMP="${RESTORE_DUMP:-./dump.sql.gz}"
