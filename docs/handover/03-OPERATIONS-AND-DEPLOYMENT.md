@@ -781,7 +781,7 @@ history keeps them):
 | [`scripts/bulk-reset-credentials.ts`](../../scripts/bulk-reset-credentials.ts) | Writes only with `CONFIRM_CREDENTIAL_RESET=yes`. **It prints the generated passwords to stdout.** Never run it where its output reaches a transcript, a log or a shared screen. On production it needs `--expect-host`. |
 | [`prisma/seed-muscat-pilot.ts`](../../prisma/seed-muscat-pilot.ts) | Refuses production. Its upsert sets `isActive: true`, so on production it would **revive deactivated accounts** with passwords that are written in the file (`CLAUDE.md`, "Safety"). |
 | [`prisma/synthetic.ts`](../../prisma/synthetic.ts) (`npm run db:synthetic`) | Truncates core tables. Refuses `ep-sweet-haze`. |
-| [`prisma/seed.ts`](../../prisma/seed.ts) (`npm run db:seed`) | Refuses production unless `--expect-host` names it. Inserts missing channels, sub-channels and regions only: it never renames an existing one (2026-10-11). |
+| [`prisma/seed.ts`](../../prisma/seed.ts) (`npm run db:seed`) | Never runs on production, not even with `--expect-host`. Anywhere else it only inserts missing channels, sub-channels, regions and the `admin` account, and never changes an existing row (owner decisions 2026-10-11). |
 
 Other scripts in `scripts/` and `scripts/golive/` open a database too. Treat any script
 that builds a `PrismaClient` as able to write until you have read it. The output of the

@@ -90,6 +90,23 @@ export function withoutExpectHost(args: readonly string[]): string[] {
   return [...args.slice(0, i), ...args.slice(i + (hasValue ? 2 : 1))];
 }
 
+/**
+ * Does this connection string point at production? The marker anywhere in it, in
+ * any case, percent-escaped or not — the reading assertNotProduction uses. The
+ * escapes are decoded because libpq, node-postgres and Prisma all decode the query,
+ * and a `host` parameter there overrides the host in the URL, so
+ * `?host=ep%2Dsweet%2Dhaze…` reached production while the host said localhost
+ * (review of d02cb27). Only well-formed %XX escapes are decoded, so a stray `%`
+ * cannot make this throw.
+ *
+ * Exported for the scripts that must never run on production at all, whatever the
+ * command line says (prisma/seed.ts; owner decisions 2026-10-11).
+ */
+export function pointsAtProduction(url: string): boolean {
+  const decoded = url.replace(/%[0-9a-f]{2}/gi, (e) => String.fromCharCode(parseInt(e.slice(1), 16)));
+  return url.toLowerCase().includes(PRODUCTION_HOST_PREFIX) || decoded.toLowerCase().includes(PRODUCTION_HOST_PREFIX);
+}
+
 export function assertNotProduction(
   url: string | undefined,
   args: readonly string[] = process.argv.slice(2),
@@ -122,16 +139,7 @@ export function assertNotProduction(
     );
   }
 
-  // The marker is also looked for with the percent-escapes decoded: libpq,
-  // node-postgres and Prisma all decode the query, and a `host` parameter there
-  // overrides the host in the URL, so `?host=ep%2Dsweet%2Dhaze…` reached
-  // production while the host read above said localhost (review of d02cb27).
-  // Only well-formed %XX escapes are decoded, so a stray `%` cannot make this throw.
-  const decoded = raw.replace(/%[0-9a-f]{2}/gi, (e) => String.fromCharCode(parseInt(e.slice(1), 16)));
-  const production =
-    host.startsWith(PRODUCTION_HOST_PREFIX) ||
-    raw.toLowerCase().includes(PRODUCTION_HOST_PREFIX) ||
-    decoded.toLowerCase().includes(PRODUCTION_HOST_PREFIX);
+  const production = host.startsWith(PRODUCTION_HOST_PREFIX) || pointsAtProduction(raw);
   const shown = production ? `${PRODUCTION_HOST_PREFIX}… (PRODUCTION)` : host;
   const expect = expectHostArg(args);
 
