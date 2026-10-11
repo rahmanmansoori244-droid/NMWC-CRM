@@ -8,6 +8,8 @@
  *   MANAGER   — customers/branches in regions they manage (M:N managedRegions)
  *   STEWARD   — all (data ops role)
  *   VIEWER    — all (read-only management view, by design)
+ *   FINANCE_MANAGER / GM / SALES_DIRECTOR — all (org-wide credit approvers; the
+ *               Sales Director mirrors the GM, owner decisions 2026-10-11)
  *
  * The helpers throw NotFoundError on scope mismatch (not ForbiddenError) so
  * the UI surfaces "doesn't exist" rather than "you can't see this", denying
@@ -74,9 +76,12 @@ export function canSeeCustomer(
     case Role.STEWARD:
     case Role.VIEWER:
     // Owner-confirmed: FINANCE_MANAGER and GM are org-wide approvers — they must
-    // be able to review any customer that reaches their approval step.
+    // be able to review any customer that reaches their approval step. The Sales
+    // Director is one for every region in Oman and has the GM's access
+    // everywhere (owner decisions 2026-10-11).
     case Role.FINANCE_MANAGER:
     case Role.GM:
+    case Role.SALES_DIRECTOR:
       return true;
     case Role.SALESMAN:
       if (!scope.ownedRouteId) return false;
@@ -127,6 +132,7 @@ export function filterBranchesByScope<B extends Pick<Branch, 'routeId' | 'region
     case Role.VIEWER:
     case Role.FINANCE_MANAGER:
     case Role.GM:
+    case Role.SALES_DIRECTOR:
       return live;
     case Role.SALESMAN:
       return salesmanBranches(live, scope.ownedRouteId);
@@ -169,6 +175,7 @@ export function canEditCustomer(
     case Role.ACCOUNTANT:
     case Role.FINANCE_MANAGER:
     case Role.GM:
+    case Role.SALES_DIRECTOR:
       return false;
   }
 }

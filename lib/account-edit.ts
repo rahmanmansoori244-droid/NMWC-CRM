@@ -50,6 +50,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   ACCOUNTANT: 'Accountant',
   FINANCE_MANAGER: 'Finance Manager',
   GM: 'GM',
+  SALES_DIRECTOR: 'Sales Director',
 };
 
 /** Roles whose data scope is the regions they manage (User.managedRegions). */

@@ -57,7 +57,8 @@ import { HOME_BY_ROLE, homeForRole } from '@/lib/role-home';
 import { NAV_BY_ROLE } from '@/components/nmwc/Sidebar';
 import ApprovalsPage from '@/app/(app)/approvals/page';
 
-const APPROVERS = ['ACCOUNTANT', 'FINANCE_MANAGER', 'GM'] as const;
+// SALES_DIRECTOR: owner decisions 2026-10-11, the GM's landing page and queue rule.
+const APPROVERS = ['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'SALES_DIRECTOR'] as const;
 
 /** Every `pendingRole` constraint in a Prisma where, and whether an OR sits above it. */
 function pendingRoleConstraints(
@@ -88,6 +89,7 @@ describe('landing pages', () => {
       ACCOUNTANT: '/approvals',
       FINANCE_MANAGER: '/approvals',
       GM: '/approvals',
+      SALES_DIRECTOR: '/approvals',
     });
     for (const role of APPROVERS) expect(homeForRole(role)).toBe('/approvals');
   });

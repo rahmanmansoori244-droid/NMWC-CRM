@@ -120,6 +120,7 @@ const HOME_HEADING: Record<Role, string> = {
   ACCOUNTANT: 'Approval queue',
   FINANCE_MANAGER: 'Approval queue',
   GM: 'Approval queue',
+  SALES_DIRECTOR: 'Approval queue',
   MANAGER: 'Dashboard',
   VIEWER: 'Dashboard',
   STEWARD: 'Import Excel',
@@ -203,6 +204,8 @@ const MENU: Record<Role, Array<[string, string]>> = {
   ACCOUNTANT: FINANCE_MENU,
   FINANCE_MANAGER: FINANCE_MENU,
   GM: FINANCE_MENU,
+  // Owner decisions 2026-10-11: the Sales Director's menu is the GM's.
+  SALES_DIRECTOR: FINANCE_MENU,
 };
 
 /** The salesman's phone tab bar (components/nmwc/Sidebar.tsx MobileTabBar). */

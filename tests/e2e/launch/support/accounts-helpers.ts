@@ -170,6 +170,7 @@ export const HOME_HEADING: Record<Role, RegExp> = {
   ACCOUNTANT: /^Approval queue$/,
   FINANCE_MANAGER: /^Approval queue$/,
   GM: /^Approval queue$/,
+  SALES_DIRECTOR: /^Approval queue$/,
   MANAGER: /^Dashboard$/,
   VIEWER: /^Dashboard$/,
   STEWARD: /^Import Excel$/,
@@ -288,6 +289,8 @@ export const MENU_BY_ROLE: Record<Role, readonly Item[]> = {
   ACCOUNTANT: APPROVER,
   FINANCE_MANAGER: APPROVER,
   GM: APPROVER,
+  // Owner decisions 2026-10-11: the Sales Director's menu is the GM's.
+  SALES_DIRECTOR: APPROVER,
 };
 
 /** The salesman's bottom tab bar on a phone. */

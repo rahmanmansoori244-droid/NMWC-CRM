@@ -16,12 +16,16 @@ import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
 
 export const metadata = { title: 'Approvals · NMWC' };
 
+// SALES_DIRECTOR (owner decisions 2026-10-11) mirrors the GM. Admitted from the
+// credit-flow foundation on: lib/role-home.ts lands him here, and a role this page
+// refused would bounce between /home and /approvals for ever.
 const APPROVER_ROLES: Role[] = [
   Role.SUPERVISOR,
   Role.MANAGER,
   Role.ACCOUNTANT,
   Role.FINANCE_MANAGER,
   Role.GM,
+  Role.SALES_DIRECTOR,
 ];
 
 /** The most cards the queue renders, most overdue first. */
@@ -44,6 +48,8 @@ export default async function ApprovalsPage() {
   //   ACCOUNTANT       — pendingRole ACCOUNTANT + region overlap (fail-closed)
   //   FINANCE_MANAGER  — pendingRole FINANCE_MANAGER (org-wide)
   //   GM               — pendingRole GM (org-wide)
+  //   SALES_DIRECTOR   — pendingRole SALES_DIRECTOR (org-wide, like the GM;
+  //                      owner decisions 2026-10-11)
   // Region overlap matches live customer branches (UPDATE) OR draft branches
   // (CREATE — customerId is null until finalize).
   // Deploy-gap healing: a row submitted by pre-Phase-1 code AFTER the
@@ -66,7 +72,7 @@ export default async function ApprovalsPage() {
       OR: supervisorStepOr,
       submittedBy: { supervisorId: session.user.id },
     };
-  } else if (role === Role.FINANCE_MANAGER || role === Role.GM) {
+  } else if (role === Role.FINANCE_MANAGER || role === Role.GM || role === Role.SALES_DIRECTOR) {
     where = { state: 'SUBMITTED', pendingRole: role };
   } else {
     // MANAGER (fallback on the Supervisor step) and ACCOUNTANT — region-scoped.

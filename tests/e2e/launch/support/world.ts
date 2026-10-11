@@ -79,6 +79,7 @@ const FIRST_NAME: Record<Role, string> = {
   ACCOUNTANT: 'Aisha',
   FINANCE_MANAGER: 'Fatma',
   GM: 'Ghalib',
+  SALES_DIRECTOR: 'Sultan',
   MANAGER: 'Marwan',
   STEWARD: 'Sara',
   VIEWER: 'Vikram',

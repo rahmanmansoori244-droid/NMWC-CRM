@@ -142,6 +142,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'Customer.altPhone': { subject: 'customer', kind: 'contact' },
   'Customer.contactPerson': { subject: 'customer', kind: 'name' },
   'Customer.contactRole': { subject: 'customer', note: 'that person’s role at the shop' },
+  'Customer.email': { subject: 'customer', kind: 'contact', note: 'credit customers only (owner decisions 2026-10-11); often the owner’s own address' },
   'Customer.status': { subject: 'business-or-person' },
   'Customer.notes': { subject: 'customer', kind: 'free text', note: 'unbounded; whatever a salesman or approver typed' },
   'Customer.completenessScore': { subject: 'none', note: 'derived' },
@@ -241,7 +242,10 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
 
   // ---- Attachment: photo metadata (the images live in R2) ------------------
   'Attachment.id': { subject: 'none', note: STRUCTURAL },
-  'Attachment.kind': { subject: 'none', note: 'SHOP / SIGNBOARD / CR / GUARANTEE / EXTRA' },
+  'Attachment.kind': {
+    subject: 'none',
+    note: 'SHOP / SIGNBOARD / CR / GUARANTEE / EXTRA, and the credit documents (owner decisions 2026-10-11): ID_CARD (the owner’s ID card), MEMBERSHIP_CERT, VAT_CERT, TAX_CARD and CREDIT_FORM (the signed credit application). The kind is not personal; the image behind an ID card is the owner’s identity document',
+  },
   'Attachment.customerId': { subject: 'none', note: STRUCTURAL },
   'Attachment.branchId': { subject: 'none', note: STRUCTURAL },
   'Attachment.branchExtraId': { subject: 'none', note: STRUCTURAL },
@@ -379,6 +383,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'EditCustomerDraft.altPhone': { subject: 'customer', kind: 'contact' },
   'EditCustomerDraft.contactPerson': { subject: 'customer', kind: 'name' },
   'EditCustomerDraft.contactRole': { subject: 'customer' },
+  'EditCustomerDraft.email': { subject: 'customer', kind: 'contact', note: 'credit requests only; copied to Customer.email at finalize' },
   'EditCustomerDraft.notes': { subject: 'customer', kind: 'free text' },
   'EditCustomerDraft.crPhotoAttachmentId': { subject: 'none', kind: 'image reference' },
   'EditBranchDraft.id': { subject: 'none', note: STRUCTURAL },
@@ -408,7 +413,11 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'EditApproval.cycle': { subject: 'none' },
   'EditApproval.stepIndex': { subject: 'none' },
   'EditApproval.role': { subject: 'employee', kind: 'behaviour' },
-  'EditApproval.decision': { subject: 'employee', kind: 'behaviour', note: 'what this named person decided' },
+  'EditApproval.decision': {
+    subject: 'employee',
+    kind: 'behaviour',
+    note: 'what this named person decided: APPROVED, REJECTED, or FORM_UPLOADED (the salesman uploaded the signed credit application, owner decisions 2026-10-11)',
+  },
   'EditApproval.actorId': { subject: 'employee', kind: 'identifier' },
   'EditApproval.reason': { subject: 'customer', kind: 'free text' },
   'EditApproval.at': { subject: 'employee', kind: 'behaviour' },

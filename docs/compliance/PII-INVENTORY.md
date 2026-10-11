@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**300 stored columns across 24 tables** — Customer contact: 26 · Employee: 67 · Customer entity (personal if a sole establishment): 36 · Not personal data: 171.
+**302 stored columns across 24 tables** — Customer contact: 28 · Employee: 67 · Customer entity (personal if a sole establishment): 36 · Not personal data: 171.
 
 ## Columns holding personal data
 
@@ -68,6 +68,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | `altPhone` | Customer contact | contact |  |
 | `contactPerson` | Customer contact | name |  |
 | `contactRole` | Customer contact | — | that person’s role at the shop |
+| `email` | Customer contact | contact | credit customers only (owner decisions 2026-10-11); often the owner’s own address |
 | `status` | Customer entity (personal if a sole establishment) | — |  |
 | `notes` | Customer contact | free text | unbounded; whatever a salesman or approver typed |
 | `creditLimit` | Customer entity (personal if a sole establishment) | financial |  |
@@ -186,6 +187,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | `altPhone` | Customer contact | contact |  |
 | `contactPerson` | Customer contact | name |  |
 | `contactRole` | Customer contact | — |  |
+| `email` | Customer contact | contact | credit requests only; copied to Customer.email at finalize |
 | `notes` | Customer contact | free text |  |
 
 ### EditBranchDraft
@@ -207,7 +209,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | Column | Subject | Kind | Note |
 |---|---|---|---|
 | `role` | Employee | behaviour |  |
-| `decision` | Employee | behaviour | what this named person decided |
+| `decision` | Employee | behaviour | what this named person decided: APPROVED, REJECTED, or FORM_UPLOADED (the salesman uploaded the signed credit application, owner decisions 2026-10-11) |
 | `actorId` | Employee | identifier |  |
 | `reason` | Customer contact | free text |  |
 | `at` | Employee | behaviour |  |
@@ -316,7 +318,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | CustomerEdit | `createdAt` | DateTime | record timestamp, not an attribute of a person |
 | CustomerEdit | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
 | Attachment | `id` | String | foreign key / structural value |
-| Attachment | `kind` | AttachmentKind | SHOP / SIGNBOARD / CR / GUARANTEE / EXTRA |
+| Attachment | `kind` | AttachmentKind | SHOP / SIGNBOARD / CR / GUARANTEE / EXTRA, and the credit documents (owner decisions 2026-10-11): ID_CARD (the owner’s ID card), MEMBERSHIP_CERT, VAT_CERT, TAX_CARD and CREDIT_FORM (the signed credit application). The kind is not personal; the image behind an ID card is the owner’s identity document |
 | Attachment | `customerId` | String | foreign key / structural value |
 | Attachment | `branchId` | String | foreign key / structural value |
 | Attachment | `branchExtraId` | String | foreign key / structural value |

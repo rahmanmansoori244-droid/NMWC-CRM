@@ -45,8 +45,8 @@ describe('SR-M2: customerListBranchScope is fail-closed', () => {
     expect(s.branchSome).toEqual({ routeId: 'rt1', deletedAt: null });
   });
 
-  it('STEWARD / VIEWER / FINANCE_MANAGER / GM are org-wide (no branch scope, not empty)', () => {
-    for (const role of [Role.STEWARD, Role.VIEWER, Role.FINANCE_MANAGER, Role.GM]) {
+  it('STEWARD / VIEWER / FINANCE_MANAGER / GM / SALES_DIRECTOR are org-wide (no branch scope, not empty)', () => {
+    for (const role of [Role.STEWARD, Role.VIEWER, Role.FINANCE_MANAGER, Role.GM, Role.SALES_DIRECTOR]) {
       const s = customerListBranchScope(role, empty);
       expect(s.forceEmpty, `${role} must not be force-empty`).toBe(false);
       expect(s.branchSome, `${role} must have no branch scope`).toBeUndefined();
@@ -57,7 +57,8 @@ describe('SR-M2: customerListBranchScope is fail-closed', () => {
     for (const role of Object.values(Role)) {
       const s = customerListBranchScope(role as Role, empty);
       // With an EMPTY scope, only the four org-wide roles may be non-empty.
-      const orgWide = ([Role.STEWARD, Role.VIEWER, Role.FINANCE_MANAGER, Role.GM] as Role[]).includes(role as Role);
+      // SALES_DIRECTOR: org-wide like the GM (owner decisions 2026-10-11).
+      const orgWide = ([Role.STEWARD, Role.VIEWER, Role.FINANCE_MANAGER, Role.GM, Role.SALES_DIRECTOR] as Role[]).includes(role as Role);
       if (!orgWide) expect(s.forceEmpty, `${role} must be fail-closed on empty scope`).toBe(true);
     }
   });

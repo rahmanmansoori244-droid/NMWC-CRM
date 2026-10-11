@@ -114,7 +114,8 @@ type BranchSomeWhere = NonNullable<
  * region-less Manager/Accountant, route-less Salesman) or a branch predicate to
  * pass as `branchSomeBase` (undefined = org-wide visibility).
  *
- * STEWARD/VIEWER/FINANCE_MANAGER/GM: org-wide. SALESMAN: own route. SUPERVISOR:
+ * STEWARD/VIEWER/FINANCE_MANAGER/GM/SALES_DIRECTOR: org-wide (the Sales Director
+ * mirrors the GM, owner decisions 2026-10-11). SALESMAN: own route. SUPERVISOR:
  * team routes. MANAGER/ACCOUNTANT: managed regions (both fail-closed when empty).
  */
 export type ListBranchScope =
@@ -130,6 +131,7 @@ export function customerListBranchScope(
     case Role.VIEWER:
     case Role.FINANCE_MANAGER:
     case Role.GM:
+    case Role.SALES_DIRECTOR:
       return { forceEmpty: false }; // org-wide — no branch scope
     case Role.SALESMAN:
       if (!scope.ownedRouteId) return { forceEmpty: true };

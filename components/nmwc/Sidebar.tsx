@@ -131,6 +131,14 @@ export const NAV_BY_ROLE: Record<Role, NavItem[]> = {
     { href: '/work', label: 'Work items', icon: Inbox },
     CHANGE_PASSWORD,
   ],
+  // Owner decisions 2026-10-11: the Sales Director has the GM's access everywhere,
+  // so the GM's menu exactly.
+  SALES_DIRECTOR: [
+    { href: '/approvals', label: 'Approvals', icon: ListChecks },
+    { href: '/customers', label: 'Customers', icon: Search },
+    { href: '/work', label: 'Work items', icon: Inbox },
+    CHANGE_PASSWORD,
+  ],
 };
 
 export function Sidebar({ role }: { role: Role }) {

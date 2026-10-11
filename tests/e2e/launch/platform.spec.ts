@@ -187,6 +187,13 @@ const MENU: Record<Role, Array<{ label: string; path: string }>> = {
     { label: 'Work items', path: '/work' },
     CHANGE_PASSWORD,
   ],
+  // Owner decisions 2026-10-11: the Sales Director's menu is the GM's.
+  SALES_DIRECTOR: [
+    { label: 'Approvals', path: '/approvals' },
+    { label: 'Customers', path: '/customers' },
+    { label: 'Work items', path: '/work' },
+    CHANGE_PASSWORD,
+  ],
 };
 
 /** Every page a role reaches from its menu, plus /profile (the salesman's Me tab) and the bell. */

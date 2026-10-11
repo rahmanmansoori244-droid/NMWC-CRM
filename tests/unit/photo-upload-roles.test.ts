@@ -40,7 +40,7 @@ import { POST as presignPOST } from '@/app/api/photos/presign/route';
 import { POST as finalizePOST } from '@/app/api/photos/finalize/route';
 import { PHOTO_ROLE_REFUSED_MESSAGE } from '@/lib/photo-attach';
 
-const ALL_ROLES = ['SALESMAN', 'SUPERVISOR', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'STEWARD', 'VIEWER'];
+const ALL_ROLES = ['SALESMAN', 'SUPERVISOR', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'SALES_DIRECTOR', 'MANAGER', 'STEWARD', 'VIEWER'];
 const WRITERS = ['SALESMAN', 'STEWARD', 'MANAGER'];
 const REFUSED = ALL_ROLES.filter((r) => !WRITERS.includes(r));
 const HASH = 'a'.repeat(64);

@@ -18,6 +18,7 @@ enum Role {
   ACCOUNTANT // Phase 1: final approver on both create chains (region-scoped)
   FINANCE_MANAGER // Phase 1: credit-chain approver (org-wide)
   GM // Phase 1: credit-chain approver (org-wide)
+  SALES_DIRECTOR // Owner decisions 2026-10-11: credit-chain approver after the Supervisor; org-wide, mirrors GM
   MANAGER
   STEWARD
   VIEWER
@@ -63,6 +64,12 @@ enum AttachmentKind {
   CR
   GUARANTEE // Phase 1: credit guarantee / security document (1:N per customer)
   FREE
+  // Owner decisions 2026-10-11: the credit documents (1..N pages each, like GUARANTEE)
+  ID_CARD // owner's ID card
+  MEMBERSHIP_CERT // membership certificate
+  VAT_CERT // VAT registration certificate
+  TAX_CARD // tax card
+  CREDIT_FORM // the printed credit application, signed and stamped by the customer
 }
 
 enum ImportRowState {
@@ -97,6 +104,8 @@ enum AuditAction {
   FINALIZE
   ESCALATE
   EXPORT
+  // Owner decisions 2026-10-11: every printout (credit application, customer form)
+  PRINT
 }
 
 enum ImportBatchStatus {
@@ -117,7 +126,7 @@ enum ExportJobStatus {
 // ── Phase 1: unified-CRM enums ───────────────────────────
 enum EditProcess {
   UPDATE // existing-customer enrichment/correction (1-step: Supervisor)
-  CREATE // net-new onboarding (cash: SUP→ACC; credit: SUP→FM→GM→ACC)
+  CREATE // net-new onboarding (cash: SUP→ACC; credit: SUP→SD→signed application→FM→GM→ACC, owner decisions 2026-10-11)
 }
 
 // Batch upload-to-Temix queue state on Customer.
@@ -138,6 +147,7 @@ enum NotificationKind {
   TEMIX_SYNC_ACKED // to the submitter: their customer landed in Temix (code assigned)
   REQUEST_FYI // F1: a salesman's request, for the region's Accountant to know of (lib/notify-policy.ts)
   REACTIVATION_REQUESTED // F1: a reactivation waiting on a Manager; decided only on /reactivations
+  SIGNED_FORM_REQUESTED // Owner decisions 2026-10-11: the salesman must upload the signed credit application
 }
 
 // ── ORG HIERARCHY ────────────────────────────────────────
@@ -299,6 +309,9 @@ model Customer {
   altPhone          String?
   contactPerson     String?
   contactRole       String?
+  // Owner decisions 2026-10-11: the customer's e-mail, captured for CREDIT only
+  // and copied from the request at finalize. Null on every cash customer.
+  email             String?
   status            CustomerStatus @default(ACTIVE)
   notes             String?        @db.Text
   completenessScore Int            @default(0)
@@ -712,6 +725,9 @@ model EditCustomerDraft {
   altPhone            String?
   contactPerson       String?
   contactRole         String?
+  // Owner decisions 2026-10-11: CREDIT only (mandatory there), copied to
+  // Customer.email at finalize. Null on a cash request.
+  email               String?
   notes               String?      @db.Text
   crPhotoAttachmentId String?      @unique
 
@@ -765,7 +781,7 @@ model EditApproval {
   cycle     Int
   stepIndex Int
   role      Role
-  decision  String // 'APPROVED' | 'REJECTED'
+  decision  String // 'APPROVED' | 'REJECTED' | 'FORM_UPLOADED' (the salesman's signed application, lib/approval-chains.ts)
   actorId   String
   reason    String?  @db.Text
   at        DateTime @default(now())

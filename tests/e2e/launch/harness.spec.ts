@@ -60,6 +60,7 @@ const HOME_HEADING: Record<Role, RegExp> = {
   ACCOUNTANT: /^Approval queue$/,
   FINANCE_MANAGER: /^Approval queue$/,
   GM: /^Approval queue$/,
+  SALES_DIRECTOR: /^Approval queue$/,
   MANAGER: /^Dashboard$/,
   VIEWER: /^Dashboard$/,
   STEWARD: /^Import Excel$/,

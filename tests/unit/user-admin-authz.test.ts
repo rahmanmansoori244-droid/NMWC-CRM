@@ -31,7 +31,8 @@ const manager = { id: 'mgr-1', role: Role.MANAGER, username: 'mgr' };
 const steward = { id: 'stw-1', role: Role.STEWARD, username: 'stw' };
 const tgt = (role: Role, id = 'tgt-1') => ({ id, role });
 
-const APPROVERS = [Role.FINANCE_MANAGER, Role.GM, Role.ACCOUNTANT];
+// Owner decisions 2026-10-11: the Sales Director is a credit approver, Steward-provisioned like the GM.
+const APPROVERS = [Role.FINANCE_MANAGER, Role.GM, Role.SALES_DIRECTOR, Role.ACCOUNTANT];
 const ADMINS = [Role.MANAGER, Role.STEWARD];
 const ORG_WIDE_READ = [Role.VIEWER];
 const FIELD_FORCE = [Role.SALESMAN, Role.SUPERVISOR];

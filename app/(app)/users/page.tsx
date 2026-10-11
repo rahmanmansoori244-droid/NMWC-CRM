@@ -49,12 +49,15 @@ type Search = { status?: string };
 const ROLE_ORDER: Record<Role, number> = {
   STEWARD: 0,
   GM: 1,
-  FINANCE_MANAGER: 2,
-  ACCOUNTANT: 3,
-  MANAGER: 4,
-  SUPERVISOR: 5,
-  SALESMAN: 6,
-  VIEWER: 7,
+  // Owner decisions 2026-10-11: the Sales Director sits beside the GM, above the
+  // Finance Manager whose step follows his.
+  SALES_DIRECTOR: 2,
+  FINANCE_MANAGER: 3,
+  ACCOUNTANT: 4,
+  MANAGER: 5,
+  SUPERVISOR: 6,
+  SALESMAN: 7,
+  VIEWER: 8,
 };
 
 // The day-1 operator check — who has not claimed their account yet — which the

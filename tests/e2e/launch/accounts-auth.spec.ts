@@ -115,6 +115,7 @@ const ROLE_LABEL: Record<Role, string> = {
   ACCOUNTANT: 'Accountant',
   FINANCE_MANAGER: 'Finance Manager',
   GM: 'GM',
+  SALES_DIRECTOR: 'Sales Director',
 };
 
 /** The audit rows about one user, as "ACTION:reason" strings. */

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Role } from '@prisma/client';
-import { canSeeCustomer, canEditCustomer } from '@/lib/access';
+import { canSeeCustomer, canEditCustomer, filterBranchesByScope } from '@/lib/access';
 
 const baseScope = {
   ownedRouteId: 'route-A',
@@ -76,5 +76,38 @@ describe('lib/access — canEditCustomer', () => {
   it('Steward and Manager (in scope) can edit', () => {
     expect(canEditCustomer(STW(), customerOnRouteX, baseScope)).toBe(true);
     expect(canEditCustomer(MGR(), customerInScopeRegion, baseScope)).toBe(true);
+  });
+});
+
+// Owner decisions 2026-10-11: one Sales Director for every region in Oman, with
+// the GM's access everywhere — org-wide read, every branch, and no direct edit.
+describe('lib/access — the Sales Director mirrors the GM', () => {
+  const SD = { id: 'u6', role: Role.SALES_DIRECTOR, username: 'sd' } as const;
+  const GM = { id: 'u7', role: Role.GM, username: 'gm' } as const;
+  const noScope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: [] };
+  const twoRegions = {
+    branches: [
+      { routeId: 'route-A', regionId: 'region-Muscat', deletedAt: null },
+      { routeId: 'route-X', regionId: 'region-Dhofar', deletedAt: null },
+      { routeId: 'route-Y', regionId: 'region-Dhofar', deletedAt: new Date() },
+    ],
+  };
+
+  it('sees every customer, with no region assigned, exactly as the GM does', () => {
+    for (const c of [customerOnRouteA, customerOnRouteX, twoRegions]) {
+      expect(canSeeCustomer(SD, c, noScope)).toBe(true);
+      expect(canSeeCustomer(SD, c, noScope)).toBe(canSeeCustomer(GM, c, noScope));
+    }
+  });
+
+  it('sees every live branch of a customer, as the GM does', () => {
+    const sd = filterBranchesByScope(SD, twoRegions.branches, noScope);
+    expect(sd.map((b) => b.routeId)).toEqual(['route-A', 'route-X']);
+    expect(sd).toEqual(filterBranchesByScope(GM, twoRegions.branches, noScope));
+  });
+
+  it('never edits a customer directly (he approves his step, like the GM)', () => {
+    expect(canEditCustomer(SD, customerOnRouteA, baseScope)).toBe(false);
+    expect(canEditCustomer(GM, customerOnRouteA, baseScope)).toBe(false);
   });
 });

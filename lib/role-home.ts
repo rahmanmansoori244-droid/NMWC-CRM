@@ -25,6 +25,8 @@ export const HOME_BY_ROLE: Record<Role, Route> = {
   ACCOUNTANT: '/approvals',
   FINANCE_MANAGER: '/approvals',
   GM: '/approvals',
+  // Owner decisions 2026-10-11: the Sales Director mirrors the GM.
+  SALES_DIRECTOR: '/approvals',
 };
 
 export function homeForRole(role: Role): Route {

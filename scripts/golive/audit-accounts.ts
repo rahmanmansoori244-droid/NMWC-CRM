@@ -58,12 +58,14 @@ const MANAGERS_JSON = files[1] ?? 'golive-data/managers.json';
 const SEVERITY: Record<Role, number> = {
   STEWARD: 0,
   GM: 1,
-  FINANCE_MANAGER: 2,
-  MANAGER: 3,
-  ACCOUNTANT: 4,
-  SUPERVISOR: 5,
-  VIEWER: 6,
-  SALESMAN: 7,
+  // Org-wide credit approver with the GM's access (owner decisions 2026-10-11).
+  SALES_DIRECTOR: 2,
+  FINANCE_MANAGER: 3,
+  MANAGER: 4,
+  ACCOUNTANT: 5,
+  SUPERVISOR: 6,
+  VIEWER: 7,
+  SALESMAN: 8,
 };
 
 function fmtDate(d: Date | null): string {
