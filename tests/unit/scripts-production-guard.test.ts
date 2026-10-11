@@ -23,8 +23,7 @@
  *     scripts/ and prisma/ that opens its own database (lib/db.ts, the app's client).
  *
  * The behaviour half pins what the guard refuses and what it is allowed to print,
- * and that scripts/synthetic-launch-test.ts and scripts/qa/run-with-env.mjs refuse
- * production (review of d02cb27).
+ * and that scripts/qa/run-with-env.mjs refuses production (review of d02cb27).
  */
 import { describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -750,22 +749,6 @@ describe('the structural scan sees what it is meant to see', () => {
   });
 });
 
-describe('scripts/synthetic-launch-test.ts refuses before it signs in to production', () => {
-  // Review of d02cb27: its browser half always acts on the live site (BASE), so
-  // the shared guard, which sees only the database, let a UAT .env through to a
-  // production sign-in and photo upload. Pinned structurally: running the script
-  // in a test would, if the refusal were broken, do exactly that.
-  const src = code('scripts/synthetic-launch-test.ts');
-  it('checks --expect-host for the production marker before the client and before Chromium', () => {
-    const refusal = src.search(/expectHostArg\(\s*process\.argv\.slice\(2\)\s*\)/);
-    expect(refusal).toBeGreaterThan(-1);
-    expect(src.slice(refusal)).toMatch(/startsWith\(\s*PRODUCTION_HOST_PREFIX\s*\)[\s\S]*?process\.exit\(\s*2\s*\)/);
-    expect(refusal).toBeLessThan(src.search(/\bnew\s+PrismaClient\s*\(/));
-    expect(refusal).toBeLessThan(src.search(/chromium\.launch\s*\(/));
-    expect(src).toMatch(/const BASE = 'https:\/\/nmwc-cm\.vercel\.app'/);
-  });
-});
-
 describe('scripts/qa/run-with-env.mjs refuses production', () => {
   // Review of d02cb27: it loads .env (production in the owner's main checkout) and
   // starts any command — integration suites with no production check of their own
@@ -828,13 +811,17 @@ describe('prisma/seed.ts inserts what is missing and renames nothing', () => {
 describe('the scripts the owner deleted on 2026-10-11 stay deleted', () => {
   // Git history keeps them. Bringing one back means bringing back a script that
   // opened the audit maintenance switch, or rewrote customers, against whatever
-  // database it was handed.
+  // database it was handed — or, for synthetic-launch-test.ts, signed in to the
+  // live site and uploaded a photo there whatever database it was given.
   it.each([
     'scripts/wipe-synthetic-data.ts',
     'scripts/cleanup-synthetic-test.ts',
     'scripts/flatten-customer-branches.ts',
     'scripts/seed-demo-edit.ts',
     'prisma/inject-test-edits.ts',
+    'scripts/synthetic-launch-test.ts',
+    'prisma/seed-muscat-customers.ts',
+    'prisma/seed-muscat-payment-terms.ts',
   ])('%s', (file) => {
     expect(existsSync(file)).toBe(false);
   });

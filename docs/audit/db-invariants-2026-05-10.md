@@ -119,7 +119,7 @@ The state-machine itself appears robust. The application code in `services/edits
 
 **What a user sees:** When the salesman who owns C1/C4/etc. opens this customer to enrich it, the EnrichmentForm submits → `submitEditCore` calls `collectMissingMandatory` (services/edits.ts:151–159) → an error `branch.<id>.address: "Branch CAA2468-01: address is required."` fires. The salesman did **not** type "WK"; they're being asked to fix something they didn't break. Worse, if the salesman *doesn't* touch the address field, `addr.trim().length < 3` still triggers because the merged value falls back to the live DB record's `"WK"`. The salesman is locked out of submitting any edit on this customer until they retype the address.
 
-The Zod schema `submitEditSchema` in `lib/validation/edit.ts:53` enforces `address.min(3)`, so the runtime can't introduce this. The bypass came from the seed import — `prisma/seed-muscat-customers.ts:231` passes `r.address ?? 'Address pending'` straight into `prisma.branch.upsert`, no validation. The source row in `GT-MUSCAT-PILOT.xlsx` for `CAA2468` had `address = "WK"`.
+The Zod schema `submitEditSchema` in `lib/validation/edit.ts:53` enforces `address.min(3)`, so the runtime can't introduce this. The bypass came from the seed import — `prisma/seed-muscat-customers.ts:231` (deleted 2026-10-11) passes `r.address ?? 'Address pending'` straight into `prisma.branch.upsert`, no validation. The source row in `GT-MUSCAT-PILOT.xlsx` for `CAA2468` had `address = "WK"`.
 
 **Severity:** HIGH. One row is a small blast radius but it's a guaranteed-to-trip-the-gate inconsistency that produces a misleading user error. Could be the first paper-cut a salesman hits this week.
 
@@ -132,7 +132,7 @@ WHERE  id = 'cmozfs4zc03ljtvfkz6ek9z0p' AND address = 'WK';
 ```
 
 **Code-level prevention:**
-1. Make `prisma/seed-muscat-customers.ts:224–243` validate the address with the same `min(3)` constraint before calling `upsert`. Sketch:
+1. Make `prisma/seed-muscat-customers.ts:224–243` (deleted 2026-10-11) validate the address with the same `min(3)` constraint before calling `upsert`. Sketch:
    ```ts
    const addr = (r.address ?? 'Address pending').trim();
    const safeAddr = addr.length >= 3 ? addr : 'Address pending';
@@ -193,7 +193,7 @@ to also stamp when a fresh row is created with non-ACTIVE status. For the seed/t
 
 ### DB-03 (MEDIUM) — 2,327 active branches still have `address = "Address pending"`
 
-**What this is:** The placeholder set by `services/imports.ts:781–784` and `prisma/seed-muscat-customers.ts:231` when the source row had no address. **Length is 15, so the >=3 gate passes**, but these are not real addresses — they are flagged as "fix me later."
+**What this is:** The placeholder set by `services/imports.ts:781–784` and `prisma/seed-muscat-customers.ts:231` (deleted 2026-10-11) when the source row had no address. **Length is 15, so the >=3 gate passes**, but these are not real addresses — they are flagged as "fix me later."
 
 **Why surface it:** Without an address, the salesman cannot route to the store. With the placeholder, the mandatory-fields gate currently lets the customer through completeness scoring (the score already correctly stays low: 3,238 of 3,334 customers have score=0). But there's no UI surfacing "your route has X stores with placeholder addresses," and the EnrichmentForm doesn't pre-warn the salesman that the address shown is a placeholder. The salesman might submit photos + GPS + day-of-visit thinking they're done, then get the gate-rejection on submit.
 

@@ -644,7 +644,7 @@ The full procedure is in [`HANDOVER.md`](../HANDOVER.md) §2 and §5. In short:
 - `npm run format`, `prettier --write` or `eslint --fix` over existing files;
 - `npm run guide:capture` or `npm run guide:build`;
 - `npm run ops:r2-setup` against the production photo bucket (OPERATIONS §6.13 step 0);
-- the historical scripts that write as soon as they run (AUDITOR-BRIEF §2): `prisma/seed-muscat-customers.ts`, `prisma/seed-muscat-payment-terms.ts` and `prisma/seed.ts`. Since 2026-10-11 they refuse production unless `--expect-host` names it, but they still write to any other database the moment they run (the others on this list were deleted that day, OPERATIONS §5j);
+- the historical script that writes as soon as it runs (AUDITOR-BRIEF §2): `prisma/seed.ts`. Since 2026-10-11 it refuses production unless `--expect-host` names it, but it still writes to any other database the moment it runs (the others on this list, `prisma/seed-muscat-customers.ts` and `prisma/seed-muscat-payment-terms.ts` among them, were deleted that day, OPERATIONS §5j);
 - any other script under `scripts/**` or `prisma/*.ts` before you have read it and know its write switch (AUDITOR-BRIEF §2).
 
 Never open, list or copy `golive-data/`, and never print a secret ([`CLAUDE.md`](../../CLAUDE.md), Safety).
