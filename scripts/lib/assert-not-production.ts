@@ -19,7 +19,8 @@
  *     same mistake is caught on UAT.
  *   - A connection string this cannot read a host from is refused: a guard that
  *     cannot see the host cannot say it is not production. The marker anywhere
- *     in the string also counts as production, for the same reason.
+ *     in the string, percent-escaped or not, also counts as production, for the
+ *     same reason.
  *
  * WHAT IT PRINTS. The host it is about to use, before anything connects, and
  * nothing else from the URL — never the user, the password, the database or the
@@ -121,8 +122,16 @@ export function assertNotProduction(
     );
   }
 
+  // The marker is also looked for with the percent-escapes decoded: libpq,
+  // node-postgres and Prisma all decode the query, and a `host` parameter there
+  // overrides the host in the URL, so `?host=ep%2Dsweet%2Dhaze…` reached
+  // production while the host read above said localhost (review of d02cb27).
+  // Only well-formed %XX escapes are decoded, so a stray `%` cannot make this throw.
+  const decoded = raw.replace(/%[0-9a-f]{2}/gi, (e) => String.fromCharCode(parseInt(e.slice(1), 16)));
   const production =
-    host.startsWith(PRODUCTION_HOST_PREFIX) || raw.toLowerCase().includes(PRODUCTION_HOST_PREFIX);
+    host.startsWith(PRODUCTION_HOST_PREFIX) ||
+    raw.toLowerCase().includes(PRODUCTION_HOST_PREFIX) ||
+    decoded.toLowerCase().includes(PRODUCTION_HOST_PREFIX);
   const shown = production ? `${PRODUCTION_HOST_PREFIX}… (PRODUCTION)` : host;
   const expect = expectHostArg(args);
 
@@ -130,8 +139,11 @@ export function assertNotProduction(
     refuse('[db-guard] refusing: --expect-host was passed without a host.');
   }
   if (expect !== null && !host.includes(expect.toLowerCase())) {
+    // The value is shown as the marker when it names production: it may be the
+    // full endpoint id, which this guard never prints (see the end of this function).
+    const asked = expect.toLowerCase().includes(PRODUCTION_HOST_PREFIX) ? `${PRODUCTION_HOST_PREFIX}…` : expect;
     refuse(
-      `[db-guard] refusing: you asked for "${expect}" but this connection points at ${shown}.`,
+      `[db-guard] refusing: you asked for "${asked}" but this connection points at ${shown}.`,
       '  Check the connection string you set, in the same shell that runs this command.',
       '  Nothing was read or written.'
     );

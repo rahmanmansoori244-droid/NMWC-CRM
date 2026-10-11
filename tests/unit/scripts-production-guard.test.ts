@@ -11,19 +11,27 @@
  * on every run rather than remembered:
  *
  *   - every file under scripts/ and prisma/ (ts, cjs, mjs and friends) that builds a
- *     PrismaClient or a pg client must call the guard: assertNotProduction()
- *     directly, or requireExpectedHost() from scripts/ops/requeue-untracked.ts,
- *     which is checked below to end in assertNotProduction();
- *   - the call must come before the client is built (or be inside its arguments);
- *   - the client must be given its URL explicitly, so the URL the guard checked is
- *     the URL it uses — a bare `new PrismaClient()` reads DATABASE_URL from the
- *     schema behind the guard's back.
+ *     PrismaClient (under any name), imports one as a value, or imports a pg driver
+ *     must call the guard: assertNotProduction() directly, or requireExpectedHost()
+ *     from scripts/ops/requeue-untracked.ts, which is checked below to end in
+ *     assertNotProduction();
+ *   - the client must be given its URL explicitly, and that URL must be the one the
+ *     guard checked, before the client is built — a bare `new PrismaClient()` reads
+ *     DATABASE_URL from the schema behind the guard's back, and so does a client
+ *     handed some other variable;
+ *   - no file there may import, directly or through other modules, a module outside
+ *     scripts/ and prisma/ that opens its own database (lib/db.ts, the app's client).
  *
- * The behaviour half pins what the guard refuses and what it is allowed to print.
+ * The behaviour half pins what the guard refuses and what it is allowed to print,
+ * and that scripts/synthetic-launch-test.ts and scripts/qa/run-with-env.mjs refuse
+ * production (review of d02cb27).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import ts from 'typescript';
 import { stripComments } from '../support/strip-comments';
 import { callArguments, objectAfter } from '../support/call-args';
 import {
@@ -117,11 +125,39 @@ describe('assertNotProduction: what it refuses', () => {
     }
   });
 
+  it('treats a percent-escaped marker as production too — the drivers decode it', () => {
+    // Review of d02cb27: libpq, node-postgres and Prisma decode the query, and a
+    // `host` parameter overrides the URL's host, so this reached production while
+    // the guard printed "localhost".
+    const escaped = urlFor('localhost:5432', '?host=ep%2Dsweet%2Dhaze-fake9q7.neon.invalid');
+    for (const args of [[], ['--expect-host', PRODUCTION_HOST_PREFIX]]) {
+      const r = run(escaped, args);
+      expect(r.thrown, JSON.stringify(args)).toBeInstanceOf(ProductionGuardRefusal);
+      expect(r.out.log).not.toHaveBeenCalled();
+    }
+    expect(run(urlFor('localhost:5432', '?host=%65p-sweet-haze-fake9q7.neon.invalid'), []).thrown).toBeInstanceOf(
+      ProductionGuardRefusal
+    );
+    // A stray `%` that is not an escape neither throws nor counts as production.
+    expect(run(urlFor('localhost:5432', '?application_name=at-100%'), []).thrown).toBeUndefined();
+  });
+
   it('refuses a named host that is not the one in the connection string, on UAT too', () => {
     const r = run(UAT_URL, ['--expect-host', PRODUCTION_HOST_PREFIX]);
     expect(r.thrown).toBeInstanceOf(ProductionGuardRefusal);
-    expect(r.printed).toMatch(/you asked for "ep-sweet-haze" but this connection points at ep-uat-branch-1/);
+    expect(r.printed).toMatch(/you asked for "ep-sweet-haze…" but this connection points at ep-uat-branch-1/);
     expectNoSecrets(r.printed);
+  });
+
+  it('does not echo a full production endpoint id given as --expect-host', () => {
+    // Review of d02cb27: the mismatch refusal printed the value as typed, though
+    // the guard never prints the endpoint id anywhere else.
+    const r = run(UAT_URL, ['--expect-host', PROD_ENDPOINT]);
+    expect(r.thrown).toBeInstanceOf(ProductionGuardRefusal);
+    expect(r.printed).toMatch(/you asked for "ep-sweet-haze…"/);
+    expectNoSecrets(r.printed);
+    // A value that does not name production is the operator's own words: shown.
+    expect(run(UAT_URL, ['--expect-host', 'ep-other-branch']).printed).toMatch(/you asked for "ep-other-branch"/);
   });
 });
 
@@ -168,6 +204,13 @@ describe('the --expect-host argument helpers', () => {
 
 // ---------------------------------------------------------------------------
 // The structural half.
+//
+// Review of d02cb27: the first version matched the literal `new PrismaClient(`
+// and accepted any guard call earlier in the file, so an aliased import, the
+// app's own client reached through an import, or a client handed a different
+// variable from the one the guard checked all passed. So the files are parsed
+// (TypeScript's parser, which reads the .cjs/.mjs files too) and the URL each
+// client is given is traced back to the guard.
 
 const ROOTS = ['scripts', 'prisma'];
 const SKIP_DIRS = new Set(['migrations', 'node_modules']);
@@ -182,18 +225,42 @@ const HELPER = 'scripts/lib/assert-not-production.ts';
  */
 const NEVER_CONNECTS: Record<string, string> = {};
 
-function walk(dir: string): string[] {
+/**
+ * Shell scripts that reach a database. The guard is TypeScript, so a shell script
+ * cannot call it: each one is listed here with what stands in its place, so a new
+ * one is a decision someone wrote down rather than a gap nobody saw.
+ */
+const SHELL_OUTSIDE_GUARD: Record<string, string> = {
+  'scripts/ops/restore-load.sh':
+    'Loads a backup into RESTORE_TARGET_URL with psql (CI, the restore drill, OPERATIONS §6.5). ' +
+    'It has no production check of its own. The dump is plain, made without --clean ' +
+    '(db-backup.yml), and psql runs with ON_ERROR_STOP=1. OPERATIONS §6.5 loads only into a ' +
+    'new, emptied branch. Whether it should also refuse the production marker is an open ' +
+    'owner question (2026-10-11).',
+};
+
+function walk(dir: string, ext: RegExp = EXT): string[] {
   return readdirSync(dir).flatMap((name) => {
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) return SKIP_DIRS.has(name) ? [] : walk(p);
-    return EXT.test(name) ? [p.replace(/\\/g, '/')] : [];
+    if (statSync(p).isDirectory()) return SKIP_DIRS.has(name) ? [] : walk(p, ext);
+    return ext.test(name) ? [p.replace(/\\/g, '/')] : [];
   });
 }
 
+/** Memoised per file: the import walk below reads the same lib/ modules for every script. */
+const memo = <T,>(fn: (file: string) => T) => {
+  const cache = new Map<string, T>();
+  return (file: string) => {
+    if (!cache.has(file)) cache.set(file, fn(file));
+    return cache.get(file)!;
+  };
+};
 /** Comment-stripped source; parsed as TypeScript, which reads plain JS too. */
-const code = (file: string) => stripComments(readFileSync(file, 'utf8'), file.replace(EXT, '.ts'));
+const code = memo((file) => stripComments(readFileSync(file, 'utf8'), file.replace(EXT, '.ts')));
+const parse = memo((file) =>
+  ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+);
 
-const PRISMA_CLIENT = /\bnew\s+PrismaClient\s*\(/g;
 // A raw Postgres driver counts as opening a database the moment it is imported:
 // its Client / Pool is what connects, and nothing else would be imported it for.
 const PG_IMPORT =
@@ -201,13 +268,327 @@ const PG_IMPORT =
 const GUARD_IMPORT = /import\s*\{[^}]*\bassertNotProduction\b[^}]*\}\s*from\s*['"][./]+(?:scripts\/)?lib\/assert-not-production(?:\.js)?['"]/;
 const HOST_GUARD_IMPORT = /import\s*\{[^}]*\brequireExpectedHost\b[^}]*\}\s*from\s*['"]\.\/requeue-untracked['"]/;
 const GUARD_CALL = /\b(?:assertNotProduction|requireExpectedHost)\s*\(/g;
+const IMPORT_SPEC = /(?:\bfrom\s*|\brequire\(\s*|\bimport\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm;
 
-function opensDatabase(src: string): boolean {
-  return new RegExp(PRISMA_CLIENT.source).test(src) || PG_IMPORT.test(src);
+const all = (sf: ts.SourceFile): ts.Node[] => {
+  const out: ts.Node[] = [];
+  const visit = (n: ts.Node) => {
+    out.push(n);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+};
+
+const unwrap = (e: ts.Expression): ts.Expression =>
+  ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) || ts.isAsExpression(e) ||
+  ts.isTypeAssertionExpression(e) || ts.isSatisfiesExpression(e) || ts.isAwaitExpression(e)
+    ? unwrap(e.expression)
+    : e;
+
+const calleeName = (call: ts.CallExpression) => {
+  const callee = unwrap(call.expression);
+  return ts.isIdentifier(callee) ? callee.text : null;
+};
+
+/** An identifier sitting in a type (`client: PrismaClient`, `typeof PrismaClient`): not a value use. */
+function inTypePosition(node: ts.Node): boolean {
+  let p = node.parent;
+  while (p && ts.isQualifiedName(p)) p = p.parent;
+  return !!p && (ts.isTypeNode(p) || ts.isExpressionWithTypeArguments(p));
 }
 
-const files = ROOTS.flatMap(walk).filter((f) => f !== HELPER);
-const connecting = files.filter((f) => opensDatabase(code(f)));
+/** The names a binding declares (`a`, or every name in `{ a, b: [c] }`). */
+function boundNames(name: ts.BindingName): ts.Identifier[] {
+  if (ts.isIdentifier(name)) return [name];
+  return name.elements.flatMap((el) => (ts.isOmittedExpression(el) ? [] : boundNames(el.name)));
+}
+
+/**
+ * The identifier that DECLARES the variable `id` refers to, found by walking out
+ * through the enclosing scopes. Block scoping is assumed for every declaration; a
+ * `var` this misses resolves to nothing, which fails closed.
+ */
+function declarationOf(id: ts.Identifier): ts.Identifier | null {
+  const declaredIn = (scope: ts.Node): ts.Identifier[] => {
+    const out: ts.Identifier[] = [];
+    const fromStatements = (statements: readonly ts.Statement[]) => {
+      for (const st of statements) {
+        if (ts.isVariableStatement(st)) st.declarationList.declarations.forEach((d) => out.push(...boundNames(d.name)));
+        else if ((ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st)) && st.name) out.push(st.name);
+        else if (ts.isImportDeclaration(st) && st.importClause) {
+          const c = st.importClause;
+          if (c.name) out.push(c.name);
+          const nb = c.namedBindings;
+          if (nb && ts.isNamespaceImport(nb)) out.push(nb.name);
+          if (nb && ts.isNamedImports(nb)) nb.elements.forEach((el) => out.push(el.name));
+        }
+      }
+    };
+    if (ts.isSourceFile(scope) || ts.isBlock(scope) || ts.isModuleBlock(scope) || ts.isCaseClause(scope) || ts.isDefaultClause(scope)) {
+      fromStatements(scope.statements);
+    }
+    if (ts.isFunctionLike(scope)) scope.parameters.forEach((p) => out.push(...boundNames(p.name)));
+    if ((ts.isForStatement(scope) || ts.isForOfStatement(scope) || ts.isForInStatement(scope)) && scope.initializer &&
+        ts.isVariableDeclarationList(scope.initializer)) {
+      scope.initializer.declarations.forEach((d) => out.push(...boundNames(d.name)));
+    }
+    if (ts.isCatchClause(scope) && scope.variableDeclaration) out.push(...boundNames(scope.variableDeclaration.name));
+    return out;
+  };
+  for (let scope: ts.Node | undefined = id.parent; scope; scope = scope.parent) {
+    const hit = declaredIn(scope).find((d) => d.text === id.text);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** The VariableDeclaration a declaring identifier belongs to, through any destructuring. */
+function variableOf(decl: ts.Identifier): ts.VariableDeclaration | null {
+  let n: ts.Node = decl.parent;
+  while (ts.isBindingElement(n) || ts.isObjectBindingPattern(n) || ts.isArrayBindingPattern(n)) n = n.parent;
+  return ts.isVariableDeclaration(n) ? n : null;
+}
+
+const isConst = (v: ts.VariableDeclaration) =>
+  ts.isVariableDeclarationList(v.parent) && (v.parent.flags & ts.NodeFlags.Const) !== 0;
+
+/** A function declared in this file under that name: `function f() {}` or `const f = () => …`. */
+function localFunction(sf: ts.SourceFile, name: string): ts.FunctionLikeDeclaration | null {
+  for (const n of all(sf)) {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === name && n.body) return n;
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === name && n.initializer &&
+        (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer))) {
+      return n.initializer;
+    }
+  }
+  return null;
+}
+
+/** What a function returns: every `return` expression of its own body (not of nested functions). */
+function returnsOf(fn: ts.FunctionLikeDeclaration): Array<{ expr: ts.Expression; at: number }> {
+  const body = fn.body;
+  if (!body) return [];
+  if (!ts.isBlock(body)) return [{ expr: body as ts.Expression, at: body.getStart() }];
+  const out: Array<{ expr: ts.Expression; at: number }> = [];
+  let bare = false;
+  const visit = (n: ts.Node) => {
+    if (ts.isFunctionLike(n)) return;
+    if (ts.isReturnStatement(n)) {
+      if (n.expression) out.push({ expr: n.expression, at: n.getStart() });
+      else bare = true;
+    }
+    ts.forEachChild(n, visit);
+  };
+  ts.forEachChild(body, visit);
+  return bare ? [] : out;
+}
+
+/**
+ * Is this the URL the guard checked? True for `assertNotProduction(…)` itself;
+ * for a call to a function in this file that returns only such URLs; and for a
+ * variable that was assigned one, or that was handed to the guard
+ * (`assertNotProduction(url, …)` / `requireExpectedHost(args, url, …)`) before
+ * position `at`, and is never assigned again. Anything else is not traced, and
+ * fails: an unproven URL is treated as an unchecked one.
+ */
+function checkedUrl(sf: ts.SourceFile, expr: ts.Expression, at: number, depth = 0): boolean {
+  if (depth > 8) return false;
+  const e = unwrap(expr);
+  if (ts.isCallExpression(e)) {
+    const name = calleeName(e);
+    if (name === 'assertNotProduction') return true;
+    const fn = name ? localFunction(sf, name) : null;
+    const returns = fn ? returnsOf(fn) : [];
+    return returns.length > 0 && returns.every((r) => checkedUrl(sf, r.expr, r.at, depth + 1));
+  }
+  if (!ts.isIdentifier(e)) return false;
+  const decl = declarationOf(e);
+  if (!decl) return false;
+  const variable = variableOf(decl);
+
+  if (variable && isConst(variable) && variable.initializer) {
+    if (ts.isIdentifier(variable.name) && checkedUrl(sf, variable.initializer, variable.getStart(), depth + 1)) {
+      return true;
+    }
+    // `const { url } = prepare(…)`, where prepare returns `{ url, … }` it has checked.
+    const init = unwrap(variable.initializer);
+    const element = decl.parent;
+    if (ts.isObjectBindingPattern(variable.name) && ts.isBindingElement(element) && ts.isCallExpression(init)) {
+      const key = (element.propertyName && ts.isIdentifier(element.propertyName) ? element.propertyName : decl).text;
+      const name = calleeName(init);
+      const fn = name ? localFunction(sf, name) : null;
+      const returns = fn ? returnsOf(fn) : [];
+      const field = (r: { expr: ts.Expression }) => {
+        const obj = unwrap(r.expr);
+        if (!ts.isObjectLiteralExpression(obj)) return null;
+        for (const p of obj.properties) {
+          if (ts.isShorthandPropertyAssignment(p) && p.name.text === key) return p.name;
+          if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === key) return p.initializer;
+        }
+        return null;
+      };
+      if (returns.length > 0 && returns.every((r) => {
+        const value = field(r);
+        return value !== null && checkedUrl(sf, value, r.at, depth + 1);
+      })) {
+        return true;
+      }
+    }
+  }
+
+  const nodes = all(sf);
+  const sameVariable = (n: ts.Node | undefined) =>
+    !!n && ts.isIdentifier(unwrap(n as ts.Expression)) && declarationOf(unwrap(n as ts.Expression) as ts.Identifier) === decl;
+  const reassigned = nodes.some(
+    (n) =>
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      sameVariable(n.left)
+  );
+  if (reassigned) return false;
+  return nodes.some((n) => {
+    if (!ts.isCallExpression(n) || n.getStart() >= at) return false;
+    const name = calleeName(n);
+    if (name === 'assertNotProduction') return sameVariable(n.arguments[0]);
+    if (name === 'requireExpectedHost') return sameVariable(n.arguments[1]);
+    return false;
+  });
+}
+
+/** The `datasourceUrl` (or `datasources.<name>.url`) a client's options give it, or null. */
+function clientUrl(construction: ts.NewExpression): ts.Expression | null {
+  const opts = construction.arguments?.[0] && unwrap(construction.arguments[0]);
+  if (!opts || !ts.isObjectLiteralExpression(opts)) return null;
+  const prop = (obj: ts.ObjectLiteralExpression, key: string): ts.Expression | null => {
+    for (const p of obj.properties) {
+      if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === key) {
+        return p.initializer;
+      }
+      if (ts.isShorthandPropertyAssignment(p) && p.name.text === key) return p.name;
+    }
+    return null;
+  };
+  const direct = prop(opts, 'datasourceUrl');
+  if (direct) return direct;
+  const sources = prop(opts, 'datasources');
+  if (!sources || !ts.isObjectLiteralExpression(unwrap(sources))) return null;
+  const urls = (unwrap(sources) as ts.ObjectLiteralExpression).properties.flatMap((p) => {
+    const inner = ts.isPropertyAssignment(p) ? unwrap(p.initializer) : null;
+    const url = inner && ts.isObjectLiteralExpression(inner) ? prop(inner, 'url') : null;
+    return url ? [url] : [];
+  });
+  return urls.length === 1 ? urls[0]! : null;
+}
+
+type ClientScan = {
+  /** Every `new PrismaClient(…)`, under any name it was imported as. */
+  constructions: ts.NewExpression[];
+  /** PrismaClient used as a value other than `new …(…)`: it could be built where this cannot see. */
+  escapes: number[];
+  /** A value import of PrismaClient (not `import type`), aliases included. */
+  valueImport: boolean;
+};
+
+function scanClients(sf: ts.SourceFile): ClientScan {
+  const names = new Set(['PrismaClient']);
+  let valueImport = false;
+  const fromPrisma = (spec: ts.Node | undefined) =>
+    !!spec && ts.isStringLiteral(spec) && /^@prisma\/client(\/|$)/.test(spec.text);
+  for (const n of all(sf)) {
+    if (ts.isImportDeclaration(n) && fromPrisma(n.moduleSpecifier) && n.importClause && !n.importClause.isTypeOnly) {
+      const nb = n.importClause.namedBindings;
+      if (nb && ts.isNamedImports(nb)) {
+        for (const el of nb.elements) {
+          if (!el.isTypeOnly && (el.propertyName ?? el.name).text === 'PrismaClient') {
+            names.add(el.name.text);
+            valueImport = true;
+          }
+        }
+      }
+    }
+    // const { PrismaClient: P } = require('@prisma/client')
+    if (ts.isVariableDeclaration(n) && n.initializer && ts.isCallExpression(n.initializer) &&
+        calleeName(n.initializer) === 'require' && fromPrisma(n.initializer.arguments[0]) &&
+        ts.isObjectBindingPattern(n.name)) {
+      for (const el of n.name.elements) {
+        const key = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : (el.name as ts.Identifier).text;
+        if (key === 'PrismaClient' && ts.isIdentifier(el.name)) {
+          names.add(el.name.text);
+          valueImport = true;
+        }
+      }
+    }
+  }
+  const constructions: ts.NewExpression[] = [];
+  const escapes: number[] = [];
+  for (const n of all(sf)) {
+    const isClientRef =
+      (ts.isIdentifier(n) && names.has(n.text)) ||
+      // `new Prisma.PrismaClient(…)`, `new pc.PrismaClient(…)` from a namespace import.
+      (ts.isPropertyAccessExpression(n) && n.name.text === 'PrismaClient');
+    if (!isClientRef) continue;
+    const parent = n.parent;
+    if (ts.isNewExpression(parent) && parent.expression === n) constructions.push(parent);
+    else if (ts.isIdentifier(n)) {
+      const declaring =
+        ts.isImportSpecifier(parent) || ts.isBindingElement(parent) ||
+        (ts.isPropertyAccessExpression(parent) && parent.name === n);
+      if (!declaring && !inTypePosition(n)) escapes.push(n.getStart());
+    } else if (!inTypePosition(n)) escapes.push(n.getStart());
+  }
+  return { constructions, escapes, valueImport };
+}
+
+/**
+ * A module outside scripts/ and prisma/ that this file imports, directly or through
+ * other modules, and that opens a database itself — lib/db.ts, the app's client,
+ * reads DATABASE_URL behind the guard's back, and every services/* module uses it.
+ * Returns the import chain, or null. Modules under scripts/ and prisma/ are not
+ * followed: they are scanned on their own.
+ */
+function reachesOutsideDatabase(file: string): string[] | null {
+  const resolveSpec = (from: string, spec: string): string | null => {
+    let base: string;
+    if (spec.startsWith('@/')) base = spec.slice(2);
+    else if (spec.startsWith('.')) base = join(dirname(from), spec).replace(/\\/g, '/');
+    else return null;
+    if (/\.(ts|tsx|mts|cts)$/.test(base) && existsSync(base)) return base;
+    base = base.replace(/\.(js|mjs|cjs)$/, '');
+    for (const c of [`${base}.ts`, `${base}.tsx`, `${base}.mts`, `${base}.cts`, `${base}.js`, `${base}.mjs`, `${base}.cjs`, `${base}/index.ts`, `${base}/index.tsx`]) {
+      if (existsSync(c) && statSync(c).isFile()) return c;
+    }
+    return null;
+  };
+  const cameFrom = new Map<string, string | null>([[file, null]]);
+  const queue = [file];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const m of code(current).matchAll(IMPORT_SPEC)) {
+      const next = resolveSpec(current, m[1]!);
+      if (!next || cameFrom.has(next) || /^(scripts|prisma|node_modules)\//.test(next)) continue;
+      cameFrom.set(next, current);
+      const src = code(next);
+      if (/\bnew\s+PrismaClient\s*\(/.test(src) || PG_IMPORT.test(src)) {
+        const chain: string[] = [];
+        for (let c: string | null | undefined = next; c; c = cameFrom.get(c)) chain.unshift(c);
+        return chain;
+      }
+      queue.push(next);
+    }
+  }
+  return null;
+}
+
+function opensDatabase(file: string): boolean {
+  const src = code(file);
+  const scan = scanClients(parse(file));
+  return scan.constructions.length > 0 || scan.valueImport || PG_IMPORT.test(src) || reachesOutsideDatabase(file) !== null;
+}
+
+const files = ROOTS.flatMap((r) => walk(r)).filter((f) => f !== HELPER);
+const connecting = files.filter(opensDatabase);
 
 describe('every script that opens a database calls the production guard', () => {
   it('finds the scripts it is meant to police (the walk is not silently empty)', () => {
@@ -220,11 +601,19 @@ describe('every script that opens a database calls the production guard', () => 
         'scripts/ops/requeue-untracked.ts',
         'scripts/ops/verify-load.ts',
         'scripts/ops/app-role.ts',
+        'scripts/ops/rescore-completeness.ts',
       ])
     );
   });
 
   it.each(connecting.filter((f) => !(f in NEVER_CONNECTS)))('%s', (file) => {
+    const chain = reachesOutsideDatabase(file);
+    expect(
+      chain,
+      `${file} reaches a module that opens its own database (${chain?.join(' → ')}); that client reads ` +
+        'DATABASE_URL itself, behind the guard. Build the script its own client from a guarded URL instead.'
+    ).toBeNull();
+
     const src = code(file);
     const imported = GUARD_IMPORT.test(src) || HOST_GUARD_IMPORT.test(src) || file === 'scripts/ops/requeue-untracked.ts';
     expect(imported, `${file} must import assertNotProduction from ${HELPER}`).toBe(true);
@@ -234,16 +623,22 @@ describe('every script that opens a database calls the production guard', () => 
     const calls = guardCalls.filter((i) => !/function\s+$/.test(src.slice(Math.max(0, i - 20), i)));
     expect(calls.length, `${file} must CALL the guard, not only import it`).toBeGreaterThan(0);
 
-    for (const m of src.matchAll(PRISMA_CLIENT)) {
-      const at = m.index!;
-      const [argText] = callArguments(src.slice(at), /\bnew\s+PrismaClient\b/);
+    const sf = parse(file);
+    const scan = scanClients(sf);
+    expect(
+      scan.escapes,
+      `${file}: PrismaClient is used as a value other than \`new PrismaClient({ datasourceUrl: … })\` ` +
+        '(an alias, a factory, a re-export), so a client could be built where this test cannot see it'
+    ).toEqual([]);
+    for (const construction of scan.constructions) {
+      const at = construction.getStart();
+      const url = clientUrl(construction);
+      expect(url, `${file}: give the client at offset ${at} its URL explicitly (datasourceUrl)`).not.toBeNull();
       expect(
-        calls.some((c) => c < at) || new RegExp(GUARD_CALL.source).test(argText ?? ''),
-        `${file}: the guard must run before \`new PrismaClient(\` at offset ${at}`
-      ).toBe(true);
-      expect(
-        /\bdatasourceUrl\b|\bdatasources\b/.test(argText ?? ''),
-        `${file}: give the client its URL explicitly, so it uses the URL the guard checked`
+        checkedUrl(sf, url!, at),
+        `${file}: the client at offset ${at} must be given the URL the guard checked — ` +
+          '`assertNotProduction(…)` itself, or a const assigned from it, or a variable handed to ' +
+          'assertNotProduction / requireExpectedHost before the client is built'
       ).toBe(true);
     }
   });
@@ -273,6 +668,140 @@ describe('every script that opens a database calls the production guard', () => 
       expect(existsSync(file), `${file} is listed but gone — remove it`).toBe(true);
       expect(reason.trim().length, `${file} needs a reason`).toBeGreaterThan(20);
     }
+  });
+
+  it('lists every shell script that reaches a database, with what stands in for the guard', () => {
+    const shells = ROOTS.flatMap((r) => walk(r, /\.(sh|bash|ps1)$/)).filter((f) =>
+      /\b(?:psql|pg_dump|pg_dumpall|pg_restore|prisma)\b/.test(readFileSync(f, 'utf8'))
+    );
+    expect(shells.sort()).toEqual(Object.keys(SHELL_OUTSIDE_GUARD).sort());
+    for (const reason of Object.values(SHELL_OUTSIDE_GUARD)) expect(reason.trim().length).toBeGreaterThan(20);
+  });
+});
+
+describe('the structural scan sees what it is meant to see', () => {
+  // Each blind spot the review of d02cb27 named, as a file the scan must flag. Run
+  // on throw-away source, so the scan is proven to fail when it should — a guard
+  // test that can only pass passes for the wrong reason.
+  const scanSource = (src: string) => {
+    const sf = ts.createSourceFile('probe.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const scan = scanClients(sf);
+    return {
+      scan,
+      checked: scan.constructions.map((c) => {
+        const url = clientUrl(c);
+        return url !== null && checkedUrl(sf, url, c.getStart());
+      }),
+    };
+  };
+  const GUARD = "import { assertNotProduction } from '../lib/assert-not-production';\n";
+
+  it('finds a client under an alias, from a namespace, or from require()', () => {
+    expect(scanSource(`import { PrismaClient as P } from '@prisma/client';\nconst c = new P({});`).scan.constructions).toHaveLength(1);
+    expect(scanSource(`import * as pc from '@prisma/client';\nconst c = new pc.PrismaClient({});`).scan.constructions).toHaveLength(1);
+    expect(scanSource(`import { Prisma } from '@prisma/client';\nconst c = new Prisma.PrismaClient({});`).scan.constructions).toHaveLength(1);
+    expect(scanSource(`const { PrismaClient: P } = require('@prisma/client');\nconst c = new P({});`).scan.constructions).toHaveLength(1);
+    expect(scanSource(`import { PrismaClient } from '@prisma/client';`).scan.valueImport).toBe(true);
+    expect(scanSource(`import type { PrismaClient } from '@prisma/client';`).scan.valueImport).toBe(false);
+    expect(scanSource(`import { type PrismaClient } from '@prisma/client';`).scan.valueImport).toBe(false);
+  });
+
+  it('flags PrismaClient handed around as a value, but not used as a type', () => {
+    expect(scanSource(`import { PrismaClient } from '@prisma/client';\nconst C = PrismaClient;`).scan.escapes).toHaveLength(1);
+    expect(
+      scanSource(`import { PrismaClient } from '@prisma/client';\nfunction f(c: PrismaClient): InstanceType<typeof PrismaClient> { return c; }`)
+        .scan.escapes
+    ).toEqual([]);
+  });
+
+  it('accepts only the URL the guard checked', () => {
+    const ok = [
+      `${GUARD}new PrismaClient({ datasourceUrl: assertNotProduction(process.env.DIRECT_URL) });`,
+      `${GUARD}const url = assertNotProduction(process.env.DIRECT_URL);\nnew PrismaClient({ datasourceUrl: url });`,
+      `${GUARD}function main() { const url = process.env.DIRECT_URL ?? ''; requireExpectedHost(args, url, h); new PrismaClient({ datasourceUrl: url }); }`,
+      `${GUARD}function owner(): string { return assertNotProduction(process.env.DIRECT_URL); }\nnew PrismaClient({ datasourceUrl: owner() });`,
+      `${GUARD}function prepare() { const url = process.env.DIRECT_URL ?? ''; requireExpectedHost(a, url, h); return { url, h }; }\n` +
+        `function main() { const { url } = prepare(); new PrismaClient({ datasourceUrl: url }); }`,
+      `${GUARD}new PrismaClient({ datasources: { db: { url: assertNotProduction(process.env.DIRECT_URL) } } });`,
+    ];
+    for (const src of ok) expect(scanSource(src).checked, src).toEqual([true]);
+
+    const refused = [
+      // Checked one variable, handed the client another (the review's example).
+      `${GUARD}assertNotProduction(process.env.DIRECT_URL);\nnew PrismaClient({ datasourceUrl: process.env.DATABASE_URL });`,
+      `${GUARD}const a = process.env.DIRECT_URL; const b = process.env.DATABASE_URL;\nassertNotProduction(a);\nnew PrismaClient({ datasourceUrl: b });`,
+      // The guard ran in an unrelated function, on its own variable of the same name.
+      `${GUARD}function check() { const url = process.env.DIRECT_URL; assertNotProduction(url); }\n` +
+        `function main() { const url = process.env.DATABASE_URL; new PrismaClient({ datasourceUrl: url }); }`,
+      // Checked after the client was built.
+      `${GUARD}const url = process.env.DIRECT_URL;\nconst c = new PrismaClient({ datasourceUrl: url });\nassertNotProduction(url);`,
+      // Checked, then replaced.
+      `${GUARD}let url = process.env.DIRECT_URL;\nassertNotProduction(url);\nurl = process.env.DATABASE_URL;\nnew PrismaClient({ datasourceUrl: url });`,
+      // No URL at all: the client reads DATABASE_URL from the schema.
+      `${GUARD}assertNotProduction(process.env.DATABASE_URL);\nnew PrismaClient();`,
+      `${GUARD}const opts = { datasourceUrl: assertNotProduction(process.env.DIRECT_URL) };\nnew PrismaClient(opts);`,
+    ];
+    for (const src of refused) expect(scanSource(src).checked, src).toEqual([false]);
+  });
+
+  it('follows imports to a module that opens its own database', () => {
+    // lib/audit.ts imports the app client: proves the walk resolves `./db`-style imports.
+    expect(reachesOutsideDatabase('lib/audit.ts')).toEqual(['lib/audit.ts', 'lib/db.ts']);
+  });
+});
+
+describe('scripts/synthetic-launch-test.ts refuses before it signs in to production', () => {
+  // Review of d02cb27: its browser half always acts on the live site (BASE), so
+  // the shared guard, which sees only the database, let a UAT .env through to a
+  // production sign-in and photo upload. Pinned structurally: running the script
+  // in a test would, if the refusal were broken, do exactly that.
+  const src = code('scripts/synthetic-launch-test.ts');
+  it('checks --expect-host for the production marker before the client and before Chromium', () => {
+    const refusal = src.search(/expectHostArg\(\s*process\.argv\.slice\(2\)\s*\)/);
+    expect(refusal).toBeGreaterThan(-1);
+    expect(src.slice(refusal)).toMatch(/startsWith\(\s*PRODUCTION_HOST_PREFIX\s*\)[\s\S]*?process\.exit\(\s*2\s*\)/);
+    expect(refusal).toBeLessThan(src.search(/\bnew\s+PrismaClient\s*\(/));
+    expect(refusal).toBeLessThan(src.search(/chromium\.launch\s*\(/));
+    expect(src).toMatch(/const BASE = 'https:\/\/nmwc-cm\.vercel\.app'/);
+  });
+});
+
+describe('scripts/qa/run-with-env.mjs refuses production', () => {
+  // Review of d02cb27: it loads .env (production in the owner's main checkout) and
+  // starts any command — integration suites with no production check of their own
+  // among them. No command is passed here, so even a broken check starts nothing.
+  const runner = join(process.cwd(), 'scripts/qa/run-with-env.mjs');
+  const runIn = (envFile: string, env: Record<string, string> = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'run-with-env-'));
+    try {
+      writeFileSync(join(dir, '.env'), envFile);
+      // The developer's own connection strings are left out, so only this case's count.
+      const clean = Object.fromEntries(
+        Object.entries(process.env).filter(([k, v]) => v !== undefined && !/_URL$/.test(k))
+      );
+      const childEnv = { ...clean, ...env } as NodeJS.ProcessEnv;
+      return spawnSync(process.execPath, [runner], { cwd: dir, env: childEnv, encoding: 'utf8' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it.each([
+    ['DIRECT_URL in .env', `DIRECT_URL=${PROD_URL}\n`, {}],
+    ['DATABASE_URL in .env, percent-escaped', `DATABASE_URL=${urlFor('localhost:5432', '?host=ep%2Dsweet%2Dhaze-x.invalid')}\n`, {}],
+    ['DATABASE_URL set in the shell, which wins over .env', `DATABASE_URL=${UAT_URL}\n`, { DATABASE_URL: PROD_URL }],
+    ['another connection string in the shell', `DATABASE_URL=${UAT_URL}\n`, { NMWC_APP_URL: PROD_URL }],
+  ])('%s', (_label, envFile, env) => {
+    const r = runIn(envFile, env);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/\[run-with-env\] refusing: .* at PRODUCTION/);
+    expectNoSecrets(r.stdout + r.stderr);
+  });
+
+  it('lets UAT through to the command', () => {
+    const r = runIn(`DATABASE_URL=${UAT_URL}\nDIRECT_URL=${UAT_URL}\n`);
+    expect(r.stderr).not.toMatch(/refusing/);
+    expect(r.stderr).toMatch(/usage: run-with-env\.mjs/);
   });
 });
 

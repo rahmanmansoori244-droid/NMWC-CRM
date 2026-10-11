@@ -153,11 +153,11 @@ Work through these steps in order.
    covers only `DATABASE_URL` and `DIRECT_URL`, in the file and in the process
    environment. For each one it prints `PRODUCTION`, `not production` or `not set`, never
    a value. It ends with `STOP: …` and exit code 1 on production, or `ok: …` otherwise.
-   Run it first because `run-with-env.mjs` loads `.env` without checking the host, and
-   because some integration suites do not refuse production (AGENTS.md item 4,
-   [AUDITOR-BRIEF §11](AUDITOR-BRIEF.md)); since 2026-10-11 the scripts under `scripts/`
-   and `prisma/` that open a database do, unless `--expect-host` names it
-   ([OPERATIONS §5j](docs/OPERATIONS.md)). Never inspect a `.env` with
+   Run it first because Prisma's CLI loads `.env` without checking the host, and because
+   some integration suites do not refuse production (AGENTS.md item 4,
+   [AUDITOR-BRIEF §11](AUDITOR-BRIEF.md)). Since 2026-10-11 `run-with-env.mjs` refuses
+   production, and so do the scripts under `scripts/` and `prisma/` that open a database,
+   unless `--expect-host` names it ([OPERATIONS §5j](docs/OPERATIONS.md)). Never inspect a `.env` with
    `grep` or `Select-String`. They print the whole line, password included. Every
    checkout's `.env` should name UAT. On the owner's computer today, the main checkout's
    `.env` is the production file, and Claude's operator runs pass it explicitly with

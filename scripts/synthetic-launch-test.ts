@@ -25,15 +25,37 @@
  * Output: docs/audit/synthetic-test-report-<DATE>.json with timings, errors,
  * and what the run produced.
  *
- * Run:  npx tsx scripts/synthetic-launch-test.ts
- * The database connection goes through the shared production guard
- * (scripts/lib/assert-not-production.ts): production needs --expect-host.
+ * Run:  npx tsx scripts/synthetic-launch-test.ts --expect-host ep-sweet-haze
+ *
+ * THE BROWSER PART ALWAYS ACTS ON PRODUCTION. BASE below is the live site,
+ * whatever database this process was given: each of the four sign-ins writes a
+ * LOGIN audit row there, and the "Mark closed" step uploads a photo through the
+ * live form. So the script refuses to start unless the command line names
+ * production with --expect-host ep-sweet-haze, and the shared guard
+ * (scripts/lib/assert-not-production.ts) then refuses unless the database it
+ * snapshots is production too. Before review of d02cb27 a UAT .env passed the
+ * guard and the browser still signed in to production (data audit 2026-10-10,
+ * gap 3). It is not a scripts/ops/ script, so docs/OPERATIONS.md §5j rule 1 does
+ * not cover running it on production; whether it may run there, or stays in the
+ * repository at all, is an open owner question (2026-10-11).
  */
 import { chromium, type Page, type BrowserContext } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
-import { assertNotProduction } from './lib/assert-not-production';
+import { PRODUCTION_HOST_PREFIX, assertNotProduction, expectHostArg } from './lib/assert-not-production';
+
+// Before the client and before Chromium: nothing is read or signed in to unless
+// the operator has named production, because that is where BASE always points.
+const named = expectHostArg(process.argv.slice(2));
+if (named === null || !named.toLowerCase().startsWith(PRODUCTION_HOST_PREFIX)) {
+  console.error(
+    '[synthetic] refusing: this script signs in to the PRODUCTION site and uploads a photo there,\n' +
+      '  whatever database it is given. Run it only on purpose, with\n' +
+      `  --expect-host ${PRODUCTION_HOST_PREFIX} and a production DIRECT_URL. Nothing was read or written.`
+  );
+  process.exit(2);
+}
 
 const prisma = new PrismaClient({
   datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),

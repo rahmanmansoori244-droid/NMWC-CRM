@@ -756,7 +756,7 @@ after use all the same.
 |---|---|
 | Prisma CLI (`prisma migrate`, `prisma db`, `prisma studio`) | `.env` |
 | `npm run dev` (Next.js) | `.env.local`, then `.env`. Variables already set in the shell win |
-| `scripts/qa/run-with-env.mjs` | `.env` only. Shell variables win. **It does not check the host** |
+| `scripts/qa/run-with-env.mjs` | `.env` only. Shell variables win. Since 2026-10-11 it refuses to start anything when `DATABASE_URL`, `DIRECT_URL` or any other connection string points at production ([OPERATIONS §5j](../OPERATIONS.md)) |
 | `scripts/print-required-secrets.ts` | `.env.local` and `.env`. It prints lengths only, never values |
 | `scripts/dev/prod-run.cjs` | The file named in `NMWC_PROD_ENV_FILE`, otherwise `.env`. It refuses anything that is not production and masks the output |
 | `scripts/dev/env-check.cjs` | The file you name, otherwise `.env`, plus the shell environment |
