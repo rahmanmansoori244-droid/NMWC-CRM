@@ -335,7 +335,8 @@ test.describe('update flow: a salesman enriches a customer, a Manager who is not
     await expect(page).toHaveURL(new RegExp(`/approvals/${editId}$`));
 
     const chain = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Approval chain' }) });
-    await expect(chain.getByText('SUPERVISOR', { exact: true }), 'the current step is highlighted').toHaveClass(/bg-brand-600/);
+    // Owner decisions 2026-10-11: steps are named in words (lib/approval-chains.ts stepName).
+    await expect(chain.getByText('Supervisor', { exact: true }), 'the current step is highlighted').toHaveClass(/bg-brand-600/);
     const diff = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Customer', exact: true }) });
     await expect(diff).toContainText('primaryPhone');
     await expect(diff.getByText(phone, { exact: true })).toBeVisible();
