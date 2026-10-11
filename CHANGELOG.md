@@ -78,3 +78,11 @@
 - Cash requests: no e-mail stored, no credit document; a request switched to cash releases its documents
 - Finalize: the required documents are read from the chain frozen on the request (4-step chain: a guarantee; 6-step chain: the four documents and the signed application); every live decision-bound document is bound to the customer and the e-mail copied for CREDIT; a missing document is refused by name
 - Launch e2e: the R2 guard of the suite knows the new kinds (the signed-application pages part A uploads were refused at clean-up)
+
+### Credit flow, part C (owner decisions 2026-10-11)
+- **Credit application printout** (`/print/credit-application/<request>`): every request detail incl. the e-mail and the requested credit limit and days, each shop with its location, the customer's declaration verbatim from the paper form, the customer's Name / Designation / Signature / Company stamp boxes, and an annex of the request's documents and photos; offered only while the request waits at the signed-application step, linked from the review page's banner
+- **Final customer form printout** (`/print/customer/<customer>`), for every customer: both codes, every detail and location, every photo and document (the signed application included), the approval trail, and approver signature boxes (cash: Supervisor, Accountant; credit: Supervisor, Sales Director, Finance Manager, GM, Accountant); linked from the profile and an approved new-customer request
+- A4 portrait, English, no app chrome (`app/(print)` layout and `print.css`); the company named in text until a logo is sent
+- Every role but the salesman prints, within its own scope (`lib/print.ts` PRINT_ALLOWED); out of scope is the branded 404
+- Every print writes a `PRINT` audit row first (ids only; the Steward and, for their regions, Managers read it on /audit), and a print that cannot be recorded is not started; Ctrl+P prints a notice instead of the form; printing the credit application answers the printer's own "Credit application to print" alert
+- Customer profile: the customer's e-mail
