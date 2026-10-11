@@ -148,7 +148,7 @@ WHERE  id = 'cmozfs4zc03ljtvfkz6ek9z0p' AND address = 'WK';
 
 ### DB-02 (HIGH) — 6 CLOSED/SUSPENDED branches have null `lastStatusChangeAt`, defeating EL-11/EL-12 reactivation evidence freshness
 
-**Affected rows:** 6 branches, all created 2026-05-09 by `pilot.steward` (seemingly via `prisma/inject-test-edits.ts` or a similar fixture path):
+**Affected rows:** 6 branches, all created 2026-05-09 by `pilot.steward` (seemingly via `prisma/inject-test-edits.ts` (deleted 2026-10-11) or a similar fixture path):
 
 | branchCode | status | createdAt | updatedAt |
 |---|---|---|---|
@@ -189,7 +189,7 @@ if (branchUpdate.status !== undefined) {
   // ... existing change-detection ...
 }
 ```
-to also stamp when a fresh row is created with non-ACTIVE status. For the seed/test fixtures, add a runtime check to `prisma/inject-test-edits.ts` that explicitly sets `lastStatusChangeAt: new Date()` when injecting CLOSED/SUSPENDED state.
+to also stamp when a fresh row is created with non-ACTIVE status. For the seed/test fixtures, add a runtime check to `prisma/inject-test-edits.ts` (deleted 2026-10-11) that explicitly sets `lastStatusChangeAt: new Date()` when injecting CLOSED/SUSPENDED state.
 
 ### DB-03 (MEDIUM) — 2,327 active branches still have `address = "Address pending"`
 
@@ -362,7 +362,7 @@ The CHECK constraint should be added **after** the DB-01 cleanup, otherwise it'l
 | Add `CHECK (length(btrim(address)) >= 3)` to `Branch.address` | Closes the seed-script bypass that produced DB-01 | 1 migration line |
 | In `services/edits.ts:151` `collectMissingMandatory`, blacklist `'Address pending'` and similar placeholder values | Closes DB-03 — placeholder addresses currently pass the length check | 5 lines |
 | Stamp `lastStatusChangeAt` on insert when initial status ≠ ACTIVE | Closes DB-02 at the runtime; ensures every CLOSED/SUSPENDED row has a reactivation anchor | 3 lines in `services/edits.ts` and any other `branch.create` write paths |
-| In `prisma/inject-test-edits.ts` (and any other test-fixture seed), explicitly set `lastStatusChangeAt: new Date()` whenever creating non-ACTIVE rows | Stops test fixtures from contaminating the dataset with NULL stamps | 1 line per fixture |
+| In `prisma/inject-test-edits.ts` (deleted 2026-10-11) (and any other test-fixture seed), explicitly set `lastStatusChangeAt: new Date()` whenever creating non-ACTIVE rows | Stops test fixtures from contaminating the dataset with NULL stamps | 1 line per fixture |
 | Add Zod refinement: `SALESMAN.supervisorId` and `SUPERVISOR.supervisorId` must be non-null (DB-05) | Hardens the AUTH-06 invariant for future user creation | 5 lines in `services/users.ts` |
 | Add non-unique index on `Customer(crNumberNorm) WHERE deletedAt IS NULL` | Speeds duplicate-CR lookups at 50K+ scale (not urgent) | 1 migration line |
 

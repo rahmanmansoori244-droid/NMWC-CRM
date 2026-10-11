@@ -13,28 +13,30 @@
  * SAFETY:
  *   - Before any agent runs, snapshot the 6 test customers' state into
  *     `docs/audit/synthetic-test-snapshot-<DATE>.json`.
- *   - Each agent records what it created via console logs so the cleanup
- *     phase knows what to delete.
- *   - After the test, run `cleanup-synthetic-test.ts` which:
- *       a. Reverts the 6 test customers to their snapshot state.
- *       b. Soft-deletes all CustomerEdits created during the test.
- *       c. Soft-deletes all Attachments captured during the test.
- *       d. Deletes AuditLog rows authored by synthetic users during the test
- *          window.
+ *   - Each agent records what it created via console logs, and the report
+ *     lists what the run produced.
+ *   - There is NO clean-up script in the repository any more. Its pair,
+ *     scripts/cleanup-synthetic-test.ts, reverted the customers and deleted
+ *     audit rows under the maintenance switch; the owner deleted it on
+ *     2026-10-11 (data audit 2026-10-10, gap 3; git history keeps it). What a
+ *     run leaves behind is listed in the report and stays until someone decides
+ *     what to do with it.
  *
  * Output: docs/audit/synthetic-test-report-<DATE>.json with timings, errors,
- * and the cleanup manifest.
+ * and what the run produced.
  *
  * Run:  npx tsx scripts/synthetic-launch-test.ts
- * Cleanup: npx tsx scripts/cleanup-synthetic-test.ts <snapshot-file>
+ * The database connection goes through the shared production guard
+ * (scripts/lib/assert-not-production.ts): production needs --expect-host.
  */
 import { chromium, type Page, type BrowserContext } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
+import { assertNotProduction } from './lib/assert-not-production';
 
 const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
 });
 
 const BASE = 'https://nmwc-cm.vercel.app';
@@ -352,7 +354,7 @@ async function main() {
     for (const e of r.errors) console.log(`    ERROR: ${e.slice(0, 200)}`);
   }
 
-  // Identify any rows produced during the test for cleanup
+  // Identify any rows produced during the test, for the report
   const editsCreated = await prisma.customerEdit.findMany({
     where: { createdAt: { gte: STARTED_AT } },
     select: { id: true, customerId: true, branchId: true, state: true, submittedBy: { select: { username: true } } },
@@ -390,8 +392,9 @@ async function main() {
     )
   );
   console.log(`\nReport saved: ${reportPath}`);
-  console.log(`\nNext: review the report, then run cleanup with:`);
-  console.log(`  npx tsx scripts/cleanup-synthetic-test.ts ${reportPath}`);
+  // The clean-up script this used to name was deleted on 2026-10-11 (owner decision).
+  console.log('\nNext: review the report. There is no clean-up script in the repository;');
+  console.log('what this run produced stays until someone decides what to do with it.');
 
   await prisma.$disconnect();
 }

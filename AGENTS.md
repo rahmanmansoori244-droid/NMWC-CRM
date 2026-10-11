@@ -38,9 +38,10 @@ chat.
    `node scripts/dev/env-check.cjs`: it prints only "production" or "not production" for
    `DATABASE_URL` and `DIRECT_URL` (in the file and the environment), never a value, and
    exits 1 on production. Never check with `grep` or `Select-String` on `.env`: they
-   print the whole line, password included. Some integration suites and `prisma/seed.ts`
-   do not refuse production. If you have no UAT access, do not look for credentials: say so
-   when you hand the work back.
+   print the whole line, password included. Some integration suites do not refuse
+   production (scripts under `scripts/` and `prisma/` that open a database do, unless
+   `--expect-host` names it: `docs/OPERATIONS.md` §5j). If you have no UAT access, do not
+   look for credentials: say so when you hand the work back.
 5. Never run `npm run build` locally (it runs `prisma migrate deploy` against whatever
    `.env` names before `next build`), any `npm run db:*` script, or
    `npx prisma migrate …` / `npx prisma db …`. Typecheck, lint and CI's `next build`

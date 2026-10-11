@@ -841,7 +841,8 @@ system day to day.
     pack) and refuses to run without `--expect-host`. See
     [GO-LIVE-RUNBOOK](../GO-LIVE-RUNBOOK.md) for how it was run.
   - `scripts/bulk-reset-credentials.ts --username=<steward username>` resets one
-    active account. Read the warning below before you use it.
+    active account; on production it also needs `--expect-host ep-sweet-haze`
+    (OPERATIONS §5j). Read the warning below before you use it.
 - **For the new person (an owner action):** the owner, signed in as a Data Steward,
   creates a **named** Steward account for the new person on the Users page. It is on
   the fill-in list in `PRIVATE-HANDOVER.md`. Never share a Steward account.
@@ -862,7 +863,9 @@ system day to day.
   - The passwords generated for go-live are in `golive-data/`, inside the private
     pack.
 - **Warning: `scripts/bulk-reset-credentials.ts`.**
-  - It has no production refusal.
+  - It refuses production unless `--expect-host ep-sweet-haze` is on its command line
+    (since 2026-10-11, OPERATIONS §5j). That is a check on which database, not on what
+    it does there.
   - It is a dry run unless `CONFIRM_CREDENTIAL_RESET=yes` is set.
   - Without `--username=…` it resets **every active user**.
   - It prints the new passwords to the terminal.

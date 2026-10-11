@@ -205,7 +205,7 @@ Opus must **prove isolation before any write** and treat any uncertainty as a fu
    proceed if any assertion fails.
 
 **Hard stops:** any DB whose host matches production; any run of `synthetic.ts --reset`
-or `wipe-synthetic-data.ts` or `bulk-reset-credentials.ts` without the isolation gate
+or `wipe-synthetic-data.ts` (deleted 2026-10-11) or `bulk-reset-credentials.ts` without the isolation gate
 green; email `EMAIL_ENABLED` not false; R2 not synthetic.
 
 **Backup / reset:** because the QA target is a Neon branch, the reset procedure is
@@ -490,7 +490,7 @@ evidence (Deliverable 8), and refute every P0/P1 before accepting.
 - Never write to production; never use production credentials; never send real email
   (`EMAIL_ENABLED=false` / sink); no uncontrolled R2 writes (synthetic bucket/mock);
   no real customer PII in fixtures/logs/screenshots; no secrets in any artifact.
-- **Never** run `prisma/synthetic.ts --reset`, `scripts/wipe-synthetic-data.ts`, or
+- **Never** run `prisma/synthetic.ts --reset`, `scripts/wipe-synthetic-data.ts` (deleted 2026-10-11), or
   `scripts/bulk-reset-credentials.ts` against anything but the proven QA branch (C5).
 - Do not fix code before Phase P. Planning/testing only through O.
 

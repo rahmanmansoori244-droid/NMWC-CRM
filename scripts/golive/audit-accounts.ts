@@ -26,8 +26,11 @@
  * account is the owner's: deactivate it from Users, or reset it from Users → Reset
  * password, which also revokes its live sessions.
  *
- *   DATABASE_URL='<production URL>' npx tsx scripts/golive/audit-accounts.ts \
- *     [golive-data/account-master.xlsx] [golive-data/managers.json]
+ *   NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs scripts/golive/audit-accounts.ts \
+ *     [golive-data/account-master.xlsx] [golive-data/managers.json] --expect-host ep-sweet-haze
+ *
+ * --expect-host is required on production (scripts/lib/assert-not-production.ts;
+ * data audit 2026-10-10, owner decision 2026-10-11) and is never read as a file.
  *
  * Exit 1 if any account can sign in that the go-live master does not name, so the
  * runbook step can gate on it. Exit 0 when the live account list and the master
@@ -35,13 +38,16 @@
  */
 import { PrismaClient, type Role } from '@prisma/client';
 import { expectedUsernames } from '../../lib/ops/golive-accounts';
+import { assertNotProduction, withoutExpectHost } from '../lib/assert-not-production';
 
 const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
 });
 
-const ACCOUNT_MASTER = process.argv[2] ?? 'golive-data/account-master.xlsx';
-const MANAGERS_JSON = process.argv[3] ?? 'golive-data/managers.json';
+// Positional, with `--expect-host <host>` taken out first so it cannot land in a file slot.
+const files = withoutExpectHost(process.argv.slice(2));
+const ACCOUNT_MASTER = files[0] ?? 'golive-data/account-master.xlsx';
+const MANAGERS_JSON = files[1] ?? 'golive-data/managers.json';
 
 /**
  * Report order. Not a permission model — `lib/permissions.ts` owns that — just the

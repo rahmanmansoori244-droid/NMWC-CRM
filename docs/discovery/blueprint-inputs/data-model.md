@@ -21,7 +21,7 @@
 | C3 | Creation-request capability on `CustomerEdit` (`process`, typed drafts) | `customer.create` only in Steward import (`services/imports.ts:820-868`) + seed/scripts [Confirmed] | New columns + 2 new tables |
 | C4 | Multi-step approval data: `approvalChain`, `currentStepIndex`, `pendingRole`, `EditApproval` child | Single-tier: one `reviewedById/reviewedAt` pair, `schema.prisma:360-361` [Confirmed] | New columns + 1 new table + backfill |
 | C5 | SLA columns on `CustomerEdit` + `Notification` model | Neither exists — only `submittedAt` ordering (`schema.prisma:377`, `app/(app)/approvals/page.tsx:59,67-69`); no Notification model, no mailer (`new-rules.md §M`) [Confirmed] | New columns + 1 new table |
-| C6 | Restore safe 1:N branches | Schema is ALREADY 1:N (`Branch.customerId`, `schema.prisma:294-349`); the pilot flattened **data** to 1:1 (`scripts/flatten-customer-branches.ts:1-29`) and 3 code paths assume `branches[0]` [Confirmed §7] | Code edits only (no DDL) + optional data re-merge |
+| C6 | Restore safe 1:N branches | Schema is ALREADY 1:N (`Branch.customerId`, `schema.prisma:294-349`); the pilot flattened **data** to 1:1 (`scripts/flatten-customer-branches.ts:1-29` (deleted 2026-10-11)) and 3 code paths assume `branches[0]` [Confirmed §7] | Code edits only (no DDL) + optional data re-merge |
 | C7 | `Customer.temixCode` crosswalk + `TemixSyncState` queue + `TemixSyncBatch` | No temix/erp identifier anywhere [Confirmed grep-negative; `x-integration.md §M.1.1`] | ADD COLUMN + enum + 1 new table |
 | C8 | Soft-delete: confirm coverage + Temix-deactivation signal | `deletedAt` on Customer/Branch/Attachment (`schema.prisma:278,335,406`); `AuditAction.SOFT_DELETE` (`:89`) [Confirmed] | Signal = C7's `DEACTIVATE_PENDING`; no new columns |
 | C9 | `nmwcCode` allocation: `CodeSequence` counter | `formatCustomerCode` defined but never called (`lib/codes.ts:9-18`; import uses raw `cust_code`, `imports.ts:820-833`) [Confirmed] | 1 new table |
@@ -118,7 +118,7 @@ ALTER TYPE "AttachmentKind" ADD VALUE IF NOT EXISTS 'GUARANTEE';
 ## 4. C3 — Customer-CREATION request: extend `CustomerEdit`, typed drafts (DECISION)
 
 ### 4.1 Current state [Confirmed]
-- No salesman-facing create exists. `prisma.customer.create` appears only in `services/imports.ts` promote (`:820-868`), `prisma/synthetic.ts:317` (seed) and `scripts/flatten-customer-branches.ts:137`.
+- No salesman-facing create exists. `prisma.customer.create` appears only in `services/imports.ts` promote (`:820-868`), `prisma/synthetic.ts:317` (seed) and `scripts/flatten-customer-branches.ts:137` (deleted 2026-10-11).
 - `CustomerEdit.customerId` is **already nullable** (`String?`, `schema.prisma:355`).
 - The one-open-edit partial unique fires only `WHERE state='SUBMITTED' AND "customerId" IS NOT NULL` (`prisma/migrations/20260509150000_qa_remediation/migration.sql:12-14`) — CREATE rows (null customerId) pass through it untouched.
 - `EditTarget` = `CUSTOMER | BRANCH` (`schema.prisma:52-55`); `fieldChanges Json` diffs against a live record (`:364`).
@@ -379,7 +379,7 @@ Delivery-channel representation: **two timestamps, not a channel enum** — ever
 
 ## 7. C6 — Restore safe 1:N branches (code changes; schema already 1:N)
 
-**Key fact [Confirmed]:** the *schema* never lost 1:N — `Branch.customerId` is a plain FK with `branches Branch[]` on Customer (`schema.prisma:285,294-349`), and the Steward import creates N branches per `custCode` group (`services/imports.ts:700-923`, branch code suffixing at `:806-807`). The pilot flattened the *data* via `scripts/flatten-customer-branches.ts` (P1.2: 3,239→3,308 customers so every customer has exactly 1 branch; header comment `:1-29`). What must change is the code that has since grown `branches[0]` assumptions:
+**Key fact [Confirmed]:** the *schema* never lost 1:N — `Branch.customerId` is a plain FK with `branches Branch[]` on Customer (`schema.prisma:285,294-349`), and the Steward import creates N branches per `custCode` group (`services/imports.ts:700-923`, branch code suffixing at `:806-807`). The pilot flattened the *data* via `scripts/flatten-customer-branches.ts` (deleted 2026-10-11) (P1.2: 3,239→3,308 customers so every customer has exactly 1 branch; header comment `:1-29`). What must change is the code that has since grown `branches[0]` assumptions:
 
 | # | File:line [Confirmed] | Assumption | Required change [Proposed] |
 |---|---|---|---|
@@ -387,8 +387,8 @@ Delivery-channel representation: **two timestamps, not a channel enum** — ever
 | 2 | `services/duplicates.ts:137-138` | EXACT_TRIPLE key uses `c.branches[0].regionId` only — a duplicate whose matching branch isn't the first is MISSED | Insert the customer into `byTriple` once per **distinct** branch `regionId` (`for (const r of new Set(c.branches.map(b => b.regionId)))`); pair-dedup via the existing `seen` set (`duplicates.ts:110-112`) already prevents double-reporting |
 | 3 | `services/customer-export.ts:182-192` (`take: 1`) + `:195` (`const b = c.branches[0]`) | Filtered xlsx export emits ONE row per customer with the first scoped branch — silently drops branches 2..N | `flatMap`: one row per scoped branch (add a `Branch code` column); mirrors how the main export is already per-branch (`services/exports.ts:134-168` — one row per branch, [Confirmed via sla-notif §3.1]). Note `EXPORT_ROW_CAP` semantics shift from customers to rows |
 | 4 | `app/(app)/customers/page.tsx:59-62` (`take: 1`) + `:315` (`primaryBranch={c.branches[0]}`) | List card shows an arbitrary "oldest" branch | KEEP `take: 1` (a list card wants one subtitle) but: (a) apply the scoped `where` fix from audit RBAC-05-002 (`docs/audit/05-rbac-scope.md:90-98`) so the shown branch is on the viewer's route/region; (b) surface `_count.branches` as a badge so multi-branch is visible |
-| 5 | `scripts/flatten-customer-branches.ts` | The flattener itself | RETIRE — must never re-run post-consolidation. Move to `scripts/retired/` or delete; its reversal map lives at `docs/audit/flatten-map-<DATE>.json` (`script:23-26`) |
-| 6 | `prisma/inject-test-edits.ts:30,73`, `prisma/synthetic.ts:429,468` | Dev/seed scripts pick `branches[0]` | Low priority; update seeds to generate multi-branch customers so tests exercise 1:N |
+| 5 | `scripts/flatten-customer-branches.ts` (deleted 2026-10-11) | The flattener itself | RETIRE — must never re-run post-consolidation. Move to `scripts/retired/` or delete; its reversal map lives at `docs/audit/flatten-map-<DATE>.json` (`script:23-26`) |
+| 6 | `prisma/inject-test-edits.ts:30,73` (deleted 2026-10-11), `prisma/synthetic.ts:429,468` | Dev/seed scripts pick `branches[0]` | Low priority; update seeds to generate multi-branch customers so tests exercise 1:N |
 
 **Already multi-branch-safe [Confirmed — no change]:**
 - Completeness: `scoreCustomer` averages the branch part across ALL branches (`lib/completeness.ts:73-86`); recompute reads all live branches (`services/edits.ts:577-584`). (Perf caveat for 50-branch chains noted at `docs/audit/07-cross-check.md:158` — acceptable.)

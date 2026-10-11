@@ -7,6 +7,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
+import { assertNotProduction } from '../lib/assert-not-production';
 
 for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
   const m = /^([A-Z0-9_]+)=(.*)$/.exec(line);
@@ -15,7 +16,9 @@ for (const line of readFileSync('.env', 'utf8').split(/\r?\n/)) {
 if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze')) {
   console.error('ABORT: production endpoint'); process.exit(2);
 }
-const prisma = new PrismaClient();
+// The shared guard too (data audit 2026-10-10), on the same URL the client gets:
+// the abort above stays, so this never runs on production even with --expect-host.
+const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(process.env.DATABASE_URL) });
 
 // Invariants that MUST be present (verified against pg_catalog + migrations).
 const REQUIRED_PARTIAL_UNIQUE = [

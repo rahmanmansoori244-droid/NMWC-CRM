@@ -32,13 +32,18 @@
  *   CONFIRM_CREDENTIAL_RESET=yes npx tsx scripts/bulk-reset-credentials.ts
  *   # optionally target one user only:
  *   CONFIRM_CREDENTIAL_RESET=yes npx tsx scripts/bulk-reset-credentials.ts --username=c1-nmwc
+ *   # on production the database must be named as well (the shared guard,
+ *   # scripts/lib/assert-not-production.ts; data audit 2026-10-10):
+ *   CONFIRM_CREDENTIAL_RESET=yes NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs \
+ *     scripts/bulk-reset-credentials.ts --username=<username> --expect-host ep-sweet-haze
  */
 import { PrismaClient, type Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
+import { assertNotProduction } from './lib/assert-not-production';
 
 const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
 });
 
 const CONFIRMED = process.env.CONFIRM_CREDENTIAL_RESET === 'yes';

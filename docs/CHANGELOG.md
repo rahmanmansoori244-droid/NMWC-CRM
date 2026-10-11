@@ -15,10 +15,10 @@ no real filtering. Plus pre-launch hardening: pre-warm cron, perf cache,
 shared simple passwords (explicit owner trade-off), synthetic load test.
 
 ### Major changes
-- **P1.1** Synthetic data wipe (`scripts/wipe-synthetic-data.ts`) — removed
+- **P1.1** Synthetic data wipe (`scripts/wipe-synthetic-data.ts` (deleted 2026-10-11)) — removed
   6 fake regions, 38 routes, 115 branches, 95 customers, 38 fake users.
   Muscat-only state.
-- **P1.2** Flatten data model (`scripts/flatten-customer-branches.ts`) —
+- **P1.2** Flatten data model (`scripts/flatten-customer-branches.ts` (deleted 2026-10-11)) —
   each Customer now owns exactly 1 Branch (was 1:1 or 1:N). 3308=3308.
   Reversibility map in `docs/audit/flatten-map-*.json`.
 - **P1.3** Phone-uniqueness dropped (migration `20260510160000_p1_drop_phone_unique`).
@@ -54,7 +54,7 @@ shared simple passwords (explicit owner trade-off), synthetic load test.
   accounts disabled. Explicit security trade-off the owner accepted on
   2026-05-11 for pilot ease of use.
 - **Synthetic load test** (`scripts/synthetic-launch-test.ts` +
-  `cleanup-synthetic-test.ts`) — 4 concurrent Playwright workers verify
+  `cleanup-synthetic-test.ts` (deleted 2026-10-11)) — 4 concurrent Playwright workers verify
   the daily workflow against production with safe revert.
 - **PDF guides regenerated** — all 8 user-facing PDFs refreshed with
   post-flatten data.
@@ -110,12 +110,12 @@ This session closed the senior-audit findings, hardened the daily backup workflo
 - `scripts/build-role-guides.ts` — 7 role-specific PDF generator
 - `scripts/capture-guide-screenshots.ts` — mobile-viewport (390×844) screenshots
 - `scripts/capture-steward-screenshots.ts` — desktop (1280×800) screenshots
-- `scripts/seed-demo-edit.ts` — idempotent SUBMITTED edit for screenshot population
+- `scripts/seed-demo-edit.ts` (deleted 2026-10-11) — idempotent SUBMITTED edit for screenshot population
 - `scripts/guide-html-to-pdf.ts` — Playwright HTML → PDF
 - `scripts/r2-setup-lifecycle.ts` — programmatic R2 lifecycle config attempt (graceful fallback to dashboard URL)
 - `scripts/print-required-secrets.ts` — list missing GitHub Actions secrets
-- `prisma/test-prod-001-race.ts` — atomic-claim race verification
-- `prisma/test-approve-as-supervisor.ts` — bypass UI for approve flow
+- `prisma/test-prod-001-race.ts` (deleted 2026-10-11) — atomic-claim race verification
+- `prisma/test-approve-as-supervisor.ts` (deleted 2026-10-11) — bypass UI for approve flow
 - `prisma/inspect-pending-edit.ts` — see edits per customer
 
 ### New npm scripts

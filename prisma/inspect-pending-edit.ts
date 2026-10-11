@@ -3,13 +3,15 @@
  * what's blocking the close attempt.
  */
 import { PrismaClient } from '@prisma/client';
+import { assertNotProduction, withoutExpectHost } from '../scripts/lib/assert-not-production';
 
+// Production only with --expect-host (data audit 2026-10-10, owner decision 2026-10-11).
 const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
 });
 
 async function main() {
-  const customerId = process.argv[2] ?? 'cmozfdiur00jotvfkreapvu8d';
+  const customerId = withoutExpectHost(process.argv.slice(2))[0] ?? 'cmozfdiur00jotvfkreapvu8d';
   const edits = await prisma.customerEdit.findMany({
     where: { customerId },
     orderBy: { createdAt: 'desc' },

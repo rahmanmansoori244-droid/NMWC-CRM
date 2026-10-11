@@ -50,8 +50,8 @@ Node engine target: CI uses **Node 20** (`.github/workflows/ci.yml:16`).
 - `components/nmwc/` (16) — UI components (CustomerCard, PhotoCaptureSlot, GpsCaptureButton, Sidebar, etc.).
 - `lib/` (22) — infra: `db.ts`, `auth.ts`, `auth-handlers.ts`, `audit.ts`, `rate-limit.ts`, `r2.ts`, `logger.ts`, `access.ts`, `permissions.ts`, `session.ts`, `reference-data.ts`, `customer-count.ts`, `customer-filters.ts`, `completeness.ts`, `codes.ts`, `cr.ts`, `phone.ts`, `tz.ts`, `excel.ts`, `errors.ts`, `utils.ts`, `validation/edit.ts`.
 - `services/` (10) — business logic: customer-export, duplicates, edits, exports, imports, photos, reactivations, routes, saved-views, users.
-- `prisma/` — `schema.prisma`, `migrations/` (9 migrations), plus many seed/test scripts (`seed*.ts`, `synthetic.ts`, `test-*.ts`, `inject-test-edits.ts`).
-- `scripts/` (13) — ops/one-off tooling (bulk-reset-credentials, flatten-customer-branches, r2-setup-lifecycle, guide/PDF builders, synthetic-launch-test).
+- `prisma/` — `schema.prisma`, `migrations/` (9 migrations), plus many seed/test scripts (`seed*.ts`, `synthetic.ts`, `test-*.ts` (deleted 2026-10-11), `inject-test-edits.ts` (deleted 2026-10-11)).
+- `scripts/` (13) — ops/one-off tooling (bulk-reset-credentials, flatten-customer-branches (deleted 2026-10-11), r2-setup-lifecycle, guide/PDF builders, synthetic-launch-test).
 - `tests/` — `unit/` (10 vitest specs), `e2e/login.spec.ts`, `loadtest.mjs`, `setup.ts`.
 - `docs/` — PRD, TECH-SPEC, BUILD-REPORT, `audit/` (multiple audit .md), `guide/`.
 - Config: `next.config.ts`, `middleware.ts`, `auth.config.ts`, `instrumentation.ts`, `sentry.{client,server,edge}.config.ts`, `vercel.json`, `tailwind/postcss/eslint/vitest/playwright` configs, `tsconfig.json`.

@@ -126,11 +126,10 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
       // These really do write the ledger. The blank device and network on their
       // rows is a documented class, not missing data — RECORDS-OF-PROCESSING.md §A6.
       const code = 'export async function f(tx: any) { await tx.auditLog.create({ data: {} }); }';
+      // The synthetic-data wipe, its clean-up and the branch flatten wrote the ledger
+      // too, until the owner deleted them on 2026-10-11 (data audit 2026-10-10, gap 3).
       const OPERATOR_WRITERS = [
         'scripts/bulk-reset-credentials.ts',
-        'scripts/cleanup-synthetic-test.ts',
-        'scripts/flatten-customer-branches.ts',
-        'scripts/wipe-synthetic-data.ts',
         'scripts/golive/bootstrap-accounts.ts',
         // The Temix requeue: a STARTING row before the first chunk and a COMPLETED
         // row after the last, recording that a few thousand customers changed sync
@@ -204,9 +203,6 @@ describe('DG-06: AuditLog rows must be written through writeAudit()', () => {
 
       const listed = [
         'scripts/bulk-reset-credentials.ts',
-        'scripts/cleanup-synthetic-test.ts',
-        'scripts/flatten-customer-branches.ts',
-        'scripts/wipe-synthetic-data.ts',
         'scripts/golive/bootstrap-accounts.ts',
         'scripts/ops/requeue-untracked.ts',
         'scripts/ops/zero-credit-limits.ts',

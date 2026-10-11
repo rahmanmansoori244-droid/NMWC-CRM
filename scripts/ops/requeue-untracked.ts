@@ -45,6 +45,7 @@ import { readFileSync } from 'node:fs';
 import { TEMIX_QUEUE_WHERE } from '../../lib/temix';
 import { isDemoAccount } from '../../lib/demo-accounts';
 import { OperatorRefusal } from './error-label';
+import { assertNotProduction } from '../lib/assert-not-production';
 
 /**
  * The rows to correct, and the whole of the safety argument, in one object.
@@ -172,7 +173,15 @@ export async function connectWaking(prisma: PrismaClient): Promise<void> {
   }
 }
 
-/** The operator must NAME the database they mean; this refuses if the URL disagrees. */
+/**
+ * The operator must NAME the database they mean; this refuses if the URL disagrees.
+ *
+ * It ends in the shared guard (scripts/lib/assert-not-production.ts; data audit
+ * 2026-10-10, owner decision 2026-10-11), so every ops script that calls this is
+ * covered by the same production rule as the rest of scripts/ and prisma/ — and
+ * by the stricter half of it: `--expect-host sweet` matches the host here, but
+ * production also needs the value to start with `ep-sweet-haze`.
+ */
 export function requireExpectedHost(args: string[], url: string, host: string): void {
   const expectIdx = args.indexOf('--expect-host');
   const expectHost = expectIdx >= 0 ? (args[expectIdx + 1] ?? '') : '';
@@ -187,7 +196,10 @@ export function requireExpectedHost(args: string[], url: string, host: string): 
         '  (that string is also the PROD_DB_HOST_MARKER repository variable).'
     );
   }
-  if (host.includes(expectHost)) return;
+  if (host.includes(expectHost)) {
+    assertNotProduction(url, args);
+    return;
+  }
 
   // Name this trap specifically when it is what happened: a DIRECT_URL that did
   // not reach this process does not fail, because Prisma has already merged the

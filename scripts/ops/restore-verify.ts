@@ -31,9 +31,13 @@
  *
  * Safe by construction: every statement is a read, except the functional probes,
  * which run inside a transaction that is always rolled back. It still refuses to
- * touch production unless ALLOW_PRODUCTION=1.
+ * touch production unless ALLOW_PRODUCTION=1 — and, since the data audit of
+ * 2026-10-10, unless `--expect-host ep-sweet-haze` names it too (the shared guard,
+ * scripts/lib/assert-not-production.ts, which prints its own refusal reason: the
+ * handler below prints only the class of an error it did not raise).
  */
 import { PrismaClient } from '@prisma/client';
+import { assertNotProduction } from '../lib/assert-not-production';
 import { readFileSync, readdirSync, writeFileSync } from 'fs';
 import { parsePrismaSchema, implicitJoinTables } from '../../lib/compliance/prisma-schema';
 import { describeError } from './describe-error';
@@ -94,6 +98,7 @@ async function main() {
   if (url.includes(PROD_MARKER) && process.env.ALLOW_PRODUCTION !== '1') {
     throw new VerifyError('Refusing to run against production without ALLOW_PRODUCTION=1');
   }
+  assertNotProduction(url, process.argv.slice(2));
   const expectAppRole = process.argv.includes('--expect-app-role');
   const manifestPath = arg('manifest');
   let manifest: Manifest | null = null;

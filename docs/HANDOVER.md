@@ -289,6 +289,12 @@ as described in §2.
   `recompute-cr-norm.ts`. Run it through `prod-run.cjs` like a read (the runner passes its
   arguments through, e.g. `--expect-host ep-sweet-haze --apply --actor <steward>`); never put
   `DIRECT_URL=…` on a command line, even though the scripts' own headers show that form.
+- **The rules for scripts and tools against production** (data audit 2026-10-10, owner
+  decision 2026-10-11) are in [OPERATIONS §5j](OPERATIONS.md): only the audited
+  `scripts/ops/` scripts, through `prod-run.cjs`, with `--expect-host ep-sweet-haze`;
+  every script in `scripts/` and `prisma/` that opens a database refuses production
+  without that flag; Prisma Studio or `psql` on production counts as maintenance. How the
+  read-only question scripts above fit that rule is an open owner question (§5j).
 - The app still connects as the database owner; switching it to `nmwc_app` is open (§6.2).
 
 ---

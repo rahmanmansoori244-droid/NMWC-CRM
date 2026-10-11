@@ -38,7 +38,7 @@ Driven on customer `MASHARA JIBAL- (JIDAN HADEESA)` / branch `CAA0367-01`. Audit
 
 Branch.status flipped ACTIVE → CLOSED → ACTIVE. `lastStatusChangeAt` stamped on every transition (EL-11 / EL-12 freshness anchor). The reactivation evidence photo had to be captured AFTER the closure timestamp; the freshness gate accepted the right photo and would have rejected a pre-closure shot.
 
-Caveat: the supervisor "Approve" click is dispatched by an inline button that calls `window.confirm(...)`. Headless Chrome MCP froze the renderer mid-server-action when the confirm fired; I verified the underlying `approveEditCore` Prisma transaction in isolation (`prisma/test-approve-as-supervisor.ts`) and it produced the same APPROVED row + branch flip a real supervisor click would. The other three legs (close request UI, reactivation request UI, manager Reactivate button UI) all completed end-to-end through the live UI.
+Caveat: the supervisor "Approve" click is dispatched by an inline button that calls `window.confirm(...)`. Headless Chrome MCP froze the renderer mid-server-action when the confirm fired; I verified the underlying `approveEditCore` Prisma transaction in isolation (`prisma/test-approve-as-supervisor.ts` (deleted 2026-10-11)) and it produced the same APPROVED row + branch flip a real supervisor click would. The other three legs (close request UI, reactivation request UI, manager Reactivate button UI) all completed end-to-end through the live UI.
 
 ### 3. SafeAction error contract (PROD-006)
 Every server action under `services/{edits,photos,users,imports,duplicates,reactivations}.ts` now returns the discriminated union `{ ok: true, data } | { ok: false, code, message, fields? }` via `runAction()` in `lib/errors.ts`. Verified in production: when I tried to submit a second close request while one was still SUBMITTED, the form rendered:
@@ -54,7 +54,7 @@ Before: `test.mustchange` user with `mustChangePassword=true` could navigate fre
 The submit-time guard already blocked salesmen / supervisors / stewards / managers from flipping `customer.status` through the regular edit form. We added a mirror guard inside `approveEditCore` so even a DB-injected SUBMITTED edit with `customer.status: ACTIVE → CLOSED` is rejected with `ConflictError('STATUS_BYPASS')` rather than rubber-stamped. Verified by injecting the malicious payload directly via Prisma; ahmed's approve click now returns the actionable message instead of writing the flip.
 
 ### 6. PROD-001 atomic claim
-Concurrency test (`prisma/test-prod-001-race.ts`): 5 separate races, 3 simultaneous claim+apply transactions per race, each race produced exactly 1 winner and 2 losers (the losers saw `count=0` from `customerEdit.updateMany` and bailed). No edit was applied twice, no duplicate audit row was written. Total: 5 winners / 10 losers across 15 attempts — the contract holds.
+Concurrency test (`prisma/test-prod-001-race.ts` (deleted 2026-10-11)): 5 separate races, 3 simultaneous claim+apply transactions per race, each race produced exactly 1 winner and 2 losers (the losers saw `count=0` from `customerEdit.updateMany` and bailed). No edit was applied twice, no duplicate audit row was written. Total: 5 winners / 10 losers across 15 attempts — the contract holds.
 
 ### 7. DB invariants
 - DB-01 (address.length ≥ 3): live record `CAA2468-01` had `address="WK"` from the source xlsx, would have permanently blocked the salesman from submitting any edit; fixed live + `prisma/seed-muscat-customers.ts` now enforces the 3-char floor.

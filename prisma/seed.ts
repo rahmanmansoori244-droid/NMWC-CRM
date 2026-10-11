@@ -3,12 +3,22 @@
  * Idempotent: safe to re-run.
  *
  * Run with: npm run db:seed
+ *
+ * Data audit 2026-10-10 / owner decision 2026-10-11:
+ *   - production is refused unless the command names it
+ *     (`npm run db:seed -- --expect-host ep-sweet-haze`; the shared guard in
+ *     scripts/lib/assert-not-production.ts);
+ *   - it only INSERTS missing channels, sub-channels and regions. An existing
+ *     Region name or Channel / SubChannel label is never changed: the seed's names
+ *     are placeholders, and a re-run must not overwrite names the business has set.
+ *     A row whose stored name differs is reported by its key and left as it is.
  */
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { assertNotProduction } from '../scripts/lib/assert-not-production';
 
 const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
 });
 
 const CHANNELS = [
@@ -69,30 +79,47 @@ const REGIONS = [
 ];
 
 async function main() {
+  // Rows whose stored name differs from the seed's, reported by key only. Each is
+  // read before its upsert, and no upsert below writes a label or a name.
+  const leftAsIs: string[] = [];
+
   console.log('▸ Seeding channels…');
   for (const c of CHANNELS) {
+    const before = await prisma.channel.findUnique({ where: { key: c.key }, select: { label: true } });
+    if (before && before.label !== c.label) leftAsIs.push(`Channel ${c.key}`);
     const channel = await prisma.channel.upsert({
       where: { key: c.key },
       create: { key: c.key, label: c.label, displayOrder: c.order },
-      update: { label: c.label, displayOrder: c.order },
+      // displayOrder is still refreshed, as before; only the label is protected.
+      update: { displayOrder: c.order },
     });
     for (const subLabel of c.subs) {
       const subKey = subLabel.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+      const where = { channelId_key: { channelId: channel.id, key: subKey } };
+      const subBefore = await prisma.subChannel.findUnique({ where, select: { label: true } });
+      if (subBefore && subBefore.label !== subLabel) leftAsIs.push(`SubChannel ${c.key}/${subKey}`);
       await prisma.subChannel.upsert({
-        where: { channelId_key: { channelId: channel.id, key: subKey } },
+        where,
         create: { channelId: channel.id, key: subKey, label: subLabel },
-        update: { label: subLabel },
+        update: {},
       });
     }
   }
 
   console.log('▸ Seeding regions…');
   for (const r of REGIONS) {
+    const before = await prisma.region.findUnique({ where: { code: r.code }, select: { name: true } });
+    if (before && before.name !== r.name) leftAsIs.push(`Region ${r.code}`);
     await prisma.region.upsert({
       where: { code: r.code },
       create: { code: r.code, name: r.name },
-      update: { name: r.name },
+      update: {},
     });
+  }
+
+  if (leftAsIs.length > 0) {
+    console.log(`  Refused to rename ${leftAsIs.length} existing row(s); their stored names were kept:`);
+    for (const row of leftAsIs) console.log(`    ${row}`);
   }
 
   console.log('▸ Seeding admin user…');

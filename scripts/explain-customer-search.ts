@@ -24,9 +24,11 @@ dotenv({ path: '.env' });
 dotenv({ path: '.env.local', override: true });
 
 import { PrismaClient } from '@prisma/client';
+import { assertNotProduction } from './lib/assert-not-production';
 
+// After both dotenv loads, so the guard sees the URL the client will use.
 const prisma = new PrismaClient({
-  datasourceUrl: process.env.DIRECT_URL ?? process.env.DATABASE_URL,
+  datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
   log: ['error'],
 });
 

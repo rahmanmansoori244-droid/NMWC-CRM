@@ -275,7 +275,7 @@ LEFT JOIN LATERAL (
 ---
 
 ## 5. STEP 4 — Structural transform
-Script `scripts/migrate-legacy-ico.ts` [Proposed], run with `tsx` against the work branch, same style as `prisma/synthetic.ts` / `scripts/flatten-customer-branches.ts` [Confirmed those exist].
+Script `scripts/migrate-legacy-ico.ts` [Proposed], run with `tsx` against the work branch, same style as `prisma/synthetic.ts` / `scripts/flatten-customer-branches.ts` (deleted 2026-10-11) [Confirmed those exist].
 
 ### 5.1 Taxonomy crosswalk — channel/subChannel (fail-loud)
 

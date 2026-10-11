@@ -24,7 +24,7 @@ Confidence tags: **[Confirmed]** = read in code, **[Proposed]** = this design, *
 | Audit per decision: APPROVE writes full `fieldChanges` diff (EL-05) | `services/edits.ts:785-798`; REJECT at 969-977 |
 | Bulk approve/reject loops per-edit isolated transactions, cap 50 | `services/edits.ts:818-913` |
 | Queues query `state:'SUBMITTED'` + supervisor relation directly | `app/(app)/approvals/page.tsx:26-35`, `app/(app)/work/page.tsx:38,65,92`, `app/(app)/dashboard/page.tsx:82` |
-| **No customer-creation flow exists in app code** — `prisma.customer.create` appears only in seed/scripts (`prisma/synthetic.ts:317`, `scripts/flatten-customer-branches.ts:137`); production Customers are created only by Steward import promote (`services/imports.ts:709-923`). CREATE-CASH/CREATE-CREDIT are net-new build | grep-verified |
+| **No customer-creation flow exists in app code** — `prisma.customer.create` appears only in seed/scripts (`prisma/synthetic.ts:317`, `scripts/flatten-customer-branches.ts:137` (deleted 2026-10-11)); production Customers are created only by Steward import promote (`services/imports.ts:709-923`). CREATE-CASH/CREATE-CREDIT are net-new build | grep-verified |
 | No notification/SLA subsystem (discovery `new-rules.md` §M) | absent from schema + package.json |
 | OLD system precedent for multi-stage + return-vs-reject: `RETURNED_BY_SUPERVISOR`/`RETURNED_BY_ACCOUNTANT` → back to salesman-editable; `REJECTED_*` terminal; optimistic `updateMany` on `{id,status}`; SLA 8h/9h with escalation cron | ICO `customer-portal` (discovery `old-functional.md` lines 30-55, 100-105) |
 

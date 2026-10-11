@@ -26,11 +26,15 @@
  *             leaves no trace — safe to run against production.
  *
  * All commands use DIRECT_URL (owner) except `verify`, which uses NMWC_APP_URL.
- * Production is refused unless ALLOW_PRODUCTION=1 is set explicitly by the owner.
+ * Production is refused unless ALLOW_PRODUCTION=1 is set explicitly by the owner
+ * AND the command line names it with `--expect-host ep-sweet-haze` (the shared
+ * guard in scripts/lib/assert-not-production.ts; data audit 2026-10-10, owner
+ * decision 2026-10-11). The Provision app role workflow passes both.
  *
  *   node scripts/qa/run-with-env.mjs tsx scripts/ops/app-role.ts grant
  */
 import { PrismaClient } from '@prisma/client';
+import { assertNotProduction } from '../lib/assert-not-production';
 
 const ROLE = 'nmwc_app';
 const PROD_MARKER = 'ep-sweet-haze';
@@ -41,7 +45,7 @@ function ownerUrl(): string {
   if (url.includes(PROD_MARKER) && process.env.ALLOW_PRODUCTION !== '1') {
     throw new Error('Refusing to run against production without ALLOW_PRODUCTION=1');
   }
-  return url;
+  return assertNotProduction(url, process.argv.slice(2));
 }
 
 function q(sql: string, client: PrismaClient) {
@@ -257,7 +261,7 @@ async function verify() {
   if (url.includes(PROD_MARKER) && process.env.ALLOW_PRODUCTION !== '1') {
     throw new Error('Refusing to run against production without ALLOW_PRODUCTION=1');
   }
-  const app = new PrismaClient({ datasourceUrl: url });
+  const app = new PrismaClient({ datasourceUrl: assertNotProduction(url, process.argv.slice(2)) });
   let auditRowId = '';
   try {
     const [{ me }] = await app.$queryRawUnsafe<{ me: string }[]>(`SELECT current_user AS me`);
