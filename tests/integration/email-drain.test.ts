@@ -284,7 +284,10 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
     const { resolveChain } = await import('@/lib/approval-chains');
     const credit = await request({
       approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT) as never,
-      currentStepIndex: 2,
+      // The GM's own step, looked up rather than numbered: the credit chain grew
+      // to six steps (owner decisions 2026-10-11), and index 2 is now the
+      // salesman's signed-application step.
+      currentStepIndex: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT).findIndex((s) => s.role === 'GM'),
       pendingRole: 'GM',
     });
     const late = await request();
@@ -331,7 +334,10 @@ describe.skipIf(!ENABLED)('F1: the e-mail drain on Postgres', () => {
     });
     const atGm = await request({
       approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT) as never,
-      currentStepIndex: 2,
+      // The GM's own step, looked up rather than numbered: the credit chain grew
+      // to six steps (owner decisions 2026-10-11), and index 2 is now the
+      // salesman's signed-application step.
+      currentStepIndex: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT).findIndex((s) => s.role === 'GM'),
       pendingRole: 'GM',
     });
     const rows = {
