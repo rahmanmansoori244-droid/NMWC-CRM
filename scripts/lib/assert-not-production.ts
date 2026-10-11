@@ -79,6 +79,36 @@ export function expectHostArg(args: readonly string[]): string | null {
   return value.startsWith('--') ? '' : value;
 }
 
+/** The live site: production. Scripts whose browser part signs in there use this. */
+export const LIVE_SITE = 'https://nmwc-cm.vercel.app';
+
+/**
+ * For a script whose browser part acts on the live site — it signs in to LIVE_SITE,
+ * which is production, whatever database the checkout's .env names. Owner decisions
+ * 2026-10-11: such a script runs only when its command line names production with
+ * `--expect-host ep-sweet-haze`, the flag the database guard below reads, read the
+ * same way (the documented two-word form, a value that starts with the marker).
+ *
+ * Call it first, at the top of the script, before Chromium starts or anything is
+ * signed in to or written: it prints why it refuses and returns false, and the
+ * caller exits (`if (!liveSiteNamed('…')) process.exit(2);`). Pinned by
+ * tests/unit/scripts-production-guard.test.ts.
+ */
+export function liveSiteNamed(
+  script: string,
+  args: readonly string[] = process.argv.slice(2),
+  out: GuardOutput = consoleOutput
+): boolean {
+  const named = expectHostArg(args);
+  if (named && named.toLowerCase().startsWith(PRODUCTION_HOST_PREFIX)) return true;
+  out.error(`[live-site guard] refusing: ${script} signs in to the PRODUCTION site (${LIVE_SITE}).`);
+  out.error(
+    `  Run it only on purpose, with --expect-host ${PRODUCTION_HOST_PREFIX} on the command line ` +
+      '(owner decisions 2026-10-11). Nothing was opened, signed in to or written.'
+  );
+  return false;
+}
+
 /**
  * The arguments with `--expect-host <value>` taken out, for scripts that read
  * positional arguments: the flag must not shift a file path into the wrong slot.

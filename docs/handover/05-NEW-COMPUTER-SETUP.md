@@ -591,7 +591,12 @@ PowerShell, `$env:RUN_<FLAG>` stays set for the rest of that window.
   app** with accounts named in
   [scripts/capture-guide-screenshots.ts](../../scripts/capture-guide-screenshots.ts).
   `guide:build` runs the capture first, then the PDF step ([package.json](../../package.json)).
-  Both are production actions. Do not run either without deciding to.
+  Both are production actions. Do not run either without deciding to. Since 2026-10-11
+  the capture refuses to start unless the command names production
+  (`npm run guide:capture -- --expect-host ep-sweet-haze`, or
+  `npx tsx scripts/capture-steward-screenshots.ts --expect-host ep-sweet-haze`; owner
+  decisions 2026-10-11). `guide:build` cannot pass that flag to its capture step, so it
+  stops there.
 
 **The graphify knowledge graph**
 

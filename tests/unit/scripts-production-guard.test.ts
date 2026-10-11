@@ -23,7 +23,9 @@
  *     scripts/ and prisma/ that opens its own database (lib/db.ts, the app's client).
  *
  * The behaviour half pins what the guard refuses and what it is allowed to print,
- * and that scripts/qa/run-with-env.mjs refuses production (review of d02cb27).
+ * and that scripts/qa/run-with-env.mjs refuses production (review of d02cb27). The
+ * scripts that sign in to the live site refuse unless production is named, and
+ * prisma/seed.ts refuses production outright (owner decisions 2026-10-11).
  */
 import { describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -38,6 +40,7 @@ import {
   ProductionGuardRefusal,
   assertNotProduction,
   expectHostArg,
+  liveSiteNamed,
   withoutExpectHost,
 } from '../../scripts/lib/assert-not-production';
 import { OperatorRefusal, operatorErrorLabel } from '../../scripts/ops/error-label';
@@ -746,6 +749,61 @@ describe('the structural scan sees what it is meant to see', () => {
   it('follows imports to a module that opens its own database', () => {
     // lib/audit.ts imports the app client: proves the walk resolves `./db`-style imports.
     expect(reachesOutsideDatabase('lib/audit.ts')).toEqual(['lib/audit.ts', 'lib/db.ts']);
+  });
+});
+
+describe('the screenshot scripts refuse the live site unless production is named (owner decisions 2026-10-11)', () => {
+  // Their browser part signs in to the live site (BASE), which is production,
+  // whatever database the checkout names — so the database guard never sees them.
+  // Pinned structurally, as the deleted load test was: running one in a test
+  // would, if the refusal were broken, sign in to production.
+  const CAPTURE = ['scripts/capture-guide-screenshots.ts', 'scripts/capture-steward-screenshots.ts'];
+
+  it.each(CAPTURE)('%s refuses at the top, before Chromium, a page or a sign-in', (file) => {
+    const src = code(file);
+    expect(src).toMatch(/import\s*\{[^}]*\bliveSiteNamed\b[^}]*\}\s*from\s*'\.\/lib\/assert-not-production'/);
+    expect(src).toMatch(/const BASE = LIVE_SITE;/);
+    const refusal = src.search(new RegExp(`if \\(!liveSiteNamed\\('${file.replace(/[.]/g, '\\.')}'\\)\\) process\\.exit\\(2\\);`));
+    expect(refusal, 'the refusal, naming the script').toBeGreaterThan(-1);
+    for (const later of [/chromium\.launch\s*\(/, /\bawait\s+login\s*\(/, /page\.goto\s*\(/, /\bmkdir\s*\(/, /\bmain\(\)/]) {
+      expect(refusal, String(later)).toBeLessThan(src.search(later));
+    }
+    // A top-level statement, so it runs when the module does, before main() is called.
+    const top = parse(file).statements.findIndex((st) => ts.isIfStatement(st) && st.getText().includes('liveSiteNamed('));
+    const mainCall = parse(file).statements.findIndex((st) => ts.isExpressionStatement(st) && /^main\(\)/.test(st.getText()));
+    expect(top).toBeGreaterThan(-1);
+    expect(top).toBeLessThan(mainCall);
+  });
+
+  it('liveSiteNamed lets a script start only when --expect-host names production', () => {
+    const run = (args: string[]) => {
+      const out = { log: vi.fn(), error: vi.fn() };
+      const ok = liveSiteNamed('scripts/x.ts', args, out);
+      return { ok, printed: out.error.mock.calls.flat().join('\n'), out };
+    };
+    for (const args of [
+      [],
+      ['--expect-host'],
+      ['--expect-host', '--apply'],
+      ['--expect-host', 'sweet-haze'],
+      ['--expect-host', 'ep-uat-branch-1'],
+      [`--expect-host=${PRODUCTION_HOST_PREFIX}`],
+    ]) {
+      const r = run(args);
+      expect(r.ok, JSON.stringify(args)).toBe(false);
+      expect(r.printed).toMatch(/\[live-site guard\] refusing: scripts\/x\.ts signs in to the PRODUCTION site/);
+      expect(r.printed).toContain(`--expect-host ${PRODUCTION_HOST_PREFIX}`);
+      expect(r.printed).not.toContain('ep-uat-branch-1');
+    }
+    for (const args of [
+      ['--expect-host', PRODUCTION_HOST_PREFIX],
+      ['--expect-host', PROD_ENDPOINT],
+      ['--expect-host', PRODUCTION_HOST_PREFIX.toUpperCase()],
+    ]) {
+      const r = run(args);
+      expect(r.ok, JSON.stringify(args)).toBe(true);
+      expect(r.out.error).not.toHaveBeenCalled();
+    }
   });
 });
 

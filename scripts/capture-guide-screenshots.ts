@@ -5,12 +5,22 @@
  * saves PNG screenshots to docs/guide/img/. Mobile-emulating viewport
  * (390 × 844, iPhone 14 Pro size) so the guide reflects what salesmen
  * actually see on their phones.
+ *
+ * It refuses to start without `--expect-host ep-sweet-haze` (owner decisions
+ * 2026-10-11): BASE is production.
  */
 import { chromium, type Page } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { LIVE_SITE, liveSiteNamed } from './lib/assert-not-production';
 
-const BASE = 'https://nmwc-cm.vercel.app';
+// Owner decisions 2026-10-11: BASE is the live site, which is production, so nothing
+// starts — no browser, no sign-in, no file written — unless the command line names
+// production: `npx tsx scripts/capture-guide-screenshots.ts --expect-host ep-sweet-haze`
+// (or `npm run guide:capture -- --expect-host ep-sweet-haze`).
+if (!liveSiteNamed('scripts/capture-guide-screenshots.ts')) process.exit(2);
+
+const BASE = LIVE_SITE;
 const OUT = 'docs/guide/img';
 
 const SALES = { username: 'c1-12345-nmwc', password: 'C1-12345-NMWC' };
