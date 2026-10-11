@@ -293,8 +293,10 @@ as described in §2.
   decision 2026-10-11) are in [OPERATIONS §5j](OPERATIONS.md): only the audited
   `scripts/ops/` scripts, through `prod-run.cjs`, with `--expect-host ep-sweet-haze`;
   every script in `scripts/` and `prisma/` that opens a database refuses production
-  without that flag; Prisma Studio or `psql` on production counts as maintenance. How the
-  read-only question scripts above fit that rule is an open owner question (§5j).
+  without that flag; Prisma Studio or `psql` on production counts as maintenance, and each
+  session goes in the private operations log in the owner's handover pack, never in this
+  repository. How the read-only question scripts above fit that rule is an open owner
+  question (§5j).
 - The app still connects as the database owner; switching it to `nmwc_app` is open (§6.2).
 
 ---

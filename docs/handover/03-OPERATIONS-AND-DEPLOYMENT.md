@@ -391,7 +391,7 @@ production. Two cases are exceptions. Decide each one deliberately and record wh
 - If [`AUDITOR-BRIEF.md`](../../AUDITOR-BRIEF.md) states something the change altered, update
   it in the same kind of change
   ([HANDOVER §2](../HANDOVER.md#2-how-a-change-is-made-verified-and-merged-here) step 3).
-- Record what shipped in your private operations record.
+- Record what shipped in the private operations log in the owner's handover pack.
 
 ### 4.3 If `deploy-watch.sh` does not exit 0
 
@@ -665,8 +665,8 @@ The sequence:
 7. Run `npm run smoke` again. Where the operation touches the load totals, run
    `scripts/ops/verify-load.ts` with the privately reconciled expectations
    ([OPERATIONS §7](../OPERATIONS.md#7-common-operations), [GO-LIVE-RUNBOOK](../GO-LIVE-RUNBOOK.md) step 6a).
-8. Record what ran, when, and its counts in your **private** operations record. Never in
-   this repository.
+8. Record what ran, when, and its counts in the **private** operations log in the owner's
+   handover pack. Never in this repository.
 
 **The ledger tells you whether a run finished.** Each applied run writes a `STARTING` row and
 a `COMPLETED` row in `AuditLog`, sharing one `entityId`. A `STARTING` row with no `COMPLETED`

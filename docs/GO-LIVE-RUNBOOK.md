@@ -194,7 +194,7 @@ importer enforces most of the order, but not all of it.
      the expectation adds 1. Changing one non-null day to another adds nothing. Do not
      count a repair of an already expected day as a new expected day.
    - Keep the reconciled totals, branch identities and supporting records in the private
-     operations log. If the baseline or change records cannot support an expectation,
+     operations log in the owner's handover pack, never in this repository. If the baseline or change records cannot support an expectation,
      stop and reconcile them; never copy the observed totals merely to make a check pass.
 
    An omitted override still comes from the manifest; use that default only when its

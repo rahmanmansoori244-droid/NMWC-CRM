@@ -51,7 +51,7 @@ so the app no longer depends on the credential being replaced.
 
 Provision and verify the runtime role using the operations runbook before this step
 if necessary. This procedure does not establish whether a role is already in use;
-keep configuration and usage evidence in the private operations record.
+keep configuration and usage evidence in the private operations log in the owner's handover pack.
 
 1. GitHub → Settings → Secrets and variables → Actions → **Secrets**. Find
    `NMWC_APP_PASSWORD` and **Update** it to the new app password. (Update, not
