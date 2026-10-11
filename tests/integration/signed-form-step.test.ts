@@ -340,12 +340,20 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
       decisionCategory: 'withdrawn',
       reviewedById: ids.manager,
     });
-    // Nothing about it waits on anyone now.
+    // Nothing about it waits on anyone now. His own progress pings ("Request
+    // advanced") are left alone, as on every decision and on his own withdraw
+    // (lib/notify-policy.ts SETTLED_ON_DECISION_KINDS); his must-act alert and
+    // any late-request alert are answered.
     expect(
       await prisma.notification.count({
-        where: { editId, readAt: null, kind: { in: ['SIGNED_FORM_REQUESTED', 'EDIT_STAGE_ADVANCED', 'SLA_BREACH'] } },
+        where: { editId, readAt: null, kind: { in: ['SIGNED_FORM_REQUESTED', 'EDIT_STAGE_ADVANCED', 'SLA_BREACH'] }, userId: { not: ids.salesman } },
       })
     ).toBe(0);
+    const hisUnread = await prisma.notification.findMany({
+      where: { editId, readAt: null, userId: ids.salesman, kind: { in: ['SIGNED_FORM_REQUESTED', 'EDIT_STAGE_ADVANCED', 'SLA_BREACH'] } },
+      select: { kind: true, title: true },
+    });
+    expect(hisUnread.every((r) => r.kind === 'EDIT_STAGE_ADVANCED' && r.title === 'Request advanced'), JSON.stringify(hisUnread)).toBe(true);
     expect(
       await prisma.auditLog.count({ where: { entityId: editId, actorId: ids.manager, reason: 'withdrawn when the account was disabled' } })
     ).toBe(1);

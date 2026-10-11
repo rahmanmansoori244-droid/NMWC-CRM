@@ -906,6 +906,13 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       pageC.one = await mkAtt('CREDIT_FORM');
       pageC.two = await mkAtt('CREDIT_FORM');
       expect((await sendSignedForm(editC, [pageC.one, pageC.two])).ok).toBe(true);
+      // The Sales Director's step-back to the Supervisor (the test above) rightly
+      // pinged him "not returned to you" — it was not. Only a row this send-back
+      // writes would contradict his red alert, so count from here.
+      const notReturnedPings = () =>
+        prisma.notification.count({ where: { editId: editC, userId: ids.salesman, body: { contains: 'not returned to you' } } });
+      const pingsBefore = await notReturnedPings();
+      expect(pingsBefore).toBe(1);
       asUser(ids.fm, 'FINANCE_MANAGER');
       expect((await decideC('reject')).ok).toBe(true);
       expect(await at()).toEqual(['SUBMITTED', 2, 'SALESMAN']);
@@ -915,7 +922,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect(asked.title).toBe('Signed application sent back');
       expect(asked.body).toMatch(/sent back by the Finance Manager: The stamp on the signed application is not readable./);
       // Not the contradictory "not returned to you" ping.
-      expect(await prisma.notification.count({ where: { editId: editC, userId: ids.salesman, body: { contains: 'not returned to you' } } })).toBe(0);
+      expect(await notReturnedPings()).toBe(pingsBefore);
     });
 
     it('he uploads it again, keeping one page and adding one: the page he dropped is released', async () => {
