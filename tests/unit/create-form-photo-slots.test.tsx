@@ -8,7 +8,9 @@
  * upload, and the page load after the answer cut it off. The extra-photo
  * onChange also wrote back the list it rendered with, so the photo that
  * finished first was dropped. submit-forms.test mocks the slot and cannot see
- * either.
+ * either. Owner decisions 2026-10-11: the guarantee is no longer asked for, and
+ * the four credit documents use its slots (CreditDocumentSlots): they are held
+ * to the same here, with the guarantees a returned request still carries.
  *
  * jsdom has no image decoder, canvas or R2: each photo compresses to a blob of
  * its own size (1, 2, …), the presign is keyed by that size, and the test
@@ -66,7 +68,15 @@ class FakeXHR {
 /** A presign held open until the test lets it go, by photo (blob size). */
 let presignHeld = new Map<number, () => void>();
 let holdPresign = new Set<number>();
-let formBodies: Array<Record<string, any>> = [];
+/** What the form posts to the field-form route, as these tests read it. */
+type SentBody = {
+  isDraft?: boolean;
+  customer: { email?: string };
+  guaranteeAttachmentIds: string[];
+  creditDocuments: Record<string, string[]>;
+  branches: Array<{ extraPhotoAttachmentIds: string[] }>;
+};
+let formBodies: SentBody[] = [];
 let blobs = 0;
 
 beforeEach(() => {
@@ -135,9 +145,11 @@ const complete = (over: Partial<CreateFormInitial> = {}, extras: string[] = []):
     contactRole: '',
     notes: '',
     crPhotoAttachmentId: 'att-cr',
+    email: '',
   },
   credit: { requestedCreditLimit: null, requestedPaymentTermDays: null },
   guaranteeAttachmentIds: [],
+  creditDocuments: { ID_CARD: [], MEMBERSHIP_CERT: [], VAT_CERT: [], TAX_CARD: [] },
   branches: [
     {
       branchName: 'Main',
@@ -248,24 +260,29 @@ describe('the new-customer form, with real photo slots', () => {
     expect(formBodies[1]!.branches[0].extraPhotoAttachmentIds).toEqual(['att-1', 'att-z']);
   });
 
-  it('removing a guarantee document while the next one uploads keeps Submit held, and the new one is sent', async () => {
-    const credit = complete({
-      customer: { ...complete().customer, paymentTerms: 'CREDIT' },
+  // Owner decisions 2026-10-11: the credit documents use the guarantee list's
+  // slots (CreditDocumentSlots), so what was learnt on the guarantees holds for
+  // each of them; the owner's ID card stands for the four.
+  const credit = (docs: Partial<CreateFormInitial['creditDocuments']> = {}, guarantees: string[] = []) =>
+    complete({
+      customer: { ...complete().customer, paymentTerms: 'CREDIT', email: 'accounts@bluesea.om' },
       credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
-      guaranteeAttachmentIds: ['g1', 'g2'],
+      guaranteeAttachmentIds: guarantees,
+      creditDocuments: { ID_CARD: ['i1'], MEMBERSHIP_CERT: ['m1'], VAT_CERT: ['v1'], TAX_CARD: ['t1'], ...docs },
     });
-    render(<CreateCustomerForm channels={channels} initial={credit} sessionUserId="u1" />);
+  const idCards = () => slotInputs("Owner's ID card");
+
+  it('removing a page of the ID card while the next one uploads keeps Submit held, and the new one is sent', async () => {
+    render(<CreateCustomerForm channels={channels} initial={credit({ ID_CARD: ['i1', 'i2'] })} sessionUserId="u1" />);
     await waitFor(() => expect(submitBtn()).toBeEnabled());
-    const guarantees = () => slotInputs('Guarantee doc');
-    expect(guarantees()).toHaveLength(3); // g1, g2 and the empty slot for the next
+    expect(idCards()).toHaveLength(3); // i1, i2 and the empty slot for the next page
     holdPresign.add(1);
-    pick(guarantees()[2]!);
+    pick(idCards()[2]!);
     await waitFor(() => expect(presignHeld.has(1)).toBe(true));
-    removePhoto(guarantees()[1]!); // g2
+    removePhoto(idCards()[1]!); // i2
     await flush();
-    // The empty slot was keyed by the number of documents: removing g2 re-keyed
-    // it, and Submit unlocked while g3's presign was still open. Remounted, it
-    // also showed a blank slot where g3 was going up.
+    // Keyed by the number of pages, the empty slot would remount here and let
+    // Submit go while the new page's presign was still open.
     expect(held()).toBe(true);
     expect(submitBtn()).toBeDisabled();
     expect(screen.getAllByText(/^Uploading…/)).toHaveLength(1);
@@ -276,42 +293,72 @@ describe('the new-customer form, with real photo slots', () => {
     await waitFor(() => expect(submitBtn()).toBeEnabled());
     fireEvent.click(submitBtn());
     await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledWith('/work'));
-    expect(formBodies[0]!.guaranteeAttachmentIds).toEqual(['g1', 'att-1']);
+    expect(formBodies[0]!.creditDocuments).toEqual({ ID_CARD: ['i1', 'att-1'], MEMBERSHIP_CERT: ['m1'], VAT_CERT: ['v1'], TAX_CARD: ['t1'] });
+    expect(formBodies[0]!.customer.email).toBe('accounts@bluesea.om');
   });
 
-  it('a retaken guarantee document replaces the old one in the request, in place', async () => {
-    // Its onChange handled only a removal: the screen showed the new document
-    // while the request still sent the old id.
-    const credit = complete({
-      customer: { ...complete().customer, paymentTerms: 'CREDIT' },
-      credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
-      guaranteeAttachmentIds: ['g1', 'g2'],
-    });
-    render(<CreateCustomerForm channels={channels} initial={credit} sessionUserId="u1" />);
+  it('a retaken page replaces the old one in the request, in place', async () => {
+    render(<CreateCustomerForm channels={channels} initial={credit({ ID_CARD: ['i1', 'i2'] })} sessionUserId="u1" />);
     await waitFor(() => expect(submitBtn()).toBeEnabled());
-    pick(slotInputs('Guarantee doc')[0]!); // retake g1
+    pick(idCards()[0]!); // retake i1
     await waitFor(() => expect(putFor(1)).toBeDefined());
     await act(async () => putFor(1)!.finish());
     await waitFor(() => expect(submitBtn()).toBeEnabled());
     const body = await saveDraft();
-    expect(body.guaranteeAttachmentIds).toEqual(['att-1', 'g2']);
+    expect(body.creditDocuments.ID_CARD).toEqual(['att-1', 'i2']);
   });
 
-  it('a guarantee document finished in the empty slot makes way for a fresh empty slot', async () => {
-    const credit = complete({
-      customer: { ...complete().customer, paymentTerms: 'CREDIT' },
-      credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
-      guaranteeAttachmentIds: [],
-    });
-    render(<CreateCustomerForm channels={channels} initial={credit} sessionUserId="u1" />);
-    await waitFor(() => expect(slotInputs('Guarantee doc')).toHaveLength(1));
-    pick(slotInputs('Guarantee doc')[0]!);
+  it('a page finished in the empty slot makes way for a fresh empty slot, up to 4 pages', async () => {
+    render(<CreateCustomerForm channels={channels} initial={credit({ ID_CARD: [] })} sessionUserId="u1" />);
+    await waitFor(() => expect(idCards()).toHaveLength(1));
+    expect(submitBtn()).toBeDisabled();
+    pick(idCards()[0]!);
     await waitFor(() => expect(putFor(1)).toBeDefined());
     await act(async () => putFor(1)!.finish());
-    await waitFor(() => expect(slotInputs('Guarantee doc')).toHaveLength(2));
-    const [done, fresh] = slotInputs('Guarantee doc');
+    await waitFor(() => expect(idCards()).toHaveLength(2));
+    const [done, fresh] = idCards();
     expect(done!.parentElement!.querySelector('img')!.getAttribute('src')).toBe('/api/photos/att-1');
     expect(fresh!.parentElement!.querySelector('img')).toBeNull();
     await waitFor(() => expect(submitBtn()).toBeEnabled());
+    cleanup();
+    // Four pages on file: no empty slot for a fifth.
+    render(<CreateCustomerForm channels={channels} initial={credit({ ID_CARD: ['i1', 'i2', 'i3', 'i4'] })} sessionUserId="u1" />);
+    await waitFor(() => expect(submitBtn()).toBeEnabled());
+    expect(idCards()).toHaveLength(4);
+  });
+
+  it('the guarantees a returned request carries stay shown and are sent again; one can be removed; none is added (the guarantee is switched off)', async () => {
+    render(<CreateCustomerForm channels={channels} initial={credit({}, ['g1', 'g2'])} sessionUserId="u1" />);
+    await waitFor(() => expect(submitBtn()).toBeEnabled());
+    const guarantees = () => slotInputs('Guarantee doc');
+    expect(guarantees(), 'g1 and g2, and no empty slot').toHaveLength(2);
+    expect(screen.getByText('Guarantee / security documents already attached (no longer required)')).toBeTruthy();
+    // Unsent, the submit would release them: the evidence stays with the request.
+    expect((await saveDraft()).guaranteeAttachmentIds).toEqual(['g1', 'g2']);
+    removePhoto(guarantees()[1]!);
+    await flush();
+    expect(guarantees()).toHaveLength(1);
+    expect((await saveDraft()).guaranteeAttachmentIds).toEqual(['g1']);
+  });
+
+  it('a request with no guarantee offers no guarantee slot, and Submit does not wait for one', async () => {
+    render(<CreateCustomerForm channels={channels} initial={credit()} sessionUserId="u1" />);
+    await waitFor(() => expect(submitBtn()).toBeEnabled());
+    expect(slotInputs('Guarantee doc')).toHaveLength(0);
+    fireEvent.click(submitBtn());
+    await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledWith('/work'));
+    expect(formBodies[0]!.guaranteeAttachmentIds).toEqual([]);
+  });
+
+  it('switched to cash: no credit document slots, and neither the documents nor the e-mail are sent', async () => {
+    render(<CreateCustomerForm channels={channels} initial={credit({}, ['g1'])} sessionUserId="u1" />);
+    await waitFor(() => expect(submitBtn()).toBeEnabled());
+    fireEvent.click(screen.getByRole('radio', { name: 'Cash' }));
+    await waitFor(() => expect(idCards()).toHaveLength(0));
+    expect(screen.queryByRole('textbox', { name: 'E-mail *' })).toBeNull();
+    const body = await saveDraft();
+    expect(body.creditDocuments).toEqual({});
+    expect(body.guaranteeAttachmentIds).toEqual([]);
+    expect(body.customer.email).toBeUndefined();
   });
 });

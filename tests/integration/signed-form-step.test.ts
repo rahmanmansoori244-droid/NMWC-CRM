@@ -60,7 +60,10 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
   };
   const digits = (salt: number) => String(100000 + ((parseInt(tag, 16) + salt) % 900000));
 
-  async function mkAtt(kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE' | 'ID_CARD' | 'CREDIT_FORM', editId?: string) {
+  async function mkAtt(
+    kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE' | 'ID_CARD' | 'MEMBERSHIP_CERT' | 'VAT_CERT' | 'TAX_CARD' | 'CREDIT_FORM',
+    editId?: string
+  ) {
     const a = await prisma.attachment.create({
       data: {
         kind,
@@ -86,9 +89,11 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
     return kind === 'approve' ? edits.approveEditAction(fd) : edits.rejectEditAction(fd);
   }
 
-  /** A CREDIT request walked to the signed-application step, with an ID card on it. */
+  /** A CREDIT request walked to the signed-application step, with its credit documents (an ID card among them). */
   async function atSignedForm(name: string, salt: number): Promise<{ editId: string; idCard: string }> {
     asUser(ids.salesman, 'SALESMAN');
+    // Owner decisions 2026-10-11 (part B): sent with the e-mail and the four credit documents.
+    const idCard = await mkAtt('ID_CARD');
     const res = await creates.submitCreateAction({
       isDraft: false,
       customer: {
@@ -100,9 +105,16 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
         contactPerson: `ZZ Contact ${tag}`,
         crNumber: `92${digits(salt + 1)}`,
         crPhotoAttachmentId: await mkAtt('CR'),
+        email: `zz.signed.${tag}@example.com`,
       },
       credit: { requestedCreditLimit: 600, requestedPaymentTermDays: 30 },
       guaranteeAttachmentIds: [await mkAtt('GUARANTEE')],
+      creditDocuments: {
+        ID_CARD: [idCard],
+        MEMBERSHIP_CERT: [await mkAtt('MEMBERSHIP_CERT')],
+        VAT_CERT: [await mkAtt('VAT_CERT')],
+        TAX_CARD: [await mkAtt('TAX_CARD')],
+      },
       branches: [
         {
           branchName: `ZZ Branch ${name}`,
@@ -121,8 +133,6 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
     if (!res.ok) console.error('SIGNED FORM SUBMIT FAILED', JSON.stringify(res));
     expect(res.ok).toBe(true);
     const editId = (res as { ok: true; data: { editId: string } }).data.editId;
-    // A credit document, as the new-customer form (part B) attaches it at submit.
-    const idCard = await mkAtt('ID_CARD', editId);
     asUser(ids.supervisor, 'SUPERVISOR');
     expect((await decide('approve', editId)).ok).toBe(true);
     asUser(ids.sd, 'SALES_DIRECTOR');

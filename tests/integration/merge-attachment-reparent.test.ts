@@ -13,6 +13,10 @@
  *      customer, where assertCanAccessAttachment 404s them for every role except
  *      STEWARD/VIEWER and services/temix.ts's live-GUARANTEE groupBy cannot see them.
  *
+ * Owner decisions 2026-10-11: the credit documents (the owner's ID card, the
+ * membership, VAT and tax documents) and the signed credit application are bound
+ * by customerId like the guarantees, so they follow a merge the same way.
+ *
  * The third test pins the POLICY: a merge must never RELEASE (soft-delete) an
  * attachment. If a later pass turns merge into a release path, that test goes red and
  * the decision has to be made explicitly.
@@ -48,9 +52,11 @@ const ids = {
   g1: `${P}-g1`,
   g2: `${P}-g2`,
   gDead: `${P}-gDead`,
+  idCard: `${P}-idCard`,
+  form: `${P}-form`,
 };
 const CUSTOMER_IDS = [ids.winner, ids.loser];
-const ATTACHMENT_IDS = [ids.crW, ids.crL, ids.g1, ids.g2, ids.gDead];
+const ATTACHMENT_IDS = [ids.crW, ids.crL, ids.g1, ids.g2, ids.gDead, ids.idCard, ids.form];
 
 describe.skipIf(!ENABLED)('DG-03/04: merge re-parents customer-bound attachments', () => {
   let prisma: import('@prisma/client').PrismaClient;
@@ -74,7 +80,7 @@ describe.skipIf(!ENABLED)('DG-03/04: merge re-parents customer-bound attachments
 
   async function makeAttachment(
     id: string,
-    kind: 'CR' | 'GUARANTEE',
+    kind: 'CR' | 'GUARANTEE' | 'ID_CARD' | 'CREDIT_FORM',
     customerId: string,
     deletedAt: Date | null = null
   ) {
@@ -167,6 +173,9 @@ describe.skipIf(!ENABLED)('DG-03/04: merge re-parents customer-bound attachments
     await makeAttachment(ids.g1, 'GUARANTEE', ids.loser);
     await makeAttachment(ids.g2, 'GUARANTEE', ids.loser);
     await makeAttachment(ids.gDead, 'GUARANTEE', ids.loser, new Date(Date.now() - 86_400_000));
+    // Owner decisions 2026-10-11: a credit document and a signed-application page.
+    await makeAttachment(ids.idCard, 'ID_CARD', ids.loser);
+    await makeAttachment(ids.form, 'CREDIT_FORM', ids.loser);
     current = { id: ids.steward, role: 'STEWARD', username: ids.steward };
   });
 
@@ -227,6 +236,16 @@ describe.skipIf(!ENABLED)('DG-03/04: merge re-parents customer-bound attachments
       where: { customerId: ids.winner, kind: 'GUARANTEE', deletedAt: null },
     });
     expect(winnerGuarantees).toBe(2);
+
+    // Owner decisions 2026-10-11: the credit documents follow the same way.
+    const moved = await prisma.attachment.findMany({
+      where: { id: { in: [ids.idCard, ids.form] } },
+      select: { customerId: true, deletedAt: true },
+    });
+    expect(moved).toEqual([
+      { customerId: ids.winner, deletedAt: null },
+      { customerId: ids.winner, deletedAt: null },
+    ]);
   });
 
   it('POLICY PIN: a merge RELEASES nothing, and does not revive an already-dead doc', async () => {
@@ -237,7 +256,7 @@ describe.skipIf(!ENABLED)('DG-03/04: merge re-parents customer-bound attachments
     // on nothing today; it is here so that a later pass cannot quietly turn merge
     // into a release path without the decision being made explicitly.
     const released = await prisma.attachment.count({
-      where: { id: { in: [ids.crL, ids.g1, ids.g2] }, deletedAt: { not: null } },
+      where: { id: { in: [ids.crL, ids.g1, ids.g2, ids.idCard, ids.form] }, deletedAt: { not: null } },
     });
     expect(released).toBe(0);
 

@@ -1162,9 +1162,11 @@ describe('the new-customer form', () => {
       contactRole: '',
       notes: '',
       crPhotoAttachmentId: 'att-cr',
+      email: '',
     },
     credit: { requestedCreditLimit: null, requestedPaymentTermDays: null },
     guaranteeAttachmentIds: [],
+    creditDocuments: { ID_CARD: [], MEMBERSHIP_CERT: [], VAT_CERT: [], TAX_CARD: [] },
     branches: [
       {
         branchName: 'Main',
@@ -1466,12 +1468,13 @@ describe('the new-customer form', () => {
     await waitFor(() => expect(nav.hardReplace).toHaveBeenCalledWith('/work'));
   });
 
-  it('every slot holds it: CR, each guarantee document, shop, signboard and both FREE', async () => {
+  it('every slot holds it: CR, each credit document, a guarantee kept from before, shop, signboard and both FREE', async () => {
     const credit: CreateFormInitial = {
       ...complete,
-      customer: { ...complete.customer, paymentTerms: 'CREDIT' },
+      customer: { ...complete.customer, paymentTerms: 'CREDIT', email: 'accounts@bluesea.om' },
       credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
       guaranteeAttachmentIds: ['att-g1'],
+      creditDocuments: { ID_CARD: ['att-i1'], MEMBERSHIP_CERT: ['att-m1'], VAT_CERT: ['att-v1'], TAX_CARD: ['att-t1'] },
     };
     render(<CreateCustomerForm channels={channels} initial={credit} sessionUserId="u1" />);
     const submitBtn = () => screen.getByRole('button', { name: 'Submit for approval ▶' });
@@ -1479,8 +1482,13 @@ describe('the new-customer form', () => {
     const kinds = screen.getAllByRole('button', { name: /^start \w+ upload$/ }).map((b) => b.textContent);
     for (const k of ['CR', 'GUARANTEE', 'SHOP', 'SIGNBOARD', 'FREE']) expect(kinds).toContain(`start ${k} upload`);
     expect(kinds.filter((k) => k === 'start FREE upload')).toHaveLength(2);
-    // The existing guarantee document AND the empty slot for the next one.
-    expect(kinds.filter((k) => k === 'start GUARANTEE upload').length).toBeGreaterThanOrEqual(2);
+    // Owner decisions 2026-10-11: each credit document's page on file AND the
+    // empty slot for the next one; the guarantee kept from before, with none
+    // offered (the guarantee is switched off).
+    for (const k of ['ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD']) {
+      expect(kinds.filter((x) => x === `start ${k} upload`), k).toHaveLength(2);
+    }
+    expect(kinds.filter((k) => k === 'start GUARANTEE upload')).toHaveLength(1);
     kinds.forEach((kind, i) => {
       fireEvent.click(screen.getAllByRole('button', { name: /^start \w+ upload$/ })[i]!);
       expect(submitBtn(), `${kind} #${i}`).toBeDisabled();

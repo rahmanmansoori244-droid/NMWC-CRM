@@ -16,7 +16,22 @@ import {
 } from '@aws-sdk/client-s3';
 import { hasR2, safeError } from './env';
 
-const KINDS = ['SHOP', 'SIGNBOARD', 'CR', 'GUARANTEE', 'FREE'] as const;
+// Every kind the app's presign mints a key for (app/api/photos/presign/route.ts):
+// owner decisions 2026-10-11 added the credit documents and the signed credit
+// application. A kind missing here made every write AND every clean-up of such
+// a key refused, so the objects stayed behind.
+const KINDS = [
+  'SHOP',
+  'SIGNBOARD',
+  'CR',
+  'GUARANTEE',
+  'FREE',
+  'ID_CARD',
+  'MEMBERSHIP_CERT',
+  'VAT_CERT',
+  'TAX_CARD',
+  'CREDIT_FORM',
+] as const;
 const YMD = /^\d{4}\/(0[1-9]|1[0-2])\/(0[1-9]|[12]\d|3[01])$/;
 /** cuid-shaped ids (Prisma's default and the suite's own newId()). */
 const USER_ID = /^c[a-z0-9]{8,40}$/;

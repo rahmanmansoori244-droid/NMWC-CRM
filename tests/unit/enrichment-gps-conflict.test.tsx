@@ -321,9 +321,11 @@ describe('the new-customer form: its GPS buttons unmount only with their branch'
       contactRole: '',
       notes: '',
       crPhotoAttachmentId: null,
+      email: '',
     },
     credit: { requestedCreditLimit: null, requestedPaymentTermDays: null },
     guaranteeAttachmentIds: [],
+    creditDocuments: { ID_CARD: [], MEMBERSHIP_CERT: [], VAT_CERT: [], TAX_CARD: [] },
     branches: [draftBranch('Main', 23.5, 58.3), draftBranch('Second', 23.4, 58.2)],
   };
   /** Save draft; returns each branch sent as [name, lat, lng]. */

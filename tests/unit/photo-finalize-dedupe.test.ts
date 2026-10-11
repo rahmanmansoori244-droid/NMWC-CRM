@@ -155,6 +155,11 @@ describe('finalize hands back an earlier upload only when he can still use it (p
     ['an extra photo of a branch', 'FREE', { kind: 'FREE', branchId: 'br1', branchExtraId: 'br1' }],
     ['claimed by a new-customer request — in review, withdrawn or approved alike', 'SHOP', { kind: 'SHOP', editId: 'edit1' }],
     ['a guarantee document claimed by a request', 'GUARANTEE', { kind: 'GUARANTEE', editId: 'edit1' }],
+    // Owner decisions 2026-10-11: the credit documents and the signed application, the same.
+    ['an ID card page claimed by a request', 'ID_CARD', { kind: 'ID_CARD', editId: 'edit1' }],
+    ["a tax card on a customer's record", 'TAX_CARD', { kind: 'TAX_CARD', customerId: 'cust1' }],
+    ['a signed-application page claimed by a request', 'CREDIT_FORM', { kind: 'CREDIT_FORM', editId: 'edit1' }],
+    ['of another document: the same picture taken as the membership certificate', 'VAT_CERT', { kind: 'MEMBERSHIP_CERT' }],
     ['of another kind: the same picture taken for the signboard', 'SHOP', { kind: 'SIGNBOARD' }],
     ['removed (soft-deleted), its hash still set', 'SHOP', { kind: 'SHOP', deletedAt: hoursBefore(1) }],
   ] as const)('%s: a row of its own for the object just uploaded', async (_label, kind, prior) => {
@@ -169,6 +174,17 @@ describe('finalize hands back an earlier upload only when he can still use it (p
     // The earlier photo is left exactly as it was: on its slot, with its request.
     expect(h.rows.find((r) => r.id === 'prior')).toEqual(before);
   });
+
+  it.each(['ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD', 'CREDIT_FORM'])(
+    'owner decisions 2026-10-11: his own free %s of the same picture is handed back, as any kind is',
+    async (kind) => {
+      seed(row({ id: 'free-doc', kind }));
+      const res = await finalize(kind);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ attachmentId: 'free-doc', deduped: true });
+      expect(h.create).not.toHaveBeenCalled();
+    }
+  );
 
   it("another uploader's photo of the same picture is never handed back (NEW-PHOTO-002), nor its time taken", async () => {
     seed(row({ id: 'theirs', kind: 'SHOP', capturedById: 'sales2', capturedAt: hoursBefore(72) }));

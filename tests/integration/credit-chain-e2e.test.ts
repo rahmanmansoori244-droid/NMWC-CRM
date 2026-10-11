@@ -10,6 +10,10 @@
  * cascade has its own request (C): a Sales Director send-back to the Supervisor,
  * a Finance Manager send-back to the salesman, who uploads the signed form again
  * (the pages he dropped released), and a GM send-back to the Finance Manager.
+ * Since part B every CREDIT request is sent as the form sends it: with the
+ * customer's e-mail and the four credit documents, and no guarantee needed;
+ * finalize copies the e-mail and binds every document, the signed application's
+ * pages and a guarantee the request still carries to the customer.
  * It pins three requirements the pure unit tests can't reach:
  *
  *   R19  Materialize ONLY after the final approval. After every NON-final step
@@ -102,7 +106,9 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
 
   const asUser = (u: string, role: string) => { current = { id: u, role, username: u }; };
 
-  async function mkAtt(kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE' | 'CREDIT_FORM') {
+  async function mkAtt(
+    kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE' | 'ID_CARD' | 'MEMBERSHIP_CERT' | 'VAT_CERT' | 'TAX_CARD' | 'CREDIT_FORM'
+  ) {
     const a = await prisma.attachment.create({
       data: {
         kind, r2Key: `uat/${kind.toLowerCase()}-${tag}-${randomUUID().slice(0, 6)}.jpg`,
@@ -196,6 +202,20 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       decisionToken: await freshDecisionToken(prisma, id),
     });
   }
+  /**
+   * Owner decisions 2026-10-11 (part B): the four credit documents a CREDIT
+   * submit carries, one page each, fresh for every request.
+   */
+  async function mkCreditDocs() {
+    return {
+      ID_CARD: [await mkAtt('ID_CARD')],
+      MEMBERSHIP_CERT: [await mkAtt('MEMBERSHIP_CERT')],
+      VAT_CERT: [await mkAtt('VAT_CERT')],
+      TAX_CARD: [await mkAtt('TAX_CARD')],
+    };
+  }
+  const allDocIds = (d: Record<string, string[]>) => Object.values(d).flat();
+  let mainDocs: Record<string, string[]> = {};
   /** A request frozen before the change: the 4-step chain, as its column holds it. */
   const freezeLegacy = (id: string) =>
     prisma.customerEdit.update({ where: { id }, data: { approvalChain: LEGACY_CREDIT_CHAIN as unknown as object } });
@@ -209,9 +229,12 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         primaryPhone: `+96890${String(400000 + (parseInt(tag, 16) % 90000)).slice(0, 6)}`,
         contactPerson: `ZZ Contact ${tag}`, crNumber: `98${String(parseInt(tag, 16) % 900000).padStart(6, '0')}`,
         crPhotoAttachmentId: await mkAtt('CR'),
+        // Owner decisions 2026-10-11 (part B): the e-mail, as typed; stored lower-cased.
+        email: ` ZZ.Credit.${tag}@Example.com `,
       },
       credit: { requestedCreditLimit: REQUESTED_LIMIT, requestedPaymentTermDays: REQUESTED_DAYS },
-      guaranteeAttachmentIds: [await mkAtt('GUARANTEE')],
+      // No guarantee: switched off (GUARANTEE_REQUIRED_FOR_CREDIT); the four documents instead.
+      creditDocuments: (mainDocs = await mkCreditDocs()),
       branches: [{
         branchName: `ZZ Branch ${tag}`, address: `ZZ Way 1, ${tag}`, gpsLat: 23.6, gpsLng: 58.4,
         dayOfVisit: 'MON', coolersCount: 1, standsCount: 1, emptyBottlesCount: 5,
@@ -226,6 +249,11 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(st.currentStepIndex).toBe(0);
     expect(st.pendingRole).toBe('SUPERVISOR');
     expect(st.customerId).toBeNull();
+    // The e-mail on the draft, and the four documents claimed by the request.
+    expect((await prisma.editCustomerDraft.findUniqueOrThrow({ where: { editId }, select: { email: true } })).email).toBe(
+      `zz.credit.${tag}@example.com`
+    );
+    expect(await prisma.attachment.count({ where: { id: { in: allDocIds(mainDocs) }, editId, deletedAt: null } })).toBe(4);
     const frozen = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId }, select: { approvalChain: true } });
     expect((frozen.approvalChain as Array<{ role: string }>).map((s) => s.role)).toEqual([
       'SUPERVISOR',
@@ -359,10 +387,18 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
 
     // R17: approvers never amended — the live customer carries the salesman's
     // originally requested credit figures verbatim.
-    const cust = await prisma.customer.findUniqueOrThrow({ where: { id: st.customerId! }, select: { creditLimit: true, paymentTermDays: true, paymentTerms: true } });
+    const cust = await prisma.customer.findUniqueOrThrow({ where: { id: st.customerId! }, select: { creditLimit: true, paymentTermDays: true, paymentTerms: true, email: true } });
     expect(cust.paymentTerms).toBe('CREDIT');
     expect(Number(cust.creditLimit)).toBe(REQUESTED_LIMIT);
     expect(cust.paymentTermDays).toBe(REQUESTED_DAYS);
+    // Owner decisions 2026-10-11 (part B): the e-mail is copied, and the four
+    // documents and both signed-application pages are bound to the customer.
+    expect(cust.email).toBe(`zz.credit.${tag}@example.com`);
+    const bound = await prisma.attachment.findMany({
+      where: { editId, customerId: st.customerId!, deletedAt: null },
+      select: { kind: true },
+    });
+    expect(bound.map((b) => b.kind).sort()).toEqual(['CR', 'CREDIT_FORM', 'CREDIT_FORM', 'ID_CARD', 'MEMBERSHIP_CERT', 'TAX_CARD', 'VAT_CERT']);
   });
 
   it('Temix: created with the code he typed, queued for the next batch as an UPSERT of that code; audited; the salesman told both codes', async () => {
@@ -450,7 +486,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   describe('N01: every decision is bound to the request as the reviewer saw it', () => {
     let editA = '';
     let editB = '';
-    const attA = { cr: '', guarantee: '', shop: '', signboard: '' };
+    const attA = { cr: '', guarantee: '', shop: '', signboard: '', docs: {} as Record<string, string[]> };
     // Pages kept open while the request changed underneath them.
     const kept = { supCycle1: '', fmVisit1: '', fmCycle1Visit2: '', accVisit1: '' };
     const digits = (salt: number) => String(100000 + ((parseInt(tag, 16) + salt) % 900000));
@@ -463,9 +499,12 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
           legalName: nameA, paymentTerms: 'CREDIT', channelId, subChannelId,
           primaryPhone: `+96891${digits(11)}`, contactPerson: `ZZ Contact A ${tag}`,
           crNumber: `97${digits(12)}`, crPhotoAttachmentId: attA.cr,
+          email: `zz.a.${tag}@example.com`,
         },
         credit,
         guaranteeAttachmentIds: [attA.guarantee],
+        // Part B: the submit asks for the four documents whatever chain the row is frozen with afterwards.
+        creditDocuments: attA.docs,
         branches: [{
           branchName: `ZZ Branch A ${tag}`, address: `ZZ Way 2, ${tag}`, gpsLat: 23.61, gpsLng: 58.41,
           dayOfVisit: 'MON', coolersCount: 1, standsCount: 1, emptyBottlesCount: 5,
@@ -508,6 +547,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       attA.guarantee = await mkAtt('GUARANTEE');
       attA.shop = await mkAtt('SHOP');
       attA.signboard = await mkAtt('SIGNBOARD');
+      attA.docs = await mkCreditDocs();
       const a = await submitA({ requestedCreditLimit: 400, requestedPaymentTermDays: 30 });
       if (!a.ok) console.error('N01 SUBMIT A FAILED', JSON.stringify(a));
       expect(a.ok).toBe(true);
@@ -706,6 +746,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     // one while the request is SUBMITTED, and neither the cycle nor the row moves.
     let editD = '';
     const gD = { one: '', two: '' };
+    let docsD: Record<string, string[]> = {};
 
     it('D is submitted with two guarantee documents; a page opened now binds both', async () => {
       asUser(ids.salesman, 'SALESMAN');
@@ -717,9 +758,11 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
           legalName: nameD, paymentTerms: 'CREDIT', channelId, subChannelId,
           primaryPhone: `+96893${digits(31)}`, contactPerson: `ZZ Contact D ${tag}`,
           crNumber: `95${digits(32)}`, crPhotoAttachmentId: await mkAtt('CR'),
+          email: `zz.d.${tag}@example.com`,
         },
         credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
         guaranteeAttachmentIds: [gD.one, gD.two],
+        creditDocuments: (docsD = await mkCreditDocs()),
         branches: [{
           branchName: `ZZ Branch D ${tag}`, address: `ZZ Way 4, ${tag}`, gpsLat: 23.63, gpsLng: 58.43,
           dayOfVisit: 'WED', coolersCount: 1, standsCount: 1, emptyBottlesCount: 5,
@@ -731,7 +774,8 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       editD = (res as { ok: true; data: { editId: string } }).data.editId;
       // Like A, a request frozen with the 4-step chain: the Finance Manager is step 1.
       await freezeLegacy(editD);
-      expect(parseDecisionToken(await fresh(editD))!.guarantees).toBe(guaranteeDigest([gD.one, gD.two]));
+      // Every decision-bound document of the request: the two guarantees and the four credit documents.
+      expect(parseDecisionToken(await fresh(editD))!.guarantees).toBe(guaranteeDigest([gD.one, gD.two, ...allDocIds(docsD)]));
     });
 
     it('one is removed while the Supervisor’s page is open: that page can neither approve nor reject, and nothing is written', async () => {
@@ -829,9 +873,12 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
           legalName: nameC, paymentTerms: 'CREDIT', channelId, subChannelId,
           primaryPhone: `+96895${digitsC(71)}`, contactPerson: `ZZ Contact C ${tag}`,
           crNumber: `93${digitsC(72)}`, crPhotoAttachmentId: await mkAtt('CR'),
+          email: `zz.c.${tag}@example.com`,
         },
         credit: { requestedCreditLimit: 900, requestedPaymentTermDays: 30 },
+        // A guarantee it still carries is bound too, though none is required.
         guaranteeAttachmentIds: [await mkAtt('GUARANTEE')],
+        creditDocuments: await mkCreditDocs(),
         branches: [{
           branchName: `ZZ Branch C ${tag}`, address: `ZZ Way 7, ${tag}`, gpsLat: 23.65, gpsLng: 58.45,
           dayOfVisit: 'SUN', coolersCount: 1, standsCount: 1, emptyBottlesCount: 5,
@@ -902,6 +949,14 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect(done.ok, JSON.stringify(done)).toBe(true);
       expect((await at())[0]).toBe('APPROVED');
       expect(await prisma.customer.count({ where: { legalName: nameC } })).toBe(1);
+      // Part B: the documents, the guarantee and the pages he kept are bound; the page he dropped is not.
+      const cust = await prisma.customer.findFirstOrThrow({ where: { legalName: nameC }, select: { id: true, email: true } });
+      expect(cust.email).toBe(`zz.c.${tag}@example.com`);
+      const bound = await prisma.attachment.findMany({ where: { editId: editC, customerId: cust.id, deletedAt: null }, select: { id: true, kind: true } });
+      expect(bound.map((b) => b.kind).sort()).toEqual(
+        ['CR', 'CREDIT_FORM', 'CREDIT_FORM', 'GUARANTEE', 'ID_CARD', 'MEMBERSHIP_CERT', 'TAX_CARD', 'VAT_CERT']
+      );
+      expect(bound.map((b) => b.id)).not.toContain(pageC.one);
     });
   });
 

@@ -52,6 +52,7 @@ import { prismaOutboxStore } from '../../../../lib/email/outbox-store';
 import { manualGpsMarker } from '../../../../lib/gps-manual';
 import { stageSnapshot } from '../../../../lib/working-hours';
 import { LEGACY_CREDIT_CHAIN } from '../../../support/legacy-chain';
+import { CREDIT_DOCUMENT_KINDS, type CreditDocumentKind } from '../../../../lib/credit-documents';
 import { submitCreateViaApi, uploadPhotoViaApi, type ActionJson } from './api';
 import { db, hasR2, safeError } from './env';
 import { newId } from './ids';
@@ -152,8 +153,26 @@ export type CreateSeed = {
   crPhoto?: boolean;
   /** CREDIT only. Default 500, 30. */
   credit?: { limit: number; days: number };
-  /** GUARANTEE documents (CREDIT default 1). */
+  /**
+   * GUARANTEE documents. Default 1 on a request frozen with the 4-step chain
+   * (legacyChain), which needs one; none otherwise — owner decisions 2026-10-11
+   * switched the guarantee off.
+   */
   guarantees?: number;
+  /**
+   * Owner decisions 2026-10-11: pages of EACH credit document (the owner's ID
+   * card, the membership, VAT and tax documents). Default 1 on a CREDIT request
+   * with the new chain, 0 otherwise.
+   */
+  creditDocPages?: number;
+  /**
+   * Pages of the signed credit application. Default 1 once a new-chain request
+   * stands past the signed-application step (its FORM_UPLOADED row is seeded), 0
+   * otherwise: finalize needs it.
+   */
+  signedFormPages?: number;
+  /** The customer's e-mail. Default a fixture address on a CREDIT request with the new chain; null = none. */
+  email?: string | null;
   /** Default one branch. */
   branches?: CreateBranchSeed[];
   state?: Extract<EditState, 'DRAFT' | 'SUBMITTED' | 'NEEDS_CORRECTION'>;
@@ -192,9 +211,22 @@ export type SeededCreate = {
   photos: {
     cr: SeededPhoto | null;
     guarantees: SeededPhoto[];
+    /** Owner decisions 2026-10-11: each credit document's pages. */
+    creditDocs: Record<CreditDocumentKind, SeededPhoto[]>;
+    /** The signed credit application's pages. */
+    signedForm: SeededPhoto[];
     branches: Array<{ shop: SeededPhoto | null; signboard: SeededPhoto | null; extras: SeededPhoto[] }>;
   };
+  email: string | null;
 };
+
+/** A fixture e-mail for a credit customer of this world (lower case, as the submit stores it). */
+export function fixtureEmail(w: World, tag = 'accounts'): string {
+  return `${tag}.${w.sfx}@example.com`.toLowerCase();
+}
+
+const noCreditDocs = <T>(): Record<CreditDocumentKind, T[]> =>
+  Object.fromEntries(CREDIT_DOCUMENT_KINDS.map((k) => [k, [] as T[]])) as unknown as Record<CreditDocumentKind, T[]>;
 
 /**
  * A CREATE request at a given step, written as services/creates.ts writes the
@@ -237,6 +269,11 @@ export async function seedCreateRequest(w: World, o: CreateSeed): Promise<Seeded
 
   const decided = state === 'NEEDS_CORRECTION';
   const credit = isCredit ? (o.credit ?? { limit: 500, days: 30 }) : null;
+  // Owner decisions 2026-10-11: what a credit request carries depends on the
+  // chain it is frozen with (lib/credit-documents.ts requiredAtFinalize).
+  const newCreditChain = isCredit && chain.some((s) => isSignedFormStep(s));
+  const formStep = chain.findIndex((s) => isSignedFormStep(s));
+  const email = o.email === undefined ? (newCreditChain ? fixtureEmail(w) : null) : o.email;
   const gpsMarkers = branches.flatMap((b, i) =>
     b.manualReason && b.gps ? [manualGpsMarker(i, b.gps.lat, b.gps.lng, b.manualReason)] : []
   );
@@ -289,11 +326,22 @@ export async function seedCreateRequest(w: World, o: CreateSeed): Promise<Seeded
 
   // Unbound photos, claimed by the request through editId (the form uploads
   // them unbound; the submit claims them; finalize binds them to slots).
-  type Planned = { slot: 'cr' | 'guarantee' | 'shop' | 'signboard' | 'extra'; branch?: number; spec: PhotoSpec };
+  type Planned = {
+    slot: 'cr' | 'guarantee' | 'creditDoc' | 'signedForm' | 'shop' | 'signboard' | 'extra';
+    branch?: number;
+    spec: PhotoSpec;
+  };
   const planned: Planned[] = [];
   const photo = (kind: PhotoSpec['kind']): PhotoSpec => ({ kind, capturedBy: o.submitter, editId: id });
   if (o.crPhoto ?? true) planned.push({ slot: 'cr', spec: photo('CR') });
-  for (let g = 0; g < (o.guarantees ?? (isCredit ? 1 : 0)); g++) planned.push({ slot: 'guarantee', spec: photo('GUARANTEE') });
+  const guarantees = o.guarantees ?? (isCredit && !newCreditChain ? 1 : 0);
+  for (let g = 0; g < guarantees; g++) planned.push({ slot: 'guarantee', spec: photo('GUARANTEE') });
+  const docPages = o.creditDocPages ?? (newCreditChain ? 1 : 0);
+  for (const kind of CREDIT_DOCUMENT_KINDS) {
+    for (let p = 0; p < docPages; p++) planned.push({ slot: 'creditDoc', spec: photo(kind) });
+  }
+  const formPages = o.signedFormPages ?? (newCreditChain && state === 'SUBMITTED' && step > formStep ? 1 : 0);
+  for (let p = 0; p < formPages; p++) planned.push({ slot: 'signedForm', spec: photo('CREDIT_FORM') });
   branches.forEach((b, i) => {
     if (b.photos) {
       planned.push({ slot: 'shop', branch: i, spec: photo('SHOP') });
@@ -305,12 +353,16 @@ export async function seedCreateRequest(w: World, o: CreateSeed): Promise<Seeded
   const out: SeededCreate['photos'] = {
     cr: null,
     guarantees: [],
+    creditDocs: noCreditDocs<SeededPhoto>(),
+    signedForm: [],
     branches: branches.map(() => ({ shop: null, signboard: null, extras: [] })),
   };
   planned.forEach((p, i) => {
     const s = seeded[i]!;
     if (p.slot === 'cr') out.cr = s;
     else if (p.slot === 'guarantee') out.guarantees.push(s);
+    else if (p.slot === 'creditDoc') out.creditDocs[p.spec.kind as CreditDocumentKind].push(s);
+    else if (p.slot === 'signedForm') out.signedForm.push(s);
     else if (p.slot === 'shop') out.branches[p.branch!]!.shop = s;
     else if (p.slot === 'signboard') out.branches[p.branch!]!.signboard = s;
     else out.branches[p.branch!]!.extras.push(s);
@@ -330,6 +382,8 @@ export async function seedCreateRequest(w: World, o: CreateSeed): Promise<Seeded
         primaryPhoneNorm: phone,
         contactPerson: o.contact === undefined ? 'Salim Al Habsi' : o.contact,
         crPhotoAttachmentId: out.cr?.id ?? null,
+        // Owner decisions 2026-10-11: credit only, as services/creates.ts stores it.
+        email: isCredit ? email : null,
       },
     });
     // One insert, in form order: finalize numbers the branches -01, -02 … in the
@@ -394,6 +448,7 @@ export async function seedCreateRequest(w: World, o: CreateSeed): Promise<Seeded
     chain,
     branchNames: branches.map((b) => b.name),
     photos: out,
+    email: isCredit ? email : null,
   };
 }
 
@@ -454,7 +509,12 @@ export type ApiCreate = {
   phone?: string | null;
   contact?: string;
   credit?: { limit: number | string; days: number | string };
+  /** GUARANTEE documents (default none: owner decisions 2026-10-11 switched the guarantee off). */
   guarantees?: number;
+  /** Owner decisions 2026-10-11: pages of each credit document (CREDIT default 1). */
+  creditDocPages?: number;
+  /** The customer's e-mail (CREDIT default a fixture address; null = not sent). */
+  email?: string | null;
   branches?: Array<{
     name?: string;
     gps?: { lat: number; lng: number; accuracy?: number };
@@ -472,6 +532,8 @@ export type ApiCreate = {
 export type CreatePhotoIds = {
   cr: string | null;
   guarantees: string[];
+  /** Owner decisions 2026-10-11: each credit document's pages (empty for cash). */
+  creditDocs: Record<CreditDocumentKind, string[]>;
   branches: Array<{ shop: string | null; signboard: string | null; extras: string[] }>;
 };
 
@@ -482,12 +544,18 @@ export type CreatePhotoIds = {
 export async function uploadCreatePhotos(
   page: Page,
   w: World,
-  o: { credit?: boolean; guarantees?: number; branches: Array<{ extras?: number }> }
+  o: { credit?: boolean; guarantees?: number; creditDocPages?: number; branches: Array<{ extras?: number }> }
 ): Promise<CreatePhotoIds> {
-  const up = async (kind: 'CR' | 'GUARANTEE' | 'SHOP' | 'SIGNBOARD' | 'FREE') => (await uploadPhotoViaApi(page, w, { kind })).attachmentId;
+  const up = async (kind: 'CR' | 'GUARANTEE' | CreditDocumentKind | 'SHOP' | 'SIGNBOARD' | 'FREE') =>
+    (await uploadPhotoViaApi(page, w, { kind })).attachmentId;
   const cr = await up('CR');
   const guarantees: string[] = [];
-  for (let g = 0; g < (o.guarantees ?? (o.credit ? 1 : 0)); g++) guarantees.push(await up('GUARANTEE'));
+  for (let g = 0; g < (o.guarantees ?? 0); g++) guarantees.push(await up('GUARANTEE'));
+  // Owner decisions 2026-10-11: each credit document, a page by default on a credit request.
+  const creditDocs = noCreditDocs<string>();
+  for (const kind of CREDIT_DOCUMENT_KINDS) {
+    for (let p = 0; p < (o.creditDocPages ?? (o.credit ? 1 : 0)); p++) creditDocs[kind].push(await up(kind));
+  }
   const branches: CreatePhotoIds['branches'] = [];
   for (const b of o.branches) {
     const shop = await up('SHOP');
@@ -496,7 +564,7 @@ export async function uploadCreatePhotos(
     for (let x = 0; x < (b.extras ?? 0); x++) extras.push(await up('FREE'));
     branches.push({ shop, signboard, extras });
   }
-  return { cr, guarantees, branches };
+  return { cr, guarantees, creditDocs, branches };
 }
 
 /**
@@ -512,7 +580,14 @@ export async function submitCreateRequestViaApi(
   const terms = o.paymentTerms ?? 'CASH';
   const branchesIn = o.branches ?? [{}];
   const photos =
-    o.reuse ?? (await uploadCreatePhotos(page, w, { credit: terms === 'CREDIT', guarantees: o.guarantees, branches: branchesIn }));
+    o.reuse ??
+    (await uploadCreatePhotos(page, w, {
+      credit: terms === 'CREDIT',
+      guarantees: o.guarantees,
+      creditDocPages: o.creditDocPages,
+      branches: branchesIn,
+    }));
+  const email = o.email === undefined ? fixtureEmail(w) : o.email;
   const ch = await generalTrade();
   const body: Record<string, unknown> = {
     ...(o.editId ? { editId: o.editId } : {}),
@@ -526,11 +601,14 @@ export async function submitCreateRequestViaApi(
       ...(o.phone === null ? {} : { primaryPhone: o.phone ?? (await w.allocPhones(1))[0]! }),
       contactPerson: o.contact ?? 'Salim Al Habsi',
       ...(photos.cr ? { crPhotoAttachmentId: photos.cr } : {}),
+      // Owner decisions 2026-10-11: credit only, as the form sends it.
+      ...(terms === 'CREDIT' && email !== null ? { email } : {}),
     },
     ...(terms === 'CREDIT'
       ? { credit: { requestedCreditLimit: o.credit?.limit ?? 500, requestedPaymentTermDays: o.credit?.days ?? 30 } }
       : {}),
     guaranteeAttachmentIds: terms === 'CREDIT' ? photos.guarantees : [],
+    creditDocuments: terms === 'CREDIT' ? photos.creditDocs : {},
     branches: branchesIn.map((b, i) => {
       const gps = b.gps ?? { lat: SHOP_POINT.lat, lng: SHOP_POINT.lng, accuracy: SHOP_POINT.accuracy };
       return {

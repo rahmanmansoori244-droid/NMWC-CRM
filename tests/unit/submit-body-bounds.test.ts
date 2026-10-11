@@ -70,7 +70,9 @@ import {
   TOO_MANY_EXTRA_PHOTOS_MESSAGE,
   TOO_MANY_GUARANTEES_MESSAGE,
   submitCreateSchema,
+  tooManyDocumentPagesMessage,
 } from '@/lib/validation/create';
+import { MAX_PAGES_PER_DOCUMENT } from '@/lib/credit-documents';
 import { MAX_REPORTED_ISSUES, MAX_REPORTED_MESSAGE, reportedIssues } from '@/lib/validation/fields';
 import { BRANCH_EDIT_FIELDS, CUSTOMER_EDIT_FIELDS, EDIT_PAYLOAD_VERSION } from '@/lib/edit-values';
 import { submitEditAction } from '@/services/edits';
@@ -187,6 +189,14 @@ describe('an array over its limit is refused on its length, before any element i
       (n) => createBody({ guaranteeAttachmentIds: names(n) }),
       MAX_CREATE_ATTACHMENTS,
       [{ path: ['guaranteeAttachmentIds'], message: TOO_MANY_GUARANTEES_MESSAGE }],
+    ],
+    [
+      // Owner decisions 2026-10-11: each credit document's pages, capped the same way.
+      'create: a credit document whose pages are not ids',
+      submitCreateSchema,
+      (n) => createBody({ creditDocuments: { MEMBERSHIP_CERT: names(n) } }),
+      MAX_PAGES_PER_DOCUMENT,
+      [{ path: ['creditDocuments', 'MEMBERSHIP_CERT'], message: tooManyDocumentPagesMessage('MEMBERSHIP_CERT') }],
     ],
     [
       'create: one branch with extra photos that are not ids',
@@ -410,6 +420,18 @@ describe('through the actions: refused before the database, and the error stays 
     );
     expect(Object.keys(res.fields)).toEqual(['customer.paymentTerms']);
     expect(res.fields['customer.paymentTerms']).toHaveLength(MAX_REPORTED_MESSAGE);
+    expect(db.user.findUniqueOrThrow).not.toHaveBeenCalled();
+  });
+
+  it('create: a credit document over its pages is said beside that document, before the database (owner decisions 2026-10-11)', async () => {
+    const res = failed(
+      await submitCreateAction(
+        createBody({ creditDocuments: { TAX_CARD: Array<string>(MILLION).fill('x') } }) as unknown as Parameters<
+          typeof submitCreateAction
+        >[0]
+      )
+    );
+    expect(res.fields).toEqual({ 'creditDoc.TAX_CARD': tooManyDocumentPagesMessage('TAX_CARD') });
     expect(db.user.findUniqueOrThrow).not.toHaveBeenCalled();
   });
 });

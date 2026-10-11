@@ -1474,8 +1474,73 @@ test.describe('salesman phone: every send is safe — double tap, no signal, los
     await page.goBack();
     await expect(page).toHaveURL(/\/today$/);
     await page.goto(`/customers/new?edit=${reqs[0]!.id}`);
-    await expect(page.getByText(/^This request is in review — current step:/)).toContainText('SUPERVISOR');
+    // The step in words since owner decisions 2026-10-11 (lib/approval-chains.ts stepName), not the enum.
+    await expect(page.getByText(/^This request is in review — current step:/)).toContainText('Supervisor');
     await expect(page.getByRole('button', { name: SUBMIT })).toHaveCount(0);
+  });
+
+  test('new customer on credit (owner decisions 2026-10-11): the e-mail with its own keyboard, the four credit documents (the ID card front and back), no guarantee, nothing wider than the phone; sent, the request carries them', async ({ browser }) => {
+    notRunHere(!hasR2, 'the new-customer form needs its photos and credit documents (R2)');
+    test.setTimeout(600_000);
+    const { user } = await addFieldSalesman(world, 'C4');
+    await resetLimits({ users: [user] });
+    const page = await (await contextAs(browser, user, { device: 'phone' })).newPage();
+    const ch = await channelWithSubs();
+    const [phone] = await world.allocPhones(1);
+    const name = world.name('Al Wadi Credit Traders');
+    const email = `accounts.${world.sfx}@example.com`.toLowerCase();
+    await page.goto('/today');
+    await fillCreateForm(page, {
+      legalName: name,
+      crNumber: `CR${world.SFX}C4`,
+      phone: phone!,
+      contact: 'Saleh Al Rashdi',
+      channelLabel: ch.label,
+      day: OMAN_TODAY,
+      address: world.name('Way 2210, Al Mawaleh North, Seeb'),
+      // Typed in capitals: stored in lower case.
+      credit: { limit: '750', days: '30', email: email.toUpperCase(), idPages: 2 },
+    });
+    const emailBox = page.getByLabel('E-mail *', { exact: true });
+    await expect(emailBox, 'the e-mail keyboard').toHaveAttribute('type', 'email');
+    await expect(emailBox, "never the phone owner's own address").toHaveAttribute('autocomplete', 'off');
+    await expect(photoSlot(page, 'Guarantee doc'), 'the guarantee is switched off').toHaveCount(0);
+    await expect(photoSlot(page, "Owner's ID card", 2), 'a fresh slot for a third page').toBeVisible();
+    await expectNoSideScroll(page);
+
+    await page.getByRole('button', { name: SUBMIT, exact: true }).click();
+    await expect(page).toHaveURL(/\/work$/, { timeout: 30_000 });
+    const req = await db.customerEdit.findFirstOrThrow({
+      where: { submittedById: user.id, process: 'CREATE' },
+      select: {
+        id: true,
+        state: true,
+        customerDraft: { select: { paymentTerms: true, email: true } },
+        attachments: { where: { deletedAt: null }, select: { kind: true } },
+      },
+    });
+    expect(req.state).toBe('SUBMITTED');
+    expect(req.customerDraft).toEqual({ paymentTerms: 'CREDIT', email });
+    expect(req.attachments.map((a) => a.kind).sort()).toEqual([
+      'CR',
+      'ID_CARD',
+      'ID_CARD',
+      'MEMBERSHIP_CERT',
+      'SHOP',
+      'SIGNBOARD',
+      'TAX_CARD',
+      'VAT_CERT',
+    ]);
+    await expectOneSet(req.id, audience);
+
+    // Reopened in review: the e-mail and every page are shown, nothing can change, and no slot is offered.
+    await page.goto(`/customers/new?edit=${req.id}`);
+    await expect(page.getByText(/^This request is in review — current step:/)).toContainText('Supervisor');
+    await expect(emailBox).toHaveValue(email);
+    await expect(emailBox).toBeDisabled();
+    await expect(photoSlot(page, "Owner's ID card", 1)).toBeVisible();
+    await expect(photoSlot(page, "Owner's ID card", 2), 'no slot for a new page').toHaveCount(0);
+    await expectNoSideScroll(page);
   });
 
   test('new customer: no signal, then signed out — nothing sent, nothing lost; after signing in, Try again sends it once (SM-SUBMIT-OFFLINE, AUTH-EXPIRED-MID-FORM)', async ({ browser }) => {

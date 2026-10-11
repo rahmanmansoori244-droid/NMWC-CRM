@@ -88,8 +88,10 @@ async function routeOf(w: World, userKey: string): Promise<{ routeId: string; re
  * its frozen chain, as services/creates.ts leaves a submitted one. Steps before
  * `step` are recorded as approved by `priorApprovers` (user keys, one per step).
  * With `photos` (and R2), real photos are stored and claimed by the request:
- * the CR document, a shop, a signboard and one extra photo per branch, and a
- * guarantee for a credit request.
+ * the CR document, a shop, a signboard and one extra photo per branch, and for
+ * a credit request what its frozen chain needs (owner decisions 2026-10-11): a
+ * guarantee on the 4-step chain; on the new chain one page of each credit
+ * document, and the signed application once it stands past that step.
  */
 export async function seedCreateRequest(
   w: World,
@@ -169,6 +171,8 @@ export async function seedCreateRequest(
         primaryPhone: phone!,
         primaryPhoneNorm: phone!,
         contactPerson: 'Saif Al Hinai',
+        // Owner decisions 2026-10-11: a credit customer's e-mail (none for cash).
+        email: terms === 'CREDIT' ? `accounts.${w.sfx}@example.com`.toLowerCase() : null,
       },
     });
     await db.editBranchDraft.createMany({
@@ -203,7 +207,16 @@ export async function seedCreateRequest(
   const photoIds: string[] = [];
   if (o.photos && hasR2) {
     const specs: PhotoSpec[] = [{ kind: 'CR', capturedBy: o.submitter, editId: id }];
-    if (terms === 'CREDIT') specs.push({ kind: 'GUARANTEE', capturedBy: o.submitter, editId: id });
+    if (terms === 'CREDIT' && !chain.some((s) => isSignedFormStep(s))) {
+      specs.push({ kind: 'GUARANTEE', capturedBy: o.submitter, editId: id });
+    } else if (terms === 'CREDIT') {
+      for (const kind of ['ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD'] as const) {
+        specs.push({ kind, capturedBy: o.submitter, editId: id });
+      }
+      if (stepIndex > chain.findIndex((s) => isSignedFormStep(s))) {
+        specs.push({ kind: 'CREDIT_FORM', capturedBy: o.submitter, editId: id });
+      }
+    }
     for (let i = 0; i < branchCount; i++) {
       specs.push(
         { kind: 'SHOP', capturedBy: o.submitter, editId: id },
@@ -316,11 +329,22 @@ export async function createRequestViaApi(
   const legalName = w.name(`Api ${terms} shop ${n}`);
   const { channelId, subChannelId } = await generalTrade();
   const [phone] = await w.allocPhones(1);
-  const up = async (kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE') => (await uploadPhotoViaApi(page, w, { kind })).attachmentId;
+  const up = async (kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'ID_CARD' | 'MEMBERSHIP_CERT' | 'VAT_CERT' | 'TAX_CARD') =>
+    (await uploadPhotoViaApi(page, w, { kind })).attachmentId;
   const cr = await up('CR');
   const shop = await up('SHOP');
   const sign = await up('SIGNBOARD');
-  const guarantee = terms === 'CREDIT' ? await up('GUARANTEE') : null;
+  // Owner decisions 2026-10-11: a credit request carries the e-mail and the four
+  // credit documents, and no longer a guarantee.
+  const creditDocuments =
+    terms === 'CREDIT'
+      ? {
+          ID_CARD: [await up('ID_CARD')],
+          MEMBERSHIP_CERT: [await up('MEMBERSHIP_CERT')],
+          VAT_CERT: [await up('VAT_CERT')],
+          TAX_CARD: [await up('TAX_CARD')],
+        }
+      : null;
   const body: Record<string, unknown> = {
     customer: {
       legalName,
@@ -331,6 +355,7 @@ export async function createRequestViaApi(
       primaryPhone: phone,
       contactPerson: 'Saif Al Hinai',
       crPhotoAttachmentId: cr,
+      ...(creditDocuments ? { email: `accounts.${w.sfx}@example.com`.toLowerCase() } : {}),
     },
     branches: [
       {
@@ -346,8 +371,8 @@ export async function createRequestViaApi(
         extraPhotoAttachmentIds: [],
       },
     ],
-    ...(guarantee
-      ? { credit: { requestedCreditLimit: 1500, requestedPaymentTermDays: 30 }, guaranteeAttachmentIds: [guarantee] }
+    ...(creditDocuments
+      ? { credit: { requestedCreditLimit: 1500, requestedPaymentTermDays: 30 }, creditDocuments }
       : {}),
   };
   const out = await submitCreateViaApi(page, body, { world: w });

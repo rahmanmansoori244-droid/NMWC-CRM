@@ -9,7 +9,16 @@
  *    them onto the edit at save and binds them to real slots at finalize;
  *  - branches are a dynamic array (add/remove, 1–10) keyed by index;
  *  - paymentTerms is chosen up front and routes the approval chain
- *    (CASH → SUP→ACC, CREDIT → SUP→FM→GM→ACC) + reveals the credit block.
+ *    (CASH → SUP→ACC; CREDIT → SUP→SD→signed application→FM→GM→ACC since owner
+ *    decisions 2026-10-11) + reveals the credit block.
+ *
+ * Owner decisions 2026-10-11: a CREDIT request asks for the customer's e-mail
+ * and four credit documents (the owner's ID card, the membership certificate,
+ * the VAT registration certificate and the tax card, 1..4 pages each —
+ * CreditDocumentSlots), and no longer for a guarantee. The guarantee is a switch
+ * (lib/credit-documents.ts GUARANTEE_REQUIRED_FOR_CREDIT), off: its slot is not
+ * offered, and the guarantees a returned request already carries stay shown,
+ * removable, and sent again. A CASH request shows and sends none of these.
  */
 import { useCallback, useId, useEffect, useRef, useState } from 'react';
 import type { DayOfWeek, EditState, PaymentTerms } from '@prisma/client';
@@ -36,6 +45,14 @@ import { hardReplace } from '@/lib/navigate';
 import { LabeledField as Field, errorTiedTo, groupNamedBy } from '@/components/nmwc/LabeledField';
 import { typedNumber } from '@/lib/digits';
 import { onSignOut } from '@/lib/device-drafts';
+import {
+  CREDIT_DOCUMENT_KINDS,
+  CREDIT_DOCUMENT_LABELS,
+  GUARANTEE_REQUIRED_FOR_CREDIT,
+  MAX_PAGES_PER_DOCUMENT,
+  type CreditDocumentKind,
+} from '@/lib/credit-documents';
+import { CreditDocumentSlots, documentPages, type DocumentPages } from './CreditDocumentSlots';
 
 type ChannelWithSubs = {
   id: string;
@@ -61,12 +78,16 @@ export type CreateFormInitial = {
     contactRole: string;
     notes: string;
     crPhotoAttachmentId: string | null;
+    /** Owner decisions 2026-10-11: CREDIT only ('' when none is on file). */
+    email: string;
   };
   credit: {
     requestedCreditLimit: number | null;
     requestedPaymentTermDays: number | null;
   };
   guaranteeAttachmentIds: string[];
+  /** Owner decisions 2026-10-11: each credit document's live pages on file, oldest first. */
+  creditDocuments: Record<CreditDocumentKind, string[]>;
   branches: Array<{
     branchName: string;
     address: string;
@@ -143,7 +164,31 @@ function typedAnything(d: Record<string, unknown>): boolean {
     d.notes,
     d.creditLimit,
     d.termDays,
+    d.email,
   ].some((v) => typeof v === 'string' && v.trim() !== '');
+}
+
+/**
+ * The rendered error slots: a refusal keyed anything else is said at the top of
+ * the form, so a submit never appears to do nothing. Owner decisions 2026-10-11:
+ * the e-mail and each credit document's group.
+ */
+const RENDERED_ERROR_KEYS = new RegExp(
+  `^(customer\\.(legalName|crNumber|crPhoto|channelId|subChannelId|primaryPhone|altPhone|contactPerson|contactRole|email)|credit\\.(requestedCreditLimit|requestedPaymentTermDays)|creditDoc\\.(${CREDIT_DOCUMENT_KINDS.join('|')})|guarantee|branch\\.\\d+\\.(branchName|address|areaDescription|gps|dayOfVisit|openingHours|deliveryWindow|shopPhoto|signboardPhoto)|_form)$`
+);
+
+/** What the CREDIT choice says (owner decisions 2026-10-11: lib/approval-chains.ts resolveChain). */
+export const CREDIT_CHAIN_NOTE =
+  "Credit: approval chain is Supervisor → Sales Director → signed application → Finance Manager → GM → Accountant. The customer's e-mail and the four credit documents below are required.";
+
+/** The credit documents' pages as the request on file holds them. */
+function initialCreditDocuments(
+  docs: Partial<Record<CreditDocumentKind, string[]>> | undefined
+): Record<CreditDocumentKind, DocumentPages> {
+  return Object.fromEntries(CREDIT_DOCUMENT_KINDS.map((k) => [k, documentPages(docs?.[k] ?? [])])) as Record<
+    CreditDocumentKind,
+    DocumentPages
+  >;
 }
 
 let branchKeyCounter = 1;
@@ -246,6 +291,8 @@ export function CreateCustomerForm({
   const [contactRole, setContactRole] = useState(ic?.contactRole ?? '');
   const [notes, setNotes] = useState(ic?.notes ?? '');
   const [crPhotoId, setCrPhotoId] = useState<string | null>(ic?.crPhotoAttachmentId ?? null);
+  // Owner decisions 2026-10-11: CREDIT only — shown, checked and sent for credit.
+  const [email, setEmail] = useState(ic?.email ?? '');
 
   const [creditLimit, setCreditLimit] = useState(
     initial?.credit.requestedCreditLimit != null ? String(initial.credit.requestedCreditLimit) : ''
@@ -259,12 +306,21 @@ export function CreateCustomerForm({
   // slot only when a new document is in. It was keyed by the number of
   // documents, so removing another one remounted it mid-upload and let Submit
   // go (item 22 review). One state, so the key moves with the list, never for
-  // a document already on it.
-  const [guarantees, setGuarantees] = useState(() => ({
-    ids: initial?.guaranteeAttachmentIds ?? [],
-    emptySlot: 0,
-  }));
+  // a document already on it. CreditDocumentSlots renders each list.
+  const [guarantees, setGuarantees] = useState<DocumentPages>(() =>
+    documentPages(initial?.guaranteeAttachmentIds)
+  );
   const guaranteeIds = guarantees.ids;
+  // Owner decisions 2026-10-11: offered while the switch is on; with it off,
+  // only the guarantees a returned request already carries are shown (and kept).
+  const showGuarantees = GUARANTEE_REQUIRED_FOR_CREDIT || guaranteeIds.length > 0;
+  // The four credit documents, each like the guarantee list.
+  const [creditDocs, setCreditDocs] = useState(() => initialCreditDocuments(initial?.creditDocuments));
+  const setDocPages = useCallback(
+    (kind: CreditDocumentKind) => (update: (p: DocumentPages) => DocumentPages) =>
+      setCreditDocs((all) => ({ ...all, [kind]: update(all[kind]) })),
+    []
+  );
 
   const [branchStates, setBranchStates] = useState<BState[]>(() => {
     if (initial && initial.branches.length > 0) {
@@ -319,7 +375,13 @@ export function CreateCustomerForm({
     // Number(), '٥٠٠' was "missing".
     if (!(typedNumber(creditLimit) > 0)) missingMandatory.push('Credit limit');
     if (!(typedNumber(termDays) >= 1)) missingMandatory.push('Payment term days');
-    if (guaranteeIds.length === 0) missingMandatory.push('Guarantee document');
+    // Owner decisions 2026-10-11: the e-mail (its format is checked on the
+    // server and said beside the field) and a page of each credit document.
+    if (!email.trim()) missingMandatory.push('E-mail');
+    for (const kind of CREDIT_DOCUMENT_KINDS) {
+      if (creditDocs[kind].ids.length === 0) missingMandatory.push(CREDIT_DOCUMENT_LABELS[kind]);
+    }
+    if (GUARANTEE_REQUIRED_FOR_CREDIT && guaranteeIds.length === 0) missingMandatory.push('Guarantee document');
   }
   branchStates.forEach((s, i) => {
     const tag = `Branch ${i + 1}`;
@@ -402,6 +464,7 @@ export function CreateCustomerForm({
       if (typeof d.notes === 'string') setNotes(d.notes);
       if (typeof d.creditLimit === 'string') setCreditLimit(d.creditLimit);
       if (typeof d.termDays === 'string') setTermDays(d.termDays);
+      if (typeof d.email === 'string') setEmail(d.email);
       // Item 22: this form was never saved to the server (a server draft would
       // have been loaded instead), so nothing else was kept anywhere. The old
       // text said photos, GPS and branches were "kept on the server".
@@ -481,6 +544,7 @@ export function CreateCustomerForm({
         notes,
         creditLimit,
         termDays,
+        email,
         savedAt: Date.now(),
         unanswered: unansweredRef.current,
       };
@@ -509,6 +573,7 @@ export function CreateCustomerForm({
     notes,
     creditLimit,
     termDays,
+    email,
   ]);
 
   // Item 22: a green "saved" or "received" no longer describes the form once it
@@ -528,8 +593,10 @@ export function CreateCustomerForm({
     notes,
     creditLimit,
     termDays,
+    email,
     crPhotoId,
     guaranteeIds,
+    creditDocs,
     branchStates,
   ]);
 
@@ -565,6 +632,8 @@ export function CreateCustomerForm({
         contactRole: contactRole.trim() || undefined,
         notes: notes.trim() || undefined,
         crPhotoAttachmentId: crPhotoId ?? undefined,
+        // Owner decisions 2026-10-11: credit only; never sent for cash.
+        email: isCredit ? email.trim() || undefined : undefined,
       },
       credit: isCredit
         ? {
@@ -572,7 +641,17 @@ export function CreateCustomerForm({
             requestedPaymentTermDays: termDays.trim() ? typedNumber(termDays) : undefined,
           }
         : undefined,
+      // With the guarantee switched off, the ones a returned request carries are
+      // still sent: unsent, the submit would release them (services/creates.ts).
       guaranteeAttachmentIds: isCredit ? guaranteeIds : [],
+      // Owner decisions 2026-10-11: none for cash, so a request switched to cash
+      // releases them.
+      creditDocuments: isCredit
+        ? (Object.fromEntries(CREDIT_DOCUMENT_KINDS.map((k) => [k, creditDocs[k].ids])) as Record<
+            CreditDocumentKind,
+            string[]
+          >)
+        : {},
       branches: branchStates.map((s) => ({
         branchName: s.branchName.trim() || 'Main',
         address: s.address.trim() || undefined,
@@ -637,9 +716,7 @@ export function CreateCustomerForm({
         if (result.fields) {
           // Any key without a rendered slot must still surface somewhere —
           // otherwise the submit appears to silently do nothing.
-          const rendered =
-            /^(customer\.(legalName|crNumber|crPhoto|channelId|subChannelId|primaryPhone|altPhone|contactPerson|contactRole)|credit\.(requestedCreditLimit|requestedPaymentTermDays)|guarantee|branch\.\d+\.(branchName|address|areaDescription|gps|dayOfVisit|openingHours|deliveryWindow|shopPhoto|signboardPhoto)|_form)$/;
-          const orphaned = Object.entries(result.fields).filter(([k]) => !rendered.test(k));
+          const orphaned = Object.entries(result.fields).filter(([k]) => !RENDERED_ERROR_KEYS.test(k));
           setErrors({
             ...result.fields,
             ...(orphaned.length > 0 && !result.fields._form
@@ -749,7 +826,7 @@ export function CreateCustomerForm({
         </div>
         <p className="mt-2 text-xs text-slate-500">
           {isCredit
-            ? 'Credit: approval chain is Supervisor → Finance Manager → GM → Accountant, and a credit application is required below.'
+            ? CREDIT_CHAIN_NOTE
             : 'Cash: approval chain is Supervisor → Accountant.'}
         </p>
       </FormSection>
@@ -905,6 +982,21 @@ export function CreateCustomerForm({
             disabled={readOnly}
             maxLength={200}
           />
+          {/* Owner decisions 2026-10-11: asked of a credit customer only. 'off',
+              like the phones: the browser would offer the salesman's own address. */}
+          {isCredit && (
+            <Field
+              label="E-mail *"
+              type="email"
+              autoComplete="off"
+              placeholder="name@company.com"
+              value={email}
+              onChange={setEmail}
+              error={errors['customer.email']}
+              disabled={readOnly}
+              maxLength={254}
+            />
+          )}
         </div>
       </FormSection>
 
@@ -934,64 +1026,55 @@ export function CreateCustomerForm({
               inputMode="numeric"
             />
           </div>
-          <div className="mt-3" {...groupNamedBy(`${uid}-guarantee`, errors['guarantee'])}>
-            <p id={`${uid}-guarantee`} className="mb-1 block text-sm font-medium text-slate-700">
-              Guarantee / security documents * (at least one)
-            </p>
-            {errors['guarantee'] && (
-              <p id={`${uid}-guarantee-error`} className="mb-1 text-xs font-medium text-red-600">
-                {errors['guarantee']}
-              </p>
+        </FormSection>
+      )}
+
+      {/* Owner decisions 2026-10-11: the four credit documents, a page or more
+          of each, handled like a CR copy (never cached, every view recorded). */}
+      {isCredit && (
+        <FormSection
+          title="Credit documents"
+          description={`Take a clear photo of every page — up to ${MAX_PAGES_PER_DOCUMENT} pages each.`}
+          defaultOpen
+        >
+          <div className="grid gap-4">
+            {CREDIT_DOCUMENT_KINDS.map((kind) => (
+              <CreditDocumentSlots
+                key={kind}
+                id={`${uid}-doc-${kind}`}
+                caption={`${CREDIT_DOCUMENT_LABELS[kind]} *`}
+                kind={kind}
+                pages={creditDocs[kind]}
+                onPagesChange={setDocPages(kind)}
+                max={MAX_PAGES_PER_DOCUMENT}
+                required
+                readOnly={readOnly}
+                locked={photosLocked}
+                error={errors[`creditDoc.${kind}`]}
+                onBusyChange={onPhotoBusy}
+              />
+            ))}
+            {showGuarantees && (
+              <CreditDocumentSlots
+                id={`${uid}-guarantee`}
+                caption={
+                  GUARANTEE_REQUIRED_FOR_CREDIT
+                    ? 'Guarantee / security documents * (at least one)'
+                    : 'Guarantee / security documents already attached (no longer required)'
+                }
+                kind="GUARANTEE"
+                pages={guarantees}
+                onPagesChange={setGuarantees}
+                max={10}
+                // Switched off: the ones on file stay, removable; none is added.
+                allowNew={GUARANTEE_REQUIRED_FOR_CREDIT}
+                required={GUARANTEE_REQUIRED_FOR_CREDIT}
+                readOnly={readOnly}
+                locked={photosLocked}
+                error={errors['guarantee']}
+                onBusyChange={onPhotoBusy}
+              />
             )}
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-              {guaranteeIds.map((gid) => (
-                <PhotoCaptureSlot
-                  key={gid}
-                  kind="GUARANTEE"
-                  disabled={readOnly || photosLocked}
-                  initial={{ attachmentId: gid, remoteUrl: `/api/photos/${gid}` }}
-                  onChange={(p) => {
-                    if (readOnly) return;
-                    const next = p?.attachmentId;
-                    // A retake replaces this document in place. Only a removal was
-                    // handled: the screen showed the new document while the request
-                    // still sent the old id (found by the item-22 review agent).
-                    setGuarantees((g) =>
-                      !next
-                        ? { ...g, ids: g.ids.filter((x) => x !== gid) }
-                        : next === gid
-                          ? g
-                          : {
-                              ...g,
-                              ids: g.ids
-                                .map((x) => (x === gid ? next : x))
-                                .filter((x, i, all) => all.indexOf(x) === i),
-                            }
-                    );
-                  }}
-                  onBusyChange={onPhotoBusy}
-                />
-              ))}
-              {!readOnly && guaranteeIds.length < 10 && (
-                <PhotoCaptureSlot
-                  // Reset the empty slot after each successful capture so a
-                  // fresh one appears for the next document.
-                  key={`empty-${guarantees.emptySlot}`}
-                  kind="GUARANTEE"
-                  required={guaranteeIds.length === 0}
-                  onChange={(p) => {
-                    const id = p?.attachmentId;
-                    if (id) {
-                      setGuarantees((g) =>
-                        g.ids.includes(id) ? g : { ids: [...g.ids, id], emptySlot: g.emptySlot + 1 }
-                      );
-                    }
-                  }}
-                  onBusyChange={onPhotoBusy}
-                  disabled={photosLocked}
-                />
-              )}
-            </div>
           </div>
         </FormSection>
       )}

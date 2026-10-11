@@ -6,7 +6,9 @@
  *    "Equipment at the shop" and "Photos" were <label>s with no control to
  *    name: a photo slot, the GPS capture and the steppers have no single field
  *    to point at. Each caption now names its group (role=group), and the
- *    group's error, when shown, describes it.
+ *    group's error, when shown, describes it. Owner decisions 2026-10-11: each
+ *    credit document (the owner's ID card, the membership, VAT and tax
+ *    documents) is such a group too, and the credit customer's e-mail a field.
  *  - The Channel, Sub-channel and Day of visit selects showed their error as a
  *    bare line: the select is now aria-invalid and described by it, as every
  *    LabeledField is.
@@ -66,9 +68,11 @@ describe('the new-customer form', () => {
       contactRole: '',
       notes: '',
       crPhotoAttachmentId: null,
+      email: '',
     },
     credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
     guaranteeAttachmentIds: [],
+    creditDocuments: { ID_CARD: [], MEMBERSHIP_CERT: [], VAT_CERT: [], TAX_CARD: [] },
     branches: [
       {
         branchName: 'Main',
@@ -96,7 +100,9 @@ describe('the new-customer form', () => {
     'customer.crPhoto': 'Capture the CR document.',
     'customer.channelId': 'Pick a channel.',
     'customer.subChannelId': 'Pick a sub-channel.',
-    guarantee: 'Add at least one guarantee document.',
+    'creditDoc.ID_CARD': "Owner's ID card is required for credit.",
+    'creditDoc.TAX_CARD': 'Tax card is required for credit.',
+    'customer.email': 'Enter a valid e-mail address, like name@company.com.',
     'branch.0.gps': 'Capture the location.',
     'branch.0.dayOfVisit': 'Pick a day of visit.',
     'branch.0.shopPhoto': 'Capture the shop front.',
@@ -112,11 +118,17 @@ describe('the new-customer form', () => {
   it('each caption over a photo slot, the GPS capture or the steppers names its group', () => {
     render(<CreateCustomerForm channels={channels} initial={credit} sessionUserId="u1" />);
     expect(within(screen.getByRole('group', { name: 'CR document photo *' })).getByText('CR photo')).toBeTruthy();
-    expect(
-      within(screen.getByRole('group', { name: 'Guarantee / security documents * (at least one)' })).getByText(
-        'GUARANTEE photo'
-      )
-    ).toBeTruthy();
+    // Owner decisions 2026-10-11: the four credit documents, each its own group.
+    for (const [name, kind] of [
+      ["Owner's ID card *", 'ID_CARD'],
+      ['Membership certificate *', 'MEMBERSHIP_CERT'],
+      ['VAT registration certificate *', 'VAT_CERT'],
+      ['Tax card *', 'TAX_CARD'],
+    ] as const) {
+      expect(within(screen.getByRole('group', { name })).getByText(`${kind} photo`), name).toBeTruthy();
+    }
+    // The guarantee is no longer asked for (switched off), and this request carries none.
+    expect(screen.queryByRole('group', { name: /Guarantee/ })).toBeNull();
     expect(
       within(screen.getByRole('group', { name: 'Location * (required to submit)' })).getByRole('button', {
         name: 'Capture GPS',
@@ -130,13 +142,25 @@ describe('the new-customer form', () => {
     await refusedDraft();
     for (const [name, error] of [
       ['CR document photo *', ERRORS['customer.crPhoto']],
-      ['Guarantee / security documents * (at least one)', ERRORS.guarantee],
+      ["Owner's ID card *", ERRORS['creditDoc.ID_CARD']],
+      ['Tax card *', ERRORS['creditDoc.TAX_CARD']],
       ['Location * (required to submit)', ERRORS['branch.0.gps']],
       ['Photos', ERRORS['branch.0.shopPhoto']],
     ] as const) {
       expect(screen.getByRole('group', { name }), name).toHaveAccessibleDescription(error);
     }
     expect(screen.getByRole('group', { name: 'Equipment at the shop' })).toHaveAccessibleDescription('');
+    expect(screen.getByRole('group', { name: 'VAT registration certificate *' })).toHaveAccessibleDescription('');
+  });
+
+  it("owner decisions 2026-10-11: the credit customer's e-mail is a field, invalid and described by its error", async () => {
+    await refusedDraft();
+    const email = screen.getByRole('textbox', { name: 'E-mail *' });
+    expect(email).toHaveAttribute('type', 'email');
+    // 'off', like the phones: the browser would offer the salesman's own address.
+    expect(email).toHaveAttribute('autocomplete', 'off');
+    expect(email).toHaveAttribute('aria-invalid', 'true');
+    expect(email).toHaveAccessibleDescription(ERRORS['customer.email']);
   });
 
   it('a select with an error is invalid and described by it', async () => {

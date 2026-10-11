@@ -2,7 +2,8 @@
 /**
  * UAT DATA BUILDER — submit real CASH + CREDIT CREATE requests via the actual
  * submitCreateAction so the approval chains have live work items to walk in the
- * UI (cash SUP→ACC, credit SUP→FM→GM→ACC). Uses a seeded salesman; leaves the
+ * UI (cash SUP→ACC, credit SUP→SD→signed application→FM→GM→ACC since owner
+ * decisions 2026-10-11). Uses a seeded salesman; leaves the
  * requests SUBMITTED at step 0 (no cleanup). Prints who to log in as.
  *
  *   RUN_BUILD_CHAIN=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/build-chain-data.test.ts
@@ -47,7 +48,7 @@ describe.skipIf(!ENABLED)('UAT: build cash + credit CREATE chain data', () => {
 
   // create an UNBOUND synthetic attachment (DB row only, no R2 object) the create
   // flow can claim. Returns its id.
-  async function mkAtt(kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE', tag: string) {
+  async function mkAtt(kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE' | 'ID_CARD' | 'MEMBERSHIP_CERT' | 'VAT_CERT' | 'TAX_CARD', tag: string) {
     const a = await prisma.attachment.create({
       data: { kind, r2Key: `uat/${kind.toLowerCase()}-${tag}.jpg`, mimeType: kind === 'GUARANTEE' ? 'application/pdf' : 'image/jpeg', bytes: 1000, capturedById: salesman.id, capturedAt: new Date() },
     });
@@ -75,13 +76,15 @@ describe.skipIf(!ENABLED)('UAT: build cash + credit CREATE chain data', () => {
     }
   });
 
-  it('submits CREDIT CREATE requests (chain: Supervisor → FM → GM → Accountant)', async () => {
+  it('submits CREDIT CREATE requests (chain: Supervisor → Sales Director → signed application → FM → GM → Accountant)', async () => {
     for (let i = 1; i <= 2; i++) {
+      // Owner decisions 2026-10-11: the e-mail and the four credit documents, no guarantee.
+      const doc = async (kind: 'ID_CARD' | 'MEMBERSHIP_CERT' | 'VAT_CERT' | 'TAX_CARD') => [await mkAtt(kind, `${kind.toLowerCase()}-${i}-${Date.now()}`)];
       const res = await creates.submitCreateAction({
         isDraft: false,
-        customer: { legalName: `UAT Credit Customer ${i}`, paymentTerms: 'CREDIT', channelId, subChannelId, primaryPhone: `+9689${6000000 + i}`, contactPerson: `Credit Contact ${i}`, crNumber: `${9700000 + i}`, crPhotoAttachmentId: await mkAtt('CR', `credit-${i}-${Date.now()}`) },
+        customer: { legalName: `UAT Credit Customer ${i}`, paymentTerms: 'CREDIT', channelId, subChannelId, primaryPhone: `+9689${6000000 + i}`, contactPerson: `Credit Contact ${i}`, crNumber: `${9700000 + i}`, crPhotoAttachmentId: await mkAtt('CR', `credit-${i}-${Date.now()}`), email: `uat.credit.${i}@example.com` },
         credit: { requestedCreditLimit: 5000 * i, requestedPaymentTermDays: 30 },
-        guaranteeAttachmentIds: [await mkAtt('GUARANTEE', `${i}-${Date.now()}`)],
+        creditDocuments: { ID_CARD: await doc('ID_CARD'), MEMBERSHIP_CERT: await doc('MEMBERSHIP_CERT'), VAT_CERT: await doc('VAT_CERT'), TAX_CARD: await doc('TAX_CARD') },
         branches: [await branch(100 + i)],
       });
       if (!res.ok) console.error('CREDIT create failed:', JSON.stringify(res));
@@ -96,7 +99,7 @@ describe.skipIf(!ENABLED)('UAT: build cash + credit CREATE chain data', () => {
     console.log(`Salesman submitter: ${salesman.username} (Demo!2026Demo)`);
     console.log(`Their Supervisor (step 1): ${supervisorName}`);
     console.log(`CREATE requests now SUBMITTED (pending Supervisor): ${pending}`);
-    console.log(`Walk: Supervisor approves → CASH goes to Accountant; CREDIT goes to Finance Manager → GM → Accountant.`);
+    console.log(`Walk: Supervisor approves → CASH goes to Accountant; CREDIT goes to the Sales Director, then the salesman uploads the signed application, then Finance Manager → GM → Accountant.`);
     expect(pending).toBeGreaterThanOrEqual(4);
   });
 });

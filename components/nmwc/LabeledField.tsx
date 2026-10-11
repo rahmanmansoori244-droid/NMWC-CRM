@@ -68,8 +68,10 @@ export function LabeledField({
    * 'tel' opens the phone keypad — digits and '+', which is everything
    * lib/phone.ts accepts. Never 'number': it drops the '+' and leading zeros.
    * Benchmark item 36: every phone field opened the full QWERTY keyboard.
+   * 'email' opens the keyboard with '@' (owner decisions 2026-10-11: the credit
+   * customer's e-mail on the new-customer form).
    */
-  type?: 'text' | 'tel';
+  type?: 'text' | 'tel' | 'email';
   /**
    * The customer phone fields pass 'off'. 'tel' would offer the DEVICE OWNER's
    * number — the salesman's own — as a one-tap fill for a customer's phone.

@@ -11,6 +11,10 @@
  *           stand at a Finance Manager, GM or Accountant step by index are frozen
  *           with the 4-step chain a request submitted before those decisions
  *           still carries (legacyChain), so they keep testing what they test.
+ *           Part B of those decisions: a credit request carries the customer's
+ *           e-mail and four credit documents (the owner's ID card, the
+ *           membership, VAT and tax documents), each a page or more, and no
+ *           longer a guarantee; finalize binds them and copies the e-mail.
  *
  * What the launch build changed here, and what these tests hold it to:
  *   - wave 1: the Accountant stays on the request and sees the code he created;
@@ -110,6 +114,7 @@ import {
   decisionTokenNow,
   emailVerdictFor,
   fastForwardCreate,
+  fixtureEmail,
   generalTrade,
   parseChain,
   rewriteActionForm,
@@ -190,7 +195,10 @@ function formSection(page: Page, title: string | RegExp): Locator {
   return page.locator('details').filter({ has: page.locator('summary h3').filter({ hasText: title }) });
 }
 
-/** A PhotoCaptureSlot by its label ('CR document', 'Shop front', 'Signboard', 'Guarantee doc', 'Other'). */
+/**
+ * A PhotoCaptureSlot by its label ('CR document', 'Shop front', 'Signboard', 'Guarantee doc', 'Other', and
+ * since owner decisions 2026-10-11 "Owner's ID card", 'Membership certificate', 'VAT certificate', 'Tax card').
+ */
 function photoSlot(scope: Locator, label: string): Locator {
   return scope.locator('div.isolate').filter({ hasText: label });
 }
@@ -397,7 +405,9 @@ async function expectPhotoServed(page: Page, id: string, confidential: boolean):
   expect(r.status, `photo ${id}`).toBe(200);
   expect(r.headers['content-type']).toBe('image/jpeg');
   if (confidential) {
-    expect(r.headers['cache-control'], 'a CR or guarantee document is never cached').toBe('private, no-store, no-cache, must-revalidate');
+    expect(r.headers['cache-control'], 'a CR, guarantee or credit document is never cached').toBe(
+      'private, no-store, no-cache, must-revalidate'
+    );
     expect(r.headers['etag']).toBeUndefined();
   } else {
     expect(r.headers['cache-control']).toBe('private, max-age=3600, immutable');
@@ -926,7 +936,7 @@ test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] 
   test.describe.configure({ mode: 'serial' });
 
   let w: World;
-  const K = { id: '', name: '', cr: '', phone: '', customerId: '' };
+  const K = { id: '', name: '', cr: '', phone: '', customerId: '', email: '' };
 
   test.beforeAll(async () => {
     test.setTimeout(300_000);
@@ -937,7 +947,7 @@ test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] 
     await w?.cleanup();
   });
 
-  test('the salesman applies for credit on his phone: the credit block, figures that count as missing, Arabic digits, a fresh guarantee slot', async ({ browser }) => {
+  test('the salesman applies for credit on his phone: the credit block, the e-mail, the four credit documents, figures that count as missing, Arabic digits, no guarantee', async ({ browser }) => {
     notRunHere(!hasR2, 'the form uploads its photos to R2');
     test.setTimeout(360_000);
     const sa = w.user('SA');
@@ -945,16 +955,23 @@ test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] 
     const page = await pageAs(browser, sa, 'phone');
     await page.goto('/customers/new');
     await expect(formSection(page, 'Credit application')).toHaveCount(0);
+    // Owner decisions 2026-10-11: none of the credit part is asked of a cash customer.
+    await expect(formSection(page, 'Credit documents')).toHaveCount(0);
+    await expect(page.getByLabel('E-mail *', { exact: true })).toHaveCount(0);
     await page.locator('label').filter({ hasText: /^Credit$/ }).click();
     await expect(page.getByRole('radio', { name: 'Credit' })).toBeChecked();
     const credit = formSection(page, 'Credit application');
     await expect(credit).toBeVisible();
     await expect(
-      page.getByText('Credit: approval chain is Supervisor → Finance Manager → GM → Accountant, and a credit application is required below.', {
-        exact: true,
-      })
+      page.getByText(
+        "Credit: approval chain is Supervisor → Sales Director → signed application → Finance Manager → GM → Accountant. The customer's e-mail and the four credit documents below are required.",
+        { exact: true }
+      )
     ).toBeVisible();
-    await expect(missingList(page)).toContainText('Credit limit, Payment term days, Guarantee document');
+    await expect(missingList(page)).toContainText(
+      "Credit limit, Payment term days, E-mail, Owner's ID card, Membership certificate, VAT registration certificate, Tax card"
+    );
+    await expect(missingList(page), 'the guarantee is switched off').not.toContainText('Guarantee');
 
     const limit = page.getByLabel('Requested credit limit (OMR) *', { exact: true });
     const days = page.getByLabel('Requested payment term (days) *', { exact: true });
@@ -967,11 +984,28 @@ test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] 
     await days.fill('45');
     await expect(missingList(page)).not.toContainText('Credit limit');
     await expect(missingList(page)).not.toContainText('Payment term days');
-    const guarantees = photoSlot(credit, 'Guarantee doc');
-    await expect(guarantees).toHaveCount(1);
-    await takePhoto(guarantees.first());
-    await expect(guarantees, 'a fresh slot appears for the next document').toHaveCount(2);
-    await expect(missingList(page)).not.toContainText('Guarantee document');
+    // The customer's e-mail: an e-mail keyboard, typed in capitals, stored in lower case.
+    const email = page.getByLabel('E-mail *', { exact: true });
+    await expect(email).toHaveAttribute('type', 'email');
+    K.email = fixtureEmail(w, 'credit');
+    await email.fill(K.email.toUpperCase());
+    await expect(missingList(page)).not.toContainText('E-mail');
+    // The four credit documents, a page each and a fresh slot for the next; the ID card front and back.
+    const docs = formSection(page, 'Credit documents');
+    await expect(docs).toBeVisible();
+    await expect(photoSlot(docs, 'Guarantee doc'), 'no guarantee slot: switched off').toHaveCount(0);
+    await expect(photoSlot(page.locator('main'), 'Guarantee doc')).toHaveCount(0);
+    for (const label of ["Owner's ID card", 'Membership certificate', 'VAT certificate', 'Tax card']) {
+      const slots = photoSlot(docs, label);
+      await expect(slots, label).toHaveCount(1);
+      await takePhoto(slots.first());
+      await expect(slots, `${label}: a fresh slot appears for the next page`).toHaveCount(2);
+    }
+    await takePhoto(photoSlot(docs, "Owner's ID card").nth(1));
+    await expect(photoSlot(docs, "Owner's ID card")).toHaveCount(3);
+    for (const item of ["Owner's ID card", 'Membership certificate', 'VAT registration certificate', 'Tax card']) {
+      await expect(missingList(page)).not.toContainText(item);
+    }
 
     K.name = w.name('Credit House');
     K.cr = uniqueCr(w);
@@ -999,7 +1033,16 @@ test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] 
       ['ACCOUNTANT', 9],
     ]);
     expectFreshStage(edit, edit.submittedAt!.getTime(), 8);
-    expect(edit.attachments.filter((a) => a.kind === 'GUARANTEE' && !a.deletedAt)).toHaveLength(1);
+    // Owner decisions 2026-10-11: the four documents claimed by the request (the ID card two pages), no guarantee.
+    const live = edit.attachments.filter((a) => !a.deletedAt).map((a) => a.kind);
+    expect(live.filter((k) => !['CR', 'SHOP', 'SIGNBOARD'].includes(k)).sort()).toEqual([
+      'ID_CARD',
+      'ID_CARD',
+      'MEMBERSHIP_CERT',
+      'TAX_CARD',
+      'VAT_CERT',
+    ]);
+    expect((await db.editCustomerDraft.findUniqueOrThrow({ where: { editId: K.id }, select: { email: true } })).email).toBe(K.email);
 
     const rows = await notificationsFor({ editId: K.id });
     expect(rows.map((r) => `${r.kind}:${r.userId}`).sort()).toEqual(
@@ -1157,9 +1200,18 @@ test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] 
     await expect(fm1.getByRole('heading', { level: 2, name: 'Credit application (requested — approve or reject, no amendment)' })).toBeVisible();
     await expect(fm1.getByText('OMR 1234.500', { exact: true })).toBeVisible();
     await expect(fm1.getByText('45 days', { exact: true })).toBeVisible();
-    await expect(fm1.getByText('Guarantee documents (1)', { exact: true })).toBeVisible();
-    const g = await db.attachment.findFirstOrThrow({ where: { editId: K.id, kind: 'GUARANTEE', deletedAt: null } });
-    await expectPhotoServed(fm1, g.id, true);
+    // Owner decisions 2026-10-11 (part B): no guarantee on this request, so no guarantee row; the four
+    // credit documents it was sent with, each shown and never cached.
+    await expect(fm1.getByText(/^Guarantee documents/)).toHaveCount(0);
+    const docs = await db.attachment.findMany({
+      where: { editId: K.id, deletedAt: null, kind: { in: ['ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD'] } },
+      select: { id: true },
+    });
+    expect(docs).toHaveLength(5); // the ID card front and back, and one page of each other document
+    for (const d of docs) {
+      await expect(fm1.locator(`main img[src="/api/photos/${d.id}"]`)).toBeVisible();
+      await expectPhotoServed(fm1, d.id, true);
+    }
     // Owner decisions 2026-10-11: the signed application he decides on, never cached, its uploader named.
     const signed = await db.attachment.findFirstOrThrow({ where: { editId: K.id, kind: 'CREDIT_FORM', deletedAt: null } });
     await expect(fm1.locator(`main img[src="/api/photos/${signed.id}"]`)).toBeVisible();
@@ -1236,8 +1288,14 @@ test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] 
     expect(customer.nmwcCode).toMatch(codeRe());
     expect(customer).toMatchObject({ paymentTerms: 'CREDIT', paymentTermDays: 45, temixSyncState: 'PENDING_UPLOAD', temixCode: temix });
     expect(Number(customer.creditLimit), 'exactly as requested, never amended').toBe(1234.5);
-    const g = await db.attachment.findFirstOrThrow({ where: { editId: K.id, kind: 'GUARANTEE' } });
-    expect(g.customerId, 'the guarantee is bound to the customer').toBe(customer.id);
+    // Owner decisions 2026-10-11: the e-mail is copied; the four documents and the signed application are bound to the customer.
+    expect(customer.email).toBe(K.email);
+    const docs = await db.attachment.findMany({
+      where: { editId: K.id, deletedAt: null, kind: { in: ['ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD', 'CREDIT_FORM'] } },
+      select: { kind: true, customerId: true },
+    });
+    expect(docs.map((d) => d.kind).sort()).toEqual(['CREDIT_FORM', 'ID_CARD', 'ID_CARD', 'MEMBERSHIP_CERT', 'TAX_CARD', 'VAT_CERT']);
+    for (const d of docs) expect(d.customerId, `${d.kind} bound to the customer`).toBe(customer.id);
     const steps = await db.editApproval.findMany({ where: { editId: K.id }, orderBy: { at: 'asc' } });
     expect(steps.map((s) => [s.stepIndex, s.role, s.decision, s.actorId])).toEqual([
       [0, 'SUPERVISOR', 'APPROVED', w.user('M1').id],
@@ -2355,7 +2413,7 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
   installLaunchHooks();
 
   let w: World;
-  const R = { id: '', name: '', cr: '', guarantee: '', others: [] as string[] };
+  const R = { id: '', name: '', cr: '', guarantee: '', docs: [] as string[], others: [] as string[] };
   const TYPED_REASON = 'Phone GPS chip broken; coordinates from Google Maps.';
 
   test.beforeAll(async () => {
@@ -2377,6 +2435,8 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
       legalName: R.name,
       paymentTerms: 'CREDIT',
       credit: { limit: 750, days: 30 },
+      // Owner decisions 2026-10-11: the four credit documents (by default) and, though no longer required, a guarantee.
+      guarantees: 1,
       branches: [
         { gps: { lat: 23.5881, lng: 58.3829, accuracy: 12 }, extras: 1 },
         { name: w.name('Typed Point'), gps: { lat: 23.6, lng: 58.4 }, manualReason: TYPED_REASON },
@@ -2386,6 +2446,8 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
     R.id = sent.editId!;
     R.cr = sent.photos.cr!;
     R.guarantee = sent.photos.guarantees[0]!;
+    R.docs = Object.values(sent.photos.creditDocs).flat();
+    expect(R.docs).toHaveLength(4);
     R.others = sent.photos.branches.flatMap((b) => [b.shop!, b.signboard!, ...b.extras]);
 
     // The queue card says the point was typed in, before any bulk decision.
@@ -2399,9 +2461,13 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
         const page = await pageAs(browser, w.user(k), device);
         await openApproval(page, R.id);
         const srcs = await expectTilesDecode(page);
-        expect(srcs.sort(), `${k} on ${device}: every tile`).toEqual([R.cr, R.guarantee, ...R.others].map((id) => `/api/photos/${id}`).sort());
+        expect(srcs.sort(), `${k} on ${device}: every tile`).toEqual(
+          [R.cr, R.guarantee, ...R.docs, ...R.others].map((id) => `/api/photos/${id}`).sort()
+        );
         await expectPhotoServed(page, R.cr, true);
         await expectPhotoServed(page, R.guarantee, true);
+        // Owner decisions 2026-10-11: each credit document is handled like a CR copy.
+        for (const id of R.docs) await expectPhotoServed(page, id, true);
         for (const id of R.others) await expectPhotoServed(page, id, false);
         // The captured point: coordinates, accuracy, its band, map links. The typed one: the salesman's reason.
         const b1 = page.locator('section').filter({ has: page.getByRole('heading', { level: 2, name: /^Branch 1: / }) });

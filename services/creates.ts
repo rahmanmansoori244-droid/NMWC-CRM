@@ -13,8 +13,12 @@
  * Owner-confirmed rules enforced here:
  *  - Salesman only; every branch is forced onto the salesman's own route
  *    (region derived from the route — the client cannot choose either).
- *  - CASH chain SUP→ACC, CREDIT chain SUP→FM→GM→ACC (resolved + frozen at
- *    submit from the draft's paymentTerms).
+ *  - CASH chain SUP→ACC, CREDIT chain SUP→SD→signed application→FM→GM→ACC
+ *    (owner decisions 2026-10-11; resolved + frozen at submit from the draft's
+ *    paymentTerms).
+ *  - Owner decisions 2026-10-11: a CREDIT request carries the customer's
+ *    e-mail and the four credit documents (lib/credit-documents.ts), and no
+ *    longer needs a guarantee; a CASH request stores no e-mail.
  *  - Exact-CR duplicates HARD-BLOCK at submit (vs live customers AND other
  *    open CREATE requests), as does the EXACT_TRIPLE
  *    (legalName+phone+region) rule; phone-only matches are advisory/logged.
@@ -85,6 +89,11 @@ const PHOTO_SLOT_LABEL: Record<CreatePhotoRef['expect'], string> = {
   SHOP: 'shop front',
   SIGNBOARD: 'signboard',
   FREE: 'extra',
+  // Owner decisions 2026-10-11: the credit documents (lib/credit-documents.ts).
+  ID_CARD: "owner's ID card",
+  MEMBERSHIP_CERT: 'membership certificate',
+  VAT_CERT: 'VAT certificate',
+  TAX_CARD: 'tax card',
 };
 
 /**
@@ -117,6 +126,11 @@ function zodIssuesToFields(issues: ZodIssue[]): Record<string, string> {
     }
     if (p[0] === 'guaranteeAttachmentIds') {
       fields['guarantee'] = issue.message;
+      continue;
+    }
+    // Owner decisions 2026-10-11: a credit document's pages, said beside its group.
+    if (p[0] === 'creditDocuments' && typeof p[1] === 'string') {
+      fields[`creditDoc.${p[1]}`] = issue.message;
       continue;
     }
     fields[p.join('.') || '_form'] = issue.message;
@@ -392,6 +406,10 @@ async function submitCreateOnce(
     contactRole: c.contactRole ?? null,
     notes: c.notes ?? null,
     crPhotoAttachmentId: c.crPhotoAttachmentId ?? null,
+    // Owner decisions 2026-10-11: the e-mail is asked of a credit customer only.
+    // A CASH request stores none, so one typed before the terms were switched to
+    // cash is not kept (finalize copies it for CREDIT only, too).
+    email: isCredit ? (c.email ?? null) : null,
   };
   const branchDraftRows = data.branches.map((b) => ({
     branchName: b.branchName,
@@ -553,7 +571,11 @@ async function submitCreateOnce(
 
     // Claim referenced attachments for this edit; release (soft-delete) any
     // previously claimed photo the salesman removed from the form — mirrors
-    // detachPhoto semantics so the GC pipeline picks them up.
+    // detachPhoto semantics so the GC pipeline picks them up. Owner decisions
+    // 2026-10-11: the same for the credit documents, so a request switched to
+    // CASH releases them; and the pages of a signed credit application are not
+    // in any payload, so resubmitting after a correction releases them — the new
+    // round reaches the signed-application step again and he uploads it afresh.
     if (attachmentIds.length > 0) {
       const claimed = await tx.attachment.updateMany({
         where: {

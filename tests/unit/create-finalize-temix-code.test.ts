@@ -25,6 +25,7 @@ vi.mock('@/lib/create-guards', () => ({
 vi.mock('@/lib/audit', () => ({ writeAudit: h.writeAudit }));
 
 import { finalizeCreateInTx, type FinalizableEdit } from '@/lib/create-finalize';
+import { resolveChain } from '@/lib/approval-chains';
 
 const env = { actorId: 'u-acc', ip: null, userAgent: null } as never;
 const AT = new Date('2026-10-08T06:00:00.000Z');
@@ -35,6 +36,7 @@ const edit: FinalizableEdit = {
   cycle: 1,
   requestedCreditLimit: null,
   requestedPaymentTermDays: null,
+  approvalChain: resolveChain('CREATE', 'CASH') as never,
   customerDraft: {
     legalName: 'Al Noor Trading',
     paymentTerms: 'CASH',
@@ -69,9 +71,10 @@ beforeEach(() => {
   tx = {
     route: { findMany: step('route.read', [{ id: 'r1', regionId: 'g1' }]) },
     attachment: {
-      findMany: vi.fn(async (a: { where: { kind?: string } }) => {
+      findMany: vi.fn(async (a: { where: { kind?: unknown } }) => {
         calls.push('photos.read');
-        return a.where.kind === 'GUARANTEE' ? [] : [{ id: 'p-cr' }, { id: 'p-shop' }];
+        // The decision-bound documents (none on a cash request), then the photos it names.
+        return a.where.kind ? [] : [{ id: 'p-cr' }, { id: 'p-shop' }];
       }),
       updateMany: step('photo.bind', { count: 1 }),
     },

@@ -1754,6 +1754,9 @@ async function approveEditCore(formData: FormData) {
             cycle: edit.cycle,
             requestedCreditLimit: edit.requestedCreditLimit,
             requestedPaymentTermDays: edit.requestedPaymentTermDays,
+            // Owner decisions 2026-10-11: the documents finalize requires are
+            // read from the chain frozen on the request.
+            approvalChain: edit.approvalChain,
             customerDraft: edit.customerDraft!,
             branchDrafts: edit.branchDrafts,
           },

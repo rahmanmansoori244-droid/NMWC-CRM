@@ -2,13 +2,32 @@
  * Phase 1 creation flow: schema, mandatory gate, cycle bump, attachment
  * collection, and notification-audience unit tests.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PaymentTerms, Role } from '@prisma/client';
+
+// Owner decisions 2026-10-11: the guarantee is a switch, off. Read where it is
+// used, so a test can turn it back on as the owner may.
+const sw = vi.hoisted(() => ({ guaranteeOn: false }));
+vi.mock('@/lib/credit-documents', async (orig) => {
+  const real = await orig<typeof import('@/lib/credit-documents')>();
+  return {
+    ...real,
+    get GUARANTEE_REQUIRED_FOR_CREDIT() {
+      return sw.guaranteeOn;
+    },
+  };
+});
+
 import {
   submitCreateSchema,
   collectMissingForCreate,
   collectAttachmentIds,
   resolveCycleOnSubmit,
+  creditDocumentMissingMessage,
+  tooManyDocumentPagesMessage,
+  CUSTOMER_EMAIL_MISSING_MESSAGE,
+  GUARANTEE_MISSING_MESSAGE,
+  INVALID_CUSTOMER_EMAIL_MESSAGE,
   type ParsedSubmitCreate,
 } from '@/lib/validation/create';
 import { resolveStepAudience } from '@/lib/notifications';
@@ -46,6 +65,28 @@ function completeCashInput(over: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+/** Owner decisions 2026-10-11: one page of each credit document. */
+const DOC_IDS = {
+  ID_CARD: ['ckdocid000000000000000001'],
+  MEMBERSHIP_CERT: ['ckdocmem00000000000000001'],
+  VAT_CERT: ['ckdocvat00000000000000001'],
+  TAX_CARD: ['ckdoctax00000000000000001'],
+};
+/** A complete CREDIT payload as the form sends it since owner decisions 2026-10-11: e-mail, figures, the four documents, no guarantee. */
+function completeCreditInput(over: Partial<Record<string, unknown>> = {}) {
+  return completeCashInput({
+    customer: { ...completeCashInput().customer, paymentTerms: 'CREDIT', email: 'accounts@alnoor.om' },
+    credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
+    creditDocuments: DOC_IDS,
+    ...over,
+  });
+}
+const creditCustomer = () => completeCreditInput().customer as Record<string, unknown>;
+
+beforeEach(() => {
+  sw.guaranteeOn = false;
+});
+
 describe('submitCreateSchema', () => {
   it('parses a complete CASH payload', () => {
     const r = submitCreateSchema.safeParse(completeCashInput());
@@ -54,6 +95,9 @@ describe('submitCreateSchema', () => {
       expect(r.data.customer.paymentTerms).toBe(PaymentTerms.CASH);
       expect(r.data.branches).toHaveLength(1);
       expect(r.data.guaranteeAttachmentIds).toEqual([]);
+      // Owner decisions 2026-10-11: no e-mail, and no credit documents.
+      expect(r.data.customer.email).toBeUndefined();
+      expect(r.data.creditDocuments).toEqual({ ID_CARD: [], MEMBERSHIP_CERT: [], VAT_CERT: [], TAX_CARD: [] });
     }
   });
 
@@ -295,7 +339,7 @@ describe('collectMissingForCreate', () => {
     );
   });
 
-  it('CREDIT additionally requires limit, term days and >=1 guarantee doc', () => {
+  it('CREDIT additionally requires limit, term days, the e-mail and a page of each credit document — and no guarantee (owner decisions 2026-10-11)', () => {
     const missing = collectMissingForCreate(
       parse(
         completeCashInput({
@@ -303,26 +347,41 @@ describe('collectMissingForCreate', () => {
         })
       )
     );
-    expect(Object.keys(missing)).toEqual(
-      expect.arrayContaining([
-        'credit.requestedCreditLimit',
-        'credit.requestedPaymentTermDays',
-        'guarantee',
-      ])
-    );
+    expect(missing).toEqual({
+      'credit.requestedCreditLimit': 'Requested credit limit (OMR) is required.',
+      'credit.requestedPaymentTermDays': 'Requested payment term (days) is required.',
+      'customer.email': CUSTOMER_EMAIL_MISSING_MESSAGE,
+      'creditDoc.ID_CARD': "Owner's ID card is required for credit.",
+      'creditDoc.MEMBERSHIP_CERT': 'Membership certificate is required for credit.',
+      'creditDoc.VAT_CERT': 'VAT registration certificate is required for credit.',
+      'creditDoc.TAX_CARD': 'Tax card is required for credit.',
+    });
+    expect(missing.guarantee).toBeUndefined();
   });
 
-  it('CREDIT with full credit block passes', () => {
-    const missing = collectMissingForCreate(
-      parse(
-        completeCashInput({
-          customer: { ...completeCashInput().customer, paymentTerms: 'CREDIT' },
-          credit: { requestedCreditLimit: 500, requestedPaymentTermDays: 30 },
-          guaranteeAttachmentIds: [CUID3],
-        })
-      )
-    );
-    expect(missing).toEqual({});
+  it('CREDIT with the e-mail, the figures and the four documents passes, with no guarantee', () => {
+    expect(collectMissingForCreate(parse(completeCreditInput()))).toEqual({});
+  });
+
+  it.each(['ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD'] as const)('CREDIT without its %s is held, beside that document', (kind) => {
+    const missing = collectMissingForCreate(parse(completeCreditInput({ creditDocuments: { ...DOC_IDS, [kind]: [] } })));
+    expect(missing).toEqual({ [`creditDoc.${kind}`]: creditDocumentMissingMessage(kind) });
+  });
+
+  it("CREDIT with the e-mail left empty is held for the e-mail", () => {
+    const missing = collectMissingForCreate(parse(completeCreditInput({ customer: { ...creditCustomer(), email: '' } })));
+    expect(missing).toEqual({ 'customer.email': CUSTOMER_EMAIL_MISSING_MESSAGE });
+  });
+
+  it('CASH asks for no e-mail and no credit document', () => {
+    expect(collectMissingForCreate(parse(completeCashInput()))).toEqual({});
+  });
+
+  it('the guarantee switched back on: CREDIT asks for one again, CASH still does not', () => {
+    sw.guaranteeOn = true;
+    expect(collectMissingForCreate(parse(completeCreditInput()))).toEqual({ guarantee: GUARANTEE_MISSING_MESSAGE });
+    expect(collectMissingForCreate(parse(completeCreditInput({ guaranteeAttachmentIds: [CUID3] })))).toEqual({});
+    expect(collectMissingForCreate(parse(completeCashInput()))).toEqual({});
   });
 
   it('keys branch errors by array index', () => {
@@ -350,7 +409,85 @@ describe('resolveCycleOnSubmit (cycle invariant)', () => {
   });
 });
 
+describe('owner decisions 2026-10-11: the customer e-mail and the credit documents in the schema', () => {
+  const parseEmail = (email: unknown) =>
+    submitCreateSchema.safeParse(completeCreditInput({ customer: { ...creditCustomer(), email } }));
+
+  it('an e-mail is trimmed and lower-cased', () => {
+    const r = parseEmail('  Accounts@AlNoor.OM ');
+    expect(r.success && r.data.customer.email).toBe('accounts@alnoor.om');
+  });
+
+  it("'' and an absent e-mail read as not given", () => {
+    for (const email of ['', undefined]) {
+      const r = parseEmail(email);
+      expect(r.success, String(email)).toBe(true);
+      if (r.success) expect(r.data.customer.email, String(email)).toBeUndefined();
+    }
+  });
+
+  it.each(['accounts', 'accounts@alnoor', 'a b@alnoor.om', '<x>@alnoor.om', 'a@b.om,c@d.om', '   ', `${'a'.repeat(250)}@x.om`])(
+    '%s is refused, keyed to the e-mail, in one message',
+    (email) => {
+      const r = parseEmail(email);
+      expect(r.success).toBe(false);
+      if (r.success) return;
+      const issues = r.error.issues.filter((i) => i.path.join('.') === 'customer.email');
+      expect(issues.length).toBeGreaterThan(0);
+      expect(new Set(issues.map((i) => i.message))).toEqual(new Set([INVALID_CUSTOMER_EMAIL_MESSAGE]));
+    }
+  );
+
+  it('an e-mail that is not a string is refused', () => {
+    expect(parseEmail(42).success).toBe(false);
+  });
+
+  it('each credit document takes up to 4 page ids; a fifth is refused on its length, beside that document', () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => 'ckpage' + String(i).padStart(19, '0'));
+    const ok = submitCreateSchema.safeParse(completeCreditInput({ creditDocuments: { ...DOC_IDS, ID_CARD: ids(4) } }));
+    expect(ok.success).toBe(true);
+    const over = submitCreateSchema.safeParse(completeCreditInput({ creditDocuments: { ...DOC_IDS, VAT_CERT: ids(5) } }));
+    expect(over.success).toBe(false);
+    if (over.success) return;
+    expect(over.error.issues.map((i) => [i.path, i.message])).toEqual([
+      [['creditDocuments', 'VAT_CERT'], tooManyDocumentPagesMessage('VAT_CERT')],
+    ]);
+    expect(tooManyDocumentPagesMessage('VAT_CERT')).toBe('VAT registration certificate: at most 4 pages.');
+  });
+
+  it('a page that is not an id is refused; a key that is no credit document is dropped', () => {
+    const bad = submitCreateSchema.safeParse(completeCreditInput({ creditDocuments: { ...DOC_IDS, TAX_CARD: ['x'] } }));
+    expect(bad.success).toBe(false);
+    if (!bad.success) expect(bad.error.issues[0]!.path).toEqual(['creditDocuments', 'TAX_CARD', 0]);
+    // The signed application is uploaded at its own step (services/signed-form.ts), never with the request.
+    const extra = submitCreateSchema.safeParse(
+      completeCreditInput({ creditDocuments: { ...DOC_IDS, CREDIT_FORM: [CUID], GUARANTEE: [CUID2] } })
+    );
+    expect(extra.success).toBe(true);
+    if (extra.success) {
+      expect(Object.keys(extra.data.creditDocuments).sort()).toEqual(['ID_CARD', 'MEMBERSHIP_CERT', 'TAX_CARD', 'VAT_CERT']);
+    }
+  });
+});
+
 describe('collectAttachmentIds', () => {
+  it("owner decisions 2026-10-11: each credit document page with its kind and its group's error key", () => {
+    const parsed = submitCreateSchema.safeParse(
+      completeCreditInput({ creditDocuments: { ...DOC_IDS, ID_CARD: ['ckdocid000000000000000001', 'ckdocid000000000000000002'] } })
+    );
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const { all, byKind } = collectAttachmentIds(parsed.data);
+    expect(byKind.filter((r) => r.field.startsWith('creditDoc.'))).toEqual([
+      { id: 'ckdocid000000000000000001', expect: 'ID_CARD', field: 'creditDoc.ID_CARD' },
+      { id: 'ckdocid000000000000000002', expect: 'ID_CARD', field: 'creditDoc.ID_CARD' },
+      { id: DOC_IDS.MEMBERSHIP_CERT[0], expect: 'MEMBERSHIP_CERT', field: 'creditDoc.MEMBERSHIP_CERT' },
+      { id: DOC_IDS.VAT_CERT[0], expect: 'VAT_CERT', field: 'creditDoc.VAT_CERT' },
+      { id: DOC_IDS.TAX_CARD[0], expect: 'TAX_CARD', field: 'creditDoc.TAX_CARD' },
+    ]);
+    expect(all).toHaveLength(3 + 5); // cr + shop + signboard, and the five pages
+  });
+
   it('collects each referenced id with its expected kind', () => {
     const parsed = submitCreateSchema.safeParse(
       completeCashInput({

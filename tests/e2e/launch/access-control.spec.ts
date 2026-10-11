@@ -1759,6 +1759,8 @@ test.describe('access control: the photo API contract', { tag: ['@desktop'] }, (
 
   let world: World;
   let guaranteeId: string;
+  /** Owner decisions 2026-10-11: a credit document and a signed-application page, on the customer. */
+  let creditDocIds: string[] = [];
   let removedId: string;
 
   test.beforeAll(async () => {
@@ -1786,6 +1788,10 @@ test.describe('access control: the photo API contract', { tag: ['@desktop'] }, (
     });
     const pic = world.customer('PIC');
     guaranteeId = (await seedPhoto(world, { kind: 'GUARANTEE', capturedBy: 'SA', customerId: pic.id })).id;
+    creditDocIds = [
+      (await seedPhoto(world, { kind: 'ID_CARD', capturedBy: 'SA', customerId: pic.id })).id,
+      (await seedPhoto(world, { kind: 'CREDIT_FORM', capturedBy: 'SA', customerId: pic.id })).id,
+    ];
     removedId = (await seedPhoto(world, { kind: 'SHOP', capturedBy: 'SA', branchId: pic.branch.id })).id;
     await db.attachment.update({ where: { id: removedId }, data: { deletedAt: new Date() } });
   });
@@ -1880,7 +1886,7 @@ test.describe('access control: the photo API contract', { tag: ['@desktop'] }, (
     expect(await putToR2(url, Buffer.concat([bytes, Buffer.alloc(7, 0x20)]), 'image/jpeg')).toBe(403);
   });
 
-  test('serving: a shop photo is cached and revalidated by ETag; CR and GUARANTEE are never cached', async ({ browser }) => {
+  test('serving: a shop photo is cached and revalidated by ETag; CR, GUARANTEE and the credit documents are never cached', async ({ browser }) => {
     const ctx = await contextAs(browser, world.user('M1'), { device: 'desktop' });
     const pic = world.customer('PIC');
     const shop = pic.photos.find((p) => p.wire === 'SHOP')!;
@@ -1893,7 +1899,7 @@ test.describe('access control: the photo API contract', { tag: ['@desktop'] }, (
     expect(etag).toBe(`"p-${shop.id}"`);
     const again = await ctx.request.get(`/api/photos/${shop.id}`, { headers: { 'if-none-match': etag! }, failOnStatusCode: false });
     expect(again.status()).toBe(304);
-    for (const id of [cr.id, guaranteeId]) {
+    for (const id of [cr.id, guaranteeId, ...creditDocIds]) {
       const conf = await ctx.request.get(`/api/photos/${id}`, { failOnStatusCode: false });
       expect(conf.status(), id).toBe(200);
       expect(conf.headers()['cache-control']).toBe('private, no-store, no-cache, must-revalidate');

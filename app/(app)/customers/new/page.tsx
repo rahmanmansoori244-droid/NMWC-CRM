@@ -9,7 +9,7 @@ import { WithdrawRequest } from './WithdrawRequest';
 import { SignedFormUpload } from './SignedFormUpload';
 import { DECISION_REJECTED, isSignedFormStep, parseChain, stepName } from '@/lib/approval-chains';
 import { decisionBoundWhere, decisionTokenFor } from '@/lib/decision-token';
-import { SIGNED_FORM_KIND } from '@/lib/credit-documents';
+import { CREDIT_DOCUMENT_KINDS, SIGNED_FORM_KIND, type CreditDocumentKind } from '@/lib/credit-documents';
 import { minutesRemaining } from '@/lib/working-hours';
 import { omanDateTime } from '@/lib/tz';
 
@@ -81,11 +81,14 @@ export default async function NewCustomerPage({
       );
       if (elsewhere.size > 0) startedOn = [...elsewhere].join(', ');
     }
-    const guarantees = await prisma.attachment.findMany({
-      where: { editId: edit.id, kind: 'GUARANTEE', deletedAt: null },
-      select: { id: true },
+    // The documents on file, by kind: the guarantees, and (owner decisions
+    // 2026-10-11) each credit document's pages — oldest first, as they were taken.
+    const docs = await prisma.attachment.findMany({
+      where: { editId: edit.id, kind: { in: ['GUARANTEE', ...CREDIT_DOCUMENT_KINDS] }, deletedAt: null },
+      select: { id: true, kind: true },
       orderBy: { createdAt: 'asc' },
     });
+    const docsOf = (kind: string) => docs.filter((a) => a.kind === kind).map((a) => a.id);
     if (atSignedForm) {
       // The documents his confirm is bound to, read by the server's own rule
       // (lib/decision-token.ts), and the pages an earlier upload left on file.
@@ -139,13 +142,18 @@ export default async function NewCustomerPage({
         contactRole: d?.contactRole ?? '',
         notes: d?.notes ?? '',
         crPhotoAttachmentId: d?.crPhotoAttachmentId ?? null,
+        email: d?.email ?? '',
       },
       credit: {
         requestedCreditLimit:
           edit.requestedCreditLimit != null ? Number(edit.requestedCreditLimit) : null,
         requestedPaymentTermDays: edit.requestedPaymentTermDays,
       },
-      guaranteeAttachmentIds: guarantees.map((g) => g.id),
+      guaranteeAttachmentIds: docsOf('GUARANTEE'),
+      creditDocuments: Object.fromEntries(CREDIT_DOCUMENT_KINDS.map((k) => [k, docsOf(k)])) as Record<
+        CreditDocumentKind,
+        string[]
+      >,
       branches: edit.branchDrafts.map((b) => ({
         branchName: b.branchName,
         address: b.address === '(address pending)' ? '' : b.address,

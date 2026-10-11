@@ -28,6 +28,15 @@
  * PENDING_UPLOAD: the next batch sends the full record (branches,
  * GPS, phones) as an UPSERT keyed by that temix_code — an update of the Temix
  * record he made, not a second one (lib/temix.ts buildTemixRows).
+ *
+ * Owner decisions 2026-10-11 (the credit flow): which documents a CREDIT
+ * request must still have is read from the chain frozen on it
+ * (lib/credit-documents.ts requiredAtFinalize), never from today's switches — a
+ * request frozen with the 4-step chain needs a guarantee, as it was submitted; a
+ * request frozen with the new chain needs the four credit documents and the
+ * signed credit application, and a guarantee never. Every live decision-bound
+ * document of the request (guarantees, credit documents, signed application) is
+ * bound to the customer, and the customer's e-mail is copied for CREDIT.
  */
 import {
   CustomerStatus,
@@ -46,6 +55,13 @@ import { lockCreateIdentity, assertNoExactCreateDuplicate } from './create-guard
 import { writeAudit, type AuditEnvelope } from './audit';
 import { UNWIRED_LIVE } from './photo-attach';
 import { lockTemixCode, temixCodeHolder, temixCodeHolderMessage } from './temix-code';
+import { parseChain } from './approval-chains';
+import {
+  CREDIT_DOCUMENT_LABELS,
+  DECISION_BOUND_KINDS,
+  requiredAtFinalize,
+  type DecisionBoundKind,
+} from './credit-documents';
 
 type Tx = Prisma.TransactionClient;
 
@@ -55,9 +71,38 @@ export type FinalizableEdit = {
   cycle: number;
   requestedCreditLimit: Prisma.Decimal | null;
   requestedPaymentTermDays: number | null;
+  /**
+   * The chain frozen on the request at its last submit (CustomerEdit.approvalChain):
+   * which documents it must still have is read from its shape (owner decisions
+   * 2026-10-11, lib/credit-documents.ts requiredAtFinalize).
+   */
+  approvalChain: Prisma.JsonValue;
   customerDraft: EditCustomerDraft;
   branchDrafts: EditBranchDraft[];
 };
+
+/**
+ * What the approver at the last step reads when a required document was
+ * removed after the request was sent. A guarantee keeps the words it always had;
+ * owner decisions 2026-10-11: a credit document or the signed application is
+ * named the same way.
+ */
+export function documentRemovedMessage(kind: DecisionBoundKind): string {
+  if (kind === 'GUARANTEE') {
+    return 'The guarantee document was removed after it was sent, so it cannot be approved. Reject it and say the guarantee is missing. It goes back one approver at a time; once it reaches the salesman, he can attach it again.';
+  }
+  const label = CREDIT_DOCUMENT_LABELS[kind];
+  // "Owner's ID card" → "owner's ID card" mid-sentence; "VAT registration certificate" stays.
+  const inSentence = /^[A-Z][a-z]/.test(label) ? label[0]!.toLowerCase() + label.slice(1) : label;
+  // The signed application goes back to the salesman's own step, where he
+  // uploads it again; a credit document is re-attached only on a request
+  // returned to him for correction (the details are not reopened at that step).
+  const whereFixed =
+    kind === 'CREDIT_FORM'
+      ? "once it reaches the salesman's signed-application step, he uploads it again."
+      : 'once it is returned to the salesman for correction, he can attach it again.';
+  return `The ${inSentence} was removed after it was sent, so it cannot be approved. Reject it and say the ${inSentence} is missing. It goes back one approver at a time; ${whereFixed}`;
+}
 
 /** string[] stored as Json on the draft row. */
 function extraIds(draft: EditBranchDraft): string[] {
@@ -191,9 +236,15 @@ export async function finalizeCreateInTx(
       ...extraIds(b),
     ]),
   ];
-  const guarantees = await tx.attachment.findMany({
-    where: { editId: edit.id, kind: 'GUARANTEE', deletedAt: null },
-    select: { id: true },
+  // The request's live decision-bound documents (lib/credit-documents.ts): its
+  // guarantees, and since owner decisions 2026-10-11 the four credit documents
+  // and the signed credit application. All of them are bound in step 6; the
+  // ones the frozen chain requires are checked below. In upload order, so the
+  // pages of one document are bound in the order he took them.
+  const decisionDocs = await tx.attachment.findMany({
+    where: { editId: edit.id, kind: { in: [...DECISION_BOUND_KINDS] }, deletedAt: null },
+    select: { id: true, kind: true },
+    orderBy: { createdAt: 'asc' },
   });
   const liveReferenced = referencedIds.length
     ? await tx.attachment.findMany({
@@ -209,11 +260,16 @@ export async function finalizeCreateInTx(
       `A required photo on this request was removed after it was sent, so it cannot be approved. ${STEP_BACK_FOR_PHOTO}`
     );
   }
-  if (isCredit && guarantees.length === 0) {
-    throw new ConflictError(
-      'NEEDS_REUPLOAD',
-      'The guarantee document was removed after it was sent, so it cannot be approved. Reject it and say the guarantee is missing. It goes back one approver at a time; once it reaches the salesman, he can attach it again.'
+  // Owner decisions 2026-10-11: what a CREDIT request must still have is read
+  // from the chain frozen on it — a guarantee on the 4-step chain, the credit
+  // documents and the signed application on the new one — so switching the
+  // guarantee back on (GUARANTEE_REQUIRED_FOR_CREDIT) can never refuse a request
+  // already in flight. The first document missing is named.
+  if (isCredit) {
+    const missing = requiredAtFinalize(parseChain(edit.approvalChain)).find(
+      (kind) => !decisionDocs.some((d) => d.kind === kind)
     );
+    if (missing) throw new ConflictError('NEEDS_REUPLOAD', documentRemovedMessage(missing));
   }
 
   // 3b. Owner decision 2026-10-08: the Temix code is this customer's alone.
@@ -253,6 +309,9 @@ export async function finalizeCreateInTx(
       // No amendment: the approved figures ARE the requested figures.
       creditLimit: isCredit ? edit.requestedCreditLimit : null,
       paymentTermDays: isCredit ? edit.requestedPaymentTermDays : null,
+      // Owner decisions 2026-10-11: asked of a credit customer only (the submit
+      // stores none for CASH; this holds it to that whatever the draft holds).
+      email: isCredit ? draft.email : null,
       // Owner decision 2026-10-08: the code the Accountant created it under in
       // Temix. Still queued: the next batch updates that record with all of it.
       temixCode,
@@ -329,8 +388,11 @@ export async function finalizeCreateInTx(
       data: { crPhotoId: draft.crPhotoAttachmentId },
     });
   }
-  for (const g of guarantees) {
-    await bindOne(g.id, { customerId: customer.id });
+  // Every live decision-bound document goes to the customer, as the guarantees
+  // always did: the credit documents and the signed application too (owner
+  // decisions 2026-10-11), and a guarantee on a new-chain request that has one.
+  for (const d of decisionDocs) {
+    await bindOne(d.id, { customerId: customer.id });
   }
   for (const { id: branchId, draft: b } of branches) {
     if (b.shopPhotoAttachmentId) {

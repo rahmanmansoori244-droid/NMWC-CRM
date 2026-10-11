@@ -96,9 +96,11 @@ const creditInput = (credit: Record<string, unknown>) => ({
     primaryPhone: AR('91234567'),
     contactPerson: 'سعيد',
     crPhotoAttachmentId: CUID3,
+    email: 'owner@alnoor.om',
   },
   credit,
   guaranteeAttachmentIds: [CUID],
+  creditDocuments: { ID_CARD: [CUID], MEMBERSHIP_CERT: [CUID2], VAT_CERT: [CUID3], TAX_CARD: [CUID] },
   branches: [
     {
       branchName: 'الفرع الرئيسي',
@@ -176,9 +178,11 @@ describe('the new-customer form takes credit figures typed in Arabic digits', ()
       contactRole: '',
       notes: '',
       crPhotoAttachmentId: 'att-cr',
+      email: 'owner@alnoor.om',
     },
     credit: { requestedCreditLimit: null, requestedPaymentTermDays: null },
     guaranteeAttachmentIds: ['g1'],
+    creditDocuments: { ID_CARD: ['d-id'], MEMBERSHIP_CERT: ['d-mem'], VAT_CERT: ['d-vat'], TAX_CARD: ['d-tax'] },
     branches: [
       {
         branchName: 'Main',

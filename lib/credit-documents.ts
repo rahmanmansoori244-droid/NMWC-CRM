@@ -75,9 +75,11 @@ export const MAX_SIGNED_FORM_PAGES = 6;
  * switch governs only the new-customer form's guarantee slot and its submit
  * gate. Finalize never requires a guarantee on a request frozen with the new
  * chain (requiredAtFinalize), so switching this back on cannot refuse a request
- * already in flight.
+ * already in flight. Typed `boolean`, not the literal `false`, so the code
+ * behind it keeps being type-checked while it is off (lib/validation/create.ts,
+ * the new-customer form).
  */
-export const GUARANTEE_REQUIRED_FOR_CREDIT = false;
+export const GUARANTEE_REQUIRED_FOR_CREDIT: boolean = false;
 
 /** Whether a step is the signed-application step (scope SUBMITTER); a local copy of lib/approval-chains.ts isSignedFormStep, kept here so this module stays import-free. */
 const isSubmitterStep = (step: Pick<ApprovalStep, 'scope'>) => step.scope === 'SUBMITTER';

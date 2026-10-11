@@ -48,9 +48,11 @@ const initial = (state: CreateFormInitial['state']): CreateFormInitial => ({
     contactRole: '',
     notes: '',
     crPhotoAttachmentId: null,
+    email: '',
   },
   credit: { requestedCreditLimit: null, requestedPaymentTermDays: null },
   guaranteeAttachmentIds: [],
+  creditDocuments: { ID_CARD: [], MEMBERSHIP_CERT: [], VAT_CERT: [], TAX_CARD: [] },
   branches: [
     {
       branchName: 'Main',
@@ -457,6 +459,25 @@ describe('owner decisions 2026-10-11: his credit request at the signed-applicati
     });
     expect(h.withdrawProps).toEqual([{ editId: 'e1', isDraft: false, atSignedForm: true }]);
     expect((h.formProps[0]!.initial as { pendingRole: string }).pendingRole).toBe('Signed application');
+  });
+
+  it("part B: the e-mail and each credit document's pages on file reach the form; a guarantee too; the signed pages are not a form document", async () => {
+    h.edit = await atStep(1, {
+      customerDraft: { legalName: 'Al Noor Shop', paymentTerms: 'CREDIT', email: 'accounts@alnoor.om' },
+    });
+    h.bound = [
+      { id: 'g1', kind: 'GUARANTEE' },
+      { id: 'id-1', kind: 'ID_CARD' },
+      { id: 'id-2', kind: 'ID_CARD' },
+      { id: 'tax-1', kind: 'TAX_CARD' },
+      { id: 'form-1', kind: 'CREDIT_FORM' },
+    ];
+    const { default: Page } = await import('@/app/(app)/customers/new/page');
+    render(await Page({ searchParams: Promise.resolve({ edit: 'e1' }) }));
+    const init = h.formProps[0]!.initial as CreateFormInitial;
+    expect(init.customer.email).toBe('accounts@alnoor.om');
+    expect(init.guaranteeAttachmentIds).toEqual(['g1']);
+    expect(init.creditDocuments).toEqual({ ID_CARD: ['id-1', 'id-2'], MEMBERSHIP_CERT: [], VAT_CERT: [], TAX_CARD: ['tax-1'] });
   });
 
   it('a reason is shown only when the latest decision of this round is the Finance Manager’s send-back', async () => {

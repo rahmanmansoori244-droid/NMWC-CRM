@@ -551,6 +551,9 @@ export function todayStat(page: Page, label: string): Locator {
  * shop front, signboard) through the camera input. Waits until Submit is enabled.
  * `photos`: the files to pick (a picture picked again, production walk
  * 2026-10-09); a fresh PNG for each slot otherwise.
+ * `credit` (owner decisions 2026-10-11): Credit instead, its figures, the
+ * customer's e-mail and the four credit documents through the camera input —
+ * a page each, `idPages` of the owner's ID card (front and back).
  */
 export async function fillCreateForm(
   page: Page,
@@ -563,10 +566,32 @@ export async function fillCreateForm(
     day: DayOfWeek;
     address: string;
     photos?: { cr: PickedFile; shop: PickedFile; sign: PickedFile };
+    credit?: { limit: string; days: string; email: string; idPages?: number };
   }
 ): Promise<void> {
   await page.goto('/customers/new');
   await settled(page);
+  if (o.credit) {
+    await page.locator('label').filter({ hasText: /^Credit$/ }).click();
+    await expect(page.getByRole('radio', { name: 'Credit' })).toBeChecked();
+    await page.getByLabel('Requested credit limit (OMR) *', { exact: true }).fill(o.credit.limit);
+    await page.getByLabel('Requested payment term (days) *', { exact: true }).fill(o.credit.days);
+    await page.getByLabel('E-mail *', { exact: true }).fill(o.credit.email);
+    const pages: Array<[string, number]> = [
+      ["Owner's ID card", o.credit.idPages ?? 1],
+      ['Membership certificate', 1],
+      ['VAT certificate', 1],
+      ['Tax card', 1],
+    ];
+    for (const [label, count] of pages) {
+      for (let n = 0; n < count; n++) {
+        // Each page in the fresh empty slot the one before it made way for.
+        const slot = photoSlot(page, label, n);
+        await pickFile(slot, pngFile(`${label.replace(/\W+/g, '-').toLowerCase()}-${n + 1}`));
+        await expect(retakeOf(slot), `${label} page ${n + 1} is in`).toBeVisible({ timeout: 120_000 });
+      }
+    }
+  }
   await page.getByLabel('Legal name *', { exact: true }).fill(o.legalName);
   await page.getByLabel('CR number *', { exact: true }).fill(o.crNumber);
   await page.getByLabel('Channel *', { exact: true }).selectOption({ label: o.channelLabel });

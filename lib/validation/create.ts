@@ -27,6 +27,14 @@ import { isGpsTooInaccurate, gpsTooInaccurateMessage } from '../gps-accuracy';
 // itself (F19). The value stays as typed — services/creates.ts normalizes it.
 import { cappedArray, createPhone, optionalText, strippedStr } from './fields';
 import { foldNumberInput } from '../digits';
+import { isEmailAddress } from '../notify-address';
+import {
+  CREDIT_DOCUMENT_KINDS,
+  CREDIT_DOCUMENT_LABELS,
+  GUARANTEE_REQUIRED_FOR_CREDIT,
+  MAX_PAGES_PER_DOCUMENT,
+  type CreditDocumentKind,
+} from '../credit-documents';
 
 /**
  * The limits a create request always had: 10 branches, and 10 attachments in
@@ -35,7 +43,8 @@ import { foldNumberInput } from '../digits';
  * read (cappedArray): zod's own .max(10) parsed every element of a longer array
  * first, and 300,000 empty branches (a 0.9 MB body) took 14 s to be refused in
  * a local run (review of the fix for the adversarial pass after phase 2,
- * finding 4).
+ * finding 4). Owner decisions 2026-10-11 add the four credit documents, up to
+ * MAX_PAGES_PER_DOCUMENT pages each, capped the same way.
  */
 export const MAX_CREATE_BRANCHES = 10;
 export const MAX_CREATE_ATTACHMENTS = 10;
@@ -43,12 +52,41 @@ export const TOO_MANY_CREATE_BRANCHES_MESSAGE = `One request can add at most ${M
 export const TOO_MANY_EXTRA_PHOTOS_MESSAGE = `A branch can have at most ${MAX_CREATE_ATTACHMENTS} extra photos.`;
 export const TOO_MANY_GUARANTEES_MESSAGE = `A request can have at most ${MAX_CREATE_ATTACHMENTS} guarantee documents.`;
 
+/** A credit document with more pages than the form offers (lib/credit-documents.ts MAX_PAGES_PER_DOCUMENT). */
+export function tooManyDocumentPagesMessage(kind: CreditDocumentKind): string {
+  return `${CREDIT_DOCUMENT_LABELS[kind]}: at most ${MAX_PAGES_PER_DOCUMENT} pages.`;
+}
+/** A credit document a CREDIT submit lacks (collectMissingForCreate). */
+export function creditDocumentMissingMessage(kind: CreditDocumentKind): string {
+  return `${CREDIT_DOCUMENT_LABELS[kind]} is required for credit.`;
+}
+export const INVALID_CUSTOMER_EMAIL_MESSAGE = 'Enter a valid e-mail address, like name@company.com.';
+export const CUSTOMER_EMAIL_MISSING_MESSAGE = "The customer's e-mail is required for credit.";
+export const GUARANTEE_MISSING_MESSAGE = 'At least one guarantee / security document is required for credit.';
+
 const optionalStr = <T extends z.ZodTypeAny>(schema: T) =>
   schema.optional().or(z.literal('').transform(() => undefined));
 
+/**
+ * The customer's e-mail (owner decisions 2026-10-11): asked of a CREDIT
+ * customer only — services/creates.ts stores it for CREDIT and null for CASH,
+ * and the form shows the field for CREDIT only. Trimmed and lower-cased before it
+ * is checked, then held to the one rule this codebase has for an address
+ * (lib/notify-address.ts isEmailAddress, which also caps it at 254 characters).
+ * Not free text: never HTML-stripped, and the rule refuses `<`, `>` and quotes.
+ */
+const customerEmail = z.preprocess(
+  (v) => (typeof v === 'string' ? v.trim().toLowerCase() : v),
+  z
+    .string()
+    .max(254, INVALID_CUSTOMER_EMAIL_MESSAGE)
+    .refine((v) => isEmailAddress(v), INVALID_CUSTOMER_EMAIL_MESSAGE)
+);
+
 export const createCustomerDraftSchema = z.object({
   legalName: strippedStr(2, 200, 'Legal name must be at least 2 characters.'),
-  // Routing key: CASH → SUP→ACC chain; CREDIT → SUP→FM→GM→ACC chain.
+  // Routing key: CASH → Supervisor → Accountant; CREDIT → the credit chain
+  // (lib/approval-chains.ts resolveChain; 6 steps since owner decisions 2026-10-11).
   paymentTerms: z.nativeEnum(PaymentTerms),
   crNumber: optionalStr(z.string().max(50).transform((v) => v.trim())),
   channelId: optionalStr(z.string().cuid()),
@@ -59,7 +97,26 @@ export const createCustomerDraftSchema = z.object({
   contactRole: optionalText(200),
   notes: optionalText(5000),
   crPhotoAttachmentId: optionalStr(z.string().cuid()),
+  email: optionalStr(customerEmail),
 });
+
+/**
+ * One credit document's pages: unbound attachments of its kind, like the
+ * guarantee documents (owner decisions 2026-10-11). Its length is checked before
+ * any element is read (cappedArray).
+ */
+const documentPages = (kind: CreditDocumentKind) =>
+  cappedArray(z.array(z.string().cuid()), MAX_PAGES_PER_DOCUMENT, tooManyDocumentPagesMessage(kind)).default([]);
+
+/** The four credit documents, 0..MAX_PAGES_PER_DOCUMENT pages each (the submit gate asks for ≥1 of each on CREDIT). */
+const creditDocumentsSchema = z
+  .object({
+    ID_CARD: documentPages('ID_CARD'),
+    MEMBERSHIP_CERT: documentPages('MEMBERSHIP_CERT'),
+    VAT_CERT: documentPages('VAT_CERT'),
+    TAX_CARD: documentPages('TAX_CARD'),
+  } satisfies Record<CreditDocumentKind, z.ZodTypeAny>)
+  .default({});
 
 export const createBranchDraftSchema = z.object({
   branchName: strippedStr(1, 200, 'Branch name is required.'),
@@ -133,12 +190,26 @@ export const submitCreateSchema = z.object({
         .optional(),
     })
     .optional(),
-  /** Guarantee / security documents (CREDIT): unbound GUARANTEE attachments. */
+  /**
+   * Guarantee / security documents (CREDIT): unbound GUARANTEE attachments.
+   * Owner decisions 2026-10-11: no longer required (GUARANTEE_REQUIRED_FOR_CREDIT
+   * is off), and still accepted — a request sent back to the salesman keeps the
+   * guarantees it was sent with, and the form sends them again so the submit's
+   * release step never deletes that evidence.
+   */
   guaranteeAttachmentIds: cappedArray(
     z.array(z.string().cuid()),
     MAX_CREATE_ATTACHMENTS,
     TOO_MANY_GUARANTEES_MESSAGE
   ).default([]),
+  /**
+   * Owner decisions 2026-10-11: the owner's ID card, the membership
+   * certificate, the VAT registration certificate and the tax card, each as
+   * unbound attachments of its own kind (lib/credit-documents.ts), claimed by the
+   * request at submit and bound to the customer at finalize. Mandatory for CREDIT
+   * (collectMissingForCreate).
+   */
+  creditDocuments: creditDocumentsSchema,
   branches: cappedArray(
     z.array(createBranchDraftSchema).min(1, 'At least one branch is required.'),
     MAX_CREATE_BRANCHES,
@@ -154,7 +225,12 @@ export type ParsedSubmitCreate = z.output<typeof submitCreateSchema>;
  * Mirrors the UPDATE-flow collectMissingMandatory rules (PRD §6) plus the
  * owner-confirmed credit block. Pure — unit-tested in
  * tests/unit/create-flow.test.ts. Keys match the form's error slots:
- * `customer.<f>`, `credit.<f>`, `branch.<i>.<f>`, `guarantee`.
+ * `customer.<f>`, `credit.<f>`, `branch.<i>.<f>`, `creditDoc.<KIND>`, `guarantee`.
+ *
+ * Owner decisions 2026-10-11: CREDIT asks for the customer's e-mail and at
+ * least one page of each of the four credit documents, and no longer for a
+ * guarantee — that is a switch (GUARANTEE_REQUIRED_FOR_CREDIT), off. CASH asks
+ * for none of them.
  *
  * Note crNumber is required for BOTH payment terms on a net-new customer
  * (owner-confirmed) — unlike the UPDATE flow where a salesman may be locked
@@ -185,8 +261,14 @@ export function collectMissingForCreate(input: ParsedSubmitCreate): Record<strin
     ) {
       errors['credit.requestedPaymentTermDays'] = 'Requested payment term (days) is required.';
     }
-    if (input.guaranteeAttachmentIds.length === 0) {
-      errors['guarantee'] = 'At least one guarantee / security document is required for credit.';
+    if (!isStr(c.email)) errors['customer.email'] = CUSTOMER_EMAIL_MISSING_MESSAGE;
+    for (const kind of CREDIT_DOCUMENT_KINDS) {
+      if (input.creditDocuments[kind].length === 0) {
+        errors[`creditDoc.${kind}`] = creditDocumentMissingMessage(kind);
+      }
+    }
+    if (GUARANTEE_REQUIRED_FOR_CREDIT && input.guaranteeAttachmentIds.length === 0) {
+      errors['guarantee'] = GUARANTEE_MISSING_MESSAGE;
     }
   }
 
@@ -243,7 +325,7 @@ export function resolveCycleOnSubmit(
  */
 export type CreatePhotoRef = {
   id: string;
-  expect: 'CR' | 'SHOP' | 'SIGNBOARD' | 'FREE' | 'GUARANTEE';
+  expect: 'CR' | 'SHOP' | 'SIGNBOARD' | 'FREE' | 'GUARANTEE' | CreditDocumentKind;
   field: string;
 };
 
@@ -257,6 +339,10 @@ export function collectAttachmentIds(input: ParsedSubmitCreate): {
     byKind.push({ id: input.customer.crPhotoAttachmentId, expect: 'CR', field: 'customer.crPhoto' });
   }
   for (const g of input.guaranteeAttachmentIds) byKind.push({ id: g, expect: 'GUARANTEE', field: 'guarantee' });
+  // Owner decisions 2026-10-11: each credit document's pages, refused beside its own group.
+  for (const kind of CREDIT_DOCUMENT_KINDS) {
+    for (const id of input.creditDocuments[kind]) byKind.push({ id, expect: kind, field: `creditDoc.${kind}` });
+  }
   input.branches.forEach((b, i) => {
     if (b.shopPhotoAttachmentId) {
       byKind.push({ id: b.shopPhotoAttachmentId, expect: 'SHOP', field: `branch.${i}.shopPhoto` });
