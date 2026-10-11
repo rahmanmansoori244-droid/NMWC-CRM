@@ -231,7 +231,8 @@ describe('runEmailDrain', () => {
       update('cr', {
         process: 'CREATE',
         approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT),
-        currentStepIndex: 2,
+        // The GM step of the 6-step credit chain (owner decisions 2026-10-11).
+        currentStepIndex: 4,
         pendingRole: Role.GM,
       })
     );

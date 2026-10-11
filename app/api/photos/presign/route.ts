@@ -32,7 +32,21 @@ const MAX_BYTES = 3 * 1024 * 1024;
 const presignSchema = z.object({
   // GUARANTEE (Phase 1): credit guarantee / security documents captured during
   // a net-new-customer CREATE request. Image-only for now (Q-guarantee-pdf).
-  kind: z.enum(['SHOP', 'SIGNBOARD', 'CR', 'FREE', 'GUARANTEE']),
+  // Owner decisions 2026-10-11: the four credit documents and the signed credit
+  // application (lib/credit-documents.ts), image-only like the guarantee. In
+  // lockstep with the finalize route's kindFromKey (tests/unit/photo-upload-roles.test.ts).
+  kind: z.enum([
+    'SHOP',
+    'SIGNBOARD',
+    'CR',
+    'FREE',
+    'GUARANTEE',
+    'ID_CARD',
+    'MEMBERSHIP_CERT',
+    'VAT_CERT',
+    'TAX_CARD',
+    'CREDIT_FORM',
+  ]),
   mimeType: z.string().refine((m) => ALLOWED_MIME.includes(m), 'Invalid mime type'),
   bytes: z.number().int().min(1).max(MAX_BYTES),
 });

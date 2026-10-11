@@ -6,6 +6,12 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { manualGpsReasonForPoint } from '@/lib/gps-manual';
 import { CreateCustomerForm, type CreateFormInitial } from './CreateCustomerForm';
 import { WithdrawRequest } from './WithdrawRequest';
+import { SignedFormUpload } from './SignedFormUpload';
+import { DECISION_REJECTED, isSignedFormStep, parseChain, stepName } from '@/lib/approval-chains';
+import { decisionBoundWhere, decisionTokenFor } from '@/lib/decision-token';
+import { SIGNED_FORM_KIND } from '@/lib/credit-documents';
+import { minutesRemaining } from '@/lib/working-hours';
+import { omanDateTime } from '@/lib/tz';
 
 export const metadata = { title: 'New customer · NMWC' };
 // UXI-005 posture: never serve a stale cached form (same as the edit page).
@@ -40,6 +46,15 @@ export default async function NewCustomerPage({
   // when he has since moved off them. services/creates.ts refuses to save or
   // send it again; the page says why, shows it read-only, and keeps Withdraw.
   let startedOn: string | null = null;
+  // Owner decisions 2026-10-11: his request waiting at the signed-application step.
+  let signedForm: {
+    editId: string;
+    decisionToken: string;
+    keptPageIds: string[];
+    dueText: string | null;
+    overdue: boolean;
+    sentBackReason: string | null;
+  } | null = null;
   if (editParam) {
     const edit = await prisma.customerEdit.findUnique({
       where: { id: editParam },
@@ -55,7 +70,11 @@ export default async function NewCustomerPage({
     if (edit.state === 'APPROVED' && edit.customerId) {
       redirect(`/customers/${edit.customerId}`);
     }
-    if (me.ownedRoute && (edit.state === 'DRAFT' || edit.state === 'NEEDS_CORRECTION')) {
+    const chain = parseChain(edit.approvalChain);
+    const atSignedForm = edit.state === 'SUBMITTED' && isSignedFormStep(chain[edit.currentStepIndex]);
+    // At the signed-application step too (owner decisions 2026-10-11): the
+    // signed form is refused from a route he has left, as a resubmit is.
+    if (me.ownedRoute && (edit.state === 'DRAFT' || edit.state === 'NEEDS_CORRECTION' || atSignedForm)) {
       const myRouteId = me.ownedRoute.id;
       const elsewhere = new Set(
         edit.branchDrafts.filter((b) => b.routeId !== myRouteId).map((b) => b.route.code)
@@ -67,12 +86,47 @@ export default async function NewCustomerPage({
       select: { id: true },
       orderBy: { createdAt: 'asc' },
     });
+    if (atSignedForm) {
+      // The documents his confirm is bound to, read by the server's own rule
+      // (lib/decision-token.ts), and the pages an earlier upload left on file.
+      const [bound, latest] = await Promise.all([
+        prisma.attachment.findMany({
+          where: decisionBoundWhere(edit.id),
+          select: { id: true, kind: true },
+          orderBy: { createdAt: 'asc' },
+        }),
+        // The Finance Manager's reason: the latest decision of this round, when it
+        // is his send-back to this step — never decisionReason, which an earlier
+        // round or step may have left.
+        prisma.editApproval.findFirst({
+          where: { editId: edit.id, cycle: edit.cycle },
+          orderBy: { at: 'desc' },
+          select: { decision: true, stepIndex: true, reason: true },
+        }),
+      ]);
+      signedForm = {
+        editId: edit.id,
+        decisionToken: decisionTokenFor(
+          edit,
+          bound.map((b) => b.id)
+        ),
+        keptPageIds: bound.filter((b) => b.kind === SIGNED_FORM_KIND).map((b) => b.id),
+        dueText: edit.slaDueAt ? omanDateTime(edit.slaDueAt) : null,
+        overdue: edit.slaDueAt ? minutesRemaining(edit.slaDueAt) < 0 : false,
+        sentBackReason:
+          latest?.decision === DECISION_REJECTED && latest.stepIndex === edit.currentStepIndex + 1
+            ? latest.reason
+            : null,
+      };
+    }
     const d = edit.customerDraft;
     initial = {
       editId: edit.id,
       state: edit.state,
       decisionReason: edit.decisionReason,
-      pendingRole: edit.pendingRole,
+      // The step in words (lib/approval-chains.ts stepName): "Sales Director",
+      // "Signed application" — never the enum the form would print.
+      pendingRole: edit.pendingRole ? stepName(edit.pendingRole) : null,
       customer: {
         legalName: d?.legalName ?? '',
         paymentTerms: d?.paymentTerms ?? 'CASH',
@@ -143,6 +197,7 @@ export default async function NewCustomerPage({
           of route {startedOn} adds the shop afresh.
         </div>
       )}
+      {signedForm && me.ownedRoute?.isActive && !startedOn && <SignedFormUpload {...signedForm} />}
       {!me.ownedRoute || !me.ownedRoute.isActive ? (
         <div className="m-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-200 sm:m-6">
           {me.ownedRoute
@@ -158,9 +213,15 @@ export default async function NewCustomerPage({
         />
       )}
       {/* Launch fix: his own draft, or one sent back to him, can be withdrawn —
-          an open request blocks its CR and shop for everyone. Not one in review. */}
-      {initial && (initial.state === 'DRAFT' || initial.state === 'NEEDS_CORRECTION') && (
-        <WithdrawRequest editId={initial.editId} isDraft={initial.state === 'DRAFT'} />
+          an open request blocks its CR and shop for everyone. Not one in review,
+          except at his own signed-application step (owner decisions 2026-10-11:
+          the customer may not sign). */}
+      {initial && (initial.state === 'DRAFT' || initial.state === 'NEEDS_CORRECTION' || signedForm) && (
+        <WithdrawRequest
+          editId={initial.editId}
+          isDraft={initial.state === 'DRAFT'}
+          atSignedForm={signedForm !== null}
+        />
       )}
     </main>
   );

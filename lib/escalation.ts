@@ -12,14 +12,24 @@
  * company-wide Manager or a Steward was handed the customer's name and a link that
  * 404s or leads nowhere.
  *   SUPERVISOR breached  → the MANAGER(s) of the request's regions; L2 adds GM
- *   MANAGER (reactivation) → GM
- *   ACCOUNTANT breached  → FINANCE_MANAGER + GM
- *   FINANCE_MANAGER      → GM
+ *                          and SALES_DIRECTOR
+ *   SALES_DIRECTOR       → GM
+ *   SALESMAN (the signed application, owner decisions 2026-10-11) → the
+ *                          salesman himself and the MANAGER(s) of the request's
+ *                          regions; L2 adds GM and SALES_DIRECTOR
+ *   MANAGER (reactivation) → GM + SALES_DIRECTOR
+ *   ACCOUNTANT breached  → FINANCE_MANAGER + GM + SALES_DIRECTOR
+ *   FINANCE_MANAGER      → GM + SALES_DIRECTOR
  *   GM breached          → the MANAGER(s) of the request's regions (visibility
  *                          only — nobody outranks GM)
+ * The Sales Director has the GM's access everywhere (owner decisions 2026-10-11),
+ * so he is told wherever the GM is told of another step's lateness. Who is told
+ * of a late Sales Director step, and of a late signed application, are DEFAULTS
+ * the owner has not confirmed (docs/handover/04-PENDING-WORK.md).
  * A level-2 escalation re-sends to the same people unless a tier is added above.
  * Region-scoped roles with nobody over the request's regions fall back to the GM
- * (app/api/cron/sla-escalate/route.ts), never to every Manager in the company.
+ * and the Sales Director (app/api/cron/sla-escalate/route.ts), never to every
+ * Manager in the company.
  *
  * Owner decision 6 (2026-10-07): a late request is e-mailed to the people this
  * plan tells ("the region's managers, then the GM at 2x" — the Supervisor step),
@@ -35,7 +45,7 @@
 import { Role } from '@prisma/client';
 
 export type EscalationPlan = {
-  /** Roles resolved region-scoped against the request's regions (fallback: the GM). */
+  /** Roles resolved region-scoped against the request's regions (fallback: the GM and the Sales Director). */
   regionScopedRoles: Role[];
   /** Roles resolved org-wide (all active holders). */
   globalRoles: Role[];
@@ -45,6 +55,12 @@ export type EscalationPlan = {
    * e-mailed for it (owner decision 6: e-mail only to people who can act).
    */
   visibilityOnly: boolean;
+  /**
+   * Owner decisions 2026-10-11: the submitting salesman is told too — the late
+   * step is his own (the signed credit application). Never e-mailed: a salesman
+   * is not on lib/notify-policy.ts EMAIL_ROLES.
+   */
+  includeSubmitter: boolean;
 };
 
 export function escalationPlan(pendingRole: Role | null, level: 1 | 2): EscalationPlan {
@@ -54,19 +70,51 @@ export function escalationPlan(pendingRole: Role | null, level: 1 | 2): Escalati
     case Role.SUPERVISOR:
       return {
         regionScopedRoles: [Role.MANAGER],
-        globalRoles: level === 2 ? [Role.GM] : [],
+        globalRoles: level === 2 ? [Role.GM, Role.SALES_DIRECTOR] : [],
         visibilityOnly: false,
+        includeSubmitter: false,
+      };
+    case Role.SALES_DIRECTOR:
+      return { regionScopedRoles: [], globalRoles: [Role.GM], visibilityOnly: false, includeSubmitter: false };
+    case Role.SALESMAN:
+      // The signed-application step: the salesman's own errand. He is told, and
+      // the Managers of the region who can chase him; at 2x the org-wide pair too.
+      return {
+        regionScopedRoles: [Role.MANAGER],
+        globalRoles: level === 2 ? [Role.GM, Role.SALES_DIRECTOR] : [],
+        visibilityOnly: false,
+        includeSubmitter: true,
       };
     case Role.MANAGER:
-      return { regionScopedRoles: [], globalRoles: [Role.GM], visibilityOnly: false };
+      return {
+        regionScopedRoles: [],
+        globalRoles: [Role.GM, Role.SALES_DIRECTOR],
+        visibilityOnly: false,
+        includeSubmitter: false,
+      };
     case Role.ACCOUNTANT:
-      return { regionScopedRoles: [], globalRoles: [Role.FINANCE_MANAGER, Role.GM], visibilityOnly: false };
+      return {
+        regionScopedRoles: [],
+        globalRoles: [Role.FINANCE_MANAGER, Role.GM, Role.SALES_DIRECTOR],
+        visibilityOnly: false,
+        includeSubmitter: false,
+      };
     case Role.FINANCE_MANAGER:
-      return { regionScopedRoles: [], globalRoles: [Role.GM], visibilityOnly: false };
+      return {
+        regionScopedRoles: [],
+        globalRoles: [Role.GM, Role.SALES_DIRECTOR],
+        visibilityOnly: false,
+        includeSubmitter: false,
+      };
     case Role.GM:
-      return { regionScopedRoles: [Role.MANAGER], globalRoles: [], visibilityOnly: true };
+      return { regionScopedRoles: [Role.MANAGER], globalRoles: [], visibilityOnly: true, includeSubmitter: false };
     default:
-      // SALESMAN/STEWARD/VIEWER never hold a pending step; fail safe.
-      return { regionScopedRoles: [], globalRoles: [Role.GM], visibilityOnly: false };
+      // STEWARD/VIEWER never hold a pending step; fail safe.
+      return {
+        regionScopedRoles: [],
+        globalRoles: [Role.GM, Role.SALES_DIRECTOR],
+        visibilityOnly: false,
+        includeSubmitter: false,
+      };
   }
 }

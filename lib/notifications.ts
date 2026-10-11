@@ -77,12 +77,16 @@ export async function supervisorWhoCanAct(
  * REGION_OVERLAP — active holders of the step role whose managedRegions
  * overlap the request's branch regions (Accountants share the ManagerRegions
  * M:N). Fail-closed: no regions ⇒ nobody (matches canActOnStep).
- * GLOBAL — every active holder of the step role (Finance Manager / GM).
+ * GLOBAL — every active holder of the step role (Finance Manager / GM / Sales
+ * Director).
+ * SUBMITTER — the submitting salesman himself (owner decisions 2026-10-11: the
+ * signed credit application is his to bring back). Needs `submitter.id`; a
+ * caller without it reaches nobody.
  */
 export async function resolveStepAudience(
   tx: Tx,
   step: Pick<ApprovalStep, 'role' | 'scope'>,
-  submitter: { supervisorId: string | null },
+  submitter: { id?: string; supervisorId: string | null },
   regionIds: string[]
 ): Promise<string[]> {
   switch (step.scope) {
@@ -106,6 +110,8 @@ export async function resolveStepAudience(
       });
       return users.map((u) => u.id);
     }
+    case 'SUBMITTER':
+      return submitter.id ? [submitter.id] : [];
   }
 }
 

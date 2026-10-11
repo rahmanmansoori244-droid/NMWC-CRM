@@ -17,7 +17,19 @@ import { withdrawCreateAction } from '@/services/creates';
 import { ConfirmModal } from '@/components/nmwc/ConfirmModal';
 import { hardReplace } from '@/lib/navigate';
 
-export function WithdrawRequest({ editId, isDraft }: { editId: string; isDraft: boolean }) {
+export function WithdrawRequest({
+  editId,
+  isDraft,
+  atSignedForm = false,
+}: {
+  editId: string;
+  isDraft: boolean;
+  /**
+   * Owner decisions 2026-10-11: the request waits for the customer's signed
+   * credit application. The customer may refuse to sign; withdrawing closes it.
+   */
+  atSignedForm?: boolean;
+}) {
   const [pending, start] = useTransition();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,12 +68,18 @@ export function WithdrawRequest({ editId, isDraft }: { editId: string; isDraft: 
         {pending ? 'Withdrawing…' : isDraft ? 'Discard this draft' : 'Withdraw this request'}
       </button>
       <p className="mt-1 text-xs text-slate-500">
-        For a shop you will not add after all. It frees the CR number and the shop for anyone to add.
+        {atSignedForm
+          ? 'If the customer will not sign the credit application. It frees the CR number and the shop for anyone to add.'
+          : 'For a shop you will not add after all. It frees the CR number and the shop for anyone to add.'}
       </p>
       <ConfirmModal
         open={confirming}
         title={isDraft ? 'Discard this draft?' : 'Withdraw this request?'}
-        message="It is closed for good and cannot be sent again. Its CR number and shop are free for a new request."
+        message={
+          atSignedForm
+            ? 'The customer will not sign? The request is closed for good, nobody approves it any further, and it cannot be sent again. Its CR number and shop are free for a new request.'
+            : 'It is closed for good and cannot be sent again. Its CR number and shop are free for a new request.'
+        }
         confirmLabel={isDraft ? 'Discard draft' : 'Withdraw request'}
         confirmTone="danger"
         onConfirm={withdraw}

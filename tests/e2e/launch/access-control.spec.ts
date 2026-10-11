@@ -217,7 +217,8 @@ const TAB_BAR: Array<[string, string]> = [
 ];
 
 /** One fixture user of each role, as the page matrix walks them. */
-const MATRIX_KEYS = ['SA', 'SUP', 'M1', 'STW', 'VW', 'ACC1', 'FM1', 'GM1'] as const;
+// SD1: owner decisions 2026-10-11 — the Sales Director, with the GM's access everywhere.
+const MATRIX_KEYS = ['SA', 'SUP', 'M1', 'STW', 'VW', 'ACC1', 'FM1', 'GM1', 'SD1'] as const;
 
 /** A strong throwaway password of the shape the secret scan looks for; typed with fillSecret only. */
 const throwawayPassword = () => `E2e-${randomBytes(12).toString('base64url')}-9a`;
@@ -314,7 +315,7 @@ function matrixPages(fx: MatrixFixture): MatrixPage[] {
   const full = fx.world.customer('FULL');
   const profile = `/customers/${full.id}`;
   const admin: Role[] = ['MANAGER', 'STEWARD'];
-  const approvers: Role[] = ['SUPERVISOR', 'MANAGER', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM'];
+  const approvers: Role[] = ['SUPERVISOR', 'MANAGER', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'SALES_DIRECTOR'];
   const people = [fx.world.user('ACC2').username];
   const batch = [fx.batchName];
   const queue = [fx.marker];
@@ -515,7 +516,7 @@ test.describe('access control: page matrix', { tag: ['@desktop'] }, () => {
     await expect(m1.getByRole('link', { name: 'Enrich', exact: true })).toBeVisible();
     await expect(m1.getByRole('button', { name: 'Archive', exact: true })).toBeVisible();
 
-    for (const key of ['ACC1', 'FM1', 'GM1']) {
+    for (const key of ['ACC1', 'FM1', 'GM1', 'SD1']) {
       const page = await pageAs(browser, fx.world.user(key));
       for (const c of [full, closed]) {
         await page.goto(`/customers/${c.id}`);
@@ -747,7 +748,7 @@ test.describe('access control: deep links and scope', { tag: ['@desktop'] }, () 
       expect(html, `${key}: B1's address`).not.toContain(B1_ADDRESS);
       if (b1Photo) expect(html, `${key}: B1's photo`).not.toContain(b1Photo.id);
     }
-    for (const key of ['FM1', 'GM1', 'STW', 'VW']) {
+    for (const key of ['FM1', 'GM1', 'SD1', 'STW', 'VW']) {
       const page = await pageAs(browser, world.user(key));
       await page.goto(`/customers/${multi.id}`);
       for (const b of [a1!, a2!, b1!]) {
@@ -910,7 +911,7 @@ test.describe('access control: route handlers', { tag: ['@desktop'] }, () => {
   test('exports: 403 “Your role cannot export.” for the salesman and the finance roles, 401 signed out', async ({ browser }) => {
     test.setTimeout(300_000);
     const paths = exportPaths();
-    for (const key of ['SA', 'ACC1', 'FM1', 'GM1']) {
+    for (const key of ['SA', 'ACC1', 'FM1', 'GM1', 'SD1']) {
       const ctx = await contextAs(browser, world.user(key), { device: 'desktop' });
       for (const path of paths) {
         const res = await ctx.request.get(path, { failOnStatusCode: false, maxRedirects: 0 });
@@ -973,7 +974,7 @@ test.describe('access control: route handlers', { tag: ['@desktop'] }, () => {
   });
 
   test('/api/perf-probe: 403 for every role but the Steward and the Manager, 401 signed out', async ({ browser }) => {
-    for (const key of ['SA', 'SUP', 'VW', 'ACC1', 'FM1', 'GM1']) {
+    for (const key of ['SA', 'SUP', 'VW', 'ACC1', 'FM1', 'GM1', 'SD1']) {
       const ctx = await contextAs(browser, world.user(key), { device: 'desktop' });
       const res = await ctx.request.get('/api/perf-probe', { failOnStatusCode: false, maxRedirects: 0 });
       expect(res.status(), key).toBe(403);
@@ -993,7 +994,7 @@ test.describe('access control: route handlers', { tag: ['@desktop'] }, () => {
 
   test('/api/photos/presign: 403 FORBIDDEN_ROLE with its message for the roles that cannot attach, and for a Manager’s GUARANTEE', async ({ browser }) => {
     const shop = { kind: 'SHOP', mimeType: 'image/jpeg', bytes: 1000 };
-    for (const key of ['VW', 'ACC1', 'FM1', 'GM1', 'SUP']) {
+    for (const key of ['VW', 'ACC1', 'FM1', 'GM1', 'SD1', 'SUP']) {
       const ctx = await contextAs(browser, world.user(key), { device: 'desktop' });
       const out = await presignRaw(ctx.request, shop);
       expect(out.status, key).toBe(403);
@@ -1003,6 +1004,16 @@ test.describe('access control: route handlers', { tag: ['@desktop'] }, () => {
     const guarantee = await presignRaw(m1.request, { ...shop, kind: 'GUARANTEE' });
     expect(guarantee.status).toBe(403);
     expect(guarantee.json.error).toBe('FORBIDDEN_ROLE');
+    // Owner decisions 2026-10-11: the credit documents and the signed credit
+    // application are uploaded by the salesman only, like the guarantee.
+    const stw = await contextAs(browser, world.user('STW'), { device: 'desktop' });
+    for (const kind of ['ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD', 'CREDIT_FORM']) {
+      for (const [who, ctx] of [['M1', m1], ['STW', stw]] as const) {
+        const out = await presignRaw(ctx.request, { ...shop, kind });
+        expect(out.status, `${who} ${kind}`).toBe(403);
+        expect(out.json.error, `${who} ${kind}`).toBe('FORBIDDEN_ROLE');
+      }
+    }
     const anon = await signedOutRequest();
     try {
       const out = await presignRaw(anon, shop);
@@ -1407,7 +1418,7 @@ test.describe('access control: server actions replayed by the wrong caller', { t
     });
     expect(bulk.actionId).toBe(actionIdFor('bulkApproveEditsAction', 'app/(app)/approvals/page'));
 
-    const others = await callersFor(browser, world, ['SA', 'VW', 'ACC1', 'FM1', 'GM1', 'M5', 'MNR', 'STW']);
+    const others = await callersFor(browser, world, ['SA', 'VW', 'ACC1', 'FM1', 'GM1', 'SD1', 'M5', 'MNR', 'STW']);
     await expectRefused(approve, others, 'You are not authorized to act on this step.');
     await expectRefused(reject, others, 'You are not authorized to act on this step.');
     // A bulk run answers ok with a per-request failure: nothing approved.
@@ -1499,7 +1510,7 @@ test.describe('access control: server actions replayed by the wrong caller', { t
     });
     expect(create.actionId).toBe(actionIdFor('createUserAction', 'app/(app)/users/page'));
 
-    const notAdmin = await callersFor(browser, world, ['SA', 'VW', 'ACC1', 'FM1', 'GM1']);
+    const notAdmin = await callersFor(browser, world, ['SA', 'VW', 'ACC1', 'FM1', 'GM1', 'SD1']);
     const [m1, m5, mnr] = await callersFor(browser, world, ['M1', 'M5', 'MNR']);
     // Reset of R2's salesman: R1's Manager does not manage him; a region-less Manager manages no one.
     await expectRefused(reset, [m1!], 'That account belongs to a region you do not manage.');
@@ -1568,7 +1579,7 @@ test.describe('access control: server actions replayed by the wrong caller', { t
     expect(toggleRoute.actionId).toBe(actionIdFor('toggleRouteActiveAction', 'app/(app)/routes/page'));
 
     const [m1, m5, mnr] = await callersFor(browser, world, ['M1', 'M5', 'MNR']);
-    const notAdmin = await callersFor(browser, world, ['SA', 'VW', 'ACC1', 'FM1', 'GM1']);
+    const notAdmin = await callersFor(browser, world, ['SA', 'VW', 'ACC1', 'FM1', 'GM1', 'SD1']);
     await expectRefused(createRegion, [m1!, m5!], 'Only the Steward can create a region.');
     await expectRefused(createRegion, notAdmin, 'Only Managers and the Steward can manage routes.');
     await expectRefused(createRoute, [m1!], 'That region is not one you manage.');
@@ -1616,7 +1627,7 @@ test.describe('access control: server actions replayed by the wrong caller', { t
     });
     expect(merge.actionId).toBe(actionIdFor('mergeCustomersAction', 'app/(app)/duplicates/page'));
 
-    const callers = await callersFor(browser, world, ['M1', 'SA', 'VW', 'ACC1', 'FM1', 'GM1']);
+    const callers = await callersFor(browser, world, ['M1', 'SA', 'VW', 'ACC1', 'FM1', 'GM1', 'SD1']);
     await expectRefused(dismiss, callers, 'Only the Data Steward can merge customers.');
     await expectRefused(merge, callers, 'Only the Data Steward can merge customers.');
     for (const x of [dismiss, merge]) await expectSignedOutRefused(x);
@@ -1646,7 +1657,7 @@ test.describe('access control: server actions replayed by the wrong caller', { t
     });
     expect(promote.actionId).toBe(actionIdFor('promoteCustomerBatchAction', 'app/(app)/import/[batchId]/page'));
 
-    const callers = await callersFor(browser, world, ['M1', 'SA', 'VW', 'ACC1', 'FM1', 'GM1']);
+    const callers = await callersFor(browser, world, ['M1', 'SA', 'VW', 'ACC1', 'FM1', 'GM1', 'SD1']);
     await expectRefused(upload, callers, 'Only the Data Steward can run imports.');
     await expectRefused(promote, callers, 'Only the Data Steward can run imports.');
     for (const x of [upload, promote]) await expectSignedOutRefused(x);
@@ -1676,11 +1687,11 @@ test.describe('access control: server actions replayed by the wrong caller', { t
     });
     expect(exportFiltered.actionId).toBe(actionIdFor('exportFilteredCustomersAction', 'app/(app)/customers/page'));
 
-    const notAllowed = await callersFor(browser, world, ['SA', 'VW', 'ACC1', 'FM1', 'GM1']);
+    const notAllowed = await callersFor(browser, world, ['SA', 'VW', 'ACC1', 'FM1', 'GM1', 'SD1']);
     await expectRefused(archive, notAllowed, 'Only a Steward or Manager can archive a customer.');
     // Another region's Manager, and one with no region, cannot reach the customer.
     await expectRefused(archive, await callersFor(browser, world, ['M5', 'MNR']), 'Edit not allowed.');
-    await expectRefused(exportFiltered, await callersFor(browser, world, ['SA', 'ACC1', 'FM1', 'GM1']), 'Your role cannot export.');
+    await expectRefused(exportFiltered, await callersFor(browser, world, ['SA', 'ACC1', 'FM1', 'GM1', 'SD1']), 'Your role cannot export.');
     for (const x of [archive, exportFiltered]) await expectSignedOutRefused(x);
     expect(await snapshot(['Customer', 'Branch'], rows), 'the customer is not archived').toBe(untouched);
   });

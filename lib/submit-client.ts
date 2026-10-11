@@ -32,7 +32,13 @@ import {
   type SubmitReceipt,
 } from '@/lib/submission';
 
-export type FieldForm = 'customer-edit' | 'customer-create' | 'branch-close' | 'branch-reactivate';
+export type FieldForm =
+  | 'customer-edit'
+  | 'customer-create'
+  | 'branch-close'
+  | 'branch-reactivate'
+  // Owner decisions 2026-10-11: the signed credit application (services/signed-form.ts).
+  | 'credit-form';
 
 export type SubmitOutcome<T> =
   | { kind: 'answered'; result: ActionResult<T> }

@@ -15,11 +15,15 @@ const QUEUE = { __queue: 'the Manager’s /approvals where' };
 const h = vi.hoisted(() => ({
   regions: ['g1'] as string[],
   rows: [] as Array<Record<string, unknown>>,
+  /** Owner decisions 2026-10-11: credit applications to print (the query on pendingRole SALESMAN). */
+  printRows: [] as Array<Record<string, unknown>>,
+  role: 'MANAGER',
   findManyArgs: [] as Array<{ where: Record<string, unknown> }>,
+  printArgs: [] as Array<{ where: Record<string, unknown> }>,
   queueCalls: [] as unknown[][],
 }));
 
-vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: { id: 'u-mgr', role: 'MANAGER', username: 'mgr' } }) }));
+vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: { id: 'u-mgr', role: h.role, username: 'mgr' } }) }));
 vi.mock('next/navigation', () => ({
   redirect: (to: string) => {
     throw new Error(`REDIRECT ${to}`);
@@ -42,10 +46,16 @@ vi.mock('@/lib/manager-queue', async (importOriginal) => ({
     return QUEUE;
   }),
 }));
+// The salesman's sent-back list is not under test here.
+vi.mock('@/lib/returned-work', () => ({ openReturnedIds: async () => [], inIdOrder: () => [] }));
 vi.mock('@/lib/db', () => ({
   prisma: {
     customerEdit: {
       findMany: async (args: { where: Record<string, unknown> }) => {
+        if (args.where.pendingRole === 'SALESMAN') {
+          h.printArgs.push(args);
+          return h.printRows;
+        }
         h.findManyArgs.push(args);
         return h.rows;
       },
@@ -74,7 +84,10 @@ async function renderWork() {
 beforeEach(() => {
   h.regions = ['g1'];
   h.rows = [];
+  h.printRows = [];
+  h.role = 'MANAGER';
   h.findManyArgs = [];
+  h.printArgs = [];
   h.queueCalls = [];
 });
 afterEach(cleanup);
@@ -109,6 +122,87 @@ describe('Work, for a Manager: stale approvals', () => {
     await renderWork();
     expect(h.queueCalls).toEqual([]);
     expect(h.findManyArgs).toEqual([]);
+    expect(h.printArgs).toEqual([]);
     expect(screen.getByText('All clear')).toBeTruthy();
+  });
+});
+
+describe('owner decisions 2026-10-11: credit applications to print', () => {
+  const printRow = (over: Record<string, unknown> = {}) => ({
+    id: 'e-print',
+    state: 'SUBMITTED',
+    slaDueAt: new Date('2026-10-14T12:00:00Z'),
+    customerDraft: { legalName: 'Sea View Trading' },
+    submittedBy: { fullName: 'Salim Al Harthy' },
+    ...over,
+  });
+
+  it('a Manager: requests from his regions waiting for the signed application, linked to their review page', async () => {
+    h.printRows = [printRow()];
+    await renderWork();
+    expect(h.printArgs).toHaveLength(1);
+    expect(h.printArgs[0]!.where).toEqual({
+      branchDrafts: { some: { route: { regionId: { in: ['g1'] } } } },
+      state: 'SUBMITTED',
+      process: 'CREATE',
+      pendingRole: 'SALESMAN',
+    });
+    const card = screen.getByText('Sea View Trading').closest('a')!;
+    expect(card.getAttribute('href')).toBe('/approvals/e-print');
+    expect(card.textContent).toContain('Credit application to print');
+    expect(card.textContent).toContain('For Salim Al Harthy to have signed and stamped · due 14/10/2026, 16:00:00');
+  });
+
+  it('a Supervisor: his own reports’ requests', async () => {
+    h.role = 'SUPERVISOR';
+    h.printRows = [printRow()];
+    await renderWork();
+    expect(h.printArgs[0]!.where).toEqual({
+      submittedBy: { supervisorId: 'u-mgr' },
+      state: 'SUBMITTED',
+      process: 'CREATE',
+      pendingRole: 'SALESMAN',
+    });
+    expect(screen.getByText('Sea View Trading').closest('a')!.getAttribute('href')).toBe('/approvals/e-print');
+  });
+
+  it('the salesman sees it as his own work, with the due time, on his request’s page', async () => {
+    h.role = 'SALESMAN';
+    h.rows = [
+      {
+        id: 'e-mine',
+        process: 'CREATE',
+        state: 'SUBMITTED',
+        pendingRole: 'SALESMAN',
+        isReactivation: false,
+        target: 'CUSTOMER',
+        customerId: null,
+        slaDueAt: new Date('2026-10-14T12:00:00Z'),
+        submittedAt: new Date('2026-10-10T08:00:00Z'),
+        customer: null,
+        customerDraft: { legalName: 'Sea View Trading' },
+      },
+      {
+        id: 'e-sd',
+        process: 'CREATE',
+        state: 'SUBMITTED',
+        pendingRole: 'SALES_DIRECTOR',
+        isReactivation: false,
+        target: 'CUSTOMER',
+        customerId: null,
+        slaDueAt: null,
+        submittedAt: new Date('2026-10-10T08:00:00Z'),
+        customer: null,
+        customerDraft: { legalName: 'Bahja Stores' },
+      },
+    ];
+    const { default: WorkPage } = await import('@/app/(app)/work/page');
+    render(await WorkPage());
+    const mine = screen.getAllByText('Sea View Trading')[0]!.closest('a')!;
+    expect(mine.getAttribute('href')).toBe('/customers/new?edit=e-mine');
+    expect(mine.textContent).toContain('New customer — signed application needed');
+    expect(mine.textContent).toContain('Have it signed and stamped, then upload it · due 14/10/2026, 16:00:00');
+    const sd = screen.getAllByText('Bahja Stores')[0]!.closest('a')!;
+    expect(sd.textContent).toContain('In review — current step: Sales Director');
   });
 });

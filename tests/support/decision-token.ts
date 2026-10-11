@@ -1,7 +1,8 @@
 /**
  * N01 test support: the decision token a freshly loaded approval page would
  * render for a request, read from the database the way the page reads it —
- * the row, and for a new-customer request its live guarantee documents.
+ * the row, and for a new-customer request its live decision-bound documents
+ * (guarantees, credit documents, the signed credit application).
  *
  * Approve and reject refuse a call without a token, so every integration test
  * that decides a request sends one. Tests that hold a token across a change to
@@ -9,7 +10,7 @@
  * the refusal; every other caller takes a fresh one right before deciding.
  */
 import type { PrismaClient } from '@prisma/client';
-import { decisionTokenFor } from '@/lib/decision-token';
+import { decisionBoundWhere, decisionTokenFor } from '@/lib/decision-token';
 
 export async function freshDecisionToken(prisma: PrismaClient, editId: string): Promise<string> {
   const row = await prisma.customerEdit.findUniqueOrThrow({
@@ -27,7 +28,7 @@ export async function freshDecisionToken(prisma: PrismaClient, editId: string): 
   const guarantees =
     row.process === 'CREATE'
       ? await prisma.attachment.findMany({
-          where: { editId, kind: 'GUARANTEE', deletedAt: null },
+          where: decisionBoundWhere(editId),
           select: { id: true },
         })
       : [];

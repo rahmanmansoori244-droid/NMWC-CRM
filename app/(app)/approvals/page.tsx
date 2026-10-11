@@ -9,7 +9,7 @@ import { loadScope } from '@/lib/access';
 import { managerQueueWhere } from '@/lib/manager-queue';
 import { formatSlaStatus } from '@/lib/working-hours';
 import { countFieldChanges, hasManualGps } from '@/lib/gps-manual';
-import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
+import { decisionBoundWhere, decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
 import { draftScores } from '@/lib/create-score';
 import { isFinalStep, parseChain } from '@/lib/approval-chains';
 import { BulkApprovalQueue, type ApprovalQueueItem } from './BulkApprovalQueue';
@@ -186,14 +186,16 @@ export default async function ApprovalsPage() {
   // exactly the requests this approver could open.
   const pendingCount = await prisma.customerEdit.count({ where });
 
-  // N01: a new-customer request's token also binds its live guarantee documents
-  // (lib/decision-token.ts), so a card is decided on the request as it stood when
-  // this page was rendered. One read for the whole page.
+  // N01: a new-customer request's token also binds its live decision-bound
+  // documents (lib/decision-token.ts: guarantees, and the credit documents and
+  // the signed application since owner decisions 2026-10-11), so a card is
+  // decided on the request as it stood when this page was rendered. One read for
+  // the whole page.
   const createIds = items.filter((e) => e.process === 'CREATE').map((e) => e.id);
   const guaranteeIdsOf = new Map<string, string[]>();
   if (createIds.length > 0) {
     const guarantees = await prisma.attachment.findMany({
-      where: { editId: { in: createIds }, kind: 'GUARANTEE', deletedAt: null },
+      where: decisionBoundWhere({ in: createIds }),
       select: { id: true, editId: true },
     });
     for (const g of guarantees) {

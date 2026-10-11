@@ -34,10 +34,12 @@ function expectedPrefixes(userId: string): string[] {
  */
 function kindFromKey(key: string): AttachmentKind | null {
   // Keep in lockstep with the presign kind enum — GUARANTEE was added for the
-  // Phase 1 creation flow (updating only one of the two produces 403s).
-  const m = /^[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/[a-z0-9]+\/(SHOP|SIGNBOARD|CR|FREE|GUARANTEE)\//.exec(
-    key
-  );
+  // Phase 1 creation flow, the credit documents and the signed credit application
+  // by owner decisions 2026-10-11 (updating only one of the two produces 403s).
+  const m =
+    /^[0-9]{4}\/[0-9]{2}\/[0-9]{2}\/[a-z0-9]+\/(SHOP|SIGNBOARD|CR|FREE|GUARANTEE|ID_CARD|MEMBERSHIP_CERT|VAT_CERT|TAX_CARD|CREDIT_FORM)\//.exec(
+      key
+    );
   return m ? (m[1] as AttachmentKind) : null;
 }
 

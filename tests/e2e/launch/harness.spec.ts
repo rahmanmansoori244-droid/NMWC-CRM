@@ -67,7 +67,7 @@ const HOME_HEADING: Record<Role, RegExp> = {
 };
 
 /** One account of every role. */
-const ONE_PER_ROLE = ['SA', 'SUP', 'ACC1', 'FM1', 'GM1', 'M1', 'STW', 'VW'];
+const ONE_PER_ROLE = ['SA', 'SUP', 'ACC1', 'FM1', 'GM1', 'SD1', 'M1', 'STW', 'VW'];
 
 const homeUrl = (role: Role) => new RegExp(`${homePathFor(role).replace(/\//g, '\\/')}(\\?|$)`);
 

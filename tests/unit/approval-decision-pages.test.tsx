@@ -18,6 +18,7 @@ import type { ReactNode } from 'react';
 import { EditProcess, PaymentTerms, Prisma } from '@prisma/client';
 import { resolveChain } from '@/lib/approval-chains';
 import { decisionView, guaranteeDigest, parseDecisionToken, type DecisionRow } from '@/lib/decision-token';
+import { LEGACY_CREDIT_CHAIN } from '../support/legacy-chain';
 
 type Att = { id: string; editId: string; kind: string; deletedAt: Date | null };
 const h = vi.hoisted(() => ({
@@ -36,14 +37,19 @@ const h = vi.hoisted(() => ({
   phoneCustomers: [] as Array<Record<string, unknown>>,
 }));
 
-/** The attachment table, for a `where` of { editId | editId.in, kind, deletedAt: null }. */
-function attachmentsFor(where: { editId?: string | { in: string[] }; kind?: string; deletedAt?: null }): Att[] {
+/** The attachment table, for a `where` of { editId | editId.in, kind | kind.in, deletedAt: null }. */
+function attachmentsFor(where: {
+  editId?: string | { in: string[] };
+  kind?: string | { in: string[] };
+  deletedAt?: null;
+}): Att[] {
   if (where.editId === undefined) return [];
   const ids = typeof where.editId === 'string' ? [where.editId] : where.editId.in;
+  const kinds = where.kind === undefined ? null : typeof where.kind === 'string' ? [where.kind] : where.kind.in;
   return h.attachments.filter(
     (a) =>
       ids.includes(a.editId) &&
-      (where.kind === undefined || a.kind === where.kind) &&
+      (kinds === null || kinds.includes(a.kind)) &&
       (where.deletedAt !== null || a.deletedAt === null)
   );
 }
@@ -99,7 +105,7 @@ vi.mock('@/lib/db', () => ({
     },
     attachment: {
       findMany: async (args: { where: Parameters<typeof attachmentsFor>[0] }) =>
-        attachmentsFor(args.where).map(({ id, editId }) => ({ id, editId })),
+        attachmentsFor(args.where).map(({ id, editId, kind }) => ({ id, editId, kind })),
     },
     branch: { findMany: async () => [] },
     channel: { findMany: async () => [] },
@@ -221,10 +227,18 @@ describe('the review page', () => {
     };
 
     it('a later step, the first time this round: one step back, to the previous role', async () => {
+      // Owner decisions 2026-10-11: SUP 0, SD 1, signed application 2, FM 3, GM 4, ACC 5.
       expect(await rejectOutcomeOf(createRow('CREDIT', 1))).toEqual({ kind: 'STEP_BACK', toRole: 'SUPERVISOR' });
-      expect(await rejectOutcomeOf(createRow('CREDIT', 2))).toEqual({ kind: 'STEP_BACK', toRole: 'FINANCE_MANAGER' });
-      expect(await rejectOutcomeOf(createRow('CREDIT', 3))).toEqual({ kind: 'STEP_BACK', toRole: 'GM' });
+      // The Finance Manager sends it back to the salesman's signed-application step.
+      expect(await rejectOutcomeOf(createRow('CREDIT', 3))).toEqual({ kind: 'STEP_BACK', toRole: 'SALESMAN' });
+      expect(await rejectOutcomeOf(createRow('CREDIT', 4))).toEqual({ kind: 'STEP_BACK', toRole: 'FINANCE_MANAGER' });
+      expect(await rejectOutcomeOf(createRow('CREDIT', 5))).toEqual({ kind: 'STEP_BACK', toRole: 'GM' });
       expect(await rejectOutcomeOf(createRow('CASH', 1))).toEqual({ kind: 'STEP_BACK', toRole: 'SUPERVISOR' });
+      // A request frozen with the 4-step chain keeps its own cascade.
+      expect(await rejectOutcomeOf(createRow('CREDIT', 2, { approvalChain: LEGACY_CREDIT_CHAIN }))).toEqual({
+        kind: 'STEP_BACK',
+        toRole: 'FINANCE_MANAGER',
+      });
     });
 
     it('the first step: to the salesman', async () => {
@@ -275,7 +289,16 @@ describe('the review page', () => {
   });
 
   it('X-APPR-2: a mid-chain step sends it on to the next role', async () => {
-    expect((await renderDetail(createRow('CREDIT', 1))).outcome).toEqual({ kind: 'ADVANCE', nextRole: 'GM' });
+    // Owner decisions 2026-10-11: the Sales Director sends it on for the
+    // customer's signature, with the salesman's budget frozen on the request.
+    expect((await renderDetail(createRow('CREDIT', 1))).outcome).toEqual({
+      kind: 'ADVANCE',
+      nextRole: 'SALESMAN',
+      budget: '3 working days',
+    });
+    cleanup();
+    h.actionProps = [];
+    expect((await renderDetail(createRow('CREDIT', 3))).outcome).toEqual({ kind: 'ADVANCE', nextRole: 'GM' });
     cleanup();
     h.actionProps = [];
     expect((await renderDetail(createRow('CASH', 0))).outcome).toEqual({ kind: 'ADVANCE', nextRole: 'ACCOUNTANT' });
@@ -283,7 +306,12 @@ describe('the review page', () => {
 
   it('X-APPR-2: the final step of a new-customer request creates it', async () => {
     // Viewed by an org-wide role: the words follow the step, not the viewer.
-    expect((await renderDetail(createRow('CREDIT', 3))).outcome).toEqual({ kind: 'CREATE' });
+    expect((await renderDetail(createRow('CREDIT', 5))).outcome).toEqual({ kind: 'CREATE' });
+    cleanup();
+    h.actionProps = [];
+    expect((await renderDetail(createRow('CREDIT', 3, { approvalChain: LEGACY_CREDIT_CHAIN }))).outcome).toEqual({
+      kind: 'CREATE',
+    });
     cleanup();
     h.actionProps = [];
     expect((await renderDetail(createRow('CASH', 1))).outcome).toEqual({ kind: 'CREATE' });
@@ -544,8 +572,8 @@ describe('the approval queue', () => {
     const cards = await renderQueue([
       { ...createRow('CASH', 0), id: 'cash-sup' },
       { ...createRow('CASH', 1), id: 'cash-acc' },
-      { ...createRow('CREDIT', 2), id: 'credit-gm' },
-      { ...createRow('CREDIT', 3), id: 'credit-acc' },
+      { ...createRow('CREDIT', 4), id: 'credit-gm' },
+      { ...createRow('CREDIT', 5), id: 'credit-acc' },
       update,
     ]);
     expect(Object.fromEntries(cards.map((c) => [c.id, c.needsTemixCode]))).toEqual({
@@ -659,7 +687,9 @@ describe('F1: the review page says when its viewer cannot decide the request (li
     await renderDetail(update());
     const note = screen.getByRole('note');
     expect(note.textContent).toMatch(/For your information/);
-    expect(note.textContent).toContain('SUPERVISOR');
+    // The step in words (lib/approval-chains.ts stepName), never the enum.
+    expect(note.textContent).toContain('waiting at the Supervisor step');
+    expect(note.textContent).not.toContain('SUPERVISOR');
   });
 
   it('the approver of the current step sees no banner', async () => {
@@ -761,11 +791,12 @@ describe('launch fixes on the new-customer review page and queue card', () => {
       )
     ).toBeTruthy();
     expect(screen.queryByText(/cannot be approved/)).toBeNull();
-    // The guarantee the same: at the Finance Manager step, and at the last.
+    // The guarantee the same, on a request frozen with the 4-step chain (which
+    // still needs one): at the Finance Manager step, and at the last.
     cleanup();
     h.actionProps = [];
     h.attachments = [];
-    await renderDetail(createRow('CREDIT', 1));
+    await renderDetail(createRow('CREDIT', 1, { approvalChain: LEGACY_CREDIT_CHAIN }));
     expect(
       screen.getByText(
         'None on file: removed since the request was sent. It will be refused at the last step — reject it and say the guarantee is missing.'
@@ -773,12 +804,31 @@ describe('launch fixes on the new-customer review page and queue card', () => {
     ).toBeTruthy();
     cleanup();
     h.actionProps = [];
-    await renderDetail(createRow('CREDIT', 3));
+    await renderDetail(createRow('CREDIT', 3, { approvalChain: LEGACY_CREDIT_CHAIN }));
     expect(
       screen.getByText(
         'None on file: removed since the request was sent. It cannot be approved — reject it and say the guarantee is missing.'
       )
     ).toBeTruthy();
+    // Owner decisions 2026-10-11: on the new chain a missing credit document says
+    // the same, naming the document; no guarantee row at all when there is none.
+    cleanup();
+    h.actionProps = [];
+    await renderDetail(createRow('CREDIT', 3));
+    expect(screen.queryByText(/Guarantee documents/)).toBeNull();
+    expect(
+      screen.getAllByText(
+        'None on file: removed since the request was sent. It will be refused at the last step — reject it and say which document is missing.'
+      )
+    ).toHaveLength(4);
+    cleanup();
+    h.actionProps = [];
+    await renderDetail(createRow('CREDIT', 5));
+    expect(
+      screen.getAllByText(
+        'None on file: removed since the request was sent. It cannot be approved — reject it and say which document is missing.'
+      )
+    ).toHaveLength(4);
   });
 
   it('a live customer on the same phone is shown: named when the approver can open it, counted when not', async () => {
@@ -856,5 +906,108 @@ describe('launch fixes on the new-customer review page and queue card', () => {
     render(await Page());
     // 35 of 40 on the customer (no notes) + 60 of 60 on its one branch.
     expect((h.queueItems[0]!.customer as { completenessScore: number }).completenessScore).toBe(95);
+  });
+});
+
+describe('owner decisions 2026-10-11: the credit chain on the review page', () => {
+  /** Rendered without the one-actions assertion: the signed-application step has none. */
+  async function renderPage(edit: unknown) {
+    h.edit = edit;
+    const { default: Page } = await import('@/app/(app)/approvals/[id]/page');
+    render(await Page({ params: Promise.resolve({ id: 'e1' }) }));
+  }
+  const doc = (id: string, kind: string, deletedAt: Date | null = null): Att => ({ id, editId: 'e1', kind, deletedAt });
+  const step = (stepIndex: number, role: string, decision: string, actor: string, at: string) => ({
+    id: `s-${stepIndex}-${decision}`,
+    stepIndex,
+    cycle: 2,
+    role,
+    decision,
+    reason: null,
+    at: new Date(at),
+    actor: { fullName: actor },
+  });
+
+  it('at the signed-application step nobody gets Approve or Reject — the page says what it waits on, and until when', async () => {
+    // The Sales Director who sent it on, and any other approver: no buttons.
+    h.role = 'SALES_DIRECTOR';
+    await renderPage(createRow('CREDIT', 2, { slaDueAt: new Date('2026-09-29T12:00:00.000Z') }));
+    expect(h.actionProps).toHaveLength(0);
+    const note = screen.getByRole('note');
+    expect(note.textContent).toContain(
+      "Waiting for Salesman One to upload the customer's signed and stamped credit application"
+    );
+    // Oman time: 12:00 UTC is 16:00 in Muscat.
+    expect(note.textContent).toContain('due 29/09/2026, 16:00:00');
+    expect(note.textContent).toMatch(/It then goes to the Finance Manager\./);
+  });
+
+  it('the chain reads as steps in words, and the salesman’s upload is not an approval', async () => {
+    await renderDetail(
+      createRow('CREDIT', 3, {
+        steps: [
+          step(0, 'SUPERVISOR', 'APPROVED', 'Manager A', '2026-09-22T05:00:00Z'),
+          step(1, 'SALES_DIRECTOR', 'APPROVED', 'Sales Director A', '2026-09-22T06:00:00Z'),
+          step(2, 'SALESMAN', 'FORM_UPLOADED', 'Salesman One', '2026-09-23T09:15:00Z'),
+        ],
+      })
+    );
+    const chips = screen.getByText('Approval chain').closest('section')!;
+    for (const name of ['Supervisor', 'Sales Director', 'Signed application', 'Finance Manager', 'GM', 'Accountant']) {
+      expect(within(chips).getAllByText(name).length, name).toBeGreaterThan(0);
+    }
+    expect(chips.textContent).not.toMatch(/SALES_DIRECTOR|SALESMAN|FINANCE MANAGER/);
+    expect(chips.textContent).toContain('Signed application uploaded by Salesman One');
+    expect(chips.textContent).toContain('APPROVED at Sales Director step by Sales Director A');
+    expect(chips.textContent).not.toContain('FORM_UPLOADED');
+  });
+
+  it('the credit documents are listed one row per kind, with the signed application and who uploaded it', async () => {
+    h.attachments = [
+      doc('id-1', 'ID_CARD'),
+      doc('id-2', 'ID_CARD'),
+      doc('mem-1', 'MEMBERSHIP_CERT'),
+      doc('vat-1', 'VAT_CERT'),
+      doc('tax-1', 'TAX_CARD'),
+      doc('form-1', 'CREDIT_FORM'),
+      doc('form-old', 'CREDIT_FORM', new Date()),
+    ];
+    const props = await renderDetail(
+      createRow('CREDIT', 3, {
+        steps: [step(2, 'SALESMAN', 'FORM_UPLOADED', 'Salesman One', '2026-09-23T09:15:00Z')],
+      })
+    );
+    const section = screen.getByText('Credit documents').closest('section')!;
+    const imgs = (label: string) =>
+      within(within(section).getByText(label).parentElement!)
+        .getAllByRole('img')
+        .map((i) => i.getAttribute('src')!.replace('/api/photos/', ''));
+    expect(imgs("Owner's ID card")).toEqual(['id-1', 'id-2']);
+    expect(imgs('Membership certificate')).toEqual(['mem-1']);
+    expect(imgs('VAT registration certificate')).toEqual(['vat-1']);
+    expect(imgs('Tax card')).toEqual(['tax-1']);
+    expect(imgs('Signed credit application')).toEqual(['form-1']);
+    expect(section.textContent).toContain('Uploaded bySalesman One · 23/09/2026, 13:15:00');
+    // N01: the Finance Manager's decision is bound to every one of them.
+    expect(parseDecisionToken(props.decisionToken)!.guarantees).toBe(
+      guaranteeDigest(['id-1', 'id-2', 'mem-1', 'vat-1', 'tax-1', 'form-1'])
+    );
+  });
+
+  it('before the salesman uploads it, the signed application is "not uploaded yet", not "removed"', async () => {
+    h.role = 'SALES_DIRECTOR';
+    await renderDetail(createRow('CREDIT', 1));
+    expect(screen.getByText('Not uploaded yet: the salesman uploads it after the Sales Director approves.')).toBeTruthy();
+  });
+
+  it('a credit request shows the customer’s e-mail; a request frozen before the change shows no credit-documents section', async () => {
+    const row = createRow('CREDIT', 1);
+    await renderDetail({ ...row, customerDraft: { ...row.customerDraft, email: 'owner@shop.example' } });
+    expect(screen.getByText('E-mail').parentElement!.textContent).toBe('E-mailowner@shop.example');
+    cleanup();
+    h.actionProps = [];
+    await renderDetail(createRow('CREDIT', 1, { approvalChain: LEGACY_CREDIT_CHAIN }));
+    expect(screen.queryByText('Credit documents')).toBeNull();
+    expect(screen.getByText('Guarantee documents (0)')).toBeTruthy();
   });
 });

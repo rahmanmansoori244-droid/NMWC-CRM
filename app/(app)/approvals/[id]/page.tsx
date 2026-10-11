@@ -6,8 +6,25 @@ import { prisma } from '@/lib/db';
 import { omanDateTime } from '@/lib/tz';
 import { Role } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
-import { isFinalStep, parseChain, resolveRejectTarget } from '@/lib/approval-chains';
-import { decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
+import {
+  DECISION_APPROVED,
+  DECISION_FORM_UPLOADED,
+  hasSignedFormStep,
+  isFinalStep,
+  isSignedFormStep,
+  parseChain,
+  resolveRejectTarget,
+  signedFormStepIndex,
+  stepName,
+} from '@/lib/approval-chains';
+import { decisionBoundWhere, decisionTokenFor, formatRequestedLimit } from '@/lib/decision-token';
+import { formatSlaStatus, formatWorkingBudget } from '@/lib/working-hours';
+import {
+  CREDIT_DOCUMENT_KINDS,
+  CREDIT_DOCUMENT_LABELS,
+  SIGNED_FORM_KIND,
+  requiredAtFinalize,
+} from '@/lib/credit-documents';
 import { sentByPreviousForm, staleLabelsForPendingEdit } from '@/lib/edit-approval';
 import { isUnmovedCoordinate } from '@/lib/edit-values';
 import { manualGpsReasonForBranch, manualGpsReasonForPoint } from '@/lib/gps-manual';
@@ -180,9 +197,18 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     managedRegionIds: scope.managedRegionIds,
   });
   // X-APPR-2: what approving the current step does, for the confirmation's words.
-  // Read off the same frozen chain approveEditCore advances along.
+  // Read off the same frozen chain approveEditCore advances along. Owner
+  // decisions 2026-10-11: sending on to the signed-application step says the
+  // salesman's budget, read from the chain frozen on this request.
+  const nextStep = chain[edit.currentStepIndex + 1];
   const approveOutcome: ApproveOutcome = !isFinalStep(chain, edit.currentStepIndex)
-    ? { kind: 'ADVANCE', nextRole: chain[edit.currentStepIndex + 1]!.role }
+    ? isSignedFormStep(nextStep)
+      ? {
+          kind: 'ADVANCE',
+          nextRole: nextStep!.role,
+          budget: formatWorkingBudget(Math.round(nextStep!.slaHours * 60)),
+        }
+      : { kind: 'ADVANCE', nextRole: nextStep!.role }
     : isCreate
       ? { kind: 'CREATE' }
       : { kind: 'APPLY' };
@@ -307,16 +333,29 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     return liveAccuracy;
   };
 
-  // Guarantee documents (CREATE-CREDIT): edit-claimed GUARANTEE attachments.
-  // N01: their ids are bound into the decision token below, so a decision is
-  // refused if one is removed while this page is open.
-  const guaranteeDocs = isCreate
+  // The decision-bound documents of a new-customer request (lib/credit-documents.ts):
+  // guarantees, and since owner decisions 2026-10-11 the four credit documents
+  // and the signed credit application. N01: their ids are bound into the
+  // decision token below, so a decision is refused if one is removed (or a page
+  // added) while this page is open. The same rule the server re-reads them by.
+  const boundDocs = isCreate
     ? await prisma.attachment.findMany({
-        where: { editId: edit.id, kind: 'GUARANTEE', deletedAt: null },
-        select: { id: true },
+        where: decisionBoundWhere(edit.id),
+        select: { id: true, kind: true },
         orderBy: { createdAt: 'asc' },
       })
     : [];
+  const docsOf = (kind: string) => boundDocs.filter((d) => d.kind === kind).map((d) => d.id);
+  const guaranteeDocs = boundDocs.filter((d) => d.kind === 'GUARANTEE');
+  // The chain frozen on this request says which documents it carries: a credit
+  // request frozen before 2026-10-11 has guarantees; one frozen after has the
+  // credit documents and a signed-application step.
+  const newCreditChain = hasSignedFormStep(chain);
+  const finalizeNeeds = requiredAtFinalize(chain);
+  const formStep = signedFormStepIndex(chain);
+  // The latest upload of the signed application: who and when (EditApproval
+  // FORM_UPLOADED rows are append-only; the last one is the pages on file now).
+  const formUpload = [...edit.steps].reverse().find((s) => s.decision === DECISION_FORM_UPLOADED) ?? null;
 
   // X-STATUS-2: a close request is decided on the photo it was sent with. It
   // used to appear only among the branch's "Other photos", beside older ones
@@ -472,8 +511,26 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
             className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 ring-1 ring-inset ring-sky-200"
           >
             For your information: this request is waiting at the{' '}
-            <strong>{lane.waitingOn.replace('_', ' ')}</strong> step, which you cannot decide.
+            <strong>{stepName(lane.waitingOn)}</strong> step, which you cannot decide.
             You can read it here; only that step&apos;s approver can approve or reject it now.
+          </p>
+        )}
+        {lane.kind === 'signedForm' && (
+          // Owner decisions 2026-10-11: nobody decides this step — the salesman
+          // completes it by uploading the signed form — so there are no buttons.
+          <p
+            role="note"
+            className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-inset ring-amber-200"
+          >
+            Waiting for <strong>{edit.submittedBy.fullName}</strong> to upload the customer&apos;s signed
+            and stamped credit application
+            {edit.slaDueAt ? (
+              <>
+                {' '}
+                — due {omanDateTime(edit.slaDueAt)} ({formatSlaStatus(edit.slaDueAt).label})
+              </>
+            ) : null}
+            . It then goes to the Finance Manager.
           </p>
         )}
 
@@ -500,7 +557,7 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                             : 'bg-slate-100 text-slate-500'
                       }`}
                     >
-                      {s.role.replace('_', ' ')}
+                      {stepName(s)}
                     </span>
                   </span>
                 );
@@ -514,12 +571,22 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                     className="flex flex-col gap-0.5 px-4 py-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3"
                   >
                     <span className="min-w-0">
-                      <strong
-                        className={s.decision === 'APPROVED' ? 'text-emerald-700' : 'text-red-700'}
-                      >
-                        {s.decision}
-                      </strong>{' '}
-                      at {s.role.replace('_', ' ')} step by {s.actor.fullName}
+                      {s.decision === DECISION_FORM_UPLOADED ? (
+                        // Owner decisions 2026-10-11: the salesman's upload, not an approval.
+                        <>
+                          <strong className="text-emerald-700">Signed application uploaded</strong> by{' '}
+                          {s.actor.fullName}
+                        </>
+                      ) : (
+                        <>
+                          <strong
+                            className={s.decision === DECISION_APPROVED ? 'text-emerald-700' : 'text-red-700'}
+                          >
+                            {s.decision}
+                          </strong>{' '}
+                          at {stepName(s.role)} step by {s.actor.fullName}
+                        </>
+                      )}
                       {s.reason ? <em className="text-slate-600"> — “{s.reason}”</em> : null}
                     </span>
                     <span className="shrink-0 text-slate-500">
@@ -555,6 +622,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                 label="Alt phone"
                 value={draft.altPhone ? <PhoneLink phone={draft.altPhone} /> : null}
               />
+              {/* Owner decisions 2026-10-11: credit requests carry the customer's e-mail. */}
+              <DetailRow label="E-mail" value={draft.email} />
               <DetailRow
                 label="Contact"
                 value={
@@ -614,15 +683,57 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
                       : null
                   }
                 />
+                {/* A request frozen before 2026-10-11 needs its guarantee at
+                    finalize; on the new chain guarantees are shown only when
+                    there are any (lib/credit-documents.ts requiredAtFinalize). */}
+                {(!newCreditChain || guaranteeDocs.length > 0) && (
+                  <PhotoRow
+                    label={`Guarantee documents (${guaranteeDocs.length})`}
+                    ids={guaranteeDocs.map((g) => g.id)}
+                    emptyText={
+                      isPending && finalizeNeeds.includes('GUARANTEE')
+                        ? `None on file: removed since the request was sent. ${refusedHere[0]!.toUpperCase()}${refusedHere.slice(1)} — reject it and say the guarantee is missing.`
+                        : 'None on file'
+                    }
+                  />
+                )}
+              </DetailSection>
+            )}
+
+            {/* Owner decisions 2026-10-11: the credit documents, handled like CR
+                copies (never cached, every view recorded), and the customer's
+                signed credit application once the salesman has uploaded it. */}
+            {isCredit && newCreditChain && (
+              <DetailSection title="Credit documents">
+                {CREDIT_DOCUMENT_KINDS.map((kind) => (
+                  <PhotoRow
+                    key={kind}
+                    label={CREDIT_DOCUMENT_LABELS[kind]}
+                    ids={docsOf(kind)}
+                    emptyText={
+                      isPending
+                        ? `None on file: removed since the request was sent. ${refusedHere[0]!.toUpperCase()}${refusedHere.slice(1)} — reject it and say which document is missing.`
+                        : 'None on file'
+                    }
+                  />
+                ))}
                 <PhotoRow
-                  label={`Guarantee documents (${guaranteeDocs.length})`}
-                  ids={guaranteeDocs.map((g) => g.id)}
+                  label={CREDIT_DOCUMENT_LABELS[SIGNED_FORM_KIND]}
+                  ids={docsOf(SIGNED_FORM_KIND)}
                   emptyText={
-                    isPending
-                      ? `None on file: removed since the request was sent. ${refusedHere[0]!.toUpperCase()}${refusedHere.slice(1)} — reject it and say the guarantee is missing.`
-                      : 'None on file'
+                    isPending && edit.currentStepIndex <= formStep
+                      ? 'Not uploaded yet: the salesman uploads it after the Sales Director approves.'
+                      : isPending
+                        ? `None on file: removed since it was uploaded. ${refusedHere[0]!.toUpperCase()}${refusedHere.slice(1)} — reject it so the salesman uploads it again.`
+                        : 'None on file'
                   }
                 />
+                {formUpload && docsOf(SIGNED_FORM_KIND).length > 0 && (
+                  <DetailRow
+                    label="Uploaded by"
+                    value={`${formUpload.actor.fullName} · ${omanDateTime(formUpload.at)}`}
+                  />
+                )}
               </DetailSection>
             )}
 
@@ -855,19 +966,21 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
         )}
       </div>
 
-      {isPending && (
+      {/* Owner decisions 2026-10-11: no buttons at the signed-application step —
+          nobody can decide it (lib/decision-lane.ts 'signedForm'). */}
+      {isPending && lane.kind !== 'signedForm' && (
         // No negative margin: this bar is a child of <main>, which has no horizontal
         // padding to cancel, so `-mx-4 sm:-mx-6` made it wider than the screen — a
         // sideways scroll on every phone and a 24px scrollbar on desktop (item 37).
         <div className="sticky bottom-0 mt-4 border-t border-slate-200 bg-white p-4 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] sm:p-6">
           {/* N01: the token is made from the row this page just rendered and the
-              guarantee documents it listed, so a decision is refused if the
+              decision-bound documents it listed, so a decision is refused if the
               request has changed since. */}
           <ApproveRejectActions
             editId={edit.id}
             decisionToken={decisionTokenFor(
               edit,
-              guaranteeDocs.map((g) => g.id)
+              boundDocs.map((g) => g.id)
             )}
             outcome={approveOutcome}
             rejectOutcome={rejectOutcome}

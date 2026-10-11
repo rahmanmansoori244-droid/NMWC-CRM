@@ -182,3 +182,17 @@ describe('B2 / SEC-02: Manager administration is region-scoped', () => {
     expect(managerCanAssignSupervisor(me, [], fp({ id: 'sup-1', role: Role.SUPERVISOR }))).toBe(false);
   });
 });
+
+describe('owner decisions 2026-10-11: the Sales Director is Steward-provisioned', () => {
+  it('the Steward’s role picker offers it, labelled in words; a Manager’s never does', async () => {
+    const { administrableRolesFor } = await import('@/lib/permissions');
+    const { ROLE_LABELS } = await import('@/lib/account-edit');
+    expect(administrableRolesFor(Role.STEWARD)).toContain(Role.SALES_DIRECTOR);
+    expect(administrableRolesFor(Role.MANAGER)).not.toContain(Role.SALES_DIRECTOR);
+    expect(ROLE_LABELS.SALES_DIRECTOR).toBe('Sales Director');
+    // A Manager can neither mint one nor take one over; the Steward can.
+    expect(canMutateUser(manager, tgt(Role.SALES_DIRECTOR)).ok).toBe(false);
+    expect(canMutateUser(steward, tgt(Role.SALES_DIRECTOR)).ok).toBe(true);
+    expect(managerCanAdministerUser(['g1'], fp({ role: Role.SALES_DIRECTOR })).ok).toBe(false);
+  });
+});

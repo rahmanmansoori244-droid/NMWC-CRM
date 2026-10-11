@@ -221,6 +221,28 @@ describe('attach, through the route: every check still refuses before a write', 
     expect(wrote()).toBe(0);
   });
 
+  it.each(['CR', 'GUARANTEE', 'ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD', 'CREDIT_FORM'])(
+    'owner decisions 2026-10-11: a %s photo never goes onto the extra-photo slot, which would re-kind it FREE and cache it',
+    async (kind) => {
+      for (const role of ['SALESMAN', 'MANAGER', 'STEWARD']) {
+        s.user = { ...s.user, role };
+        s.scope = { ownedRouteId: 'r1', teamRouteIds: [], managedRegionIds: ['g1'] };
+        db.attachment.findUnique.mockResolvedValue(photo({ kind }));
+        const res = await attach({ attachmentId: ATT, branchId: B1, slot: 'FREE' });
+        expect(res, `${role} ${kind}`).toMatchObject({ ok: false, code: 'VALIDATION_FAILED' });
+        expect(res.fields?.attachmentId).toBe(PHOTO_OTHER_SLOT_MESSAGE);
+      }
+      expect(wrote()).toBe(0);
+    }
+  );
+
+  it('an ordinary photo still goes onto the extra-photo slot', async () => {
+    for (const kind of ['FREE', 'SHOP', 'SIGNBOARD']) {
+      db.attachment.findUnique.mockResolvedValue(photo({ kind }));
+      expect((await attach({ attachmentId: ATT, branchId: B1, slot: 'FREE' })).ok, kind).toBe(true);
+    }
+  });
+
   it('a fresh photo on his own branch is attached, with its audit row', async () => {
     db.attachment.findUnique.mockResolvedValue(photo());
     expect(await attach({ attachmentId: ATT, branchId: B1, slot: 'SHOP' })).toEqual({ ok: true });

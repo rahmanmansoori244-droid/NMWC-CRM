@@ -717,7 +717,7 @@ test.describe('update flow: a customer with shops on two routes', { tag: ['@phon
     await expect(m5.locator(`a[href="/approvals/${editId}"]`), 'not in the other region’s queue').toHaveCount(0);
     await m5.goto(`/approvals/${editId}`);
     await expect(m5.getByRole('note').filter({ hasText: 'For your information: this request is waiting at the' })).toContainText(
-      'SUPERVISOR step, which you cannot decide.'
+      'Supervisor step, which you cannot decide.'
     );
     await expect(m5.getByText("Not shown: the changes to 1 branch outside your regions. Their region's Manager decides them.")).toBeVisible();
   });

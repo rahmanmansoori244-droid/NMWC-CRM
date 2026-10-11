@@ -30,6 +30,7 @@ import {
   UNWIRED_LIVE,
 } from '@/lib/photo-attach';
 import { lockCustomerRow } from '@/lib/locks';
+import { isConfidentialKind } from '@/lib/credit-documents';
 
 const customerAttach = z.object({
   attachmentId: z.string().cuid(),
@@ -232,6 +233,17 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       );
       throw new ValidationError({ attachmentId: PHOTO_OTHER_SLOT_MESSAGE });
     }
+  } else if (isConfidentialKind(att.kind)) {
+    // Owner decisions 2026-10-11 hardening: the FREE slot re-kinds the photo it
+    // takes to FREE, so a CR copy, a guarantee or a credit document attached
+    // there would lose its no-store and record-every-view handling
+    // (app/api/photos/[id]/route.ts). No form offers that; a hand-made call is
+    // refused like any photo taken for another slot.
+    logger.info(
+      { attachmentId: att.id, slot: data.slot, kind: att.kind, by: session.user.id },
+      'photo.attach.confidential_on_free'
+    );
+    throw new ValidationError({ attachmentId: PHOTO_OTHER_SLOT_MESSAGE });
   }
 
   // Keep the existing actor-scope policy; recheck the target under its lock.

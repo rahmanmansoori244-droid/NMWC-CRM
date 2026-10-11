@@ -8,6 +8,7 @@ import { AppError } from '@/lib/errors';
 import { submitEditAction } from '@/services/edits';
 import { submitCreateAction } from '@/services/creates';
 import { markBranchClosedAction, requestReactivationAction } from '@/services/reactivations';
+import { submitSignedFormAction } from '@/services/signed-form';
 import type { ActionResult } from '@/lib/errors';
 import { readJsonObject, refuse, refuseCrossSite } from '@/lib/fetch-route';
 
@@ -33,6 +34,9 @@ const FORMS: Record<string, (body: Json) => Promise<ActionResult<unknown>>> = {
   'customer-create': (body) => submitCreateAction(body as Parameters<typeof submitCreateAction>[0]),
   'branch-close': (body) => markBranchClosedAction(formDataOf(body)),
   'branch-reactivate': (body) => requestReactivationAction(formDataOf(body)),
+  // Owner decisions 2026-10-11: the salesman's signed credit application. Its
+  // decision token is its replay key (services/signed-form.ts).
+  'credit-form': (body) => submitSignedFormAction(body as Parameters<typeof submitSignedFormAction>[0]),
 };
 
 /** The close / reactivate actions read FormData (their server-action shape). */

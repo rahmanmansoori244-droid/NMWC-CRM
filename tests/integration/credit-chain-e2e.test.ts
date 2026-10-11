@@ -1,8 +1,16 @@
 // @vitest-environment node
 /**
  * CREDIT-CHAIN E2E — walks a real CREDIT CREATE request through its full frozen
- * chain SUPERVISOR → FINANCE_MANAGER → GM → ACCOUNTANT against the isolated UAT
- * branch, pinning three requirements the pure unit tests can't reach:
+ * chain against the isolated UAT branch. Since owner decisions 2026-10-11 that is
+ * SUPERVISOR → SALES_DIRECTOR → the salesman's signed application → FINANCE_MANAGER
+ * → GM → ACCOUNTANT (lib/approval-chains.ts CHAIN_VERSION 2); the N01 requests
+ * A and D are hand-frozen with the 4-step chain a request submitted before the
+ * change still carries (tests/support/legacy-chain.ts), so the legacy chain is
+ * proved to advance, step back and finalize with its guarantee. The 6-step
+ * cascade has its own request (C): a Sales Director send-back to the Supervisor,
+ * a Finance Manager send-back to the salesman, who uploads the signed form again
+ * (the pages he dropped released), and a GM send-back to the Finance Manager.
+ * It pins three requirements the pure unit tests can't reach:
  *
  *   R19  Materialize ONLY after the final approval. After every NON-final step
  *        the customer must NOT exist yet (no Customer row, edit still SUBMITTED).
@@ -46,6 +54,7 @@ import { CREDIT_BULK_REFUSED_MESSAGE, TEMIX_CODE_BULK_REFUSED_MESSAGE } from '@/
 import { TEMIX_CODE_CRM_MESSAGE, TEMIX_CODE_REQUIRED_MESSAGE } from '@/lib/temix-code';
 import { buildTemixRows } from '@/lib/temix';
 import { PHOTO_IN_REVIEW_MESSAGE } from '@/lib/photo-attach';
+import { LEGACY_CREDIT_CHAIN } from '../support/legacy-chain';
 import { randomUUID } from 'node:crypto';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 90_000 });
@@ -61,13 +70,14 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   let creates: typeof import('@/services/creates');
   let edits: typeof import('@/services/edits');
   let photos: typeof import('@/services/photos');
+  let signedForm: typeof import('@/services/signed-form');
 
   const tag = randomUUID().slice(0, 8);
   const ids = {
     region: '', route: '',
     salesman: `ZZCC-sales-${tag}`, supervisor: `ZZCC-sup-${tag}`,
     fm: `ZZCC-fm-${tag}`, gm: `ZZCC-gm-${tag}`, acc: `ZZCC-acc-${tag}`,
-    steward: `ZZCC-stw-${tag}`,
+    steward: `ZZCC-stw-${tag}`, sd: `ZZCC-sd-${tag}`,
   };
   const legalName = `ZZ-SYN Credit Chain ${tag}`;
   // N01's two requests: A (CREDIT, corrected mid-chain) and B (CASH).
@@ -80,7 +90,9 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   const nameE = `ZZ-SYN Credit Chain TX-E ${tag}`;
   const nameF = `ZZ-SYN Credit Chain TX-F ${tag}`;
   const nameHolders = `ZZ-SYN Credit Chain TX-holder ${tag}`;
-  const allNames = [legalName, nameA, nameB, nameD, nameE, nameF, nameHolders];
+  // Owner decisions 2026-10-11: C walks the 6-step cascade's send-backs.
+  const nameC = `ZZ-SYN Credit Chain CAS-C ${tag}`;
+  const allNames = [legalName, nameA, nameB, nameC, nameD, nameE, nameF, nameHolders];
   // Owner decision 2026-10-08: the Temix code the Accountant typed for each customer.
   const TEMIX = { main: `ZTM${tag}`.toUpperCase(), a: `ZTA${tag}`.toUpperCase(), b: `ZTB${tag}`.toUpperCase() };
   const REQUESTED_LIMIT = 7777;
@@ -90,7 +102,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
 
   const asUser = (u: string, role: string) => { current = { id: u, role, username: u }; };
 
-  async function mkAtt(kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE') {
+  async function mkAtt(kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE' | 'CREDIT_FORM') {
     const a = await prisma.attachment.create({
       data: {
         kind, r2Key: `uat/${kind.toLowerCase()}-${tag}-${randomUUID().slice(0, 6)}.jpg`,
@@ -107,6 +119,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     creates = await import('@/services/creates');
     edits = await import('@/services/edits');
     photos = await import('@/services/photos');
+    signedForm = await import('@/services/signed-form');
 
     const region = await prisma.region.create({ data: { name: `ZZCC Region ${tag}`, code: `ZZCC-${tag}` } });
     ids.region = region.id;
@@ -117,6 +130,8 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     await prisma.user.create({ data: { id: ids.supervisor, username: ids.supervisor, passwordHash: 'x', fullName: 'ZZ Sup', role: 'SUPERVISOR' } });
     await prisma.user.create({ data: { id: ids.fm, username: ids.fm, passwordHash: 'x', fullName: 'ZZ FM', role: 'FINANCE_MANAGER' } });
     await prisma.user.create({ data: { id: ids.gm, username: ids.gm, passwordHash: 'x', fullName: 'ZZ GM', role: 'GM' } });
+    // Owner decisions 2026-10-11: the Sales Director, org-wide like the GM.
+    await prisma.user.create({ data: { id: ids.sd, username: ids.sd, passwordHash: 'x', fullName: 'ZZ SD', role: 'SALES_DIRECTOR' } });
     // Accountant is region-scoped: manage exactly this region so REGION_OVERLAP passes.
     await prisma.user.create({ data: { id: ids.acc, username: ids.acc, passwordHash: 'x', fullName: 'ZZ Acc', role: 'ACCOUNTANT', managedRegions: { connect: { id: region.id } } } });
     // The Steward removes a guarantee document of a request in review (N01-D).
@@ -147,9 +162,10 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         await prisma.customer.deleteMany({ where: { id: { in: allCust } } });
       }
       await prisma.attachment.deleteMany({ where: { capturedById: ids.salesman } });
-      await purgeAuditLog(prisma, { where: { actorId: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc, ids.steward] } } });
-      await prisma.notification.deleteMany({ where: { userId: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc, ids.steward] } } });
-      await prisma.user.deleteMany({ where: { id: { in: [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.acc, ids.steward] } } });
+      const people = [ids.salesman, ids.supervisor, ids.fm, ids.gm, ids.sd, ids.acc, ids.steward];
+      await purgeAuditLog(prisma, { where: { actorId: { in: people } } });
+      await prisma.notification.deleteMany({ where: { userId: { in: people } } });
+      await prisma.user.deleteMany({ where: { id: { in: people } } });
       await prisma.route.deleteMany({ where: { id: ids.route } });
       await prisma.region.deleteMany({ where: { id: ids.region } });
     } catch (e) { console.error('cleanup', e); }
@@ -172,7 +188,19 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     stageBefore.push({ stageEnteredAt: st.stageEnteredAt, slaDueAt: st.slaDueAt });
   const customerCount = () => prisma.customer.count({ where: { legalName } });
 
-  it('submits the CREDIT request and freezes the 4-step chain', async () => {
+  /** Owner decisions 2026-10-11: the salesman sends the signed form from his page as it is now. */
+  async function sendSignedForm(id: string, attachmentIds: string[]) {
+    return signedForm.submitSignedFormAction({
+      editId: id,
+      attachmentIds,
+      decisionToken: await freshDecisionToken(prisma, id),
+    });
+  }
+  /** A request frozen before the change: the 4-step chain, as its column holds it. */
+  const freezeLegacy = (id: string) =>
+    prisma.customerEdit.update({ where: { id }, data: { approvalChain: LEGACY_CREDIT_CHAIN as unknown as object } });
+
+  it('submits the CREDIT request and freezes the 6-step chain', async () => {
     asUser(ids.salesman, 'SALESMAN');
     const res = await creates.submitCreateAction({
       isDraft: false,
@@ -198,6 +226,15 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(st.currentStepIndex).toBe(0);
     expect(st.pendingRole).toBe('SUPERVISOR');
     expect(st.customerId).toBeNull();
+    const frozen = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId }, select: { approvalChain: true } });
+    expect((frozen.approvalChain as Array<{ role: string }>).map((s) => s.role)).toEqual([
+      'SUPERVISOR',
+      'SALES_DIRECTOR',
+      'SALESMAN',
+      'FINANCE_MANAGER',
+      'GM',
+      'ACCOUNTANT',
+    ]);
     expect(await customerCount()).toBe(0); // R19: nothing materialized at submit
     // F1: the region's Accountant is told at submit, for information, in the
     // submit's own transaction; the Finance Manager and the GM are told only when
@@ -205,19 +242,63 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     expect(await prisma.notification.findMany({ where: { editId, kind: 'REQUEST_FYI' }, select: { userId: true } })).toEqual([
       { userId: ids.acc },
     ]);
-    expect(await prisma.notification.count({ where: { editId, userId: { in: [ids.fm, ids.gm] } } })).toBe(0);
+    expect(await prisma.notification.count({ where: { editId, userId: { in: [ids.fm, ids.gm, ids.sd] } } })).toBe(0);
     keepStage(st);
   });
 
-  it('R19: SUPERVISOR approve advances to FM — still no customer', async () => {
+  it('R19: SUPERVISOR approve advances to the SALES DIRECTOR — still no customer', async () => {
     asUser(ids.supervisor, 'SUPERVISOR');
     const res = await approve(editId);
     expect(res.ok).toBe(true);
     const st = await editState();
     expect(st.state).toBe('SUBMITTED');
     expect(st.currentStepIndex).toBe(1);
+    expect(st.pendingRole).toBe('SALES_DIRECTOR');
+    expect(await customerCount()).toBe(0);
+    // The Sales Director is told the request waits on him (GLOBAL, like the GM).
+    expect(await prisma.notification.count({ where: { editId, userId: ids.sd, kind: 'EDIT_STAGE_ADVANCED' } })).toBe(1);
+    keepStage(st);
+  });
+
+  it('R19: SALES DIRECTOR approve hands it to the salesman for the signed application — still no customer', async () => {
+    asUser(ids.sd, 'SALES_DIRECTOR');
+    const res = await approve(editId);
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    const st = await editState();
+    expect(st.currentStepIndex).toBe(2);
+    expect(st.pendingRole).toBe('SALESMAN');
+    expect(await customerCount()).toBe(0);
+    // His red alert, with the due time, and the supervisor's "to print" row.
+    const asked = await prisma.notification.findMany({ where: { editId, userId: ids.salesman, kind: 'SIGNED_FORM_REQUESTED' } });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.title).toBe('Signed credit application needed');
+    const toPrint = await prisma.notification.findMany({ where: { editId, userId: ids.supervisor, title: 'Credit application to print' } });
+    expect(toPrint).toHaveLength(1);
+    // Three working days, frozen on the request.
+    expect(st.slaDueAt!.getTime()).toBeGreaterThan(st.stageEnteredAt!.getTime());
+    keepStage(st);
+  });
+
+  it('nobody approves the signed-application step; the salesman’s upload moves it to the FINANCE MANAGER', async () => {
+    for (const [u, role] of [[ids.supervisor, 'SUPERVISOR'], [ids.sd, 'SALES_DIRECTOR'], [ids.fm, 'FINANCE_MANAGER']] as const) {
+      asUser(u, role);
+      expect(await approve(editId), role).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+    }
+    asUser(ids.salesman, 'SALESMAN');
+    const pages = [await mkAtt('CREDIT_FORM'), await mkAtt('CREDIT_FORM')];
+    const res = await sendSignedForm(editId, pages);
+    expect(res, JSON.stringify(res)).toEqual({ ok: true, data: { editId, pages: 2, replayed: false } });
+    const st = await editState();
+    expect(st.currentStepIndex).toBe(3);
     expect(st.pendingRole).toBe('FINANCE_MANAGER');
     expect(await customerCount()).toBe(0);
+    expect(await prisma.attachment.count({ where: { id: { in: pages }, editId, deletedAt: null } })).toBe(2);
+    const row = await prisma.editApproval.findFirstOrThrow({ where: { editId, stepIndex: 2 } });
+    expect([row.decision, row.role, row.actorId]).toEqual(['FORM_UPLOADED', 'SALESMAN', ids.salesman]);
+    // His alert and the print row are settled; the Finance Manager is told.
+    expect(await prisma.notification.count({ where: { editId, userId: ids.salesman, kind: 'SIGNED_FORM_REQUESTED', readAt: null } })).toBe(0);
+    expect(await prisma.notification.count({ where: { editId, userId: ids.supervisor, readAt: null } })).toBe(0);
+    expect(await prisma.notification.count({ where: { editId, userId: ids.fm, kind: 'EDIT_STAGE_ADVANCED', readAt: null } })).toBe(1);
     keepStage(st);
   });
 
@@ -226,7 +307,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     const res = await approve(editId);
     expect(res.ok).toBe(true);
     const st = await editState();
-    expect(st.currentStepIndex).toBe(2);
+    expect(st.currentStepIndex).toBe(4);
     expect(st.pendingRole).toBe('GM');
     expect(await customerCount()).toBe(0);
     keepStage(st);
@@ -237,7 +318,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     const res = await approve(editId);
     expect(res.ok).toBe(true);
     const st = await editState();
-    expect(st.currentStepIndex).toBe(3);
+    expect(st.currentStepIndex).toBe(5);
     expect(st.pendingRole).toBe('ACCOUNTANT');
     expect(await customerCount()).toBe(0);
     keepStage(st);
@@ -255,7 +336,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       });
     }
     expect(await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).toEqual(before);
-    expect(await prisma.editApproval.count({ where: { editId, stepIndex: 3 } })).toBe(0);
+    expect(await prisma.editApproval.count({ where: { editId, stepIndex: 5 } })).toBe(0);
     expect(await customerCount()).toBe(0);
   });
 
@@ -336,8 +417,10 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
     // The change request keeps SLA state for its CURRENT stage only; this ledger
     // row is the only lasting record of whether each stage met its SLA.
     const steps = await prisma.editApproval.findMany({ where: { editId }, orderBy: { stepIndex: 'asc' } });
-    expect(steps.map((s) => s.role)).toEqual(['SUPERVISOR', 'FINANCE_MANAGER', 'GM', 'ACCOUNTANT']);
-    expect(stageBefore).toHaveLength(4);
+    // The salesman's signed application is a step with a due time too (owner decisions 2026-10-11).
+    expect(steps.map((s) => s.role)).toEqual(['SUPERVISOR', 'SALES_DIRECTOR', 'SALESMAN', 'FINANCE_MANAGER', 'GM', 'ACCOUNTANT']);
+    expect(steps.map((s) => s.decision)).toEqual(['APPROVED', 'APPROVED', 'FORM_UPLOADED', 'APPROVED', 'APPROVED', 'APPROVED']);
+    expect(stageBefore).toHaveLength(6);
     for (const [i, s] of steps.entries()) {
       // Exactly the stage that was decided — not the one it advanced to, which
       // would read as "decided in 0 minutes, on time" for every step.
@@ -429,6 +512,9 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       if (!a.ok) console.error('N01 SUBMIT A FAILED', JSON.stringify(a));
       expect(a.ok).toBe(true);
       editA = (a as { ok: true; data: { editId: string } }).data.editId;
+      // A is a request submitted before owner decisions 2026-10-11: its column
+      // holds the 4-step chain, which it keeps through every step and send-back.
+      await freezeLegacy(editA);
 
       const b = await creates.submitCreateAction({
         isDraft: false,
@@ -486,6 +572,11 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editA } });
       expect([st.state, st.cycle, st.currentStepIndex]).toEqual(['SUBMITTED', 2, 0]);
       expect(Number(st.requestedCreditLimit)).toBe(10_000);
+      // Every submit freezes the chain afresh: sent again after the change, it
+      // carries the 6-step chain. Frozen back by hand so the rest of this walk
+      // stays the legacy chain's (the 6-step cascade is C's, below).
+      expect((st.approvalChain as unknown[]).length).toBe(6);
+      await freezeLegacy(editA);
     });
 
     it('a Supervisor page from cycle 1 cannot reject cycle 2 — not even the decision row that precedes the claim is written', async () => {
@@ -602,6 +693,9 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect(ok.ok, JSON.stringify(ok)).toBe(true);
       const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editA } });
       expect(st.state).toBe('APPROVED');
+      // A legacy 4-step request finalized on its own chain, with its guarantee bound.
+      expect((st.approvalChain as unknown[]).length).toBe(4);
+      expect(await prisma.attachment.count({ where: { id: attA.guarantee, customerId: st.customerId! } })).toBe(1);
       const cust = await prisma.customer.findUniqueOrThrow({ where: { id: st.customerId! }, select: { legalName: true, creditLimit: true, paymentTermDays: true } });
       expect(cust.legalName).toBe(nameA);
       expect(Number(cust.creditLimit)).toBe(10_000);
@@ -635,6 +729,8 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       if (!res.ok) console.error('N01 SUBMIT D FAILED', JSON.stringify(res));
       expect(res.ok).toBe(true);
       editD = (res as { ok: true; data: { editId: string } }).data.editId;
+      // Like A, a request frozen with the 4-step chain: the Finance Manager is step 1.
+      await freezeLegacy(editD);
       expect(parseDecisionToken(await fresh(editD))!.guarantees).toBe(guaranteeDigest([gD.one, gD.two]));
     });
 
@@ -697,6 +793,115 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expectStale(res);
       // Rolled back whole: the claim, the decision row, the audit row, the notifications.
       expect(await footprint(editD, nameD)).toEqual(before);
+    });
+  });
+
+  // ── Owner decisions 2026-10-11: the 6-step cascade's send-backs ─────────────
+  // A Sales Director send-back returns to the Supervisor; a Finance Manager
+  // send-back returns to the salesman's signed-application step, where he
+  // uploads the form again (the pages he dropped are released); a GM send-back
+  // returns to the Finance Manager. Index-based, as every send-back is.
+  describe('owner decisions 2026-10-11: the credit cascade, one step back at a time', () => {
+    let editC = '';
+    const pageC = { one: '', two: '', three: '' };
+    const digitsC = (salt: number) => String(100000 + ((parseInt(tag, 16) + salt) % 900000));
+    const decideC = async (kind: 'approve' | 'reject', temixCode?: string) => {
+      const fd = new FormData();
+      fd.set('editId', editC);
+      fd.set('decisionToken', await freshDecisionToken(prisma, editC));
+      if (temixCode) fd.set('temixCode', temixCode);
+      if (kind === 'reject') {
+        fd.set('reason', 'The stamp on the signed application is not readable.');
+        fd.set('category', 'other');
+      }
+      return kind === 'approve' ? edits.approveEditAction(fd) : edits.rejectEditAction(fd);
+    };
+    const at = async () => {
+      const st = await prisma.customerEdit.findUniqueOrThrow({ where: { id: editC }, select: { state: true, currentStepIndex: true, pendingRole: true } });
+      return [st.state, st.currentStepIndex, st.pendingRole];
+    };
+
+    it('C is submitted and reaches the Sales Director, who sends it back to the Supervisor', async () => {
+      asUser(ids.salesman, 'SALESMAN');
+      const res = await creates.submitCreateAction({
+        isDraft: false,
+        customer: {
+          legalName: nameC, paymentTerms: 'CREDIT', channelId, subChannelId,
+          primaryPhone: `+96895${digitsC(71)}`, contactPerson: `ZZ Contact C ${tag}`,
+          crNumber: `93${digitsC(72)}`, crPhotoAttachmentId: await mkAtt('CR'),
+        },
+        credit: { requestedCreditLimit: 900, requestedPaymentTermDays: 30 },
+        guaranteeAttachmentIds: [await mkAtt('GUARANTEE')],
+        branches: [{
+          branchName: `ZZ Branch C ${tag}`, address: `ZZ Way 7, ${tag}`, gpsLat: 23.65, gpsLng: 58.45,
+          dayOfVisit: 'SUN', coolersCount: 1, standsCount: 1, emptyBottlesCount: 5,
+          shopPhotoAttachmentId: await mkAtt('SHOP'), signboardPhotoAttachmentId: await mkAtt('SIGNBOARD'),
+        }],
+      });
+      if (!res.ok) console.error('CASCADE SUBMIT C FAILED', JSON.stringify(res));
+      expect(res.ok).toBe(true);
+      editC = (res as { ok: true; data: { editId: string } }).data.editId;
+      asUser(ids.supervisor, 'SUPERVISOR');
+      expect((await decideC('approve')).ok).toBe(true);
+      asUser(ids.sd, 'SALES_DIRECTOR');
+      expect((await decideC('reject')).ok).toBe(true);
+      expect(await at()).toEqual(['SUBMITTED', 0, 'SUPERVISOR']);
+      // The Supervisor is told it is back on his step.
+      expect(await prisma.notification.count({ where: { editId: editC, userId: ids.supervisor, title: 'Request returned to your step', readAt: null } })).toBe(1);
+    });
+
+    it('sent on again; the salesman uploads two pages; the Finance Manager sends it back to him', async () => {
+      asUser(ids.supervisor, 'SUPERVISOR');
+      expect((await decideC('approve')).ok).toBe(true);
+      asUser(ids.sd, 'SALES_DIRECTOR');
+      expect((await decideC('approve')).ok).toBe(true);
+      asUser(ids.salesman, 'SALESMAN');
+      pageC.one = await mkAtt('CREDIT_FORM');
+      pageC.two = await mkAtt('CREDIT_FORM');
+      expect((await sendSignedForm(editC, [pageC.one, pageC.two])).ok).toBe(true);
+      asUser(ids.fm, 'FINANCE_MANAGER');
+      expect((await decideC('reject')).ok).toBe(true);
+      expect(await at()).toEqual(['SUBMITTED', 2, 'SALESMAN']);
+      const asked = await prisma.notification.findFirstOrThrow({
+        where: { editId: editC, userId: ids.salesman, kind: 'SIGNED_FORM_REQUESTED', readAt: null },
+      });
+      expect(asked.title).toBe('Signed application sent back');
+      expect(asked.body).toMatch(/sent back by the Finance Manager: The stamp on the signed application is not readable./);
+      // Not the contradictory "not returned to you" ping.
+      expect(await prisma.notification.count({ where: { editId: editC, userId: ids.salesman, body: { contains: 'not returned to you' } } })).toBe(0);
+    });
+
+    it('he uploads it again, keeping one page and adding one: the page he dropped is released', async () => {
+      asUser(ids.salesman, 'SALESMAN');
+      pageC.three = await mkAtt('CREDIT_FORM');
+      expect((await sendSignedForm(editC, [pageC.two, pageC.three])).ok).toBe(true);
+      expect(await at()).toEqual(['SUBMITTED', 3, 'FINANCE_MANAGER']);
+      const live = await prisma.attachment.findMany({ where: { editId: editC, kind: 'CREDIT_FORM', deletedAt: null }, select: { id: true } });
+      expect(live.map((a) => a.id).sort()).toEqual([pageC.two, pageC.three].sort());
+      const dropped = await prisma.attachment.findUniqueOrThrow({ where: { id: pageC.one } });
+      expect(dropped.deletedAt).not.toBeNull();
+      expect(dropped.hash).toBeNull();
+      // Two uploads in this cycle, each its own visit to the step.
+      expect(await prisma.editApproval.count({ where: { editId: editC, stepIndex: 2, decision: 'FORM_UPLOADED' } })).toBe(2);
+    });
+
+    it('the GM sends it back to the Finance Manager, who approves again; the Accountant creates the customer', async () => {
+      asUser(ids.fm, 'FINANCE_MANAGER');
+      expect((await decideC('approve')).ok).toBe(true);
+      asUser(ids.gm, 'GM');
+      expect((await decideC('reject')).ok).toBe(true);
+      expect(await at()).toEqual(['SUBMITTED', 3, 'FINANCE_MANAGER']);
+      // Re-deciding his own step after a send-back is allowed.
+      asUser(ids.fm, 'FINANCE_MANAGER');
+      expect((await decideC('approve')).ok).toBe(true);
+      asUser(ids.gm, 'GM');
+      expect((await decideC('approve')).ok).toBe(true);
+      expect(await at()).toEqual(['SUBMITTED', 5, 'ACCOUNTANT']);
+      asUser(ids.acc, 'ACCOUNTANT');
+      const done = await decideC('approve', `ZTC${tag}`.toUpperCase());
+      expect(done.ok, JSON.stringify(done)).toBe(true);
+      expect((await at())[0]).toBe('APPROVED');
+      expect(await prisma.customer.count({ where: { legalName: nameC } })).toBe(1);
     });
   });
 

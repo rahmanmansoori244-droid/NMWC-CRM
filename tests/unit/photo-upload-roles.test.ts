@@ -151,6 +151,47 @@ describe('finalize', () => {
   });
 });
 
+// Owner decisions 2026-10-11: the four credit documents and the signed credit
+// application are uploaded like a guarantee — by the salesman only — and the two
+// routes accept them in lockstep (presign's kind enum, finalize's key pattern).
+describe('the credit documents and the signed application (owner decisions 2026-10-11)', () => {
+  const KINDS = ['ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD', 'CREDIT_FORM'];
+
+  it('are exactly the decision-bound kinds besides the guarantee', async () => {
+    const { DECISION_BOUND_KINDS } = await import('@/lib/credit-documents');
+    expect([...DECISION_BOUND_KINDS].filter((k) => k !== 'GUARANTEE')).toEqual(KINDS);
+  });
+
+  it.each(KINDS)('%s: a salesman presigns and finalizes it, under its own kind', async (kind) => {
+    const res = await presign(kind);
+    expect(res.status, kind).toBe(200);
+    const { key } = (await res.json()) as { key: string };
+    expect(key).toContain(`/${kind}/`);
+    expect((await finalize(key, kind)).status, kind).toBe(200);
+    expect(h.create.mock.calls[0]![0]).toMatchObject({ data: { kind } });
+  });
+
+  it.each(KINDS)('%s: never a Steward or a Manager, at presign or at finalize', async (kind) => {
+    for (const role of ['STEWARD', 'MANAGER']) {
+      as(role);
+      h.getSignedUrl.mockClear();
+      h.send.mockClear();
+      h.create.mockClear();
+      expect((await presign(kind)).status, `${role} presign`).toBe(403);
+      expect(h.getSignedUrl).not.toHaveBeenCalled();
+      expect((await finalize(mintedKey(h.user.id, kind), kind)).status, `${role} finalize`).toBe(403);
+      expect(h.create).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a key minted for one kind cannot be finalized as another (NEW-PHOTO-001)', async () => {
+    const { key } = (await (await presign('SHOP')).json()) as { key: string };
+    const res = await finalize(key, 'CREDIT_FORM');
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(h.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('finalize tells a missing object from R2 not answering', () => {
   // lib/r2.ts throws on requestTimeout since the phase-1 review. Before this, any
   // HeadObject failure answered 404 OBJECT_NOT_FOUND, which the phone does not

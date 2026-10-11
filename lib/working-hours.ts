@@ -30,16 +30,45 @@ const DAY_CAPACITY_MIN = WORK_END_MIN - WORK_START_MIN;
  * Per-stage SLA budgets in working minutes, env-overridable.
  * SUPERVISOR 8h / ACCOUNTANT 9h are OLD-parity values (owner-confirmed);
  * FINANCE_MANAGER 16h / GM 24h / MANAGER 16h are placeholders (Q-sla open).
+ * Owner decisions 2026-10-11: SALESMAN is the signed-application step — 3
+ * WORKING days (owner-confirmed), on this same calendar; SALES_DIRECTOR 16h is
+ * a placeholder like the Finance Manager's (Q-sla).
  * NOTE: lib/approval-chains.ts freezes each edit's budget onto its row at
  * submit, so changing these affects NEW submissions only — by design.
  */
 export const STAGE_SLA_MINUTES: Partial<Record<Role, number>> = {
   [Role.SUPERVISOR]: Number(process.env.SLA_SUPERVISOR_MIN ?? 8 * 60),
+  [Role.SALES_DIRECTOR]: Number(process.env.SLA_SALES_DIRECTOR_MIN ?? 16 * 60),
+  // 3 working days: 1,620 working minutes on the 08:00–17:00 Sunday–Thursday
+  // week (entered Thursday 16:00, due Tuesday 16:00). A degenerate window
+  // falls back to the default day so the budget is never zero.
+  [Role.SALESMAN]: Number(
+    process.env.SLA_SIGNED_FORM_MIN ?? 3 * (DAY_CAPACITY_MIN > 0 ? DAY_CAPACITY_MIN : 9 * 60)
+  ),
   [Role.ACCOUNTANT]: Number(process.env.SLA_ACCOUNTANT_MIN ?? 9 * 60),
   [Role.FINANCE_MANAGER]: Number(process.env.SLA_FINANCE_MIN ?? 16 * 60),
   [Role.GM]: Number(process.env.SLA_GM_MIN ?? 24 * 60),
   [Role.MANAGER]: Number(process.env.SLA_MANAGER_MIN ?? 16 * 60),
 };
+
+/**
+ * A step's budget as people read it: "3 working days" when it is whole working
+ * days, else "16 working hours" / "90 working minutes". The signed-application
+ * step's confirmation and notices say its budget this way, from the budget
+ * frozen on the request, so an env override is never contradicted on screen.
+ */
+export function formatWorkingBudget(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (DAY_CAPACITY_MIN > 0 && m >= DAY_CAPACITY_MIN && m % DAY_CAPACITY_MIN === 0) {
+    const days = m / DAY_CAPACITY_MIN;
+    return `${days} working day${days === 1 ? '' : 's'}`;
+  }
+  if (m >= 60 && m % 60 === 0) {
+    const hours = m / 60;
+    return `${hours} working hour${hours === 1 ? '' : 's'}`;
+  }
+  return `${m} working minute${m === 1 ? '' : 's'}`;
+}
 
 export const DEFAULT_STAGE_SLA_MIN = 8 * 60;
 

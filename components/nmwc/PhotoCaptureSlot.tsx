@@ -5,7 +5,20 @@ import { Camera, Image as ImageIcon, Trash2, RefreshCw, Check, Loader2, RotateCw
 import { cn } from '@/lib/utils';
 import type { ActionResult } from '@/lib/errors';
 
-export type PhotoSlotKind = 'SHOP' | 'SIGNBOARD' | 'CR' | 'FREE' | 'GUARANTEE';
+export type PhotoSlotKind =
+  | 'SHOP'
+  | 'SIGNBOARD'
+  | 'CR'
+  | 'FREE'
+  | 'GUARANTEE'
+  // Owner decisions 2026-10-11: the credit documents and the signed credit
+  // application (lib/credit-documents.ts). Presigned and finalized as their own
+  // kinds, so the photo route handles them like a CR copy.
+  | 'ID_CARD'
+  | 'MEMBERSHIP_CERT'
+  | 'VAT_CERT'
+  | 'TAX_CARD'
+  | 'CREDIT_FORM';
 export type AttachTarget =
   | { kind: 'customer'; customerId: string; slot: 'CR' }
   | { kind: 'branch'; branchId: string; slot: 'SHOP' | 'SIGNBOARD' | 'FREE' };
@@ -21,6 +34,11 @@ const LABELS: Record<PhotoSlotKind, string> = {
   CR: 'CR document',
   FREE: 'Other',
   GUARANTEE: 'Guarantee doc',
+  ID_CARD: "Owner's ID card",
+  MEMBERSHIP_CERT: 'Membership certificate',
+  VAT_CERT: 'VAT certificate',
+  TAX_CARD: 'Tax card',
+  CREDIT_FORM: 'Signed application page',
 };
 
 /** A HEIC photo the browser cannot decode (NEW-PHOTO-012): how to stop sending them. */

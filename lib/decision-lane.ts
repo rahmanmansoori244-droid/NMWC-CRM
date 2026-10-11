@@ -17,6 +17,12 @@
  * authority, existing reviewers are not second-guessed by the page, and a banner
  * that is wrong can only mislead where a hidden button could strand a request.
  *
+ * One exception (owner decisions 2026-10-11): the signed-application step of a
+ * credit request. NOBODY can decide it — canActOnStep refuses every actor on a
+ * SUBMITTER step, and the salesman completes it by uploading the signed form
+ * (services/signed-form.ts) — so no button there could ever succeed, and the
+ * 'signedForm' lane hides Approve and Reject and says what the request waits on.
+ *
  * The inputs are exactly what `approveEditCore` passes `canActOnStep`, so the
  * page and the action answer the same question: the frozen chain's current
  * step, the scope branches (a new-customer request's DRAFT routes, otherwise the
@@ -24,7 +30,7 @@
  * OTHER steps in the current cycle (separation of duty).
  */
 import type { Role } from '@prisma/client';
-import { parseChain } from './approval-chains';
+import { isSignedFormStep, parseChain } from './approval-chains';
 import { canActOnStep } from './permissions';
 
 export type DecisionLane =
@@ -34,6 +40,11 @@ export type DecisionLane =
   | { kind: 'inform'; waitingOn: Role }
   /** A reactivation: decided only on /reactivations, by a Manager of the branch's region. */
   | { kind: 'reactivation' }
+  /**
+   * Owner decisions 2026-10-11: waiting for the submitting salesman to upload the
+   * customer's signed and stamped credit application. Decided by no one: no buttons.
+   */
+  | { kind: 'signedForm' }
   /** Not pending any more: the page's decision banner says what happened. */
   | { kind: 'closed' };
 
@@ -60,6 +71,7 @@ export function decisionLaneFor(
   // A pending request with no current step is refused by the action as
   // NOT_PENDING; nothing useful to say here beyond the action's own answer.
   if (!step) return { kind: 'decide' };
+  if (isSignedFormStep(step)) return { kind: 'signedForm' };
   const priorStepActorIds = edit.steps
     .filter((s) => s.cycle === edit.cycle && s.stepIndex !== edit.currentStepIndex)
     .map((s) => s.actorId)

@@ -7,6 +7,7 @@ import { Role, AttachmentKind, type User, type Customer, type Branch } from '@pr
 import { ForbiddenError } from './errors';
 import type { StepScope } from './approval-chains';
 import { parseFieldPath } from './edit-values';
+import { isDecisionBoundKind } from './credit-documents';
 
 export type SessionUser = {
   id: string;
@@ -71,11 +72,14 @@ export const PHOTO_WRITER_ROLES: readonly Role[] = [Role.SALESMAN, Role.STEWARD,
 /**
  * Whether this role may upload a photo, and — once the kind is known — one of
  * this kind. A GUARANTEE document belongs only to a new-customer (CREATE)
- * request, which only a salesman starts (services/creates.ts).
+ * request, which only a salesman starts (services/creates.ts). So does every
+ * credit document and the signed credit application (owner decisions
+ * 2026-10-11, lib/credit-documents.ts DECISION_BOUND_KINDS): the salesman
+ * attaches them to his request, and uploads the signed form himself.
  */
 export function canUploadPhoto(role: Role, kind?: AttachmentKind): boolean {
   if (!PHOTO_WRITER_ROLES.includes(role)) return false;
-  return kind !== AttachmentKind.GUARANTEE || role === Role.SALESMAN;
+  return kind === undefined || !isDecisionBoundKind(kind) || role === Role.SALESMAN;
 }
 
 /**
@@ -264,7 +268,16 @@ export function managesEveryBranch(
  *                               fallback; owner decision 3), via canApproveSpecificEdit
  *     REGION_OVERLAP          — the step's role (Accountant), region-scoped,
  *                               fail-closed on empty managedRegions
- *     GLOBAL                  — any holder of the step's role (Finance Manager / GM)
+ *     GLOBAL                  — any holder of the step's role (Finance Manager / GM /
+ *                               Sales Director)
+ *     SUBMITTER               — nobody (owner decisions 2026-10-11): the signed
+ *                               credit application is the submitting salesman's
+ *                               errand, completed by his own upload
+ *                               (services/signed-form.ts), never approved or
+ *                               rejected — so the submitter never approves, and
+ *                               the decision lane, the e-mail check and bulk
+ *                               approval, which all ask this function, can
+ *                               never act on it either
  */
 export function canActOnStep(
   user: SessionUser,
@@ -305,8 +318,13 @@ export function canActOnStep(
       return branches.some((b) => managed.includes(b.regionId));
     }
     case 'GLOBAL':
-      // Org-wide approver (Finance Manager / GM): any holder of the step's role.
+      // Org-wide approver (Finance Manager / GM / Sales Director): any holder of
+      // the step's role.
       return user.role === step.role;
+    case 'SUBMITTER':
+      // The signed-application step: no approver decides it. Refused for the
+      // submitter above already; refused for everyone else here.
+      return false;
   }
 }
 

@@ -345,7 +345,7 @@ test.describe('approvals: four Managers share one region’s queue', { tag: ['@d
     await page.goto(`/approvals/${ids.cx}`);
     await expect(page.getByRole('heading', { level: 1, name: w.customer('CX').legalName })).toBeVisible();
     await expect(
-      page.getByRole('note').filter({ hasText: 'For your information: this request is waiting at the SUPERVISOR step, which you cannot decide.' })
+      page.getByRole('note').filter({ hasText: 'For your information: this request is waiting at the Supervisor step, which you cannot decide.' })
     ).toBeVisible();
     await expect(page.getByText(/Not shown: the changes to 1 branch outside your regions\. Their region.s Manager decides them\./)).toBeVisible();
     await expect(page.getByText('06:00-23:00'), 'the R1 shop’s change is not shown to R2’s Manager').toHaveCount(0);
@@ -353,6 +353,75 @@ test.describe('approvals: four Managers share one region’s queue', { tag: ['@d
     await expect(page.getByText('You are not authorized to act on this step.')).toBeVisible();
     expect((await stateOf(ids.cx)).state).toBe('SUBMITTED');
     expect(await db.editApproval.count({ where: { editId: ids.cx } })).toBe(0);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 1b. The Sales Director's queue (owner decisions 2026-10-11)
+// ═════════════════════════════════════════════════════════════════════════════
+
+test.describe('approvals: the Sales Director’s queue', { tag: ['@desktop'] }, () => {
+  requireLaunchEnv();
+  installLaunchHooks();
+  test.describe.configure({ mode: 'serial' });
+
+  let w: World;
+  const ids = { atSd: '', atSup: '', cash: '' };
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    w = await createWorld('asd', {
+      regions: REGIONS,
+      routes: ROUTES,
+      users: [
+        mgr('M1'),
+        S1,
+        { key: 'SD1', role: 'SALES_DIRECTOR' },
+        { key: 'FM1', role: 'FINANCE_MANAGER' },
+        { key: 'GM1', role: 'GM' },
+      ],
+      customers: [],
+    });
+    ids.atSd = (await seedCreateRequest(w, { submitter: 'S1', paymentTerms: 'CREDIT', step: 'SALES_DIRECTOR', priorApprovers: ['M1'] })).id;
+    ids.atSup = (await seedCreateRequest(w, { submitter: 'S1', paymentTerms: 'CREDIT' })).id;
+    ids.cash = (await seedCreateRequest(w, { submitter: 'S1', paymentTerms: 'CASH' })).id;
+  });
+
+  test.afterAll(async () => {
+    test.setTimeout(300_000);
+    if (w) await w.cleanup();
+  });
+
+  test('the Sales Director sees, org-wide, exactly the credit requests at his step, each with a lock; the Finance Manager and the GM do not', async ({ browser }) => {
+    const sd = await pageAs(browser, w, 'SD1');
+    await sd.goto('/approvals');
+    await expect(sd.getByRole('heading', { level: 1, name: 'Approval queue' })).toBeVisible();
+    const atSd = await db.editCustomerDraft.findUniqueOrThrow({ where: { editId: ids.atSd }, select: { legalName: true } });
+    const others = await db.editCustomerDraft.findMany({ where: { editId: { in: [ids.atSup, ids.cash] } }, select: { legalName: true } });
+    const card = sd.locator('ul > li').filter({ hasText: atSd.legalName });
+    await expect(card).toBeVisible();
+    await expect(card.getByRole('img', { name: 'Credit application: open it to decide' })).toBeVisible();
+    for (const o of others) await expect(sd.getByText(o.legalName), o.legalName).toHaveCount(0);
+    for (const key of ['FM1', 'GM1']) {
+      const p = await pageAs(browser, w, key);
+      await p.goto('/approvals');
+      await expect(p.locator('ul > li').filter({ hasText: atSd.legalName }), `${key}'s queue`).toHaveCount(0);
+    }
+  });
+
+  test('he decides it on its own page; the GM reads it under the banner, in words', async ({ browser }) => {
+    const sd = await pageAs(browser, w, 'SD1');
+    await sd.goto(`/approvals/${ids.atSd}`);
+    await expect(sd.getByRole('button', { name: '✓ Approve', exact: true })).toBeVisible();
+    await expect(sd.getByRole('note')).toHaveCount(0);
+    const gm = await pageAs(browser, w, 'GM1');
+    await gm.goto(`/approvals/${ids.atSd}`);
+    await expect(gm.getByRole('note')).toContainText(
+      'For your information: this request is waiting at the Sales Director step, which you cannot decide.'
+    );
+    // At the Supervisor step the Sales Director only reads it.
+    await sd.goto(`/approvals/${ids.atSup}`);
+    await expect(sd.getByRole('note')).toContainText('this request is waiting at the Supervisor step, which you cannot decide.');
   });
 });
 
@@ -1521,9 +1590,11 @@ test.describe('approvals: Work items list what a Manager can decide; Service sta
     ids.update = (await seedUpdateEdit(w, { customer: 'W1', submitter: 'S1', patch: contact(w, 'Stale update'), submittedAt: fourDays })).id;
     ids.react = (await seedBranchRequest(w, { kind: 'reactivate', branch: 'WR', submitter: 'S1', submittedAt: fourDays })).id;
     ids.r2 = (await seedUpdateEdit(w, { customer: 'W3', submitter: 'S3', patch: contact(w, 'Other region'), submittedAt: fourDays })).id;
+    // Frozen with the 4-step chain a request sent before owner decisions 2026-10-11 carries.
     const credit = await seedCreateRequest(w, {
       submitter: 'S1',
       paymentTerms: 'CREDIT',
+      legacyChain: true,
       step: 'GM',
       priorApprovers: ['M1', 'FM1'],
       submittedAt: fourDays,
@@ -1736,6 +1807,8 @@ test.describe('approvals: the SLA escalation sweep', { tag: ['@exclusive'] }, ()
       seedCreateRequest(w!, {
         submitter: 'S1',
         paymentTerms: role === 'ACCOUNTANT' ? 'CASH' : 'CREDIT',
+        // The credit ones frozen with the 4-step chain (owner decisions 2026-10-11).
+        legacyChain: role !== 'ACCOUNTANT',
         step: role,
         priorApprovers: role === 'ACCOUNTANT' ? ['M2'] : role === 'FINANCE_MANAGER' ? ['M2'] : ['M2', 'FM1'],
         escalationLevel: level,

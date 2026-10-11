@@ -6,12 +6,13 @@
  * = 04:00–13:00 UTC.
  * All fixture instants are written in UTC and annotated with Oman wall time.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Role } from '@prisma/client';
 import {
   slaDeadline,
   minutesRemaining,
   formatSlaStatus,
+  formatWorkingBudget,
   STAGE_SLA_MINUTES,
   ESCALATION_MULTIPLIER,
 } from '@/lib/working-hours';
@@ -57,6 +58,47 @@ describe('slaDeadline (working-hours calendar)', () => {
   });
 });
 
+describe('the credit chain budgets (owner decisions 2026-10-11)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('the signed application gets 3 WORKING days: 1,620 working minutes', () => {
+    expect(STAGE_SLA_MINUTES[Role.SALESMAN]).toBe(3 * 9 * 60);
+    expect(formatWorkingBudget(STAGE_SLA_MINUTES[Role.SALESMAN]!)).toBe('3 working days');
+  });
+
+  it('entered Thursday 16:00, due Tuesday 16:00: Friday and Saturday do not count', () => {
+    const thu16 = new Date('2026-07-16T12:00:00.000Z'); // Thu 16:00 Oman
+    expect(slaDeadline(thu16, STAGE_SLA_MINUTES[Role.SALESMAN]!).toISOString()).toBe(
+      '2026-07-21T12:00:00.000Z' // Tue 16:00 Oman
+    );
+  });
+
+  it('the Sales Director step is a 16-hour placeholder, like the Finance Manager’s', () => {
+    expect(STAGE_SLA_MINUTES[Role.SALES_DIRECTOR]).toBe(16 * 60);
+    expect(STAGE_SLA_MINUTES[Role.SALES_DIRECTOR]).toBe(STAGE_SLA_MINUTES[Role.FINANCE_MANAGER]);
+  });
+
+  it('both are environment-overridable, like every other step', async () => {
+    vi.stubEnv('SLA_SIGNED_FORM_MIN', '1080');
+    vi.stubEnv('SLA_SALES_DIRECTOR_MIN', '480');
+    vi.resetModules();
+    const fresh = await import('@/lib/working-hours');
+    expect(fresh.STAGE_SLA_MINUTES[Role.SALESMAN]).toBe(1080);
+    expect(fresh.STAGE_SLA_MINUTES[Role.SALES_DIRECTOR]).toBe(480);
+    expect(fresh.formatWorkingBudget(1080)).toBe('2 working days');
+  });
+
+  it('a budget is said in words people use', () => {
+    expect(formatWorkingBudget(540)).toBe('1 working day');
+    expect(formatWorkingBudget(16 * 60)).toBe('16 working hours');
+    expect(formatWorkingBudget(60)).toBe('1 working hour');
+    expect(formatWorkingBudget(90)).toBe('90 working minutes');
+  });
+});
+
 describe('minutesRemaining / formatSlaStatus', () => {
   it('counts only working minutes toward the deadline', () => {
     const due = slaDeadline(WED_1630_OMAN, 60); // Thu 08:30 Oman
@@ -80,31 +122,74 @@ describe('minutesRemaining / formatSlaStatus', () => {
 });
 
 describe('escalationPlan', () => {
-  it('SUPERVISOR breach → region Managers; level 2 adds GM', () => {
+  it('SUPERVISOR breach → region Managers; level 2 adds GM and the Sales Director', () => {
     expect(escalationPlan(Role.SUPERVISOR, 1)).toEqual({
       regionScopedRoles: [Role.MANAGER],
       globalRoles: [],
       visibilityOnly: false,
+      includeSubmitter: false,
     });
     expect(escalationPlan(Role.SUPERVISOR, 2)).toEqual({
       regionScopedRoles: [Role.MANAGER],
-      globalRoles: [Role.GM],
+      globalRoles: [Role.GM, Role.SALES_DIRECTOR],
       visibilityOnly: false,
+      includeSubmitter: false,
     });
   });
 
-  it('finance chain escalates upward: ACCOUNTANT → FM+GM, FM → GM, GM → the region’s Managers', () => {
+  it('owner decisions 2026-10-11: the Sales Director step goes to the GM; a late signed application to the salesman and his region’s Managers, then GM and Sales Director', () => {
+    expect(escalationPlan(Role.SALES_DIRECTOR, 1)).toEqual({
+      regionScopedRoles: [],
+      globalRoles: [Role.GM],
+      visibilityOnly: false,
+      includeSubmitter: false,
+    });
+    expect(escalationPlan(Role.SALES_DIRECTOR, 2).globalRoles).toEqual([Role.GM]);
+    expect(escalationPlan(Role.SALESMAN, 1)).toEqual({
+      regionScopedRoles: [Role.MANAGER],
+      globalRoles: [],
+      visibilityOnly: false,
+      includeSubmitter: true,
+    });
+    expect(escalationPlan(Role.SALESMAN, 2)).toEqual({
+      regionScopedRoles: [Role.MANAGER],
+      globalRoles: [Role.GM, Role.SALES_DIRECTOR],
+      visibilityOnly: false,
+      includeSubmitter: true,
+    });
+    // Only the salesman's own step tells the submitter.
+    for (const role of [Role.SUPERVISOR, Role.SALES_DIRECTOR, Role.MANAGER, Role.ACCOUNTANT, Role.FINANCE_MANAGER, Role.GM]) {
+      expect(escalationPlan(role, 2).includeSubmitter, role).toBe(false);
+    }
+  });
+
+  it('finance chain escalates upward: ACCOUNTANT → FM+GM+SD, FM → GM+SD, GM → the region’s Managers', () => {
     expect(escalationPlan(Role.ACCOUNTANT, 1).globalRoles).toEqual([
       Role.FINANCE_MANAGER,
       Role.GM,
+      Role.SALES_DIRECTOR,
     ]);
-    expect(escalationPlan(Role.FINANCE_MANAGER, 1).globalRoles).toEqual([Role.GM]);
+    expect(escalationPlan(Role.FINANCE_MANAGER, 1).globalRoles).toEqual([Role.GM, Role.SALES_DIRECTOR]);
+    expect(escalationPlan(Role.MANAGER, 1).globalRoles).toEqual([Role.GM, Role.SALES_DIRECTOR]);
     // Launch fix (2026-10-07): not every Manager in the company, and no Steward —
     // only people who can open the request (/approvals/[id]).
     // Owner decision 6 (2026-10-07): told for visibility only — nobody outranks the
     // GM — so the drain does not e-mail them (lib/email/eligibility.ts).
-    expect(escalationPlan(Role.GM, 1)).toEqual({ regionScopedRoles: [Role.MANAGER], globalRoles: [], visibilityOnly: true });
-    for (const role of [Role.SUPERVISOR, Role.MANAGER, Role.ACCOUNTANT, Role.FINANCE_MANAGER, Role.GM]) {
+    expect(escalationPlan(Role.GM, 1)).toEqual({
+      regionScopedRoles: [Role.MANAGER],
+      globalRoles: [],
+      visibilityOnly: true,
+      includeSubmitter: false,
+    });
+    for (const role of [
+      Role.SUPERVISOR,
+      Role.SALES_DIRECTOR,
+      Role.SALESMAN,
+      Role.MANAGER,
+      Role.ACCOUNTANT,
+      Role.FINANCE_MANAGER,
+      Role.GM,
+    ]) {
       for (const level of [1, 2] as const) {
         const plan = escalationPlan(role, level);
         expect(plan.globalRoles, `${role} L${level}`).not.toContain(Role.MANAGER);

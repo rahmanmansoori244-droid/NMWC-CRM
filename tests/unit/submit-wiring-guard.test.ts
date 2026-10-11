@@ -114,7 +114,9 @@ describe('every submit path answers a replay before doing anything else', () => 
     const route = src('app/api/forms/[form]/route.ts');
     const served = [...route.matchAll(/^\s+'([a-z-]+)': \(body\) =>/gm)].map((m) => m[1]).sort();
     expect(served).toEqual(named);
-    expect(named).toHaveLength(4);
+    // Owner decisions 2026-10-11: the fifth is the salesman's signed credit application.
+    expect(named).toHaveLength(5);
+    expect(named).toContain('credit-form');
   });
 });
 

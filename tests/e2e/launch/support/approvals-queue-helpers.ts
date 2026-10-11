@@ -23,7 +23,8 @@
  */
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { PaymentTerms, Prisma, Role } from '@prisma/client';
-import { resolveChain, stepDeadline } from '../../../../lib/approval-chains';
+import { DECISION_FORM_UPLOADED, isSignedFormStep, resolveChain, stepDeadline } from '../../../../lib/approval-chains';
+import { LEGACY_CREDIT_CHAIN } from '../../../support/legacy-chain';
 import { normalizeCR } from '../../../../lib/cr';
 import { DEFAULT_STAGE_SLA_MIN, STAGE_SLA_MINUTES } from '../../../../lib/working-hours';
 import { receiptEditId, submitCreateViaApi, uploadPhotoViaApi } from './api';
@@ -104,10 +105,17 @@ export async function seedCreateRequest(
     stageEnteredAt?: Date;
     slaDueAt?: Date;
     escalationLevel?: number;
+    /**
+     * CREDIT only: the 4-step chain a request submitted before owner decisions
+     * 2026-10-11 still carries (Supervisor → Finance Manager → GM → Accountant),
+     * so priorApprovers line up with it.
+     */
+    legacyChain?: boolean;
   }
 ): Promise<{ id: string; legalName: string; photoIds: string[] }> {
   const terms: PaymentTerms = o.paymentTerms ?? 'CASH';
-  const chain = resolveChain('CREATE', terms);
+  if (o.legacyChain && terms !== 'CREDIT') throw new Error('seedCreateRequest: legacyChain is a CREDIT chain');
+  const chain = o.legacyChain ? LEGACY_CREDIT_CHAIN : resolveChain('CREATE', terms);
   const stepIndex = o.step ? chain.findIndex((s) => s.role === o.step) : 0;
   if (stepIndex < 0) throw new Error(`seedCreateRequest: a ${terms} request has no ${o.step} step`);
   const n = next(w);
@@ -182,8 +190,10 @@ export async function seedCreateRequest(
     for (let i = 0; i < stepIndex; i++) {
       const by = o.priorApprovers?.[i];
       if (!by) continue;
+      // Owner decisions 2026-10-11: the signed application is the submitter's upload, not an approval.
+      const decision = isSignedFormStep(chain[i]) ? DECISION_FORM_UPLOADED : 'APPROVED';
       await db.editApproval.create({
-        data: { editId: id, cycle: 1, stepIndex: i, role: chain[i]!.role, decision: 'APPROVED', actorId: w.user(by).id, at: stageEnteredAt },
+        data: { editId: id, cycle: 1, stepIndex: i, role: chain[i]!.role, decision, actorId: w.user(by).id, at: stageEnteredAt },
       });
     }
   } catch (err) {

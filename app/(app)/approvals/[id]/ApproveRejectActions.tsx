@@ -56,7 +56,12 @@ const REJECT_TEMPLATES: Record<string, string[]> = {
  * customer rather than changing one.
  */
 export type ApproveOutcome =
-  | { kind: 'ADVANCE'; nextRole: string }
+  /**
+   * `budget`: owner decisions 2026-10-11 — when the next step is the salesman's
+   * signed application, how long he has, from the budget frozen on the request
+   * ("3 working days").
+   */
+  | { kind: 'ADVANCE'; nextRole: string; budget?: string }
   | { kind: 'CREATE' }
   | { kind: 'APPLY' };
 
@@ -83,6 +88,15 @@ export function approveConfirmCopy(
 } {
   switch (outcome.kind) {
     case 'ADVANCE': {
+      if (outcome.nextRole === 'SALESMAN') {
+        // Owner decisions 2026-10-11: the Sales Director sends it on for the
+        // customer's signature — the signed-application step, the salesman's.
+        return {
+          title: 'Send on for the customer’s signature?',
+          message: `You approve this step. The credit application can then be printed, and the salesman has ${outcome.budget ?? '3 working days'} to bring it back signed and stamped by the customer. It then goes to the Finance Manager. Nothing is written to the customer master until the final step approves it.`,
+          confirmLabel: 'Approve and send for signature',
+        };
+      }
       const next = STEP_LABEL[outcome.nextRole] ?? outcome.nextRole.replace(/_/g, ' ');
       return {
         title: `Send on to ${next}?`,
@@ -120,6 +134,16 @@ export function rejectFormCopy(outcome: RejectOutcome): {
   placeholder: string;
   submitLabel: string;
 } {
+  if (outcome.kind === 'STEP_BACK' && outcome.toRole === 'SALESMAN') {
+    // Owner decisions 2026-10-11: the Finance Manager's send-back returns the
+    // request to the signed-application step — only the signed form is redone.
+    return {
+      reasonLabel: 'Reason for the salesman *',
+      placeholder:
+        'Say what is wrong with the signed application. It goes back to him to upload the signed application again; the details are not reopened.',
+      submitLabel: '✗ Send back for the signed application',
+    };
+  }
   if (outcome.kind === 'STEP_BACK') {
     const back = STEP_LABEL[outcome.toRole] ?? outcome.toRole.replace(/_/g, ' ');
     return {

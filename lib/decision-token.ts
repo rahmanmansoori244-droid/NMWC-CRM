@@ -30,14 +30,23 @@
  *                    is tied to the numbers on screen even if the invariant above
  *                    is ever broken.
  *   guarantees       A CREATE request only (null on an UPDATE): a digest of the
- *                    sorted ids of its live GUARANTEE documents as the page
- *                    rendered them. They are attachments, not columns, and a
- *                    Manager or the Steward can still Remove one while the request
- *                    is SUBMITTED (the salesman cannot: services/photos.ts),
- *                    which changes neither the cycle nor the row — so a decision
- *                    made on a page showing two could land on a request with one.
- *                    The claim cannot compare them; assertGuaranteesAsViewed
- *                    re-reads them inside the decision transaction instead.
+ *                    sorted ids of its live decision-bound documents as the page
+ *                    rendered them — the guarantees, and since owner decisions
+ *                    2026-10-11 the four credit documents and the signed credit
+ *                    application (lib/credit-documents.ts DECISION_BOUND_KINDS).
+ *                    They are attachments, not columns, and a Manager or the
+ *                    Steward can still Remove one while the request is SUBMITTED
+ *                    (the salesman cannot: services/photos.ts), which changes
+ *                    neither the cycle nor the row — so a decision made on a page
+ *                    showing two could land on a request with one. The claim
+ *                    cannot compare them; assertGuaranteesAsViewed re-reads them
+ *                    inside the decision transaction instead. The Finance
+ *                    Manager's decision, and every one after it, is so bound to
+ *                    the signed application he saw. A request with guarantees
+ *                    only digests exactly as before (same ids, same hash), so a
+ *                    page rendered before the change still decides. The names
+ *                    (guarantees, guaranteeDigest, assertGuaranteesAsViewed) are
+ *                    kept to limit churn; they mean every decision-bound document.
  *
  * Not bound: live photo slots of an UPDATE's customer (EL-04 re-checks those at
  * approval), and the CREATE drafts' photos (finalize re-checks those).
@@ -47,8 +56,9 @@
  * gives, and the authorization gate runs before it is compared.
  */
 import { createHash } from 'node:crypto';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { ConflictError, ValidationError } from './errors';
+import { DECISION_BOUND_KINDS } from './credit-documents';
 
 export const STALE_VIEW_CODE = 'STALE_VIEW';
 export const STALE_VIEW_MESSAGE =
@@ -65,7 +75,7 @@ export type DecisionView = {
   /** OMR with three decimals, exactly as the approval screens print it. */
   creditLimit: string | null;
   paymentTermDays: number | null;
-  /** CREATE: guaranteeDigest of the live GUARANTEE ids the page rendered. UPDATE: null. */
+  /** CREATE: guaranteeDigest of the live decision-bound document ids the page rendered. UPDATE: null. */
   guarantees: string | null;
 };
 
@@ -82,9 +92,9 @@ export type DecisionRow = {
 };
 
 /**
- * The live guarantee documents of a request, as one value: order-free (sorted
- * here, so a page and the server need not agree on an ORDER BY), and short
- * enough for a token whatever the count.
+ * The live decision-bound documents of a request (DECISION_BOUND_KINDS), as one
+ * value: order-free (sorted here, so a page and the server need not agree on an
+ * ORDER BY), and short enough for a token whatever the count.
  */
 export function guaranteeDigest(ids: readonly string[]): string {
   return createHash('sha256')
@@ -105,7 +115,8 @@ const isCreate = (row: Pick<DecisionRow, 'process'>) => row.process === 'CREATE'
 
 /**
  * The view a page shows: the row, and for a CREATE request the ids of the live
- * guarantee documents it rendered (ignored for an UPDATE, which has none).
+ * decision-bound documents it rendered (ignored for an UPDATE, which has none).
+ * Pages read them with decisionBoundWhere, the same rule as the server.
  */
 export function decisionView(row: DecisionRow, guaranteeIds: readonly string[]): DecisionView {
   return {
@@ -133,7 +144,7 @@ export function serializeDecisionToken(v: DecisionView): string {
   });
 }
 
-/** The token a page renders for the row it is showing and the guarantees it rendered. */
+/** The token a page renders for the row it is showing and the decision-bound documents it rendered. */
 export function decisionTokenFor(row: DecisionRow, guaranteeIds: readonly string[]): string {
   return serializeDecisionToken(decisionView(row, guaranteeIds));
 }
@@ -217,8 +228,21 @@ export function assertDecisionView(expected: DecisionView, row: DecisionRow): vo
 }
 
 /**
- * Refuse a decision on a CREATE request whose live guarantee documents are not
- * the ones the reviewer's page rendered. Nothing to read for an UPDATE.
+ * The decision-bound documents of one request, as every page that renders a
+ * decision token reads them: live, claimed by the request, of a
+ * DECISION_BOUND_KINDS kind. The server's FOR SHARE read below is its SQL twin.
+ */
+export function decisionBoundWhere(editId: string | { in: string[] }) {
+  return {
+    editId,
+    kind: { in: [...DECISION_BOUND_KINDS] },
+    deletedAt: null,
+  } satisfies Prisma.AttachmentWhereInput;
+}
+
+/**
+ * Refuse a decision on a CREATE request whose live decision-bound documents are
+ * not the ones the reviewer's page rendered. Nothing to read for an UPDATE.
  *
  * Call it inside the decision transaction, straight after the claim. There, the
  * claim holds the request's row lock, so no other decision on this request can
@@ -241,9 +265,11 @@ export async function assertGuaranteesAsViewed(
     throw new ConflictError(STALE_VIEW_CODE, STALE_VIEW_MESSAGE);
   }
   if (!isCreate(edit)) return;
+  // "kind"::text: the kinds are bound as text parameters, which an enum column
+  // does not compare with directly.
   const live = await tx.$queryRaw<
     Array<{ id: string }>
-  >`SELECT "id" FROM "Attachment" WHERE "editId" = ${edit.id} AND "kind" = 'GUARANTEE' AND "deletedAt" IS NULL FOR SHARE`;
+  >`SELECT "id" FROM "Attachment" WHERE "editId" = ${edit.id} AND "kind"::text IN (${Prisma.join([...DECISION_BOUND_KINDS])}) AND "deletedAt" IS NULL FOR SHARE`;
   if (guaranteeDigest(live.map((r) => r.id)) !== expected.guarantees) {
     throw new ConflictError(STALE_VIEW_CODE, STALE_VIEW_MESSAGE);
   }

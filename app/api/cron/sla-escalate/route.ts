@@ -26,7 +26,7 @@ import { logger } from '@/lib/logger';
 import { cronAuthorized } from '@/lib/cron-auth';
 import { withHeartbeat } from '@/lib/heartbeat';
 import { escalationPlan } from '@/lib/escalation';
-import { parseChain } from '@/lib/approval-chains';
+import { parseChain, stepName } from '@/lib/approval-chains';
 import { requestScopeBranches } from '@/lib/permissions';
 import { parseSubmitGate } from '@/lib/edit-scope';
 import {
@@ -148,6 +148,9 @@ async function resolveEscalationAudience(
     });
     global.forEach((u) => ids.add(u.id));
   }
+  // Owner decisions 2026-10-11: a late signed application is the salesman's own
+  // step, so he is told too (in-app only: a salesman is never e-mailed).
+  if (plan.includeSubmitter) ids.add(e.submittedById);
   return [...ids];
 }
 
@@ -186,7 +189,8 @@ async function escalate(e: DueEdit, level: 1 | 2, now: Date): Promise<boolean> {
     });
     if (claimed.count === 0) return false;
     const audience = await resolveEscalationAudience(tx, e, level);
-    const stepLabel = (e.pendingRole ?? Role.SUPERVISOR).replace('_', ' ');
+    // The step's own name (lib/approval-chains.ts): "Signed application", never "SALESMAN".
+    const stepLabel = stepName(e.pendingRole ?? Role.SUPERVISOR);
     // System sweep — no human actor exists. AuditLog.actorId is an FK to User,
     // so the row is attributed to the submitter, but `env` carries null ip and
     // null userAgent and the reason says 'system:' outright, so the record

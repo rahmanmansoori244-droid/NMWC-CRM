@@ -968,7 +968,7 @@ test.describe('salesman phone: Work items and Needs correction (SM-WORK-ITEMS, S
       { title: wsub.legalName, category: 'Awaiting approval', subtitle: 'Submitted to your supervisor', href: `/customers/${wsub.id}`, date: await when(ids.wsub, 'submittedAt') },
       // Wave 1: a reactivation is a Manager's decision.
       { title: wreact.legalName, category: 'Awaiting approval', subtitle: 'Sent to a Manager', href: `/customers/${wreact.id}`, date: await when(ids.wreact, 'submittedAt') },
-      { title: names.cfm, category: 'New customer — in approval', subtitle: 'In review — current step: FINANCE MANAGER', href: `/customers/new?edit=${ids.cfm}`, date: await when(ids.cfm, 'submittedAt') },
+      { title: names.cfm, category: 'New customer — in approval', subtitle: 'In review — current step: Finance Manager', href: `/customers/new?edit=${ids.cfm}`, date: await when(ids.cfm, 'submittedAt') },
       { title: names.cdraft, category: 'New customer — draft', subtitle: 'Unfinished create request — tap to continue', href: `/customers/new?edit=${ids.cdraft}`, date: await when(ids.cdraft, 'updatedAt') },
     ];
     await expect(page.locator('main li')).toHaveCount(rows.length);
@@ -999,7 +999,7 @@ test.describe('salesman phone: Work items and Needs correction (SM-WORK-ITEMS, S
     await page.goto('/work');
     await row(names.cfm).getByRole('link').click();
     await expect(page).toHaveURL(new RegExp(`/customers/new\\?edit=${ids.cfm}$`));
-    await expect(page.getByText(/^This request is in review — current step:/)).toContainText('FINANCE MANAGER');
+    await expect(page.getByText(/^This request is in review — current step:/)).toContainText('Finance Manager');
     await expect(page.getByRole('button', { name: SUBMIT })).toHaveCount(0);
 
     await page.goto('/work');

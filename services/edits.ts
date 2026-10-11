@@ -94,7 +94,11 @@ import {
   isFinalStep,
   stepDeadline,
   resolveRejectTarget,
+  isSignedFormStep,
+  stepName,
+  type ApprovalStep,
 } from '@/lib/approval-chains';
+import { omanDayTime } from '@/lib/tz';
 import { stageSnapshot } from '@/lib/working-hours';
 import {
   MISSING_TOKEN_MESSAGE,
@@ -116,6 +120,61 @@ import { openReturnedIds, RETURNED_CLEARED_REASON } from '@/lib/returned-work';
 
 async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
+}
+
+/**
+ * Owner decisions 2026-10-11: who prints the credit application at the
+ * signed-application step — the Supervisor step's own audience, so the
+ * salesman's supervisor when he can act, else the region's Managers (in NMWC the
+ * class Manager does the Supervisor's step: there are no supervisor accounts).
+ */
+const PRINT_AUDIENCE_STEP: Pick<ApprovalStep, 'role' | 'scope'> = {
+  role: Role.SUPERVISOR,
+  scope: 'SUPERVISOR_OF_SUBMITTER',
+};
+
+/**
+ * Owner decisions 2026-10-11: the request has just reached the signed-application
+ * step — by the Sales Director's approval, or by a Finance Manager's send-back.
+ * The salesman gets his must-act alert (SIGNED_FORM_REQUESTED: red in his bell,
+ * never e-mailed — lib/notify-policy.ts), with the due time; whoever prints the
+ * credit application is told it is ready to print. These replace the generic
+ * "now with …" rows, which would say SALESMAN to the salesman himself.
+ */
+async function notifySignedFormRequested(
+  tx: Prisma.TransactionClient,
+  input: {
+    editId: string;
+    requestName: string;
+    submitter: { id: string; supervisorId: string | null };
+    regionIds: string[];
+    dueAt: Date;
+    /** A Finance Manager's send-back: who, and why. */
+    sentBack?: { by: string; reason: string };
+  }
+): Promise<void> {
+  const due = omanDayTime(input.dueAt);
+  await notifyUsers(tx, [input.submitter.id], {
+    kind: 'SIGNED_FORM_REQUESTED',
+    title: input.sentBack ? 'Signed application sent back' : 'Signed credit application needed',
+    body: input.sentBack
+      ? `${input.requestName} — sent back by the ${input.sentBack.by}: ${input.sentBack.reason} — upload the signed credit application again by ${due}.`
+      : `${input.requestName} — get the credit application signed and stamped by the customer, and upload it by ${due}.`,
+    editId: input.editId,
+  });
+  const printers = await resolveStepAudience(tx, PRINT_AUDIENCE_STEP, input.submitter, input.regionIds);
+  await notifyUsers(
+    tx,
+    printers.filter((id) => id !== input.submitter.id),
+    {
+      kind: 'EDIT_STAGE_ADVANCED',
+      title: 'Credit application to print',
+      body: input.sentBack
+        ? `${input.requestName} — sent back by the ${input.sentBack.by} for the signed application again. Print the credit application for the salesman if he needs a new copy.`
+        : `${input.requestName} — approved by the Sales Director. Print the credit application for the salesman to have signed and stamped.`,
+      editId: input.editId,
+    }
+  );
 }
 
 // FieldChange comes from lib/gps-manual: it carries item 41's optional marker,
@@ -1587,26 +1646,37 @@ async function approveEditCore(formData: FormData) {
         await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
         // Notify the next step's approvers + the submitter (progress). Inside
         // the tx so a lost claim race never notifies.
-        const nextAudience = await resolveStepAudience(
-          tx,
-          nextStep,
-          { supervisorId: edit.submittedBy.supervisorId },
-          scopeRegionIds
-        );
-        await notifyUsers(tx, nextAudience, {
-          kind: 'EDIT_STAGE_ADVANCED',
-          title: 'Approval waiting on you',
-          body: `${requestName} — request advanced to the ${nextStep.role} step.`,
-          editId,
-          customerId: edit.customerId ?? undefined,
-        });
-        await notifyUsers(tx, [edit.submittedById], {
-          kind: 'EDIT_STAGE_ADVANCED',
-          title: 'Request advanced',
-          body: `${requestName} — approved at the ${step.role} step; now with ${nextStep.role}.`,
-          editId,
-          customerId: edit.customerId ?? undefined,
-        });
+        if (isSignedFormStep(nextStep)) {
+          // Owner decisions 2026-10-11: the next step is the salesman's own.
+          await notifySignedFormRequested(tx, {
+            editId,
+            requestName,
+            submitter: { id: edit.submittedById, supervisorId: edit.submittedBy.supervisorId },
+            regionIds: scopeRegionIds,
+            dueAt: stepDeadline(advancedAt, nextStep.slaHours),
+          });
+        } else {
+          const nextAudience = await resolveStepAudience(
+            tx,
+            nextStep,
+            { id: edit.submittedById, supervisorId: edit.submittedBy.supervisorId },
+            scopeRegionIds
+          );
+          await notifyUsers(tx, nextAudience, {
+            kind: 'EDIT_STAGE_ADVANCED',
+            title: 'Approval waiting on you',
+            body: `${requestName} — request advanced to the ${stepName(nextStep)} step.`,
+            editId,
+            customerId: edit.customerId ?? undefined,
+          });
+          await notifyUsers(tx, [edit.submittedById], {
+            kind: 'EDIT_STAGE_ADVANCED',
+            title: 'Request advanced',
+            body: `${requestName} — approved at the ${stepName(step)} step; now with the ${stepName(nextStep)}.`,
+            editId,
+            customerId: edit.customerId ?? undefined,
+          });
+        }
         // Same remote-DB latency headroom as the final apply (final-hunt #32): claim
         // + step-decision + audit + two notification fan-outs must not trip the 5s
         // default interactive-transaction limit.
@@ -2376,7 +2446,20 @@ async function rejectEditCore(formData: FormData) {
     // rows that asked for this decision are answered first, so a step-back's
     // fresh rows to the previous step stay unread.
     await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
-    if (target.kind === 'STEP_BACK') {
+    if (target.kind === 'STEP_BACK' && isSignedFormStep(rejectChain[target.toStepIndex])) {
+      // Owner decisions 2026-10-11: a Finance Manager send-back returns the
+      // request to the salesman's signed-application step — he uploads the form
+      // again. It IS back with him, so the "not returned to you" ping below
+      // would contradict his red alert; this replaces both rows.
+      await notifySignedFormRequested(tx, {
+        editId,
+        requestName: rejectRequestName,
+        submitter: { id: edit.submittedById, supervisorId: edit.submittedBy.supervisorId },
+        regionIds: rejectRegionIds,
+        dueAt: stepDeadline(rejectedAt, rejectChain[target.toStepIndex]!.slaHours),
+        sentBack: { by: stepName(rejectStep), reason },
+      });
+    } else if (target.kind === 'STEP_BACK') {
       // The request went back to the previous approver step; tell that step's
       // audience it is waiting on them again, and give the submitter a
       // progress ping (their request has NOT come back to them).
@@ -2384,13 +2467,13 @@ async function rejectEditCore(formData: FormData) {
       const backAudience = await resolveStepAudience(
         tx,
         backStep,
-        { supervisorId: edit.submittedBy.supervisorId },
+        { id: edit.submittedById, supervisorId: edit.submittedBy.supervisorId },
         rejectRegionIds
       );
       await notifyUsers(tx, backAudience, {
         kind: 'EDIT_STAGE_ADVANCED',
         title: 'Request returned to your step',
-        body: `${rejectRequestName} — rejected at the ${rejectStep.role} step and returned to ${backStep.role} for re-review.`,
+        body: `${rejectRequestName} — rejected at the ${stepName(rejectStep)} step and returned to the ${stepName(backStep)} for re-review.`,
         editId,
         customerId: edit.customerId ?? undefined,
       });

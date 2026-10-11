@@ -289,3 +289,22 @@ describe('/users — the row actions wrap between buttons, and an open box fits 
     expect(classes(inputs[1]!.parentElement!)).toContain('min-w-[7rem]');
   });
 });
+
+describe('owner decisions 2026-10-11: the Sales Director on the roster', () => {
+  it('sits after the GM, before the Finance Manager whose step follows his', async () => {
+    h.rows = [
+      account('fm', 'FINANCE_MANAGER', { username: 'finance.manager', fullName: 'A Finance' }),
+      account('sd', 'SALES_DIRECTOR', { username: 'sales.director', fullName: 'B Sales' }),
+      account('gm', 'GM', { username: 'gm.nmwc', fullName: 'C General' }),
+      account('stw', 'STEWARD', { username: 'data.steward', fullName: 'D Steward' }),
+    ];
+    const { container } = await renderPage('all');
+    const order = [...container.querySelectorAll('tbody tr')].map((tr) => tr.querySelectorAll('td')[1]?.textContent);
+    expect(order.filter((u) => u && ['data.steward', 'gm.nmwc', 'sales.director', 'finance.manager'].includes(u))).toEqual([
+      'data.steward',
+      'gm.nmwc',
+      'sales.director',
+      'finance.manager',
+    ]);
+  });
+});

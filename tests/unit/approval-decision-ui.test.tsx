@@ -341,6 +341,25 @@ describe('X-APPR-2 — the approve confirmation says what this step does', () =>
       expect(/go live/i.test(`${copy.title} ${copy.message}`), JSON.stringify(outcome)).toBe(outcome.kind === 'APPLY');
     }
   });
+
+  it('owner decisions 2026-10-11: the Sales Director sends it on for the customer’s signature, with the salesman’s budget', () => {
+    renderActions({ kind: 'ADVANCE', nextRole: 'SALESMAN', budget: '3 working days' });
+    fireEvent.click(screen.getByRole('button', { name: '✓ Approve' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('heading').textContent).toBe('Send on for the customer’s signature?');
+    expect(dialog.textContent).toContain('the salesman has 3 working days to bring it back signed and stamped');
+    expect(dialog.textContent).toContain('It then goes to the Finance Manager.');
+    expect(dialog.textContent).not.toMatch(/SALESMAN|Send on to salesman/);
+    expect(within(dialog).getByRole('button', { name: 'Approve and send for signature' })).toBeTruthy();
+    // A budget the request froze differently is said as it is.
+    expect(approveConfirmCopy({ kind: 'ADVANCE', nextRole: 'SALESMAN', budget: '2 working days' }).message).toContain(
+      'has 2 working days'
+    );
+  });
+
+  it('the Sales Director step is named in words when the Supervisor sends it on', () => {
+    expect(approveConfirmCopy({ kind: 'ADVANCE', nextRole: 'SALES_DIRECTOR' }).title).toBe('Send on to Sales Director?');
+  });
 });
 
 describe('owner decision 2026-10-08 — the Temix code at the last step of a new-customer request', () => {
@@ -452,6 +471,19 @@ describe('the reject form says where rejecting this step sends the request', () 
     expect(f.placeholder).toContain('not to the salesman');
     expect(within(f.form).queryByRole('button', { name: /salesman/i })).toBeNull();
     expect(f.label).not.toMatch(/salesman/i);
+  });
+
+  it('owner decisions 2026-10-11: the Finance Manager’s step back goes to the salesman for the signed application only', () => {
+    renderActions({ kind: 'APPLY' }, { kind: 'STEP_BACK', toRole: 'SALESMAN' });
+    fireEvent.click(screen.getByRole('button', { name: '✗ Reject' }));
+    const form = screen.getByRole('textbox').closest('form')!;
+    expect(form.querySelector('textarea')!.parentElement!.querySelector('label')!.textContent).toBe(
+      'Reason for the salesman *'
+    );
+    expect(screen.getByRole('textbox').getAttribute('placeholder')).toBe(
+      'Say what is wrong with the signed application. It goes back to him to upload the signed application again; the details are not reopened.'
+    );
+    expect(within(form).getByRole('button', { name: '✗ Send back for the signed application' })).toBeTruthy();
   });
 
   it('a rejection that goes to the salesman keeps the salesman wording', () => {

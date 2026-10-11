@@ -11,6 +11,8 @@ import Link from 'next/link';
 import { StatusBadge } from '@/components/nmwc/StatusBadge';
 import { inIdOrder, openReturnedIds } from '@/lib/returned-work';
 import { managerQueueWhere, SUPERVISOR_STEP_OR } from '@/lib/manager-queue';
+import { stepName } from '@/lib/approval-chains';
+import { omanDateTime } from '@/lib/tz';
 
 export const metadata = { title: 'Work items · NMWC' };
 
@@ -18,6 +20,38 @@ export const metadata = { title: 'Work items · NMWC' };
 type WorkHref = Route<
   `/approvals/${string}` | `/customers/${string}` | `/customers/${string}/edit` | `/import/${string}`
 >;
+
+/**
+ * Owner decisions 2026-10-11: credit requests at the signed-application step
+ * (pendingRole SALESMAN — held there only), within `where`: the credit
+ * application is printed for the salesman to have signed and stamped.
+ */
+async function creditApplicationsToPrint(where: import('@prisma/client').Prisma.CustomerEditWhereInput) {
+  return prisma.customerEdit.findMany({
+    where: { ...where, state: 'SUBMITTED', process: 'CREATE', pendingRole: Role.SALESMAN },
+    select: {
+      id: true,
+      state: true,
+      slaDueAt: true,
+      customerDraft: { select: { legalName: true } },
+      submittedBy: { select: { fullName: true } },
+    },
+    orderBy: { slaDueAt: 'asc' },
+    take: 50,
+  });
+}
+
+function printItems(rows: Awaited<ReturnType<typeof creditApplicationsToPrint>>) {
+  return rows.map((e) => ({
+    id: `print-${e.id}`,
+    category: 'Credit application to print',
+    title: e.customerDraft?.legalName ?? '—',
+    subtitle: `For ${e.submittedBy.fullName} to have signed and stamped${e.slaDueAt ? ` · due ${omanDateTime(e.slaDueAt)}` : ''}`,
+    href: `/approvals/${e.id}` as WorkHref,
+    state: e.state,
+    when: e.slaDueAt,
+  }));
+}
 
 export default async function WorkPage() {
   const session = await auth();
@@ -104,15 +138,24 @@ export default async function WorkPage() {
       })),
       ...pending.map((e) => ({
         id: e.id,
-        category: e.process === 'CREATE' ? 'New customer — in approval' : 'Awaiting approval',
+        // Owner decisions 2026-10-11: at the signed-application step the request
+        // waits on HIM — the customer's signed and stamped credit application.
+        category:
+          e.process === 'CREATE' && e.pendingRole === Role.SALESMAN
+            ? 'New customer — signed application needed'
+            : e.process === 'CREATE'
+              ? 'New customer — in approval'
+              : 'Awaiting approval',
         title: editTitle(e),
         subtitle:
-          e.process === 'CREATE'
-            ? `In review — current step: ${e.pendingRole?.replace('_', ' ') ?? '…'}`
-            : // A reactivation is a Manager's decision (services/reactivations.ts).
-              e.isReactivation
-              ? 'Sent to a Manager'
-              : 'Submitted to your supervisor',
+          e.process === 'CREATE' && e.pendingRole === Role.SALESMAN
+            ? `Have it signed and stamped, then upload it${e.slaDueAt ? ` · due ${omanDateTime(e.slaDueAt)}` : ''}`
+            : e.process === 'CREATE'
+              ? `In review — current step: ${e.pendingRole ? stepName(e.pendingRole) : '…'}`
+              : // A reactivation is a Manager's decision (services/reactivations.ts).
+                e.isReactivation
+                ? 'Sent to a Manager'
+                : 'Submitted to your supervisor',
         href: editHref(e),
         state: e.state,
         when: e.submittedAt,
@@ -154,6 +197,9 @@ export default async function WorkPage() {
       state: e.state,
       when: e.submittedAt,
     }));
+    // Owner decisions 2026-10-11: his reports' credit requests at the
+    // signed-application step — the Supervisor prints the credit application.
+    items.push(...printItems(await creditApplicationsToPrint({ submittedBy: { supervisorId: userId } })));
   } else if (
     role === Role.ACCOUNTANT ||
     role === Role.FINANCE_MANAGER ||
@@ -245,6 +291,18 @@ export default async function WorkPage() {
       state: e.state,
       when: e.submittedAt,
     }));
+    // Owner decisions 2026-10-11: in NMWC the class Manager does the
+    // Supervisor's step, so he prints the credit applications of requests from
+    // his regions (the draft route's region, as /approvals/[id] scopes them).
+    if (scope.managedRegionIds.length > 0) {
+      items.push(
+        ...printItems(
+          await creditApplicationsToPrint({
+            branchDrafts: { some: { route: { regionId: { in: scope.managedRegionIds } } } },
+          })
+        )
+      );
+    }
   } else if (role === Role.STEWARD) {
     // RK-3: promote is sliced, so a load can now be left half-finished (tab closed,
     // timeout, network drop) — it sits in PROMOTING with no live lease. That needs

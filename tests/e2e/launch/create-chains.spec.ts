@@ -4,9 +4,13 @@
  *
  *   CASH    Salesman → Supervisor step (his supervisor, or any Manager of the
  *           region) → Accountant of the region, who creates the customer.
- *   CREDIT  Salesman → Supervisor step → Finance Manager → GM → Accountant; the
- *           requested figures are approved or rejected, never amended, and never
- *           in a bulk approve.
+ *   CREDIT  Salesman → Supervisor step → Sales Director → the salesman's signed
+ *           application → Finance Manager → GM → Accountant (owner decisions
+ *           2026-10-11); the requested figures are approved or rejected, never
+ *           amended, and never in a bulk approve. Seeded credit requests that
+ *           stand at a Finance Manager, GM or Accountant step by index are frozen
+ *           with the 4-step chain a request submitted before those decisions
+ *           still carries (legacyChain), so they keep testing what they test.
  *
  * What the launch build changed here, and what these tests hold it to:
  *   - wave 1: the Accountant stays on the request and sees the code he created;
@@ -141,7 +145,8 @@ const codeRe = () => new RegExp(`^NMWC-${omanYearNow()}-\\d{6}$`);
 
 /**
  * R1: M1 (SA's supervisor), M2 (SA2's) and M3 share it, with ACC1. R2: M5 (SB's
- * supervisor), ACC2. Org-wide: FM1, FM2, GM1, STW. Routes A, A2 in R1; B, B2 in R2.
+ * supervisor), ACC2. Org-wide: FM1, FM2, GM1, SD1 (the Sales Director), STW. Routes
+ * A, A2 in R1; B, B2 in R2.
  */
 const CHAIN_USERS: UserSpec[] = [
   { key: 'M1', role: 'MANAGER', regions: ['R1'] },
@@ -156,6 +161,7 @@ const CHAIN_USERS: UserSpec[] = [
   { key: 'FM1', role: 'FINANCE_MANAGER' },
   { key: 'FM2', role: 'FINANCE_MANAGER' },
   { key: 'GM1', role: 'GM' },
+  { key: 'SD1', role: 'SALES_DIRECTOR' },
   { key: 'STW', role: 'STEWARD' },
 ];
 
@@ -233,7 +239,8 @@ type FormAnswer = {
 };
 
 /**
- * Clicks Submit or Save draft and returns the /api/forms/customer-create answer.
+ * Clicks Submit or Save draft (or, for `form` 'credit-form', Send signed
+ * application) and returns the /api/forms/<form> answer.
  * A successful submit navigates to /work at once, and the browser then drops the
  * response body (waitForResponse + json() races it). So the page's POST is held,
  * sent once and unchanged (its own headers, cookie and body) with Node's fetch, and
@@ -241,8 +248,12 @@ type FormAnswer = {
  * failed route.fetch prints the request headers — the session cookie — into the
  * report (the secret scan then deletes the report and fails the run).
  */
-async function sendForm(page: Page, click: () => Promise<void>): Promise<FormAnswer> {
-  const pattern = '**/api/forms/customer-create';
+async function sendForm(
+  page: Page,
+  click: () => Promise<void>,
+  form: 'customer-create' | 'credit-form' = 'customer-create'
+): Promise<FormAnswer> {
+  const pattern = `**/api/forms/${form}`;
   let settle!: { resolve: (a: FormAnswer) => void; reject: (e: unknown) => void };
   const answered = new Promise<FormAnswer>((resolve, reject) => (settle = { resolve, reject }));
   const HOP = new Set(['host', 'content-length', 'connection', 'accept-encoding', 'keep-alive', 'transfer-encoding']);
@@ -270,7 +281,7 @@ async function sendForm(page: Page, click: () => Promise<void>): Promise<FormAns
       settle.resolve(JSON.parse(body.toString('utf8')) as FormAnswer);
     } catch (err) {
       // The kind of failure only: never the request (its headers carry the session cookie).
-      settle.reject(new Error(`the customer-create POST got no answer (${(err as Error)?.name ?? 'error'})`));
+      settle.reject(new Error(`the ${form} POST got no answer (${(err as Error)?.name ?? 'error'})`));
       await route.abort('failed').catch(() => undefined);
     }
   };
@@ -281,7 +292,7 @@ async function sendForm(page: Page, click: () => Promise<void>): Promise<FormAns
     return await Promise.race([
       answered,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('no /api/forms/customer-create answer within 130 s')), 130_000);
+        timer = setTimeout(() => reject(new Error(`no /api/forms/${form} answer within 130 s`)), 130_000);
       }),
     ]);
   } finally {
@@ -574,7 +585,7 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
     await expect(page).toHaveURL(/\/work$/);
     const item = page.getByRole('link').filter({ hasText: A.name });
     await expect(item).toContainText('New customer — in approval');
-    await expect(item).toContainText('In review — current step: SUPERVISOR');
+    await expect(item).toContainText('In review — current step: Supervisor');
 
     // The request row: CREATE, no customer yet, the CASH chain frozen, drafts on his route, photos claimed.
     const ch = await generalTrade();
@@ -693,13 +704,14 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
     expect(fresh.map((r) => `${r.kind}:${r.userId}`).sort()).toEqual(
       [`EDIT_STAGE_ADVANCED:${w.user('ACC1').id}`, `EDIT_STAGE_ADVANCED:${w.user('SA').id}`].sort()
     );
+    // Steps in words (lib/approval-chains.ts stepName, owner decisions 2026-10-11).
     expect(fresh.find((r) => r.userId === w.user('ACC1').id)).toMatchObject({
       title: 'Approval waiting on you',
-      body: `${A.name} — request advanced to the ACCOUNTANT step.`,
+      body: `${A.name} — request advanced to the Accountant step.`,
     });
     expect(fresh.find((r) => r.userId === w.user('SA').id)).toMatchObject({
       title: 'Request advanced',
-      body: `${A.name} — approved at the SUPERVISOR step; now with ACCOUNTANT.`,
+      body: `${A.name} — approved at the Supervisor step; now with the Accountant.`,
     });
     const all = await notificationsFor({ editId: A.id });
     expect(all.find((r) => r.kind === 'EDIT_SUBMITTED')!.readAt, "M1's review row is settled by M2's decision").not.toBeNull();
@@ -817,7 +829,7 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
         customer.id,
       ],
     ]);
-    for (const k of ['M1', 'M2', 'M3', 'ACC2', 'FM1', 'GM1']) expect(recipients(fresh), `${k} is not told`).not.toContain(w.user(k).id);
+    for (const k of ['M1', 'M2', 'M3', 'ACC2', 'FM1', 'GM1', 'SD1']) expect(recipients(fresh), `${k} is not told`).not.toContain(w.user(k).id);
     const accRows = (await notificationsFor({ editId: A.id })).filter((r) => r.userId === acc1.id && r.kind === 'EDIT_STAGE_ADVANCED');
     expect(accRows.every((r) => r.readAt), "the Accountant's own must-act row is settled").toBe(true);
     expectNoPii(fresh, [A.phone, A.cr]);
@@ -905,10 +917,10 @@ test.describe('new CASH customer, end to end', { tag: ['@desktop'] }, () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 2. CREDIT, through all four steps
+// 2. CREDIT, through all six steps (owner decisions 2026-10-11)
 // ═════════════════════════════════════════════════════════════════════════════
 
-test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop'] }, () => {
+test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] }, () => {
   requireLaunchEnv();
   installLaunchHooks();
   test.describe.configure({ mode: 'serial' });
@@ -979,6 +991,9 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     expect(edit.requestedPaymentTermDays).toBe(45);
     expect(parseChain(edit.approvalChain).map((s) => [s.role, s.slaHours])).toEqual([
       ['SUPERVISOR', 8],
+      ['SALES_DIRECTOR', 16],
+      // The signed application: 3 working days of 9 hours.
+      ['SALESMAN', 27],
       ['FINANCE_MANAGER', 16],
       ['GM', 24],
       ['ACCOUNTANT', 9],
@@ -1003,7 +1018,7 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     expect(await db.editCustomerDraft.count({ where: { legalName: w.name('Zero Term') } })).toBe(0);
   });
 
-  test('the supervisor sends it to the Finance Managers; the card shows the figures and a lock instead of a tick box', async ({ browser }) => {
+  test('the supervisor sends it to the Sales Director; the card shows the figures and a lock instead of a tick box', async ({ browser }) => {
     test.skip(!K.id, 'needs the credit request');
     const m1 = await pageAs(browser, w.user('M1'), 'desktop');
     await m1.goto('/approvals');
@@ -1016,24 +1031,111 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     await expect(temixCodeBox(m1), 'the Temix code box is the Accountant’s alone, at the last step').toHaveCount(0);
     const before = await rowIds(K.id);
     const t0 = Date.now();
-    await approveHere(m1, 'Send on to Finance Manager?', 'Approve and send on');
+    await approveHere(m1, 'Send on to Sales Director?', 'Approve and send on');
     await expect(m1).toHaveURL(/\/approvals$/);
     const row = await stageOf(K.id);
-    expect(row).toMatchObject({ state: 'SUBMITTED', currentStepIndex: 1, pendingRole: 'FINANCE_MANAGER', customerId: null });
+    expect(row).toMatchObject({ state: 'SUBMITTED', currentStepIndex: 1, pendingRole: 'SALES_DIRECTOR', customerId: null });
     expectFreshStage(row, t0, 16);
     const fresh = await newRows(K.id, before);
-    // Every active Finance Manager (real UAT ones too) must act; the salesman is told.
-    expect(recipients(fresh)).toEqual(expect.arrayContaining([w.user('FM1').id, w.user('FM2').id, w.user('SA').id]));
-    for (const k of ['M1', 'M2', 'M3', 'M5', 'ACC1', 'ACC2', 'GM1', 'STW']) {
+    // Every active Sales Director must act (org-wide, like the GM); the salesman is told.
+    expect(recipients(fresh)).toEqual(expect.arrayContaining([w.user('SD1').id, w.user('SA').id]));
+    for (const k of ['M1', 'M2', 'M3', 'M5', 'ACC1', 'ACC2', 'FM1', 'FM2', 'GM1', 'STW']) {
       expect(recipients(fresh), `${k} is not told at this step`).not.toContain(w.user(k).id);
     }
-    expect(fresh.find((r) => r.userId === w.user('FM1').id)).toMatchObject({
+    const toSd = fresh.find((r) => r.userId === w.user('SD1').id)!;
+    expect(toSd).toMatchObject({
       kind: 'EDIT_STAGE_ADVANCED',
       title: 'Approval waiting on you',
-      body: `${K.name} — request advanced to the FINANCE_MANAGER step.`,
+      body: `${K.name} — request advanced to the Sales Director step.`,
     });
+    // Like the GM: e-mailed work waiting on him.
+    expect(await emailVerdictFor(toSd.id), 'the Sales Director is e-mailed work waiting on him').toEqual({ send: true, status: null });
     expect(fresh.find((r) => r.userId === w.user('SA').id)).toMatchObject({ title: 'Request advanced' });
     expect(await db.customer.count({ where: { legalName: K.name } })).toBe(0);
+  });
+
+  test('the Sales Director on his phone sends it on for the customer’s signature: the salesman’s red alert, the print row, and nobody can decide that step', async ({ browser }) => {
+    test.skip(!K.id, 'needs the credit request');
+    const sd = await pageAs(browser, w.user('SD1'), 'phone');
+    await sd.goto('/approvals');
+    await expect(queueCard(sd, K.name).getByRole('img', { name: CREDIT_LOCK })).toBeVisible();
+    await openApproval(sd, K.id);
+    await expect(sd.getByText('Not uploaded yet: the salesman uploads it after the Sales Director approves.', { exact: true })).toBeVisible();
+    const before = await rowIds(K.id);
+    const t0 = Date.now();
+    await sd.getByRole('button', { name: '✓ Approve', exact: true }).click();
+    const dialog = sd.getByRole('dialog', { name: 'Send on for the customer’s signature?' });
+    await expect(dialog).toContainText('the salesman has 3 working days to bring it back signed and stamped by the customer');
+    await dialog.getByRole('button', { name: 'Approve and send for signature', exact: true }).click();
+    await expect(sd).toHaveURL(/\/approvals$/);
+    const row = await stageOf(K.id);
+    expect(row).toMatchObject({ state: 'SUBMITTED', currentStepIndex: 2, pendingRole: 'SALESMAN', customerId: null });
+    expectFreshStage(row, t0, 27);
+    const fresh = await newRows(K.id, before);
+    const toSa = fresh.filter((r) => r.userId === w.user('SA').id);
+    expect(toSa.map((r) => [r.kind, r.title])).toEqual([['SIGNED_FORM_REQUESTED', 'Signed credit application needed']]);
+    expect(toSa[0]!.body).toMatch(new RegExp(`^${escapeRe(K.name)} — get the credit application signed and stamped by the customer, and upload it by `));
+    const toPrint = fresh.filter((r) => r.title === 'Credit application to print');
+    expect(recipients(toPrint)).toEqual([w.user('M1').id]);
+    // Nobody can act on the step: the print row is in-app only; the salesman is never e-mailed.
+    expect(await emailVerdictFor(toPrint[0]!.id)).toMatchObject({ send: false });
+    expect(await emailVerdictFor(toSa[0]!.id)).toMatchObject({ send: false });
+    // The review page waits on the salesman, with no Approve or Reject, for every approver.
+    for (const k of ['M1', 'SD1', 'FM1']) {
+      const p = await pageAs(browser, w.user(k), 'desktop');
+      await openApproval(p, K.id);
+      await expect(p.getByRole('note')).toContainText(
+        `Waiting for ${w.user('SA').fullName} to upload the customer's signed and stamped credit application`
+      );
+      await expect(p.getByRole('button', { name: '✓ Approve', exact: true }), k).toHaveCount(0);
+      await expect(p.getByRole('button', { name: '✗ Reject', exact: true }), k).toHaveCount(0);
+      await p.context().close();
+    }
+    // M1 prints it: his Work lists it.
+    const m1 = await pageAs(browser, w.user('M1'), 'desktop');
+    await m1.goto('/work');
+    await expect(m1.getByRole('main').getByRole('link').filter({ hasText: K.name })).toContainText('Credit application to print');
+  });
+
+  test('the salesman uploads the signed application on his phone; it goes to the Finance Managers', async ({ browser }) => {
+    test.skip(!K.id, 'needs the credit request');
+    notRunHere(!hasR2, 'the signed application is uploaded to R2');
+    test.setTimeout(300_000);
+    const sa = w.user('SA');
+    await resetLimits({ users: [sa] });
+    const page = await pageAs(browser, sa, 'phone');
+    await page.goto('/work');
+    const item = page.getByRole('main').getByRole('link').filter({ hasText: K.name });
+    await expect(item).toContainText('New customer — signed application needed');
+    await item.click();
+    await expect(page).toHaveURL(new RegExp(`/customers/new\\?edit=${K.id}$`));
+    const block = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Signed credit application needed' }) });
+    await expect(block).toContainText('Your supervisor prints the credit application.');
+    const send = block.getByRole('button', { name: 'Send signed application' });
+    await expect(send).toBeDisabled();
+    await takePhoto(photoSlot(block, 'Signed application page'));
+    await expect(send).toBeEnabled();
+    const before = await rowIds(K.id);
+    const t0 = Date.now();
+    const answer = await sendForm(page, () => send.click(), 'credit-form');
+    expect(answer, JSON.stringify(answer)).toMatchObject({ ok: true, data: { editId: K.id, replayed: false } });
+    await expect(page).toHaveURL(/\/work$/);
+    const row = await stageOf(K.id);
+    expect(row).toMatchObject({ state: 'SUBMITTED', currentStepIndex: 3, pendingRole: 'FINANCE_MANAGER', customerId: null });
+    expectFreshStage(row, t0, 16);
+    const pages = await db.attachment.findMany({ where: { editId: K.id, kind: 'CREDIT_FORM', deletedAt: null } });
+    expect(pages).toHaveLength(1);
+    const done = await db.editApproval.findFirstOrThrow({ where: { editId: K.id, stepIndex: 2 } });
+    expect([done.decision, done.role, done.actorId]).toEqual(['FORM_UPLOADED', 'SALESMAN', sa.id]);
+    const fresh = await newRows(K.id, before);
+    expect(recipients(fresh)).toEqual(expect.arrayContaining([w.user('FM1').id, w.user('FM2').id]));
+    expect(recipients(fresh)).not.toContain(sa.id);
+    // His alert and M1's print row are settled.
+    const settled = (await notificationsFor({ editId: K.id })).filter(
+      (r) => r.kind === 'SIGNED_FORM_REQUESTED' || r.title === 'Credit application to print'
+    );
+    expect(settled.length).toBeGreaterThan(0);
+    expect(settled.every((r) => r.readAt)).toBe(true);
   });
 
   test('a Finance Manager on his phone decides it alone, on its own page; the other FM, whose page went stale, is refused', async ({ browser }) => {
@@ -1058,6 +1160,10 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     await expect(fm1.getByText('Guarantee documents (1)', { exact: true })).toBeVisible();
     const g = await db.attachment.findFirstOrThrow({ where: { editId: K.id, kind: 'GUARANTEE', deletedAt: null } });
     await expectPhotoServed(fm1, g.id, true);
+    // Owner decisions 2026-10-11: the signed application he decides on, never cached, its uploader named.
+    const signed = await db.attachment.findFirstOrThrow({ where: { editId: K.id, kind: 'CREDIT_FORM', deletedAt: null } });
+    await expect(fm1.locator(`main img[src="/api/photos/${signed.id}"]`)).toBeVisible();
+    await expectPhotoServed(fm1, signed.id, true);
     await expect(fm1.locator('main input, main textarea, main select'), 'nothing on the page can change the figures').toHaveCount(0);
     await expect(temixCodeBox(fm1), 'the Temix code box is the Accountant’s alone, at the last step').toHaveCount(0);
 
@@ -1067,7 +1173,7 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     await approveHere(fm1, 'Send on to GM?', 'Approve and send on');
     await expect(fm1).toHaveURL(/\/approvals$/);
     const row = await stageOf(K.id);
-    expect(row).toMatchObject({ currentStepIndex: 2, pendingRole: 'GM' });
+    expect(row).toMatchObject({ currentStepIndex: 4, pendingRole: 'GM' });
     expectFreshStage(row, t0, 24);
     expect(await db.editApproval.count({ where: { editId: K.id } })).toBe(steps + 1);
 
@@ -1105,7 +1211,7 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     await approveHere(gm, 'Send on to Accountant?', 'Approve and send on');
     await expect(gm).toHaveURL(/\/approvals$/);
     const row = await stageOf(K.id);
-    expect(row).toMatchObject({ currentStepIndex: 3, pendingRole: 'ACCOUNTANT' });
+    expect(row).toMatchObject({ currentStepIndex: 5, pendingRole: 'ACCOUNTANT' });
     expectFreshStage(row, t0, 9);
     const fresh = await newRows(K.id, before);
     expect(recipients(fresh)).toEqual([w.user('ACC1').id, w.user('SA').id].sort());
@@ -1135,11 +1241,13 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     const steps = await db.editApproval.findMany({ where: { editId: K.id }, orderBy: { at: 'asc' } });
     expect(steps.map((s) => [s.stepIndex, s.role, s.decision, s.actorId])).toEqual([
       [0, 'SUPERVISOR', 'APPROVED', w.user('M1').id],
-      [1, 'FINANCE_MANAGER', 'APPROVED', w.user('FM1').id],
-      [2, 'GM', 'APPROVED', w.user('GM1').id],
-      [3, 'ACCOUNTANT', 'APPROVED', acc1.id],
+      [1, 'SALES_DIRECTOR', 'APPROVED', w.user('SD1').id],
+      [2, 'SALESMAN', 'FORM_UPLOADED', w.user('SA').id],
+      [3, 'FINANCE_MANAGER', 'APPROVED', w.user('FM1').id],
+      [4, 'GM', 'APPROVED', w.user('GM1').id],
+      [5, 'ACCOUNTANT', 'APPROVED', acc1.id],
     ]);
-    expect(new Set(steps.map((s) => s.actorId)).size, 'four different people').toBe(4);
+    expect(new Set(steps.map((s) => s.actorId)).size, 'six different people, the salesman his own errand').toBe(6);
     const fresh = await newRows(K.id, before);
     expect(fresh.find((r) => r.userId === w.user('SA').id)).toMatchObject({
       kind: 'EDIT_APPROVED_FINAL',
@@ -1149,7 +1257,7 @@ test.describe('new CREDIT customer, through all four steps', { tag: ['@desktop']
     expect(fresh.find((r) => r.userId === w.user('STW').id)).toMatchObject({ kind: 'EDIT_APPROVED_FINAL', title: 'Ready for Temix upload' });
     expectNoPii(await notificationsFor({ editId: K.id }), [K.phone, K.cr]);
 
-    for (const k of ['FM1', 'FM2', 'GM1']) {
+    for (const k of ['FM1', 'FM2', 'GM1', 'SD1']) {
       const p = await pageAs(browser, w.user(k), 'desktop');
       await p.goto('/approvals');
       await expect(queueCard(p, K.name), `${k}'s queue`).toHaveCount(0);
@@ -1262,10 +1370,11 @@ test.describe('a credit application, and a new customer at its last step, is nev
     // At the Accountant: two cash, one credit. At the FM, the GM: one credit each. At the Supervisor: one credit, two cash.
     S.c1 = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: w.name('Bulk Cash One') });
     S.c2 = await seedCreateRequest(w, { submitter: 'SA', step: 1, approvedBy: ['M1'], legalName: w.name('Bulk Cash Two') });
-    S.k1 = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', step: 3, approvedBy: ['M1', 'FM1', 'GM1'], legalName: w.name('Credit At Acc') });
-    S.k2 = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', step: 1, approvedBy: ['M1'], legalName: w.name('Credit At Fm') });
-    S.k3 = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', step: 2, approvedBy: ['M1', 'FM2'], legalName: w.name('Credit At Gm') });
-    S.k4 = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', legalName: w.name('Credit At Sup') });
+    // Frozen with the 4-step chain (legacyChain): the steps are indexed on it.
+    S.k1 = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', legacyChain: true, step: 3, approvedBy: ['M1', 'FM1', 'GM1'], legalName: w.name('Credit At Acc') });
+    S.k2 = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', legacyChain: true, step: 1, approvedBy: ['M1'], legalName: w.name('Credit At Fm') });
+    S.k3 = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', legacyChain: true, step: 2, approvedBy: ['M1', 'FM2'], legalName: w.name('Credit At Gm') });
+    S.k4 = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', legacyChain: true, legalName: w.name('Credit At Sup') });
     S.c3 = await seedCreateRequest(w, { submitter: 'SA', legalName: w.name('Sup Cash Three') });
     S.c4 = await seedCreateRequest(w, { submitter: 'SA', legalName: w.name('Sup Cash Four') });
 
@@ -1330,7 +1439,7 @@ test.describe('a credit application, and a new customer at its last step, is nev
     const m1 = await pageAs(browser, w.user('M1'), 'desktop');
     await openApproval(m1, S.k2!.id);
     await expect(m1.getByRole('note')).toContainText(
-      'For your information: this request is waiting at the FINANCE MANAGER step, which you cannot decide.'
+      'For your information: this request is waiting at the Finance Manager step, which you cannot decide.'
     );
     const frozen = await snapshot(['CustomerEdit'], { id: S.k2!.id });
     await approveHere(m1, 'Send on to GM?', 'Approve and send on');
@@ -1463,7 +1572,7 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
         ].sort()
       );
       expect(fresh.find((r) => r.userId === m1.id)!.body).toBe(
-        `${X.legalName} — rejected at the ACCOUNTANT step and returned to SUPERVISOR for re-review.`
+        `${X.legalName} — rejected at the Accountant step and returned to the Supervisor for re-review.`
       );
       expect(fresh.find((r) => r.userId === sa.id)!.body).toBe(`${X.legalName} — sent back one step for re-review (not returned to you).`);
       for (const k of ['M1', 'M2', 'M3']) {
@@ -1476,10 +1585,10 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
     await test.step('M3 reads why, re-approves; the Accountant’s second rejection in the round goes to the salesman', async () => {
       const page = await pageAs(browser, m3, 'desktop');
       await openApproval(page, X.id);
-      await expect(page.locator('li').filter({ hasText: 'REJECTED at ACCOUNTANT step' })).toContainText(
-        `REJECTED at ACCOUNTANT step by ${acc1.fullName} — “CR number does not match the photo”`
+      await expect(page.locator('li').filter({ hasText: 'REJECTED at Accountant step' })).toContainText(
+        `REJECTED at Accountant step by ${acc1.fullName} — “CR number does not match the photo”`
       );
-      await expect(page.locator('li').filter({ hasText: 'APPROVED at SUPERVISOR step' })).toContainText(`by ${w.user('M2').fullName}`);
+      await expect(page.locator('li').filter({ hasText: 'APPROVED at Supervisor step' })).toContainText(`by ${w.user('M2').fullName}`);
       // At the first step a rejection goes to the salesman.
       await page.getByRole('button', { name: '✗ Reject', exact: true }).click();
       await expect(page.getByText('Reason for the salesman *', { exact: true })).toBeVisible();
@@ -1601,9 +1710,11 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
     notRunHere(!hasR2, 'the request carries R2 photos');
     test.setTimeout(600_000);
     const [m1, fm1, gm1] = [w.user('M1'), w.user('FM1'), w.user('GM1')];
+    // Frozen with the 4-step chain (legacyChain): the Finance Manager is step 1.
     const Y = await seedCreateRequest(w, {
       submitter: 'SA',
       paymentTerms: 'CREDIT',
+      legacyChain: true,
       step: 1,
       approvedBy: ['M1'],
       legalName: w.name('Cascade Credit'),
@@ -1698,6 +1809,7 @@ test.describe('rejections step back one approver at a time', { tag: ['@desktop']
     const Z = await seedCreateRequest(w, {
       submitter: 'SA',
       paymentTerms: 'CREDIT',
+      legacyChain: true,
       step: 3,
       approvedBy: ['M1', 'FM1', 'GM1'],
       legalName: w.name('Credit Back To Gm'),
@@ -2212,11 +2324,11 @@ test.describe("the salesman's new-customer form", { tag: ['@phone'] }, () => {
     const page = await pageAs(browser, w.user('SA'), 'phone');
     await page.goto('/work');
     const item = page.getByRole('link').filter({ hasText: r.legalName });
-    await expect(item).toContainText('In review — current step: SUPERVISOR');
+    await expect(item).toContainText('In review — current step: Supervisor');
     await item.click();
     await expect(page).toHaveURL(new RegExp(`/customers/new\\?edit=${r.id}$`));
     await expect(page.getByText(/^This request is in review — current step:/)).toContainText(
-      'This request is in review — current step: SUPERVISOR. You will be notified when it is decided.'
+      'This request is in review — current step: Supervisor. You will be notified when it is decided.'
     );
     await expect(page.getByLabel('Legal name *', { exact: true })).toBeDisabled();
     await expect(page.getByLabel('Primary phone *', { exact: true })).toBeDisabled();
@@ -2319,8 +2431,8 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
   test('the read-only lane: a viewer who cannot decide the current step is told so, and his Approve and Reject are refused', async ({ browser }) => {
     test.skip(!R.id, 'needs the request of the documents test');
     test.setTimeout(300_000);
-    const atGm = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', step: 2, approvedBy: ['M1', 'FM2'], legalName: w.name('Waits At Gm') });
-    const atFm = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', step: 1, approvedBy: ['M1'], legalName: w.name('Waits At Fm') });
+    const atGm = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', legacyChain: true, step: 2, approvedBy: ['M1', 'FM2'], legalName: w.name('Waits At Gm') });
+    const atFm = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', legacyChain: true, step: 1, approvedBy: ['M1'], legalName: w.name('Waits At Fm') });
     const update = await seedUpdateEdit(w, { customer: 'UPD', submitter: 'SA', patch: { customer: { contactPerson: w.name('New contact') } } });
 
     // The Accountant opens his FYI for the request still at the Supervisor step.
@@ -2330,10 +2442,11 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
     await expect(acc1).toHaveURL(new RegExp(`/approvals/${R.id}$`));
 
     const cases: Array<{ page: Page; id: string; step: string; approve: [string, string] }> = [
-      { page: acc1, id: R.id, step: 'SUPERVISOR', approve: ['Send on to Finance Manager?', 'Approve and send on'] },
+      // Steps in words (stepName); R, sent after owner decisions 2026-10-11, goes on to the Sales Director.
+      { page: acc1, id: R.id, step: 'Supervisor', approve: ['Send on to Sales Director?', 'Approve and send on'] },
       { page: await pageAs(browser, w.user('FM1'), 'desktop'), id: atGm.id, step: 'GM', approve: ['Send on to Accountant?', 'Approve and send on'] },
-      { page: await pageAs(browser, w.user('GM1'), 'desktop'), id: atFm.id, step: 'FINANCE MANAGER', approve: ['Send on to GM?', 'Approve and send on'] },
-      { page: await pageAs(browser, w.user('ACC1'), 'desktop'), id: update.id, step: 'SUPERVISOR', approve: ['Approve this edit?', 'Approve'] },
+      { page: await pageAs(browser, w.user('GM1'), 'desktop'), id: atFm.id, step: 'Finance Manager', approve: ['Send on to GM?', 'Approve and send on'] },
+      { page: await pageAs(browser, w.user('ACC1'), 'desktop'), id: update.id, step: 'Supervisor', approve: ['Approve this edit?', 'Approve'] },
     ];
     for (const c of cases) {
       if (c.page.url().indexOf(c.id) < 0) await openApproval(c.page, c.id);
@@ -2389,7 +2502,7 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
   test('a photo removed mid-chain reads as removed at every step, and the last step refuses it; Reject steps back to the GM', async ({ browser }) => {
     notRunHere(!hasR2, 'the request carries R2 photos');
     test.setTimeout(300_000);
-    const r = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', step: 1, approvedBy: ['M1'], legalName: w.name('Missing Photo Co') });
+    const r = await seedCreateRequest(w, { submitter: 'SA', paymentTerms: 'CREDIT', legacyChain: true, step: 1, approvedBy: ['M1'], legalName: w.name('Missing Photo Co') });
     // A shop photo gone after the request was sent (written in the database: a salesman can no longer remove one
     // from a request in review, 628e541 — asserted below — but a request sent before that fix, or a Steward's
     // clean-up, can still leave one missing).
@@ -2429,6 +2542,7 @@ test.describe('the review page of a new-customer request', { tag: ['@desktop'] }
     const r = await seedCreateRequest(w, {
       submitter: 'SA',
       paymentTerms: 'CREDIT',
+      legacyChain: true,
       step: 3,
       approvedBy: ['M1', 'FM1', 'GM1'],
       legalName: w.name('Missing Guarantee Co'),

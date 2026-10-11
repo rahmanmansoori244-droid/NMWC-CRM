@@ -324,7 +324,8 @@ describe('37 + 40 — the approval review page, rendered', () => {
     expect(sections.length).toBeGreaterThanOrEqual(3);
     for (const s of sections) expect(s.className).toContain('[overflow-wrap:anywhere]');
     // The step history stacks on a phone instead of squeezing the reason.
-    const step = screen.getByText(/at MANAGER step by Manager One/).closest('li')!;
+    // The step in words (lib/approval-chains.ts stepName, owner decisions 2026-10-11).
+    const step = screen.getByText(/at Manager step by Manager One/).closest('li')!;
     expect(step.className).toMatch(/\bflex-col\b/);
     expect(step.className).toMatch(/\bsm:flex-row\b/);
   });

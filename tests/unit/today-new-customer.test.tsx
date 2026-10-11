@@ -5,7 +5,7 @@
  * bottom bar has none. Every other link to /customers/new opens an existing
  * request (?edit=).
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: { id: 'u1', role: 'SALESMAN', username: 's' } }) }));
@@ -15,10 +15,17 @@ vi.mock('next/navigation', () => ({
   },
   useRouter: () => ({ refresh: () => {}, push: () => {} }),
 }));
+const h = vi.hoisted(() => ({ signedForms: 0, countWheres: [] as unknown[] }));
 vi.mock('@/lib/db', () => ({
   prisma: {
     user: { findUniqueOrThrow: async () => ({ id: 'u1', fullName: 'Said Ali', ownedRouteId: 'r1' }) },
-    customerEdit: { count: async () => 0 },
+    // Owner decisions 2026-10-11: his requests at the signed-application step.
+    customerEdit: {
+      count: async (args: { where: { pendingRole?: string } }) => {
+        h.countWheres.push(args.where);
+        return args.where.pendingRole === 'SALESMAN' ? h.signedForms : 0;
+      },
+    },
     // lib/returned-work.ts countOpenReturned: nothing sent back waits on him.
     $queryRaw: async () => [{ n: 0 }],
     branch: { findMany: async () => [], count: async () => 12 },
@@ -27,6 +34,10 @@ vi.mock('@/lib/db', () => ({
 
 import TodayPage from '@/app/(app)/today/page';
 
+beforeEach(() => {
+  h.signedForms = 0;
+  h.countWheres = [];
+});
 afterEach(cleanup);
 
 describe('/today', () => {
@@ -36,5 +47,16 @@ describe('/today', () => {
     expect(link.getAttribute('href')).toBe('/customers/new');
     // Not tucked behind a breakpoint: no hidden / md:-only class on it.
     expect(link.className).not.toMatch(/(^|\s)hidden(\s|$)|md:inline|md:flex|md:block/);
+  });
+
+  it('owner decisions 2026-10-11: his signed applications to upload are counted, in red, one tap from Work', async () => {
+    render(await TodayPage({}));
+    expect(screen.queryByText(/signed credit application/)).toBeNull();
+    cleanup();
+    h.signedForms = 2;
+    render(await TodayPage({}));
+    const tile = screen.getByText('2 signed credit applications to upload').closest('a')!;
+    expect(tile.getAttribute('href')).toBe('/work');
+    expect(h.countWheres).toContainEqual({ submittedById: 'u1', state: 'SUBMITTED', pendingRole: 'SALESMAN' });
   });
 });

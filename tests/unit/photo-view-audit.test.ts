@@ -98,7 +98,10 @@ function get(id: string, headers: Record<string, string> = {}) {
   });
 }
 
-const STRICT = ['CR', 'GUARANTEE'] as const;
+// Owner decisions 2026-10-11: the credit documents and the signed credit
+// application are handled exactly like CR copies and guarantees.
+const NEW_CREDIT_KINDS = ['ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD', 'CREDIT_FORM'] as const;
+const STRICT = ['CR', 'GUARANTEE', ...NEW_CREDIT_KINDS] as const;
 const SERVED_ANYWAY = ['SHOP', 'SIGNBOARD', 'FREE'] as const;
 
 beforeEach(() => {
@@ -200,6 +203,23 @@ describe('every served view writes one PHOTO_VIEW row (owner decision a)', () =>
     const shop = await get(h.att.id);
     expect(shop.headers.get('cache-control')).toBe('private, max-age=3600, immutable');
     expect(shop.headers.get('etag')).toBe(`"p-${h.att.id}"`);
+  });
+
+  it.each(NEW_CREDIT_KINDS)('%s is never cached and has no ETag, like a CR copy (owner decisions 2026-10-11)', async (kind) => {
+    h.att = att(kind);
+    const res = await get(h.att.id);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store, no-cache, must-revalidate');
+    expect(res.headers.get('etag')).toBeNull();
+    // A revalidation is never answered 304 for it: it is served whole, after its row.
+    h.att = att(kind);
+    const again = await get(h.att.id, { 'if-none-match': `"p-${h.att.id}"` });
+    expect(again.status).toBe(200);
+  });
+
+  it('the route reads both sets from lib/credit-documents.ts', async () => {
+    const { CONFIDENTIAL_KINDS } = await import('@/lib/credit-documents');
+    expect([...CONFIDENTIAL_KINDS].sort()).toEqual([...STRICT].sort());
   });
 });
 

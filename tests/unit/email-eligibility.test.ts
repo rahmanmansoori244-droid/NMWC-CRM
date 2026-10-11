@@ -94,8 +94,10 @@ describe('owner decision 6: the GM is e-mailed work waiting on him', () => {
     req({ process: 'CREATE', approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT), currentStepIndex: step, ...over });
   const gm = who(Role.GM, { id: 'gm', managedRegionIds: [] });
 
+  // The 6-step credit chain (owner decisions 2026-10-11): SUP 0, SD 1, signed
+  // application 2, FM 3, GM 4, ACC 5.
   it('a credit request at the GM step is e-mailed to him, as "now at your approval step"', () => {
-    const atGm = credit(2, { pendingRole: Role.GM });
+    const atGm = credit(4, { pendingRole: Role.GM });
     expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, atGm, NOW)).toEqual({
       send: true,
       item: { kind: 'EDIT_STAGE_ADVANCED', editId: 'e1', requestType: 'CREATE' },
@@ -103,23 +105,55 @@ describe('owner decision 6: the GM is e-mailed work waiting on him', () => {
   });
 
   it('not before it reaches him, not once it moved past him, not if he decided another step, not information', () => {
-    for (const step of [0, 1, 3]) {
+    for (const step of [0, 1, 2, 3, 5]) {
       expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, credit(step), NOW), `step ${step}`).toEqual({
         send: false,
         status: 'SKIPPED_RESOLVED',
       });
     }
-    expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, credit(2, { state: 'APPROVED' }), NOW)).toEqual({
+    expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, credit(4, { state: 'APPROVED' }), NOW)).toEqual({
       send: false,
       status: 'SKIPPED_RESOLVED',
     });
-    expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, credit(2, { otherStepActorIds: ['gm'] }), NOW)).toEqual({
+    expect(rowVerdict(row({ userId: 'gm', kind: 'EDIT_STAGE_ADVANCED' }), gm, credit(4, { otherStepActorIds: ['gm'] }), NOW)).toEqual({
       send: false,
       status: 'SKIPPED_RESOLVED',
     });
     // An update or a cash request never waits on the GM.
     expect(rowVerdict(row({ userId: 'gm' }), gm, req(), NOW)).toEqual({ send: false, status: 'SKIPPED_RESOLVED' });
-    expect(rowVerdict(row({ userId: 'gm', kind: 'REQUEST_FYI' }), gm, credit(2), NOW)).toEqual({ send: false, status: 'SKIPPED_ROLE' });
+    expect(rowVerdict(row({ userId: 'gm', kind: 'REQUEST_FYI' }), gm, credit(4), NOW)).toEqual({ send: false, status: 'SKIPPED_ROLE' });
+  });
+
+  it('owner decisions 2026-10-11: the Sales Director is e-mailed like the GM — work at his step, never information', () => {
+    const sd = who(Role.SALES_DIRECTOR, { id: 'sd', managedRegionIds: [] });
+    expect(rowVerdict(row({ userId: 'sd', kind: 'EDIT_STAGE_ADVANCED' }), sd, credit(1, { pendingRole: Role.SALES_DIRECTOR }), NOW)).toEqual({
+      send: true,
+      item: { kind: 'EDIT_STAGE_ADVANCED', editId: 'e1', requestType: 'CREATE' },
+    });
+    for (const step of [0, 2, 3, 4, 5]) {
+      expect(rowVerdict(row({ userId: 'sd', kind: 'EDIT_STAGE_ADVANCED' }), sd, credit(step), NOW), `step ${step}`).toEqual({
+        send: false,
+        status: 'SKIPPED_RESOLVED',
+      });
+    }
+    expect(rowVerdict(row({ userId: 'sd', kind: 'REQUEST_FYI' }), sd, credit(1), NOW)).toEqual({ send: false, status: 'SKIPPED_ROLE' });
+  });
+
+  it('owner decisions 2026-10-11: at the signed-application step nobody is e-mailed "please review" — the print rows stay in-app', () => {
+    // The supervisor's or Manager's "Credit application to print" row is an
+    // EDIT_STAGE_ADVANCED row; nobody can act on a SUBMITTER step, so it is
+    // never e-mailed. The salesman's own alert is a kind that is never e-mailed.
+    const atForm = credit(2, { pendingRole: Role.SALESMAN });
+    for (const r of [who(Role.MANAGER), who(Role.SUPERVISOR), gm, who(Role.SALES_DIRECTOR, { id: 'sd' }), who(Role.FINANCE_MANAGER, { id: 'fm' })]) {
+      expect(rowVerdict(row({ userId: r.id, kind: 'EDIT_STAGE_ADVANCED' }), r, atForm, NOW), r.role).toEqual({
+        send: false,
+        status: 'SKIPPED_RESOLVED',
+      });
+    }
+    expect(rowVerdict(row({ userId: 's1', kind: 'SIGNED_FORM_REQUESTED' }), who(Role.SALESMAN, { id: 's1' }), atForm, NOW)).toEqual({
+      send: false,
+      status: 'SKIPPED_KIND',
+    });
   });
 });
 
@@ -151,10 +185,23 @@ describe('owner decision 6: a late request (SLA_BREACH) goes to the people the e
   it('late at a later step, or a reactivation: the plan’s people for that step', () => {
     const credit = (step: number, pendingRole: Role) =>
       req({ process: 'CREATE', approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT), currentStepIndex: step, pendingRole });
-    expect([fm, gm, manager].map((r) => verdict(r, credit(3, Role.ACCOUNTANT)))).toEqual(['send', 'send', 'SKIPPED_RESOLVED']);
-    expect([gm, fm, manager].map((r) => verdict(r, credit(1, Role.FINANCE_MANAGER)))).toEqual(['send', 'SKIPPED_RESOLVED', 'SKIPPED_RESOLVED']);
+    const sd = who(Role.SALES_DIRECTOR, { id: 'sd', managedRegionIds: [] });
+    expect([fm, gm, sd, manager].map((r) => verdict(r, credit(5, Role.ACCOUNTANT)))).toEqual(['send', 'send', 'send', 'SKIPPED_RESOLVED']);
+    expect([gm, sd, fm, manager].map((r) => verdict(r, credit(3, Role.FINANCE_MANAGER)))).toEqual(['send', 'send', 'SKIPPED_RESOLVED', 'SKIPPED_RESOLVED']);
+    // Owner decisions 2026-10-11: a late Sales Director step goes to the GM.
+    expect([gm, sd, fm, manager].map((r) => verdict(r, credit(1, Role.SALES_DIRECTOR)))).toEqual(['send', 'SKIPPED_RESOLVED', 'SKIPPED_RESOLVED', 'SKIPPED_RESOLVED']);
+    // A late signed application: the region's Managers chase the salesman, and at
+    // 2x the GM and the Sales Director; the salesman himself is never e-mailed.
+    expect([manager, farManager, gm, sd, fm].map((r) => verdict(r, credit(2, Role.SALESMAN)))).toEqual([
+      'send',
+      'SKIPPED_RESOLVED',
+      'send',
+      'send',
+      'SKIPPED_RESOLVED',
+    ]);
+    expect(verdict(who(Role.SALESMAN, { id: 'x7' }), credit(2, Role.SALESMAN))).toBe('SKIPPED_ROLE');
     const react = req({ isReactivation: true, target: 'BRANCH', approvalChain: null, pendingRole: Role.MANAGER });
-    expect([gm, manager].map((r) => verdict(r, react))).toEqual(['send', 'SKIPPED_RESOLVED']);
+    expect([gm, sd, manager].map((r) => verdict(r, react))).toEqual(['send', 'send', 'SKIPPED_RESOLVED']);
   });
 
   it('late at the GM step: the region’s Managers are told in-app for visibility only, and not e-mailed — only one who can decide it is', () => {
@@ -162,7 +209,7 @@ describe('owner decision 6: a late request (SLA_BREACH) goes to the people the e
       req({
         process: 'CREATE',
         approvalChain: resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT),
-        currentStepIndex: 2,
+        currentStepIndex: 4,
         pendingRole: Role.GM,
         ...over,
       });
@@ -200,7 +247,16 @@ describe('owner decision 6: a late request (SLA_BREACH) goes to the people the e
   });
 
   it('answers as lib/escalation.ts plans, at either level, for every role and step', () => {
-    const steps: Array<Role | null> = [null, Role.SUPERVISOR, Role.MANAGER, Role.ACCOUNTANT, Role.FINANCE_MANAGER, Role.GM];
+    const steps: Array<Role | null> = [
+      null,
+      Role.SUPERVISOR,
+      Role.SALES_DIRECTOR,
+      Role.SALESMAN,
+      Role.MANAGER,
+      Role.ACCOUNTANT,
+      Role.FINANCE_MANAGER,
+      Role.GM,
+    ];
     for (const pendingRole of steps) {
       const plans = [escalationPlan(pendingRole, 1), escalationPlan(pendingRole, 2)];
       for (const role of Object.values(Role)) {
@@ -294,9 +350,13 @@ describe('waitsOn: has the request moved past him, and can he act on it?', () =>
   });
 
   it('EDIT_STAGE_ADVANCED: the step that must act now, in scope, and nobody else', () => {
-    const atFm = { ...credit(), currentStepIndex: 1 };
+    const atFm = { ...credit(), currentStepIndex: 3 };
     expect(waitsOn(who(Role.FINANCE_MANAGER, { id: 'fm', managedRegionIds: [] }), 'EDIT_STAGE_ADVANCED', atFm)).toBe(true);
-    expect(waitsOn(who(Role.FINANCE_MANAGER, { id: 'fm' }), 'EDIT_STAGE_ADVANCED', { ...atFm, currentStepIndex: 2 })).toBe(false);
+    expect(waitsOn(who(Role.FINANCE_MANAGER, { id: 'fm' }), 'EDIT_STAGE_ADVANCED', { ...atFm, currentStepIndex: 4 })).toBe(false);
+    // Owner decisions 2026-10-11: the signed-application step waits on no approver.
+    for (const role of EMAIL_ROLES) {
+      expect(waitsOn(who(role, { id: `x-${role}` }), 'EDIT_STAGE_ADVANCED', { ...credit(), currentStepIndex: 2 }), role).toBe(false);
+    }
     expect(waitsOn(who(Role.ACCOUNTANT, { id: 'a' }), 'EDIT_STAGE_ADVANCED', { ...cash(), currentStepIndex: 1 })).toBe(true);
     // The Accountant step is region-scoped: another region's Accountant cannot act on it.
     expect(waitsOn(who(Role.ACCOUNTANT, { id: 'a', managedRegionIds: [OTHER] }), 'EDIT_STAGE_ADVANCED', { ...cash(), currentStepIndex: 1 })).toBe(false);
@@ -305,13 +365,18 @@ describe('waitsOn: has the request moved past him, and can he act on it?', () =>
   });
 
   it('answers as canActOnStep does — the rule the decision applies — for every role and scope', () => {
-    const chains = [cash(), { ...cash(), currentStepIndex: 1 }, credit(), { ...credit(), currentStepIndex: 1 }, { ...credit(), currentStepIndex: 2 }, { ...credit(), currentStepIndex: 3 }, req()];
+    const chains = [
+      cash(),
+      { ...cash(), currentStepIndex: 1 },
+      ...[0, 1, 2, 3, 4, 5].map((i) => ({ ...credit(), currentStepIndex: i })),
+      req(),
+    ];
     for (const edit of chains) {
       for (const role of EMAIL_ROLES) {
         for (const managedRegionIds of [[REGION], [OTHER], []]) {
           for (const id of ['u1', 'x9']) {
             const r = who(role, { id, managedRegionIds });
-            const step = (edit.approvalChain as Array<{ role: Role; scope: 'SUPERVISOR_OF_SUBMITTER' | 'REGION_OVERLAP' | 'GLOBAL' }>)[edit.currentStepIndex]!;
+            const step = (edit.approvalChain as Array<{ role: Role; scope: 'SUPERVISOR_OF_SUBMITTER' | 'REGION_OVERLAP' | 'GLOBAL' | 'SUBMITTER' }>)[edit.currentStepIndex]!;
             const expected = canActOnStep(r, step, { id: edit.submittedById, supervisorId: edit.submitterSupervisorId }, {
               customerBranches: edit.scopeRegionIds.map((regionId) => ({ regionId, deletedAt: null })),
               managedRegionIds,

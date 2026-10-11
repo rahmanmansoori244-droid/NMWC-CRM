@@ -20,6 +20,8 @@ const KIND_LABEL: Record<string, string> = {
   // F1
   REQUEST_FYI: 'FYI',
   REACTIVATION_REQUESTED: 'Reactivation',
+  // Owner decisions 2026-10-11: the salesman's must-act alert.
+  SIGNED_FORM_REQUESTED: 'Signed form',
 };
 
 const KIND_TONE: Record<string, string> = {
@@ -32,6 +34,7 @@ const KIND_TONE: Record<string, string> = {
   TEMIX_SYNC_ACKED: 'bg-violet-50 text-violet-700 ring-violet-200',
   REQUEST_FYI: 'bg-slate-100 text-slate-600 ring-slate-200',
   REACTIVATION_REQUESTED: 'bg-sky-50 text-sky-700 ring-sky-200',
+  SIGNED_FORM_REQUESTED: 'bg-amber-50 text-amber-800 ring-amber-200',
 };
 
 export function NotificationRow({

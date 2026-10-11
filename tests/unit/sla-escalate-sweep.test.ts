@@ -217,6 +217,9 @@ const ORG: User[] = [
   { id: 'fm', role: 'FINANCE_MANAGER', isActive: true, regions: [] },
   { id: 'gm', role: 'GM', isActive: true, regions: [] },
   { id: 'gm-off', role: 'GM', isActive: false, regions: [] },
+  // Owner decisions 2026-10-11: the Sales Director, org-wide like the GM.
+  { id: 'sd', role: 'SALES_DIRECTOR', isActive: true, regions: [] },
+  { id: 'sd-off', role: 'SALES_DIRECTOR', isActive: false, regions: [] },
   { id: 'stw', role: 'STEWARD', isActive: true, regions: ['r1', 'r2'] },
   { id: 'stw-off', role: 'STEWARD', isActive: false, regions: [] },
   { id: 'vw', role: 'VIEWER', isActive: true, regions: ['r1', 'r2'] },
@@ -258,7 +261,7 @@ function canOpen(userId: string, e: Edit): boolean {
   if (!APPROVER_ROLES.includes(u.role as Role)) return false;
   if (u.role === 'SUPERVISOR') return false; // the sweep never escalates to a Supervisor
   if (u.role === 'MANAGER' || u.role === 'ACCOUNTANT') return u.regions.some((r) => e.regions.includes(r));
-  return true; // FINANCE_MANAGER, GM: org-wide
+  return true; // FINANCE_MANAGER, GM, SALES_DIRECTOR: org-wide
 }
 
 beforeEach(() => {
@@ -293,10 +296,11 @@ describe('who a breach is escalated to', () => {
     // A late GM step: the request's region's Managers only — before, every
     // active Manager in the company and every Steward.
     expect(told('e-gm')).toEqual(['mgr-r2']);
-    expect(told('e-acc')).toEqual(['fm', 'gm']);
-    expect(told('e-react')).toEqual(['gm']);
-    // Nobody covers the region: the GM, never every Manager.
-    expect(told('e-orphan')).toEqual(['gm']);
+    // Owner decisions 2026-10-11: the Sales Director wherever the GM is told.
+    expect(told('e-acc')).toEqual(['fm', 'gm', 'sd']);
+    expect(told('e-react')).toEqual(['gm', 'sd']);
+    // Nobody covers the region: the GM and the Sales Director, never every Manager.
+    expect(told('e-orphan')).toEqual(['gm', 'sd']);
 
     for (const n of h.notes) {
       const e = h.edits.find((x) => x.id === n.editId)!;
@@ -308,7 +312,7 @@ describe('who a breach is escalated to', () => {
         e.isReactivation && role === 'MANAGER' ? '/reactivations' : `/approvals/${e.id}`
       );
     }
-    for (const never of ['stw', 'stw-off', 'vw', 'mgr-r1-off', 'gm-off', 'acc-r1', 'sup-1']) {
+    for (const never of ['stw', 'stw-off', 'vw', 'mgr-r1-off', 'gm-off', 'sd-off', 'acc-r1', 'sup-1']) {
       expect(h.notes.filter((n) => n.userId === never), never).toEqual([]);
     }
     // Each escalation is audited once, as the system.
@@ -341,7 +345,7 @@ describe('who a breach is escalated to', () => {
       overdue('e-r9', 'SUPERVISOR', ['r1', 'r9'], { fieldChanges: [{ field: 'branch.e-r9-b1.address', before: null, after: 'x' }] }),
     ];
     await run();
-    expect(told('e-r9')).toEqual(['gm']);
+    expect(told('e-r9')).toEqual(['gm', 'sd']);
   });
 
   it('a second escalation at the Supervisor step adds the GM; a late GM step stays with the region’s Managers', async () => {
@@ -352,9 +356,30 @@ describe('who a breach is escalated to', () => {
     ];
     const { body } = await run();
     expect(body).toMatchObject({ escalated: 0, level2: 2 });
-    expect(told('e-sup2')).toEqual(['gm', 'mgr-r1a', 'mgr-r1b']);
+    expect(told('e-sup2')).toEqual(['gm', 'mgr-r1a', 'mgr-r1b', 'sd']);
     expect(told('e-gm2')).toEqual(['mgr-r1a', 'mgr-r1b']);
     expect(h.edits.map((e) => e.escalationLevel)).toEqual([2, 2]);
+  });
+
+  it('owner decisions 2026-10-11: a late signed application tells the salesman and his region’s Managers; at 2x the GM and the Sales Director too', async () => {
+    const longAgo = new Date(NOW.getTime() - 30 * DAY);
+    const create = { process: 'CREATE' as const, customerId: null };
+    h.edits = [
+      overdue('e-form', 'SALESMAN', ['r1'], create),
+      overdue('e-form2', 'SALESMAN', ['r1'], { ...create, escalationLevel: 1, stageEnteredAt: longAgo, slaDueAt: longAgo }),
+      overdue('e-sd', 'SALES_DIRECTOR', ['r2'], create),
+    ];
+    const { body } = await run();
+    expect(body).toMatchObject({ escalated: 2, level2: 1, sweepErrors: 0 });
+    expect(told('e-form')).toEqual(['mgr-r1a', 'mgr-r1b', 'sal-1']);
+    expect(told('e-form2')).toEqual(['gm', 'mgr-r1a', 'mgr-r1b', 'sal-1', 'sd']);
+    // A late Sales Director step goes to the GM.
+    expect(told('e-sd')).toEqual(['gm']);
+    // The step is named in words, never as SALESMAN.
+    const toSalesman = h.notes.find((n) => n.editId === 'e-form' && n.userId === 'sal-1')!;
+    expect(toSalesman.body).toBe('New e-form — waiting on the Signed application step past its SLA.');
+    // His row opens his own request, where he uploads it.
+    expect(hrefFor({ ...toSalesman, edit: { isReactivation: false } }, 'SALESMAN')).toBe('/customers/new?edit=e-form');
   });
 });
 
@@ -426,15 +451,16 @@ describe('owner decision 6: the drain e-mails what the sweep wrote, to those who
     }
     expect(Object.fromEntries(emailed)).toEqual({
       sup: ['mgr-r1a', 'mgr-r1b'],
-      'sup-2x': ['gm', 'mgr-r1a', 'mgr-r1b'],
+      'sup-2x': ['gm', 'mgr-r1a', 'mgr-r1b', 'sd'],
       two: ['mgr-r1a', 'mgr-r1b'],
-      'two-2x': ['gm', 'mgr-r1a', 'mgr-r1b'],
-      orphan: ['gm'],
-      acc: ['fm', 'gm'],
-      fm: ['gm'],
+      'two-2x': ['gm', 'mgr-r1a', 'mgr-r1b', 'sd'],
+      orphan: ['gm', 'sd'],
+      acc: ['fm', 'gm', 'sd'],
+      fm: ['gm', 'sd'],
       // Told in-app (mgr-r2; mgr-r1a and mgr-r1b), e-mailed to nobody: nobody outranks the GM.
+      // The fallback tells the GM and the Sales Director; only the GM can decide it.
       'gm-orphan': ['gm'],
-      react: ['gm'],
+      react: ['gm', 'sd'],
     });
     expect(told('gm')).toEqual(['mgr-r2']);
     expect(told('gm-2x')).toEqual(['mgr-r1a', 'mgr-r1b']);

@@ -24,6 +24,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EditProcess, PaymentTerms, Prisma } from '@prisma/client';
 import { resolveChain } from '@/lib/approval-chains';
+import { DECISION_BOUND_KINDS } from '@/lib/credit-documents';
+import { LEGACY_CREDIT_CHAIN } from '../support/legacy-chain';
 import {
   MISSING_TOKEN_MESSAGE,
   STALE_VIEW_MESSAGE,
@@ -104,7 +106,10 @@ import {
   bulkRejectEditsAction,
 } from '@/services/edits';
 
-const CHAIN = resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT); // SUP → FM → GM → ACC
+// A credit request frozen before owner decisions 2026-10-11: SUP → FM → GM → ACC.
+// The token's binding does not depend on the chain's shape; the 6-step chain's
+// own steps are pinned in tests/unit/signed-form.test.ts and approval-engine.test.ts.
+const CHAIN = LEGACY_CREDIT_CHAIN;
 const T_CYCLE1 = new Date('2026-09-20T06:00:00.123Z'); // the FM stage the old tab showed
 const T_EARLIER_VISIT = new Date('2026-09-22T07:30:00.456Z'); // cycle 2, before a GM step-back
 const T_NOW = new Date('2026-09-23T09:15:00.789Z'); // cycle 2, the FM stage as it is now
@@ -557,14 +562,18 @@ describe('guarantee documents: a decision lands only on the guarantees the page 
     expect(h.finalize).not.toHaveBeenCalled();
   }
 
-  it('the re-read comes after the claim, locks the live GUARANTEE rows of this request, and a match approves', async () => {
+  it('the re-read comes after the claim, locks the live decision-bound rows of this request, and a match approves', async () => {
     expect((await approve('e1', shownBoth())).ok).toBe(true);
     expect(h.queryRaw).toHaveBeenCalledTimes(1);
-    const [sql, editId] = h.queryRaw.mock.calls[0] as [TemplateStringsArray, string];
+    const [sql, editId, kinds] = h.queryRaw.mock.calls[0] as [TemplateStringsArray, string, Prisma.Sql];
     expect(editId).toBe('e1');
     expect(sql.join('?').replace(/\s+/g, ' ')).toBe(
-      `SELECT "id" FROM "Attachment" WHERE "editId" = ? AND "kind" = 'GUARANTEE' AND "deletedAt" IS NULL FOR SHARE`
+      `SELECT "id" FROM "Attachment" WHERE "editId" = ? AND "kind"::text IN (?) AND "deletedAt" IS NULL FOR SHARE`
     );
+    // Owner decisions 2026-10-11: the guarantees, the four credit documents and
+    // the signed credit application — every kind a decision is bound to.
+    expect(kinds.values).toEqual([...DECISION_BOUND_KINDS]);
+    expect(kinds.values).toEqual(['GUARANTEE', 'ID_CARD', 'MEMBERSHIP_CERT', 'VAT_CERT', 'TAX_CARD', 'CREDIT_FORM']);
     expect(order(h.queryRaw)).toBeGreaterThan(order(h.updateMany));
     expect(order(h.queryRaw)).toBeLessThan(order(h.approvalCreate));
   });
@@ -642,6 +651,25 @@ describe('guarantee documents: a decision lands only on the guarantees the page 
     if (!res.ok) return;
     expect(res.data.successes).toEqual(['e2']);
     expect(res.data.failures).toEqual([{ editId: 'e1', code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE }]);
+  });
+
+  it('owner decisions 2026-10-11: a request with guarantees only digests as before — a page rendered before the change still decides', () => {
+    // The ids are the same and so is the hash: nothing about the digest moved.
+    expect(guaranteeDigest([...G])).toBe(guaranteeDigest([...G].reverse()));
+    expect(decisionView(creditRow() as unknown as DecisionRow, [...G]).guarantees).toBe(guaranteeDigest([...G]));
+  });
+
+  it('owner decisions 2026-10-11: the signed application is bound too — a page that did not show a page the request now holds decides nothing', async () => {
+    // The Finance Manager's page showed the guarantees only; a signed-form page
+    // (or a credit document) is live on the request now.
+    h.guarantees.set('e1', [...G, 'ckform00000000000000000001']);
+    expect(await approve('e1', shownBoth())).toEqual({ ok: false, code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE });
+    expectRolledBackBeforeAnyWrite();
+    // The page that showed it decides.
+    h.rolledBack = false;
+    h.updateMany.mockClear();
+    const fresh = tokenOf(creditRow(), [...G, 'ckform00000000000000000001']);
+    expect((await approve('e1', fresh)).ok).toBe(true);
   });
 });
 
@@ -826,5 +854,77 @@ describe('owner decision 2026-10-08: the Accountant types the Temix code at the 
       { editId: 'e1', code: 'VALIDATION_FAILED', message: CREDIT_BULK_REFUSED_MESSAGE },
     ]);
     expectNothingWritten();
+  });
+});
+
+describe('owner decisions 2026-10-11: the steps around the signed application', () => {
+  const NEW_CHAIN = resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT); // SUP, SD, form, FM, GM, ACC
+  const SD: User = { id: 'sd1', role: 'SALES_DIRECTOR', username: 'sales.director' };
+  const at = (stepIndex: number) =>
+    creditRow('e1', {
+      approvalChain: NEW_CHAIN,
+      currentStepIndex: stepIndex,
+      customerDraft: { legalName: 'Al Noor Trading', paymentTerms: 'CREDIT' },
+    });
+  const rowsOf = (kind: string) =>
+    h.notifyUsers.mock.calls
+      .map((c) => ({ ids: c[1] as string[], data: c[2] as { kind: string; title: string; body: string } }))
+      .filter((n) => n.data.kind === kind);
+
+  it('the Sales Director’s approval hands the request to the salesman: his red alert, with the due time — not "now with SALESMAN"', async () => {
+    h.user = SD;
+    h.rows.set('e1', at(1));
+    expect((await approve('e1', tokenOf(at(1)))).ok).toBe(true);
+    const claim = h.updateMany.mock.calls[0]![0] as { data: Record<string, unknown> };
+    expect(claim.data).toMatchObject({ currentStepIndex: 2, pendingRole: 'SALESMAN' });
+    const asked = rowsOf('SIGNED_FORM_REQUESTED');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.ids).toEqual(['sales1']);
+    expect(asked[0]!.data.title).toBe('Signed credit application needed');
+    expect(asked[0]!.data.body).toMatch(
+      /^Al Noor Trading — get the credit application signed and stamped by the customer, and upload it by \d{2} [A-Z][a-z]{2}, \d{2}:\d{2}\.$/
+    );
+    // Whoever prints it is told it is ready to print (the audience is mocked empty here).
+    expect(rowsOf('EDIT_STAGE_ADVANCED').map((n) => n.data.title)).toEqual(['Credit application to print']);
+    expect(JSON.stringify(h.notifyUsers.mock.calls)).not.toMatch(/SALESMAN|now with/);
+  });
+
+  it('nobody approves or rejects the signed-application step itself', async () => {
+    h.rows.set('e1', at(2));
+    for (const u of [SD, FM, GM, ACC, SUP, { id: 'sales1', role: 'SALESMAN', username: 'mct-01' }]) {
+      h.user = u;
+      expect(await approve('e1', tokenOf(at(2))), u.role).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+      expect(await reject('e1', tokenOf(at(2))), u.role).toMatchObject({ ok: false, code: 'FORBIDDEN' });
+    }
+    expect(h.updateMany).not.toHaveBeenCalled();
+    expect(h.approvalCreate).not.toHaveBeenCalled();
+  });
+
+  it('the Finance Manager’s send-back returns it to the salesman for the signed application, with the reason and a new due time', async () => {
+    h.user = FM;
+    h.rows.set('e1', at(3));
+    expect((await reject('e1', tokenOf(at(3)))).ok).toBe(true);
+    const claim = h.updateMany.mock.calls[0]![0] as { data: Record<string, unknown> };
+    expect(claim.data).toMatchObject({ currentStepIndex: 2, pendingRole: 'SALESMAN' });
+    const asked = rowsOf('SIGNED_FORM_REQUESTED');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.ids).toEqual(['sales1']);
+    expect(asked[0]!.data.title).toBe('Signed application sent back');
+    expect(asked[0]!.data.body).toMatch(
+      /^Al Noor Trading — sent back by the Finance Manager: Credit figures need rework\. — upload the signed credit application again by /
+    );
+    // The contradictory "not returned to you" ping is not sent.
+    expect(JSON.stringify(h.notifyUsers.mock.calls)).not.toMatch(/not returned to you/);
+  });
+
+  it('every other step-back reads in words: the GM returns it to the Finance Manager', async () => {
+    h.user = GM;
+    h.rows.set('e1', at(4));
+    expect((await reject('e1', tokenOf(at(4)))).ok).toBe(true);
+    expect(rowsOf('EDIT_STAGE_ADVANCED').map((n) => n.data.body)).toEqual([
+      'Al Noor Trading — rejected at the GM step and returned to the Finance Manager for re-review.',
+      'Al Noor Trading — sent back one step for re-review (not returned to you).',
+    ]);
+    expect(rowsOf('SIGNED_FORM_REQUESTED')).toEqual([]);
   });
 });

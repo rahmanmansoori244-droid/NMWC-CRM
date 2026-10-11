@@ -49,7 +49,7 @@ export default async function TodayPage({
   // Find owned route. perf audit #15: the personal edit counts key off the
   // session id directly — fetch them in the SAME wave as `me` instead of a
   // third sequential round trip after the branch list.
-  const [me, pending, rejected] = await Promise.all([
+  const [me, pending, rejected, signedForms] = await Promise.all([
     prisma.user.findUniqueOrThrow({
       where: { id: session.user.id },
       select: {
@@ -64,6 +64,11 @@ export default async function TodayPage({
     // on him (lib/returned-work.ts) — counting every sent-back row kept the
     // tile red for good.
     countOpenReturned(prisma, session.user.id),
+    // Owner decisions 2026-10-11: his credit requests waiting for the customer's
+    // signed application (pendingRole SALESMAN is held at that step only).
+    prisma.customerEdit.count({
+      where: { submittedById: session.user.id, state: 'SUBMITTED', pendingRole: Role.SALESMAN },
+    }),
   ]);
   if (!me.ownedRouteId) {
     return (
@@ -187,6 +192,24 @@ export default async function TodayPage({
           href="/rejected"
         />
       </div>
+
+      {signedForms > 0 && (
+        // Owner decisions 2026-10-11: work only he can do, with a due time — it
+        // is on Work, one tap away, in red like Needs correction.
+        <div className="px-4 pt-2 sm:px-6">
+          <Link
+            href="/work"
+            className="flex min-h-11 items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm font-semibold text-red-700 ring-1 ring-inset ring-red-200 hover:ring-2"
+          >
+            <span>
+              {signedForms === 1
+                ? '1 signed credit application to upload'
+                : `${signedForms} signed credit applications to upload`}
+            </span>
+            <span aria-hidden="true">→</span>
+          </Link>
+        </div>
+      )}
 
       <section className="px-4 py-4 sm:px-6">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

@@ -37,13 +37,21 @@
  */
 import type { Page } from '@playwright/test';
 import { Prisma, type DayOfWeek, type EditState, type PaymentTerms } from '@prisma/client';
-import { parseChain, resolveChain, stepDeadline, type ApprovalStep } from '../../../../lib/approval-chains';
+import {
+  DECISION_FORM_UPLOADED,
+  isSignedFormStep,
+  parseChain,
+  resolveChain,
+  stepDeadline,
+  type ApprovalStep,
+} from '../../../../lib/approval-chains';
 import { normalizeCR } from '../../../../lib/cr';
-import { decisionTokenFor } from '../../../../lib/decision-token';
+import { decisionBoundWhere, decisionTokenFor } from '../../../../lib/decision-token';
 import { rowVerdict } from '../../../../lib/email/eligibility';
 import { prismaOutboxStore } from '../../../../lib/email/outbox-store';
 import { manualGpsMarker } from '../../../../lib/gps-manual';
 import { stageSnapshot } from '../../../../lib/working-hours';
+import { LEGACY_CREDIT_CHAIN } from '../../../support/legacy-chain';
 import { submitCreateViaApi, uploadPhotoViaApi, type ActionJson } from './api';
 import { db, hasR2, safeError } from './env';
 import { newId } from './ids';
@@ -53,6 +61,12 @@ import type { SeededPhoto, World } from './types';
 
 /** The chain arithmetic the assertions recompute (the frozen chain, the working-hours deadline). */
 export { parseChain, stepDeadline };
+
+/**
+ * Owner decisions 2026-10-11: the credit chain a request submitted before them
+ * still carries (tests/support/legacy-chain.ts holds the one copy).
+ */
+export { LEGACY_CREDIT_CHAIN };
 
 /** The shop point the phone project reports, and a seeded draft's default. */
 export const SHOP_POINT = { lat: 23.5881, lng: 58.3829, accuracy: 9 } as const;
@@ -145,8 +159,20 @@ export type CreateSeed = {
   state?: Extract<EditState, 'DRAFT' | 'SUBMITTED' | 'NEEDS_CORRECTION'>;
   /** SUBMITTED: the chain step it waits at (default 0). */
   step?: number;
-  /** User keys who approved steps 0..step-1, in order. */
+  /**
+   * User keys who approved steps 0..step-1, in order. On the credit chain's
+   * signed-application step (owner decisions 2026-10-11) the key is the
+   * submitter's, and the row is his FORM_UPLOADED, not an approval.
+   */
   approvedBy?: string[];
+  /**
+   * CREDIT only: freeze the 4-step chain (Supervisor → Finance Manager → GM →
+   * Accountant) a request submitted before owner decisions 2026-10-11 still
+   * carries, instead of today's 6-step one. Steps and approvers then index that
+   * chain. Every reader goes through the frozen column, so such a request still
+   * advances, steps back and finalizes on it.
+   */
+  legacyChain?: boolean;
   /** When the current stage began (default now). */
   stageEnteredAt?: Date;
   escalationLevel?: number;
@@ -182,7 +208,8 @@ export async function seedCreateRequest(w: World, o: CreateSeed): Promise<Seeded
   const route = await db.route.findUniqueOrThrow({ where: { id: submitter.routeId }, select: { id: true, regionId: true } });
   const terms: PaymentTerms = o.paymentTerms ?? 'CASH';
   const isCredit = terms === 'CREDIT';
-  const chain = resolveChain('CREATE', terms);
+  if (o.legacyChain && !isCredit) throw new Error('seedCreateRequest: legacyChain is a CREDIT chain');
+  const chain = o.legacyChain ? LEGACY_CREDIT_CHAIN : resolveChain('CREATE', terms);
   const state = o.state ?? 'SUBMITTED';
   const step = state === 'SUBMITTED' ? (o.step ?? 0) : 0;
   if (step < 0 || step >= chain.length) throw new Error(`seedCreateRequest: step ${step} is not on a ${terms} chain`);
@@ -326,13 +353,16 @@ export async function seedCreateRequest(w: World, o: CreateSeed): Promise<Seeded
     });
     // The decisions of the steps already passed (append-only ledger), oldest first.
     for (let s = 0; s < approvers.length; s++) {
+      if (isSignedFormStep(chain[s]) && approvers[s] !== o.submitter) {
+        throw new Error(`seedCreateRequest: step ${s} is the signed application, completed by the submitter ${o.submitter}`);
+      }
       await db.editApproval.create({
         data: {
           editId: id,
           cycle: 1,
           stepIndex: s,
           role: chain[s]!.role,
-          decision: 'APPROVED',
+          decision: isSignedFormStep(chain[s]) ? DECISION_FORM_UPLOADED : 'APPROVED',
           actorId: w.user(approvers[s]!).id,
           at: new Date(stageEnteredAt.getTime() - (approvers.length - s) * 60_000),
         },
@@ -391,7 +421,8 @@ export async function fastForwardCreate(w: World, editId: string, toStep: number
         cycle: edit.cycle,
         stepIndex: s,
         role: chain[s]!.role,
-        decision: 'APPROVED',
+        // Owner decisions 2026-10-11: the signed application is the salesman's upload.
+        decision: isSignedFormStep(chain[s]) ? DECISION_FORM_UPLOADED : 'APPROVED',
         actorId: w.user(approvers[k]!).id,
         at,
         ...stageSnapshot(stage, at),
@@ -578,8 +609,10 @@ export async function decisionTokenNow(editId: string): Promise<string> {
     where: { id: editId },
     select: { process: true, cycle: true, currentStepIndex: true, stageEnteredAt: true, requestedCreditLimit: true, requestedPaymentTermDays: true },
   });
+  // Every decision-bound document, as the approval page reads them (owner
+  // decisions 2026-10-11: the credit documents and the signed application too).
   const guarantees = await db.attachment.findMany({
-    where: { editId, kind: 'GUARANTEE', deletedAt: null },
+    where: decisionBoundWhere(editId),
     select: { id: true },
   });
   return decisionTokenFor(row, guarantees.map((g) => g.id));

@@ -4,13 +4,21 @@
 import { describe, it, expect } from 'vitest';
 import { Role, PaymentTerms, EditProcess } from '@prisma/client';
 import {
+  CHAIN_VERSION,
+  DECISION_FORM_UPLOADED,
   resolveChain,
   isFinalStep,
+  isSignedFormStep,
+  hasSignedFormStep,
+  signedFormStepIndex,
   resolveRejectTarget,
   parseChain,
   stepDeadline,
+  stepName,
 } from '@/lib/approval-chains';
+import { STAGE_SLA_MINUTES } from '@/lib/working-hours';
 import { canActOnStep } from '@/lib/permissions';
+import { LEGACY_CREDIT_CHAIN } from '../support/legacy-chain';
 
 describe('resolveChain', () => {
   it('UPDATE → single Supervisor step', () => {
@@ -25,18 +33,30 @@ describe('resolveChain', () => {
     expect(c.find((s) => s.role === Role.ACCOUNTANT)?.scope).toBe('REGION_OVERLAP');
   });
 
-  it('CREATE + CREDIT → Supervisor → Finance Manager → GM → Accountant', () => {
+  it('CREATE + CREDIT → Supervisor → Sales Director → signed application → Finance Manager → GM → Accountant (owner decisions 2026-10-11)', () => {
     const c = resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT);
-    expect(c.map((s) => s.role)).toEqual([
-      Role.SUPERVISOR,
-      Role.FINANCE_MANAGER,
-      Role.GM,
-      Role.ACCOUNTANT,
+    expect(c.map((s) => [s.role, s.scope])).toEqual([
+      [Role.SUPERVISOR, 'SUPERVISOR_OF_SUBMITTER'],
+      [Role.SALES_DIRECTOR, 'GLOBAL'],
+      [Role.SALESMAN, 'SUBMITTER'],
+      [Role.FINANCE_MANAGER, 'GLOBAL'],
+      [Role.GM, 'GLOBAL'],
+      [Role.ACCOUNTANT, 'REGION_OVERLAP'],
     ]);
-    // Owner-confirmed: FM + GM are org-wide; Accountant is region-scoped.
-    expect(c.find((s) => s.role === Role.FINANCE_MANAGER)?.scope).toBe('GLOBAL');
-    expect(c.find((s) => s.role === Role.GM)?.scope).toBe('GLOBAL');
-    expect(c.find((s) => s.role === Role.ACCOUNTANT)?.scope).toBe('REGION_OVERLAP');
+    // The budgets frozen on the request: the signed application's is 3 working
+    // days (owner-confirmed), the Sales Director's a placeholder like the FM's.
+    expect(c[2]!.slaHours * 60).toBe(STAGE_SLA_MINUTES[Role.SALESMAN]);
+    expect(c[1]!.slaHours * 60).toBe(STAGE_SLA_MINUTES[Role.SALES_DIRECTOR]);
+    expect(CHAIN_VERSION).toBe(2);
+  });
+
+  it('CASH and UPDATE chains are unchanged by the credit decisions', () => {
+    expect(resolveChain(EditProcess.CREATE, PaymentTerms.CASH).map((s) => s.scope)).toEqual([
+      'SUPERVISOR_OF_SUBMITTER',
+      'REGION_OVERLAP',
+    ]);
+    expect(hasSignedFormStep(resolveChain(EditProcess.CREATE, PaymentTerms.CASH))).toBe(false);
+    expect(hasSignedFormStep(resolveChain(EditProcess.UPDATE, PaymentTerms.CREDIT))).toBe(false);
   });
 
   it('GM is always present on the credit chain (no threshold skip)', () => {
@@ -141,14 +161,76 @@ describe('canActOnStep', () => {
     expect(canActOnStep(su('fm', Role.FINANCE_MANAGER), fm, submitter)).toBe(true);
     expect(canActOnStep(su('gm', Role.GM), gm, submitter)).toBe(true);
   });
+
+  it('GLOBAL (Sales Director): any Sales Director, no region needed; nobody else (owner decisions 2026-10-11)', () => {
+    const sd = { role: Role.SALES_DIRECTOR, scope: 'GLOBAL' as const };
+    expect(canActOnStep(su('sd', Role.SALES_DIRECTOR), sd, submitter)).toBe(true);
+    expect(canActOnStep(su('sd', Role.SALES_DIRECTOR), sd, submitter, { managedRegionIds: [] })).toBe(true);
+    for (const role of [Role.GM, Role.FINANCE_MANAGER, Role.MANAGER, Role.SUPERVISOR, Role.STEWARD]) {
+      expect(canActOnStep(su('x', role), sd, submitter, { managedRegionIds: ['g1'] }), role).toBe(false);
+    }
+    // Separation of duty: the Sales Director who approved cannot then act as the FM, and so on.
+    const fm = { role: Role.FINANCE_MANAGER, scope: 'GLOBAL' as const };
+    expect(canActOnStep(su('fm', Role.FINANCE_MANAGER), fm, submitter, { priorStepActorIds: ['fm'] })).toBe(false);
+  });
+
+  it('SUBMITTER (the signed application): nobody acts on it — not the salesman, not any approver', () => {
+    const step = resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT)[2]!;
+    expect(step.scope).toBe('SUBMITTER');
+    // The submitter never approves; every other role is refused too.
+    expect(canActOnStep(su('sub', Role.SALESMAN), step, submitter)).toBe(false);
+    for (const role of Object.values(Role)) {
+      expect(
+        canActOnStep(su(`u-${role}`, role), step, submitter, {
+          customerBranches: [{ regionId: 'g1', deletedAt: null }],
+          managedRegionIds: ['g1'],
+        }),
+        role
+      ).toBe(false);
+    }
+    // The submitter's own supervisor, the region's Manager: still no.
+    expect(canActOnStep(su('sup', Role.SUPERVISOR), step, submitter)).toBe(false);
+  });
+});
+
+describe('the signed-application step helpers (owner decisions 2026-10-11)', () => {
+  const credit = resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT);
+  it('finds the step by its scope, on the new chain only', () => {
+    expect(signedFormStepIndex(credit)).toBe(2);
+    expect(isSignedFormStep(credit[2])).toBe(true);
+    expect(credit.filter((s) => isSignedFormStep(s))).toHaveLength(1);
+    expect(isSignedFormStep(undefined)).toBe(false);
+    // A credit request frozen before the decisions has no such step.
+    expect(signedFormStepIndex(LEGACY_CREDIT_CHAIN)).toBe(-1);
+    expect(hasSignedFormStep(parseChain(LEGACY_CREDIT_CHAIN))).toBe(false);
+  });
+
+  it('names every step in words, never the enum', () => {
+    expect(credit.map((s) => stepName(s))).toEqual([
+      'Supervisor',
+      'Sales Director',
+      'Signed application',
+      'Finance Manager',
+      'GM',
+      'Accountant',
+    ]);
+    // A bare pendingRole reads as the step it holds; null is a deploy-gap Supervisor row.
+    expect(stepName('SALESMAN')).toBe('Signed application');
+    expect(stepName(null)).toBe('Supervisor');
+    expect(stepName('MANAGER')).toBe('Manager');
+    expect(DECISION_FORM_UPLOADED).toBe('FORM_UPLOADED');
+  });
 });
 
 describe('isFinalStep', () => {
-  const credit = resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT); // 4 steps
+  const credit = resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT); // 6 steps
   it('is true only for the last approver step', () => {
     expect(isFinalStep(credit, 0)).toBe(false);
-    expect(isFinalStep(credit, 2)).toBe(false);
-    expect(isFinalStep(credit, 3)).toBe(true); // Accountant = final
+    expect(isFinalStep(credit, 2)).toBe(false); // the signed application
+    expect(isFinalStep(credit, 4)).toBe(false); // GM
+    expect(isFinalStep(credit, 5)).toBe(true); // Accountant = final
+    // A request frozen with the 4-step chain keeps its own final step.
+    expect(isFinalStep(LEGACY_CREDIT_CHAIN, 3)).toBe(true);
   });
   it('single-step UPDATE: step 0 is final', () => {
     const upd = resolveChain(EditProcess.UPDATE, PaymentTerms.CASH);
@@ -164,6 +246,18 @@ describe('resolveRejectTarget (step-back cascade + loop guard)', () => {
   });
   it('rejection at the first step returns to the salesman', () => {
     expect(resolveRejectTarget(0, 0)).toEqual({ kind: 'TO_SALESMAN' });
+  });
+  it('the owner’s credit cascade (2026-10-11) falls out of the index rule', () => {
+    const credit = resolveChain(EditProcess.CREATE, PaymentTerms.CREDIT);
+    const back = (i: number) => {
+      const t = resolveRejectTarget(i, 0);
+      return t.kind === 'STEP_BACK' ? stepName(credit[t.toStepIndex]) : 'salesman (Needs correction)';
+    };
+    expect(back(0)).toBe('salesman (Needs correction)'); // Supervisor
+    expect(back(1)).toBe('Supervisor'); // Sales Director
+    expect(back(3)).toBe('Signed application'); // Finance Manager: he uploads it again
+    expect(back(4)).toBe('Finance Manager'); // GM
+    expect(back(5)).toBe('GM'); // Accountant
   });
   it('loop guard: a step rejecting twice in one cycle returns to the salesman', () => {
     // e.g. GM (step 2) rejected once already this cycle → 2nd reject bails out.

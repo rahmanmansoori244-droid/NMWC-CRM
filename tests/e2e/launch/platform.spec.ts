@@ -114,6 +114,8 @@ const ONE_PER_ROLE: Array<{ key: string; role: Role }> = [
   { key: 'ACC1', role: 'ACCOUNTANT' },
   { key: 'FM1', role: 'FINANCE_MANAGER' },
   { key: 'GM1', role: 'GM' },
+  // Owner decisions 2026-10-11: the Sales Director, with the GM's access.
+  { key: 'SD1', role: 'SALES_DIRECTOR' },
 ];
 
 const CHANGE_PASSWORD = { label: 'Change password', path: '/profile/change-password' };
@@ -696,7 +698,7 @@ test.describe('platform: every time on screen is Oman time while the server runs
     await expect(subtitleOf(page)).toContainText(`submitted by ${sa.fullName} · ${omanText(T2).dateTime}`);
     expect(omanText(T2).dateTime).toMatch(/, 10:30:00$/);
     await expect(page.getByText(/^Decision:/).first()).toContainText(`by ${m1.fullName} on ${omanText(T1).dateTime}`);
-    await expect(page.getByRole('listitem').filter({ hasText: `at SUPERVISOR step by ${m1.fullName}` })).toContainText(
+    await expect(page.getByRole('listitem').filter({ hasText: `at Supervisor step by ${m1.fullName}` })).toContainText(
       omanText(T1).dateTime
     );
     await expect(page.getByText(`captured ${omanText(TG).dateTime}`)).toBeVisible();

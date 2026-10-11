@@ -54,6 +54,15 @@ export function hrefFor(
   role: Role
 ): Route<`/approvals/${string}` | `/customers/${string}`> {
   if (n.kind === 'TEMIX_UPLOAD_READY') return '/temix';
+  // Owner decisions 2026-10-11: the salesman's signed credit application is
+  // uploaded on his own request's page. A late one (SLA_BREACH to the salesman)
+  // only ever arises at that step, so it goes there too.
+  if (
+    n.editId &&
+    (n.kind === 'SIGNED_FORM_REQUESTED' || (n.kind === 'SLA_BREACH' && role === Role.SALESMAN))
+  ) {
+    return `/customers/new?edit=${n.editId}`;
+  }
   const isReactivation = n.kind === 'REACTIVATION_REQUESTED' || n.edit?.isReactivation === true;
   if (REVIEW_KINDS.includes(n.kind) && isReactivation && role === Role.MANAGER) {
     return '/reactivations';

@@ -138,7 +138,27 @@ describe('the approval engine snapshots the stage on every decision it records',
         expect(args, `${f}: an EditApproval insert without the stage snapshot`).toMatch(/\.\.\.stageSnapshot\(\s*edit\s*,/);
       }
     }
-    expect(sites).toBe(4);
+    // services/edits.ts's four, and the salesman's signed application
+    // (services/signed-form.ts, owner decisions 2026-10-11).
+    expect(sites).toBe(5);
+  });
+
+  it('the signed application’s claim is built from his page’s decision token too (owner decisions 2026-10-11)', () => {
+    const src = stripComments(readFileSync('services/signed-form.ts', 'utf8'), 'signed-form.ts');
+    const claims = callArguments(src, /\btx\.customerEdit\.updateMany\b/);
+    expect(claims).toHaveLength(1);
+    const top = topLevel(objectAfter(claims[0]!, /\bwhere\s*:/)!);
+    expect(top).toMatch(/\bstate:\s*EditState\.SUBMITTED\b/);
+    expect(top).toMatch(/\bsubmittedById:\s*session\.id\b/);
+    for (const [column, field] of [
+      ['cycle', 'cycle'],
+      ['currentStepIndex', 'stepIndex'],
+      ['stageEnteredAt', 'stageEnteredAt'],
+      ['requestedCreditLimit', 'creditLimit'],
+      ['requestedPaymentTermDays', 'paymentTermDays'],
+    ]) {
+      expect(top, `${column} in the claim`).toMatch(new RegExp(`\\b${column}:\\s*expected\\.${field}\\s*(,|$)`));
+    }
   });
 
   it('every decision claim is built from the reviewer’s decision token, so a stale decision cannot land', () => {

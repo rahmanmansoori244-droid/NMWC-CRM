@@ -71,6 +71,8 @@ import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { answerIfLanded, findReceipt, shownTime } from '@/lib/submission-replay';
 import { omanWhen, submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import { UNWIRED_LIVE } from '@/lib/photo-attach';
+import { isSignedFormStep, parseChain } from '@/lib/approval-chains';
+import { settleRequestAlerts } from '@/lib/notifications';
 
 async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
@@ -667,6 +669,12 @@ function routeMovedMessage(from: string, to: string): string {
  * (SUBMITTED) cannot be withdrawn: an approver has it, and sends it back first.
  * Its photos stay bound to it (an abandoned-draft sweep is the owner's open
  * retention decision, schema.prisma Attachment.editId).
+ *
+ * Owner decisions 2026-10-11: one in review AT THE SIGNED-APPLICATION STEP can
+ * be withdrawn — that step is his, not an approver's, and a customer who will
+ * not sign the credit application must not leave the request (and its CR and
+ * shop) blocked for ever. [Default — the owner has not said what happens when
+ * the customer will not sign; withdrawing is the existing way to close one.]
  */
 export async function withdrawCreateAction(input: { editId: string }): SafeAction<{ editId: string }> {
   return runAction(() => withdrawCreateCore(input));
@@ -682,7 +690,15 @@ async function withdrawCreateCore(input: { editId: string }): Promise<{ editId: 
   }
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
-    select: { id: true, process: true, state: true, submittedById: true, cycle: true },
+    select: {
+      id: true,
+      process: true,
+      state: true,
+      submittedById: true,
+      cycle: true,
+      approvalChain: true,
+      currentStepIndex: true,
+    },
   });
   // A create request is private to its submitter: anyone else's reads as not found.
   if (!edit || edit.process !== EditProcess.CREATE || edit.submittedById !== session.id) {
@@ -690,7 +706,11 @@ async function withdrawCreateCore(input: { editId: string }): Promise<{ editId: 
   }
   // Already withdrawn (a retry whose first answer was lost): that is the answer.
   if (edit.state === EditState.REJECTED) return { editId };
-  if (edit.state !== EditState.DRAFT && edit.state !== EditState.NEEDS_CORRECTION) {
+  // Owner decisions 2026-10-11: in review, but at his own signed-application step.
+  const atSignedForm =
+    edit.state === EditState.SUBMITTED &&
+    isSignedFormStep(parseChain(edit.approvalChain)[edit.currentStepIndex]);
+  if (edit.state !== EditState.DRAFT && edit.state !== EditState.NEEDS_CORRECTION && !atSignedForm) {
     throw new ConflictError(
       'EDIT_LOCKED',
       edit.state === EditState.SUBMITTED
@@ -703,9 +723,16 @@ async function withdrawCreateCore(input: { editId: string }): Promise<{ editId: 
   const withdrawnAt = new Date();
   await prisma.$transaction(async (tx) => {
     // Claimed on the state and cycle read above: a submit from another tab in
-    // between wins, and this answers that it changed.
+    // between wins, and this answers that it changed. At the signed-application
+    // step, on the step too: a confirm of the signed form that landed first wins.
     const claim = await tx.customerEdit.updateMany({
-      where: { id: editId, state: edit.state, cycle: edit.cycle, submittedById: session.id },
+      where: {
+        id: editId,
+        state: edit.state,
+        cycle: edit.cycle,
+        submittedById: session.id,
+        ...(atSignedForm ? { currentStepIndex: edit.currentStepIndex } : {}),
+      },
       data: {
         state: EditState.REJECTED,
         pendingRole: null,
@@ -735,14 +762,30 @@ async function withdrawCreateCore(input: { editId: string }): Promise<{ editId: 
         state: EditState.REJECTED,
         from: edit.state,
         cycle: edit.cycle,
+        ...(atSignedForm ? { atStep: edit.currentStepIndex } : {}),
       } as unknown as Prisma.InputJsonValue,
     });
+    if (atSignedForm) {
+      // Nothing waits on anyone now: the print rows held by his supervisor or
+      // Managers, and his own signed-form and late alerts, are answered.
+      await settleRequestAlerts(tx, { editId, submittedById: session.id });
+      await tx.notification.updateMany({
+        where: {
+          editId,
+          userId: session.id,
+          readAt: null,
+          kind: { in: ['SIGNED_FORM_REQUESTED', 'SLA_BREACH'] },
+        },
+        data: { readAt: withdrawnAt },
+      });
+    }
   });
 
-  logger.info({ editId, by: session.id, from: edit.state }, 'create.withdraw');
+  logger.info({ editId, by: session.id, from: edit.state, atSignedForm }, 'create.withdraw');
   revalidatePath('/work');
   revalidatePath('/today');
   revalidatePath('/rejected');
+  if (atSignedForm) revalidatePath('/approvals');
   return { editId };
 }
 

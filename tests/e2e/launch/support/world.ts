@@ -660,7 +660,8 @@ function mergeByKey<T extends { key: string }>(base: T[], extra: T[] | undefined
  * The standard shape (plan "FIXTURES"): regions R1 (MCT-like, managers M1 and M2
  * share it) and R2 (M5); routes A, A2 and FREE (unowned) in R1, B in R2;
  * salesmen SA (A, supervisor M1), SA2 (A2, M2), SB (B, M5); ACC1/ACC2, FM1, FM2,
- * GM1, STW, VW and SUP (a SUPERVISOR with no reports — production salesmen
+ * GM1, SD1 (the Sales Director, org-wide like the GM: owner decisions
+ * 2026-10-11), STW, VW and SUP (a SUPERVISOR with no reports — production salesmen
  * report to Managers; pass {key:'SA', …, supervisor:'SUP'} in extra.users to put
  * SA under him). Customers: GAPS, FULL, CRED, MULTI, CLOSEDB, ARCH, DUE1, DUE2,
  * OTHERDAY, NODAY1, NODAY2, DELETED, BONLY.
@@ -691,6 +692,7 @@ export async function standardWorld(tag: string, extra: Partial<WorldSpec> = {})
       { key: 'FM1', role: 'FINANCE_MANAGER' },
       { key: 'FM2', role: 'FINANCE_MANAGER' },
       { key: 'GM1', role: 'GM' },
+      { key: 'SD1', role: 'SALES_DIRECTOR' },
       { key: 'STW', role: 'STEWARD' },
       { key: 'VW', role: 'VIEWER' },
       { key: 'SUP', role: 'SUPERVISOR' },

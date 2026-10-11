@@ -23,6 +23,7 @@ import { checkLimitLocal } from '@/lib/rate-limit';
 import { serveHeadersFor } from '@/lib/photo-mime';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { errorLogFields, reportableError } from '@/lib/account-import';
+import { CONFIDENTIAL_KINDS as CONFIDENTIAL_DOCUMENT_KINDS } from '@/lib/credit-documents';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,8 +33,12 @@ export const runtime = 'nodejs';
  * view is on the ledger — no row, no file. Every other kind is served anyway, and
  * the lost row is reported. Deliberately NOT the no-store set in GET: how photos
  * are cached is a separate owner decision, and changing it must not change this.
+ * The credit documents and the signed credit application are handled exactly
+ * like CR copies and guarantees (owner decisions 2026-10-11, credit flow), so
+ * both sets are read from lib/credit-documents.ts CONFIDENTIAL_KINDS — still two
+ * named sets, each changeable on its own.
  */
-const VIEW_RECORD_REQUIRED = new Set<string>(['CR', 'GUARANTEE']);
+const VIEW_RECORD_REQUIRED = new Set<string>(CONFIDENTIAL_DOCUMENT_KINDS);
 const VIEW_NOT_RECORDED_MESSAGE = 'This document could not be opened right now. Try again.';
 
 /**
@@ -138,8 +143,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // NEW-PHOTO-009 (+ final-hunt #18): CR registration docs AND GUARANTEE credit-
   // security documents are confidential financial PII; never cache them. The
   // no-store guard must cover every confidential kind, not just CR — a GUARANTEE
-  // is at least as sensitive.
-  const CONFIDENTIAL_KINDS = new Set(['CR', 'GUARANTEE']);
+  // is at least as sensitive. So are the owner's ID card, the membership, VAT and
+  // tax documents and the signed credit application (owner decisions 2026-10-11).
+  const CONFIDENTIAL_KINDS = new Set<string>(CONFIDENTIAL_DOCUMENT_KINDS);
   const confidential = CONFIDENTIAL_KINDS.has(att.kind);
   // perf audit #22: an Attachment's bytes are IMMUTABLE — replacement mints a new
   // row (NEW-PHOTO-003) and detach soft-deletes (→404) — so non-confidential
