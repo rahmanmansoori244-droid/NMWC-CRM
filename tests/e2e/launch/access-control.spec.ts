@@ -833,14 +833,22 @@ test.describe('access control: deep links and scope', { tag: ['@desktop'] }, () 
     await page.goto('/customers/new');
     await expectPath(page, '/customers', 'VW new customer → /customers');
 
+    const shop = world.customer('FULL').photos.find((p) => p.wire === 'SHOP');
     if (hasR2) {
-      const shop = world.customer('FULL').photos.find((p) => p.wire === 'SHOP')!;
-      const res = await page.context().request.get(`/api/photos/${shop.id}`, { failOnStatusCode: false });
+      const res = await page.context().request.get(`/api/photos/${shop!.id}`, { failOnStatusCode: false });
       expect(res.status()).toBe(200);
       expect(res.headers()['content-type']).toBe('image/jpeg');
     }
     expect(await db.customerEdit.count({ where: { submittedById: vw.id } }), 'no request by the Viewer').toBe(0);
-    expect(await db.auditLog.count({ where: { actorId: vw.id } }), 'no audit row by the Viewer').toBe(0);
+    // Data audit 2026-10-10 gap 2 (owner decisions 2026-10-11): every photo served
+    // to him is recorded as a PHOTO_VIEW. That is a read, not a change, so those
+    // rows are the only ones he may have written.
+    const rows = await db.auditLog.findMany({ where: { actorId: vw.id }, select: { action: true, entityType: true, entityId: true } });
+    expect(
+      rows.filter((r) => r.action !== 'PHOTO_VIEW' || r.entityType !== 'Attachment'),
+      'no audit row by the Viewer but his photo views'
+    ).toEqual([]);
+    if (hasR2) expect(rows.map((r) => r.entityId), 'the shop photo he opened is recorded').toContain(shop!.id);
   });
 });
 
