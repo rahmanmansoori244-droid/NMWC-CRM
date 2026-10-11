@@ -945,8 +945,11 @@ const MANAGER_EN: Guide = {
       intro: 'Use this when something looks unusual or HR asks who did what.',
       steps: [
         { html: 'Tap <strong>Audit log</strong> in the menu.' },
+        // Owner decisions 2026-10-11: photo views (PHOTO_VIEW) are recorded but shown to
+        // the Data Steward only (lib/audit-scope.ts). This step and the reference card
+        // (and their AR twins) said the log showed every action in his region.
         {
-          html: 'Every action by every user is logged: login, login fail, customer create/update, approval, reject, reactivation, photo capture, password reset, etc.',
+          html: 'Every action by every user is logged: login, login fail, customer create/update, approval, reject, reactivation, photo capture, password reset, etc. Who opened a photo or document is recorded too, but only the Data Steward can see those rows: they never appear in your audit log.',
         },
         // These two steps (and their AR twins) promised an IP, old/new values and
         // filters by user and date range. app/(app)/audit/page.tsx shows When, Actor,
@@ -1066,7 +1069,7 @@ const MANAGER_EN: Guide = {
           ['<strong>Dashboard</strong>', 'Daily morning check. Region totals.'],
           ['<strong>Reactivations</strong>', 'Closed shops asking to reopen.'],
           ['<strong>Users</strong>', 'Your team. Passwords, status, route ownership.'],
-          ['<strong>Audit log</strong>', 'Every action ever taken in your region.'],
+          ['<strong>Audit log</strong>', 'Every action taken in your region, except who opened photos and documents: that is recorded, but only the Data Steward sees it.'],
           ['<strong>Approvals</strong>', "Your salesmen's pending updates — review with photos and map, approve or reject."],
           ['<strong>Export</strong>', 'Customer master .xlsx and the field-update report (changes highlighted).'],
           [
@@ -1301,6 +1304,11 @@ const STEWARD_EN: Guide = {
         },
         {
           html: 'Filter by action type, by entity type (Customer / Branch / CustomerEdit / User / ImportBatch / Attachment / Export), or by a record id in <strong>Entity ID contains…</strong>. There is no filter by person or by date range: the newest rows come first, 50 to a page.',
+        },
+        // Owner decisions 2026-10-11: photo views are out of the default list; the
+        // Photo views action and the customer filter bring them back (lib/audit-scope.ts).
+        {
+          html: 'Photo views (<strong>PHOTO_VIEW</strong>: who opened which photo or document) are left out of the default list and its count. Pick <strong>Photo views</strong> under Action to see them all, or type a customer’s NMWC or Temix code into <strong>Customer code</strong> to see who opened that customer’s photos and documents: its CR and guarantee documents, its shops’ photos and the photos of its requests. Only you see these rows; a Manager’s audit log never shows them.',
         },
         {
           html: 'For an HR investigation of one person: narrow by action and entity type, then read the <strong>Actor</strong> column. Over a long period that is many pages; ask head-office ops for a database query instead.',
@@ -2179,7 +2187,7 @@ const MANAGER_AR: Guide = {
       steps: [
         { html: 'اضغط على <strong>سجل التدقيق</strong> في القائمة.' },
         {
-          html: 'كل عمل من كل مستخدم مسجل: تسجيل دخول، فشل دخول، إنشاء/تعديل عميل، موافقة، رفض، إعادة تفعيل، التقاط صورة، إعادة ضبط كلمة مرور، إلخ.',
+          html: 'كل عمل من كل مستخدم مسجل: تسجيل دخول، فشل دخول، إنشاء/تعديل عميل، موافقة، رفض، إعادة تفعيل، التقاط صورة، إعادة ضبط كلمة مرور، إلخ. ويُسجَّل أيضًا من فتح صورة أو مستندًا، لكن أمين البيانات وحده يرى هذه السجلات: لا تظهر في سجل التدقيق لديك.',
         },
         {
           html: 'كل صف يظهر: متى، ومن، وأي عمل، وعلى أي سجل (نوعه وبداية رقمه)، والسبب إن وُجد. عنوان IP والقيم القديمة والجديدة تُسجَّل أيضًا، لكن هذه الصفحة لا تعرضها؛ إذا احتاج تحقيق إليها فاطلبها من المكتب الرئيسي.',
@@ -2285,7 +2293,7 @@ const MANAGER_AR: Guide = {
           ['<strong>لوحة المعلومات</strong>', 'الفحص اليومي الصباحي. مجاميع المنطقة.'],
           ['<strong>إعادة التفعيل</strong>', 'محلات مغلقة تطلب الفتح.'],
           ['<strong>المستخدمون</strong>', 'فريقك. كلمات المرور، الحالة، ملكية الخط.'],
-          ['<strong>سجل التدقيق</strong>', 'كل عمل في منطقتك على الإطلاق.'],
+          ['<strong>سجل التدقيق</strong>', 'كل عمل في منطقتك، ما عدا من فتح الصور والمستندات: يُسجَّل ذلك، لكن أمين البيانات وحده يراه.'],
           ['<strong>الموافقات</strong>', 'تحديثات مندوبيك المعلّقة — راجعها مع الصور والخريطة، ثم اعتمد أو ارفض.'],
           ['<strong>تصدير</strong>', 'ملف إكسل للسجل الرئيسي وتقرير التحديثات الميدانية (التغييرات ملوّنة).'],
           [

@@ -23,7 +23,8 @@
  *     regions only, Oman time);
  *   - photo views (data audit 2026-10-10 gap 2): a Manager who opens a request
  *     with photos is recorded, and only the Steward sees it (owner decisions
- *     2026-10-11);
+ *     2026-10-11) — not in his default list, but with the Photo views action or
+ *     the customer's code;
  *   - dashboards (organisation, a fixture region, a Manager's hand-made URLs),
  *     service status, and the Steward's Work items.
  *
@@ -2316,11 +2317,29 @@ test.describe('back office: photo views are recorded, and only the Steward sees 
       await expect(rows.first()).toContainText('PHOTO_VIEW');
     }
 
+    // 3b. Owner decisions 2026-10-11: the Steward's default list leaves photo views out
+    // and says so; his customer filter finds every one of DOC's by its code, typed in
+    // lower case — the shop, signboard and extra photo views included, whose rows carry
+    // no customer id.
+    const views = await auditFor({ actorId: m1.id, action: 'PHOTO_VIEW' });
+    await sp.goto(`/audit?actor=${m1.id}`);
+    await expect(sp.getByText('Photo views are not in this list.', { exact: false })).toBeVisible();
+    await expect(sp.locator('tbody td', { hasText: 'PHOTO_VIEW' })).toHaveCount(0);
+    await sp.goto(`/audit?customer=${encodeURIComponent(doc.code.toLowerCase())}&actor=${m1.id}`);
+    await expect(sp.getByText(/Showing who opened the photos and documents of/)).toContainText(doc.code);
+    await expect(pageSubtitle(sp)).toHaveText(`${views.length} matching events`);
+    for (const id of photos.keys()) {
+      await expect(sp.locator('tbody tr').filter({ hasText: entity(id) }).first(), id).toContainText('PHOTO_VIEW');
+    }
+
     // 4. The Manager's own /audit: not offered, and not shown by a hand-made URL either.
     await page.goto('/audit');
     await expect(page.locator('select[name="action"] option[value="PHOTO_VIEW"]')).toHaveCount(0);
     await expect(page.locator('tbody td', { hasText: 'PHOTO_VIEW' })).toHaveCount(0);
+    await expect(page.locator('input[name="customer"]')).toHaveCount(0);
     await page.goto('/audit?action=PHOTO_VIEW');
+    await expect(page.getByText(NONE)).toBeVisible();
+    await page.goto(`/audit?action=PHOTO_VIEW&customer=${encodeURIComponent(doc.code)}`);
     await expect(page.getByText(NONE)).toBeVisible();
     for (const id of photos.keys()) {
       await page.goto(`/audit?entityType=Attachment&q=${id}`);

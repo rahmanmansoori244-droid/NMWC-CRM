@@ -57,7 +57,7 @@ The submit-time guard already blocked salesmen / supervisors / stewards / manage
 Concurrency test (`prisma/test-prod-001-race.ts` (deleted 2026-10-11)): 5 separate races, 3 simultaneous claim+apply transactions per race, each race produced exactly 1 winner and 2 losers (the losers saw `count=0` from `customerEdit.updateMany` and bailed). No edit was applied twice, no duplicate audit row was written. Total: 5 winners / 10 losers across 15 attempts — the contract holds.
 
 ### 7. DB invariants
-- DB-01 (address.length ≥ 3): live record `CAA2468-01` had `address="WK"` from the source xlsx, would have permanently blocked the salesman from submitting any edit; fixed live + `prisma/seed-muscat-customers.ts` now enforces the 3-char floor.
+- DB-01 (address.length ≥ 3): live record `CAA2468-01` had `address="WK"` from the source xlsx, would have permanently blocked the salesman from submitting any edit; fixed live + `prisma/seed-muscat-customers.ts` (deleted 2026-10-11) now enforces the 3-char floor.
 - DB-02 (lastStatusChangeAt on CLOSED/SUSPENDED): 6 demo-seeded branches with null timestamps backfilled from `updatedAt` so the EL-11 freshness gate has an anchor.
 
 ## Production credentials reference (ops handoff)

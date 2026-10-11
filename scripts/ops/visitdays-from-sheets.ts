@@ -3,14 +3,14 @@
  * workbooks, onto the branches that still have no visit day.
  *
  *   NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs scripts/ops/visitdays-from-sheets.ts \
- *     --expect-host <host marker> --sheets <folder or .xlsx> [--sheets …] [--out <folder>] [--actor <username>]
+ *     --expect-host ep-sweet-haze --sheets <folder or .xlsx> [--sheets …] [--out <folder>] [--actor <username>]
  *
  *   then, naming the set the dry run wrote and the hash it printed:
- *     … --expect-host <host marker> --set <set .json> --set-sha <hash> --rehearse [--chunk <n>]
- *     … --expect-host <host marker> --set <set .json> --set-sha <hash> --apply [--chunk <n>]
+ *     … --expect-host ep-sweet-haze --set <set .json> --set-sha <hash> --rehearse [--chunk <n>]
+ *     … --expect-host ep-sweet-haze --set <set .json> --set-sha <hash> --apply [--chunk <n>]
  *
  *   and only to undo a run:
- *     … --expect-host <host marker> --reverse <runId> [--confirm]
+ *     … --expect-host ep-sweet-haze --reverse <runId> [--confirm]
  *
  *   or: npm run ops:visitdays-from-sheets -- <the same arguments>
  *

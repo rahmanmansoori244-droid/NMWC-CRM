@@ -276,8 +276,11 @@ as described in §2.
 - **Read-only questions**: a small script that opens a `SET TRANSACTION READ ONLY`
   transaction, builds its client as `new PrismaClient({ datasourceUrl: process.env.DIRECT_URL })`,
   and prints counts only (never a name, code, phone or id), run with
-  `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> [args]`. The runner
-  refuses an env file whose host is not production, gives the script `DIRECT_URL` only
+  `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`.
+  The runner refuses any run without `--expect-host ep-sweet-haze` among the script's arguments,
+  read-only or not (owner decisions 2026-10-11), and passes every argument on to the
+  script unchanged, so the script's own guard checks the flag again. It refuses an env
+  file whose host is not production, gives the script `DIRECT_URL` only
   (`DATABASE_URL` is set to an address that cannot connect), runs it with no shell, and masks
   the URL, its password (raw and decoded), user and host, and anything shaped like a
   connection string, in everything it prints.
@@ -293,8 +296,10 @@ as described in §2.
   decision 2026-10-11) are in [OPERATIONS §5j](OPERATIONS.md): only the audited
   `scripts/ops/` scripts, through `prod-run.cjs`, with `--expect-host ep-sweet-haze`;
   every script in `scripts/` and `prisma/` that opens a database refuses production
-  without that flag; Prisma Studio or `psql` on production counts as maintenance. How the
-  read-only question scripts above fit that rule is an open owner question (§5j).
+  without that flag; Prisma Studio or `psql` on production counts as maintenance, and each
+  session goes in the private operations log in the owner's handover pack, never in this
+  repository. How the read-only question scripts above fit that rule is an open owner
+  question (§5j).
 - The app still connects as the database owner; switching it to `nmwc_app` is open (§6.2).
 
 ---

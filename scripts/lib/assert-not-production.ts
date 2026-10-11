@@ -79,6 +79,36 @@ export function expectHostArg(args: readonly string[]): string | null {
   return value.startsWith('--') ? '' : value;
 }
 
+/** The live site: production. Scripts whose browser part signs in there use this. */
+export const LIVE_SITE = 'https://nmwc-cm.vercel.app';
+
+/**
+ * For a script whose browser part acts on the live site — it signs in to LIVE_SITE,
+ * which is production, whatever database the checkout's .env names. Owner decisions
+ * 2026-10-11: such a script runs only when its command line names production with
+ * `--expect-host ep-sweet-haze`, the flag the database guard below reads, read the
+ * same way (the documented two-word form, a value that starts with the marker).
+ *
+ * Call it first, at the top of the script, before Chromium starts or anything is
+ * signed in to or written: it prints why it refuses and returns false, and the
+ * caller exits (`if (!liveSiteNamed('…')) process.exit(2);`). Pinned by
+ * tests/unit/scripts-production-guard.test.ts.
+ */
+export function liveSiteNamed(
+  script: string,
+  args: readonly string[] = process.argv.slice(2),
+  out: GuardOutput = consoleOutput
+): boolean {
+  const named = expectHostArg(args);
+  if (named && named.toLowerCase().startsWith(PRODUCTION_HOST_PREFIX)) return true;
+  out.error(`[live-site guard] refusing: ${script} signs in to the PRODUCTION site (${LIVE_SITE}).`);
+  out.error(
+    `  Run it only on purpose, with --expect-host ${PRODUCTION_HOST_PREFIX} on the command line ` +
+      '(owner decisions 2026-10-11). Nothing was opened, signed in to or written.'
+  );
+  return false;
+}
+
 /**
  * The arguments with `--expect-host <value>` taken out, for scripts that read
  * positional arguments: the flag must not shift a file path into the wrong slot.
@@ -88,6 +118,23 @@ export function withoutExpectHost(args: readonly string[]): string[] {
   if (i < 0) return [...args];
   const hasValue = i + 1 < args.length && !args[i + 1]!.startsWith('--');
   return [...args.slice(0, i), ...args.slice(i + (hasValue ? 2 : 1))];
+}
+
+/**
+ * Does this connection string point at production? The marker anywhere in it, in
+ * any case, percent-escaped or not — the reading assertNotProduction uses. The
+ * escapes are decoded because libpq, node-postgres and Prisma all decode the query,
+ * and a `host` parameter there overrides the host in the URL, so
+ * `?host=ep%2Dsweet%2Dhaze…` reached production while the host said localhost
+ * (review of d02cb27). Only well-formed %XX escapes are decoded, so a stray `%`
+ * cannot make this throw.
+ *
+ * Exported for the scripts that must never run on production at all, whatever the
+ * command line says (prisma/seed.ts; owner decisions 2026-10-11).
+ */
+export function pointsAtProduction(url: string): boolean {
+  const decoded = url.replace(/%[0-9a-f]{2}/gi, (e) => String.fromCharCode(parseInt(e.slice(1), 16)));
+  return url.toLowerCase().includes(PRODUCTION_HOST_PREFIX) || decoded.toLowerCase().includes(PRODUCTION_HOST_PREFIX);
 }
 
 export function assertNotProduction(
@@ -122,16 +169,7 @@ export function assertNotProduction(
     );
   }
 
-  // The marker is also looked for with the percent-escapes decoded: libpq,
-  // node-postgres and Prisma all decode the query, and a `host` parameter there
-  // overrides the host in the URL, so `?host=ep%2Dsweet%2Dhaze…` reached
-  // production while the host read above said localhost (review of d02cb27).
-  // Only well-formed %XX escapes are decoded, so a stray `%` cannot make this throw.
-  const decoded = raw.replace(/%[0-9a-f]{2}/gi, (e) => String.fromCharCode(parseInt(e.slice(1), 16)));
-  const production =
-    host.startsWith(PRODUCTION_HOST_PREFIX) ||
-    raw.toLowerCase().includes(PRODUCTION_HOST_PREFIX) ||
-    decoded.toLowerCase().includes(PRODUCTION_HOST_PREFIX);
+  const production = host.startsWith(PRODUCTION_HOST_PREFIX) || pointsAtProduction(raw);
   const shown = production ? `${PRODUCTION_HOST_PREFIX}… (PRODUCTION)` : host;
   const expect = expectHostArg(args);
 

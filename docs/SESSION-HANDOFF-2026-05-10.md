@@ -279,7 +279,7 @@ npx tsx prisma/test-approve-as-supervisor.ts <editId>      # bypass UI for appro
 6. **`window.confirm()` freezes Chrome MCP** — replace with `<ConfirmModal>` for any flow you want to E2E-test in headless Chrome. Real users were unaffected.
 7. **Vercel `regions: ["fra1"]` for Oman** — ~200ms RTT vs ~700ms iad1 default.
 8. **Neon Postgres major auto-upgrades** silently. The DB-backup workflow's `pg_dump` major version must match. Bump when you see "server version mismatch" in the workflow log.
-9. **Live demo seeds have rough edges.** Pilot-seed scripts (`seed-muscat-pilot.ts`, `seed-muscat-customers.ts`) had a 2-char address (DB-01) and 6 closed branches with null `lastStatusChangeAt` (DB-02). Both fixed live + script-enforced.
+9. **Live demo seeds have rough edges.** Pilot-seed scripts (`seed-muscat-pilot.ts`, `seed-muscat-customers.ts` (deleted 2026-10-11)) had a 2-char address (DB-01) and 6 closed branches with null `lastStatusChangeAt` (DB-02). Both fixed live + script-enforced.
 10. **GitHub secrets pasted from Notepad on Windows often carry trailing `\r\n`.** Workflows that consume multi-line secrets should trim defensively + print a sanitized length + head + tail diagnostic.
 
 ---

@@ -145,7 +145,7 @@ Choose a username that is not on the demo denylist
 **Where the production file is today, and where it should be.** On the previous owner's
 computer, the main checkout's `.env` *is* the production env file, and Claude's operator
 runs pass it explicitly (`NMWC_PROD_ENV_FILE=<main checkout>/.env node
-scripts/dev/prod-run.cjs …`). That works, but it leaves a checkout in which anything that
+scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze …`). That works, but it leaves a checkout in which anything that
 loads `.env` by default reaches production ([§2.4](#24-if-you-received-a-copied-folder)).
 For the new setup, **keep the production env file outside every checkout** and pass it
 explicitly. Then nothing that loads `.env` by default can reach production by accident.
@@ -391,7 +391,7 @@ production. Two cases are exceptions. Decide each one deliberately and record wh
 - If [`AUDITOR-BRIEF.md`](../../AUDITOR-BRIEF.md) states something the change altered, update
   it in the same kind of change
   ([HANDOVER §2](../HANDOVER.md#2-how-a-change-is-made-verified-and-merged-here) step 3).
-- Record what shipped in your private operations record.
+- Record what shipped in the private operations log in the owner's handover pack.
 
 ### 4.3 If `deploy-watch.sh` does not exit 0
 
@@ -592,6 +592,14 @@ the connection string ever reaching the terminal:
   set, it uses `.env` in the current directory. Always set the variable, and never rely on
   the default.
 - It **refuses** a file whose host is not production (`ep-sweet-haze…`).
+- It **requires** `--expect-host ep-sweet-haze` among the script's arguments on every run, read-only or
+  not (owner decisions 2026-10-11). Without it, or with a value that does not start with
+  `ep-sweet-haze` or is not part of the env file's host, it refuses and runs nothing; the
+  flag is checked before the env file is read. It **passes every argument on to the
+  script unchanged**, so the script's own guard checks the same flag again
+  ([OPERATIONS §5j](../OPERATIONS.md)). A throw-away `*.tmp.ts` read script is handed the
+  flag too and may ignore it; a private-pack script that rejects arguments it does not
+  know must accept it.
 - It gives the script `DIRECT_URL` only. It sets `DATABASE_URL` to an address that cannot
   connect, so a script that ignores `DIRECT_URL` fails instead of using another database.
 - It runs the script through `tsx` with **no shell**, so an argument is only ever an
@@ -665,8 +673,8 @@ The sequence:
 7. Run `npm run smoke` again. Where the operation touches the load totals, run
    `scripts/ops/verify-load.ts` with the privately reconciled expectations
    ([OPERATIONS §7](../OPERATIONS.md#7-common-operations), [GO-LIVE-RUNBOOK](../GO-LIVE-RUNBOOK.md) step 6a).
-8. Record what ran, when, and its counts in your **private** operations record. Never in
-   this repository.
+8. Record what ran, when, and its counts in the **private** operations log in the owner's
+   handover pack. Never in this repository.
 
 **The ledger tells you whether a run finished.** Each applied run writes a `STARTING` row and
 a `COMPLETED` row in `AuditLog`, sharing one `entityId`. A `STARTING` row with no `COMPLETED`
@@ -719,7 +727,7 @@ main().finally(() => prisma.$disconnect());
 
 Write it in a scratch folder outside the checkout, copy it into the checkout's root as
 `count-example.tmp.ts`, and run it from there with
-`NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs count-example.tmp.ts`
+`NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs count-example.tmp.ts --expect-host ep-sweet-haze`
 (Git Bash; in PowerShell set the variable first, as in
 [§7.2](#72-the-runner-scriptsdevprod-runcjs)). Name every throw-away script `*.tmp.ts`:
 [`.gitignore`](../../.gitignore) ignores that pattern, so it cannot be committed by
@@ -763,7 +771,7 @@ Read a script's header before you run it.
 | Export the CRM's payment terms for the master builder | `export-crm-terms.ts` (`ops:export-crm-terms`) | Writes a CSV of customer data into `golive-data/` (private) | — | Script header |
 | The least-privilege app role | `app-role.ts` | Yes. Refuses production unless `ALLOW_PRODUCTION=1` and `--expect-host` | — | OPERATIONS §5c (prefer the **Provision app role** workflow) |
 | Verify a restored database | `restore-verify.ts` | No. Refuses production | — | OPERATIONS §6.4–6.5 |
-| Load a dump into an **empty** target | `restore-load.sh` | Yes, into the target it is given | — | OPERATIONS §6.5 |
+| Load a dump into an **empty** target | `restore-load.sh` | Yes, into the target it is given; it refuses a production target (2026-10-11) | — | OPERATIONS §6.5 |
 | Backup-bucket retention | `r2-backups-lifecycle.ts` | **Yes, without `--check`**: it writes the bucket's lifecycle rules. Only `--check` is read-only | — | OPERATIONS §6.9 |
 | Photo-bucket versioning check | `r2-photos-versioning.ts` | No. It is a checker only (`--check`) | — | OPERATIONS §6.13 |
 | cron-job.org jobs | `cron-scheduler.ts` | Writes to cron-job.org in `apply` mode. It runs inside the **External cron scheduler** workflow. Do not run `apply` again ([§9](#9-scheduled-jobs)) | — | OPERATIONS §5d |
@@ -781,7 +789,7 @@ history keeps them):
 | [`scripts/bulk-reset-credentials.ts`](../../scripts/bulk-reset-credentials.ts) | Writes only with `CONFIRM_CREDENTIAL_RESET=yes`. **It prints the generated passwords to stdout.** Never run it where its output reaches a transcript, a log or a shared screen. On production it needs `--expect-host`. |
 | [`prisma/seed-muscat-pilot.ts`](../../prisma/seed-muscat-pilot.ts) | Refuses production. Its upsert sets `isActive: true`, so on production it would **revive deactivated accounts** with passwords that are written in the file (`CLAUDE.md`, "Safety"). |
 | [`prisma/synthetic.ts`](../../prisma/synthetic.ts) (`npm run db:synthetic`) | Truncates core tables. Refuses `ep-sweet-haze`. |
-| [`prisma/seed.ts`](../../prisma/seed.ts) (`npm run db:seed`) | Refuses production unless `--expect-host` names it. Inserts missing channels, sub-channels and regions only: it never renames an existing one (2026-10-11). |
+| [`prisma/seed.ts`](../../prisma/seed.ts) (`npm run db:seed`) | Never runs on production, not even with `--expect-host`. Anywhere else it only inserts missing channels, sub-channels, regions and the `admin` account, and never changes an existing row (owner decisions 2026-10-11). |
 
 Other scripts in `scripts/` and `scripts/golive/` open a database too. Treat any script
 that builds a `PrismaClient` as able to write until you have read it. The output of the
@@ -796,9 +804,17 @@ with scripts kept only in the private pack, among them `temix-link-apply.ts`,
    checkout that holds it ([§7.2](#72-the-runner-scriptsdevprod-runcjs)).
 2. Read its header, then follow [§7.3](#73-the-sequence-for-a-write), running it from that
    checkout's root as
-   `NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs <name>.tmp.ts`.
+   `NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs <name>.tmp.ts --expect-host ep-sweet-haze`.
    Its flags may differ from those of the scripts above.
-3. Delete the copy afterwards.
+3. **Check how it reads its arguments before its first run since 2026-10-11.** `prod-run.cjs`
+   now hands every script `--expect-host ep-sweet-haze` ([§7.2](#72-the-runner-scriptsdevprod-runcjs)),
+   and nobody has checked the pack's scripts against that (they are only in the private
+   pack). A script that refuses an argument it does not know stops at once; one that
+   takes plain words as arguments (a file, a run id) could read `ep-sweet-haze` as one
+   of them. Make such a script accept the flag, better still check the host with it as
+   [`scripts/lib/assert-not-production.ts`](../../scripts/lib/assert-not-production.ts)
+   does, and do this in the pack's copy too.
+4. Delete the copy afterwards.
 
 They were run on one pattern: a dry run, an independent check of its counts, a rehearsal
 (rolled back) where the script has a `--rehearse` mode, then the apply, with

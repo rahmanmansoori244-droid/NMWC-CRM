@@ -23,8 +23,9 @@
  *     scripts/ and prisma/ that opens its own database (lib/db.ts, the app's client).
  *
  * The behaviour half pins what the guard refuses and what it is allowed to print,
- * and that scripts/synthetic-launch-test.ts and scripts/qa/run-with-env.mjs refuse
- * production (review of d02cb27).
+ * and that scripts/qa/run-with-env.mjs refuses production (review of d02cb27). The
+ * scripts that sign in to the live site refuse unless production is named, and
+ * prisma/seed.ts refuses production outright (owner decisions 2026-10-11).
  */
 import { describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -33,12 +34,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import ts from 'typescript';
 import { stripComments } from '../support/strip-comments';
-import { callArguments, objectAfter } from '../support/call-args';
+import { callArguments } from '../support/call-args';
 import {
   PRODUCTION_HOST_PREFIX,
   ProductionGuardRefusal,
   assertNotProduction,
   expectHostArg,
+  liveSiteNamed,
   withoutExpectHost,
 } from '../../scripts/lib/assert-not-production';
 import { OperatorRefusal, operatorErrorLabel } from '../../scripts/ops/error-label';
@@ -233,10 +235,10 @@ const NEVER_CONNECTS: Record<string, string> = {};
 const SHELL_OUTSIDE_GUARD: Record<string, string> = {
   'scripts/ops/restore-load.sh':
     'Loads a backup into RESTORE_TARGET_URL with psql (CI, the restore drill, OPERATIONS §6.5). ' +
-    'It has no production check of its own. The dump is plain, made without --clean ' +
-    '(db-backup.yml), and psql runs with ON_ERROR_STOP=1. OPERATIONS §6.5 loads only into a ' +
-    'new, emptied branch. Whether it should also refuse the production marker is an open ' +
-    'owner question (2026-10-11).',
+    'Owner decisions 2026-10-11: it refuses, before psql or pg_restore starts, a target with the ' +
+    'production marker anywhere in it (raw or percent-decoded) and a PGHOST / PGHOSTADDR with ' +
+    'it; tests/unit/restore-load-guard.test.ts executes that. The dump is plain, made without ' +
+    '--clean (db-backup.yml), and psql runs with ON_ERROR_STOP=1.',
 };
 
 function walk(dir: string, ext: RegExp = EXT): string[] {
@@ -750,19 +752,58 @@ describe('the structural scan sees what it is meant to see', () => {
   });
 });
 
-describe('scripts/synthetic-launch-test.ts refuses before it signs in to production', () => {
-  // Review of d02cb27: its browser half always acts on the live site (BASE), so
-  // the shared guard, which sees only the database, let a UAT .env through to a
-  // production sign-in and photo upload. Pinned structurally: running the script
-  // in a test would, if the refusal were broken, do exactly that.
-  const src = code('scripts/synthetic-launch-test.ts');
-  it('checks --expect-host for the production marker before the client and before Chromium', () => {
-    const refusal = src.search(/expectHostArg\(\s*process\.argv\.slice\(2\)\s*\)/);
-    expect(refusal).toBeGreaterThan(-1);
-    expect(src.slice(refusal)).toMatch(/startsWith\(\s*PRODUCTION_HOST_PREFIX\s*\)[\s\S]*?process\.exit\(\s*2\s*\)/);
-    expect(refusal).toBeLessThan(src.search(/\bnew\s+PrismaClient\s*\(/));
-    expect(refusal).toBeLessThan(src.search(/chromium\.launch\s*\(/));
-    expect(src).toMatch(/const BASE = 'https:\/\/nmwc-cm\.vercel\.app'/);
+describe('the screenshot scripts refuse the live site unless production is named (owner decisions 2026-10-11)', () => {
+  // Their browser part signs in to the live site (BASE), which is production,
+  // whatever database the checkout names — so the database guard never sees them.
+  // Pinned structurally, as the deleted load test was: running one in a test
+  // would, if the refusal were broken, sign in to production.
+  const CAPTURE = ['scripts/capture-guide-screenshots.ts', 'scripts/capture-steward-screenshots.ts'];
+
+  it.each(CAPTURE)('%s refuses at the top, before Chromium, a page or a sign-in', (file) => {
+    const src = code(file);
+    expect(src).toMatch(/import\s*\{[^}]*\bliveSiteNamed\b[^}]*\}\s*from\s*'\.\/lib\/assert-not-production'/);
+    expect(src).toMatch(/const BASE = LIVE_SITE;/);
+    const refusal = src.search(new RegExp(`if \\(!liveSiteNamed\\('${file.replace(/[.]/g, '\\.')}'\\)\\) process\\.exit\\(2\\);`));
+    expect(refusal, 'the refusal, naming the script').toBeGreaterThan(-1);
+    for (const later of [/chromium\.launch\s*\(/, /\bawait\s+login\s*\(/, /page\.goto\s*\(/, /\bmkdir\s*\(/, /\bmain\(\)/]) {
+      expect(refusal, String(later)).toBeLessThan(src.search(later));
+    }
+    // A top-level statement, so it runs when the module does, before main() is called.
+    const top = parse(file).statements.findIndex((st) => ts.isIfStatement(st) && st.getText().includes('liveSiteNamed('));
+    const mainCall = parse(file).statements.findIndex((st) => ts.isExpressionStatement(st) && /^main\(\)/.test(st.getText()));
+    expect(top).toBeGreaterThan(-1);
+    expect(top).toBeLessThan(mainCall);
+  });
+
+  it('liveSiteNamed lets a script start only when --expect-host names production', () => {
+    const run = (args: string[]) => {
+      const out = { log: vi.fn(), error: vi.fn() };
+      const ok = liveSiteNamed('scripts/x.ts', args, out);
+      return { ok, printed: out.error.mock.calls.flat().join('\n'), out };
+    };
+    for (const args of [
+      [],
+      ['--expect-host'],
+      ['--expect-host', '--apply'],
+      ['--expect-host', 'sweet-haze'],
+      ['--expect-host', 'ep-uat-branch-1'],
+      [`--expect-host=${PRODUCTION_HOST_PREFIX}`],
+    ]) {
+      const r = run(args);
+      expect(r.ok, JSON.stringify(args)).toBe(false);
+      expect(r.printed).toMatch(/\[live-site guard\] refusing: scripts\/x\.ts signs in to the PRODUCTION site/);
+      expect(r.printed).toContain(`--expect-host ${PRODUCTION_HOST_PREFIX}`);
+      expect(r.printed).not.toContain('ep-uat-branch-1');
+    }
+    for (const args of [
+      ['--expect-host', PRODUCTION_HOST_PREFIX],
+      ['--expect-host', PROD_ENDPOINT],
+      ['--expect-host', PRODUCTION_HOST_PREFIX.toUpperCase()],
+    ]) {
+      const r = run(args);
+      expect(r.ok, JSON.stringify(args)).toBe(true);
+      expect(r.out.error).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -805,36 +846,203 @@ describe('scripts/qa/run-with-env.mjs refuses production', () => {
   });
 });
 
-describe('prisma/seed.ts inserts what is missing and renames nothing', () => {
-  // Owner decision 2026-10-11: the seed may still insert missing rows, but it must
-  // never change an existing Region name or Channel / SubChannel label — its names
-  // are placeholders, and a re-run used to overwrite whatever the business had set.
+describe('prisma/seed.ts never runs on production and never changes an existing row (owner decisions 2026-10-11)', () => {
+  // The seed used to refuse production only until --expect-host named it, and then
+  // upserted: it could create the default `admin` Manager there, and it refreshed
+  // Channel.displayOrder on every run. Now production is refused whatever the
+  // command line says, and the only writes are inserts that skip what exists.
   const src = code('prisma/seed.ts');
-  it.each([
-    ['channel', /\blabel\b/],
-    ['subChannel', /\blabel\b/],
-    ['region', /\bname\b/],
-  ] as const)('%s upsert writes no name on update', (model, field) => {
-    const calls = callArguments(src, new RegExp(`prisma\\.${model}\\.upsert`));
-    expect(calls.length, `the ${model} upsert must exist`).toBeGreaterThan(0);
-    for (const args of calls) {
-      const update = objectAfter(args, /\bupdate\s*:/);
-      expect(update, `${model} upsert must spell out its update`).not.toBeNull();
-      expect(update!).not.toMatch(field);
+
+  it('writes only with createMany + skipDuplicates: no upsert, update, delete, single create or raw SQL', () => {
+    for (const banned of [/\.upsert\s*\(/, /\.update\s*\(/, /\.updateMany\s*\(/, /\.delete\s*\(/, /\.deleteMany\s*\(/, /\.create\s*\(/, /\$executeRaw/, /\$queryRaw/]) {
+      expect(src, String(banned)).not.toMatch(banned);
     }
+    const inserts = callArguments(src, /\.createMany/);
+    expect(inserts.length).toBe(4);
+    for (const args of inserts) expect(args).toMatch(/\bskipDuplicates\s*:\s*true\b/);
   });
+
+  it('refuses production before building a client, in main()', () => {
+    const main = src.slice(src.indexOf('async function main('));
+    expect(main.indexOf('refuseProductionSeed(url)')).toBeGreaterThan(-1);
+    expect(main.indexOf('refuseProductionSeed(url)')).toBeLessThan(main.search(/new\s+PrismaClient\s*\(/));
+  });
+
+  it('refuseProductionSeed: production in any spelling is refused, whatever the arguments; nothing else is', async () => {
+    const { refuseProductionSeed } = await import('../../prisma/seed');
+    for (const url of [
+      PROD_URL,
+      urlFor(`${PROD_ENDPOINT.toUpperCase()}.neon.invalid`),
+      urlFor('localhost:5432', `?host=${PROD_ENDPOINT}.neon.invalid`),
+      urlFor('localhost:5432', '?host=ep%2Dsweet%2Dhaze-fake9q7.neon.invalid'),
+    ]) {
+      const out = { log: vi.fn(), error: vi.fn() };
+      expect(() => refuseProductionSeed(url, out), url.replace(PASSWORD, '…')).toThrow(ProductionGuardRefusal);
+      const printed = out.error.mock.calls.flat().join('\n');
+      expect(printed).toMatch(/never runs there,\n {2}not even with --expect-host/);
+      expectNoSecrets(printed);
+    }
+    const out = { log: vi.fn(), error: vi.fn() };
+    expect(() => refuseProductionSeed(UAT_URL, out)).not.toThrow();
+    expect(() => refuseProductionSeed(undefined, out)).not.toThrow(); // assertNotProduction refuses that next
+    expect(out.error).not.toHaveBeenCalled();
+  });
+
+  /** A database that holds rows and has only the calls the seed may make: any other call throws. */
+  function fakeDb(initial: {
+    channels?: Array<{ key: string; label: string; displayOrder: number }>;
+    subChannels?: Array<{ channelKey: string; key: string; label: string }>;
+    regions?: Array<{ code: string; name: string }>;
+    admin?: { passwordHash: string };
+  }) {
+    const channels = (initial.channels ?? []).map((c) => ({ id: `ch-${c.key}`, ...c }));
+    const subChannels = (initial.subChannels ?? []).map((s) => ({ channelId: `ch-${s.channelKey}`, key: s.key, label: s.label }));
+    const regions = [...(initial.regions ?? [])];
+    const users = initial.admin ? [{ id: 'u-admin', username: 'admin', ...initial.admin }] : [];
+    type Where = { key?: { in: string[] }; code?: { in: string[] }; channelId?: { in: string[] } };
+    const db = {
+      channel: {
+        findMany: async ({ where }: { where: Where }) => channels.filter((c) => where.key!.in.includes(c.key)),
+        createMany: async ({ data, skipDuplicates }: { data: Array<{ key: string; label: string; displayOrder: number }>; skipDuplicates: boolean }) => {
+          expect(skipDuplicates).toBe(true);
+          const fresh = data.filter((d) => !channels.some((c) => c.key === d.key));
+          channels.push(...fresh.map((d) => ({ id: `ch-${d.key}`, ...d })));
+          return { count: fresh.length };
+        },
+      },
+      subChannel: {
+        findMany: async ({ where }: { where: Where }) => subChannels.filter((s) => where.channelId!.in.includes(s.channelId)),
+        createMany: async ({ data, skipDuplicates }: { data: Array<{ channelId: string; key: string; label: string }>; skipDuplicates: boolean }) => {
+          expect(skipDuplicates).toBe(true);
+          const fresh = data.filter((d) => !subChannels.some((s) => s.channelId === d.channelId && s.key === d.key));
+          subChannels.push(...fresh);
+          return { count: fresh.length };
+        },
+      },
+      region: {
+        findMany: async ({ where }: { where: Where }) => regions.filter((r) => where.code!.in.includes(r.code)),
+        createMany: async ({ data, skipDuplicates }: { data: Array<{ code: string; name: string }>; skipDuplicates: boolean }) => {
+          expect(skipDuplicates).toBe(true);
+          // Both code and name are unique: a clash on either skips the row.
+          const fresh = data.filter((d) => !regions.some((r) => r.code === d.code || r.name === d.name));
+          regions.push(...fresh);
+          return { count: fresh.length };
+        },
+      },
+      user: {
+        findUnique: async ({ where }: { where: { username: string } }) => users.find((u) => u.username === where.username) ?? null,
+        createMany: async ({ data, skipDuplicates }: { data: Array<{ username: string; passwordHash: string; role: string }>; skipDuplicates: boolean }) => {
+          expect(skipDuplicates).toBe(true);
+          const fresh = data.filter((d) => !users.some((u) => u.username === d.username));
+          users.push(...fresh.map((d) => ({ id: `u-${d.username}`, ...d })));
+          return { count: fresh.length };
+        },
+      },
+    };
+    return { db, channels, subChannels, regions, users };
+  }
+
+  it('on an empty database: inserts every channel, sub-channel and region, and the admin Manager', async () => {
+    const seed = await import('../../prisma/seed');
+    const f = fakeDb({});
+    const hash = vi.fn(async () => 'hash-1');
+    const report = await seed.insertMissing(f.db as unknown as import('../../prisma/seed').SeedDb, hash);
+    expect(report.inserted).toEqual({
+      channels: seed.CHANNELS.length,
+      subChannels: seed.CHANNELS.flatMap((c) => c.subs).length,
+      regions: seed.REGIONS.length,
+      admin: true,
+    });
+    expect(report.leftAsIs).toEqual([]);
+    expect(hash).toHaveBeenCalledOnce();
+    expect(f.users).toEqual([expect.objectContaining({ username: 'admin', passwordHash: 'hash-1', role: 'MANAGER' })]);
+  });
+
+  it('on a database that has them: changes nothing — names, labels, displayOrder, the admin account — and lists what differs', async () => {
+    const seed = await import('../../prisma/seed');
+    const [first, second] = seed.CHANNELS;
+    const sub = first!.subs[0]!;
+    const f = fakeDb({
+      channels: [
+        { key: first!.key, label: 'Renamed by the business', displayOrder: first!.order },
+        { key: second!.key, label: second!.label, displayOrder: 99 },
+      ],
+      subChannels: [{ channelKey: first!.key, key: seed.subChannelKey(sub), label: 'Their own label' }],
+      regions: [
+        { code: 'MUSCAT', name: 'Muscat Governorate' },
+        // A region another code already carries the seed's name for: skipped, not renamed.
+        { code: 'BN', name: 'Batinah North' },
+      ],
+      admin: { passwordHash: 'their-hash' },
+    });
+    const before = JSON.stringify([f.channels, f.subChannels, f.regions, f.users]);
+    const hash = vi.fn(async () => 'never');
+    const report = await seed.insertMissing(f.db as unknown as import('../../prisma/seed').SeedDb, hash);
+
+    // Every row that was there is exactly as it was: the inserts only appended.
+    const after = [f.channels, f.subChannels, f.regions, f.users].map((rows, i) =>
+      rows.slice(0, (JSON.parse(before) as unknown[][])[i]!.length)
+    );
+    expect(JSON.stringify(after)).toBe(before);
+    expect(hash).not.toHaveBeenCalled();
+    expect(report.inserted.admin).toBe(false);
+    expect(report.inserted.channels).toBe(seed.CHANNELS.length - 2);
+    expect(report.inserted.regions).toBe(seed.REGIONS.length - 2);
+    expect(report.leftAsIs.sort()).toEqual(
+      [`Channel ${first!.key}`, `Channel ${second!.key}`, `SubChannel ${first!.key}/${seed.subChannelKey(sub)}`, 'Region MUSCAT'].sort()
+    );
+  });
+
+  // Run for real: the script, as `npm run db:seed` starts it, handed a fake
+  // production-looking URL (`.invalid` never resolves, so even a broken refusal
+  // could reach nothing). It must stop before it inserts anything, whatever
+  // --expect-host says. DIRECT_URL is always given: the Prisma client loads a
+  // checkout's .env when it is imported, and fills in any variable left unset.
+  const runSeed = (env: Record<string, string>, args: string[]) => {
+    const clean = Object.fromEntries(
+      Object.entries(process.env).filter(([k, v]) => v !== undefined && !/_URL$/.test(k))
+    );
+    return spawnSync(process.execPath, ['--import', 'tsx', 'prisma/seed.ts', ...args], {
+      cwd: process.cwd(),
+      env: { ...clean, ...env } as NodeJS.ProcessEnv,
+      encoding: 'utf8',
+      timeout: 120_000,
+    });
+  };
+
+  it.each([
+    ['DIRECT_URL, no flag', { DIRECT_URL: PROD_URL }, []],
+    ['DIRECT_URL, --expect-host ep-sweet-haze', { DIRECT_URL: PROD_URL }, ['--expect-host', PRODUCTION_HOST_PREFIX]],
+    ['DIRECT_URL, --expect-host naming the endpoint', { DIRECT_URL: PROD_URL }, ['--expect-host', PROD_ENDPOINT]],
+    [
+      'a percent-escaped host parameter, --expect-host ep-sweet-haze',
+      { DIRECT_URL: urlFor('localhost:5432', '?host=ep%2Dsweet%2Dhaze-fake9q7.neon.invalid') },
+      ['--expect-host', PRODUCTION_HOST_PREFIX],
+    ],
+  ] as const)('npm run db:seed on production refuses: %s', (_label, env, args) => {
+    const r = runSeed(env, [...args]);
+    expect(r.error).toBeUndefined();
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/\[seed\] refusing: this connection points at PRODUCTION/);
+    expect(r.stdout).not.toMatch(/Inserting|inserted|Seed complete/);
+    expectNoSecrets(r.stdout + r.stderr);
+  }, 150_000);
 });
 
 describe('the scripts the owner deleted on 2026-10-11 stay deleted', () => {
   // Git history keeps them. Bringing one back means bringing back a script that
   // opened the audit maintenance switch, or rewrote customers, against whatever
-  // database it was handed.
+  // database it was handed — or, for synthetic-launch-test.ts, signed in to the
+  // live site and uploaded a photo there whatever database it was given.
   it.each([
     'scripts/wipe-synthetic-data.ts',
     'scripts/cleanup-synthetic-test.ts',
     'scripts/flatten-customer-branches.ts',
     'scripts/seed-demo-edit.ts',
     'prisma/inject-test-edits.ts',
+    'scripts/synthetic-launch-test.ts',
+    'prisma/seed-muscat-customers.ts',
+    'prisma/seed-muscat-payment-terms.ts',
   ])('%s', (file) => {
     expect(existsSync(file)).toBe(false);
   });

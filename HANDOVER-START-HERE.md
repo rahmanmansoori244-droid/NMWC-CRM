@@ -58,7 +58,6 @@ production.**
 | 5 | [05-NEW-COMPUTER-SETUP](docs/handover/05-NEW-COMPUTER-SETUP.md) | From a clean machine to a working setup, including opening the pack. You use it at checklist step 6. |
 | 6 | [06-WORKING-WITH-AI-AGENTS](docs/handover/06-WORKING-WITH-AI-AGENTS.md) | How Claude and Codex have been used here, and how to continue with them |
 | 7 | [07-PROJECT-HISTORY](docs/handover/07-PROJECT-HISTORY.md) | A dated timeline and the major decisions |
-| 8 | [08-KNOWLEDGE-GRAPH](docs/handover/08-KNOWLEDGE-GRAPH.md) | The knowledge graph in `graphify-out/`: a map of where things live in the code and docs and how they connect, how to query it, and how to rebuild it without leaking anything private |
 
 **Existing documents.** The handover set links to these rather than copying them.
 
@@ -161,7 +160,8 @@ Work through these steps in order.
    `grep` or `Select-String`. They print the whole line, password included. Every
    checkout's `.env` should name UAT. On the owner's computer today, the main checkout's
    `.env` is the production file, and Claude's operator runs pass it explicitly with
-   `NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs <script> [args]`.
+   `NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`
+   (the runner refuses any run without that flag, read-only or not).
    In your setup, keep the production env file outside every checkout, and pass it the
    same way, through `NMWC_PROD_ENV_FILE=<file>` ([HANDOVER §5](docs/HANDOVER.md)). If you
    copy an operator script from the pack into a checkout, name it `*.tmp.ts`. Git ignores
@@ -307,30 +307,6 @@ names the deployments to roll back to, in order.
 - **The docs.** Follow the reading order in §3. For anything open, use
   [04-PENDING-WORK](docs/handover/04-PENDING-WORK.md). For what users report, use
   OPERATIONS §7a.
-- **The knowledge graph** in [`graphify-out/`](graphify-out/). Read
-  [08-KNOWLEDGE-GRAPH](docs/handover/08-KNOWLEDGE-GRAPH.md) first. The graph was rebuilt
-  on 2026-10-04 from `main` at `9d0fd61`, from the tracked files only. It has 4,602
-  nodes, 10,495 links and 226 clusters, and it covers the code and the documents, but not
-  the PDFs and screenshots in `docs/guide/`.
-  - **Start with [`graphify-out/wiki/index.md`](graphify-out/wiki/index.md).** It links
-    one article per cluster and per highly connected node.
-  - `GRAPH_REPORT.md` is the summary.
-  - `graph.html` is an interactive map. It needs internet access, because it loads the
-    vis-network library from unpkg.com.
-  - `graph.json` is for the `graphify` command-line tool. Install the version the graph
-    was built with: `uv tool install graphifyy==0.8.44`. 08 says how to query the graph.
-
-  The graph is a map, not a source of truth. It shows what the stale role guides say, not
-  what is true. Where the graph and the code differ, the code wins. Check the date at the
-  top of `GRAPH_REPORT.md`. It should say 2026-10-04.
-  **Before you commit a rebuilt graph**, build it from a clean export of the tracked
-  files, as 08 shows. A `git archive` export holds tracked files only, so it cannot
-  include `.env` files, `golive-data/` or `.claude/`, which `.gitignore` excludes, or
-  anything else untracked, such as the pack. Then search every output file for absolute
-  paths, and run leak-check on the outputs. In Git Bash:
-  `node scripts/dev/leak-check.cjs graphify-out/*.md graphify-out/*.json graphify-out/.graphify_labels.json graphify-out/graph.html graphify-out/wiki/*.md`.
-  The copies committed before the rebuild, which are still in the history, held absolute
-  paths from the owner's computer.
 - **The history.** The commit messages here are detailed (`git log`). The pack holds the
   app's official exports of all three NMWC CRM chat sessions (the conversation, the
   sub-agent transcripts and the metadata). It also holds the raw Claude Code project
@@ -341,7 +317,7 @@ names the deployments to roll back to, in order.
   All of this may hold production figures, customer details and paths from the owner's
   computer, so treat it like the `.env` files.
 - **Claude Code in this repository.** It loads `CLAUDE.md` automatically. Give it the
-  handover set and ask. 08 suggests pointing it at `graphify-out/wiki/index.md` first.
+  handover set and ask.
 
 ## 7. Not settled by this handover
 

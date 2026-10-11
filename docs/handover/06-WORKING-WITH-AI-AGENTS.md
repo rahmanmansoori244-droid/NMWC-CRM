@@ -15,8 +15,7 @@ Dependabot:
 
 This page explains how that worked, which files hold the rules, where the written rules
 and the practice differ, and how you can carry on — with the same agents, other agents,
-or none. The other handover pages are in [this folder](./). The knowledge graph has its
-own page: [08 — The knowledge graph](08-KNOWLEDGE-GRAPH.md).
+or none. The other handover pages are in [this folder](./).
 
 **A note on words.** Where the rules say "the owner", read "the person who holds the
 owner's powers now". That is not automatically whoever reads this page. After the
@@ -91,8 +90,7 @@ standing rules, HANDOVER itself, [`AUDITOR-BRIEF.md`](../../AUDITOR-BRIEF.md), t
 [docs/OPERATIONS.md](../OPERATIONS.md) and
 [docs/GO-LIVE-RUNBOOK.md](../GO-LIVE-RUNBOOK.md) before touching production. For the
 handover itself, add [`HANDOVER-START-HERE.md`](../../HANDOVER-START-HERE.md) and the
-pages of this folder in order, 01 to 08; page 8 is
-[the knowledge graph](08-KNOWLEDGE-GRAPH.md).
+pages of this folder in order, 01 to 07.
 
 ---
 
@@ -144,7 +142,7 @@ with **no production env file**. It is the same principle `AGENTS.md` applies to
 
 **Where the production env file lives.** On the previous owner's computer, the main
 checkout's `.env` points at production, and Claude's operator runs named that file
-explicitly: `NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs …`.
+explicitly: `NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze …`.
 For your setup we recommend keeping the production env file **outside every checkout**
 and always passing it explicitly the same way
 ([03 — Operations and deployment](03-OPERATIONS-AND-DEPLOYMENT.md) §2.3). Then no
@@ -181,16 +179,19 @@ grant still stands. Tell it in the chat.
 - **Reads:** a small script that opens a `SET TRANSACTION READ ONLY` transaction, builds
   its client as `new PrismaClient({ datasourceUrl: process.env.DIRECT_URL })`, and
   prints counts only — never a name, code, phone or id. Run it with
-  `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> [args]`.
+  `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`.
   In PowerShell:
-  `$env:NMWC_PROD_ENV_FILE='<env file>'; node scripts/dev/prod-run.cjs <script> [args]`,
+  `$env:NMWC_PROD_ENV_FILE='<env file>'; node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`,
   then `Remove-Item Env:NMWC_PROD_ENV_FILE`, because the variable stays set for the
   rest of the session. Without the variable, `prod-run.cjs` reads `.env` in the current
   directory.
-- **What [`prod-run.cjs`](../../scripts/dev/prod-run.cjs) does:** it refuses an env
-  file whose `DIRECT_URL` host is not production. It runs the script with the parent
-  environment, adds `DIRECT_URL`, and replaces `DATABASE_URL` with an address that
-  cannot connect (lines 84–88). So `DIRECT_URL` is the only database URL it supplies,
+- **What [`prod-run.cjs`](../../scripts/dev/prod-run.cjs) does:** it refuses any run
+  without `--expect-host ep-sweet-haze` among the script's arguments, read-only or not (owner
+  decisions 2026-10-11), and passes every argument on to the script unchanged, so the
+  script's own guard checks the flag too. It refuses an env file whose `DIRECT_URL`
+  host is not production. It runs the script with the parent environment, adds
+  `DIRECT_URL`, and replaces `DATABASE_URL` with an address that cannot connect (the
+  `env` object it builds before the run). So `DIRECT_URL` is the only database URL it supplies,
   but **any other secret already set in your shell reaches the script too**: start it
   from a clean shell. It runs the script through `tsx` with no shell, and masks the
   connection string, password (raw and decoded), user and host in everything it prints.
@@ -622,7 +623,7 @@ On one run the refuters killed seven of sixteen findings; keep that stage.
 Write a read-only script in your scratchpad: SET TRANSACTION READ ONLY, client built from
 process.env.DIRECT_URL, counts only — never a name, code, phone or id.
 Copy it into the checkout as <name>.tmp.ts (gitignored), so tsx resolves @prisma/client.
-Run it with NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <name>.tmp.ts,
+Run it with NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <name>.tmp.ts --expect-host ep-sweet-haze,
 from a shell with no other secrets set. Delete the <name>.tmp.ts copy afterwards.
 Run npm run smoke before and after. Show me only the counts.
 ```
@@ -772,7 +773,7 @@ the part about agents.
 
    ```text
    Read CLAUDE.md (or AGENTS.md), docs/HANDOVER.md, AUDITOR-BRIEF.md,
-   HANDOVER-START-HERE.md and docs/handover/01 to 08 in order.
+   HANDOVER-START-HERE.md and docs/handover/01 to 07 in order.
    Run git fetch and tell me the current origin/main commit and its CI result.
    Summarise what is open and what is the owner's to decide. Change nothing.
    ```
@@ -793,13 +794,6 @@ the part about agents.
    - whether to adopt the review-depth rule (§2.6) into the repository;
    - branch protection or a ruleset for `main`, and credentials for Codex that cannot
      push it (§3).
-8. **The knowledge graph.** See [08 — The knowledge graph](08-KNOWLEDGE-GRAPH.md): what
-   is in `graphify-out/`, how to query it, and how to rebuild it without letting private
-   material in. It was rebuilt on 2026-10-04 from `main` at `9d0fd61` (4,602 nodes,
-   10,495 links, 226 clusters). Point an agent at
-   [`graphify-out/wiki/index.md`](../../graphify-out/wiki/index.md) first.
-   `graph.html` needs internet access: it loads the vis-network library from unpkg.com.
-   The command-line tool is installed with `uv tool install graphifyy==0.8.44`.
 
 ---
 

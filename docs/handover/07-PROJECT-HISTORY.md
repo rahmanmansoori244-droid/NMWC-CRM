@@ -245,7 +245,7 @@ including **many branches per customer**. See
 - Verdict on 07-21: no open P0 or P1. It recommended a supervised pilot once the owner
   completed the actions it listed
   ([`qa/reports/FINAL-GOLIVE-VERDICT.md`](../../qa/reports/FINAL-GOLIVE-VERDICT.md)).
-- The first graphify knowledge graph was committed to `graphify-out/` (`a5752a9`,
+- The first graphify knowledge graph was committed to `graphify-out/` (deleted 2026-10-11) (`a5752a9`,
   `fd897d0`). It was replaced by a full rebuild on 2026-10-04 (section 3.11).
 - Go-live import templates were added (`7b83bfb`).
 
@@ -532,7 +532,7 @@ If `docs/guide/` is rebuilt instead:
 
 The owner is handing the project to a new person. Recorded for that handover:
 
-- **The documentation set.** These `docs/handover/` documents (01–08) and
+- **The documentation set.** These `docs/handover/` documents (01–08; 08, the knowledge graph page, deleted 2026-10-11) and
   [`HANDOVER-START-HERE.md`](../../HANDOVER-START-HERE.md) are public and link to the
   existing records rather than copying them. They reached `main` after `9d0fd61`,
   together with the rebuilt knowledge graph. The same change adds `*.tmp.ts` to
@@ -584,14 +584,8 @@ The owner is handing the project to a new person. Recorded for that handover:
     found nothing to recompute. The item is closed (HANDOVER §6.2).
 - **The knowledge graph** in `graphify-out/` (first committed 2026-07-21) was rebuilt
   on 2026-10-04 from `main` at `9d0fd61`: 4,602 nodes, 10,495 links and 226 clusters,
-  built with graphify 0.8.44 (`uv tool install graphifyy==0.8.44`). Start at
-  [`graphify-out/wiki/index.md`](../../graphify-out/wiki/index.md). `graph.html` needs
-  internet access, because it loads the vis-network library from unpkg.com. See
-  [`08-KNOWLEDGE-GRAPH.md`](08-KNOWLEDGE-GRAPH.md). `graphify-out/` is committed to a
-  **public** repository. Any rebuild must start from the tracked files only, never
-  from a working folder that holds `golive-data/`, an `.env`, backups or transcripts.
-  Check `graphify-out/manifest.json` and the output for private material and local
-  paths before committing.
+  built with graphify 0.8.44. On 2026-10-11 the owner had it deleted from this public
+  repository, with its page `08-KNOWLEDGE-GRAPH.md` (git history keeps both).
 - **Things a GitHub clone does not bring:**
   - `golive-data/`, the `.env` files and everything else that is gitignored;
   - about 60 local branches and about two dozen worktrees under `.claude/worktrees/` on
@@ -728,7 +722,6 @@ These are worth knowing, but they are not written as rules in CLAUDE.md or AGENT
   [`docs/GO-LIVE-RUNBOOK.md`](../GO-LIVE-RUNBOOK.md),
   [`docs/SECRETS-INVENTORY.md`](../SECRETS-INVENTORY.md),
   [`docs/CREDENTIAL-ROTATION.md`](../CREDENTIAL-ROTATION.md).
-- The knowledge graph: [`08-KNOWLEDGE-GRAPH.md`](08-KNOWLEDGE-GRAPH.md).
 - Everything private: the private handover pack (PRIVATE-HANDOVER.md).
 - The rest of this handover set: [`HANDOVER-START-HERE.md`](../../HANDOVER-START-HERE.md),
-  then [`docs/handover/`](./) 01–08 (08 is the knowledge graph).
+  then [`docs/handover/`](./) 01–07.

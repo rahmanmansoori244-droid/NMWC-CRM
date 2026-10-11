@@ -123,7 +123,7 @@ Photos:
 | 10 | Photo size cap | Presign 4MB request | PASS | Zod rejects (`max(MAX_BYTES)` = 3MB) |
 | 11 | Photo mime type | Presign with `application/pdf` | PASS | Zod rejects (`refine ALLOWED_MIME`) |
 | 12 | Rate limit (login) | 6 wrong attempts in 60s | PASS | 429 with `Retry-After`; verified in unit tests |
-| 13 | DB constraint: address ≥ 3 | Bulk import a 2-char address | PASS (after fix) | `seed-muscat-customers.ts` enforces; live row backfilled |
+| 13 | DB constraint: address ≥ 3 | Bulk import a 2-char address | PASS (after fix) | `seed-muscat-customers.ts` (deleted 2026-10-11) enforces; live row backfilled |
 | 14 | DB constraint: lastStatusChangeAt | Closed branches with null timestamp | PASS (after fix) | 6 demo rows backfilled live |
 | 15 | Health endpoint | Public GET `/api/health` | PASS | 200, `{"status":"ok"}` |
 | 16 | Unit test suite | `npm test` | PASS 59/59 | 9 test files |

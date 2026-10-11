@@ -27,10 +27,16 @@
  * And never a STEWARD_ONLY_AUDIT_ACTIONS row (PHOTO_VIEW), even about a photo of
  * his regions — owner decision 2026-10-11.
  *
+ * The Data Steward's log is global, but photo views are left out of his default
+ * list (STEWARD_HIDDEN_BY_DEFAULT) and he can ask for the views of one customer's
+ * documents (auditCustomersByCode, customerDocumentIds, photoViewsOfDocumentsSql)
+ * — owner decisions 2026-10-11.
+ *
  * No database client of its own: the page passes its client in.
  */
 import { AuditAction, Prisma, type PrismaClient } from '@prisma/client';
 import { managerCanAdministerUser } from './permissions';
+import { normalizeTemixCode } from './temix-code';
 
 /**
  * Gap 2 (data audit 2026-10-10): who opened which photo or document is recorded as
@@ -45,6 +51,119 @@ export const STEWARD_ONLY_AUDIT_ACTIONS: readonly AuditAction[] = [AuditAction.P
 export const MANAGER_AUDIT_ACTIONS: readonly AuditAction[] = Object.values(AuditAction).filter(
   (a) => !STEWARD_ONLY_AUDIT_ACTIONS.includes(a)
 );
+
+/**
+ * Owner decisions 2026-10-11: the Data Steward's /audit leaves photo views out of
+ * its default list and out of its count. He sees them when he picks that action
+ * in the action filter ("Photo views", PHOTO_VIEW), or when he looks up one
+ * customer's documents (photoViewsOfDocumentsSql). Any other action he picks
+ * cannot match them anyway.
+ */
+export const STEWARD_HIDDEN_BY_DEFAULT: readonly AuditAction[] = [AuditAction.PHOTO_VIEW];
+
+/** A customer the Steward's customer filter matched, by NMWC code or Temix code. */
+export type AuditCustomer = { id: string; nmwcCode: string; temixCode: string | null; archived: boolean };
+
+/** How many customers one typed code may match: a Temix code is not unique (H-01). */
+export const AUDIT_CUSTOMER_MATCH_LIMIT = 20;
+
+/**
+ * Owner decisions 2026-10-11: the customer filter. The customers whose NMWC code or
+ * Temix code is the typed code, archived ones included (the audit log is history),
+ * at most AUDIT_CUSTOMER_MATCH_LIMIT + 1 of them so the page can say there were
+ * more. The code is folded as lib/temix-code.ts folds a typed code (digits, hidden
+ * characters, ends, case) and compared without regard to case, as temixCodeHolder
+ * compares it: an older row may hold a code as its sheet spelled it. That reads the
+ * Customer table — one row per customer — never the ledger.
+ */
+export async function auditCustomersByCode(
+  db: Pick<PrismaClient, '$queryRaw'>,
+  typed: string
+): Promise<AuditCustomer[]> {
+  const code = normalizeTemixCode(typed);
+  if (!code) return [];
+  return db.$queryRaw<AuditCustomer[]>`
+    SELECT c."id", c."nmwcCode", c."temixCode", c."deletedAt" IS NOT NULL AS "archived"
+      FROM "Customer" c
+     WHERE UPPER(c."nmwcCode") = ${code} OR UPPER(c."temixCode") = ${code}
+     ORDER BY (c."deletedAt" IS NOT NULL), c."nmwcCode"
+     LIMIT ${AUDIT_CUSTOMER_MATCH_LIMIT + 1}`;
+}
+
+/**
+ * Owner decisions 2026-10-11: "who viewed this customer's documents". The ids of
+ * every photo and document of these customers, by where each one is wired now:
+ *   - the CR and guarantee documents on the customer (Attachment.customerId);
+ *   - the shop, signboard and extra photos of its branches (branchId,
+ *     branchExtraId) — the PHOTO_VIEW row of one of these has a null
+ *     after.customerId, because the photo route copies the photo's own wiring
+ *     into `after` (app/api/photos/[id]/route.ts);
+ *   - the photos of its requests (editId). A new-customer request's photos are
+ *     viewed while only their editId is set; the final approval binds them to the
+ *     customer and its branches, keeps the editId and names the new customer on
+ *     the request (lib/create-finalize.ts), so a view from before the approval is
+ *     found here too.
+ * Removed and replaced photos count: a view of one is still a view of this
+ * customer's document.
+ *
+ * Why the wiring and not the view row's `after`: a photo's wiring only ever goes
+ * from nothing to one slot and stays there (services/photos.ts, services/creates.ts,
+ * services/reactivations.ts, lib/create-finalize.ts). The one move is a merge
+ * (services/duplicates.ts): it takes the losing customer's live documents, branches
+ * and requests to the winner and archives the loser. So for a live customer, every
+ * view whose after.customerId names him is the view of a document still wired to
+ * him, and these ids find the views that after.customerId cannot. An archived
+ * customer is read through after.customerId as well (photoViewsOfDocumentsSql).
+ *
+ * Every arm is an indexed lookup: Attachment(customerId), Branch(customerId) then
+ * Attachment(branchId) / Attachment(branchExtraId), CustomerEdit(customerId, state)
+ * then Attachment(editId).
+ */
+export async function customerDocumentIds(
+  db: Pick<PrismaClient, '$queryRaw'>,
+  customerIds: string[]
+): Promise<string[]> {
+  if (customerIds.length === 0) return [];
+  const rows = await db.$queryRaw<Array<{ id: string }>>`
+    SELECT t."id" FROM "Attachment" t WHERE t."customerId" = ANY(${customerIds}::text[])
+    UNION
+    SELECT t."id" FROM "Attachment" t JOIN "Branch" b ON b."id" = t."branchId"
+     WHERE b."customerId" = ANY(${customerIds}::text[])
+    UNION
+    SELECT t."id" FROM "Attachment" t JOIN "Branch" b ON b."id" = t."branchExtraId"
+     WHERE b."customerId" = ANY(${customerIds}::text[])
+    UNION
+    SELECT t."id" FROM "Attachment" t JOIN "CustomerEdit" e ON e."id" = t."editId"
+     WHERE e."customerId" = ANY(${customerIds}::text[])`;
+  return rows.map((r) => r.id);
+}
+
+/**
+ * The condition, for the audit row aliased `a`, that selects the PHOTO_VIEW rows
+ * of those documents (owner decisions 2026-10-11). Steward only: the page never
+ * builds it for anyone else.
+ *
+ * The query plan, with no schema change: the document ids are one bound array, so
+ * Postgres reads the ledger through AuditLog(entityType, entityId, at) — an index
+ * probe per document — and the action is checked on the rows found. The cost
+ * follows the customer's own documents and their views, not the size of the
+ * ledger, for the count and the page alike.
+ *
+ * An archived customer also matches the views whose after.customerId names him: a
+ * merged-away customer's CR and guarantee documents now sit on the winner, and only
+ * the view row still names him. No index covers a JSON field, so that arm walks the
+ * PHOTO_VIEW rows through AuditLog(action, at). It is added only when an archived
+ * customer matched, the one case it can find anything the ids cannot. The views of
+ * a merged-away customer's branch and request photos are found under the winner's
+ * code, where those branches and requests now are.
+ */
+export function photoViewsOfDocumentsSql(documentIds: string[], archivedCustomerIds: string[]): Prisma.Sql {
+  const named =
+    archivedCustomerIds.length > 0
+      ? Prisma.sql` OR a."after"->>'customerId' = ANY(${archivedCustomerIds}::text[])`
+      : Prisma.empty;
+  return Prisma.sql`(a."action" = ${AuditAction.PHOTO_VIEW}::"AuditAction" AND a."entityType" = 'Attachment' AND (a."entityId" = ANY(${documentIds}::text[])${named}))`;
+}
 
 export type ManagerAuditScope = {
   /** The regions he manages; never empty here (the page shows nothing first). */

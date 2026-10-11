@@ -41,7 +41,7 @@ describe('a Manager’s audit scope never holds a Steward-only action', () => {
 /** file → why a PHOTO_VIEW row cannot reach a non-Steward through its AuditLog reads. */
 const READERS: Record<string, string> = {
   'app/(app)/audit/page.tsx':
-    'the only screen that lists audit rows. MANAGER and STEWARD only (anyone else is redirected); the Steward reads every row, a Manager only through managerAuditScopeSql',
+    'the only screen that lists audit rows. MANAGER and STEWARD only (anyone else is redirected); the Steward reads every row (photo views when he picks that action or a customer code), a Manager only through managerAuditScopeSql',
   'lib/returned-work.ts': 'an EXISTS on CustomerEdit rows carrying the returned-cleared reason; returns request ids, never a row',
   'services/duplicates.ts': 'CustomerPair rows only (the Mark distinct ledger)',
   'services/imports.ts': 'one Customer CREATE row, to tell a finalize-born customer; returns only whether it exists',
@@ -124,5 +124,10 @@ describe('every reader of the audit log keeps photo views from anyone but the St
     expect(src).toMatch(/managerAuditScopeSql\(/);
     // Every Manager read is built on that scope: the count and the page of ids share one WHERE.
     expect(src.match(/FROM "AuditLog" a WHERE \$\{whereSql\}/g)).toHaveLength(2);
+    // Owner decisions 2026-10-11: the customer filter, which reads photo views, is the
+    // Steward's alone — a Manager's address cannot turn it on, and his raw reads start
+    // from his scope.
+    expect(src).toMatch(/const customerCode = isManager \? null : /);
+    expect(src).toMatch(/if \(isManager\) \{[\s\S]*?rawConds = \[managerAuditScopeSql\(/);
   });
 });

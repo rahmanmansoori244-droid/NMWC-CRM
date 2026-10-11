@@ -36,7 +36,6 @@ const SOURCES = [
   ['prisma/synthetic.ts', /bcrypt\.hash\(\s*['"`]([^'"`]+)['"`]/g],
   ['prisma/seed-muscat-pilot.ts', /bcrypt\.hash\(\s*['"`]([^'"`]+)['"`]/g],
   ['scripts/capture-guide-screenshots.ts', /password\s*:\s*['"`]([^'"`]+)['"`]/g],
-  ['scripts/synthetic-launch-test.ts', /password\s*:\s*['"`]([^'"`]+)['"`]/g],
   ['tests/loadtest.mjs', /PWD\s*=\s*[^'"`\n]*['"`]([^'"`]+)['"`]/g],
 ];
 const found = [];

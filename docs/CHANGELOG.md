@@ -53,7 +53,7 @@ shared simple passwords (explicit owner trade-off), synthetic load test.
   share `[REDACTED-PILOT-PW]`. `mustChangePassword=false` everywhere. 13 demo
   accounts disabled. Explicit security trade-off the owner accepted on
   2026-05-11 for pilot ease of use.
-- **Synthetic load test** (`scripts/synthetic-launch-test.ts` +
+- **Synthetic load test** (`scripts/synthetic-launch-test.ts` (deleted 2026-10-11) +
   `cleanup-synthetic-test.ts` (deleted 2026-10-11)) — 4 concurrent Playwright workers verify
   the daily workflow against production with safe revert.
 - **PDF guides regenerated** — all 8 user-facing PDFs refreshed with
