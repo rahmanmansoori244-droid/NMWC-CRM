@@ -114,6 +114,7 @@ children.push(H2('Version history'));
     ...[
       ['1.0', '__________', 'CRM / IT', 'Initial policy — customer lifecycle, approval chains, access-control matrix.'],
       ['1.1', '__________', 'CRM / IT', 'Added §8 Bulk Data Load (Import) Procedure: staged load, promotion in passes with resume, the mandatory post-load reconciliation, and the rule that bulk-loaded customers do not pass through the approval chain. Sections 8–10 renumbered to 9–11.'],
+      ['1.2', '__________', 'CRM / IT', 'Credit onboarding (management decisions of 11 October 2026): the Sales Director role and approval step; the customer’s signed credit application, uploaded by the salesman; the customer’s e-mail and four credit documents in place of the guarantee; the one-step-back send-back; the printed credit application and customer form, every print recorded.'],
     ].map(
       (r) => new TableRow({ children: r.map((c, i) => cell(c, { w: w[i] })) })
     ),
@@ -158,7 +159,7 @@ children.push(H1('2.  Definitions & System Overview'));
     ['Customer', 'A legal trading entity, identified by its customer code and a CRM-allocated NMWC code. One customer may have several branches.'],
     ['Branch', 'A physical outlet of a customer (identified by a globally-unique branch code). Field data (GPS, photos, equipment) is captured per branch.'],
     ['CASH customer', 'Pays on delivery. Onboarding requires sales + accounts approval only.'],
-    ['CREDIT customer', 'Granted a credit limit and payment terms. Onboarding additionally requires Finance Manager and GM approval.'],
+    ['CREDIT customer', 'Granted a credit limit and payment terms. Onboarding additionally requires Sales Director, Finance Manager and GM approval, the customer’s e-mail and credit documents, and the customer’s signed credit application.'],
     ['Approval chain', 'The fixed sequence of approver steps a request must pass, in order, before it takes effect.'],
     ['Materialization', 'The moment a net-new customer becomes a live record — only after the FINAL approval. Nothing exists in the master before that.'],
     ['SLA', 'The working-hours time budget for each approval step, after which the step escalates. Working week: Sunday–Thursday, 08:00–17:00 (Asia/Muscat).'],
@@ -173,17 +174,18 @@ children.push(H1('2.  Definitions & System Overview'));
 
 // ═══════════════════ 3. ROLES ═══════════════════
 children.push(H1('3.  Roles & Responsibilities'));
-children.push(body('The CRM has eight account types. Every user is assigned exactly one role.'));
+children.push(body('The CRM has nine account types. Every user is assigned exactly one role.'));
 {
   const w = cols(CONTENT_W, [1.9, 6.1]);
   const roles = [
-    ['Salesman', 'Field sales. Creates and enriches customers on their OWN route, capturing the required photos and GPS. Submits branch-closure and reactivation requests. Cannot approve anything.'],
+    ['Salesman', 'Field sales. Creates and enriches customers on their OWN route, capturing the required photos and GPS. For a credit customer, obtains the customer’s signature and company stamp on the printed credit application and uploads it. Submits branch-closure and reactivation requests. Cannot approve anything, and cannot print.'],
     ['Supervisor', 'First-line approver for their own team of salesmen. Approves the first step of every new-customer request and all enrichment edits from their team.'],
     ['Accountant', 'Region-scoped FINAL approver. The last gate on every new customer (cash and credit). On the Accountant’s approval the customer materializes and is queued for Temix.'],
-    ['Finance Manager', 'Organization-wide credit approver — the second step of the CREDIT chain. Reviews the requested credit limit and terms.'],
-    ['GM (General Manager)', 'Organization-wide credit approver — the third step of the CREDIT chain. Final management endorsement of credit before the Accountant.'],
+    ['Sales Director', 'Organization-wide credit approver for every region in Oman — the step of the CREDIT chain after the Supervisor. Has the same access as the GM throughout the system.'],
+    ['Finance Manager', 'Organization-wide credit approver — the step of the CREDIT chain after the customer’s signed credit application. Reviews the requested credit limit and terms.'],
+    ['GM (General Manager)', 'Organization-wide credit approver — the step of the CREDIT chain after the Finance Manager. Final management endorsement of credit before the Accountant.'],
     ['Manager', 'Regional field-force administrator. Creates and manages Salesman / Supervisor / Viewer accounts, approves branch REACTIVATIONS (photo-gated), stands in for an absent Supervisor on the first approval step, and sees a regional dashboard. Cannot create finance/approver accounts.'],
-    ['Steward', 'Data-operations administrator. Runs the bulk account & customer master imports, merges duplicate customers, runs Temix synchronization, and provisions the approver accounts (Accountant / Finance Manager / GM). Does not sit in the approval chain.'],
+    ['Steward', 'Data-operations administrator. Runs the bulk account & customer master imports, merges duplicate customers, runs Temix synchronization, and provisions the approver accounts (Accountant / Finance Manager / GM / Sales Director). Does not sit in the approval chain.'],
     ['Viewer', 'Read-only management visibility across the whole master. Makes no changes and approves nothing.'],
   ];
   children.push(table(w, [
@@ -209,7 +211,7 @@ children.push(flowRow([
 children.push(P(' ', { spacing: { after: 60 } }));
 
 children.push(H2('4.2  Step detail'));
-children.push(bullet([txt('1. Capture (Salesman). ', { bold: true }), txt('At the shop the salesman records the customer and branch details, and captures the mandatory evidence: the CR (commercial registration) document photo, the shop photo and the signboard photo, plus GPS inside Oman. The salesman selects the payment basis — CASH or CREDIT — and, for credit, enters the requested credit limit, payment-term days and uploads the guarantee/security document.')]));
+children.push(bullet([txt('1. Capture (Salesman). ', { bold: true }), txt('At the shop the salesman records the customer and branch details, and captures the mandatory evidence: the CR (commercial registration) document photo, the shop photo and the signboard photo, plus GPS inside Oman. The salesman selects the payment basis — CASH or CREDIT — and, for credit, enters the customer’s e-mail and the requested credit limit and payment-term days, and photographs the four credit documents: the owner’s ID card, the membership certificate, the VAT registration certificate and the tax card. (A guarantee/security document is no longer required.)')]));
 children.push(bullet([txt('2. Submit (Salesman). ', { bold: true }), txt('The system checks all mandatory fields are present, then submits the request into the approval chain. The SLA clock starts. Incomplete work can be saved as a draft instead.')]));
 children.push(bullet([txt('3. Approve (chain). ', { bold: true }), txt('The request advances one approver step at a time (see §5). Any approver may REJECT and return it to the salesman for correction. No customer data is written to the master during these steps.')]));
 children.push(bullet([txt('4. Go live / materialize (final approval). ', { bold: true }), txt('On the FINAL (Accountant) approval the customer and its branches are created as live records, a unique NMWC code is allocated, and the credit figures are copied verbatim. The record is immediately queued for Temix upload.')]));
@@ -233,12 +235,16 @@ children.push(H2('5.2  New CREDIT customer'));
 children.push(flowRow([
   { title: 'Salesman', sub: 'submit' },
   { title: 'Supervisor', sub: 'own team', color: NAVY },
+  { title: 'Sales Dir.', sub: 'org-wide', color: NAVY },
+  { title: 'Signed form', sub: 'salesman', color: STEEL },
   { title: 'Finance Mgr', sub: 'org-wide', color: NAVY },
   { title: 'GM', sub: 'org-wide', color: NAVY },
   { title: 'Accountant', sub: 'region — FINAL', color: '1B7A3D' },
 ]));
 children.push(P(' ', { spacing: { after: 40 } }));
-children.push(body([txt('Four approval steps. Credit onboarding always requires Finance Manager AND GM in addition to Supervisor and Accountant — there is no value threshold that skips them. ', {}), txt('Approvers approve or reject the requested figures as submitted; they cannot change the amount — a different limit means reject-and-resubmit. ', { bold: true }), txt('The credit limit and terms only take effect when the Accountant gives the final approval.')]));
+children.push(body([txt('Five approval steps and the customer’s signed credit application. Credit onboarding always requires the Sales Director, the Finance Manager AND the GM in addition to the Supervisor and the Accountant — there is no value threshold that skips them. ', {}), txt('Approvers approve or reject the requested figures as submitted; they cannot change the amount — a different limit means reject-and-resubmit. ', { bold: true }), txt('The credit limit and terms only take effect when the Accountant gives the final approval.')]));
+children.push(body([txt('The signed credit application. ', { bold: true }), txt('After the Sales Director approves, the Supervisor (or anyone allowed to print) prints the credit application. The salesman has the customer sign it and stamp it with the company stamp, and uploads it within 3 working days; the request then goes to the Finance Manager. Nobody approves this step, so the submitter still never approves his own request.')]));
+children.push(body([txt('Send-backs. ', { bold: true }), txt('A send-back returns the request one step: the Finance Manager’s to the signed-application step (the salesman uploads it again), the GM’s to the Finance Manager, the Sales Director’s to the Supervisor, and the Supervisor’s to the salesman for correction.')]));
 
 children.push(H2('5.3  Enrichment edit (existing customer)'));
 children.push(flowRow([{ title: 'Salesman', sub: 'submit edit' }, { title: 'Supervisor', sub: 'own team — FINAL', color: '1B7A3D' }]));
@@ -263,6 +269,8 @@ children.push(body('Each step has a working-hours budget (working week Sunday–
     headerRow(['Approval step', 'Role', 'Budget (working hrs)'], w),
     ['Supervisor step (create & edits)', 'Supervisor', '8'],
     ['Final approval', 'Accountant', '9'],
+    ['Credit — sales review', 'Sales Director', '16'],
+    ['Credit — signed application', 'Salesman', '27 (3 working days)'],
     ['Credit — finance review', 'Finance Manager', '16'],
     ['Credit — management review', 'GM', '24'],
     ['Reactivation review', 'Manager', '16'],
@@ -275,30 +283,47 @@ children.push(P([new PageBreak()]));
 children.push(H1('6.  Access-Control Matrix — What Each Account Can Do'));
 children.push(body('The table below is the authoritative statement of rights. A cell shows the scope of the right: Own = own route, Team = own team’s routes, Rgn = managed region(s), All = entire master, ✓ = permitted, — = not permitted.'));
 {
-  const roleW = 720;
-  const actW = CONTENT_W - roleW * 8;
-  const w = [actW, ...Array(8).fill(roleW)];
+  // The columns, keyed by the system's role names (prisma/schema.prisma Role).
+  // Management decisions of 11 October 2026: the Sales Director has the GM's
+  // access everywhere, so his column mirrors the GM's but for his own step.
+  const ROLE_COLUMNS = {
+    SALESMAN: 'Sales',
+    SUPERVISOR: 'Super',
+    ACCOUNTANT: 'Acct',
+    FINANCE_MANAGER: 'Fin.Mgr',
+    GM: 'GM',
+    SALES_DIRECTOR: 'SD',
+    MANAGER: 'Mgr',
+    STEWARD: 'Stew',
+    VIEWER: 'View',
+  };
+  const roles = Object.values(ROLE_COLUMNS);
+  const roleW = 660;
+  const actW = CONTENT_W - roleW * roles.length;
+  const w = [actW, ...Array(roles.length).fill(roleW)];
   const S = 15; // small font for density
-  const roles = ['Sales', 'Super', 'Acct', 'Fin.Mgr', 'GM', 'Mgr', 'Stew', 'View'];
   const M = [
-    ['Create a new customer (submit)', 'Own', '—', '—', '—', '—', '—', 'bulk', '—'],
-    ['Approve — Supervisor step', '—', 'Team', '—', '—', '—', 'Rgn*', '—', '—'],
-    ['Approve — Finance Manager step', '—', '—', '—', 'All', '—', '—', '—', '—'],
-    ['Approve — GM step', '—', '—', '—', '—', 'All', '—', '—', '—'],
-    ['Approve — Accountant (final) step', '—', '—', 'Rgn', '—', '—', '—', '—', '—'],
-    ['Reject / return for correction', '—', '✓', '✓', '✓', '✓', '✓', '—', '—'],
-    ['Edit / enrich a customer (submit)', 'Own', '—', '—', '—', '—', '—', '—', '—'],
-    ['Edit a customer directly (no queue)', '—', '—', '—', '—', '—', 'Rgn', 'All', '—'],
-    ['Approve an enrichment edit', '—', 'Team', '—', '—', '—', 'Rgn*', '—', '—'],
-    ['Close a branch (submit + photo)', 'Own', '—', '—', '—', '—', '—', '—', '—'],
-    ['Reactivate a closed branch (approve)', 'req', '—', '—', '—', '—', 'Rgn', '—', '—'],
-    ['Merge duplicate customers', '—', '—', '—', '—', '—', '—', '✓', '—'],
-    ['Import account / customer master', '—', '—', '—', '—', '—', '—', '✓', '—'],
-    ['Run Temix sync (export / refresh)', '—', '—', '—', '—', '—', '—', '✓', '—'],
-    ['Create/manage field users (SM/SUP/VW)', '—', '—', '—', '—', '—', '✓', '✓', '—'],
-    ['Create/manage approver users (ACC/FM/GM)', '—', '—', '—', '—', '—', '—', '✓', '—'],
-    ['View customer records', 'Own', 'Team', 'Rgn', 'All', 'All', 'Rgn', 'All', 'All'],
-    ['Export customer data (scope-filtered)', '—', 'Team', 'Rgn', 'All', 'All', 'Rgn', 'All', 'All'],
+    ['Create a new customer (submit)', 'Own', '—', '—', '—', '—', '—', '—', 'bulk', '—'],
+    ['Approve — Supervisor step', '—', 'Team', '—', '—', '—', '—', 'Rgn*', '—', '—'],
+    ['Approve — Sales Director step', '—', '—', '—', '—', '—', 'All', '—', '—', '—'],
+    ['Upload the signed credit application', 'Own', '—', '—', '—', '—', '—', '—', '—', '—'],
+    ['Approve — Finance Manager step', '—', '—', '—', 'All', '—', '—', '—', '—', '—'],
+    ['Approve — GM step', '—', '—', '—', '—', 'All', '—', '—', '—', '—'],
+    ['Approve — Accountant (final) step', '—', '—', 'Rgn', '—', '—', '—', '—', '—', '—'],
+    ['Reject / return one step back', '—', '✓', '✓', '✓', '✓', '✓', '✓', '—', '—'],
+    ['Print customer form / credit application', '—', 'Team', 'Rgn', 'All', 'All', 'All', 'Rgn', 'All', 'All'],
+    ['Edit / enrich a customer (submit)', 'Own', '—', '—', '—', '—', '—', '—', '—', '—'],
+    ['Edit a customer directly (no queue)', '—', '—', '—', '—', '—', '—', 'Rgn', 'All', '—'],
+    ['Approve an enrichment edit', '—', 'Team', '—', '—', '—', '—', 'Rgn*', '—', '—'],
+    ['Close a branch (submit + photo)', 'Own', '—', '—', '—', '—', '—', '—', '—', '—'],
+    ['Reactivate a closed branch (approve)', 'req', '—', '—', '—', '—', '—', 'Rgn', '—', '—'],
+    ['Merge duplicate customers', '—', '—', '—', '—', '—', '—', '—', '✓', '—'],
+    ['Import account / customer master', '—', '—', '—', '—', '—', '—', '—', '✓', '—'],
+    ['Run Temix sync (export / refresh)', '—', '—', '—', '—', '—', '—', '—', '✓', '—'],
+    ['Create/manage field users (SM/SUP/VW)', '—', '—', '—', '—', '—', '—', '✓', '✓', '—'],
+    ['Create/manage approver users (ACC/FM/GM/SD)', '—', '—', '—', '—', '—', '—', '—', '✓', '—'],
+    ['View customer records', 'Own', 'Team', 'Rgn', 'All', 'All', 'All', 'Rgn', 'All', 'All'],
+    ['Export customer data (scope-filtered)', '—', 'Team', 'Rgn', 'All', 'All', 'All', 'Rgn', 'All', 'All'],
   ];
   const rows = [headerRow(['Action', ...roles], w, { size: 16 })];
   M.forEach((r, idx) => {
@@ -313,7 +338,7 @@ children.push(body('The table below is the authoritative statement of rights. A 
     }));
   });
   children.push(table(w, rows));
-  children.push(P([txt('* Manager acts on the Supervisor step only as a fallback for their region when the submitter’s Supervisor is unavailable.  “bulk” = via the Steward import, not the per-customer create screen.  “req” = the salesman raises the reactivation request; a Manager approves it.', { italics: true, color: GREY, size: 16 })], { spacing: { before: 80 } }));
+  children.push(P([txt('* Manager acts on the Supervisor step only as a fallback for their region when the submitter’s Supervisor is unavailable.  “bulk” = via the Steward import, not the per-customer create screen.  “req” = the salesman raises the reactivation request; a Manager approves it.  SD = Sales Director.  The signed credit application is the salesman’s own request only; nobody approves that step.  Every print is recorded in the audit log.', { italics: true, color: GREY, size: 16 })], { spacing: { before: 80 } }));
 }
 
 // ═══════════════════ 7. SCENARIO PLAYBOOK ═══════════════════
@@ -324,8 +349,8 @@ children.push(body('Common situations and exactly who does what.'));
   const w = cols(CONTENT_W, [0.5, 2.6, 4.9]);
   const sc = [
     ['A', 'New CASH shop', 'Salesman captures photos + details and submits → Supervisor approves → Accountant approves → customer is live and queued for Temix.'],
-    ['B', 'New CREDIT shop', 'Salesman submits with requested limit + guarantee → Supervisor → Finance Manager → GM → Accountant. Only after the Accountant’s approval does the credit take effect.'],
-    ['C', 'Rejected & corrected', 'Any approver rejects with a reason → the request returns to the salesman as “needs correction” → the salesman fixes and resubmits → the chain restarts from the first step.'],
+    ['B', 'New CREDIT shop', 'Salesman submits with the requested limit and days, the customer’s e-mail and the four credit documents → Supervisor → Sales Director → the credit application is printed, signed and stamped by the customer, and uploaded by the salesman (3 working days) → Finance Manager → GM → Accountant. Only after the Accountant’s approval does the credit take effect.'],
+    ['C', 'Sent back & corrected', 'An approver sends the request back with a reason → it returns one step (a Finance Manager send-back returns to the signed-application step; the Supervisor’s returns it to the salesman as “needs correction”) → the salesman fixes and resubmits → the chain restarts from the first step.'],
     ['D', 'Adding a missing phone / photo', 'Salesman opens the live customer, edits, submits → Supervisor approves → change goes live. (No finance involvement — enrichment is a single step.)'],
     ['E', 'A shop closes', 'Salesman photographs the shut shop and submits a closure → Supervisor approves → the branch is marked CLOSED.'],
     ['F', 'A closed shop reopens', 'Salesman photographs the reopened shop and submits a reactivation → a MANAGER reviews the fresh photo and approves → the branch is ACTIVE again.'],
@@ -336,6 +361,7 @@ children.push(body('Common situations and exactly who does what.'));
     ['K', 'Change a customer to CREDIT', 'This is NOT an edit. The payment basis cannot be switched in the edit screen; it is handled as a fresh credit onboarding / via Temix, so finance and GM review it.'],
     ['L', 'A bulk load is interrupted', 'Everything already promoted is saved. The batch shows “Promote interrupted” and appears in the Steward’s work list as “Import to resume”; the Steward clicks Resume promote and it continues from exactly where it stopped. Nothing is loaded twice or skipped (§8.3).'],
     ['M', 'Rows rejected during a load', 'A rejected row is NOT in the master. The Steward reviews each one (rejected rows are listed first, with the reason), corrects the source file, and re-imports the affected customers. The load is not complete until every rejected and quarantined row is resolved or formally accepted (§8.4).'],
+    ['N', 'Print a credit application or customer form', 'Anyone but the salesman, within what they may see, uses the page’s Print button → the print is recorded in the audit log → the browser prints or saves a PDF. A credit application can be printed only while the request waits for the customer’s signature.'],
   ];
   const rows = [headerRow(['#', 'Scenario', 'Who does what'], w)];
   sc.forEach((r, idx) => rows.push(new TableRow({
@@ -354,7 +380,7 @@ children.push(body('The customer master is first populated — and thereafter re
 
 children.push(H2('8.1  Order of loading (mandatory)'));
 children.push(bullet([txt('1. Create the MANAGER and STEWARD accounts in the application first. ', { bold: true }), txt('The import deliberately CANNOT create these two roles, so that no administrative account can ever be introduced from a spreadsheet. (On a brand-new system the very first Steward is created by IT through a one-time, audited bootstrap procedure, because no account able to create a Steward exists yet; every Steward after that is created in the application.)')]));
-children.push(bullet([txt('2. Import the Account master ', { bold: true }), txt('— regions, then routes, then people (salesmen, supervisors, accountants, Finance Manager, GM, viewers). Routes must exist before the customers that reference them.')]));
+children.push(bullet([txt('2. Import the Account master ', { bold: true }), txt('— regions, then routes, then people (salesmen, supervisors, accountants, Finance Manager, GM, Sales Director, viewers). Routes must exist before the customers that reference them.')]));
 children.push(bullet([txt('3. Import the Customer master ', { bold: true }), txt('— customers and their branches, one row per branch.')]));
 children.push(body([txt('Regions and routes are matched on their CODE, never their name. ', { bold: true }), txt('A customer whose region or route code is unknown is parked in an UNASSIGNED area with a warning for the Steward to resolve — it is never silently discarded.')]));
 
@@ -391,11 +417,11 @@ children.push(body([txt('A load is not complete when the screen stops moving; it
 children.push(body([txt('Unresolved rejected or quarantined rows are missing customers. ', { bold: true, color: AMBER }), txt('They must be corrected and re-imported, or explicitly signed off as excluded, before the load is treated as complete.')]));
 
 children.push(H2('8.5  Bulk-loaded customers do not pass through the approval chain'));
-children.push(body([txt('This is a deliberate policy decision requiring management endorsement. ', { bold: true }), txt('Customers introduced by a bulk import are existing NMWC customers being migrated or reconciled from Temix — not new applications — so they are created directly and do NOT travel the Supervisor / Finance Manager / GM / Accountant chain described in §5. Any customer created in the field after go-live does follow that chain in full.')]));
+children.push(body([txt('This is a deliberate policy decision requiring management endorsement. ', { bold: true }), txt('Customers introduced by a bulk import are existing NMWC customers being migrated or reconciled from Temix — not new applications — so they are created directly and do NOT travel the Supervisor / Sales Director / Finance Manager / GM / Accountant chain described in §5. Any customer created in the field after go-live does follow that chain in full.')]));
 children.push(body('The compensating controls are that importing is restricted to the Data Steward alone, that the Steward sits outside the approval chain and so cannot approve their own work, that every import and every promotion pass is written to the immutable audit log with its counts, and that the reconciliation in §8.4 is mandatory.'));
 
 children.push(H2('8.6  What an import may and may not create'));
-children.push(bullet([txt('May create or update: ', { bold: true }), txt('regions, routes, user accounts for salesmen, supervisors, accountants, Finance Manager, GM and viewers; customers and their branches.')]));
+children.push(bullet([txt('May create or update: ', { bold: true }), txt('regions, routes, user accounts for salesmen, supervisors, accountants, Finance Manager, GM, Sales Director and viewers; customers and their branches.')]));
 children.push(bullet([txt('May never create: ', { bold: true }), txt('MANAGER or STEWARD accounts — these exist only through the application, created by an existing administrator. An import may also never promote an existing user INTO, or demote one OUT OF, those two roles. Administrative privilege therefore cannot be granted from a spreadsheet under any circumstances.')]));
 children.push(bullet([txt('Never overwritten by a re-import: ', { bold: true }), txt('an existing user keeps their password, role and supervisor unless the file explicitly says otherwise; and field-captured customer data (photographs, GPS, equipment counts, contacts) is never cleared by a blank cell in a later file.')]));
 
@@ -419,15 +445,15 @@ children.push(body([txt('Direction of credit: ', { bold: true }), txt('credit li
 
 // ═══════════════════ 10. CONTROLS ═══════════════════
 children.push(H1('10.  Controls, Safeguards & Audit'));
-children.push(bullet([txt('Evidence-gated creation: ', { bold: true }), txt('a customer cannot be submitted without the CR photo and the branch shop/signboard photos; credit requires a guarantee document.')]));
-children.push(bullet([txt('Three-tier credit control: ', { bold: true }), txt('every credit customer is reviewed by Finance Manager, GM and Accountant; the requested figures cannot be silently amended by an approver.')]));
-children.push(bullet([txt('Segregation of the approver tier: ', { bold: true }), txt('only the Steward can create Accountant / Finance Manager / GM accounts — a regional Manager cannot mint or take over the credit-approval chain.')]));
+children.push(bullet([txt('Evidence-gated creation: ', { bold: true }), txt('a customer cannot be submitted without the CR photo and the branch shop/signboard photos; credit requires the customer’s e-mail and the four credit documents, and the customer’s signed credit application before the finance review.')]));
+children.push(bullet([txt('Four-tier credit control: ', { bold: true }), txt('every credit customer is reviewed by the Sales Director, the Finance Manager, the GM and the Accountant; the requested figures cannot be silently amended by an approver; nobody acts on two different steps of the same request.')]));
+children.push(bullet([txt('Segregation of the approver tier: ', { bold: true }), txt('only the Steward can create Accountant / Finance Manager / GM / Sales Director accounts — a regional Manager cannot mint or take over the credit-approval chain.')]));
 children.push(bullet([txt('Region containment: ', { bold: true }), txt('users only see and act on their own scope; an unscoped user sees nothing by default.')]));
 children.push(bullet([txt('Duplicate protection: ', { bold: true }), txt('the system flags customers that share a CR number or phone across different entities for steward review; merges are steward-only and confirmed.')]));
-children.push(bullet([txt('Confidential documents: ', { bold: true }), txt('CR and credit-guarantee documents are never cached by the browser and are access-checked on every view.')]));
+children.push(bullet([txt('Confidential documents: ', { bold: true }), txt('the CR copy, the credit documents, the signed credit application and guarantee documents are never cached by the browser, are access-checked on every view, and every view is recorded.')]));
 children.push(bullet([txt('Bulk-load reconciliation: ', { bold: true }), txt('importing is restricted to the Data Steward, who sits outside the approval chain; every load — and every pass of a resumed load — is written to the audit log with its counts; and the load is not complete until Promoted + Rejected + Quarantined equals Total (§8.4).')]));
 children.push(bullet([txt('No silent data loss on import: ', { bold: true }), txt('a customer whose region or route is unknown is parked in UNASSIGNED with a warning rather than discarded; a customer that could not be loaded because of a technical fault is retried automatically rather than written off; and a load that stops making progress halts and reports instead of retrying indefinitely.')]));
-children.push(bullet([txt('Full audit trail: ', { bold: true }), txt('every create, approve, reject, edit, merge, import and administrative action is recorded immutably.')]));
+children.push(bullet([txt('Full audit trail: ', { bold: true }), txt('every create, approve, reject, edit, merge, import, print and administrative action is recorded immutably. A print record shows a deliberate request to print; it does not prevent a copy of what is on screen.')]));
 
 // ═══════════════════ 11. EXCEPTIONS ═══════════════════
 children.push(H1('11.  Exceptions & Escalation'));

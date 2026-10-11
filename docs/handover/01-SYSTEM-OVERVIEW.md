@@ -303,20 +303,22 @@ PRIVATE-HANDOVER.md, never in this repo.
 
 ## 3. Roles and what each can do
 
-There are eight roles (the `Role` enum in `prisma/schema.prisma`). Checks live in
+There are nine roles (the `Role` enum in `prisma/schema.prisma`; `SALES_DIRECTOR` since
+the owner decisions of 2026-10-11, branch `claude/credit-flow`). Checks live in
 `lib/permissions.ts` and `lib/access.ts`. The landing page per role is
 `lib/role-home.ts`; the menu per role is `NAV_BY_ROLE` in
 `components/nmwc/Sidebar.tsx`.
 
 | Role | Sees | Lands on | Can do |
 |---|---|---|---|
-| `SALESMAN` | His own route only | `/today` | Enrich customers on his route (update requests). The **only** role that starts a new-customer request, a close-shop request or a reactivation request. Uploads and attaches photos he captured. `legalName` is always locked for him; `crNumber` is locked on CREDIT customers. |
+| `SALESMAN` | His own route only | `/today` | Enrich customers on his route (update requests). The **only** role that starts a new-customer request, a close-shop request or a reactivation request. Uploads and attaches photos he captured. `legalName` is always locked for him; `crNumber` is locked on CREDIT customers. On a credit request he holds the **signed-application step**: he uploads the customer's signed and stamped credit application (`services/signed-form.ts`). The only role that cannot print. |
 | `SUPERVISOR` | His direct reports' routes | `/approvals` | Approves the **Supervisor step** for his reports. Sees "My team". Exports his team's routes. Cannot edit customers. |
 | `MANAGER` | His managed regions | `/dashboard` | **Direct write**: his edits apply at once, with no approval (audited). Acts as the **fallback approver on the Supervisor step** for any request whose branches overlap his regions. The **only** role that decides reactivations. Archives a customer when every live branch is in his regions. Administers `SALESMAN` and `SUPERVISOR` accounts, and routes, in his regions. Exports, reads the audit log, the Service status page and the dashboard of his regions (4.17). |
 | `STEWARD` (Data Steward) | Everything | `/import` | Imports, duplicates and merge, Temix batches, direct write, archive. Creates regions and routes. Administers every role. Exports, audit log, Service status, the dashboard (from the menu). |
 | `ACCOUNTANT` | His managed regions | `/approvals` | The **final step** of both new-customer chains (cash and credit). |
 | `FINANCE_MANAGER` | Everything (read) | `/approvals` | A step on the **credit** new-customer chain only. Approves or rejects the requested credit figures; never amends them. |
 | `GM` | Everything (read) | `/approvals` | A step on the **credit** new-customer chain only, after the Finance Manager. Always required. |
+| `SALES_DIRECTOR` | Everything (read) | `/approvals` | One for every region in Oman, with the **GM's access everywhere** (owner decisions 2026-10-11). A step on the **credit** new-customer chain only, after the Supervisor. Created by the Steward on `/users`. |
 | `VIEWER` | Everything (read) | `/dashboard` | Read and export org-wide, including CR and guarantee documents. Cannot edit. The dashboard shows the whole organisation (4.17). |
 
 **How the Supervisor step really works.** The design lets regional Managers supervise
@@ -421,10 +423,19 @@ flowchart LR
         c1["Supervisor step"] --> c2["Accountant"] --> c9["Finalize"]
     end
     subgraph K["CREATE, CREDIT"]
-        k1["Supervisor step"] --> k2["Finance Manager"] --> k3["GM"] --> k4["Accountant"] --> k9["Finalize"]
+        k1["Supervisor step"] --> k5["Sales Director"] --> k6["Signed application (the salesman)"] --> k2["Finance Manager"] --> k3["GM"] --> k4["Accountant"] --> k9["Finalize"]
     end
 ```
 
+- **The credit chain** (owner decisions 2026-10-11, `CHAIN_VERSION` 2): a credit request
+  also carries the customer's e-mail and four credit documents (owner's ID card,
+  membership certificate, VAT registration certificate, tax card); the guarantee is
+  switched off (`lib/credit-documents.ts`). After the Sales Director approves, the credit
+  application is printed (`/print/credit-application/<request>`; every role but the
+  salesman prints, and every print is a `PRINT` audit row), and the salesman uploads it
+  signed and stamped within 3 working days. Nobody approves that step. A credit request
+  sent before 2026-10-11 keeps the 4-step chain frozen on it. Details: AUDITOR-BRIEF
+  (CREATE, Printouts) and 04-PENDING A8.
 - **Reject** steps back one step. From the first step it goes to `NEEDS_CORRECTION`. A
   second reject by the same step in one cycle goes straight to `NEEDS_CORRECTION`. A
   resubmission starts a new cycle.

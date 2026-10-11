@@ -35,6 +35,12 @@
 -- production and passed smoke. From then on the rollback target is the
 -- foundation's deployment, never an older one; rolling back past it needs every
 -- row holding a new value re-kinded or removed first.
+-- A rollback from the full build TO the foundation corrupts nothing, but it
+-- FREEZES every credit request frozen with the new 6-step chain until the roll
+-- forward: the foundation knows no signed-application step (a Sales Director's
+-- approve still moves a request into it, and then nobody can upload, withdraw or
+-- decide it), and its finalize asks for a guarantee the new chain does not carry.
+-- Once any 6-step request exists, prefer a roll-forward fix.
 ALTER TYPE "Role" ADD VALUE IF NOT EXISTS 'SALES_DIRECTOR';
 
 ALTER TYPE "AttachmentKind" ADD VALUE IF NOT EXISTS 'ID_CARD';

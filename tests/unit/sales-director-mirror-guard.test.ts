@@ -35,8 +35,6 @@ const ALLOWED: Record<string, string> = {
   'lib/working-hours.ts': 'per-step SLA budgets; the Sales Director has his own entry',
   // The plan per late step: who is told depends on which step is late.
   'lib/escalation.ts': 'per-step escalation targets, decided one step at a time',
-  // The 2026-07 SOP document generator: a frozen description of the old chain.
-  'scripts/build-sop-doc.cjs': 'historical SOP document builder for the old credit chain',
   // The Muscat pilot seed refuses production and seeds the pilot's own accounts.
   'prisma/seed-muscat-pilot.ts': 'the pilot seed, which issued no Sales Director',
 };

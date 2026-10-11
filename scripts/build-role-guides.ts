@@ -488,9 +488,61 @@ const SALESMAN_EN: Guide = {
         ],
       },
     },
+    // Owner decisions 2026-10-11: the credit flow — the e-mail and the four credit
+    // documents at submit, and the salesman's own signed-application step.
+    {
+      number: 10,
+      title: 'A new customer on credit terms',
+      intro:
+        'Since 11 October 2026 a credit customer needs more documents, and one more errand from you: the customer’s signed credit application. A cash customer is unchanged.',
+      steps: [
+        {
+          html: 'Tap <strong>New customer</strong> in the menu and choose <strong>Credit</strong> payment terms. Fill in the customer and the shop as for a cash customer.',
+        },
+        { html: 'Type the customer’s <strong>E-mail</strong>. It is required for a credit customer.' },
+        {
+          html: 'Under <strong>Credit application</strong>, type the requested credit limit (OMR) and payment term (days). The Finance Manager and the GM approve or reject these figures; they cannot change them.',
+        },
+        {
+          html: 'Under <strong>Credit documents</strong>, take a clear photo of every page of the owner’s ID card, the membership certificate, the VAT registration certificate and the tax card (up to 4 pages each). All four are required, with the CR copy. No guarantee document is asked for.',
+        },
+        {
+          html: 'Submit. The request goes to your supervisor (in NMWC, your manager), then to the Sales Director.',
+        },
+        {
+          html: 'When the Sales Director approves, you get a red alert, <strong>Signed credit application needed</strong>, with the time it is due: <strong>3 working days</strong>. Your supervisor or manager prints the credit application for you.',
+        },
+        {
+          html: 'Take the printed application to the customer. The customer writes the name and designation, signs, and stamps it with the company stamp.',
+        },
+        {
+          html: 'Open the alert, or the request under <strong>Work items</strong>. Take a clear photo of each page up to and including the page with the signature and stamp (at most 6). Leave out the <strong>Photos &amp; documents</strong> pages after it: the CRM already has them. Tap <strong>Send signed application</strong>.',
+        },
+        {
+          html: 'The request goes on to the Finance Manager, the GM and the Accountant. The customer is created when the Accountant approves.',
+        },
+      ],
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'Late after 3 working days',
+          body: 'If the signed application is not uploaded in time, you and your managers are told, and later the GM and the Sales Director.',
+        },
+        {
+          kind: 'info',
+          title: 'Sent back by the Finance Manager',
+          body: 'The request comes back to you at the same step, with the reason. Keep the pages that are right, retake the others, and tap <strong>Send signed application</strong> again.',
+        },
+        {
+          kind: 'info',
+          title: 'The customer will not sign',
+          body: 'Open the request and tap <strong>Withdraw this request</strong> at the bottom of the page. It is closed for good, and the CR number and the shop are free again.',
+        },
+      ],
+    },
   ],
   ref: {
-    title: '10. Quick reference card',
+    title: '11. Quick reference card',
     intro: 'Keep this page handy in your first weeks.',
     tables: [
       {
@@ -687,9 +739,40 @@ const SUPERVISOR_EN: Guide = {
         ],
       },
     },
+    // Owner decisions 2026-10-11 (part C): the printouts.
+    {
+      number: 8,
+      title: 'Print the credit application and the customer form',
+      intro:
+        'Since 11 October 2026. Every role except the salesman can print, within what it can already see; every print is recorded in the audit log.',
+      steps: [
+        {
+          html: 'A credit request of one of your salesmen goes to the Sales Director after you approve it. When the Sales Director approves, you get an alert, <strong>Credit application to print</strong>, and the request is listed under <strong>Work items</strong>.',
+        },
+        {
+          html: 'Open it. The yellow note says the request is waiting for the salesman’s signed application. Tap <strong>Print credit application</strong>: it opens in a new tab.',
+        },
+        {
+          html: 'Tap <strong>Print / Save as PDF</strong>. The app records the print first, then opens the browser’s print dialog. Choose A4 and untick <strong>Headers and footers</strong>. Print it, or save the PDF and send it to the salesman.',
+        },
+        {
+          html: 'The salesman has the customer sign and stamp it and uploads it within 3 working days. The request then goes to the Finance Manager.',
+        },
+        {
+          html: 'Every customer you can open has a <strong>Print customer form</strong> button on its page: both codes, the details, the location, the photos and documents, the approval trail and the approvers’ signature boxes.',
+        },
+      ],
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'Use the Print button',
+          body: 'Printed with Ctrl+P or the browser menu, the page prints a notice instead of the form: only a print the button started is recorded. Print from a computer: printing from a phone or tablet has not been checked yet.',
+        },
+      ],
+    },
   ],
   ref: {
-    title: '8. Quick reference card',
+    title: '9. Quick reference card',
     tables: [
       {
         title: 'Buttons',
@@ -925,9 +1008,45 @@ const MANAGER_EN: Guide = {
         ],
       },
     },
+    // Owner decisions 2026-10-11: the credit chain, the printouts, and a leaver
+    // with a request at his signed-application step.
+    {
+      number: 10,
+      title: 'Credit requests: print the application and the customer form',
+      intro:
+        'Since 11 October 2026 a credit request goes: Supervisor step (you) → Sales Director → the salesman’s signed application → Finance Manager → GM → Accountant. Cash requests are unchanged.',
+      steps: [
+        {
+          html: 'Approve or reject the Supervisor step of a credit request as for any new customer. Check the customer’s e-mail and the credit documents: the owner’s ID card, the membership certificate, the VAT registration certificate and the tax card.',
+        },
+        {
+          html: 'When the Sales Director approves, you get <strong>Credit application to print</strong> (it is also under <strong>Work items</strong>). Open the request and tap <strong>Print credit application</strong> in the yellow note.',
+        },
+        {
+          html: 'Tap <strong>Print / Save as PDF</strong>: the print is recorded, then the browser’s print dialog opens. Choose A4 and untick <strong>Headers and footers</strong>. Give the copy to the salesman.',
+        },
+        {
+          html: 'The salesman uploads the signed and stamped application within 3 working days. If he is late, you are told.',
+        },
+        { html: 'Every customer page has a <strong>Print customer form</strong> button.' },
+        { html: 'Every print is a <strong>PRINT</strong> row in the audit log.' },
+      ],
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'Use the Print button',
+          body: 'Printed with Ctrl+P or the browser menu, the page prints a notice instead of the form: only a print the button started is recorded. Print from a computer: printing from a phone or tablet has not been checked yet.',
+        },
+        {
+          kind: 'info',
+          title: 'Disabling a salesman with a request at that step',
+          body: 'Only he can upload the signed application or close the request. When you disable him, the app says so and asks again; confirm, and the request is withdrawn with the disable. A withdrawn request is closed for good, and its CR number and shop are free again.',
+        },
+      ],
+    },
   ],
   ref: {
-    title: '10. Quick reference card',
+    title: '11. Quick reference card',
     tables: [
       {
         title: 'Manager-only actions',
@@ -1099,7 +1218,7 @@ const STEWARD_EN: Guide = {
         {
           kind: 'danger',
           title: 'Imported customers skip the approval chain',
-          body: 'Customers loaded this way are created directly — they do not go through Supervisor → Finance → GM → Accountant. That is deliberate (they are existing customers being migrated) and it is why importing is yours alone and fully audited. Every customer created in the field after go-live follows the chain in full.',
+          body: 'Customers loaded this way are created directly — they do not go through the approval chain (cash: Supervisor → Accountant; credit, since 11 October 2026: Supervisor → Sales Director → the salesman’s signed application → Finance Manager → GM → Accountant). That is deliberate (they are existing customers being migrated) and it is why importing is yours alone and fully audited. Every customer created in the field after go-live follows the chain in full.',
         },
       ],
     },
@@ -1175,7 +1294,10 @@ const STEWARD_EN: Guide = {
         // filters by action, entity type and entity id; the customer page has no
         // History. The rest is stored but no page reads it.
         {
-          html: 'Each row: when, who, what action (CREATE / UPDATE / APPROVE / REJECT / MERGE / IMPORT / REACTIVATE / LOGIN / LOGIN_FAIL / FORCE_OVERRIDE / DELETE / SOFT_DELETE / PHOTO_VIEW), on which record (its type and the start of its id), and the reason if one was given. The IP, user-agent and old and new values are stored with the row as well, but this page does not show them: reading them takes a database query by head-office ops.',
+          html: 'Each row: when, who, what action (CREATE / UPDATE / APPROVE / REJECT / MERGE / IMPORT / REACTIVATE / LOGIN / LOGIN_FAIL / FORCE_OVERRIDE / DELETE / SOFT_DELETE / PHOTO_VIEW / PRINT), on which record (its type and the start of its id), and the reason if one was given. The IP, user-agent and old and new values are stored with the row as well, but this page does not show them: reading them takes a database query by head-office ops.',
+        },
+        {
+          html: '<strong>PRINT</strong> (since 11 October 2026): someone used the Print button on a credit application (entity CustomerEdit, reason “credit application printed”) or a customer form (entity Customer, “customer form printed”). It is written when the print dialog opens, so it records a deliberate request to print — not that paper came out, and it does not stop a screenshot or a saved page.',
         },
         {
           html: 'Filter by action type, by entity type (Customer / Branch / CustomerEdit / User / ImportBatch / Attachment / Export), or by a record id in <strong>Entity ID contains…</strong>. There is no filter by person or by date range: the newest rows come first, 50 to a page.',
@@ -1242,6 +1364,12 @@ const STEWARD_EN: Guide = {
         },
         {
           html: "You CAN onboard a new manager (since managers don't have a higher-rank approver) — head office hands you the request, you create the user record with the MANAGER role and the regions they cover.",
+        },
+        {
+          html: 'The <strong>Sales Director</strong> (since 11 October 2026) is one approver for all of Oman, with the GM’s access everywhere; he approves the step after the Supervisor on every credit request. You create his account on <strong>Users</strong> with the <strong>Sales Director</strong> role, as you create the Finance Manager and the GM — a Manager cannot.',
+        },
+        {
+          html: 'A salesman with a credit request waiting for the customer’s signed application holds it alone: nobody else can upload it, send it back or close it. <strong>Disable</strong> says so and asks again; confirm, and the request is withdrawn with the disable. <strong>Edit account</strong> refuses a route or role change that would strand it until you tick <strong>Withdraw them with this change</strong>. A withdrawn request is closed for good, and its CR number and shop are free again.',
         },
       ],
     },
@@ -1610,9 +1738,58 @@ const SALESMAN_AR: Guide = {
         ],
       },
     },
+    // Owner decisions 2026-10-11: the credit flow (see SALESMAN_EN section 10).
+    {
+      number: 10,
+      title: 'عميل جديد بنظام الائتمان (آجل)',
+      intro:
+        'منذ 11 أكتوبر 2026 يحتاج عميل الائتمان إلى مستندات إضافية، وإلى مهمة إضافية منك: طلب الائتمان موقّعًا ومختومًا من العميل. عميل النقد بلا تغيير.',
+      steps: [
+        {
+          html: 'اضغط <strong>New customer</strong> (عميل جديد) في القائمة واختر شروط الدفع <strong>Credit</strong> (ائتمان). أدخل بيانات العميل والمحل كما تفعل لعميل النقد.',
+        },
+        { html: 'اكتب <strong>البريد الإلكتروني</strong> للعميل (E-mail). وهو إلزامي لعميل الائتمان.' },
+        {
+          html: 'في قسم <strong>Credit application</strong> اكتب حد الائتمان المطلوب (بالريال العماني) ومدة السداد (بالأيام). المدير المالي والمدير العام يعتمدان هذه الأرقام أو يرفضانها، ولا يمكنهما تعديلها.',
+        },
+        {
+          html: 'في قسم <strong>Credit documents</strong> التقط صورة واضحة لكل صفحة من: بطاقة هوية المالك، وشهادة العضوية، وشهادة التسجيل في ضريبة القيمة المضافة، والبطاقة الضريبية (حتى 4 صفحات لكل منها). كلها إلزامية مع نسخة السجل التجاري. لم يعد مستند الضمان مطلوبًا.',
+        },
+        { html: 'أرسل الطلب. يذهب إلى مشرفك (في NMWC هو مديرك)، ثم إلى مدير المبيعات.' },
+        {
+          html: 'عندما يعتمد مدير المبيعات الطلب يصلك تنبيه أحمر <strong>Signed credit application needed</strong> مع موعد التسليم: <strong>3 أيام عمل</strong>. مشرفك أو مديرك يطبع لك طلب الائتمان.',
+        },
+        {
+          html: 'خذ الطلب المطبوع إلى العميل. يكتب العميل الاسم والمسمى الوظيفي، ويوقّع، ويختم بختم الشركة.',
+        },
+        {
+          html: 'افتح التنبيه، أو الطلب من <strong>Work items</strong>. التقط صورة واضحة لكل صفحة حتى الصفحة التي عليها التوقيع والختم، وهذه الصفحة معها (6 صفحات كحد أقصى). لا تصوّر صفحات <strong>Photos &amp; documents</strong> التي تليها، فهي موجودة في النظام. اضغط <strong>Send signed application</strong>.',
+        },
+        {
+          html: 'يذهب الطلب بعد ذلك إلى المدير المالي، ثم المدير العام، ثم المحاسب. يُنشأ العميل عند اعتماد المحاسب.',
+        },
+      ],
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'التأخير بعد 3 أيام عمل',
+          body: 'إذا لم يُرفع الطلب الموقّع في الموعد، تُبلَّغ أنت ومديرو منطقتك، ثم المدير العام ومدير المبيعات.',
+        },
+        {
+          kind: 'info',
+          title: 'إذا أعاده المدير المالي',
+          body: 'يعود الطلب إليك في الخطوة نفسها مع السبب. احتفظ بالصفحات السليمة، وأعد تصوير الباقي، ثم اضغط <strong>Send signed application</strong> مرة أخرى.',
+        },
+        {
+          kind: 'info',
+          title: 'إذا رفض العميل التوقيع',
+          body: 'افتح الطلب واضغط <strong>Withdraw this request</strong> أسفل الصفحة. يُغلق الطلب نهائيًا، ويصبح رقم السجل التجاري والمحل متاحين من جديد.',
+        },
+      ],
+    },
   ],
   ref: {
-    title: '10. بطاقة مرجعية سريعة',
+    title: '11. بطاقة مرجعية سريعة',
     intro: 'احتفظ بهذه الصفحة معك في أول أسابيعك.',
     tables: [
       {
@@ -1801,9 +1978,40 @@ const SUPERVISOR_AR: Guide = {
         ],
       },
     },
+    // Owner decisions 2026-10-11 (part C): the printouts (see SUPERVISOR_EN section 8).
+    {
+      number: 8,
+      title: 'طباعة طلب الائتمان ونموذج العميل',
+      intro:
+        'منذ 11 أكتوبر 2026. كل الأدوار ما عدا المندوب يمكنها الطباعة، في حدود ما تراه أصلًا؛ وكل طباعة تُسجَّل في سجل التدقيق.',
+      steps: [
+        {
+          html: 'بعد أن تعتمد طلب ائتمان لأحد مندوبيك يذهب إلى مدير المبيعات. عندما يعتمده يصلك تنبيه <strong>Credit application to print</strong>، ويظهر الطلب في <strong>Work items</strong>.',
+        },
+        {
+          html: 'افتحه. الملاحظة الصفراء تقول إن الطلب ينتظر الطلب الموقّع من المندوب. اضغط <strong>Print credit application</strong>؛ يُفتح في تبويب جديد.',
+        },
+        {
+          html: 'اضغط <strong>Print / Save as PDF</strong>. يسجّل التطبيق الطباعة أولًا ثم يفتح نافذة الطباعة في المتصفح. اختر A4 وألغِ تحديد <strong>Headers and footers</strong> (الرأس والتذييل). اطبعه، أو احفظه PDF وأرسله إلى المندوب.',
+        },
+        {
+          html: 'يأخذ المندوب توقيع العميل وختمه، ويرفعه خلال 3 أيام عمل. ثم يذهب الطلب إلى المدير المالي.',
+        },
+        {
+          html: 'في صفحة كل عميل يمكنك فتحه زر <strong>Print customer form</strong>: الرمزان، والبيانات، والموقع، والصور والمستندات، ومسار الاعتماد، وخانات توقيع المعتمدين.',
+        },
+      ],
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'استخدم زر الطباعة',
+          body: 'الطباعة بـ Ctrl+P أو من قائمة المتصفح تطبع إشعارًا بدل النموذج: فقط الطباعة التي يبدأها الزر تُسجَّل. اطبع من حاسوب؛ لم تُختبر الطباعة من الهاتف أو الجهاز اللوحي بعد.',
+        },
+      ],
+    },
   ],
   ref: {
-    title: '8. بطاقة مرجعية سريعة',
+    title: '9. بطاقة مرجعية سريعة',
     tables: [
       {
         title: 'الأزرار',
@@ -2020,9 +2228,44 @@ const MANAGER_AR: Guide = {
         ],
       },
     },
+    // Owner decisions 2026-10-11 (see MANAGER_EN section 10).
+    {
+      number: 10,
+      title: 'طلبات الائتمان: طباعة الطلب ونموذج العميل',
+      intro:
+        'منذ 11 أكتوبر 2026 يمر طلب الائتمان بهذه الخطوات: خطوة المشرف (أنت) ← مدير المبيعات ← الطلب الموقّع من المندوب ← المدير المالي ← المدير العام ← المحاسب. طلبات النقد بلا تغيير.',
+      steps: [
+        {
+          html: 'اعتمد خطوة المشرف لطلب الائتمان أو ارفضها كأي عميل جديد. تحقّق من البريد الإلكتروني للعميل ومن مستندات الائتمان: بطاقة هوية المالك، وشهادة العضوية، وشهادة التسجيل في ضريبة القيمة المضافة، والبطاقة الضريبية.',
+        },
+        {
+          html: 'عندما يعتمد مدير المبيعات يصلك تنبيه <strong>Credit application to print</strong> (ويظهر أيضًا في <strong>Work items</strong>). افتح الطلب واضغط <strong>Print credit application</strong> في الملاحظة الصفراء.',
+        },
+        {
+          html: 'اضغط <strong>Print / Save as PDF</strong>: تُسجَّل الطباعة ثم تُفتح نافذة الطباعة في المتصفح. اختر A4 وألغِ تحديد <strong>Headers and footers</strong>. سلّم النسخة إلى المندوب.',
+        },
+        {
+          html: 'يرفع المندوب الطلب موقّعًا ومختومًا خلال 3 أيام عمل. إذا تأخر تُبلَّغ أنت.',
+        },
+        { html: 'في صفحة كل عميل زر <strong>Print customer form</strong>.' },
+        { html: 'كل طباعة تظهر سطرًا <strong>PRINT</strong> في سجل التدقيق.' },
+      ],
+      callouts: [
+        {
+          kind: 'warn',
+          title: 'استخدم زر الطباعة',
+          body: 'الطباعة بـ Ctrl+P أو من قائمة المتصفح تطبع إشعارًا بدل النموذج: فقط الطباعة التي يبدأها الزر تُسجَّل. اطبع من حاسوب؛ لم تُختبر الطباعة من الهاتف أو الجهاز اللوحي بعد.',
+        },
+        {
+          kind: 'info',
+          title: 'تعطيل مندوب لديه طلب في هذه الخطوة',
+          body: 'وحده يستطيع رفع الطلب الموقّع أو إغلاق الطلب. عند تعطيله يخبرك التطبيق بذلك ويسألك مرة أخرى؛ إذا أكّدت يُسحب الطلب مع التعطيل. الطلب المسحوب يُغلق نهائيًا، ويصبح رقم السجل التجاري والمحل متاحين من جديد.',
+        },
+      ],
+    },
   ],
   ref: {
-    title: '10. بطاقة مرجعية سريعة',
+    title: '11. بطاقة مرجعية سريعة',
     tables: [
       {
         title: 'إجراءات للمدير فقط',
