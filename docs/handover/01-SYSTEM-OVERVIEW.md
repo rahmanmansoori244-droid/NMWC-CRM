@@ -7,8 +7,8 @@
   are in the private handover pack (PRIVATE-HANDOVER.md), which is handed over offline.
   A few things are in neither the repository nor the pack; section 6 lists them.
 - **Other handover files:** start at
-  [`HANDOVER-START-HERE.md`](../../HANDOVER-START-HERE.md). The eight numbered files in
-  [`docs/handover/`](./), 01 to [08 — the knowledge graph](08-KNOWLEDGE-GRAPH.md), are
+  [`HANDOVER-START-HERE.md`](../../HANDOVER-START-HERE.md). The seven numbered files in
+  [`docs/handover/`](./), 01 to [07 — the project history](07-PROJECT-HISTORY.md), are
   listed in reading order in section 7.
 - **"The owner"** in this file is the project owner who is handing over. Product and
   business decisions after the handover go to the person the owner names in
@@ -889,7 +889,6 @@ from `lib/compliance/pii-classification.ts`.
 | `docs/` | Runbooks and records. Current: `HANDOVER.md`, `OPERATIONS.md`, `GO-LIVE-RUNBOOK.md`, `SECRETS-INVENTORY.md`, `CREDENTIAL-ROTATION.md`, `SERVICE-LEVELS.md`, `compliance/`, `import-templates/`, `design/phase2-edit-semantics/`, and this `handover/` set. Role guides (HTML/PDF) in `guide/` are **stale**. A newer English and Arabic guide set (PDFs for the Salesman, Manager, Approvers and Data Steward, a how-it-works guide, and an owner checklist) was produced on 2026-10-04 from the code and given to users; it is in the private pack, not the repository. Whether it replaces `docs/guide/` (after a leak review) is a pending item ([04](04-PENDING-WORK.md)). Many others are historical. |
 | `qa/` | Audit evidence, findings and reports, notably `qa/reports/ENTERPRISE-READINESS-ASSESSMENT.md` and `qa/reports/OWNER-DECISIONS.md`. Partly stale. |
 | `.github/workflows/` | `ci.yml` and seven operational workflows (section 4.15). |
-| `graphify-out/` | A generated knowledge graph of the code and documents, rebuilt on 2026-10-04 from `main` at `9d0fd61`: 4,602 nodes, 10,495 links, 226 clusters. Start at `graphify-out/wiki/index.md` (an article per cluster and per highly connected node); `GRAPH_REPORT.md` is the summary; `graph.html` is the interactive view and needs internet (it loads the vis-network library from unpkg.com); `graph.json` is for tools. Install the tool with `uv tool install graphifyy==0.8.44`. See [08 — the knowledge graph](08-KNOWLEDGE-GRAPH.md). A navigation aid, never a source of truth. |
 | Root files | `middleware.ts`, `auth.config.ts`, `next.config.ts`, `vercel.json`, `instrumentation*.ts`, `sentry.*.config.ts`, `playwright.config.ts`, `vitest.config.ts`, `eslint.config.mjs`. Rules: `CLAUDE.md`, `AGENTS.md`. Records: `AUDITOR-BRIEF.md`, `CHANGELOG.md`. `.env.example` lists variable names with placeholder values. `README.md` is stale. |
 
 **Not in the repository, on purpose:** `.env` files, `golive-data/` (customer data and
@@ -938,7 +937,6 @@ never prints a value.
 5. [05 — Setting up a new computer](05-NEW-COMPUTER-SETUP.md)
 6. [06 — Working with AI agents](06-WORKING-WITH-AI-AGENTS.md)
 7. [07 — Project history](07-PROJECT-HISTORY.md)
-8. [08 — The knowledge graph](08-KNOWLEDGE-GRAPH.md)
 
 | You want | Read |
 |---|---|

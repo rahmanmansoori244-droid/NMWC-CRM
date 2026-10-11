@@ -70,7 +70,6 @@ tests/support        strip-comments (TypeScript-parser based), jsx-ast, where-ev
                      promote, audit (owner-client purge helper)
 docs/, qa/           specs, runbooks, audits — many stale (§15)
 .github/workflows/   ci.yml + 7 operational workflows (§10); dependabot.yml
-graphify-out/        knowledge graph of code + docs, rebuilt 2026-10-04 from 9d0fd61 (docs/handover/08-KNOWLEDGE-GRAPH.md); a map, not a source of truth
 ```
 
 **Route handlers** (`app/api/**/route.ts`):

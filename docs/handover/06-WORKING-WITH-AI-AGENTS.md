@@ -15,8 +15,7 @@ Dependabot:
 
 This page explains how that worked, which files hold the rules, where the written rules
 and the practice differ, and how you can carry on — with the same agents, other agents,
-or none. The other handover pages are in [this folder](./). The knowledge graph has its
-own page: [08 — The knowledge graph](08-KNOWLEDGE-GRAPH.md).
+or none. The other handover pages are in [this folder](./).
 
 **A note on words.** Where the rules say "the owner", read "the person who holds the
 owner's powers now". That is not automatically whoever reads this page. After the
@@ -91,8 +90,7 @@ standing rules, HANDOVER itself, [`AUDITOR-BRIEF.md`](../../AUDITOR-BRIEF.md), t
 [docs/OPERATIONS.md](../OPERATIONS.md) and
 [docs/GO-LIVE-RUNBOOK.md](../GO-LIVE-RUNBOOK.md) before touching production. For the
 handover itself, add [`HANDOVER-START-HERE.md`](../../HANDOVER-START-HERE.md) and the
-pages of this folder in order, 01 to 08; page 8 is
-[the knowledge graph](08-KNOWLEDGE-GRAPH.md).
+pages of this folder in order, 01 to 07.
 
 ---
 
@@ -775,7 +773,7 @@ the part about agents.
 
    ```text
    Read CLAUDE.md (or AGENTS.md), docs/HANDOVER.md, AUDITOR-BRIEF.md,
-   HANDOVER-START-HERE.md and docs/handover/01 to 08 in order.
+   HANDOVER-START-HERE.md and docs/handover/01 to 07 in order.
    Run git fetch and tell me the current origin/main commit and its CI result.
    Summarise what is open and what is the owner's to decide. Change nothing.
    ```
@@ -796,13 +794,6 @@ the part about agents.
    - whether to adopt the review-depth rule (§2.6) into the repository;
    - branch protection or a ruleset for `main`, and credentials for Codex that cannot
      push it (§3).
-8. **The knowledge graph.** See [08 — The knowledge graph](08-KNOWLEDGE-GRAPH.md): what
-   is in `graphify-out/`, how to query it, and how to rebuild it without letting private
-   material in. It was rebuilt on 2026-10-04 from `main` at `9d0fd61` (4,602 nodes,
-   10,495 links, 226 clusters). Point an agent at
-   [`graphify-out/wiki/index.md`](../../graphify-out/wiki/index.md) first.
-   `graph.html` needs internet access: it loads the vis-network library from unpkg.com.
-   The command-line tool is installed with `uv tool install graphifyy==0.8.44`.
 
 ---
 

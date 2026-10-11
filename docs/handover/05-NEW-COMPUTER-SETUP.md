@@ -42,15 +42,13 @@ the pack.** Do not copy the owner's project folder to the new computer.
 | You also copy the owner's main-checkout `.env`, which points at **production** ([HANDOVER.md §3](../HANDOVER.md)), and its `.env.local`, which does too ([CREDENTIAL-ROTATION.md, Step 3](../CREDENTIAL-ROTATION.md)). Anything you run there talks to production. | You choose each env file on purpose and check it first (§6.1). |
 | `node_modules` holds binaries built for the old computer (the Prisma engine, for example). It is also very large. | `npm ci` installs the right ones from `package-lock.json`. |
 | Git worktrees store absolute paths. Worktrees under `.claude/worktrees/` break when the folder moves. Codex's worktrees, and some temporary ones, lived outside the folder entirely, so they would not come with it. Some worktrees have a `node_modules` junction that points at a path on the old computer. | You create the worktrees you need (§7). |
-| Leftovers come too: `.next/`, `tsconfig.tsbuildinfo`, `playwright-report/`, `test-results/`, `sigpipetest/`, graphify caches, and possibly database dump files. | Nothing that is not tracked comes with it. |
+| Leftovers come too: `.next/`, `tsconfig.tsbuildinfo`, `playwright-report/`, `test-results/`, `sigpipetest/`, and possibly database dump files. | Nothing that is not tracked comes with it. |
 | `golive-data/` (customer data and generated passwords) is spread wherever the copy lands. | `golive-data/` goes to exactly one place (§6.2). |
 
 ### If you must copy the folder anyway
 
 - Leave out what is rebuilt or not needed: `node_modules/`, `.next/`, `.claude/worktrees/`,
-  `tsconfig.tsbuildinfo`, `playwright-report/`, `test-results/`, `sigpipetest/`,
-  `graphify-corpus/`, `graphify-out/cache/`, `graphify-out/.graphify_python` and
-  `graphify-out/.graphify_root`.
+  `tsconfig.tsbuildinfo`, `playwright-report/`, `test-results/` and `sigpipetest/`.
 - **[SECRETS]** Leave out what must not travel this way:
   - `golive-data/`. It comes from the pack and lives in one place (§6.2).
   - Every env file except `.env.example`: any name that starts with `.env`, or ends in
@@ -113,7 +111,6 @@ git stash list                                 # the stash is shared by every wo
 | **GitHub CLI (`gh`)** | Signed in with your own account. | CI checks on an exact commit, and the "is the branch up to date" check before a merge. | [AGENTS.md](../../AGENTS.md) "When you finish a task"; [scripts/dev/ci-watch-sha.sh](../../scripts/dev/ci-watch-sha.sh) |
 | **GnuPG (`gpg`)** | Included in Git for Windows (Git Bash). On macOS `brew install gnupg`, on Linux the `gnupg` package. | Opening the private pack (§5) | `HOW-TO-OPEN.txt`, next to the pack |
 | Playwright Chromium (optional) | Install after `npm ci` (§9). | `npm run test:e2e` and the user-guide builds | [playwright.config.ts](../../playwright.config.ts); [ci.yml](../../.github/workflows/ci.yml) |
-| Python + uv (optional) | Only for rebuilding or querying the graphify knowledge graph (§9). Install the tool with `uv tool install graphifyy==0.8.44`. | `graphify-out/` | [08-KNOWLEDGE-GRAPH.md](08-KNOWLEDGE-GRAPH.md) |
 | `psql`, `age`, `shred` (optional) | Only if you will restore a database backup. `age-keygen` also makes the key pair whose public half you give the owner for the backups (§6.3). | Backup restore runbooks | [OPERATIONS.md §6.5](../OPERATIONS.md); [02 §2.10](02-ACCESS-ACCOUNTS-AND-SECRETS.md) |
 | Claude Code / Codex (optional) | Only if you will work with an AI agent. The rules they follow come with the repo. | — | [CLAUDE.md](../../CLAUDE.md), [AGENTS.md](../../AGENTS.md) |
 
@@ -601,30 +598,6 @@ PowerShell, `$env:RUN_<FLAG>` stays set for the rest of that window.
   decisions 2026-10-11). `guide:build` cannot pass that flag to its capture step, so it
   stops there.
 
-**The graphify knowledge graph**
-
-- `graphify-out/` is committed. It was rebuilt on 2026-10-04 from `main` at `9d0fd61`:
-  4,602 nodes, 10,495 links, 226 clusters. Start at `graphify-out/wiki/index.md`, or read
-  `graphify-out/GRAPH_REPORT.md`. You need nothing installed for either.
-  `graphify-out/graph.html` opens in a browser but needs internet: it loads the
-  vis-network library from unpkg.com. [08-KNOWLEDGE-GRAPH.md](08-KNOWLEDGE-GRAPH.md)
-  explains what is in it and how to query and rebuild it.
-- To rebuild or query the graph you need the graphify tool. It is a separate Python tool,
-  not a dependency of this repo. Install the version the graph was built with:
-  `uv tool install graphifyy==0.8.44`. The owner also drove it through a Claude Code
-  skill, which is not in this repository; the commands in
-  [08-KNOWLEDGE-GRAPH.md](08-KNOWLEDGE-GRAPH.md) use the command-line tool.
-- **`graphify-out/` is public.** Rebuild only from the tracked files, as
-  [08-KNOWLEDGE-GRAPH.md](08-KNOWLEDGE-GRAPH.md) describes. Nothing from `golive-data/`,
-  any `.env*` file, `.claude/` or the pack may reach its input. Before committing, check
-  that `graphify-out/manifest.json` and the rest hold no absolute local paths.
-- Do not copy its machine-specific files (`graphify-out/.graphify_python`,
-  `graphify-out/.graphify_root`, `graphify-out/cache/`). They are gitignored.
-- The graph is a map, not the truth. The code and [AUDITOR-BRIEF.md](../../AUDITOR-BRIEF.md)
-  win where they differ. The repository map near the top of the brief describes the
-  2026-10-04 build. Whoever commits a rebuilt graph updates that line in the same change
-  ([AGENTS.md](../../AGENTS.md), "When you finish a task").
-
 **Backup restore tools.** `psql`, `age` and `shred` are needed only for the restore
 runbooks ([OPERATIONS.md §6.5](../OPERATIONS.md)). **[SECRETS]** Restoring also needs the
 backup age private key ([OPERATIONS.md §6.7](../OPERATIONS.md)), which is not in the pack
@@ -736,5 +709,3 @@ in PRIVATE-HANDOVER.md.
   5. 05-NEW-COMPUTER-SETUP.md (this page)
   6. [06-WORKING-WITH-AI-AGENTS.md](06-WORKING-WITH-AI-AGENTS.md)
   7. [07-PROJECT-HISTORY.md](07-PROJECT-HISTORY.md)
-  8. [08-KNOWLEDGE-GRAPH.md](08-KNOWLEDGE-GRAPH.md): the knowledge graph in
-     `graphify-out/`, and how to query and rebuild it.
