@@ -1,0 +1,131 @@
+/*
+ * The printouts (owner decisions 2026-10-11, part C): A4 portrait, browser print
+ * or Save as PDF. Loaded by app/(print)/layout.tsx only, and the printouts are
+ * opened in a tab of their own, which leaves them by a full page load (plain
+ * links, no client navigation). Even so, every rule but the page box and the
+ * printed page's white background is keyed to a print-* class (or .no-print).
+ *
+ * tests/unit/print-css-guard.test.ts pins the rules below that a print depends on.
+ */
+
+@page {
+  size: A4 portrait;
+  margin: 12mm;
+}
+
+/* ── On screen: a toolbar, and the sheet centred at A4 width ── */
+.print-page {
+  min-height: 100vh;
+  background: #e2e8f0;
+  padding-bottom: 24px;
+}
+
+.print-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #cbd5e1;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+
+.print-sheet,
+.print-sheet-message {
+  box-sizing: border-box;
+  width: 210mm;
+  max-width: calc(100% - 16px);
+  margin: 16px auto 0;
+  padding: 12mm;
+  background: #ffffff;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.15);
+}
+
+.print-sheet {
+  min-height: 297mm;
+}
+
+/* An approver opening it on a phone: the A4 margins would leave a strip of text. */
+@media screen and (max-width: 640px) {
+  .print-sheet,
+  .print-sheet-message {
+    padding: 16px;
+  }
+
+  .print-sheet {
+    min-height: 0;
+  }
+}
+
+/* Shown only when printed without the button (below). */
+.print-blocked {
+  display: none;
+}
+
+/* ── Printed ── */
+@media print {
+  html,
+  body,
+  .print-page {
+    background: #ffffff !important;
+  }
+
+  .print-page {
+    min-height: 0;
+    padding: 0;
+  }
+
+  /* Pills, borders and the section headers' tint print as on screen. */
+  .print-page,
+  .print-page * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-sheet {
+    width: auto;
+    max-width: none;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+  }
+
+  .print-keep,
+  .print-sheet figure {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .print-new-page {
+    break-before: page;
+    page-break-before: always;
+  }
+
+  /*
+   * Only a print the Print button started carries the form: the button records
+   * it (a PRINT audit row) and sets data-print-ok for that one print. Ctrl+P or
+   * the browser's menu prints this notice instead.
+   */
+  html:not([data-print-ok]) .print-sheet {
+    display: none !important;
+  }
+
+  html:not([data-print-ok]) .print-blocked {
+    display: block !important;
+    margin: 40mm 0 0;
+    font-size: 14pt;
+    font-weight: 600;
+    text-align: center;
+    color: #0f172a;
+  }
+}

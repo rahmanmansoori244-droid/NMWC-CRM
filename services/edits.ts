@@ -116,6 +116,7 @@ import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { finalizeCreateInTx, assertFinalizable } from '@/lib/create-finalize';
 import { normalizeTemixCode, temixCodeProblem } from '@/lib/temix-code';
 import { salesmanSubmitGate, isRequired, type SubmitGate } from '@/lib/submit-gate';
+import { PRINT_REQUEST_TITLE } from '@/lib/print';
 import { openReturnedIds, RETURNED_CLEARED_REASON } from '@/lib/returned-work';
 
 async function requireUser() {
@@ -168,7 +169,8 @@ async function notifySignedFormRequested(
     printers.filter((id) => id !== input.submitter.id),
     {
       kind: 'EDIT_STAGE_ADVANCED',
-      title: 'Credit application to print',
+      // The printout's own action marks this row read for whoever prints (services/prints.ts).
+      title: PRINT_REQUEST_TITLE,
       body: input.sentBack
         ? `${input.requestName} — sent back by the ${input.sentBack.by} for the signed application again. Print the credit application for the salesman if he needs a new copy.`
         : `${input.requestName} — approved by the Sales Director. Print the credit application for the salesman to have signed and stamped.`,

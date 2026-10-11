@@ -194,3 +194,9 @@ async function refundLimitPg(key: string, cfg: RateLimitConfig): Promise<void> {
 export const LOGIN_LIMIT: RateLimitConfig = { capacity: 5, refillPerSec: 5 / 60 };
 export const FORM_LIMIT: RateLimitConfig = { capacity: 60, refillPerSec: 60 / 3600 };
 export const PHOTO_LIMIT: RateLimitConfig = { capacity: 120, refillPerSec: 120 / 3600 };
+/**
+ * Owner decisions 2026-10-11 (part C): recording a print (services/prints.ts).
+ * Light — a print is a read with an audit row — and its own bucket, so a Manager
+ * printing a morning's applications never spends the decisions' FORM_LIMIT.
+ */
+export const PRINT_LIMIT: RateLimitConfig = { capacity: 120, refillPerSec: 120 / 3600 };

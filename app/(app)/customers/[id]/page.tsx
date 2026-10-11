@@ -17,7 +17,8 @@ import { openReturnedIds } from '@/lib/returned-work';
 import { omanWhen } from '@/lib/submission';
 import { ArchiveCustomerButton } from './ArchiveCustomerButton';
 import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
-import { MapPin, Phone, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil } from 'lucide-react';
+import { canPrint } from '@/lib/print';
+import { MapPin, Phone, Mail, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil, Printer } from 'lucide-react';
 
 export const metadata = { title: 'Customer · NMWC' };
 
@@ -127,6 +128,20 @@ export default async function CustomerProfilePage({
             {(session.user.role === Role.STEWARD || session.user.role === Role.MANAGER) && (
               <ArchiveCustomerButton customerId={customer.id} legalName={customer.legalName} />
             )}
+            {/* Owner decisions 2026-10-11 (part C): the final customer form, for
+                every role but the salesman, with the branches this page shows. A
+                tab of its own; the print itself is recorded there. */}
+            {canPrint(session.user.role) && (
+              <a
+                href={`/print/customer/${customer.id}`}
+                target="_blank"
+                rel="noopener"
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-4 py-2.5 text-base font-medium text-slate-700 hover:bg-slate-50"
+              >
+                <Printer className="h-4 w-4" />
+                Print customer form
+              </a>
+            )}
           </div>
         }
       />
@@ -184,6 +199,13 @@ export default async function CustomerProfilePage({
           <Row
             label="Alt phone"
             value={customer.altPhone ? <PhoneLink phone={customer.altPhone} /> : '—'}
+          />
+          {/* Owner decisions 2026-10-11: captured for credit customers only, so a
+              cash customer reads "—". */}
+          <Row
+            label="E-mail"
+            value={customer.email ?? '—'}
+            icon={<Mail className="h-4 w-4 text-slate-400" />}
           />
           <Row
             label="Contact"

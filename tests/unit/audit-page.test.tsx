@@ -241,6 +241,40 @@ describe('photo views are the Data Steward’s alone (data audit 2026-10-10 gap 
   });
 });
 
+describe('owner decisions 2026-10-11 (part C): every print is an ordinary audit row', () => {
+  const actions = () =>
+    [...(document.querySelector('select[name="action"]') as HTMLSelectElement).options].map((o) => o.value).filter(Boolean);
+  const print = (id: string, entityType: 'Customer' | 'CustomerEdit'): Log => ({
+    ...log(id, 'u-mgr', 'Mona Manager'),
+    action: 'PRINT',
+    entityType,
+    entityId: `${entityType === 'Customer' ? 'cu' : 'ed'}-${id}-000000`,
+  });
+
+  it('the Steward is offered PRINT and sees who printed which customer or request', async () => {
+    h.logs = [print('p1', 'Customer'), print('p2', 'CustomerEdit')];
+    await open({ action: 'PRINT' });
+    expect(actions()).toContain('PRINT');
+    expect(h.count).toHaveBeenCalledWith({ where: { action: 'PRINT' } });
+    expect(screen.getAllByText('PRINT', { selector: 'td' })).toHaveLength(2);
+    expect(screen.getByText('Customer/cu-p1-00…')).toBeTruthy();
+    expect(screen.getByText('CustomerEdit/ed-p2-00…')).toBeTruthy();
+  });
+
+  it('a Manager is offered PRINT too, read through his regional scope (Customer and CustomerEdit rows of his regions)', async () => {
+    h.role = 'MANAGER';
+    expect(MANAGER_AUDIT_ACTIONS).toContain('PRINT');
+    expect(MANAGER_AUDIT_ENTITY_TYPES).toEqual(expect.arrayContaining(['Customer', 'CustomerEdit']));
+    await open({ action: 'PRINT' });
+    expect(actions()).toContain('PRINT');
+    expect(h.raw).toHaveLength(2);
+    for (const sql of h.raw) {
+      expect(sql).toContain(`a."entityType" = 'Customer' AND EXISTS`);
+      expect(sql).toContain(`a."entityType" = 'CustomerEdit' AND EXISTS`);
+    }
+  });
+});
+
 describe('the Steward’s filter lists every entity type the code writes to the audit log', () => {
   function sources(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {

@@ -1010,4 +1010,38 @@ describe('owner decisions 2026-10-11: the credit chain on the review page', () =
     expect(screen.queryByText('Credit documents')).toBeNull();
     expect(screen.getByText('Guarantee documents (0)')).toBeTruthy();
   });
+
+  it('part C: the signed-application banner links to the credit application, in a tab of its own', async () => {
+    for (const role of ['SALES_DIRECTOR', 'FINANCE_MANAGER', 'GM']) {
+      h.role = role;
+      await renderPage(createRow('CREDIT', 2));
+      const link = within(screen.getByRole('note')).getByRole('link', { name: 'Print credit application' });
+      expect(link.getAttribute('href'), role).toBe('/print/credit-application/e1');
+      expect(link.getAttribute('target')).toBe('_blank');
+      expect(link.getAttribute('rel')).toBe('noopener');
+      cleanup();
+    }
+    // At any other step there is nothing to print yet.
+    await renderDetail(createRow('CREDIT', 1));
+    expect(screen.queryByRole('link', { name: 'Print credit application' })).toBeNull();
+  });
+
+  it('part C: an approved new customer offers its customer form beside the profile; an archived one does not', async () => {
+    const created = (deletedAt: Date | null) =>
+      createRow('CREDIT', 5, {
+        state: 'APPROVED',
+        customerId: 'c-new',
+        customer: { id: 'c-new', legalName: 'Al Noor Trading', nmwcCode: 'NMWC-2026-000123', crPhotoId: null, branches: [], deletedAt },
+        reviewedBy: { fullName: 'Accountant One' },
+        reviewedAt: new Date('2026-10-11T08:00:00Z'),
+      });
+    await renderPage(created(null));
+    const link = screen.getByRole('link', { name: 'Print customer form' });
+    expect(link.getAttribute('href')).toBe('/print/customer/c-new');
+    expect(link.getAttribute('target')).toBe('_blank');
+    cleanup();
+    await renderPage(created(new Date()));
+    expect(screen.queryByRole('link', { name: 'Print customer form' })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Open profile' })).toBeTruthy();
+  });
 });

@@ -33,6 +33,7 @@ import { EVIDENCE_SELECT, evidenceIds, standsAsEvidence } from '@/lib/status-evi
 import { decisionLaneFor } from '@/lib/decision-lane';
 import { requestScopeBranches } from '@/lib/permissions';
 import { parseSubmitGate } from '@/lib/edit-scope';
+import { canPrint } from '@/lib/print';
 import { AlertTriangle } from 'lucide-react';
 import {
   ApproveRejectActions,
@@ -73,6 +74,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
           nmwcCode: true,
           // Owner decision 2026-10-08: the Temix code the Accountant created it under.
           temixCode: true,
+          // Owner decisions 2026-10-11 (part C): an archived customer has no form to print.
+          deletedAt: true,
           // Go-live review: photos are attached LIVE (outside fieldChanges), so a
           // reviewer of an enrichment edit must see the customer's CURRENT photo
           // slots + GPS to judge it — the diff alone shows only text fields.
@@ -245,6 +248,14 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
   const createdCode = isCreate && edit.state === 'APPROVED' ? (edit.customer?.nmwcCode ?? null) : null;
   // Owner decision 2026-10-08: and the Temix code he typed for it.
   const createdTemixCode = createdCode ? (edit.customer?.temixCode ?? null) : null;
+  // Owner decisions 2026-10-11 (part C): every role but the salesman prints, and
+  // every role that opens this page may. Plain links to a tab of their own: the
+  // printout's page renders no app chrome, and rendering it writes nothing.
+  const mayPrint = canPrint(session.user.role);
+  const printCustomerHref =
+    mayPrint && isCreate && edit.state === 'APPROVED' && edit.customerId && edit.customer && !edit.customer.deletedAt
+      ? `/print/customer/${edit.customerId}`
+      : null;
   const subtitleCode = isCreate
     ? createdCode
       ? `New customer ${createdCode}`
@@ -444,12 +455,24 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
         subtitle={`${subtitleCode} · submitted by ${edit.submittedBy.fullName}${edit.submittedAt ? ' · ' + omanDateTime(edit.submittedAt) : ''}`}
         actions={
           edit.customerId ? (
-            <Link
-              href={`/customers/${edit.customerId}`}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Open profile
-            </Link>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                href={`/customers/${edit.customerId}`}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Open profile
+              </Link>
+              {printCustomerHref && (
+                <a
+                  href={printCustomerHref}
+                  target="_blank"
+                  rel="noopener"
+                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Print customer form
+                </a>
+              )}
+            </div>
           ) : undefined
         }
       />
@@ -531,6 +554,19 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
               </>
             ) : null}
             . It then goes to the Finance Manager.
+            {mayPrint && (
+              <>
+                {' '}
+                <a
+                  href={`/print/credit-application/${edit.id}`}
+                  target="_blank"
+                  rel="noopener"
+                  className="font-semibold underline underline-offset-2"
+                >
+                  Print credit application
+                </a>
+              </>
+            )}
           </p>
         )}
 

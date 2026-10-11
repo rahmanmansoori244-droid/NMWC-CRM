@@ -41,6 +41,10 @@ const EVENT_ONLY: Record<string, { count: number; why: string }> = {
     count: 1,
     why: 'PHOTO_VIEW (data audit 2026-10-10 gap 2): records a read, nothing else is written; a CR or guarantee is not served without its row, any other photo is served and the lost row reported (owner decisions 2026-10-11)',
   },
+  'services/prints.ts': {
+    count: 1,
+    why: 'PRINT of a customer form (owner decisions 2026-10-11, part C): records a read, nothing else is written, and fails closed — the print is not started without its row. The credit application PRINT row commits in the transaction that reads the alert it answers',
+  },
   'services/duplicates.ts': {
     count: 2,
     why: 'Mark distinct and its undo: the audit row IS the record (an append-only ledger read by the detector); there is no other write',
