@@ -71,3 +71,10 @@
 - New alert `SIGNED_FORM_REQUESTED` (red for the salesman, never e-mailed); "Credit application to print" for his supervisor or the region's Managers; steps named in words on every screen and notification
 - Credit documents (`ID_CARD`, `MEMBERSHIP_CERT`, `VAT_CERT`, `TAX_CARD`, `CREDIT_FORM`) handled like CR copies: salesman-only upload, never cached, every view recorded and refused when it cannot be; decisions bound to every one of them
 - Schema: `Customer.email`, `EditCustomerDraft.email`, the new enum values (`AuditAction.PRINT` for part C); two additive migrations, deployed first as the foundation
+
+### Credit flow, part B (owner decisions 2026-10-11)
+- New-customer form, CREDIT only: the customer's **e-mail** (mandatory, trimmed and lower-cased, an e-mail keyboard) and the **four credit documents** — owner's ID card, membership certificate, VAT registration certificate, tax card — up to 4 pages each, a fresh slot after each page (`CreditDocumentSlots`); the submit gate asks for each, beside it
+- The guarantee is **switched off** (`GUARANTEE_REQUIRED_FOR_CREDIT` false, kept): no guarantee slot, no guarantee required; guarantees a returned request carries stay shown, removable and sent again
+- Cash requests: no e-mail stored, no credit document; a request switched to cash releases its documents
+- Finalize: the required documents are read from the chain frozen on the request (4-step chain: a guarantee; 6-step chain: the four documents and the signed application); every live decision-bound document is bound to the customer and the e-mail copied for CREDIT; a missing document is refused by name
+- Launch e2e: the R2 guard of the suite knows the new kinds (the signed-application pages part A uploads were refused at clean-up)
