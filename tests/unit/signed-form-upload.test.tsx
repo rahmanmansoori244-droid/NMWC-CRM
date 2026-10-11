@@ -95,6 +95,10 @@ describe('SignedFormUpload', () => {
     fireEvent.click(sendButton());
     expect(await screen.findByText('A page of the signed application was removed. Take it again.', {}, { timeout: 10_000 })).toBeTruthy();
     expect(nav.hardReplace).not.toHaveBeenCalled();
+    // The refusal can be on screen a render before the transition ends: Send is
+    // still "Sending…" (disabled) then, and a click on it is lost. Send again only
+    // once it is enabled again, as a salesman would.
+    await waitFor(() => expect((sendButton() as HTMLButtonElement).disabled).toBe(false), { timeout: 10_000 });
 
     h.post.mockResolvedValueOnce({ kind: 'unconfirmed' });
     fireEvent.click(sendButton());
