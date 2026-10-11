@@ -37,6 +37,10 @@ const EVENT_ONLY: Record<string, { count: number; why: string }> = {
   'services/customer-export.ts': { count: 1, why: 'EXPORT: records a read, fails closed before the file is returned' },
   'app/api/exports/changes/route.ts': { count: 1, why: 'EXPORT: records a read, fails closed before the file is returned' },
   'services/temix.ts': { count: 1, why: 'EXPORT of a Temix batch re-download (X-TEMIX-2): records a read' },
+  'app/api/photos/[id]/route.ts': {
+    count: 1,
+    why: 'PHOTO_VIEW (data audit 2026-10-10 gap 2): records a read, nothing else is written; a CR or guarantee is not served without its row, any other photo is served and the lost row reported (owner decisions 2026-10-11)',
+  },
   'services/duplicates.ts': {
     count: 2,
     why: 'Mark distinct and its undo: the audit row IS the record (an append-only ledger read by the detector); there is no other write',

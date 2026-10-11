@@ -24,10 +24,27 @@
  * duplicate pairs, no operator runs. Every test is an EXISTS on an indexed key,
  * so the query no longer carries one bound parameter per customer and branch.
  *
+ * And never a STEWARD_ONLY_AUDIT_ACTIONS row (PHOTO_VIEW), even about a photo of
+ * his regions — owner decision 2026-10-11.
+ *
  * No database client of its own: the page passes its client in.
  */
-import { Prisma, type PrismaClient } from '@prisma/client';
+import { AuditAction, Prisma, type PrismaClient } from '@prisma/client';
 import { managerCanAdministerUser } from './permissions';
+
+/**
+ * Gap 2 (data audit 2026-10-10): who opened which photo or document is recorded as
+ * PHOTO_VIEW. Owner decision 2026-10-11: only the Data Steward may read those rows.
+ * Every reader of the audit log for any other role leaves them out — today that is
+ * a Manager's /audit, through managerAuditScopeSql and the action filter he is
+ * offered (MANAGER_AUDIT_ACTIONS).
+ */
+export const STEWARD_ONLY_AUDIT_ACTIONS: readonly AuditAction[] = [AuditAction.PHOTO_VIEW];
+
+/** The actions a Manager's /audit action filter offers. */
+export const MANAGER_AUDIT_ACTIONS: readonly AuditAction[] = Object.values(AuditAction).filter(
+  (a) => !STEWARD_ONLY_AUDIT_ACTIONS.includes(a)
+);
 
 export type ManagerAuditScope = {
   /** The regions he manages; never empty here (the page shows nothing first). */
@@ -40,7 +57,8 @@ export function managerAuditScopeSql(scope: ManagerAuditScope): Prisma.Sql {
   const regions = scope.regionIds;
   const users = scope.userIds;
   const inRegions = Prisma.sql`ANY(${regions}::text[])`;
-  return Prisma.sql`(
+  const stewardOnly = Prisma.join(STEWARD_ONLY_AUDIT_ACTIONS.map((x) => Prisma.sql`${x}::"AuditAction"`));
+  return Prisma.sql`(a."action" NOT IN (${stewardOnly}) AND (
     (a."entityType" = 'Customer' AND EXISTS (
        SELECT 1 FROM "Branch" sb WHERE sb."customerId" = a."entityId" AND sb."regionId" = ${inRegions}))
     OR (a."entityType" = 'Branch' AND EXISTS (
@@ -65,7 +83,7 @@ export function managerAuditScopeSql(scope: ManagerAuditScope): Prisma.Sql {
        SELECT 1 FROM "Route" sr WHERE sr."id" = a."entityId" AND sr."regionId" = ${inRegions}))
     OR (a."entityType" = 'User' AND a."entityId" = ANY(${users}::text[]))
     OR (a."entityType" = 'Export' AND a."actorId" = ANY(${users}::text[]))
-  )`;
+  ))`;
 }
 
 /**

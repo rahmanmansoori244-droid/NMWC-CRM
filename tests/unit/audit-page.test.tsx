@@ -78,7 +78,8 @@ vi.mock('@/lib/db', () => ({
 }));
 
 import AuditPage from '@/app/(app)/audit/page';
-import { AUDIT_ENTITY_TYPES, MANAGER_AUDIT_ENTITY_TYPES } from '@/lib/audit-scope';
+import { AUDIT_ENTITY_TYPES, MANAGER_AUDIT_ACTIONS, MANAGER_AUDIT_ENTITY_TYPES } from '@/lib/audit-scope';
+import { AuditAction, Role } from '@prisma/client';
 
 const log = (id: string, actorId: string, fullName: string): Log => ({
   id,
@@ -185,6 +186,58 @@ describe('/audit for a Manager', () => {
     expect(h.raw).toEqual([]);
     expect(h.findMany).not.toHaveBeenCalled();
     expect(screen.getByText('0 matching events')).toBeTruthy();
+  });
+});
+
+describe('photo views are the Data Steward’s alone (data audit 2026-10-10 gap 2; owner decision 2026-10-11)', () => {
+  const actions = () =>
+    [...(document.querySelector('select[name="action"]') as HTMLSelectElement).options].map((o) => o.value).filter(Boolean);
+  const view = (id: string): Log => ({ ...log(id, 'u-mgr', 'Mona Manager'), action: 'PHOTO_VIEW', entityType: 'Attachment', entityId: `ph-${id}-000000` });
+
+  it('the Steward is offered PHOTO_VIEW and can filter the log to it, with the viewer and the photo shown', async () => {
+    h.logs = [view('cr1')];
+    await open({ action: 'PHOTO_VIEW' });
+    expect(actions()).toEqual(Object.values(AuditAction));
+    expect((screen.getByRole('combobox', { name: 'Action' }) as HTMLSelectElement).value).toBe('PHOTO_VIEW');
+    expect(h.count).toHaveBeenCalledWith({ where: { action: 'PHOTO_VIEW' } });
+    expect(h.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { action: 'PHOTO_VIEW' } }));
+    expect(screen.getByText('PHOTO_VIEW', { selector: 'td' })).toBeTruthy();
+    expect(screen.getByText('Attachment/ph-cr1-0…')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Mona Manager' }).getAttribute('href')).toBe('?action=PHOTO_VIEW&actor=u-mgr');
+  });
+
+  it('the Steward’s default view is as before: every action, photo views included (the default is the owner’s to decide)', async () => {
+    await open();
+    expect(h.count).toHaveBeenCalledWith({ where: {} });
+  });
+
+  it('a Manager is never offered PHOTO_VIEW, and every read he makes leaves it out — whatever the address asks', async () => {
+    h.role = 'MANAGER';
+    expect(MANAGER_AUDIT_ACTIONS).toEqual(Object.values(AuditAction).filter((a) => a !== 'PHOTO_VIEW'));
+    const asks: Record<string, string>[] = [{}, { action: 'PHOTO_VIEW' }, { entityType: 'Attachment' }, { action: 'PHOTO_VIEW', entityType: 'Attachment', q: 'ph-' }];
+    for (const sp of asks) {
+      cleanup();
+      h.raw = [];
+      await open(sp);
+      expect(actions(), JSON.stringify(sp)).toEqual([...MANAGER_AUDIT_ACTIONS]);
+      // The count and the page of ids: both carry the exclusion, bound as a value.
+      expect(h.raw, JSON.stringify(sp)).toHaveLength(2);
+      for (const sql of h.raw) {
+        expect(sql).toContain('a."action" NOT IN (?::"AuditAction") AND (');
+        expect(sql).toContain('["PHOTO_VIEW",');
+      }
+      expect(h.count).not.toHaveBeenCalled();
+    }
+  });
+
+  it('no other role reaches the page, so none reads the log', async () => {
+    for (const role of Object.values(Role).filter((r) => r !== 'MANAGER' && r !== 'STEWARD')) {
+      h.role = role;
+      await expect(open(), role).rejects.toThrow('REDIRECT /home');
+    }
+    expect(h.raw).toEqual([]);
+    expect(h.count).not.toHaveBeenCalled();
+    expect(h.findMany).not.toHaveBeenCalled();
   });
 });
 

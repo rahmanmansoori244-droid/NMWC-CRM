@@ -10,6 +10,7 @@ import { PageHeader } from '@/components/nmwc/PageHeader';
 import { loadScope } from '@/lib/access';
 import {
   AUDIT_ENTITY_TYPES,
+  MANAGER_AUDIT_ACTIONS,
   MANAGER_AUDIT_ENTITY_TYPES,
   managerAuditScopeSql,
   managerAuditUserIds,
@@ -107,6 +108,10 @@ export default async function AuditPage({
   const entityTypes: readonly string[] = isManager ? MANAGER_AUDIT_ENTITY_TYPES : AUDIT_ENTITY_TYPES;
   const entityOptions =
     sp.entityType && !entityTypes.includes(sp.entityType) ? [...entityTypes, sp.entityType] : entityTypes;
+  // Owner decision 2026-10-11: photo views (PHOTO_VIEW) are the Data Steward's to
+  // read. A Manager is not offered them, and his scope leaves them out whatever the
+  // address asks (lib/audit-scope.ts).
+  const actionOptions: readonly AuditAction[] = isManager ? MANAGER_AUDIT_ACTIONS : Object.values(AuditAction);
   // ?actor= is supported but had no control, and Apply dropped it. It now rides
   // along in a hidden field, is named above the table, and can be cleared; the
   // Actor cells set it. The name comes from the rows shown, never a lookup.
@@ -154,7 +159,7 @@ export default async function AuditPage({
           className="rounded-md border border-slate-300 px-2 py-2"
         >
           <option value="">All actions</option>
-          {Object.values(AuditAction).map((a) => (
+          {actionOptions.map((a) => (
             <option key={a} value={a}>
               {a}
             </option>

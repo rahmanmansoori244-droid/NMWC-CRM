@@ -13,6 +13,10 @@
  * about each — plus an import batch and two exports. The query runs over this
  * suite's own audit rows only, so other suites' rows cannot change the answer.
  *
+ * Gap 2 (data audit 2026-10-10; owner decision 2026-10-11): a PHOTO_VIEW row is
+ * the Data Steward's alone — two views, one of a photo in each region, the first
+ * by the first Manager himself, are shown to neither Manager.
+ *
  *   RUN_AUDIT_SCOPE=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/audit-manager-scope.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
@@ -123,6 +127,8 @@ describe.skipIf(!ENABLED)('a Manager’s audit log: his regions’ events and hi
     await audit('create other', 'CustomerEdit', ids.createOther, 'ESCALATE');
     await audit('photo mine', 'Attachment', ids.attMine);
     await audit('photo other', 'Attachment', ids.attOther);
+    await audit('my view of a photo of mine', 'Attachment', ids.attMine, 'PHOTO_VIEW', ids.manager);
+    await audit('a view of the other region’s photo', 'Attachment', ids.attOther, 'PHOTO_VIEW', ids.smOther);
     await audit('region mine', 'Region', ids.regMine);
     await audit('region other', 'Region', ids.regOther);
     await audit('route mine', 'Route', ids.rtMine);
@@ -203,5 +209,24 @@ describe.skipIf(!ENABLED)('a Manager’s audit log: his regions’ events and hi
         'reset of another region’s salesman',
       ].sort()
     );
+  });
+
+  it('photo views are the Steward’s alone: no Manager sees one, even his own view of his region’s photo', async () => {
+    const views = [...rows].filter(([, label]) => label.includes('view of')).map(([id]) => id);
+    expect(views).toHaveLength(2);
+    for (const scope of [
+      { regionIds: [ids.regMine], userIds: await lib.managerAuditUserIds(prisma, ids.manager, [ids.regMine]) },
+      { regionIds: [ids.regOther], userIds: [ids.smOther] },
+      { regionIds: [ids.regMine, ids.regOther], userIds: [ids.manager, ids.smMine, ids.smOther] },
+    ]) {
+      const seen = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT a."id" FROM "AuditLog" a
+         WHERE a."id" = ANY(${views}::text[])
+           AND ${lib.managerAuditScopeSql(scope)}`);
+      expect(seen).toEqual([]);
+    }
+    // The Steward's read has no scope: both are there for him.
+    const all = await prisma.auditLog.findMany({ where: { id: { in: views }, action: 'PHOTO_VIEW' }, select: { id: true } });
+    expect(all).toHaveLength(2);
   });
 });

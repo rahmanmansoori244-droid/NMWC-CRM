@@ -198,7 +198,7 @@ The server always gets: `TZ=UTC`, `AUTH_URL=NEXTAUTH_URL=http://localhost:<port>
   only under `<UTC yyyy/mm/dd>/<fixture user id>/<KIND>/<uuid>.jpg` (the
   presign layout), lists only those day folders, and asserts that layout before
   every DeleteObject (`support/r2.ts`). Nothing else is listed or deleted.
-- **Rows the app writes for fixtures** — LOGIN/APPROVE audit rows, step ledger,
+- **Rows the app writes for fixtures** — LOGIN/APPROVE/PHOTO_VIEW audit rows, step ledger,
   notifications (including those sent to REAL Stewards/FM/GM about a fixture
   request — found by `editId`), rate-limit buckets of fixture names and
   `198.18.x.x`/`198.19.x.x` addresses (plus the localhost buckets). The
@@ -221,7 +221,8 @@ The server always gets: `TZ=UTC`, `AUTH_URL=NEXTAUTH_URL=http://localhost:<port>
   route or region, is **foreign**: never deleted, counted as `foreign<Table>`,
   and the world user, route or region it points at is kept (deactivated) — so
   the world stays dirty and a person decides. So is an audit row a world user
-  wrote about anything but a world row (the audit trail of a real request).
+  wrote about anything but a world row (the audit trail of a real request) —
+  except a world user's PHOTO_VIEW, which is the world's whatever photo it names.
 - Known residue by design: the `CodeSequence 'CUSTOMER-<year>'` counter advances
   with every finalized CREATE; authorized cron calls leave `CronHeartbeat` /
   `CronRun` rows.

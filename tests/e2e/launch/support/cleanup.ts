@@ -31,7 +31,7 @@
  * minted, adopted or carrying the suffix), and never the object of a foreign
  * photo; r2.ts checks the key layout before every DeleteObject.
  */
-import { Prisma, type PrismaClient } from '@prisma/client';
+import { Prisma, type AuditAction, type PrismaClient } from '@prisma/client';
 import { hasR2, ownerDb, redact, RUN_ID } from './env';
 import { utcYmd } from './oman';
 import { deleteFixtureObject, listFixturePrefix } from './r2';
@@ -76,6 +76,13 @@ const CHUNK = 400;
 const LOCALHOST_IPS = ['::1', '127.0.0.1', '::ffff:127.0.0.1'];
 /** Audit rows whose entity is the actor's own act, not another record. */
 const ACTOR_OWNED_AUDIT = ['Export'];
+/**
+ * Audit actions that are the actor's own act whatever record they name. A world
+ * user's view of a photo (PHOTO_VIEW, data audit 2026-10-10 gap 2) is the world's
+ * even when the photo is a real one — an org-wide Steward or Viewer can open it —
+ * so it is deleted with the world instead of keeping the world user as foreign.
+ */
+const ACTOR_OWNED_ACTIONS: AuditAction[] = ['PHOTO_VIEW'];
 
 function chunks<T>(xs: readonly T[], n = CHUNK): T[][] {
   const out: T[][] = [];
@@ -338,7 +345,12 @@ async function foreignRows(f: Fixture, p: PrismaClient): Promise<Foreign> {
     }),
     p.temixSyncBatch.findMany({ where: { id: notIn(f.temixBatches), createdById: { in: users } }, select: { createdById: true } }),
     p.auditLog.findMany({
-      where: { actorId: { in: users }, entityId: { notIn: ownAuditIds }, entityType: { notIn: ACTOR_OWNED_AUDIT } },
+      where: {
+        actorId: { in: users },
+        entityId: { notIn: ownAuditIds },
+        entityType: { notIn: ACTOR_OWNED_AUDIT },
+        action: { notIn: ACTOR_OWNED_ACTIONS },
+      },
       select: { actorId: true, entityType: true, entityId: true },
     }),
     regions.length
@@ -506,14 +518,17 @@ async function deleteRows(
   }
 
   // 6. Audit rows naming a world row (whoever the actor), the 'unknown:<name>'
-  //    sentinel of suffix-carrying names, a world user's own exports, and
-  //    duplicate-pair rows ('aId|bId') naming a world customer. NOT every row a
-  //    world user acted in: one about a real record is foreign (counted, kept).
+  //    sentinel of suffix-carrying names, a world user's own exports and photo
+  //    views, and duplicate-pair rows ('aId|bId') naming a world customer. NOT
+  //    every row a world user acted in: one about a real record is foreign
+  //    (counted, kept).
   const entityIds = [...allIds(f), ...unknownSentinels(f)];
   await inMaintenance(async (tx) => {
     for (const c of chunks(entityIds)) add('AuditLog', (await tx.auditLog.deleteMany({ where: { entityId: { in: c } } })).count);
     for (const c of chunks(allUsers))
       add('AuditLog', (await tx.auditLog.deleteMany({ where: { actorId: { in: c }, entityType: { in: ACTOR_OWNED_AUDIT } } })).count);
+    for (const c of chunks(allUsers))
+      add('AuditLog', (await tx.auditLog.deleteMany({ where: { actorId: { in: c }, action: { in: ACTOR_OWNED_ACTIONS } } })).count);
     for (const c of chunks(customers, 50)) {
       add(
         'AuditLog',
@@ -621,7 +636,15 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     p.notification.count({
       where: { OR: [{ userId: { in: users } }, { editId: { in: [...f.edits] } }, { customerId: { in: [...f.customers] } }, { title: ci(sfx) }, { body: ci(sfx) }] },
     }),
-    p.auditLog.count({ where: { OR: [{ entityId: { in: entityIds } }, { actorId: { in: users }, entityType: { in: ACTOR_OWNED_AUDIT } }] } }),
+    p.auditLog.count({
+      where: {
+        OR: [
+          { entityId: { in: entityIds } },
+          { actorId: { in: users }, entityType: { in: ACTOR_OWNED_AUDIT } },
+          { actorId: { in: users }, action: { in: ACTOR_OWNED_ACTIONS } },
+        ],
+      },
+    }),
     p.rateLimit.count({ where: { OR: [{ key: { in: keys } }, { key: ci(sfx) }] } }),
     p.passwordHistory.count({ where: { userId: { in: users } } }),
     p.savedView.count({ where: { userId: { in: users } } }),

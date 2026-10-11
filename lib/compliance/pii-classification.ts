@@ -343,7 +343,11 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   // ---- AuditLog: append-only, and therefore the hardest to erase from ------
   'AuditLog.id': { subject: 'none', note: STRUCTURAL },
   'AuditLog.actorId': { subject: 'employee', kind: 'identifier', note: 'who did it' },
-  'AuditLog.action': { subject: 'employee', kind: 'behaviour' },
+  'AuditLog.action': {
+    subject: 'employee',
+    kind: 'behaviour',
+    note: 'includes PHOTO_VIEW: which member of staff opened which photo or document (data audit gap 2), read by the Data Steward only',
+  },
   'AuditLog.entityType': { subject: 'none' },
   'AuditLog.entityId': { subject: 'none', note: STRUCTURAL },
   'AuditLog.before': {

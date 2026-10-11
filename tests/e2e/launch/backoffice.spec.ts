@@ -21,6 +21,9 @@
  *     decision 7), cross-region merge with a reason;
  *   - the audit log for the Steward (every entity type) and a Manager (his
  *     regions only, Oman time);
+ *   - photo views (data audit 2026-10-10 gap 2): a Manager who opens a request
+ *     with photos is recorded, and only the Steward sees it (owner decisions
+ *     2026-10-11);
  *   - dashboards (organisation, a fixture region, a Manager's hand-made URLs),
  *     service status, and the Steward's Work items.
  *
@@ -63,6 +66,7 @@ import {
   replayServerAction,
   requestsOf,
   requireLaunchEnv,
+  seedPhoto,
   seedUpdateEdit,
   signInViaUi,
   snapshot,
@@ -2212,6 +2216,124 @@ test.describe('back office: audit log', { tag: ['@desktop'] }, () => {
     await expect(page.locator('select[name="entityType"] option[value="ImportBatch"]')).toHaveCount(0);
     await page.goto(`/audit?entityType=ImportBatch&q=${importBatch}`);
     await expect(page.getByText('No audit entries match these filters.')).toBeVisible();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 7b. Photo views (data audit 2026-10-10 gap 2; owner decisions 2026-10-11)
+// ═════════════════════════════════════════════════════════════════════════════
+
+test.describe('back office: photo views are recorded, and only the Steward sees them', { tag: ['@desktop'] }, () => {
+  requireLaunchEnv();
+  installLaunchHooks();
+  test.describe.configure({ mode: 'serial' });
+
+  let w: World;
+  let editId = '';
+  /** photo id → kind: the CR, shop and signboard on file, and one other photo of the shop. */
+  const photos = new Map<string, string>();
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    w = await createWorld('bpv', {
+      regions: [{ key: 'R1' }],
+      routes: [{ key: 'A', region: 'R1' }],
+      users: [
+        { key: 'STW', role: 'STEWARD' },
+        { key: 'M1', role: 'MANAGER', regions: ['R1'] },
+        { key: 'SA', role: 'SALESMAN', route: 'A', supervisor: 'M1' },
+      ],
+      customers: [
+        {
+          key: 'DOC',
+          phone: true,
+          crNumber: true,
+          crPhoto: true,
+          contact: 'Salim Al Harthi',
+          branches: [{ key: 'S', route: 'A', photos: ['SHOP', 'SIGNBOARD'] }],
+        },
+      ],
+    });
+    if (!hasR2) return; // the test says why it does not run
+    const free = await seedPhoto(w, { kind: 'FREE', capturedBy: 'SA', branchExtraId: w.branch('DOC').id });
+    for (const p of [...w.customer('DOC').photos, free]) photos.set(p.id, p.kind);
+    editId = (await seedUpdateEdit(w, { customer: 'DOC', submitter: 'SA', patch: { customer: { contactPerson: w.name('Photo View') } } })).id;
+  });
+
+  test.afterAll(async () => {
+    test.setTimeout(300_000);
+    if (w) await w.cleanup();
+  });
+
+  const entity = (id: string) => `Attachment/${id.slice(0, 8)}…`;
+  const NONE = 'No audit entries match these filters.';
+
+  test('a Manager opens a request with photos: the Steward’s audit log shows each view; the Manager’s own log and the customer’s activity show none', async ({ browser }) => {
+    notRunHere(!hasR2, 'the request shows R2 photos');
+    test.setTimeout(300_000);
+    const m1 = w.user('M1');
+    const stw = w.user('STW');
+    expect([...photos.values()].sort()).toEqual(['CR', 'FREE', 'SHOP', 'SIGNBOARD']);
+
+    // 1. The Manager opens the request: every photo on file is shown, and decodes.
+    const page = await openAs(browser, m1, `/approvals/${editId}`);
+    const tiles = page.locator('main img[src^="/api/photos/"]');
+    await expect(tiles.first()).toBeVisible();
+    const srcs = await tiles.evaluateAll((els) => els.map((e) => e.getAttribute('src') ?? ''));
+    for (let i = 0; i < srcs.length; i++) {
+      await tiles.nth(i).scrollIntoViewIfNeeded();
+      await expect
+        .poll(() => tiles.nth(i).evaluate((el: HTMLImageElement) => (el.complete ? el.naturalWidth : 0)), { message: `tile ${srcs[i]} decodes` })
+        .toBeGreaterThan(0);
+    }
+    expect([...new Set(srcs)].sort()).toEqual([...photos.keys()].map((id) => `/api/photos/${id}`).sort());
+
+    // 2. One PHOTO_VIEW row per photo, by him, ids only.
+    await expect
+      .poll(async () => [...new Set((await auditFor({ actorId: m1.id, action: 'PHOTO_VIEW' })).map((a) => a.entityId))].sort())
+      .toEqual([...photos.keys()].sort());
+    const doc = w.customer('DOC');
+    for (const row of await auditFor({ actorId: m1.id, action: 'PHOTO_VIEW' })) {
+      const kind = photos.get(row.entityId)!;
+      expect(row.entityType).toBe('Attachment');
+      expect(row.after).toEqual({
+        kind,
+        customerId: kind === 'CR' ? doc.id : null,
+        branchId: kind === 'SHOP' || kind === 'SIGNBOARD' ? doc.branch.id : null,
+        branchExtraId: kind === 'FREE' ? doc.branch.id : null,
+        editId: null,
+      });
+    }
+
+    // 3. The Steward's /audit: each view, by the Manager, found by the photo's id.
+    const sp = await openAs(browser, stw, `/audit?action=PHOTO_VIEW&actor=${m1.id}`);
+    await expect(sp.getByText(`Showing what ${m1.fullName} did.`)).toBeVisible();
+    await expect(sp.locator('select[name="action"] option[value="PHOTO_VIEW"]')).toHaveCount(1);
+    for (const id of photos.keys()) {
+      await sp.goto(`/audit?action=PHOTO_VIEW&actor=${m1.id}&q=${id}`);
+      const rows = sp.locator('tbody tr').filter({ hasText: entity(id) });
+      await expect(rows.first(), id).toContainText(m1.fullName);
+      await expect(rows.first()).toContainText('PHOTO_VIEW');
+    }
+
+    // 4. The Manager's own /audit: not offered, and not shown by a hand-made URL either.
+    await page.goto('/audit');
+    await expect(page.locator('select[name="action"] option[value="PHOTO_VIEW"]')).toHaveCount(0);
+    await expect(page.locator('tbody td', { hasText: 'PHOTO_VIEW' })).toHaveCount(0);
+    await page.goto('/audit?action=PHOTO_VIEW');
+    await expect(page.getByText(NONE)).toBeVisible();
+    for (const id of photos.keys()) {
+      await page.goto(`/audit?entityType=Attachment&q=${id}`);
+      await expect(page.getByText(NONE), id).toBeVisible();
+    }
+
+    // 5. The customer page's Recent activity: the request, and nothing about who looked.
+    for (const [who, p] of [['M1', page], ['STW', sp]] as const) {
+      await p.goto(`/customers/${doc.id}`);
+      const activity = p.locator('section').filter({ has: p.getByRole('heading', { level: 2, name: 'Recent activity' }) });
+      await expect(activity.locator('li'), who).toHaveCount(1);
+      await expect(activity.locator('li'), who).toContainText(`${w.user('SA').fullName} submitted 1 change(s)`);
+    }
   });
 });
 
