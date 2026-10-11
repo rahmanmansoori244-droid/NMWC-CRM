@@ -18,7 +18,12 @@ import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { scoreCustomer, scoreBranch } from '@/lib/completeness';
 import { loadScope, assertCanAccessAttachment, assertCanEditCustomer } from '@/lib/access';
-import { CR_DOCUMENT_LOCKED_MESSAGE, PHOTO_WRITER_ROLES, isFieldLocked } from '@/lib/permissions';
+import {
+  CR_DOCUMENT_LOCKED_MESSAGE,
+  CREDIT_DOCUMENT_LOCKED_MESSAGE,
+  PHOTO_WRITER_ROLES,
+  isFieldLocked,
+} from '@/lib/permissions';
 import {
   ALREADY_ATTACHED_MESSAGE,
   PHOTO_CHANGED_MESSAGE,
@@ -30,7 +35,7 @@ import {
   UNWIRED_LIVE,
 } from '@/lib/photo-attach';
 import { lockCustomerRow } from '@/lib/locks';
-import { isConfidentialKind } from '@/lib/credit-documents';
+import { isConfidentialKind, isDecisionBoundKind } from '@/lib/credit-documents';
 
 const customerAttach = z.object({
   attachmentId: z.string().cuid(),
@@ -590,6 +595,14 @@ async function detachPhotoCore(input: { attachmentId: string }) {
     if (owner && isFieldLocked('crPhoto', sessionUser, owner)) {
       throw new ForbiddenError(CR_DOCUMENT_LOCKED_MESSAGE);
     }
+  }
+  // Owner decisions 2026-10-11 (review): nor a credit document or the signed
+  // credit application once it is on a customer — handled like a CR copy, and
+  // the record the customer's credit was decided on. Whatever the terms are now.
+  // Its kind never changes and Remove refuses a photo that moved since this read
+  // (the wiring check under the lock below), so this read decides it.
+  if (session.user.role === Role.SALESMAN && att.customerId && isDecisionBoundKind(att.kind)) {
+    throw new ForbiddenError(CREDIT_DOCUMENT_LOCKED_MESSAGE);
   }
   // Post-merge review (2026-09-29): the photo slot cleared on NOT_FOUND, taking
   // it to mean "removed already" — but the scope check above answers NOT_FOUND

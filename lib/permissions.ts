@@ -118,6 +118,18 @@ export const CR_DOCUMENT_LOCKED_MESSAGE =
   'The CR document of a credit customer is changed by your manager or the Data Steward.';
 
 /**
+ * Owner decisions 2026-10-11 (credit documents "handled exactly like CR copies";
+ * review): once the customer exists, its credit documents and the signed credit
+ * application (lib/credit-documents.ts DECISION_BOUND_KINDS) are the record its
+ * credit was decided on. A salesman removes none of them, not even one he took
+ * and whatever the customer's terms are now — removed, the photo GC would purge
+ * it for good. A Manager or the Steward keeps the audited Remove
+ * (services/photos.ts detachPhotoCore).
+ */
+export const CREDIT_DOCUMENT_LOCKED_MESSAGE =
+  "A customer's credit documents and signed credit application are changed by your manager or the Data Steward.";
+
+/**
  * Whether a Salesman can interact with a given branch (i.e. it is on his
  * route). Other roles see by hierarchy or all.
  */

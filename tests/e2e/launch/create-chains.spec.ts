@@ -141,6 +141,8 @@ const RETURNED_PREFIX = 'Returned for correction:';
 const FIX_FIELDS = 'Not sent — fix what is marked in red, then submit again.';
 const INVALID_PHONE = 'Enter a valid Oman number (8 digits, or +968 XXXXXXXX).';
 const CR_LOCKED = 'The CR document of a credit customer is changed by your manager or the Data Steward.';
+const CREDIT_DOCUMENT_LOCKED_MESSAGE =
+  "A customer's credit documents and signed credit application are changed by your manager or the Data Steward.";
 const DECIDED_ELSEWHERE = /This request was just decided by another reviewer\. Refresh to see the current state\.|Edit is in state APPROVED\./;
 const ADDRESS = 'Way 3012, Al Ghubra North, Muscat — opposite the bakery';
 
@@ -1330,6 +1332,19 @@ test.describe('new CREDIT customer, through all six steps', { tag: ['@desktop'] 
     const cr = await db.attachment.findUniqueOrThrow({ where: { id: customer.crPhotoId! } });
     expect(cr.deletedAt).toBeNull();
     expect((await db.customer.findUniqueOrThrow({ where: { id: K.customerId } })).crPhotoId).toBe(customer.crPhotoId);
+    // Review (2026-10-11): nor the credit documents or the signed application he
+    // took himself, now on the customer — a removed one the photo GC would purge.
+    const onCustomer = await db.attachment.findMany({
+      where: { customerId: customer.id, deletedAt: null, kind: { in: ['ID_CARD', 'CREDIT_FORM'] } },
+      select: { id: true, capturedById: true },
+    });
+    expect(onCustomer.length).toBeGreaterThanOrEqual(2);
+    for (const d of onCustomer) {
+      expect(d.capturedById, 'his own capture').toBe(w.user('SA').id);
+      const refused = (await (await postJson(sa, '/api/photos/detach', { attachmentId: d.id })).json()) as { ok: boolean; message?: string };
+      expect(refused).toMatchObject({ ok: false, message: CREDIT_DOCUMENT_LOCKED_MESSAGE });
+      expect((await db.attachment.findUniqueOrThrow({ where: { id: d.id } })).deletedAt).toBeNull();
+    }
   });
 });
 

@@ -71,7 +71,8 @@ import {
   PHOTO_OTHER_SLOT_MESSAGE,
   PHOTO_TARGET_CHANGED_MESSAGE,
 } from '@/lib/photo-attach';
-import { CR_DOCUMENT_LOCKED_MESSAGE, PHOTO_WRITER_ROLES } from '@/lib/permissions';
+import { CR_DOCUMENT_LOCKED_MESSAGE, CREDIT_DOCUMENT_LOCKED_MESSAGE, PHOTO_WRITER_ROLES } from '@/lib/permissions';
+import { DECISION_BOUND_KINDS } from '@/lib/credit-documents';
 import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 
 const HOST = 'nmwc.example';
@@ -1014,6 +1015,52 @@ describe('owner decision 2: the CR document of a credit customer', () => {
     expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
     s.user = { id: 'x2', role: 'MANAGER', username: 'x2' };
     s.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+  });
+});
+
+// Owner decisions 2026-10-11 (review): the credit documents and the signed
+// credit application are handled like a CR copy. Once finalize has put them on
+// the customer they are the record its credit was decided on: the salesman who
+// took them could remove one with a hand-made /api/photos/detach, and the photo
+// GC would then purge it for good. Whatever the customer's terms are now.
+describe("owner decisions 2026-10-11: a customer's credit documents and signed application", () => {
+  const EDIT = 'ckedit00000000000000000001';
+  const onCustomer = (kind: string, over: Record<string, unknown> = {}) =>
+    photo({ kind, customerId: CUST, editId: EDIT, ...over });
+
+  it.each([...DECISION_BOUND_KINDS])('a salesman cannot remove a %s on a customer, even one he took — nothing is written', async (kind) => {
+    db.attachment.findFirst.mockResolvedValue(onCustomer(kind));
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: false, code: 'FORBIDDEN', message: CREDIT_DOCUMENT_LOCKED_MESSAGE });
+    expect(wrote()).toBe(0);
+  });
+
+  it('…nor after the customer was moved to CASH terms', async () => {
+    db.attachment.findFirst.mockResolvedValue(onCustomer('CREDIT_FORM'));
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CASH' }));
+    expect((await detach({ attachmentId: ATT })).message).toBe(CREDIT_DOCUMENT_LOCKED_MESSAGE);
+    expect(wrote()).toBe(0);
+  });
+
+  it.each(['MANAGER', 'STEWARD'])('a %s keeps the audited Remove', async (role) => {
+    s.user = { id: 'x2', role, username: 'x2' };
+    s.scope = { ownedRouteId: null, teamRouteIds: [], managedRegionIds: ['g1'] };
+    db.attachment.findFirst.mockResolvedValue(onCustomer('ID_CARD'));
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
+    expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
+    expect(db.attachment.updateMany).toHaveBeenCalledOnce();
+    expect(audit.writeAudit).toHaveBeenCalledOnce();
+  });
+
+  it('his own shop photo of the same customer is still his to remove', async () => {
+    db.attachment.findFirst.mockResolvedValue(photo({ branchId: B1 }));
+    db.branch.findUnique.mockResolvedValue(branch());
+    db.customer.findFirst.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
     db.customer.findUnique.mockResolvedValue(customer({ paymentTerms: 'CREDIT' }));
     expect(await detach({ attachmentId: ATT })).toEqual({ ok: true });
   });
