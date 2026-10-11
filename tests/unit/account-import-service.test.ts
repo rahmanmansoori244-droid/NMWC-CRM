@@ -76,7 +76,7 @@ type Store = {
     issues: Array<{ message: string; sheet: string; row: number }>;
   }>;
   /** Open new-customer requests: whose, in what state, on which routes' branch drafts. */
-  creates: Array<{ submittedById: string; state: string; routeIds: string[] }>;
+  creates: Array<{ submittedById: string; state: string; routeIds: string[]; pendingRole?: string }>;
 };
 type Sheet = {
   name: string;
@@ -364,16 +364,19 @@ function makeClient(isTx: boolean): any {
       },
     },
     // Owner decision 8: his new-customer requests not in review, started on another
-    // route than the one the row leaves him with.
+    // route than the one the row leaves him with — and (owner decisions 2026-10-11,
+    // lib/stranded-creates.ts) one waiting at his signed-application step.
     customerEdit: {
       count: async (args: any) => {
         gate('customerEdit', 'count', args, false);
         const w = args.where;
         const other = w.branchDrafts?.some.routeId.not;
+        const stateMatches = (c: { state: string; pendingRole?: string }, x: any): boolean =>
+          x.state?.in ? x.state.in.includes(c.state) : x.state === c.state && (x.pendingRole === undefined || x.pendingRole === c.pendingRole);
         return st().creates.filter(
           (c) =>
             c.submittedById === w.submittedById &&
-            w.state.in.includes(c.state) &&
+            (w.OR ? w.OR.some((x: any) => stateMatches(c, x)) : stateMatches(c, w)) &&
             (other === undefined || c.routeIds.some((r) => r !== other))
         ).length;
       },
@@ -1878,12 +1881,29 @@ describe('owner decision 8: the import and /users agree on routes, names and sup
     expect(okData(res).clean).toBe(0);
     expect(messages).toEqual([
       expect.stringMatching(
-        /^Users 2: "mct-01" has 1 new-customer request\(s\) that are not in review .*Nothing was written/
+        /^Users 2: "mct-01" has 1 new-customer request\(s\) only he can send or close \(drafts, sent back to him, or waiting for his upload of the customer's signed credit application\).*Nothing was written/
       ),
     ]);
     expect(routeOwner('rt-1')).toBe('mct-01');
     // One already on the route he is given is no obstacle.
     h.store.creates = [{ submittedById: 's1', state: 'DRAFT', routeIds: ['rt-2'] }];
+    expect(
+      okData((await upload(usersSheet(salesmanRow({ route_code: 'MCT-02' })))).res).clean
+    ).toBe(1);
+    expect(routeOwner('rt-2')).toBe('mct-01');
+  });
+
+  // Owner decisions 2026-10-11 (review, Q-signed-form-stranded): a credit request
+  // waiting at his signed-application step takes the signed form only from the
+  // route it was started on; one with the approvers does not hold the move back.
+  it('a route change is held back by a request at his signed-application step, not by one with the approvers', async () => {
+    addUser({ id: 's1', username: 'mct-01', role: 'SALESMAN', ownedRouteId: 'rt-1' });
+    h.store.creates.push({ submittedById: 's1', state: 'SUBMITTED', pendingRole: 'SALESMAN', routeIds: ['rt-1'] });
+    const { res, messages } = await upload(usersSheet(salesmanRow({ route_code: 'MCT-02' })));
+    expect(okData(res).clean).toBe(0);
+    expect(messages).toEqual([expect.stringMatching(/^Users 2: "mct-01" has 1 new-customer request\(s\) only he can send or close/)]);
+    expect(routeOwner('rt-1')).toBe('mct-01');
+    h.store.creates = [{ submittedById: 's1', state: 'SUBMITTED', pendingRole: 'FINANCE_MANAGER', routeIds: ['rt-1'] }];
     expect(
       okData((await upload(usersSheet(salesmanRow({ route_code: 'MCT-02' })))).res).clean
     ).toBe(1);

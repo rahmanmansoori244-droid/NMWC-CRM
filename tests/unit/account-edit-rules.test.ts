@@ -18,6 +18,7 @@ import {
   routeMoveNotes,
   routeSignInName,
   strandedCreatesImportIssue,
+  signedFormDisableIssue,
   strandedCreatesIssue,
   supervisorCoverIssue,
   supervisorStepNotes,
@@ -387,6 +388,52 @@ describe('reviewer fixes (2026-10-07)', () => {
     expect(strandedCreatesImportIssue('c4', 2)).toMatch(
       /Afterwards he could not send them again from his new route, only withdraw them\./
     );
+  });
+
+  // Owner decisions 2026-10-11 (review, Q-signed-form-stranded): a credit request
+  // at his signed-application step is stranded by a move too — only he uploads
+  // its signed form, from the route it was started on.
+  it('a credit request at his signed-application step is named as such, alone or beside drafts', () => {
+    const alone = strandedCreatesIssue({
+      who: 'Ali',
+      count: 1,
+      atSignedForm: 1,
+      fromRoutes: ['C4'],
+      toRoute: 'C5',
+      withdraw: false,
+    });
+    expect(alone).toBe(
+      "Ali has 1 credit request(s) started on route C4 waiting for him to upload the customer's signed credit application, which nobody else can upload, send back or close. After the move he cannot send them again from route C5, only withdraw them. Ask him to upload the signed application first, or to withdraw them; or tick \"Withdraw them with this change\"."
+    );
+    const both = strandedCreatesIssue({
+      who: 'Ali',
+      count: 3,
+      atSignedForm: 1,
+      fromRoutes: ['C4'],
+      toRoute: null,
+      withdraw: false,
+    });
+    expect(both).toMatch(
+      /^Ali has 2 new-customer request\(s\) started on route C4 that are not in review \(drafts, or sent back to him\), and 1 credit request\(s\) started on route C4 waiting for him to upload/
+    );
+    expect(both).toMatch(/Without a route he can never send them again/);
+    expect(
+      strandedCreatesIssue({ who: 'Ali', count: 1, atSignedForm: 1, fromRoutes: ['C4'], toRoute: 'C5', withdraw: true })
+    ).toBeNull();
+    expect(strandedCreatesImportIssue('c4', 1)).toMatch(
+      /only he can send or close \(drafts, sent back to him, or waiting for his upload of the customer's signed credit application\)/
+    );
+    expect(routeMoveNotes({ who: 'Ali', fromRoute: 'C4', inReview: 0, sentBack: 0, withdrawn: 1 })[0]).toMatch(
+      /\(drafts, sent back to him, or waiting for his signed credit application\) were withdrawn/
+    );
+  });
+
+  it('a disable is held back by a request at his signed-application step, unless it is withdrawn with it', () => {
+    expect(signedFormDisableIssue({ who: 'Ali', count: 2, withdraw: false })).toBe(
+      "Ali has 2 credit request(s) waiting for him to upload the customer's signed credit application. Nobody else can upload it, send the request back or close it, so once his account is disabled it would hold its shop and CR number for every salesman. Ask him to upload it or withdraw the request first, or withdraw it with the disable."
+    );
+    expect(signedFormDisableIssue({ who: 'Ali', count: 2, withdraw: true })).toBeNull();
+    expect(signedFormDisableIssue({ who: 'Ali', count: 0, withdraw: false })).toBeNull();
   });
 
   it('the notes count withdrawn new-customer requests apart from sent-back updates', () => {

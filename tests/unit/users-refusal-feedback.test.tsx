@@ -110,6 +110,47 @@ describe('UserRowActions — refusals read as errors', () => {
     expect(screen.queryByText('That account is outside the regions you manage.')).toBeNull();
   });
 
+  // Owner decisions 2026-10-11 (review, Q-signed-form-stranded): a credit request
+  // at his signed-application step. The server refuses and says why; withdrawing
+  // it with the disable is a second, explicit question.
+  const SIGNED_FORM_REFUSAL = {
+    ok: false,
+    code: 'VALIDATION_FAILED',
+    message: 'Validation failed',
+    fields: {
+      withdrawCreates:
+        "Ali has 1 credit request(s) waiting for him to upload the customer's signed credit application. Nobody else can upload it, send the request back or close it, so once his account is disabled it would hold its shop and CR number for every salesman. Ask him to upload it or withdraw the request first, or withdraw it with the disable.",
+    },
+  };
+  const sentWithdraw = () => h.toggle.mock.calls.map(([fd]) => (fd as FormData).get('withdrawCreates'));
+
+  it('a request at his signed-application step: asked again, and sent again with withdrawCreates only on a yes', async () => {
+    h.toggle.mockResolvedValueOnce(SIGNED_FORM_REFUSAL);
+    h.toggle.mockResolvedValueOnce({ ok: true, data: undefined });
+    const asked = vi.mocked(window.confirm);
+    render(
+      <UsersFeedback>
+        <UserRowActions userId="u-sal" username="mct-01" isActive />
+      </UsersFeedback>
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    await screen.findByText(/^Disabled "mct-01"/, {}, SLOW);
+    expect(asked).toHaveBeenCalledTimes(2);
+    expect(asked.mock.calls[1]![0]).toContain('upload the customer');
+    expect(asked.mock.calls[1]![0]).toContain('Disable "mct-01" and withdraw them now? A withdrawn request is closed for good.');
+    expect(sentWithdraw()).toEqual([null, 'on']);
+  });
+
+  it('a request at his signed-application step, and the answer is no: nothing sent again, the reason in red', async () => {
+    h.toggle.mockResolvedValueOnce(SIGNED_FORM_REFUSAL);
+    vi.mocked(window.confirm).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    render(<UserRowActions userId="u-sal" username="mct-01" isActive />);
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    const alert = await screen.findByRole('alert', {}, SLOW);
+    expect(alert.textContent).toBe(SIGNED_FORM_REFUSAL.fields.withdrawCreates);
+    expect(sentWithdraw()).toEqual([null]);
+  });
+
   it('a thrown failure is red too', async () => {
     h.reset.mockRejectedValue(new Error('Network down'));
     render(<UserRowActions userId="u-target" username="someone" isActive />);

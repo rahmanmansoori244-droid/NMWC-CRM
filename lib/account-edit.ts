@@ -32,10 +32,11 @@
  *     moved salesman can take the new route's code as his;
  *   - a salesman's new-customer requests that are not in review (drafts, or sent
  *     back to him) were started on his route, and services/creates.ts refuses
- *     to save or send one again from another route: he can only withdraw it. A
- *     route change is refused while he has any started on another route
- *     (strandedCreatesIssue); the form can withdraw them with the move instead,
- *     the import cannot.
+ *     to save or send one again from another route: he can only withdraw it. So
+ *     is a credit request waiting at his signed-application step (owner
+ *     decisions 2026-10-11, lib/stranded-creates.ts). A route change is refused
+ *     while he has any started on another route (strandedCreatesIssue); the form
+ *     can withdraw them with the move instead, the import cannot.
  */
 import type { Role } from '@prisma/client';
 import { nameKey } from './name-key';
@@ -262,9 +263,11 @@ export function revokesSessions(before: EditableAccount, after: EditableAccount)
  *
  * New-customer requests that are not in review (drafts, or sent back) cannot
  * follow him: services/creates.ts refuses to send one again from another route.
- * The change is refused while he has any (strandedCreatesIssue) unless the
- * Steward withdraws them with it; `withdrawn` counts those, and `sentBack`
- * leaves them out.
+ * Nor can a credit request waiting at his signed-application step (owner
+ * decisions 2026-10-11): services/signed-form.ts takes the signed form only from
+ * the route it was started on. The change is refused while he has any
+ * (strandedCreatesIssue) unless the Steward withdraws them with it; `withdrawn`
+ * counts those, and `sentBack` and `inReview` leave them out.
  *
  * A leaver (disabled) sends nothing again; his drafts and sent-back requests no
  * longer hold the shop or the CR number for anyone (lib/create-guards.ts).
@@ -306,7 +309,7 @@ export function routeMoveNotes(p: {
   }
   if (p.withdrawn) {
     notes.push(
-      `${p.withdrawn} new-customer request(s) ${p.who} had started on route ${p.withdrawnRoutes?.join(' or ') || p.fromRoute} (drafts, or sent back to him) were withdrawn with this change. The salesman of ${p.withdrawnRoutes?.join(' or ') || p.fromRoute} adds those shops afresh.`
+      `${p.withdrawn} new-customer request(s) ${p.who} had started on route ${p.withdrawnRoutes?.join(' or ') || p.fromRoute} (drafts, sent back to him, or waiting for his signed credit application) were withdrawn with this change. The salesman of ${p.withdrawnRoutes?.join(' or ') || p.fromRoute} adds those shops afresh.`
     );
   }
   return notes;
@@ -321,10 +324,18 @@ export function routeMoveNotes(p: {
  * send them. Until they are closed they hold their shops and CR numbers for
  * every salesman (lib/create-guards.ts). Null when there are none, or the
  * Steward withdraws them with the change (`withdraw`).
+ *
+ * Owner decisions 2026-10-11 (review, Q-signed-form-stranded): a credit request
+ * waiting at his signed-application step counts too (`atSignedForm` of `count`).
+ * Only he uploads the signed form, as a salesman and from the route it was
+ * started on (services/signed-form.ts), and nobody else can send that step back
+ * (lib/stranded-creates.ts).
  */
 export function strandedCreatesIssue(p: {
   who: string;
   count: number;
+  /** Of `count`, the ones waiting at his signed-application step. */
+  atSignedForm?: number;
   /** The codes of the routes they were started on. */
   fromRoutes: string[];
   /** The route he is given; null when the new role has none. */
@@ -333,15 +344,48 @@ export function strandedCreatesIssue(p: {
 }): string | null {
   if (p.count === 0 || p.withdraw) return null;
   const from = p.fromRoutes.length > 0 ? `route ${p.fromRoutes.join(', ')}` : 'his route';
+  const atForm = Math.min(p.atSignedForm ?? 0, p.count);
+  const notInReview = p.count - atForm;
+  const what = [
+    ...(notInReview > 0
+      ? [`${notInReview} new-customer request(s) started on ${from} that are not in review (drafts, or sent back to him)`]
+      : []),
+    ...(atForm > 0
+      ? [
+          `${atForm} credit request(s) started on ${from} waiting for him to upload the customer's signed credit application, which nobody else can upload, send back or close`,
+        ]
+      : []),
+  ].join(', and ');
   const why = p.toRoute
     ? `After the move he cannot send them again from route ${p.toRoute}, only withdraw them.`
     : 'Without a route he can never send them again, and until they are closed they hold their shops and CR numbers for every salesman.';
-  return `${p.who} has ${p.count} new-customer request(s) started on ${from} that are not in review (drafts, or sent back to him). ${why} Ask him to send them first — in review they stay with the approvers of ${from}, but if one is sent back after the move he cannot send it again and withdraws it — or to withdraw them; or tick "Withdraw them with this change".`;
+  const ask =
+    notInReview > 0
+      ? `Ask him to send them first — in review they stay with the approvers of ${from}, but if one is sent back after the move he cannot send it again and withdraws it — or to withdraw them; or tick "Withdraw them with this change".`
+      : 'Ask him to upload the signed application first, or to withdraw them; or tick "Withdraw them with this change".';
+  return `${p.who} has ${what}. ${why} ${ask}`;
 }
 
 /** The import's words for strandedCreatesIssue: it has no tick box, so it points at /users. */
 export function strandedCreatesImportIssue(username: string, count: number): string {
-  return `"${username}" has ${count} new-customer request(s) that are not in review (drafts, or sent back to him), started on a route this row takes him off. Nothing was written. Afterwards he could not send them again from his new route, only withdraw them. Ask him to send or withdraw them first, or make this change on Users (Edit account), which can withdraw them with it.`;
+  return `"${username}" has ${count} new-customer request(s) only he can send or close (drafts, sent back to him, or waiting for his upload of the customer's signed credit application), started on a route this row takes him off. Nothing was written. Afterwards he could not send them again from his new route, only withdraw them. Ask him to send or withdraw them first, or make this change on Users (Edit account), which can withdraw them with it.`;
+}
+
+/**
+ * Owner decisions 2026-10-11 (review, Q-signed-form-stranded): disabling an
+ * account while a credit request of his waits at his signed-application step.
+ * Nobody else can upload the signed form, send that step back or close the
+ * request (lib/stranded-creates.ts), and a request in review holds its CR number
+ * and shop for every salesman whoever sent it (lib/create-guards.ts) — so once
+ * he cannot sign in, it would hold them for good, and its late alerts would go
+ * on reaching people who cannot act on it. Refused unless whoever disables him
+ * withdraws them with it (`withdraw`). His drafts and sent-back requests are
+ * left as before: a disabled salesman's no longer hold anything. Null when there
+ * are none, or they are withdrawn.
+ */
+export function signedFormDisableIssue(p: { who: string; count: number; withdraw: boolean }): string | null {
+  if (p.count === 0 || p.withdraw) return null;
+  return `${p.who} has ${p.count} credit request(s) waiting for him to upload the customer's signed credit application. Nobody else can upload it, send the request back or close it, so once his account is disabled it would hold its shop and CR number for every salesman. Ask him to upload it or withdraw the request first, or withdraw it with the disable.`;
 }
 
 /**

@@ -47,8 +47,10 @@ import {
   expectNoRegionNotice,
   expectNoSideScroll,
   fillSecret,
+  hasR2,
   installLaunchHooks,
   newId,
+  notRunHere,
   omanDateISO,
   postForm,
   postJson,
@@ -105,6 +107,7 @@ import {
   usersBanner,
   usersRow,
 } from './support/accounts-helpers';
+import { seedCreateRequest } from './support/create-chains-helpers';
 
 const ROLE_LABEL: Record<Role, string> = {
   SALESMAN: 'Salesman',
@@ -2806,5 +2809,76 @@ test.describe('accounts: /users shows every row’s actions without sideways scr
       expect(await page.evaluate(() => window.scrollX), `${what}: the page did not scroll sideways`).toBeLessThanOrEqual(1);
       await expectInsideBox(edit, after, `${what}: ${key} Edit`);
     }
+  });
+});
+
+// Owner decisions 2026-10-11 (review, Q-signed-form-stranded): a salesman whose
+// credit request waits at his signed-application step. Nobody else can upload its
+// form, send it back or close it, so Disable says so and asks a second time; on a
+// yes the request is withdrawn in the disable's transaction, on a no nothing changes.
+test.describe('accounts: disabling a salesman whose credit request waits for the signed application', { tag: ['@desktop'] }, () => {
+  requireLaunchEnv();
+  installLaunchHooks();
+  test.describe.configure({ mode: 'serial' });
+
+  let world: World;
+
+  test.beforeAll(async () => {
+    test.setTimeout(300_000);
+    world = await createWorld('asf', {
+      regions: [{ key: 'R1' }],
+      routes: [{ key: 'A', region: 'R1' }],
+      users: [
+        { key: 'M1', role: 'MANAGER', regions: ['R1'] },
+        { key: 'SD1', role: 'SALES_DIRECTOR' },
+        { key: 'T', role: 'SALESMAN', route: 'A', supervisor: 'M1' },
+      ],
+    });
+  });
+
+  test.afterAll(async () => {
+    test.setTimeout(300_000);
+    if (world) await world.cleanup();
+  });
+
+  test('his Manager is told why and asked again: No changes nothing; Yes withdraws the request with the disable', async ({ browser }) => {
+    notRunHere(!hasR2, 'the request’s credit documents are seeded in R2');
+    test.setTimeout(300_000);
+    const t = world.user('T');
+    const m1 = world.user('M1');
+    const K = await seedCreateRequest(world, { submitter: 'T', paymentTerms: 'CREDIT', step: 2, approvedBy: ['M1', 'SD1'] });
+    const requestNow = () =>
+      db.customerEdit.findUniqueOrThrow({
+        where: { id: K.id },
+        select: { state: true, pendingRole: true, decisionCategory: true, reviewedById: true },
+      });
+
+    const admin = await (await contextAt(browser, m1, world.ip(1), { device: 'desktop' })).newPage();
+    await admin.goto('/users');
+    await settle(admin);
+    const asked: string[] = [];
+    let answers: boolean[] = [true, false];
+    admin.on('dialog', (d) => {
+      asked.push(d.message());
+      void (answers.shift() ? d.accept() : d.dismiss());
+    });
+
+    // No to the second question: nothing is written, and the reason stays in red.
+    await usersRow(admin, t.username).getByRole('button', { name: 'Disable', exact: true }).click();
+    await expect(admin.getByRole('alert').filter({ hasText: "waiting for him to upload the customer's signed credit application" })).toBeVisible();
+    expect(asked).toHaveLength(2);
+    expect(asked[1]).toContain(`Disable "${t.username}" and withdraw them now? A withdrawn request is closed for good.`);
+    expect((await userRow(t.id)).isActive).toBe(true);
+    expect(await requestNow()).toMatchObject({ state: 'SUBMITTED', pendingRole: 'SALESMAN' });
+
+    // Yes: the request is withdrawn and the account disabled, together.
+    answers = [true, true];
+    await usersRow(admin, t.username).getByRole('button', { name: 'Disable', exact: true }).click();
+    await expect(usersBanner(admin)).toContainText(`Disabled "${t.username}".`, { timeout: 60_000 });
+    expect((await userRow(t.id)).isActive).toBe(false);
+    expect(await requestNow()).toEqual({ state: 'REJECTED', pendingRole: null, decisionCategory: 'withdrawn', reviewedById: m1.id });
+    expect(await auditFor({ entityId: K.id, action: 'UPDATE' })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ actorId: m1.id, reason: 'withdrawn when the account was disabled' })])
+    );
   });
 });

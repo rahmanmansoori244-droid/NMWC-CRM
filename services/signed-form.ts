@@ -20,7 +20,10 @@
  * from it, so a confirm made on a page opened before a send-back, a withdraw or
  * a Manager's Remove of a document lands on nothing. The token is also the
  * replay key: a retry whose first try landed is answered from the FORM_UPLOADED
- * row it wrote, not refused (the item-22 fetch route, app/api/forms/[form]).
+ * row it wrote, not refused (the item-22 fetch route, app/api/forms/[form]) —
+ * but only while the request is no longer waiting at the step. Back at it (a
+ * Finance Manager send-back since), "sent" would be false: the pages of a page
+ * opened before that send-back were never claimed, so it is told to reload.
  */
 import { z } from 'zod';
 import { EditProcess, EditState, Role, type Prisma } from '@prisma/client';
@@ -170,18 +173,12 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
     );
   }
 
-  // N01: the page he confirmed on still shows the request as it is. A page that
-  // does not may be a retry whose first try landed and was then sent back: that
-  // is answered as landed, not as stale.
-  try {
-    assertDecisionView(expected, edit);
-  } catch (err) {
-    if (err instanceof ConflictError) {
-      const replay = await landed(editId, session.id, expected);
-      if (replay) return replay;
-    }
-    throw err;
-  }
+  // N01: the page he confirmed on still shows the request as it is. One that
+  // does not is stale, even when an upload from it landed before: the request
+  // is waiting at the step again (a Finance Manager send-back), so these pages
+  // were never sent, and "sent" would leave it waiting with nothing on the way
+  // (review, 2026-10-11). He reloads and sees what the step holds now.
+  assertDecisionView(expected, edit);
 
   // Every page: live, his own capture, taken as a signed-application page, on no
   // customer or branch, and on no other request.
@@ -351,9 +348,22 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
  * Did a confirm made on this view already land? His FORM_UPLOADED row for the
  * same cycle and step, written at or after the visit the token names — one per
  * visit, so a send-back and a new upload are a new visit with a new entry time.
+ *
+ * Review (2026-10-11): never while the request is waiting at the step again. A
+ * Finance Manager send-back after that upload brings it back, and a page opened
+ * before the send-back still finds that upload's row: answered as landed, its
+ * new pages would be left unclaimed while the client said "Sent". Read afresh,
+ * not from the caller's row, since a claim that missed read it before the miss.
  */
 async function landed(editId: string, actorId: string, view: DecisionView): Promise<SignedFormReceipt | null> {
   if (!view.stageEnteredAt) return null;
+  const now = await prisma.customerEdit.findUnique({
+    where: { id: editId },
+    select: { state: true, approvalChain: true, currentStepIndex: true },
+  });
+  if (!now || (now.state === EditState.SUBMITTED && isSignedFormStep(parseChain(now.approvalChain)[now.currentStepIndex]))) {
+    return null;
+  }
   const row = await prisma.editApproval.findFirst({
     where: {
       editId,

@@ -21,10 +21,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type Row = Record<string, unknown> & { id: string };
-type Tables = Record<'user' | 'region' | 'route' | 'auditLog', Map<string, Row>>;
+type Tables = Record<'user' | 'region' | 'route' | 'auditLog' | 'customerEdit' | 'notification', Map<string, Row>>;
 
 const h = vi.hoisted(() => ({
-  tables: null as unknown as Record<'user' | 'region' | 'route' | 'auditLog', Map<string, Record<string, unknown> & { id: string }>>,
+  tables: null as unknown as Record<
+    'user' | 'region' | 'route' | 'auditLog' | 'customerEdit' | 'notification',
+    Map<string, Record<string, unknown> & { id: string }>
+  >,
   /** When set, the next AuditLog insert throws it. */
   failAudit: null as null | Error,
   /** Writes that did not go through a transaction. */
@@ -60,7 +63,11 @@ vi.mock('@/lib/db', () => {
     });
   const matches = (row: Row, where: Record<string, unknown>) =>
     Object.entries(where).every(([k, v]) =>
-      v && typeof v === 'object' && 'not' in (v as object) ? row[k] !== (v as { not: unknown }).not : row[k] === v
+      v && typeof v === 'object' && 'not' in (v as object)
+        ? row[k] !== (v as { not: unknown }).not
+        : v && typeof v === 'object' && 'in' in (v as object)
+          ? (v as { in: unknown[] }).in.includes(row[k])
+          : row[k] === v
     );
   const model = (tables: () => Tables, name: keyof Tables, via: 'tx' | 'prisma') => ({
     findUnique: async ({ where, include }: { where: Record<string, unknown>; include?: { reports?: unknown } }) => {
@@ -86,6 +93,14 @@ vi.mock('@/lib/db', () => {
     },
     count: async ({ where }: { where: Record<string, unknown> }) =>
       [...tables()[name].values()].filter((r) => matches(r, where)).length,
+    findMany: async ({ where }: { where: Record<string, unknown> }) =>
+      [...tables()[name].values()].filter((r) => matches(r, where)).map((r) => ({ ...r })),
+    updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+      if (via === 'prisma') h.autocommit.push(`${name}.updateMany`);
+      const hit = [...tables()[name].values()].filter((r) => matches(r, where));
+      for (const r of hit) tables()[name].set(r.id, { ...r, ...data });
+      return { count: hit.length };
+    },
     // The create's e-mail clash check: `email: { equals, mode: 'insensitive' }`.
     findFirst: async ({ where }: { where: { email?: { equals: string; mode?: string } } }) => {
       const want = where.email?.equals;
@@ -131,6 +146,8 @@ vi.mock('@/lib/db', () => {
     region: model(tables, 'region', via),
     route: model(tables, 'route', via),
     auditLog: model(tables, 'auditLog', via),
+    customerEdit: model(tables, 'customerEdit', via),
+    notification: model(tables, 'notification', via),
   });
   const clone = (t: Tables): Tables =>
     Object.fromEntries(
@@ -199,6 +216,8 @@ beforeEach(() => {
     region: new Map([[REGION, { id: REGION, code: 'MCT', name: 'Muscat', isActive: true }]]),
     route: new Map([[ROUTE, { id: ROUTE, code: 'M01', name: 'Muscat 1', regionId: REGION, isActive: true }]]),
     auditLog: new Map(),
+    customerEdit: new Map(),
+    notification: new Map(),
   };
 });
 
@@ -464,5 +483,101 @@ describe('a change to who exists, is active or holds which role refreshes the ca
     const res = await createUserAction(form({ username: 'Bad Name', fullName: 'X', role: 'SUPERVISOR', password: 'A-long-password-1' }));
     expect(res).toMatchObject({ ok: false });
     expect(h.tags).toEqual([]);
+  });
+});
+
+// Owner decisions 2026-10-11 (review, Q-signed-form-stranded): a salesman's credit
+// request waiting at his signed-application step. Nobody else can move it on or
+// close it, so a disable is refused unless it withdraws the request, and then the
+// withdraw, its audit row, the answered alerts and the disable are one transaction.
+describe('disabling a salesman whose credit request waits at his signed-application step', () => {
+  const SALES = 'cksalesmanatform00000001';
+  const EDIT = 'ckeditatsignedform000001';
+  beforeEach(() => {
+    h.tables.user.set(SALES, {
+      id: SALES,
+      username: 'm01',
+      fullName: 'Ali Salesman',
+      role: 'SALESMAN',
+      isActive: true,
+      supervisorId: null,
+      ownedRouteId: ROUTE,
+    });
+    h.tables.customerEdit.set(EDIT, {
+      id: EDIT,
+      process: 'CREATE',
+      state: 'SUBMITTED',
+      pendingRole: 'SALESMAN',
+      currentStepIndex: 2,
+      cycle: 1,
+      submittedById: SALES,
+      slaDueAt: new Date('2026-10-14T05:00:00Z'),
+    });
+    // His own must-act alert, and the print alert his Manager holds.
+    h.tables.notification.set('n-own', { id: 'n-own', editId: EDIT, userId: SALES, kind: 'SIGNED_FORM_REQUESTED', readAt: null });
+    h.tables.notification.set('n-mgr', { id: 'n-mgr', editId: EDIT, userId: 'ckmanager0000000000000001', kind: 'EDIT_STAGE_ADVANCED', readAt: null });
+  });
+  const disable = (withdraw: boolean) =>
+    toggleUserActiveAction(form({ userId: SALES, ...(withdraw ? { withdrawCreates: 'on' } : {}) }));
+
+  it('without the withdraw: refused, naming why, and nothing is written', async () => {
+    const before = snapshot();
+    const res = await disable(false);
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      fields: {
+        withdrawCreates: expect.stringMatching(
+          /^Ali Salesman has 1 credit request\(s\) waiting for him to upload the customer's signed credit application\. Nobody else can upload it, send the request back or close it/
+        ),
+      },
+    });
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('with it: the request is withdrawn, its alerts answered, and the account disabled — in one transaction', async () => {
+    expect(await disable(true)).toEqual({ ok: true, data: undefined });
+    expect(h.tables.customerEdit.get(EDIT)).toMatchObject({
+      state: 'REJECTED',
+      pendingRole: null,
+      slaDueAt: null,
+      reviewedById: STEWARD,
+      decisionCategory: 'withdrawn',
+    });
+    expect(h.tables.notification.get('n-own')!.readAt).toBeInstanceOf(Date);
+    expect(h.tables.notification.get('n-mgr')!.readAt).toBeInstanceOf(Date);
+    expect(h.tables.user.get(SALES)).toMatchObject({ isActive: false });
+    expect([...h.tables.auditLog.values()]).toMatchObject([
+      {
+        action: 'UPDATE',
+        entityType: 'CustomerEdit',
+        entityId: EDIT,
+        reason: 'withdrawn when the account was disabled',
+        after: { process: 'CREATE', state: 'REJECTED', from: 'SUBMITTED', cycle: 1, atStep: 2 },
+      },
+      { action: 'UPDATE', entityType: 'User', entityId: SALES, reason: 'disabled' },
+    ]);
+    expect(h.autocommit).toEqual([]);
+  });
+
+  it('with it, but the audit insert fails: neither the withdraw nor the disable is saved', async () => {
+    const before = snapshot();
+    h.failAudit = poolTimeout();
+    expect(await disable(true)).toEqual(NOTHING_SAVED);
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('a draft or a sent-back request does not hold a disable back (a leaver’s no longer hold its shop)', async () => {
+    h.tables.customerEdit.set(EDIT, { ...h.tables.customerEdit.get(EDIT)!, state: 'NEEDS_CORRECTION', pendingRole: null });
+    expect(await disable(false)).toEqual({ ok: true, data: undefined });
+    expect(h.tables.customerEdit.get(EDIT)).toMatchObject({ state: 'NEEDS_CORRECTION' });
+    expect(h.tables.user.get(SALES)).toMatchObject({ isActive: false });
+  });
+
+  it('enabling is never held back', async () => {
+    h.tables.user.set(SALES, { ...h.tables.user.get(SALES)!, isActive: false });
+    expect(await disable(false)).toEqual({ ok: true, data: undefined });
+    expect(h.tables.user.get(SALES)).toMatchObject({ isActive: true });
+    expect(h.tables.customerEdit.get(EDIT)).toMatchObject({ state: 'SUBMITTED' });
   });
 });

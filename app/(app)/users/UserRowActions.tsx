@@ -117,7 +117,21 @@ export function UserRowActions({
     start(async () => {
       // PROD-006: action returns `{ ok, code, message, fields? }` shape —
       // last-Manager-lockout and peer-Manager guards must surface to the UI.
-      const res = await toggleUserActiveAction(fd);
+      let res = await toggleUserActiveAction(fd);
+      // Owner decisions 2026-10-11 (review): a credit request of his waits at his
+      // signed-application step, which nobody else can move on. The server says
+      // so; withdrawing it with the disable is asked separately, never assumed.
+      const withdrawAsk = !res.ok ? res.fields?.withdrawCreates : undefined;
+      if (withdrawAsk) {
+        if (!confirm(`${withdrawAsk}\n\nDisable "${username}" and withdraw them now? A withdrawn request is closed for good.`)) {
+          setResetMsg({ text: withdrawAsk, ok: false });
+          return;
+        }
+        const again = new FormData();
+        again.set('userId', userId);
+        again.set('withdrawCreates', 'on');
+        res = await toggleUserActiveAction(again);
+      }
       if (!res.ok) {
         setResetMsg({ text: refusalText(res), ok: false });
         return;

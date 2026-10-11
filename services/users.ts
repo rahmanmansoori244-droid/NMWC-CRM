@@ -37,6 +37,7 @@ import {
   routeHandover,
   routeMoveNotes,
   routeSignInName,
+  signedFormDisableIssue,
   strandedCreatesIssue,
   supervisorCoverIssue,
   supervisorStepNotes,
@@ -47,6 +48,13 @@ import {
 } from '@/lib/account-edit';
 import { countOpenReturned, openReturnedIds } from '@/lib/returned-work';
 import { omanDateISO } from '@/lib/tz';
+import {
+  STRANDED_CREATE_SELECT,
+  atSignedFormStep,
+  atSignedFormStepWhere,
+  onlyHisToCloseWhere,
+  withdrawWithAccountChange,
+} from '@/lib/stranded-creates';
 
 // User administration is a MANAGER or STEWARD action. A MANAGER is capped at the
 // field force (MANAGER_ADMINISTRABLE_ROLES); a STEWARD is the org data-admin and
@@ -640,6 +648,10 @@ async function createUserCore(formData: FormData) {
  *     active MANAGER.
  *   • AUTH-12 — bumps `sessionsRevokedAt` on disable so the JWT freshness
  *     loop in lib/auth.ts kicks the disabled user out at the next request.
+ *   • Owner decisions 2026-10-11 (review) — a disable is refused while a credit
+ *     request of his waits at his signed-application step, unless the form
+ *     sends `withdrawCreates` (UserRowActions asks first): they are then
+ *     withdrawn in the same transaction (lib/stranded-creates.ts).
  */
 export async function toggleUserActiveAction(formData: FormData): SafeAction<void> {
   return runAction(() => toggleUserActiveCore(formData));
@@ -674,9 +686,47 @@ async function toggleUserActiveCore(formData: FormData) {
     }
   }
 
+  // Owner decisions 2026-10-11 (review, Q-signed-form-stranded): his credit
+  // requests waiting at his signed-application step. Nobody else can move one
+  // on or close it, so disabled he would leave each holding its CR number and
+  // shop for good: refused unless they are withdrawn with the disable, as the
+  // Steward's account edit withdraws the requests a route move strands
+  // (lib/stranded-creates.ts). Whoever may disable him may withdraw them, so a
+  // leaver's account is never kept open for want of a Steward. [Default — the
+  // owner may instead let a Manager or the Steward send the step back.]
+  const atSignedForm = newActive
+    ? []
+    : await prisma.customerEdit.findMany({
+        where: { submittedById: userId, ...atSignedFormStepWhere() },
+        select: STRANDED_CREATE_SELECT,
+      });
+  const withdrawCreates = formData.get('withdrawCreates') === 'on';
+  const signedFormIssue = signedFormDisableIssue({
+    who: user.fullName,
+    count: atSignedForm.length,
+    withdraw: withdrawCreates,
+  });
+  if (signedFormIssue) throw new ValidationError({ withdrawCreates: signedFormIssue });
+
   // F13: the change and its audit row in one transaction (see createUserCore).
   const env = await getAuditEnvelope(me.id);
+  const now = new Date();
   await prisma.$transaction(async (tx) => {
+    for (const e of atSignedForm) {
+      const done = await withdrawWithAccountChange(tx, env, e, {
+        submittedById: userId,
+        byId: me.id,
+        at: now,
+        decisionReason:
+          'Withdrawn when your account was disabled: nobody else can upload its signed credit application. The salesman of the shop’s route adds it afresh.',
+        auditReason: 'withdrawn when the account was disabled',
+      });
+      if (!done) {
+        throw new ValidationError({
+          withdrawCreates: `One of ${user.fullName}'s credit requests changed while this was being saved. Nothing was saved — reload the page and try again.`,
+        });
+      }
+    }
     const updated = await tx.user.update({
       where: { id: userId },
       data: {
@@ -684,7 +734,7 @@ async function toggleUserActiveCore(formData: FormData) {
         // AUTH-12: bump revocation marker so existing JWTs are immediately
         // invalidated on the next freshness check (≤5 min). Bump on disable
         // OR re-enable so a re-enabled user still picks up role changes etc.
-        sessionsRevokedAt: new Date(),
+        sessionsRevokedAt: now,
       },
     });
 
@@ -699,6 +749,10 @@ async function toggleUserActiveCore(formData: FormData) {
   });
   revalidatePath('/users');
   revalidateTag('ref:users'); // the cached list holds active accounts only
+  if (atSignedForm.length > 0) {
+    revalidatePath('/work');
+    revalidatePath('/approvals');
+  }
 }
 
 /**
@@ -876,6 +930,26 @@ async function updateUserRoleCore(formData: FormData) {
     resolvedRouteId = ownedRouteId;
   }
 
+  // Owner decisions 2026-10-11 (review, Q-signed-form-stranded): as the account
+  // edit refuses it — a role or route change that leaves a credit request at his
+  // signed-application step with nobody able to upload its form
+  // (lib/stranded-creates.ts). This action withdraws nothing; the Steward's Edit
+  // account can withdraw them with the change.
+  if (target.isActive && resolvedRouteId !== target.ownedRouteId) {
+    const stranded = await prisma.customerEdit.count({
+      where: {
+        submittedById: userId,
+        ...atSignedFormStepWhere(),
+        ...(resolvedRouteId ? { branchDrafts: { some: { routeId: { not: resolvedRouteId } } } } : {}),
+      },
+    });
+    if (stranded > 0) {
+      throw new ValidationError({
+        _form: `${target.fullName} has ${stranded} credit request(s) waiting for him to upload the customer's signed credit application, which nobody else can upload, send back or close, and after this change he could not upload it. Ask him to upload it or withdraw the request first, or ask the Data Steward to make this change on Users (Edit account), which can withdraw them with it.`,
+      });
+    }
+  }
+
   // F13: the change and its audit row in one transaction (see createUserCore).
   const env = await getAuditEnvelope(me.id);
   await prisma.$transaction(async (tx) => {
@@ -945,8 +1019,10 @@ async function updateUserRoleCore(formData: FormData) {
  *     clears on Needs correction;
  *   - new-customer requests not in review (drafts, or sent back) cannot be sent
  *     again from his NEW route (services/creates.ts refuses one started on
- *     another route). So the change is refused while he has any started on
- *     another route (strandedCreatesIssue), unless the Steward ticks
+ *     another route), nor can a credit request waiting at his signed-application
+ *     step have its form uploaded from there (owner decisions 2026-10-11,
+ *     lib/stranded-creates.ts). So the change is refused while he has any started
+ *     on another route (strandedCreatesIssue), unless the Steward ticks
  *     `withdrawCreates`: they are then withdrawn in the same transaction, as he
  *     could withdraw them himself (withdrawCreateAction).
  */
@@ -1107,19 +1183,19 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
   // withdraw them. Refused, unless the Steward withdraws them with this
   // change. A disabled account sends nothing again, and its drafts hold no
   // shop (lib/create-guards.ts), so his are left as they are.
+  // Owner decisions 2026-10-11 (review): with them, a credit request waiting at
+  // his signed-application step — only he uploads its signed form, as a
+  // salesman and from the route it was started on (lib/stranded-creates.ts).
   const strandedCreates =
     target.isActive && routeChanged
       ? await prisma.customerEdit.findMany({
           where: {
             submittedById: target.id,
-            process: EditProcess.CREATE,
-            state: { in: [EditState.DRAFT, EditState.NEEDS_CORRECTION] },
+            ...onlyHisToCloseWhere(),
             ...(route ? { branchDrafts: { some: { routeId: { not: route.id } } } } : {}),
           },
           select: {
-            id: true,
-            state: true,
-            cycle: true,
+            ...STRANDED_CREATE_SELECT,
             branchDrafts: { select: { route: { select: { code: true } } } },
           },
         })
@@ -1130,6 +1206,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
   const strandedIssue = strandedCreatesIssue({
     who: target.fullName,
     count: strandedCreates.length,
+    atSignedForm: strandedCreates.filter(atSignedFormStep).length,
     fromRoutes: strandedFrom,
     toRoute: route?.code ?? null,
     withdraw: d.withdrawCreates,
@@ -1288,9 +1365,12 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
   if (handover && route) notes.push(...(await handOverNotes(handover, route.code, retired)));
   if (routeChanged && (target.ownedRoute || strandedCreates.length > 0)) {
     const withdrawn = new Set(strandedCreates.map((e) => e.id));
+    // One withdrawn at the signed-application step was in review too: it is
+    // counted as withdrawn, not as staying with the approvers.
+    const notWithdrawn = { id: { notIn: [...withdrawn] } };
     const [inReview, inReviewCreates, sentBackIds] = await Promise.all([
       prisma.customerEdit.count({
-        where: { submittedById: target.id, state: EditState.SUBMITTED },
+        where: { submittedById: target.id, state: EditState.SUBMITTED, ...notWithdrawn },
       }),
       // Security review: in review, a new customer stays with its route's
       // approvers; sent back after the move, he cannot send it again. The
@@ -1302,6 +1382,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
               process: EditProcess.CREATE,
               state: EditState.SUBMITTED,
               branchDrafts: { some: { routeId: { not: route.id } } },
+              ...notWithdrawn,
             },
             select: {
               branchDrafts: {
@@ -1369,44 +1450,25 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
       // His new-customer requests the change would strand, withdrawn as
       // withdrawCreateCore (services/creates.ts) withdraws one: closed for good
       // (REJECTED), the clock stopped, the decision fields saying who and why.
-      // Claimed on the state and cycle read above: one he sent or changed since
-      // is not withdrawn, and nothing is saved.
+      // Claimed on the state and cycle read above (and the step, for one at the
+      // signed-application step): one he sent or changed since is not
+      // withdrawn, and nothing is saved (lib/stranded-creates.ts).
       for (const e of strandedCreates) {
-        const claim = await tx.customerEdit.updateMany({
-          where: { id: e.id, state: e.state, cycle: e.cycle, submittedById: target.id },
-          data: {
-            state: EditState.REJECTED,
-            pendingRole: null,
-            slaDueAt: null,
-            slaBreachedAt: null,
-            lastEscalatedAt: null,
-            escalationLevel: 0,
-            reviewedById: me.id,
-            reviewedAt: now,
-            decisionReason: route
-              ? `Withdrawn by the Data Steward when your route changed to ${route.code}: it could not be sent again from that route. The salesman of the shop's route adds it afresh.`
-              : 'Withdrawn by the Data Steward when your role changed: it can no longer be sent. The salesman of the shop’s route adds it afresh.',
-            decisionCategory: 'withdrawn',
-          },
+        const done = await withdrawWithAccountChange(tx, env, e, {
+          submittedById: target.id,
+          byId: me.id,
+          at: now,
+          decisionReason: route
+            ? `Withdrawn by the Data Steward when your route changed to ${route.code}: it could not be sent again from that route. The salesman of the shop's route adds it afresh.`
+            : 'Withdrawn by the Data Steward when your role changed: it can no longer be sent. The salesman of the shop’s route adds it afresh.',
+          auditReason: 'withdrawn with an account edit',
+          auditAfter: { route: route?.code ?? null },
         });
-        if (claim.count === 0) {
+        if (!done) {
           throw new ValidationError({
             withdrawCreates: `One of ${target.fullName}'s new-customer requests changed while this was being saved. Nothing was saved — reload the page and try again.`,
           });
         }
-        await writeAudit(tx, env, {
-          action: 'UPDATE',
-          entityType: 'CustomerEdit',
-          entityId: e.id,
-          reason: 'withdrawn with an account edit',
-          after: {
-            process: 'CREATE',
-            state: EditState.REJECTED,
-            from: e.state,
-            cycle: e.cycle,
-            route: route?.code ?? null,
-          } as unknown as Prisma.InputJsonValue,
-        });
       }
       await tx.user.update({
         where: { id: target.id },
@@ -1471,6 +1533,7 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
     revalidatePath('/work');
     revalidatePath('/today');
     revalidatePath('/rejected');
+    if (strandedCreates.some(atSignedFormStep)) revalidatePath('/approvals');
   }
   return { changed: changedFields(before, after), username, notes };
 }

@@ -11,7 +11,8 @@
  *     dropped pages released; the completion is a FORM_UPLOADED decision row and
  *     an UPDATE audit row (never STEP_APPROVE); his alerts and the print rows are
  *     settled; the Finance Manager is told;
- *   - a retry of a confirm that landed is answered as landed, never refused.
+ *   - a retry of a confirm that landed is answered as landed, never refused —
+ *     unless the request is back at the step, when an older page reloads.
  * The same against Postgres: tests/integration/signed-form-step.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -31,6 +32,8 @@ const h = vi.hoisted(() => ({
   claimCount: 1,
   pageClaimCount: null as number | null,
   landedRow: null as { id: string } | null,
+  /** Runs when the claim misses: what another try did in between. */
+  onClaimMiss: null as null | (() => void),
   calls: [] as Array<[string, unknown]>,
   rolledBack: false,
 }));
@@ -66,6 +69,7 @@ const tx = {
   customerEdit: {
     updateMany: async (args: unknown) => {
       h.calls.push(['claim', args]);
+      if (h.claimCount === 0) h.onClaimMiss?.();
       return { count: h.claimCount };
     },
   },
@@ -164,6 +168,7 @@ beforeEach(() => {
   h.claimCount = 1;
   h.pageClaimCount = null;
   h.landedRow = null;
+  h.onClaimMiss = null;
   h.calls = [];
   h.rolledBack = false;
 });
@@ -377,13 +382,21 @@ describe('a confirm that lands', () => {
     expect(order.indexOf('settleRequestAlerts')).toBeLessThan(order.indexOf('notifyUsers'));
   });
 
+  const movedOn = () => row({ currentStepIndex: 3, pendingRole: 'FINANCE_MANAGER', stageEnteredAt: new Date() });
+
   it('a retry whose first try landed is answered as landed — whether the claim missed or the request moved on', async () => {
     const token = tokenOf();
     h.claimCount = 0;
     h.landedRow = { id: 'ea1' };
+    // The claim missed because the first try had just moved it on: read afresh,
+    // the request is with the Finance Manager.
+    h.onClaimMiss = () => {
+      h.edit = movedOn();
+    };
     expect(await send([P1, P2], token)).toEqual({ ok: true, data: { editId: EDIT, pages: 2, replayed: true } });
+    h.onClaimMiss = null;
     h.claimCount = 1;
-    h.edit = row({ currentStepIndex: 3, pendingRole: 'FINANCE_MANAGER', stageEnteredAt: new Date() });
+    h.edit = movedOn();
     expect(await send([P1, P2], token)).toEqual({ ok: true, data: { editId: EDIT, pages: 2, replayed: true } });
     // Without its row, the same misses are refusals.
     h.landedRow = null;
@@ -391,6 +404,22 @@ describe('a confirm that lands', () => {
     h.edit = row();
     h.claimCount = 0;
     expect(await send([P1, P2], token)).toMatchObject({ ok: false, code: 'NOT_PENDING' });
+  });
+
+  // Review (2026-10-11): he confirmed, the Finance Manager sent it back to the
+  // step, and he sends new pages from a page opened before that send-back. His
+  // earlier upload's row is still there, but the request waits for him again:
+  // "Sent" would leave it waiting with these pages never claimed.
+  it('back at the step after a send-back, an older page is told to reload — never "sent" from the earlier upload', async () => {
+    h.landedRow = { id: 'ea-earlier-visit' };
+    const beforeSendBack = tokenOf(row({ stageEnteredAt: new Date(STAGE.getTime() - 86_400_000) }));
+    expect(await send([P1], beforeSendBack)).toEqual({ ok: false, code: 'STALE_VIEW', message: STALE_VIEW_MESSAGE });
+    expect(called('claim')).toEqual([]);
+    expect(called('claimPages')).toEqual([]);
+    // Nor when a claim misses while the request is still waiting at the step.
+    h.claimCount = 0;
+    expect(await send([P1], tokenOf())).toMatchObject({ ok: false, code: 'NOT_PENDING' });
+    expect(called('decisionRow')).toEqual([]);
   });
 });
 

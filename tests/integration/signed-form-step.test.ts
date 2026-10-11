@@ -9,7 +9,13 @@
  *   - a Manager removes a credit document while the salesman's page is open: his
  *     confirm is refused STALE_VIEW and writes nothing; from a fresh page it lands;
  *   - the salesman withdraws a request the customer will not sign: it is closed,
- *     every alert about it settled, and a confirm afterwards lands on nothing.
+ *     every alert about it settled, and a confirm afterwards lands on nothing;
+ *   - review (2026-10-11): after a Finance Manager send-back, a page opened
+ *     before it sends new pages: told to reload (STALE_VIEW), not "sent" from the
+ *     earlier upload, and the new pages stay unclaimed;
+ *   - review (2026-10-11, Q-signed-form-stranded): his Manager disables him while
+ *     a request waits at his step: refused, then, told to withdraw it, the
+ *     request is closed with its alerts answered and the account disabled.
  *
  * Who the SLA sweep tells of a late signed application (the salesman, the
  * region's Managers, then the GM and the Sales Director) is pinned with the
@@ -39,6 +45,7 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
   let edits: typeof import('@/services/edits');
   let photos: typeof import('@/services/photos');
   let signedForm: typeof import('@/services/signed-form');
+  let users: typeof import('@/services/users');
 
   const tag = randomUUID().slice(0, 8);
   const ids = {
@@ -53,6 +60,8 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
   const people = () => [ids.salesman, ids.supervisor, ids.manager, ids.sd, ids.fm];
   const nameR = `ZZ-SYN Signed Form R ${tag}`;
   const nameW = `ZZ-SYN Signed Form W ${tag}`;
+  const nameS = `ZZ-SYN Signed Form S ${tag}`;
+  const nameD = `ZZ-SYN Signed Form D ${tag}`;
   let channelId = '';
   let subChannelId = '';
   const asUser = (u: string, role: string) => {
@@ -160,6 +169,7 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
     edits = await import('@/services/edits');
     photos = await import('@/services/photos');
     signedForm = await import('@/services/signed-form');
+    users = await import('@/services/users');
     const region = await prisma.region.create({ data: { name: `ZZSF Region ${tag}`, code: `ZZSF-${tag}` } });
     ids.region = region.id;
     const route = await prisma.route.create({ data: { name: `ZZSF Route ${tag}`, code: `ZZSF-RT-${tag}`, regionId: region.id } });
@@ -281,5 +291,65 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
       decisionToken: token,
     });
     expect(late).toMatchObject({ ok: false, code: 'NOT_PENDING' });
+  });
+  it('after a Finance Manager send-back, a page opened before it is told to reload — not "sent" from the earlier upload', async () => {
+    const { editId } = await atSignedForm(nameS, 101);
+    asUser(ids.salesman, 'SALESMAN');
+    const before = await freshDecisionToken(prisma, editId);
+    const first = await signedForm.submitSignedFormAction({ editId, attachmentIds: [await mkAtt('CREDIT_FORM')], decisionToken: before });
+    expect(first.ok, JSON.stringify(first)).toBe(true);
+    asUser(ids.fm, 'FINANCE_MANAGER');
+    expect((await decide('reject', editId)).ok).toBe(true);
+
+    asUser(ids.salesman, 'SALESMAN');
+    const newPage = await mkAtt('CREDIT_FORM');
+    const was = await footprint(editId);
+    const stale = await signedForm.submitSignedFormAction({ editId, attachmentIds: [newPage], decisionToken: before });
+    expect(stale).toMatchObject({ ok: false, code: 'STALE_VIEW' });
+    expect(await footprint(editId)).toEqual(was);
+    expect(was.row).toMatchObject({ state: 'SUBMITTED', currentStepIndex: 2, pendingRole: 'SALESMAN' });
+    expect((await prisma.attachment.findUniqueOrThrow({ where: { id: newPage } })).editId).toBeNull();
+    expect(await prisma.editApproval.count({ where: { editId, decision: 'FORM_UPLOADED' } })).toBe(1);
+  });
+
+  // Last: it disables the salesman.
+  it('his Manager disables him while a request waits at his step: refused, then withdrawn with the disable', async () => {
+    const { editId } = await atSignedForm(nameD, 111);
+    asUser(ids.manager, 'MANAGER');
+    const form = (withdraw: boolean) => {
+      const fd = new FormData();
+      fd.set('userId', ids.salesman);
+      if (withdraw) fd.set('withdrawCreates', 'on');
+      return fd;
+    };
+    const refused = await users.toggleUserActiveAction(form(false));
+    expect(refused, JSON.stringify(refused)).toMatchObject({
+      ok: false,
+      fields: { withdrawCreates: expect.stringMatching(/credit request\(s\) waiting for him to upload the customer's signed credit application/) },
+    });
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: ids.salesman } })).isActive).toBe(true);
+    expect((await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).state).toBe('SUBMITTED');
+
+    const done = await users.toggleUserActiveAction(form(true));
+    expect(done.ok, JSON.stringify(done)).toBe(true);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: ids.salesman } })).isActive).toBe(false);
+    expect(await prisma.customerEdit.findUniqueOrThrow({ where: { id: editId } })).toMatchObject({
+      state: 'REJECTED',
+      pendingRole: null,
+      slaDueAt: null,
+      decisionCategory: 'withdrawn',
+      reviewedById: ids.manager,
+    });
+    // Nothing about it waits on anyone now.
+    expect(
+      await prisma.notification.count({
+        where: { editId, readAt: null, kind: { in: ['SIGNED_FORM_REQUESTED', 'EDIT_STAGE_ADVANCED', 'SLA_BREACH'] } },
+      })
+    ).toBe(0);
+    expect(
+      await prisma.auditLog.count({ where: { entityId: editId, actorId: ids.manager, reason: 'withdrawn when the account was disabled' } })
+    ).toBe(1);
+    // No request of his is left at the step.
+    expect(await prisma.customerEdit.count({ where: { submittedById: ids.salesman, state: 'SUBMITTED', pendingRole: 'SALESMAN' } })).toBe(0);
   });
 });

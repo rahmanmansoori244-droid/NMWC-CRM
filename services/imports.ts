@@ -5,8 +5,6 @@ import { isTransientDbError } from '@/lib/db-errors';
 import {
   Role,
   ImportRowState,
-  EditProcess,
-  EditState,
   type Prisma,
   type DayOfWeek,
   type CustomerStatus,
@@ -58,6 +56,7 @@ import {
   importSupervisorCoverIssue,
   strandedCreatesImportIssue,
 } from '@/lib/account-edit';
+import { onlyHisToCloseWhere } from '@/lib/stranded-creates';
 import { assertPasswordNotReused, rotatePasswordHistory } from '@/lib/password-policy';
 import {
   checkCustomerRow,
@@ -766,13 +765,15 @@ async function uploadAccountMasterCore(
         // back) and were started on another route than the one this row leaves
         // him with: services/creates.ts refuses to save or send one again from
         // another route, so after the move he could only withdraw them. /users
-        // can withdraw them with the change; the import cannot.
+        // can withdraw them with the change; the import cannot. Owner decisions
+        // 2026-10-11 (review): and a credit request waiting at his
+        // signed-application step, whose form only he uploads, from the route it
+        // was started on (lib/stranded-creates.ts).
         if (existing?.isActive && (existing.ownedRouteId ?? null) !== ownedRouteId) {
           const stranded = await prisma.customerEdit.count({
             where: {
               submittedById: existing.id,
-              process: EditProcess.CREATE,
-              state: { in: [EditState.DRAFT, EditState.NEEDS_CORRECTION] },
+              ...onlyHisToCloseWhere(),
               ...(ownedRouteId
                 ? { branchDrafts: { some: { routeId: { not: ownedRouteId } } } }
                 : {}),
