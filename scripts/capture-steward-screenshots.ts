@@ -9,7 +9,7 @@
  * The account comes from the environment, never from this file (owner item 20,
  * 2026-10-11; scripts/lib/guide-accounts.ts). Set GUIDE_STEWARD_USERNAME and
  * GUIDE_STEWARD_PASSWORD in the shell for the one run, then:
- *   npx tsx scripts/capture-steward-screenshots.ts --expect-host ep-sweet-haze
+ *   npm run guide:capture:steward -- --expect-host ep-sweet-haze
  * A missing variable stops it before Chromium starts.
  */
 import { chromium, type Page } from 'playwright';
@@ -21,6 +21,7 @@ import { guideAccountsFromEnv, type GuideAccount } from './lib/guide-accounts';
 // Owner decisions 2026-10-11: BASE is the live site, which is production, so nothing
 // starts — no browser, no sign-in, no file written — unless the command line names
 // production: `npx tsx scripts/capture-steward-screenshots.ts --expect-host ep-sweet-haze`
+// (or `npm run guide:capture:steward -- --expect-host ep-sweet-haze`).
 if (!liveSiteNamed('scripts/capture-steward-screenshots.ts')) process.exit(2);
 
 const BASE = LIVE_SITE;

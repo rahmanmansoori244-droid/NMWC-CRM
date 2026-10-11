@@ -121,7 +121,7 @@ This session closed the senior-audit findings, hardened the daily backup workflo
 ### New npm scripts
 
 ```
-guide:capture · guide:pdf · guide:roles · guide:build
+guide:capture · guide:pdf · guide:roles · guide:build (split on 2026-10-11, owner item 21: guide:build no longer captures)
 ops:r2-setup · ops:print-secrets
 ```
 

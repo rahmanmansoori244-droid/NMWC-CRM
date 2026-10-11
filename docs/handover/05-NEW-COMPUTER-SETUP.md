@@ -574,32 +574,37 @@ PowerShell, `$env:RUN_<FLAG>` stays set for the rest of that window.
   `npx playwright install --with-deps chromium` ([ci.yml](../../.github/workflows/ci.yml)).
 - To reuse a Chromium that is already installed, set `E2E_CHROMIUM` to its path for the
   tests ([playwright.config.ts](../../playwright.config.ts)), or `GUIDE_CHROMIUM` for
-  `npm run guide:roles` ([scripts/build-role-guides.ts](../../scripts/build-role-guides.ts)).
+  `npm run guide:roles` and the role guides of `npm run guide:build`
+  ([scripts/build-role-guides.ts](../../scripts/build-role-guides.ts)).
 - `npm run test:e2e` starts `npm run dev` against whatever `.env.local` or `.env` names,
   unless `E2E_BASE_URL` is set. Run `env-check.cjs` first.
 - `npm run guide:pdf` renders `docs/guide/NMWC-CRM-USER-GUIDE.html` to PDF on your
   computer ([scripts/guide-html-to-pdf.ts](../../scripts/guide-html-to-pdf.ts)).
 - `npm run guide:roles` builds the role guides and renders them to PDF on your computer.
   The Arabic guides load a font from Google Fonts, so it needs the network.
+  `npm run guide:roles:html` writes their HTML only.
+- `npm run guide:build` renders every PDF in `docs/guide/` from the committed HTML on
+  your computer, without rewriting the HTML: the role guides, then the combined user
+  guide. It takes no screenshot and signs in to nothing (owner item 21, 2026-10-11).
 - **The guides in `docs/guide/` are stale.** A newer English and Arabic set (PDFs for
   Salesman, Manager, Approvers, Data Steward and How it works, plus an owner checklist) was
   produced on 2026-10-04 from the code and given to users. It is in the pack: the PDFs in
   `guides/`, and the content JSON and renderer in `golive-data/guides-2026-10-04/`.
   Whether it replaces `docs/guide/` in the repository, after a leak review, is a pending
   item ([04-PENDING-WORK.md](04-PENDING-WORK.md)).
-- **`npm run guide:capture` and `npm run guide:build` sign in to the live production
-  app**
-  ([scripts/capture-guide-screenshots.ts](../../scripts/capture-guide-screenshots.ts)).
+- **`npm run guide:capture` and `npm run guide:capture:steward` sign in to the live
+  production app** to re-take the screenshots
+  ([scripts/capture-guide-screenshots.ts](../../scripts/capture-guide-screenshots.ts),
+  [scripts/capture-steward-screenshots.ts](../../scripts/capture-steward-screenshots.ts)).
   Since owner item 20 (2026-10-11) the scripts hold no credential: the accounts come
   from `GUIDE_*_USERNAME` / `GUIDE_*_PASSWORD`, set in the shell for the one run
   ([scripts/lib/guide-accounts.ts](../../scripts/lib/guide-accounts.ts)).
-  `guide:build` runs the capture first, then the PDF step ([package.json](../../package.json)).
-  Both are production actions. Do not run either without deciding to. Since 2026-10-11
-  the capture refuses to start unless the command names production
-  (`npm run guide:capture -- --expect-host ep-sweet-haze`, or
-  `npx tsx scripts/capture-steward-screenshots.ts --expect-host ep-sweet-haze`; owner
-  decisions 2026-10-11). `guide:build` cannot pass that flag to its capture step, so it
-  stops there.
+  Both are production actions. Do not run either without deciding to. Each refuses to
+  start unless the command names production
+  (`npm run guide:capture -- --expect-host ep-sweet-haze`,
+  `npm run guide:capture:steward -- --expect-host ep-sweet-haze`; owner decisions
+  2026-10-11). Until owner item 21 (2026-10-11) `guide:build` ran the capture first; it
+  no longer does ([package.json](../../package.json)).
 
 **Backup restore tools.** `psql`, `age` and `shred` are needed only for the restore
 runbooks ([OPERATIONS.md §6.5](../OPERATIONS.md)). **[SECRETS]** Restoring also needs the

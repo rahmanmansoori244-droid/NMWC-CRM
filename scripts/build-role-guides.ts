@@ -15,9 +15,23 @@
  *     with NMWC branding, RTL flip when lang === 'ar'.
  *   - Playwright then renders each HTML to PDF.
  *
- * Re-run any time:  npm run guide:roles
+ * Everything here runs on this computer: no database, no live site, no sign-in
+ * (the Arabic guides fetch the Tajawal font from Google Fonts while rendering).
+ *
+ *   npm run guide:roles        writes every role guide's HTML from this script,
+ *                              then renders the PDFs
+ *   npm run guide:roles:html   writes the HTML only (no Chromium): `git diff`
+ *                              then shows whether the committed HTML matches
+ *   npm run guide:build        renders the PDFs from the committed HTML (this
+ *                              script with --pdf-only), then the combined
+ *                              user guide's PDF (scripts/guide-html-to-pdf.ts)
+ *
+ * Owner item 21 (2026-10-11): guide:build used to re-take the screenshots from
+ * the live site first. That is `npm run guide:capture` / `guide:capture:steward`
+ * now, a production action of its own that needs --expect-host ep-sweet-haze.
  */
 import { chromium } from 'playwright';
+import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -2324,15 +2338,37 @@ const ALL_GUIDES: Guide[] = [
 ];
 
 async function main() {
+  const args = process.argv.slice(2);
+  const htmlOnly = args.includes('--html-only');
+  const pdfOnly = args.includes('--pdf-only');
+  const unknown = args.filter((a) => a !== '--html-only' && a !== '--pdf-only');
+  if (unknown.length > 0 || (htmlOnly && pdfOnly)) {
+    console.error('usage: tsx scripts/build-role-guides.ts [--html-only | --pdf-only]');
+    process.exit(2);
+  }
   const outDir = resolve('docs/guide');
   await mkdir(outDir, { recursive: true });
 
-  console.log('Writing HTML files…');
-  for (const g of ALL_GUIDES) {
-    const html = renderHtml(g);
-    const path = resolve(outDir, `${g.filename}.html`);
-    await writeFile(path, html, 'utf8');
-    console.log(`  → ${path}`);
+  if (pdfOnly) {
+    // Owner item 21: the PDFs from the HTML as committed, not rewritten first.
+    const missing = ALL_GUIDES.map((g) => `${g.filename}.html`).filter((f) => !existsSync(resolve(outDir, f)));
+    if (missing.length > 0) {
+      console.error(`Not in docs/guide: ${missing.join(', ')}. Run npm run guide:roles:html first.`);
+      process.exit(2);
+    }
+    console.log('Rendering the PDFs from the HTML files on disk (not rewritten)…');
+  } else {
+    console.log('Writing HTML files…');
+    for (const g of ALL_GUIDES) {
+      const html = renderHtml(g);
+      const path = resolve(outDir, `${g.filename}.html`);
+      await writeFile(path, html, 'utf8');
+      console.log(`  → ${path}`);
+    }
+    if (htmlOnly) {
+      console.log('\nDone (HTML only).');
+      return;
+    }
   }
 
   console.log('\nRendering PDFs…');

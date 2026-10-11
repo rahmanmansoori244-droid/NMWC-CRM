@@ -137,7 +137,7 @@ End state in `docs/guide/`:
 guide:capture   # mobile screenshots
 guide:pdf       # combined guide
 guide:roles     # all 7 role-specific guides (this is the daily refresh)
-guide:build     # capture + render combined
+guide:build     # capture + render combined (until 2026-10-11; since owner item 21 it renders every guide PDF locally, no capture)
 ops:r2-setup    # try to programmatically set R2 lifecycle
 ops:print-secrets  # print which GitHub secrets are missing
 ```

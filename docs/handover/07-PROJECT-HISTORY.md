@@ -522,8 +522,10 @@ If `docs/guide/` is rebuilt instead:
   `scripts/build-role-guides.ts`. It renders locally with Playwright's Chromium and
   uses no database.
 - `npm run guide:pdf` re-renders the combined user guide's PDF from its HTML.
-- **Do not run `guide:capture` or `guide:build`.** They sign in to a live deployment to
-  re-take screenshots. `scripts/capture-guide-screenshots.ts` points at the production
+- `npm run guide:build` re-renders every PDF in `docs/guide/` from the committed HTML,
+  locally. Until owner item 21 (2026-10-11) it re-took the screenshots first.
+- **Do not run `guide:capture` or `guide:capture:steward`.** They sign in to a live
+  deployment to re-take screenshots. `scripts/capture-guide-screenshots.ts` points at the production
   URL. It carried pilot credential literals until owner item 20 (2026-10-11); it now
   reads its accounts from the environment (AUDITOR-BRIEF §14).
 - Check the new PDFs before committing them. The existing screenshots were captured
