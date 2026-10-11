@@ -30,7 +30,16 @@
  * The Data Steward's log is global, but photo views are left out of his default
  * list (STEWARD_HIDDEN_BY_DEFAULT) and he can ask for the views of one customer's
  * documents (auditCustomersByCode, customerDocumentIds, photoViewsOfDocumentsSql)
- * — owner decisions 2026-10-11.
+ * — owner decisions 2026-10-11 — and, with them, the prints of that customer's
+ * printouts (customerRequestIds, printsOfCustomersSql; the credit flow's part C,
+ * a default for the owner to confirm). customerFilterSql puts the two together as
+ * the page asks them.
+ *
+ * PRINT rows (owner decisions 2026-10-11, part C: services/prints.ts) are ordinary
+ * audit rows, not STEWARD_ONLY_AUDIT_ACTIONS: the Steward sees them in his default
+ * list, and a Manager sees those about his regions' customers (entity Customer,
+ * the customer form) and requests (entity CustomerEdit, the credit application)
+ * through managerAuditScopeSql, like any other row about them.
  *
  * No database client of its own: the page passes its client in.
  */
@@ -163,6 +172,68 @@ export function photoViewsOfDocumentsSql(documentIds: string[], archivedCustomer
       ? Prisma.sql` OR a."after"->>'customerId' = ANY(${archivedCustomerIds}::text[])`
       : Prisma.empty;
   return Prisma.sql`(a."action" = ${AuditAction.PHOTO_VIEW}::"AuditAction" AND a."entityType" = 'Attachment' AND (a."entityId" = ANY(${documentIds}::text[])${named}))`;
+}
+
+/**
+ * The customer filter's second question: who printed this customer's printouts
+ * (services/prints.ts; a default added with the merge of the credit flow and the
+ * audit follow-ups, for the owner to confirm). A PRINT row names what was printed
+ * as its own entity: the customer form names the customer (entityType 'Customer'),
+ * the credit application names the new-customer request (entityType
+ * 'CustomerEdit'). The ids of every request of these customers find the second
+ * kind: an application is printed while the request is still a request, the
+ * final approval names the new customer on it (lib/create-finalize.ts), and a
+ * merge moves the losing customer's requests to the winner (services/duplicates.ts),
+ * so an application is found under the code of the customer its request belongs
+ * to now. A form printed for a customer later merged away still names that
+ * customer, and is found under its own (archived) code. An indexed lookup on
+ * CustomerEdit(customerId, state).
+ */
+export async function customerRequestIds(
+  db: Pick<PrismaClient, '$queryRaw'>,
+  customerIds: string[]
+): Promise<string[]> {
+  if (customerIds.length === 0) return [];
+  const rows = await db.$queryRaw<Array<{ id: string }>>`
+    SELECT e."id" FROM "CustomerEdit" e WHERE e."customerId" = ANY(${customerIds}::text[])`;
+  return rows.map((r) => r.id);
+}
+
+/**
+ * The condition, for the audit row aliased `a`, that selects the PRINT rows of
+ * these customers' printouts: their customer forms, and the credit applications
+ * of their requests (customerRequestIds). Steward only, like
+ * photoViewsOfDocumentsSql: the page never builds it for anyone else. Each arm is
+ * one bound array read through AuditLog(entityType, entityId, at).
+ */
+export function printsOfCustomersSql(customerIds: string[], requestIds: string[]): Prisma.Sql {
+  const requests =
+    requestIds.length > 0
+      ? Prisma.sql` OR (a."entityType" = 'CustomerEdit' AND a."entityId" = ANY(${requestIds}::text[]))`
+      : Prisma.empty;
+  return Prisma.sql`(a."action" = ${AuditAction.PRINT}::"AuditAction" AND ((a."entityType" = 'Customer' AND a."entityId" = ANY(${customerIds}::text[]))${requests}))`;
+}
+
+/**
+ * The Steward's customer filter as one condition, for the customers a typed code
+ * matched (auditCustomersByCode): the views of their documents
+ * (photoViewsOfDocumentsSql; only when there is a document, or an archived
+ * customer whose views name him) OR the prints of their printouts
+ * (printsOfCustomersSql). Null when no customer matched: the page then reads
+ * nothing from the ledger.
+ */
+export async function customerFilterSql(
+  db: Pick<PrismaClient, '$queryRaw'>,
+  customers: readonly AuditCustomer[]
+): Promise<Prisma.Sql | null> {
+  const ids = customers.map((c) => c.id);
+  if (ids.length === 0) return null;
+  const [documentIds, requestIds] = await Promise.all([customerDocumentIds(db, ids), customerRequestIds(db, ids)]);
+  const archivedIds = customers.filter((c) => c.archived).map((c) => c.id);
+  const asked: Prisma.Sql[] = [];
+  if (documentIds.length > 0 || archivedIds.length > 0) asked.push(photoViewsOfDocumentsSql(documentIds, archivedIds));
+  asked.push(printsOfCustomersSql(ids, requestIds));
+  return asked.length === 1 ? asked[0]! : Prisma.sql`(${Prisma.join(asked, ' OR ')})`;
 }
 
 export type ManagerAuditScope = {

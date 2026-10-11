@@ -18,6 +18,13 @@
  * before the merge still names L. The query runs over this suite's own audit rows
  * only, so other suites' rows cannot change the answer.
  *
+ * Since the merge with the credit flow (a default for the owner to confirm) the
+ * filter also shows who printed the customer's printouts (customerRequestIds,
+ * printsOfCustomersSql and customerFilterSql): a PRINT row names the customer
+ * (the customer form) or the new-customer request (the credit application), as
+ * services/prints.ts writes them. C's form and C's request's application are
+ * printed, D's form, and L's form from before the merge.
+ *
  *   RUN_AUDIT_SCOPE=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/audit-customer-filter.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
@@ -29,7 +36,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 const ENABLED = process.env.RUN_AUDIT_SCOPE === '1' && !!process.env.DATABASE_URL;
 const sfx = `acf${Date.now().toString(36)}`;
 
-describe.skipIf(!ENABLED)('the Steward’s customer filter finds every view of a customer’s documents', () => {
+describe.skipIf(!ENABLED)('the Steward’s customer filter finds every view of a customer’s documents, and every print of its printouts', () => {
   let prisma: import('@prisma/client').PrismaClient;
   let Prisma: typeof import('@prisma/client').Prisma;
   let lib: typeof import('@/lib/audit-scope');
@@ -123,6 +130,24 @@ describe.skipIf(!ENABLED)('the Steward’s customer filter finds every view of a
     await audit('view of L’s CR, before the merge', ids.crMoved, wiring({ customerId: ids.custL }, 'CR'));
     await audit('view of D’s shop photo', ids.shopD, wiring({ branchId: ids.brD }, 'SHOP'));
     await audit('an update of C’s CR, not a view', ids.crC, { kind: 'CR' }, 'UPDATE');
+
+    // Written as services/prints.ts writes them: the printed record is the entity,
+    // `after` holds ids and counters only.
+    const printed = async (label: string, entityType: 'Customer' | 'CustomerEdit', entityId: string, after: PrismaNS.InputJsonValue) => {
+      const a = await prisma.auditLog.create({
+        data: { actorId: ids.steward, action: 'PRINT', entityType, entityId, after, reason: `${sfx} ${label}` },
+      });
+      rows.set(a.id, label);
+    };
+    await printed('print of C’s credit application', 'CustomerEdit', ids.request, { printout: 'CREDIT_APPLICATION', cycle: 1, stepIndex: 2 });
+    await printed('print of C’s customer form', 'Customer', ids.custC, { printout: 'CUSTOMER_FORM', requestId: ids.request, branchIds: [ids.brC] });
+    await printed('print of D’s customer form', 'Customer', ids.custD, { printout: 'CUSTOMER_FORM', requestId: null, branchIds: [ids.brD] });
+    await printed('print of L’s customer form, before the merge', 'Customer', ids.custL, { printout: 'CUSTOMER_FORM', requestId: null, branchIds: [] });
+    // Another action about C, not a print.
+    const other = await prisma.auditLog.create({
+      data: { actorId: ids.steward, action: 'UPDATE', entityType: 'Customer', entityId: ids.custC, reason: `${sfx} an update of C, not a print` },
+    });
+    rows.set(other.id, 'an update of C, not a print');
   });
 
   afterAll(async () => {
@@ -152,6 +177,18 @@ describe.skipIf(!ENABLED)('the Steward’s customer filter finds every view of a
       SELECT a."id" FROM "AuditLog" a
        WHERE a."id" = ANY(${[...rows.keys()]}::text[])
          AND ${lib.photoViewsOfDocumentsSql(documents, archived)}`);
+    return seen.map((r) => rows.get(r.id)!).sort();
+  }
+
+  /** What the page shows for a typed code — views and prints — over this suite's rows. */
+  async function filterFor(code: string): Promise<string[]> {
+    const customers = await lib.auditCustomersByCode(prisma, code);
+    const asked = await lib.customerFilterSql(prisma, customers);
+    if (!asked) return [];
+    const seen = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT a."id" FROM "AuditLog" a
+       WHERE a."id" = ANY(${[...rows.keys()]}::text[])
+         AND ${asked}`);
     return seen.map((r) => rows.get(r.id)!).sort();
   }
 
@@ -188,5 +225,15 @@ describe.skipIf(!ENABLED)('the Steward’s customer filter finds every view of a
   it('a code no customer has finds nothing', async () => {
     expect(await lib.auditCustomersByCode(prisma, `${sfx}-none`)).toEqual([]);
     expect(await viewsFor(`${sfx}-none`)).toEqual([]);
+    expect(await filterFor(`${sfx}-none`)).toEqual([]);
+  });
+
+  it('the whole filter: the views, and the prints of the customer form and of its requests’ credit applications', async () => {
+    const PRINTS_OF_C = ['print of C’s credit application', 'print of C’s customer form'];
+    expect(await filterFor(`${sfx}-c`)).toEqual([...OF_C, ...PRINTS_OF_C].sort());
+    expect(await filterFor(temixC.toLowerCase())).toEqual([...OF_C, ...PRINTS_OF_C].sort());
+    expect(await filterFor(`${sfx}-d`)).toEqual(['print of D’s customer form', 'view of D’s shop photo']);
+    // L's request moved with the merge; the form printed for L still names L.
+    expect(await filterFor(`${sfx}-l`)).toEqual(['print of L’s customer form, before the merge', 'view of L’s CR, before the merge']);
   });
 });

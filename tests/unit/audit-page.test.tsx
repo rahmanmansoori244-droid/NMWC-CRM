@@ -16,7 +16,10 @@
  * Owner decisions 2026-10-11: photo views (PHOTO_VIEW) are left out of the
  * Steward's default list and its count, and shown when he picks that action; a
  * customer filter (an NMWC or Temix code) shows who opened that customer's photos
- * and documents. Neither reaches a Manager.
+ * and documents, and (since the merge with the credit flow, a default) who printed
+ * its customer form or its requests' credit applications (PRINT). Neither reaches a
+ * Manager. PRINT rows are otherwise ordinary rows: in the Steward's default list,
+ * and in a Manager's log for his regions.
  *
  * The page is rendered with its session and database mocked.
  */
@@ -37,6 +40,8 @@ const h = vi.hoisted(() => ({
   customers: [] as Array<{ id: string; nmwcCode: string; temixCode: string | null; archived: boolean }>,
   /** What the documents query answers (customerDocumentIds). */
   docs: [] as string[],
+  /** What the requests query answers (customerRequestIds). */
+  requests: [] as string[],
   count: vi.fn(),
   findMany: vi.fn(),
   customerFindMany: vi.fn(),
@@ -82,6 +87,7 @@ vi.mock('@/lib/db', () => ({
       h.raw.push(text);
       if (text.includes('FROM "Customer" c')) return h.customers;
       if (text.includes('FROM "Attachment" t')) return h.docs.map((id) => ({ id }));
+      if (text.includes('FROM "CustomerEdit" e')) return h.requests.map((id) => ({ id }));
       if (text.includes('count(*)')) return [{ n: h.logs.length }];
       return h.logs.map((l) => ({ id: l.id }));
     },
@@ -115,6 +121,7 @@ beforeEach(() => {
   h.raw = [];
   h.customers = [];
   h.docs = [];
+  h.requests = [];
   h.logs = [log('l1', 'u-ali', 'Ali Salesman')];
   h.count.mockImplementation(async () => h.logs.length);
   h.findMany.mockImplementation(async () => h.logs);
@@ -281,16 +288,19 @@ describe('photo views are the Data Steward’s alone (data audit 2026-10-10 gap 
     h.role = 'MANAGER';
     h.customers = [{ id: 'cust-1', nmwcCode: 'NMWC-2026-000123', temixCode: null, archived: false }];
     h.docs = ['att-1'];
+    h.requests = ['edit-c1'];
     await open({ customer: 'NMWC-2026-000123', actor: 'sm-mine' });
     expect(document.querySelector('input[name="customer"]')).toBeNull();
     expect(screen.queryByText(/Showing who opened/)).toBeNull();
-    // His two reads, through his scope; no customer lookup, no documents query.
+    // His two reads, through his scope; no customer lookup, no documents or requests query.
     expect(h.raw).toHaveLength(2);
     for (const sql of h.raw) {
       expect(sql).toContain('a."action" NOT IN (?::"AuditAction") AND (');
       expect(sql).not.toContain('FROM "Customer" c');
       expect(sql).not.toContain('FROM "Attachment" t');
+      expect(sql).not.toContain('FROM "CustomerEdit" e');
       expect(sql).not.toContain('att-1');
+      expect(sql).not.toContain('edit-c1');
     }
     expect(screen.getByRole('link', { name: 'Show everyone' }).getAttribute('href')).toBe('?');
     expect(screen.getByRole('link', { name: 'Ali Salesman' }).getAttribute('href')).toBe('?actor=u-ali');
@@ -341,18 +351,31 @@ describe('owner decisions 2026-10-11 (part C): every print is an ordinary audit 
   });
 });
 
-describe('the Steward’s customer filter: who viewed this customer’s documents (owner decisions 2026-10-11)', () => {
+describe('the Steward’s customer filter: who viewed this customer’s documents (owner decisions 2026-10-11), and who printed its printouts', () => {
   const view = (id: string): Log => ({ ...log(id, 'u-mgr', 'Mona Manager'), action: 'PHOTO_VIEW', entityType: 'Attachment', entityId: `att-${id}-00000` });
+  const printed = (id: string, entityType: 'Customer' | 'CustomerEdit', entityId: string): Log => ({
+    ...log(id, 'u-mgr', 'Mona Manager'),
+    action: 'PRINT',
+    entityType,
+    entityId,
+  });
   const live = { id: 'cust-1', nmwcCode: 'NMWC-2026-000123', temixCode: 'CAA0367', archived: false };
   const lookup = () => h.raw.find((t) => t.includes('FROM "Customer" c'));
   const documents = () => h.raw.find((t) => t.includes('FROM "Attachment" t'));
+  const requests = () => h.raw.find((t) => t.includes('FROM "CustomerEdit" e'));
   const ledger = () => h.raw.filter((t) => t.includes('FROM "AuditLog" a'));
   /** The photo-view condition the page builds, as the mock prints it (lib/audit-scope.ts photoViewsOfDocumentsSql). */
   const VIEWS_OF = `(a."action" = ?::"AuditAction" AND a."entityType" = 'Attachment' AND (a."entityId" = ANY(?::text[])`;
+  /** The print condition (printsOfCustomersSql): the customer forms, then its requests' credit applications. */
+  const PRINTS_OF = `(a."action" = ?::"AuditAction" AND ((a."entityType" = 'Customer' AND a."entityId" = ANY(?::text[]))`;
+  const OF_REQUESTS = ` OR (a."entityType" = 'CustomerEdit' AND a."entityId" = ANY(?::text[]))`;
+  /** Both, as the page joins them: views OR prints, in one parenthesis. */
+  const VIEWS_OR_PRINTS = `(${VIEWS_OF})) OR ${PRINTS_OF}${OF_REQUESTS}))) `;
 
   beforeEach(() => {
     h.customers = [live];
     h.docs = ['att-cr', 'att-shop', 'att-free', 'att-request'];
+    h.requests = ['edit-c1'];
     h.logs = [view('cr'), view('request')];
   });
 
@@ -372,12 +395,17 @@ describe('the Steward’s customer filter: who viewed this customer’s document
     expect(docs).toContain('JOIN "CustomerEdit" e ON e."id" = t."editId"');
     expect(docs).toContain('e."customerId" = ANY(?::text[])');
     expect(docs).toContain('["cust-1"] ["cust-1"] ["cust-1"] ["cust-1"]');
+    // Its requests, for the prints of their credit applications.
+    expect(requests()).toContain('SELECT e."id" FROM "CustomerEdit" e WHERE e."customerId" = ANY(?::text[])');
+    expect(requests()).toContain('["cust-1"]');
     // The count and the page: PHOTO_VIEW rows of exactly those documents, as one bound
-    // array (an index probe per document on AuditLog(entityType, entityId, at)).
+    // array (an index probe per document on AuditLog(entityType, entityId, at)), OR the
+    // PRINT rows of the customer's form and of its requests' credit applications.
     expect(ledger()).toHaveLength(2);
     for (const sql of ledger()) {
       expect(sql).toContain(`${VIEWS_OF}))`);
-      expect(sql).toContain('["PHOTO_VIEW",["att-cr","att-shop","att-free","att-request"]]');
+      expect(sql).toContain(VIEWS_OR_PRINTS);
+      expect(sql).toContain('["PHOTO_VIEW",["att-cr","att-shop","att-free","att-request"],"PRINT",["cust-1"],["edit-c1"]]');
       // A live customer needs no scan of the views' JSON.
       expect(sql).not.toContain('after');
     }
@@ -385,6 +413,7 @@ describe('the Steward’s customer filter: who viewed this customer’s document
     expect(screen.getByText('2 matching events')).toBeTruthy();
     expect(screen.getAllByText('PHOTO_VIEW', { selector: 'td' })).toHaveLength(2);
     expect(screen.getByText(/Showing who opened the photos and documents of/).textContent).toContain('NMWC-2026-000123');
+    expect(screen.getByText(/Showing who opened/).textContent).toContain('and who printed its customer form or credit application.');
     expect(screen.queryByText('Photo views are not in this list.', { exact: false })).toBeNull();
     // Kept on Apply, and in every link, until cleared.
     expect((screen.getByLabelText('Customer code (NMWC or Temix)') as HTMLInputElement).value).toBe('  nmwc-2026-000123 ');
@@ -408,18 +437,23 @@ describe('the Steward’s customer filter: who viewed this customer’s document
     expect(documents()).toMatch(
       /SELECT t\."id" FROM "Attachment" t JOIN "CustomerEdit" e ON e\."id" = t\."editId"\s+WHERE e\."customerId" = ANY/
     );
-    for (const sql of ledger()) expect(sql).toContain('["PHOTO_VIEW",["att-request"]]');
+    for (const sql of ledger()) expect(sql).toContain('["PHOTO_VIEW",["att-request"],"PRINT",["cust-1"],["edit-c1"]]');
     expect(screen.getByText('Attachment/att-requ…')).toBeTruthy();
   });
 
   it('an archived customer also matches the views that name him: a merged-away customer’s documents moved on', async () => {
     h.customers = [{ ...live, id: 'cust-gone', nmwcCode: 'NMWC-2026-000099', archived: true }];
     h.docs = [];
+    // The merge moved its requests to the winner (services/duplicates.ts).
+    h.requests = [];
     await open({ customer: 'NMWC-2026-000099' });
     expect(ledger()).toHaveLength(2);
     for (const sql of ledger()) {
       expect(sql).toContain(`${VIEWS_OF} OR a."after"->>'customerId' = ANY(?::text[])))`);
-      expect(sql).toContain('["PHOTO_VIEW",[],["cust-gone"]]');
+      // And the prints of the forms printed for him, which name him: no request arm.
+      expect(sql).toContain(`(${VIEWS_OF} OR a."after"->>'customerId' = ANY(?::text[]))) OR ${PRINTS_OF}))) `);
+      expect(sql).not.toContain(OF_REQUESTS);
+      expect(sql).toContain('["PHOTO_VIEW",[],["cust-gone"],"PRINT",["cust-gone"]]');
     }
     expect(screen.getByText(/Showing who opened/).textContent).toContain('NMWC-2026-000099 (archived)');
   });
@@ -428,10 +462,13 @@ describe('the Steward’s customer filter: who viewed this customer’s document
     h.customers = [live, { ...live, id: 'cust-2', nmwcCode: 'NMWC-2026-000124' }];
     await open({ customer: 'CAA0367' });
     expect(documents()).toContain('["cust-1","cust-2"]');
+    expect(requests()).toContain('["cust-1","cust-2"]');
+    for (const sql of ledger()) expect(sql).toContain('"PRINT",["cust-1","cust-2"],["edit-c1"]]');
     expect(screen.getByText(/Showing who opened/).textContent).toContain('NMWC-2026-000123, NMWC-2026-000124');
+    expect(screen.getByText(/Showing who opened/).textContent).toContain('who printed their customer forms or credit applications');
   });
 
-  it('a code that names no customer, or a customer with no documents, reads nothing from the ledger', async () => {
+  it('a code that names no customer reads nothing from the ledger; a customer with no documents is asked for its prints only', async () => {
     h.customers = [];
     await open({ customer: 'NMWC-0000' });
     expect(h.raw).toHaveLength(1);
@@ -444,16 +481,41 @@ describe('the Steward’s customer filter: who viewed this customer’s document
     h.raw = [];
     h.customers = [live];
     h.docs = [];
+    h.requests = [];
+    h.logs = [];
     await open({ customer: 'NMWC-2026-000123' });
-    expect(ledger()).toEqual([]);
+    // No document: no photo-view arm. Its customer form may still have been printed.
+    expect(ledger()).toHaveLength(2);
+    for (const sql of ledger()) {
+      expect(sql).toContain(`${PRINTS_OF})) ["PRINT",["cust-1"]]`);
+      expect(sql).not.toContain("'Attachment'");
+      expect(sql).not.toContain('PHOTO_VIEW');
+    }
+    expect(h.findMany).not.toHaveBeenCalled();
     expect(screen.getByText('0 matching events')).toBeTruthy();
+  });
+
+  it('the prints of its customer form and of its requests’ credit applications are found, and the Print action narrows to them', async () => {
+    h.logs = [printed('p1', 'Customer', 'cust-1'), printed('p2', 'CustomerEdit', 'edit-c1')];
+    await open({ customer: 'NMWC-2026-000123', action: 'PRINT' });
+    expect(ledger()).toHaveLength(2);
+    for (const sql of ledger()) {
+      expect(sql).toContain(`${VIEWS_OR_PRINTS}AND a."action" = ?::"AuditAction"`);
+      expect(sql).toContain('["PHOTO_VIEW",["att-cr","att-shop","att-free","att-request"],"PRINT",["cust-1"],["edit-c1"],"PRINT"]');
+    }
+    expect(h.count).not.toHaveBeenCalled();
+    expect(screen.getByText('2 matching events')).toBeTruthy();
+    expect(screen.getAllByText('PRINT', { selector: 'td' })).toHaveLength(2);
+    expect(screen.getByText('Customer/cust-1…')).toBeTruthy();
+    expect(screen.getByText('CustomerEdit/edit-c1…')).toBeTruthy();
   });
 
   it('works with the other filters, which narrow it further', async () => {
     await open({ customer: 'NMWC-2026-000123', actor: 'u-mgr', q: 'att-cr' });
     expect(ledger()).toHaveLength(2);
     for (const sql of ledger()) {
-      expect(sql).toContain(`${VIEWS_OF})) AND a."actorId" = ? AND strpos(a."entityId", ?) > 0`);
+      expect(sql).toContain(`${VIEWS_OF})) OR `);
+      expect(sql).toContain(`${VIEWS_OR_PRINTS}AND a."actorId" = ? AND strpos(a."entityId", ?) > 0`);
     }
     expect(screen.getByText(/Showing what/).textContent).toContain('Mona Manager');
   });

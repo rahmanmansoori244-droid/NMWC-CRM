@@ -1307,8 +1307,10 @@ const STEWARD_EN: Guide = {
         },
         // Owner decisions 2026-10-11: photo views are out of the default list; the
         // Photo views action and the customer filter bring them back (lib/audit-scope.ts).
+        // The customer filter also finds the customer's PRINT rows (a default added
+        // with the merge of the credit flow and the audit follow-ups).
         {
-          html: 'Photo views (<strong>PHOTO_VIEW</strong>: who opened which photo or document) are left out of the default list and its count. Pick <strong>Photo views</strong> under Action to see them all, or type a customer’s NMWC or Temix code into <strong>Customer code</strong> to see who opened that customer’s photos and documents: its CR and guarantee documents, its shops’ photos and the photos of its requests. Only you see these rows; a Manager’s audit log never shows them.',
+          html: 'Photo views (<strong>PHOTO_VIEW</strong>: who opened which photo or document) are left out of the default list and its count. Pick <strong>Photo views</strong> under Action to see them all, or type a customer’s NMWC or Temix code into <strong>Customer code</strong> to see who opened that customer’s photos and documents — its CR, guarantee and credit documents, its signed credit application, its shops’ photos and the photos of its requests — and who printed its customer form or its credit application (<strong>PRINT</strong>). Only you see the photo views: a Manager’s audit log never shows them. The prints are ordinary rows, which a Manager sees for his own regions.',
         },
         {
           html: 'For an HR investigation of one person: narrow by action and entity type, then read the <strong>Actor</strong> column. Over a long period that is many pages; ask head-office ops for a database query instead.',

@@ -15,10 +15,9 @@ import {
   MANAGER_AUDIT_ENTITY_TYPES,
   STEWARD_HIDDEN_BY_DEFAULT,
   auditCustomersByCode,
-  customerDocumentIds,
+  customerFilterSql,
   managerAuditScopeSql,
   managerAuditUserIds,
-  photoViewsOfDocumentsSql,
   type AuditCustomer,
 } from '@/lib/audit-scope';
 
@@ -88,14 +87,12 @@ export default async function AuditPage({
     // PHOTO_VIEW rows of every photo and document of the customers the code names —
     // its request photos and its branches' photos included, whose rows carry no
     // customer id. lib/audit-scope.ts says which documents, and how the query keeps
-    // to the ledger's indexes. A code that names no customer shows nothing.
+    // to the ledger's indexes. And who printed its printouts: the PRINT rows of its
+    // customer form and of its requests' credit applications (part C; a default for
+    // the owner to confirm). A code that names no customer shows nothing.
     customers = await auditCustomersByCode(prisma, customerCode);
-    const matched = customers.slice(0, AUDIT_CUSTOMER_MATCH_LIMIT);
-    const documentIds = await customerDocumentIds(prisma, matched.map((c) => c.id));
-    const archivedIds = matched.filter((c) => c.archived).map((c) => c.id);
-    if (documentIds.length > 0 || archivedIds.length > 0) {
-      rawConds = [photoViewsOfDocumentsSql(documentIds, archivedIds)];
-    }
+    const asked = await customerFilterSql(prisma, customers.slice(0, AUDIT_CUSTOMER_MATCH_LIMIT));
+    if (asked) rawConds = [asked];
   } else {
     const where: Prisma.AuditLogWhereInput = {};
     if (sp.actor) where.actorId = sp.actor;
@@ -193,7 +190,8 @@ export default async function AuditPage({
         />
         {!isManager && (
           <>
-            {/* Owner decisions 2026-10-11: who viewed this customer's documents. */}
+            {/* Owner decisions 2026-10-11: who viewed this customer's documents, and who
+                printed its printouts. */}
             <label htmlFor="audit-customer" className="sr-only">
               Customer code (NMWC or Temix)
             </label>
@@ -201,7 +199,7 @@ export default async function AuditPage({
               id="audit-customer"
               name="customer"
               defaultValue={sp.customer ?? ''}
-              placeholder="Customer code: photo views…"
+              placeholder="Customer code: views, prints…"
               className="rounded-md border border-slate-300 px-3 py-2"
             />
           </>
@@ -253,7 +251,8 @@ export default async function AuditPage({
             {matchedCodes.length > 0 ? (
               <>
                 Showing who opened the photos and documents of{' '}
-                <span className="font-medium text-slate-900">{matchedCodes.join(', ')}</span>
+                <span className="font-medium text-slate-900">{matchedCodes.join(', ')}</span>, and who printed{' '}
+                {matchedCodes.length === 1 ? 'its customer form or credit application' : 'their customer forms or credit applications'}
                 {customers.length > AUDIT_CUSTOMER_MATCH_LIMIT
                   ? ` — this code names more than ${AUDIT_CUSTOMER_MATCH_LIMIT} customers; type an NMWC code to see one`
                   : ''}
