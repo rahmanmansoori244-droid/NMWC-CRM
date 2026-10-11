@@ -4,9 +4,16 @@
  * Owner decisions 2026-10-11 — the salesman's signed-application step: after the
  * Sales Director approves a credit request, his supervisor (or anyone allowed to
  * print) prints the credit application, he has the customer sign it and stamp it
- * with the company stamp, and uploads a photo of every page here. "Send signed
- * application" moves the request on to the Finance Manager
- * (services/signed-form.ts).
+ * with the company stamp, and uploads a photo of each page up to the signed and
+ * stamped one here. "Send signed application" moves the request on to the
+ * Finance Manager (services/signed-form.ts).
+ *
+ * Not "every page" (review, 2026-10-11): the printout ends with a "Photos &
+ * documents" annex on pages of its own (one for every document and shop photo,
+ * no limit), so a multi-branch customer's copy can run past
+ * MAX_SIGNED_FORM_PAGES. The annex repeats what the CRM already holds; the
+ * details, the declaration and the boxes come before it. Whether the signed copy
+ * should carry the annex at all is the owner's (04-PENDING A8).
  *
  * Its own component, above the read-only request, so the new-customer form is
  * untouched. It submits over postForm like every field form (item 22): a lost
@@ -96,7 +103,8 @@ export function SignedFormUpload({
       <p className="mt-1 text-sm text-slate-700">
         The Sales Director approved this credit request. Your supervisor prints the credit
         application. Have the customer sign it and stamp it with the company stamp, then take a clear
-        photo of every page and send it here.
+        photo of each page up to and including the page with the signature and stamp, and send them
+        here. The &ldquo;Photos &amp; documents&rdquo; pages after it are already in the CRM: leave them out.
       </p>
       {dueText && (
         <p className={`mt-2 text-sm font-medium ${overdue ? 'text-red-700' : 'text-slate-800'}`}>

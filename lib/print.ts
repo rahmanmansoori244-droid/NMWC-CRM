@@ -52,6 +52,39 @@ export const PRINTOUT_TITLES: Record<Printout, string> = {
 };
 
 /**
+ * The tab title of one printout, which a browser's "Save as PDF" also takes as
+ * the file name (review, 2026-10-11): one constant title gave every saved PDF the
+ * same name. The record's reference, never the customer's name: the customer
+ * form by its NMWC code, the application by its request reference — both
+ * already printed in the sheet's header. Without one (a page about to 404, a
+ * request that cannot be printed now) the plain title.
+ */
+export function printoutDocumentTitle(printout: Printout, ref: string | null | undefined): string {
+  const name = printout === 'CUSTOMER_FORM' ? 'Customer form' : 'Credit application';
+  return ref ? `${name} ${ref} · NMWC` : `${name} · NMWC`;
+}
+
+/**
+ * The customer form's Temix code when none is recorded (review, 2026-10-11). A
+ * customer made through a CRM request gets its Temix code from the Accountant at
+ * the last approval, so none on record means none was typed. A migrated or seeded
+ * customer is in Temix under its NMWC code with no Temix code recorded
+ * (prisma/schema.prisma Customer.temixCode; the profile says the same,
+ * app/(app)/customers/[id]/page.tsx): a bare "None recorded" on a form the
+ * Accountant files would read as "not in Temix". [Default — wording is the
+ * owner's to confirm, 04-PENDING A8.]
+ */
+export const TEMIX_CODE_NONE = 'None recorded';
+export const TEMIX_CODE_MIGRATED = 'Not recorded (migrated: in Temix under its NMWC code)';
+
+/**
+ * The toolbar's hint (review, 2026-10-11): Chrome's "Headers and footers" is on
+ * by default and prints the tab title, the page address (with the record's id),
+ * the date and page numbers in the sheet's 12 mm margins.
+ */
+export const PRINT_DIALOG_HINT = 'In the print dialog choose A4 and untick “Headers and footers” for a clean page.';
+
+/**
  * The company, in text: the owner has not sent a logo (open point, owner
  * decisions 2026-10-11). Replace the text with the logo when it arrives.
  */

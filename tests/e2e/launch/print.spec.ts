@@ -36,12 +36,17 @@ import { seedCreateRequest, type SeededCreate } from './support/create-chains-he
 const NOT_FOUND_TEXT = "That page doesn't exist or isn't available to your account.";
 const BLOCKED_NOTICE = 'This printout was not recorded. Use the Print button on the page so the print is recorded.';
 
-/** window.print, stubbed in every page of the context: it records whether the form was let through. */
+/**
+ * window.print, stubbed in every page of the context: it records whether the form
+ * was let through. It fires beforeprint as a dialog that really opened does: the
+ * Print button's permission ends on its own when none comes (allowOnePrint).
+ */
 async function stubPrint(ctx: BrowserContext): Promise<void> {
   await ctx.addInitScript(() => {
     const w = window as unknown as { __prints: boolean[] };
     w.__prints = [];
     window.print = () => {
+      window.dispatchEvent(new Event('beforeprint'));
       w.__prints.push(document.documentElement.hasAttribute('data-print-ok'));
     };
   });
@@ -85,6 +90,10 @@ test.describe('printouts', { tag: ['@desktop'] }, () => {
     await expect(tab).toHaveURL(new RegExp(`/print/credit-application/${K.id}$`));
     const sheet = tab.getByRole('article', { name: `Credit Application: ${K.legalName}` });
     await expect(sheet).toContainText('Awaiting customer signature');
+    // Review (2026-10-11): a saved PDF is named after the tab title, now the
+    // request's reference; the toolbar says to switch off the browser's header and footer.
+    await expect(tab).toHaveTitle(`Credit application ${K.id} · NMWC`);
+    await expect(tab.getByText('untick “Headers and footers”', { exact: false })).toBeVisible();
     await expect(sheet).toContainText('We/I hereby undertake to indemnify M/S: National Mineral Water Company SAOG');
     await expect(sheet.getByRole('region', { name: /^Customer: / })).toHaveCount(4);
     // Every document is in before the print starts.
@@ -163,6 +172,11 @@ test.describe('printouts', { tag: ['@desktop'] }, () => {
       /^GM/,
       /^Accountant/,
     ]);
+    // Review (2026-10-11): no photo, document or location on file — the empty
+    // states print; and the tab title (a saved PDF's name) is the NMWC code.
+    await expect(page.getByRole('article')).toContainText('No photos or documents on file.');
+    await expect(page.getByRole('article')).toContainText('No location recorded.');
+    await expect(page).toHaveTitle(`Customer form ${credit.code} · NMWC`);
     // CRED has no photos: nothing to wait for, so the print goes straight through.
     await page.getByRole('button', { name: 'Print / Save as PDF' }).click();
     await expect.poll(() => printsOf(page)).toEqual([true]);

@@ -7,8 +7,9 @@
  *     and the guard — the sheet prints only while <html data-print-ok> is set,
  *     and the notice prints otherwise;
  *   - components/print/PrintButton.tsx: the photos are in, THEN the print is
- *     recorded, THEN data-print-ok is set and the dialog opened; afterprint
- *     clears it; nothing else in the code sets it.
+ *     recorded, THEN data-print-ok is set and the dialog opened (allowOnePrint);
+ *     afterprint, or a timer when none comes, clears it; nothing else in the
+ *     code sets it.
  * Comments are stripped first: a comment quoting a rule is not the rule.
  */
 import { describe, it, expect } from 'vitest';
@@ -82,22 +83,40 @@ describe('components/print/PrintButton.tsx', () => {
     return i;
   };
 
-  it('waits for the photos, then records, then sets data-print-ok, then prints', () => {
+  it('waits for the photos, then records, then lets one print through', () => {
     const decoded = at('img.decode()');
     const recorded = at('await recordPrintAction({ printout, id })');
     const refused = at('if (!res.ok)');
-    const listened = at("window.addEventListener('afterprint'");
-    const set = at("html.setAttribute('data-print-ok', '')");
-    const printed = at('window.print()');
+    const allowed = at('allowOnePrint()');
     expect(decoded).toBeLessThan(recorded);
     expect(recorded).toBeLessThan(refused);
-    expect(refused).toBeLessThan(set);
-    expect(listened).toBeLessThan(set);
-    expect(set).toBeLessThan(printed);
+    expect(refused).toBeLessThan(allowed);
     // A refusal returns before anything is printed.
-    expect(onPrint.slice(refused, set)).toMatch(/return;/);
-    expect(onPrint).toMatch(/removeAttribute\('data-print-ok'\)/);
-    expect(src.match(/window\.print\(\)/g)).toHaveLength(1);
+    expect(onPrint.slice(refused, allowed)).toMatch(/return;/);
+  });
+
+  it('allowOnePrint: listens, then sets data-print-ok and starts its clock, then prints — and every way out clears it', () => {
+    const body = src.slice(src.indexOf('export function allowOnePrint('), src.indexOf('export function PrintButton('));
+    const pos = (needle: string) => {
+      const i = body.indexOf(needle);
+      expect(i, needle).toBeGreaterThan(-1);
+      return i;
+    };
+    const listened = pos("win.addEventListener('afterprint', end)");
+    const opened = pos("win.addEventListener('beforeprint', opened)");
+    const set = pos("html.setAttribute('data-print-ok', '')");
+    const clock = pos('timer = win.setTimeout(end, PRINT_DIALOG_OPEN_MS)');
+    const printed = pos('win.print()');
+    expect(Math.max(listened, opened)).toBeLessThan(set);
+    expect(set).toBeLessThan(clock);
+    expect(clock).toBeLessThan(printed);
+    const end = body.slice(pos('const end = () => {'), pos('function opened()'));
+    expect(end).toMatch(/html\.removeAttribute\('data-print-ok'\)/);
+    // beforeprint only restarts the clock: the attribute is never removed there.
+    const onOpen = body.slice(pos('function opened()'), listened);
+    expect(onOpen).toMatch(/timer = win\.setTimeout\(end, ONE_PRINT_MS\)/);
+    expect(onOpen).not.toMatch(/removeAttribute/);
+    expect(src.match(/\.print\(\)/g)).toHaveLength(1);
   });
 
   it('nothing else in the app sets data-print-ok or opens the print dialog', () => {

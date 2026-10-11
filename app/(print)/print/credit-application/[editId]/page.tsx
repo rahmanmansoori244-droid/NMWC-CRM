@@ -1,7 +1,9 @@
+import { cache } from 'react';
+import type { Metadata } from 'next';
 import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { omanDateTime } from '@/lib/tz';
-import { PRINTOUT_TITLES } from '@/lib/print';
+import { PRINTOUT_TITLES, printoutDocumentTitle } from '@/lib/print';
 import { loadCreditApplicationPrint } from '@/lib/print-load';
 import { PrintFrame, PrintUnavailable } from '@/components/print/PrintFrame';
 import {
@@ -13,9 +15,29 @@ import {
   PrintSheet,
 } from '@/components/print/PrintSheet';
 
-export const metadata = { title: 'Credit application · NMWC' };
 // Never cached: who may print, and whether the request is still at its step, are read per request.
 export const dynamic = 'force-dynamic';
+
+/**
+ * The printout for whoever is signed in, read once per request: the page and its
+ * title (generateMetadata) share it (React cache). Null when signed out.
+ */
+const loadForViewer = cache(async (editId: string) => {
+  const session = await auth();
+  if (!session?.user) return null;
+  const user = { id: session.user.id, role: session.user.role, username: session.user.username };
+  return { session, loaded: await loadCreditApplicationPrint(user, editId) };
+});
+
+/**
+ * Review (2026-10-11): titled by the request reference printed in its header, so
+ * a saved PDF is named after its request — only when it can be printed.
+ */
+export async function generateMetadata({ params }: { params: Promise<{ editId: string }> }): Promise<Metadata> {
+  const { editId } = await params;
+  const loaded = (await loadForViewer(editId))?.loaded;
+  return { title: printoutDocumentTitle('CREDIT_APPLICATION', loaded?.kind === 'ok' ? loaded.print.editId : null) };
+}
 
 /**
  * Owner decisions 2026-10-11 (part C): the CREDIT APPLICATION of a credit
@@ -28,11 +50,10 @@ export const dynamic = 'force-dynamic';
  * 404. Rendering writes nothing: the print is recorded by the Print button.
  */
 export default async function CreditApplicationPrintPage({ params }: { params: Promise<{ editId: string }> }) {
-  const session = await auth();
-  if (!session?.user) redirect('/login');
   const { editId } = await params;
-  const user = { id: session.user.id, role: session.user.role, username: session.user.username };
-  const loaded = await loadCreditApplicationPrint(user, editId);
+  const viewer = await loadForViewer(editId);
+  if (!viewer) redirect('/login');
+  const { session, loaded } = viewer;
   if (!loaded) notFound();
   const backHref = `/approvals/${editId}`;
   if (loaded.kind === 'unavailable') {

@@ -48,7 +48,12 @@ afterEach(cleanup);
 describe('SignedFormUpload', () => {
   it('says what to do and by when; Send waits for a page', () => {
     render(<SignedFormUpload {...base} />);
-    expect(screen.getByText(/Your supervisor prints the credit application/)).toBeTruthy();
+    const what = screen.getByText(/Your supervisor prints the credit application/).textContent!;
+    // Review (2026-10-11): the pages up to the signed one, not "every page" — the
+    // printout's documents annex has no page limit, this upload has.
+    expect(what).toContain('take a clear photo of each page up to and including the page with the signature and stamp');
+    expect(what).toContain('The “Photos & documents” pages after it are already in the CRM: leave them out.');
+    expect(what).not.toMatch(/every page/);
     expect(screen.getByText(/Upload it by 14\/10\/2026, 16:00:00\./)).toBeTruthy();
     expect((sendButton() as HTMLButtonElement).disabled).toBe(true);
     expect(h.slots.every((s) => s.kind === 'CREDIT_FORM')).toBe(true);

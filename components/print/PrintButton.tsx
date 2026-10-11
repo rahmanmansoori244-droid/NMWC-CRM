@@ -6,9 +6,15 @@
  * PRINT audit row), and only an ok answer opens the browser's print dialog.
  *
  * The sheet prints only while <html data-print-ok> is set (app/(print)/print.css).
- * This button sets it just before window.print() and the browser's afterprint
- * clears it, so every print needs its own row: Ctrl+P, or the browser menu, on
- * the page prints a notice instead of the form.
+ * This button sets it just before window.print(), for that one print only
+ * (allowOnePrint): the browser's afterprint clears it, and so does a timer when
+ * no afterprint comes. So every print needs its own row: Ctrl+P, or the browser
+ * menu, on the page prints a notice instead of the form.
+ *
+ * What a PRINT row is: a deliberate request to print this printout, recorded
+ * before the dialog opens. It does not stop a copy — the page is on screen, and
+ * a screenshot, a saved page or a removed stylesheet copy it with no row
+ * (AUDITOR-BRIEF "Printouts").
  *
  * Every photo and document must be in first: a page that printed with a hole
  * where the ID card should be would look complete to whoever files it. The button
@@ -23,6 +29,54 @@ import type { Printout } from '@/lib/print';
 const NOT_RECORDED = 'This print could not be recorded, so it was not started.';
 /** Longer than PrintImage's last retry (about a minute after the first failure). */
 const IMAGES_WAIT_MS = 90_000;
+
+/**
+ * How long the browser has to open its print dialog (beforeprint) after the
+ * button's window.print(). The call comes after two awaits (the photos, then
+ * the record), so the click's user activation may have expired, and a browser
+ * may ignore it: then no dialog opens, no afterprint ever comes, and without
+ * this the permission stayed on the page until it was reloaded (review,
+ * 2026-10-11).
+ */
+export const PRINT_DIALOG_OPEN_MS = 10_000;
+/**
+ * The longest one print keeps its permission once its dialog opened. Desktop
+ * browsers end it sooner with afterprint; iOS Safari may never fire afterprint
+ * (unverified on a real device: 04-PENDING A8), and this bounds it there.
+ */
+export const ONE_PRINT_MS = 120_000;
+
+/**
+ * Lets exactly the print this call starts carry the sheet: sets data-print-ok,
+ * opens the dialog, and takes the permission away again on the first of —
+ * afterprint; no beforeprint within PRINT_DIALOG_OPEN_MS (the call was
+ * ignored); ONE_PRINT_MS after beforeprint (afterprint never came); a throw
+ * from print(). Never removed during the print itself: beforeprint only starts
+ * the longer clock, because the sheet is laid out for print after it.
+ */
+export function allowOnePrint(win: Window = window): void {
+  const html = win.document.documentElement;
+  let timer = 0;
+  const end = () => {
+    win.clearTimeout(timer);
+    win.removeEventListener('beforeprint', opened);
+    win.removeEventListener('afterprint', end);
+    html.removeAttribute('data-print-ok');
+  };
+  function opened() {
+    win.clearTimeout(timer);
+    timer = win.setTimeout(end, ONE_PRINT_MS);
+  }
+  win.addEventListener('beforeprint', opened);
+  win.addEventListener('afterprint', end);
+  html.setAttribute('data-print-ok', '');
+  timer = win.setTimeout(end, PRINT_DIALOG_OPEN_MS);
+  try {
+    win.print();
+  } catch {
+    end();
+  }
+}
 
 /** Resolves once no photo of the sheet is still loading, or after IMAGES_WAIT_MS. */
 async function imagesSettled(): Promise<HTMLImageElement[]> {
@@ -60,10 +114,7 @@ export function PrintButton({ printout, id }: { printout: Printout; id: string }
         setError(`${NOT_RECORDED} ${res.message}`);
         return;
       }
-      const html = document.documentElement;
-      window.addEventListener('afterprint', () => html.removeAttribute('data-print-ok'), { once: true });
-      html.setAttribute('data-print-ok', '');
-      window.print();
+      allowOnePrint();
     } catch {
       setError(`${NOT_RECORDED} Check the connection and try again.`);
     } finally {

@@ -7,7 +7,7 @@
  */
 import type { ReactNode } from 'react';
 import type { Printout } from '@/lib/print';
-import { PRINTOUT_TITLES } from '@/lib/print';
+import { PRINT_DIALOG_HINT, PRINTOUT_TITLES } from '@/lib/print';
 import { CloseButton, PrintButton } from './PrintButton';
 
 export const PRINT_BLOCKED_NOTICE =
@@ -28,9 +28,13 @@ export function PrintFrame({
   return (
     <div className="print-page">
       <div className="print-toolbar no-print">
-        <p className="text-sm font-semibold text-slate-700">
-          {PRINTOUT_TITLES[printout]} <span className="font-normal text-slate-500">· A4 · print or save as PDF</span>
-        </p>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-700">
+            {PRINTOUT_TITLES[printout]} <span className="font-normal text-slate-500">· A4 · print or save as PDF</span>
+          </p>
+          {/* Review (2026-10-11): the browser's own header and footer print the page address and the date in the margins. */}
+          <p className="text-xs text-slate-500">{PRINT_DIALOG_HINT}</p>
+        </div>
         <div className="flex flex-wrap items-start justify-end gap-2">
           <PrintButton printout={printout} id={id} />
           <CloseButton backHref={backHref} />

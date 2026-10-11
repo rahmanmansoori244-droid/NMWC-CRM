@@ -1,6 +1,8 @@
+import { cache } from 'react';
+import type { Metadata } from 'next';
 import { notFound, redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
-import { PRINTOUT_TITLES } from '@/lib/print';
+import { PRINTOUT_TITLES, TEMIX_CODE_MIGRATED, TEMIX_CODE_NONE, printoutDocumentTitle } from '@/lib/print';
 import { STATUS_LABEL, loadCustomerFormPrint } from '@/lib/print-load';
 import { PrintFrame } from '@/components/print/PrintFrame';
 import {
@@ -13,9 +15,29 @@ import {
   PrintSheet,
 } from '@/components/print/PrintSheet';
 
-export const metadata = { title: 'Customer form · NMWC' };
 // Never cached: scope and the customer as it stands are read per request.
 export const dynamic = 'force-dynamic';
+
+/**
+ * The printout for whoever is signed in, read once per request: the page and its
+ * title (generateMetadata) share it (React cache). Null when signed out.
+ */
+const loadForViewer = cache(async (customerId: string) => {
+  const session = await auth();
+  if (!session?.user) return null;
+  const user = { id: session.user.id, role: session.user.role, username: session.user.username };
+  return { session, print: await loadCustomerFormPrint(user, customerId) };
+});
+
+/**
+ * Review (2026-10-11): titled by the customer's NMWC code, so a saved PDF is
+ * named after its customer — only once the viewer may print it.
+ */
+export async function generateMetadata({ params }: { params: Promise<{ customerId: string }> }): Promise<Metadata> {
+  const { customerId } = await params;
+  const loaded = await loadForViewer(customerId);
+  return { title: printoutDocumentTitle('CUSTOMER_FORM', loaded?.print?.nmwcCode) };
+}
 
 /**
  * Owner decisions 2026-10-11 (part C): the FINAL CUSTOMER FORM, for every live
@@ -29,11 +51,10 @@ export const dynamic = 'force-dynamic';
  * Rendering writes nothing: the print is recorded by the Print button.
  */
 export default async function CustomerFormPrintPage({ params }: { params: Promise<{ customerId: string }> }) {
-  const session = await auth();
-  if (!session?.user) redirect('/login');
   const { customerId } = await params;
-  const user = { id: session.user.id, role: session.user.role, username: session.user.username };
-  const p = await loadCustomerFormPrint(user, customerId);
+  const loaded = await loadForViewer(customerId);
+  if (!loaded) redirect('/login');
+  const { session, print: p } = loaded;
   if (!p) notFound();
   return (
     <PrintFrame printout="CUSTOMER_FORM" id={p.customerId} backHref={`/customers/${p.customerId}`}>
@@ -44,7 +65,12 @@ export default async function CustomerFormPrintPage({ params }: { params: Promis
           { label: 'NMWC code', value: p.nmwcCode, mono: true },
           p.temixCode
             ? { label: 'Temix code', value: p.temixCode, mono: true }
-            : { label: 'Temix code', value: 'None recorded', muted: true },
+            : {
+                label: 'Temix code',
+                // Not made through a CRM request (imported or seeded): in Temix under its NMWC code.
+                value: p.trail.kind === 'request' ? TEMIX_CODE_NONE : TEMIX_CODE_MIGRATED,
+                muted: true,
+              },
         ]}
         status={`${STATUS_LABEL[p.status]} · ${p.paymentTerms === 'CREDIT' ? 'Credit' : 'Cash'}`}
         printedBy={session.user.name ?? session.user.username}

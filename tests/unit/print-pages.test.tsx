@@ -16,7 +16,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { EditProcess, PaymentTerms } from '@prisma/client';
 import { resolveChain } from '@/lib/approval-chains';
-import { CREDIT_DECLARATION } from '@/lib/print';
+import { CREDIT_DECLARATION, PRINT_DIALOG_HINT, TEMIX_CODE_MIGRATED, TEMIX_CODE_NONE } from '@/lib/print';
 import { stripComments } from '../support/strip-comments';
 import { LEGACY_CREDIT_CHAIN } from '../support/legacy-chain';
 
@@ -327,6 +327,19 @@ describe('the credit application', () => {
     }
   });
 
+  // Review (2026-10-11): a saved PDF is named after the tab title.
+  it('the tab title carries the request reference printed in its header — only while it can be printed', async () => {
+    const { generateMetadata } = await import('@/app/(print)/print/credit-application/[editId]/page');
+    const title = async () => (await generateMetadata({ params: Promise.resolve({ editId: EDIT }) })).title;
+    as('GM');
+    expect(await title()).toBe(`Credit application ${EDIT} · NMWC`);
+    h.edit = creditEdit(3);
+    expect(await title()).toBe('Credit application · NMWC');
+    h.edit = creditEdit(2);
+    as('SALESMAN', { ownedRouteId: 'rA' });
+    expect(await title()).toBe('Credit application · NMWC');
+  });
+
   it('once the customer exists, it points to the customer form', async () => {
     as('GM');
     h.edit = creditEdit(5, { state: 'APPROVED', customerId: CUST });
@@ -503,11 +516,86 @@ describe('the final customer form', () => {
     h.batch = { uploadedAt: new Date('2026-09-20T05:00:00Z') };
     await customerPage();
     expect(screen.getByText('Loaded by import on 20/09/2026; no approval trail in the CRM.')).toBeTruthy();
-    expect(screen.getByRole('article').textContent).toContain('None recorded');
+    // Review (2026-10-11): migrated, it is in Temix under its NMWC code — never a
+    // bare "None recorded", which reads as "not in Temix".
+    expect(screen.getByRole('article').textContent).toContain(TEMIX_CODE_MIGRATED);
+    expect(screen.getByRole('article').textContent).not.toContain(TEMIX_CODE_NONE);
     cleanup();
-    h.customer = customer('CASH');
+    h.customer = customer('CASH', { temixCode: null });
     await customerPage();
     expect(screen.getByText('Not created through a new-customer request in the CRM; no approval trail.')).toBeTruthy();
+    expect(screen.getByRole('article').textContent).toContain(TEMIX_CODE_MIGRATED);
+    cleanup();
+    // Made through a CRM request with no Temix code typed: none recorded, said plainly.
+    h.customer = customer('CASH', { temixCode: null });
+    h.request = {
+      id: EDIT,
+      cycle: 1,
+      approvalChain: CASH_CHAIN,
+      submittedAt: new Date('2026-10-10T05:00:00Z'),
+      submittedBy: { fullName: 'Salesman One' },
+      steps: steps(CASH_CHAIN),
+    };
+    await customerPage();
+    expect(screen.getByRole('article').textContent).toContain(`Temix code${TEMIX_CODE_NONE}`);
+    expect(screen.getByRole('article').textContent).not.toContain(TEMIX_CODE_MIGRATED);
+  });
+
+  // Review (2026-10-11): "works for a migrated customer with no photos" — every
+  // other fixture had a CR photo, shop photos and GPS.
+  it('a migrated customer with no photo, no document and no location: the empty states, the import trail, its boxes, and it prints', async () => {
+    as('GM');
+    h.attachments = [];
+    h.batch = { uploadedAt: new Date('2026-09-20T05:00:00Z') };
+    h.customer = customer('CREDIT', {
+      importBatchId: 'ib1',
+      temixCode: null,
+      email: null,
+      crPhotoId: null,
+      creditLimit: null,
+      paymentTermDays: null,
+      branches: [branch('b1', 'g1', { shopPhotoId: null, signboardPhotoId: null, gpsLat: null, gpsLng: null })],
+    });
+    const { container } = await customerPage();
+    const sheet = screen.getByRole('article', { name: 'Customer Form: Al Noor Trading' });
+    expect(within(sheet).getByText('No photos or documents on file.')).toBeTruthy();
+    expect(within(sheet).getByText('No location recorded.')).toBeTruthy();
+    expect(within(sheet).getByText('Loaded by import on 20/09/2026; no approval trail in the CRM.')).toBeTruthy();
+    expect(sheet.textContent).toContain(TEMIX_CODE_MIGRATED);
+    expect(images(container)).toEqual([]);
+    // Its terms' boxes: a credit customer's five, though it went through no chain here.
+    expect(screen.getAllByRole('region', { name: /^Signature: / })).toHaveLength(5);
+    // Review (2026-10-11): the toolbar, which does not print, says to switch off
+    // the browser's own header and footer.
+    expect(screen.getByText(PRINT_DIALOG_HINT).closest('.no-print')).toBeTruthy();
+    expect(PRINT_DIALOG_HINT).toMatch(/untick “Headers and footers”/);
+
+    const { recordPrintAction } = await import('@/services/prints');
+    vi.mocked(recordPrintAction).mockReset().mockResolvedValue({ ok: true, data: { printout: 'CUSTOMER_FORM', id: CUST } } as never);
+    const printed: boolean[] = [];
+    const print = vi.spyOn(window, 'print').mockImplementation(() => {
+      printed.push(document.documentElement.hasAttribute('data-print-ok'));
+    });
+    const { fireEvent, waitFor } = await import('@testing-library/react');
+    fireEvent.click(screen.getByRole('button', { name: 'Print / Save as PDF' }));
+    await waitFor(() => expect(printed).toEqual([true]), { timeout: 3000 });
+    expect(recordPrintAction).toHaveBeenCalledWith({ printout: 'CUSTOMER_FORM', id: CUST });
+    print.mockRestore();
+    window.dispatchEvent(new Event('afterprint'));
+    expect(document.documentElement.hasAttribute('data-print-ok')).toBe(false);
+  });
+
+  // Review (2026-10-11): one constant title gave every saved PDF the same name.
+  it('the tab title, which a saved PDF is named after, carries the customer’s NMWC code — only for whoever may print it', async () => {
+    const { generateMetadata } = await import('@/app/(print)/print/customer/[customerId]/page');
+    const title = async () => (await generateMetadata({ params: Promise.resolve({ customerId: CUST }) })).title;
+    h.customer = customer('CASH');
+    as('GM');
+    expect(await title()).toBe('Customer form NMWC-2026-000123 · NMWC');
+    as('SALESMAN', { ownedRouteId: 'r-g1' });
+    expect(await title()).toBe('Customer form · NMWC');
+    h.user = null;
+    expect(await title()).toBe('Customer form · NMWC');
   });
 
   it('a step sent back and taken again shows its final taker, and the send-back is counted', async () => {
@@ -570,7 +658,9 @@ describe('the printouts carry no app chrome, and every page checks the session i
     for (const f of PRINT_FILES.filter((x) => x.endsWith('/page.tsx'))) {
       const s = src(f);
       expect(s, f).toMatch(/export const dynamic = 'force-dynamic';/);
-      expect(s, f).toMatch(/const session = await auth\(\);\s*if \(!session\?\.user\) redirect\('\/login'\);/);
+      // One load per request, shared with the page's title (generateMetadata).
+      expect(s, f).toMatch(/const loadForViewer = cache\(async \(\w+: string\) => \{\s*const session = await auth\(\);\s*if \(!session\?\.user\) return null;/);
+      expect(s, f).toMatch(/if \(!(loaded|viewer)\) redirect\('\/login'\);/);
       expect(s, f).toMatch(/notFound\(\)/);
     }
   });
@@ -667,6 +757,79 @@ describe('the Print button: recorded first, printed only on ok', () => {
     expect(screen.getByRole('alert').textContent).toBe(
       '1 photo or document did not load, so the print was not started. Reload the page and try again.'
     );
+  });
+});
+
+// Review (2026-10-11): the permission used to be cleared by afterprint alone. A
+// browser that ignored the late window.print() (the click's activation spent on
+// the waits), or one that never fires afterprint (iOS Safari), left it set, and
+// every later Ctrl+P printed the form with no PRINT row until a reload.
+describe('allowOnePrint: the permission covers the one print the button started', () => {
+  const allowed = () => document.documentElement.hasAttribute('data-print-ok');
+  const fire = (type: 'beforeprint' | 'afterprint') => window.dispatchEvent(new Event(type));
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.documentElement.removeAttribute('data-print-ok');
+  });
+  /** window.print as a browser behaves: `opens` fires beforeprint (a dialog opened). */
+  const stubPrint = (opens: boolean) => {
+    const seen: boolean[] = [];
+    vi.spyOn(window, 'print').mockImplementation(() => {
+      if (opens) fire('beforeprint');
+      seen.push(allowed());
+    });
+    return seen;
+  };
+
+  it('a call the browser ignores (no dialog): the permission ends after PRINT_DIALOG_OPEN_MS', async () => {
+    const { allowOnePrint, PRINT_DIALOG_OPEN_MS } = await import('@/components/print/PrintButton');
+    const seen = stubPrint(false);
+    allowOnePrint();
+    expect(seen).toEqual([true]);
+    vi.advanceTimersByTime(PRINT_DIALOG_OPEN_MS - 1);
+    expect(allowed()).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(allowed()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a dialog that never says afterprint: the permission ends ONE_PRINT_MS after it opened, not at the open deadline', async () => {
+    const { allowOnePrint, PRINT_DIALOG_OPEN_MS, ONE_PRINT_MS } = await import('@/components/print/PrintButton');
+    const seen = stubPrint(true);
+    allowOnePrint();
+    expect(seen).toEqual([true]);
+    vi.advanceTimersByTime(PRINT_DIALOG_OPEN_MS);
+    expect(allowed()).toBe(true);
+    vi.advanceTimersByTime(ONE_PRINT_MS - PRINT_DIALOG_OPEN_MS);
+    expect(allowed()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('afterprint ends it at once, and leaves nothing behind: a later Ctrl+P is not let through', async () => {
+    const { allowOnePrint } = await import('@/components/print/PrintButton');
+    stubPrint(true);
+    allowOnePrint();
+    fire('afterprint');
+    expect(allowed()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    // The next print, without the button: its beforeprint finds no listener.
+    fire('beforeprint');
+    expect(allowed()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a print() that throws leaves nothing let through', async () => {
+    const { allowOnePrint } = await import('@/components/print/PrintButton');
+    vi.spyOn(window, 'print').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    allowOnePrint();
+    expect(allowed()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
