@@ -62,3 +62,12 @@
 - Security headers: HSTS, X-Frame-Options DENY, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, CSP (lenient v1)
 - Operations runbook: `docs/OPERATIONS.md`
 - Health check pings DB + R2; reports `degraded` HTTP 503 on failure
+
+### Credit flow, part A (owner decisions 2026-10-11)
+- New role **Sales Director**: one for every region, with the GM's access everywhere (read scope, menu, approval queue and review page, e-mail for work at his step, SLA fallback, account import, `verify-load`, go-live account `sales.director`); Steward-provisioned only
+- CREDIT new-customer chain (CHAIN_VERSION 2): Supervisor → Sales Director → signed application (the submitting salesman) → Finance Manager → GM → Accountant; requests frozen with the 4-step chain keep it
+- Signed-application step: the salesman uploads the customer's signed and stamped credit application from his request's page (`services/signed-form.ts`), within 3 working days (`SLA_SIGNED_FORM_MIN`); nobody approves the step; he may withdraw the request at it
+- Send-backs one step at a time: Sales Director → Supervisor, Finance Manager → the signed application, GM → Finance Manager
+- New alert `SIGNED_FORM_REQUESTED` (red for the salesman, never e-mailed); "Credit application to print" for his supervisor or the region's Managers; steps named in words on every screen and notification
+- Credit documents (`ID_CARD`, `MEMBERSHIP_CERT`, `VAT_CERT`, `TAX_CARD`, `CREDIT_FORM`) handled like CR copies: salesman-only upload, never cached, every view recorded and refused when it cannot be; decisions bound to every one of them
+- Schema: `Customer.email`, `EditCustomerDraft.email`, the new enum values (`AuditAction.PRINT` for part C); two additive migrations, deployed first as the foundation
