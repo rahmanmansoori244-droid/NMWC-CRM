@@ -55,8 +55,11 @@ const READ_ONLY_ENTITY: Record<string, string> = {
 };
 
 const ROOTS = ['app', 'lib', 'services', 'components'];
+// Case-insensitive, and with or without the schema: Postgres takes `from "AuditLog"`
+// and `FROM public."AuditLog"` alike, and a reader written either way would
+// otherwise pass unseen (review of gap 2, 2026-10-11).
 const READ =
-  /\.auditLog\s*\.\s*(?:findMany|findFirst|findFirstOrThrow|findUnique|findUniqueOrThrow|count|groupBy|aggregate)\s*\(|\b(?:FROM|JOIN)\s+"AuditLog"|\bauditLogs\s*:/g;
+  /\.auditLog\s*\.\s*(?:findMany|findFirst|findFirstOrThrow|findUnique|findUniqueOrThrow|count|groupBy|aggregate)\s*\(|\b(?:FROM|JOIN)\s+(?:"?public"?\.)?"AuditLog"|\bauditLogs\s*:/gi;
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -82,6 +85,19 @@ function readers(): Map<string, Array<{ index: number; src: string }>> {
 }
 
 describe('every reader of the audit log keeps photo views from anyone but the Steward', () => {
+  it('the reader pattern sees a read however its SQL is cased or qualified', () => {
+    for (const read of [
+      'SELECT count(*) FROM "AuditLog" a',
+      'select a.id from "AuditLog" a',
+      'SELECT 1 FROM public."AuditLog" a',
+      'left join "public"."AuditLog" l on true',
+      'tx.auditLog.findMany(',
+      'include: { auditLogs: true }',
+    ]) {
+      expect([...read.matchAll(READ)], read).toHaveLength(1);
+    }
+  });
+
   it('reads AuditLog only where the list says, for the reason it gives', () => {
     const found = readers();
     expect([...found.keys()].sort()).toEqual(Object.keys(READERS).sort());
