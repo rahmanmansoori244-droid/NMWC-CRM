@@ -239,7 +239,7 @@ checkout points at **PRODUCTION** ([HANDOVER.md §3](../HANDOVER.md);
 ([CREDENTIAL-ROTATION.md, Step 3](../CREDENTIAL-ROTATION.md)). So any seed, test or
 `npm run dev` started there goes to production. Claude's operator runs on that computer
 pass the file explicitly:
-`NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs …`. Do not rebuild
+`NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze …`. Do not rebuild
 that layout on the new computer: keep the production file outside every checkout, and
 still pass it explicitly.
 
@@ -270,8 +270,10 @@ chat, a screen share or a screenshot either.
   and [scripts/dev/env-check.cjs](../../scripts/dev/env-check.cjs) all read `.env`.
 - **Production env file = outside every checkout.** It is used only through
   [scripts/dev/prod-run.cjs](../../scripts/dev/prod-run.cjs), which takes its path from
-  `NMWC_PROD_ENV_FILE`, refuses a file that is not production, and masks the connection
-  string in everything it prints ([HANDOVER.md §5](../HANDOVER.md)). Always set
+  `NMWC_PROD_ENV_FILE`, refuses a file that is not production, refuses any run without
+  `--expect-host ep-sweet-haze` among the script's arguments (owner decisions 2026-10-11; it
+  passes them on to the script unchanged), and masks the connection string in everything
+  it prints ([HANDOVER.md §5](../HANDOVER.md)). Always set
   `NMWC_PROD_ENV_FILE`: without it, `prod-run.cjs` reads `./.env`. If the file is never
   inside a checkout, nothing loads it by accident.
 
@@ -370,7 +372,7 @@ tools check `.env`. The README's Scripts table also lists `npm run build` and
   it. A script usually imports the repository's packages (`@prisma/client`, for example),
   and `tsx` resolves those only from inside a checkout. So to run one, copy it into the
   root of the checkout as `<name>.tmp.ts`, run it with
-  `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <name>.tmp.ts`, then
+  `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <name>.tmp.ts --expect-host ep-sweet-haze`, then
   delete the copy. `*.tmp.ts` is gitignored ([.gitignore](../../.gitignore)), so
   `git add` does not pick such a copy up, but delete it after use anyway and check
   `git status --short` before any commit. Anything that writes to production follows the
@@ -379,9 +381,10 @@ tools check `.env`. The README's Scripts table also lists `npm run build` and
   - `--apply` to write, with `--actor <steward username>`, which some scripts require and
     which is needed wherever more than one Steward exists;
   - counts-only output, and a second dry run that reports nothing left;
-  - run through `prod-run.cjs`, which passes the arguments on:
-    `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> [args]`
-    (PowerShell: `$env:NMWC_PROD_ENV_FILE='<env file>'; node scripts/dev/prod-run.cjs <script> [args]`).
+  - run through `prod-run.cjs`, which requires `--expect-host ep-sweet-haze` on every run and
+    passes the arguments on unchanged:
+    `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`
+    (PowerShell: `$env:NMWC_PROD_ENV_FILE='<env file>'; node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`).
   - **Never put `DIRECT_URL=…` on a command line**, even though the headers of scripts
     such as [rescore-completeness.ts](../../scripts/ops/rescore-completeness.ts) show that
     form ([HANDOVER.md §5](../HANDOVER.md)).

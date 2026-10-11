@@ -714,7 +714,7 @@ All the real ones are gitignored. Copies are in the private pack.
 
 **Today, on the owner's computer,** the production env file is that main checkout's
 `.env`, and Claude's operator runs name it explicitly:
-`NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs <script> [args]`.
+`NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`.
 For the new set-up, keep the production env file outside every checkout and pass it
 the same way (step 3 below).
 
@@ -758,7 +758,7 @@ after use all the same.
 | `npm run dev` (Next.js) | `.env.local`, then `.env`. Variables already set in the shell win |
 | `scripts/qa/run-with-env.mjs` | `.env` only. Shell variables win. Since 2026-10-11 it refuses to start anything when `DATABASE_URL`, `DIRECT_URL` or any other connection string points at production ([OPERATIONS §5j](../OPERATIONS.md)) |
 | `scripts/print-required-secrets.ts` | `.env.local` and `.env`. It prints lengths only, never values |
-| `scripts/dev/prod-run.cjs` | The file named in `NMWC_PROD_ENV_FILE`, otherwise `.env`. It refuses anything that is not production and masks the output |
+| `scripts/dev/prod-run.cjs` | The file named in `NMWC_PROD_ENV_FILE`, otherwise `.env`. It refuses anything that is not production, refuses any run without `--expect-host ep-sweet-haze` among the script's arguments (owner decisions 2026-10-11), and masks the output |
 | `scripts/dev/env-check.cjs` | The file you name, otherwise `.env`, plus the shell environment |
 | `scripts/ops/smoke.ts` | No file. Set `HEALTH_BEARER` in the shell to add the bearer-only checks |
 
@@ -771,7 +771,7 @@ after use all the same.
    "ok: nothing here points at production."
 3. **Keep the production env file outside every checkout,** so that nothing loads it
    by accident. Use it only through
-   `NMWC_PROD_ENV_FILE=<path> node scripts/dev/prod-run.cjs <script> [args]`
+   `NMWC_PROD_ENV_FILE=<path> node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`
    ([HANDOVER §5](../HANDOVER.md)).
 4. **Do not create a `.env.local` that holds production values.** Do not run
    `npx vercel env pull` until you have checked Vercel's Development scope (§2.3).

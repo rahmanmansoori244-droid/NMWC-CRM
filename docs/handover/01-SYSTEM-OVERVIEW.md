@@ -34,7 +34,7 @@ These four rules protect production. Each has a real incident behind it
    in it. Work in your own clone whose `.env` names the UAT database or your own empty
    Postgres. On the owner's computer today, the main checkout's `.env` points at
    production, and operator runs pass it explicitly
-   (`NMWC_PROD_ENV_FILE=<that file> node scripts/dev/prod-run.cjs <script>`). For a new
+   (`NMWC_PROD_ENV_FILE=<that file> node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze`). For a new
    setup, keep the production env file **outside every checkout** and pass it the same
    way ([03 §7](03-OPERATIONS-AND-DEPLOYMENT.md#7-running-operator-scripts-against-production)).
 2. **Before anything that loads `.env`, run `node scripts/dev/env-check.cjs`.** It

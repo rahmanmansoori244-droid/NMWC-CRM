@@ -276,8 +276,11 @@ as described in §2.
 - **Read-only questions**: a small script that opens a `SET TRANSACTION READ ONLY`
   transaction, builds its client as `new PrismaClient({ datasourceUrl: process.env.DIRECT_URL })`,
   and prints counts only (never a name, code, phone or id), run with
-  `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> [args]`. The runner
-  refuses an env file whose host is not production, gives the script `DIRECT_URL` only
+  `NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`.
+  The runner refuses any run without `--expect-host ep-sweet-haze` among the script's arguments,
+  read-only or not (owner decisions 2026-10-11), and passes every argument on to the
+  script unchanged, so the script's own guard checks the flag again. It refuses an env
+  file whose host is not production, gives the script `DIRECT_URL` only
   (`DATABASE_URL` is set to an address that cannot connect), runs it with no shell, and masks
   the URL, its password (raw and decoded), user and host, and anything shaped like a
   connection string, in everything it prints.

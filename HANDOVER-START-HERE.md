@@ -161,7 +161,8 @@ Work through these steps in order.
    `grep` or `Select-String`. They print the whole line, password included. Every
    checkout's `.env` should name UAT. On the owner's computer today, the main checkout's
    `.env` is the production file, and Claude's operator runs pass it explicitly with
-   `NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs <script> [args]`.
+   `NMWC_PROD_ENV_FILE=<main checkout>/.env node scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze [args]`
+   (the runner refuses any run without that flag, read-only or not).
    In your setup, keep the production env file outside every checkout, and pass it the
    same way, through `NMWC_PROD_ENV_FILE=<file>` ([HANDOVER §5](docs/HANDOVER.md)). If you
    copy an operator script from the pack into a checkout, name it `*.tmp.ts`. Git ignores

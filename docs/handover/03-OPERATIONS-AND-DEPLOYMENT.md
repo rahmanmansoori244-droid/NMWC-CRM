@@ -145,7 +145,7 @@ Choose a username that is not on the demo denylist
 **Where the production file is today, and where it should be.** On the previous owner's
 computer, the main checkout's `.env` *is* the production env file, and Claude's operator
 runs pass it explicitly (`NMWC_PROD_ENV_FILE=<main checkout>/.env node
-scripts/dev/prod-run.cjs …`). That works, but it leaves a checkout in which anything that
+scripts/dev/prod-run.cjs <script> --expect-host ep-sweet-haze …`). That works, but it leaves a checkout in which anything that
 loads `.env` by default reaches production ([§2.4](#24-if-you-received-a-copied-folder)).
 For the new setup, **keep the production env file outside every checkout** and pass it
 explicitly. Then nothing that loads `.env` by default can reach production by accident.
@@ -592,6 +592,14 @@ the connection string ever reaching the terminal:
   set, it uses `.env` in the current directory. Always set the variable, and never rely on
   the default.
 - It **refuses** a file whose host is not production (`ep-sweet-haze…`).
+- It **requires** `--expect-host ep-sweet-haze` among the script's arguments on every run, read-only or
+  not (owner decisions 2026-10-11). Without it, or with a value that does not start with
+  `ep-sweet-haze` or is not part of the env file's host, it refuses and runs nothing; the
+  flag is checked before the env file is read. It **passes every argument on to the
+  script unchanged**, so the script's own guard checks the same flag again
+  ([OPERATIONS §5j](../OPERATIONS.md)). A throw-away `*.tmp.ts` read script is handed the
+  flag too and may ignore it; a private-pack script that rejects arguments it does not
+  know must accept it.
 - It gives the script `DIRECT_URL` only. It sets `DATABASE_URL` to an address that cannot
   connect, so a script that ignores `DIRECT_URL` fails instead of using another database.
 - It runs the script through `tsx` with **no shell**, so an argument is only ever an
@@ -719,7 +727,7 @@ main().finally(() => prisma.$disconnect());
 
 Write it in a scratch folder outside the checkout, copy it into the checkout's root as
 `count-example.tmp.ts`, and run it from there with
-`NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs count-example.tmp.ts`
+`NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs count-example.tmp.ts --expect-host ep-sweet-haze`
 (Git Bash; in PowerShell set the variable first, as in
 [§7.2](#72-the-runner-scriptsdevprod-runcjs)). Name every throw-away script `*.tmp.ts`:
 [`.gitignore`](../../.gitignore) ignores that pattern, so it cannot be committed by
@@ -796,7 +804,7 @@ with scripts kept only in the private pack, among them `temix-link-apply.ts`,
    checkout that holds it ([§7.2](#72-the-runner-scriptsdevprod-runcjs)).
 2. Read its header, then follow [§7.3](#73-the-sequence-for-a-write), running it from that
    checkout's root as
-   `NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs <name>.tmp.ts`.
+   `NMWC_PROD_ENV_FILE=<production env file> node scripts/dev/prod-run.cjs <name>.tmp.ts --expect-host ep-sweet-haze`.
    Its flags may differ from those of the scripts above.
 3. Delete the copy afterwards.
 

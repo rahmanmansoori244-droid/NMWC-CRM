@@ -3,8 +3,18 @@
 // string ever reaching the terminal, a log or a chat (docs/HANDOVER.md §5).
 //
 //   NMWC_PROD_ENV_FILE=<path to the .env holding the production DIRECT_URL> \
-//     node scripts/dev/prod-run.cjs <script path> [args...]
+//     node scripts/dev/prod-run.cjs <script path> --expect-host ep-sweet-haze [the script's own args]
 //
+// - `--expect-host ep-sweet-haze` is REQUIRED on every run, read-only or not (owner
+//   decisions 2026-10-11). It is one of the SCRIPT's arguments, anywhere after the
+//   script path: the runner reads it there and FORWARDS every argument to the script
+//   unchanged, so the script's own guard (scripts/lib/assert-not-production.ts, or
+//   requireExpectedHost in the ops scripts) checks the very same flag. Typed once,
+//   checked twice. The runner refuses, before it reads the env file, when the flag
+//   is missing, has no value, or its value does not start with ep-sweet-haze (the
+//   two-word form only: `--expect-host=…` is not read); and after reading it, when
+//   the value is not part of the env file's host. A throw-away read-only script
+//   (`*.tmp.ts`) is handed the flag too and may simply ignore it.
 // - DIRECT_URL is read from that file (default: .env in the current directory) and
 //   passed to the script in its environment only. DATABASE_URL is set to an address
 //   that cannot connect, so a script that ignores DIRECT_URL fails instead of silently
@@ -14,18 +24,37 @@
 //   pointing it at a UAT .env runs nothing.
 // - Everything the script prints is masked: the URL, its password (raw and decoded),
 //   user and host, and anything shaped like a postgres connection string. Output is
-//   shown when the script ends.
+//   shown when the script ends. The runner's own refusals print no value from the
+//   env file or from --expect-host.
 // - The script runs through tsx with no shell, so an argument is only ever an argument.
 // The script decides what it does: read-only questions open SET TRANSACTION READ ONLY
 // and print counts only; writes go through a scripts/ops/ operator script with a dry
-// run, --expect-host and --apply. Run `npm run smoke` before and after a write.
+// run and --apply. Run `npm run smoke` before and after a write.
+// tests/unit/prod-run.test.ts runs it with a fake production env file.
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+const PRODUCTION = 'ep-sweet-haze';
+const USAGE = `usage: node scripts/dev/prod-run.cjs <script> --expect-host ${PRODUCTION} [the script's own args]`;
+
 const [script, ...args] = process.argv.slice(2);
-if (!script) {
-  console.log('usage: node scripts/dev/prod-run.cjs <script> [args]');
+if (!script || script.startsWith('-')) {
+  console.log(USAGE);
+  process.exit(2);
+}
+// Owner decisions 2026-10-11: every run names production. Read from the script's own
+// arguments, which are passed on unchanged below; its value is never printed (it may
+// be the full endpoint id, which the output masking hides everywhere else).
+const flagAt = args.indexOf('--expect-host');
+const expectHost = flagAt < 0 ? '' : (args[flagAt + 1] ?? '');
+if (!expectHost || expectHost.startsWith('--') || !expectHost.toLowerCase().startsWith(PRODUCTION)) {
+  console.log(
+    `[prod-run] refusing: every run needs --expect-host ${PRODUCTION} among the script's arguments,\n` +
+      '  as two words, read-only or not (owner decisions 2026-10-11). It is passed on to the\n' +
+      "  script unchanged, so the script's own guard checks it too. Nothing was read or run."
+  );
+  console.log(USAGE);
   process.exit(2);
 }
 const envFile = path.resolve(process.env.NMWC_PROD_ENV_FILE || '.env');
@@ -49,8 +78,16 @@ try {
   console.log('DIRECT_URL in the env file is not a URL — refusing');
   process.exit(2);
 }
-if (!parsed.hostname.startsWith('ep-sweet-haze')) {
+const hostname = parsed.hostname.toLowerCase();
+if (!hostname.startsWith(PRODUCTION)) {
   console.log('that env file does not point at production — refusing');
+  process.exit(2);
+}
+if (!hostname.includes(expectHost.toLowerCase())) {
+  console.log(
+    "[prod-run] refusing: the --expect-host value is not part of the env file's production host.\n" +
+      `  Pass --expect-host ${PRODUCTION}, or the host's own endpoint id. Nothing was run.`
+  );
   process.exit(2);
 }
 

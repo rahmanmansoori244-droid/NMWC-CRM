@@ -2,7 +2,7 @@
  * Is the organisation ready for notification e-mail? READ-ONLY, counts only.
  *
  *   NMWC_PROD_ENV_FILE=<env file> node scripts/dev/prod-run.cjs \
- *     scripts/ops/notify-readiness.ts --expect-host <host marker>
+ *     scripts/ops/notify-readiness.ts --expect-host ep-sweet-haze
  *
  *   or against UAT / a local database:
  *   npx tsx scripts/ops/notify-readiness.ts --expect-host <host marker>
