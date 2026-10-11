@@ -517,9 +517,11 @@ export const loadChecks = (prisma: PrismaClient, expected: LoadExpectations): Ch
       };
     },
   },
-  ...(['FINANCE_MANAGER', 'GM'] as const).map(
+  // SALES_DIRECTOR: owner decisions 2026-10-11 — every CREDIT request now has a
+  // GLOBAL Sales Director step after the Supervisor, told the same way.
+  ...(['FINANCE_MANAGER', 'GM', 'SALES_DIRECTOR'] as const).map(
     (role): Check => ({
-      name: `an active ${role === 'GM' ? 'GM' : 'Finance Manager'} past the password change`,
+      name: `an active ${role === 'GM' ? 'GM' : role === 'SALES_DIRECTOR' ? 'Sales Director' : 'Finance Manager'} past the password change`,
       why: `every CREDIT request has a GLOBAL ${role} step, told to every active ${role} (lib/notifications.ts); with none, or none who can get past the forced password change, each one waits on nobody and the queue just looks quiet`,
       run: async () => {
         // Demo-denied accounts cannot sign in where production runs

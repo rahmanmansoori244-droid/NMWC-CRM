@@ -99,7 +99,7 @@ export const accountantUsername = (regionCode: string): string =>
  * stopped the load.
  */
 /**
- * The two org-wide approvers. Their steps are GLOBAL, so they hold no region and
+ * The org-wide approvers. Their steps are GLOBAL, so they hold no region and
  * there is one of each, not one per region.
  *
  * Named here rather than spelled again in the builder: the point of this module
@@ -109,9 +109,16 @@ export const accountantUsername = (regionCode: string): string =>
  */
 export const FINANCE_MANAGER_USERNAME = 'finance.manager';
 export const GM_USERNAME = 'gm.nmwc';
+/**
+ * Owner decisions 2026-10-11: one Sales Director for every region in Oman — a
+ * GLOBAL credit step like the GM's, so one region-less account. Not caught by
+ * lib/demo-accounts.ts (its `salesman.` prefix does not match `sales.`).
+ */
+export const SALES_DIRECTOR_USERNAME = 'sales.director';
 
 export const APPROVER_USERNAMES: string[] = [
   ...GOLIVE_REGION_CODES.map(accountantUsername),
   FINANCE_MANAGER_USERNAME,
   GM_USERNAME,
+  SALES_DIRECTOR_USERNAME,
 ];

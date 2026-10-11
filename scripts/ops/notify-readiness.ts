@@ -44,7 +44,8 @@ import { isEmailAddress } from '../../lib/notify-address';
 /**
  * Roles that can receive notification e-mail (lib/notify-policy.ts EMAIL_ROLES;
  * tests/unit/notify-readiness.test.ts holds the two equal). The GM since owner
- * decision 6 (2026-10-07): he is e-mailed credit requests at his step.
+ * decision 6 (2026-10-07): he is e-mailed credit requests at his step. The
+ * Sales Director since owner decisions 2026-10-11, as the GM.
  */
 export const READINESS_APPROVER_ROLES: readonly Role[] = [
   Role.MANAGER,
@@ -52,6 +53,7 @@ export const READINESS_APPROVER_ROLES: readonly Role[] = [
   Role.ACCOUNTANT,
   Role.FINANCE_MANAGER,
   Role.GM,
+  Role.SALES_DIRECTOR,
 ];
 
 /**

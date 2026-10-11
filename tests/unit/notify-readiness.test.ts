@@ -37,6 +37,7 @@ const USERS: ReadinessUser[] = [
   u('a1', Role.ACCOUNTANT, { email: 'MGR.ONE@example.test', managedRegionIds: ['g1'] }),
   u('fm-1', Role.FINANCE_MANAGER),
   u('gm-1', Role.GM, { email: 'gm@example.test' }),
+  u('sd-1', Role.SALES_DIRECTOR),
   u('stw-1', Role.STEWARD),
   // salesmen
   u('s-ok', Role.SALESMAN, { supervisorId: 'm1', routeRegionId: 'g1' }),
@@ -59,7 +60,16 @@ describe('readinessReport', () => {
     // Owner decision 6 (2026-10-07): the GM is e-mailed work at his step, so his
     // address is a readiness row too. The Steward is never e-mailed: no row.
     expect(r.approvers.GM).toEqual({ withEmail: 1, without: 0, malformed: 0 });
-    expect(Object.keys(r.approvers).sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SUPERVISOR']);
+    // Owner decisions 2026-10-11: the Sales Director is e-mailed as the GM is.
+    expect(r.approvers.SALES_DIRECTOR).toEqual({ withEmail: 0, without: 1, malformed: 0 });
+    expect(Object.keys(r.approvers).sort()).toEqual([
+      'ACCOUNTANT',
+      'FINANCE_MANAGER',
+      'GM',
+      'MANAGER',
+      'SALES_DIRECTOR',
+      'SUPERVISOR',
+    ]);
   });
 
   it('reports exactly the roles the drain may e-mail (lib/notify-policy.ts EMAIL_ROLES)', async () => {

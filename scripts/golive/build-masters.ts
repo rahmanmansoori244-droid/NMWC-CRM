@@ -37,6 +37,7 @@ import {
   accountantUsername,
   FINANCE_MANAGER_USERNAME,
   GM_USERNAME,
+  SALES_DIRECTOR_USERNAME,
 } from '../../lib/ops/golive-accounts';
 import { routeMasterName } from '../../lib/ops/golive-routes';
 
@@ -1398,8 +1399,8 @@ async function main() {
   // rule would block these seven real accounts at sign-in — which is exactly how
   // the 'steward' username nearly stopped the load.
   //
-  // FINANCE_MANAGER and GM stay single and region-less: their approval steps are
-  // GLOBAL, not region-scoped.
+  // FINANCE_MANAGER, GM and SALES_DIRECTOR stay single and region-less: their
+  // approval steps are GLOBAL, not region-scoped.
   const approvers: Array<[string, string, string, string]> = [
     ...REGIONS.filter((r) => r.code !== 'UNASSIGNED').map(
       (r) =>
@@ -1412,6 +1413,8 @@ async function main() {
     ),
     [FINANCE_MANAGER_USERNAME, 'Finance Manager', 'FINANCE_MANAGER', ''],
     [GM_USERNAME, 'General Manager', 'GM', ''],
+    // Owner decisions 2026-10-11: org-wide like the GM, so region-less.
+    [SALES_DIRECTOR_USERNAME, 'Sales Director', 'SALES_DIRECTOR', ''],
   ];
   for (const [username, fullName, role, regions] of approvers) {
     // The approver block used to bypass uniqueUsername(), which was safe while

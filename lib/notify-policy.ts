@@ -80,7 +80,9 @@ export const SUPERVISING_ROLES: readonly Role[] = [Role.MANAGER, Role.SUPERVISOR
  * Roles that may receive notification E-MAIL. An allowlist: STEWARD, VIEWER,
  * SALESMAN and any future role fail closed. Re-checked against the recipient's
  * CURRENT role, active flag and address at send time (lib/email/drain.ts).
- * The GM since owner decision 6 (2026-10-07): "like the other approvers".
+ * The GM since owner decision 6 (2026-10-07): "like the other approvers". The
+ * Sales Director since owner decisions 2026-10-11: he has the GM's access
+ * everywhere, so he is e-mailed exactly as the GM is.
  */
 export const EMAIL_ROLES: readonly Role[] = [
   Role.MANAGER,
@@ -88,14 +90,16 @@ export const EMAIL_ROLES: readonly Role[] = [
   Role.ACCOUNTANT,
   Role.FINANCE_MANAGER,
   Role.GM,
+  Role.SALES_DIRECTOR,
 ];
 
 /**
  * Of EMAIL_ROLES, the roles e-mailed only rows that ask them to act or chase:
  * a row that only informs (REQUEST_FYI) is skipped as SKIPPED_ROLE, whoever wrote
- * it. Owner decision 6 asked for the GM's e-mail for work waiting on him.
+ * it. Owner decision 6 asked for the GM's e-mail for work waiting on him; the
+ * Sales Director mirrors the GM (owner decisions 2026-10-11).
  */
-export const EMAIL_ACT_ONLY_ROLES: readonly Role[] = [Role.GM];
+export const EMAIL_ACT_ONLY_ROLES: readonly Role[] = [Role.GM, Role.SALES_DIRECTOR];
 
 /**
  * Owner decision 6 (2026-10-07): late requests are e-mailed, to the people the

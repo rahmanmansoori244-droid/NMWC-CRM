@@ -225,7 +225,7 @@ describe('a Manager’s approval figures are their own regions’ requests, neve
     const { container } = render(await StatusPage());
     expect(card().textContent).toContain('Supervisor step: 30/40 on time');
     expect(card().textContent).toContain(
-      'The Accountant, Finance Manager and GM steps and reactivations are reported to the Data Steward.'
+      'The Sales Director, signed application, Accountant, Finance Manager and GM steps and reactivations are reported to the Data Steward.'
     );
     expect(container.textContent).not.toMatch(/3\/5|30\/35|33\/40/);
     expect(container.textContent).not.toContain('General manager');
@@ -290,6 +290,26 @@ describe('a Manager’s approval figures are their own regions’ requests, neve
     h.load.mockResolvedValue(status({ openApprovals: [] }));
     const again = render(await StatusPage());
     expect(again.container.textContent).toContain('Nothing is waiting for an approver');
+  });
+
+  it('the Data Steward reads the credit chain’s new steps by name (owner decisions 2026-10-11)', async () => {
+    h.user = { id: 'x', role: 'STEWARD', username: 'x' };
+    h.load.mockResolvedValue(
+      status({
+        approvals: {
+          ...status().approvals,
+          tiers: [
+            { role: 'SALES_DIRECTOR', decided: 4, tracked: 4, within: 4, p50Minutes: 60, p90Minutes: 90 },
+            { role: 'SALESMAN', decided: 3, tracked: 3, within: 1, p50Minutes: 900, p90Minutes: 1500 },
+          ],
+        },
+        openApprovals: [{ role: 'SALESMAN', open: 2, pastDue: 1, oldestWorkingMinutes: 1700 }],
+      })
+    );
+    const { container } = render(await StatusPage());
+    expect(container.textContent).toContain('Sales director step: 4/4 on time');
+    expect(container.textContent).toContain('Signed application (salesman): 1/3 on time');
+    expect(container.textContent).not.toMatch(/\bSALES_DIRECTOR\b|\bSALESMAN\b/);
   });
 });
 

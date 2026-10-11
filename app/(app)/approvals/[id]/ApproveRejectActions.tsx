@@ -66,6 +66,10 @@ const STEP_LABEL: Record<string, string> = {
   ACCOUNTANT: 'Accountant',
   FINANCE_MANAGER: 'Finance Manager',
   GM: 'GM',
+  // Owner decisions 2026-10-11: the credit chain's Sales Director step, and the
+  // signed-application step the submitting salesman owns.
+  SALES_DIRECTOR: 'Sales Director',
+  SALESMAN: 'salesman',
 };
 
 export function approveConfirmCopy(

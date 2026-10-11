@@ -15,6 +15,7 @@ import {
   PROMOTE_STUCK_AFTER_MIN,
   TEMIX_BACKLOG_MAX_DAYS,
   approvalsResult,
+  NON_APPROVAL_TIERS,
   availabilityResult,
   backupResult,
   formatAge,
@@ -252,6 +253,25 @@ describe('approvals', () => {
     expect(r.ratio).toBeCloseTo(0.92);
   });
 
+  it('the signed-application step is not an approval: its decisions stay out of the objective', () => {
+    // Owner decisions 2026-10-11: the salesman's upload of the signed credit
+    // application is a step with a due time (role SALESMAN, FORM_UPLOADED), not a
+    // decision an approver made. A late shop visit must not miss the approvals SLO.
+    const withSalesman = approvalsResult([
+      tier('SUPERVISOR', { decided: 50, tracked: 40, within: 38 }),
+      tier('SALES_DIRECTOR', { decided: 10, tracked: 10, within: 8 }),
+      tier('SALESMAN', { decided: 20, tracked: 20, within: 2 }),
+    ]);
+    const without = approvalsResult([
+      tier('SUPERVISOR', { decided: 50, tracked: 40, within: 38 }),
+      tier('SALES_DIRECTOR', { decided: 10, tracked: 10, within: 8 }),
+    ]);
+    expect(withSalesman).toEqual(without);
+    expect(withSalesman.total).toBe(50);
+    expect(withSalesman.good).toBe(46);
+    expect(NON_APPROVAL_TIERS).toEqual(['SALESMAN']);
+  });
+
   it('percentile is percentile_cont: linear between ranks', () => {
     expect(percentile([], 0.5)).toBeNull();
     expect(percentile([10], 0.9)).toBe(10);
@@ -292,9 +312,20 @@ describe('a Manager sees only the Supervisor step', () => {
     expect(MANAGER_VIEW_GROUPS.map((g) => g.key)).toEqual(['SUPERVISOR']);
     expect(MANAGER_VIEW_ROLES).toEqual(['SUPERVISOR']);
     // No Manager screen shows these steps' due times (lib/service-levels.ts).
-    for (const role of ['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER']) expect(MANAGER_VIEW_ROLES).not.toContain(role);
-    // Every step is still reported to the Data Steward.
-    expect([...STEP_ROLES].sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SUPERVISOR']);
+    for (const role of ['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SALES_DIRECTOR', 'SALESMAN']) {
+      expect(MANAGER_VIEW_ROLES).not.toContain(role);
+    }
+    // Every step is still reported to the Data Steward — the Sales Director's and
+    // the signed application's too (owner decisions 2026-10-11).
+    expect([...STEP_ROLES].sort()).toEqual([
+      'ACCOUNTANT',
+      'FINANCE_MANAGER',
+      'GM',
+      'MANAGER',
+      'SALESMAN',
+      'SALES_DIRECTOR',
+      'SUPERVISOR',
+    ]);
   });
 
   it('a row of another step that reached the grouping anyway is on no line', () => {

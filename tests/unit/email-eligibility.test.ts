@@ -61,15 +61,16 @@ const req = (over: Partial<RequestNow> = {}): RequestNow => ({
 });
 
 describe('the allowlists', () => {
-  it('information goes to MANAGER, SUPERVISOR, ACCOUNTANT and FINANCE_MANAGER only — never the GM, whatever the row', () => {
+  it('information goes to MANAGER, SUPERVISOR, ACCOUNTANT and FINANCE_MANAGER only — never the GM or the Sales Director, whatever the row', () => {
     for (const role of Object.values(Role)) {
       const v = rowVerdict(row({ kind: 'REQUEST_FYI' }), who(role), req(), NOW);
       const allowed = ([Role.MANAGER, Role.SUPERVISOR, Role.ACCOUNTANT, Role.FINANCE_MANAGER] as Role[]).includes(role);
       expect(v.send ? 'send' : (v as { status: string }).status, role).toBe(allowed ? 'send' : 'SKIPPED_ROLE');
     }
     // Owner decision 6 (2026-10-07): the GM is e-mailed, for work waiting on him only.
-    expect([...EMAIL_ROLES].sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SUPERVISOR']);
-    expect([...EMAIL_ACT_ONLY_ROLES]).toEqual(['GM']);
+    // Owner decisions 2026-10-11: the Sales Director mirrors the GM.
+    expect([...EMAIL_ROLES].sort()).toEqual(['ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER', 'SALES_DIRECTOR', 'SUPERVISOR']);
+    expect([...EMAIL_ACT_ONLY_ROLES]).toEqual(['GM', 'SALES_DIRECTOR']);
   });
 
   it('a Steward, a Viewer or a salesman is never e-mailed, even a row that would ask him to act', () => {
@@ -210,8 +211,9 @@ describe('owner decision 6: a late request (SLA_BREACH) goes to the people the e
             (p) =>
               p.globalRoles.includes(role) ||
               (p.regionScopedRoles.includes(role) && managedRegionIds.includes(REGION)) ||
-              // The sweep's fallback for a region nobody covers.
-              (p.regionScopedRoles.length > 0 && role === Role.GM)
+              // The sweep's fallback for a region nobody covers: the GM and the
+              // Sales Director (owner decisions 2026-10-11).
+              (p.regionScopedRoles.length > 0 && (role === Role.GM || role === Role.SALES_DIRECTOR))
           );
           // A plan for visibility only is e-mailed to nobody it names; only to one who can decide the step.
           const canAct = plans[1]!.visibilityOnly ? waitsOn(r, 'EDIT_STAGE_ADVANCED', e) : named;

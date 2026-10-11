@@ -342,8 +342,31 @@ export const MANAGER_VIEW_GROUPS: readonly StepGroup[] = [
 /** The step roles a Manager's figures may count (lib/service-status.ts filters by them). */
 export const MANAGER_VIEW_ROLES: readonly string[] = MANAGER_VIEW_GROUPS.flatMap((g) => g.roles);
 
-/** Every approval step role, for loaders that must report every step even when empty. */
-export const STEP_ROLES: readonly string[] = ['SUPERVISOR', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'MANAGER'];
+/**
+ * Every approval step role, for loaders that must report every step even when empty.
+ * SALES_DIRECTOR and SALESMAN since owner decisions 2026-10-11: the credit chain's
+ * Sales Director step, and its signed-application step, which the submitting
+ * salesman owns (lib/approval-chains.ts) — a step with a due time, but not an
+ * approval (NON_APPROVAL_TIERS).
+ */
+export const STEP_ROLES: readonly string[] = [
+  'SUPERVISOR',
+  'SALES_DIRECTOR',
+  'SALESMAN',
+  'ACCOUNTANT',
+  'FINANCE_MANAGER',
+  'GM',
+  'MANAGER',
+];
+
+/**
+ * Owner decisions 2026-10-11: the steps whose decision rows are not approvals.
+ * The signed-application step is completed by the salesman uploading the
+ * customer's signed form (EditApproval decision FORM_UPLOADED, role SALESMAN):
+ * its time is a salesman's errand to the shop, not an approver's turnaround, so
+ * it is kept out of the approvals objective and reported on a line of its own.
+ */
+export const NON_APPROVAL_TIERS: readonly string[] = ['SALESMAN'];
 
 /** Several steps as one: counts add; a median of medians is nobody's figure. */
 export function mergeDecisions(role: string, members: TierDecisions[]): TierDecisions {
@@ -395,9 +418,12 @@ export function queuesForManager(queues: QueueLike[]): { group: StepGroup; queue
 
 export function approvalsResult(tiers: TierDecisions[]): RatioResult & { untracked: number } {
   const target = sloById('approvals').target!;
-  const tracked = tiers.reduce((n, t) => n + t.tracked, 0);
-  const within = tiers.reduce((n, t) => n + t.within, 0);
-  const decided = tiers.reduce((n, t) => n + t.decided, 0);
+  // The signed-application step is not an approval (NON_APPROVAL_TIERS): its
+  // line is shown, its figures are not in the objective.
+  const approvals = tiers.filter((t) => !NON_APPROVAL_TIERS.includes(t.role));
+  const tracked = approvals.reduce((n, t) => n + t.tracked, 0);
+  const within = approvals.reduce((n, t) => n + t.within, 0);
+  const decided = approvals.reduce((n, t) => n + t.decided, 0);
   return { ...ratioVerdict(within, tracked, target), untracked: decided - tracked };
 }
 

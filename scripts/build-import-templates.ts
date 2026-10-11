@@ -139,7 +139,7 @@ const usersCols: Col[] = [
   {
     key: 'role',
     required: 'Required',
-    format: 'SALESMAN | SUPERVISOR | ACCOUNTANT | FINANCE_MANAGER | GM | VIEWER',
+    format: 'SALESMAN | SUPERVISOR | ACCOUNTANT | FINANCE_MANAGER | GM | SALES_DIRECTOR | VIEWER',
     notes:
       'MANAGER and STEWARD CANNOT be created here — create them in the app (/users) first, then load everyone else here.',
   },
@@ -207,7 +207,7 @@ function buildAccountMaster(): Buffer {
     wb,
     'NMWC — ACCOUNT MASTER (organization) import',
     [
-      'PURPOSE: load your regions, routes, and people (salesmen, supervisors, accountants, finance managers, GM, viewers).',
+      'PURPOSE: load your regions, routes, and people (salesmen, supervisors, accountants, finance managers, GM, sales director, viewers).',
       'ORDER: import this file FIRST — before the Customer master. Inside the file the app auto-processes supervisors before salesmen, so you can keep everyone on one Users sheet.',
       'HOW TO IMPORT: sign in as the Steward → Import → Account master → upload this file. Rows with problems are listed for review; fix and re-upload (re-import is safe).',
       'DELETE the yellow EXAMPLE rows on each sheet before you import.',
@@ -289,6 +289,20 @@ function buildAccountMaster(): Buffer {
       username: 'general.manager',
       full_name: 'GM Name',
       role: 'GM',
+      password: 'ChangeMe-2026!',
+      supervisor_username: '',
+      route_code: '',
+      region_codes: '',
+      email: '',
+      phone: '',
+      reset_password: '',
+      change_role: '',
+    },
+    {
+      // Owner decisions 2026-10-11: one Sales Director for every region, org-wide like the GM.
+      username: 'sales.director',
+      full_name: 'Sales Director Name',
+      role: 'SALES_DIRECTOR',
       password: 'ChangeMe-2026!',
       supervisor_username: '',
       route_code: '',

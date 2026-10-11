@@ -34,6 +34,8 @@ const APPROVER_ROLES: Role[] = [
   Role.ACCOUNTANT,
   Role.FINANCE_MANAGER,
   Role.GM,
+  // Owner decisions 2026-10-11: org-wide like the GM.
+  Role.SALES_DIRECTOR,
 ];
 
 export default async function ApprovalDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -133,7 +135,8 @@ export default async function ApprovalDetailPage({ params }: { params: Promise<{
     const inScope = regionIds.some((r) => scope.managedRegionIds.includes(r));
     if (!inScope) notFound();
   }
-  // FINANCE_MANAGER / GM are org-wide approvers (owner-confirmed) — no region gate.
+  // FINANCE_MANAGER / GM / SALES_DIRECTOR are org-wide approvers (owner-confirmed;
+  // the Sales Director mirrors the GM, owner decisions 2026-10-11) — no region gate.
 
   // Live photo slots + GPS of the customer under review (UPDATE only). Branches
   // are narrowed to the reviewer's scope (RBAC-05-001 posture: a multi-region

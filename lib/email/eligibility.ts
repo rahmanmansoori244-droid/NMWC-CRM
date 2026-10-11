@@ -185,7 +185,12 @@ export function escalationReaches(recipient: Recipient, edit: RequestNow): boole
   if (plan.regionScopedRoles.includes(recipient.role)) {
     return edit.scopeRegionIds.some((r) => recipient.managedRegionIds.includes(r));
   }
-  return plan.regionScopedRoles.length > 0 && recipient.role === Role.GM;
+  // The sweep's fallback for a region nobody covers: the GM, and the Sales
+  // Director who mirrors him (owner decisions 2026-10-11).
+  return (
+    plan.regionScopedRoles.length > 0 &&
+    (recipient.role === Role.GM || recipient.role === Role.SALES_DIRECTOR)
+  );
 }
 
 export type Verdict = { send: true; item: DigestItem } | { send: false; status: SkipStatus };

@@ -154,10 +154,16 @@ export default async function WorkPage() {
       state: e.state,
       when: e.submittedAt,
     }));
-  } else if (role === Role.ACCOUNTANT || role === Role.FINANCE_MANAGER || role === Role.GM) {
+  } else if (
+    role === Role.ACCOUNTANT ||
+    role === Role.FINANCE_MANAGER ||
+    role === Role.GM ||
+    role === Role.SALES_DIRECTOR
+  ) {
     // Phase 1 approver queues. Accountant is region-scoped (fail-closed, same
     // managedRegions mechanism as Manager) and matches CREATE requests via
-    // draft-branch regions; FM/GM are org-wide.
+    // draft-branch regions; FM/GM/SD are org-wide (the Sales Director mirrors
+    // the GM, owner decisions 2026-10-11).
     const { loadScope } = await import('@/lib/access');
     let where: import('@prisma/client').Prisma.CustomerEditWhereInput;
     if (role === Role.ACCOUNTANT) {

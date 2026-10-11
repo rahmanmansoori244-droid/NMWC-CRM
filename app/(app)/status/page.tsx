@@ -174,6 +174,11 @@ function AvailabilityCard({ s }: { s: ServiceStatus }) {
 
 const TIER_LABEL: Record<string, string> = {
   SUPERVISOR: 'Supervisor step',
+  // Owner decisions 2026-10-11: the credit chain's two new steps. The salesman's
+  // line is not counted in the objective above it (lib/service-levels.ts
+  // NON_APPROVAL_TIERS).
+  SALES_DIRECTOR: 'Sales director step',
+  SALESMAN: 'Signed application (salesman)',
   ACCOUNTANT: 'Accountant step',
   FINANCE_MANAGER: 'Finance manager step',
   GM: 'General manager step',
@@ -208,7 +213,10 @@ function ApprovalsCard({ s, scope }: { s: ServiceStatus; scope: ApprovalsScope }
         {approvalsForManager(a.tiers).map((g) => (
           <TierLine key={g.group.key} label={g.group.label} t={g.decisions} />
         ))}
-        <p>The Accountant, Finance Manager and GM steps and reactivations are reported to the Data Steward.</p>
+        <p>
+          The Sales Director, signed application, Accountant, Finance Manager and GM steps and
+          reactivations are reported to the Data Steward.
+        </p>
         <Budget left={a.budgetLeft} />
         <Since since={a.since} now={s.now} />
       </SloCard>

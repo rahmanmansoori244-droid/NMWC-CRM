@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { Role } from '@prisma/client';
-import { hrefFor } from '@/lib/notification-links';
+import { APPROVER_ROLES, hrefFor } from '@/lib/notification-links';
 
 const row = (kind: string, over: Partial<Parameters<typeof hrefFor>[0]> = {}) => ({
   kind,
@@ -46,6 +46,14 @@ describe('hrefFor', () => {
     expect(hrefFor(row('EDIT_SUBMITTED'), Role.MANAGER)).toBe('/approvals/e1');
     expect(hrefFor(row('EDIT_STAGE_ADVANCED'), Role.FINANCE_MANAGER)).toBe('/approvals/e1');
     expect(hrefFor(row('SLA_BREACH'), Role.GM)).toBe('/approvals/e1');
+  });
+
+  it('the Sales Director opens a request on its review page, as the GM does (owner decisions 2026-10-11)', () => {
+    for (const kind of ['EDIT_STAGE_ADVANCED', 'SLA_BREACH', 'EDIT_SUBMITTED']) {
+      expect(hrefFor(row(kind), Role.SALES_DIRECTOR), kind).toBe('/approvals/e1');
+      expect(hrefFor(row(kind), Role.SALES_DIRECTOR)).toBe(hrefFor(row(kind), Role.GM));
+    }
+    expect(APPROVER_ROLES).toContain(Role.SALES_DIRECTOR);
   });
 
   it('roles that cannot open /approvals fall back to the customer, then to /work', () => {

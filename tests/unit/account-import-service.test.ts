@@ -883,6 +883,27 @@ describe('X-IMPORTS-1 / X-AUTH-3: every account, route and region the import cha
     expect(JSON.stringify(h.store.audits)).not.toMatch(/1234|hashed:|new\.salesman@|New Salesman/);
   });
 
+  it('owner decisions 2026-10-11: the Steward bulk-loads the Sales Director, region-less like the GM', async () => {
+    const { res } = await upload(
+      usersSheet({
+        username: 'sales.director',
+        full_name: 'Sales Director',
+        role: 'SALES_DIRECTOR',
+        password: '1234',
+        must_change_password: 'yes',
+      })
+    );
+    expect(okData(res).clean).toBe(1);
+    expect(find('sales.director')!.role).toBe('SALES_DIRECTOR');
+    expect(rowAudits()).toEqual([
+      expect.objectContaining({
+        action: 'CREATE',
+        entityType: 'User',
+        after: expect.objectContaining({ username: 'sales.director', role: 'SALES_DIRECTOR', regions: [] }),
+      }),
+    ]);
+  });
+
   it('a changed account gets one UPDATE row with what changed; an unchanged re-import writes none', async () => {
     addUser({
       id: 's1',

@@ -131,9 +131,11 @@ async function resolveEscalationAudience(
       // apex) rather than broadcasting the customer's name to every Manager
       // org-wide (which would cut against the RBAC-05-012 fail-closed
       // posture for unscoped Managers). A breach is still never unowned.
+      // The Sales Director too: he has the GM's access everywhere and is one for
+      // every region (owner decisions 2026-10-11).
       // [Open — owner to confirm the escalation chain.]
       const gms = await tx.user.findMany({
-        where: { role: Role.GM, isActive: true },
+        where: { role: { in: [Role.GM, Role.SALES_DIRECTOR] }, isActive: true },
         select: { id: true },
       });
       gms.forEach((u) => ids.add(u.id));

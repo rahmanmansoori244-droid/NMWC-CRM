@@ -116,7 +116,7 @@ describe('supervisorIssue (AUTH-06, as the Users UI applies it)', () => {
     expect(msg).toMatch(/Name an active SUPERVISOR or MANAGER in supervisor_username/);
   });
 
-  it.each(['SALESMAN', 'VIEWER', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'STEWARD'] as const)(
+  it.each(['SALESMAN', 'VIEWER', 'ACCOUNTANT', 'FINANCE_MANAGER', 'GM', 'SALES_DIRECTOR', 'STEWARD'] as const)(
     'refuses an active %s, naming the role',
     (role) => {
       const msg = supervisorIssue({ supervisorUsername: 'x', supervisor: { role, isActive: true } });

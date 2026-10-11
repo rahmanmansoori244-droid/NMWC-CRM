@@ -243,6 +243,10 @@ async function seedUsers() {
   for (const u of ['gm.a', 'gm.b']) {
     await prisma.user.upsert({ where: { username: u }, update: {}, create: { username: u, passwordHash: password, fullName: `GM ${u.slice(-1).toUpperCase()}`, role: Role.GM } });
   }
+  // Owner decisions 2026-10-11: the Sales Director, org-wide like the GM.
+  for (const u of ['sd.a', 'sd.b']) {
+    await prisma.user.upsert({ where: { username: u }, update: {}, create: { username: u, passwordHash: password, fullName: `Sales Director ${u.slice(-1).toUpperCase()}`, role: Role.SALES_DIRECTOR } });
+  }
   // ── Edge accounts for scope / negative testing ──
   await prisma.user.upsert({ where: { username: 'manager.unscoped' }, update: {}, create: { username: 'manager.unscoped', passwordHash: password, fullName: 'Manager Unscoped (no regions)', role: Role.MANAGER } });
   await prisma.user.upsert({ where: { username: 'accountant.unscoped' }, update: {}, create: { username: 'accountant.unscoped', passwordHash: password, fullName: 'Accountant Unscoped (no regions)', role: Role.ACCOUNTANT } });

@@ -4,7 +4,7 @@ Two Excel files to fill and hand back. They are generated to match **exactly** t
 
 | File | What it loads | Import as |
 |---|---|---|
-| `account-master-template.xlsx` | Regions, Routes, People (salesmen, supervisors, accountants, finance manager, GM, viewers) | Steward → **Import → Account master** |
+| `account-master-template.xlsx` | Regions, Routes, People (salesmen, supervisors, accountants, finance manager, GM, sales director, viewers) | Steward → **Import → Account master** |
 | `customer-master-template.xlsx` | Customers + their branches | Steward → **Import → Customer master** |
 
 ## Do it in this order
@@ -44,7 +44,7 @@ Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instruct
 |---|---|---|
 | `username` | ✅ | lowercase, 1–50, `a–z 0–9 . _ -`. Unique login (salesmen: the route code). |
 | `full_name` | ✅ | |
-| `role` | ✅ | one of `SALESMAN`, `SUPERVISOR`, `ACCOUNTANT`, `FINANCE_MANAGER`, `GM`, `VIEWER`. (MANAGER/STEWARD → create in `/users`.) |
+| `role` | ✅ | one of `SALESMAN`, `SUPERVISOR`, `ACCOUNTANT`, `FINANCE_MANAGER`, `GM`, `SALES_DIRECTOR`, `VIEWER`. (MANAGER/STEWARD → create in `/users`.) |
 | `password` | ✅ for **new** users | 12+ chars. Blank for existing users = keep current. |
 | `supervisor_username` | ✅ for SALESMAN | the `username` of an **active** SUPERVISOR or MANAGER — on this sheet, or already in the CRM. Naming anyone else (a salesman, a viewer, an approver, a deactivated account) holds the row back and **nothing** is written for it, as `/users` refuses the same supervisor — unless that person is already this account's supervisor, since the cell then changes nothing. For a salesman the supervisor must also cover the region of his route, as on `/users`: a MANAGER who manages it, or a SUPERVISOR whose team works there — judged when the supervisor, the route or the role changes, and for the kept supervisor too when only the route changes. Blank on re-import = keep existing. |
 | `route_code` | ✅ for SALESMAN | a Routes `code`. One salesman per route: the row takes the route from a **deactivated** owner (the leaver), and from an **active** one only when `change_route` is `yes` (recorded in the audit log either way). A route change is also held back while the salesman has new-customer requests not in review (drafts, or sent back to him), which he could not send again from his new route — he sends or withdraws them first, or the Steward moves him with **Edit** on `/users`, which can withdraw them. A route is never handed to a **deactivated** account — that row is held back; reactivate the account in `/users` first. |

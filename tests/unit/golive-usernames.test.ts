@@ -89,7 +89,7 @@ describe('the go-live accounts can actually sign in', () => {
     // leave it open is deliberate.
     //
     // prisma/synthetic.ts also seeds accountant.a, accountant.b,
-    // accountant.unscoped, manager.unscoped, fm.a, fm.b, gm.a and gm.b, and none
+    // accountant.unscoped, manager.unscoped, fm.a, fm.b, gm.a, gm.b, sd.a and sd.b, and none
     // of them is on this list. The compensating controls are that synthetic.ts
     // refuses to run against production at all, and that
     // scripts/golive/audit-accounts.ts reports every account that can sign in
@@ -107,6 +107,8 @@ describe('the go-live accounts can actually sign in', () => {
       'fm.b',
       'gm.a',
       'gm.b',
+      'sd.a',
+      'sd.b',
     ];
     for (const u of uncovered) {
       expect(

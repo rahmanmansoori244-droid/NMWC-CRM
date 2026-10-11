@@ -20,6 +20,7 @@ export const ROLES = {
   ACCOUNTANT: 'ACCOUNTANT',
   FINANCE_MANAGER: 'FINANCE_MANAGER',
   GM: 'GM',
+  SALES_DIRECTOR: 'SALES_DIRECTOR',
   MANAGER: 'MANAGER',
   STEWARD: 'STEWARD',
   VIEWER: 'VIEWER',
@@ -313,7 +314,7 @@ export function canActOnStep(
  * The ONLY roles a MANAGER may administer (create / disable / reset password /
  * assign) — the field force. Everything else is Steward-provisioned out-of-band:
  * peer MANAGER/STEWARD, AND the org-wide/region credit approvers that make up
- * the SUP→FM→GM→ACC chain (FINANCE_MANAGER, GM, ACCOUNTANT). This is an
+ * the credit chain (SALES_DIRECTOR, FINANCE_MANAGER, GM, ACCOUNTANT). This is an
  * ALLOWLIST on purpose — a newly added Role is protected by default, so no
  * future approver tier can be minted or taken over by a regional Manager.
  *
@@ -335,7 +336,7 @@ export const MANAGER_ADMINISTRABLE_ROLES: Role[] = [Role.SALESMAN, Role.SUPERVIS
  * B2 / SEC-02: the regions a user's data access is anchored to, for delegated
  * administration. A SALESMAN is anchored to their route's region, a SUPERVISOR
  * to the regions of the routes their reports own, a MANAGER/ACCOUNTANT to the
- * regions they manage. Org-wide roles (STEWARD/VIEWER/FM/GM) have no regional
+ * regions they manage. Org-wide roles (STEWARD/VIEWER/FM/GM/SD) have no regional
  * anchor and are never Manager-administrable anyway.
  */
 export type UserRegionFootprint = {

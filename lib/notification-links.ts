@@ -15,6 +15,8 @@ export const APPROVER_ROLES: readonly Role[] = [
   Role.ACCOUNTANT,
   Role.FINANCE_MANAGER,
   Role.GM,
+  // Owner decisions 2026-10-11: the Sales Director mirrors the GM.
+  Role.SALES_DIRECTOR,
 ];
 
 /** Kinds about a request someone is to review, or to know of (F1: REQUEST_FYI). */

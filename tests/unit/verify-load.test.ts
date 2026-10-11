@@ -242,6 +242,7 @@ describe('verify-load: the org-wide approvers and the regions it counts (launch 
     return c!.run();
   }
   const FM = 'an active Finance Manager past the password change';
+  const SD = 'an active Sales Director past the password change';
   const GM = 'an active GM past the password change';
 
   it('passes with one active Finance Manager and one GM who have changed the hand-out password', async () => {
@@ -258,6 +259,18 @@ describe('verify-load: the org-wide approvers and the regions it counts (launch 
       expect(fm.detail).toContain('no active FINANCE_MANAGER');
       expect((await check(GM, org)).ok).toBe(false);
     }
+  });
+
+  it('checks the Sales Director like the GM: every CREDIT request has his GLOBAL step (owner decisions 2026-10-11)', async () => {
+    expect((await check(SD, [holder('SALES_DIRECTOR')])).ok).toBe(true);
+    const none = await check(SD, [holder('GM'), holder('FINANCE_MANAGER')]);
+    expect(none.ok).toBe(false);
+    expect(none.detail).toContain('no active SALES_DIRECTOR');
+    expect((await check(SD, [holder('SALES_DIRECTOR', { isActive: false })])).ok).toBe(false);
+    expect((await check(SD, [holder('SALES_DIRECTOR', { username: 'admin' })])).ok).toBe(false);
+    const handOut = await check(SD, [holder('SALES_DIRECTOR', { mustChangePassword: true })]);
+    expect(handOut.ok).toBe(false);
+    expect(handOut.detail).toContain('none has changed the hand-out password');
   });
 
   it('fails, and says why, while the only one still has the hand-out password', async () => {

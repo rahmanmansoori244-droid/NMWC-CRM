@@ -253,7 +253,7 @@ async function main() {
     'every approver account the builder defines was issued',
     missingApprovers.length === 0,
     missingApprovers.length === 0
-      ? `${APPROVER_USERNAMES.length} approvers (one accountant per region, plus the two org-wide)`
+      ? `${APPROVER_USERNAMES.length} approvers (one accountant per region, plus the three org-wide)`
       : `no slip for: ${missingApprovers.join(', ')}`
   );
 
