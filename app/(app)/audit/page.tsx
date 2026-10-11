@@ -9,11 +9,17 @@ import { Role, AuditAction, Prisma } from '@prisma/client';
 import { PageHeader } from '@/components/nmwc/PageHeader';
 import { loadScope } from '@/lib/access';
 import {
+  AUDIT_CUSTOMER_MATCH_LIMIT,
   AUDIT_ENTITY_TYPES,
   MANAGER_AUDIT_ACTIONS,
   MANAGER_AUDIT_ENTITY_TYPES,
+  STEWARD_HIDDEN_BY_DEFAULT,
+  auditCustomersByCode,
+  customerDocumentIds,
   managerAuditScopeSql,
   managerAuditUserIds,
+  photoViewsOfDocumentsSql,
+  type AuditCustomer,
 } from '@/lib/audit-scope';
 
 export const metadata = { title: 'Audit log · NMWC' };
@@ -26,8 +32,13 @@ type Search = {
   action?: string;
   entityType?: string;
   q?: string;
+  /** Steward only (owner decisions 2026-10-11): an NMWC or Temix customer code. */
+  customer?: string;
   page?: string;
 };
+
+/** The action filter's words for an action: its code, and the photo views by name too. */
+const actionLabel = (a: AuditAction) => (a === AuditAction.PHOTO_VIEW ? 'Photo views (PHOTO_VIEW)' : a);
 
 export default async function AuditPage({
   searchParams,
@@ -51,44 +62,46 @@ export default async function AuditPage({
       ? (sp.action as AuditAction)
       : null;
   const q = sp.q?.trim() || null;
+  // Owner decisions 2026-10-11: the customer filter is the Data Steward's alone. On
+  // a Manager's address it is ignored, and his links do not carry it on.
+  const customerCode = isManager ? null : sp.customer?.trim() || null;
+  const filters: Search = isManager ? { ...sp, customer: undefined } : sp;
   const include = { actor: { select: { fullName: true, username: true } } } as const;
 
   let total = 0;
   let logs: Prisma.AuditLogGetPayload<{ include: typeof include }>[] = [];
+  // The reads written as SQL — a Manager's regional scope, or the Steward's
+  // customer filter — share one WHERE for the count and the page of ids below.
+  // Null when nothing is read that way.
+  let rawConds: Prisma.Sql[] | null = null;
+  let customers: AuditCustomer[] = [];
   if (isManager) {
     // RBAC-05-007: a Manager's log is regional — lib/audit-scope.ts says what
     // that covers and what it replaced. A Manager with no regions sees nothing.
     const scope = await loadScope(session.user.id);
     if (scope.managedRegionIds.length > 0) {
       const userIds = await managerAuditUserIds(prisma, session.user.id, scope.managedRegionIds);
-      const conds: Prisma.Sql[] = [
-        managerAuditScopeSql({ regionIds: scope.managedRegionIds, userIds }),
-      ];
-      if (sp.actor) conds.push(Prisma.sql`a."actorId" = ${sp.actor}`);
-      if (action) conds.push(Prisma.sql`a."action" = ${action}::"AuditAction"`);
-      if (sp.entityType) conds.push(Prisma.sql`a."entityType" = ${sp.entityType}`);
-      // strpos: a literal substring, as Prisma's `contains` is on the Steward's path.
-      if (q) conds.push(Prisma.sql`strpos(a."entityId", ${q}) > 0`);
-      const whereSql = Prisma.join(conds, ' AND ');
-      const [counted, ids] = await Promise.all([
-        prisma.$queryRaw<Array<{ n: number }>>`SELECT count(*)::int AS "n" FROM "AuditLog" a WHERE ${whereSql}`,
-        prisma.$queryRaw<Array<{ id: string }>>`SELECT a."id" FROM "AuditLog" a WHERE ${whereSql}
-          ORDER BY a."at" DESC, a."id" DESC LIMIT ${PAGE_SIZE} OFFSET ${(page - 1) * PAGE_SIZE}`,
-      ]);
-      total = counted[0]?.n ?? 0;
-      logs =
-        ids.length === 0
-          ? []
-          : await prisma.auditLog.findMany({
-              where: { id: { in: ids.map((r) => r.id) } },
-              orderBy: [{ at: 'desc' }, { id: 'desc' }],
-              include,
-            });
+      rawConds = [managerAuditScopeSql({ regionIds: scope.managedRegionIds, userIds })];
+    }
+  } else if (customerCode) {
+    // Owner decisions 2026-10-11: who viewed this customer's documents. The
+    // PHOTO_VIEW rows of every photo and document of the customers the code names —
+    // its request photos and its branches' photos included, whose rows carry no
+    // customer id. lib/audit-scope.ts says which documents, and how the query keeps
+    // to the ledger's indexes. A code that names no customer shows nothing.
+    customers = await auditCustomersByCode(prisma, customerCode);
+    const matched = customers.slice(0, AUDIT_CUSTOMER_MATCH_LIMIT);
+    const documentIds = await customerDocumentIds(prisma, matched.map((c) => c.id));
+    const archivedIds = matched.filter((c) => c.archived).map((c) => c.id);
+    if (documentIds.length > 0 || archivedIds.length > 0) {
+      rawConds = [photoViewsOfDocumentsSql(documentIds, archivedIds)];
     }
   } else {
     const where: Prisma.AuditLogWhereInput = {};
     if (sp.actor) where.actorId = sp.actor;
-    if (action) where.action = action;
+    // Owner decisions 2026-10-11: photo views are left out of the Steward's list
+    // and its count unless he picks that action (or uses the customer filter).
+    where.action = action ?? { notIn: [...STEWARD_HIDDEN_BY_DEFAULT] };
     if (sp.entityType) where.entityType = sp.entityType;
     if (q) where.entityId = { contains: q };
     [total, logs] = await Promise.all([
@@ -102,6 +115,29 @@ export default async function AuditPage({
       }),
     ]);
   }
+  if (rawConds) {
+    const conds = [...rawConds];
+    if (sp.actor) conds.push(Prisma.sql`a."actorId" = ${sp.actor}`);
+    if (action) conds.push(Prisma.sql`a."action" = ${action}::"AuditAction"`);
+    if (sp.entityType) conds.push(Prisma.sql`a."entityType" = ${sp.entityType}`);
+    // strpos: a literal substring, as Prisma's `contains` is on the Steward's path.
+    if (q) conds.push(Prisma.sql`strpos(a."entityId", ${q}) > 0`);
+    const whereSql = Prisma.join(conds, ' AND ');
+    const [counted, ids] = await Promise.all([
+      prisma.$queryRaw<Array<{ n: number }>>`SELECT count(*)::int AS "n" FROM "AuditLog" a WHERE ${whereSql}`,
+      prisma.$queryRaw<Array<{ id: string }>>`SELECT a."id" FROM "AuditLog" a WHERE ${whereSql}
+        ORDER BY a."at" DESC, a."id" DESC LIMIT ${PAGE_SIZE} OFFSET ${(page - 1) * PAGE_SIZE}`,
+    ]);
+    total = counted[0]?.n ?? 0;
+    logs =
+      ids.length === 0
+        ? []
+        : await prisma.auditLog.findMany({
+            where: { id: { in: ids.map((r) => r.id) } },
+            orderBy: [{ at: 'desc' }, { id: 'desc' }],
+            include,
+          });
+  }
   const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
   // Launch fix: the entity filter offers every type the viewer can see (it
   // offered seven), and keeps a type from the address it does not list.
@@ -112,13 +148,19 @@ export default async function AuditPage({
   // read. A Manager is not offered them, and his scope leaves them out whatever the
   // address asks (lib/audit-scope.ts).
   const actionOptions: readonly AuditAction[] = isManager ? MANAGER_AUDIT_ACTIONS : Object.values(AuditAction);
+  // Owner decisions 2026-10-11: the Steward's default list leaves photo views out;
+  // its first action option and a line above the table say so.
+  const photoViewsHidden = !isManager && !customerCode && !action;
+  const matchedCodes = customers
+    .slice(0, AUDIT_CUSTOMER_MATCH_LIMIT)
+    .map((c) => (c.archived ? `${c.nmwcCode} (archived)` : c.nmwcCode));
   // ?actor= is supported but had no control, and Apply dropped it. It now rides
   // along in a hidden field, is named above the table, and can be cleared; the
   // Actor cells set it. The name comes from the rows shown, never a lookup.
   const actorName = sp.actor ? (logs.find((l) => l.actorId === sp.actor)?.actor.fullName ?? 'one person') : null;
   const qs = (overrides: Partial<Search>): Route => {
     const p = new URLSearchParams();
-    const merged: Search = { ...sp, ...overrides };
+    const merged: Search = { ...filters, ...overrides };
     for (const k of Object.keys(merged) as (keyof Search)[]) {
       const v = merged[k];
       if (v) p.set(k, String(v));
@@ -134,7 +176,7 @@ export default async function AuditPage({
       />
       <form
         method="get"
-        className="grid grid-cols-1 gap-2 border-b border-slate-200 bg-white p-3 text-sm sm:grid-cols-4 sm:px-6"
+        className={`grid grid-cols-1 gap-2 border-b border-slate-200 bg-white p-3 text-sm sm:px-6 ${isManager ? 'sm:grid-cols-4' : 'sm:grid-cols-5'}`}
       >
         {/* Each filter named by a label a screen reader reads (a placeholder and
             a first option are not names); hidden, so the bar looks as it did.
@@ -149,6 +191,21 @@ export default async function AuditPage({
           placeholder="Entity ID contains…"
           className="rounded-md border border-slate-300 px-3 py-2"
         />
+        {!isManager && (
+          <>
+            {/* Owner decisions 2026-10-11: who viewed this customer's documents. */}
+            <label htmlFor="audit-customer" className="sr-only">
+              Customer code (NMWC or Temix)
+            </label>
+            <input
+              id="audit-customer"
+              name="customer"
+              defaultValue={sp.customer ?? ''}
+              placeholder="Customer code: photo views…"
+              className="rounded-md border border-slate-300 px-3 py-2"
+            />
+          </>
+        )}
         <label htmlFor="audit-action" className="sr-only">
           Action
         </label>
@@ -158,10 +215,10 @@ export default async function AuditPage({
           defaultValue={sp.action ?? ''}
           className="rounded-md border border-slate-300 px-2 py-2"
         >
-          <option value="">All actions</option>
+          <option value="">{isManager || customerCode ? 'All actions' : 'All actions but photo views'}</option>
           {actionOptions.map((a) => (
             <option key={a} value={a}>
-              {a}
+              {actionLabel(a)}
             </option>
           ))}
         </select>
@@ -191,6 +248,33 @@ export default async function AuditPage({
       </form>
 
       <div className="p-4 sm:p-6">
+        {customerCode && (
+          <p className="mb-3 text-sm text-slate-600">
+            {matchedCodes.length > 0 ? (
+              <>
+                Showing who opened the photos and documents of{' '}
+                <span className="font-medium text-slate-900">{matchedCodes.join(', ')}</span>
+                {customers.length > AUDIT_CUSTOMER_MATCH_LIMIT
+                  ? ` — this code names more than ${AUDIT_CUSTOMER_MATCH_LIMIT} customers; type an NMWC code to see one`
+                  : ''}
+                .{' '}
+              </>
+            ) : (
+              <>
+                No customer has the code <span className="font-medium text-slate-900">{customerCode}</span>.{' '}
+              </>
+            )}
+            <Link href={qs({ customer: undefined, page: undefined })} className="text-brand-700 underline">
+              Show the whole log
+            </Link>
+          </p>
+        )}
+        {photoViewsHidden && (
+          <p className="mb-3 text-sm text-slate-600">
+            Photo views are not in this list. To see who opened which photo or document, pick Photo views under
+            Action, or type a customer&rsquo;s code.
+          </p>
+        )}
         {sp.actor && (
           <p className="mb-3 text-sm text-slate-600">
             Showing what <span className="font-medium text-slate-900">{actorName}</span> did.{' '}
