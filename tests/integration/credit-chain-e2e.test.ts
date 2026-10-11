@@ -157,6 +157,10 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       const edIds = eds.map((e) => e.id);
       const custIds = eds.map((e) => e.customerId).filter((x): x is string => !!x);
       if (edIds.length) {
+        // The org-wide steps also alert the REAL UAT Finance Manager, GM and
+        // Stewards about these requests. Deleting a request only blanks the
+        // alert's editId (no cascade), so they are found by it here, first.
+        await prisma.notification.deleteMany({ where: { editId: { in: edIds } } });
         await purgeEditApprovals(prisma, { where: { editId: { in: edIds } } });
         await prisma.editBranchDraft.deleteMany({ where: { editId: { in: edIds } } });
         await prisma.editCustomerDraft.deleteMany({ where: { editId: { in: edIds } } });
@@ -164,6 +168,9 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       }
       const allCust = [...custIds, ...(await prisma.customer.findMany({ where: { legalName: { in: allNames } }, select: { id: true } })).map((c) => c.id)];
       if (allCust.length) {
+        // "Ready for Temix upload" goes to every active Steward and names the
+        // customer, which has no foreign key: it would outlive the customer.
+        await prisma.notification.deleteMany({ where: { customerId: { in: allCust } } });
         await prisma.branch.deleteMany({ where: { customerId: { in: allCust } } });
         await prisma.customer.deleteMany({ where: { id: { in: allCust } } });
       }
