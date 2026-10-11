@@ -350,7 +350,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'AuditLog.action': {
     subject: 'employee',
     kind: 'behaviour',
-    note: 'includes PHOTO_VIEW: which member of staff opened which photo or document (data audit gap 2), read by the Data Steward only',
+    note: 'includes PHOTO_VIEW: which member of staff opened which photo or document (data audit gap 2), read by the Data Steward only; and PRINT: which member of staff printed which customer form or credit application (owner decisions 2026-10-11), read by the Data Steward and, for their regions, Managers',
   },
   'AuditLog.entityType': { subject: 'none' },
   'AuditLog.entityId': { subject: 'none', note: STRUCTURAL },

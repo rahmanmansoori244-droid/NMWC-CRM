@@ -166,7 +166,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | Column | Subject | Kind | Note |
 |---|---|---|---|
 | `actorId` | Employee | identifier | who did it |
-| `action` | Employee | behaviour | includes PHOTO_VIEW: which member of staff opened which photo or document (data audit gap 2), read by the Data Steward only |
+| `action` | Employee | behaviour | includes PHOTO_VIEW: which member of staff opened which photo or document (data audit gap 2), read by the Data Steward only; and PRINT: which member of staff printed which customer form or credit application (owner decisions 2026-10-11), read by the Data Steward and, for their regions, Managers |
 | `before` | Customer contact | snapshot | full field snapshot — legal name, CR number, phones, contact person, notes, address, GPS. Cannot be edited or deleted except in an owner-session maintenance transaction (migrations 20260914150000 + 20260914160000) |
 | `after` | Customer contact | snapshot | as above; an UPDATE approval also copies CustomerEdit.fieldChanges here, including a salesman’s free-text manual-GPS reason (item 41). A duplicate dismissal stores truncated, unkeyed sha256 digests of the shared CR and of name + phone (item 16) — for a short CR the value can be recovered by brute force |
 | `reason` | Customer contact | free text |  |
