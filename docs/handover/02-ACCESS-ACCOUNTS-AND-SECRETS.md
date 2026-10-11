@@ -812,6 +812,7 @@ GitHub value. Set each one only for the single command that needs it.
 | `R2_ADMIN_*`, `BACKUP_R2_ADMIN_*`, `R2_ACCOUNT_ID`, `BACKUP_R2_ACCOUNT_ID` | The R2 scripts in §2.5 | Bucket checks and lifecycle rules |
 | `SEED_ADMIN_PASSWORD` | `prisma/seed.ts`, `prisma/synthetic.ts` | The seeded admin's password. Its default value is a literal in the public repository ([AUDITOR-BRIEF §14](../../AUDITOR-BRIEF.md)) |
 | `ALLOW_PROD_SEED` | `prisma/synthetic.ts`, `prisma/seed-muscat-pilot.ts` | An escape hatch past their production refusal. **Never set it** |
+| `GUIDE_SALESMAN_USERNAME`, `GUIDE_SALESMAN_PASSWORD`, `GUIDE_SUPERVISOR_USERNAME`, `GUIDE_SUPERVISOR_PASSWORD`, `GUIDE_MANAGER_USERNAME`, `GUIDE_MANAGER_PASSWORD`; `GUIDE_STEWARD_USERNAME`, `GUIDE_STEWARD_PASSWORD` | `scripts/capture-guide-screenshots.ts`; `scripts/capture-steward-screenshots.ts` (both through `scripts/lib/guide-accounts.ts`) | The accounts the screenshot scripts sign in to the **live production site** as. Since owner item 20 (2026-10-11) no username or password is written in the repository: set them in the shell for the one run, never in `.env` or any file. The scripts read them only after their `--expect-host ep-sweet-haze` refusal, and a missing one stops the run before the browser starts, naming the variable, never a value |
 
 ---
 

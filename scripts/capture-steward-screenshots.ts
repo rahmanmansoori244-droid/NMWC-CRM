@@ -1,15 +1,22 @@
 /**
- * Captures steward (pilot.steward) screenshots for the Steward User Guide.
+ * Captures the Data Steward's screenshots for the Steward User Guide.
  * Saves to docs/guide/img/steward-*.png at desktop viewport (1280×800)
  * because stewards work primarily on a laptop, not a phone.
  *
  * It refuses to start without `--expect-host ep-sweet-haze` (owner decisions
  * 2026-10-11): BASE is production.
+ *
+ * The account comes from the environment, never from this file (owner item 20,
+ * 2026-10-11; scripts/lib/guide-accounts.ts). Set GUIDE_STEWARD_USERNAME and
+ * GUIDE_STEWARD_PASSWORD in the shell for the one run, then:
+ *   npx tsx scripts/capture-steward-screenshots.ts --expect-host ep-sweet-haze
+ * A missing variable stops it before Chromium starts.
  */
 import { chromium, type Page } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LIVE_SITE, liveSiteNamed } from './lib/assert-not-production';
+import { guideAccountsFromEnv, type GuideAccount } from './lib/guide-accounts';
 
 // Owner decisions 2026-10-11: BASE is the live site, which is production, so nothing
 // starts — no browser, no sign-in, no file written — unless the command line names
@@ -18,9 +25,15 @@ if (!liveSiteNamed('scripts/capture-steward-screenshots.ts')) process.exit(2);
 
 const BASE = LIVE_SITE;
 const OUT = 'docs/guide/img';
-const STEWARD = { username: 'pilot.steward', password: 'Steward-NMWC-2026!' };
 
-async function login(page: Page, u: { username: string; password: string }) {
+// Owner item 20 (2026-10-11): no credential is written here. The operator sets
+// GUIDE_STEWARD_USERNAME and GUIDE_STEWARD_PASSWORD in the shell for this run only
+// (scripts/lib/guide-accounts.ts), read only after the refusal above.
+const ACCOUNTS = guideAccountsFromEnv('scripts/capture-steward-screenshots.ts', ['steward']);
+if (!ACCOUNTS) process.exit(2);
+const { steward: STEWARD } = ACCOUNTS;
+
+async function login(page: Page, u: GuideAccount) {
   await page.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
   if (!page.url().endsWith('/login')) {
     await page.context().clearCookies();

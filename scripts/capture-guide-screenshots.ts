@@ -8,11 +8,21 @@
  *
  * It refuses to start without `--expect-host ep-sweet-haze` (owner decisions
  * 2026-10-11): BASE is production.
+ *
+ * The accounts come from the environment, never from this file (owner item 20,
+ * 2026-10-11; scripts/lib/guide-accounts.ts). Set them in the shell for the one run:
+ *   GUIDE_SALESMAN_USERNAME, GUIDE_SALESMAN_PASSWORD
+ *   GUIDE_SUPERVISOR_USERNAME, GUIDE_SUPERVISOR_PASSWORD
+ *   GUIDE_MANAGER_USERNAME, GUIDE_MANAGER_PASSWORD
+ * then: npm run guide:capture -- --expect-host ep-sweet-haze
+ * A missing variable stops it before Chromium starts. The salesman account must be
+ * able to open DEMO_CUSTOMER_ID below.
  */
 import { chromium, type Page } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { LIVE_SITE, liveSiteNamed } from './lib/assert-not-production';
+import { guideAccountsFromEnv, type GuideAccount } from './lib/guide-accounts';
 
 // Owner decisions 2026-10-11: BASE is the live site, which is production, so nothing
 // starts — no browser, no sign-in, no file written — unless the command line names
@@ -23,14 +33,19 @@ if (!liveSiteNamed('scripts/capture-guide-screenshots.ts')) process.exit(2);
 const BASE = LIVE_SITE;
 const OUT = 'docs/guide/img';
 
-const SALES = { username: 'c1-12345-nmwc', password: 'C1-12345-NMWC' };
-const SUP = { username: 'ahmed.alndabi', password: 'Ahmed-NMWC-2026!' };
-const MGR = { username: 'pilot.manager', password: 'Manager-NMWC-2026!' };
+// Owner item 20 (2026-10-11): no credential is written here. The operator sets the
+// three accounts in the shell for this run only (GUIDE_SALESMAN_USERNAME/_PASSWORD,
+// GUIDE_SUPERVISOR_USERNAME/_PASSWORD, GUIDE_MANAGER_USERNAME/_PASSWORD;
+// scripts/lib/guide-accounts.ts), read only after the refusal above.
+const ACCOUNTS = guideAccountsFromEnv('scripts/capture-guide-screenshots.ts', ['salesman', 'supervisor', 'manager']);
+if (!ACCOUNTS) process.exit(2);
+const { salesman: SALES, supervisor: SUP, manager: MGR } = ACCOUNTS;
 
-// Known customer on c1's route for the screenshots.
+// A known production customer on the May 2026 pilot salesman's route, for the
+// screenshots: the salesman account given above must be able to open it.
 const DEMO_CUSTOMER_ID = 'cmozfay5m0003tvfkupla658l';
 
-async function login(page: Page, u: { username: string; password: string }) {
+async function login(page: Page, u: GuideAccount) {
   await page.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
   // If we're already redirected away from /login (existing session), force
   // logout via cookie wipe and try again.
@@ -48,7 +63,7 @@ async function login(page: Page, u: { username: string; password: string }) {
   // Sanity: confirm we're not stuck on /login (failed login leaves us there).
   if (page.url().endsWith('/login')) {
     // Could be rate-limited from prior runs. Wait a bit and try once more.
-    console.warn(`  ⚠ login retry for ${u.username} after 70s wait (rate limit?)`);
+    console.warn(`  ⚠ login retry for the ${u.label} account after 70s wait (rate limit?)`);
     await page.waitForTimeout(70_000);
     await page.fill('input[name=username]', u.username);
     await page.fill('input[name=password]', u.password);
@@ -57,7 +72,7 @@ async function login(page: Page, u: { username: string; password: string }) {
       page.click('button[type=submit]'),
     ]);
     if (page.url().endsWith('/login')) {
-      throw new Error(`Login failed for ${u.username} — still on /login after retry`);
+      throw new Error(`Login failed for the ${u.label} account — still on /login after retry`);
     }
   }
 }
@@ -105,7 +120,7 @@ async function main() {
   await shot(page, '01-login');
 
   // ---- 2. SALESMAN ----
-  console.log('\n● Salesman screens (c1-12345-nmwc)');
+  console.log('\n● Salesman screens');
   await login(page, SALES);
   await page.waitForTimeout(800);
 
@@ -139,7 +154,7 @@ async function main() {
   await logout(page);
 
   // ---- 3. SUPERVISOR ----
-  console.log('\n● Supervisor screens (ahmed.alndabi)');
+  console.log('\n● Supervisor screens');
   await login(page, SUP);
   await page.waitForTimeout(800);
 
@@ -168,7 +183,7 @@ async function main() {
   await logout(page);
 
   // ---- 4. MANAGER ----
-  console.log('\n● Manager screens (pilot.manager)');
+  console.log('\n● Manager screens');
   await login(page, MGR);
   await page.waitForTimeout(800);
 

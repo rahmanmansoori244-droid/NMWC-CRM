@@ -524,7 +524,8 @@ If `docs/guide/` is rebuilt instead:
 - `npm run guide:pdf` re-renders the combined user guide's PDF from its HTML.
 - **Do not run `guide:capture` or `guide:build`.** They sign in to a live deployment to
   re-take screenshots. `scripts/capture-guide-screenshots.ts` points at the production
-  URL and carries pilot credential literals (AUDITOR-BRIEF §14).
+  URL. It carried pilot credential literals until owner item 20 (2026-10-11); it now
+  reads its accounts from the environment (AUDITOR-BRIEF §14).
 - Check the new PDFs before committing them. The existing screenshots were captured
   from production in May (AUDITOR-BRIEF §14).
 

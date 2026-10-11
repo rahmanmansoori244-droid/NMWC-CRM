@@ -588,8 +588,11 @@ PowerShell, `$env:RUN_<FLAG>` stays set for the rest of that window.
   Whether it replaces `docs/guide/` in the repository, after a leak review, is a pending
   item ([04-PENDING-WORK.md](04-PENDING-WORK.md)).
 - **`npm run guide:capture` and `npm run guide:build` sign in to the live production
-  app** with accounts named in
-  [scripts/capture-guide-screenshots.ts](../../scripts/capture-guide-screenshots.ts).
+  app**
+  ([scripts/capture-guide-screenshots.ts](../../scripts/capture-guide-screenshots.ts)).
+  Since owner item 20 (2026-10-11) the scripts hold no credential: the accounts come
+  from `GUIDE_*_USERNAME` / `GUIDE_*_PASSWORD`, set in the shell for the one run
+  ([scripts/lib/guide-accounts.ts](../../scripts/lib/guide-accounts.ts)).
   `guide:build` runs the capture first, then the PDF step ([package.json](../../package.json)).
   Both are production actions. Do not run either without deciding to. Since 2026-10-11
   the capture refuses to start unless the command names production

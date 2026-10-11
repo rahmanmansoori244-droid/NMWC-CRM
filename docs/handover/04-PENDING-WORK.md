@@ -388,7 +388,7 @@ AUDITOR-BRIEF §18 ("Closed by the 2026-10-04 batch") records what that batch cl
 - A run rewrites every role guide. Git shows only the files whose content changed, so review the diff.
 - The Arabic guides load the Tajawal font from Google Fonts, so build while online. The Arabic text is also older than the English (re-benchmark item 26).
 - HANDOVER §4 records that there are no Supervisor accounts. Ask the owner whether the Supervisor guides are still needed.
-- **Do not run `npm run guide:capture` or `npm run guide:build`.** They sign in to the live production app with credentials written in `scripts/capture-guide-screenshots.ts`. Since 2026-10-11 both screenshot scripts refuse to start unless `--expect-host ep-sweet-haze` is on the command line (owner decisions 2026-10-11); `guide:build` cannot pass that flag to its capture step, so it stops there.
+- **Do not run `npm run guide:capture` or `npm run guide:build`.** They sign in to the live production app. Since owner item 20 (2026-10-11) no credential is written in the screenshot scripts: the operator sets the accounts as `GUIDE_*_USERNAME` / `GUIDE_*_PASSWORD` for the run ([02 §3](02-ACCESS-ACCOUNTS-AND-SECRETS.md), `scripts/lib/guide-accounts.ts`). Since 2026-10-11 both screenshot scripts also refuse to start unless `--expect-host ep-sweet-haze` is on the command line (owner decisions 2026-10-11); `guide:build` cannot pass that flag to its capture step, so it stops there.
 - The existing images in `docs/guide/img/` were captured from production in May (AUDITOR-BRIEF §14). Do not add new production screenshots to this public repository.
 
 ### B2. Recorded as "not done" in the code

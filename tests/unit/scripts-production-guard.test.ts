@@ -44,6 +44,7 @@ import {
   withoutExpectHost,
 } from '../../scripts/lib/assert-not-production';
 import { OperatorRefusal, operatorErrorLabel } from '../../scripts/ops/error-label';
+import { GUIDE_ACCOUNT_VARS, guideAccountsFromEnv } from '../../scripts/lib/guide-accounts';
 
 // Built from pieces so no connection-string-shaped literal sits in the source. All
 // fake: `.invalid` never resolves.
@@ -773,6 +774,75 @@ describe('the screenshot scripts refuse the live site unless production is named
     const mainCall = parse(file).statements.findIndex((st) => ts.isExpressionStatement(st) && /^main\(\)/.test(st.getText()));
     expect(top).toBeGreaterThan(-1);
     expect(top).toBeLessThan(mainCall);
+  });
+
+  it.each(CAPTURE)(
+    '%s holds no credential: its accounts come from the environment, read after the refusal (owner item 20)',
+    (file) => {
+      const raw = readFileSync(file, 'utf8');
+      // No username or password written as a literal, in code or in a comment.
+      expect(raw).not.toMatch(/\b(username|password)\s*:\s*['"`]/i);
+      const src = code(file);
+      const refusal = src.search(/if \(!liveSiteNamed\(/);
+      const accounts = src.search(/\bguideAccountsFromEnv\(/);
+      const stop = src.search(/if \(!ACCOUNTS\) process\.exit\(2\);/);
+      expect(refusal).toBeGreaterThan(-1);
+      expect(accounts, 'read after the refusal').toBeGreaterThan(refusal);
+      expect(stop, 'a missing variable stops it').toBeGreaterThan(accounts);
+      for (const later of [/chromium\.launch\s*\(/, /\bawait\s+login\s*\(/, /page\.goto\s*\(/, /\bmkdir\s*\(/, /\bmain\(\)/]) {
+        expect(stop, String(later)).toBeLessThan(src.search(later));
+      }
+      // Top-level statements, in that order, before main() is called.
+      const statements = parse(file).statements;
+      const at = (pred: (st: ts.Statement) => boolean) => statements.findIndex(pred);
+      const top = at((st) => ts.isIfStatement(st) && st.getText().includes('liveSiteNamed('));
+      const read = at((st) => ts.isVariableStatement(st) && st.getText().includes('guideAccountsFromEnv('));
+      const exit = at((st) => ts.isIfStatement(st) && st.getText().includes('!ACCOUNTS'));
+      const mainCall = at((st) => ts.isExpressionStatement(st) && /^main\(\)/.test(st.getText()));
+      expect([top < read, read < exit, exit < mainCall, top > -1]).toEqual([true, true, true, true]);
+    }
+  );
+
+  it('guideAccountsFromEnv names the variables that are missing, never a value, and hands back the accounts when all are set', () => {
+    const out = { log: vi.fn(), error: vi.fn() };
+    const partial = {
+      GUIDE_SALESMAN_USERNAME: 'sales-user-x',
+      GUIDE_SALESMAN_PASSWORD: 'sales-secret-x',
+      GUIDE_SUPERVISOR_PASSWORD: 'sup-secret-x',
+      GUIDE_MANAGER_USERNAME: '   ',
+      GUIDE_MANAGER_PASSWORD: '',
+    };
+    expect(guideAccountsFromEnv('scripts/x.ts', ['salesman', 'supervisor', 'manager'], partial, out)).toBeNull();
+    const printed = out.error.mock.calls.flat().join('\n');
+    expect(printed).toMatch(/\[guide accounts\] refusing: scripts\/x\.ts needs /);
+    for (const name of ['GUIDE_SUPERVISOR_USERNAME', 'GUIDE_MANAGER_USERNAME', 'GUIDE_MANAGER_PASSWORD']) {
+      expect(printed).toContain(name);
+    }
+    for (const name of ['GUIDE_SALESMAN_USERNAME', 'GUIDE_SALESMAN_PASSWORD', 'GUIDE_SUPERVISOR_PASSWORD']) {
+      expect(printed).not.toContain(name);
+    }
+    for (const value of Object.values(partial).filter((v) => v.trim())) expect(printed).not.toContain(value);
+    expect(out.log).not.toHaveBeenCalled();
+
+    const quiet = { log: vi.fn(), error: vi.fn() };
+    const full = {
+      GUIDE_STEWARD_USERNAME: '  steward-user-x ',
+      GUIDE_STEWARD_PASSWORD: ' steward secret x ',
+    };
+    expect(guideAccountsFromEnv('scripts/y.ts', ['steward'], full, quiet)).toEqual({
+      steward: { label: 'steward', username: 'steward-user-x', password: ' steward secret x ' },
+    });
+    expect(quiet.error).not.toHaveBeenCalled();
+    expect(quiet.log).not.toHaveBeenCalled();
+    // Each role has its own two variables, and the scripts' headers name them.
+    expect(Object.values(GUIDE_ACCOUNT_VARS).flat()).toHaveLength(8);
+    for (const [file, roles] of [
+      ['scripts/capture-guide-screenshots.ts', ['salesman', 'supervisor', 'manager']],
+      ['scripts/capture-steward-screenshots.ts', ['steward']],
+    ] as const) {
+      const raw = readFileSync(file, 'utf8');
+      for (const role of roles) for (const name of GUIDE_ACCOUNT_VARS[role]) expect(raw, `${file} ${name}`).toContain(name);
+    }
   });
 
   it('liveSiteNamed lets a script start only when --expect-host names production', () => {

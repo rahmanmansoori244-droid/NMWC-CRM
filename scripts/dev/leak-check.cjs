@@ -35,7 +35,10 @@ const SOURCES = [
   ['prisma/synthetic.ts', /SEED_ADMIN_PASSWORD\s*\?\?\s*['"`]([^'"`]+)['"`]/g],
   ['prisma/synthetic.ts', /bcrypt\.hash\(\s*['"`]([^'"`]+)['"`]/g],
   ['prisma/seed-muscat-pilot.ts', /bcrypt\.hash\(\s*['"`]([^'"`]+)['"`]/g],
-  ['scripts/capture-guide-screenshots.ts', /password\s*:\s*['"`]([^'"`]+)['"`]/g],
+  // The May pilot passwords' table ("Production credentials reference"). The screenshot
+  // scripts held them too until owner item 20 (2026-10-11) moved their accounts to the
+  // environment; this table holds every value they held that the pilot seed does not.
+  ['docs/audit/E2E-VERIFICATION-2026-05-10.md', /^\|[^|\n]*\|\s*`[^`\n]+`\s*\|\s*`([^`\n]+)`\s*\|/gm],
   ['tests/loadtest.mjs', /PWD\s*=\s*[^'"`\n]*['"`]([^'"`]+)['"`]/g],
 ];
 const found = [];
