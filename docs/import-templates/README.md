@@ -37,7 +37,7 @@ Three sheets, named exactly **Regions**, **Routes**, **Users** (plus an Instruct
 |---|---|---|
 | `code` | ✅ | UPPERCASE code, e.g. `MCT-01`. **The customer master's `route` matches this code.** |
 | `name` | ✅ | Display name. |
-| `region_code` | ✅ | A code from the Regions sheet. |
+| `region_code` | ✅ | A code from the Regions sheet. **A route never moves to another region** (owner, 2026-10-11): for a route that already exists, a row naming a different region is held back with *"Routes never move to another region. Close this route and open a new one in the other region."* — the database refuses the move too. Its `name` is still saved. To serve an area from another region, open a new route there (a new `code`) and move the shops to it. |
 
 ### Users
 | Column | Required | Notes |

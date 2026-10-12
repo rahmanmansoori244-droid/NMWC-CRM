@@ -57,7 +57,7 @@
  */
 import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
-import { ConflictError, ValidationError } from './errors';
+import { ConflictError, ValidationError, type ConflictMeta } from './errors';
 import { DECISION_BOUND_KINDS } from './credit-documents';
 
 export const STALE_VIEW_CODE = 'STALE_VIEW';
@@ -221,10 +221,31 @@ const guaranteesStatedRight = (expected: DecisionView, row: Pick<DecisionRow, 'p
  * inside the decision transaction; here only their presence is: a CREATE token
  * that states none, or an UPDATE token that states some, is refused now.
  */
-export function assertDecisionView(expected: DecisionView, row: DecisionRow): void {
+export function assertDecisionView(expected: DecisionView, row: DecisionRow, lost?: ConflictMeta): void {
   if (!sameColumns(expected, decisionView(row, [])) || !guaranteesStatedRight(expected, row)) {
-    throw new ConflictError(STALE_VIEW_CODE, STALE_VIEW_MESSAGE);
+    throw new ConflictError(STALE_VIEW_CODE, STALE_VIEW_MESSAGE, staleViewMeta(lost, expected, row));
   }
+}
+
+/**
+ * Gap 22 (part C): a decision made on a page the request has moved past is the
+ * losing side of a race (another reviewer, a send-back, a withdraw). With the
+ * caller's `lost` (who and on what) it is recorded as a CONFLICT row by
+ * runAction: the stage the page showed, and the stage the request is at now.
+ */
+function staleViewMeta(
+  lost: ConflictMeta | undefined,
+  expected: DecisionView,
+  row: Pick<DecisionRow, 'cycle' | 'currentStepIndex'> | null,
+  fields?: string[]
+): ConflictMeta | undefined {
+  if (!lost) return undefined;
+  return {
+    ...lost,
+    expectedVersion: `cycle ${expected.cycle} step ${expected.stepIndex}`,
+    ...(row ? { liveVersion: `cycle ${row.cycle} step ${row.currentStepIndex}` } : {}),
+    ...(fields ? { fields } : {}),
+  };
 }
 
 /**
@@ -259,10 +280,12 @@ export function decisionBoundWhere(editId: string | { in: string[] }) {
 export async function assertGuaranteesAsViewed(
   tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
   edit: { id: string; process: string },
-  expected: DecisionView
+  expected: DecisionView,
+  /** Gap 22 (part C): who decides, on what (staleViewMeta). */
+  lost?: ConflictMeta
 ): Promise<void> {
   if (!guaranteesStatedRight(expected, edit)) {
-    throw new ConflictError(STALE_VIEW_CODE, STALE_VIEW_MESSAGE);
+    throw new ConflictError(STALE_VIEW_CODE, STALE_VIEW_MESSAGE, staleViewMeta(lost, expected, null));
   }
   if (!isCreate(edit)) return;
   // "kind"::text: the kinds are bound as text parameters, which an enum column
@@ -271,6 +294,6 @@ export async function assertGuaranteesAsViewed(
     Array<{ id: string }>
   >`SELECT "id" FROM "Attachment" WHERE "editId" = ${edit.id} AND "kind"::text IN (${Prisma.join([...DECISION_BOUND_KINDS])}) AND "deletedAt" IS NULL FOR SHARE`;
   if (guaranteeDigest(live.map((r) => r.id)) !== expected.guarantees) {
-    throw new ConflictError(STALE_VIEW_CODE, STALE_VIEW_MESSAGE);
+    throw new ConflictError(STALE_VIEW_CODE, STALE_VIEW_MESSAGE, staleViewMeta(lost, expected, null, ['guarantees']));
   }
 }

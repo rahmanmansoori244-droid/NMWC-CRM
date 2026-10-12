@@ -326,7 +326,12 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         },
       });
       if (!customerNow || customerNow.deletedAt) {
-        throw new ConflictError('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE);
+        throw new ConflictError(
+          'PHOTO_CHANGED',
+          PHOTO_TARGET_CHANGED_MESSAGE,
+          // Gap 22 (part C): the attach lost to a merge or an archive of its customer.
+          { actorId: session.user.id, entityType: 'Customer', entityId: c.id, path: 'photo.attach', fields: ['crPhotoId'] }
+        );
       }
       // An import may have moved the last reachable branch while we waited.
       // Refuse before claiming the upload, replacing a photo or rescoring.
@@ -452,7 +457,12 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         !customerNow ||
         customerNow.deletedAt
       ) {
-        throw new ConflictError('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE);
+        throw new ConflictError(
+          'PHOTO_CHANGED',
+          PHOTO_TARGET_CHANGED_MESSAGE,
+          // Gap 22 (part C): the attach lost to a merge or an archive of its shop.
+          { actorId: session.user.id, entityType: 'Branch', entityId: b.id, path: 'photo.attach' }
+        );
       }
       if (session.user.role === Role.SALESMAN && branchNow.routeId !== ownedRouteId) {
         throw new ForbiddenError('Branch not on your route.');
@@ -729,7 +739,14 @@ async function detachPhotoCore(input: { attachmentId: string }) {
       now.branchExtraId !== wiring.branchExtraId ||
       now.editId !== wiring.editId ||
       ownerNow !== ownerId;
-    if (moved) throw new ConflictError('PHOTO_CHANGED', PHOTO_CHANGED_MESSAGE);
+    if (moved) {
+      throw new ConflictError(
+        'PHOTO_CHANGED',
+        PHOTO_CHANGED_MESSAGE,
+        // Gap 22 (part C): the Remove lost to a write that moved the photo first.
+        { actorId: session.user.id, entityType: 'Attachment', entityId: att.id, path: 'photo.detach' }
+      );
+    }
     // A route/region move can commit while Remove waits for the customer
     // lock without changing the photo wiring. Recheck live customer scope
     // through tx before writing; retain F04's customer-level overlap rule.
@@ -763,7 +780,13 @@ async function detachPhotoCore(input: { attachmentId: string }) {
       where: { id: att.id, deletedAt: null, ...wiring },
       data: { deletedAt: new Date() },
     });
-    if (gone.count !== 1) throw new ConflictError('PHOTO_CHANGED', PHOTO_CHANGED_MESSAGE);
+    if (gone.count !== 1) {
+      throw new ConflictError(
+        'PHOTO_CHANGED',
+        PHOTO_CHANGED_MESSAGE,
+        { actorId: session.user.id, entityType: 'Attachment', entityId: att.id, path: 'photo.detach' }
+      );
+    }
     if (att.customerId) {
       await tx.customer.updateMany({
         where: { id: att.customerId, crPhotoId: att.id },

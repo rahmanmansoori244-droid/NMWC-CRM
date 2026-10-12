@@ -357,6 +357,20 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'CronRun.dbMs': { subject: 'none' },
   'CronRun.source': { subject: 'none', note: "a fixed label ('vercel', 'cron-job.org', 'github', 'other'), not the User-Agent" },
 
+  // ---- JobRunDay (gap 21, part C) ------------------------------------------
+  // One row per scheduled job per Oman day, summarised from CronRun before its
+  // runs are pruned, and kept for ever. Counts and times of machine jobs only.
+  'JobRunDay.id': { subject: 'none', note: STRUCTURAL },
+  'JobRunDay.key': { subject: 'none', note: 'which scheduled job' },
+  'JobRunDay.day': { subject: 'none', note: 'the Oman calendar day the runs started on' },
+  'JobRunDay.runs': { subject: 'none' },
+  'JobRunDay.failures': { subject: 'none' },
+  'JobRunDay.firstAt': { subject: 'none', note: RECORD_META },
+  'JobRunDay.lastAt': { subject: 'none', note: RECORD_META },
+  'JobRunDay.maxDurationMs': { subject: 'none' },
+  'JobRunDay.sources': { subject: 'none', note: 'the CronRun scheduler labels seen that day, never a User-Agent' },
+  'JobRunDay.recordedAt': { subject: 'none', note: RECORD_META },
+
   // ---- RateLimit -----------------------------------------------------------
   'RateLimit.key': {
     subject: 'employee',
@@ -417,6 +431,34 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
     note: 'what caused the row: a request, import row, script run or job (lib/change-context.ts), never text a person typed',
   },
   'AuditLog.txId': { subject: 'none', note: 'database transaction id: joins the row to the dated history rows of the same change' },
+
+  // ---- AuthEvent (gap 23, part C) ------------------------------------------
+  // Sign-in failures on names no account has, throttle refusals, failures on a
+  // retired sign-in name, and every session cut-off; append-only, kept for ever.
+  // The typed name is NEVER stored: usernameHmac is a keyed fingerprint
+  // (HMAC-SHA256 under a key derived from AUTH_SECRET, lib/sign-in-events.ts),
+  // so neither a name nor a password typed into the name field can be read back
+  // from the table without the application secret.
+  'AuthEvent.id': { subject: 'none', note: 'the strict order of the events' },
+  'AuthEvent.at': { subject: 'employee', kind: 'behaviour', note: 'when the attempt or the cut-off happened' },
+  'AuthEvent.kind': { subject: 'none', note: 'LOGIN_FAIL_UNKNOWN, LOGIN_RATE_LIMITED, LOGIN_FAIL_REUSED_NAME or SESSION_REVOKE' },
+  'AuthEvent.userId': { subject: 'employee', kind: 'identifier', note: 'the account concerned, when there is one (no foreign key: the event outlives the account)' },
+  'AuthEvent.usernameHmac': {
+    subject: 'employee',
+    kind: 'identifier',
+    note: 'keyed fingerprint of the typed sign-in name — pseudonymous: matching it to a name needs AUTH_SECRET; the name itself is never stored',
+  },
+  'AuthEvent.keyId': { subject: 'none', note: 'which fingerprint key (first 8 hex of its SHA-256): a rotated AUTH_SECRET gives another' },
+  'AuthEvent.reason': { subject: 'none', note: 'a fixed category (not_found, retired_username, ip, user, deactivated, password, role, …), never free text' },
+  'AuthEvent.ip': { subject: 'employee', kind: 'device', note: 'source IP of the attempt, as AuditLog.ip' },
+  'AuthEvent.userAgent': { subject: 'employee', kind: 'device', note: 'browser and device string, as AuditLog.userAgent' },
+  'AuthEvent.actorId': { subject: 'employee', kind: 'identifier', note: 'who cut the sessions off (the change context); null for a sign-in failure' },
+  'AuthEvent.source': {
+    subject: 'none',
+    kind: 'identifier',
+    note: 'what caused it (lib/change-context.ts): auth:logout, users:toggle:<id>, import:<batch>:Users!<row>, …',
+  },
+  'AuthEvent.txId': { subject: 'none', note: 'database transaction id: joins the AuditLog rows of the same change' },
 
   // ---- Dated history (gaps 5, 6, 17, 24; docs/HISTORY.md) ------------------
   // Append-only and kept for ever, so it holds NO personal value of a customer:
@@ -572,6 +614,14 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'EditApproval.slaDueAt': { subject: 'employee', kind: 'behaviour' },
   'EditApproval.workingMinutes': { subject: 'employee', kind: 'behaviour', note: 'how long this named person took to decide' },
   'EditApproval.category': { subject: 'none', note: 'the send-back reason category picked from a fixed list (gap 12)' },
+  // Gap 11 (part C): who decided as what, and why he could, at that moment.
+  'EditApproval.actorRole': { subject: 'employee', kind: 'behaviour', note: 'the decider’s own role when he decided' },
+  'EditApproval.authorityBasis': {
+    subject: 'none',
+    note: 'why the decider could decide (lib/permissions.ts AUTHORITY_BASES), a fixed value the database checks',
+  },
+  'EditApproval.scopeRegionIds': { subject: 'none', note: 'the regions the request covered when decided' },
+  'EditApproval.submitterRouteId': { subject: 'none', note: 'the submitting salesman’s route when decided' },
 
   // ---- Notification --------------------------------------------------------
   'Notification.id': { subject: 'none', note: STRUCTURAL },

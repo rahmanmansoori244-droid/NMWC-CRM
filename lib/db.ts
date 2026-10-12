@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { logger } from './logger';
+import { registerConflictRecorder } from './errors';
 
 declare global {
   var __prismaClient: PrismaClient | undefined;
@@ -41,3 +42,15 @@ export const prisma = globalThis.__prismaClient ?? createClient();
 if (process.env.NODE_ENV !== 'production') {
   globalThis.__prismaClient = prisma;
 }
+
+/**
+ * Gap 22 (part C): a save that lost a race is recorded as a CONFLICT audit row
+ * (lib/conflict-record.ts). runAction in lib/errors.ts finds the recorder here;
+ * that file is imported by client components too, so it cannot import this one.
+ * Registered by the module every server write path already loads, and loaded
+ * lazily, so a plain read never pulls the audit writer in.
+ */
+registerConflictRecorder(async (err) => {
+  const { recordConflict } = await import('./conflict-record');
+  await recordConflict(err);
+});

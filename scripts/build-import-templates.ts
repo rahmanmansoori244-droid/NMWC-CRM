@@ -125,7 +125,8 @@ const routesCols: Col[] = [
     key: 'region_code',
     required: 'Required',
     format: 'a code from the Regions sheet',
-    notes: 'Which region this route belongs to. Must exist in Regions.',
+    notes:
+      'Which region this route belongs to. Must exist in Regions. A route NEVER moves to another region: a row naming another region than the route has is held back (its name is still saved). Close the route and open a new one in the other region.',
   },
 ];
 const usersCols: Col[] = [

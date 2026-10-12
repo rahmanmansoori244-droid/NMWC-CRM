@@ -97,5 +97,20 @@ export function purgeHistory(prisma: PrismaClient, ids: HistoryIds) {
     region: (await tx.regionHistory.deleteMany({ where: { regionId: inList(ids.regionIds) } })).count,
     attachment: (await tx.attachmentHistory.deleteMany({ where: { attachmentId: inList(ids.attachmentIds) } })).count,
     revision: (await tx.editRevision.deleteMany({ where: { editId: inList(ids.editIds) } })).count,
+    // Part C (gap 23): the suite's accounts' sign-in events and session cut-offs.
+    authEvent: (await tx.authEvent.deleteMany({ where: { userId: inList(ids.userIds) } })).count,
   }));
+}
+
+/**
+ * Part C (gap 23): sign-in events a suite caused that name no account (a failure
+ * on a name nobody has, a throttle refusal), found by the name's fingerprint.
+ */
+export function purgeAuthEvents(prisma: PrismaClient, args: Prisma.AuthEventDeleteManyArgs) {
+  return withAuditMaintenance(prisma, (tx) => tx.authEvent.deleteMany(args));
+}
+
+/** Part C (gap 21): the day rows a suite's own scheduled-job runs were summarised into. */
+export function purgeJobRunDays(prisma: PrismaClient, args: Prisma.JobRunDayDeleteManyArgs) {
+  return withAuditMaintenance(prisma, (tx) => tx.jobRunDay.deleteMany(args));
 }

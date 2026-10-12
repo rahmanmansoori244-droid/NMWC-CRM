@@ -10,7 +10,8 @@
  * fixtures leaves their history behind. The launch e2e harness purges its own
  * (tests/e2e/launch/support/cleanup.ts, step 10), and a converted suite calls
  * purgeHistory (tests/support/audit.ts); this removes what the rest leave: the
- * history of customers, shops, accounts, routes and regions that are gone.
+ * history of customers, shops, accounts, routes and regions that are gone, and
+ * (part C) the sign-in events of accounts that are gone.
  *
  * NEVER ON PRODUCTION. On production a record is never hard-deleted outside the
  * owner's maintenance window, and its history is the permanent record of it: this
@@ -33,11 +34,16 @@ export const ORPHAN_SCOPES = [
   // Lossless paths (20261014100000): a photo's history, a new-customer request's rounds.
   { table: 'AttachmentHistory', key: 'attachmentId', live: 'Attachment' },
   { table: 'EditRevision', key: 'editId', live: 'CustomerEdit' },
+  // Part C (20261015100000): sign-in events of accounts that are gone — a suite
+  // that disables, resets or deletes a test account leaves its SESSION_REVOKE
+  // rows. An event with no account (a name nobody has) is never an orphan.
+  { table: 'AuthEvent', key: 'userId', live: 'User', nullable: true },
 ] as const;
 
 /** The WHERE clause that finds a scope's orphans (no live row with that id). */
 export function orphanWhere(s: (typeof ORPHAN_SCOPES)[number]): string {
-  return `NOT EXISTS (SELECT 1 FROM "${s.live}" l WHERE l."id" = h."${s.key}")`;
+  const gone = `NOT EXISTS (SELECT 1 FROM "${s.live}" l WHERE l."id" = h."${s.key}")`;
+  return 'nullable' in s && s.nullable ? `h."${s.key}" IS NOT NULL AND ${gone}` : gone;
 }
 
 async function main(): Promise<number> {

@@ -23,6 +23,7 @@ import {
   StaleFieldsError,
   ROUTE_INACTIVE_MESSAGE,
   runAction,
+  type ConflictMeta,
   type SafeAction,
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
@@ -36,7 +37,7 @@ import {
   NO_STATUS_EVENTS,
   statusEvents,
 } from '@/lib/customer-status';
-import { isFieldLocked, canActOnStep, requestScopeBranches } from '@/lib/permissions';
+import { isFieldLocked, requestScopeBranches, stepAuthority } from '@/lib/permissions';
 import {
   EQUIPMENT_UNCONFIRM_MESSAGE,
   isCurrentEditPayload,
@@ -222,6 +223,32 @@ function channelPairOf(customer: Record<string, unknown>) {
 }
 
 /**
+ * Gap 22 (part C): who lost a race on a request, by which write, and the stage
+ * he decided on (the decision token's) or what he found instead. Recorded as a
+ * CONFLICT row by runAction (lib/conflict-record.ts); the answer is unchanged.
+ */
+function lostOnEdit(
+  actorId: string,
+  editId: string,
+  path: string,
+  at: { expected?: { cycle: number; stepIndex: number }; liveVersion?: string } = {}
+): ConflictMeta {
+  return {
+    actorId,
+    entityType: 'CustomerEdit',
+    entityId: editId,
+    path,
+    ...(at.expected ? { expectedVersion: `cycle ${at.expected.cycle} step ${at.expected.stepIndex}` } : {}),
+    ...(at.liveVersion !== undefined ? { liveVersion: at.liveVersion } : {}),
+  };
+}
+
+/** Gap 22 (part C): who lost a race on a customer, by which write. */
+function lostOnCustomer(actorId: string, customerId: string, path: string): ConflictMeta {
+  return { actorId, entityType: 'Customer', entityId: customerId, path };
+}
+
+/**
  * F06: the fields a submit named whose value changed after the form was opened.
  * Refused whole, before anything is written, with the value live now for each —
  * for a location or an equipment block, the whole group's, because the form
@@ -236,7 +263,10 @@ function channelPairOf(customer: Record<string, unknown>) {
 function staleFieldsError(
   paths: readonly string[],
   liveCustomer: Readonly<Record<string, unknown>>,
-  liveBranches: ReadonlyMap<string, Readonly<Record<string, unknown>>>
+  liveBranches: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
+  // Gap 22 (part C): who lost, on which customer, by which write. The field
+  // paths are added here: names only, never a value.
+  lost: Omit<ConflictMeta, 'fields'>
 ): StaleFieldsError {
   const fields: Record<string, string> = {};
   const current: Record<string, BaseValue> = {};
@@ -257,7 +287,7 @@ function staleFieldsError(
       current[branchPath(p.branchId, f)] = toBaseValue(branch?.[f]);
     }
   }
-  return new StaleFieldsError(fields, current);
+  return new StaleFieldsError(fields, current, { ...lost, fields: [...paths] });
 }
 
 /**
@@ -568,7 +598,8 @@ async function submitEditOnce(
         // lost reply this is how he learns his earlier submit arrived.
         existing.submittedById === session.id
           ? ownOpenRequestMessage(existing, { kind: 'update' })
-          : 'A submitted edit is already pending review for this customer.'
+          : 'A submitted edit is already pending review for this customer.',
+        { ...lostOnCustomer(session.id, customerId, 'edit.submit'), liveVersion: `open request ${existing.id}` }
       );
     }
   }
@@ -787,7 +818,9 @@ async function submitEditOnce(
     fieldChanges.push(...branchChanges);
   }
 
-  if (stalePaths.length > 0) throw staleFieldsError(stalePaths, customer, branchById);
+  if (stalePaths.length > 0) {
+    throw staleFieldsError(stalePaths, customer, branchById, lostOnCustomer(session.id, customer.id, 'edit.submit'));
+  }
 
   // F16: the channel pair the customer would carry must fit — CREATE's rule
   // (lib/channel-pair.ts), checked only when the channel or the sub-channel
@@ -962,7 +995,8 @@ async function submitEditOnce(
           if (!branch) {
             throw new ConflictError(
               'VERSION_CONFLICT',
-              'A branch was modified by someone else while your changes were processing. Refresh and try again.'
+              'A branch was modified by someone else while your changes were processing. Refresh and try again.',
+              { actorId: me.id, entityType: 'Branch', entityId: bp.branchId, path: 'edit.direct' }
             );
           }
           if (me.role === Role.MANAGER && !managerRegionIds?.includes(branch.regionId)) {
@@ -973,11 +1007,19 @@ async function submitEditOnce(
           fieldChanges,
           liveSnapshotOf(now, now.branches)
         );
-        if (stale.length > 0) throw staleFieldsError(stale.map((s) => s.field), now, nowBranches);
+        if (stale.length > 0) {
+          throw staleFieldsError(
+            stale.map((s) => s.field),
+            now,
+            nowBranches,
+            lostOnCustomer(me.id, customer.id, 'edit.direct')
+          );
+        }
         if (droppedBranchIds.length > 0) {
           throw new ConflictError(
             'VERSION_CONFLICT',
-            'A branch was modified by someone else while your changes were processing. Refresh and try again.'
+            'A branch was modified by someone else while your changes were processing. Refresh and try again.',
+            { actorId: me.id, entityType: 'Branch', entityId: droppedBranchIds[0]!, path: 'edit.direct' }
           );
         }
         // An overlapping retry of a write that has just landed finds all of it
@@ -1118,7 +1160,8 @@ async function submitEditOnce(
       if (code === 'P2002' || /Unique constraint failed/i.test(message)) {
         throw new ConflictError(
           'EDIT_LOCKED',
-          'Another submission for this customer was just made. Refresh to see it.'
+          'Another submission for this customer was just made. Refresh to see it.',
+          lostOnCustomer(me.id, customer.id, 'edit.submit')
         );
       }
       throw err;
@@ -1289,11 +1332,16 @@ async function clearReturnedEditCore(input: { editId: string }): Promise<{ editI
   if (edit.process === EditProcess.CREATE) {
     throw new ConflictError(
       'EDIT_LOCKED',
-      'A new-customer request is withdrawn from its own page, which also frees its CR number and shop.'
+      'A new-customer request is withdrawn from its own page, which also frees its CR number and shop.',
+      lostOnEdit(me.id, editId, 'edit.returned-clear', { liveVersion: edit.state })
     );
   }
   if (edit.state !== EditState.NEEDS_CORRECTION) {
-    throw new ConflictError('EDIT_LOCKED', 'This request was not sent back to you, so there is nothing to clear.');
+    throw new ConflictError(
+      'EDIT_LOCKED',
+      'This request was not sent back to you, so there is nothing to clear.',
+      lostOnEdit(me.id, editId, 'edit.returned-clear', { liveVersion: edit.state })
+    );
   }
 
   const env = await getAuditEnvelope(me.id);
@@ -1371,7 +1419,15 @@ async function applyEditChanges(
     if (customerResult.count === 0) {
       throw new ConflictError(
         'VERSION_CONFLICT',
-        'This customer was modified by someone else while your changes were processing. Refresh and try again.'
+        'This customer was modified by someone else while your changes were processing. Refresh and try again.',
+        {
+          actorId,
+          entityType: 'Customer',
+          entityId: customerId,
+          path: 'edit.apply',
+          fields: Object.keys(customerProposed).filter((k) => customerProposed[k] !== undefined),
+          expectedVersion: currentCustomer.version,
+        }
       );
     }
   }
@@ -1409,7 +1465,15 @@ async function applyEditChanges(
     if (branchResult.count === 0) {
       throw new ConflictError(
         'VERSION_CONFLICT',
-        'A branch was modified by someone else while your changes were processing. Refresh and try again.'
+        'A branch was modified by someone else while your changes were processing. Refresh and try again.',
+        {
+          actorId,
+          entityType: 'Branch',
+          entityId: bp.branchId,
+          path: 'edit.apply',
+          fields: Object.keys(branchUpdate).filter((k) => k !== 'lastEditedById' && k !== 'lastStatusChangeAt'),
+          expectedVersion: currentBranch.version,
+        }
       );
     }
   }
@@ -1508,7 +1572,11 @@ async function approveEditCore(formData: FormData) {
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (edit.state !== EditState.SUBMITTED) {
-    throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
+    throw new ConflictError(
+      'NOT_PENDING',
+      `Edit is in state ${edit.state}.`,
+      lostOnEdit(session.id, editId, 'edit.approve', { liveVersion: edit.state })
+    );
   }
   // QA-C11 (Critical): a reactivation is a Manager-only decision (region-scoped +
   // photo-evidence gated) handled exclusively by approveReactivationAction. It is
@@ -1578,23 +1646,37 @@ async function approveEditCore(formData: FormData) {
   const chain = parseChain(edit.approvalChain);
   const stepIndex = edit.currentStepIndex;
   const step = chain[stepIndex];
-  if (!step) throw new ConflictError('NOT_PENDING', 'This edit has no pending step.');
+  if (!step) {
+    throw new ConflictError(
+      'NOT_PENDING',
+      'This edit has no pending step.',
+      lostOnEdit(session.id, editId, 'edit.approve', { liveVersion: `step ${stepIndex}` })
+    );
+  }
   const priorStepDecisions = await prisma.editApproval.findMany({
     where: { editId, cycle: edit.cycle, stepIndex: { not: stepIndex } },
     select: { actorId: true },
   });
-  if (
-    !canActOnStep(sessionUser, step, edit.submittedBy, {
-      customerBranches: scopeBranches,
-      managedRegionIds: actorScope.managedRegionIds,
-      priorStepActorIds: priorStepDecisions.map((d) => d.actorId),
-    })
-  ) {
+  const authority = stepAuthority(sessionUser, step, edit.submittedBy, {
+    customerBranches: scopeBranches,
+    managedRegionIds: actorScope.managedRegionIds,
+    priorStepActorIds: priorStepDecisions.map((d) => d.actorId),
+  });
+  if (!authority) {
     throw new ForbiddenError('You are not authorized to act on this step.');
   }
+  // Gap 11 (part C): on every decision row below, beside the step's role, the
+  // approver's own role, why he could decide (the basis the gate just found),
+  // the regions the request covered and the submitter's route, as they are now.
+  const decidedAs = {
+    actorRole: session.role,
+    authorityBasis: authority,
+    scopeRegionIds,
+    submitterRouteId: edit.submittedBy.ownedRouteId,
+  };
   // N01: a page opened before a correction round, a step-back or another
   // reviewer's decision shows a request that no longer exists. Nothing is written.
-  assertDecisionView(expected, edit);
+  assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.approve'));
 
   // DG-06: one audit envelope for the whole action, captured here — after the
   // authorization gate and outside every transaction below. `session.id` (from
@@ -1647,12 +1729,13 @@ async function approveEditCore(formData: FormData) {
         if (claim.count === 0) {
           throw new ConflictError(
             'NOT_PENDING',
-            'This step was just decided by another reviewer. Refresh to see the current state.'
+            'This step was just decided by another reviewer. Refresh to see the current state.',
+            lostOnEdit(session.id, editId, 'edit.approve', { expected })
           );
         }
         // N01: the guarantee documents the page rendered, still exactly the live
         // ones — under the claim's lock, and locked themselves until commit.
-        await assertGuaranteesAsViewed(tx, edit, expected);
+        await assertGuaranteesAsViewed(tx, edit, expected, lostOnEdit(session.id, editId, 'edit.approve'));
         await tx.editApproval.create({
           data: {
             editId,
@@ -1663,6 +1746,7 @@ async function approveEditCore(formData: FormData) {
             actorId: session.id,
             // Item 9: the stage as it stood when decided (lib/working-hours.ts).
             ...stageSnapshot(edit, advancedAt),
+            ...decidedAs,
           },
         });
         await writeAudit(tx, env, {
@@ -1767,11 +1851,12 @@ async function approveEditCore(formData: FormData) {
         if (claim.count === 0) {
           throw new ConflictError(
             'NOT_PENDING',
-            'This request was just decided by another reviewer. Refresh to see the current state.'
+            'This request was just decided by another reviewer. Refresh to see the current state.',
+            lostOnEdit(session.id, editId, 'edit.approve', { expected })
           );
         }
         // N01: before finalize binds them (see the advance claim above).
-        await assertGuaranteesAsViewed(tx, edit, expected);
+        await assertGuaranteesAsViewed(tx, edit, expected, lostOnEdit(session.id, editId, 'edit.approve'));
         await tx.editApproval.create({
           data: {
             editId,
@@ -1781,6 +1866,7 @@ async function approveEditCore(formData: FormData) {
             decision: 'APPROVED',
             actorId: session.id,
             ...stageSnapshot(edit, finalizedAt),
+            ...decidedAs,
           },
         });
         const finalized = await finalizeCreateInTx(
@@ -1957,11 +2043,12 @@ async function approveEditCore(formData: FormData) {
       if (claim.count === 0) {
         throw new ConflictError(
           'NOT_PENDING',
-          'This edit was just decided by another reviewer. Refresh to see the current state.'
+          'This edit was just decided by another reviewer. Refresh to see the current state.',
+          lostOnEdit(session.id, editId, 'edit.approve', { expected })
         );
       }
       // N01: an UPDATE has no guarantees to read; this refuses a token that states some.
-      await assertGuaranteesAsViewed(tx, edit, expected);
+      await assertGuaranteesAsViewed(tx, edit, expected, lostOnEdit(session.id, editId, 'edit.approve'));
       await tx.editApproval.create({
         data: {
           editId,
@@ -1971,6 +2058,7 @@ async function approveEditCore(formData: FormData) {
           decision: 'APPROVED',
           actorId: session.id,
           ...stageSnapshot(edit, new Date()),
+          ...decidedAs,
         },
       });
       // The customer's row lock before any branch write (lib/locks.ts): photo
@@ -2021,7 +2109,11 @@ async function approveEditCore(formData: FormData) {
         );
         throw new ConflictError(
           'STALE_BEFORE',
-          staleBeforeMessage(staleFieldLabels(classified.stale))
+          staleBeforeMessage(staleFieldLabels(classified.stale)),
+          {
+            ...lostOnEdit(session.id, editId, 'edit.approve', { expected }),
+            fields: classified.stale.map((c) => c.field),
+          }
         );
       }
       // QA-039 + EL-10: changes to a branch deleted, or moved to another
@@ -2341,7 +2433,11 @@ async function rejectEditCore(formData: FormData) {
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (edit.state !== EditState.SUBMITTED) {
-    throw new ConflictError('NOT_PENDING', `Edit is in state ${edit.state}.`);
+    throw new ConflictError(
+      'NOT_PENDING',
+      `Edit is in state ${edit.state}.`,
+      lostOnEdit(session.id, editId, 'edit.reject', { liveVersion: edit.state })
+    );
   }
   // QA-C11 (Critical): reactivations are Manager-only and handled exclusively by
   // rejectReactivationAction — never the generic engine (see approveEditCore).
@@ -2374,27 +2470,32 @@ async function rejectEditCore(formData: FormData) {
   const rejectChain = parseChain(edit.approvalChain);
   const rejectStepIndex = edit.currentStepIndex;
   const rejectStep = rejectChain[rejectStepIndex];
-  if (!rejectStep) throw new ConflictError('NOT_PENDING', 'This edit has no pending step.');
+  if (!rejectStep) {
+    throw new ConflictError(
+      'NOT_PENDING',
+      'This edit has no pending step.',
+      lostOnEdit(session.id, editId, 'edit.reject', { liveVersion: `step ${rejectStepIndex}` })
+    );
+  }
   const rejectPriorDecisions = await prisma.editApproval.findMany({
     where: { editId, cycle: edit.cycle, stepIndex: { not: rejectStepIndex } },
     select: { actorId: true },
   });
-  if (
-    !canActOnStep(
-      { id: session.id, role: session.role, username: session.username },
-      rejectStep,
-      edit.submittedBy,
-      {
-        customerBranches: rejectScopeBranches,
-        managedRegionIds: rejectScope.managedRegionIds,
-        priorStepActorIds: rejectPriorDecisions.map((d) => d.actorId),
-      }
-    )
-  ) {
+  const rejectAuthority = stepAuthority(
+    { id: session.id, role: session.role, username: session.username },
+    rejectStep,
+    edit.submittedBy,
+    {
+      customerBranches: rejectScopeBranches,
+      managedRegionIds: rejectScope.managedRegionIds,
+      priorStepActorIds: rejectPriorDecisions.map((d) => d.actorId),
+    }
+  );
+  if (!rejectAuthority) {
     throw new ForbiddenError('You are not authorized to act on this step.');
   }
   // N01: after the gate, before anything is written (see approveEditCore).
-  assertDecisionView(expected, edit);
+  assertDecisionView(expected, edit, lostOnEdit(session.id, editId, 'edit.reject'));
 
   // Owner-confirmed step-back cascade: a rejection returns the request to the
   // previous approver (step N-1); a rejection at the first step returns it to the
@@ -2431,6 +2532,11 @@ async function rejectEditCore(formData: FormData) {
         // decision (CustomerEdit.decisionCategory holds only the latest).
         category,
         ...stageSnapshot(edit, rejectedAt),
+        // Gap 11 (part C): who decided, as what, and why he could (see approve).
+        actorRole: session.role,
+        authorityBasis: rejectAuthority,
+        scopeRegionIds: rejectRegionIds,
+        submitterRouteId: edit.submittedBy.ownedRouteId,
       },
     });
     const data: Prisma.CustomerEditUncheckedUpdateManyInput =
@@ -2483,12 +2589,13 @@ async function rejectEditCore(formData: FormData) {
     if (claim.count === 0) {
       throw new ConflictError(
         'NOT_PENDING',
-        'This edit was just decided by another reviewer. Refresh to see the current state.'
+        'This edit was just decided by another reviewer. Refresh to see the current state.',
+        lostOnEdit(session.id, editId, 'edit.reject', { expected })
       );
     }
     // N01: a rejection is bound to the guarantees shown too; a refusal rolls
     // back the decision row above with the claim.
-    await assertGuaranteesAsViewed(tx, edit, expected);
+    await assertGuaranteesAsViewed(tx, edit, expected, lostOnEdit(session.id, editId, 'edit.reject'));
     await writeAudit(tx, env, {
       action: 'REJECT',
       entityType: 'CustomerEdit',

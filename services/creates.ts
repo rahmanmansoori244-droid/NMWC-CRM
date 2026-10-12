@@ -50,6 +50,7 @@ import {
   ROUTE_INACTIVE_MESSAGE,
   ValidationError,
   runAction,
+  type ConflictMeta,
   type SafeAction,
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
@@ -246,14 +247,19 @@ async function submitCreateOnce(
         'EDIT_LOCKED',
         existing.state === EditState.SUBMITTED
           ? 'This request is already submitted and in review.'
-          : 'This request was already approved.'
+          : 'This request was already approved.',
+        createLost(session.id, existing.id, 'create.submit', existing.state)
       );
     }
     // Launch fix: a withdrawn request is closed for good. It no longer blocks
     // its CR or shop, so sending it again could slip past a request made since.
     // (Nothing else ever wrote REJECTED on a new-customer request.)
     if (existing.state === EditState.REJECTED) {
-      throw new ConflictError('EDIT_LOCKED', WITHDRAWN_MESSAGE);
+      throw new ConflictError(
+        'EDIT_LOCKED',
+        WITHDRAWN_MESSAGE,
+        createLost(session.id, existing.id, 'create.submit', existing.state)
+      );
     }
     // Security review: one started on a route he has since left (moved while it
     // was in review, then sent back; or moved by a role change or an import) is
@@ -266,7 +272,11 @@ async function submitCreateOnce(
       ),
     ].join(', ');
     if (startedOn) {
-      throw new ConflictError('EDIT_LOCKED', routeMovedMessage(startedOn, route.code));
+      throw new ConflictError(
+        'EDIT_LOCKED',
+        routeMovedMessage(startedOn, route.code),
+        createLost(session.id, existing.id, 'create.submit', `route ${route.code}`)
+      );
     }
     // DRAFT / NEEDS_CORRECTION may be revised and resubmitted.
   }
@@ -559,7 +569,8 @@ async function submitCreateOnce(
       if (claim.count === 0) {
         throw new ConflictError(
           'EDIT_LOCKED',
-          'This request just changed in another tab. Refresh to see its current state.'
+          'This request just changed in another tab. Refresh to see its current state.',
+          { ...createLost(session.id, existing.id, 'create.submit'), expectedVersion: `${existing.state} cycle ${existing.cycle}` }
         );
       }
       editRow = await tx.customerEdit.findUniqueOrThrow({ where: { id: existing.id } });
@@ -807,6 +818,21 @@ async function recordRefusedDuplicate(
 const WITHDRAWN_MESSAGE =
   'This request was withdrawn and is closed. Start a new request if the shop still needs adding.';
 
+/**
+ * Gap 22 (part C): a new-customer request that changed under its salesman (sent,
+ * withdrawn or decided in another tab, or started on a route he has left). The
+ * refusal is recorded as a CONFLICT row by runAction; the answer is unchanged.
+ */
+function createLost(actorId: string, editId: string, path: string, liveVersion?: string): ConflictMeta {
+  return {
+    actorId,
+    entityType: 'CustomerEdit',
+    entityId: editId,
+    path,
+    ...(liveVersion !== undefined ? { liveVersion } : {}),
+  };
+}
+
 /** A request started on a route he no longer works (app/(app)/customers/new/page.tsx says the same). */
 function routeMovedMessage(from: string, to: string): string {
   return `This request was started on route ${from}, and you now work route ${to}, so it cannot be saved or sent again. Withdraw it, and the salesman of route ${from} adds the shop afresh.`;
@@ -872,7 +898,8 @@ async function withdrawCreateCore(input: { editId: string }): Promise<{ editId: 
       'EDIT_LOCKED',
       edit.state === EditState.SUBMITTED
         ? 'This request is in review, so it cannot be withdrawn now. Ask the approver who has it to send it back to you, then withdraw it.'
-        : 'This request was already approved.'
+        : 'This request was already approved.',
+      createLost(session.id, editId, 'create.withdraw', edit.state)
     );
   }
 
@@ -906,7 +933,8 @@ async function withdrawCreateCore(input: { editId: string }): Promise<{ editId: 
     if (claim.count === 0) {
       throw new ConflictError(
         'EDIT_LOCKED',
-        'This request just changed in another tab. Refresh to see its current state.'
+        'This request just changed in another tab. Refresh to see its current state.',
+        { ...createLost(session.id, editId, 'create.withdraw'), expectedVersion: `${edit.state} cycle ${edit.cycle}` }
       );
     }
     await writeAudit(tx, env, {

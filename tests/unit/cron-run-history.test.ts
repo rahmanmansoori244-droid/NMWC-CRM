@@ -134,13 +134,21 @@ describe('the approval engine snapshots the stage on every decision it records',
       for (const args of callArguments(src, /\beditApproval\.(create\w*|upsert)\b/)) {
         sites += 1;
         // `stageSnapshot(edit, …)`: the change request as loaded BEFORE the claim,
-        // i.e. the stage being decided, not the one it advances to.
+        // i.e. the stage being decided, not the one it advances to. A reactivation
+        // decision (part C, gap 11) builds its row in reactivationDecision, which
+        // must carry it the same way.
+        if (/\breactivationDecision\(\s*edit\s*,/.test(args)) {
+          const helper = src.slice(src.indexOf('function reactivationDecision('), src.indexOf('function reactivationConflict('));
+          expect(helper, `${f}: reactivationDecision without the stage snapshot`).toMatch(/\.\.\.stageSnapshot\(\s*edit\s*,/);
+          continue;
+        }
         expect(args, `${f}: an EditApproval insert without the stage snapshot`).toMatch(/\.\.\.stageSnapshot\(\s*edit\s*,/);
       }
     }
-    // services/edits.ts's four, and the salesman's signed application
-    // (services/signed-form.ts, owner decisions 2026-10-11).
-    expect(sites).toBe(5);
+    // services/edits.ts's four, the salesman's signed application
+    // (services/signed-form.ts, owner decisions 2026-10-11), and a reactivation's
+    // approve and reject (services/reactivations.ts, part C).
+    expect(sites).toBe(7);
   });
 
   it('the signed application’s claim is built from his page’s decision token too (owner decisions 2026-10-11)', () => {
@@ -210,8 +218,9 @@ describe('the approval engine snapshots the stage on every decision it records',
     for (const core of ['approveEditCore', 'rejectEditCore']) {
       const b = body(core);
       expect(b.match(/\bconst expected = readDecisionToken\(formData\);/g), core).toHaveLength(1);
-      const gate = b.search(/!canActOnStep\(/);
-      const check = b.search(/\bassertDecisionView\(expected, edit\);/);
+      // Gap 11 (part C): the gate keeps the basis it admitted the actor on.
+      const gate = b.search(/\bif \(!(?:authority|rejectAuthority)\) \{/);
+      const check = b.search(/\bassertDecisionView\(expected, edit, lostOnEdit\(/);
       // Gap 24: every write transaction opens through withChangeContext.
       const firstWrite = b.search(/\bwithChangeContext\(/);
       expect(gate, `${core}: the authorization gate`).toBeGreaterThan(-1);
@@ -247,7 +256,8 @@ describe('the approval engine snapshots the stage on every decision it records',
             const countCheck = n.statements[i + 1]?.getText(sf) ?? '';
             const next = n.statements[i + 2]?.getText(sf) ?? '';
             if (!/^if \(claim\.count === 0\)/.test(countCheck)) out.push(`claim ${claims}: no count check after it`);
-            if (next !== 'await assertGuaranteesAsViewed(tx, edit, expected);') {
+            // Gap 22 (part C): told who decides, so a stale page is recorded.
+            if (!/^await assertGuaranteesAsViewed\(tx, edit, expected, lostOnEdit\(session\.id, editId, 'edit\.(approve|reject)'\)\);$/.test(next)) {
               out.push(`claim ${claims}: next is ${next.split('\n')[0]}`);
             }
           });
@@ -263,13 +273,14 @@ describe('the approval engine snapshots the stage on every decision it records',
 
     // A guard that cannot fail is not a guard: the check dropped from one
     // transaction, read on the pooled client, or moved below the first write.
-    const CALL = 'await assertGuaranteesAsViewed(tx, edit, expected);';
-    expect(src.split(CALL)).toHaveLength(5);
+    // The three approve transactions' check (the reject's names its own path).
+    const CALL = "await assertGuaranteesAsViewed(tx, edit, expected, lostOnEdit(session.id, editId, 'edit.approve'));";
+    expect(src.split(CALL)).toHaveLength(4);
     expect(problems(src.replace(CALL, '')).out).toHaveLength(1);
     expect(problems(src.replace(CALL, `// ${CALL}`)).out).toHaveLength(1);
-    expect(problems(src.replace(CALL, 'await assertGuaranteesAsViewed(prisma, edit, expected);')).out).toHaveLength(1);
+    expect(problems(src.replace(CALL, CALL.replace('(tx, ', '(prisma, '))).out).toHaveLength(1);
     const moved = src.replace(
-      /(await assertGuaranteesAsViewed\(tx, edit, expected\);)(\s*)(await tx\.editApproval\.create\(\{[\s\S]*?\n {8}\}\);)/,
+      /(await assertGuaranteesAsViewed\(tx, edit, expected, lostOnEdit\(session\.id, editId, 'edit\.approve'\)\);)(\s*)(await tx\.editApproval\.create\(\{[\s\S]*?\n {8}\}\);)/,
       '$3$2$1'
     );
     expect(moved).not.toBe(src);

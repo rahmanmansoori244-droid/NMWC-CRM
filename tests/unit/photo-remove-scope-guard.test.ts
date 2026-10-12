@@ -14,7 +14,8 @@ function assertLockedScope(code: string) {
   const tx = code.slice(start);
   const lock = tx.indexOf('await lockCustomer(tx, ownerId)');
   const read = tx.indexOf('await tx.attachment.findFirst(');
-  const wiring = tx.indexOf("if (moved) throw new ConflictError('PHOTO_CHANGED'");
+  // Gap 22 (part C): the refusal carries its conflict meta, so it is a block now.
+  const wiring = tx.search(/if \(moved\) \{\s*throw new ConflictError\(\s*'PHOTO_CHANGED'/);
   const scope = tx.indexOf(recheck);
   expect(lock).toBeGreaterThan(-1);
   expect(read).toBeGreaterThan(lock);
@@ -37,7 +38,8 @@ describe('Remove scope is rechecked through the transaction before any write', (
     // Use a valid specimen even before the fix, so these controls independently
     // prove the guard can reject each regression rather than an absent anchor.
     const without = remove.replace(recheck, '');
-    const anchor = "if (moved) throw new ConflictError('PHOTO_CHANGED', PHOTO_CHANGED_MESSAGE);";
+    const anchor = /if \(moved\) \{\s*throw new ConflictError\(\s*'PHOTO_CHANGED',\s*PHOTO_CHANGED_MESSAGE,[\s\S]*?\);\s*\}/.exec(without)?.[0] ?? '';
+    expect(anchor).not.toBe('');
     expect(without).toContain(anchor);
     const valid = without.replace(anchor, anchor + '\n' + recheck);
     expect(() => assertLockedScope(valid)).not.toThrow();

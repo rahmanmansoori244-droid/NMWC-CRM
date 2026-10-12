@@ -458,6 +458,7 @@ import { uploadAccountMasterAction } from '@/services/imports';
 import { loadExcelJS } from '@/lib/excel';
 import { logger } from '@/lib/logger';
 import { assertPasswordNotReused } from '@/lib/password-policy';
+import { ROUTE_REGION_FIXED_MESSAGE } from '@/lib/route-region';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 const user = (over: Partial<U> & { id: string; username: string; role: string }): U => ({
@@ -996,35 +997,74 @@ describe('X-IMPORTS-1 / X-AUTH-3: every account, route and region the import cha
     ]);
   });
 
-  it('a route moved to another region records both region codes', async () => {
-    const { res } = await upload([
+  // Gap 16 (owner, 2026-10-11): a route never moves to another region. The row
+  // is held back with the rule, in the words the database refusal uses
+  // (lib/route-region.ts), and nothing about the route's region is written.
+  it('a route that names another region is held back with the rule, and nothing is written', async () => {
+    const { res, messages } = await upload([
       { name: 'Routes', rows: [{ code: 'MCT-02', name: 'Muscat 2', region_code: 'BAT' }] },
     ]);
-    expect(okData(res).clean).toBe(1);
-    expect(h.store.routes.find((r) => r.code === 'MCT-02')!.regionId).toBe('rg-bat');
+    expect(okData(res).clean).toBe(0);
+    expect(okData(res).issues).toBe(1);
+    expect(h.store.routes.find((r) => r.code === 'MCT-02')!.regionId).toBe('rg-mct');
+    expect(rowAudits()).toEqual([]);
+    expect(messages).toEqual([
+      `Routes 2: ${ROUTE_REGION_FIXED_MESSAGE} Route MCT-02 is in region MCT; this row says BAT.`,
+    ]);
+  });
+
+  it('a renamed route that names another region keeps its new name, its region, and is held back', async () => {
+    const { res, messages } = await upload([
+      { name: 'Routes', rows: [{ code: 'MCT-02', name: 'Muscat Two', region_code: 'BAT' }] },
+    ]);
+    expect(okData(res).clean).toBe(0);
+    const route = h.store.routes.find((r) => r.code === 'MCT-02')!;
+    expect(route).toMatchObject({ name: 'Muscat Two', regionId: 'rg-mct' });
     expect(rowAudits()).toEqual([
       {
         action: 'UPDATE',
         entityType: 'Route',
         entityId: 'rt-2',
-        before: { regionCode: 'MCT' },
-        after: { regionCode: 'BAT', batchId: h.store.batches[0].id },
+        before: { name: 'Muscat 2' },
+        after: { name: 'Muscat Two', batchId: h.store.batches[0].id },
+        reason: 'account_import',
+        viaTx: true,
+      },
+    ]);
+    expect(messages).toEqual([
+      `Routes 2: ${ROUTE_REGION_FIXED_MESSAGE} Route MCT-02 is in region MCT; this row says BAT. Its new name was saved.`,
+    ]);
+  });
+
+  it('a renamed route in its own region is applied and records both names', async () => {
+    const { res } = await upload([
+      { name: 'Routes', rows: [{ code: 'MCT-02', name: 'Muscat Two', region_code: 'MCT' }] },
+    ]);
+    expect(okData(res).clean).toBe(1);
+    expect(h.store.routes.find((r) => r.code === 'MCT-02')!).toMatchObject({ name: 'Muscat Two', regionId: 'rg-mct' });
+    expect(rowAudits()).toEqual([
+      {
+        action: 'UPDATE',
+        entityType: 'Route',
+        entityId: 'rt-2',
+        before: { name: 'Muscat 2' },
+        after: { name: 'Muscat Two', batchId: h.store.batches[0].id },
         reason: 'account_import',
         viaTx: true,
       },
     ]);
   });
 
-  it('a failed audit leaves the route where it was', async () => {
+  it('a failed audit leaves the route as it was', async () => {
     h.auditFails = (p) => p.reason === 'account_import';
     const { res, messages } = await upload([
-      { name: 'Routes', rows: [{ code: 'MCT-02', name: 'Muscat 2', region_code: 'BAT' }] },
+      { name: 'Routes', rows: [{ code: 'MCT-02', name: 'Muscat Two', region_code: 'MCT' }] },
     ]);
     expect(okData(res).clean).toBe(0);
     expect(messages).toEqual([
       `Routes 2: nothing was written for route "MCT-02": it could not be saved (Error).`,
     ]);
-    expect(h.store.routes.find((r) => r.code === 'MCT-02')!.regionId).toBe('rg-mct');
+    expect(h.store.routes.find((r) => r.code === 'MCT-02')!.name).toBe('Muscat 2');
   });
 });
 

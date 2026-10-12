@@ -1,7 +1,8 @@
 /**
- * The dated history (prisma/migrations/20261013100100_history_foundation and
- * 20261014100000_lossless_paths, docs/HISTORY.md): its tables, the triggers that
- * write and protect them, and the functions behind them. One list, read by the
+ * The dated history (prisma/migrations/20261013100100_history_foundation,
+ * 20261014100000_lossless_paths and part C's 20261015100000 / 20261015100100,
+ * docs/HISTORY.md): its tables, the triggers that write and protect them, and
+ * the functions behind them. One list, read by the
  * operator scripts that check the database (scripts/ops/app-role.ts,
  * restore-verify.ts, history-report.ts), the /status card, /api/health and the
  * e2e clean-up, so a table added to the history is added everywhere at once.
@@ -14,6 +15,10 @@
 export const HISTORY_MIGRATIONS = [
   '20261013100100_history_foundation',
   '20261014100000_lossless_paths',
+  // Part C: approval authority, job days, sign-in events (gaps 11, 21, 23) and
+  // the rule that a route never changes region (gap 16).
+  '20261015100000_authority_jobs_auth_events',
+  '20261015100100_route_region_fixed',
 ] as const;
 
 /** INSERT-only tables written by the capture triggers, never by the application. */
@@ -33,11 +38,18 @@ export type HistoryTable = (typeof HISTORY_TABLES)[number];
 export const CAPTURED_TABLES = ['Customer', 'Branch', 'User', 'Route', 'Region', 'Attachment'] as const;
 
 /**
- * Append-only tables the APPLICATION writes (lossless paths, gaps 12 and 14): the
- * runtime role may insert, never update or delete, and a trigger refuses both
- * outside the owner's maintenance window.
+ * Append-only tables the APPLICATION writes (lossless paths, gaps 12 and 14; part
+ * C, gaps 21 and 23): the runtime role may insert, never update or delete, and a
+ * trigger refuses both outside the owner's maintenance window.
  */
-export const APPEND_ONLY_APP_TABLES = ['EditRevision', 'ExportJob'] as const;
+export const APPEND_ONLY_APP_TABLES = ['EditRevision', 'ExportJob', 'JobRunDay', 'AuthEvent'] as const;
+
+/**
+ * The ones with a BIGSERIAL id: the runtime role draws ids from the sequence
+ * (nextval on insert) but may not set it (setval would make inserts collide).
+ * ExportJob's id is a cuid.
+ */
+export const LEDGER_SEQUENCE_TABLES = ['EditRevision', 'JobRunDay', 'AuthEvent'] as const;
 
 /**
  * Gap 19 (lossless paths): a request, once sent, is evidence. Its original
@@ -64,6 +76,12 @@ export const HISTORY_TRIGGERS: readonly string[] = [
   'managerregions_history_capture',
   // AuditLog rows carry the writer's source and the transaction id.
   'auditlog_stamp_context',
+  // Part C (gap 23): every session cut-off, written by the database, and the
+  // sign-in events the application inserts carry the same cause and transaction.
+  'user_session_revoke_capture',
+  'authevent_stamp_context',
+  // Part C (gap 16): a route never changes region.
+  'route_region_fixed',
   ...HISTORY_TABLES.flatMap((t) => [
     `${t.toLowerCase()}_append_only`,
     `${t.toLowerCase()}_no_truncate`,
@@ -86,6 +104,8 @@ export const HISTORY_FUNCTIONS = [
   'nmwc_history_insert_guard',
   'nmwc_customeredit_original_customer',
   'nmwc_customeredit_evidence_guard',
+  'nmwc_user_session_revoke',
+  'nmwc_route_region_fixed',
   'nmwc_day_end',
   'nmwc_branches_at',
   'nmwc_branches_on',
@@ -117,6 +137,8 @@ export const HISTORY_DEFINER_FUNCTIONS = [
   'nmwc_history_region',
   'nmwc_history_manager_regions',
   'nmwc_history_attachment',
+  // Part C (gap 23): the session cut-off capture.
+  'nmwc_user_session_revoke',
 ] as const;
 
 /** Trigger functions that are not definer-rights but whose EXECUTE is revoked from PUBLIC too. */
@@ -124,6 +146,7 @@ export const GUARD_FUNCTIONS = [
   'nmwc_history_insert_guard',
   'nmwc_customeredit_original_customer',
   'nmwc_customeredit_evidence_guard',
+  'nmwc_route_region_fixed',
 ] as const;
 
 /** The sequence behind each table's BIGSERIAL id (Prisma's naming). */

@@ -72,6 +72,25 @@ export function formatWorkingBudget(minutes: number): string {
 
 export const DEFAULT_STAGE_SLA_MIN = 8 * 60;
 
+/**
+ * Gap 21 (part C): the working calendar a deadline was computed on, written on
+ * each ESCALATE audit row, so a late step can be re-judged later on the calendar
+ * it was judged on then (the window and the week are env-overridable).
+ */
+export function workingCalendar(): {
+  tzOffsetMin: number;
+  workDays: number[];
+  startMin: number;
+  endMin: number;
+} {
+  return {
+    tzOffsetMin: TZ_OFFSET_MIN,
+    workDays: [...WORK_DAYS].sort((a, b) => a - b),
+    startMin: WORK_START_MIN,
+    endMin: WORK_END_MIN,
+  };
+}
+
 /** How much later (multiple of the stage SLA) the level-2 escalation fires. */
 export const ESCALATION_MULTIPLIER = 2;
 

@@ -94,7 +94,8 @@ function assertClaimFirst(tx: string) {
 function assertTargetReadAgain(tx: string, reads: RegExp[], conditions: string[]) {
   const lock = at(tx, /await lockCustomer\(tx, /);
   const claim = at(tx, /await tx\.attachment\.updateMany\(\{\s*where: claimWhere\(/);
-  const refuse = at(tx, /throw new ConflictError\('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE\)/);
+  // Gap 22 (part C): with or without its conflict meta after the message.
+  const refuse = at(tx, /throw new ConflictError\(\s*'PHOTO_CHANGED',\s*PHOTO_TARGET_CHANGED_MESSAGE\b/);
   expect(lock, 'the lock').toBeGreaterThan(-1);
   for (const read of reads) {
     const r = at(tx, read);
@@ -102,7 +103,7 @@ function assertTargetReadAgain(tx: string, reads: RegExp[], conditions: string[]
     expect(refuse, `the refusal after ${String(read)}`).toBeGreaterThan(r);
   }
   expect(claim, 'the claim after the refusal').toBeGreaterThan(refuse);
-  const cond = /if \(([^{]*)\)\s*\{\s*throw new ConflictError\('PHOTO_CHANGED', PHOTO_TARGET_CHANGED_MESSAGE\)/.exec(tx)?.[1] ?? '';
+  const cond = /if \(([^{]*)\)\s*\{\s*throw new ConflictError\(\s*'PHOTO_CHANGED',\s*PHOTO_TARGET_CHANGED_MESSAGE\b/.exec(tx)?.[1] ?? '';
   const flat = cond.replace(/\s+/g, ' ');
   for (const part of conditions) expect(flat, part).toContain(part);
 }
@@ -194,7 +195,7 @@ describe('X-PHOTO-1: Remove reads again under the lock and soft-deletes only gua
     const tx = txs[0];
     const lock = at(tx, /if \(ownerId\) await lockCustomer\(tx, ownerId\)/);
     const reread = at(tx, /await tx\.attachment\.findFirst\(\{ where: \{ id: att\.id, deletedAt: null \} \}\)/);
-    const refuse = at(tx, /if \(moved\) throw new ConflictError\('PHOTO_CHANGED'/);
+    const refuse = at(tx, /if \(moved\) \{\s*throw new ConflictError\(\s*'PHOTO_CHANGED'/);
     expect(lock).toBeGreaterThan(-1);
     expect(reread).toBeGreaterThan(lock);
     expect(refuse).toBeGreaterThan(reread);
@@ -234,7 +235,7 @@ describe('X-PHOTO-1: Remove reads again under the lock and soft-deletes only gua
     const reread = at(tx, /await tx\.attachment\.findFirst\(\{ where: \{ id: att\.id, deletedAt: null \} \}\)/);
     const goneNow = at(tx, /if \(!now\) throw new ConflictError\('PHOTO_GONE', PHOTO_GONE_MESSAGE\);/);
     expect(goneNow).toBeGreaterThan(reread);
-    expect(goneNow).toBeLessThan(at(tx, /if \(moved\) throw new ConflictError\('PHOTO_CHANGED'/));
+    expect(goneNow).toBeLessThan(at(tx, /if \(moved\) \{\s*throw new ConflictError\(\s*'PHOTO_CHANGED'/));
     // Only these two say it; NotFoundError is never "gone".
     expect(detach.match(/'PHOTO_GONE'/g)).toHaveLength(2);
   });
@@ -243,7 +244,7 @@ describe('X-PHOTO-1: Remove reads again under the lock and soft-deletes only gua
     const tx = txs[0];
     expect(tx).not.toMatch(/tx\.attachment\.update\(/);
     expect(tx).toMatch(
-      /const gone = await tx\.attachment\.updateMany\(\{\s*where: \{ id: att\.id, deletedAt: null, \.\.\.wiring \},\s*data: \{ deletedAt: new Date\(\) \},?\s*\}\);\s*if \(gone\.count !== 1\) throw new ConflictError\('PHOTO_CHANGED'/
+      /const gone = await tx\.attachment\.updateMany\(\{\s*where: \{ id: att\.id, deletedAt: null, \.\.\.wiring \},\s*data: \{ deletedAt: new Date\(\) \},?\s*\}\);\s*if \(gone\.count !== 1\) \{\s*throw new ConflictError\(\s*'PHOTO_CHANGED'/
     );
     expect(detach).toMatch(
       /const wiring = \{\s*customerId: att\.customerId,\s*branchId: att\.branchId,\s*branchExtraId: att\.branchExtraId,\s*editId: att\.editId,?\s*\};/

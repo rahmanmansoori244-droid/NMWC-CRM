@@ -34,10 +34,10 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
   let managerId = '';
   const editIds: string[] = [];
   // A Manager of region "in"; region "out" is someone else's.
-  const reg = { in: '', out: '', routeIn: '', routeOut: '', routeMoved: '' };
+  const reg = { in: '', out: '', routeIn: '', routeOut: '' };
   const cust: string[] = [];
   const e = {} as Record<
-    | 'in' | 'out' | 'early' | 'deleted' | 'multi' | 'createIn' | 'createMoved' | 'createLinked'
+    | 'in' | 'out' | 'early' | 'deleted' | 'multi' | 'createIn' | 'createLinked'
     | 'reactIn' | 'reactOut' | 'reactMultiOut' | 'waitingIn' | 'waitingOut' | 'waitingReactMultiOut',
     string
   >;
@@ -118,9 +118,8 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       prisma.route.create({ data: { name: `SLO ${code}`, code: `${sfx}-${code}`, regionId } });
     reg.routeIn = (await route('RIN', rIn.id)).id;
     reg.routeOut = (await route('ROUT', rOut.id)).id;
-    // Drafted in region "in", then the route is moved to "out" (below): the request
-    // page follows the route's CURRENT region, so the Manager of "in" can no longer open it.
-    reg.routeMoved = (await route('RMOVED', rIn.id)).id;
+    // A route never changes region (owner, 2026-10-11, gap 16; the database refuses
+    // it), so the case of a draft whose route moved to "out" is gone.
 
     const customer = async (key: string, branches: { regionId: string; routeId: string; deleted?: boolean }[]) => {
       const c = await prisma.customer.create({
@@ -184,8 +183,6 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       branchDrafts: { create: [{ branchName: 'SLO draft', regionId: rIn.id, routeId, address: 'SLO Way 2' }] },
     });
     await decided('createIn', draft(reg.routeIn), 'SUPERVISOR', true, 90);
-    await decided('createMoved', draft(reg.routeMoved), 'GM', true, 45);
-    await prisma.route.update({ where: { id: reg.routeMoved }, data: { regionId: rOut.id } });
     // A finalized CREATE is linked to its customer (lib/create-finalize.ts). Its
     // draft route is in "in", the customer's live branch in "out": the request
     // page follows the draft, so "in" may open it and "out" may not.
@@ -206,8 +203,19 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       });
       editIds.push(edit.id);
       e[key] = edit.id;
+      return edit.id;
     };
-    await reactivation('reactIn', cIn);
+    // Gap 11 (part C): a reactivation decided now also writes its EditApproval
+    // row (stepIndex 0, MANAGER). The figures read reactivations from the request
+    // itself, so that row must not be counted a second time.
+    const reactInId = await reactivation('reactIn', cIn);
+    await prisma.editApproval.create({
+      data: {
+        editId: reactInId, cycle: 1, stepIndex: 0, role: 'MANAGER', decision: 'APPROVED', actorId: managerId,
+        at: R('05:00:00'), stageEnteredAt: R('04:00:00'), slaDueAt: R('12:00:00'), workingMinutes: 60,
+        actorRole: 'MANAGER', authorityBasis: 'REGION_MANAGER', scopeRegionIds: [rIn.id],
+      },
+    });
     await reactivation('reactOut', cOut);
     // The multi-region customer's branch in "out": decided by "out"'s Managers
     // (/reactivations, approveReactivation). "in" may open the request, but it is
@@ -247,7 +255,7 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
       await prisma.branch.deleteMany({ where: { customerId: { in: cust } } });
       await prisma.customer.deleteMany({ where: { id: { in: cust } } });
     }
-    await prisma.route.deleteMany({ where: { id: { in: [reg.routeIn, reg.routeOut, reg.routeMoved].filter(Boolean) } } });
+    await prisma.route.deleteMany({ where: { id: { in: [reg.routeIn, reg.routeOut].filter(Boolean) } } });
     await prisma.region.deleteMany({ where: { id: { in: [reg.in, reg.out].filter(Boolean) } } });
     await prisma.user.deleteMany({ where: { id: { in: [userId, managerId].filter(Boolean) } } });
     await prisma.$disconnect();
@@ -343,7 +351,7 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     // The cases themselves: live branch in the region, a multi-region customer,
     // a draft on a route there now, a finalized CREATE whose draft route is here
     // though its customer's branch is not — yes; the other region, a deleted
-    // branch, a draft whose route has since moved away — no.
+    // branch — no.
     expect(await pageLetsOpen([reg.in])).toEqual(
       new Set([e.in, e.multi, e.createIn, e.createLinked, e.reactIn, e.reactMultiOut, e.waitingIn, e.waitingReactMultiOut])
     );
@@ -374,10 +382,12 @@ describe.skipIf(!ENABLED)('item 9: the service-level queries', () => {
     expect(await tiers([])).toEqual({ tiers: [], firstCounted: null });
     // The company's has every step, reactivations included.
     const company = await svc.__internal.approvalTiers(REGION_FROM, 'company');
-    expect(company.tiers.find((t) => t.role === 'GM')?.decided).toBe(2);
+    expect(company.tiers.find((t) => t.role === 'GM')?.decided).toBe(1);
     expect(company.tiers.find((t) => t.role === 'FINANCE_MANAGER')?.decided).toBe(1);
     expect(company.tiers.find((t) => t.role === 'ACCOUNTANT')?.decided).toBe(2);
-    // Three region reactivations on 10 May, and the suite's first one on 1 June.
+    // Three region reactivations on 10 May, and the suite's first one on 1 June —
+    // counted once each: reactIn's own EditApproval row is not a second decision.
+    expect(company.tiers.filter((t) => t.role === 'MANAGER')).toHaveLength(1);
     expect(company.tiers.find((t) => t.role === 'MANAGER')?.decided).toBe(4);
     expect(company.firstCounted!.getTime()).toBeLessThanOrEqual(new Date('2099-05-09T06:00:00Z').getTime());
   });

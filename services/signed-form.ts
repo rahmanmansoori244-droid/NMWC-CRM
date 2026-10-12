@@ -39,6 +39,7 @@ import {
   ROUTE_INACTIVE_MESSAGE,
   ValidationError,
   runAction,
+  type ConflictMeta,
   type SafeAction,
 } from '@/lib/errors';
 import { logger } from '@/lib/logger';
@@ -65,6 +66,26 @@ import { UNWIRED_LIVE } from '@/lib/photo-attach';
 
 /** The answer: the request moved on (or had already, from this same confirm). */
 export type SignedFormReceipt = { editId: string; pages: number; replayed: boolean };
+
+/**
+ * Gap 22 (part C): his confirm lost to a change of the request (a send-back, a
+ * withdraw, a confirm from another tab). Recorded as a CONFLICT row by runAction;
+ * the answer is unchanged.
+ */
+function signedFormLost(
+  actorId: string,
+  editId: string,
+  at: { expected?: { cycle: number; stepIndex: number }; liveVersion?: string }
+): ConflictMeta {
+  return {
+    actorId,
+    entityType: 'CustomerEdit',
+    entityId: editId,
+    path: 'signed-form.upload',
+    ...(at.expected ? { expectedVersion: `cycle ${at.expected.cycle} step ${at.expected.stepIndex}` } : {}),
+    ...(at.liveVersion !== undefined ? { liveVersion: at.liveVersion } : {}),
+  };
+}
 
 /** Where the form puts every refusal about the pages (app/(app)/customers/new/SignedFormUpload.tsx). */
 const FIELD = 'signedForm';
@@ -151,10 +172,20 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
     // A retry of a confirm that landed finds the request already moved on.
     const replay = await landed(editId, session.id, expected);
     if (replay) return replay;
-    throw new ConflictError('NOT_PENDING', NOT_AT_SIGNED_FORM_MESSAGE);
+    throw new ConflictError(
+      'NOT_PENDING',
+      NOT_AT_SIGNED_FORM_MESSAGE,
+      signedFormLost(session.id, editId, { liveVersion: `${edit.state} step ${edit.currentStepIndex}` })
+    );
   }
   const nextStep = chain[edit.currentStepIndex + 1];
-  if (!nextStep) throw new ConflictError('NOT_PENDING', NOT_AT_SIGNED_FORM_MESSAGE);
+  if (!nextStep) {
+    throw new ConflictError(
+      'NOT_PENDING',
+      NOT_AT_SIGNED_FORM_MESSAGE,
+      signedFormLost(session.id, editId, { liveVersion: `step ${edit.currentStepIndex}` })
+    );
+  }
 
   // The rule of a resubmit (services/creates.ts): his request only from the
   // route it was started on, and only while that route is active.
@@ -170,7 +201,9 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
   if (startedOn) {
     throw new ConflictError(
       'EDIT_LOCKED',
-      `This request was started on route ${startedOn}, and you now work route ${me.ownedRoute.code}, so its signed application cannot be sent from here. Withdraw it, and the salesman of route ${startedOn} adds the shop afresh.`
+      // Gap 22 (part C): the request is on a route he has left since.
+      `This request was started on route ${startedOn}, and you now work route ${me.ownedRoute.code}, so its signed application cannot be sent from here. Withdraw it, and the salesman of route ${startedOn} adds the shop afresh.`,
+      signedFormLost(session.id, editId, { liveVersion: `route ${me.ownedRoute.code}` })
     );
   }
 
@@ -179,7 +212,7 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
   // is waiting at the step again (a Finance Manager send-back), so these pages
   // were never sent, and "sent" would leave it waiting with nothing on the way
   // (review, 2026-10-11). He reloads and sees what the step holds now.
-  assertDecisionView(expected, edit);
+  assertDecisionView(expected, edit, signedFormLost(session.id, editId, {}));
 
   // Every page: live, his own capture, taken as a signed-application page, on no
   // customer or branch, and on no other request.
@@ -247,11 +280,16 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
           },
         });
         if (claim.count === 0) {
-          throw new ConflictError('NOT_PENDING', NOT_AT_SIGNED_FORM_MESSAGE);
+          // A retry whose first try landed is answered below and records nothing.
+          throw new ConflictError(
+            'NOT_PENDING',
+            NOT_AT_SIGNED_FORM_MESSAGE,
+            signedFormLost(session.id, editId, { expected })
+          );
         }
         // The documents he saw (credit documents, and the pages he kept after a
         // send-back) are still exactly the live ones — under the claim's lock.
-        await assertGuaranteesAsViewed(tx, edit, expected);
+        await assertGuaranteesAsViewed(tx, edit, expected, signedFormLost(session.id, editId, {}));
         // His pages, claimed by this request; the count must match.
         const claimed = await tx.attachment.updateMany({
           where: {
@@ -310,6 +348,12 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
             actorId: session.id,
             // Item 9: the stage as it stood when he completed it.
             ...stageSnapshot(edit, now),
+            // Gap 11 (part C): his own errand, never an approval — the basis says
+            // so; the regions are the request's, the route the one he works now.
+            actorRole: session.role,
+            authorityBasis: 'SUBMITTER',
+            scopeRegionIds: regionIds,
+            submitterRouteId: me.ownedRoute!.id,
           },
         });
         await writeAudit(tx, env, {

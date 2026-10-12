@@ -108,6 +108,7 @@ import {
   usersRow,
 } from './support/accounts-helpers';
 import { seedCreateRequest } from './support/create-chains-helpers';
+import { fingerprintKey, usernameFingerprint } from '../../../lib/sign-in-events';
 
 const ROLE_LABEL: Record<Role, string> = {
   SALESMAN: 'Salesman',
@@ -869,6 +870,8 @@ test.describe('accounts: a refused sign-in', { tag: ['@phone'] }, () => {
     const s1 = world.user('S1');
     const sx = world.user('SX');
     const unknown = `e2e.nobody.${world.sfx}`;
+    // Gap 23: its AuthEvent row is the world's, found by the name's fingerprint.
+    world.adopt.user(unknown);
     await resetLimits({ users: [s1, sx], ips: [world.ip(1), world.ip(2), world.ip(3)] });
 
     await expectSignInRefused(browser, { username: s1.username, password: freshPassword() }, world.ip(1), INVALID_LOGIN, 'phone');
@@ -877,8 +880,17 @@ test.describe('accounts: a refused sign-in', { tag: ['@phone'] }, () => {
 
     expect(await auditKinds(s1.id)).toEqual(['LOGIN_FAIL:wrong_password']);
     expect(await auditKinds(sx.id)).toEqual(['LOGIN_FAIL:inactive']);
-    // An unknown name has no account to point at: logged, never an audit row (critic correction).
+    // An unknown name has no account to point at: never an audit row (critic correction).
     expect(await db.auditLog.count({ where: { entityId: `unknown:${unknown}` } })).toBe(0);
+    // Gap 23 (part C): it is kept in AuthEvent instead, as a keyed fingerprint of
+    // the name — the name itself is stored nowhere in the row.
+    const k = fingerprintKey();
+    notRunHere(!k, 'AUTH_SECRET is not set here: the fingerprint cannot be computed');
+    const events = await db.authEvent.findMany({ where: { usernameHmac: usernameFingerprint(unknown, k!) } });
+    expect(events.map((e) => [e.kind, e.reason, e.keyId, e.userId])).toEqual([
+      ['LOGIN_FAIL_UNKNOWN', 'not_found', k!.keyId, null],
+    ]);
+    expect(JSON.stringify(events, (_key, v) => (typeof v === 'bigint' ? String(v) : v))).not.toContain(unknown);
   });
 
   test('empty fields are stopped by the browser, and the way back in is on the page', async ({ browser }) => {

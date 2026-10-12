@@ -12,6 +12,12 @@ import { checkLimit, LOGIN_LIMIT, refundLimit } from '@/lib/rate-limit';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { isDemoAccount } from '@/lib/demo-accounts';
 import { LoginThrottledError } from '@/lib/login-throttle';
+import {
+  recordRateLimited,
+  recordReusedNameFailure,
+  recordUnknownNameFailure,
+  type SignInSeen,
+} from '@/lib/auth-events';
 
 // QA-023 / AUTH-17: assert AUTH_SECRET is present, of sufficient length, AND
 // not trivially low-entropy. Length alone (≥32) is a poor proxy — `aaaa…`
@@ -139,38 +145,38 @@ async function clientIp(): Promise<string> {
   }
 }
 
-/**
- * B-04: Write a LOGIN_FAIL audit row.
- *
- * The AuditLog.actorId column has a real FK to User.id, so when the
- * attempted username doesn't exist in our DB we cannot insert a row
- * (the FK would reject it). For known users we write the row with both
- * actorId and entityId set to user.id and `reason` describing the
- * failure category. For unknown users we drop down to a logger.warn so
- * the attempt is still captured for log-shipping / SIEM, just not in
- * the immutable AuditLog table.
- *
- * `entityId` accepts the sentinel `'unknown:<username-prefix>'` for the
- * known-user-but-no-actor case (e.g. rate_limited fired before we even
- * loaded the user) — but in practice we only call this with a real
- * userId or the sentinel string, and skip the DB write for sentinels.
- */
-async function writeLoginFail(entityId: string, reason: string): Promise<void> {
+/** Gap 23: where a refused sign-in came from, for its AuthEvent row (as AuditLog keeps it). */
+async function signInSeen(ip: string): Promise<SignInSeen> {
+  let userAgent: string | null = null;
   try {
-    if (entityId.startsWith('unknown:')) {
-      // No actor row to point at. Captured in logs only.
-      logger.warn({ entityId, reason }, 'login.fail.unknown_user');
-      return;
-    }
-    await writeAudit(null, await getAuditEnvelope(entityId), {
+    userAgent = (await headers()).get('user-agent');
+  } catch {
+    /* outside a request: none */
+  }
+  return { ip: ip === 'unknown' ? null : ip, userAgent };
+}
+
+/**
+ * B-04: Write a LOGIN_FAIL audit row, for a failure on a REAL account: both
+ * actorId and entityId are its user id, `reason` the failure category.
+ *
+ * AuditLog.actorId is a real FK to User.id, so a name no account has cannot be
+ * written there. Gap 23 (part C): such a failure, and a refusal by a sign-in
+ * throttle, go to AuthEvent instead (lib/auth-events.ts), kept for ever with a
+ * keyed fingerprint of the name, never the name. They used to reach only the
+ * 30-day logs, with the typed name — sometimes a password — in plain text.
+ */
+async function writeLoginFail(userId: string, reason: string): Promise<void> {
+  try {
+    await writeAudit(null, await getAuditEnvelope(userId), {
       action: 'LOGIN_FAIL',
       entityType: 'User',
-      entityId,
+      entityId: userId,
       reason,
     });
   } catch (err) {
     // Audit failure must never block the auth flow.
-    logger.warn({ err: String(err), entityId, reason }, 'audit.login_fail.failed');
+    logger.warn({ err: String(err), userId, reason }, 'audit.login_fail.failed');
   }
 }
 
@@ -351,9 +357,9 @@ const {
             // tokens — no worse than before X-AUTH-2, when this bucket was charged
             // first, and no help for guessing: these attempts never reach bcrypt.
             if (bucket === 'user') await refundLimit(ipKey, LOGIN_LIMIT);
-            // B-04: surface rate-limit hits in the audit trail with a
-            // sentinel entityId so forensics can spot pattern attacks.
-            await writeLoginFail(`unknown:${username.slice(0, 50)}`, 'rate_limited');
+            // Gap 23: a throttle refusal is kept, at most once per bucket per
+            // five minutes, with the name as a fingerprint only.
+            await recordRateLimited(bucket, username, await signInSeen(ip));
             // Thrown, not `return null`, so the form can say "locked" or "too
             // many attempts" instead of "Invalid username or password" to a
             // user whose password is right (lib/login-throttle.ts). The code
@@ -373,11 +379,9 @@ const {
         const isDemo = isDemoAccount(username);
         if (isDemo && process.env.DEMO_ACCOUNTS_DISABLED === 'true') {
           await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
-          logger.warn({ username }, 'login.demo_disabled');
-          await writeLoginFail(
-            user?.id ?? `unknown:${username.slice(0, 50)}`,
-            'demo_disabled'
-          );
+          logger.warn({ known: Boolean(user) }, 'login.demo_disabled');
+          if (user) await writeLoginFail(user.id, 'demo_disabled');
+          else await recordUnknownNameFailure(username, 'demo_disabled', await signInSeen(ip));
           return null;
         }
 
@@ -386,13 +390,18 @@ const {
         const hashToCheck = user?.isActive ? user.passwordHash : DUMMY_BCRYPT_HASH;
         const ok = await bcrypt.compare(password, hashToCheck);
         if (!user || !user.isActive || !ok) {
-          // B-04: write a LOGIN_FAIL audit row with a category. For an
-          // unknown username we use a sentinel entityId so we can trace the
-          // attempted username for forensics without revealing whether it
-          // existed in any other surface.
-          const entityId = user?.id ?? `unknown:${username.slice(0, 50)}`;
-          const reason = !user ? 'not_found' : !user.isActive ? 'inactive' : 'wrong_password';
-          await writeLoginFail(entityId, reason);
+          // B-04: a failure on a real account is a LOGIN_FAIL audit row with a
+          // category. Gap 23: a name no account has is an AuthEvent row
+          // (lib/auth-events.ts) — and a failure on a name another account held
+          // before (a retired route sign-in name) gets an AuthEvent row too, so
+          // a leaver's old habit is not read as an attack on his successor.
+          const seen = await signInSeen(ip);
+          if (!user) {
+            await recordUnknownNameFailure(username, 'not_found', seen);
+          } else {
+            await writeLoginFail(user.id, !user.isActive ? 'inactive' : 'wrong_password');
+            await recordReusedNameFailure(user, seen);
+          }
           return null;
         }
 

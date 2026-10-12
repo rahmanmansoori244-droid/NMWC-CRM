@@ -1232,6 +1232,12 @@ test.describe('approvals: a reactivation from the phone to the Manager’s decis
     expect((await auditFor({ entityId: cl.branch.id, action: 'REACTIVATE', entityType: 'Branch' })).length).toBe(1);
     expect((await auditFor({ entityId: cl.id, action: 'REACTIVATE', entityType: 'Customer' })).length).toBe(1);
     expect(await stateOf(edit.id)).toMatchObject({ state: 'APPROVED', reviewedById: w.user('M1').id });
+    // Gap 11 (part C): the decision is in the step ledger like every other one —
+    // the MANAGER step, decided by a Manager as a Manager of the shop's region.
+    const decided = await db.editApproval.findMany({ where: { editId: edit.id } });
+    expect(
+      decided.map((d) => [d.stepIndex, d.role, d.decision, d.actorId, d.actorRole, d.authorityBasis, d.scopeRegionIds])
+    ).toEqual([[0, 'MANAGER', 'APPROVED', w.user('M1').id, 'MANAGER', 'REGION_MANAGER', [cl.branch.regionId]]]);
     // Wave 1: the salesman is told; M1's own request row is settled by the decision.
     await expect
       .poll(async () => (await notificationsFor({ editId: edit.id, userId: w.user('S1').id })).map((n) => `${n.kind}:${n.title}`))
@@ -1856,6 +1862,23 @@ test.describe('approvals: the SLA escalation sweep', { tag: ['@exclusive'] }, ()
     expect(audit.map((a) => ({ reason: a.reason, actorId: a.actorId, ip: a.ip, userAgent: a.userAgent }))).toEqual([
       { reason: 'system: sla-escalate sweep', actorId: ww.user('S1').id, ip: null, userAgent: null },
     ]);
+    // Gap 21 (part C): the row names the job as its cause, and says which step of
+    // which round was late, on what budget and calendar, and who was told — the
+    // same people the SLA_BREACH rows went to, which are deleted after 90 days.
+    const escalated = audit[0]!;
+    expect(escalated.source).toBe('cron:sla-escalate');
+    const after = escalated.after as {
+      level: number;
+      stepIndex: number;
+      cycle: number;
+      budgetMin: number;
+      audienceUserIds: string[];
+      calendar: { workDays: number[]; startMin: number; endMin: number };
+    };
+    expect([after.level, after.stepIndex, after.cycle]).toEqual([1, 0, 1]);
+    expect(after.budgetMin).toBeGreaterThan(0);
+    expect(after.audienceUserIds).toEqual(await breachRecipients(e.sup1!));
+    expect(after.calendar.endMin).toBeGreaterThan(after.calendar.startMin);
 
     const r1 = idsOf(ww, FOUR);
     const has = (rows: string[], keys: string[]) => keys.every((k) => rows.includes(ww.user(k).id));

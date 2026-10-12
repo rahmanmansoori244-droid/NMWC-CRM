@@ -64,7 +64,7 @@ const h = vi.hoisted(() => ({
   edits: [] as Edit[],
   users: [] as User[],
   notes: [] as Note[],
-  audits: [] as Array<{ entityId: string; action: string }>,
+  audits: [] as Array<{ entityId: string; action: string; after?: unknown }>,
   temixQueue: 0,
   /** Runs after the sweep has read its rows and before the claim: a decision landing in between. */
   beforeClaim: null as null | (() => void),
@@ -188,8 +188,8 @@ vi.mock('@/lib/alert', () => ({ sendAlert: vi.fn(async () => true) }));
 vi.mock('@/lib/temix', () => ({ TEMIX_QUEUE_WHERE: { temixQueued: true } }));
 vi.mock('@/lib/audit', () => ({
   systemAuditEnvelope: (actorId: string) => ({ actorId, ip: null, userAgent: null }),
-  writeAudit: vi.fn(async (_tx: unknown, _env: unknown, row: { entityId: string; action: string }) => {
-    h.audits.push({ entityId: row.entityId, action: row.action });
+  writeAudit: vi.fn(async (_tx: unknown, _env: unknown, row: { entityId: string; action: string; after?: unknown }) => {
+    h.audits.push({ entityId: row.entityId, action: row.action, after: row.after });
   }),
 }));
 
@@ -198,6 +198,7 @@ import { hrefFor, APPROVER_ROLES } from '@/lib/notification-links';
 import { rowVerdict, type Recipient, type RequestNow } from '@/lib/email/eligibility';
 import { resolveChain } from '@/lib/approval-chains';
 import { EditProcess, PaymentTerms, type Role } from '@prisma/client';
+import { DEFAULT_STAGE_SLA_MIN, STAGE_SLA_MINUTES, workingCalendar } from '@/lib/working-hours';
 
 const SECRET = 'sla-sweep-test-secret';
 const req = (auth = `Bearer ${SECRET}`) =>
@@ -317,6 +318,21 @@ describe('who a breach is escalated to', () => {
     }
     // Each escalation is audited once, as the system.
     expect(h.audits.map((a) => a.entityId).sort()).toEqual(['e-acc', 'e-gm', 'e-orphan', 'e-react', 'e-sup']);
+    // Gap 21 (part C): each row says which step of which round was late, from
+    // when, on what budget and calendar, and exactly who was told.
+    for (const a of h.audits) {
+      const e = h.edits.find((x) => x.id === a.entityId)!;
+      expect(a.after, a.entityId).toMatchObject({
+        level: 1,
+        pendingRole: e.pendingRole,
+        stepIndex: e.currentStepIndex,
+        cycle: e.cycle,
+        stageEnteredAt: e.stageEnteredAt?.toISOString() ?? null,
+        budgetMin: STAGE_SLA_MINUTES[e.pendingRole as Role] ?? DEFAULT_STAGE_SLA_MIN,
+        audienceUserIds: told(a.entityId),
+        calendar: workingCalendar(),
+      });
+    }
   });
 
   it('a customer with branches in two regions: the Managers of the branch the request is about, not the other region’s', async () => {

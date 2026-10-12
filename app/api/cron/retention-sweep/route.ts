@@ -20,9 +20,11 @@
  *
  * Deletion is intentionally conservative: each rule has a stated purpose and a
  * period taken from docs/compliance/DATA-RETENTION-SCHEDULE.md, and the sweep
- * NEVER touches the append-only ledgers (AuditLog, EditApproval) — those are
- * retained deliberately and any change to them is an owner-authorised
- * maintenance operation, not a cron job.
+ * NEVER touches the append-only ledgers (AuditLog, EditApproval, the dated
+ * history, JobRunDay, AuthEvent) — those are retained deliberately and any
+ * change to them is an owner-authorised maintenance operation, not a cron job.
+ * It only ever ADDS to one: each day of scheduled-job runs is written to
+ * JobRunDay before that day's runs may be pruned (gap 21, lib/job-run-day.ts).
  *
  * Daily via vercel.json crons. Reports through the same heartbeat machinery as
  * the other jobs so a silently dead sweep alarms on /api/health.
@@ -33,6 +35,7 @@ import { logger } from '@/lib/logger';
 import { cronAuthorized } from '@/lib/cron-auth';
 import { withHeartbeat } from '@/lib/heartbeat';
 import { IMPORT_PAYLOAD_DAYS as IMPORT_PAYLOAD_DAYS_SHARED } from '@/lib/import-row-fix';
+import { pruneSummarisedCronRuns, summariseJobRunDays } from '@/lib/job-run-day';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -175,18 +178,20 @@ async function handle(req: NextRequest) {
   }
 
   // 4. Scheduled-run history (item 9). Three 30-day service-level windows, then
-  //    gone. Up to ~450 rows arrive a day while three schedulers call keep-warm;
-  //    one 2,000-row statement a day stays ahead of that with room to catch up.
+  //    the runs go — but never their day (gap 21, lib/job-run-day.ts): first
+  //    every Oman day that is over is written to JobRunDay, kept for ever, and
+  //    only runs whose day has its row are pruned. A failed summary prunes
+  //    nothing it has not summarised. Up to ~450 rows arrive a day while three
+  //    schedulers call keep-warm; one 2,000-row statement a day stays ahead of
+  //    that with room to catch up.
   try {
-    const count = await prisma.$executeRaw`
-      DELETE FROM "CronRun"
-       WHERE "id" IN (
-         SELECT "id" FROM "CronRun"
-          WHERE "at" < ${cutoff(CRON_RUN_DAYS)}
-          ORDER BY "at"
-          LIMIT ${CRON_RUN_BATCH}
-       )`;
-    swept.cronRuns = count;
+    swept.jobRunDays = await summariseJobRunDays(prisma);
+  } catch (err) {
+    errors += 1;
+    logger.error({ err: (err as Error).message }, 'retention.job_run_days_failed');
+  }
+  try {
+    swept.cronRuns = await pruneSummarisedCronRuns(prisma, cutoff(CRON_RUN_DAYS), CRON_RUN_BATCH);
   } catch (err) {
     errors += 1;
     logger.error({ err: (err as Error).message }, 'retention.cron_runs_failed');

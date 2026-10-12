@@ -41,6 +41,7 @@ import {
   GUARD_FUNCTIONS,
   HISTORY_DEFINER_FUNCTIONS,
   HISTORY_TABLES,
+  LEDGER_SEQUENCE_TABLES,
   historySequence,
 } from '../../lib/history-tables';
 
@@ -284,11 +285,12 @@ async function grant() {
     // their owner may attach them to a table. The migration revokes EXECUTE from
     // PUBLIC, but a restore made with --no-privileges brings the default back.
     const guarded = await historyFunctionsPresent(owner);
-    // Lossless paths (gaps 12 and 14): EditRevision and ExportJob are insert-only
-    // for the role. The blanket GRANT below would hand UPDATE back, so it is taken
-    // back after it; EditRevision's sequence stays usable (nextval on insert) but
-    // not settable.
+    // Lossless paths (gaps 12 and 14) and part C (gaps 21 and 23): EditRevision,
+    // ExportJob, JobRunDay and AuthEvent are insert-only for the role. The blanket
+    // GRANT below would hand UPDATE back, so it is taken back after it; the
+    // BIGSERIAL ids' sequences stay usable (nextval on insert) but not settable.
     const ledgers = await appendOnlyTablesPresent(owner);
+    const ledgerSequences = LEDGER_SEQUENCE_TABLES.filter((t) => (ledgers as string[]).includes(t));
     const stmts = [
       `GRANT CONNECT ON DATABASE "${db}" TO "${ROLE}"`,
       `GRANT USAGE ON SCHEMA public TO "${ROLE}"`,
@@ -317,9 +319,7 @@ async function grant() {
       ...guarded.map((f) => `REVOKE EXECUTE ON FUNCTION ${f}() FROM PUBLIC`),
       // the insert-only ledgers the application writes (see above)
       ...ledgers.map((t) => `REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "${t}" FROM "${ROLE}"`),
-      ...(ledgers.includes('EditRevision')
-        ? [`REVOKE UPDATE ON SEQUENCE "${historySequence('EditRevision')}" FROM "${ROLE}"`]
-        : []),
+      ...ledgerSequences.map((t) => `REVOKE UPDATE ON SEQUENCE "${historySequence(t)}" FROM "${ROLE}"`),
       // tables and sequences created by FUTURE migrations (run by the owner) inherit the grants
       // No DELETE here on purpose: a table added by a future migration must not
       // become deletable by the runtime credential without somebody deciding so.
@@ -350,7 +350,8 @@ async function grant() {
   }
 }
 
-const REFUSAL = /permission denied|append-only|must be owner|insufficient_privilege/i;
+// The last alternative: the route rule's own words (gap 16, lib/route-region.ts).
+const REFUSAL = /permission denied|append-only|must be owner|insufficient_privilege|never move to another region/i;
 
 class Rollback extends Error {}
 
@@ -565,6 +566,46 @@ async function verify() {
             );
             await tx.$executeRaw`UPDATE "CustomerEdit" SET "state" = 'REJECTED', "reviewedById" = ${actor.id}, "reviewedAt" = now() WHERE "id" = ${editId}`;
             console.log(`  ✓ insert-only ledgers (${ledgers.join(', ')}): insert yes, change no; a sent request keeps what it asked for and still moves state`);
+
+            // Part C (gaps 21 and 23): the sweep's day summary and a failed sign-in
+            // are plain inserts; a session cut-off is written by the database,
+            // once, under the context set above; the id sequences cannot be set.
+            if (ledgers.includes('JobRunDay')) {
+              await tx.$executeRaw`INSERT INTO "JobRunDay" ("key","day","runs","failures","firstAt","lastAt","maxDurationMs","sources")
+                VALUES ('verify', DATE '2000-01-01', 1, 0, now(), now(), 0, '{}') ON CONFLICT ("key","day") DO NOTHING`;
+              await expectRefused(tx, 'JobRunDay sequence setval', () =>
+                tx.$queryRawUnsafe(`SELECT setval('"JobRunDay_id_seq"', 1)::text AS v`)
+              );
+            }
+            if (ledgers.includes('AuthEvent')) {
+              await tx.$executeRaw`INSERT INTO "AuthEvent" ("kind","usernameHmac","keyId","reason") VALUES ('LOGIN_FAIL_UNKNOWN', 'verify', 'verify', 'not_found')`;
+              await tx.$executeRaw`UPDATE "User" SET "sessionsRevokedAt" = now() WHERE "id" = ${actor.id}`;
+              const revokes = await tx.$queryRaw<{ source: string | null; reason: string | null }[]>`
+                SELECT "source", "reason" FROM "AuthEvent" WHERE "kind" = 'SESSION_REVOKE' AND "userId" = ${actor.id} AND "txId" = txid_current()`;
+              if (revokes.length !== 1 || revokes[0]!.source !== 'verify:app-role') {
+                throw new Error(`session cut-off capture: expected one SESSION_REVOKE under verify:app-role, got ${JSON.stringify(revokes)}`);
+              }
+              await expectRefused(tx, 'AuthEvent sequence setval', () =>
+                tx.$queryRawUnsafe(`SELECT setval('"AuthEvent_id_seq"', 1)::text AS v`)
+              );
+              console.log('  ✓ part C: a job-day summary and a failed sign-in insert; a session cut-off recorded by the database, once');
+            }
+          }
+          // Gap 16: a route never changes region, for this role as for any other.
+          const routeRule = await app.$queryRawUnsafe<{ n: number }[]>(
+            `SELECT count(*)::int AS n FROM pg_trigger WHERE tgname = 'route_region_fixed' AND NOT tgisinternal`
+          );
+          if ((routeRule[0]?.n ?? 0) > 0) {
+            const rsfx = `vrr${Date.now().toString(36)}`;
+            await tx.$executeRawUnsafe(
+              `INSERT INTO "Region" ("id","name","code","updatedAt") VALUES ('${rsfx}-a','Verify A ${rsfx}','VA${rsfx}',now()), ('${rsfx}-b','Verify B ${rsfx}','VB${rsfx}',now())`
+            );
+            await tx.$executeRawUnsafe(
+              `INSERT INTO "Route" ("id","name","code","regionId","updatedAt") VALUES ('${rsfx}-r','Verify route','VR${rsfx}','${rsfx}-a',now())`
+            );
+            await expectRefused(tx, 'moving a route to another region (gap 16)', () =>
+              tx.$executeRawUnsafe(`UPDATE "Route" SET "regionId" = '${rsfx}-b' WHERE "id" = '${rsfx}-r'`)
+            );
           }
           await expectRefused(tx, 'DDL (ALTER TABLE)', () => tx.$executeRawUnsafe(`ALTER TABLE "RateLimit" ADD COLUMN "x" INTEGER`));
           await expectRefused(tx, 'read _prisma_migrations', () => tx.$queryRawUnsafe(`SELECT count(*) FROM "_prisma_migrations"`));

@@ -446,7 +446,13 @@ describe.skipIf(!ENABLED)('photo attach and Remove on real Postgres (N06, X-PHOT
       branchId: null,
       deletedAt: null,
     });
-    expect(await prisma.auditLog.count({ where: { actorId: ids.sales, entityType: 'Customer', entityId: ids.cust } })).toBe(0);
+    expect(
+      await prisma.auditLog.count({ where: { actorId: ids.sales, entityType: 'Customer', entityId: ids.cust, action: { not: 'CONFLICT' } } })
+    ).toBe(0);
+    // Gap 22 (part C): the attach lost a race, and that is recorded — one CONFLICT row.
+    await expect
+      .poll(() => prisma.auditLog.count({ where: { actorId: ids.sales, entityType: 'Customer', entityId: ids.cust, action: 'CONFLICT' } }), { timeout: 15_000 })
+      .toBe(1);
   });
 
   it('the branch moves to another customer (a merge) while a shop attach waits — refused, nothing written', async () => {
@@ -657,7 +663,8 @@ describe.skipIf(!ENABLED)('Remove scope under the customer lock on real Postgres
         expect(result).toEqual({ ok: true });
         const removed = await prisma.attachment.findUniqueOrThrow({ where: { id: attachment.id } });
         expect(removed.deletedAt).not.toBeNull();
-        expect(removed.hash).toBeNull();
+        // Gap 15 (lossless paths): a removed photo keeps its fingerprint.
+        expect(removed.hash).toBe(attachment.hash);
         if (slot === 'CR') expect((await prisma.customer.findUniqueOrThrow({ where: { id: ids.customer } })).crPhotoId).toBeNull();
         else if (slot !== 'FREE') {
           const branch = await prisma.branch.findUniqueOrThrow({ where: { id: ids.branch } });

@@ -86,6 +86,7 @@ npx prisma migrate deploy
 
 - **The history foundation (`20261013100100_history_foundation`) locks the five master tables while it runs.** It writes a first page of history for every customer, shop, account, route and region (about 31k rows on production, 1–3 s on Neon) under `SHARE ROW EXCLUSIVE` locks, so writes to those tables wait for it; `lock_timeout` is 10 s, so a busy table fails the deploy fast (re-run it) rather than queueing behind it. Deploy it outside working hours. Re-run `scripts/ops/app-role.ts grant` afterwards (it takes INSERT/UPDATE on the history tables and their sequences back from `nmwc_app` if the role existed before the migration ran; the migration does it too when the role exists) and check `status`. Then `npx tsx scripts/ops/history-report.ts --expect-host <host>`: the baseline is in and nothing is unattributed. Every write path now names its cause (`lib/change-context.ts`); `docs/HISTORY.md` is the reference.
 - **The lossless paths (`20261014100000_lossless_paths`) come after it, and lock `Customer`, `CustomerEdit`, `EditApproval`, `EditBranchDraft`, `ExportJob`, `ImportBatch` and `CustomerHistory` (ACCESS EXCLUSIVE) and `Attachment` (SHARE ROW EXCLUSIVE) while it runs** — reads of those tables wait too. It adds columns, writes a first page of photo history (one row per photo), fills `CustomerEdit.originalCustomerId` and the merged customers' `mergedIntoId`: seconds. Deploy it outside working hours, after the history foundation. Then re-run `scripts/ops/app-role.ts grant` and `status`: `EditRevision` and `ExportJob` must read insert-only and `AttachmentHistory` read-only. From then on: a request, once sent, cannot be rewritten or deleted (a fixture or a correction goes through the maintenance window, §5e); every export is recorded with its customers and file fingerprint before it is sent; an import writes nothing for a customer or shop it leaves as it is.
+- **Part C (`20261015100000_authority_jobs_auth_events`, then `20261015100100_route_region_fixed`) comes after the lossless paths.** Additive and quick: four nullable columns on `EditApproval` (no rewrite; a CHECK on a few thousand rows), two new append-only tables (`JobRunDay`, filled from the `CronRun` rows that exist, and `AuthEvent`), a trigger on `User` that records every session cut-off, and a trigger on `Route` that refuses any change of its region. The second migration prints, read-only, `route_region_fixed: N shop(s) on M route(s) carry a region other than their route's` in the deploy log: a drift an earlier route move left behind (gap 16). If N is not 0, see §7 "A route never changes region". Afterwards re-run `scripts/ops/app-role.ts grant` and `status`: `JobRunDay` and `AuthEvent` must read insert-only. From then on: every decision row says who decided as what and why he could; a save that lost a race leaves a `CONFLICT` audit row; failed sign-ins on unknown names and every session cut-off are kept in `AuthEvent` (fingerprints, never names); the retention sweep keeps each day of scheduled-job runs in `JobRunDay` before it prunes them; and **no one can move a route to another region**, the Steward's account import included. `docs/HISTORY.md` §10 is the reference.
 - **Migrations ARE applied by the Vercel build.** `package.json` `build` runs `prisma generate && next typegen && tsc --noEmit && next lint && prisma migrate deploy && next build --no-lint`, so any migration on the deployed commit is applied to the database in `DIRECT_URL` as part of the deploy — but only after the typecheck and lint have passed. A deploy that failed in `next typegen`, `tsc` or `next lint` applied nothing; one that failed inside `next build` HAS applied its migrations. (This line previously said the opposite; it was wrong, and it matters — a rollback of the application does not roll back the schema, and a restore followed by a deploy will re-apply migrations.)
 
 ## 5b. First-time post-deploy operator checklist
@@ -632,6 +633,26 @@ The Data Steward does this on `/users` (owner decision 8, 2026-10-07). A Manager
 
 The account-master import can do the same, with the same rules (`services/imports.ts`): a `Users` row takes a route from a **disabled** salesman as it is, and from an **active** one only when its `change_route` cell is `yes` (that salesman is then left with no route unless his own row gives him one, so put both rows of a swap in one file). Because the import finds accounts by username, a salesman's row whose `full_name` differs from the account's is held back unless `change_name` is `yes`: after a hand-over on `/users`, an older sheet would otherwise put the leaver's name on the joiner's account. The import has no review step, and it cannot withdraw anyone's requests.
 
+### A route never changes region (owner, 2026-10-11)
+Routes never move to another region, are never renamed, split or merged. A route's customers can move to other routes, and a route can be closed (switched off on `/routes`); a route for another region is a **new** route. The database refuses any change of a route's region (trigger `route_region_fixed`, migration `20261015100100_route_region_fixed`) for every user, script and the table owner — there is no maintenance-window override — and the account-master import holds back a `Routes` row whose `region_code` differs from the route's: *"Routes never move to another region. Close this route and open a new one in the other region."* The row's new `name` (the route's label) is still saved.
+
+To serve an area from another region:
+1. Create the new route in the other region (`/routes`, or a `Routes` row with a new code).
+2. Move the customers' shops to it — today by the customer-master import or the edit flow; later by the daily Temix file (item D), where route moves are made.
+3. Give the new route its salesman on `/users` (§ "Move a route to another salesman").
+4. Switch the old route off when no shop is left on it.
+
+If the deploy log of `20261015100100_route_region_fixed` reported shops whose region differs from their route's (an earlier route move), list them with:
+
+```sql
+SELECT b."branchCode", rb."code" AS shop_region, rr."code" AS route_region, r."code" AS route
+  FROM "Branch" b JOIN "Route" r ON r."id" = b."routeId"
+  JOIN "Region" rb ON rb."id" = b."regionId" JOIN "Region" rr ON rr."id" = r."regionId"
+ WHERE b."regionId" <> r."regionId" ORDER BY r."code", b."branchCode";
+```
+
+and put each right through the customer-master import (the shop takes its route's region), so each correction is recorded with its batch and row. It is an owner decision whether to correct them; nothing does it automatically.
+
 ### Re-import the master after a bulk fix
 1. Sign in as Steward.
 2. `/import` → upload xlsx → review batch → Promote.
@@ -969,6 +990,13 @@ change — all unless the owner has opened this window. Hard-deleting a user who
 exported needs their `ExportJob` rows removed in the window first (RESTRICT); a
 customer another one was merged into cannot be hard-deleted while that one points at
 it (`Customer.mergedIntoId`, RESTRICT).
+
+**And, since part C (`20261015100000_authority_jobs_auth_events`, docs/HISTORY.md
+§10):** `JobRunDay` (the scheduled jobs' days) and `AuthEvent` (sign-in failures and
+session cut-offs) refuse UPDATE, DELETE and TRUNCATE the same way; the application
+only inserts them, and they are kept for ever. **The window does NOT open the route
+rule** (`20261015100100_route_region_fixed`): a route's region cannot be changed in
+it or anywhere else (§7, "A route never changes region").
 
 Legitimate uses so far: test-fixture clean-up on isolated branches
 (`tests/support/audit.ts`, including `purgeHistory`; the launch e2e clean-up's step 10;

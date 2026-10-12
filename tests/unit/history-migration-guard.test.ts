@@ -1,8 +1,8 @@
 // @vitest-environment node
 /**
- * The history migrations' SQL (prisma/migrations/20261013100100_history_foundation
- * and 20261014100000_lossless_paths) against what the rest of the system believes
- * about them.
+ * The history migrations' SQL (prisma/migrations/20261013100100_history_foundation,
+ * 20261014100000_lossless_paths, and part C's 20261015100000 and 20261015100100)
+ * against what the rest of the system believes about them.
  *
  *  - A new column on Customer, Branch, User, Route, Region or Attachment fails
  *    here until someone decides whether its changes are history (watched) or
@@ -19,6 +19,9 @@
  *    migration's own source, for every table.
  *  - Gap 19: every CustomerEdit column is either frozen once a request is sent
  *    (the evidence guard compares it) or deliberately left movable.
+ *  - Part C: every session cut-off is captured by the database, a route's region
+ *    can never change (no override), and the CHECK constraints name exactly the
+ *    values the application writes.
  *
  * Structural, per CLAUDE.md: SQL comments are stripped first.
  */
@@ -35,13 +38,17 @@ import {
   HISTORY_MIGRATIONS,
   HISTORY_TABLES,
   HISTORY_TRIGGERS,
+  LEDGER_SEQUENCE_TABLES,
 } from '@/lib/history-tables';
+import { AUTHORITY_BASES } from '@/lib/permissions';
+import { AUTH_EVENT_KINDS } from '@/lib/sign-in-events';
+import { ROUTE_REGION_FIXED_MESSAGE } from '@/lib/route-region';
 
 const strip = (sql: string) => sql.replace(/--[^\n]*/g, '');
 const MIGRATION_SQL: Record<string, string> = Object.fromEntries(
   HISTORY_MIGRATIONS.map((m) => [m, strip(readFileSync(`prisma/migrations/${m}/migration.sql`, 'utf8'))])
 );
-const [A, B] = HISTORY_MIGRATIONS;
+const [A, B, C, C2] = HISTORY_MIGRATIONS;
 /** Both migrations, in order: a later definition comes after an earlier one. */
 const SQL = HISTORY_MIGRATIONS.map((m) => MIGRATION_SQL[m]!).join('\n');
 const schema = parsePrismaSchema(readFileSync('prisma/schema.prisma', 'utf8'));
@@ -381,12 +388,16 @@ describe('history: lib/history-tables.ts is the migrations', () => {
     }
   });
 
-  it('the application ledgers are insert-only for the runtime role', () => {
-    const block = MIGRATION_SQL[B]!.slice(MIGRATION_SQL[B]!.indexOf('DO $$\nBEGIN\n  IF EXISTS'));
+  it('the application ledgers are insert-only for the runtime role, their sequences not settable', () => {
+    const blocks = [...SQL.matchAll(/DO \$\$\nBEGIN\n {2}IF EXISTS([\s\S]*?)END;\n\$\$;/g)].map((m) => m[1]!).join('\n');
     for (const t of APPEND_ONLY_APP_TABLES) {
-      expect(block, t).toMatch(new RegExp(`REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON [^;]*"${t}"`));
+      expect(blocks, t).toMatch(new RegExp(`REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON [^;]*"${t}"`));
     }
-    expect(block).toContain('REVOKE UPDATE ON SEQUENCE "EditRevision_id_seq" FROM nmwc_app');
+    for (const t of LEDGER_SEQUENCE_TABLES) {
+      expect(blocks, t).toMatch(new RegExp(`REVOKE UPDATE ON SEQUENCE [^;]*"${t}_id_seq"[^;]* FROM nmwc_app`));
+      // A BIGSERIAL id, in the migration that creates the table.
+      expect(SQL, t).toMatch(new RegExp(`CREATE TABLE "${t}" \\(\\s+"id" BIGSERIAL NOT NULL`));
+    }
   });
 });
 
@@ -465,7 +476,9 @@ describe('gap 19: a request, once sent, is evidence', () => {
     expect(sql).toMatch(/CREATE TRIGGER customeredit_no_delete BEFORE DELETE ON "CustomerEdit" FOR EACH ROW EXECUTE FUNCTION nmwc_forbid_audit_mutation\(\)/);
     expect(sql).toMatch(/CREATE TRIGGER customeredit_no_truncate BEFORE TRUNCATE ON "CustomerEdit" FOR EACH STATEMENT EXECUTE FUNCTION nmwc_forbid_audit_mutation\(\)/);
     for (const t of APPEND_ONLY_APP_TABLES) {
-      expect(sql).toContain(`CREATE TRIGGER ${t.toLowerCase()}_append_only BEFORE UPDATE OR DELETE ON "${t}" FOR EACH ROW EXECUTE FUNCTION nmwc_forbid_audit_mutation()`);
+      // Lossless paths and part C: in whichever history migration creates the ledger.
+      expect(SQL).toContain(`CREATE TRIGGER ${t.toLowerCase()}_append_only BEFORE UPDATE OR DELETE ON "${t}" FOR EACH ROW EXECUTE FUNCTION nmwc_forbid_audit_mutation()`);
+      expect(SQL).toContain(`CREATE TRIGGER ${t.toLowerCase()}_no_truncate BEFORE TRUNCATE ON "${t}" FOR EACH STATEMENT EXECUTE FUNCTION nmwc_forbid_audit_mutation()`);
     }
     expect(EVIDENCE_TRIGGERS.every((t) => HISTORY_TRIGGERS.includes(t))).toBe(true);
   });
@@ -487,11 +500,15 @@ describe('history: the operator checks know about it', () => {
     const seqs = src.indexOf('REVOKE ALL ON SEQUENCE "${historySequence(t)}"');
     const exec = src.indexOf('REVOKE EXECUTE ON FUNCTION ${f}() FROM PUBLIC');
     const ledgers = src.indexOf('REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "${t}"');
-    for (const [label, at] of Object.entries({ blanket, sequences, tables, seqs, exec, ledgers }))
+    const ledgerSeqs = src.indexOf('REVOKE UPDATE ON SEQUENCE "${historySequence(t)}"');
+    for (const [label, at] of Object.entries({ blanket, sequences, tables, seqs, exec, ledgers, ledgerSeqs }))
       expect(at, label).toBeGreaterThan(-1);
     expect(tables).toBeGreaterThan(blanket);
     expect(seqs).toBeGreaterThan(sequences);
     expect(ledgers).toBeGreaterThan(blanket);
+    // Every BIGSERIAL ledger's sequence, not only EditRevision's.
+    expect(ledgerSeqs).toBeGreaterThan(sequences);
+    expect(src).toMatch(/LEDGER_SEQUENCE_TABLES\.filter/);
     // Probed by `verify` and reported by `status`.
     expect(src).toMatch(/history capture: expected/);
     expect(src).toMatch(/history tables: read-only for/);
@@ -505,5 +522,64 @@ describe('history: the operator checks know about it', () => {
     expect(src).toMatch(/APPEND_ONLY_APP_TABLES\.map\(\(t\) => \[t, \['SELECT', 'INSERT'\]\]\)/);
     expect(src).toMatch(/'F-03'/);
     expect(src).toMatch(/'F-04'/);
+    // Part C: a restored database still refuses to move a route to another region.
+    expect(src).toMatch(/'F-05'/);
+  });
+
+  it('app-role verify probes part C: a session cut-off captured once, and the route rule', () => {
+    const src = stripTs('scripts/ops/app-role.ts');
+    expect(src).toMatch(/session cut-off capture: expected one SESSION_REVOKE under verify:app-role/);
+    expect(src).toMatch(/moving a route to another region \(gap 16\)/);
+    expect(src).toMatch(/never move to another region/);
+  });
+});
+
+describe('part C: session cut-offs, the route rule and the evidence vocabulary', () => {
+  const sqlC = () => MIGRATION_SQL[C]!;
+  const sqlC2 = () => MIGRATION_SQL[C2]!;
+
+  it('every change of sessionsRevokedAt is captured, with the writer’s actor and source', () => {
+    expect(sqlC()).toMatch(
+      /CREATE TRIGGER user_session_revoke_capture\s+AFTER UPDATE OF "sessionsRevokedAt" ON "User"\s+FOR EACH ROW\s+WHEN \(NEW\."sessionsRevokedAt" IS DISTINCT FROM OLD\."sessionsRevokedAt" AND NEW\."sessionsRevokedAt" IS NOT NULL\)\s+EXECUTE FUNCTION nmwc_user_session_revoke\(\)/
+    );
+    const body = functionBody('nmwc_user_session_revoke');
+    expect(body).toContain(`IF TG_RELID <> 'public."User"'::regclass THEN`);
+    expect(body).toContain('public.nmwc_change_ctx()');
+    expect(body).toMatch(/'SESSION_REVOKE', NEW\."id"[\s\S]*ctx\.actor_id, ctx\.source, ctx\.tx_id/);
+    // A credential is compared, never copied.
+    expect(body).not.toMatch(/VALUES[\s\S]*passwordHash/);
+  });
+
+  it('a route never changes region: refused in the owner’s words, with no override', () => {
+    expect(sqlC2()).toMatch(
+      /CREATE TRIGGER route_region_fixed\s+BEFORE UPDATE OF "regionId" ON "Route"\s+FOR EACH ROW\s+WHEN \(NEW\."regionId" IS DISTINCT FROM OLD\."regionId"\)\s+EXECUTE FUNCTION nmwc_route_region_fixed\(\)/
+    );
+    const body = functionBody('nmwc_route_region_fixed');
+    expect(body).toContain(`RAISE EXCEPTION '${ROUTE_REGION_FIXED_MESSAGE}'`);
+    expect(body).not.toMatch(/audit_maintenance|session_user|RETURN NEW/);
+    // The drift report reads and changes nothing.
+    const report = sqlC2().slice(0, sqlC2().indexOf('CREATE OR REPLACE FUNCTION'));
+    expect(report).toContain('RAISE NOTICE');
+    expect(report).not.toMatch(/\b(UPDATE|DELETE|INSERT)\b/);
+  });
+
+  it('the CHECK constraints name exactly what the application writes', () => {
+    const list = (constraint: string) => {
+      const at = sqlC().indexOf(constraint);
+      expect(at, constraint).toBeGreaterThan(-1);
+      const text = sqlC().slice(at, sqlC().indexOf(';', at));
+      return [...text.slice(text.indexOf(' IN (')).matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]!).sort();
+    };
+    expect(list('"EditApproval_authorityBasis_check"')).toEqual([...AUTHORITY_BASES].sort());
+    expect(list('"AuthEvent_kind_check"')).toEqual([...AUTH_EVENT_KINDS].sort());
+  });
+
+  it('the job-day backfill counts Oman days that are over, and never a day a prune may have cut short', () => {
+    const at = sqlC().indexOf('INSERT INTO "JobRunDay"');
+    const stmt = sqlC().slice(at, sqlC().indexOf(';', at));
+    expect(stmt).toContain(`AT TIME ZONE 'Asia/Muscat')::date AS day`);
+    expect(stmt).toContain(`d.day < ((now() - interval '1 hour') AT TIME ZONE 'Asia/Muscat')::date`);
+    expect(stmt).toContain(`interval '89 days'`);
+    expect(stmt).toContain('ON CONFLICT ("key", "day") DO NOTHING');
   });
 });

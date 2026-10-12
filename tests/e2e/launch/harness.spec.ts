@@ -21,6 +21,7 @@
  *   RUN_LAUNCH_E2E=1 node scripts/qa/run-with-env.mjs playwright test -c playwright.launch.config.ts harness --project=phone --project=desktop
  */
 import { expect, request as pwRequest, test } from '@playwright/test';
+import { HISTORY_TABLES } from '../../../lib/history-tables';
 import type { Role } from '@prisma/client';
 import {
   BASE_URL,
@@ -427,7 +428,11 @@ test.describe('launch harness: cleanup deletes only the world’s own rows', { t
     // A's cleanup: nothing of C's is deleted; A's users, route and region they point at are kept.
     const out = await a.cleanup();
     expect(a.registry.data.clean).toBe(false);
-    const nonZero = Object.fromEntries(Object.entries(out.leftovers).filter(([, n]) => n !== 0));
+    // The kept rows keep their dated history and sign-in events (docs/HISTORY.md):
+    // purged with them in step 10 when they go, so counted here as theirs.
+    const ledgers = new Set<string>([...HISTORY_TABLES, 'EditRevision', 'AuthEvent']);
+    const nonZero = Object.fromEntries(Object.entries(out.leftovers).filter(([k, n]) => n !== 0 && !ledgers.has(k)));
+    expect(out.leftovers.UserHistory, 'the kept users keep their history').toBeGreaterThan(0);
     expect(nonZero).toEqual({
       User: 3,
       Route: 1,

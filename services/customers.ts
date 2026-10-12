@@ -122,7 +122,9 @@ async function archiveCustomerCore(formData: FormData) {
       // transaction; a code that moved since needs a fresh start.
       throw new ConflictError(
         'STATE_CHANGED',
-        "This customer's Temix code just changed. Refresh and try again."
+        "This customer's Temix code just changed. Refresh and try again.",
+        // Gap 22 (part C): the archive lost to a write that moved the code.
+        { actorId: session.user.id, entityType: 'Customer', entityId: customerId, path: 'customer.archive', fields: ['temixCode'] }
       );
     }
     // F11: a Temix code another live customer still holds is not deactivated —
@@ -149,7 +151,16 @@ async function archiveCustomerCore(formData: FormData) {
     if (claim.count === 0) {
       throw new ConflictError(
         'STATE_CHANGED',
-        'This customer just changed (another action or a Temix batch ran). Refresh and try again.'
+        'This customer just changed (another action or a Temix batch ran). Refresh and try again.',
+        // Gap 22 (part C): the archive lost to a write that landed first.
+        {
+          actorId: session.user.id,
+          entityType: 'Customer',
+          entityId: customerId,
+          path: 'customer.archive',
+          fields: ['temixSyncState'],
+          expectedVersion: fresh.temixSyncState,
+        }
       );
     }
     // Tombstone the branches too — route/region-scoped reads (today lists,

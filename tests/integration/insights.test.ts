@@ -8,8 +8,10 @@
  *     lets a Manager open, and countedInRegionsSql itself for requests — with a
  *     customer whose branches sit in two regions among the fixtures;
  *   - the definitions: direct writes are their own series, close-shop requests
- *     and reactivations are never "updated", a moved route takes its new-customer
- *     requests with it, and a non-array fieldChanges does not break the query;
+ *     and reactivations are never "updated", and a non-array fieldChanges does
+ *     not break the query (a route never changes region — owner, 2026-10-11, gap
+ *     16 — so the moved-route case this suite had is gone: the database refuses
+ *     the move, tests/integration/route-region-fixed.test.ts);
  *   - Oman days: a decision at 21:00 UTC lands on the next Oman day, and the week
  *     bucket Postgres computes is the one lib/insights/period.ts gap-fills;
  *   - a multi-region customer adds no heat cell and no route count from its other
@@ -49,7 +51,7 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
 
   const users = { salesman: '', steward: '', manager: '' };
   const reg = { in: '', out: '', flat: '' };
-  const rt = { in1: '', in2: '', out: '', moved: '', flat: '' };
+  const rt = { in1: '', in2: '', out: '', flat: '' };
   const cust: Record<string, { id: string; branchIds: string[] }> = {};
   const edits: Record<string, string> = {};
   const editIds: string[] = [];
@@ -83,7 +85,6 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     rt.in1 = await route('IN1', reg.in);
     rt.in2 = await route('IN2', reg.in);
     rt.out = await route('OUT', reg.out);
-    rt.moved = await route('MOVED', reg.in);
     // A region of its own for the like-for-like comparison, so its events touch no other case.
     reg.flat = (await prisma.region.create({ data: { name: `Insights Flat ${sfx}`, code: `${sfx}-FLAT` } })).id;
     rt.flat = await route('FLAT', reg.flat);
@@ -155,7 +156,6 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     // New customers. 21:00 UTC on 10 June is 01:00 on 11 June in Oman.
     await edit('createIn', { ...create(rt.in1, reg.in, 'CASH'), ...approved('2099-06-10T21:00:00') });
     await edit('createOut', { ...create(rt.out, reg.out, 'CREDIT'), ...approved('2099-06-12T06:00:00') });
-    await edit('createMoved', { ...create(rt.moved, reg.in, 'CASH'), ...approved('2099-06-12T07:00:00') });
     // Finalized and linked to a customer whose branch is elsewhere: it counts where it was raised.
     await edit('createLinked', {
       ...create(rt.in2, reg.in, 'CREDIT'),
@@ -163,8 +163,6 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
       customerId: cust.out!.id,
     });
     await edit('createPrev', { ...create(rt.in1, reg.in, 'CASH'), ...approved('2099-05-20T06:00:00') });
-    // The route is moved after the request: the request follows the route's current region.
-    await prisma.route.update({ where: { id: rt.moved }, data: { regionId: reg.out } });
 
     // Customers updated.
     await edit('updIn', {
@@ -414,7 +412,7 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     expect(in2.route.hasOwner).toBe(false);
     expect(data.state.data.routes.some((r) => r.route.id === rt.out)).toBe(false);
 
-    // New customers: createIn and createLinked; createMoved went to "out" with its route.
+    // New customers: createIn and createLinked.
     const c = data.created.data;
     expect(c.total).toBe(2);
     expect(c.prevTotal).toBe(1);
@@ -467,7 +465,7 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     if (!data.created.ok || !data.updated.ok || !data.statusChanges.ok || !data.heat.ok || !data.state.ok) {
       throw new Error('a card failed');
     }
-    expect(data.created.data.total).toBe(2); // createOut and createMoved
+    expect(data.created.data.total).toBe(1); // createOut
     expect(data.updated.data.customers).toBe(2); // multi, out
     expect(data.updated.data.routes.map((r) => r.route.id)).toEqual([rt.out]);
     // Both customers count on OUT, both by the IN1 salesman's requests; but only
@@ -487,7 +485,7 @@ describe.skipIf(!ENABLED)('F2: the insights dashboard queries', () => {
     );
     const data = await load.loadInsights(scope, period());
     if (!data.created.ok || !data.updated.ok || !data.state.ok || !data.heat.ok) throw new Error('a card failed');
-    expect(data.created.data.total).toBe(4);
+    expect(data.created.data.total).toBe(3); // createIn, createLinked, createOut
     expect(data.updated.data.customers).toBe(4); // in, in2, multi, out — multi once
     expect(data.state.data.total.customers).toBe(7); // in's six and out
     expect(data.heat.data.cellDeg).toBe(0.05);

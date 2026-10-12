@@ -199,6 +199,9 @@ jobs:
           # merge-record, edit-revision, edit-evidence-guard, export-record,
           # photo-history, finalize-birth.
           RUN_LOSSLESS: '1'
+          # Part C (gaps 11, 16, 21, 22, 23): approval-authority, job-run-day,
+          # conflict-record, auth-events, route-region-fixed.
+          RUN_ACCOUNTABILITY: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

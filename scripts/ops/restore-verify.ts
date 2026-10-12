@@ -616,6 +616,44 @@ async function main() {
       'the history is rewritable after recovery — the append-only guarantee is silently undone'
     );
 
+    // F-05: a route never changes region (gap 16, owner 2026-10-11). Rolled back.
+    let routeRuleRefused = false;
+    let routeRuleDetail = 'not run';
+    const routeProbeDone = new Error('rolled back');
+    try {
+      await db.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '2000ms'`);
+        await setChangeContext(tx, { actorId: null, source: src.verify('restore') });
+        const sfx = `rr${Math.floor(Date.now() / 1000)}`;
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "Region" ("id","name","code","updatedAt") VALUES ('${sfx}-a','RR A ${sfx}','RRA${sfx}',now()), ('${sfx}-b','RR B ${sfx}','RRB${sfx}',now())`
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "Route" ("id","name","code","regionId","updatedAt") VALUES ('${sfx}-r','RR Route','RR${sfx}','${sfx}-a',now())`
+        );
+        await tx.$executeRawUnsafe('SAVEPOINT move');
+        try {
+          await tx.$executeRawUnsafe(`UPDATE "Route" SET "regionId" = '${sfx}-b' WHERE "id" = '${sfx}-r'`);
+          routeRuleDetail = 'NOT refused: a route was moved to another region (and rolled back)';
+        } catch (err) {
+          const msg = (err as Error).message;
+          routeRuleRefused = /never move to another region/i.test(msg);
+          routeRuleDetail = routeRuleRefused ? 'the move was refused by the trigger' : `NOT refused: it failed with ${describeError(err)} instead`;
+        }
+        await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT move');
+        throw routeProbeDone;
+      });
+    } catch (err) {
+      if (err !== routeProbeDone) routeRuleDetail = `the probe failed with ${describeError(err)}`;
+    }
+    record(
+      'F-05',
+      'the restored database refuses to move a route to another region',
+      routeRuleRefused ? 'pass' : 'fail',
+      routeRuleDetail,
+      'routes can move between regions after recovery, leaving their shops filed under the old region (gap 16)'
+    );
+
     // ---- R: the runtime role ----------------------------------------------
     const [{ n: roleCount }] = await q<{ n: number }>(
       `SELECT count(*)::int AS n FROM pg_roles WHERE rolname = 'nmwc_app'`

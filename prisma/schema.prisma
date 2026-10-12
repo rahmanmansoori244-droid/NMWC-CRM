@@ -674,6 +674,30 @@ model CronRun {
   @@index([key, at])
 }
 
+// Gap 21 (part C, 20261015100000): the scheduled jobs' run history, kept for
+// ever. CronRun keeps every run for 90 days (the service-level report reads 30);
+// before the retention sweep prunes a day, it writes that day here as one row
+// per job: how often it ran and failed, first and last start, the slowest run
+// and which schedulers called. So "the escalation never happened" can still be
+// told from "the job never ran" a year later. Append-only: the runtime role
+// inserts (ON CONFLICT DO NOTHING), nothing updates or deletes.
+model JobRunDay {
+  id            BigInt   @id @default(autoincrement())
+  key           String
+  // The Oman (Asia/Muscat) calendar day the runs STARTED on.
+  day           DateTime @db.Date
+  runs          Int
+  failures      Int
+  firstAt       DateTime
+  lastAt        DateTime
+  maxDurationMs Int
+  // CronRun.source values seen that day ('vercel', 'cron-job.org', 'github', 'other').
+  sources       String[]
+  recordedAt    DateTime @default(now())
+
+  @@unique([key, day])
+}
+
 // ── RATE LIMIT ──────────────────────────────────────
 // QA-015: durable rate limiter that survives across Vercel function instances.
 // Token-bucket: each row holds the bucket's current tokens and the last refill
@@ -749,6 +773,52 @@ model AuditLog {
   // scanned a table that grows forever.
   @@index([at(sort: Desc)])
   @@index([txId])
+}
+
+// Gap 23 (part C, 20261015100000): sign-in events AuditLog cannot hold, kept for
+// ever. AuditLog needs a real user as actor, so a failed sign-in with a name no
+// account has, and a refusal by the rate limit, used to reach only the 30-day
+// logs; and a session cut-off (disable, password reset, role or route change,
+// sign-out, an account-import row) left no row of its own. kind:
+//   LOGIN_FAIL_UNKNOWN      a name no account has (reason: not_found,
+//                           demo_disabled, or retired_username when an account
+//                           used to have it)
+//   LOGIN_RATE_LIMITED      refused by a sign-in throttle (reason: the bucket, ip
+//                           or user); at most one row per bucket per 5 minutes
+//   LOGIN_FAIL_REUSED_NAME  a failure on an account whose name another account
+//                           held before (a retired route sign-in name), beside
+//                           its LOGIN_FAIL audit row (reason retired_username)
+//   SESSION_REVOKE          written by the DATABASE (trigger
+//                           user_session_revoke_capture) whenever
+//                           User.sessionsRevokedAt moves, with the change
+//                           context's actor and source; reason = what moved with
+//                           it (deactivated, password, role, route, username)
+// The typed name is never stored, only usernameHmac: HMAC-SHA256 of the trimmed,
+// lower-cased name, keyed from AUTH_SECRET (lib/username-fingerprint.ts); keyId
+// says which key, so a rotated AUTH_SECRET is told apart. A password typed into
+// the name field cannot be read back. No foreign key: an event outlives the
+// account. Append-only like AuditLog.
+model AuthEvent {
+  id           BigInt   @id @default(autoincrement())
+  at           DateTime @default(now())
+  kind         String
+  userId       String?
+  usernameHmac String?
+  keyId        String?
+  reason       String?
+  ip           String?
+  userAgent    String?
+  // Who caused a SESSION_REVOKE (the change context's actor); null for sign-in failures.
+  actorId      String?
+  // The change context's source (lib/change-context.ts), stamped by the database.
+  source       String?
+  // The transaction (joins AuditLog.txId and the history), stamped by the database.
+  txId         BigInt?
+
+  @@index([at(sort: Desc)])
+  @@index([userId, at(sort: Desc)])
+  @@index([usernameHmac, at(sort: Desc)])
+  @@index([kind, at(sort: Desc)])
 }
 
 // ── DATED HISTORY (gaps 5, 6, 17, 24; docs/HISTORY.md) ───────────────────
@@ -1091,6 +1161,17 @@ model EditApproval {
   // Gap 12 (lossless paths): the send-back reason category chosen with a
   // rejection. Null on approvals and on rows written before 20261014100000.
   category       String?
+  // Gap 11 (part C, 20261015100000): beside the STEP's role above, the
+  // decider's OWN role when he decided, why he was allowed to
+  // (lib/permissions.ts stepAuthority: SUPERVISOR_OF_SUBMITTER,
+  // REGION_MANAGER, REGION_OVERLAP, GLOBAL, or SUBMITTER for the salesman's
+  // signed-application upload), the regions the request covered and the
+  // submitter's route at that moment. Null / empty on rows written before
+  // 20261015100000: not recorded then, never guessed afterwards.
+  actorRole        Role?
+  authorityBasis   String?
+  scopeRegionIds   String[]
+  submitterRouteId String?
 
   edit  CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
   actor User         @relation("StepActor", fields: [actorId], references: [id])

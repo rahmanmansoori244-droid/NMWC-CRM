@@ -20,6 +20,7 @@ import {
   ConflictError,
   ROUTE_INACTIVE_MESSAGE,
   runAction,
+  type ConflictMeta,
   type SafeAction,
 } from '@/lib/errors';
 import { revalidatePath } from 'next/cache';
@@ -29,7 +30,7 @@ import { lockCustomerRow } from '@/lib/locks';
 import { followBranchStatus, statusEvents } from '@/lib/customer-status';
 import { REACTIVATION_STATE_CHANGED_MESSAGE, assertStatusEvidence } from '@/lib/status-evidence';
 import { stepDeadline } from '@/lib/approval-chains';
-import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN } from '@/lib/working-hours';
+import { STAGE_SLA_MINUTES, DEFAULT_STAGE_SLA_MIN, stageSnapshot } from '@/lib/working-hours';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import {
   answerIfLanded,
@@ -50,6 +51,48 @@ async function require(role?: Role[]) {
     throw new ForbiddenError(`Role ${user.role} not allowed.`);
   }
   return user;
+}
+
+/**
+ * Gap 11 (part C): a reactivation decision as an EditApproval row. A Manager
+ * decides it alone (stepIndex 0, the MANAGER step), on the region of the shop it
+ * is about: approve and reject both refuse a Manager who does not manage it, so
+ * the basis is REGION_MANAGER and the scope that one region.
+ */
+function reactivationDecision(
+  edit: {
+    id: string;
+    cycle: number;
+    stageEnteredAt: Date | null;
+    slaDueAt: Date | null;
+    submittedAt: Date | null;
+    branch: { regionId: string } | null;
+    submittedBy: { ownedRouteId: string | null } | null;
+  },
+  me: { id: string; role: Role },
+  decision: 'APPROVED' | 'REJECTED',
+  reason: string | null,
+  decidedAt: Date
+): Prisma.EditApprovalUncheckedCreateInput {
+  return {
+    editId: edit.id,
+    cycle: edit.cycle,
+    stepIndex: 0,
+    role: Role.MANAGER,
+    decision,
+    actorId: me.id,
+    reason,
+    ...stageSnapshot(edit, decidedAt),
+    actorRole: me.role,
+    authorityBasis: 'REGION_MANAGER',
+    scopeRegionIds: edit.branch ? [edit.branch.regionId] : [],
+    submitterRouteId: edit.submittedBy?.ownedRouteId ?? null,
+  };
+}
+
+/** Gap 22 (part C): the losing side of two Managers deciding one reactivation at once. */
+function reactivationConflict(actorId: string, editId: string, path: string): ConflictMeta {
+  return { actorId, entityType: 'CustomerEdit', entityId: editId, path };
 }
 
 /**
@@ -477,7 +520,8 @@ async function approveReactivationCore(formData: FormData) {
 
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
-    include: { branch: true, customer: true, submittedBy: { select: { id: true } } },
+    // ownedRouteId: gap 11, the submitter's route on the decision row.
+    include: { branch: true, customer: true, submittedBy: { select: { id: true, ownedRouteId: true } } },
   });
   if (!edit) throw new NotFoundError('Edit not found.');
   if (!edit.isReactivation) throw new ValidationError({ editId: 'Not a reactivation.' });
@@ -514,21 +558,30 @@ async function approveReactivationCore(formData: FormData) {
     // racing here: only one updateMany matches state=SUBMITTED, the loser sees
     // count=0 and aborts before any branch/customer/score/audit side effects —
     // no duplicate REACTIVATE audit rows, no reviewer misattribution.
+    const decidedAt = new Date();
     const claim = await tx.customerEdit.updateMany({
       where: { id: editId, state: EditState.SUBMITTED, isReactivation: true },
       data: {
         state: EditState.APPROVED,
         pendingRole: null,
         reviewedById: me.id,
-        reviewedAt: new Date(),
+        reviewedAt: decidedAt,
       },
     });
     if (claim.count === 0) {
       throw new ConflictError(
         'NOT_PENDING',
-        'This reactivation was just decided by another reviewer. Refresh to see the current state.'
+        'This reactivation was just decided by another reviewer. Refresh to see the current state.',
+        reactivationConflict(me.id, editId, 'reactivation.approve')
       );
     }
+    // Gap 11 (part C): the decision in the one permanent table every other
+    // decision is in — stepIndex 0, the MANAGER step, the stage as it stood, and
+    // why this Manager could decide it (a Manager of the shop's region). Counted
+    // once on /status: lib/service-status.ts reads reactivations from the request.
+    await tx.editApproval.create({
+      data: reactivationDecision(edit, me, 'APPROVED', managerReason, decidedAt),
+    });
     // The customer's row lock before the branch write (lib/locks.ts): photo
     // attach and Remove take it first too, and the opposite order deadlocked
     // on the same branch (pre-merge review).
@@ -556,7 +609,11 @@ async function approveReactivationCore(formData: FormData) {
       customerNow.deletedAt
     ) {
       // The Reactivations queue's reject button is "Keep closed"; the message names it.
-      throw new ConflictError('STATE_CHANGED', REACTIVATION_STATE_CHANGED_MESSAGE);
+      throw new ConflictError(
+        'STATE_CHANGED',
+        REACTIVATION_STATE_CHANGED_MESSAGE,
+        { ...reactivationConflict(me.id, editId, 'reactivation.approve'), entityType: 'Branch', entityId: edit.branchId! }
+      );
     }
     // F10: the photo the request was sent with must still stand — live, the
     // submitter's, on this branch. Read under the lock Remove also takes; the
@@ -678,7 +735,8 @@ async function rejectReactivationCore(formData: FormData) {
     where: { id: editId },
     include: {
       branch: true,
-      submittedBy: { select: { id: true } },
+      // ownedRouteId: gap 11, the submitter's route on the decision row.
+      submittedBy: { select: { id: true, ownedRouteId: true } },
       // For the salesman's notification: the name and code, never more.
       customer: { select: { legalName: true, nmwcCode: true } },
     },
@@ -720,21 +778,27 @@ async function rejectReactivationCore(formData: FormData) {
     // salesman's Needs correction lists for ever. decisionReason keeps HIS reason
     // for asking (it was overwritten, and lost); the Manager's is on the REJECT
     // audit row below and in the salesman's notification.
+    const decidedAt = new Date();
     const claim = await tx.customerEdit.updateMany({
       where: { id: editId, state: EditState.SUBMITTED, isReactivation: true },
       data: {
         state: EditState.REJECTED,
         pendingRole: null,
         reviewedById: me.id,
-        reviewedAt: new Date(),
+        reviewedAt: decidedAt,
       },
     });
     if (claim.count === 0) {
       throw new ConflictError(
         'NOT_PENDING',
-        'This reactivation was just decided by another reviewer. Refresh to see the current state.'
+        'This reactivation was just decided by another reviewer. Refresh to see the current state.',
+        reactivationConflict(me.id, editId, 'reactivation.reject')
       );
     }
+    // Gap 11 (part C): as on approve, with the Manager's reason.
+    await tx.editApproval.create({
+      data: reactivationDecision(edit, me, 'REJECTED', reason, decidedAt),
+    });
     await writeAudit(tx, env, {
       action: 'REJECT',
       entityType: 'CustomerEdit',

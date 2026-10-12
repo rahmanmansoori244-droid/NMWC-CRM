@@ -4,7 +4,11 @@ What the CRM remembers about its customers, shops, accounts, routes, regions and
 photos, from when to when, and why. Data audit 2026-10-10, gaps 5, 6, 17 and 24;
 migration `prisma/migrations/20261013100100_history_foundation`. The write paths
 that used to lose what they changed (gaps 4, 7, 8, 12, 14, 15, 19, 20 and 27) are
-in §9, migration `20261014100000_lossless_paths`.
+in §9, migration `20261014100000_lossless_paths`. Who decided as what (gap 11),
+the scheduled jobs' days (21), the losing side of two saves at once (22), sign-in
+events and session cut-offs (23) and the rule that a route never changes region
+(16) are in §10, migrations `20261015100000_authority_jobs_auth_events` and
+`20261015100100_route_region_fixed`.
 
 The owner's rule (2026-10-11): everything is logged, history is appended and never
 rewritten, and it is kept for ever. Effective dates matter from the day this
@@ -23,7 +27,8 @@ application are all recorded alike.
 An update that touches only bookkeeping — `updatedAt`, `version`,
 `completenessScore`, `lastEditedById`, `lastLoginAt`, `sessionsRevokedAt`,
 `passwordHash`, the Temix upload-queue columns — writes nothing, and neither does
-an update that sets a value it already had.
+an update that sets a value it already had. (A move of `sessionsRevokedAt` — a
+session cut-off — is recorded in `AuthEvent` instead, §10.)
 `tests/unit/history-migration-guard.test.ts` lists every column of the five tables
 as watched or deliberately not, and fails on a new column until someone decides.
 
@@ -68,6 +73,8 @@ every script and seed that writes a master table name its run.
 | `routes:<action>:<id or code>` | `create-region`, `create-route`, `toggle-region`, `toggle-route` |
 | `temix:<action>:<batchId>` | the Temix upload queue: `generate`, `loaded` |
 | `auth:logout`, `password:change` | sign-out, a person changing their own password |
+| `auth:login-fail`, `auth:rate-limited` | a failed sign-in or a throttle refusal kept in `AuthEvent` (§10) |
+| `conflict:<path>:<id>` | the `CONFLICT` audit row of a save that lost a race (§10): `edit.approve`, `edit.reject`, `edit.submit`, `edit.direct`, `edit.apply`, `create.submit`, `photo.detach`, … |
 | `cron:<job>` | a scheduled job (`sla-escalate`, `photo-gc`) |
 | `script:<name>:<runId>` | an operator script run (`scripts/ops/*`, bulk credential reset, go-live bootstrap) |
 | `seed:<name>` | a development or pilot seed |
@@ -269,8 +276,10 @@ nothing (the same no-bump rule as the master import).
   `purgeHistory` (`tests/support/audit.ts`), and the launch e2e clean-up purges its
   world's history last (`tests/e2e/launch/support/cleanup.ts`, step 10).
 - **Checks:** `scripts/ops/app-role.ts verify` proves the runtime role cannot write
-  the history and that a change it makes is recorded; `scripts/ops/restore-verify.ts`
-  F-03/F-04 prove a restored database still records and still refuses a rewrite.
+  the history and that a change it makes is recorded, that a session cut-off is
+  recorded once, and that a route cannot change region; `scripts/ops/restore-verify.ts`
+  F-03/F-04 prove a restored database still records and still refuses a rewrite,
+  and F-05 that it still refuses to move a route to another region.
 - **Cost per write:** one extra statement per write transaction (`set_config`); a
   changed row adds one index lookup and one insert. An import names each row it
   writes (one more statement per row).
@@ -323,3 +332,57 @@ Kept for ever like the rest of the history: `AttachmentHistory`, `EditRevision`,
 `ExportJob`. `ExportJob.customerIds` of a full master export is about 14,000 ids
 (~0.4 MB); a daily master export would add ~130 MB a year — see
 `docs/compliance/DATA-RETENTION-SCHEDULE.md`.
+
+## 10. Who decided, the jobs' days, lost races, sign-ins, and the route rule (part C)
+
+Migrations `20261015100000_authority_jobs_auth_events` and
+`20261015100100_route_region_fixed`. Additive; nothing existing is rewritten.
+
+| Gap | What is kept now | Where |
+|---|---|---|
+| 11 — who decided, as what | Every `EditApproval` row says, beside the step's `role`: the decider's own role (`actorRole`), why he could decide (`authorityBasis`: `SUPERVISOR_OF_SUBMITTER` the salesman's own Supervisor, `REGION_MANAGER` a Manager of every region of the request — the Supervisor step's fallback, and every reactivation decision —, `REGION_OVERLAP` an Accountant over one of its regions, `GLOBAL` the Finance Manager, GM or Sales Director, `SUBMITTER` the salesman's own signed-application upload, never an approval), the regions the request covered (`scopeRegionIds`) and the salesman's route (`submitterRouteId`), as they were at that moment. The database refuses any other basis. A reactivation's approve and "Keep closed" now write their `EditApproval` row too (stepIndex 0, the MANAGER step); `/status` reads reactivations from the request, so its figures leave those rows out and do not change. Rows written before part C keep these columns empty: **not recorded then**, never guessed. | `lib/permissions.ts` `stepAuthority` (`canActOnStep` is its wrapper), `services/edits.ts`, `services/signed-form.ts`, `services/reactivations.ts` |
+| 21 — escalations and job runs | The `ESCALATE` row (source `cron:sla-escalate`) says which step of which round was late (`stepIndex`, `cycle`), from when (`stageEnteredAt`), on what budget and working calendar (`budgetMin`, `calendar`), at which `level`, and who was told (`audienceUserIds`) — the notifications that say the same are deleted after 90 days. `JobRunDay`: one row per scheduled job per Oman day — runs, failures, first and last start, the slowest run, the schedulers — written by the retention sweep for every day that is over, before that day's runs may be pruned; a `CronRun` row past 90 days is deleted only once its day has its row. Filled at the migration from the runs that existed. No system user: `AuditLog.source` names the job. | `app/api/cron/sla-escalate`, `lib/job-run-day.ts`, `app/api/cron/retention-sweep` |
+| 22 — the losing side of two saves at once | A save refused because another landed first — `NOT_PENDING`, `VERSION_CONFLICT`, `STALE_FIELDS`, `STALE_BEFORE`, `STALE_VIEW`, `EDIT_LOCKED`, `STATE_CHANGED`, `ROW_CHANGED`, `PHOTO_CHANGED` — leaves one `CONFLICT` audit row under the loser's name, source `conflict:<path>:<id>`, written in its own transaction after his has rolled back: the write that lost, the field names (never values), the version or stage he expected and the one he found, and for a request what the winner left (`live`: state, step, who decided, when). Best-effort: the 409 he sees is unchanged. Imports and merges do not lose races, they win them; what they overwrite is in their own rows (§9). | `lib/errors.ts` (`ConflictMeta`, `runAction`), `lib/conflict-record.ts`; `tests/unit/conflict-meta-guard.test.ts` fails on a throw of those codes without its meta |
+| 23 — sign-ins and session cut-offs | `AuthEvent`, append-only, kept for ever. `SESSION_REVOKE`: written by the **database** (trigger `user_session_revoke_capture`) whenever `User.sessionsRevokedAt` moves — sign-out, disable, password change or reset, role change, an account-import row — with the writer's actor and source (`sql` when none) and what moved with it (`reason`: `deactivated`, `password`, `role`, `route`, `username`). `LOGIN_FAIL_UNKNOWN`: a name no account has (`not_found`, `demo_disabled`, or `retired_username` when an account used to hold it). `LOGIN_RATE_LIMITED`: a throttle refusal, at most one row per bucket (`ip` or `user`) per five minutes. `LOGIN_FAIL_REUSED_NAME`: a failure on an account whose name another account held before — a leaver typing his old route sign-in name — beside its `LOGIN_FAIL` audit row. The typed name is **never stored**: `usernameHmac` is HMAC-SHA256 of the trimmed, lower-cased name under a key derived from `AUTH_SECRET` (HKDF, label `nmwc-auth-event-v1`), `keyId` the first 8 hex digits of the key's SHA-256. The 30-day logs no longer carry the typed name either. | `lib/auth.ts`, `lib/auth-events.ts`, `lib/sign-in-events.ts` |
+| 16 — a route never changes region | The owner's rule (2026-10-11): routes never move to another region, are never renamed, split or merged; a route may be closed and its customers moved to other routes, and a route for another region is a new route. The database refuses any change of `Route.regionId` (trigger `route_region_fixed`), for every role and path, with no override — not even the maintenance window: *"Routes never move to another region. Close this route and open a new one in the other region."* The account-master import holds back a Routes row that names another region than the stored route's, in the same words; its label (`name`) may still change. The migration reported, read-only, how many shops carry a region other than their route's. | `lib/route-region.ts`, `services/imports.ts`, `docs/OPERATIONS.md` |
+
+Examples:
+
+```sql
+-- Did anyone approve outside their region? Decisions made as the region's Manager
+-- whose request covered a region the decider did not manage at that moment.
+SELECT a."editId", a."at", a."actorId", a."scopeRegionIds", u."regionIds"
+  FROM "EditApproval" a
+  CROSS JOIN LATERAL (
+    SELECT h."regionIds" FROM "UserHistory" h
+     WHERE h."userId" = a."actorId" AND h."validFrom" <= a."at"
+     ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1) u
+ WHERE a."authorityBasis" = 'REGION_MANAGER'
+   AND NOT (a."scopeRegionIds" <@ u."regionIds");
+
+-- Did the SLA sweep run on 3 November 2026, and how often did it fail?
+SELECT "runs", "failures", "firstAt", "lastAt", "sources"
+  FROM "JobRunDay" WHERE "key" = 'sla-escalate' AND "day" = DATE '2026-11-03';
+
+-- Who lost a race on this request, and to what?
+SELECT "at", "actorId", "reason", "after"
+  FROM "AuditLog" WHERE "action" = 'CONFLICT' AND "entityId" = '<editId>' ORDER BY "at";
+
+-- Every time this account's sessions were cut off, and why.
+SELECT "at", "reason", "source", "actorId" FROM "AuthEvent"
+ WHERE "kind" = 'SESSION_REVOKE' AND "userId" = '<userId>' ORDER BY "at";
+
+-- Failed sign-ins on names no account has, by fingerprint, last 7 days.
+SELECT "usernameHmac", "keyId", count(*), min("at"), max("at"), array_agg(DISTINCT "ip")
+  FROM "AuthEvent"
+ WHERE "kind" IN ('LOGIN_FAIL_UNKNOWN', 'LOGIN_RATE_LIMITED') AND "at" > now() - interval '7 days'
+ GROUP BY 1, 2 ORDER BY 3 DESC;
+```
+
+To ask "did anyone try the name X?", fingerprint X with the same key
+(`lib/sign-in-events.ts` `usernameFingerprint`, with `AUTH_SECRET`) and look the value
+up; a row whose `keyId` differs was written under an earlier secret.
+
+Kept for ever: `JobRunDay`, `AuthEvent`, and the new `EditApproval` columns with
+their table. An `ESCALATE` and a `CONFLICT` row are `AuditLog` rows and are kept
+like the rest of it.

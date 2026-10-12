@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**460 stored columns across 32 tables** — Customer contact: 29 · Employee: 88 · Customer entity (personal if a sole establishment): 50 · Not personal data: 293.
+**486 stored columns across 34 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 312.
 
 ## Columns holding personal data
 
@@ -174,6 +174,17 @@ Every column the database stores, classified by whose personal data it is. This 
 | `userAgent` | Employee | device | browser and device string |
 | `at` | Employee | behaviour | when that person acted |
 
+### AuthEvent
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `at` | Employee | behaviour | when the attempt or the cut-off happened |
+| `userId` | Employee | identifier | the account concerned, when there is one (no foreign key: the event outlives the account) |
+| `usernameHmac` | Employee | identifier | keyed fingerprint of the typed sign-in name — pseudonymous: matching it to a name needs AUTH_SECRET; the name itself is never stored |
+| `ip` | Employee | device | source IP of the attempt, as AuditLog.ip |
+| `userAgent` | Employee | device | browser and device string, as AuditLog.userAgent |
+| `actorId` | Employee | identifier | who cut the sessions off (the change context); null for a sign-in failure |
+
 ### CustomerHistory
 
 | Column | Subject | Kind | Note |
@@ -292,6 +303,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | `stageEnteredAt` | Employee | behaviour |  |
 | `slaDueAt` | Employee | behaviour |  |
 | `workingMinutes` | Employee | behaviour | how long this named person took to decide |
+| `actorRole` | Employee | behaviour | the decider’s own role when he decided |
 
 ### Notification
 
@@ -310,7 +322,7 @@ Every column the database stores, classified by whose personal data it is. This 
 
 ## Tables with no personal data
 
-`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CronRun`, `CodeSequence`
+`Region`, `Channel`, `SubChannel`, `CronHeartbeat`, `CronRun`, `JobRunDay`, `CodeSequence`
 
 ## Columns classified as not personal data
 
@@ -442,6 +454,16 @@ Every column the database stores, classified by whose personal data it is. This 
 | CronRun | `durationMs` | Int | structural / operational value |
 | CronRun | `dbMs` | Int | structural / operational value |
 | CronRun | `source` | String | a fixed label ('vercel', 'cron-job.org', 'github', 'other'), not the User-Agent |
+| JobRunDay | `id` | BigInt | foreign key / structural value |
+| JobRunDay | `key` | String | which scheduled job |
+| JobRunDay | `day` | DateTime | the Oman calendar day the runs started on |
+| JobRunDay | `runs` | Int | structural / operational value |
+| JobRunDay | `failures` | Int | structural / operational value |
+| JobRunDay | `firstAt` | DateTime | record timestamp, not an attribute of a person |
+| JobRunDay | `lastAt` | DateTime | record timestamp, not an attribute of a person |
+| JobRunDay | `maxDurationMs` | Int | structural / operational value |
+| JobRunDay | `sources` | String[] | the CronRun scheduler labels seen that day, never a User-Agent |
+| JobRunDay | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
 | RateLimit | `tokens` | Float | structural / operational value |
 | RateLimit | `lastRefill` | DateTime | record timestamp, not an attribute of a person |
 | RateLimit | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
@@ -461,6 +483,12 @@ Every column the database stores, classified by whose personal data it is. This 
 | AuditLog | `entityId` | String | foreign key / structural value |
 | AuditLog | `source` | String | what caused the row: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
 | AuditLog | `txId` | BigInt | database transaction id: joins the row to the dated history rows of the same change |
+| AuthEvent | `id` | BigInt | the strict order of the events |
+| AuthEvent | `kind` | String | LOGIN_FAIL_UNKNOWN, LOGIN_RATE_LIMITED, LOGIN_FAIL_REUSED_NAME or SESSION_REVOKE |
+| AuthEvent | `keyId` | String | which fingerprint key (first 8 hex of its SHA-256): a rotated AUTH_SECRET gives another |
+| AuthEvent | `reason` | String | a fixed category (not_found, retired_username, ip, user, deactivated, password, role, …), never free text |
+| AuthEvent | `source` | String | what caused it (lib/change-context.ts): auth:logout, users:toggle:<id>, import:<batch>:Users!<row>, … |
+| AuthEvent | `txId` | BigInt | database transaction id: joins the AuditLog rows of the same change |
 | CustomerHistory | `id` | BigInt | the strict order of the history |
 | CustomerHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
 | CustomerHistory | `changedFields` | String[] | field NAMES only — never a value |
@@ -593,6 +621,9 @@ Every column the database stores, classified by whose personal data it is. This 
 | EditApproval | `cycle` | Int | structural / operational value |
 | EditApproval | `stepIndex` | Int | structural / operational value |
 | EditApproval | `category` | String | the send-back reason category picked from a fixed list (gap 12) |
+| EditApproval | `authorityBasis` | String | why the decider could decide (lib/permissions.ts AUTHORITY_BASES), a fixed value the database checks |
+| EditApproval | `scopeRegionIds` | String[] | the regions the request covered when decided |
+| EditApproval | `submitterRouteId` | String | the submitting salesman’s route when decided |
 | Notification | `id` | String | foreign key / structural value |
 | Notification | `kind` | NotificationKind | structural / operational value |
 | Notification | `editId` | String | foreign key / structural value |

@@ -36,6 +36,7 @@ import { hasR2, ownerDb, redact, RUN_ID } from './env';
 import { utcYmd } from './oman';
 import { deleteFixtureObject, listFixturePrefix } from './r2';
 import { Registry, listRegistryFiles, ownedByLiveRun, type RegistryData } from './registry';
+import { fingerprintKey, usernameFingerprint } from '../../../../lib/sign-in-events';
 
 export type Residue = Record<string, number>;
 export type CleanupResult = { leftovers: Residue; deleted: Record<string, number>; warnings: string[] };
@@ -289,6 +290,19 @@ function allIds(f: Fixture): string[] {
 /** 'unknown:<name>' audit sentinels (failed sign-ins as a name no user has): suffix-carrying names only. */
 function unknownSentinels(f: Fixture): string[] {
   return [...f.usernames].filter((u) => u.toLowerCase().includes(f.sfx)).map((u) => `unknown:${u.slice(0, 50)}`);
+}
+
+/**
+ * Gap 23 (part C): the world's AuthEvent rows — session cut-offs and failures of
+ * its accounts (userId), and failures and throttle refusals on its sign-in names,
+ * which are stored only as a keyed fingerprint (lib/sign-in-events.ts), so the
+ * names are fingerprinted here with the same AUTH_SECRET the server uses.
+ */
+function authEventWhere(f: Fixture, users: string[]): Prisma.AuthEventWhereInput {
+  const k = fingerprintKey();
+  const names = [...f.usernames].filter((u) => u.toLowerCase().includes(f.sfx));
+  const hmacs = k ? names.map((u) => usernameFingerprint(u, k)) : [];
+  return { OR: [{ userId: { in: users } }, ...(hmacs.length ? [{ usernameHmac: { in: hmacs } }] : [])] };
 }
 
 function rateLimitKeys(f: Fixture): string[] {
@@ -608,6 +622,9 @@ async function deleteRows(
       add('AttachmentHistory', (await tx.attachmentHistory.deleteMany({ where: { attachmentId: { in: c } } })).count);
     for (const c of chunks(gone.edits))
       add('EditRevision', (await tx.editRevision.deleteMany({ where: { editId: { in: c } } })).count);
+    // Part C (gap 23): the world's sign-in events — its accounts' session
+    // cut-offs and failures, and the failures on its own sign-in names.
+    add('AuthEvent', (await tx.authEvent.deleteMany({ where: authEventWhere(f, gone.users) })).count);
   });
   return n;
 }
@@ -724,6 +741,7 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     RegionHistory,
     AttachmentHistory,
     EditRevision,
+    AuthEvent,
   ] = await Promise.all([
     p.user.count({ where: { OR: [{ id: { in: users } }, { username: ci(sfx) }, { fullName: ci(sfx) }] } }),
     p.region.count({ where: { OR: [{ id: { in: [...f.regions] } }, { code: ci(sfx) }, { name: ci(sfx) }] } }),
@@ -770,6 +788,8 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     // Lossless paths: the world's photos' history and its requests' rounds.
     p.attachmentHistory.count({ where: { attachmentId: { in: [...f.attachments.keys()] } } }),
     p.editRevision.count({ where: { editId: { in: [...f.edits] } } }),
+    // Part C (gap 23): purged last with the history, in step 10.
+    p.authEvent.count({ where: authEventWhere(f, users) }),
   ]);
   const foreign = known?.foreign ?? (await foreignRows(f, p));
   const r2Objects = hasR2 ? (await listFixtureObjects(f)).filter((k) => !foreign.keys.has(k)).length : 0;
@@ -799,6 +819,7 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     RegionHistory,
     AttachmentHistory,
     EditRevision,
+    AuthEvent,
     r2Objects,
     ...foreign.counts,
   };

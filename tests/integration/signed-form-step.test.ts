@@ -158,7 +158,8 @@ describe.skipIf(!ENABLED)('the signed-application step on Postgres (owner decisi
       select: { state: true, currentStepIndex: true, pendingRole: true, stageEnteredAt: true },
     }),
     decisions: await prisma.editApproval.count({ where: { editId } }),
-    audits: await prisma.auditLog.count({ where: { entityId: editId } }),
+    // A refused confirm records its lost race (gap 22, CONFLICT); it writes nothing else.
+    audits: await prisma.auditLog.count({ where: { entityId: editId, action: { not: 'CONFLICT' } } }),
     pages: await prisma.attachment.count({ where: { editId, kind: 'CREDIT_FORM', deletedAt: null } }),
   });
 

@@ -243,13 +243,33 @@ export function canApproveSpecificEdit(
     managedRegionIds?: string[];
   } = {}
 ): boolean {
-  // EL-15: separation of duty — submitter can never approve their own edit.
-  if (user.id === submittedBy.id) return false;
-  if (user.role === Role.MANAGER) {
-    return managesEveryBranch(context.managedRegionIds ?? [], context.customerBranches ?? []);
+  return specificEditBasis(user, submittedBy, context) !== null;
+}
+
+/**
+ * canApproveSpecificEdit's rule, saying WHICH half of it let the user in: the
+ * submitter's own Supervisor, or a Manager of every region of the request's
+ * scope (the RBAC-05-003 fallback). Null = not allowed.
+ */
+function specificEditBasis(
+  user: SessionUser,
+  submittedBy: Pick<User, 'id' | 'supervisorId'>,
+  context: {
+    customerBranches?: Pick<Branch, 'regionId' | 'deletedAt'>[];
+    managedRegionIds?: string[];
   }
-  if (user.role === Role.SUPERVISOR) return submittedBy.supervisorId === user.id;
-  return false;
+): 'SUPERVISOR_OF_SUBMITTER' | 'REGION_MANAGER' | null {
+  // EL-15: separation of duty — submitter can never approve their own edit.
+  if (user.id === submittedBy.id) return null;
+  if (user.role === Role.MANAGER) {
+    return managesEveryBranch(context.managedRegionIds ?? [], context.customerBranches ?? [])
+      ? 'REGION_MANAGER'
+      : null;
+  }
+  if (user.role === Role.SUPERVISOR) {
+    return submittedBy.supervisorId === user.id ? 'SUPERVISOR_OF_SUBMITTER' : null;
+  }
+  return null;
 }
 
 /**
@@ -295,48 +315,94 @@ export function canActOnStep(
   user: SessionUser,
   step: { role: Role; scope: StepScope },
   submittedBy: Pick<User, 'id' | 'supervisorId'>,
-  context: {
-    customerBranches?: Pick<Branch, 'regionId' | 'deletedAt'>[];
-    managedRegionIds?: string[];
-    priorStepActorIds?: string[];
-  } = {}
+  context: StepContext = {}
 ): boolean {
+  return stepAuthority(user, step, submittedBy, context) !== null;
+}
+
+/** What canActOnStep and stepAuthority are told about the request and the actor. */
+export type StepContext = {
+  customerBranches?: Pick<Branch, 'regionId' | 'deletedAt'>[];
+  managedRegionIds?: string[];
+  priorStepActorIds?: string[];
+};
+
+/**
+ * Gap 11 (data audit 2026-10-10): why a decider was allowed to decide, written on
+ * the EditApproval row beside the step's role (authorityBasis), so "did anyone
+ * approve outside their region" is answered from what was recorded at the time,
+ * not worked out again from today's assignments.
+ *
+ *   SUPERVISOR_OF_SUBMITTER  the submitter's own Supervisor (a Supervisor step)
+ *   REGION_MANAGER           a Manager of every region of the request's scope
+ *                            (the Supervisor step's fallback, and the Manager's
+ *                            reactivation decision)
+ *   REGION_OVERLAP           a region-scoped step's role holder over one of the
+ *                            request's regions (the Accountant)
+ *   GLOBAL                   an org-wide step's role holder (Finance Manager, GM,
+ *                            Sales Director)
+ *   SUBMITTER                the salesman completing his own signed-application
+ *                            step (services/signed-form.ts) — never an approval;
+ *                            stepAuthority itself never returns it
+ *
+ * The database refuses any other value (EditApproval_authorityBasis_check).
+ */
+export const AUTHORITY_BASES = [
+  'SUPERVISOR_OF_SUBMITTER',
+  'REGION_MANAGER',
+  'REGION_OVERLAP',
+  'GLOBAL',
+  'SUBMITTER',
+] as const;
+export type AuthorityBasis = (typeof AUTHORITY_BASES)[number];
+
+/**
+ * canActOnStep's rule, returning the basis it admitted the user on, or null when
+ * it refuses. canActOnStep is "stepAuthority(...) !== null", so the decision and
+ * the recorded reason for it can never disagree.
+ */
+export function stepAuthority(
+  user: SessionUser,
+  step: { role: Role; scope: StepScope },
+  submittedBy: Pick<User, 'id' | 'supervisorId'>,
+  context: StepContext = {}
+): Exclude<AuthorityBasis, 'SUBMITTER'> | null {
   // Separation of duty (every step/scope): the submitter can never act on their
   // own request; and no user may act on two DIFFERENT steps of the same request
   // (re-deciding your OWN step after a step-back cascade IS allowed — the caller
   // excludes the current step's actors from priorStepActorIds).
-  if (user.id === submittedBy.id) return false;
-  if ((context.priorStepActorIds ?? []).includes(user.id)) return false;
+  if (user.id === submittedBy.id) return null;
+  if ((context.priorStepActorIds ?? []).includes(user.id)) return null;
 
   switch (step.scope) {
     case 'SUPERVISOR_OF_SUBMITTER':
       // The submitter's direct Supervisor OR a region-overlapping Manager
       // (RBAC-05-003: the deliberate fallback so an edit isn't stranded when the
-      // one specific supervisor is unavailable). Delegated to
-      // canApproveSpecificEdit so the "supervisor-or-region-manager" rule has a
+      // one specific supervisor is unavailable). The same rule as
+      // canApproveSpecificEdit, so the "supervisor-or-region-manager" rule has a
       // single home and the two never drift.
-      return canApproveSpecificEdit(user, submittedBy, {
+      return specificEditBasis(user, submittedBy, {
         customerBranches: context.customerBranches,
         managedRegionIds: context.managedRegionIds,
       });
     case 'REGION_OVERLAP': {
       // Region-scoped finance approver (Accountant): only that role, fail-closed
       // on empty managedRegions, requires overlap with a live customer branch.
-      if (user.role !== step.role) return false;
+      if (user.role !== step.role) return null;
       const managed = context.managedRegionIds ?? [];
-      if (managed.length === 0) return false;
+      if (managed.length === 0) return null;
       const branches = (context.customerBranches ?? []).filter((b) => !b.deletedAt);
-      if (branches.length === 0) return false;
-      return branches.some((b) => managed.includes(b.regionId));
+      if (branches.length === 0) return null;
+      return branches.some((b) => managed.includes(b.regionId)) ? 'REGION_OVERLAP' : null;
     }
     case 'GLOBAL':
       // Org-wide approver (Finance Manager / GM / Sales Director): any holder of
       // the step's role.
-      return user.role === step.role;
+      return user.role === step.role ? 'GLOBAL' : null;
     case 'SUBMITTER':
       // The signed-application step: no approver decides it. Refused for the
       // submitter above already; refused for everyone else here.
-      return false;
+      return null;
   }
 }
 

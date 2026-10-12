@@ -235,10 +235,14 @@ async function runs(key: string, from: Date): Promise<RunSample[]> {
  * decisions carrying the stage snapshot (made on or after 2026-09-27); the rest
  * are reported as untracked, never judged.
  *
- * Reactivations are decided outside the step engine and write no EditApproval
- * row. Their change request has kept its due time and its decision time since
- * July 2026, so they are read from there as the MANAGER tier, and counted from
- * those records rather than from the snapshot date. `firstCounted` is the
+ * Reactivations are decided outside the step engine. Their change request has
+ * kept its due time and its decision time since July 2026, so they are read from
+ * there as the MANAGER tier, and counted from those records rather than from the
+ * snapshot date. Since part C (gap 11) a reactivation's decision also writes an
+ * EditApproval row (stepIndex 0, MANAGER, with the decider's authority); both
+ * EditApproval queries below leave those rows out (e."isReactivation" = false),
+ * so a reactivation is still counted once, from its request, and the figures do
+ * not change. `firstCounted` is the
  * earliest tracked decision these figures could count, ever — fixed, so a
  * "Measuring since" line never moves with the window (review of dfa0ea9).
  */
@@ -265,6 +269,7 @@ async function approvalTiers(
       FROM "EditApproval" a
       JOIN "CustomerEdit" e ON e."id" = a."editId"
      WHERE a."at" >= ${from}
+       AND e."isReactivation" = false
        ${managerScopeSql(scope, Prisma.sql`a."role"::text`)}
      GROUP BY a."role"
      ORDER BY a."role"`;
@@ -276,6 +281,7 @@ async function approvalTiers(
       FROM "EditApproval" a
       JOIN "CustomerEdit" e ON e."id" = a."editId"
      WHERE a."slaDueAt" IS NOT NULL
+       AND e."isReactivation" = false
        ${managerScopeSql(scope, Prisma.sql`a."role"::text`)}`;
 
   const tiers: TierDecisions[] = steps.map((s) => ({

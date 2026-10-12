@@ -12,7 +12,7 @@
  *   RUN_RETENTION_SWEEP=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/retention-sweep.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { purgeAuditLog } from '../support/audit';
+import { purgeAuditLog, purgeJobRunDays } from '../support/audit';
 
 // The setup writes some thirty rows one round trip at a time, over a WAN link
 // to the test database; the 10 s default hook timeout is not enough for that.
@@ -217,6 +217,8 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
     await prisma.notification.deleteMany({ where: { userId } });
     await prisma.rateLimit.deleteMany({ where: { key: { startsWith: `login:user:${sfx}` } } });
     await prisma.cronRun.deleteMany({ where: { key: `${sfx}-job` } });
+    // Gap 21: the days the sweep wrote for this suite's job (append-only: owner window).
+    await purgeJobRunDays(prisma, { where: { key: `${sfx}-job` } });
     await purgeAuditLog(prisma, { where: { actorId: userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
     await prisma.$disconnect();
@@ -325,6 +327,15 @@ describe.skipIf(!ENABLED)('B6: the retention sweep clears the payloads it says i
   it('item 9: prunes scheduled-run history past 90 days and keeps the rest', async () => {
     const left = await prisma.cronRun.findMany({ where: { key: `${sfx}-job` }, select: { id: true } });
     expect(left.map((r) => r.id)).toEqual([`${sfx}-run-new`]);
+  });
+
+  it('gap 21: both days are kept as JobRunDay rows, the pruned one included', async () => {
+    const days = await prisma.jobRunDay.findMany({ where: { key: `${sfx}-job` }, orderBy: { day: 'asc' } });
+    expect(days).toHaveLength(2);
+    expect(days.map((d) => [d.runs, d.failures, d.maxDurationMs])).toEqual([
+      [1, 0, 1],
+      [1, 0, 1],
+    ]);
   });
 
   it('deletes long-unread notifications and leaves read ones to the SLA sweep', async () => {

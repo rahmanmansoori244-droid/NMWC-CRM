@@ -1,16 +1,55 @@
 import { isDbConflict, isTransientDbError, mayHaveCommitted } from './db-errors';
 
+/**
+ * Gap 22 (data audit 2026-10-10): the losing side of two people saving at once.
+ *
+ * When a save is refused because someone else's landed first — a version that
+ * moved, a field changed since the form opened, a request already decided, a
+ * photo or an import row changed meanwhile — the refusal used to reach only the
+ * 30-day logs. A ConflictError (or StaleFieldsError) thrown with this meta is
+ * recorded by runAction below as one AuditLog CONFLICT row, in its own short
+ * transaction, best-effort (lib/conflict-record.ts): who lost, on which record,
+ * by which write, and which fields or versions were expected. The 409 the user
+ * sees never changes. tests/unit/conflict-meta-guard.test.ts fails on a throw of
+ * one of those codes without it.
+ *
+ * No value a person typed goes here: field NAMES and version numbers only.
+ */
+export type ConflictMeta = {
+  /** The person whose save lost (AuditLog.actorId). */
+  actorId: string;
+  /** The record it was about: 'CustomerEdit', 'Customer', 'Branch', 'Attachment', 'ImportRow'. */
+  entityType: string;
+  entityId: string;
+  /** Which write lost, as an identifier: 'edit.approve', 'photo.detach', … */
+  path: string;
+  /** Field names (never values). */
+  fields?: string[];
+  /** The version (or stage) the writer expected, and the one it found. */
+  expectedVersion?: number | string | null;
+  liveVersion?: number | string | null;
+};
+
 export class AppError extends Error {
   readonly code: string;
   readonly httpStatus: number;
   readonly fields?: Record<string, string>;
+  /** Gap 22: set on a lost race; runAction records it (ConflictMeta). */
+  readonly conflict?: ConflictMeta;
 
-  constructor(code: string, message: string, httpStatus = 500, fields?: Record<string, string>) {
+  constructor(
+    code: string,
+    message: string,
+    httpStatus = 500,
+    fields?: Record<string, string>,
+    conflict?: ConflictMeta
+  ) {
     super(message);
     this.name = this.constructor.name;
     this.code = code;
     this.httpStatus = httpStatus;
     this.fields = fields;
+    this.conflict = conflict;
   }
 }
 
@@ -47,8 +86,9 @@ export class NotFoundError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(code: string, message: string) {
-    super(code, message, 409);
+  /** `conflict`: pass it where the refusal means another save landed first (gap 22). */
+  constructor(code: string, message: string, conflict?: ConflictMeta) {
+    super(code, message, 409, undefined, conflict);
   }
 }
 
@@ -88,9 +128,75 @@ export const STALE_FIELDS_MESSAGE =
  */
 export class StaleFieldsError extends AppError {
   readonly current: Record<string, LiveValue>;
-  constructor(fields: Record<string, string>, current: Record<string, LiveValue>) {
-    super('STALE_FIELDS', STALE_FIELDS_MESSAGE, 409, fields);
+  constructor(
+    fields: Record<string, string>,
+    current: Record<string, LiveValue>,
+    conflict?: ConflictMeta
+  ) {
+    super('STALE_FIELDS', STALE_FIELDS_MESSAGE, 409, fields, conflict);
     this.current = current;
+  }
+}
+
+/**
+ * The codes whose throw sites must say who lost and on what (ConflictMeta):
+ * each means another save landed first. tests/unit/conflict-meta-guard.test.ts
+ * reads every `new ConflictError('<code>'` in app/, lib/ and services/.
+ */
+export const RECORDED_CONFLICT_CODES = [
+  'VERSION_CONFLICT',
+  'STALE_FIELDS',
+  'STALE_BEFORE',
+  'NOT_PENDING',
+  'EDIT_LOCKED',
+  'STATE_CHANGED',
+  'ROW_CHANGED',
+  'PHOTO_CHANGED',
+  // A decision made on a page the request has moved past (lib/decision-token.ts).
+  'STALE_VIEW',
+] as const;
+
+/** What records a lost race. Registered by lib/db.ts on the server; absent in the browser and in unit tests. */
+export type ConflictRecorder = (err: AppError & { conflict: ConflictMeta }) => Promise<void>;
+
+/**
+ * The recorder lives on globalThis, not in this module: this file is imported by
+ * client components too, so it may not import the database; and a server bundle
+ * can hold more than one copy of a module, which must all see the one recorder.
+ */
+const RECORDER_KEY = Symbol.for('nmwc.conflictRecorder');
+type RecorderHolder = { [RECORDER_KEY]?: ConflictRecorder };
+
+export function registerConflictRecorder(recorder: ConflictRecorder | null): void {
+  const g = globalThis as RecorderHolder;
+  if (recorder) g[RECORDER_KEY] = recorder;
+  else delete g[RECORDER_KEY];
+}
+
+/** A slow database must not hold the user's 409 back for long. */
+export const CONFLICT_RECORD_BUDGET_MS = 3_000;
+
+/**
+ * Record a lost race, if the error says it is one and a recorder is registered.
+ * Never throws and never changes the answer: a failure to record is the
+ * recorder's to log.
+ */
+export async function recordLostRace(err: AppError): Promise<void> {
+  const conflict = err.conflict;
+  const recorder = (globalThis as RecorderHolder)[RECORDER_KEY];
+  if (!conflict || !recorder) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      recorder(err as AppError & { conflict: ConflictMeta }),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, CONFLICT_RECORD_BUDGET_MS);
+      }),
+    ]);
+  } catch {
+    /* best-effort: the 409 stands either way */
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -204,6 +310,9 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
       throw err;
     }
     if (err instanceof AppError) {
+      // Gap 22: a save that lost a race is recorded (CONFLICT), then answered
+      // exactly as before.
+      await recordLostRace(err);
       return {
         ok: false,
         code: err.code,

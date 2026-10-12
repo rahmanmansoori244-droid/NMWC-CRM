@@ -35,6 +35,7 @@ import {
   STAGE_SLA_MINUTES,
   DEFAULT_STAGE_SLA_MIN,
   ESCALATION_MULTIPLIER,
+  workingCalendar,
 } from '@/lib/working-hours';
 import { TEMIX_QUEUE_WHERE } from '@/lib/temix';
 import { notifyUsers } from '@/lib/notifications';
@@ -103,6 +104,21 @@ function editRegionIds(e: DueEdit): string[] {
 
 function editName(e: DueEdit): string {
   return e.customer?.legalName ?? e.customerDraft?.legalName ?? '—';
+}
+
+/**
+ * The stage's budget in working minutes: from the row's FROZEN chain snapshot
+ * (the same source that stamped slaDueAt) so an env override never retimes
+ * in-flight edits; rows without a chain (reactivations, deploy-gap) fall back to
+ * the env policy for their pendingRole.
+ */
+function stageBudgetMin(e: DueEdit): number {
+  const frozenStep = Array.isArray(e.approvalChain)
+    ? parseChain(e.approvalChain)[e.currentStepIndex]
+    : undefined;
+  return frozenStep
+    ? Math.round(frozenStep.slaHours * 60)
+    : (STAGE_SLA_MINUTES[e.pendingRole ?? Role.SUPERVISOR] ?? DEFAULT_STAGE_SLA_MIN);
 }
 
 /** Resolve the escalation plan to concrete user ids. */
@@ -198,9 +214,15 @@ async function escalate(e: DueEdit, level: 1 | 2, now: Date): Promise<boolean> {
     const stepLabel = stepName(e.pendingRole ?? Role.SUPERVISOR);
     // System sweep — no human actor exists. AuditLog.actorId is an FK to User,
     // so the row is attributed to the submitter, but `env` carries null ip and
-    // null userAgent and the reason says 'system:' outright, so the record
-    // cannot read as an action the salesman took. [Open — a dedicated
-    // system-actor user is the cleaner long-term fix.]
+    // null userAgent, the reason says 'system:' outright, and since the history
+    // foundation the row's source is 'cron:sla-escalate' (stamped from the
+    // context above), so the record cannot read as an action the salesman took.
+    // No system user (owner decision, part C): one would leak into user lists,
+    // counts and the dashboard.
+    //
+    // Gap 21 (part C): which step of which round was late, from when, on what
+    // budget and calendar, and who was told — the notifications that also say so
+    // are deleted after 90 days; this row is kept for ever.
     await writeAudit(tx, env, {
       action: 'ESCALATE',
       entityType: 'CustomerEdit',
@@ -210,6 +232,12 @@ async function escalate(e: DueEdit, level: 1 | 2, now: Date): Promise<boolean> {
         level,
         pendingRole: e.pendingRole,
         slaDueAt: e.slaDueAt?.toISOString(),
+        stepIndex: e.currentStepIndex,
+        cycle: e.cycle,
+        stageEnteredAt: e.stageEnteredAt?.toISOString() ?? null,
+        budgetMin: stageBudgetMin(e),
+        audienceUserIds: [...audience].sort(),
+        calendar: workingCalendar(),
       } as unknown as Prisma.InputJsonValue,
     });
     await notifyUsers(tx, audience, {
@@ -262,13 +290,7 @@ async function handle(req: NextRequest) {
     include: DUE_INCLUDE,
   });
   for (const e of l1) {
-    const frozenStep = Array.isArray(e.approvalChain)
-      ? parseChain(e.approvalChain)[e.currentStepIndex]
-      : undefined;
-    const budgetMin = frozenStep
-      ? Math.round(frozenStep.slaHours * 60)
-      : (STAGE_SLA_MINUTES[e.pendingRole ?? Role.SUPERVISOR] ?? DEFAULT_STAGE_SLA_MIN);
-    const dueAt2 = slaDeadline(e.stageEnteredAt!, ESCALATION_MULTIPLIER * budgetMin);
+    const dueAt2 = slaDeadline(e.stageEnteredAt!, ESCALATION_MULTIPLIER * stageBudgetMin(e));
     if (now <= dueAt2) continue;
     try {
       if (await escalate(e, 2, now)) level2 += 1;

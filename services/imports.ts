@@ -35,6 +35,7 @@ import { importRejectionAlert } from '@/lib/import-rejection-alert';
 import { randomUUID } from 'node:crypto';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 import { sha256Hex } from '@/lib/fingerprint';
+import { routeRegionHeldMessage } from '@/lib/route-region';
 import {
   IMPORT_AUDIT_REASON_PREFIX,
   changeAudit,
@@ -370,10 +371,15 @@ async function uploadAccountMasterCore(
           issues.push({ sheet: 'Routes', row: sheetRow, message: `region "${regionCode}" not found` });
           continue;
         }
-        // X-AUTH-3 / X-IMPORTS-1: as for regions. A route moved to another region
-        // records both region codes.
+        // X-AUTH-3 / X-IMPORTS-1: as for regions.
+        //
+        // Gap 16 (owner, 2026-10-11): a route NEVER moves to another region. A row
+        // naming another region than the stored route's is held back with the
+        // plain rule (lib/route-region.ts) — the database would refuse the move
+        // anyway (trigger route_region_fixed) — and only its label may still
+        // change. The Steward closes the route and opens a new one there instead.
         const cause = { actorId: me.id, source: src.importAccount(batch.id, 'Routes', sheetRow) };
-        await withChangeContext(prisma, cause, async (tx) => {
+        const regionHeld = await withChangeContext(prisma, cause, async (tx) => {
           const before = await tx.route.findUnique({
             where: { code },
             include: { region: { select: { code: true } } },
@@ -387,28 +393,33 @@ async function uploadAccountMasterCore(
               after: { code, name, regionCode: region.code, batchId: batch.id },
               reason: 'account_import',
             });
-          } else if (before.name !== name || before.regionId !== region.id) {
-            await tx.route.update({ where: { id: before.id }, data: { name, regionId: region.id } });
-            const was: Record<string, string> = {};
-            const now: Record<string, string> = {};
-            if (before.name !== name) {
-              was.name = before.name;
-              now.name = name;
-            }
-            if (before.regionId !== region.id) {
-              was.regionCode = before.region.code;
-              now.regionCode = region.code;
-            }
+            return null;
+          }
+          const renamed = before.name !== name;
+          if (renamed) {
+            await tx.route.update({ where: { id: before.id }, data: { name } });
             await writeAudit(tx, env, {
               action: 'UPDATE',
               entityType: 'Route',
               entityId: before.id,
-              before: was,
-              after: { ...now, batchId: batch.id },
+              before: { name: before.name },
+              after: { name, batchId: batch.id },
               reason: 'account_import',
             });
           }
+          return before.regionId !== region.id
+            ? routeRegionHeldMessage({
+                routeCode: code,
+                storedRegionCode: before.region.code,
+                sheetRegionCode: region.code,
+                renamed,
+              })
+            : null;
         });
+        if (regionHeld) {
+          issues.push({ sheet: 'Routes', row: sheetRow, message: regionHeld });
+          continue;
+        }
         applied();
       } catch (err) {
         await failed('Routes', sheetRow, err, `route "${code}"`);

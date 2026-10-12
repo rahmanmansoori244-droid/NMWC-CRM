@@ -261,7 +261,9 @@ async function recheck(
   targets: RowForFix[],
   correctionsFor: (row: RowForFix) => Corrections,
   /** The row the Steward acted on; its customer's other rejected rows only come along. */
-  actedRowId: string
+  actedRowId: string,
+  /** Gap 22 (part C): the Steward, named on a CONFLICT row when a row changed meanwhile. */
+  actorId: string
 ): Promise<{ clean: number; held: number }> {
   const targetIds = new Set(targets.map((t) => t.id));
   // The unit this action's rows belong to: the acted row's own, when an earlier
@@ -362,7 +364,8 @@ async function recheck(
     if (res.count !== 1) {
       throw new ConflictError(
         'ROW_CHANGED',
-        `Row ${t.rowNumber} changed while you were fixing it. Refresh and try again.`
+        `Row ${t.rowNumber} changed while you were fixing it. Refresh and try again.`,
+        { actorId, entityType: 'ImportRow', entityId: t.id, path: 'import-fix.recheck', expectedVersion: t.state }
       );
     }
     if (nextState === ImportRowState.CLEAN) clean++;
@@ -430,7 +433,7 @@ async function recheckCore(formData: FormData): Promise<FixResult> {
       targets.map((t) => ({ row: t, c: readCorrections(t.corrections) })),
       row.id
     );
-    const r = await recheck(tx, batch, targets, (t) => readCorrections(t.corrections), row.id);
+    const r = await recheck(tx, batch, targets, (t) => readCorrections(t.corrections), row.id, me.id);
     await audit(tx, env, 'UPDATE', row.id, 'Import row re-checked by the Data Steward', {
       rows: targets.length,
       ...r,
@@ -486,7 +489,7 @@ async function correctCore(formData: FormData): Promise<FixResult> {
       targets.map((t) => ({ row: t, c: correctionsFor(t) })),
       row.id
     );
-    const r = await recheck(tx, batch, targets, correctionsFor, row.id);
+    const r = await recheck(tx, batch, targets, correctionsFor, row.id, me.id);
     // Gap 7: which cells were corrected, from what to what — kept after the
     // 90-day sweep empties the row. Non-personal cells (codes, channel, visit day,
     // status) keep their values; a personal one (name, address, phone, CR number,
@@ -535,7 +538,7 @@ async function releaseCore(formData: FormData): Promise<FixResult> {
     }
     const merged: Corrections = { ...readCorrections(row.corrections), phoneReleased: { reason } };
     await refuseIfNewerUpload(tx, batch, [{ row, c: merged }], row.id);
-    const r = await recheck(tx, batch, [row], () => merged, row.id);
+    const r = await recheck(tx, batch, [row], () => merged, row.id, me.id);
     await audit(
       tx,
       env,
@@ -649,7 +652,12 @@ async function withdrawCore(formData: FormData): Promise<{ rows: number }> {
         },
       });
       if (res.count !== 1) {
-        throw new ConflictError('ROW_CHANGED', `Row ${r.rowNumber} changed meanwhile. Refresh and try again.`);
+        throw new ConflictError(
+          'ROW_CHANGED',
+          `Row ${r.rowNumber} changed meanwhile. Refresh and try again.`,
+          // Gap 22 (part C): the withdraw lost to a write that landed first.
+          { actorId: me.id, entityType: 'ImportRow', entityId: r.id, path: 'import-fix.withdraw', expectedVersion: r.state }
+        );
       }
     }
     const counts = await tx.importRow.groupBy({ by: ['state'], where: { batchId: batch.id }, _count: { _all: true } });

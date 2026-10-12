@@ -545,7 +545,8 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         select: { state: true, cycle: true, currentStepIndex: true, pendingRole: true, stageEnteredAt: true, slaDueAt: true, reviewedAt: true },
       }),
       decisions: await prisma.editApproval.count({ where: { editId: id } }),
-      audits: await prisma.auditLog.count({ where: { entityId: id } }),
+      // A refused decision records its lost race (gap 22, CONFLICT); it writes nothing else.
+      audits: await prisma.auditLog.count({ where: { entityId: id, action: { not: 'CONFLICT' } } }),
       notifications: await prisma.notification.count({ where: { editId: id } }),
       customers: await prisma.customer.count({ where: { legalName: name } }),
     });
@@ -1011,7 +1012,8 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
         select: { state: true, cycle: true, currentStepIndex: true, pendingRole: true, reviewedAt: true, customerId: true },
       }),
       decisions: await prisma.editApproval.count({ where: { editId: id } }),
-      audits: await prisma.auditLog.count({ where: { entityId: id } }),
+      // A refused decision records its lost race (gap 22, CONFLICT); it writes nothing else.
+      audits: await prisma.auditLog.count({ where: { entityId: id, action: { not: 'CONFLICT' } } }),
       notifications: await prisma.notification.count({ where: { editId: id } }),
       customers: await prisma.customer.count({ where: { legalName: name } }),
     });

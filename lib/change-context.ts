@@ -140,6 +140,11 @@ export const src = {
   /** A verification probe that rolls back (app-role verify, restore-verify). */
   verify: (name: string) => join('verify', name),
   /**
+   * Gap 22 (part C): the CONFLICT row of a save that lost a race — the write
+   * that lost ('edit.approve', 'photo.detach', …) and the record it was about.
+   */
+  conflict: (path: string, entityId: string) => join('conflict', path, entityId),
+  /**
    * Reserved for item D, the daily Temix file: one source per file row, written
    * with effectiveFrom = the load day ('YYYY-MM-DD').
    */
