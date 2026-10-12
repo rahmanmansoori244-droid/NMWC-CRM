@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   load: vi.fn(),
   regions: ['r-north', 'r-south'] as string[],
   scopeFor: vi.fn(),
+  history: vi.fn(),
 }));
 vi.mock('@/lib/auth', () => ({ auth: async () => (h.user ? { user: h.user } : null) }));
 vi.mock('@/lib/access', () => ({
@@ -30,6 +31,11 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/service-status', async (orig) => ({
   ...(await orig<typeof import('@/lib/service-status')>()),
   loadServiceStatus: h.load,
+}));
+// Gap 24: the record-keeping card's reader; never a real database in a unit test.
+vi.mock('@/lib/history-report', async (orig) => ({
+  ...(await orig<typeof import('@/lib/history-report')>()),
+  loadHistoryReport: h.history,
 }));
 
 import StatusPage from '@/app/(app)/status/page';
@@ -78,6 +84,7 @@ function status(over: Partial<ServiceStatus> = {}): ServiceStatus {
 
 beforeEach(() => {
   h.load.mockReset().mockResolvedValue(status());
+  h.history.mockReset().mockResolvedValue({ since: NOW, rows: [], fromApp: 0, fromOther: 0 });
   h.scopeFor.mockReset();
   h.regions = ['r-north', 'r-south'];
 });
@@ -336,5 +343,50 @@ describe('a job’s error text never reaches the page — it stays behind the mo
     const src = stripComments(readFileSync('lib/service-status.ts', 'utf8'), 'service-status.ts');
     expect(src).toMatch(/jobs: jobs\.map\(\(j\) => withoutErrorText\(j,/);
     expect(src).not.toMatch(/lastDetail/);
+  });
+});
+
+describe('gap 24: changes with no recorded cause (the Data Steward only)', () => {
+  const card = () =>
+    screen.getByRole('heading', { name: 'Changes with no recorded cause (30 days)' }).closest('article')!;
+
+  it('a Manager neither sees the card nor causes the history to be read', async () => {
+    h.user = { id: 'x', role: 'MANAGER', username: 'x' };
+    render(await StatusPage());
+    expect(screen.queryByRole('heading', { name: 'Record keeping' })).toBeNull();
+    expect(h.history).not.toHaveBeenCalled();
+  });
+
+  it('the Steward sees zero, said to be what is expected', async () => {
+    h.user = { id: 'x', role: 'STEWARD', username: 'x' };
+    render(await StatusPage());
+    expect(card().textContent).toContain('0');
+    expect(card().textContent).toContain('Zero is expected');
+  });
+
+  it('separates the application’s from a hand-typed change, and names tables, days and row ids only', async () => {
+    h.user = { id: 'x', role: 'STEWARD', username: 'x' };
+    h.history.mockResolvedValue({
+      since: NOW,
+      rows: [
+        { table: 'BranchHistory', day: '2026-10-04', dbUser: 'nmwc_app', n: 2, sampleIds: ['41', '42'] },
+        { table: 'CustomerHistory', day: '2026-10-03', dbUser: 'neondb_owner', n: 7, sampleIds: ['1', '2', '3', '4', '5'] },
+      ],
+      fromApp: 2,
+      fromOther: 7,
+    });
+    render(await StatusPage());
+    const text = card().textContent!;
+    expect(text).toContain('9');
+    expect(text).toContain('2 by the application (nmwc_app)');
+    expect(text).toMatch(/7 by another database login/);
+    expect(text).toContain('2026-10-03 · CustomerHistory · neondb_owner · 7 (rows 1, 2, 3, 4, 5, …)');
+  });
+
+  it('an unreadable history says so instead of showing zero', async () => {
+    h.user = { id: 'x', role: 'STEWARD', username: 'x' };
+    h.history.mockResolvedValue(null);
+    render(await StatusPage());
+    expect(screen.getByText(/the history could not be read just now/)).toBeTruthy();
   });
 });

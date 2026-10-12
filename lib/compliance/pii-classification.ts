@@ -58,6 +58,30 @@ export type Classification = {
 const RECORD_META = 'record timestamp, not an attribute of a person';
 const STRUCTURAL = 'foreign key / structural value';
 
+/**
+ * The columns every dated-history table shares (prisma/migrations/20261013100100,
+ * docs/HISTORY.md): when and why a change was recorded, and by whom.
+ */
+function historyCommon(table: string): Record<string, Classification> {
+  return {
+    [`${table}.id`]: { subject: 'none', note: 'the strict order of the history' },
+    [`${table}.changeKind`]: { subject: 'none', note: 'BASELINE, CREATE, UPDATE or DELETE' },
+    [`${table}.changedFields`]: { subject: 'none', note: 'field NAMES only — never a value' },
+    [`${table}.validFrom`]: { subject: 'none', note: 'when the change took effect' },
+    [`${table}.recordedAt`]: { subject: 'none', note: RECORD_META },
+    [`${table}.effectiveRequested`]: { subject: 'none', note: 'the effective time the writer asked for' },
+    [`${table}.actorId`]: { subject: 'employee', kind: 'identifier', note: 'who caused the change (null for a job or an unnamed script)' },
+    [`${table}.source`]: {
+      subject: 'none',
+      kind: 'identifier',
+      note: 'what caused it: a request, import row, script run or job (lib/change-context.ts), never text a person typed',
+    },
+    [`${table}.sourceKind`]: { subject: 'none' },
+    [`${table}.txId`]: { subject: 'none', note: 'database transaction id (joins AuditLog.txId)' },
+    [`${table}.dbUser`]: { subject: 'none', note: 'the database login (the runtime role or the owner), not a person' },
+  };
+}
+
 export const PII_CLASSIFICATION: Record<string, Classification> = {
   // ---- Region: organisational taxonomy -----------------------------------
   'Region.id': { subject: 'none', note: STRUCTURAL },
@@ -368,6 +392,73 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'AuditLog.ip': { subject: 'employee', kind: 'device', note: 'source IP of the member of staff' },
   'AuditLog.userAgent': { subject: 'employee', kind: 'device', note: 'browser and device string' },
   'AuditLog.at': { subject: 'employee', kind: 'behaviour', note: 'when that person acted' },
+  // Gap 24: stamped by the database from the writer's change context.
+  'AuditLog.source': {
+    subject: 'none',
+    kind: 'identifier',
+    note: 'what caused the row: a request, import row, script run or job (lib/change-context.ts), never text a person typed',
+  },
+  'AuditLog.txId': { subject: 'none', note: 'database transaction id: joins the row to the dated history rows of the same change' },
+
+  // ---- Dated history (gaps 5, 6, 17, 24; docs/HISTORY.md) ------------------
+  // Append-only and kept for ever, so it holds NO personal value of a customer:
+  // names, phones, CR number, contact, e-mail, notes, address and GPS appear only
+  // as a field NAME in changedFields (PDPL-ASSESSMENT Q4). The values kept are
+  // business columns, classified as on the live record they copy.
+  ...historyCommon('CustomerHistory'),
+  'CustomerHistory.customerId': { subject: 'business-or-person', kind: 'identifier' },
+  'CustomerHistory.nmwcCode': { subject: 'business-or-person', kind: 'identifier', note: 'the customer code as it was' },
+  'CustomerHistory.paymentTerms': { subject: 'business-or-person', kind: 'financial' },
+  'CustomerHistory.creditLimit': { subject: 'business-or-person', kind: 'financial' },
+  'CustomerHistory.paymentTermDays': { subject: 'business-or-person', kind: 'financial' },
+  'CustomerHistory.temixCode': { subject: 'business-or-person', kind: 'identifier' },
+  'CustomerHistory.status': { subject: 'business-or-person' },
+  'CustomerHistory.channelId': { subject: 'none', note: STRUCTURAL },
+  'CustomerHistory.subChannelId': { subject: 'none', note: STRUCTURAL },
+  'CustomerHistory.crPhotoId': { subject: 'none', kind: 'image reference', note: 'which CR document was on file' },
+  'CustomerHistory.deletedAt': { subject: 'none', note: 'soft-delete marker as it was' },
+  ...historyCommon('BranchHistory'),
+  'BranchHistory.branchId': { subject: 'business-or-person', kind: 'identifier' },
+  'BranchHistory.branchCode': { subject: 'business-or-person', kind: 'identifier' },
+  'BranchHistory.customerId': { subject: 'none', note: STRUCTURAL },
+  'BranchHistory.routeId': { subject: 'none', note: 'the route that served the shop then' },
+  'BranchHistory.regionId': { subject: 'none', note: STRUCTURAL },
+  'BranchHistory.dayOfVisit': { subject: 'business-or-person' },
+  'BranchHistory.status': { subject: 'business-or-person' },
+  'BranchHistory.deletedAt': { subject: 'none', note: 'soft-delete marker as it was' },
+  'BranchHistory.coolersCount': { subject: 'none' },
+  'BranchHistory.standsCount': { subject: 'none' },
+  'BranchHistory.emptyBottlesCount': { subject: 'none' },
+  'BranchHistory.equipmentConfirmed': { subject: 'none' },
+  'BranchHistory.hasGps': { subject: 'none', note: 'whether a GPS point was on file; the point itself is never copied' },
+  'BranchHistory.shopPhotoId': { subject: 'none', kind: 'image reference' },
+  'BranchHistory.signboardPhotoId': { subject: 'none', kind: 'image reference' },
+  ...historyCommon('UserHistory'),
+  'UserHistory.userId': { subject: 'employee', kind: 'identifier' },
+  'UserHistory.username': { subject: 'employee', kind: 'identifier', note: 'as it was: a salesman’s is his route code, retired on hand-over' },
+  'UserHistory.role': { subject: 'employee', kind: 'behaviour', note: 'job function then' },
+  'UserHistory.isActive': { subject: 'employee', note: 'employment status in this system then' },
+  'UserHistory.supervisorId': { subject: 'employee', note: 'reporting line then' },
+  'UserHistory.ownedRouteId': { subject: 'employee', note: 'the round this person worked then' },
+  'UserHistory.regionIds': { subject: 'employee', note: 'the regions this person administered then' },
+  ...historyCommon('RouteOwnerHistory'),
+  'RouteOwnerHistory.routeId': { subject: 'none', note: STRUCTURAL },
+  'RouteOwnerHistory.ownerId': { subject: 'employee', kind: 'identifier', note: 'who held the round then (null: nobody)' },
+  ...historyCommon('RouteHistory'),
+  'RouteHistory.routeId': { subject: 'none', note: STRUCTURAL },
+  'RouteHistory.code': {
+    subject: 'employee',
+    kind: 'identifier',
+    note: 'as Route.code: doubles as the salesman’s login username',
+  },
+  'RouteHistory.name': { subject: 'none' },
+  'RouteHistory.regionId': { subject: 'none', note: STRUCTURAL },
+  'RouteHistory.isActive': { subject: 'none' },
+  ...historyCommon('RegionHistory'),
+  'RegionHistory.regionId': { subject: 'none', note: STRUCTURAL },
+  'RegionHistory.code': { subject: 'none' },
+  'RegionHistory.name': { subject: 'none', note: 'geographic area of operations' },
+  'RegionHistory.isActive': { subject: 'none' },
 
   // ---- Edit drafts: proposed values, same shape as the live records --------
   'EditCustomerDraft.id': { subject: 'none', note: STRUCTURAL },

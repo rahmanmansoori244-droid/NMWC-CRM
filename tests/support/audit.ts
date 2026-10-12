@@ -58,3 +58,30 @@ export function purgeEditApprovals(prisma: PrismaClient, args: Prisma.EditApprov
 export function purgeCustomerEdits(prisma: PrismaClient, args: Prisma.CustomerEditDeleteManyArgs) {
   return withAuditMaintenance(prisma, (tx) => tx.customerEdit.deleteMany(args));
 }
+
+/** The world ids whose dated history a suite's teardown removes (gap 6, docs/HISTORY.md). */
+export type HistoryIds = {
+  customerIds?: string[];
+  branchIds?: string[];
+  userIds?: string[];
+  routeIds?: string[];
+  regionIds?: string[];
+};
+
+/**
+ * Remove the dated history of a suite's own fixtures, in the owner's maintenance
+ * window (the history refuses DELETE otherwise, like AuditLog). Call it LAST in a
+ * teardown: deleting the fixtures themselves writes DELETE tombstones. Only ids the
+ * suite created — the history of anything else is that record's permanent record.
+ */
+export function purgeHistory(prisma: PrismaClient, ids: HistoryIds) {
+  const inList = (xs: string[] | undefined) => ({ in: xs ?? [] });
+  return withAuditMaintenance(prisma, async (tx) => ({
+    customer: (await tx.customerHistory.deleteMany({ where: { customerId: inList(ids.customerIds) } })).count,
+    branch: (await tx.branchHistory.deleteMany({ where: { branchId: inList(ids.branchIds) } })).count,
+    user: (await tx.userHistory.deleteMany({ where: { userId: inList(ids.userIds) } })).count,
+    routeOwner: (await tx.routeOwnerHistory.deleteMany({ where: { routeId: inList(ids.routeIds) } })).count,
+    route: (await tx.routeHistory.deleteMany({ where: { routeId: inList(ids.routeIds) } })).count,
+    region: (await tx.regionHistory.deleteMany({ where: { regionId: inList(ids.regionIds) } })).count,
+  }));
+}

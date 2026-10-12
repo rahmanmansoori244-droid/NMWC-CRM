@@ -21,7 +21,8 @@ import type { DayOfWeek, PaymentTerms, Prisma, Role } from '@prisma/client';
 import { normalizeCR } from '../../../../lib/cr';
 import { scoreBranch, scoreCustomer, type BranchForScore, type CustomerForScore } from '../../../../lib/completeness';
 import { cleanupRegistry, residue } from './cleanup';
-import { assertNotProduction, db, REGISTRY_DIR, RUN_ID, safeError, hasR2 } from './env';
+import { assertNotProduction, db, getDb, REGISTRY_DIR, RUN_ID, safeError, hasR2 } from './env';
+import { changeContextStatement, contextClient, src } from '../../../../lib/change-context';
 import { FIXTURE_PASSWORD_SHAPE } from './secret-scan';
 import { makeRunId, newId, smallHash } from './ids';
 import { assertOmanDayUnchanged, OMAN_TODAY, omanDayAfter } from './oman';
@@ -39,6 +40,19 @@ import type {
   World,
   WorldSpec,
 } from './types';
+
+/**
+ * Gap 24: the world's rows are written under this run's name, so the dated
+ * history the database keeps (docs/HISTORY.md) says the e2e harness made them,
+ * not 'sql'. One short transaction per seeding call; created on first use, so
+ * importing this module opens no connection.
+ */
+const SEED_CONTEXT = { actorId: null, source: src.e2e(RUN_ID) };
+let seedClient: ReturnType<typeof contextClient> | undefined;
+function seedDb() {
+  seedClient ??= contextClient(getDb(), SEED_CONTEXT);
+  return seedClient;
+}
 
 /** The real hand-out password the account master gives every new account. */
 export const INITIAL_PASSWORD = '12345';
@@ -212,7 +226,7 @@ class WorldImpl implements World {
     if (rows.length === 0) return [];
     this.registry.add('regionIds', ...rows.map((r) => r.id));
     this.registry.add('regionCodes', ...rows.map((r) => r.code));
-    await db.region.createMany({ data: rows.map(({ id, code, name }) => ({ id, code, name })) });
+    await seedDb().region.createMany({ data: rows.map(({ id, code, name }) => ({ id, code, name })) });
     rows.forEach((r) => this.regions.set(r.key, r));
     return rows;
   }
@@ -241,7 +255,7 @@ class WorldImpl implements World {
     if (rows.length > 0) {
       this.registry.add('routeIds', ...rows.map((r) => r.id));
       this.registry.add('routeCodes', ...rows.map((r) => r.code));
-      await db.route.createMany({
+      await seedDb().route.createMany({
         data: rows.map((r) => ({ id: r.id, code: r.code, name: r.name, regionId: r.regionId, isActive: r.isActive })),
       });
       rows.forEach((r) =>
@@ -273,7 +287,7 @@ class WorldImpl implements World {
       // cleanup never looks a route up by it.
       this.registry.add('routeIds', id);
       try {
-        await db.route.create({ data: { id, code, name: `E2E Route ${key} ${this.sfx}`, regionId: region.id } });
+        await seedDb().route.create({ data: { id, code, name: `E2E Route ${key} ${this.sfx}`, regionId: region.id } });
         this.registry.add('routeCodes', code);
         this.counters.route++;
         const r: FixtureRoute = { key, id, code, name: `E2E Route ${key} ${this.sfx}`, regionId: region.id, regionKey };
@@ -339,7 +353,7 @@ class WorldImpl implements World {
         return !sup || done.has(sup);
       });
       if (wave.length === 0) throw new Error('supervisor cycle in the world spec');
-      await db.user.createMany({
+      await seedDb().user.createMany({
         data: wave.map((p) => ({
           id: p.id,
           username: p.username,
@@ -362,7 +376,11 @@ class WorldImpl implements World {
       const regionIds = links.map((l) => l[0]);
       const userIds = links.map((l) => l[1]);
       // The implicit many-to-many table: A = Region.id, B = User.id.
-      await db.$executeRaw`INSERT INTO "_ManagerRegions" ("A", "B") SELECT * FROM UNNEST(${regionIds}::text[], ${userIds}::text[]) ON CONFLICT DO NOTHING`;
+      const client = getDb();
+      await client.$transaction([
+        changeContextStatement(client, SEED_CONTEXT),
+        client.$executeRaw`INSERT INTO "_ManagerRegions" ("A", "B") SELECT * FROM UNNEST(${regionIds}::text[], ${userIds}::text[]) ON CONFLICT DO NOTHING`,
+      ]);
     }
     return planned.map((p) => {
       const u: FixtureUser = {
@@ -561,8 +579,8 @@ class WorldImpl implements World {
     this.registry.add('customerIds', ...customers.map((c) => c.id!));
     this.registry.add('branchIds', ...branches.map((b) => b.id!));
     try {
-      await db.customer.createMany({ data: customers });
-      await db.branch.createMany({ data: branches });
+      await seedDb().customer.createMany({ data: customers });
+      await seedDb().branch.createMany({ data: branches });
     } catch (err) {
       throw safeError(err, 'creating fixture customers failed');
     }

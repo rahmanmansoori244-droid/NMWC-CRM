@@ -374,6 +374,19 @@ test.describe('update flow: a salesman enriches a customer, a Manager who is not
     expect(live.branches[0]).toMatchObject({ address, dayOfVisit: 'SUN' });
     expect(live.branches[0]!.gpsLat).toBeCloseTo(MUSCAT.lat, 4);
 
+    // Gap 6/24: the database recorded the shop's change in its dated history, once,
+    // naming the request as the cause and M2 as the actor — and the address and the
+    // point by field name only (docs/HISTORY.md).
+    const shopHistory = await db.branchHistory.findMany({
+      where: { branchId: c.branch.id, source: `edit:${editId}` },
+      orderBy: { id: 'asc' },
+    });
+    expect(shopHistory.map((h) => ({ kind: h.changeKind, actor: h.actorId, day: h.dayOfVisit, hasGps: h.hasGps }))).toEqual([
+      { kind: 'UPDATE', actor: m2.id, day: 'SUN', hasGps: true },
+    ]);
+    expect(shopHistory[0]!.changedFields).toEqual(expect.arrayContaining(['dayOfVisit', 'address', 'gps']));
+    expect(await db.customerHistory.count({ where: { customerId: c.id, source: `edit:${editId}`, actorId: m2.id } })).toBe(1);
+
     // The salesman is told; the direct supervisor's review row is settled by M2's decision (wave 1).
     await expect
       .poll(async () => (await notificationsFor({ editId, userId: sa.id })).map((n) => `${n.kind}:${n.title}`))

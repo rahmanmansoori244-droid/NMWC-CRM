@@ -561,7 +561,78 @@ async function deleteRows(
   // 9. Routes, then regions (same fallback).
   await deleteEach('Route', routes, (c) => p.route.deleteMany({ where: { id: { in: c } } }), add, warnings);
   await deleteEach('Region', regions, (c) => p.region.deleteMany({ where: { id: { in: c } } }), add, warnings);
+
+  // 10. The dated history of every world row that is gone (gap 6, docs/HISTORY.md).
+  //     LAST, because steps 0, 2 and 8 change world rows and every delete above
+  //     writes a DELETE tombstone: all of them are history rows. In the owner's
+  //     maintenance window (the history refuses DELETE otherwise), and only for
+  //     rows that no longer exist: a world row kept for a foreign row keeps its
+  //     history, and a re-run after a crash between step 9 and here still finds
+  //     the ids (the registry holds them).
+  const gone = await goneIds(p, {
+    branches,
+    customers,
+    users,
+    routes,
+    regions,
+  });
+  await inMaintenance(async (tx) => {
+    for (const c of chunks(gone.branches))
+      add('BranchHistory', (await tx.branchHistory.deleteMany({ where: { branchId: { in: c } } })).count);
+    for (const c of chunks(gone.customers))
+      add('CustomerHistory', (await tx.customerHistory.deleteMany({ where: { customerId: { in: c } } })).count);
+    for (const c of chunks(gone.users))
+      add('UserHistory', (await tx.userHistory.deleteMany({ where: { userId: { in: c } } })).count);
+    for (const c of chunks(gone.routes)) {
+      add('RouteOwnerHistory', (await tx.routeOwnerHistory.deleteMany({ where: { routeId: { in: c } } })).count);
+      add('RouteHistory', (await tx.routeHistory.deleteMany({ where: { routeId: { in: c } } })).count);
+    }
+    for (const c of chunks(gone.regions))
+      add('RegionHistory', (await tx.regionHistory.deleteMany({ where: { regionId: { in: c } } })).count);
+  });
   return n;
+}
+
+type WorldIds = { branches: string[]; customers: string[]; users: string[]; routes: string[]; regions: string[] };
+
+/** Of these world ids, the ones whose live row no longer exists. */
+async function goneIds(p: PrismaClient, w: WorldIds): Promise<WorldIds> {
+  const live = async (ids: string[], find: (c: string[]) => Promise<Array<{ id: string }>>) => {
+    const out = new Set<string>();
+    for (const c of chunks(ids)) (await find(c)).forEach((r) => out.add(r.id));
+    return ids.filter((id) => !out.has(id));
+  };
+  const sel = { select: { id: true } } as const;
+  return {
+    branches: await live(w.branches, (c) => p.branch.findMany({ where: { id: { in: c } }, ...sel })),
+    customers: await live(w.customers, (c) => p.customer.findMany({ where: { id: { in: c } }, ...sel })),
+    users: await live(w.users, (c) => p.user.findMany({ where: { id: { in: c } }, ...sel })),
+    routes: await live(w.routes, (c) => p.route.findMany({ where: { id: { in: c } }, ...sel })),
+    regions: await live(w.regions, (c) => p.region.findMany({ where: { id: { in: c } }, ...sel })),
+  };
+}
+
+/**
+ * History rows of rows that are NOT the world's but name a world user or route:
+ * a real branch that once sat on a world route, a user once supervised by a world
+ * user, a route a world salesman once held. They are that row's permanent record,
+ * never the world's to delete, and unlike a live foreign row they hold nothing
+ * back (history has no foreign keys). So they are reported, not counted as
+ * leftovers: counting them would leave a world dirty for ever over a row no
+ * clean-up may touch. scripts/qa/purge-orphan-history.ts removes the history of
+ * rows that no longer exist, on UAT only.
+ */
+async function foreignHistoryRefs(f: Fixture, p: PrismaClient): Promise<Residue> {
+  const users = ids(f.users);
+  const routes = ids(f.routes);
+  const branches = ids(f.branches);
+  if (users.length === 0 && routes.length === 0) return {};
+  const [branchRows, userRows, ownerRows] = await Promise.all([
+    p.branchHistory.count({ where: { routeId: { in: routes }, branchId: { notIn: branches } } }),
+    p.userHistory.count({ where: { supervisorId: { in: users }, userId: { notIn: users } } }),
+    p.routeOwnerHistory.count({ where: { ownerId: { in: users }, routeId: { notIn: routes } } }),
+  ]);
+  return { foreignBranchHistory: branchRows, foreignUserHistory: userRows, foreignRouteOwnerHistory: ownerRows };
 }
 
 /** Deletes in chunks; a chunk that fails is retried one row at a time, and a row that still fails is reported. */
@@ -616,6 +687,12 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     ImportRow,
     TemixSyncBatch,
     ExportJob,
+    BranchHistory,
+    CustomerHistory,
+    UserHistory,
+    RouteOwnerHistory,
+    RouteHistory,
+    RegionHistory,
   ] = await Promise.all([
     p.user.count({ where: { OR: [{ id: { in: users } }, { username: ci(sfx) }, { fullName: ci(sfx) }] } }),
     p.region.count({ where: { OR: [{ id: { in: [...f.regions] } }, { code: ci(sfx) }, { name: ci(sfx) }] } }),
@@ -652,6 +729,13 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     p.importRow.count({ where: { batchId: { in: [...f.importBatches] } } }),
     p.temixSyncBatch.count({ where: { id: { in: [...f.temixBatches] } } }),
     p.exportJob.count({ where: { requestedById: { in: users } } }),
+    // The dated history of the world's rows (gap 6): purged last, in step 10.
+    p.branchHistory.count({ where: { branchId: { in: [...f.branches] } } }),
+    p.customerHistory.count({ where: { customerId: { in: [...f.customers] } } }),
+    p.userHistory.count({ where: { userId: { in: users } } }),
+    p.routeOwnerHistory.count({ where: { routeId: { in: [...f.routes] } } }),
+    p.routeHistory.count({ where: { routeId: { in: [...f.routes] } } }),
+    p.regionHistory.count({ where: { regionId: { in: [...f.regions] } } }),
   ]);
   const foreign = known?.foreign ?? (await foreignRows(f, p));
   const r2Objects = hasR2 ? (await listFixtureObjects(f)).filter((k) => !foreign.keys.has(k)).length : 0;
@@ -673,6 +757,12 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     ImportRow,
     TemixSyncBatch,
     ExportJob,
+    BranchHistory,
+    CustomerHistory,
+    UserHistory,
+    RouteOwnerHistory,
+    RouteHistory,
+    RegionHistory,
     r2Objects,
     ...foreign.counts,
   };
@@ -707,6 +797,12 @@ async function cleanupPass(
   const foreign = await foreignRows(f, p);
   const r2 = await deleteR2(f, reg, foreign, warnings);
   const deleted = await deleteRows(f, reg, foreign, r2.refused, warnings);
+  const refs = Object.entries(await foreignHistoryRefs(f, p)).filter(([, count]) => count > 0);
+  if (refs.length) {
+    warnings.push(
+      `history rows of other records name this world (kept, not leftovers): ${refs.map(([k, count]) => `${k}=${count}`).join(', ')}`
+    );
+  }
   // Counted again after the deletes: a foreign row may have arrived meanwhile.
   return { leftovers: await residue(reg, { f }), deleted, r2Keys: r2.deleted };
 }

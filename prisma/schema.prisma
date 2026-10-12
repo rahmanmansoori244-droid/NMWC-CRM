@@ -694,6 +694,14 @@ model AuditLog {
   ip         String?
   userAgent  String?
   at         DateTime    @default(now())
+  // Gap 24 (history foundation, 20261013100100): what caused the row, from the
+  // writer's change context (lib/change-context.ts), and the database
+  // transaction it was written in — the join to the dated history tables below.
+  // Both stamped by the trigger auditlog_stamp_context, never by the app. Null
+  // source: written outside any context (sign-ins, photo views, stand-alone
+  // exports), or before the column existed.
+  source     String?
+  txId       BigInt?
 
   actor User @relation(fields: [actorId], references: [id])
 
@@ -705,6 +713,192 @@ model AuditLog {
   // forensic query that starts from a time window — had no index to use and
   // scanned a table that grows forever.
   @@index([at(sort: Desc)])
+  @@index([txId])
+}
+
+// ── DATED HISTORY (gaps 5, 6, 17, 24; docs/HISTORY.md) ───────────────────
+// Written by the DATABASE, from triggers on Customer, Branch, User, Route,
+// Region and _ManagerRegions (migration 20261013100100_history_foundation): one
+// row per real change of a watched column, never by the application. INSERT-only:
+// UPDATE, DELETE and TRUNCATE are refused like AuditLog's, and a direct INSERT is
+// refused too (only the capture triggers, or the owner's maintenance window,
+// write here). Kept forever (owner decision 2026-10-11).
+//
+// No relations on purpose: history outlives the rows it describes (an owner
+// hard-delete leaves a DELETE tombstone), and a fixture can be purged in any
+// order. validTo is not stored: it is the next row's validFrom for the same key
+// (the nmwc_*_intervals functions derive it).
+//
+// Personal values are never copied here: names, phones, CR number, contact,
+// e-mail, notes, address and GPS appear only as a field NAME in changedFields.
+
+// What a history row records.
+enum HistoryChange {
+  BASELINE // the first page, written by the migration: the state as found (inferred before recordedAt)
+  CREATE
+  UPDATE
+  DELETE // a hard delete (owner maintenance only); the row keeps the last values
+}
+
+model CustomerHistory {
+  id                 BigInt         @id @default(autoincrement())
+  changeKind         HistoryChange
+  // Every watched column whose value changed, personal ones by name only.
+  changedFields      String[]
+  // When the change took effect: the writer's nmwc.effective_from (the daily
+  // Temix file's load day) or the transaction's time, never before the key's
+  // previous row. recordedAt is when it was written; effectiveRequested what the
+  // writer asked for (null = "same as recorded").
+  validFrom          DateTime
+  recordedAt         DateTime
+  effectiveRequested DateTime?
+  actorId            String?
+  source             String
+  sourceKind         String
+  txId               BigInt
+  dbUser             String
+  customerId         String
+  nmwcCode           String
+  paymentTerms       PaymentTerms
+  creditLimit        Decimal?       @db.Decimal(14, 3)
+  paymentTermDays    Int?
+  temixCode          String?
+  status             CustomerStatus
+  channelId          String?
+  subChannelId       String?
+  crPhotoId          String?
+  deletedAt          DateTime?
+
+  @@index([customerId, validFrom(sort: Desc), id(sort: Desc)])
+  @@index([txId])
+}
+
+model BranchHistory {
+  id                 BigInt         @id @default(autoincrement())
+  changeKind         HistoryChange
+  changedFields      String[]
+  validFrom          DateTime
+  recordedAt         DateTime
+  effectiveRequested DateTime?
+  actorId            String?
+  source             String
+  sourceKind         String
+  txId               BigInt
+  dbUser             String
+  branchId           String
+  branchCode         String
+  customerId         String
+  routeId            String
+  regionId           String
+  dayOfVisit         DayOfWeek?
+  status             CustomerStatus
+  deletedAt          DateTime?
+  coolersCount       Int
+  standsCount        Int
+  emptyBottlesCount  Int
+  equipmentConfirmed Boolean
+  // Whether a GPS point is on file; the point itself is never copied.
+  hasGps             Boolean
+  shopPhotoId        String?
+  signboardPhotoId   String?
+
+  @@index([branchId, validFrom(sort: Desc), id(sort: Desc)])
+  @@index([customerId, validFrom])
+  @@index([routeId, validFrom])
+  @@index([txId])
+}
+
+model UserHistory {
+  id                 BigInt        @id @default(autoincrement())
+  changeKind         HistoryChange
+  changedFields      String[]
+  validFrom          DateTime
+  recordedAt         DateTime
+  effectiveRequested DateTime?
+  actorId            String?
+  source             String
+  sourceKind         String
+  txId               BigInt
+  dbUser             String
+  userId             String
+  // As it was then: a salesman's username is his route code, retired when the
+  // route changes hands.
+  username           String
+  role               Role
+  isActive           Boolean
+  supervisorId       String?
+  ownedRouteId       String?
+  // The regions a Manager (or region-scoped role) administered, sorted.
+  regionIds          String[]
+
+  @@index([userId, validFrom(sort: Desc), id(sort: Desc)])
+  @@index([username])
+  @@index([txId])
+}
+
+// Who held each route, one chain per route (written by the User trigger when
+// ownedRouteId moves). ownerId null = nobody.
+model RouteOwnerHistory {
+  id                 BigInt        @id @default(autoincrement())
+  changeKind         HistoryChange
+  changedFields      String[]
+  validFrom          DateTime
+  recordedAt         DateTime
+  effectiveRequested DateTime?
+  actorId            String?
+  source             String
+  sourceKind         String
+  txId               BigInt
+  dbUser             String
+  routeId            String
+  ownerId            String?
+
+  @@index([routeId, validFrom(sort: Desc), id(sort: Desc)])
+  @@index([ownerId, validFrom])
+  @@index([txId])
+}
+
+model RouteHistory {
+  id                 BigInt        @id @default(autoincrement())
+  changeKind         HistoryChange
+  changedFields      String[]
+  validFrom          DateTime
+  recordedAt         DateTime
+  effectiveRequested DateTime?
+  actorId            String?
+  source             String
+  sourceKind         String
+  txId               BigInt
+  dbUser             String
+  routeId            String
+  code               String
+  name               String
+  regionId           String
+  isActive           Boolean
+
+  @@index([routeId, validFrom(sort: Desc), id(sort: Desc)])
+  @@index([txId])
+}
+
+model RegionHistory {
+  id                 BigInt        @id @default(autoincrement())
+  changeKind         HistoryChange
+  changedFields      String[]
+  validFrom          DateTime
+  recordedAt         DateTime
+  effectiveRequested DateTime?
+  actorId            String?
+  source             String
+  sourceKind         String
+  txId               BigInt
+  dbUser             String
+  regionId           String
+  code               String
+  name               String
+  isActive           Boolean
+
+  @@index([regionId, validFrom(sort: Desc), id(sort: Desc)])
+  @@index([txId])
 }
 
 // ── Phase 1: CREATE-request drafts, multi-step approval, SLA/notifications, Temix sync ──

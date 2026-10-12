@@ -84,6 +84,7 @@ npm run db:migrate -- --name describe_change
 npx prisma migrate deploy
 ```
 
+- **The history foundation (`20261013100100_history_foundation`) locks the five master tables while it runs.** It writes a first page of history for every customer, shop, account, route and region (about 31k rows on production, 1–3 s on Neon) under `SHARE ROW EXCLUSIVE` locks, so writes to those tables wait for it; `lock_timeout` is 10 s, so a busy table fails the deploy fast (re-run it) rather than queueing behind it. Deploy it outside working hours. Re-run `scripts/ops/app-role.ts grant` afterwards (it takes INSERT/UPDATE on the history tables and their sequences back from `nmwc_app` if the role existed before the migration ran; the migration does it too when the role exists) and check `status`. Then `npx tsx scripts/ops/history-report.ts --expect-host <host>`: the baseline is in and nothing is unattributed. Every write path now names its cause (`lib/change-context.ts`); `docs/HISTORY.md` is the reference.
 - **Migrations ARE applied by the Vercel build.** `package.json` `build` runs `prisma generate && next typegen && tsc --noEmit && next lint && prisma migrate deploy && next build --no-lint`, so any migration on the deployed commit is applied to the database in `DIRECT_URL` as part of the deploy — but only after the typecheck and lint have passed. A deploy that failed in `next typegen`, `tsc` or `next lint` applied nothing; one that failed inside `next build` HAS applied its migrations. (This line previously said the opposite; it was wrong, and it matters — a rollback of the application does not roll back the schema, and a restore followed by a deploy will re-apply migrations.)
 
 ## 5b. First-time post-deploy operator checklist
@@ -950,8 +951,18 @@ procedural, and this is the procedure:
    (`DIRECT_URL`), and never as part of a script that also does other work.
 4. Record the row counts before and after in the same log entry.
 
+**The window also covers the dated history** (gap 6, migration
+`20261013100100_history_foundation`, `docs/HISTORY.md`): the six `*History` tables
+refuse UPDATE, DELETE and TRUNCATE through the same function, and a direct INSERT
+through `nmwc_history_insert_guard()`, unless the owner has opened this window. The
+history is kept for ever; on production nothing purges it. Deleting a customer, shop,
+account, route or region (owner, in the window) writes a DELETE tombstone into its
+history — the record of the delete.
+
 Legitimate uses so far: test-fixture clean-up on isolated branches
-(`tests/support/audit.ts`) and the synthetic-data wipe scripts. Of those scripts only
+(`tests/support/audit.ts`, including `purgeHistory`; the launch e2e clean-up's step 10;
+`scripts/qa/purge-orphan-history.ts` on UAT, which refuses production) and the
+synthetic-data wipe scripts. Of those scripts only
 `prisma/synthetic.ts` (`--reset`, `--clear-only`) is left: `scripts/wipe-synthetic-data.ts`
 and `scripts/cleanup-synthetic-test.ts` were deleted on 2026-10-11 (owner decision, data
 audit 2026-10-10; §5j). An erasure
@@ -969,6 +980,8 @@ curl -fsSL -H "Authorization: Bearer $HEALTH_BEARER" https://nmwc-cm.vercel.app/
 ```
 - `db: fail` → Neon project may be sleeping (free tier auto-suspends). Hit any page; first load wakes it. If persistent: check Neon console.
 - `r2: unconfigured` → one of `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` is missing from this deployment. On production that is a 503: no photograph can be uploaded. Set it in Vercel and redeploy.
+- `warnings` holds `history:unattributed` → in the last 24 hours the application (`nmwc_app`) changed a customer, shop, account, route or region without naming the cause: a code path missing `withChangeContext` (`docs/HISTORY.md` §5). The change itself was recorded (source `sql`); find the rows with `scripts/ops/history-report.ts` or the Steward's Record keeping card on `/status`, and report it as a defect. Never pages.
+- `warnings` holds `history:triggers-disabled` / `history:triggers-missing` / `history:unreadable` → a history trigger was disabled or dropped (changes are going unrecorded), or the history could not be read. Re-enable it (`ALTER TABLE … ENABLE TRIGGER …`, owner) and record the gap in the private operations log; `scripts/ops/restore-verify.ts` T-03/T-10 list what should be there.
 - `r2: fail` → check R2 bucket exists and the API token isn't revoked. Test: `curl -X HEAD https://<account>.r2.cloudflarestorage.com/nmwc-photos -H "Authorization: ..."`.
 
 ### Symptom: Sign-in 500s

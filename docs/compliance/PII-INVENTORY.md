@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**302 stored columns across 24 tables** — Customer contact: 28 · Employee: 67 · Customer entity (personal if a sole establishment): 36 · Not personal data: 171.
+**414 stored columns across 30 tables** — Customer contact: 28 · Employee: 82 · Customer entity (personal if a sole establishment): 47 · Not personal data: 257.
 
 ## Columns holding personal data
 
@@ -173,6 +173,62 @@ Every column the database stores, classified by whose personal data it is. This 
 | `ip` | Employee | device | source IP of the member of staff |
 | `userAgent` | Employee | device | browser and device string |
 | `at` | Employee | behaviour | when that person acted |
+
+### CustomerHistory
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `actorId` | Employee | identifier | who caused the change (null for a job or an unnamed script) |
+| `customerId` | Customer entity (personal if a sole establishment) | identifier |  |
+| `nmwcCode` | Customer entity (personal if a sole establishment) | identifier | the customer code as it was |
+| `paymentTerms` | Customer entity (personal if a sole establishment) | financial |  |
+| `creditLimit` | Customer entity (personal if a sole establishment) | financial |  |
+| `paymentTermDays` | Customer entity (personal if a sole establishment) | financial |  |
+| `temixCode` | Customer entity (personal if a sole establishment) | identifier |  |
+| `status` | Customer entity (personal if a sole establishment) | — |  |
+
+### BranchHistory
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `actorId` | Employee | identifier | who caused the change (null for a job or an unnamed script) |
+| `branchId` | Customer entity (personal if a sole establishment) | identifier |  |
+| `branchCode` | Customer entity (personal if a sole establishment) | identifier |  |
+| `dayOfVisit` | Customer entity (personal if a sole establishment) | — |  |
+| `status` | Customer entity (personal if a sole establishment) | — |  |
+
+### UserHistory
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `actorId` | Employee | identifier | who caused the change (null for a job or an unnamed script) |
+| `userId` | Employee | identifier |  |
+| `username` | Employee | identifier | as it was: a salesman’s is his route code, retired on hand-over |
+| `role` | Employee | behaviour | job function then |
+| `isActive` | Employee | — | employment status in this system then |
+| `supervisorId` | Employee | — | reporting line then |
+| `ownedRouteId` | Employee | — | the round this person worked then |
+| `regionIds` | Employee | — | the regions this person administered then |
+
+### RouteOwnerHistory
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `actorId` | Employee | identifier | who caused the change (null for a job or an unnamed script) |
+| `ownerId` | Employee | identifier | who held the round then (null: nobody) |
+
+### RouteHistory
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `actorId` | Employee | identifier | who caused the change (null for a job or an unnamed script) |
+| `code` | Employee | identifier | as Route.code: doubles as the salesman’s login username |
+
+### RegionHistory
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `actorId` | Employee | identifier | who caused the change (null for a job or an unnamed script) |
 
 ### EditCustomerDraft
 
@@ -375,6 +431,92 @@ Every column the database stores, classified by whose personal data it is. This 
 | AuditLog | `id` | String | foreign key / structural value |
 | AuditLog | `entityType` | String | structural / operational value |
 | AuditLog | `entityId` | String | foreign key / structural value |
+| AuditLog | `source` | String | what caused the row: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
+| AuditLog | `txId` | BigInt | database transaction id: joins the row to the dated history rows of the same change |
+| CustomerHistory | `id` | BigInt | the strict order of the history |
+| CustomerHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
+| CustomerHistory | `changedFields` | String[] | field NAMES only — never a value |
+| CustomerHistory | `validFrom` | DateTime | when the change took effect |
+| CustomerHistory | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| CustomerHistory | `effectiveRequested` | DateTime | the effective time the writer asked for |
+| CustomerHistory | `source` | String | what caused it: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
+| CustomerHistory | `sourceKind` | String | structural / operational value |
+| CustomerHistory | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
+| CustomerHistory | `dbUser` | String | the database login (the runtime role or the owner), not a person |
+| CustomerHistory | `channelId` | String | foreign key / structural value |
+| CustomerHistory | `subChannelId` | String | foreign key / structural value |
+| CustomerHistory | `crPhotoId` | String | which CR document was on file |
+| CustomerHistory | `deletedAt` | DateTime | soft-delete marker as it was |
+| BranchHistory | `id` | BigInt | the strict order of the history |
+| BranchHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
+| BranchHistory | `changedFields` | String[] | field NAMES only — never a value |
+| BranchHistory | `validFrom` | DateTime | when the change took effect |
+| BranchHistory | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| BranchHistory | `effectiveRequested` | DateTime | the effective time the writer asked for |
+| BranchHistory | `source` | String | what caused it: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
+| BranchHistory | `sourceKind` | String | structural / operational value |
+| BranchHistory | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
+| BranchHistory | `dbUser` | String | the database login (the runtime role or the owner), not a person |
+| BranchHistory | `customerId` | String | foreign key / structural value |
+| BranchHistory | `routeId` | String | the route that served the shop then |
+| BranchHistory | `regionId` | String | foreign key / structural value |
+| BranchHistory | `deletedAt` | DateTime | soft-delete marker as it was |
+| BranchHistory | `coolersCount` | Int | structural / operational value |
+| BranchHistory | `standsCount` | Int | structural / operational value |
+| BranchHistory | `emptyBottlesCount` | Int | structural / operational value |
+| BranchHistory | `equipmentConfirmed` | Boolean | structural / operational value |
+| BranchHistory | `hasGps` | Boolean | whether a GPS point was on file; the point itself is never copied |
+| BranchHistory | `shopPhotoId` | String | structural / operational value |
+| BranchHistory | `signboardPhotoId` | String | structural / operational value |
+| UserHistory | `id` | BigInt | the strict order of the history |
+| UserHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
+| UserHistory | `changedFields` | String[] | field NAMES only — never a value |
+| UserHistory | `validFrom` | DateTime | when the change took effect |
+| UserHistory | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| UserHistory | `effectiveRequested` | DateTime | the effective time the writer asked for |
+| UserHistory | `source` | String | what caused it: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
+| UserHistory | `sourceKind` | String | structural / operational value |
+| UserHistory | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
+| UserHistory | `dbUser` | String | the database login (the runtime role or the owner), not a person |
+| RouteOwnerHistory | `id` | BigInt | the strict order of the history |
+| RouteOwnerHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
+| RouteOwnerHistory | `changedFields` | String[] | field NAMES only — never a value |
+| RouteOwnerHistory | `validFrom` | DateTime | when the change took effect |
+| RouteOwnerHistory | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| RouteOwnerHistory | `effectiveRequested` | DateTime | the effective time the writer asked for |
+| RouteOwnerHistory | `source` | String | what caused it: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
+| RouteOwnerHistory | `sourceKind` | String | structural / operational value |
+| RouteOwnerHistory | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
+| RouteOwnerHistory | `dbUser` | String | the database login (the runtime role or the owner), not a person |
+| RouteOwnerHistory | `routeId` | String | foreign key / structural value |
+| RouteHistory | `id` | BigInt | the strict order of the history |
+| RouteHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
+| RouteHistory | `changedFields` | String[] | field NAMES only — never a value |
+| RouteHistory | `validFrom` | DateTime | when the change took effect |
+| RouteHistory | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| RouteHistory | `effectiveRequested` | DateTime | the effective time the writer asked for |
+| RouteHistory | `source` | String | what caused it: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
+| RouteHistory | `sourceKind` | String | structural / operational value |
+| RouteHistory | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
+| RouteHistory | `dbUser` | String | the database login (the runtime role or the owner), not a person |
+| RouteHistory | `routeId` | String | foreign key / structural value |
+| RouteHistory | `name` | String | structural / operational value |
+| RouteHistory | `regionId` | String | foreign key / structural value |
+| RouteHistory | `isActive` | Boolean | structural / operational value |
+| RegionHistory | `id` | BigInt | the strict order of the history |
+| RegionHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
+| RegionHistory | `changedFields` | String[] | field NAMES only — never a value |
+| RegionHistory | `validFrom` | DateTime | when the change took effect |
+| RegionHistory | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| RegionHistory | `effectiveRequested` | DateTime | the effective time the writer asked for |
+| RegionHistory | `source` | String | what caused it: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
+| RegionHistory | `sourceKind` | String | structural / operational value |
+| RegionHistory | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
+| RegionHistory | `dbUser` | String | the database login (the runtime role or the owner), not a person |
+| RegionHistory | `regionId` | String | foreign key / structural value |
+| RegionHistory | `code` | String | structural / operational value |
+| RegionHistory | `name` | String | geographic area of operations |
+| RegionHistory | `isActive` | Boolean | structural / operational value |
 | EditCustomerDraft | `id` | String | foreign key / structural value |
 | EditCustomerDraft | `editId` | String | foreign key / structural value |
 | EditCustomerDraft | `channelId` | String | foreign key / structural value |

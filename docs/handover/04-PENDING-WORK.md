@@ -488,6 +488,16 @@ The source is AUDITOR-BRIEF Appendix B.
 | B7.4 | No rate limit on: the three exports; approve, reject and bulk actions (up to 50 per call); close and reactivation requests; password reset and the rest of user admin; `GET /api/forms/customer-create`; `perf-probe`; `/api/health` (one database round trip per anonymous call). | AUDITOR-BRIEF §8 (the rate-limit table); `lib/rate-limit.ts` | A script or a stuck client can load the database. `/api/health` needs no sign-in at all. | M | B | P2 |
 | B7.5 | The JWT refresh does not re-check the demo-account denylist. | `lib/auth.ts` (the `jwt` callback, around line 199); `lib/demo-accounts.ts`; AUDITOR-BRIEF §8 | A demo-account session that already exists is not cut off when the denylist applies. | S | B | P3 |
 
+### B8. The dated history (data audit gaps 5, 6, 17, 24): part A built, what it left
+
+Part A (`lib/change-context.ts`, migration `20261013100100_history_foundation`, `docs/HISTORY.md`) records every change to a customer, shop, account, route and region, dated, with its cause. Parts B (lossless imports, merges, send-back rounds, exports, photos, approval evidence, reopening, births) and C (approver authority, job history, save conflicts, sign-in events, the route-region rule) follow on the same branch; item D (the daily Temix file) plugs in as `docs/HISTORY.md` §7 describes.
+
+| # | What | Where | Why it matters | Effort | Tier | P |
+|---|---|---|---|---|---|---|
+| B8.1 | The launch e2e harness and integration suites write some master rows straight through Prisma to set a scene (an "imported" contact, a closed customer, a deleted shop). Those writes are recorded in the history under source `sql`, as hand-typed SQL would be. The world's own seeding names its run (`e2e:<runId>`) and its history is purged with the world; the other writes are not converted. | `tests/e2e/launch/*.spec.ts`, `tests/e2e/launch/support/*-helpers.ts`; `tests/integration/*` | A run-wide "no unattributed change" check cannot be asserted until they name their cause; on UAT the Record keeping card shows them. | M | A (tests only) | P3 |
+| B8.2 | Integration suites other than `history-capture` / `history-asof` leave their fixtures' history (DELETE tombstones) on UAT. `scripts/qa/purge-orphan-history.ts --apply` removes the history of records that no longer exist (UAT only). | `tests/integration/*`; `tests/support/audit.ts` (`purgeHistory`) | UAT's history grows with test residue. | S | A | P3 |
+| B8.3 | Not tracked, by decision: the Temix upload-queue columns (`temixSyncState`, `lastTemixUpload*`) and the channel taxonomy's labels. The retention sweep writes no tracked table and names no cause. | `docs/HISTORY.md` §2 | Add them the same way if the owner wants either. | S | B | P3 |
+
 ---
 
 ## C. Owner-side operational actions

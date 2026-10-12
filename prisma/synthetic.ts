@@ -100,6 +100,8 @@ const DAYS: DayOfWeek[] = ['SAT', 'SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI'];
 async function clearSyntheticData() {
   // CASCADE truncate: simpler than juggling FK orders. Keeps schema, drops all rows
   // in the listed tables, then we restore the admin user.
+  // The dated history goes too (gap 6): TRUNCATE fires no row trigger, so the
+  // master tables' history would otherwise outlive them, naming ids no longer there.
   // B4: "AuditLog" is append-only at the database; TRUNCATE needs the
   // maintenance GUC inside the same transaction (owner credential, isolated branch only).
   await prisma.$transaction([
@@ -116,7 +118,13 @@ async function clearSyntheticData() {
       "Customer",
       "Route",
       "Region",
-      "User"
+      "User",
+      "CustomerHistory",
+      "BranchHistory",
+      "UserHistory",
+      "RouteOwnerHistory",
+      "RouteHistory",
+      "RegionHistory"
     RESTART IDENTITY CASCADE;
   `),
   ]);

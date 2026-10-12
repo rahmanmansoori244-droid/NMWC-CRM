@@ -6,6 +6,7 @@ import { HeadBucketCommand } from '@aws-sdk/client-s3';
 import { bearerMatches } from '@/lib/cron-auth';
 import { loadHeartbeatReport } from '@/lib/heartbeat';
 import { evaluateHealth, isProductionDeployment, r2Configured, type CheckState } from '@/lib/health';
+import { loadHistoryHealth } from '@/lib/history-report';
 
 /**
  * GAP-01 + B-12 (audit 2026-05-10): minimal-information health endpoint.
@@ -125,8 +126,16 @@ export async function GET(req: Request) {
       logger.warn({ err: (err as Error).message }, 'health.heartbeats.fail');
     }
   }
+  // Gap 24: the dated history is still being written, and no application path
+  // wrote without naming its cause in the last day. Warnings only, never a page.
+  const historyWarnings = checks.db === 'ok' ? await loadHistoryHealth(prisma) : [];
   // Items 11 + 12: lib/health.ts decides what pages (503) and what is only reported.
-  const verdict = evaluateHealth({ checks, jobs: heartbeats, production: isProductionDeployment() });
+  const verdict = evaluateHealth({
+    checks,
+    jobs: heartbeats,
+    production: isProductionDeployment(),
+    warnings: historyWarnings,
+  });
 
   return NextResponse.json(
     {

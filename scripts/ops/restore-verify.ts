@@ -42,6 +42,12 @@ import { readFileSync, readdirSync, writeFileSync } from 'fs';
 import { parsePrismaSchema, implicitJoinTables } from '../../lib/compliance/prisma-schema';
 import { describeError } from './describe-error';
 import { setChangeContext, src } from '../../lib/change-context';
+import {
+  HISTORY_DEFINER_FUNCTIONS,
+  HISTORY_FUNCTIONS,
+  HISTORY_TABLES,
+  HISTORY_TRIGGERS,
+} from '../../lib/history-tables';
 
 const PROD_MARKER = 'ep-sweet-haze';
 
@@ -57,7 +63,10 @@ const EXPECTED_TRIGGERS = [
   'editapproval_no_truncate',
   'branch_region_consistency_check',
   'editbranchdraft_region_consistency_check',
-] as const;
+  // The dated history (20261013100100_history_foundation): the capture triggers,
+  // the AuditLog context stamp and the guards on every history table.
+  ...HISTORY_TRIGGERS,
+];
 const EXPECTED_FUNCTIONS = ['nmwc_forbid_audit_mutation', 'enforce_branch_region_consistency'] as const;
 const EXPECTED_EXTENSIONS = ['pg_trgm'] as const;
 /** Dropped on purpose by 20260510160000_p1_drop_phone_unique — one owner, several shops. */
@@ -122,11 +131,10 @@ async function main() {
     .map((m) => readFileSync(`prisma/migrations/${m}/migration.sql`, 'utf8'))
     .join('\n');
   const declaredTriggers = new Set(
-    [...migrationSql.matchAll(/CREATE\s+TRIGGER\s+"?([A-Za-z0-9_]+)"?/gi)].map((m) => m[1]!)
+    // CONSTRAINT TRIGGER too: the history's deferred _ManagerRegions capture is one.
+    [...migrationSql.matchAll(/CREATE\s+(?:CONSTRAINT\s+)?TRIGGER\s+"?([A-Za-z0-9_]+)"?/gi)].map((m) => m[1]!)
   );
-  const unknownTriggers = [...declaredTriggers].filter(
-    (t) => !(EXPECTED_TRIGGERS as readonly string[]).includes(t)
-  );
+  const unknownTriggers = [...declaredTriggers].filter((t) => !EXPECTED_TRIGGERS.includes(t));
   if (unknownTriggers.length) {
     throw new VerifyError(
       `migrations create trigger(s) this verifier does not know about: ${unknownTriggers.join(', ')} — add them to EXPECTED_TRIGGERS in scripts/ops/restore-verify.ts`
@@ -247,6 +255,33 @@ async function main() {
           ? `disabled: ${disabled.map((d) => d.tgname).join(', ')}`
           : `${trgs.length} enabled`,
       'THE dangerous one: triggers are restored after the data, so a truncated restore leaves every row present and the append-only audit guard gone'
+    );
+
+    // The dated history's functions: every one present, and the capture functions
+    // still SECURITY DEFINER with a pinned search_path (a restore as another role
+    // keeps both, but a hand-replayed or partial post-data section may not).
+    const hfns = await q<{ proname: string; definer: boolean; pinned: boolean }>(
+      `SELECT proname, prosecdef AS definer,
+              coalesce(array_to_string(proconfig, ',') ~ 'search_path=', false) AS pinned
+         FROM pg_proc
+        WHERE pronamespace = 'public'::regnamespace
+          AND proname IN (${HISTORY_FUNCTIONS.map((f) => `'${f}'`).join(',')})`
+    );
+    const missingHfn = HISTORY_FUNCTIONS.filter((f) => !hfns.some((r) => r.proname === f));
+    const weakHfn = HISTORY_DEFINER_FUNCTIONS.filter((f) => {
+      const r = hfns.find((x) => x.proname === f);
+      return r && !(r.definer && r.pinned);
+    });
+    record(
+      'T-10',
+      `the history's ${HISTORY_FUNCTIONS.length} functions present, the capture ones definer-rights with a pinned search_path`,
+      missingHfn.length || weakHfn.length ? 'fail' : 'pass',
+      missingHfn.length
+        ? `MISSING: ${missingHfn.join(', ')}`
+        : weakHfn.length
+          ? `not SECURITY DEFINER with search_path: ${weakHfn.join(', ')}`
+          : `${hfns.length} present`,
+      'the dated history stops being written (a master write may then fail outright), or the as-of answers are gone'
     );
 
     const [{ total: fkTotal, validated: fkValidated }] = await q<{ total: number; validated: number }>(
@@ -508,6 +543,76 @@ async function main() {
       'new branches can be filed under the wrong region after recovery, which breaks every region-scoped permission check'
     );
 
+    // F-03 / F-04: the dated history (gap 6) still records and still refuses.
+    // One rolled-back transaction: a probe shop is created and its visit day
+    // changed, which must leave exactly two history rows under this drill's
+    // source; then rewriting one of them must be refused.
+    let captured = 'not run';
+    let captureOk = false;
+    let rewriteRefused = false;
+    let rewriteDetail = 'not run';
+    // Thrown to roll the probe back; anything else that ends it is a failure.
+    const probeDone = new Error('rolled back');
+    try {
+      await db.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '2000ms'`);
+        await setChangeContext(tx, { actorId: null, source: src.verify('restore') });
+        const sfx = `rh${Math.floor(Date.now() / 1000)}`;
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "Region" ("id","name","code","updatedAt") VALUES ('${sfx}-g','RH ${sfx}','RH${sfx}',now())`
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "Route" ("id","name","code","regionId","updatedAt") VALUES ('${sfx}-r','RH Route','RH${sfx}','${sfx}-g',now())`
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "Customer" ("id","nmwcCode","legalName","updatedAt") VALUES ('${sfx}-c','RH${sfx}','RH Customer',now())`
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "Branch" ("id","branchCode","branchName","customerId","routeId","regionId","address","updatedAt")
+           VALUES ('${sfx}-b','RH${sfx}-01','RH Branch','${sfx}-c','${sfx}-r','${sfx}-g','Restore drill probe address',now())`
+        );
+        await tx.$executeRawUnsafe(`UPDATE "Branch" SET "dayOfVisit" = 'SUN' WHERE "id" = '${sfx}-b'`);
+        const rows = await tx.$queryRawUnsafe<{ kind: string; source: string }[]>(
+          `SELECT "changeKind"::text AS kind, "source" FROM "BranchHistory" WHERE "branchId" = '${sfx}-b' ORDER BY "id"`
+        );
+        captured = rows.map((r) => `${r.kind}(${r.source})`).join(', ') || 'no rows';
+        captureOk =
+          rows.length === 2 &&
+          rows[0]!.kind === 'CREATE' &&
+          rows[1]!.kind === 'UPDATE' &&
+          rows.every((r) => r.source === 'verify:restore');
+        await tx.$executeRawUnsafe('SAVEPOINT rewrite');
+        try {
+          await tx.$executeRawUnsafe(`UPDATE "BranchHistory" SET "source" = 'tampered' WHERE "branchId" = '${sfx}-b'`);
+          rewriteDetail = 'NOT refused: a history row was rewritten (and rolled back)';
+        } catch (err) {
+          const msg = (err as Error).message;
+          rewriteRefused = /append-only|insufficient_privilege|permission denied/i.test(msg);
+          rewriteDetail = rewriteRefused ? 'UPDATE refused by the trigger' : `NOT refused: it failed with ${describeError(err)} instead`;
+        }
+        await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT rewrite');
+        throw probeDone;
+      });
+    } catch (err) {
+      if (err !== probeDone) {
+        captured = `the probe failed with ${describeError(err)}`;
+      }
+    }
+    record(
+      'F-03',
+      'a change to a shop is recorded in its dated history by the database',
+      captureOk ? 'pass' : 'fail',
+      captured,
+      'the history capture triggers did not survive the restore: changes made after recovery leave no dated history'
+    );
+    record(
+      'F-04',
+      'the restored dated history refuses a rewrite',
+      rewriteRefused ? 'pass' : 'fail',
+      rewriteDetail,
+      'the history is rewritable after recovery — the append-only guarantee is silently undone'
+    );
+
     // ---- R: the runtime role ----------------------------------------------
     const [{ n: roleCount }] = await q<{ n: number }>(
       `SELECT count(*)::int AS n FROM pg_roles WHERE rolname = 'nmwc_app'`
@@ -559,6 +664,8 @@ async function main() {
       EditApproval: ['SELECT', 'INSERT'],
       CustomerEdit: ['SELECT', 'INSERT', 'UPDATE'],
       _prisma_migrations: [],
+      // The dated history: written only by the database's own triggers.
+      ...Object.fromEntries(HISTORY_TABLES.map((t) => [t, ['SELECT']])),
     };
 
     if (expectAppRole && Number(roleCount) > 0) {
@@ -575,6 +682,14 @@ async function main() {
             );
           }
         }
+      }
+      // The history's definer-rights trigger functions: a --no-privileges restore
+      // gives PUBLIC its default EXECUTE back until `grant` revokes it again.
+      for (const fn of HISTORY_DEFINER_FUNCTIONS) {
+        const [{ held }] = await q<{ held: boolean }>(
+          `SELECT has_function_privilege('nmwc_app', '${fn}()', 'EXECUTE') AS held`
+        );
+        if (held) wrong.push(`${fn}().EXECUTE=GRANTED (want absent)`);
       }
       record(
         'R-02',

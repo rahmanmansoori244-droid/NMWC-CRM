@@ -50,6 +50,11 @@ export function evaluateHealth(input: {
   checks: Record<string, CheckState>;
   jobs: JobVerdictInput[] | null;
   production: boolean;
+  /**
+   * Reported, never paged: e.g. the dated history's `history:unattributed` and
+   * `history:triggers-disabled` (lib/history-report.ts).
+   */
+  warnings?: string[];
 }): HealthVerdict {
   const failedChecks: string[] = [];
   const warnings: string[] = [];
@@ -66,6 +71,7 @@ export function evaluateHealth(input: {
     if (job.severity === 'critical') criticalJobs.push(job.key);
     else warnings.push(`${job.key}:${job.state}`);
   }
+  warnings.push(...(input.warnings ?? []));
   const red = failedChecks.length > 0 || criticalJobs.length > 0;
   return {
     status: red ? 'degraded' : warnings.length > 0 ? 'warn' : 'ok',

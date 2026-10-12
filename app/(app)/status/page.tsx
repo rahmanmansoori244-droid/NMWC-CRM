@@ -17,6 +17,8 @@ import {
   type SloStatus,
 } from '@/lib/service-levels';
 import { omanWhen } from '@/lib/submission';
+import { prisma } from '@/lib/db';
+import { loadHistoryReport, RUNTIME_ROLE, UNATTRIBUTED_WINDOW_DAYS, type HistoryReport } from '@/lib/history-report';
 
 export const metadata = { title: 'Service status · NMWC' };
 export const dynamic = 'force-dynamic';
@@ -44,6 +46,8 @@ export default async function StatusPage() {
   const scope: ApprovalsScope =
     viewer === 'STEWARD' ? 'company' : { regionIds: (await loadScope(session.user.id)).managedRegionIds };
   const s = await loadServiceStatus(scope);
+  // Gap 24: the Steward's record-keeping check. Counts and table names only.
+  const history = viewer === 'STEWARD' ? await loadHistoryReport(prisma, s.now) : undefined;
 
   return (
     <main>
@@ -82,6 +86,15 @@ export default async function StatusPage() {
           </h2>
           <OpenApprovals s={s} scope={scope} />
         </section>
+
+        {history !== undefined && (
+          <section aria-labelledby="history-heading">
+            <h2 id="history-heading" className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Record keeping
+            </h2>
+            <HistoryCard report={history} />
+          </section>
+        )}
 
         <section aria-labelledby="jobs-heading">
           <h2 id="jobs-heading" className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
@@ -416,3 +429,61 @@ function Jobs({ jobs, now }: { jobs: JobState[]; now: Date }) {
   );
 }
 
+
+/**
+ * Gap 24: changes the dated history recorded with no cause (docs/HISTORY.md).
+ * Zero is expected. The runtime role's are an application path that forgot to
+ * name its cause; any other login's are SQL typed by hand or an unnamed script.
+ */
+function HistoryCard({ report }: { report: HistoryReport | null }) {
+  if (report === null) {
+    return (
+      <p className="rounded-lg bg-amber-50 p-5 text-sm text-amber-900 shadow-sm ring-1 ring-amber-200">
+        Changes with no recorded cause: the history could not be read just now. Reload the page; if it stays, the
+        history may not be installed on this database.
+      </p>
+    );
+  }
+  const total = report.fromApp + report.fromOther;
+  return (
+    <article
+      className={`rounded-lg p-5 text-sm shadow-sm ring-1 ${
+        report.fromApp > 0 ? 'bg-amber-50 text-amber-900 ring-amber-200' : 'bg-white text-slate-700 ring-slate-200'
+      }`}
+    >
+      <h3 className="text-sm font-semibold text-slate-900">Changes with no recorded cause ({UNATTRIBUTED_WINDOW_DAYS} days)</h3>
+      <p className="mt-2 text-3xl font-bold tabular-nums text-slate-900">{total}</p>
+      {total === 0 ? (
+        <p className="mt-1 text-xs text-slate-500">
+          Every change to a customer, shop, account, route or region says who made it and why. Zero is expected.
+        </p>
+      ) : (
+        <div className="mt-2 space-y-1 text-xs">
+          {report.fromApp > 0 && (
+            <p>
+              {report.fromApp} by the application ({RUNTIME_ROLE}): a screen or job that does not say why it changed the
+              record — a defect to report.
+            </p>
+          )}
+          {report.fromOther > 0 && (
+            <p>
+              {report.fromOther} by another database login: a change typed by hand, or a script that does not name its
+              run.
+            </p>
+          )}
+          <ul className="mt-2 space-y-0.5 tabular-nums text-slate-600">
+            {report.rows.map((r) => (
+              <li key={`${r.table}-${r.day}-${r.dbUser}`}>
+                {r.day} · {r.table} · {r.dbUser} · {r.n} (rows {r.sampleIds.join(', ')}
+                {r.n > r.sampleIds.length ? ', …' : ''})
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="mt-3 border-t border-slate-100 pt-2 text-xs text-slate-500">
+        Read from the dated history the database keeps for every record (docs/HISTORY.md).
+      </p>
+    </article>
+  );
+}

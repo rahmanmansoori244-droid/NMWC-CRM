@@ -36,6 +36,7 @@
 import { PrismaClient } from '@prisma/client';
 import { assertNotProduction } from '../lib/assert-not-production';
 import { setChangeContext, src } from '../../lib/change-context';
+import { HISTORY_DEFINER_FUNCTIONS, HISTORY_TABLES, historySequence } from '../../lib/history-tables';
 
 const ROLE = 'nmwc_app';
 const PROD_MARKER = 'ep-sweet-haze';
@@ -153,10 +154,60 @@ async function status() {
         console.log('  default privileges: DELETE on future tables  <-- UNEXPECTED: run `grant`');
       }
       console.log(wrong === 0 ? 'DELETE is held exactly where it should be' : `${wrong} DELETE problem(s): run \`grant\``);
+
+      // The dated history (gap 6): the role reads it and never writes it. Its
+      // sequences are out of reach too: a setval would make every capture
+      // insert collide, which fails every master write.
+      const present = await historyTablesPresent(owner);
+      let historyWrong = 0;
+      for (const t of present) {
+        const [p] = await owner.$queryRawUnsafe<
+          { sel: boolean; ins: boolean; upd: boolean; seq: boolean }[]
+        >(
+          `SELECT has_table_privilege('${ROLE}', '"${t}"', 'SELECT') AS sel,
+                  has_table_privilege('${ROLE}', '"${t}"', 'INSERT') AS ins,
+                  has_table_privilege('${ROLE}', '"${t}"', 'UPDATE') AS upd,
+                  has_sequence_privilege('${ROLE}', '"${historySequence(t)}"', 'USAGE,UPDATE') AS seq`
+        );
+        const bad = !p.sel || p.ins || p.upd || p.seq;
+        if (bad) historyWrong += 1;
+        console.log(
+          `  ${t}: SELECT ${p.sel ? 'granted' : 'MISSING'}, INSERT ${p.ins ? 'GRANTED' : 'refused'}, UPDATE ${p.upd ? 'GRANTED' : 'refused'}, sequence ${p.seq ? 'USABLE' : 'refused'}${bad ? '  <-- run `grant`' : ''}`
+        );
+      }
+      console.log(
+        present.length === 0
+          ? 'history tables: not migrated yet'
+          : historyWrong === 0
+            ? `history tables: read-only for ${ROLE} (${present.length})`
+            : `${historyWrong} history table problem(s): run \`grant\``
+      );
     }
   } finally {
     await owner.$disconnect();
   }
+}
+
+/** The history's trigger functions EXECUTE is revoked on, as this database has them. */
+async function historyFunctionsPresent(client: PrismaClient): Promise<string[]> {
+  const names = [...HISTORY_DEFINER_FUNCTIONS, 'nmwc_history_insert_guard'];
+  const rows = await client.$queryRawUnsafe<{ proname: string }[]>(
+    `SELECT proname FROM pg_proc
+      WHERE pronamespace = 'public'::regnamespace AND proname IN (${names.map((f) => `'${f}'`).join(', ')})
+      ORDER BY proname`
+  );
+  return rows.map((r) => r.proname);
+}
+
+/** The history tables this database has (none before migration 20261013100100). */
+async function historyTablesPresent(client: PrismaClient): Promise<string[]> {
+  const rows = await client.$queryRawUnsafe<{ relname: string }[]>(
+    `SELECT relname FROM pg_class
+      WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'
+        AND relname IN (${HISTORY_TABLES.map((t) => `'${t}'`).join(', ')})
+      ORDER BY relname`
+  );
+  return rows.map((r) => r.relname);
 }
 
 async function grant() {
@@ -177,6 +228,19 @@ async function grant() {
     //
     // DELETE is granted per table from DELETABLE (above `status`), which says
     // what earns a table its place there.
+    //
+    // The dated history (gap 6) is read-only for the role: its rows are written
+    // only by the database's SECURITY DEFINER capture triggers. The blanket GRANT
+    // below would hand back INSERT/UPDATE on those tables and UPDATE (setval) on
+    // their sequences, so both are taken back right after it, in the same
+    // transaction. Only the tables this database has: a database not yet
+    // migrated to 20261013100100 has none, and naming a missing table would
+    // abort the whole grant.
+    const history = await historyTablesPresent(owner);
+    // The history's definer-rights trigger functions and its insert guard: no role
+    // but their owner may attach them to a table. The migration revokes EXECUTE from
+    // PUBLIC, but a restore made with --no-privileges brings the default back.
+    const guarded = await historyFunctionsPresent(owner);
     const stmts = [
       `GRANT CONNECT ON DATABASE "${db}" TO "${ROLE}"`,
       `GRANT USAGE ON SCHEMA public TO "${ROLE}"`,
@@ -199,6 +263,10 @@ async function grant() {
       `REVOKE DELETE, TRUNCATE ON "CustomerEdit" FROM "${ROLE}"`,
       // migrations are the owner's business
       `REVOKE ALL ON "_prisma_migrations" FROM "${ROLE}"`,
+      // the dated history: read, never write (see above)
+      ...history.map((t) => `REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "${t}" FROM "${ROLE}"`),
+      ...history.map((t) => `REVOKE ALL ON SEQUENCE "${historySequence(t)}" FROM "${ROLE}"`),
+      ...guarded.map((f) => `REVOKE EXECUTE ON FUNCTION ${f}() FROM PUBLIC`),
       // tables and sequences created by FUTURE migrations (run by the owner) inherit the grants
       // No DELETE here on purpose: a table added by a future migration must not
       // become deletable by the runtime credential without somebody deciding so.
@@ -354,6 +422,68 @@ async function verify() {
           // And a table the runtime has no business deleting from: the blanket
           // DELETE an earlier grant left behind must be gone.
           await expectRefused(tx, 'Branch DELETE by ACL', () => tx.$executeRawUnsafe(`DELETE FROM "Branch" WHERE false`));
+
+          // Gap 6: the dated history. The role reads it and never writes it — not
+          // even a zero-row statement passes the ACL — and its sequences are out
+          // of reach. Then the capture itself: a branch this probe creates and
+          // changes (all rolled back) is recorded by the database, under the
+          // context set above and the role's own login.
+          const history = await historyTablesPresent(app);
+          if (history.length === 0) {
+            console.log('  - history tables not migrated yet: probes skipped');
+          } else {
+            for (const t of history) {
+              await expectRefused(tx, `${t} INSERT by ACL`, () =>
+                tx.$executeRawUnsafe(`INSERT INTO "${t}" SELECT * FROM "${t}" WHERE false`)
+              );
+              await expectRefused(tx, `${t} UPDATE by ACL (zero rows)`, () =>
+                tx.$executeRawUnsafe(`UPDATE "${t}" SET "source" = "source" WHERE false`)
+              );
+              await expectRefused(tx, `${t} DELETE by ACL (zero rows)`, () =>
+                tx.$executeRawUnsafe(`DELETE FROM "${t}" WHERE false`)
+              );
+            }
+            // A definer-rights capture function attached to a table of the role's own
+            // would write the history with the owner's rights.
+            await expectRefused(tx, 'attaching a history capture function to a table of its own', async () => {
+              await tx.$executeRawUnsafe(`CREATE TEMP TABLE verify_history_probe (x int) ON COMMIT DROP`);
+              await tx.$executeRawUnsafe(
+                `CREATE TRIGGER verify_history_probe AFTER INSERT ON verify_history_probe FOR EACH ROW EXECUTE FUNCTION nmwc_history_branch()`
+              );
+            });
+            await expectRefused(tx, 'history sequence setval (would make every capture collide)', () =>
+              tx.$queryRawUnsafe(`SELECT setval('"BranchHistory_id_seq"', 1)::text AS v`)
+            );
+            const sfx = `vr${Date.now().toString(36)}`;
+            await tx.$executeRawUnsafe(
+              `INSERT INTO "Region" ("id","name","code","updatedAt") VALUES ('${sfx}-g','Verify ${sfx}','V${sfx}',now())`
+            );
+            await tx.$executeRawUnsafe(
+              `INSERT INTO "Route" ("id","name","code","regionId","updatedAt") VALUES ('${sfx}-r','Verify route','V${sfx}','${sfx}-g',now())`
+            );
+            await tx.$executeRawUnsafe(
+              `INSERT INTO "Customer" ("id","nmwcCode","legalName","updatedAt") VALUES ('${sfx}-c','V${sfx}','Verify customer',now())`
+            );
+            await tx.$executeRawUnsafe(
+              `INSERT INTO "Branch" ("id","branchCode","branchName","customerId","routeId","regionId","address","updatedAt")
+               VALUES ('${sfx}-b','V${sfx}-01','Verify shop','${sfx}-c','${sfx}-r','${sfx}-g','Verify probe address',now())`
+            );
+            await tx.$executeRawUnsafe(`UPDATE "Branch" SET "dayOfVisit" = 'SUN' WHERE "id" = '${sfx}-b'`);
+            // A score-only change is no change of a watched column: nothing more.
+            await tx.$executeRawUnsafe(`UPDATE "Branch" SET "completenessScore" = 7 WHERE "id" = '${sfx}-b'`);
+            const rows = await tx.$queryRawUnsafe<{ kind: string; source: string; db_user: string; fields: string }[]>(
+              `SELECT "changeKind"::text AS kind, "source", "dbUser" AS db_user, array_to_string("changedFields", ',') AS fields
+                 FROM "BranchHistory" WHERE "branchId" = '${sfx}-b' ORDER BY "id"`
+            );
+            const want = [
+              { kind: 'CREATE', source: 'verify:app-role', db_user: ROLE, fields: '' },
+              { kind: 'UPDATE', source: 'verify:app-role', db_user: ROLE, fields: 'dayOfVisit' },
+            ];
+            if (JSON.stringify(rows) !== JSON.stringify(want)) {
+              throw new Error(`history capture: expected ${JSON.stringify(want)}, got ${JSON.stringify(rows)}`);
+            }
+            console.log(`  ✓ history: ${history.length} tables read-only; a branch's create and visit-day change recorded by the database, once each`);
+          }
           await expectRefused(tx, 'DDL (ALTER TABLE)', () => tx.$executeRawUnsafe(`ALTER TABLE "RateLimit" ADD COLUMN "x" INTEGER`));
           await expectRefused(tx, 'read _prisma_migrations', () => tx.$queryRawUnsafe(`SELECT count(*) FROM "_prisma_migrations"`));
           throw new Rollback();

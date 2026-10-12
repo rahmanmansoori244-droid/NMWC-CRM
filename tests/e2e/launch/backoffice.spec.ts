@@ -680,6 +680,19 @@ test.describe('back office: account and customer master imports', { tag: ['@desk
     const promoteAudit = await auditFor({ entityId: b1, action: 'IMPORT' });
     expect(promoteAudit.map((a) => a.reason)).toContain('customer_master_promote');
 
+    // Gap 6/24: each new customer and shop was born in the dated history under its
+    // own sheet row on the full lane (import:<batch>:<row>:full), by the Steward.
+    const branchIds = custs.flatMap((c) => c.branches.map((b) => b.id));
+    const births = await db.branchHistory.findMany({ where: { branchId: { in: branchIds }, changeKind: 'CREATE' } });
+    expect(births).toHaveLength(3);
+    for (const h of births) {
+      expect(h.source).toMatch(new RegExp(`^import:${b1}:\\d+:full$`));
+      expect(h.actorId).toBe(stw.id);
+    }
+    expect(new Set(births.map((h) => h.source)).size, 'each shop names its own sheet row').toBe(3);
+    const custBirths = await db.customerHistory.findMany({ where: { customerId: { in: custs.map((c) => c.id) }, changeKind: 'CREATE' } });
+    expect(custBirths.map((h) => h.source).every((s) => new RegExp(`^import:${b1}:\\d+:full$`).test(s))).toBe(true);
+
     // The salesman of route A, on his phone.
     const sa = await openAs(browser, w.user('SA'), '/today', 'phone');
     for (const c of custs) {
