@@ -2117,7 +2117,7 @@ test.describe('accounts: notification e-mail addresses on /users', { tag: ['@des
     expect((await userRow(vw.id)).email).toBe(typed.toLowerCase());
     const edit = (await auditFor({ entityId: vw.id, action: 'UPDATE' })).find((a) => a.reason === 'account_edit');
     expect(edit?.after).toEqual({ changed: ['email'] });
-    expect(JSON.stringify(edit).toLowerCase()).not.toContain(typed.toLowerCase());
+    expect(rowText(edit).toLowerCase()).not.toContain(typed.toLowerCase());
     expect((await page.content()).toLowerCase()).not.toContain(typed.toLowerCase());
   });
 });
