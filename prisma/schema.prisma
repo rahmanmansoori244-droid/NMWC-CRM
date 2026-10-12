@@ -814,6 +814,10 @@ model AuthEvent {
   source       String?
   // The transaction (joins AuditLog.txId and the history), stamped by the database.
   txId         BigInt?
+  // The database login that wrote a SESSION_REVOKE (the cut-off trigger), as the
+  // history's dbUser: a cut-off under source 'sql' by the runtime role is an
+  // application path missing its change context (nmwc_history_unattributed).
+  dbUser       String?
 
   @@index([at(sort: Desc)])
   @@index([userId, at(sort: Desc)])

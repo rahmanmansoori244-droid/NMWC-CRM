@@ -583,3 +583,95 @@ describe('part C: session cut-offs, the route rule and the evidence vocabulary',
     expect(stmt).toContain('ON CONFLICT ("key", "day") DO NOTHING');
   });
 });
+
+describe('review of the history branch (2026-10-12)', () => {
+  it('a new route starts its holder chain with "nobody", so a shop moved onto it before anyone takes it keeps its stretch', () => {
+    const body = functionBody('nmwc_history_route');
+    expect(body).toMatch(
+      /IF TG_OP = 'INSERT' THEN[\s\S]*INSERT INTO public\."RouteOwnerHistory"[\s\S]*VALUES \('CREATE', '\{\}', GREATEST\(ctx\.valid_from, prev\)[\s\S]*r\."id", NULL\);/
+    );
+  });
+
+  it('"which routes served X" keeps the part of a stretch before its route’s first holder row, and says so', () => {
+    const body = functionBody('nmwc_customer_route_intervals');
+    // Covered parts: an inner join on overlap, cut by the holder's range.
+    expect(body).toMatch(/JOIN owners ow\s+ON ow\.route_id = i\.route_id\s+AND tsrange\(ow\.owner_from, ow\.owner_to\) && tsrange\(i\.island_from, i\.island_to\)/);
+    expect(body).not.toMatch(/LEFT JOIN owners/);
+    // The rest: the part before the route's first holder row (or all of it, with none).
+    expect(body).toMatch(/tsrange\(i\.island_from, i\.island_to\) \* tsrange\(NULL, f\.owner_from\)/);
+    expect(body).toMatch(/WHERE f\.owner_from IS NULL OR i\.island_from < f\.owner_from/);
+    expect(body).toContain("'holder-unrecorded'");
+  });
+
+  it('the answers about one customer never come back empty for want of a record, and name a merge', () => {
+    for (const f of ['nmwc_customer_service_on', 'nmwc_customer_route_intervals']) {
+      const body = functionBody(f);
+      expect(body, f).toContain("'no-shop-recorded'");
+      expect(body, f).toContain("'merged'");
+      expect(body, f).toContain('"mergedIntoId"');
+    }
+    for (const f of ['nmwc_customers_at', 'nmwc_customer_terms_on', 'nmwc_customer_intervals']) {
+      expect(functionBody(f), f).toContain('"mergedIntoId"');
+    }
+    // Filled where the column exists (part B), declared with the same shape in part A.
+    for (const f of [
+      'nmwc_customers_at',
+      'nmwc_customer_terms_on',
+      'nmwc_customer_intervals',
+      'nmwc_customer_service_on',
+      'nmwc_customer_route_intervals',
+    ]) {
+      expect(MIGRATION_SQL[A]!, f).toContain(`CREATE OR REPLACE FUNCTION ${f}(`);
+      expect(MIGRATION_SQL[B]!, f).toContain(`CREATE OR REPLACE FUNCTION ${f}(`);
+    }
+  });
+
+  it('"inferred" covers every row a migration wrote (the baseline, or a back-fill such as the merges), never the baseline alone', () => {
+    for (const f of HISTORY_FUNCTIONS.filter((x) => /_(at|on|intervals)$/.test(x))) {
+      const body = functionBody(f);
+      const baseline = body.match(/= 'BASELINE'/g)?.length ?? 0;
+      expect(body.match(/= 'BASELINE' OR [a-z]+\."sourceKind" = 'migration'/g)?.length ?? 0, f).toBe(baseline);
+    }
+  });
+
+  it('the manager-region capture takes the User row lock before it reads, so it cannot race an edit of the user', () => {
+    const body = functionBody('nmwc_history_manager_regions');
+    const lock = body.indexOf('FROM public."User" WHERE "id" = uid FOR NO KEY UPDATE');
+    expect(lock).toBeGreaterThan(-1);
+    expect(lock).toBeLessThan(body.indexOf('FROM public."_ManagerRegions" mr'));
+    expect(lock).toBeLessThan(body.indexOf('FROM public."UserHistory" h'));
+  });
+
+  it('a request’s state moves only forward, checked before the open-state pass', () => {
+    const body = functionBody('nmwc_customeredit_evidence_guard');
+    const rule = body.indexOf(`IF NEW."state" <> OLD."state"`);
+    expect(rule).toBeGreaterThan(-1);
+    expect(rule).toBeLessThan(body.indexOf(`IF OLD."state" IN ('DRAFT', 'NEEDS_CORRECTION') THEN`));
+    expect(body).toContain(`OLD."state" IN ('APPROVED', 'REJECTED')`);
+    expect(body).toContain(`(OLD."state" = 'SUBMITTED' AND NEW."state" = 'DRAFT')`);
+    expect(body).toContain(`(OLD."state" IN ('DRAFT', 'NEEDS_CORRECTION') AND NEW."state" = 'APPROVED')`);
+  });
+
+  it('originalCustomerId: where the back-fill could only guess, it is left NULL; a repoint never fills it', () => {
+    const sql = MIGRATION_SQL[B]!;
+    expect(sql).toContain(`'Auto-closed: customer ' || m.loser_code || ' merged into ' || m.winner_code || '.'`);
+    expect(sql).toMatch(/WHERE m\.winner_id = e\."originalCustomerId"\s+AND e\."createdAt" < m\.merged_at/);
+    // Before the trigger exists, so the corrections are not refused as a change.
+    expect(sql.indexOf('unsure AS (')).toBeLessThan(sql.indexOf('CREATE TRIGGER customeredit_original_customer'));
+    const body = functionBody('nmwc_customeredit_original_customer');
+    expect(body).toContain(`IF NEW."originalCustomerId" IS NULL AND OLD."customerId" IS NULL AND NEW."customerId" IS NOT NULL THEN`);
+  });
+
+  it('a session cut-off with no recorded cause is in the sql report, with the login that wrote it', () => {
+    const sqlC = MIGRATION_SQL[C]!;
+    expect(sqlC).toMatch(/CREATE TABLE "AuthEvent" \([\s\S]*"dbUser" TEXT,/);
+    expect(columnsOf('AuthEvent')).toContain('dbUser');
+    expect(functionBody('nmwc_user_session_revoke')).toMatch(/ctx\.actor_id, ctx\.source, ctx\.tx_id, ctx\.db_user\)/);
+    const report = functionBody('nmwc_history_unattributed');
+    expect(report).toMatch(/'AuthEvent'[\s\S]*"kind" = 'SESSION_REVOKE' AND e\."source" = 'sql'/);
+    for (const t of HISTORY_TABLES) expect(report, t).toContain(`'${t}'`);
+    expect(sqlC).toContain(
+      `CREATE INDEX "AuthEvent_unattributed_idx" ON "AuthEvent"("at") WHERE "kind" = 'SESSION_REVOKE' AND "source" = 'sql';`
+    );
+  });
+});

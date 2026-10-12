@@ -9,7 +9,14 @@
  *   - when X was created (its first row);
  *   - "on day D" is the state at the END of that Oman day, so a change loaded or
  *     approved at any time on D counts for D;
- *   - an answer for a time before the first page was recorded is flagged inferred.
+ *   - an answer for a time before the first page was recorded is flagged inferred;
+ *   - a route opened after the first page is held by nobody until a salesman
+ *     takes it, and a shop moved onto it before then is served by that route,
+ *     with no salesman — the stretch is not lost;
+ *   - a shop moved onto a route effective earlier than the route's own creation
+ *     was recorded keeps that stretch too, marked 'holder-unrecorded';
+ *   - a customer with no shop on its first page gets an explicit 'no-shop-recorded'
+ *     answer for the time before that page, not an empty one.
  *
  * The fixtures are created now and their first rows are then moved back in time
  * as a baseline (as found on 2026-03-01, recorded 2026-04-01), in the owner's
@@ -39,7 +46,11 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
     s1: `${sfx}-s1`,
     s2: `${sfx}-s2`,
     s3: `${sfx}-s3`,
+    s4: `${sfx}-s4`,
+    r3: `${sfx}-r3`,
+    r4: `${sfx}-r4`,
     customer: `${sfx}-c`,
+    bare: `${sfx}-c2`,
     branch: `${sfx}-b`,
   };
   const name = {
@@ -48,6 +59,9 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
     s1: `s1.${sfx}`,
     s2: `s2.${sfx}`,
     s3: `s3.${sfx}`,
+    s4: `s4.${sfx}`,
+    r3: `R3${SFX}`,
+    r4: `R4${SFX}`,
   };
   const run = <T>(c: ChangeContext, fn: (tx: Prisma.TransactionClient) => Promise<T>) =>
     withChangeContext(db, c, fn);
@@ -102,6 +116,8 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
           paymentTermDays: 30,
         },
       });
+      // A customer with no shop on the first page (its shops went elsewhere before history began).
+      await tx.customer.create({ data: { id: id.bare, nmwcCode: `B${SFX}`, legalName: `As-of bare ${sfx}` } });
       await tx.branch.create({
         data: {
           id: id.branch,
@@ -119,7 +135,7 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
     await withAuditMaintenance(db, async (tx) => {
       const set = baselineSql;
       await tx.$executeRawUnsafe(set('BranchHistory', 'branchId'), [id.branch]);
-      await tx.$executeRawUnsafe(set('CustomerHistory', 'customerId'), [id.customer]);
+      await tx.$executeRawUnsafe(set('CustomerHistory', 'customerId'), [id.customer, id.bare]);
       await tx.$executeRawUnsafe(set('UserHistory', 'userId'), [id.s1, id.s2, id.s3]);
       await tx.$executeRawUnsafe(set('RouteOwnerHistory', 'routeId'), [id.r1, id.r2]);
       await tx.$executeRawUnsafe(set('RouteHistory', 'routeId'), [id.r1, id.r2]);
@@ -147,26 +163,52 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
       },
       (tx) => tx.customer.update({ where: { id: id.customer }, data: { creditLimit: 900 } })
     );
+    // A new route R3 is opened on 2026-08-01 and the shop moved onto it the same
+    // day, before anyone holds it; S4 (a new account) takes R3 on 2026-08-02.
+    await run({ actorId: null, source: src.users('create', id.s4), effectiveFrom: '2026-08-01' }, async (tx) => {
+      await tx.route.create({ data: { id: id.r3, code: name.r3, name: `As-of R3 ${sfx}`, regionId: id.region } });
+      await tx.user.create({
+        data: { id: id.s4, username: name.s4, fullName: `S4 ${sfx}`, role: 'SALESMAN', passwordHash: 'x' },
+      });
+    });
+    await run(
+      { actorId: null, source: src.temixDaily(`${sfx}-f3`, 3), effectiveFrom: '2026-08-01' },
+      (tx) => tx.branch.update({ where: { id: id.branch }, data: { routeId: id.r3 } })
+    );
+    await run({ actorId: null, source: src.users('account', id.s4), effectiveFrom: '2026-08-02' }, (tx) =>
+      tx.user.update({ where: { id: id.s4 }, data: { ownedRouteId: id.r3 } })
+    );
+    // R4 is opened at 10:00 Oman on 2026-09-01, and the daily file moves the shop
+    // onto it effective that whole day (from 00:00): the first ten hours come
+    // before the route's own first row.
+    await run(
+      { actorId: null, source: src.routes('create-route', name.r4), effectiveFrom: '2026-09-01T10:00:00+04:00' },
+      (tx) => tx.route.create({ data: { id: id.r4, code: name.r4, name: `As-of R4 ${sfx}`, regionId: id.region } })
+    );
+    await run(
+      { actorId: null, source: src.temixDaily(`${sfx}-f4`, 3), effectiveFrom: '2026-09-01' },
+      (tx) => tx.branch.update({ where: { id: id.branch }, data: { routeId: id.r4 } })
+    );
   });
 
   afterAll(async () => {
     if (!db) return;
     await withAuditMaintenance(db, async (tx) => {
       await tx.branch.deleteMany({ where: { id: id.branch } });
-      await tx.customer.deleteMany({ where: { id: id.customer } });
+      await tx.customer.deleteMany({ where: { id: { in: [id.customer, id.bare] } } });
       await tx.user.updateMany({
-        where: { id: { in: [id.s1, id.s2, id.s3] } },
+        where: { id: { in: [id.s1, id.s2, id.s3, id.s4] } },
         data: { ownedRouteId: null },
       });
-      await tx.user.deleteMany({ where: { id: { in: [id.s1, id.s2, id.s3] } } });
-      await tx.route.deleteMany({ where: { id: { in: [id.r1, id.r2] } } });
+      await tx.user.deleteMany({ where: { id: { in: [id.s1, id.s2, id.s3, id.s4] } } });
+      await tx.route.deleteMany({ where: { id: { in: [id.r1, id.r2, id.r3, id.r4] } } });
       await tx.region.deleteMany({ where: { id: id.region } });
     });
     await purgeHistory(db, {
-      customerIds: [id.customer],
+      customerIds: [id.customer, id.bare],
       branchIds: [id.branch],
-      userIds: [id.s1, id.s2, id.s3],
-      routeIds: [id.r1, id.r2],
+      userIds: [id.s1, id.s2, id.s3, id.s4],
+      routeIds: [id.r1, id.r2, id.r3, id.r4],
       regionIds: [id.region],
     });
     await db.$disconnect();
@@ -216,6 +258,11 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
       route_code: name.r2,
       salesman_username: name.s3,
     });
+    // The new route, before anyone took it: served by R3, by nobody — not "no route".
+    expect(await servedOn('2026-08-01')).toEqual([
+      { route_code: name.r3, region_id: id.region, day_of_visit: 'SUN', salesman_username: null, inferred: false },
+    ]);
+    expect((await servedOn('2026-08-02'))[0]).toMatchObject({ route_code: name.r3, salesman_username: name.s4 });
   });
 
   it('which routes served it, from when to when, with the salesman of each stretch', async () => {
@@ -226,8 +273,9 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
         valid_from: Date;
         valid_to: Date | null;
         from_inferred: boolean;
+        note: string | null;
       }>
-    >`SELECT route_code, salesman_username, valid_from, valid_to, from_inferred FROM nmwc_customer_route_intervals(${id.customer})`;
+    >`SELECT route_code, salesman_username, valid_from, valid_to, from_inferred, note FROM nmwc_customer_route_intervals(${id.customer})`;
     expect(
       rows.map((r) => [
         r.route_code,
@@ -235,11 +283,42 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
         r.valid_from.toISOString(),
         r.valid_to?.toISOString() ?? null,
         r.from_inferred,
+        r.note,
       ])
     ).toEqual([
-      [name.r1, name.s1, '2026-03-01T00:00:00.000Z', '2026-05-09T20:00:00.000Z', true],
-      [name.r2, name.s2, '2026-05-09T20:00:00.000Z', '2026-05-31T20:00:00.000Z', false],
-      [name.r2, name.s3, '2026-05-31T20:00:00.000Z', null, false],
+      [name.r1, name.s1, '2026-03-01T00:00:00.000Z', '2026-05-09T20:00:00.000Z', true, null],
+      [name.r2, name.s2, '2026-05-09T20:00:00.000Z', '2026-05-31T20:00:00.000Z', false, null],
+      [name.r2, name.s3, '2026-05-31T20:00:00.000Z', '2026-07-31T20:00:00.000Z', false, null],
+      // R3 from its opening: nobody held it for a day, then S4. Nothing of the stretch is lost.
+      [name.r3, null, '2026-07-31T20:00:00.000Z', '2026-08-01T20:00:00.000Z', false, null],
+      [name.r3, name.s4, '2026-08-01T20:00:00.000Z', '2026-08-31T20:00:00.000Z', false, null],
+      // R4: the shop is on it from 00:00 Oman, the route's first row is from 10:00 —
+      // that part is kept, with no holder on record, and said so.
+      [name.r4, null, '2026-08-31T20:00:00.000Z', '2026-09-01T06:00:00.000Z', false, 'holder-unrecorded'],
+      [name.r4, null, '2026-09-01T06:00:00.000Z', null, false, null],
+    ]);
+  });
+
+  it('a customer with no shop on its first page: "not on record", never an empty answer', async () => {
+    const [marker] = await db.$queryRaw<
+      Array<{ branch_id: string | null; inferred: boolean; note: string | null }>
+    >`SELECT branch_id, inferred, note FROM nmwc_customer_service_on(${id.bare}, ${'2026-03-15'}::date)`;
+    expect(marker).toEqual({ branch_id: null, inferred: true, note: 'no-shop-recorded' });
+    // After the first page was written, an empty answer is a recorded one.
+    expect(
+      await db.$queryRaw`SELECT branch_id FROM nmwc_customer_service_on(${id.bare}, ${'2026-04-15'}::date)`
+    ).toEqual([]);
+    const stretches = await db.$queryRaw<
+      Array<{ branch_id: string | null; valid_from: Date; valid_to: Date | null; from_inferred: boolean; note: string | null }>
+    >`SELECT branch_id, valid_from, valid_to, from_inferred, note FROM nmwc_customer_route_intervals(${id.bare})`;
+    expect(stretches).toEqual([
+      {
+        branch_id: null,
+        valid_from: new Date('2026-03-01T00:00:00Z'),
+        valid_to: new Date('2026-04-01T00:00:00Z'),
+        from_inferred: true,
+        note: 'no-shop-recorded',
+      },
     ]);
   });
 
@@ -273,6 +352,9 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
       >`SELECT owner_username FROM nmwc_route_owner_on(${route}, ${day}::date)`;
     expect(await owner(id.r2, '2026-05-20')).toEqual([{ owner_username: name.s2 }]);
     expect(await owner(id.r2, '2026-06-01')).toEqual([{ owner_username: name.s3 }]);
+    // A route opened after the first page answers "nobody" until it is taken, not nothing.
+    expect(await owner(id.r3, '2026-08-01')).toEqual([{ owner_username: null }]);
+    expect(await owner(id.r3, '2026-08-02')).toEqual([{ owner_username: name.s4 }]);
     const user = (u: string, day: string) =>
       db.$queryRaw<
         Array<{
@@ -318,6 +400,7 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
       db.$queryRaw<Array<{ branch_id: string }>>`
         SELECT branch_id FROM nmwc_branches_on(${day}::date) WHERE route_id = ${route} AND deleted_at IS NULL`;
     expect(await onRoute(id.r1, '2026-05-09')).toEqual([{ branch_id: id.branch }]);
+    expect(await onRoute(id.r3, '2026-08-01')).toEqual([{ branch_id: id.branch }]);
     expect(await onRoute(id.r1, '2026-05-10')).toEqual([]);
     expect(await onRoute(id.r2, '2026-05-10')).toEqual([{ branch_id: id.branch }]);
   });

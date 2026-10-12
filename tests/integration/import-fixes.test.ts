@@ -180,9 +180,12 @@ describe.skipIf(!ENABLED)('fixing import rows in the app (item 20)', () => {
     expect((await batchOf(b)).status).toBe('READY');
     expect(await onWork(b)).toBe(true); // fixed, waiting to be promoted
 
-    // The ledger names the column, never the value.
+    // The ledger names the column; gap 7 (lossless paths) keeps the corrected
+    // cell too — its values for a non-personal cell like the visit day (a name,
+    // phone or address would be fingerprints only) — and the batch.
     const audit = await prisma.auditLog.findFirstOrThrow({ where: { entityType: 'ImportRow', entityId: a.id } });
-    expect(audit.after).toEqual({ columns: ['day_of_visit'], clean: 1, held: 0 });
+    expect(audit.after).toMatchObject({ columns: ['day_of_visit'], clean: 1, held: 0, batchId: b });
+    expect((audit.after as { cells: Record<string, unknown> }).cells).toEqual({ day_of_visit: { from: 'XYZ', to: 'sun' } });
     expect(audit.actorId).toBe(steward);
 
     await promoteFully(imports, b);

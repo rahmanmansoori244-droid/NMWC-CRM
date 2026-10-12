@@ -13,13 +13,17 @@
 --      about, set once by the database and never changed. A merge repoints a
 --      request's customerId to the survivor; this keeps the truth. Filled for the
 --      requests that exist from their APPROVE / REJECT / FINALIZE audit rows,
---      else their current customer.
+--      else their current customer — except where an earlier merge makes that a
+--      guess: then NULL ("not known"), unless the merge's own auto-close named
+--      the loser.
 --   3. The request as sent is evidence (gap 19): once a CustomerEdit leaves DRAFT
 --      or NEEDS_CORRECTION, what it asked for, who sent it and when, its chain and
 --      its gate can no longer change (customeredit_evidence_guard), and a request
 --      can no longer be deleted (customeredit_no_delete / _no_truncate). Only the
---      owner's maintenance window gets through, as for AuditLog. Its state, its
---      decision, its SLA clock and its customerId still move as before.
+--      owner's maintenance window gets through, as for AuditLog. Its decision,
+--      its SLA clock and its customerId still move as before, and its state
+--      moves only forward: a decided request is never reopened, and a sent one
+--      goes back to its sender only as NEEDS_CORRECTION, never as a DRAFT.
 --   4. EditRevision (gap 12): every round of a new-customer request, as sent.
 --      Append-only; the application inserts it in the submit transaction.
 --   5. AttachmentHistory (gap 15): every photo and document row in the dated
@@ -31,6 +35,9 @@
 --      file SHA-256, filename and the customers it held.
 --   7. ImportBatch.fileSha256 / fileBytes (gap 7), EditApproval.category (gap 12)
 --      and EditBranchDraft.branchId (gap 27): plain new columns.
+--   8. Part A's as-of answers about a customer name the customer it was merged
+--      into (merged_into_id), and "who served X" says so when X was merged away
+--      rather than answering nothing (section 9).
 --
 -- Everything is additive. No existing value is changed except the two new
 -- columns' backfills. The new guards refuse future writes only.
@@ -39,6 +46,8 @@
 -- on production), the originalCustomerId backfill one indexed lookup per
 -- request. Seconds. Customer, CustomerEdit and the other altered tables are
 -- locked for the whole migration; deploy outside working hours, after part A.
+-- Refused by a lock, it rolls back whole and must be marked rolled back before
+-- the next deploy (docs/OPERATIONS.md §5, "A migration refused by a lock").
 
 SET lock_timeout = '10s';
 -- One statement, in a fixed order: the tables this migration alters (ACCESS
@@ -211,6 +220,16 @@ CREATE TRIGGER customer_history_capture_upd
 -- new-customer request made), else the customer it points at now. A merge made
 -- before this migration may already have repointed that one; the decision row,
 -- never moved, is preferred for exactly that reason.
+--
+-- Best effort, and said so: where the value can only be a guess it is left NULL
+-- ("not known"), never filled with a customer that may be the wrong one. A merge
+-- moved every request of the loser to the winner and kept no list of them, so a
+-- request now on a merge's winner, made before that merge, whose customer is not
+-- named by a decision row dated before the merge, may have been the loser's or
+-- the winner's. Those are resolved only where the merge said so itself: the
+-- loser's open request it closed carries "Auto-closed: customer <loser> merged
+-- into <winner>." (services/duplicates.ts before this migration), which names
+-- the loser. The rest stay NULL; the counts are in the deploy log.
 
 UPDATE "CustomerEdit" e
    SET "originalCustomerId" = COALESCE(
@@ -226,9 +245,71 @@ UPDATE "CustomerEdit" e
          e."customerId")
  WHERE e."originalCustomerId" IS NULL;
 
+-- The guesses, taken back (see above). Each merge row names its winner, its loser
+-- and both codes as they were (before.loser / before.winner, entityId = winner).
+DO $$
+DECLARE
+  from_reason bigint;
+  unknown bigint;
+BEGIN
+  WITH merges AS (
+    SELECT a."entityId" AS winner_id,
+           a."before"->'loser'->>'id' AS loser_id,
+           a."before"->'loser'->>'nmwcCode' AS loser_code,
+           a."before"->'winner'->>'nmwcCode' AS winner_code,
+           a."at" AS merged_at
+      FROM "AuditLog" a
+     WHERE a."action" = 'MERGE'
+       AND a."entityType" = 'Customer'
+       AND jsonb_typeof(a."before") = 'object'
+       AND jsonb_typeof(a."before"->'loser'->'id') = 'string'
+  ),
+  unsure AS (
+    SELECT e."id",
+           (SELECT m.loser_id
+              FROM merges m
+             WHERE e."state" = 'REJECTED'
+               AND e."decisionReason" = 'Auto-closed: customer ' || m.loser_code || ' merged into ' || m.winner_code || '.'
+             ORDER BY m.merged_at
+             LIMIT 1) AS loser_id
+      FROM "CustomerEdit" e
+     WHERE EXISTS (
+             SELECT 1
+               FROM merges m
+              WHERE m.winner_id = e."originalCustomerId"
+                AND e."createdAt" < m.merged_at
+                AND NOT EXISTS (
+                      SELECT 1
+                        FROM "AuditLog" d
+                       WHERE d."entityType" = 'CustomerEdit'
+                         AND d."entityId" = e."id"
+                         AND d."action" IN ('APPROVE', 'REJECT', 'FINALIZE')
+                         AND jsonb_typeof(d."after") = 'object'
+                         AND jsonb_typeof(d."after"->'customerId') = 'string'
+                         AND d."at" < m.merged_at))
+  ),
+  taken AS (
+    UPDATE "CustomerEdit" e
+       SET "originalCustomerId" = u.loser_id
+      FROM unsure u
+     WHERE u."id" = e."id"
+    RETURNING e."originalCustomerId"
+  )
+  SELECT count(*) FILTER (WHERE t."originalCustomerId" IS NOT NULL),
+         count(*) FILTER (WHERE t."originalCustomerId" IS NULL)
+    INTO from_reason, unknown
+    FROM taken t;
+  RAISE NOTICE 'lossless_paths: originalCustomerId of % request(s) on a merged customer: % named by the merge that closed them, % left unknown (NULL)',
+    from_reason + unknown, from_reason, unknown;
+END;
+$$;
+
 -- Set once by the database: on INSERT from the request's customerId (whatever the
--- writer sent), on UPDATE from the first non-null customerId, and never changed
--- after, except by the table owner in a maintenance transaction. Not SECURITY
+-- writer sent), on UPDATE from the request's FIRST customer (a new-customer
+-- request gets one at finalize; customerId was null until then), and never
+-- changed after, except by the table owner in a maintenance transaction. A
+-- request whose original customer the back-fill above could not know stays NULL:
+-- a later repoint of its customerId is not its first customer. Not SECURITY
 -- DEFINER: it reads nothing but its own row and the catalog.
 CREATE OR REPLACE FUNCTION nmwc_customeredit_original_customer() RETURNS trigger
 LANGUAGE plpgsql
@@ -256,7 +337,7 @@ BEGIN
       OLD."id"
       USING ERRCODE = 'insufficient_privilege';
   END IF;
-  IF NEW."originalCustomerId" IS NULL AND NEW."customerId" IS NOT NULL THEN
+  IF NEW."originalCustomerId" IS NULL AND OLD."customerId" IS NULL AND NEW."customerId" IS NOT NULL THEN
     NEW."originalCustomerId" := NEW."customerId";
   END IF;
   RETURN NEW;
@@ -275,7 +356,10 @@ CREATE TRIGGER customeredit_original_customer
 -- the winner) gets mergedIntoId, if it is still archived, still unset, and the
 -- winner still exists. Captured by the CustomerHistory trigger above under this
 -- migration's source, with the merge's own time as the effective time: the history
--- reads "merged into W from <when it happened>", recorded now.
+-- reads "merged into W from <when it happened>", recorded now. The row's other
+-- values (terms, status, channel) are the loser's as found now, not as they were
+-- at the merge: the as-of functions flag a row a migration wrote as inferred for
+-- any time before it was recorded, as they do the baseline.
 
 DO $$
 DECLARE
@@ -397,6 +481,18 @@ CREATE TRIGGER attachmenthistory_insert_guard BEFORE INSERT ON "AttachmentHistor
 -- One exception that is not a rewrite: a shop hard-deleted by the owner nulls
 -- branchId through its foreign key (ON DELETE SET NULL). That is allowed when the
 -- shop no longer exists; the request's own CREATE audit row keeps its id.
+--
+-- The state moves only forward, or the freeze could be stepped around: move a
+-- sent or decided request back to an open state, rewrite it, move it back. So a
+-- decided request (APPROVED, REJECTED) stays decided, a sent one (SUBMITTED) goes
+-- back to its sender only as NEEDS_CORRECTION — the send-back, which writes its
+-- REJECT row, and for a new-customer request each round is kept in EditRevision
+-- — never as a DRAFT, and an open one (DRAFT, NEEDS_CORRECTION) is approved only
+-- once sent. Every writer in the application keeps to this: submit, re-save as
+-- draft and resubmit (DRAFT/NEEDS_CORRECTION -> DRAFT/SUBMITTED), an approval
+-- step (SUBMITTED -> SUBMITTED/APPROVED), a send-back or step-back (SUBMITTED ->
+-- NEEDS_CORRECTION/SUBMITTED), a rejection, a withdrawal, a merge's auto-close and
+-- an account change's close of a stranded request (-> REJECTED).
 -- The owner's maintenance window gets through, as on AuditLog.
 
 CREATE OR REPLACE FUNCTION nmwc_customeredit_evidence_guard() RETURNS trigger
@@ -406,33 +502,42 @@ AS $$
 DECLARE
   owner_name name;
   changed text[] := '{}';
+  refused text;
 BEGIN
-  IF OLD."state" IN ('DRAFT', 'NEEDS_CORRECTION') THEN
+  IF NEW."state" <> OLD."state"
+     AND (OLD."state" IN ('APPROVED', 'REJECTED')
+          OR (OLD."state" = 'SUBMITTED' AND NEW."state" = 'DRAFT')
+          OR (OLD."state" IN ('DRAFT', 'NEEDS_CORRECTION') AND NEW."state" = 'APPROVED')) THEN
+    refused := format('its state cannot go from %s to %s: a decided request stays decided, a sent one goes back to its sender only as NEEDS_CORRECTION, and an open one is approved only once sent',
+      OLD."state", NEW."state");
+  ELSIF OLD."state" IN ('DRAFT', 'NEEDS_CORRECTION') THEN
     RETURN NEW;
-  END IF;
-  IF NEW."fieldChanges" IS DISTINCT FROM OLD."fieldChanges" THEN changed := changed || 'fieldChanges'::text; END IF;
-  IF NEW."attachmentChanges" IS DISTINCT FROM OLD."attachmentChanges" THEN changed := changed || 'attachmentChanges'::text; END IF;
-  IF NEW."submittedById" IS DISTINCT FROM OLD."submittedById" THEN changed := changed || 'submittedById'::text; END IF;
-  IF NEW."submittedAt" IS DISTINCT FROM OLD."submittedAt" THEN changed := changed || 'submittedAt'::text; END IF;
-  IF NEW."process" IS DISTINCT FROM OLD."process" THEN changed := changed || 'process'::text; END IF;
-  IF NEW."target" IS DISTINCT FROM OLD."target" THEN changed := changed || 'target'::text; END IF;
-  IF NEW."submitGate" IS DISTINCT FROM OLD."submitGate" THEN changed := changed || 'submitGate'::text; END IF;
-  IF NEW."isReactivation" IS DISTINCT FROM OLD."isReactivation" THEN changed := changed || 'isReactivation'::text; END IF;
-  IF NEW."isWrongRoute" IS DISTINCT FROM OLD."isWrongRoute" THEN changed := changed || 'isWrongRoute'::text; END IF;
-  IF NEW."newRouteId" IS DISTINCT FROM OLD."newRouteId" THEN changed := changed || 'newRouteId'::text; END IF;
-  IF NEW."paymentTermsAtSubmit" IS DISTINCT FROM OLD."paymentTermsAtSubmit" THEN changed := changed || 'paymentTermsAtSubmit'::text; END IF;
-  IF NEW."approvalChain" IS DISTINCT FROM OLD."approvalChain" THEN changed := changed || 'approvalChain'::text; END IF;
-  IF NEW."requestedCreditLimit" IS DISTINCT FROM OLD."requestedCreditLimit" THEN changed := changed || 'requestedCreditLimit'::text; END IF;
-  IF NEW."requestedPaymentTermDays" IS DISTINCT FROM OLD."requestedPaymentTermDays" THEN changed := changed || 'requestedPaymentTermDays'::text; END IF;
-  IF NEW."cycle" IS DISTINCT FROM OLD."cycle" THEN changed := changed || 'cycle'::text; END IF;
-  IF NEW."submissionId" IS DISTINCT FROM OLD."submissionId" THEN changed := changed || 'submissionId'::text; END IF;
-  IF NEW."branchId" IS DISTINCT FROM OLD."branchId"
-     AND NOT (NEW."branchId" IS NULL
-              AND NOT EXISTS (SELECT 1 FROM public."Branch" b WHERE b."id" = OLD."branchId")) THEN
-    changed := changed || 'branchId'::text;
-  END IF;
-  IF cardinality(changed) = 0 THEN
-    RETURN NEW;
+  ELSE
+    IF NEW."fieldChanges" IS DISTINCT FROM OLD."fieldChanges" THEN changed := changed || 'fieldChanges'::text; END IF;
+    IF NEW."attachmentChanges" IS DISTINCT FROM OLD."attachmentChanges" THEN changed := changed || 'attachmentChanges'::text; END IF;
+    IF NEW."submittedById" IS DISTINCT FROM OLD."submittedById" THEN changed := changed || 'submittedById'::text; END IF;
+    IF NEW."submittedAt" IS DISTINCT FROM OLD."submittedAt" THEN changed := changed || 'submittedAt'::text; END IF;
+    IF NEW."process" IS DISTINCT FROM OLD."process" THEN changed := changed || 'process'::text; END IF;
+    IF NEW."target" IS DISTINCT FROM OLD."target" THEN changed := changed || 'target'::text; END IF;
+    IF NEW."submitGate" IS DISTINCT FROM OLD."submitGate" THEN changed := changed || 'submitGate'::text; END IF;
+    IF NEW."isReactivation" IS DISTINCT FROM OLD."isReactivation" THEN changed := changed || 'isReactivation'::text; END IF;
+    IF NEW."isWrongRoute" IS DISTINCT FROM OLD."isWrongRoute" THEN changed := changed || 'isWrongRoute'::text; END IF;
+    IF NEW."newRouteId" IS DISTINCT FROM OLD."newRouteId" THEN changed := changed || 'newRouteId'::text; END IF;
+    IF NEW."paymentTermsAtSubmit" IS DISTINCT FROM OLD."paymentTermsAtSubmit" THEN changed := changed || 'paymentTermsAtSubmit'::text; END IF;
+    IF NEW."approvalChain" IS DISTINCT FROM OLD."approvalChain" THEN changed := changed || 'approvalChain'::text; END IF;
+    IF NEW."requestedCreditLimit" IS DISTINCT FROM OLD."requestedCreditLimit" THEN changed := changed || 'requestedCreditLimit'::text; END IF;
+    IF NEW."requestedPaymentTermDays" IS DISTINCT FROM OLD."requestedPaymentTermDays" THEN changed := changed || 'requestedPaymentTermDays'::text; END IF;
+    IF NEW."cycle" IS DISTINCT FROM OLD."cycle" THEN changed := changed || 'cycle'::text; END IF;
+    IF NEW."submissionId" IS DISTINCT FROM OLD."submissionId" THEN changed := changed || 'submissionId'::text; END IF;
+    IF NEW."branchId" IS DISTINCT FROM OLD."branchId"
+       AND NOT (NEW."branchId" IS NULL
+                AND NOT EXISTS (SELECT 1 FROM public."Branch" b WHERE b."id" = OLD."branchId")) THEN
+      changed := changed || 'branchId'::text;
+    END IF;
+    IF cardinality(changed) = 0 THEN
+      RETURN NEW;
+    END IF;
+    refused := format('%s cannot change once the request was sent (state %s)', array_to_string(changed, ', '), OLD."state");
   END IF;
   IF current_setting('nmwc.audit_maintenance', true) = 'on' THEN
     SELECT pg_get_userbyid(c.relowner) INTO owner_name
@@ -441,8 +546,8 @@ BEGIN
       RETURN NEW;
     END IF;
   END IF;
-  RAISE EXCEPTION 'CustomerEdit %: % cannot change once the request was sent (state %) — what was sent is evidence, append-only. Only the table owner may change it, in a maintenance transaction (SET LOCAL nmwc.audit_maintenance = ''on'').',
-    OLD."id", array_to_string(changed, ', '), OLD."state"
+  RAISE EXCEPTION 'CustomerEdit %: % — what was sent is evidence, append-only. Only the table owner may change it, in a maintenance transaction (SET LOCAL nmwc.audit_maintenance = ''on'').',
+    OLD."id", refused
     USING ERRCODE = 'insufficient_privilege';
 END;
 $$;
@@ -517,6 +622,323 @@ AS $$
   ) u
   GROUP BY 1, 2, 3
   ORDER BY 2 DESC, 1, 3
+$$;
+
+-- ── 9. The as-of answers say when a customer was merged (gap 8) ──────────
+--
+-- Part A's customer answers, with the same columns, now filling merged_into_id
+-- from the history (part A returns it null: the column is this migration's). The
+-- two "who served customer X" answers also say so when X had been merged away:
+-- its shops were then the winner's, so no shop names X, and an empty answer would
+-- read as "nobody served it".
+--   nmwc_customer_service_on(X, d): one row with no shop, note 'merged' and the
+--     winner in merged_into_id, when X's own row on d says it was merged and no
+--     shop names X on d.
+--   nmwc_customer_route_intervals(X): one row with no shop for each stretch X
+--     stood merged into a customer (note 'merged'); the 'no-shop-recorded' row of
+--     part A then ends where the first such stretch begins.
+-- inferred / from_inferred follow part A's rule: a row a migration wrote (the
+-- baseline, or section 4's merge back-fill) for a time before it was recorded.
+
+CREATE OR REPLACE FUNCTION nmwc_customers_at(p_at timestamp)
+RETURNS TABLE (
+  customer_id text, nmwc_code text, payment_terms "PaymentTerms", credit_limit numeric, payment_term_days integer,
+  temix_code text, status "CustomerStatus", channel_id text, sub_channel_id text, cr_photo_id text, deleted_at timestamp,
+  merged_into_id text,
+  valid_from timestamp, history_id bigint, change_kind "HistoryChange", source text, actor_id text, inferred boolean
+)
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+  SELECT h."customerId", h."nmwcCode", h."paymentTerms", h."creditLimit", h."paymentTermDays",
+         h."temixCode", h."status", h."channelId", h."subChannelId", h."crPhotoId", h."deletedAt",
+         h."mergedIntoId",
+         h."validFrom", h."id", h."changeKind", h."source", h."actorId",
+         ((h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND p_at < h."recordedAt")
+  FROM (
+    SELECT DISTINCT ON (x."customerId") x.*
+    FROM public."CustomerHistory" x
+    WHERE x."validFrom" <= p_at
+    ORDER BY x."customerId", x."validFrom" DESC, x."id" DESC
+  ) h
+  WHERE h."changeKind" <> 'DELETE'
+$$;
+
+CREATE OR REPLACE FUNCTION nmwc_customer_terms_on(p_customer_id text, d date)
+RETURNS TABLE (
+  payment_terms "PaymentTerms", credit_limit numeric, payment_term_days integer, temix_code text,
+  status "CustomerStatus", channel_id text, sub_channel_id text, deleted_at timestamp, merged_into_id text,
+  valid_from timestamp, source text, actor_id text, inferred boolean
+)
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+  SELECT x."paymentTerms", x."creditLimit", x."paymentTermDays", x."temixCode",
+         x."status", x."channelId", x."subChannelId", x."deletedAt", x."mergedIntoId",
+         x."validFrom", x."source", x."actorId",
+         ((x."changeKind" = 'BASELINE' OR x."sourceKind" = 'migration')
+          AND public.nmwc_day_end(d) - interval '1 millisecond' < x."recordedAt")
+  FROM (
+    SELECT h.* FROM public."CustomerHistory" h
+    WHERE h."customerId" = p_customer_id AND h."validFrom" <= public.nmwc_day_end(d) - interval '1 millisecond'
+    ORDER BY h."validFrom" DESC, h."id" DESC
+    LIMIT 1
+  ) x
+  WHERE x."changeKind" <> 'DELETE'
+$$;
+
+CREATE OR REPLACE FUNCTION nmwc_customer_intervals(p_customer_id text)
+RETURNS TABLE (
+  history_id bigint, change_kind "HistoryChange", valid_from timestamp, valid_to timestamp,
+  recorded_at timestamp, effective_requested timestamp, changed_fields text[], source text, actor_id text,
+  nmwc_code text, payment_terms "PaymentTerms", credit_limit numeric, payment_term_days integer, temix_code text,
+  status "CustomerStatus", channel_id text, sub_channel_id text, deleted_at timestamp, merged_into_id text,
+  from_inferred boolean
+)
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+  SELECT h."id", h."changeKind", h."validFrom", lead(h."validFrom") OVER w,
+         h."recordedAt", h."effectiveRequested", h."changedFields", h."source", h."actorId",
+         h."nmwcCode", h."paymentTerms", h."creditLimit", h."paymentTermDays", h."temixCode",
+         h."status", h."channelId", h."subChannelId", h."deletedAt", h."mergedIntoId",
+         (h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND h."validFrom" < h."recordedAt"
+  FROM public."CustomerHistory" h
+  WHERE h."customerId" = p_customer_id
+  WINDOW w AS (ORDER BY h."validFrom", h."id")
+  ORDER BY h."validFrom", h."id"
+$$;
+
+CREATE OR REPLACE FUNCTION nmwc_customer_service_on(p_customer_id text, d date)
+RETURNS TABLE (
+  branch_id text, branch_code text, route_id text, route_code text, region_id text, region_code text,
+  day_of_visit "DayOfWeek", branch_status "CustomerStatus",
+  salesman_id text, salesman_username text, salesman_active boolean, inferred boolean,
+  merged_into_id text, note text
+)
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+  WITH t AS (
+    SELECT public.nmwc_day_end(d) - interval '1 millisecond' AS at_ts
+  ),
+  cand AS (
+    SELECT DISTINCT h."branchId" AS branch_id
+    FROM public."BranchHistory" h, t
+    WHERE h."customerId" = p_customer_id AND h."validFrom" <= t.at_ts
+  ),
+  b AS (
+    SELECT x.*
+    FROM cand c
+    CROSS JOIN t
+    CROSS JOIN LATERAL (
+      SELECT h.* FROM public."BranchHistory" h
+      WHERE h."branchId" = c.branch_id AND h."validFrom" <= t.at_ts
+      ORDER BY h."validFrom" DESC, h."id" DESC
+      LIMIT 1
+    ) x
+    WHERE x."customerId" = p_customer_id AND x."changeKind" <> 'DELETE' AND x."deletedAt" IS NULL
+  ),
+  served AS (
+    SELECT b."branchId" AS shop_id, b."branchCode" AS shop_code, b."routeId" AS shop_route_id, rt.code AS shop_route_code,
+           b."regionId" AS shop_region_id, rg.code AS shop_region_code,
+           b."dayOfVisit" AS shop_day, b."status" AS shop_status,
+           ow."ownerId" AS holder_id, us."username" AS holder_username, us."isActive" AS holder_active,
+           (((b."changeKind" = 'BASELINE' OR b."sourceKind" = 'migration') AND t.at_ts < b."recordedAt")
+            OR ((ow."changeKind" = 'BASELINE' OR ow."sourceKind" = 'migration') AND t.at_ts < ow."recordedAt")
+            OR ((us."changeKind" = 'BASELINE' OR us."sourceKind" = 'migration') AND t.at_ts < us."recordedAt")) IS TRUE AS shop_inferred
+    FROM b
+    CROSS JOIN t
+    LEFT JOIN LATERAL (
+      SELECT h."code" FROM public."RouteHistory" h WHERE h."routeId" = b."routeId"
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) rt ON true
+    LEFT JOIN LATERAL (
+      SELECT h."code" FROM public."RegionHistory" h WHERE h."regionId" = b."regionId"
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) rg ON true
+    LEFT JOIN LATERAL (
+      SELECT h.* FROM public."RouteOwnerHistory" h
+      WHERE h."routeId" = b."routeId" AND h."validFrom" <= t.at_ts
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) ow ON true
+    LEFT JOIN LATERAL (
+      SELECT h.* FROM public."UserHistory" h
+      WHERE h."userId" = ow."ownerId" AND h."validFrom" <= t.at_ts
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) us ON true
+  ),
+  -- The customer's own row then.
+  c AS (
+    SELECT h.* FROM public."CustomerHistory" h, t
+    WHERE h."customerId" = p_customer_id AND h."validFrom" <= t.at_ts
+    ORDER BY h."validFrom" DESC, h."id" DESC
+    LIMIT 1
+  ),
+  cnow AS (
+    SELECT c."mergedIntoId" AS merged_into,
+           ((c."changeKind" = 'BASELINE' OR c."sourceKind" = 'migration') AND t.at_ts < c."recordedAt") AS row_inferred
+    FROM c
+    CROSS JOIN t
+    WHERE c."changeKind" <> 'DELETE'
+  )
+  SELECT s.*, (SELECT n.merged_into FROM cnow n), NULL::text FROM served s
+  UNION ALL
+  SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+         n.row_inferred, n.merged_into,
+         CASE WHEN n.merged_into IS NOT NULL THEN 'merged' ELSE 'no-shop-recorded' END
+  FROM cnow n
+  WHERE (n.merged_into IS NOT NULL OR n.row_inferred)
+    AND NOT EXISTS (SELECT 1 FROM served)
+  ORDER BY 2
+$$;
+
+CREATE OR REPLACE FUNCTION nmwc_customer_route_intervals(p_customer_id text)
+RETURNS TABLE (
+  branch_id text, branch_code text, route_id text, route_code text,
+  salesman_id text, salesman_username text, valid_from timestamp, valid_to timestamp, from_inferred boolean,
+  merged_into_id text, note text
+)
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+  WITH bids AS (
+    SELECT DISTINCT h."branchId" AS branch_id FROM public."BranchHistory" h WHERE h."customerId" = p_customer_id
+  ),
+  hist AS (
+    SELECT h.*, lead(h."validFrom") OVER (PARTITION BY h."branchId" ORDER BY h."validFrom", h."id") AS valid_to
+    FROM public."BranchHistory" h
+    WHERE h."branchId" IN (SELECT branch_id FROM bids)
+  ),
+  live AS (
+    SELECT * FROM hist
+    WHERE "customerId" = p_customer_id AND "changeKind" <> 'DELETE' AND "deletedAt" IS NULL
+      AND (valid_to IS NULL OR valid_to > "validFrom")
+  ),
+  marked AS (
+    SELECT l.*,
+           CASE WHEN lag(l."routeId") OVER w IS DISTINCT FROM l."routeId"
+                  OR lag(l.valid_to) OVER w IS DISTINCT FROM l."validFrom"
+                THEN 1 ELSE 0 END AS starts
+    FROM live l
+    WINDOW w AS (PARTITION BY l."branchId" ORDER BY l."validFrom", l."id")
+  ),
+  grouped AS (
+    SELECT m.*, sum(m.starts) OVER (PARTITION BY m."branchId" ORDER BY m."validFrom", m."id") AS island
+    FROM marked m
+  ),
+  islands AS (
+    SELECT g."branchId" AS branch_id, g."routeId" AS route_id, g.island,
+           min(g."validFrom") AS island_from,
+           (array_agg(g.valid_to ORDER BY g."validFrom" DESC, g."id" DESC))[1] AS island_to,
+           (array_agg(g."branchCode" ORDER BY g."validFrom" DESC, g."id" DESC))[1] AS branch_code,
+           (array_agg(CASE WHEN g."changeKind" = 'BASELINE' OR g."sourceKind" = 'migration' THEN g."recordedAt" END
+                      ORDER BY g."validFrom", g."id"))[1] AS inferred_until
+    FROM grouped g
+    GROUP BY g."branchId", g."routeId", g.island
+  ),
+  owners AS (
+    SELECT o."routeId" AS route_id, o."ownerId" AS owner_id, o."validFrom" AS owner_from, o.owner_to,
+           CASE WHEN o."changeKind" = 'BASELINE' OR o."sourceKind" = 'migration' THEN o."recordedAt" END AS inferred_until
+    FROM (
+      SELECT h.*, lead(h."validFrom") OVER (PARTITION BY h."routeId" ORDER BY h."validFrom", h."id") AS owner_to
+      FROM public."RouteOwnerHistory" h
+      WHERE h."routeId" IN (SELECT route_id FROM islands)
+    ) o
+    WHERE o.owner_to IS NULL OR o.owner_to > o."validFrom"
+  ),
+  first_owner AS (
+    SELECT ow.route_id, min(ow.owner_from) AS owner_from FROM owners ow GROUP BY ow.route_id
+  ),
+  pieces AS (
+    SELECT i.branch_id, i.branch_code, i.route_id, ow.owner_id,
+           tsrange(i.island_from, i.island_to) * tsrange(ow.owner_from, ow.owner_to) AS span,
+           i.inferred_until AS island_inferred_until, ow.inferred_until AS owner_inferred_until,
+           NULL::text AS note
+    FROM islands i
+    JOIN owners ow
+      ON ow.route_id = i.route_id
+     AND tsrange(ow.owner_from, ow.owner_to) && tsrange(i.island_from, i.island_to)
+    UNION ALL
+    SELECT i.branch_id, i.branch_code, i.route_id, NULL::text,
+           tsrange(i.island_from, i.island_to) * tsrange(NULL, f.owner_from),
+           i.inferred_until, NULL::timestamp,
+           'holder-unrecorded'
+    FROM islands i
+    LEFT JOIN first_owner f ON f.route_id = i.route_id
+    WHERE f.owner_from IS NULL OR i.island_from < f.owner_from
+  ),
+  shops AS (
+    SELECT p.branch_id, p.branch_code, p.route_id, rt."code" AS route_code, p.owner_id, us."username" AS owner_username,
+           lower(p.span) AS span_from, upper(p.span) AS span_to,
+           (lower(p.span) < p.island_inferred_until OR lower(p.span) < p.owner_inferred_until) IS TRUE AS span_inferred,
+           p.note
+    FROM pieces p
+    LEFT JOIN LATERAL (
+      SELECT h."code" FROM public."RouteHistory" h WHERE h."routeId" = p.route_id
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) rt ON true
+    LEFT JOIN LATERAL (
+      SELECT h."username" FROM public."UserHistory" h
+      WHERE h."userId" = p.owner_id
+      ORDER BY (h."validFrom" <= lower(p.span)) DESC,
+               CASE WHEN h."validFrom" <= lower(p.span) THEN h."validFrom" END DESC,
+               h."validFrom", h."id" DESC
+      LIMIT 1
+    ) us ON true
+  ),
+  -- X's own rows, and the stretches it stood merged into one customer.
+  own AS (
+    SELECT h."id", h."validFrom", h."recordedAt", h."changeKind", h."sourceKind",
+           CASE WHEN h."changeKind" = 'DELETE' THEN NULL ELSE h."mergedIntoId" END AS merged_into,
+           lead(h."validFrom") OVER (ORDER BY h."validFrom", h."id") AS valid_to
+    FROM public."CustomerHistory" h
+    WHERE h."customerId" = p_customer_id
+  ),
+  own_marked AS (
+    SELECT o.*,
+           CASE WHEN lag(o.merged_into) OVER (ORDER BY o."validFrom", o."id") IS DISTINCT FROM o.merged_into
+                THEN 1 ELSE 0 END AS starts
+    FROM own o
+  ),
+  own_grouped AS (
+    SELECT o.*, sum(o.starts) OVER (ORDER BY o."validFrom", o."id") AS grp
+    FROM own_marked o
+  ),
+  merged AS (
+    SELECT g.merged_into,
+           min(g."validFrom") AS merged_from,
+           (array_agg(g.valid_to ORDER BY g."validFrom" DESC, g."id" DESC))[1] AS merged_to,
+           (array_agg(CASE WHEN g."changeKind" = 'BASELINE' OR g."sourceKind" = 'migration' THEN g."recordedAt" END
+                      ORDER BY g."validFrom", g."id"))[1] AS inferred_until
+    FROM own_grouped g
+    WHERE g.merged_into IS NOT NULL
+    GROUP BY g.merged_into, g.grp
+  ),
+  first_page AS (
+    SELECT c."validFrom" AS page_from,
+           LEAST(c."recordedAt", (SELECT min(m.merged_from) FROM merged m)) AS page_to,
+           c."recordedAt" AS page_recorded
+    FROM (
+      SELECT h.* FROM public."CustomerHistory" h WHERE h."customerId" = p_customer_id
+      ORDER BY h."validFrom", h."id" LIMIT 1
+    ) c
+    WHERE (c."changeKind" = 'BASELINE' OR c."sourceKind" = 'migration') AND c."validFrom" < c."recordedAt"
+  )
+  SELECT s.branch_id, s.branch_code, s.route_id, s.route_code, s.owner_id, s.owner_username,
+         s.span_from, s.span_to, s.span_inferred, NULL::text, s.note
+  FROM shops s
+  UNION ALL
+  SELECT NULL, NULL, NULL, NULL, NULL, NULL, m.merged_from, m.merged_to,
+         (m.merged_from < m.inferred_until) IS TRUE, m.merged_into, 'merged'
+  FROM merged m
+  WHERE m.merged_to IS NULL OR m.merged_to > m.merged_from
+  UNION ALL
+  SELECT NULL, NULL, NULL, NULL, NULL, NULL, fp.page_from, fp.page_to, true, NULL, 'no-shop-recorded'
+  FROM first_page fp
+  WHERE fp.page_to > fp.page_from
+    AND NOT EXISTS (SELECT 1 FROM shops s WHERE s.span_from < fp.page_recorded)
+  ORDER BY 7, 2
 $$;
 
 RESET lock_timeout;

@@ -195,6 +195,38 @@ describe.skipIf(!ENABLED)('a merge says what moved (gap 8)', () => {
     }
   });
 
+  it('the as-of answers say the loser was merged, rather than that nobody served it', async () => {
+    const merged = await db.customerHistory.findFirstOrThrow({
+      where: { customerId: ids.loser, changedFields: { has: 'mergedIntoId' } },
+    });
+    // Who served the loser after the merge: no shop names it now, and the answer says why.
+    const served = await db.$queryRaw<
+      Array<{ branch_id: string | null; merged_into_id: string | null; note: string | null; inferred: boolean }>
+    >`SELECT branch_id, merged_into_id, note, inferred FROM nmwc_customer_service_on(${ids.loser}, CURRENT_DATE + 1)`;
+    expect(served).toEqual([{ branch_id: null, merged_into_id: ids.winner, note: 'merged', inferred: false }]);
+    // Which routes served it: its shop on the route until the merge, then the merged stretch.
+    const stretches = await db.$queryRaw<
+      Array<{ branch_id: string | null; valid_from: Date; valid_to: Date | null; merged_into_id: string | null; note: string | null }>
+    >`SELECT branch_id, valid_from, valid_to, merged_into_id, note FROM nmwc_customer_route_intervals(${ids.loser})`;
+    expect(stretches.at(-1)).toEqual({
+      branch_id: null,
+      valid_from: merged.validFrom,
+      valid_to: null,
+      merged_into_id: ids.winner,
+      note: 'merged',
+    });
+    expect(stretches.find((s) => s.branch_id === ids.lb)?.valid_to?.getTime()).toBe(merged.validFrom.getTime());
+    // Its terms and the master on a day name the winner too.
+    const [terms] = await db.$queryRaw<
+      Array<{ merged_into_id: string | null }>
+    >`SELECT merged_into_id FROM nmwc_customer_terms_on(${ids.loser}, CURRENT_DATE + 1)`;
+    expect(terms).toEqual({ merged_into_id: ids.winner });
+    const [master] = await db.$queryRaw<
+      Array<{ merged_into_id: string | null }>
+    >`SELECT merged_into_id FROM nmwc_customers_on(CURRENT_DATE + 1) WHERE customer_id = ${ids.loser}`;
+    expect(master).toEqual({ merged_into_id: ids.winner });
+  });
+
   it("the loser's code and page lead to the winner", async () => {
     const { mergedCodeMatches, survivorOf } = await import('@/lib/merged-customers');
     expect(await survivorOf(db, ids.loser)).toMatchObject({ id: ids.winner, nmwcCode: `W${SFX}` });

@@ -223,7 +223,12 @@ describe.skipIf(!ENABLED)('promote-layer reconciliation (crosswalk / fallback / 
     expect(after.primaryPhone).toBe('+96890999001');      // NOT nulled
     expect(after.crNumber).toBe('7770001');               // NOT nulled
     expect(after.contactPerson).toBe('ZZ Keep Contact');  // NOT nulled
-    expect(after.version).toBeGreaterThan(before.version); // B-05 optimistic bump (#14)
+    // Gap 4 (lossless paths): the row leaves the customer's own fields as they
+    // are and only adds a shop, so the customer is not written — no version bump
+    // (B-05's bump is for a write that changes it) — and only its updatedAt
+    // moves, for the master export's "updated since" (import-lineage.test.ts).
+    expect(after.version).toBe(before.version);
+    expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
   });
 
   // ---- SEC-03/09 (2): credit standing is approval-gated or ERP-authoritative ----

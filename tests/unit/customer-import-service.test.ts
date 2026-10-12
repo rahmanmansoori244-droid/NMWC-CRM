@@ -664,29 +664,42 @@ describe('promoteCustomerBatchAction — F21: an import writes a branch only whe
     expect(ups[0].update).toMatchObject({ address: 'Way 10, Muscat', version: { increment: 1 } });
     // The status is only restated, so it is no status change (EL-11).
     expect(ups[0].update.lastStatusChangeAt).toBeUndefined();
-    // Gap 24: the group opens under its first row; the customer write is the lead
-    // row's (sheet row 2, full lane); the changed branch is its own row's (3); the
+    // Gap 24: the group opens under its first row on the lane it most likely
+    // takes (no Temix code: the full lane), which is the lead row's — so naming
+    // the lead costs nothing more; the changed branch is its own row's (3); the
     // unchanged one names nothing; the customer's own writes after are the lead's.
-    expect(contexts).toEqual([
-      'import:batch-9:2',
-      'import:batch-9:2:full',
-      'import:batch-9:3:full',
-      'import:batch-9:2:full',
-    ]);
+    expect(contexts).toEqual(['import:batch-9:2:full', 'import:batch-9:3:full', 'import:batch-9:2:full']);
   });
 
-  it('gap 24: a refresh-lane group names its lead row on the refresh lane', async () => {
+  it('gap 24: a refresh-lane group opens on the refresh lane, its lead row named once', async () => {
     setup(live({ temixCode: 'ARC1' }), [parsed({ temixCode: 'ARC1' })], [], { branches: { 'ARC1-02': storedBranch() } });
     await promote();
-    expect(contexts).toEqual(['import:batch-9:2', 'import:batch-9:2:refresh']);
+    expect(contexts).toEqual(['import:batch-9:2:refresh']);
   });
 
-  it('gap 24: a row fixed in the app names itself on the fixed lane before its branch is written', async () => {
+  it('gap 24: a row fixed in the app opens on the fixed lane before its branch is written', async () => {
     setup(live({ temixCode: 'ARC1' }), [parsed({ fixedInApp: true, address: 'Way 10, Muscat' })], [], {
       branches: { 'ARC1-02': storedBranch() },
     });
     await promote();
-    expect(contexts).toEqual(['import:batch-9:2', 'import:batch-9:2:fixed']);
+    expect(contexts).toEqual(['import:batch-9:2:fixed']);
+  });
+
+  it('gap 24: a wrong guess is renamed before anything is written (a Temix code on a customer that has none on record)', async () => {
+    // The row carries a Temix code, so the group opens on the refresh lane; the
+    // stored customer has no code (and was never sent), so the lane is the full
+    // lane: the lead row is renamed before the first write.
+    setup(live(), [parsed({ temixCode: 'ARC1', address: 'Way 10, Muscat' })], [], { branches: { 'ARC1-02': storedBranch() } });
+    await promote();
+    expect(contexts[0]).toBe('import:batch-9:2:refresh');
+    expect(contexts[1]).toBe('import:batch-9:2:full');
+    expect(contexts.slice(1).every((c) => c.endsWith(':full'))).toBe(true);
+  });
+
+  it('gap 24: a group that writes nothing names nothing after it opens', async () => {
+    setup(live(), [parsed()], [], { branches: { 'ARC1-02': storedBranch() } });
+    await promote();
+    expect(contexts).toEqual(['import:batch-9:2:full']);
   });
 
   it.each([

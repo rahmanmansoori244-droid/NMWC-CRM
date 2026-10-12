@@ -84,6 +84,7 @@ export { approvalPlanFor, seedNotification, seedPhoto, seedPhotos, seedUpdateEdi
 export {
   KNOWN_BUGS,
   auditFor,
+  exportRecordsFor,
   expectCleanConsole,
   expectNoDataLeak,
   expectNoRegionNotice,

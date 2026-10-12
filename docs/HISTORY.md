@@ -61,7 +61,7 @@ every script and seed that writes a master table name its run.
 | Source | Written by |
 |---|---|
 | `edit:<editId>` | a request: submit, draft save, every approval step, the final apply and a new customer's finalize (actor: the approver), reject, close and reactivation requests and decisions, the signed credit form, a Manager's or Steward's direct write |
-| `import:<batch>:<row>:<lane>` | one row of a customer-master import; lane `full`, `refresh` (Temix code on record), `backup` (first Temix code), `fixed` (a row the Steward corrected in the app). `import:<batch>:<row>` alone while the row's lane is being decided (reads only). |
+| `import:<batch>:<row>:<lane>` | one row of a customer-master import; lane `full`, `refresh` (Temix code on record), `backup` (first Temix code), `fixed` (a row the Steward corrected in the app). A customer's group opens under its first row and the lane that row most likely takes; the lane is decided under the lock and the row renamed before any write when the guess was wrong. |
 | `import:<batch>:<Sheet>!<row>` | one row of an account-master import (`Regions`, `Routes`, `Users`) |
 | `import:<batch>:setup` / `:summary` | an import's own set-up (the UNASSIGNED region and route) and closing write |
 | `import-fix:<batch>:<rowId>` | the Steward's correction of a held-back import row |
@@ -120,7 +120,7 @@ into an append-only table.
 | `CustomerHistory` | `customerId` | `nmwcCode`, `paymentTerms`, `creditLimit`, `paymentTermDays`, `temixCode`, `status`, `channelId`, `subChannelId`, `crPhotoId`, `deletedAt`, `mergedIntoId` (§9; null on rows written before it) | `legalName`, `crNumber`, `primaryPhone`, `altPhone`, `contactPerson`, `contactRole`, `email`, `notes` |
 | `BranchHistory` | `branchId` | `branchCode`, `customerId`, `routeId`, `regionId`, `dayOfVisit`, `status`, `deletedAt`, `coolersCount`, `standsCount`, `emptyBottlesCount`, `equipmentConfirmed`, `hasGps` (whether a point is on file), `shopPhotoId`, `signboardPhotoId` | `branchName`, `address`, `areaDescription`, `gps` (the four GPS columns), `openingHours`, `deliveryWindow` |
 | `UserHistory` | `userId` | `username` (as it was), `role`, `isActive`, `supervisorId`, `ownedRouteId`, `regionIds` (sorted) | `fullName`, `email`, `phone` |
-| `RouteOwnerHistory` | `routeId` | `ownerId` (null = nobody): who held the route | — |
+| `RouteOwnerHistory` | `routeId` | `ownerId` (null = nobody): who held the route. A route opened after the baseline starts its chain with a `CREATE` row of nobody, written with the route; the first salesman's take follows | — |
 | `RouteHistory` | `routeId` | `code`, `name`, `regionId`, `isActive` | — |
 | `RegionHistory` | `regionId` | `code`, `name`, `isActive` | — |
 | `AttachmentHistory` | `attachmentId` | `kind`, `customerId`, `branchId`, `branchExtraId`, `editId`, `deletedAt`, `hash` (the image's SHA-256), `capturedById`, `capturedAt` (§9) | — (the capture GPS is never copied) |
@@ -149,9 +149,13 @@ then the holder from his account's creation.
 
 **What a baseline row means:** "this is what the record was when history began".
 For any time before its `recordedAt` it is an **inference**, not a record: a shop
-that moved route in September shows its October route from its creation. Every
-as-of answer that rests on a baseline row for a time before it was recorded says
-`inferred = true`. Earlier history is not replayed from `AuditLog` (the owner:
+that moved route in September shows its October route from its creation. The same
+holds for any other row a migration wrote for a time before it ran — the merges
+made before §9's migration are dated when they happened, but carry the loser's
+other values as found at the migration. Every as-of answer that rests on a row
+written by a migration (source `migration:…`, or a `BASELINE`) for a time before
+it was recorded says `inferred = true` (`from_inferred` on the interval
+functions). Earlier history is not replayed from `AuditLog` (the owner:
 effective dates matter from now on). The official pilot-day backup is taken
 separately.
 
@@ -159,8 +163,12 @@ separately.
 the migration was deployed (the baseline rows' `recordedAt`, the same for all of
 them) has only the baseline to go on. Before a baseline's `validFrom` (the record's
 `createdAt`) there is no row at all, and an as-of function returns nothing for it.
-`AuditLog.source` and `AuditLog.txId` are null on every audit row written before
-the deploy.
+**An empty answer about a time before the baseline is not evidence**: a shop moved
+to another customer, or merged away, before history began is on the baseline under
+its customer of then — the other one. The two "who served customer X" functions
+therefore never answer "nothing" for such a time: they return one row with no shop
+and `note = 'no-shop-recorded'` (§6). `AuditLog.source` and `AuditLog.txId` are
+null on every audit row written before the deploy.
 
 ## 4. Effective dates (gap 17)
 
@@ -184,11 +192,18 @@ the owner decided. No form asks for one.
 A write with no change context is still recorded, under source `sql`. Zero is
 expected.
 
-- `dbUser = nmwc_app`: an application path is missing its context — a **defect**.
-  `/api/health` (bearer) reports the warning `history:unattributed` when one
-  appeared in the last 24 hours. It never pages.
-- any other `dbUser` (the owner): SQL typed by hand, or a script that does not name
-  its run.
+- `dbUser` = the login the application connects as: an application path is
+  missing its context — a **defect**. `/api/health` (bearer) reports the warning
+  `history:unattributed` when one appeared in the last 24 hours. It never pages.
+  The application's login is read from its own connection, not assumed: it
+  should be `nmwc_app`, but while production still connects as the table owner
+  (AUDITOR-BRIEF §8) the owner's rows count here — a change typed by hand under
+  that login cannot be told from the application's then, and the card says so.
+- any other `dbUser`: SQL typed by hand, or a script that does not name its run.
+
+A session cut-off written with no context (`AuthEvent`, `SESSION_REVOKE`, source
+`sql`, §10) is in the same report, as table `AuthEvent`, with the login that wrote
+it (`AuthEvent.dbUser`).
 
 Where to see it: the Steward's **Record keeping** card on `/status` (30 days),
 `npx tsx scripts/ops/history-report.ts --expect-host <host> [--days N]` (read-only),
@@ -199,7 +214,9 @@ when a history trigger is off or gone: changes would then go unrecorded.
 ## 6. Asking it: the as-of functions
 
 SQL functions (read-only, `STABLE`, run with the caller's privileges). Times are
-UTC `timestamp`s, as in every table.
+UTC `timestamp`s, as in every table. The answers about customers carry
+`merged_into_id`: the customer a duplicate merge folded this one into (§9), from
+the merge on.
 
 **"On day D"** means the state at the **end of that Oman day**: a change made or
 loaded at any time on D counts for D (`nmwc_day_end(d)` = the start of D+1 in
@@ -207,8 +224,8 @@ Muscat, in UTC). `*_at(ts)` answers for an exact instant.
 
 | Function | Answers |
 |---|---|
-| `nmwc_customer_service_on(customer_id, d)` | who served customer X on d: per live shop, its route and region (with codes), visit day, status, and the salesman who held the route then (his username as it was), `inferred` |
-| `nmwc_customer_route_intervals(customer_id)` | which routes served X, from when to when, with the salesman of each stretch (every shop ever X's) |
+| `nmwc_customer_service_on(customer_id, d)` | who served customer X on d: per live shop, its route and region (with codes), visit day, status, and the salesman who held the route then (his username as it was), `inferred`. No shop then: one row with no shop and a `note` — `merged` (X had been merged into `merged_into_id`, whose shops they were) or `no-shop-recorded` (the time is before X's first page was written, so unknown) — instead of an empty answer; an empty answer is a recorded "no live shop" |
+| `nmwc_customer_route_intervals(customer_id)` | which routes served X, from when to when, with the salesman of each stretch (every shop ever X's). Nothing of a stretch is dropped: a route opened after the baseline is held by nobody until its first salesman (salesman null, `note` null); a stretch that begins before its route's own first row (a move loaded effective earlier than the route's creation was recorded) has that part with no salesman and `note = 'holder-unrecorded'`. Rows with no shop say where X was not on record: `merged` (from the merge on, `merged_into_id`) and `no-shop-recorded` (before X's first page was written, when no shop of X is on record then) |
 | `nmwc_customer_terms_on(customer_id, d)` | X's cash/credit, limit, days, Temix code, status, channel on d |
 | `nmwc_route_owner_on(route_id, d)` | who held route R on d |
 | `nmwc_user_on(user_id, d)` | a user's role, supervisor, regions, route (and its region), active, on d |
@@ -294,11 +311,11 @@ request was*. Each is now kept, append-only.
 |---|---|---|
 | 4 — the customer-master import | A customer or shop the row leaves as it is is **not written** (no version, editor or `updatedAt` bump; a shop change moves only the customer's `updatedAt`, for the export's "updated since"). Each customer and shop it creates or changes has an `AuditLog` `CREATE`/`UPDATE` row with the before and after of the changed fields and the lineage `{batchId, importRowId, rowNumber, lane}`, reason `import <batch> row <n> (<lane>)`; the history rows say `import:<batch>:<row>:<lane>`. | `services/imports.ts`, `lib/import-lineage.ts` |
 | 7 — which file and row | `ImportBatch.fileSha256` and `fileBytes` (the file itself is not kept); `Customer.importRowId` names the row that created it; a Steward's correction of a held-back row records each corrected cell — old and new value for codes, channel, visit day and status, SHA-256 fingerprints for a name, address, phone, CR number, contact or note. The 90-day sweep empties the row's payload; the history's source, the audit rows and the batch's file fingerprint survive it. | `services/import-fixes.ts` |
-| 8 — merges | `Customer.mergedIntoId` (set by the merge, filled for earlier merges from their MERGE rows, dated when they happened); `CustomerEdit.originalCustomerId`, set once by the database (trigger `customeredit_original_customer`) and never moved by a merge. The MERGE row lists `movedBranchIds`, `movedAttachmentIds`, `repointedEditIds`, `autoClosedEditIds` and the loser's non-personal standing (`loserSnapshot`), and always keeps the typed reason; each request the merge closed has its own `REJECT` row; moved shops get `version + 1`. Searching a merged code, or opening its old page, leads to the customer it was merged into. | `services/duplicates.ts`, `lib/merged-customers.ts` |
+| 8 — merges | `Customer.mergedIntoId` (set by the merge, filled for earlier merges from their MERGE rows, dated when they happened; those rows are `inferred` before the migration, §3); `CustomerEdit.originalCustomerId`, set once by the database (trigger `customeredit_original_customer`) and never moved by a merge. For the requests that existed before the migration it is **best effort**: the customer named by their own decision row, else their current customer — but NULL ("not known") where an earlier merge makes that a guess (a request now on a merge's winner, made before that merge, with no decision row naming its customer from before it), unless that merge's own auto-close named the loser. A NULL stays NULL: a later repoint is not a request's first customer. The MERGE row lists `movedBranchIds`, `movedAttachmentIds`, `repointedEditIds`, `autoClosedEditIds` and the loser's non-personal standing (`loserSnapshot`), and always keeps the typed reason; each request the merge closed has its own `REJECT` row; moved shops get `version + 1`. Searching a merged code, or opening its old page, leads to the customer it was merged into. | `services/duplicates.ts`, `lib/merged-customers.ts` |
 | 12 — a new-customer request's rounds | `EditRevision`: one row per submit (never a draft), in the submit's transaction — cycle, terms, credit figures, the chain, and a payload of the channel, each shop's route, region, visit day, counts and photo ids, and the documents by kind; the name, CR number, phones, contact, e-mail, notes and each shop's name, address, hours and GPS point as fingerprints only. `payloadSha256` says whether two rounds sent the same thing. A send-back's category is on its `EditApproval` row (`category`) and its `REJECT` row (`decisionCategory`). | `services/creates.ts`, `lib/edit-revision.ts` |
-| 14 — exports | Every export writes an `ExportJob` (kind, the filters and role scope, `customerIds`, `filename`, `fileSha256` of the exact bytes) and its `EXPORT` row (entityId = the job's id) in one transaction before the bytes are sent. `ExportJob` is append-only. The file itself is never stored. | `lib/export-record.ts` |
+| 14 — exports | Every export writes an `ExportJob` (kind, the filters and role scope, `customerIds`, `filename`, `fileSha256` of the exact bytes) and its `EXPORT` row (entityId = the job's id) in one transaction before the bytes are sent: the customer master (`customer-master`), the filtered list (`customers-filtered`), the field-update report (`field-updates`) and the Temix upload file (`temix-batch`, on Generate and on every re-download: `filters.batchId`, `action`, the codes held back; `customerIds` = the customers written to that copy). A Temix batch's claim keeps its own `EXPORT` row keyed by the batch. `ExportJob` is append-only. The file itself is never stored. | `lib/export-record.ts`, `services/temix.ts` |
 | 15 — photos | `AttachmentHistory`, written by the database like the tables above, with a BASELINE for every photo row that existed and a DELETE tombstone when photo-gc drops a row. A removed or replaced photo keeps its `hash` (dedupe reads live rows only). A slot write names the photo it replaced (`replacedAttachmentId`) and the replaced one gets a `SOFT_DELETE` row; so does a photo released by a new-customer resubmit or a signed-application page left out of a new upload. Remove's audit row says what was removed and from where. | `services/photos.ts` |
-| 19 — approval evidence | Once a request has left DRAFT or NEEDS_CORRECTION, what it asked for (`fieldChanges`, `attachmentChanges`), who sent it and when, its process, target, gate, chain, credit figures, cycle, shop and submission id **cannot change** (trigger `customeredit_evidence_guard`), and a request cannot be deleted (`customeredit_no_delete`, `_no_truncate`); the owner's maintenance window is the only way past. Every update, close-shop and reactivation submit writes a `CustomerEdit` `CREATE` row with the request as sent. An `APPROVE` row adds what was `applied`, what was `alreadyLive`, what the submitter's role was `lockedOut` of, and the gate's shops; a direct write lists every applied change, customer and shop. | `services/edits.ts`, `services/reactivations.ts`, `lib/request-evidence.ts` |
+| 19 — approval evidence | Once a request has left DRAFT or NEEDS_CORRECTION, what it asked for (`fieldChanges`, `attachmentChanges`), who sent it and when, its process, target, gate, chain, credit figures, cycle, shop and submission id **cannot change** (trigger `customeredit_evidence_guard`), and a request cannot be deleted (`customeredit_no_delete`, `_no_truncate`); the owner's maintenance window is the only way past. Its state moves only forward, so the freeze cannot be stepped around: a decided request (APPROVED, REJECTED) is never reopened, a sent one goes back to its sender only as NEEDS_CORRECTION (the send-back) — never as a DRAFT — and an open one is approved only once sent. Every update, close-shop and reactivation submit writes a `CustomerEdit` `CREATE` row with the request as sent. An `APPROVE` row adds what was `applied`, what was `alreadyLive`, what the submitter's role was `lockedOut` of, and the gate's shops; a direct write lists every applied change, customer and shop. | `services/edits.ts`, `services/reactivations.ts`, `lib/request-evidence.ts` |
 | 20 — reopening | A close or reactivation request stores the photo's capture time and the shop's closure time it was checked against (`attachmentChanges`). The `REACTIVATE` row records the request, the evidence, the closure time and where it came from (`closureReference`: the request, the shop's dated history, or none) and the Manager's reason when the form sends one. Acceptance rules are unchanged. | `services/reactivations.ts` |
 | 27 — a new customer's shops | At finalize each draft names the shop it became (`EditBranchDraft.branchId`), shops are numbered in draft id order, and each shop has a `Branch` `CREATE` row (draft, route, region, visit day, GPS present, counts, the request). A submit's audit row carries `duplicateSignals` (live customers on the phone, at most ten; whether the CR is a live customer's); a submit refused as an exact duplicate leaves a `REJECT` row on `CustomerCreateAttempt`. | `lib/create-finalize.ts`, `services/creates.ts` |
 
@@ -323,7 +340,7 @@ SELECT b.shop_photo_id, a."hash", a."changeKind"
 SELECT "cycle", "submittedAt", "paymentTerms", "requestedCreditLimit", "payload"
   FROM "EditRevision" WHERE "editId" = '<id>' ORDER BY "cycle", "id";
 
--- Which exports held customer X?
+-- Which exports held customer X (the Temix upload files included)?
 SELECT j."id", j."kind", j."filename", j."fileSha256", j."completedAt", j."requestedById"
   FROM "ExportJob" j WHERE '<customerId>' = ANY (j."customerIds") ORDER BY j."startedAt";
 ```
@@ -343,7 +360,7 @@ Migrations `20261015100000_authority_jobs_auth_events` and
 | 11 — who decided, as what | Every `EditApproval` row says, beside the step's `role`: the decider's own role (`actorRole`), why he could decide (`authorityBasis`: `SUPERVISOR_OF_SUBMITTER` the salesman's own Supervisor, `REGION_MANAGER` a Manager of every region of the request — the Supervisor step's fallback, and every reactivation decision —, `REGION_OVERLAP` an Accountant over one of its regions, `GLOBAL` the Finance Manager, GM or Sales Director, `SUBMITTER` the salesman's own signed-application upload, never an approval), the regions the request covered (`scopeRegionIds`) and the salesman's route (`submitterRouteId`), as they were at that moment. The database refuses any other basis. A reactivation's approve and "Keep closed" now write their `EditApproval` row too (stepIndex 0, the MANAGER step); `/status` reads reactivations from the request, so its figures leave those rows out and do not change. Rows written before part C keep these columns empty: **not recorded then**, never guessed. | `lib/permissions.ts` `stepAuthority` (`canActOnStep` is its wrapper), `services/edits.ts`, `services/signed-form.ts`, `services/reactivations.ts` |
 | 21 — escalations and job runs | The `ESCALATE` row (source `cron:sla-escalate`) says which step of which round was late (`stepIndex`, `cycle`), from when (`stageEnteredAt`), on what budget and working calendar (`budgetMin`, `calendar`), at which `level`, and who was told (`audienceUserIds`) — the notifications that say the same are deleted after 90 days. `JobRunDay`: one row per scheduled job per Oman day — runs, failures, first and last start, the slowest run, the schedulers — written by the retention sweep for every day that is over, before that day's runs may be pruned; a `CronRun` row past 90 days is deleted only once its day has its row. Filled at the migration from the runs that existed. No system user: `AuditLog.source` names the job. | `app/api/cron/sla-escalate`, `lib/job-run-day.ts`, `app/api/cron/retention-sweep` |
 | 22 — the losing side of two saves at once | A save refused because another landed first — `NOT_PENDING`, `VERSION_CONFLICT`, `STALE_FIELDS`, `STALE_BEFORE`, `STALE_VIEW`, `EDIT_LOCKED`, `STATE_CHANGED`, `ROW_CHANGED`, `PHOTO_CHANGED` — leaves one `CONFLICT` audit row under the loser's name, source `conflict:<path>:<id>`, written in its own transaction after his has rolled back: the write that lost, the field names (never values), the version or stage he expected and the one he found, and for a request what the winner left (`live`: state, step, who decided, when). Best-effort: the 409 he sees is unchanged. Imports and merges do not lose races, they win them; what they overwrite is in their own rows (§9). | `lib/errors.ts` (`ConflictMeta`, `runAction`), `lib/conflict-record.ts`; `tests/unit/conflict-meta-guard.test.ts` fails on a throw of those codes without its meta |
-| 23 — sign-ins and session cut-offs | `AuthEvent`, append-only, kept for ever. `SESSION_REVOKE`: written by the **database** (trigger `user_session_revoke_capture`) whenever `User.sessionsRevokedAt` moves — sign-out, disable, password change or reset, role change, an account-import row — with the writer's actor and source (`sql` when none) and what moved with it (`reason`: `deactivated`, `password`, `role`, `route`, `username`). `LOGIN_FAIL_UNKNOWN`: a name no account has (`not_found`, `demo_disabled`, or `retired_username` when an account used to hold it). `LOGIN_RATE_LIMITED`: a throttle refusal, at most one row per bucket (`ip` or `user`) per five minutes. `LOGIN_FAIL_REUSED_NAME`: a failure on an account whose name another account held before — a leaver typing his old route sign-in name — beside its `LOGIN_FAIL` audit row. The typed name is **never stored**: `usernameHmac` is HMAC-SHA256 of the trimmed, lower-cased name under a key derived from `AUTH_SECRET` (HKDF, label `nmwc-auth-event-v1`), `keyId` the first 8 hex digits of the key's SHA-256. The 30-day logs no longer carry the typed name either. | `lib/auth.ts`, `lib/auth-events.ts`, `lib/sign-in-events.ts` |
+| 23 — sign-ins and session cut-offs | `AuthEvent`, append-only, kept for ever. `SESSION_REVOKE`: written by the **database** (trigger `user_session_revoke_capture`) whenever `User.sessionsRevokedAt` moves — sign-out, disable, password change or reset, role change, an account-import row — with the writer's actor and source (`sql` when none: then it is in the §5 report, with its login in `dbUser`) and what moved with it (`reason`: `deactivated`, `password`, `role`, `route`, `username`). `LOGIN_FAIL_UNKNOWN`: a name no account has (`not_found`, `demo_disabled`, or `retired_username` when an account used to hold it). `LOGIN_RATE_LIMITED`: a throttle refusal, at most one row per bucket (`ip` or `user`) per five minutes. `LOGIN_FAIL_REUSED_NAME`: a failure on an account whose name another account held before — a leaver typing his old route sign-in name — beside its `LOGIN_FAIL` audit row. The typed name is **never stored**: `usernameHmac` is HMAC-SHA256 of the trimmed, lower-cased name under a key derived from `AUTH_SECRET` (HKDF, label `nmwc-auth-event-v1`), `keyId` the first 8 hex digits of the key's SHA-256. The 30-day logs no longer carry the typed name either. | `lib/auth.ts`, `lib/auth-events.ts`, `lib/sign-in-events.ts` |
 | 16 — a route never changes region | The owner's rule (2026-10-11): routes never move to another region, are never renamed, split or merged; a route may be closed and its customers moved to other routes, and a route for another region is a new route. The database refuses any change of `Route.regionId` (trigger `route_region_fixed`), for every role and path, with no override — not even the maintenance window: *"Routes never move to another region. Close this route and open a new one in the other region."* The account-master import holds back a Routes row that names another region than the stored route's, in the same words; its label (`name`) may still change. The migration reported, read-only, how many shops carry a region other than their route's. | `lib/route-region.ts`, `services/imports.ts`, `docs/OPERATIONS.md` |
 
 Examples:

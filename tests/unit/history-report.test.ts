@@ -13,6 +13,7 @@ import { HISTORY_TRIGGERS } from '@/lib/history-tables';
 
 import {
   RUNTIME_ROLE,
+  appLoginRole,
   historyWarnings,
   loadHistoryHealth,
   loadHistoryReport,
@@ -26,6 +27,8 @@ const NOW = new Date('2026-10-13T08:00:00.000Z');
 function fakeClient(opts: {
   rows?: Array<{ table_name: string; day: string; db_user: string; n: bigint; sample_ids: bigint[] }>;
   triggers?: Array<{ tgname: string; tgenabled: string }>;
+  /** The login the client connects as (session_user); the runtime role by default. */
+  login?: string;
   fail?: boolean;
 }) {
   const calls: Array<{ sql: string; values: unknown[] }> = [];
@@ -35,6 +38,7 @@ function fakeClient(opts: {
     if (q.sql.includes('nmwc_history_unattributed')) return opts.rows ?? [];
     if (q.sql.includes('pg_trigger'))
       return opts.triggers ?? HISTORY_TRIGGERS.map((t) => ({ tgname: t, tgenabled: 'O' }));
+    if (q.sql.includes('session_user')) return [{ role: opts.login ?? RUNTIME_ROLE }];
     throw new Error(`unexpected SQL ${q.sql}`);
   });
   return { client: { $queryRaw } as never, calls };
@@ -61,6 +65,28 @@ describe('summarize', () => {
     ]);
     expect(r.fromApp).toBe(3);
     expect(r.fromOther).toBe(5);
+    expect(r.appRole).toBe(RUNTIME_ROLE);
+  });
+
+  it('while the application connects as the owner, the owner’s rows are the application’s (they cannot be told apart)', () => {
+    const r = summarize(
+      NOW,
+      [
+        { table: 'BranchHistory', day: '2026-10-12', dbUser: 'neondb_owner', n: 2, sampleIds: ['1'] },
+        { table: 'AuthEvent', day: '2026-10-12', dbUser: 'neondb_owner', n: 1, sampleIds: ['5'] },
+        { table: 'CustomerHistory', day: '2026-10-12', dbUser: 'someone_else', n: 4, sampleIds: ['9'] },
+      ],
+      'neondb_owner'
+    );
+    expect(r).toMatchObject({ appRole: 'neondb_owner', fromApp: 3, fromOther: 4 });
+  });
+});
+
+describe('appLoginRole', () => {
+  it('reads the login the client connects as', async () => {
+    const { client, calls } = fakeClient({ login: 'neondb_owner' });
+    expect(await appLoginRole(client)).toBe('neondb_owner');
+    expect(calls[0]!.sql).toContain('session_user');
   });
 });
 
@@ -100,10 +126,20 @@ describe('loadHistoryReport (the /status card)', () => {
     expect(r).toEqual({
       since: new Date('2026-09-13T08:00:00.000Z'),
       rows: [],
+      appRole: RUNTIME_ROLE,
       fromApp: 0,
       fromOther: 0,
     });
     expect(calls[0]!.values).toEqual(['2026-09-13 08:00:00.000']);
+  });
+
+  it('splits by the login the application itself connects as', async () => {
+    const day = '2026-10-12';
+    const { client } = fakeClient({
+      login: 'neondb_owner',
+      rows: [{ table_name: 'UserHistory', day, db_user: 'neondb_owner', n: 2n, sample_ids: [3n, 4n] }],
+    });
+    expect(await loadHistoryReport(client, NOW)).toMatchObject({ appRole: 'neondb_owner', fromApp: 2, fromOther: 0 });
   });
 
   it('answers null when the history cannot be read, never zero', async () => {
@@ -139,6 +175,15 @@ describe('the /api/health warnings', () => {
       rows: [{ table_name: 'BranchHistory', day, db_user: RUNTIME_ROLE, n: 1n, sample_ids: [7n] }],
     });
     expect(await loadHistoryHealth(app.client, NOW)).toEqual(['history:unattributed']);
+  });
+
+  it('while production still connects as the owner, the owner’s rows warn: the safety net is not off there', async () => {
+    const day = '2026-10-13';
+    const rows = [{ table_name: 'AuthEvent', day, db_user: 'neondb_owner', n: 1n, sample_ids: [2n] }];
+    // The application's own probe, connected as the owner.
+    expect(await loadHistoryHealth(fakeClient({ login: 'neondb_owner', rows }).client, NOW)).toEqual(['history:unattributed']);
+    // An operator script, connected as the owner, says which login the application is.
+    expect(await loadHistoryHealth(fakeClient({ login: 'neondb_owner', rows }).client, NOW, RUNTIME_ROLE)).toEqual([]);
   });
 
   it('a disabled capture trigger and a missing guard are reported', async () => {

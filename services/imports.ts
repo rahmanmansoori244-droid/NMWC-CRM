@@ -2306,13 +2306,22 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // simply too tight for that over a networked Postgres — customers were
         // being rejected with P2028 ("transaction closed") purely because the link
         // was slow, which on the real master would silently drop good rows.
-        // Gap 24: every write below names its sheet row and lane (rowSource). The
-        // group starts under its first row; nothing is written before the lane
-        // is known and the lead row named.
+        // Gap 24: every write below names its sheet row and lane (rowSource).
+        // Nothing is written before the lane is known and the lead row named. The
+        // group opens under its first row and the lane that row most likely takes
+        // — the refresh lane when it carries a Temix code, the fixed lane when the
+        // Steward fixed it, else the full lane — so naming the lead row below
+        // costs no second round trip when the guess holds (most groups). The lane
+        // is decided under the lock; a wrong guess is renamed before any write.
         const rowNo = (i: number) => rowMeta.get(g.rowIds[i])?.rowNumber ?? `${custCode}#${i + 1}`;
+        const openingSource = src.import(
+          batchId,
+          rowNo(0),
+          g.parsed[0]?.fixedInApp === true ? 'fixed' : g.parsed[0]?.temixCode ? 'refresh' : 'full'
+        );
         await withChangeContext(
           prisma,
-          { actorId: me.id, source: src.import(batchId, rowNo(0)) },
+          { actorId: me.id, source: openingSource },
           async (tx) => {
             rowNotes = g.rowIds.map(() => ({ note: null, written: false }));
             clearedSubChannelOf = null;
@@ -2634,7 +2643,9 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             const laneOf = (i: number): ImportLane =>
               isFixed[i] ? 'fixed' : firstTemixCode ? 'backup' : isRefresh ? 'refresh' : 'full';
             const leadIdx = plainIdx.length > 0 ? plainIdx[0] : 0;
-            let namedSource = '';
+            // What withChangeContext named on opening: the lead row costs nothing more
+            // when it is that row on that lane.
+            let namedSource = openingSource;
             // One set_config round trip per change of row, none for a row that writes nothing.
             const nameRow = async (i: number) => {
               const source = src.import(batchId, rowNo(i), laneOf(i));

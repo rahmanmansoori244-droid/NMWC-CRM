@@ -14,8 +14,12 @@
  *  - Generate locks the queue first, in id order (lib/locks.ts lockTemixQueue),
  *    and claims only the rows it locked, so it cannot deadlock with an archive or
  *    merge locking a customer and the holders of its code in that order.
- *  - X-TEMIX-2: re-downloading a batch is rate-limited and writes one EXPORT
- *    audit row before the file is returned; when that write fails, no file.
+ *  - X-TEMIX-2: re-downloading a batch is rate-limited and is recorded before
+ *    the file is returned; when that record fails, no file.
+ *  - Gap 14 (lossless paths): the FILE — on Generate and on every re-download —
+ *    is recorded through lib/export-record.ts with the customers written to it,
+ *    its name and its bytes (an ExportJob and its EXPORT row), after it is built
+ *    and before it is returned. Generate's claim keeps its own EXPORT row.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TemixSyncState } from '@prisma/client';
@@ -33,6 +37,8 @@ type Cust = {
 
 const h = vi.hoisted(() => ({
   writeAudit: vi.fn(),
+  /** lib/export-record.ts recordExport: the file's record (gap 14). */
+  recordExport: vi.fn(),
   checkLimit: vi.fn(),
   batchFind: vi.fn(),
   /** markTemixBatchLoadedAction's claim and its follow-up read, inside the transaction. */
@@ -50,6 +56,7 @@ vi.mock('@/lib/audit', () => ({
   getAuditEnvelope: async (actorId: string) => ({ actorId, ip: null, userAgent: null }),
   writeAudit: h.writeAudit,
 }));
+vi.mock('@/lib/export-record', () => ({ recordExport: h.recordExport }));
 
 const model = vi.hoisted(() => {
   type Where = Record<string, unknown> | undefined;
@@ -178,6 +185,7 @@ beforeEach(() => {
   model.state.flipWhere = undefined;
   h.checkLimit.mockResolvedValue({ ok: true });
   h.writeAudit.mockResolvedValue(undefined);
+  h.recordExport.mockResolvedValue({ exportJobId: 'job-1', fileSha256: 'f'.repeat(64) });
 });
 
 describe('generateTemixBatchAction — F11: a shared code is held back, not the batch', () => {
@@ -206,6 +214,37 @@ describe('generateTemixBatchAction — F11: a shared code is held back, not the 
       entityType: 'TemixSyncBatch',
       after: { customers: 3, deactivations: 1, heldBack: ['N2'] },
     });
+    // Gap 14: the file itself, with exactly the customers written to it (N2 is not).
+    expect(h.recordExport).toHaveBeenCalledTimes(1);
+    const [env, rec] = h.recordExport.mock.calls[0];
+    expect(env).toMatchObject({ actorId: 'stew' });
+    expect(rec).toMatchObject({
+      kind: 'temix-batch',
+      filters: { batchId: 'batch-new', action: 'generate', heldBack: ['N2'] },
+      filename: res.data.filename,
+      rowCount: res.data.rowCount,
+      reason: `generate ${res.data.rowCount} rows / 3 customers`,
+    });
+    expect([...rec.customerIds].sort()).toEqual(['id-N1', 'id-N3', 'id-N4']);
+    // The bytes recorded are the bytes returned.
+    expect(Buffer.from(rec.bytes).toString('base64')).toBe(res.data.base64);
+    // Nothing but the file's own fields goes back to the browser.
+    expect(Object.keys(res.data).sort()).toEqual(['base64', 'batchId', 'customerCount', 'filename', 'heldBack', 'rowCount']);
+  });
+
+  it('Generate returns no file when the file cannot be recorded (the batch stays, for its Download)', async () => {
+    model.state.rows = [cust({ nmwcCode: 'N1', temixCode: 'T1', temixSyncState: TemixSyncState.PENDING_UPLOAD })];
+    h.recordExport.mockRejectedValue(new Error('insert failed'));
+    let out: unknown;
+    try {
+      out = await generateTemixBatchAction();
+    } catch (e) {
+      out = e;
+    }
+    expect(JSON.stringify(out ?? null)).not.toMatch(/"base64"/);
+    expect(out && typeof out === 'object' && 'ok' in out && (out as { ok: boolean }).ok).toBeFalsy();
+    // The claim committed before the file was built: the customer is in the batch.
+    expect(row('N1')).toMatchObject({ temixSyncState: 'UPLOADED', lastTemixUploadBatchId: 'batch-new' });
   });
 
   it('an archived row with no Temix code goes out under its customer code, so a live holder of that code holds it back', async () => {
@@ -296,6 +335,7 @@ describe('generateTemixBatchAction — F11: a shared code is held back, not the 
     expect(!res.ok && res.message).toBe('Nothing can go to Temix yet. Held back for review: N2.');
     expect(model.state.rows.map((c) => c.temixSyncState)).toEqual(['SYNCED', 'DEACTIVATE_PENDING']);
     expect(h.writeAudit).not.toHaveBeenCalled();
+    expect(h.recordExport).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -316,6 +356,7 @@ describe('generateTemixBatchAction — F11: a shared code is held back, not the 
         'The Temix queue changed while this batch was being built. Generate it again.'
       );
       expect(h.writeAudit).not.toHaveBeenCalled();
+      expect(h.recordExport).not.toHaveBeenCalled();
     }
   );
 
@@ -343,24 +384,29 @@ describe('downloadTemixBatchAction — X-TEMIX-2', () => {
     h.batchFind.mockResolvedValue({ id: 'batch-old', customerIds: ['id-N1'] });
   });
 
-  it('writes one EXPORT audit row for the batch before the file is returned', async () => {
+  it('records the copy — its customers, name and bytes — once, before the file is returned', async () => {
     const res = await downloadTemixBatchAction(fd());
     expect(res.ok).toBe(true);
-    expect(h.writeAudit).toHaveBeenCalledTimes(1);
-    const [client, env, params] = h.writeAudit.mock.calls[0];
-    expect(client).toBeNull();
+    if (!res.ok) return;
+    // Gap 14: through lib/export-record.ts, no bare EXPORT row of its own.
+    expect(h.writeAudit).not.toHaveBeenCalled();
+    expect(h.recordExport).toHaveBeenCalledTimes(1);
+    const [env, rec] = h.recordExport.mock.calls[0];
     expect(env).toMatchObject({ actorId: 'stew' });
-    expect(params).toEqual({
-      action: 'EXPORT',
-      entityType: 'TemixSyncBatch',
-      entityId: 'batch-old',
+    expect(rec).toMatchObject({
+      kind: 'temix-batch',
+      filters: { batchId: 'batch-old', action: 'redownload', heldBack: [] },
+      customerIds: ['id-N1'],
+      filename: res.data.filename,
+      rowCount: 1,
       reason: 'redownload 1 rows / 1 customers',
     });
-    expect(res.ok && res.data.base64.length).toBeGreaterThan(0);
+    expect(Buffer.from(rec.bytes).toString('base64')).toBe(res.data.base64);
+    expect(res.data.base64.length).toBeGreaterThan(0);
   });
 
-  it('returns no file when the audit row cannot be written', async () => {
-    h.writeAudit.mockRejectedValue(new Error('insert failed'));
+  it('returns no file when the record cannot be written', async () => {
+    h.recordExport.mockRejectedValue(new Error('insert failed'));
     let out: unknown;
     try {
       out = await downloadTemixBatchAction(fd());
@@ -391,12 +437,13 @@ describe('downloadTemixBatchAction — X-TEMIX-2', () => {
       expect(await sheetCodes(res.data.base64)).toEqual(['UPSERT:N1', 'UPSERT:N3']);
       expect(res.data.heldBack).toEqual(['N2']);
       expect(res.data.customerCount).toBe(2);
-      expect(h.writeAudit.mock.calls[0][2]).toEqual({
-        action: 'EXPORT',
-        entityType: 'TemixSyncBatch',
-        entityId: 'batch-old',
+      // The record says which customers this copy held — not the held-back one —
+      // and which were held back.
+      expect(h.recordExport.mock.calls[0][1]).toMatchObject({
+        kind: 'temix-batch',
+        filters: { batchId: 'batch-old', action: 'redownload', heldBack: ['N2'] },
+        customerIds: ['id-N1', 'id-N3'],
         reason: 'redownload 2 rows / 2 customers',
-        after: { heldBack: ['N2'] },
       });
     });
 
@@ -433,6 +480,7 @@ describe('downloadTemixBatchAction — X-TEMIX-2', () => {
       expect(res.ok).toBe(false);
       expect(!res.ok && res.message).toBe('Nothing in this batch can go to Temix now. Held back for review: N2.');
       expect(h.writeAudit).not.toHaveBeenCalled();
+      expect(h.recordExport).not.toHaveBeenCalled();
     });
   });
 
@@ -444,6 +492,7 @@ describe('downloadTemixBatchAction — X-TEMIX-2', () => {
     expect(h.checkLimit).toHaveBeenCalledWith('temix-download:stew', { capacity: 3, refillPerSec: 0.05 });
     expect(h.batchFind).not.toHaveBeenCalled();
     expect(h.writeAudit).not.toHaveBeenCalled();
+    expect(h.recordExport).not.toHaveBeenCalled();
   });
 });
 

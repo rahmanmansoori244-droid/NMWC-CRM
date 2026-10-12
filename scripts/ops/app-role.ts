@@ -536,7 +536,17 @@ async function verify() {
             if (JSON.stringify(rows) !== JSON.stringify(want)) {
               throw new Error(`history capture: expected ${JSON.stringify(want)}, got ${JSON.stringify(rows)}`);
             }
-            console.log(`  ✓ history: ${history.length} tables read-only; a branch's create and visit-day change recorded by the database, once each`);
+            // A new route's holder chain starts with it: held by nobody until a
+            // salesman takes it (so a shop moved onto it first keeps its stretch).
+            const holders = await tx.$queryRawUnsafe<{ kind: string; owner: string | null; source: string; db_user: string }[]>(
+              `SELECT "changeKind"::text AS kind, "ownerId" AS owner, "source", "dbUser" AS db_user
+                 FROM "RouteOwnerHistory" WHERE "routeId" = '${sfx}-r' ORDER BY "id"`
+            );
+            const wantHolders = [{ kind: 'CREATE', owner: null, source: 'verify:app-role', db_user: ROLE }];
+            if (JSON.stringify(holders) !== JSON.stringify(wantHolders)) {
+              throw new Error(`route holder chain: expected ${JSON.stringify(wantHolders)}, got ${JSON.stringify(holders)}`);
+            }
+            console.log(`  ✓ history: ${history.length} tables read-only; a branch's create and visit-day change recorded by the database, once each; a new route held by nobody from its creation`);
           }
 
           // Lossless paths (gaps 12, 14 and 19): the ledgers the application
@@ -565,6 +575,11 @@ async function verify() {
               tx.$executeRaw`UPDATE "CustomerEdit" SET "fieldChanges" = '[{"field":"customer.notes"}]' WHERE "id" = ${editId}`
             );
             await tx.$executeRaw`UPDATE "CustomerEdit" SET "state" = 'REJECTED', "reviewedById" = ${actor.id}, "reviewedAt" = now() WHERE "id" = ${editId}`;
+            // ... but only forward: a decided request is never reopened (or the
+            // freeze could be stepped around by reopening, rewriting, closing).
+            await expectRefused(tx, 'a decided request: reopening it', () =>
+              tx.$executeRaw`UPDATE "CustomerEdit" SET "state" = 'SUBMITTED' WHERE "id" = ${editId}`
+            );
             console.log(`  ✓ insert-only ledgers (${ledgers.join(', ')}): insert yes, change no; a sent request keeps what it asked for and still moves state`);
 
             // Part C (gaps 21 and 23): the sweep's day summary and a failed sign-in
@@ -580,9 +595,9 @@ async function verify() {
             if (ledgers.includes('AuthEvent')) {
               await tx.$executeRaw`INSERT INTO "AuthEvent" ("kind","usernameHmac","keyId","reason") VALUES ('LOGIN_FAIL_UNKNOWN', 'verify', 'verify', 'not_found')`;
               await tx.$executeRaw`UPDATE "User" SET "sessionsRevokedAt" = now() WHERE "id" = ${actor.id}`;
-              const revokes = await tx.$queryRaw<{ source: string | null; reason: string | null }[]>`
-                SELECT "source", "reason" FROM "AuthEvent" WHERE "kind" = 'SESSION_REVOKE' AND "userId" = ${actor.id} AND "txId" = txid_current()`;
-              if (revokes.length !== 1 || revokes[0]!.source !== 'verify:app-role') {
+              const revokes = await tx.$queryRaw<{ source: string | null; reason: string | null; db_user: string | null }[]>`
+                SELECT "source", "reason", "dbUser" AS db_user FROM "AuthEvent" WHERE "kind" = 'SESSION_REVOKE' AND "userId" = ${actor.id} AND "txId" = txid_current()`;
+              if (revokes.length !== 1 || revokes[0]!.source !== 'verify:app-role' || revokes[0]!.db_user !== ROLE) {
                 throw new Error(`session cut-off capture: expected one SESSION_REVOKE under verify:app-role, got ${JSON.stringify(revokes)}`);
               }
               await expectRefused(tx, 'AuthEvent sequence setval', () =>

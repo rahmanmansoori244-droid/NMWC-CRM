@@ -107,13 +107,15 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   const asUser = (u: string, role: string) => { current = { id: u, role, username: u }; };
 
   async function mkAtt(
-    kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE' | 'ID_CARD' | 'MEMBERSHIP_CERT' | 'VAT_CERT' | 'TAX_CARD' | 'CREDIT_FORM'
+    kind: 'CR' | 'SHOP' | 'SIGNBOARD' | 'GUARANTEE' | 'ID_CARD' | 'MEMBERSHIP_CERT' | 'VAT_CERT' | 'TAX_CARD' | 'CREDIT_FORM',
+    opts: { hash?: string } = {}
   ) {
     const a = await prisma.attachment.create({
       data: {
         kind, r2Key: `uat/${kind.toLowerCase()}-${tag}-${randomUUID().slice(0, 6)}.jpg`,
         mimeType: kind === 'GUARANTEE' ? 'application/pdf' : 'image/jpeg',
         bytes: 1000, capturedById: ids.salesman, capturedAt: new Date(),
+        ...(opts.hash ? { hash: opts.hash } : {}),
       },
     });
     return a.id;
@@ -862,6 +864,7 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   describe('owner decisions 2026-10-11: the credit cascade, one step back at a time', () => {
     let editC = '';
     const pageC = { one: '', two: '', three: '' };
+    const PAGE_ONE_HASH = randomUUID().replace(/-/g, '').padEnd(64, '0');
     const digitsC = (salt: number) => String(100000 + ((parseInt(tag, 16) + salt) % 900000));
     const decideC = async (kind: 'approve' | 'reject', temixCode?: string) => {
       const fd = new FormData();
@@ -917,7 +920,8 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       asUser(ids.sd, 'SALES_DIRECTOR');
       expect((await decideC('approve')).ok).toBe(true);
       asUser(ids.salesman, 'SALESMAN');
-      pageC.one = await mkAtt('CREDIT_FORM');
+      // The first page carries a fingerprint, so its release below can be seen to keep it.
+      pageC.one = await mkAtt('CREDIT_FORM', { hash: PAGE_ONE_HASH });
       pageC.two = await mkAtt('CREDIT_FORM');
       expect((await sendSignedForm(editC, [pageC.one, pageC.two])).ok).toBe(true);
       // The Sales Director's step-back to the Supervisor (the test above) rightly
@@ -948,7 +952,17 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
       expect(live.map((a) => a.id).sort()).toEqual([pageC.two, pageC.three].sort());
       const dropped = await prisma.attachment.findUniqueOrThrow({ where: { id: pageC.one } });
       expect(dropped.deletedAt).not.toBeNull();
-      expect(dropped.hash).toBeNull();
+      // Gap 15 (lossless paths): a released page keeps its fingerprint, and its
+      // release has its own SOFT_DELETE row under the salesman who left it out.
+      expect(dropped.hash).toBe(PAGE_ONE_HASH);
+      const released = await prisma.auditLog.findFirstOrThrow({
+        where: { action: 'SOFT_DELETE', entityType: 'Attachment', entityId: pageC.one },
+      });
+      expect(released).toMatchObject({
+        actorId: ids.salesman,
+        reason: 'released: a page of the signed application left out of the new upload',
+      });
+      expect(released.before).toMatchObject({ kind: 'CREDIT_FORM', editId: editC, hash: PAGE_ONE_HASH });
       // Two uploads in this cycle, each its own visit to the step.
       expect(await prisma.editApproval.count({ where: { editId: editC, stepIndex: 2, decision: 'FORM_UPLOADED' } })).toBe(2);
     });

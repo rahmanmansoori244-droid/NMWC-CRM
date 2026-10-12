@@ -60,12 +60,13 @@ async function main(): Promise<number> {
         await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
         return {
           rows: await loadUnattributed(tx, since),
-          warnings: await loadHistoryHealth(tx, now),
+          // This script connects as the owner: the application's login is the runtime role.
+          warnings: await loadHistoryHealth(tx, now, RUNTIME_ROLE),
         };
       },
       { timeout: 60_000 }
     );
-    const report = summarize(since, rows);
+    const report = summarize(since, rows, RUNTIME_ROLE);
     console.log(
       `Changes with no recorded cause, last ${days} day(s): ${report.fromApp + report.fromOther}`
     );
@@ -74,6 +75,9 @@ async function main(): Promise<number> {
     );
     console.log(
       `  by any other login:         ${report.fromOther}   <- SQL typed by hand, or a script that does not name its run`
+    );
+    console.log(
+      `  (while production still connects as the owner, its application defects are counted on this line: see the /status card)`
     );
     for (const r of rows) {
       console.log(

@@ -50,6 +50,7 @@ import {
   OMAN_TODAY,
   BASE_URL,
   auditFor,
+  exportRecordsFor,
   captureServerAction,
   changePasswordViaUi,
   contextAs,
@@ -1537,7 +1538,13 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
       select: { id: true, temixSyncState: true, lastTemixUploadBatchId: true },
     });
     for (const s of states) expect(s).toMatchObject({ temixSyncState: 'UPLOADED', lastTemixUploadBatchId: made.id });
+    // The batch's claim keeps its own EXPORT row; the file is recorded with its job (gap 14).
     expect((await auditFor({ entityId: made.id, action: 'EXPORT' })).map((a) => a.entityType)).toEqual(['TemixSyncBatch']);
+    const generated = await exportRecordsFor({ actorId: stw.id, kind: 'temix-batch', batchId: made.id });
+    expect(generated).toHaveLength(1);
+    expect(generated[0]!.job).toMatchObject({ filename: file.name, fileSha256: file.sha256, filters: { action: 'generate' } });
+    expect([...generated[0]!.job.customerIds].sort()).toEqual([A.id, B.id].sort());
+    expect(generated[0]!.audit?.reason).toBe('generate 2 rows / 2 customers');
 
     // Download again: the same rows, and its own ledger row.
     const again = page.waitForEvent('download');
@@ -1546,9 +1553,12 @@ test.describe('back office: Temix upload batches', { tag: ['@exclusive'] }, () =
     expect(second.sheets.find((s) => s.name === 'Temix Upload')!.rows.map((x) => `${x.sync_action}:${x.cust_code}`).sort()).toEqual(
       [`DEACTIVATE:${B.code}`, `UPSERT:${A.code}`].sort()
     );
-    await expect.poll(async () => (await auditFor({ entityId: made.id, action: 'EXPORT' })).map((a) => a.reason)).toContain(
-      'redownload 2 rows / 2 customers'
-    );
+    await expect
+      .poll(async () => (await exportRecordsFor({ actorId: stw.id, kind: 'temix-batch', batchId: made.id })).map((r) => r.audit?.reason))
+      .toEqual(['generate 2 rows / 2 customers', 'redownload 2 rows / 2 customers']);
+    const again2 = (await exportRecordsFor({ actorId: stw.id, kind: 'temix-batch', batchId: made.id }))[1]!;
+    expect(again2.job).toMatchObject({ fileSha256: second.sha256, filters: { action: 'redownload' } });
+    expect([...again2.job.customerIds].sort()).toEqual([A.id, B.id].sort());
 
     // Mark loaded, with a second tab still showing the button.
     const stale = await openAs(browser, stw, '/temix');
@@ -1774,8 +1784,12 @@ test.describe('back office: Excel exports', { tag: ['@desktop'] }, () => {
     }
     expect(sheet.rows.map((r) => r.cust_code)).not.toContain(w.customer('EXB').code);
     if (hasR2) expect(sheet.rows.find((r) => r.cust_code === w.customer('EX1').code)!.shop_photo).toBe('yes');
-    const audit = (await auditFor({ actorId: stw.id, action: 'EXPORT' })).filter((a) => a.entityType === 'Export');
-    expect(audit.map((a) => [a.entityId, a.reason])).toContainEqual([omanDateISO(), `customers ${live.length}`]);
+    // Gap 14: recorded as an ExportJob (the file, its SHA-256, its customers) and an EXPORT row keyed by it.
+    const master = (await exportRecordsFor({ actorId: stw.id, kind: 'customer-master' })).filter((r) => r.job.fileSha256 === file.sha256);
+    expect(master).toHaveLength(1);
+    expect(master[0]!.job).toMatchObject({ filename: file.name, rowCount: live.length });
+    expect(master[0]!.audit).toMatchObject({ entityType: 'Export', entityId: master[0]!.job.id, reason: `customers ${live.length}` });
+    expect(new Set(master[0]!.job.customerIds)).toEqual(new Set(live.map((b) => b.customerId)));
   });
 
   test('the Steward downloads the field-update report: the approved change is highlighted, with every sheet and the count headers', async ({ browser }) => {
@@ -1799,8 +1813,11 @@ test.describe('back office: Excel exports', { tag: ['@desktop'] }, () => {
     expect(customers.rows[i]!.contact_person).toBe(newContact);
     expect(customers.fill(i, 'contact_person'), 'the changed cell is yellow').toBe('FFFFFF00');
     expect(file.sheets[1]!.rows.some((r) => Object.values(r).includes(newContact))).toBe(true);
-    const audit = (await auditFor({ actorId: stw.id, action: 'EXPORT' })).filter((a) => a.entityId === `field-updates-${omanDateISO()}`);
-    expect(audit.length).toBeGreaterThan(0);
+    const report = (await exportRecordsFor({ actorId: stw.id, kind: 'field-updates' })).filter((r) => r.job.fileSha256 === file.sha256);
+    expect(report).toHaveLength(1);
+    expect(report[0]!.job.filename).toBe(file.name);
+    expect(report[0]!.audit).toMatchObject({ entityType: 'Export', entityId: report[0]!.job.id });
+    expect(report[0]!.job.customerIds).toContain(w.customer('EX1').id);
   });
 
   test('a Manager exports the filtered customer list — his region only — on a desktop and on a phone', async ({ browser }) => {
@@ -1822,8 +1839,12 @@ test.describe('back office: Excel exports', { tag: ['@desktop'] }, () => {
       expect(codes, `${device}: never another region`).not.toContain(w.customer('EXB').code);
       for (const r of sheet.rows) expect(r.Region, device).toBe(w.region('R1').name);
     }
-    const audit = (await auditFor({ actorId: m1.id, action: 'EXPORT' })).filter((a) => a.entityId === `customers-${omanDateISO()}`);
-    expect(audit).toHaveLength(2);
+    const lists = (await exportRecordsFor({ actorId: m1.id, kind: 'customers-filtered' })).filter((r) => r.job.filename === `customers-${omanDateISO()}.xlsx`);
+    expect(lists).toHaveLength(2);
+    for (const r of lists) {
+      expect(r.audit).toMatchObject({ entityType: 'Export', entityId: r.job.id });
+      expect(r.job.customerIds).not.toContain(w.customer('EXB').id);
+    }
   });
 
   test('the Viewer has Export in his menu and exports the filtered /customers list of a region, audited', async ({ browser }) => {
@@ -1839,8 +1860,9 @@ test.describe('back office: Excel exports', { tag: ['@desktop'] }, () => {
     const codes = list.sheets[0]!.rows.map((r) => r['NMWC code']);
     expect(codes).toEqual(expect.arrayContaining([w.customer('EX1').code, w.customer('EX2').code]));
     expect(codes).not.toContain(w.customer('EXB').code);
-    const audit = (await auditFor({ actorId: vw.id, action: 'EXPORT' })).map((a) => a.entityId);
-    expect(audit).toContain(`customers-${omanDateISO()}`);
+    const vlists = (await exportRecordsFor({ actorId: vw.id, kind: 'customers-filtered' })).filter((r) => r.job.fileSha256 === list.sha256);
+    expect(vlists).toHaveLength(1);
+    expect(vlists[0]!.audit).toMatchObject({ entityType: 'Export', entityId: vlists[0]!.job.id });
 
     await page.goto('/export');
     await expect(page.getByRole('heading', { level: 1, name: 'Export to Excel' })).toBeVisible();
@@ -1859,8 +1881,12 @@ test.describe('back office: Excel exports', { tag: ['@desktop'] }, () => {
     const report = await fetchAs(page, `/api/exports/changes?regionId=${w.region('R1').id}&onlyChanged=1`);
     expect(report.status).toBe(200);
     expect(report.headers['x-row-count']).toMatch(/^\d+$/);
-    const audit = (await auditFor({ actorId: vw.id, action: 'EXPORT' })).map((a) => a.entityId);
-    expect(audit).toEqual(expect.arrayContaining([omanDateISO(), `field-updates-${omanDateISO()}`]));
+    const vmaster = (await exportRecordsFor({ actorId: vw.id, kind: 'customer-master' })).filter((r) => r.job.fileSha256 === master.sha256);
+    expect(vmaster).toHaveLength(1);
+    expect(vmaster[0]!.audit).toMatchObject({ entityType: 'Export', entityId: vmaster[0]!.job.id });
+    const vreport = await exportRecordsFor({ actorId: vw.id, kind: 'field-updates' });
+    expect(vreport.length).toBeGreaterThan(0);
+    expect(vreport.every((r) => r.audit?.entityId === r.job.id)).toBe(true);
   });
 
   test('refusals: a salesman gets 403, a signed-out caller 401, and a refused download keeps the user on /export with words', async ({ browser }) => {
@@ -2164,9 +2190,11 @@ test.describe('back office: audit log', { tag: ['@desktop'] }, () => {
     const dl = page.waitForEvent('download', { timeout: 60_000 });
     await page.getByRole('button', { name: 'Export filtered' }).click();
     expect((await dl).suggestedFilename()).toBe(`customers-${omanDateISO()}.xlsx`);
+    // Gap 14: the EXPORT row is keyed by the export's job (lib/export-record.ts).
+    const job = (await exportRecordsFor({ actorId: stw.id, kind: 'customers-filtered' })).at(-1)!.job;
     await page.goto(`/audit?action=EXPORT&actor=${stw.id}`);
     await expect(page.getByText(`Showing what ${stw.fullName} did.`)).toBeVisible();
-    await expect(page.locator('tbody tr').filter({ hasText: 'Export/customer' }).first()).toContainText(stw.fullName);
+    await expect(logRow(page, 'Export', job.id).first()).toContainText(stw.fullName);
 
     // Times are Oman time (launch fix, wave 1).
     await page.goto(`/audit?action=STEP_APPROVE&q=${e.E2}`);

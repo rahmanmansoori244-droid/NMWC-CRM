@@ -84,7 +84,7 @@ function status(over: Partial<ServiceStatus> = {}): ServiceStatus {
 
 beforeEach(() => {
   h.load.mockReset().mockResolvedValue(status());
-  h.history.mockReset().mockResolvedValue({ since: NOW, rows: [], fromApp: 0, fromOther: 0 });
+  h.history.mockReset().mockResolvedValue({ since: NOW, rows: [], appRole: 'nmwc_app', fromApp: 0, fromOther: 0 });
   h.scopeFor.mockReset();
   h.regions = ['r-north', 'r-south'];
 });
@@ -372,6 +372,7 @@ describe('gap 24: changes with no recorded cause (the Data Steward only)', () =>
         { table: 'BranchHistory', day: '2026-10-04', dbUser: 'nmwc_app', n: 2, sampleIds: ['41', '42'] },
         { table: 'CustomerHistory', day: '2026-10-03', dbUser: 'neondb_owner', n: 7, sampleIds: ['1', '2', '3', '4', '5'] },
       ],
+      appRole: 'nmwc_app',
       fromApp: 2,
       fromOther: 7,
     });
@@ -381,6 +382,23 @@ describe('gap 24: changes with no recorded cause (the Data Steward only)', () =>
     expect(text).toContain('2 by the application (nmwc_app)');
     expect(text).toMatch(/7 by another database login/);
     expect(text).toContain('2026-10-03 · CustomerHistory · neondb_owner · 7 (rows 1, 2, 3, 4, 5, …)');
+  });
+
+  it('while the application still connects as the owner, its login is named and the doubt said', async () => {
+    h.user = { id: 'x', role: 'STEWARD', username: 'x' };
+    h.history.mockResolvedValue({
+      since: NOW,
+      rows: [{ table: 'AuthEvent', day: '2026-10-04', dbUser: 'neondb_owner', n: 3, sampleIds: ['8', '9', '10'] }],
+      appRole: 'neondb_owner',
+      fromApp: 3,
+      fromOther: 0,
+    });
+    render(await StatusPage());
+    const text = card().textContent!;
+    expect(text).toContain("3 by the application's login (neondb_owner)");
+    expect(text).toContain('still connects as the owner');
+    expect(text).not.toMatch(/by another database login/);
+    expect(text).toContain('2026-10-04 · AuthEvent · neondb_owner · 3 (rows 8, 9, 10)');
   });
 
   it('an unreadable history says so instead of showing zero', async () => {

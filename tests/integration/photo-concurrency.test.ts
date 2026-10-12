@@ -151,9 +151,10 @@ describe.skipIf(!ENABLED)('photo attach scope under a real customer lock', () =>
   it.each(cases)('$role $slot after locked route move=$move, sibling=$sibling: allowed=$allowed', async ({ role, slot, move, sibling, allowed }) => {
     current = { id: role === 'MANAGER' ? ids.manager : ids.sales, role, username: role === 'MANAGER' ? ids.manager : ids.sales };
     if (sibling) await prisma.branch.update({ where: { id: ids.sibling }, data: { routeId: ids.routeA, regionId: ids.regionA } });
+    const oldHash = randomUUID().replace(/-/g, '').padEnd(64, '0');
     const old = await prisma.attachment.create({ data: {
       kind: slot, r2Key: `synthetic-photo-scope/${tag}/${randomUUID()}.jpg`, mimeType: 'image/jpeg', bytes: 100,
-      capturedById: ids.sales, capturedAt: new Date(),
+      capturedById: ids.sales, capturedAt: new Date(), hash: oldHash,
       ...(slot === 'CR' ? { customerId: ids.customer } : { branchId: ids.branch }),
       ...(slot === 'FREE' ? { branchExtraId: ids.branch } : {}),
     } });
@@ -214,7 +215,22 @@ describe.skipIf(!ENABLED)('photo attach scope under a real customer lock', () =>
         const previous = await prisma.attachment.findUniqueOrThrow({ where: { id: old.id } });
         if (slot === 'FREE') expect(previous.deletedAt).toBeNull();
         else expect(previous.deletedAt).not.toBeNull();
-        expect((await snapshot(prisma)).audits).toBe(committed!.audits + 1);
+        if (slot === 'FREE') {
+          // An extra photo replaces nothing: the slot write is the one row.
+          expect((await snapshot(prisma)).audits).toBe(committed!.audits + 1);
+        } else {
+          // Gap 15 (lossless paths): the replaced photo's SOFT_DELETE row, then the
+          // slot write — two rows, both under the session user. The replaced one
+          // keeps its fingerprint.
+          expect((await snapshot(prisma)).audits).toBe(committed!.audits + 2);
+          expect(previous.hash).toBe(oldHash);
+          const removed = await prisma.auditLog.findFirstOrThrow({
+            where: { action: 'SOFT_DELETE', entityType: 'Attachment', entityId: old.id },
+          });
+          expect(removed.actorId).toBe(current!.id);
+          expect(removed.before).toMatchObject({ slot, hash: oldHash });
+          expect(removed.after).toEqual({ replacedBy: fresh.id });
+        }
       }
     } finally {
       await waiting?.catch(() => {});

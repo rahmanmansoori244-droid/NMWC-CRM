@@ -11,7 +11,8 @@
  *  - The app's own Oman formatters and Temix queue rule, for expectations.
  */
 import ExcelJS from 'exceljs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { Download, Locator, Page } from '@playwright/test';
 import { db } from './env';
 import { FIXTURE_PASSWORD_SHAPE } from './secret-scan';
@@ -141,10 +142,15 @@ export async function readWorkbook(file: string | Buffer): Promise<ReadSheet[]> 
 }
 
 /** Saves a Playwright download and reads it back. */
-export async function readDownload(d: Download): Promise<{ name: string; sheets: ReadSheet[] }> {
+export async function readDownload(d: Download): Promise<{ name: string; sheets: ReadSheet[]; sha256: string }> {
   const p = await d.path();
   if (!p) throw new Error(`download ${d.suggestedFilename()} failed: ${await d.failure()}`);
-  return { name: d.suggestedFilename(), sheets: await readWorkbook(p) };
+  return {
+    name: d.suggestedFilename(),
+    sheets: await readWorkbook(p),
+    // Gap 14: the export's record names the SHA-256 of the exact bytes sent.
+    sha256: createHash('sha256').update(readFileSync(p)).digest('hex'),
+  };
 }
 
 /** A password of the shape the secret scan looks for (12+ characters, never logged). */

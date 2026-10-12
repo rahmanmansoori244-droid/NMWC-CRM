@@ -7,15 +7,22 @@
  *  1. generateTemixBatchAction — snapshot the queue (PENDING_UPLOAD live rows
  *     + DEACTIVATE_PENDING soft-deleted rows), create a TemixSyncBatch, flip
  *     the rows to UPLOADED in the same transaction, and hand the Steward an
- *     xlsx (base64 — same transport as the filtered customer export).
+ *     xlsx (base64 — same transport as the filtered customer export). The
+ *     batch's own EXPORT row (in the claim transaction) says who generated it
+ *     and what was held back; the FILE is then recorded like every other export
+ *     (lib/export-record.ts: an ExportJob with the customers it held, its
+ *     filename and the SHA-256 of its bytes, and an EXPORT row keyed by the
+ *     job) before the bytes are returned (gap 14).
  *  2. downloadTemixBatchAction — regenerate any batch's workbook from its
  *     customerIds snapshot (no sync-state changes). At-least-once-with-dedup:
  *     Temix upserts on the code, so a regenerated row that has since changed
  *     is fine, and re-sending an unchanged row is a no-op — except a
  *     DEACTIVATE for a code a live customer holds, which is left out and
  *     named, as Generate holds it back (F11). It is still an
- *     export of personal data: rate-limited, and an EXPORT audit row is
- *     written before the file is returned (X-TEMIX-2).
+ *     export of personal data: rate-limited, and recorded before the file is
+ *     returned (X-TEMIX-2), through lib/export-record.ts like Generate's file:
+ *     the customers this copy held (current data, held-back ones left out),
+ *     its filename and the SHA-256 of its bytes (gap 14).
  *  3. markTemixBatchLoadedAction — records the Steward's "loaded into Temix"
  *     confirmation (markedLoadedAt) and settles the batch's DEACTIVATE-lane
  *     rows to SYNCED: Temix never echoes deactivated customers back in a
@@ -47,6 +54,7 @@ import {
   type TemixExportCustomer,
 } from '@/lib/temix';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { recordExport } from '@/lib/export-record';
 import { lockTemixQueue } from '@/lib/locks';
 import { omanDateISO } from '@/lib/tz';
 
@@ -114,13 +122,14 @@ async function withGuaranteeCounts(
 async function buildBatchWorkbook(
   customers: TemixExportCustomer[],
   batchId: string
-): Promise<{ base64: string; filename: string; rowCount: number }> {
+): Promise<{ bytes: Uint8Array; base64: string; filename: string; rowCount: number }> {
   const rows = buildTemixRows(customers, batchId);
   const wb = await buildWorkbook(rows, 'Temix Upload');
-  const buf = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
+  const bytes = new Uint8Array((await wb.xlsx.writeBuffer()) as ArrayBuffer);
   const stamp = omanDateISO(); // the Oman day: a UTC date named a batch made before 04:00 for the day before
   return {
-    base64: Buffer.from(new Uint8Array(buf)).toString('base64'),
+    bytes,
+    base64: Buffer.from(bytes).toString('base64'),
     filename: `temix-upload-${stamp}-${batchId.slice(-6)}.xlsx`,
     rowCount: rows.length,
   };
@@ -322,7 +331,20 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
   }, { timeout: 30_000, maxWait: 5_000 });
 
   const enriched = await withGuaranteeCounts(customers);
-  const wb = await buildBatchWorkbook(enriched, batch.id);
+  const { bytes, ...wb } = await buildBatchWorkbook(enriched, batch.id);
+  // Gap 14: the file itself — which customers it held, its name and the SHA-256
+  // of these bytes — recorded before they are returned. The batch is committed
+  // above; if this fails the Steward gets no file and the batch's Download (which
+  // records its own copy) hands it over instead.
+  await recordExport(env, {
+    kind: 'temix-batch',
+    filters: { batchId: batch.id, action: 'generate', heldBack },
+    customerIds: customers.map((c) => c.id),
+    bytes,
+    filename: wb.filename,
+    rowCount: wb.rowCount,
+    reason: `generate ${wb.rowCount} rows / ${customers.length} customers`,
+  });
   logger.info(
     { batchId: batch.id, customers: customers.length, rows: wb.rowCount, by: me.id },
     'temix.batch.generate'
@@ -372,19 +394,22 @@ export async function downloadTemixBatchAction(
       throw new ValidationError({ _form: why }, why);
     }
     const enriched = await withGuaranteeCounts(customers);
-    const wb = await buildBatchWorkbook(enriched, batch.id);
+    const { bytes, ...wb } = await buildBatchWorkbook(enriched, batch.id);
     // X-TEMIX-2: the ledger row is the only record that this copy left the
-    // building (Generate writes its own; a re-download wrote none). Written
+    // building (Generate records its own; a re-download wrote none). Written
     // before the bytes are returned and not swallowed, as every other export
-    // does (services/exports.ts): no ledger row, no file.
-    await writeAudit(null, await getAuditEnvelope(me.id), {
-      action: 'EXPORT',
-      entityType: 'TemixSyncBatch',
-      entityId: batch.id,
+    // does (services/exports.ts): no record, no file. Gap 14: through
+    // lib/export-record.ts, so it says which customers THIS copy held — it is
+    // rebuilt from current data, with held-back ones left out — and the SHA-256
+    // of its bytes, not only that the batch was fetched again.
+    await recordExport(await getAuditEnvelope(me.id), {
+      kind: 'temix-batch',
+      filters: { batchId: batch.id, action: 'redownload', heldBack },
+      customerIds: customers.map((c) => c.id),
+      bytes,
+      filename: wb.filename,
+      rowCount: wb.rowCount,
       reason: `redownload ${wb.rowCount} rows / ${customers.length} customers`,
-      ...(heldBack.length
-        ? { after: { heldBack: heldBack.slice(0, 100) } as unknown as Prisma.InputJsonValue }
-        : {}),
     });
     logger.info({ batchId, by: me.id, heldBack: heldBack.length }, 'temix.batch.redownload');
     return {

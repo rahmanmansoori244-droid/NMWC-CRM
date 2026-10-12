@@ -389,7 +389,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
     kind: 'free text',
     note: 'the filters and role scope of the export; the filtered list carries the search term typed, which can be a name or a phone',
   },
-  'ExportJob.kind': { subject: 'none', note: 'which export: customer-master, customers-filtered or field-updates' },
+  'ExportJob.kind': { subject: 'none', note: 'which export: customer-master, customers-filtered, field-updates or temix-batch (the Temix upload file, on Generate and on each re-download)' },
   'ExportJob.fileSha256': { subject: 'none', note: 'SHA-256 of the exact bytes sent: identifies the file, not its contents' },
   'ExportJob.filename': { subject: 'none', note: 'the file name the export was sent under (a date, never a customer)' },
   'ExportJob.customerIds': { subject: 'none', note: 'identifiers of the customers the file held; the file itself is never stored' },
@@ -459,6 +459,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
     note: 'what caused it (lib/change-context.ts): auth:logout, users:toggle:<id>, import:<batch>:Users!<row>, …',
   },
   'AuthEvent.txId': { subject: 'none', note: 'database transaction id: joins the AuditLog rows of the same change' },
+  'AuthEvent.dbUser': { subject: 'none', note: 'the database login that wrote a session cut-off (nmwc_app or the owner role)' },
 
   // ---- Dated history (gaps 5, 6, 17, 24; docs/HISTORY.md) ------------------
   // Append-only and kept for ever, so it holds NO personal value of a customer:

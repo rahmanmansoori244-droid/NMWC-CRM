@@ -180,4 +180,25 @@ describe('gap 14: every export is recorded with its file and customers before it
       expect(callArgs(src, 'recordExport'), f).toMatch(/customerIds/);
     }
   });
+
+  it('the Temix upload file is recorded on Generate and on every re-download, with the customers written to it', () => {
+    const src = read('services/temix.ts');
+    const generate = src.slice(src.indexOf('async function generateTemixBatchCore'), src.indexOf('export async function downloadTemixBatchAction'));
+    const redownload = src.slice(src.indexOf('export async function downloadTemixBatchAction'), src.indexOf('export async function markTemixBatchLoadedAction'));
+    for (const [label, body] of [
+      ['generate', generate],
+      ['re-download', redownload],
+    ] as const) {
+      const args = callArgs(body, 'recordExport');
+      expect(args, label).toContain("kind: 'temix-batch'");
+      expect(args, label).toMatch(/customerIds: customers\.map\(\(c\) => c\.id\)/);
+      expect(args, label).toMatch(/\bbytes\b/);
+      expect(args, label).toMatch(/batchId: batch\.id/);
+      // Recorded after the workbook is built (its bytes exist) and before they are returned.
+      expect(body.indexOf('await buildBatchWorkbook('), label).toBeLessThan(body.indexOf('await recordExport('));
+      expect(body.indexOf('await recordExport('), label).toBeLessThan(body.lastIndexOf('return {'));
+    }
+    // The re-download no longer writes a bare EXPORT row of its own.
+    expect(redownload).not.toMatch(/writeAudit\(/);
+  });
 });

@@ -21,10 +21,12 @@
 --      DATABASE (user_session_revoke_capture) whenever User.sessionsRevokedAt
 --      moves, with the change context's actor and source, so sign-out, disable,
 --      password reset, role or route change and an account-import row are all
---      recorded and none can be skipped.
+--      recorded and none can be skipped. A cut-off with no recorded cause is in
+--      the 'sql' report like a history row (section 5), with its login (dbUser).
 --
--- Everything is additive: two tables, four nullable columns, one function, six
--- triggers, CHECK constraints on the new columns only. No existing value changes.
+-- Everything is additive: two tables, four nullable columns, one new function
+-- and part B's report replaced, six triggers, CHECK constraints on the new
+-- columns only. No existing value changes.
 --
 -- COST: catalog-only ALTER on EditApproval (no rewrite; the CHECK scans a table of
 -- a few thousand rows), one new trigger on "User", and a GROUP BY over CronRun
@@ -67,6 +69,7 @@ CREATE TABLE "AuthEvent" (
     "actorId" TEXT,
     "source" TEXT,
     "txId" BIGINT,
+    "dbUser" TEXT,
 
     CONSTRAINT "AuthEvent_pkey" PRIMARY KEY ("id")
 );
@@ -76,6 +79,9 @@ CREATE INDEX "AuthEvent_at_idx" ON "AuthEvent"("at" DESC);
 CREATE INDEX "AuthEvent_userId_at_idx" ON "AuthEvent"("userId", "at" DESC);
 CREATE INDEX "AuthEvent_usernameHmac_at_idx" ON "AuthEvent"("usernameHmac", "at" DESC);
 CREATE INDEX "AuthEvent_kind_at_idx" ON "AuthEvent"("kind", "at" DESC);
+-- The 'sql' report reads only the session cut-offs written with no cause (part
+-- A's convention: a partial index, which Prisma does not model and ignores).
+CREATE INDEX "AuthEvent_unattributed_idx" ON "AuthEvent"("at") WHERE "kind" = 'SESSION_REVOKE' AND "source" = 'sql';
 
 -- The evidence says only what the code can say. A value outside these lists is a
 -- bug in the writer, refused loudly rather than kept for ever. (Prisma does not
@@ -142,9 +148,9 @@ BEGIN
   IF OLD."ownedRouteId" IS DISTINCT FROM NEW."ownedRouteId" THEN why := why || 'route'::text; END IF;
   IF OLD."username" IS DISTINCT FROM NEW."username" THEN why := why || 'username'::text; END IF;
   SELECT * INTO ctx FROM public.nmwc_change_ctx();
-  INSERT INTO public."AuthEvent" ("at", "kind", "userId", "reason", "actorId", "source", "txId")
+  INSERT INTO public."AuthEvent" ("at", "kind", "userId", "reason", "actorId", "source", "txId", "dbUser")
   VALUES (ctx.recorded_at, 'SESSION_REVOKE', NEW."id", NULLIF(array_to_string(why, ','), ''),
-          ctx.actor_id, ctx.source, ctx.tx_id);
+          ctx.actor_id, ctx.source, ctx.tx_id, ctx.db_user);
   RETURN NULL;
 END;
 $$;
@@ -181,6 +187,52 @@ BEGIN
     REVOKE UPDATE ON SEQUENCE "JobRunDay_id_seq", "AuthEvent_id_seq" FROM nmwc_app;
   END IF;
 END;
+$$;
+
+-- ── 5. The 'sql' report covers session cut-offs too (gap 24) ─────────────
+--
+-- A cut-off written with no change context is recorded under source 'sql', like
+-- a history row, and is reported the same way (/status, /api/health,
+-- scripts/ops/history-report.ts): by table, Oman day and login. Part B's report
+-- with one more branch.
+
+CREATE OR REPLACE FUNCTION nmwc_history_unattributed(p_since timestamp)
+RETURNS TABLE (table_name text, day date, db_user text, n bigint, sample_ids bigint[])
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+  SELECT u.table_name,
+         ((u.recorded_at AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Muscat')::date,
+         u.db_user,
+         count(*),
+         (array_agg(u.id ORDER BY u.id))[1:5]
+  FROM (
+    SELECT 'CustomerHistory'::text AS table_name, h."id" AS id, h."recordedAt" AS recorded_at, h."dbUser" AS db_user
+      FROM public."CustomerHistory" h WHERE h."sourceKind" = 'sql' AND h."recordedAt" >= p_since
+    UNION ALL
+    SELECT 'BranchHistory', h."id", h."recordedAt", h."dbUser"
+      FROM public."BranchHistory" h WHERE h."sourceKind" = 'sql' AND h."recordedAt" >= p_since
+    UNION ALL
+    SELECT 'UserHistory', h."id", h."recordedAt", h."dbUser"
+      FROM public."UserHistory" h WHERE h."sourceKind" = 'sql' AND h."recordedAt" >= p_since
+    UNION ALL
+    SELECT 'RouteOwnerHistory', h."id", h."recordedAt", h."dbUser"
+      FROM public."RouteOwnerHistory" h WHERE h."sourceKind" = 'sql' AND h."recordedAt" >= p_since
+    UNION ALL
+    SELECT 'RouteHistory', h."id", h."recordedAt", h."dbUser"
+      FROM public."RouteHistory" h WHERE h."sourceKind" = 'sql' AND h."recordedAt" >= p_since
+    UNION ALL
+    SELECT 'RegionHistory', h."id", h."recordedAt", h."dbUser"
+      FROM public."RegionHistory" h WHERE h."sourceKind" = 'sql' AND h."recordedAt" >= p_since
+    UNION ALL
+    SELECT 'AttachmentHistory', h."id", h."recordedAt", h."dbUser"
+      FROM public."AttachmentHistory" h WHERE h."sourceKind" = 'sql' AND h."recordedAt" >= p_since
+    UNION ALL
+    SELECT 'AuthEvent', e."id", e."at", COALESCE(e."dbUser", '?')
+      FROM public."AuthEvent" e WHERE e."kind" = 'SESSION_REVOKE' AND e."source" = 'sql' AND e."at" >= p_since
+  ) u
+  GROUP BY 1, 2, 3
+  ORDER BY 2 DESC, 1, 3
 $$;
 
 RESET lock_timeout;

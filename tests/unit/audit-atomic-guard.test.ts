@@ -33,10 +33,9 @@ const EVENT_ONLY: Record<string, { count: number; why: string }> = {
     count: 1,
     why: 'LOGOUT: bumps sessionsRevokedAt, then records the sign-out; the row is swallowed on purpose so signing out always works (B-04)',
   },
-  // The three exports (EXPORT rows) are no longer here: lib/export-record.ts
-  // writes each with its ExportJob row in one transaction (lossless paths, gap 14),
-  // still before the file is returned.
-  'services/temix.ts': { count: 1, why: 'EXPORT of a Temix batch re-download (X-TEMIX-2): records a read' },
+  // The exports (EXPORT rows) are no longer here — the Temix batch re-download
+  // included: lib/export-record.ts writes each with its ExportJob row in one
+  // transaction (lossless paths, gap 14), still before the file is returned.
   'app/api/photos/[id]/route.ts': {
     count: 1,
     why: 'PHOTO_VIEW (data audit 2026-10-10 gap 2): records a read, nothing else is written; a CR or guarantee is not served without its row, any other photo is served and the lost row reported (owner decisions 2026-10-11)',

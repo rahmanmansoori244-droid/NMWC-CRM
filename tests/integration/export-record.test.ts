@@ -7,6 +7,8 @@
  *     (filters and role scope, customers, file name, SHA-256 of the bytes they
  *     return) and an EXPORT audit row keyed by it, in one transaction, before
  *     the bytes are returned;
+ *   - so does a Temix batch re-download (the largest export: names, phones, CR
+ *     numbers, addresses, credit limits), naming the customers that copy held;
  *   - ExportJob refuses an update and a delete outside the owner's maintenance
  *     window (it is append-only now).
  *
@@ -44,6 +46,7 @@ describe.skipIf(!ENABLED)('every export is recorded with its customers and its f
     b3: `${sfx}-b3`,
   };
   const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
+  const temixBatchIds: string[] = [];
   const write = <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>) =>
     withChangeContext(db, { actorId: ids.steward, source: src.test('export-record') }, fn);
 
@@ -87,6 +90,8 @@ describe.skipIf(!ENABLED)('every export is recorded with its customers and its f
     try {
       await purgeAuditLog(db, { where: { actorId: ids.steward } });
       await purgeExportJobs(db, { where: { requestedById: ids.steward } });
+      await db.temixSyncBatch.deleteMany({ where: { id: { in: temixBatchIds } } });
+      await db.rateLimit.deleteMany({ where: { key: `temix-download:${ids.steward}` } });
       await write(async (tx) => {
         await tx.branch.deleteMany({ where: { id: { in: [ids.b1, ids.b2, ids.b3] } } });
         await tx.customer.deleteMany({ where: { id: { in: [ids.c1, ids.c2] } } });
@@ -143,6 +148,37 @@ describe.skipIf(!ENABLED)('every export is recorded with its customers and its f
     });
     expect(job).toMatchObject({ filename: res.data.filename, fileSha256: sha(bytes), rowCount: 1, customerIds: [ids.c1] });
     expect(job.filters).toMatchObject({ urlParams: `q=C1${SFX}`, scope: { role: 'STEWARD' } });
+  });
+
+  it('a Temix batch re-download: its record names the customers this copy held, its file and the SHA-256 of the bytes returned', async () => {
+    // A batch of the two synthetic customers, made here (Generate would claim the
+    // whole shared queue): only the re-download is exercised.
+    const batch = await write((tx) =>
+      tx.temixSyncBatch.create({
+        data: { createdById: ids.steward, rowCount: 2, customerIds: [ids.c1, ids.c2], status: 'DONE' },
+      })
+    );
+    temixBatchIds.push(batch.id);
+    await db.rateLimit.deleteMany({ where: { key: `temix-download:${ids.steward}` } });
+    const temix = await import('@/services/temix');
+    const fd = new FormData();
+    fd.set('batchId', batch.id);
+    const res = await temix.downloadTemixBatchAction(fd);
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const bytes = Buffer.from(res.data.base64, 'base64');
+    const job = await db.exportJob.findFirstOrThrow({
+      where: { requestedById: ids.steward, kind: 'temix-batch' },
+      orderBy: { startedAt: 'desc' },
+    });
+    expect(job).toMatchObject({ filename: res.data.filename, fileSha256: sha(bytes), rowCount: res.data.rowCount });
+    expect([...job.customerIds].sort()).toEqual([ids.c1, ids.c2].sort());
+    expect(job.filters).toMatchObject({ batchId: batch.id, action: 'redownload', heldBack: [] });
+    const audit = await db.auditLog.findFirstOrThrow({ where: { action: 'EXPORT', entityId: job.id } });
+    expect(audit).toMatchObject({ entityType: 'Export', reason: `redownload ${res.data.rowCount} rows / 2 customers` });
+    expect(audit.source).toBe('export:temix-batch');
+    // No bare EXPORT row keyed by the batch: the record is the job's.
+    expect(await db.auditLog.count({ where: { action: 'EXPORT', entityId: batch.id } })).toBe(0);
   });
 
   it('an export record cannot be changed or removed outside the owner’s maintenance window', async () => {

@@ -459,12 +459,19 @@ function HistoryCard({ report }: { report: HistoryReport | null }) {
         </p>
       ) : (
         <div className="mt-2 space-y-1 text-xs">
-          {report.fromApp > 0 && (
-            <p>
-              {report.fromApp} by the application ({RUNTIME_ROLE}): a screen or job that does not say why it changed the
-              record — a defect to report.
-            </p>
-          )}
+          {report.fromApp > 0 &&
+            (report.appRole === RUNTIME_ROLE ? (
+              <p>
+                {report.fromApp} by the application ({RUNTIME_ROLE}): a screen or job that does not say why it changed
+                the record — a defect to report.
+              </p>
+            ) : (
+              <p>
+                {report.fromApp} by the application&apos;s login ({report.appRole}): a screen or job that does not say why
+                it changed the record — a defect to report — or a change typed by hand under the same login, which this
+                database cannot tell apart while the application still connects as the owner.
+              </p>
+            ))}
           {report.fromOther > 0 && (
             <p>
               {report.fromOther} by another database login: a change typed by hand, or a script that does not name its

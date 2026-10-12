@@ -11,7 +11,8 @@
  *     record's previous row, and refused in the future;
  *   - a hard delete leaves a DELETE tombstone with the last values;
  *   - a manager's region `set` (DELETE then INSERT) is one row with the final set;
- *   - a route hand-over is a release then a take on the route's owner chain;
+ *   - a new route's owner chain starts with "nobody" (its CREATE row); a route
+ *     hand-over is a release then a take on that chain;
  *   - the history refuses UPDATE, DELETE, TRUNCATE and a direct INSERT, except in
  *     the owner's maintenance window — which is what fixture clean-up uses;
  *   - an AuditLog row carries the same source and transaction id.
@@ -208,9 +209,23 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
       changeKind: 'CREATE',
       regionId: ids.region,
     });
-    // A salesman created holding a route: the route's owner chain starts with him.
+    // A new route's owner chain starts with the route — nobody holds it — and a
+    // salesman created holding it takes it in the same instant (id orders them).
     const owners = await rows('routeOwnerHistory', { routeId: ids.route1 });
-    expect(owners.map((o) => [o.changeKind, o.ownerId])).toEqual([['CREATE', ids.s1]]);
+    expect(owners.map((o) => [o.changeKind, o.ownerId])).toEqual([
+      ['CREATE', null],
+      ['UPDATE', ids.s1],
+    ]);
+    expect(owners[0]!.validFrom.getTime()).toBe(owners[1]!.validFrom.getTime());
+    expect(owners[0]).toMatchObject({ source: TEST_SOURCE, actorId: ids.actor });
+    // A route nobody took: its chain is the one "nobody" row, so "who held it" answers nobody, not nothing.
+    expect((await rows('routeOwnerHistory', { routeId: ids.route2 })).map((o) => [o.changeKind, o.ownerId])).toEqual([
+      ['CREATE', null],
+    ]);
+    const [held] = await db.$queryRaw<
+      Array<{ owner_id: string | null }>
+    >`SELECT owner_id FROM nmwc_route_owner_on(${ids.route2}, CURRENT_DATE + 1)`;
+    expect(held).toEqual({ owner_id: null });
   });
 
   it('a watched change is one row naming the field; an unwatched or no-op update writes nothing', async () => {
@@ -401,9 +416,9 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
       ctx(src.users('account', ids.s2))
     );
     const owners = await rows('routeOwnerHistory', { routeId: ids.route1 });
-    expect(owners.map((o) => o.ownerId)).toEqual([ids.s1, null, ids.s2]);
-    expect(owners[1]!.validFrom.getTime()).toBe(owners[2]!.validFrom.getTime());
-    expect(owners[2]!.source).toBe(`users:account:${ids.s2}`);
+    expect(owners.map((o) => o.ownerId)).toEqual([null, ids.s1, null, ids.s2]);
+    expect(owners[2]!.validFrom.getTime()).toBe(owners[3]!.validFrom.getTime());
+    expect(owners[3]!.source).toBe(`users:account:${ids.s2}`);
     const [o] = await db.$queryRaw<
       Array<{ owner_id: string | null }>
     >`SELECT owner_id FROM nmwc_route_owner_on(${ids.route1}, CURRENT_DATE + 1)`;

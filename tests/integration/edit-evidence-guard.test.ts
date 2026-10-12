@@ -6,6 +6,10 @@
  *   - once a CustomerEdit has left DRAFT / NEEDS_CORRECTION, what it asked for,
  *     who sent it and when, its chain, its gate and its credit figures can no
  *     longer change; its state, decision, SLA clock and customer still move;
+ *   - but its state only forward: a decided request is never reopened, a sent
+ *     one goes back to its sender only as NEEDS_CORRECTION (never a DRAFT), and
+ *     an open one is approved only once sent — so the freeze cannot be stepped
+ *     around by reopening, rewriting and closing again;
  *   - a DRAFT or a request sent back is still free, so a new-customer resubmit
  *     works;
  *   - a request cannot be deleted or truncated outside the owner's maintenance
@@ -13,7 +17,8 @@
  *   - a shop hard-deleted by the owner nulls a request's branchId (its FK), and
  *     that is allowed: the shop is gone, the request's ledger row keeps its id;
  *   - originalCustomerId is set by the database from the first customer, and a
- *     merge repointing customerId does not move it;
+ *     merge repointing customerId does not move it; one the back-fill could not
+ *     know (NULL) stays unknown when the request is repointed;
  *   - the runtime role cannot rewrite or delete a sent request (when NMWC_APP_URL).
  *
  *   RUN_LOSSLESS=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/edit-evidence-guard.test.ts
@@ -139,6 +144,30 @@ describe.skipIf(!ENABLED)('a sent request is evidence (gap 19)', () => {
     await expect(db.customerEdit.update({ where: { id: e.id }, data: { fieldChanges: [] } })).rejects.toThrow(REFUSED);
   });
 
+  it('the state moves only forward, so what was sent cannot be reopened, rewritten and closed again', async () => {
+    // A decided request stays decided.
+    const decided = await newEdit({ customerId: ids.c1, state: 'APPROVED', submittedAt: new Date() });
+    for (const state of ['SUBMITTED', 'NEEDS_CORRECTION', 'DRAFT', 'REJECTED'] as const) {
+      await expect(db.customerEdit.update({ where: { id: decided.id }, data: { state } }), state).rejects.toThrow(REFUSED);
+    }
+    // A sent one goes back to its sender only as a send-back, which is open again,
+    // and can be re-sent and decided; never as a draft.
+    const sent = await newEdit({ customerId: ids.c1, state: 'SUBMITTED', submittedAt: new Date(), cycle: 1 });
+    await expect(db.customerEdit.update({ where: { id: sent.id }, data: { state: 'DRAFT' } })).rejects.toThrow(REFUSED);
+    await db.customerEdit.update({ where: { id: sent.id }, data: { state: 'NEEDS_CORRECTION' } });
+    await db.customerEdit.update({ where: { id: sent.id }, data: { fieldChanges: [], cycle: 2 } });
+    await db.customerEdit.update({ where: { id: sent.id }, data: { state: 'SUBMITTED', submittedAt: new Date() } });
+    await db.customerEdit.update({ where: { id: sent.id }, data: { state: 'APPROVED' } });
+    await expect(db.customerEdit.update({ where: { id: sent.id }, data: { state: 'REJECTED' } })).rejects.toThrow(REFUSED);
+    // An open one is approved only once sent; withdrawing it is allowed.
+    const open = await newEdit({ state: 'DRAFT', process: 'CREATE', cycle: 1 });
+    await expect(db.customerEdit.update({ where: { id: open.id }, data: { state: 'APPROVED' } })).rejects.toThrow(REFUSED);
+    await db.customerEdit.update({ where: { id: open.id }, data: { state: 'REJECTED' } });
+    // The owner's maintenance window gets through, as for the rest of the evidence.
+    await withAuditMaintenance(db, (tx) => tx.customerEdit.update({ where: { id: decided.id }, data: { state: 'REJECTED' } }));
+    expect((await db.customerEdit.findUniqueOrThrow({ where: { id: decided.id } })).state).toBe('REJECTED');
+  });
+
   it('a draft and a request sent back stay open: a new-customer resubmit rewrites its round', async () => {
     const d = await newEdit({ state: 'DRAFT', process: 'CREATE', cycle: 1 });
     await db.customerEdit.update({ where: { id: d.id }, data: { fieldChanges: [], cycle: 1 } });
@@ -178,6 +207,26 @@ describe.skipIf(!ENABLED)('a sent request is evidence (gap 19)', () => {
     expect((await db.customerEdit.findUniqueOrThrow({ where: { id: c.id } })).originalCustomerId).toBeNull();
     await db.customerEdit.update({ where: { id: c.id }, data: { state: 'APPROVED', customerId: ids.c2 } });
     expect((await db.customerEdit.findUniqueOrThrow({ where: { id: c.id } })).originalCustomerId).toBe(ids.c2);
+    // One whose first customer the back-fill could not know (an earlier merge
+    // may have repointed it) stays unknown: a later repoint is not its first customer.
+    const unknown = await withAuditMaintenance(db, (tx) =>
+      tx.customerEdit.create({
+        data: {
+          target: 'CUSTOMER',
+          submittedById: ids.user,
+          customerId: ids.c1,
+          originalCustomerId: null,
+          state: 'REJECTED',
+          submittedAt: new Date(),
+          fieldChanges: [],
+          attachmentChanges: [],
+        },
+      })
+    );
+    editIds.push(unknown.id);
+    expect(unknown.originalCustomerId).toBeNull();
+    await db.customerEdit.update({ where: { id: unknown.id }, data: { customerId: ids.c2 } });
+    expect((await db.customerEdit.findUniqueOrThrow({ where: { id: unknown.id } })).originalCustomerId).toBeNull();
   });
 
   const APP_URL = process.env.NMWC_APP_URL ?? '';

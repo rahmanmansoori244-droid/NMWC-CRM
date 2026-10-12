@@ -91,8 +91,10 @@ export const src = {
   /** A request (CustomerEdit): submit, draft, approval step, final apply, reject, close, reactivation. */
   edit: (editId: string) => join('edit', editId),
   /**
-   * A customer-master import row, by lane. `row` is the sheet row number. Without
-   * a lane: the row's group before its lane is decided (reads only).
+   * A customer-master import row, by lane. `row` is the sheet row number. A group
+   * opens under its first row and the lane that row most likely takes, renamed
+   * before any write when the lane decided under the lock differs. Without a
+   * lane: kept for callers outside the promote (none today).
    */
   import: (batchId: string, row: number | string, lane?: ImportLane) =>
     lane ? join('import', batchId, row, lane) : join('import', batchId, row),

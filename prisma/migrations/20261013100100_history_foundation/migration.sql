@@ -48,8 +48,10 @@
 -- COST: about 31k baseline rows on production (14,190 customers, 16,218 shops,
 -- users, 45 routes, 9 regions), 1 to 3 s on Neon. Writes to the five master
 -- tables wait for the whole migration (SHARE ROW EXCLUSIVE). lock_timeout makes
--- a busy table fail the deploy fast and retryably instead of queueing behind it.
--- Deploy outside working hours.
+-- a busy table fail the deploy fast instead of queueing behind it; the whole
+-- migration then rolls back, but Prisma records it as failed and refuses the
+-- next deploy until it is marked rolled back (docs/OPERATIONS.md §5, "A
+-- migration refused by a lock"). Deploy outside working hours.
 --
 -- Everything here is additive: new tables, columns, functions, triggers and
 -- indexes. No existing row is changed.
@@ -584,6 +586,19 @@ BEGIN
     "routeId", "code", "name", "regionId", "isActive")
   VALUES (k, f, GREATEST(ctx.valid_from, prev), ctx.recorded_at, ctx.effective_requested, ctx.actor_id, ctx.source, ctx.source_kind, ctx.tx_id, ctx.db_user,
     r."id", r."code", r."name", r."regionId", r."isActive");
+  -- A new route's holder chain starts with the route: nobody holds it until a
+  -- salesman takes it. Without this row, a shop moved onto a new route before
+  -- anyone took it had no recorded holder at all for that stretch, and "which
+  -- routes served X" lost the stretch. A take in the same transaction (the User
+  -- trigger) follows with the same validFrom and a higher id.
+  IF TG_OP = 'INSERT' THEN
+    SELECT h."validFrom" INTO prev FROM public."RouteOwnerHistory" h
+     WHERE h."routeId" = r."id" ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1;
+    INSERT INTO public."RouteOwnerHistory" ("changeKind", "changedFields", "validFrom", "recordedAt", "effectiveRequested", "actorId", "source", "sourceKind", "txId", "dbUser",
+      "routeId", "ownerId")
+    VALUES ('CREATE', '{}', GREATEST(ctx.valid_from, prev), ctx.recorded_at, ctx.effective_requested, ctx.actor_id, ctx.source, ctx.source_kind, ctx.tx_id, ctx.db_user,
+      r."id", NULL);
+  END IF;
   RETURN NULL;
 END;
 $$;
@@ -632,6 +647,17 @@ $$;
 -- runs in a transaction of one cause (a user-admin action, or one account-import
 -- row). A user deleted in the same transaction is skipped: his tombstone is the
 -- User trigger's.
+--
+-- Both this and the User trigger write a FULL snapshot (role, route, regions)
+-- from what they can see. A join-row change takes only FOR KEY SHARE on the User
+-- row, which does not wait for a concurrent non-key UPDATE of it (a Region delete
+-- cascading here, or SQL on _ManagerRegions, while the user is edited): each
+-- would then miss the other's uncommitted row and the newest snapshot would carry
+-- a stale role, route or region set. So this takes the User row lock first (FOR
+-- NO KEY UPDATE, what an UPDATE of the row takes) and reads after it: the two
+-- writers are serialised, and the later one, reading under READ COMMITTED after
+-- the wait, sees the earlier one's row. The application's own region changes
+-- update the User row in the same statement, so they already hold that lock.
 CREATE OR REPLACE FUNCTION nmwc_history_manager_regions() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
@@ -647,7 +673,7 @@ BEGIN
     RAISE EXCEPTION 'nmwc_history_manager_regions() runs only on "_ManagerRegions"';
   END IF;
   uid := CASE WHEN TG_OP = 'DELETE' THEN OLD."B" ELSE NEW."B" END;
-  SELECT * INTO u FROM public."User" WHERE "id" = uid;
+  SELECT * INTO u FROM public."User" WHERE "id" = uid FOR NO KEY UPDATE;
   IF NOT FOUND THEN
     RETURN NULL;
   END IF;
@@ -854,11 +880,18 @@ $$;
 --                          record with validFrom <= p_at; a DELETE tombstone drops it.
 --   *_on(d date)           the state at the END of that Oman day: a change made or
 --                          loaded at any time on d counts for d.
---   inferred               the answer rests on a BASELINE row for a time before the
---                          baseline was recorded: true "as found when history
---                          began", not a record of what it was then.
+--   inferred               the answer rests on a row a migration wrote (the
+--                          BASELINE, or a later migration's back-fill) for a time
+--                          before that row was recorded: "as found when it was
+--                          written", not a record of what it was then.
 --   *_intervals(id)        every row of one record with valid_to = the next row's
 --                          validFrom (null = still current).
+--   merged_into_id         the customer a duplicate merge folded this one into.
+--                          The column arrives with 20261014100000_lossless_paths,
+--                          which replaces these functions to fill it; null here.
+--   note                   on the two "who served customer X" answers: why a row
+--                          is not one of X's shops (each function says); null on
+--                          a shop's own row.
 
 CREATE OR REPLACE FUNCTION nmwc_day_end(d date) RETURNS timestamp
 LANGUAGE sql STABLE
@@ -883,7 +916,7 @@ AS $$
          h."coolersCount", h."standsCount", h."emptyBottlesCount", h."equipmentConfirmed",
          h."hasGps", h."shopPhotoId", h."signboardPhotoId",
          h."validFrom", h."id", h."changeKind", h."source", h."actorId",
-         (h."changeKind" = 'BASELINE' AND p_at < h."recordedAt")
+         ((h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND p_at < h."recordedAt")
   FROM (
     SELECT DISTINCT ON (x."branchId") x.*
     FROM public."BranchHistory" x
@@ -911,6 +944,7 @@ CREATE OR REPLACE FUNCTION nmwc_customers_at(p_at timestamp)
 RETURNS TABLE (
   customer_id text, nmwc_code text, payment_terms "PaymentTerms", credit_limit numeric, payment_term_days integer,
   temix_code text, status "CustomerStatus", channel_id text, sub_channel_id text, cr_photo_id text, deleted_at timestamp,
+  merged_into_id text,
   valid_from timestamp, history_id bigint, change_kind "HistoryChange", source text, actor_id text, inferred boolean
 )
 LANGUAGE sql STABLE
@@ -918,8 +952,9 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
   SELECT h."customerId", h."nmwcCode", h."paymentTerms", h."creditLimit", h."paymentTermDays",
          h."temixCode", h."status", h."channelId", h."subChannelId", h."crPhotoId", h."deletedAt",
+         NULL::text,
          h."validFrom", h."id", h."changeKind", h."source", h."actorId",
-         (h."changeKind" = 'BASELINE' AND p_at < h."recordedAt")
+         ((h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND p_at < h."recordedAt")
   FROM (
     SELECT DISTINCT ON (x."customerId") x.*
     FROM public."CustomerHistory" x
@@ -933,6 +968,7 @@ CREATE OR REPLACE FUNCTION nmwc_customers_on(d date)
 RETURNS TABLE (
   customer_id text, nmwc_code text, payment_terms "PaymentTerms", credit_limit numeric, payment_term_days integer,
   temix_code text, status "CustomerStatus", channel_id text, sub_channel_id text, cr_photo_id text, deleted_at timestamp,
+  merged_into_id text,
   valid_from timestamp, history_id bigint, change_kind "HistoryChange", source text, actor_id text, inferred boolean
 )
 LANGUAGE sql STABLE
@@ -951,7 +987,7 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
   SELECT h."userId", h."username", h."role", h."isActive", h."supervisorId", h."ownedRouteId", h."regionIds",
          h."validFrom", h."id", h."changeKind", h."source", h."actorId",
-         (h."changeKind" = 'BASELINE' AND p_at < h."recordedAt")
+         ((h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND p_at < h."recordedAt")
   FROM (
     SELECT DISTINCT ON (x."userId") x.*
     FROM public."UserHistory" x
@@ -982,7 +1018,7 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
   SELECT h."routeId", h."code", h."name", h."regionId", h."isActive",
          h."validFrom", h."id", h."changeKind", h."source", h."actorId",
-         (h."changeKind" = 'BASELINE' AND p_at < h."recordedAt")
+         ((h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND p_at < h."recordedAt")
   FROM (
     SELECT DISTINCT ON (x."routeId") x.*
     FROM public."RouteHistory" x
@@ -1002,7 +1038,7 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
   SELECT h."routeId", h."ownerId",
          h."validFrom", h."id", h."changeKind", h."source", h."actorId",
-         (h."changeKind" = 'BASELINE' AND p_at < h."recordedAt")
+         ((h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND p_at < h."recordedAt")
   FROM (
     SELECT DISTINCT ON (x."routeId") x.*
     FROM public."RouteOwnerHistory" x
@@ -1027,11 +1063,19 @@ $$;
 -- route then (his username as it was: route usernames are retired on hand-over).
 -- A shop is the customer's on d if its latest row on d names the customer — a shop
 -- merged away before d is the winner's, not X's.
+--
+-- No row at all means no shop of X was live on d, as recorded. When that cannot
+-- be known — X's own row on d is its first page (or a migration's back-fill) for
+-- a time before it was written, and no shop names X then — one row with no shop
+-- says so instead (note 'no-shop-recorded', inferred): its shops may have been
+-- moved or merged away before history began. An empty answer for such a day
+-- would read as "nobody served it".
 CREATE OR REPLACE FUNCTION nmwc_customer_service_on(p_customer_id text, d date)
 RETURNS TABLE (
   branch_id text, branch_code text, route_id text, route_code text, region_id text, region_code text,
   day_of_visit "DayOfWeek", branch_status "CustomerStatus",
-  salesman_id text, salesman_username text, salesman_active boolean, inferred boolean
+  salesman_id text, salesman_username text, salesman_active boolean, inferred boolean,
+  merged_into_id text, note text
 )
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, public, pg_temp
@@ -1055,34 +1099,52 @@ AS $$
       LIMIT 1
     ) x
     WHERE x."customerId" = p_customer_id AND x."changeKind" <> 'DELETE' AND x."deletedAt" IS NULL
+  ),
+  served AS (
+    SELECT b."branchId" AS shop_id, b."branchCode" AS shop_code, b."routeId" AS shop_route_id, rt.code AS shop_route_code,
+           b."regionId" AS shop_region_id, rg.code AS shop_region_code,
+           b."dayOfVisit" AS shop_day, b."status" AS shop_status,
+           ow."ownerId" AS holder_id, us."username" AS holder_username, us."isActive" AS holder_active,
+           (((b."changeKind" = 'BASELINE' OR b."sourceKind" = 'migration') AND t.at_ts < b."recordedAt")
+            OR ((ow."changeKind" = 'BASELINE' OR ow."sourceKind" = 'migration') AND t.at_ts < ow."recordedAt")
+            OR ((us."changeKind" = 'BASELINE' OR us."sourceKind" = 'migration') AND t.at_ts < us."recordedAt")) IS TRUE AS shop_inferred
+    FROM b
+    CROSS JOIN t
+    LEFT JOIN LATERAL (
+      SELECT h."code" FROM public."RouteHistory" h WHERE h."routeId" = b."routeId"
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) rt ON true
+    LEFT JOIN LATERAL (
+      SELECT h."code" FROM public."RegionHistory" h WHERE h."regionId" = b."regionId"
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) rg ON true
+    LEFT JOIN LATERAL (
+      SELECT h.* FROM public."RouteOwnerHistory" h
+      WHERE h."routeId" = b."routeId" AND h."validFrom" <= t.at_ts
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) ow ON true
+    LEFT JOIN LATERAL (
+      SELECT h.* FROM public."UserHistory" h
+      WHERE h."userId" = ow."ownerId" AND h."validFrom" <= t.at_ts
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) us ON true
+  ),
+  -- The customer's own row then.
+  c AS (
+    SELECT h.* FROM public."CustomerHistory" h, t
+    WHERE h."customerId" = p_customer_id AND h."validFrom" <= t.at_ts
+    ORDER BY h."validFrom" DESC, h."id" DESC
+    LIMIT 1
   )
-  SELECT b."branchId", b."branchCode", b."routeId", rt.code, b."regionId", rg.code,
-         b."dayOfVisit", b."status",
-         ow."ownerId", us."username", us."isActive",
-         ((b."changeKind" = 'BASELINE' AND t.at_ts < b."recordedAt")
-          OR (ow."changeKind" = 'BASELINE' AND t.at_ts < ow."recordedAt")
-          OR (us."changeKind" = 'BASELINE' AND t.at_ts < us."recordedAt")) IS TRUE
-  FROM b
+  SELECT s.*, NULL::text, NULL::text FROM served s
+  UNION ALL
+  SELECT NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, true, NULL, 'no-shop-recorded'
+  FROM c
   CROSS JOIN t
-  LEFT JOIN LATERAL (
-    SELECT h."code" FROM public."RouteHistory" h WHERE h."routeId" = b."routeId"
-    ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
-  ) rt ON true
-  LEFT JOIN LATERAL (
-    SELECT h."code" FROM public."RegionHistory" h WHERE h."regionId" = b."regionId"
-    ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
-  ) rg ON true
-  LEFT JOIN LATERAL (
-    SELECT h.* FROM public."RouteOwnerHistory" h
-    WHERE h."routeId" = b."routeId" AND h."validFrom" <= t.at_ts
-    ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
-  ) ow ON true
-  LEFT JOIN LATERAL (
-    SELECT h.* FROM public."UserHistory" h
-    WHERE h."userId" = ow."ownerId" AND h."validFrom" <= t.at_ts
-    ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
-  ) us ON true
-  ORDER BY b."branchCode"
+  WHERE c."changeKind" <> 'DELETE'
+    AND (c."changeKind" = 'BASELINE' OR c."sourceKind" = 'migration') AND t.at_ts < c."recordedAt"
+    AND NOT EXISTS (SELECT 1 FROM served)
+  ORDER BY 2
 $$;
 
 -- A customer's terms at the end of day d (cash or credit, limit, days, Temix
@@ -1091,16 +1153,17 @@ $$;
 CREATE OR REPLACE FUNCTION nmwc_customer_terms_on(p_customer_id text, d date)
 RETURNS TABLE (
   payment_terms "PaymentTerms", credit_limit numeric, payment_term_days integer, temix_code text,
-  status "CustomerStatus", channel_id text, sub_channel_id text, deleted_at timestamp,
+  status "CustomerStatus", channel_id text, sub_channel_id text, deleted_at timestamp, merged_into_id text,
   valid_from timestamp, source text, actor_id text, inferred boolean
 )
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, public, pg_temp
 AS $$
   SELECT x."paymentTerms", x."creditLimit", x."paymentTermDays", x."temixCode",
-         x."status", x."channelId", x."subChannelId", x."deletedAt",
+         x."status", x."channelId", x."subChannelId", x."deletedAt", NULL::text,
          x."validFrom", x."source", x."actorId",
-         (x."changeKind" = 'BASELINE' AND public.nmwc_day_end(d) - interval '1 millisecond' < x."recordedAt")
+         ((x."changeKind" = 'BASELINE' OR x."sourceKind" = 'migration')
+          AND public.nmwc_day_end(d) - interval '1 millisecond' < x."recordedAt")
   FROM (
     SELECT h.* FROM public."CustomerHistory" h
     WHERE h."customerId" = p_customer_id AND h."validFrom" <= public.nmwc_day_end(d) - interval '1 millisecond'
@@ -1110,7 +1173,9 @@ AS $$
   WHERE x."changeKind" <> 'DELETE'
 $$;
 
--- Who held route R at the end of day d (no owner_id: nobody did).
+-- Who held route R at the end of day d (no owner_id: nobody did). A route
+-- created after the baseline has a holder row from its creation (nobody, until
+-- a salesman takes it), so this answers "nobody" rather than nothing.
 CREATE OR REPLACE FUNCTION nmwc_route_owner_on(p_route_id text, d date)
 RETURNS TABLE (
   owner_id text, owner_username text, owner_active boolean,
@@ -1127,8 +1192,8 @@ AS $$
     LIMIT 1
   )
   SELECT o."ownerId", us."username", us."isActive", o."validFrom", o."source", o."actorId",
-         ((o."changeKind" = 'BASELINE' AND t.at_ts < o."recordedAt")
-          OR (us."changeKind" = 'BASELINE' AND t.at_ts < us."recordedAt")) IS TRUE
+         (((o."changeKind" = 'BASELINE' OR o."sourceKind" = 'migration') AND t.at_ts < o."recordedAt")
+          OR ((us."changeKind" = 'BASELINE' OR us."sourceKind" = 'migration') AND t.at_ts < us."recordedAt")) IS TRUE
   FROM o
   CROSS JOIN t
   LEFT JOIN LATERAL (
@@ -1159,7 +1224,7 @@ AS $$
   SELECT u."username", u."role", u."isActive", u."supervisorId", sv."username",
          u."regionIds", u."ownedRouteId", rt."code", rt."regionId",
          u."validFrom", u."source", u."actorId",
-         (u."changeKind" = 'BASELINE' AND t.at_ts < u."recordedAt")
+         ((u."changeKind" = 'BASELINE' OR u."sourceKind" = 'migration') AND t.at_ts < u."recordedAt")
   FROM u
   CROSS JOIN t
   LEFT JOIN LATERAL (
@@ -1179,6 +1244,8 @@ $$;
 -- valid_to equals its valid_from was superseded in the same instant (a create
 -- and an update in one transaction); it is kept, so the first row is always the
 -- record's birth (CREATE, or BASELINE for one that existed before history began).
+-- from_inferred: the row was written by a migration for a time before it ran, so
+-- its values are as found then.
 CREATE OR REPLACE FUNCTION nmwc_branch_intervals(p_branch_id text)
 RETURNS TABLE (
   history_id bigint, change_kind "HistoryChange", valid_from timestamp, valid_to timestamp,
@@ -1192,7 +1259,8 @@ AS $$
   SELECT h."id", h."changeKind", h."validFrom", lead(h."validFrom") OVER w,
          h."recordedAt", h."effectiveRequested", h."changedFields", h."source", h."actorId",
          h."customerId", h."branchCode", h."routeId", h."regionId", h."dayOfVisit",
-         h."status", h."deletedAt", h."changeKind" = 'BASELINE'
+         h."status", h."deletedAt",
+         (h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND h."validFrom" < h."recordedAt"
   FROM public."BranchHistory" h
   WHERE h."branchId" = p_branch_id
   WINDOW w AS (ORDER BY h."validFrom", h."id")
@@ -1204,7 +1272,8 @@ RETURNS TABLE (
   history_id bigint, change_kind "HistoryChange", valid_from timestamp, valid_to timestamp,
   recorded_at timestamp, effective_requested timestamp, changed_fields text[], source text, actor_id text,
   nmwc_code text, payment_terms "PaymentTerms", credit_limit numeric, payment_term_days integer, temix_code text,
-  status "CustomerStatus", channel_id text, sub_channel_id text, deleted_at timestamp, from_inferred boolean
+  status "CustomerStatus", channel_id text, sub_channel_id text, deleted_at timestamp, merged_into_id text,
+  from_inferred boolean
 )
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, public, pg_temp
@@ -1212,7 +1281,8 @@ AS $$
   SELECT h."id", h."changeKind", h."validFrom", lead(h."validFrom") OVER w,
          h."recordedAt", h."effectiveRequested", h."changedFields", h."source", h."actorId",
          h."nmwcCode", h."paymentTerms", h."creditLimit", h."paymentTermDays", h."temixCode",
-         h."status", h."channelId", h."subChannelId", h."deletedAt", h."changeKind" = 'BASELINE'
+         h."status", h."channelId", h."subChannelId", h."deletedAt", NULL::text,
+         (h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND h."validFrom" < h."recordedAt"
   FROM public."CustomerHistory" h
   WHERE h."customerId" = p_customer_id
   WINDOW w AS (ORDER BY h."validFrom", h."id")
@@ -1232,7 +1302,7 @@ AS $$
   SELECT h."id", h."changeKind", h."validFrom", lead(h."validFrom") OVER w,
          h."recordedAt", h."effectiveRequested", h."changedFields", h."source", h."actorId",
          h."username", h."role", h."isActive", h."supervisorId", h."ownedRouteId", h."regionIds",
-         h."changeKind" = 'BASELINE'
+         (h."changeKind" = 'BASELINE' OR h."sourceKind" = 'migration') AND h."validFrom" < h."recordedAt"
   FROM public."UserHistory" h
   WHERE h."userId" = p_user_id
   WINDOW w AS (ORDER BY h."validFrom", h."id")
@@ -1249,7 +1319,8 @@ RETURNS TABLE (
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, public, pg_temp
 AS $$
-  SELECT o."ownerId", us."username", o."validFrom", o.valid_to, o."source", o."actorId", o."changeKind" = 'BASELINE'
+  SELECT o."ownerId", us."username", o."validFrom", o.valid_to, o."source", o."actorId",
+         (o."changeKind" = 'BASELINE' OR o."sourceKind" = 'migration') AND o."validFrom" < o."recordedAt"
   FROM (
     SELECT h.*, lead(h."validFrom") OVER (ORDER BY h."validFrom", h."id") AS valid_to
     FROM public."RouteOwnerHistory" h
@@ -1270,12 +1341,26 @@ $$;
 -- "Which routes served customer X, from when to when": every shop that ever
 -- belonged to the customer, its unbroken stretches on one route while it was
 -- live and the customer's (gaps and islands), each cut by who held the route
--- (tsrange intersection). from_inferred: the stretch begins on a baseline row,
--- so its start is the record's createdAt as found, not a recorded move.
+-- (tsrange intersection). from_inferred: the stretch begins on a row a migration
+-- wrote for a time before it ran, so its start is as found, not a recorded move.
+--
+-- Nothing of a stretch is dropped. A route's holder chain is unbroken from its
+-- first row on (each row lasts until the next), so the only part of a stretch a
+-- holder row can miss is the part before the route's first row — a shop moved
+-- onto a route effective earlier than the route's own creation was recorded.
+-- That part is returned with no salesman and note 'holder-unrecorded'. A route
+-- created after the baseline starts its chain with "nobody" (nmwc_history_route),
+-- so a stretch before its first salesman reads as held by nobody, note null.
+--
+-- And one row with no shop (note 'no-shop-recorded', from_inferred) when X's own
+-- first row is its first page and no shop of X is on record before that page was
+-- written: its shops may have been moved or merged away before history began, so
+-- that stretch is unknown, not "no route".
 CREATE OR REPLACE FUNCTION nmwc_customer_route_intervals(p_customer_id text)
 RETURNS TABLE (
   branch_id text, branch_code text, route_id text, route_code text,
-  salesman_id text, salesman_username text, valid_from timestamp, valid_to timestamp, from_inferred boolean
+  salesman_id text, salesman_username text, valid_from timestamp, valid_to timestamp, from_inferred boolean,
+  merged_into_id text, note text
 )
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, public, pg_temp
@@ -1310,15 +1395,16 @@ AS $$
            min(g."validFrom") AS island_from,
            (array_agg(g.valid_to ORDER BY g."validFrom" DESC, g."id" DESC))[1] AS island_to,
            (array_agg(g."branchCode" ORDER BY g."validFrom" DESC, g."id" DESC))[1] AS branch_code,
-           -- When the island begins on a baseline row: the time before which its
-           -- start is "as found", not recorded.
-           (array_agg(CASE WHEN g."changeKind" = 'BASELINE' THEN g."recordedAt" END ORDER BY g."validFrom", g."id"))[1] AS baseline_recorded_at
+           -- When the island begins on a row a migration wrote: the time before
+           -- which its start is "as found", not recorded.
+           (array_agg(CASE WHEN g."changeKind" = 'BASELINE' OR g."sourceKind" = 'migration' THEN g."recordedAt" END
+                      ORDER BY g."validFrom", g."id"))[1] AS inferred_until
     FROM grouped g
     GROUP BY g."branchId", g."routeId", g.island
   ),
   owners AS (
     SELECT o."routeId" AS route_id, o."ownerId" AS owner_id, o."validFrom" AS owner_from, o.owner_to,
-           CASE WHEN o."changeKind" = 'BASELINE' THEN o."recordedAt" END AS baseline_recorded_at
+           CASE WHEN o."changeKind" = 'BASELINE' OR o."sourceKind" = 'migration' THEN o."recordedAt" END AS inferred_until
     FROM (
       SELECT h.*, lead(h."validFrom") OVER (PARTITION BY h."routeId" ORDER BY h."validFrom", h."id") AS owner_to
       FROM public."RouteOwnerHistory" h
@@ -1326,33 +1412,63 @@ AS $$
     ) o
     WHERE o.owner_to IS NULL OR o.owner_to > o."validFrom"
   ),
+  first_owner AS (
+    SELECT ow.route_id, min(ow.owner_from) AS owner_from FROM owners ow GROUP BY ow.route_id
+  ),
   pieces AS (
     SELECT i.branch_id, i.branch_code, i.route_id, ow.owner_id,
-           CASE WHEN ow.route_id IS NULL THEN tsrange(i.island_from, i.island_to)
-                ELSE tsrange(i.island_from, i.island_to) * tsrange(ow.owner_from, ow.owner_to) END AS span,
-           i.baseline_recorded_at AS island_baseline, ow.baseline_recorded_at AS owner_baseline
+           tsrange(i.island_from, i.island_to) * tsrange(ow.owner_from, ow.owner_to) AS span,
+           i.inferred_until AS island_inferred_until, ow.inferred_until AS owner_inferred_until,
+           NULL::text AS note
     FROM islands i
-    LEFT JOIN owners ow
+    JOIN owners ow
       ON ow.route_id = i.route_id
      AND tsrange(ow.owner_from, ow.owner_to) && tsrange(i.island_from, i.island_to)
+    UNION ALL
+    SELECT i.branch_id, i.branch_code, i.route_id, NULL::text,
+           tsrange(i.island_from, i.island_to) * tsrange(NULL, f.owner_from),
+           i.inferred_until, NULL::timestamp,
+           'holder-unrecorded'
+    FROM islands i
+    LEFT JOIN first_owner f ON f.route_id = i.route_id
+    WHERE f.owner_from IS NULL OR i.island_from < f.owner_from
+  ),
+  shops AS (
+    SELECT p.branch_id, p.branch_code, p.route_id, rt."code" AS route_code, p.owner_id, us."username" AS owner_username,
+           lower(p.span) AS span_from, upper(p.span) AS span_to,
+           (lower(p.span) < p.island_inferred_until OR lower(p.span) < p.owner_inferred_until) IS TRUE AS span_inferred,
+           p.note
+    FROM pieces p
+    LEFT JOIN LATERAL (
+      SELECT h."code" FROM public."RouteHistory" h WHERE h."routeId" = p.route_id
+      ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
+    ) rt ON true
+    LEFT JOIN LATERAL (
+      SELECT h."username" FROM public."UserHistory" h
+      WHERE h."userId" = p.owner_id
+      ORDER BY (h."validFrom" <= lower(p.span)) DESC,
+               CASE WHEN h."validFrom" <= lower(p.span) THEN h."validFrom" END DESC,
+               h."validFrom", h."id" DESC
+      LIMIT 1
+    ) us ON true
+  ),
+  -- X's own first row, when a migration wrote it for a time before it ran.
+  first_page AS (
+    SELECT c."validFrom" AS page_from, c."recordedAt" AS page_recorded
+    FROM (
+      SELECT h.* FROM public."CustomerHistory" h WHERE h."customerId" = p_customer_id
+      ORDER BY h."validFrom", h."id" LIMIT 1
+    ) c
+    WHERE (c."changeKind" = 'BASELINE' OR c."sourceKind" = 'migration') AND c."validFrom" < c."recordedAt"
   )
-  SELECT p.branch_id, p.branch_code, p.route_id, rt."code", p.owner_id, us."username",
-         lower(p.span), upper(p.span),
-         (lower(p.span) < p.island_baseline OR lower(p.span) < p.owner_baseline) IS TRUE
-  FROM pieces p
-  LEFT JOIN LATERAL (
-    SELECT h."code" FROM public."RouteHistory" h WHERE h."routeId" = p.route_id
-    ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1
-  ) rt ON true
-  LEFT JOIN LATERAL (
-    SELECT h."username" FROM public."UserHistory" h
-    WHERE h."userId" = p.owner_id
-    ORDER BY (h."validFrom" <= lower(p.span)) DESC,
-             CASE WHEN h."validFrom" <= lower(p.span) THEN h."validFrom" END DESC,
-             h."validFrom", h."id" DESC
-    LIMIT 1
-  ) us ON true
-  ORDER BY lower(p.span), p.branch_code
+  SELECT s.branch_id, s.branch_code, s.route_id, s.route_code, s.owner_id, s.owner_username,
+         s.span_from, s.span_to, s.span_inferred, NULL::text, s.note
+  FROM shops s
+  UNION ALL
+  SELECT NULL, NULL, NULL, NULL, NULL, NULL, fp.page_from, fp.page_recorded, true, NULL, 'no-shop-recorded'
+  FROM first_page fp
+  WHERE NOT EXISTS (SELECT 1 FROM shops s WHERE s.span_from < fp.page_recorded)
+  ORDER BY 7, 2
 $$;
 
 -- Changes recorded with no cause since p_since, per table, Oman day and login

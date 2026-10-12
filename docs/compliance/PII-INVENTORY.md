@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**486 stored columns across 34 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 312.
+**487 stored columns across 34 tables** — Customer contact: 29 · Employee: 95 · Customer entity (personal if a sole establishment): 50 · Not personal data: 313.
 
 ## Columns holding personal data
 
@@ -474,7 +474,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | ExportJob | `startedAt` | DateTime | record timestamp, not an attribute of a person |
 | ExportJob | `completedAt` | DateTime | record timestamp, not an attribute of a person |
 | ExportJob | `errorMessage` | String | structural / operational value |
-| ExportJob | `kind` | String | which export: customer-master, customers-filtered or field-updates |
+| ExportJob | `kind` | String | which export: customer-master, customers-filtered, field-updates or temix-batch (the Temix upload file, on Generate and on each re-download) |
 | ExportJob | `fileSha256` | String | SHA-256 of the exact bytes sent: identifies the file, not its contents |
 | ExportJob | `filename` | String | the file name the export was sent under (a date, never a customer) |
 | ExportJob | `customerIds` | String[] | identifiers of the customers the file held; the file itself is never stored |
@@ -489,6 +489,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | AuthEvent | `reason` | String | a fixed category (not_found, retired_username, ip, user, deactivated, password, role, …), never free text |
 | AuthEvent | `source` | String | what caused it (lib/change-context.ts): auth:logout, users:toggle:<id>, import:<batch>:Users!<row>, … |
 | AuthEvent | `txId` | BigInt | database transaction id: joins the AuditLog rows of the same change |
+| AuthEvent | `dbUser` | String | the database login that wrote a session cut-off (nmwc_app or the owner role) |
 | CustomerHistory | `id` | BigInt | the strict order of the history |
 | CustomerHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
 | CustomerHistory | `changedFields` | String[] | field NAMES only — never a value |

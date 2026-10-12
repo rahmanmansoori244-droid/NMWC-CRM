@@ -39,7 +39,7 @@ const FILES = [
   'services/customer-export.ts',
   'app/api/exports/changes/route.ts',
   'app/api/cron/sla-escalate/route.ts',
-  // Lossless paths (gap 14): the three exports' ExportJob and EXPORT rows.
+  // Lossless paths (gap 14): the exports' ExportJob and EXPORT rows.
   'lib/export-record.ts',
 ];
 
@@ -48,6 +48,12 @@ const FILES = [
  * (with the ExportJob row, in one transaction), which writes it with writeAudit.
  */
 const EXPORT_FILES = ['services/exports.ts', 'services/customer-export.ts', 'app/api/exports/changes/route.ts'];
+
+/**
+ * The Temix batch file is recorded through recordExport too (gap 14), on Generate
+ * and on every re-download, while the batch's own claim keeps its writeAudit.
+ */
+const RECORDS_TOO = ['services/temix.ts'];
 
 const SRC: Record<string, string> = {};
 for (const f of FILES) SRC[f] = readFileSync(f, 'utf8');
@@ -140,7 +146,7 @@ describe('every audit write goes through lib/audit', () => {
     expect(/\bwriteAudit\(/.test(stripCommentsAndStrings(SRC[f]))).toBe(true);
   });
 
-  it.each(EXPORT_FILES)('%s records its export through recordExport, which writes the row with writeAudit', (f) => {
+  it.each([...EXPORT_FILES, ...RECORDS_TOO])('%s records its export through recordExport, which writes the row with writeAudit', (f) => {
     expect(/\brecordExport\(/.test(stripCommentsAndStrings(SRC[f]))).toBe(true);
     expect(/\bwriteAudit\(/.test(stripCommentsAndStrings(SRC['lib/export-record.ts']))).toBe(true);
   });

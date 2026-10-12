@@ -11,7 +11,7 @@
  */
 import { createHash } from 'node:crypto';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import type { AuditAction, AuditLog, Notification } from '@prisma/client';
+import type { AuditAction, AuditLog, ExportJob, Notification } from '@prisma/client';
 import { db } from './env';
 
 export type KnownBugId =
@@ -442,6 +442,31 @@ export async function notificationsFor(o: { editId?: string; userId?: string; cu
   const where = Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
   if (Object.keys(where).length === 0) throw new Error('notificationsFor: name an editId, userId or customerId');
   return db.notification.findMany({ where, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
+}
+
+/**
+ * Gap 14 (lossless paths): the exports a user took — each ExportJob (kind, file
+ * name, SHA-256 of the bytes, customers) with its EXPORT audit row, whose
+ * entityId is the job's id — oldest first. A Temix batch's file names its batch
+ * in filters.batchId.
+ */
+export async function exportRecordsFor(o: {
+  actorId: string;
+  kind?: 'customer-master' | 'customers-filtered' | 'field-updates' | 'temix-batch';
+  batchId?: string;
+}): Promise<Array<{ job: ExportJob; audit: AuditLog | null }>> {
+  const jobs = await db.exportJob.findMany({
+    where: {
+      requestedById: o.actorId,
+      ...(o.kind ? { kind: o.kind } : {}),
+      ...(o.batchId ? { filters: { path: ['batchId'], equals: o.batchId } } : {}),
+    },
+    orderBy: [{ startedAt: 'asc' }, { id: 'asc' }],
+  });
+  const audits = jobs.length
+    ? await db.auditLog.findMany({ where: { action: 'EXPORT', entityType: 'Export', entityId: { in: jobs.map((j) => j.id) } } })
+    : [];
+  return jobs.map((job) => ({ job, audit: audits.find((a) => a.entityId === job.id) ?? null }));
 }
 
 /** Audit rows by entity, actor and/or action, oldest first. */
