@@ -59,6 +59,8 @@ function recordingTx() {
       return typeof value === 'function' ? (value as (a: unknown) => unknown)(args) : value;
     };
   return {
+    // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+    $executeRaw: async () => 1,
     customerEdit: {
       create: rec('customerEdit.create', { id: EDIT, cycle: 1, submittedAt: new Date() }),
       updateMany: rec('customerEdit.updateMany', { count: 1 }),

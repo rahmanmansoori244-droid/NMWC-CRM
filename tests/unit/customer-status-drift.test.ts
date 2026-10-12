@@ -18,6 +18,11 @@ function fakeDb(rows: Stored[]) {
   const log: string[] = [];
   const shape = (c: Stored) => ({ ...c, branches: c.branches.map((status) => ({ status })) });
   const tx = {
+    // Gap 24: the change context, set first in the transaction.
+    $executeRaw: vi.fn(async (_sql: TemplateStringsArray, ...values: unknown[]) => {
+      log.push(`ctx:${values[1]}`);
+      return 1;
+    }),
     $queryRaw: vi.fn(async () => {
       log.push('lock');
       return [];
@@ -65,8 +70,9 @@ describe('readDrift', () => {
 describe('applyDrift', () => {
   it('locks, re-reads, writes the status and one CLOSE row on the customer, in that order', async () => {
     const { prisma, tx, log } = fakeDb([{ id: 'c1', nmwcCode: 'N1', status: ACTIVE, deletedAt: null, branches: [CLOSED] }]);
-    expect(await applyDrift(prisma, 'c1', 'stew', 'db.example')).toEqual({ from: ACTIVE, to: CLOSED });
-    expect(log).toEqual(['lock', 'read', 'write', 'audit']);
+    expect(await applyDrift(prisma, 'c1', 'stew', 'db.example', 'run-1')).toEqual({ from: ACTIVE, to: CLOSED });
+    // Gap 24: the run names the cause before anything is read or written.
+    expect(log).toEqual(['ctx:script:customer-status-drift:run-1', 'lock', 'read', 'write', 'audit']);
     expect(tx.customer.update).toHaveBeenCalledWith({
       where: { id: 'c1' },
       data: { status: CLOSED, lastEditedById: 'stew', version: { increment: 1 } },
@@ -85,7 +91,7 @@ describe('applyDrift', () => {
 
   it('a reopening is a REACTIVATE row', async () => {
     const { prisma, tx } = fakeDb([{ id: 'c2', nmwcCode: 'N2', status: CLOSED, deletedAt: null, branches: [ACTIVE] }]);
-    expect(await applyDrift(prisma, 'c2', 'stew', 'db.example')).toEqual({ from: CLOSED, to: ACTIVE });
+    expect(await applyDrift(prisma, 'c2', 'stew', 'db.example', 'run-1')).toEqual({ from: CLOSED, to: ACTIVE });
     expect(tx.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'REACTIVATE' }) });
   });
 
@@ -96,11 +102,11 @@ describe('applyDrift', () => {
       { id: 'x', nmwcCode: 'X', status: ACTIVE, deletedAt: null, branches: [SUSPENDED, CLOSED] },
     ]) {
       const { prisma, tx } = fakeDb([c]);
-      expect(await applyDrift(prisma, 'x', 'stew', 'db.example')).toBeNull();
+      expect(await applyDrift(prisma, 'x', 'stew', 'db.example', 'run-1')).toBeNull();
       expect(tx.customer.update).not.toHaveBeenCalled();
       expect(tx.auditLog.create).not.toHaveBeenCalled();
     }
     const { prisma } = fakeDb([]);
-    expect(await applyDrift(prisma, 'gone', 'stew', 'db.example')).toBeNull();
+    expect(await applyDrift(prisma, 'gone', 'stew', 'db.example', 'run-1')).toBeNull();
   });
 });

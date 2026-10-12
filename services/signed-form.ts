@@ -29,6 +29,7 @@ import { z } from 'zod';
 import { EditProcess, EditState, Role, type Prisma } from '@prisma/client';
 import { revalidatePath } from 'next/cache';
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { requireActor } from '@/lib/session';
 import {
   ConflictError,
@@ -217,7 +218,9 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
   const env = await getAuditEnvelope(session.id);
   const now = new Date();
   try {
-    await prisma.$transaction(
+    await withChangeContext(
+      prisma,
+      { actorId: session.id, source: src.edit(editId) },
       async (tx) => {
         // The claim is built from the token, not from the row read above: the
         // check and the write are one statement (as approveEditCore's advance).

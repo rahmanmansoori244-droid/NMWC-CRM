@@ -46,6 +46,7 @@ import { TEMIX_QUEUE_WHERE } from '../../lib/temix';
 import { isDemoAccount } from '../../lib/demo-accounts';
 import { OperatorRefusal } from './error-label';
 import { assertNotProduction } from '../lib/assert-not-production';
+import { changeContextStatement, src } from '../../lib/change-context';
 
 /**
  * The rows to correct, and the whole of the safety argument, in one object.
@@ -606,7 +607,13 @@ async function main(): Promise<number> {
       });
       if (page.length === 0) break;
       const ids = page.map((c) => c.id);
-      const res = await prisma.customer.updateMany({
+      // Gap 24: each chunk names this run (its marker instant) and the operator.
+      const [, res] = await prisma.$transaction([
+        changeContextStatement(prisma, {
+          actorId: actor.id,
+          source: src.script('requeue-untracked', pendingSince.toISOString()),
+        }),
+        prisma.customer.updateMany({
         // The full predicate again, not just the ids: a row that was corrected or
         // archived by someone else between this select and this update must be
         // left to whatever did that, not clobbered on the strength of a stale read.
@@ -620,7 +627,8 @@ async function main(): Promise<number> {
           // fail with a concurrent-edit conflict — for a change that alters no
           // field any of those forms can see.
         },
-      });
+      }),
+      ]);
       if (res.count === 0) {
         throw new Error(
           `selected ${ids.length} rows and updated none — something else is writing to\n` +

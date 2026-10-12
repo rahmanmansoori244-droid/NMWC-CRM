@@ -331,7 +331,7 @@ describe('the batch this script feeds is sized for the queue it creates', () => 
     // ABOVE the default rather than equal to a literal, so that someone raising
     // the default cannot silently make this line a no-op — and so the number here
     // can still be tuned.
-    const generateTx = serviceCode.slice(serviceCode.indexOf('prisma.$transaction('));
+    const generateTx = serviceCode.slice(serviceCode.indexOf('withChangeContext(prisma,'));
     const num = (src: string, key: string) => {
       const m = new RegExp(`${key}:\\s*(\\d[\\d_]*)`).exec(src);
       expect(m, `${key} must be set`).not.toBeNull();

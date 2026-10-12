@@ -57,6 +57,8 @@ const h = vi.hoisted(() => ({
   rolledBack: false,
 }));
 const tx = vi.hoisted(() => ({
+  // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+  $executeRaw: vi.fn(async () => 1),
   customerEdit: { updateMany: vi.fn() },
   editApproval: { create: vi.fn() },
   attachment: { findMany: vi.fn() },

@@ -106,6 +106,8 @@ enum AuditAction {
   EXPORT
   // Owner decisions 2026-10-11: every printout (credit application, customer form)
   PRINT
+  // Gap 22 (data audit 2026-10-10): the losing side of two saves at once. Written by part C only.
+  CONFLICT
 }
 
 enum ImportBatchStatus {

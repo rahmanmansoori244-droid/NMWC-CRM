@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
 import {
   BULK_DECISION_LIMIT,
   BULK_DECISION_LIMIT_MESSAGE,
@@ -926,7 +927,11 @@ async function submitEditOnce(
     // outside the transaction, so nothing extra runs while it is open
     // (services/users.ts does the same).
     const env = await getAuditEnvelope(me.id);
-    edit = await prisma.$transaction(
+    // Gap 24: the request's id names the cause once its row exists (below); until
+    // then nothing in this transaction writes the master.
+    edit = await withChangeContext(
+      prisma,
+      { actorId: me.id, source: src.edit('new') },
       async (tx) => {
         // F06: a direct write has no approver to catch a value that moved, so the
         // plan is judged again under the customer's row lock, against the row as
@@ -1002,6 +1007,7 @@ async function submitEditOnce(
             ...chainFields,
           },
         });
+        await setChangeContext(tx, { actorId: me.id, source: src.edit(e.id) });
         await applyEditChanges(tx, customer.id, write.customer, write.branches, me.id, {
           env,
           via: `direct write by ${me.role}`,
@@ -1060,11 +1066,16 @@ async function submitEditOnce(
           ...chainFields,
         });
       } else if (!answeredEnv) {
+        // One autocommitted insert, as before gap 24: a request row is not a
+        // master write (no history table watches CustomerEdit), and the
+        // salesman's submit is the hottest write path there is.
         edit = await prisma.customerEdit.create({ data: submitted });
       } else {
         // F13: the trail on each request it answers commits with it, or neither does.
-        edit = await prisma.$transaction(async (tx) => {
+        const cause = { actorId: me.id, source: src.edit('new') };
+        edit = await withChangeContext(prisma, cause, async (tx) => {
           const e = await tx.customerEdit.create({ data: submitted });
+          await setChangeContext(tx, { actorId: me.id, source: src.edit(e.id) });
           for (const id of answered) {
             await writeAudit(tx, answeredEnv, {
               action: 'UPDATE',
@@ -1193,7 +1204,8 @@ async function saveUpdateDraft(
     | 'cycle'
   >
 ) {
-  return prisma.$transaction(async (tx) => {
+  const cause = { actorId: submittedById, source: src.edit('draft') };
+  return withChangeContext(prisma, cause, async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:edit-draft:${submittedById}:${customerId}`}, 42))`;
     const saved = await tx.customerEdit.findFirst({
       where: {
@@ -1267,7 +1279,8 @@ async function clearReturnedEditCore(input: { editId: string }): Promise<{ editI
   }
 
   const env = await getAuditEnvelope(me.id);
-  const cleared = await prisma.$transaction(async (tx) => {
+  const cause = { actorId: me.id, source: src.edit(editId) };
+  const cleared = await withChangeContext(prisma, cause, async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`nmwc:returned-clear:${editId}`}, 42))`;
     // Answered since, cleared by a tap a moment ago, or its customer archived:
     // it no longer waits on him, and that is the answer.
@@ -1582,7 +1595,9 @@ async function approveEditCore(formData: FormData) {
   if (!isFinal) {
     const nextStep = chain[stepIndex + 1]!;
     const advancedAt = new Date();
-    await prisma.$transaction(
+    await withChangeContext(
+      prisma,
+      { actorId: session.id, source: src.edit(editId) },
       async (tx) => {
         const claim = await tx.customerEdit.updateMany({
           where: {
@@ -1708,7 +1723,9 @@ async function approveEditCore(formData: FormData) {
     // inside the transaction below, so it cannot read the request context
     // itself; the envelope is built out here and handed down.
     const finalizeEnv = await getAuditEnvelope(session.id);
-    const result = await prisma.$transaction(
+    const result = await withChangeContext(
+      prisma,
+      { actorId: session.id, source: src.edit(editId) },
       async (tx) => {
         // PROD-001 pattern: claim the edit atomically; loser sees count=0.
         const claim = await tx.customerEdit.updateMany({
@@ -1893,7 +1910,9 @@ async function approveEditCore(formData: FormData) {
   // concurrent detachPhoto committing between the check and the apply let an APPROVED
   // record land with a missing CR/shop photo.
 
-  await prisma.$transaction(
+  await withChangeContext(
+    prisma,
+    { actorId: session.id, source: src.edit(editId) },
     async (tx) => {
       // PROD-001 fix: claim the edit atomically by transitioning SUBMITTED→APPROVED
       // in a single statement. If two approvals race, only one updateMany returns
@@ -2367,7 +2386,7 @@ async function rejectEditCore(formData: FormData) {
 
   // DG-06: envelope outside the transaction; `session.id` is the rejecting actor.
   const env = await getAuditEnvelope(session.id);
-  await prisma.$transaction(async (tx) => {
+  await withChangeContext(prisma, { actorId: session.id, source: src.edit(editId) }, async (tx) => {
     await tx.editApproval.create({
       data: {
         editId,

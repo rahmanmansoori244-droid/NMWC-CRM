@@ -212,7 +212,8 @@ describe('the approval engine snapshots the stage on every decision it records',
       expect(b.match(/\bconst expected = readDecisionToken\(formData\);/g), core).toHaveLength(1);
       const gate = b.search(/!canActOnStep\(/);
       const check = b.search(/\bassertDecisionView\(expected, edit\);/);
-      const firstWrite = b.search(/\bprisma\.\$transaction\(/);
+      // Gap 24: every write transaction opens through withChangeContext.
+      const firstWrite = b.search(/\bwithChangeContext\(/);
       expect(gate, `${core}: the authorization gate`).toBeGreaterThan(-1);
       // After the gate: before it, a caller with no right to the request could
       // tell STALE_VIEW from FORBIDDEN and test guesses of its credit figures.

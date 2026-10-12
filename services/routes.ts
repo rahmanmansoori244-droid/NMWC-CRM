@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { Role } from '@prisma/client';
 import { z } from 'zod';
 import {
@@ -101,7 +102,9 @@ async function createRegionCore(formData: FormData) {
     );
   }
   const env = await getAuditEnvelope(me.id);
-  await prisma.$transaction(async (tx) => {
+  // Gap 24: a new region is named by its code (its id does not exist yet; codes never change).
+  const cause = { actorId: me.id, source: src.routes('create-region', parsed.data.code) };
+  await withChangeContext(prisma, cause, async (tx) => {
     const region = await tx.region.create({ data: parsed.data });
     await writeAudit(tx, env, {
       action: 'CREATE',
@@ -132,7 +135,8 @@ async function createRouteCore(formData: FormData) {
   }
   assertRegionInScope(await regionScopeOf(me), parsed.data.regionId);
   const env = await getAuditEnvelope(me.id);
-  await prisma.$transaction(async (tx) => {
+  const cause = { actorId: me.id, source: src.routes('create-route', parsed.data.code) };
+  await withChangeContext(prisma, cause, async (tx) => {
     const route = await tx.route.create({ data: parsed.data });
     await writeAudit(tx, env, {
       action: 'CREATE',
@@ -161,7 +165,8 @@ async function toggleRegionActiveCore(formData: FormData) {
   const r = await prisma.region.findUnique({ where: { id } });
   if (!r) throw new NotFoundError('Region not found.');
   const env = await getAuditEnvelope(me.id);
-  await prisma.$transaction(async (tx) => {
+  const cause = { actorId: me.id, source: src.routes('toggle-region', id) };
+  await withChangeContext(prisma, cause, async (tx) => {
     const updated = await tx.region.update({
       where: { id },
       data: { isActive: !r.isActive },
@@ -205,7 +210,8 @@ async function toggleRouteActiveCore(formData: FormData) {
     }
   }
   const env = await getAuditEnvelope(me.id);
-  await prisma.$transaction(async (tx) => {
+  const cause = { actorId: me.id, source: src.routes('toggle-route', id) };
+  await withChangeContext(prisma, cause, async (tx) => {
     const updated = await tx.route.update({
       where: { id },
       data: { isActive: !r.isActive },

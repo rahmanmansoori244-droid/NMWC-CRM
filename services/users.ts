@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { EditProcess, EditState, Role, type Prisma } from '@prisma/client';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
@@ -575,7 +576,8 @@ async function createUserCore(formData: FormData) {
   const env = await getAuditEnvelope(me.id);
   let user;
   try {
-    user = await prisma.$transaction(async (tx) => {
+    const cause = { actorId: me.id, source: src.users('create', data.username) };
+    user = await withChangeContext(prisma, cause, async (tx) => {
       if (handover && route) {
         await handOverRoute(tx, env, {
           from: handover,
@@ -711,7 +713,8 @@ async function toggleUserActiveCore(formData: FormData) {
   // F13: the change and its audit row in one transaction (see createUserCore).
   const env = await getAuditEnvelope(me.id);
   const now = new Date();
-  await prisma.$transaction(async (tx) => {
+  const cause = { actorId: me.id, source: src.users('toggle', userId) };
+  await withChangeContext(prisma, cause, async (tx) => {
     for (const e of atSignedForm) {
       const done = await withdrawWithAccountChange(tx, env, e, {
         submittedById: userId,
@@ -789,7 +792,8 @@ async function resetPasswordCore(formData: FormData) {
 
   const passwordHash = await bcrypt.hash(parsed.data, 12);
   const env = await getAuditEnvelope(me.id);
-  await prisma.$transaction(async (tx) => {
+  const cause = { actorId: me.id, source: src.users('reset', userId) };
+  await withChangeContext(prisma, cause, async (tx) => {
     await tx.user.update({
       where: { id: userId },
       data: {
@@ -952,7 +956,8 @@ async function updateUserRoleCore(formData: FormData) {
 
   // F13: the change and its audit row in one transaction (see createUserCore).
   const env = await getAuditEnvelope(me.id);
-  await prisma.$transaction(async (tx) => {
+  const cause = { actorId: me.id, source: src.users('role', userId) };
+  await withChangeContext(prisma, cause, async (tx) => {
     await tx.user.update({
       where: { id: userId },
       data: {
@@ -1437,7 +1442,8 @@ async function updateUserAccountCore(formData: FormData): Promise<AccountEditRes
   const env = await getAuditEnvelope(me.id);
   const now = new Date();
   try {
-    await prisma.$transaction(async (tx) => {
+    const cause = { actorId: me.id, source: src.users('account', target.id) };
+    await withChangeContext(prisma, cause, async (tx) => {
       if (handover && route) {
         await handOverRoute(tx, env, {
           from: handover,
@@ -1612,7 +1618,8 @@ async function updateUserEmailCore(formData: FormData) {
 
   const env = await getAuditEnvelope(me.id);
   try {
-    await prisma.$transaction(async (tx) => {
+    const cause = { actorId: me.id, source: src.users('email', userId) };
+    await withChangeContext(prisma, cause, async (tx) => {
       await tx.user.update({ where: { id: userId }, data: { email } });
       await writeAudit(tx, env, {
         action: 'UPDATE',

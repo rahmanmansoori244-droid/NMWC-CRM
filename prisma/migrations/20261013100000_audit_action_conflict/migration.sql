@@ -1,0 +1,17 @@
+-- Gap 22 (data audit 2026-10-10): AuditAction.CONFLICT, the losing side of two
+-- people saving at once. Part C writes one CONFLICT row when a save is refused
+-- because someone else's landed first; nothing writes it yet.
+--
+-- Isolated enum-only migration: Postgres refuses a new enum value in the same
+-- transaction that added it, so nothing else goes here (same pattern as
+-- 20261011120000_credit_flow_enums).
+--
+-- Deploy order. A Prisma client that does not know an enum value throws when it
+-- reads a row holding one ("Value ... not found in enum"): the /audit page and
+-- every forensic read of AuditLog.action. So the build that READS this value
+-- ships first, in the history foundation (part A, which writes none), and the
+-- writer ships in part C, once A's deployment has served production and passed
+-- smoke. From then on the rollback target is A's deployment or later, never an
+-- older one; rolling back past it needs every CONFLICT row removed in the
+-- owner's maintenance window first.
+ALTER TYPE "AuditAction" ADD VALUE IF NOT EXISTS 'CONFLICT';

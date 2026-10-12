@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
 import {
   Role,
   EditState,
@@ -247,7 +248,10 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   // P2002 is still translated outside the transaction by openEditConflict.
   // A failed hierarchy lookup now fails the submit, as a new-customer submit's
   // notification always has; the salesman's retry is answered or re-run.
-  const edit = await prisma.$transaction(async (tx) => {
+  // Gap 24: the evidence photo is wired under its own name; the request's id
+  // names everything after the request exists.
+  const cause = { actorId: me.id, source: src.photo(att.id) };
+  const edit = await withChangeContext(prisma, cause, async (tx) => {
     if (env) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {
@@ -277,6 +281,7 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
         submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
       },
     });
+    await setChangeContext(tx, { actorId: me.id, source: src.edit(e.id) });
     // A Manager decides a reactivation: his supervisor if he is a Manager over
     // the branch's region, else every active Manager of it (REACTIVATION_REQUESTED,
     // linked to /reactivations); the region's Accountant for information.
@@ -382,7 +387,10 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
   const closeSubmittedAt = new Date();
   // F1 / A1.7: as for a reactivation — the request and its notifications commit
   // together, and the P2002 is translated outside the transaction.
-  const edit = await prisma.$transaction(async (tx) => {
+  // Gap 24: the evidence photo is wired under its own name; the request's id
+  // names everything after the request exists.
+  const cause = { actorId: me.id, source: src.photo(att.id) };
+  const edit = await withChangeContext(prisma, cause, async (tx) => {
     if (env) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {
@@ -409,6 +417,7 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
         submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
       },
     });
+    await setChangeContext(tx, { actorId: me.id, source: src.edit(e.id) });
     // The Supervisor step decides a close: his supervisor if he can act on it,
     // else the active Managers of the branch's region (EDIT_SUBMITTED, linked to
     // the review page); the region's Accountant for information.
@@ -475,7 +484,7 @@ async function approveReactivationCore(formData: FormData) {
   // silent; keeping the call out here makes that impossible.
   const env = await getAuditEnvelope(me.id);
 
-  await prisma.$transaction(async (tx) => {
+  await withChangeContext(prisma, { actorId: me.id, source: src.edit(editId) }, async (tx) => {
     // QA-C12: claim the edit atomically FIRST (PROD-001 pattern, mirroring
     // services/edits.ts approveEditCore). The pre-tx state read above is a fast
     // reject; this is the authoritative guard. Two Managers (or a double-click)
@@ -644,7 +653,7 @@ async function rejectReactivationCore(formData: FormData) {
   // already rejected, with no REJECT row in the audit ledger. The envelope is
   // built before the transaction opens (DG-06).
   const env = await getAuditEnvelope(me.id);
-  await prisma.$transaction(async (tx) => {
+  await withChangeContext(prisma, { actorId: me.id, source: src.edit(editId) }, async (tx) => {
     // QA-C13: atomic claim (PROD-001) so a reject racing a concurrent approve/reject
     // can't double-decide — the loser aborts before writing an audit row.
     // Launch fix (2026-10-07): "Keep closed" is final, so it ends REJECTED, not

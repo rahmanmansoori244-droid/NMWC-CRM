@@ -62,7 +62,8 @@ vi.mock('@/lib/db', () => {
       const before = new Map([...h.users].map(([k, v]) => [k, { ...v }]));
       const auditsBefore = h.audits.length;
       try {
-        return await fn({ user });
+        // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+        return await fn({ user, $executeRaw: async () => 1 });
       } catch (e) {
         h.users = before;
         h.audits.length = auditsBefore;

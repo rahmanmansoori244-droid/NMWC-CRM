@@ -2,6 +2,7 @@
 
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { requireActor } from '@/lib/session';
 import { Role, AttachmentKind, EditState, type Attachment, type Prisma } from '@prisma/client';
 import {
@@ -307,7 +308,8 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
     if (routeOff) throw new ForbiddenError(ROUTE_INACTIVE_MESSAGE);
     // DG-06: capture the request envelope before opening the transaction.
     const env = await getAuditEnvelope(session.user.id);
-    const claimed = await prisma.$transaction(async (tx) => {
+    const cause = { actorId: session.user.id, source: src.photo(att.id) };
+    const claimed = await withChangeContext(prisma, cause, async (tx) => {
       await lockCustomer(tx, c.id);
       // The customer as it stands under the lock, not as read before it (post-
       // merge review, 2026-09-29). A Steward's merge holding this lock while the
@@ -425,7 +427,8 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
 
     // DG-06: same as the CR branch — envelope before the transaction.
     const env = await getAuditEnvelope(session.user.id);
-    const claimed = await prisma.$transaction(async (tx) => {
+    const cause = { actorId: session.user.id, source: src.photo(att.id) };
+    const claimed = await withChangeContext(prisma, cause, async (tx) => {
       await lockCustomer(tx, b.customerId);
       // The branch and its customer as they stand under the lock, as on the CR
       // path. A merge waited on here has moved the branch to the winner, whose
@@ -651,7 +654,8 @@ async function detachPhotoCore(input: { attachmentId: string }) {
     branchExtraId: att.branchExtraId,
     editId: att.editId,
   };
-  await prisma.$transaction(async (tx) => {
+  const cause = { actorId: session.user.id, source: src.photo(att.id) };
+  await withChangeContext(prisma, cause, async (tx) => {
     if (ownerId) await lockCustomer(tx, ownerId);
     const now = await tx.attachment.findFirst({ where: { id: att.id, deletedAt: null } });
     // Removed since the read above, by another Remove or replaced on its slot:

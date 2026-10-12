@@ -46,7 +46,7 @@ describe('services/imports.ts: branch writes, scores and row notes', () => {
 
   it('the full lane writes a branch only when the row changes it', () => {
     const loop = src.slice(
-      src.indexOf('for (const r of fullBranches)'),
+      src.indexOf('for (const [k, r] of fullBranches.entries())'),
       src.indexOf('tx.branch.upsert(')
     );
     expect(loop).toMatch(

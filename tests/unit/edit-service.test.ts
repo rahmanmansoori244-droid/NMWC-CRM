@@ -926,6 +926,18 @@ const sqlOf = (call: unknown[]) => {
   const sql = Prisma.sql(call[0] as TemplateStringsArray, ...call.slice(1));
   return { text: sql.sql, values: sql.values };
 };
+/**
+ * The transaction's advisory lock among its raw statements, with when it ran. Gap
+ * 24: the first raw statement of every write transaction is now its change
+ * context (lib/change-context.ts), which is checked here too.
+ */
+const advisoryLock = () => {
+  const calls = tx.$executeRaw.mock.calls as unknown[][];
+  const i = calls.findIndex((c) => sqlOf(c).text.includes('pg_advisory_xact_lock'));
+  expect(i, 'the advisory lock').toBeGreaterThan(-1);
+  expect(sqlOf(calls[0]!).text, 'the change context, first').toContain("set_config('nmwc.source'");
+  return { values: sqlOf(calls[i]!).values, order: tx.$executeRaw.mock.invocationCallOrder[i]! };
+};
 
 describe('launch fix — a resubmit answers the sent-back request it fixes (lib/returned-work.ts)', () => {
   it('a submit answers his sent-back updates of this customer: each gets an audit row naming it, in its transaction', async () => {
@@ -1031,8 +1043,9 @@ describe('launch fix — Save draft keeps one draft per person per customer', ()
       },
     });
     // The lock is taken before the read, so two saves at once cannot both insert.
-    expect(order(tx.$executeRaw)).toBeLessThan(order(tx.customerEdit.findFirst));
-    expect(sqlOf(tx.$executeRaw.mock.calls[0]!).values).toContain(`nmwc:edit-draft:u-sales:${CUST}`);
+    const lock = advisoryLock();
+    expect(lock.order).toBeLessThan(order(tx.customerEdit.findFirst));
+    expect(lock.values).toContain(`nmwc:edit-draft:u-sales:${CUST}`);
   });
 
   it('a draft save spends the draft bucket, never the one his submits share', async () => {
@@ -1057,9 +1070,12 @@ describe('launch fix (review) — he clears a sent-back request he has nothing t
     db.customerEdit.findUnique.mockResolvedValue(sentBack());
     tx.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
     expect(await clear()).toEqual({ ok: true, data: { editId: 'e-returned' } });
-    expect(sqlOf(tx.$executeRaw.mock.calls[0]!).values).toContain('nmwc:returned-clear:e-returned');
+    const lock = advisoryLock();
+    expect(lock.values).toContain('nmwc:returned-clear:e-returned');
+    // Gap 24: the request he clears is the cause, he is the actor.
+    expect(sqlOf((tx.$executeRaw.mock.calls as unknown[][])[0]!).values).toEqual(['u-sales', 'edit:e-returned', '']);
     // Still waiting on him? Asked under the lock, with the clear rule in the query.
-    expect(order(tx.$executeRaw)).toBeLessThan(order(tx.$queryRaw));
+    expect(lock.order).toBeLessThan(order(tx.$queryRaw));
     const asked = sqlOf(tx.$queryRaw.mock.calls[0]!);
     expect(asked.values).toEqual(expect.arrayContaining(['u-sales', CUST, RETURNED_CLEARED_REASON]));
     expect(asked.text).toContain('FROM "AuditLog" a');

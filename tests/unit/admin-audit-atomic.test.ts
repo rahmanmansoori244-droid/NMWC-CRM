@@ -142,6 +142,8 @@ vi.mock('@/lib/db', () => {
     },
   });
   const client = (tables: () => Tables, via: 'tx' | 'prisma') => ({
+    // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+    $executeRaw: async () => 1,
     user: model(tables, 'user', via),
     region: model(tables, 'region', via),
     route: model(tables, 'route', via),

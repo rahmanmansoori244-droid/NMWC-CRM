@@ -30,6 +30,7 @@
  *    stops blocking that CR and shop for everyone (lib/create-guards.ts).
  */
 import { prisma } from '@/lib/db';
+import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
 import type { ZodIssue } from 'zod';
 import {
   AttachmentKind,
@@ -446,7 +447,8 @@ async function submitCreateOnce(
   // silent; keeping the call out here makes that impossible.
   const env = await getAuditEnvelope(session.id);
 
-  const edit = await prisma.$transaction(async (tx) => {
+  const cause = { actorId: session.id, source: src.edit(existing?.id ?? 'new') };
+  const edit = await withChangeContext(prisma, cause, async (tx) => {
     // Hard-block exact duplicates — serialized on the FULL identity surface
     // (CR leg + name/phone/region triple leg) so two racing submits cannot
     // both pass the check even when their CR numbers differ. Submits only; a
@@ -564,6 +566,10 @@ async function submitCreateOnce(
       await tx.editCustomerDraft.create({
         data: { editId: editRow.id, ...customerDraftFields },
       });
+    }
+    // Gap 24: a new request's id is known only now; its photos and audit row carry it.
+    if (!existing) {
+      await setChangeContext(tx, { actorId: session.id, source: src.edit(editRow.id) });
     }
     await tx.editBranchDraft.createMany({
       data: branchDraftRows.map((b) => ({ ...b, editId: editRow.id })),
@@ -743,7 +749,7 @@ async function withdrawCreateCore(input: { editId: string }): Promise<{ editId: 
 
   const env = await getAuditEnvelope(session.id);
   const withdrawnAt = new Date();
-  await prisma.$transaction(async (tx) => {
+  await withChangeContext(prisma, { actorId: session.id, source: src.edit(editId) }, async (tx) => {
     // Claimed on the state and cycle read above: a submit from another tab in
     // between wins, and this answers that it changed. At the signed-application
     // step, on the step too: a confirm of the signed form that landed first wins.

@@ -45,6 +45,7 @@ import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untr
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 import { statusDrift, type StatusDrift } from '../../lib/customer-status-rule';
 import { lockCustomerRow } from '../../lib/locks';
+import { setChangeContext, src } from '../../lib/change-context';
 
 export type DriftRow = { id: string; nmwcCode: string; status: CustomerStatus; drift: StatusDrift };
 
@@ -80,15 +81,18 @@ export function driftCounts(rows: readonly DriftRow[]): Record<StatusDrift['kind
 /**
  * Move one customer as the rule says, under its row lock, re-read and
  * re-classified there. Returns the move, or null when there is none to make now
- * (archived, gone, consistent, or one for a person to review).
+ * (archived, gone, consistent, or one for a person to review). Gap 24: the
+ * customer's dated history names this run (`runId`) and the operator.
  */
 export async function applyDrift(
   prisma: PrismaClient,
   customerId: string,
   actorId: string,
-  host: string
+  host: string,
+  runId: string
 ): Promise<{ from: CustomerStatus; to: CustomerStatus } | null> {
   return prisma.$transaction(async (tx) => {
+    await setChangeContext(tx, { actorId, source: src.script('customer-status-drift', runId) });
     await lockCustomerRow(tx, customerId);
     const c = await tx.customer.findUnique({
       where: { id: customerId },
@@ -168,11 +172,13 @@ async function main(): Promise<number> {
       return 0;
     }
     const actor = await resolveActor(prisma, actorArg);
+    const runId = new Date().toISOString();
+    console.log(`  run ${runId}`);
     let moved = 0;
     let left = 0;
     for (const r of rows) {
       if (r.drift.kind === 'review') continue;
-      if (await applyDrift(prisma, r.id, actor.id, host)) moved += 1;
+      if (await applyDrift(prisma, r.id, actor.id, host, runId)) moved += 1;
       else left += 1;
     }
     console.log(`\n  moved ${moved}, each with a CLOSE or REACTIVATE audit row by ${actor.username}`);

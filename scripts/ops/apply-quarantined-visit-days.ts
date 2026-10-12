@@ -35,6 +35,7 @@
  */
 import { PrismaClient, DayOfWeek, type Prisma } from '@prisma/client';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
+import { changeContextStatement, src } from '../../lib/change-context';
 
 /** Rows per statement; tiny here, but the same shape as its sibling scripts. */
 const CHUNK = 100;
@@ -232,12 +233,19 @@ async function main(): Promise<number> {
     let done = 0;
     for (let i = 0; i < plan.length; i += CHUNK) {
       for (const p of plan.slice(i, i + CHUNK)) {
-        const res = await prisma.branch.updateMany({
-          // dayOfVisit null again in the WHERE: if anything set a day between the
-          // read above and now, that decision wins over this one.
-          where: { id: p.branchId, deletedAt: null, dayOfVisit: null },
-          data: { dayOfVisit: p.day, lastEditedById: actor.id },
-        });
+        // Gap 24: each branch's dated history names this run and the operator.
+        const [, res] = await prisma.$transaction([
+          changeContextStatement(prisma, {
+            actorId: actor.id,
+            source: src.script('apply-quarantined-visit-days', at.toISOString()),
+          }),
+          prisma.branch.updateMany({
+            // dayOfVisit null again in the WHERE: if anything set a day between the
+            // read above and now, that decision wins over this one.
+            where: { id: p.branchId, deletedAt: null, dayOfVisit: null },
+            data: { dayOfVisit: p.day, lastEditedById: actor.id },
+          }),
+        ]);
         done += res.count;
       }
       console.log(`  written ${String(done).padStart(4)} of ${plan.length}`);

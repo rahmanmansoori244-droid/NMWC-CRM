@@ -165,6 +165,7 @@ function fakeDb(
 ) {
   const events: string[] = [];
   const ledger: Array<Record<string, unknown>> = [];
+  const contexts: string[] = [];
   const byId = new Map(customers.map((c) => [c.id, c]));
   const allBranches = () => customers.flatMap((c) => c.branches);
 
@@ -194,6 +195,11 @@ function fakeDb(
     }),
     $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const q = Prisma.sql(strings, ...values);
+      // Gap 24: the change context, set first in each page's transaction.
+      if (q.sql.includes("set_config('nmwc.source'")) {
+        contexts.push(String(q.values[1]));
+        return 1;
+      }
       const table = /^UPDATE "(\w+)"/.exec(q.sql)![1];
       events.push(`write ${table}`);
       let n = 0;
@@ -242,7 +248,7 @@ function fakeDb(
       }),
     },
   };
-  return { prisma: prisma as unknown as PrismaClient, raw: prisma, tx, events, ledger };
+  return { prisma: prisma as unknown as PrismaClient, raw: prisma, tx, events, ledger, contexts };
 }
 
 /** Five live customers (one stale, one right, …), one archived, in id order c-1 … c-6. */
@@ -484,6 +490,10 @@ describe('run: --apply', () => {
     // The ledger counts the rows written: c-1, c-3, c-4 and c-5 — as when c-2
     // was right and live (above) — not the archived c-2 as a fifth.
     expect(db.ledger[1].after).toMatchObject({ customersWritten: 4 });
+    // Gap 24: each page's transaction names this run as the cause, one per page.
+    expect(db.contexts).toHaveLength(3);
+    expect(new Set(db.contexts).size).toBe(1);
+    expect(db.contexts[0]).toMatch(/^script:rescore-completeness:\d{4}-\d{2}-\d{2}T/);
   });
 
   /**
@@ -679,9 +689,11 @@ describe('the script keeps the operator conventions (comment-stripped source)', 
     expect(t).toMatch(/\{ timeout: 20_000, maxWait: 10_000 \}/);
   });
 
-  it('imports no request-runtime module: only lib/locks, lib/rescore and the shared operator guards', () => {
+  it('imports no request-runtime module: only lib/locks, lib/rescore, the pure change context and the shared operator guards', () => {
     const froms = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]).sort();
     expect(froms).toEqual([
+      // Gap 24: pure (no next/*, no @/lib/db), so a script may use it.
+      '../../lib/change-context',
       '../../lib/locks',
       '../../lib/rescore',
       './error-label',

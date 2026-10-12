@@ -35,6 +35,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { assertNotProduction } from '../lib/assert-not-production';
+import { setChangeContext, src } from '../../lib/change-context';
 
 const ROLE = 'nmwc_app';
 const PROD_MARKER = 'ep-sweet-haze';
@@ -283,6 +284,9 @@ async function verify() {
       await app.$transaction(
         async (tx) => {
           await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '2000ms'`);
+          // Gap 24: the runtime role may name the cause of its writes (and this probe's).
+          await setChangeContext(tx, { actorId: null, source: src.verify('app-role') });
+          console.log('  ✓ change context set');
 
           // the durable rate limiter's single-statement upsert
           const key = `verify:${ROLE}:${Date.now()}`;

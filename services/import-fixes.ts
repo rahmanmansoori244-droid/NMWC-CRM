@@ -23,6 +23,7 @@
  * that is about to declare the batch finished.
  */
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { ImportRowState, Prisma, Role } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
@@ -86,12 +87,18 @@ type LockedBatch = {
 const MIN_REASON = 5;
 const PROBLEM: ImportRowState[] = [ImportRowState.QUARANTINED, ImportRowState.REJECTED];
 
-/** Lock the batch, refuse while a promote is running on it, then run `fn`. */
+/**
+ * Lock the batch, refuse while a promote is running on it, then run `fn`. Gap 24:
+ * the Steward is the actor and the row (or the batch's row set) the cause.
+ */
 async function withBatch<T>(
   batchId: string,
+  cause: { actorId: string; row: string },
   fn: (tx: Tx, batch: LockedBatch) => Promise<T>
 ): Promise<T> {
-  return prisma.$transaction(
+  return withChangeContext(
+    prisma,
+    { actorId: cause.actorId, source: src.importFix(batchId, cause.row) },
     async (tx) => {
       const [batch] = await tx.$queryRaw<LockedBatch[]>`
         SELECT "id", "kind", "status"::text AS "status", "promoteLeaseUntil", "uploadedAt", "filename"
@@ -411,7 +418,7 @@ async function recheckCore(formData: FormData): Promise<FixResult> {
   if (!rowId) throw new ValidationError({ _form: 'Row required.' });
   const env = await getAuditEnvelope(me.id);
   const batchId = await batchIdOf(rowId);
-  const result = await withBatch(batchId, async (tx, batch) => {
+  const result = await withBatch(batchId, { actorId: me.id, row: rowId }, async (tx, batch) => {
     const row = await loadRow(tx, rowId);
     assertFixable(row);
     const targets = await targetsFor(tx, row);
@@ -453,7 +460,7 @@ async function correctCore(formData: FormData): Promise<FixResult> {
   }
   const env = await getAuditEnvelope(me.id);
   const batchId = await batchIdOf(rowId);
-  const result = await withBatch(batchId, async (tx, batch) => {
+  const result = await withBatch(batchId, { actorId: me.id, row: rowId }, async (tx, batch) => {
     const row = await loadRow(tx, rowId);
     assertFixable(row);
     const accepted = acceptCells(row.issues, sent);
@@ -508,7 +515,7 @@ async function releaseCore(formData: FormData): Promise<FixResult> {
   }
   const env = await getAuditEnvelope(me.id);
   const batchId = await batchIdOf(rowId);
-  const result = await withBatch(batchId, async (tx, batch) => {
+  const result = await withBatch(batchId, { actorId: me.id, row: rowId }, async (tx, batch) => {
     const row = await loadRow(tx, rowId);
     assertFixable(row);
     if (row.state !== ImportRowState.QUARANTINED || !canReleasePhone(row.issues)) {
@@ -566,7 +573,7 @@ async function withdrawCore(formData: FormData): Promise<{ rows: number }> {
   if (!rowId) throw new ValidationError({ _form: 'Row required.' });
   const env = await getAuditEnvelope(me.id);
   const batchId = await batchIdOf(rowId);
-  const rows = await withBatch(batchId, async (tx, batch) => {
+  const rows = await withBatch(batchId, { actorId: me.id, row: rowId }, async (tx, batch) => {
     const row = await loadRow(tx, rowId);
     const parsedNow = (row.parsed ?? {}) as { fixedInApp?: boolean; fixedFrom?: FixedFrom; fixGroup?: string };
     // The rows the same fix brought back with this one (its unit). A row fixed
@@ -697,7 +704,7 @@ async function excludeCore(formData: FormData): Promise<{ excluded: number }> {
     }
   }
   const env = await getAuditEnvelope(me.id);
-  const excluded = await withBatch(batchId, async (tx) => {
+  const excluded = await withBatch(batchId, { actorId: me.id, row: 'excluded' }, async (tx) => {
     const res = await tx.importRow.updateMany({
       where: {
         batchId,
@@ -732,7 +739,7 @@ async function includeCore(formData: FormData): Promise<void> {
   if (!rowId) throw new ValidationError({ _form: 'Row required.' });
   const env = await getAuditEnvelope(me.id);
   const batchId = await batchIdOf(rowId);
-  await withBatch(batchId, async (tx) => {
+  await withBatch(batchId, { actorId: me.id, row: rowId }, async (tx) => {
     const res = await tx.importRow.updateMany({
       where: { id: rowId, excludedAt: { not: null } },
       data: { excludedAt: null, excludedById: null, excludedReason: null },

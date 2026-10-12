@@ -29,6 +29,7 @@
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { assertNotProduction } from '../scripts/lib/assert-not-production';
+import { contextClient, src } from '../lib/change-context';
 
 const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
 
@@ -61,7 +62,11 @@ if (PROD_ENDPOINTS.some((e) => SEED_URL.includes(e)) && process.env.ALLOW_PROD_S
 
 // And the shared guard on top of the abort above (data audit 2026-10-10, owner
 // decision 2026-10-11): production would need ALLOW_PROD_SEED=1 AND --expect-host.
-const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(SEED_URL) });
+// Gap 24: every write names this seed as its cause (one short transaction per call).
+const prisma = contextClient(new PrismaClient({ datasourceUrl: assertNotProduction(SEED_URL) }), {
+  actorId: null,
+  source: src.seed('muscat-pilot'),
+});
 
 const ROUTE_CODES = ['C1', 'C4', 'C6', 'C7', 'C12', 'C13', 'C14', 'C15', 'MH01', 'MH02'];
 

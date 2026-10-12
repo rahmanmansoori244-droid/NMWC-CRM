@@ -13,6 +13,7 @@
  * `next build` (scripts/ci/check-action-workers.ts) both fail if it grows.
  */
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import { ValidationError, runAction, type SafeAction } from '@/lib/errors';
@@ -82,7 +83,8 @@ async function changeOwnPasswordCore(formData: FormData) {
 
   const passwordHash = await bcrypt.hash(parsed.data.newPassword, 12);
   const env = await getAuditEnvelope(me.id);
-  await prisma.$transaction(async (tx) => {
+  const cause = { actorId: me.id, source: src.password('change') };
+  await withChangeContext(prisma, cause, async (tx) => {
     await tx.user.update({
       where: { id: me.id },
       data: {

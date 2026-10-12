@@ -47,6 +47,15 @@ function ranges(
   return out;
 }
 
+/**
+ * Transactions: a bare `$transaction(` or, since gap 24, `withChangeContext(` —
+ * the helper every write transaction in services/ opens through (lib/change-context.ts).
+ */
+const txRangesOf = (code: string) => [
+  ...ranges(code, '$transaction(', '(', ')'),
+  ...ranges(code, 'withChangeContext(', '(', ')'),
+];
+
 const positions = (code: string, re: RegExp) =>
   [...code.matchAll(re)].map((m) => ({ at: m.index!, text: m[0] }));
 const within = (at: number, rs: Array<[number, number]>) => rs.find(([a, b]) => at > a && at < b);
@@ -59,7 +68,7 @@ type Report = {
 };
 
 function inspect(fn: string): Report {
-  const txRanges = ranges(fn, '$transaction(', '(', ')');
+  const txRanges = txRangesOf(fn);
   const tryRanges = ranges(fn, 'try {', '{', '}');
   const auditNull = positions(fn, /writeAudit\(null\b/g).map(({ at }) => {
     const call = fn.slice(at, fn.indexOf('});', at));
@@ -81,7 +90,7 @@ function inspect(fn: string): Report {
   // Every database call a row makes sits in a try. The one exception is the batch
   // itself, created before any row: a failure there has written nothing, so
   // runAction's "Nothing was saved" is true.
-  const readsOutsideTry = positions(fn, /\bprisma\.(\$transaction|[a-zA-Z]+\.[a-zA-Z]+)\(/g)
+  const readsOutsideTry = positions(fn, /\bprisma\.(\$transaction|[a-zA-Z]+\.[a-zA-Z]+)\(|\bwithChangeContext\(/g)
     .filter(({ text }) => text !== 'prisma.importBatch.create(')
     .filter(({ at }) => !within(at, tryRanges))
     .map((p) => p.text);
@@ -116,7 +125,7 @@ describe('uploadAccountMasterCore keeps every write with its audit row', () => {
   // Post-merge review (2026-09-29): the reset's two password-history steps were a
   // correct helper nothing in the import called.
   it('checks a reset password for reuse before the write, and rotates the history inside the row transaction', () => {
-    const txRanges = ranges(CORE, '$transaction(', '(', ')');
+    const txRanges = txRangesOf(CORE);
     const tryRanges = ranges(CORE, 'try {', '{', '}');
     const reuse = positions(CORE, /\bassertPasswordNotReused\(/g);
     const rotate = positions(CORE, /\brotatePasswordHistory\(tx,/g);

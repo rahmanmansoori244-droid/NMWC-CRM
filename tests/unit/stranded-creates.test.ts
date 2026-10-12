@@ -166,7 +166,7 @@ describe('every account change that could strand one counts it', () => {
     const toggle = between(users, 'async function toggleUserActiveCore(', 'export async function resetPasswordAction(');
     expect(toggle).toMatch(/where: \{ submittedById: userId, \.\.\.atSignedFormStepWhere\(\) \}/);
     expect(toggle).toMatch(/signedFormDisableIssue\(/);
-    const tx = toggle.slice(toggle.indexOf('prisma.$transaction('));
+    const tx = toggle.slice(toggle.indexOf('withChangeContext(prisma,'));
     expect(tx.indexOf('withdrawWithAccountChange(')).toBeGreaterThan(-1);
     expect(tx.indexOf('withdrawWithAccountChange(')).toBeLessThan(tx.indexOf('tx.user.update('));
   });

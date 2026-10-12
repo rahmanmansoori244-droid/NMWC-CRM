@@ -80,6 +80,7 @@ import {
   type SignalRow,
 } from '../../lib/duplicate-pairing';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
+import { changeContextStatement, src } from '../../lib/change-context';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 
 export type NormRow = { id: string; crNumber: string | null; crNumberNorm: string | null };
@@ -367,11 +368,17 @@ export async function main(): Promise<number> {
 
     let custWritten = 0;
     let custSkipped = 0;
+    // Gap 24: named for the record although crNumberNorm, a derived key, is not
+    // one of the columns the dated history watches.
+    const cause = { actorId: actor.id, source: src.script('recompute-cr-norm', at.toISOString()) };
     for (const f of custFixes) {
-      const res = await prisma.customer.updateMany({
-        where: guardedWhere(f),
-        data: { crNumberNorm: f.next, updatedAt: f.updatedAt },
-      });
+      const [, res] = await prisma.$transaction([
+        changeContextStatement(prisma, cause),
+        prisma.customer.updateMany({
+          where: guardedWhere(f),
+          data: { crNumberNorm: f.next, updatedAt: f.updatedAt },
+        }),
+      ]);
       if (res.count === 1) custWritten += 1;
       else custSkipped += 1;
       if ((custWritten + custSkipped) % 100 === 0) {

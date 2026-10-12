@@ -27,6 +27,7 @@ import {
   pointsAtProduction,
   type GuardOutput,
 } from '../scripts/lib/assert-not-production';
+import { setChangeContext, src } from '../lib/change-context';
 
 export const CHANNELS = [
   {
@@ -213,7 +214,15 @@ async function main(): Promise<void> {
   const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? 'ChangeMeNow!2026';
   try {
     console.log('▸ Inserting missing channels, sub-channels, regions and the admin account…');
-    const { inserted, leftAsIs } = await insertMissing(prisma, () => bcrypt.hash(ADMIN_PASSWORD, 12));
+    // Gap 24: one transaction, named as this seed, so the dated history of every
+    // region and account it inserts says where they came from.
+    const { inserted, leftAsIs } = await prisma.$transaction(
+      async (tx) => {
+        await setChangeContext(tx, { actorId: null, source: src.seed('seed') });
+        return insertMissing(tx, () => bcrypt.hash(ADMIN_PASSWORD, 12));
+      },
+      { maxWait: 10_000, timeout: 60_000 }
+    );
     console.log(
       `  inserted: ${inserted.channels} channel(s), ${inserted.subChannels} sub-channel(s), ${inserted.regions} region(s)`
     );

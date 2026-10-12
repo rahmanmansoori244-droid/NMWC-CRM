@@ -41,6 +41,7 @@ import { assertNotProduction } from '../lib/assert-not-production';
 import { readFileSync, readdirSync, writeFileSync } from 'fs';
 import { parsePrismaSchema, implicitJoinTables } from '../../lib/compliance/prisma-schema';
 import { describeError } from './describe-error';
+import { setChangeContext, src } from '../../lib/change-context';
 
 const PROD_MARKER = 'ep-sweet-haze';
 
@@ -471,6 +472,8 @@ async function main() {
     try {
       await db.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '2000ms'`);
+        // Gap 24: the probe's rows (rolled back) name the drill as their cause.
+        await setChangeContext(tx, { actorId: null, source: src.verify('restore') });
         const sfx = `rv${Math.floor(Date.now() / 1000)}`;
         await tx.$executeRawUnsafe(
           `INSERT INTO "Region" ("id","name","code","updatedAt") VALUES ('${sfx}-ra','RV A ${sfx}','RVA${sfx}',now()), ('${sfx}-rb','RV B ${sfx}','RVB${sfx}',now())`

@@ -24,6 +24,7 @@
  *     (services/imports.ts).
  */
 import { prisma } from '@/lib/db';
+import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
 import { Role, TemixSyncState, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
@@ -209,7 +210,8 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
   // `requeue-untracked.ts --limit` can drain the backlog in tranches and each
   // batch generates well inside the budget. Pinned by
   // tests/unit/temix-requeue-guard.test.ts, which asserts both bounds.
-  const { batch, customers, heldBack } = await prisma.$transaction(async (tx) => {
+  const cause = { actorId: me.id, source: src.temix('generate', 'new') };
+  const { batch, customers, heldBack } = await withChangeContext(prisma, cause, async (tx) => {
     // Soft cap pre-check (updateMany cannot `take`; a handful of rows racing
     // in over the cap between count and flip is harmless).
     const pending = await tx.customer.count({ where: TEMIX_QUEUE_WHERE });
@@ -251,6 +253,7 @@ async function generateTemixBatchCore(): Promise<TemixBatchResult> {
         status: 'RUNNING',
       },
     });
+    await setChangeContext(tx, { actorId: me.id, source: src.temix('generate', b.id) });
     // FLIP FIRST, SNAPSHOT AFTER (adversarial-review CONFIRMED fix): the flip
     // is the single authoritative claim — of the rows locked above, it stamps
     // this batch's id. The snapshot below then re-reads exactly the
@@ -404,7 +407,8 @@ export async function markTemixBatchLoadedAction(formData: FormData): SafeAction
     // One transaction for claim + settle + audit: a crash between the claim
     // and the settle would otherwise strand deactivate-lane rows in UPLOADED
     // forever (the idempotency guard rejects a second confirm).
-    const settledCount = await prisma.$transaction(async (tx) => {
+    const cause = { actorId: me.id, source: src.temix('loaded', batchId) };
+    const settledCount = await withChangeContext(prisma, cause, async (tx) => {
       // Idempotent claim: only the first confirm writes.
       const claim = await tx.temixSyncBatch.updateMany({
         where: { id: batchId, markedLoadedAt: null },

@@ -54,6 +54,8 @@ vi.mock('@/lib/print-load', () => ({
   },
 }));
 const tx = {
+  // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+  $executeRaw: async () => 1,
   notification: {
     updateMany: async (args: unknown) => {
       h.alertsRead.push(args);

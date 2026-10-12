@@ -42,6 +42,7 @@ import { PrismaClient, PaymentTerms, type Prisma } from '@prisma/client';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
+import { changeContextStatement, src } from '../../lib/change-context';
 
 /**
  * The value Finance's decision takes in the CRM.
@@ -231,19 +232,26 @@ async function main(): Promise<number> {
     let done = 0;
     for (let i = 0; i < ids.length; i += CHUNK) {
       const slice = ids.slice(i, i + CHUNK);
-      const res = await prisma.customer.updateMany({
-        // The candidate predicate again, not just the ids: a row that was granted
-        // a real limit through the credit chain between the read above and this
-        // statement must keep it rather than be zeroed on a stale read.
-        where: { id: { in: slice }, ...ZERO_CANDIDATE_WHERE },
-        data: {
-          creditLimit: ZERO_LIMIT,
-          paymentTermDays: TERM_DAYS,
-          // `version` is deliberately NOT incremented, matching
-          // requeue-untracked.ts: bumping it fails every edit form currently open
-          // on one of these customers with a concurrent-edit conflict.
-        },
-      });
+      // Gap 24: the dated history of each customer's terms names this run and the operator.
+      const [, res] = await prisma.$transaction([
+        changeContextStatement(prisma, {
+          actorId: actor.id,
+          source: src.script('zero-credit-limits', at.toISOString()),
+        }),
+        prisma.customer.updateMany({
+          // The candidate predicate again, not just the ids: a row that was granted
+          // a real limit through the credit chain between the read above and this
+          // statement must keep it rather than be zeroed on a stale read.
+          where: { id: { in: slice }, ...ZERO_CANDIDATE_WHERE },
+          data: {
+            creditLimit: ZERO_LIMIT,
+            paymentTermDays: TERM_DAYS,
+            // `version` is deliberately NOT incremented, matching
+            // requeue-untracked.ts: bumping it fails every edit form currently open
+            // on one of these customers with a concurrent-edit conflict.
+          },
+        }),
+      ]);
       done += res.count;
       console.log(`  written ${String(done).padStart(6)} of ${ids.length}`);
     }

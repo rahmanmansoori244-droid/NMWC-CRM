@@ -22,6 +22,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Role, type Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { logger } from '@/lib/logger';
 import { cronAuthorized } from '@/lib/cron-auth';
 import { withHeartbeat } from '@/lib/heartbeat';
@@ -165,7 +166,11 @@ async function escalate(e: DueEdit, level: 1 | 2, now: Date): Promise<boolean> {
   // commit together — a transient failure rolls the claim back so the next
   // sweep retries, and a breach can never be marked escalated with zero
   // alerts written (adversarial-review fix).
-  return prisma.$transaction(async (tx) => {
+  // Gap 24/21: a job, not a person: no actor, the job named as the cause. The
+  // ESCALATE row's actorId stays the submitter (AuditLog needs a user); its
+  // source says the sweep wrote it.
+  const cause = { actorId: null, source: src.cron('sla-escalate') };
+  return withChangeContext(prisma, cause, async (tx) => {
     // Idempotent claim (PROD-001 pattern), pinned on the SNAPSHOT's stage
     // identity AND a live breach re-check: an approve-advance/step-back
     // racing the sweep keeps state SUBMITTED but resets escalationLevel with
@@ -286,7 +291,8 @@ async function handle(req: NextRequest) {
     });
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     for (const s of stewards) {
-      const pinged = await prisma.$transaction(async (tx) => {
+      const cause = { actorId: null, source: src.cron('sla-escalate') };
+      const pinged = await withChangeContext(prisma, cause, async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${'nmwc:temix-ping:' + s.id}, 42))`;
         const recent = await tx.notification.findFirst({
           where: {

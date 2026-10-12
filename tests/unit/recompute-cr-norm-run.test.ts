@@ -102,9 +102,16 @@ function fakeDb(options: {
     Object.assign(row, write.data);
     return { count: 1 };
   }
+  const contexts: string[] = [];
   const raw = {
     $queryRawUnsafe: vi.fn(async () => [{ '?column?': 1 }]),
     $disconnect: vi.fn(async () => {}),
+    // Gap 24: each customer write is an array transaction led by the change context.
+    $executeRaw: vi.fn(async (_sql: TemplateStringsArray, ...values: unknown[]) => {
+      contexts.push(String(values[1]));
+      return 1;
+    }),
+    $transaction: vi.fn(async (ops: Array<Promise<unknown>>) => Promise.all(ops)),
     user: { findUnique: vi.fn(async () => ACTOR) },
     customer: {
       findMany: vi.fn(async () => {
@@ -145,7 +152,7 @@ function fakeDb(options: {
   };
   const prisma = raw as unknown as PrismaClient;
   vi.mocked(PrismaClient).mockImplementation(function () { return prisma; });
-  return { customers, drafts, ledger, events, reads, raw };
+  return { customers, drafts, ledger, events, reads, raw, contexts };
 }
 
 function completed(db: ReturnType<typeof fakeDb>) {
@@ -191,6 +198,9 @@ describe('CR recompute run: completion ledger precedes verification', () => {
     expect(phases.map((r) => r.after.phase)).toEqual(['started', 'completed']);
     expect(phases[0].entityId).toBe(phases[1].entityId);
     expect(phases.every((r) => r.actorId === ACTOR.id)).toBe(true);
+    // Gap 24: each customer write names this run (its STARTING row's id) as the cause.
+    const runId = String(phases[0].entityId).replace(/:/g, '-');
+    expect(db.contexts).toEqual([`script:recompute-cr-norm:${runId}`, `script:recompute-cr-norm:${runId}`]);
     expect(db.events.indexOf('ledger:carried')).toBeLessThan(db.events.indexOf('write:customers:customer-alpha'));
     expect(db.events.indexOf('write:drafts:draft-beta')).toBeLessThan(db.events.indexOf('ledger:completed'));
     expect(db.events.indexOf('ledger:completed')).toBeLessThan(db.events.indexOf('read:customers:3'));

@@ -21,6 +21,7 @@
  */
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { requireActor } from '@/lib/session';
 import {
   ConflictError,
@@ -68,7 +69,7 @@ async function recordPrintCore(input: unknown): Promise<PrintReceipt> {
     if (!loaded) throw new NotFoundError('Request not found.');
     if (loaded.kind !== 'ok') throw new ConflictError('PRINT_UNAVAILABLE', `Not available now — ${loaded.message}`);
     const { cycle, stepIndex } = loaded.print;
-    await prisma.$transaction(async (tx) => {
+    await withChangeContext(prisma, { actorId: session.id, source: src.print(id) }, async (tx) => {
       await writeAudit(tx, env, {
         action: 'PRINT',
         entityType: 'CustomerEdit',

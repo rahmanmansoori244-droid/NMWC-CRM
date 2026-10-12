@@ -95,6 +95,7 @@ import { lockCustomersAndTemixCodeHolders } from '../../lib/locks';
 import { rescoreCustomerTx } from '../../lib/rescore';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
+import { setChangeContext, src } from '../../lib/change-context';
 
 /** The instructions sheet every workbook starts with. */
 export const HELP_SHEET = 'How to fill';
@@ -718,6 +719,11 @@ async function writeSet(
     try {
       tally = await prisma.$transaction(
         async (tx) => {
+          // Gap 24: each branch's dated history names this run and the operator.
+          await setChangeContext(tx, {
+            actorId: actor.id,
+            source: src.script('visitdays-from-sheets', runId),
+          });
           await lockCustomersAndTemixCodeHolders(tx, customerIds, null);
           const now = await tx.branch.findMany({
             where: { id: { in: chunk.map((c) => c.branchId) } },
@@ -929,6 +935,10 @@ async function reverseRun(
     const locked = new Set(chunk.map((c) => c.customerId));
     reversed += await prisma.$transaction(
       async (tx) => {
+        await setChangeContext(tx, {
+          actorId: actor.id,
+          source: src.script('visitdays-from-sheets-reverse', runId),
+        });
         await lockCustomersAndTemixCodeHolders(tx, [...locked], null);
         // Read again under the lock. A branch whose customer is no longer one this chunk
         // locked (a merge moves branches without bumping their version) is left alone.

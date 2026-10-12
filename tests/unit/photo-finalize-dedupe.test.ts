@@ -79,7 +79,14 @@ const h = vi.hoisted(() => {
 });
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
 vi.mock('@/lib/r2', () => ({ r2: () => ({ send: h.send }), R2_BUCKET: 'bucket' }));
-vi.mock('@/lib/db', () => ({ prisma: { attachment: { findFirst: h.findFirst, create: h.create } } }));
+// Gap 24: the change context each transaction sets first (lib/change-context.ts).
+vi.mock('@/lib/db', () => ({
+  prisma: {
+    attachment: { findFirst: h.findFirst, create: h.create },
+    $transaction: async (fn: (tx: unknown) => unknown) =>
+      fn({ $executeRaw: async () => 1, attachment: { create: h.create } }),
+  },
+}));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { POST as finalizePOST } from '@/app/api/photos/finalize/route';

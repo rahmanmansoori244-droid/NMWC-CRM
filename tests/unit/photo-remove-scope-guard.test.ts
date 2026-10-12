@@ -4,7 +4,8 @@ import { stripComments } from '../support/strip-comments';
 
 const source = stripComments(readFileSync('services/photos.ts', 'utf8'));
 const remove = source.slice(source.indexOf('async function detachPhotoCore('));
-const transaction = 'await prisma.$transaction(async (tx) => {';
+// Gap 24: the transaction opens through withChangeContext, naming the photo as the cause.
+const transaction = 'await withChangeContext(prisma, cause, async (tx) => {';
 const recheck = 'await assertCanAccessAttachment(sessionUser, now, scope, tx);';
 
 function assertLockedScope(code: string) {

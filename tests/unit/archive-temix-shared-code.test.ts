@@ -54,6 +54,8 @@ vi.mock('@/lib/db', () => {
     return value;
   };
   const tx = {
+    // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+    $executeRaw: async () => 1,
     $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
       h.calls.push({ op: '$queryRaw', args: { sql: strings.join('?'), values } });
       return [];

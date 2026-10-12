@@ -27,20 +27,25 @@ import { UNWIRED_LIVE } from '@/lib/photo-attach';
 
 const src = (f: string) => stripComments(readFileSync(f, 'utf8'), f);
 
-/** The text of every `$transaction( … )` call in `code`, parentheses matched. */
+/**
+ * The text of every `$transaction( … )` or `withChangeContext( … )` call in `code`
+ * (gap 24: write transactions open through the latter), parentheses matched, in
+ * source order.
+ */
 function transactions(code: string): string[] {
-  const out: string[] = [];
-  const TOKEN = '$transaction(';
-  for (let i = code.indexOf(TOKEN); i !== -1; i = code.indexOf(TOKEN, i + TOKEN.length)) {
-    let depth = 0;
-    let j = i + TOKEN.length - 1;
-    for (; j < code.length; j++) {
-      if (code[j] === '(') depth += 1;
-      else if (code[j] === ')' && --depth === 0) break;
+  const out: Array<[number, string]> = [];
+  for (const TOKEN of ['$transaction(', 'withChangeContext(']) {
+    for (let i = code.indexOf(TOKEN); i !== -1; i = code.indexOf(TOKEN, i + TOKEN.length)) {
+      let depth = 0;
+      let j = i + TOKEN.length - 1;
+      for (; j < code.length; j++) {
+        if (code[j] === '(') depth += 1;
+        else if (code[j] === ')' && --depth === 0) break;
+      }
+      out.push([i, code.slice(i, j + 1)]);
     }
-    out.push(code.slice(i, j + 1));
   }
-  return out;
+  return out.sort((a, b) => a[0] - b[0]).map(([, text]) => text);
 }
 
 /** The body of `async function <name>` up to the next top-level function. */
@@ -224,7 +229,7 @@ describe('X-PHOTO-1: Remove reads again under the lock and soft-deletes only gua
       expect(c, String(check)).toBeGreaterThan(-1);
       expect(gone, `PHOTO_GONE after ${String(check)}`).toBeGreaterThan(c);
     }
-    expect(gone).toBeLessThan(at(detach, /\$transaction\(/));
+    expect(gone).toBeLessThan(at(detach, /\bwithChangeContext\(/));
     const tx = txs[0];
     const reread = at(tx, /await tx\.attachment\.findFirst\(\{ where: \{ id: att\.id, deletedAt: null \} \}\)/);
     const goneNow = at(tx, /if \(!now\) throw new ConflictError\('PHOTO_GONE', PHOTO_GONE_MESSAGE\);/);
@@ -296,7 +301,7 @@ describe('ENH-3: presign and finalize refuse a role before any cost', () => {
     roleAfterSignIn(f, role);
     expect(at(f, /await req\.json\(\)/)).toBeGreaterThan(role);
     expect(kind).toBeGreaterThan(role);
-    for (const after of [/new HeadObjectCommand\(/, /prisma\.attachment\.findFirst\(/, /prisma\.attachment\.create\(/]) {
+    for (const after of [/new HeadObjectCommand\(/, /prisma\.attachment\.findFirst\(/, /tx\.attachment\.create\(/]) {
       expect(at(f, after), String(after)).toBeGreaterThan(kind);
     }
   });

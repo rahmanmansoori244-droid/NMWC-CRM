@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { setChangeContext, src, withChangeContext, type ImportLane } from '@/lib/change-context';
 import { isTransientDbError } from '@/lib/db-errors';
 import {
   Role,
@@ -299,7 +300,8 @@ async function uploadAccountMasterCore(
         // X-AUTH-3 / X-IMPORTS-1: a new or renamed region is audited in the same
         // transaction as the write, so the two stand or fall together. An
         // unchanged row writes nothing, so a re-import does not flood the ledger.
-        await prisma.$transaction(async (tx) => {
+        const cause = { actorId: me.id, source: src.importAccount(batch.id, 'Regions', sheetRow) };
+        await withChangeContext(prisma, cause, async (tx) => {
           const before = await tx.region.findUnique({ where: { code } });
           if (!before) {
             const created = await tx.region.create({ data: { code, name } });
@@ -358,7 +360,8 @@ async function uploadAccountMasterCore(
         }
         // X-AUTH-3 / X-IMPORTS-1: as for regions. A route moved to another region
         // records both region codes.
-        await prisma.$transaction(async (tx) => {
+        const cause = { actorId: me.id, source: src.importAccount(batch.id, 'Routes', sheetRow) };
+        await withChangeContext(prisma, cause, async (tx) => {
           const before = await tx.route.findUnique({
             where: { code },
             include: { region: { select: { code: true } } },
@@ -1031,7 +1034,9 @@ async function uploadAccountMasterCore(
         // Each of those rows names the batch, as the account_import rows do: a
         // reset or a role change that alters nothing else writes no account_import
         // row, and the batch's IMPORT summary holds counts only.
-        await prisma.$transaction(
+        await withChangeContext(
+          prisma,
+          { actorId: me.id, source: src.importAccount(batch.id, 'Users', sheetRow) },
           async (tx) => {
             if (ownedRouteId) {
               const displacedOwners = await tx.user.findMany({
@@ -1136,7 +1141,8 @@ async function uploadAccountMasterCore(
   // answering — only then does the Steward read "the database stopped answering".
   let reportFault: string | undefined;
   try {
-    await prisma.$transaction(async (tx) => {
+    const cause = { actorId: me.id, source: src.importSummary(batch.id) };
+    await withChangeContext(prisma, cause, async (tx) => {
       await tx.importBatch.update({
         where: { id: batch.id },
         data: {
@@ -1492,16 +1498,23 @@ type LaneOutcome = { notes: Array<string | null>; written: boolean[] };
 
 async function refreshLaneBranches(
   tx: Prisma.TransactionClient,
-  args: { customerId: string; custCode: string; resolved: LaneBranch[]; me: string }
+  args: {
+    customerId: string;
+    custCode: string;
+    resolved: LaneBranch[];
+    me: string;
+    // Gap 24: names the row (resolved[k]) as the cause just before its branch is written.
+    beforeWrite: (k: number) => Promise<void>;
+  }
 ): Promise<LaneOutcome> {
-  const { customerId, resolved, me } = args;
+  const { customerId, resolved, me, beforeWrite } = args;
   const notes: Array<string | null> = [];
   const written: boolean[] = [];
   const skip = (note: string | null) => {
     notes.push(note);
     written.push(false);
   };
-  for (const r of resolved) {
+  for (const [k, r] of resolved.entries()) {
     if (!r.sheetCode) {
       if (r.fixedInApp) {
         throw new Error(
@@ -1545,6 +1558,7 @@ async function refreshLaneBranches(
         );
         continue;
       }
+      await beforeWrite(k);
       await tx.branch.create({
         data: {
           branchCode: r.branchCode,
@@ -1593,6 +1607,7 @@ async function refreshLaneBranches(
       );
       continue;
     }
+    await beforeWrite(k);
     await tx.branch.update({
       where: { id: found.id },
       data: {
@@ -1988,19 +2003,27 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
     // very first import of a fresh database actually creates them.
     let unassignedRoute = routeByCode.get('UNASSIGNED') ?? null;
     if (!unassignedRoute) {
-      let unassignedRegionId = regionByCode.get('UNASSIGNED')?.id ?? null;
-      if (!unassignedRegionId) {
-        const createdRegion = await prisma.region.create({
-          data: { code: 'UNASSIGNED', name: 'Unassigned' },
-          select: { id: true, code: true },
-        });
-        regionByCode.set('UNASSIGNED', createdRegion);
-        unassignedRegionId = createdRegion.id;
-      }
-      unassignedRoute = await prisma.route.create({
-        data: { code: 'UNASSIGNED', name: 'Unassigned', regionId: unassignedRegionId },
-        select: { id: true, code: true, regionId: true },
-      });
+      const knownRegion = regionByCode.get('UNASSIGNED') ?? null;
+      // Gap 24: the pair is this batch's set-up, named so in the history.
+      const made = await withChangeContext(
+        prisma,
+        { actorId: me.id, source: src.importSetup(batchId) },
+        async (tx) => {
+          const region =
+            knownRegion ??
+            (await tx.region.create({
+              data: { code: 'UNASSIGNED', name: 'Unassigned' },
+              select: { id: true, code: true },
+            }));
+          const route = await tx.route.create({
+            data: { code: 'UNASSIGNED', name: 'Unassigned', regionId: region.id },
+            select: { id: true, code: true, regionId: true },
+          });
+          return { region, route };
+        }
+      );
+      regionByCode.set('UNASSIGNED', made.region);
+      unassignedRoute = made.route;
       routeByCode.set('UNASSIGNED', unassignedRoute);
       // Launch fix: the cached filter lists (lib/reference-data.ts) learn of it now.
       revalidateTag('ref:regions');
@@ -2222,7 +2245,13 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
         // simply too tight for that over a networked Postgres — customers were
         // being rejected with P2028 ("transaction closed") purely because the link
         // was slow, which on the real master would silently drop good rows.
-        await prisma.$transaction(
+        // Gap 24: every write below names its sheet row and lane (rowSource). The
+        // group starts under its first row; nothing is written before the lane
+        // is known and the lead row named.
+        const rowNo = (i: number) => rowMeta.get(g.rowIds[i])?.rowNumber ?? `${custCode}#${i + 1}`;
+        await withChangeContext(
+          prisma,
+          { actorId: me.id, source: src.import(batchId, rowNo(0)) },
           async (tx) => {
             rowNotes = g.rowIds.map(() => ({ note: null, written: false }));
             clearedSubChannelOf = null;
@@ -2528,6 +2557,18 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
             // attach and Remove do (lib/locks.ts), or the two orders deadlock on
             // the same branch (pre-merge review) — every lane now holds it from
             // the top of this transaction (N03).
+            const laneOf = (i: number): ImportLane =>
+              isFixed[i] ? 'fixed' : firstTemixCode ? 'backup' : isRefresh ? 'refresh' : 'full';
+            const leadIdx = plainIdx.length > 0 ? plainIdx[0] : 0;
+            let namedSource = '';
+            // One set_config round trip per change of row, none for a row that writes nothing.
+            const nameRow = async (i: number) => {
+              const source = src.import(batchId, rowNo(i), laneOf(i));
+              if (source === namedSource) return;
+              await setChangeContext(tx, { actorId: me.id, source });
+              namedSource = source;
+            };
+            await nameRow(leadIdx);
             let customerId: string;
             if (refreshLane) {
               // ── Temix REFRESH row (existing live customer + temix_code) ──
@@ -2772,7 +2813,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               customerId = customer.id;
             }
             if (fullLane) {
-              for (const r of fullBranches) {
+              for (const [k, r] of fullBranches.entries()) {
                 // QA P-01 fix (branch-steal guard): branchCode is globally unique
                 // and the upsert's update path includes customerId — without this
                 // check, a sheet row claiming a code owned by ANOTHER customer
@@ -2829,6 +2870,7 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // left in the old region of a route the account import moved
                 // is a change, and the write below repairs it.
                 if (branchOwner && differingBranchCells(r, branchOwner).length === 0) continue;
+                await nameRow(fullIdx[k]);
                 await tx.branch.upsert({
                   where: { branchCode: r.branchCode },
                   // Item 20 (owner decision): a blank cell keeps the stored value.
@@ -2873,6 +2915,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               // Merged, not replaced: the lead row may already carry the
               // sub-channel note (F16), which this used to wipe.
               for (const i of fullIdx) rowNotes[i] = { ...rowNotes[i], note: null, written: true };
+              // The customer's own writes below are the lead row's again.
+              await nameRow(leadIdx);
             }
             if (laneIdx.length > 0) {
               const out = await refreshLaneBranches(tx, {
@@ -2880,7 +2924,10 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 custCode,
                 resolved: laneIdx.map((i) => resolvedBranches[i]),
                 me: me.id,
+                beforeWrite: (k) => nameRow(laneIdx[k]),
               });
+              // The customer's own writes below are the lead row's again.
+              await nameRow(leadIdx);
               laneIdx.forEach((i, k) => {
                 rowNotes[i] = { note: out.notes[k] ?? null, written: out.written[k] ?? false };
               });
@@ -2970,7 +3017,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     return !!c.phoneReleased || c.cells?.phone !== undefined;
                   }) ?? fixedWithPhone[0];
                 const fill = phoneNow ? null : (chosen?.p.phone ?? null);
-                if (fill) {
+                if (fill && chosen) {
+                  await nameRow(chosen.i);
                   // Written only where the phone is still empty, whatever was read.
                   const wrote = await tx.customer.updateMany({
                     where: { id: customerId, OR: [{ primaryPhoneNorm: null }, { primaryPhoneNorm: '' }] },

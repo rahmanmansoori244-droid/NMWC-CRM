@@ -66,6 +66,8 @@ vi.mock('@/lib/notifications', () => ({
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 const tx = {
+  // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+  $executeRaw: async () => 1,
   customerEdit: {
     updateMany: async (args: unknown) => {
       h.calls.push(['claim', args]);

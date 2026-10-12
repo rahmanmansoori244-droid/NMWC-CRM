@@ -1,6 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { Role, EditState, TemixSyncState, CustomerStatus, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
@@ -199,7 +200,9 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
   // exists to close.
   const env = await getAuditEnvelope(session.id);
 
-  await prisma.$transaction(
+  await withChangeContext(
+    prisma,
+    { actorId: session.id, source: src.merge(winnerId, loserId) },
     async (tx) => {
       // PROD-DUP-01 (P1): lock BOTH customer rows in a deterministic (id-sorted)
       // order, then re-validate both are still live INSIDE the transaction. Without

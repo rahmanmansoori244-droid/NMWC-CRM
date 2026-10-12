@@ -462,7 +462,7 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
       [`${P}-DB`, 'reopen'],
       [`${P}-DC`, 'review'],
     ]);
-    for (const r of found) await drift.applyDrift(prisma, r.id, ids.stew, 'uat-test');
+    for (const r of found) await drift.applyDrift(prisma, r.id, ids.stew, 'uat-test', 'status-follows-test');
     expect(await statusOf(close.id)).toBe('CLOSED');
     expect(await statusOf(reopen.id)).toBe('ACTIVE');
     // A person decides these; a hold is not drift.
@@ -475,6 +475,6 @@ describe.skipIf(!ENABLED)('owner decision 7: a customer’s status follows its s
     expect(await auditRows(review.id)).toEqual([]);
     // Re-running finds only the one for a person, and moves nothing again.
     expect((await drift.readDrift(prisma, scope)).map((r) => r.nmwcCode)).toEqual([`${P}-DC`]);
-    expect(await drift.applyDrift(prisma, close.id, ids.stew, 'uat-test')).toBeNull();
+    expect(await drift.applyDrift(prisma, close.id, ids.stew, 'uat-test', 'status-follows-test')).toBeNull();
   });
 });

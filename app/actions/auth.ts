@@ -7,6 +7,7 @@ import { redirect } from 'next/navigation';
 import { loginFailureMessage } from '@/lib/login-throttle';
 import { logger } from '@/lib/logger';
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
 
 // Go-live (2026-09-10): usernames are ROUTE CODES, and several are two
@@ -86,10 +87,13 @@ export async function logoutAction() {
   try {
     const session = await auth();
     if (session?.user) {
-      await prisma.user.update({
-        where: { id: session.user.id },
-        data: { sessionsRevokedAt: new Date() },
-      });
+      const userId = session.user.id;
+      await withChangeContext(prisma, { actorId: userId, source: src.auth('logout') }, (tx) =>
+        tx.user.update({
+          where: { id: userId },
+          data: { sessionsRevokedAt: new Date() },
+        })
+      );
       // B-04: emit a LOGOUT audit row so the audit trail captures explicit
       // sign-outs (vs. session-revoked-via-marker, which is logged only).
       try {

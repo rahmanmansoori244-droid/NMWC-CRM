@@ -64,6 +64,7 @@ import {
   type RescorePlan,
 } from '../../lib/rescore';
 import { connectWaking, requireExpectedHost, resolveActor } from './requeue-untracked';
+import { setChangeContext, src } from '../../lib/change-context';
 import { OperatorRefusal, operatorErrorLabel } from './error-label';
 
 /** Customers per page: one read of them and their branches, one transaction each. */
@@ -314,6 +315,11 @@ export async function run(
     if (ids.length === 0) break;
     const res = await prisma.$transaction(
       async (tx) => {
+        // Gap 24: named for the record although the score is not a watched column.
+        await setChangeContext(tx, {
+          actorId: actor.id,
+          source: src.script('rescore-completeness', at.toISOString()),
+        });
         await lockCustomersAndTemixCodeHolders(tx, ids, null);
         // The page was read before the lock. A customer archived, or merged
         // away, while the page waited for it is locked all the same (the lock

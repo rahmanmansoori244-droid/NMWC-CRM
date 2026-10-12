@@ -28,6 +28,7 @@ import { normalizeCR } from '../lib/cr';
 import { scoreCustomer, scoreBranch } from '../lib/completeness';
 import { formatCustomerCode, formatBranchCode } from '../lib/codes';
 import { assertNotProduction, withoutExpectHost } from '../scripts/lib/assert-not-production';
+import { contextClient, src } from '../lib/change-context';
 
 const SEED_URL = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
 
@@ -48,12 +49,16 @@ if (PROD_ENDPOINTS.some((e) => SEED_URL.includes(e)) && process.env.ALLOW_PROD_S
   process.exit(2);
 }
 
-const prisma = new PrismaClient({
-  // Long-running seed: use the DIRECT (unpooled) URL to avoid pgBouncer idle timeouts.
-  // And the shared guard on top of the abort above (data audit 2026-10-10, owner
-  // decision 2026-10-11): production would need ALLOW_PROD_SEED=1 AND --expect-host.
-  datasourceUrl: assertNotProduction(SEED_URL),
-});
+// Gap 24: every write names this seed as its cause (one short transaction per call).
+const prisma = contextClient(
+  new PrismaClient({
+    // Long-running seed: use the DIRECT (unpooled) URL to avoid pgBouncer idle timeouts.
+    // And the shared guard on top of the abort above (data audit 2026-10-10, owner
+    // decision 2026-10-11): production would need ALLOW_PROD_SEED=1 AND --expect-host.
+    datasourceUrl: assertNotProduction(SEED_URL),
+  }),
+  { actorId: null, source: src.seed('synthetic') }
+);
 
 // Stable seed so re-runs produce same data
 faker.seed(20260509);

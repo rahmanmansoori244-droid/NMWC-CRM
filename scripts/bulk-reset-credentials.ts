@@ -41,6 +41,7 @@ import { PrismaClient, type Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { assertNotProduction } from './lib/assert-not-production';
+import { setChangeContext, src } from '../lib/change-context';
 
 const prisma = new PrismaClient({
   datasourceUrl: assertNotProduction(process.env.DIRECT_URL ?? process.env.DATABASE_URL),
@@ -97,6 +98,11 @@ async function main() {
   const now = new Date();
   await prisma.$transaction(
     async (tx) => {
+      // Gap 24: the run is the cause; it has no signed-in operator to name.
+      await setChangeContext(tx, {
+        actorId: null,
+        source: src.script('bulk-reset-credentials', now.toISOString()),
+      });
       for (const u of issued) {
         await tx.user.update({
           where: { id: u.id },

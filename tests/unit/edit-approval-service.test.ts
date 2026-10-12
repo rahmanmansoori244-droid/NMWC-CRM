@@ -60,6 +60,8 @@ const tx = vi.hoisted(() => ({
   channel: { findUnique: vi.fn() },
   subChannel: { findUnique: vi.fn() },
   $queryRaw: vi.fn(),
+  // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+  $executeRaw: vi.fn(async () => 1),
 }));
 const db = vi.hoisted(() => ({
   customerEdit: { findUnique: vi.fn() },
@@ -222,6 +224,7 @@ beforeEach(() => {
   for (const f of [audit.writeAudit, notify.notifyUsers, log.info, log.warn]) f.mockReset();
   audit.getAuditEnvelope.mockReset().mockResolvedValue({ actorId: SUP, ip: null, userAgent: null });
   tx.$queryRaw.mockReset().mockResolvedValue([]);
+  tx.$executeRaw.mockClear();
   db.$transaction.mockReset().mockImplementation(async (fn: (t: typeof tx) => unknown) => {
     try {
       return await fn(tx);
@@ -282,6 +285,12 @@ describe('F06 — STALE_BEFORE: a field changed since the request was sent refus
       where: { id: CUST, version: 3 },
       data: { notes: 'Closed Fridays' },
     });
+    // Gap 24: the approver is the actor and the request the cause of the customer's
+    // history, named before anything in the transaction runs.
+    const ctx = tx.$executeRaw.mock.calls.at(-1) as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(ctx[0].join('?')).toContain("set_config('nmwc.source'");
+    expect(ctx.slice(1)).toEqual([SUP, 'edit:e1', '']);
+    expect(order(tx.$executeRaw)).toBeLessThan(order(tx.$queryRaw));
   });
 
   it('a field already holding the new value is left out of the write', async () => {

@@ -91,6 +91,8 @@ async function runCli(script: Script, args: string[], guardError?: Error) {
     '../../lib/duplicate-pairing': {},
     '../../lib/locks': {},
     '../../lib/rescore': {},
+    // Gap 24: the write paths name their run (not reached before a refusal).
+    '../../lib/change-context': {},
     './error-label': { OperatorRefusal, operatorErrorLabel },
   };
   const processStub = {

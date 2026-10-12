@@ -12,6 +12,7 @@
  * actor + reason — no extra columns needed.
  */
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { EditState, Role, TemixSyncState, type Prisma } from '@prisma/client';
 import { requireActor } from '@/lib/session';
 import {
@@ -78,7 +79,8 @@ async function archiveCustomerCore(formData: FormData) {
   const archivedAt = new Date();
   // DG-06: capture the request envelope before the transaction opens.
   const env = await getAuditEnvelope(session.user.id);
-  await prisma.$transaction(async (tx) => {
+  const cause = { actorId: session.user.id, source: src.archive(customerId) };
+  await withChangeContext(prisma, cause, async (tx) => {
     // Re-checked INSIDE the tx (pre-tx check would be TOCTOU): a request
     // mid-approval must be decided first — archiving under it would orphan
     // the reviewers' queue rows and confuse the audit trail.

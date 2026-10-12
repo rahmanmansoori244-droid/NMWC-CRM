@@ -27,6 +27,7 @@ import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { readFileSync } from 'node:fs';
 import { assertNotProduction, withoutExpectHost } from '../lib/assert-not-production';
+import { setChangeContext, src } from '../../lib/change-context';
 
 type Cfg = {
   steward: { username: string; fullName: string; password: string };
@@ -110,6 +111,8 @@ async function main() {
   const prisma = new PrismaClient({ datasourceUrl: assertNotProduction(url, args) });
   const created: string[] = [];
   const skipped: string[] = [];
+  // Gap 24: one run id, on every account's dated history.
+  const runId = new Date().toISOString();
 
   const make = async (
     u: { username: string; fullName: string; password: string },
@@ -124,25 +127,33 @@ async function main() {
       skipped.push(`${username} (exists as ${clash.role})`);
       return;
     }
-    const user = await prisma.user.create({
-      data: {
-        username,
-        fullName: u.fullName,
-        role,
-        passwordHash: await bcrypt.hash(u.password, 12),
-        mustChangePassword: true,
-      },
-      select: { id: true },
-    });
-    await prisma.auditLog.create({
-      data: {
-        actorId: user.id,
-        action: 'CREATE',
-        entityType: 'User',
-        entityId: user.id,
-        after: { username, role, bootstrap: true, mustChangePassword: true },
-        reason,
-      },
+    const passwordHash = await bcrypt.hash(u.password, 12);
+    // The account and its CREATE row commit together (gap 24), under this run's name.
+    await prisma.$transaction(async (tx) => {
+      await setChangeContext(tx, {
+        actorId: null,
+        source: src.script('bootstrap-accounts', runId),
+      });
+      const user = await tx.user.create({
+        data: {
+          username,
+          fullName: u.fullName,
+          role,
+          passwordHash,
+          mustChangePassword: true,
+        },
+        select: { id: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: user.id,
+          action: 'CREATE',
+          entityType: 'User',
+          entityId: user.id,
+          after: { username, role, bootstrap: true, mustChangePassword: true },
+          reason,
+        },
+      });
     });
     created.push(`${username} (${role})`);
   };

@@ -200,6 +200,8 @@ beforeEach(() => {
         customerEdit: { updateMany: h.updateMany },
         editApproval: { create: h.approvalCreate },
         $queryRaw: h.queryRaw,
+        // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+        $executeRaw: async () => 1,
       });
     } catch (err) {
       h.rolledBack = true;

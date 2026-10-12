@@ -10,6 +10,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { PutObjectTaggingCommand } from '@aws-sdk/client-s3';
 import { logger } from '@/lib/logger';
@@ -164,7 +165,10 @@ async function handle(req: NextRequest) {
         continue; // retry on the next GC run rather than orphan the object
       }
       try {
-        await prisma.attachment.delete({ where: { id: c.id } });
+        // Gap 24: the job is the cause of the delete (and of any slot the FK clears).
+        await withChangeContext(prisma, { actorId: null, source: src.cron('photo-gc') }, (tx) =>
+          tx.attachment.delete({ where: { id: c.id } })
+        );
         deleted++;
       } catch (err) {
         const code = (err as { code?: unknown }).code;

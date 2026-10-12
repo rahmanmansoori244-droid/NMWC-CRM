@@ -4,6 +4,7 @@ import { checkActor } from '@/lib/session';
 import { r2, R2_BUCKET } from '@/lib/r2';
 import { HeadObjectCommand } from '@aws-sdk/client-s3';
 import { prisma } from '@/lib/db';
+import { src, withChangeContext } from '@/lib/change-context';
 import { AttachmentKind } from '@prisma/client';
 import { logger } from '@/lib/logger';
 import { canUploadPhoto } from '@/lib/permissions';
@@ -199,21 +200,24 @@ export async function POST(req: NextRequest) {
   const capturedAt =
     firstSent && firstSent.capturedAt.getTime() < uploadedAt.getTime() ? firstSent.capturedAt : uploadedAt;
 
-  const att = await prisma.attachment.create({
-    data: {
-      kind,
-      r2Key: key,
-      mimeType,
-      bytes,
-      width,
-      height,
-      capturedById: session.user.id,
-      capturedAt,
-      capturedLat,
-      capturedLng,
-      hash,
-    },
-  });
+  const cause = { actorId: session.user.id, source: src.photo('upload') };
+  const att = await withChangeContext(prisma, cause, (tx) =>
+    tx.attachment.create({
+      data: {
+        kind,
+        r2Key: key,
+        mimeType,
+        bytes,
+        width,
+        height,
+        capturedById: session.user.id,
+        capturedAt,
+        capturedLat,
+        capturedLng,
+        hash,
+      },
+    })
+  );
 
   return NextResponse.json({ attachmentId: att.id, deduped: false });
 }

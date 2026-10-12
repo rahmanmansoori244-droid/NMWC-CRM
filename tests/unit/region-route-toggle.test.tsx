@@ -54,6 +54,8 @@ vi.mock('@/lib/audit', () => ({
 }));
 vi.mock('@/lib/db', () => {
   const client = {
+    // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+    $executeRaw: async () => 1,
     region: {
       findUnique: async ({ where }: { where: { id: string } }) => h.regions.get(where.id) ?? null,
       update: async ({ where, data }: { where: { id: string }; data: { isActive: boolean } }) => {

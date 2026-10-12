@@ -106,6 +106,8 @@ const model = vi.hoisted(() => {
 vi.mock('@/lib/db', () => {
   const customerModel = model.customer;
   const tx = {
+    // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+    $executeRaw: async () => 1,
     customer: customerModel,
     // lib/locks.ts lockTemixQueue: the rows the queue predicate selects, by id.
     // Its SQL is pinned against TEMIX_QUEUE_WHERE by temix-deactivation-guard.test.ts.

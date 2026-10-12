@@ -66,6 +66,8 @@ vi.mock('@/lib/db', () => {
   const inTx = (id: string) =>
     id === 'L' && h.loserCodeInTx !== undefined ? { ...customer(id), temixCode: h.loserCodeInTx } : customer(id);
   const tx = {
+    // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+    $executeRaw: async () => 1,
     $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
       h.locks.push({ sql: strings.join('?'), values });
       return [];

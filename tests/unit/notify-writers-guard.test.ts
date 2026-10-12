@@ -56,7 +56,8 @@ describe('where the hierarchy is told of a salesman request', () => {
 
   it('CREATE: on the submit transaction, after the existing first-step row', () => {
     const s = fnBody(src('services/creates.ts'), 'submitCreateOnce');
-    const tx = s.indexOf('prisma.$transaction(async (tx) =>');
+    // Gap 24: the transaction opens through withChangeContext (lib/change-context.ts).
+    const tx = s.indexOf('withChangeContext(prisma,');
     const firstStep = s.indexOf("kind: 'EDIT_SUBMITTED'");
     const call = s.indexOf('notifySalesmanRequest(tx, {');
     const txEnd = s.indexOf('}, { timeout: 20_000');
@@ -73,7 +74,8 @@ describe('where the hierarchy is told of a salesman request', () => {
     ['markBranchClosedOnce', 'CLOSE', 'close'],
   ])('%s: the insert and its rows in one transaction; the P2002 translated outside it', (fn, event, kind) => {
     const s = fnBody(src('services/reactivations.ts'), fn);
-    const tx = s.indexOf('prisma.$transaction(async (tx) =>');
+    // Gap 24: the transaction opens through withChangeContext (lib/change-context.ts).
+    const tx = s.indexOf('withChangeContext(prisma,');
     const insert = s.indexOf('tx.customerEdit.create(');
     const call = s.indexOf('notifySalesmanRequest(tx, {');
     const conflict = s.indexOf(`}).catch((err: unknown) =>`);

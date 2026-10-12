@@ -35,8 +35,10 @@ function readFn(src: string, name: string): Fn | null {
     if (ts.isCallExpression(n)) {
       const callee = n.expression.getText(sf).replace(/\s+/g, '');
       calls.push({ callee, args: n.arguments.map((a) => a.getText(sf)), start: n.getStart(sf), node: n });
-      const body = n.arguments[0];
-      if (callee.endsWith('.$transaction') && body) txBodies.push([body.getStart(sf), body.getEnd()]);
+      // Gap 24: a write transaction opens through withChangeContext(client, ctx, fn, opts).
+      const viaContext = callee === 'withChangeContext';
+      const body = viaContext ? n.arguments[2] : n.arguments[0];
+      if ((viaContext || callee.endsWith('.$transaction')) && body) txBodies.push([body.getStart(sf), body.getEnd()]);
     }
     ts.forEachChild(n, walk);
   };

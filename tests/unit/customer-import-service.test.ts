@@ -252,6 +252,8 @@ let rejected: Array<{ where: unknown; data: { state: string; issues: Array<{ mes
 let rescoreWrites: Array<{ table: string; sql: string; rows: Array<[unknown, unknown]> }>;
 /** The keys of the Temix-code advisory locks taken (lib/temix-code.ts lockTemixCode). */
 let temixLocks: unknown[];
+/** Gap 24: the source each set_config named, in order (lib/change-context.ts). */
+let contexts: string[];
 
 /** Other customers in the master, as the crosswalk guard's findFirst reads them. */
 type Other = {
@@ -275,6 +277,7 @@ function setup(
   rejected = [];
   rescoreWrites = [];
   temixLocks = [];
+  contexts = [];
   h.info.mockClear();
   h.notify.mockClear();
   const w = (name: string, value: unknown = {}) =>
@@ -290,6 +293,10 @@ function setup(
     }),
     $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const q = Prisma.sql(strings, ...values);
+      if (/set_config\('nmwc\.source'/.test(q.sql)) {
+        contexts.push(String(q.values[1]));
+        return 1;
+      }
       if (/pg_advisory_xact_lock/.test(q.sql)) {
         order.push('temix.lock');
         temixLocks.push(...q.values);
@@ -655,6 +662,29 @@ describe('promoteCustomerBatchAction — F21: an import writes a branch only whe
     expect(ups[0].update).toMatchObject({ address: 'Way 10, Muscat', version: { increment: 1 } });
     // The status is only restated, so it is no status change (EL-11).
     expect(ups[0].update.lastStatusChangeAt).toBeUndefined();
+    // Gap 24: the group opens under its first row; the customer write is the lead
+    // row's (sheet row 2, full lane); the changed branch is its own row's (3); the
+    // unchanged one names nothing; the customer's own writes after are the lead's.
+    expect(contexts).toEqual([
+      'import:batch-9:2',
+      'import:batch-9:2:full',
+      'import:batch-9:3:full',
+      'import:batch-9:2:full',
+    ]);
+  });
+
+  it('gap 24: a refresh-lane group names its lead row on the refresh lane', async () => {
+    setup(live({ temixCode: 'ARC1' }), [parsed({ temixCode: 'ARC1' })], [], { branches: { 'ARC1-02': storedBranch() } });
+    await promote();
+    expect(contexts).toEqual(['import:batch-9:2', 'import:batch-9:2:refresh']);
+  });
+
+  it('gap 24: a row fixed in the app names itself on the fixed lane before its branch is written', async () => {
+    setup(live({ temixCode: 'ARC1' }), [parsed({ fixedInApp: true, address: 'Way 10, Muscat' })], [], {
+      branches: { 'ARC1-02': storedBranch() },
+    });
+    await promote();
+    expect(contexts).toEqual(['import:batch-9:2', 'import:batch-9:2:fixed']);
   });
 
   it.each([

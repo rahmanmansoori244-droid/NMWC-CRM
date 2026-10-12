@@ -96,6 +96,8 @@ const h = vi.hoisted(() => ({
   capture: vi.fn(),
   txOpen: 0,
   txOptions: [] as unknown[],
+  /** Gap 24: the source each transaction named (set_config), in order. */
+  contexts: [] as string[],
   seq: 0,
   /** Return an error to make that call throw it. */
   failOn: null as null | ((model: string, op: string, args: any) => Error | undefined),
@@ -216,6 +218,11 @@ function makeClient(isTx: boolean): any {
     u.ownedRouteId === where.ownedRouteId && u.username !== where.NOT.username;
 
   return {
+    // Gap 24: the change context (lib/change-context.ts setChangeContext).
+    $executeRaw: async (_sql: TemplateStringsArray, ...values: unknown[]) => {
+      h.contexts.push(String(values[1]));
+      return 1;
+    },
     user: {
       // The e-mail clash check: another account (NOT this username) holding the
       // address in any letter case.
@@ -472,6 +479,7 @@ beforeEach(() => {
   h.seq = 0;
   h.txOpen = 0;
   h.txOptions = [];
+  h.contexts = [];
   h.failOn = null;
   h.auditFails = null;
   h.tags = [];
@@ -630,6 +638,8 @@ describe('F07: an account row and its audit rows stand or fall together', () => 
     ]);
     // The transaction budget for a slow link is explicit, as promote's is.
     expect(h.txOptions).toContainEqual({ timeout: 20_000, maxWait: 10_000 });
+    // Gap 24: the row's transaction names its batch and sheet row as the cause.
+    expect(h.contexts.filter((c) => /^import:[^:]+:Users!\d+$/.test(c))).toHaveLength(1);
   });
 
   it('regions set by a row go in with the account write, for a new account and an existing one', async () => {

@@ -47,6 +47,8 @@ const db = vi.hoisted(() => ({
   $transaction: vi.fn(),
   // The customer row lock every photo transaction takes first.
   $queryRaw: vi.fn(),
+  // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+  $executeRaw: vi.fn(async () => 1),
 }));
 const audit = vi.hoisted(() => ({ writeAudit: vi.fn(), getAuditEnvelope: vi.fn() }));
 vi.mock('@/lib/db', () => ({ prisma: db }));

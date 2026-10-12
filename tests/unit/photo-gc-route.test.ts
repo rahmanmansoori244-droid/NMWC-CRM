@@ -38,6 +38,9 @@ const h = vi.hoisted(() => ({
 vi.mock('@/lib/db', () => ({
   prisma: {
     attachment: { findMany: h.findMany, delete: h.del },
+    // Gap 24: the change context each transaction sets first (lib/change-context.ts).
+    $transaction: async (fn: (tx: unknown) => unknown) =>
+      fn({ $executeRaw: async () => 1, attachment: { delete: h.del } }),
     cronHeartbeat: { upsert: h.upsert },
     cronRun: { create: h.runCreate },
   },
