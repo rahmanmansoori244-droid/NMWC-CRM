@@ -263,8 +263,11 @@ beforeEach(() => {
   }));
   // The direct write's read under the lock: the same row, unless a test moved it.
   tx.customer.findUnique.mockImplementation(async () => locked ?? live);
+  // Gap 19: a salesman's submit is written in a transaction with its evidence
+  // row now, so it lands here too ('e-new'); a direct write is 'e-direct'.
   tx.customerEdit.create.mockImplementation(async (a: { data: Row }) => ({
-    id: 'e-direct',
+    ...a.data,
+    id: a.data.state === 'SUBMITTED' ? 'e-new' : 'e-direct',
     state: a.data.state,
     submittedAt: a.data.submittedAt,
   }));
@@ -353,7 +356,7 @@ describe('F05 — a salesman is gated on his own route’s branches, and the set
   it('another route’s incomplete branch no longer blocks him; his request stores [his branch]', async () => {
     const res = await submit({ customer: { notes: 'Closed on Fridays' } });
     expect(res.ok, JSON.stringify(res)).toBe(true);
-    const data = db.customerEdit.create.mock.calls[0]![0].data;
+    const data = tx.customerEdit.create.mock.calls[0]![0].data;
     expect(data).toMatchObject({ state: 'SUBMITTED', submitGate: { v: 1, branchIds: [B1] } });
     expect(storedChanges()).toEqual([{ field: 'customer.notes', before: 'Old note', after: 'Closed on Fridays' }]);
   });
@@ -394,7 +397,7 @@ describe('owner decision 4 — a salesman’s submit is held complete on what it
     live = customerRow({}, [branchRow({ gpsLat: null, gpsLng: null, shopPhotoId: null }), incompleteB3()]);
     const res = await submit({ customer: { primaryPhone: '+96898765432' } });
     expect(res.ok, JSON.stringify(res)).toBe(true);
-    const data = db.customerEdit.create.mock.calls[0]![0].data;
+    const data = tx.customerEdit.create.mock.calls[0]![0].data;
     expect(data).toMatchObject({ state: 'SUBMITTED', submitGate: { v: 1, branchIds: [B1, B3] } });
   });
 
@@ -535,7 +538,15 @@ describe('F06 — the Steward/Manager direct write judges again under the custom
     expect(audit.writeAudit).toHaveBeenCalledWith(
       tx,
       expect.anything(),
-      expect.objectContaining({ action: 'UPDATE', after: { contactPerson: 'Ali' } })
+      expect.objectContaining({
+        action: 'UPDATE',
+        // Gap 19: the full applied list, customer and shop, beside the customer's values.
+        after: {
+          contactPerson: 'Ali',
+          applied: [{ field: 'customer.contactPerson', before: 'Said', after: 'Ali' }],
+          editId: 'e-direct',
+        },
+      })
     );
   });
 
@@ -917,7 +928,7 @@ describe('F1 — a salesman’s submit tells his region’s Accountant, for info
     (await hierarchy()).mockRejectedValueOnce(new Error('pool timeout'));
     const res = await submit({ customer: { notes: 'Closed on Fridays' } });
     expect(res.ok, JSON.stringify(res)).toBe(true);
-    expect(db.customerEdit.create).toHaveBeenCalledTimes(1);
+    expect(tx.customerEdit.create).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -950,30 +961,49 @@ describe('launch fix — a resubmit answers the sent-back request it fixes (lib/
     expect(db.customerEdit.create).not.toHaveBeenCalled();
     expect(order(db.$queryRaw)).toBeLessThan(order(tx.customerEdit.create));
     expect(tx.customerEdit.create.mock.calls[0]![0].data).toMatchObject({ state: 'SUBMITTED', customerId: CUST });
-    expect(audit.writeAudit).toHaveBeenCalledTimes(1);
+    // Gap 19: the new request's own evidence row first, then the answered one's.
+    expect(audit.writeAudit).toHaveBeenCalledTimes(2);
+    expect(audit.writeAudit.mock.calls[0]![2]).toMatchObject({ action: 'CREATE', entityType: 'CustomerEdit', entityId: 'e-new' });
     // F13: written with the request that answers it, never on its own.
-    expect(audit.writeAudit.mock.calls[0]![0]).toBe(tx);
-    expect(audit.writeAudit.mock.calls[0]![2]).toMatchObject({
+    expect(audit.writeAudit.mock.calls[1]![0]).toBe(tx);
+    expect(audit.writeAudit.mock.calls[1]![2]).toMatchObject({
       action: 'UPDATE',
       entityType: 'CustomerEdit',
       entityId: 'e-returned',
       reason: 'resubmitted: answered by a new request',
-      after: { state: 'NEEDS_CORRECTION', answeredBy: 'e-direct' },
+      after: { state: 'NEEDS_CORRECTION', answeredBy: 'e-new' },
     });
   });
 
-  it('a draft answers nothing; with nothing to answer a submit is the one insert it was', async () => {
+  it('a draft answers nothing; with nothing to answer a submit is its insert and its evidence row, together', async () => {
     db.$queryRaw.mockResolvedValue([{ id: 'e-returned' }]);
     expect((await submit({ isDraft: true, customer: { notes: 'Half done' } })).ok).toBe(true);
     expect(db.$queryRaw).not.toHaveBeenCalled();
     expect(audit.writeAudit).not.toHaveBeenCalled();
     db.$queryRaw.mockResolvedValue([]);
     db.$transaction.mockClear();
-    db.customerEdit.create.mockClear();
+    tx.customerEdit.create.mockClear();
     expect((await submit({ customer: { notes: 'Closed on Fridays' } })).ok).toBe(true);
-    expect(db.customerEdit.create).toHaveBeenCalledTimes(1);
-    expect(db.$transaction).not.toHaveBeenCalled();
-    expect(audit.writeAudit).not.toHaveBeenCalled();
+    // Gap 19 (lossless paths): one transaction — the request and the request as
+    // sent in the append-only ledger. It was one autocommitted insert with no row.
+    expect(db.customerEdit.create).not.toHaveBeenCalled();
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.customerEdit.create).toHaveBeenCalledTimes(1);
+    expect(audit.writeAudit).toHaveBeenCalledTimes(1);
+    expect(audit.writeAudit.mock.calls[0]![0]).toBe(tx);
+    expect(audit.writeAudit.mock.calls[0]![2]).toMatchObject({
+      action: 'CREATE',
+      entityType: 'CustomerEdit',
+      entityId: 'e-new',
+      reason: 'request sent',
+      after: {
+        process: 'UPDATE',
+        state: 'SUBMITTED',
+        customerId: CUST,
+        fieldChanges: [{ field: 'customer.notes', before: 'Old note', after: 'Closed on Fridays' }],
+        submitGate: { v: 1, branchIds: [B1] },
+      },
+    });
   });
 
   it('an audit row that cannot be written fails the submit with it: nothing is half-saved', async () => {

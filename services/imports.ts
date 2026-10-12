@@ -34,6 +34,15 @@ import { sendAlert } from '@/lib/alert';
 import { importRejectionAlert } from '@/lib/import-rejection-alert';
 import { randomUUID } from 'node:crypto';
 import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { sha256Hex } from '@/lib/fingerprint';
+import {
+  IMPORT_AUDIT_REASON_PREFIX,
+  changeAudit,
+  createAudit,
+  differingCells,
+  importAuditReason,
+  type ImportLineage,
+} from '@/lib/import-lineage';
 import {
   ACCOUNT_IMPORT_STOP_AFTER_DB_FAILURES,
   ACCOUNT_ROW_NOT_PROCESSED,
@@ -225,6 +234,9 @@ async function uploadAccountMasterCore(
       uploadedById: me.id,
       status: 'PARSING',
       totalRows: sheets.reduce((acc, s) => acc + s.rows.length, 0),
+      // Gap 7: which file this was, for as long as the batch is kept.
+      fileSha256: sha256Hex(buf),
+      fileBytes: buf.length,
     },
   });
 
@@ -1308,6 +1320,10 @@ async function uploadCustomerMasterCore(
       uploadedById: me.id,
       status: 'PARSING',
       totalRows: sheet.rows.length,
+      // Gap 7: which file set a value survives the 90-day sweep of its rows —
+      // the history names the batch and row, and the batch names the file.
+      fileSha256: sha256Hex(buf),
+      fileBytes: buf.length,
     },
   });
 
@@ -1495,6 +1511,10 @@ function differingBranchCells(
  * filter reads the CUSTOMER's updatedAt (services/exports.ts), not the branch's.
  */
 type LaneOutcome = { notes: Array<string | null>; written: boolean[] };
+/** What the branch-only lane did to a branch, for its audit row (gap 4). */
+type LaneBranchChange =
+  | { kind: 'CREATE'; values: Record<string, unknown> }
+  | { kind: 'UPDATE'; fields: string[]; stored: Record<string, unknown>; write: Record<string, unknown> };
 
 async function refreshLaneBranches(
   tx: Prisma.TransactionClient,
@@ -1505,9 +1525,11 @@ async function refreshLaneBranches(
     me: string;
     // Gap 24: names the row (resolved[k]) as the cause just before its branch is written.
     beforeWrite: (k: number) => Promise<void>;
+    // Gap 4: the audit row of a branch it created or changed, under row k's name.
+    afterWrite: (k: number, branchId: string, change: LaneBranchChange) => Promise<void>;
   }
 ): Promise<LaneOutcome> {
-  const { customerId, resolved, me, beforeWrite } = args;
+  const { customerId, resolved, me, beforeWrite, afterWrite } = args;
   const notes: Array<string | null> = [];
   const written: boolean[] = [];
   const skip = (note: string | null) => {
@@ -1545,6 +1567,8 @@ async function refreshLaneBranches(
         deletedAt: true,
         branchName: true,
         routeId: true,
+        // For the audit row only: differingBranchCells is given no region here.
+        regionId: true,
         address: true,
         dayOfVisit: true,
         status: true,
@@ -1559,7 +1583,7 @@ async function refreshLaneBranches(
         continue;
       }
       await beforeWrite(k);
-      await tx.branch.create({
+      const created = await tx.branch.create({
         data: {
           branchCode: r.branchCode,
           branchName: r.branchName,
@@ -1572,6 +1596,19 @@ async function refreshLaneBranches(
           lastStatusChangeAt: r.status === 'CLOSED' ? new Date() : null,
           createdById: me,
           lastEditedById: me,
+        },
+      });
+      await afterWrite(k, created.id, {
+        kind: 'CREATE',
+        values: {
+          branchCode: created.branchCode,
+          customerId: created.customerId,
+          branchName: created.branchName,
+          routeId: created.routeId,
+          regionId: created.regionId,
+          address: created.address,
+          dayOfVisit: created.dayOfVisit,
+          status: created.status,
         },
       });
       notes.push(null);
@@ -1596,7 +1633,8 @@ async function refreshLaneBranches(
       skip(`branch ${r.branchCode} was archived and was not revived`);
       continue;
     }
-    const differs = differingBranchCells(r, found);
+    // The region is not compared on this lane (differingBranchCells, above).
+    const differs = differingBranchCells(r, { ...found, regionId: undefined });
     if (differs.length === 0) {
       skip(null);
       continue;
@@ -1608,6 +1646,15 @@ async function refreshLaneBranches(
       continue;
     }
     await beforeWrite(k);
+    const laneWrite: Record<string, unknown> = {
+      branchName: r.nameGiven ? r.branchName : undefined,
+      regionId: r.routeResolved ? r.regionId : undefined,
+      routeId: r.routeResolved ? r.routeId : undefined,
+      address: r.sheetAddress ?? undefined,
+      dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
+      status: (r.status as CustomerStatus | null) ?? undefined,
+    };
+    const laneFields = differingCells(laneWrite, found);
     await tx.branch.update({
       where: { id: found.id },
       data: {
@@ -1624,6 +1671,9 @@ async function refreshLaneBranches(
         version: { increment: 1 },
       },
     });
+    if (laneFields.length > 0) {
+      await afterWrite(k, found.id, { kind: 'UPDATE', fields: laneFields, stored: found, write: laneWrite });
+    }
     notes.push(null);
     written.push(true);
   }
@@ -2275,8 +2325,14 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     deletedAt: true,
                     createdById: true,
                     legalName: true,
+                    // Gap 4: what the row would write is compared with what is stored,
+                    // so a customer the row leaves as it is is not written at all.
+                    primaryPhone: true,
                     primaryPhoneNorm: true,
+                    crNumber: true,
                     crNumberNorm: true,
+                    creditLimit: true,
+                    paymentTermDays: true,
                     contactPerson: true,
                     channel: { select: { key: true } },
                     // F16: whether a channel change leaves the stored
@@ -2485,8 +2541,15 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 existing.temixSyncState === 'UPLOADED' ||
                 existing.temixSyncState === 'SYNCED')
             ) {
+              // Gap 4: an import now writes a CREATE row for each customer it
+              // creates too; those carry an 'import …' reason and are not a finalize.
               const createdByFinalize = await tx.auditLog.findFirst({
-                where: { action: 'CREATE', entityType: 'Customer', entityId: existing.id },
+                where: {
+                  action: 'CREATE',
+                  entityType: 'Customer',
+                  entityId: existing.id,
+                  OR: [{ reason: null }, { NOT: { reason: { startsWith: IMPORT_AUDIT_REASON_PREFIX } } }],
+                },
                 select: { id: true },
               });
               if (createdByFinalize) {
@@ -2568,8 +2631,41 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               await setChangeContext(tx, { actorId: me.id, source });
               namedSource = source;
             };
+            // Gaps 4 and 7: which sheet row set a value, for every customer and
+            // shop this group creates or changes — kept in the audit row long
+            // after the import rows themselves are swept (90 days).
+            const lineageOf = (i: number): ImportLineage => ({
+              batchId,
+              importRowId: g.rowIds[i]!,
+              rowNumber: rowNo(i),
+              lane: laneOf(i),
+            });
+            /** One AuditLog row per created or changed customer or shop, under its row's name. */
+            const auditEntity = async (
+              i: number,
+              entity: { type: 'Customer' | 'Branch'; id: string },
+              change:
+                | { kind: 'CREATE'; values: Record<string, unknown> }
+                | { kind: 'UPDATE'; fields: string[]; stored: Record<string, unknown>; write: Record<string, unknown> }
+            ) => {
+              await nameRow(i);
+              const lineage = lineageOf(i);
+              await writeAudit(tx, env, {
+                action: change.kind,
+                entityType: entity.type,
+                entityId: entity.id,
+                ...(change.kind === 'CREATE'
+                  ? { after: createAudit(change.values, lineage) }
+                  : changeAudit(change.fields, change.stored, change.write, lineage)),
+                reason: importAuditReason(batchId, lineage.rowNumber, lineage.lane),
+              });
+            };
             await nameRow(leadIdx);
             let customerId: string;
+            // Gap 4: the full lane left the customer's own row as it was, and
+            // whether it wrote any of the customer's shops.
+            let customerUnchanged = false;
+            let fullBranchWritten = false;
             if (refreshLane) {
               // ── Temix REFRESH row (existing live customer + temix_code) ──
               // Narrow, Temix-OWNED update only: crosswalk code + payment terms +
@@ -2602,18 +2698,32 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                           ? null
                           : undefined,
                   };
-              await tx.customer.update({
-                where: { id: existing!.id },
-                data: {
-                  temixCode: lead.temixCode,
-                  ...erpOwned,
-                  lastEditedById: me.id,
-                  // B-05: make the refresh visible to the optimistic lock so a
-                  // concurrent edit-approve sees VERSION_CONFLICT, not a silent
-                  // revert of Temix-authoritative fields.
-                  version: { increment: 1 },
-                },
-              });
+              // Gap 4: only what differs from what is stored is written. A refresh
+              // that restates the customer's code, terms and figures writes nothing
+              // (no version, editor or updatedAt bump); the flip below still runs.
+              const refreshWrite: Record<string, unknown> = { temixCode: lead.temixCode, ...erpOwned };
+              const refreshChanged = differingCells(refreshWrite, existing!);
+              if (refreshChanged.length > 0) {
+                await tx.customer.update({
+                  where: { id: existing!.id },
+                  data: {
+                    ...(Object.fromEntries(
+                      refreshChanged.map((f) => [f, refreshWrite[f]])
+                    ) as Prisma.CustomerUpdateInput),
+                    lastEditedById: me.id,
+                    // B-05: make the refresh visible to the optimistic lock so a
+                    // concurrent edit-approve sees VERSION_CONFLICT, not a silent
+                    // revert of Temix-authoritative fields.
+                    version: { increment: 1 },
+                  },
+                });
+                await auditEntity(leadIdx, { type: 'Customer', id: existing!.id }, {
+                  kind: 'UPDATE',
+                  fields: refreshChanged,
+                  stored: existing!,
+                  write: refreshWrite,
+                });
+              }
               // Blueprint §8.3: the inbound refresh is what flips UPLOADED →
               // SYNCED. Guarded so a PENDING_UPLOAD row (correction approved
               // after the last batch) keeps its place in the queue. This lane
@@ -2742,75 +2852,145 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                   subChannel: `the channel in this row (${lead.channelKey?.toUpperCase()}) replaces the customer's channel, so its sub-channel, which belongs to the old channel, was cleared — pick a sub-channel of the new channel on the customer page`,
                 };
               }
-              const customer = await tx.customer.upsert({
-                where: { nmwcCode: custCode },
-                update: {
-                  // Re-import of an EXISTING customer via a non-Temix row must not
-                  // clobber CRM-owned data (adversarial-review CONFIRMED). Presence-
-                  // aware, mirroring the refresh lane: an ABSENT payment_terms column
-                  // must NOT flip a CREDIT customer to CASH, and a BLANK phone/CR/
-                  // contact cell must NOT null the stored value. `undefined` = "leave
-                  // unchanged". cust_name is mandatory (a blank row is quarantined),
-                  // so legalName is always a real value here.
-                  legalName: lead.custName,
-                  // SEC-03/09 (2): paymentTerms is deliberately NOT written here. On an
-                  // EXISTING customer, terms are Temix-owned (the refresh lane above) or
-                  // approval-owned (the credit create chain). The disagreement guard at
-                  // the top of this branch already rejects any row that differs, so the
-                  // only value that could reach this line is one that already matches what
-                  // is stored -- writing it buys nothing and re-opens the hole if that
-                  // guard is ever loosened. It also covers the one case the guard cannot
-                  // see: if a concurrent insert made this upsert take the update path when
-                  // `existing` read null, not writing terms fails in the safe direction.
-                  // `undefined` = leave unchanged, same rule as phone/CR/contact below.
-                  primaryPhone: lead.phone ?? undefined,
-                  primaryPhoneNorm: lead.phone ?? undefined,
-                  contactPerson: lead.contactPerson ?? undefined,
-                  crNumber: lead.crNumber ?? undefined,
-                  crNumberNorm: lead.crNumber ? normalizeCR(lead.crNumber) : undefined,
-                  channelId: groupChannelId ?? undefined,
-                  subChannelId: clearSub ? null : undefined,
-                  // A status other than ACTIVE is settled after the branches are
-                  // written, from every live branch (below).
-                  status: statedStatus === 'ACTIVE' ? 'ACTIVE' : undefined,
-                  lastEditedById: me.id,
-                  // B-05: bump the optimistic version so a concurrent edit-approve
-                  // sees VERSION_CONFLICT rather than a silently lost update.
-                  version: { increment: 1 },
-                },
-                create: {
-                  nmwcCode: custCode,
-                  legalName: lead.custName,
-                  paymentTerms: pt,
-                  primaryPhone: lead.phone,
-                  primaryPhoneNorm: lead.phone,
-                  contactPerson: lead.contactPerson,
-                  crNumber: lead.crNumber,
-                  crNumberNorm: normalizeCR(lead.crNumber),
-                  channelId: groupChannelId ?? null,
-                  status: statedStatus ?? 'ACTIVE',
-                  // Initial master load may carry the ERP code directly; credit
-                  // figures land only on CREDIT rows.
-                  temixCode: lead.temixCode ?? null,
-                  // Customer.temixSyncState defaults to SYNCED, which is right for a
-                  // row that arrived carrying an ERP code and wrong for one that did
-                  // not. A customer imported without a temix_code was born claiming
-                  // the ERP already knew it: never queued for an upload batch, absent
-                  // from /temix (which counts only PENDING_UPLOAD and
-                  // DEACTIVATE_PENDING), and showing a blank code beside the word
-                  // "synced". It exists in the CRM, appears on a salesman's route,
-                  // can be enriched — and Temix never learns it exists, so it cannot
-                  // be invoiced. Queue it instead.
-                  temixSyncState: lead.temixCode ? 'SYNCED' : 'PENDING_UPLOAD',
-                  temixSyncPendingSince: lead.temixCode ? null : new Date(),
-                  creditLimit: pt === 'CREDIT' ? (lead.creditLimit ?? null) : null,
-                  paymentTermDays: pt === 'CREDIT' ? (lead.paymentTermDays ?? null) : null,
-                  createdById: me.id,
-                  lastEditedById: me.id,
-                  importBatchId: batchId,
-                },
-              });
-              customerId = customer.id;
+              // What the row writes on an existing customer (the update below).
+              const customerWrite: Record<string, unknown> = {
+                // Re-import of an EXISTING customer via a non-Temix row must not
+                // clobber CRM-owned data (adversarial-review CONFIRMED). Presence-
+                // aware, mirroring the refresh lane: an ABSENT payment_terms column
+                // must NOT flip a CREDIT customer to CASH, and a BLANK phone/CR/
+                // contact cell must NOT null the stored value. `undefined` = "leave
+                // unchanged". cust_name is mandatory (a blank row is quarantined),
+                // so legalName is always a real value here.
+                legalName: lead.custName,
+                // SEC-03/09 (2): paymentTerms is deliberately NOT written here — see
+                // the update below.
+                primaryPhone: lead.phone ?? undefined,
+                primaryPhoneNorm: lead.phone ?? undefined,
+                contactPerson: lead.contactPerson ?? undefined,
+                crNumber: lead.crNumber ?? undefined,
+                crNumberNorm: lead.crNumber ? normalizeCR(lead.crNumber) : undefined,
+                channelId: groupChannelId ?? undefined,
+                subChannelId: clearSub ? null : undefined,
+                // A status other than ACTIVE is settled after the branches are
+                // written, from every live branch (below).
+                status: statedStatus === 'ACTIVE' ? 'ACTIVE' : undefined,
+              };
+              // Gap 4: a customer this row leaves as it is is not written — no
+              // version, lastEditedById or updatedAt bump — so the import stops
+              // reading as the Steward's edit of every customer in the file.
+              const customerChanged = existing ? differingCells(customerWrite, existing) : null;
+              if (existing && customerChanged!.length === 0) {
+                customerId = existing.id;
+                customerUnchanged = true;
+              } else {
+                const customer = await tx.customer.upsert({
+                  where: { nmwcCode: custCode },
+                  update: {
+                    ...(Object.fromEntries(
+                      (customerChanged ?? Object.keys(customerWrite)).map((f) => [f, customerWrite[f]])
+                    ) as Prisma.CustomerUpdateInput),
+                    // Re-import of an EXISTING customer via a non-Temix row must not
+                    // clobber CRM-owned data (adversarial-review CONFIRMED). Presence-
+                    // aware, mirroring the refresh lane: an ABSENT payment_terms column
+                    // must NOT flip a CREDIT customer to CASH, and a BLANK phone/CR/
+                    // contact cell must NOT null the stored value. `undefined` = "leave
+                    // unchanged". cust_name is mandatory (a blank row is quarantined),
+                    // so legalName is always a real value here.
+                    // SEC-03/09 (2): paymentTerms is deliberately NOT written here. On an
+                    // EXISTING customer, terms are Temix-owned (the refresh lane above) or
+                    // approval-owned (the credit create chain). The disagreement guard at
+                    // the top of this branch already rejects any row that differs, so the
+                    // only value that could reach this line is one that already matches what
+                    // is stored -- writing it buys nothing and re-opens the hole if that
+                    // guard is ever loosened. It also covers the one case the guard cannot
+                    // see: if a concurrent insert made this upsert take the update path when
+                    // `existing` read null, not writing terms fails in the safe direction.
+                    // `undefined` = leave unchanged, same rule as phone/CR/contact.
+                    // Only the cells that differ from the stored customer are written
+                    // (customerWrite and customerChanged, above); all of them when the
+                    // customer was not read (a concurrent insert, the race above).
+                    lastEditedById: me.id,
+                    // B-05: bump the optimistic version so a concurrent edit-approve
+                    // sees VERSION_CONFLICT rather than a silently lost update.
+                    version: { increment: 1 },
+                  },
+                  create: {
+                    nmwcCode: custCode,
+                    legalName: lead.custName,
+                    paymentTerms: pt,
+                    primaryPhone: lead.phone,
+                    primaryPhoneNorm: lead.phone,
+                    contactPerson: lead.contactPerson,
+                    crNumber: lead.crNumber,
+                    crNumberNorm: normalizeCR(lead.crNumber),
+                    channelId: groupChannelId ?? null,
+                    status: statedStatus ?? 'ACTIVE',
+                    // Initial master load may carry the ERP code directly; credit
+                    // figures land only on CREDIT rows.
+                    temixCode: lead.temixCode ?? null,
+                    // Customer.temixSyncState defaults to SYNCED, which is right for a
+                    // row that arrived carrying an ERP code and wrong for one that did
+                    // not. A customer imported without a temix_code was born claiming
+                    // the ERP already knew it: never queued for an upload batch, absent
+                    // from /temix (which counts only PENDING_UPLOAD and
+                    // DEACTIVATE_PENDING), and showing a blank code beside the word
+                    // "synced". It exists in the CRM, appears on a salesman's route,
+                    // can be enriched — and Temix never learns it exists, so it cannot
+                    // be invoiced. Queue it instead.
+                    temixSyncState: lead.temixCode ? 'SYNCED' : 'PENDING_UPLOAD',
+                    temixSyncPendingSince: lead.temixCode ? null : new Date(),
+                    creditLimit: pt === 'CREDIT' ? (lead.creditLimit ?? null) : null,
+                    paymentTermDays: pt === 'CREDIT' ? (lead.paymentTermDays ?? null) : null,
+                    createdById: me.id,
+                    lastEditedById: me.id,
+                    importBatchId: batchId,
+                    // Gap 7: the sheet row that created it (the lead row).
+                    importRowId: g.rowIds[leadIdx],
+                  },
+                });
+                customerId = customer.id;
+                if (existing) {
+                  // Status moves are recorded by the customer-status rule below
+                  // (followBranchStatus), from the status read under the lock.
+                  const fields = customerChanged!.filter((f) => f !== 'status');
+                  if (fields.length > 0) {
+                    await auditEntity(leadIdx, { type: 'Customer', id: customer.id }, {
+                      kind: 'UPDATE',
+                      fields,
+                      stored: existing,
+                      write: customerWrite,
+                    });
+                  }
+                } else if (customer.importRowId === g.rowIds[leadIdx]) {
+                  await auditEntity(leadIdx, { type: 'Customer', id: customer.id }, {
+                    kind: 'CREATE',
+                    values: {
+                      nmwcCode: customer.nmwcCode,
+                      legalName: customer.legalName,
+                      paymentTerms: customer.paymentTerms,
+                      primaryPhone: customer.primaryPhone,
+                      contactPerson: customer.contactPerson,
+                      crNumber: customer.crNumber,
+                      channelId: customer.channelId,
+                      status: customer.status,
+                      temixCode: customer.temixCode,
+                      temixSyncState: customer.temixSyncState,
+                      creditLimit: customer.creditLimit,
+                      paymentTermDays: customer.paymentTermDays,
+                    },
+                  });
+                } else {
+                  // Not read, yet not created here: a concurrent insert of the same
+                  // code, written over by the upsert's update. Its earlier values
+                  // were never read, so only what this row wrote is recorded.
+                  await auditEntity(leadIdx, { type: 'Customer', id: customer.id }, {
+                    kind: 'UPDATE',
+                    fields: Object.keys(customerWrite).filter((f) => customerWrite[f] !== undefined),
+                    stored: {},
+                    write: customerWrite,
+                  });
+                }
+              }
             }
             if (fullLane) {
               for (const [k, r] of fullBranches.entries()) {
@@ -2865,13 +3045,23 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 // — on branches the load had not changed; and it never bumped
                 // version on one it had changed, as an approved edit does (B-05).
                 // The export's "updated since" filter reads the CUSTOMER's
-                // updatedAt (services/exports.ts), which the upsert above moves
-                // on every full-lane group whatever its branches do. A branch
-                // left in the old region of a route the account import moved
-                // is a change, and the write below repairs it.
+                // updatedAt (services/exports.ts): the upsert above moves it when
+                // the customer changed, and the loop's end when only a branch did
+                // (gap 4). A branch left in the old region of a route the account
+                // import moved is a change, and the write below repairs it.
                 if (branchOwner && differingBranchCells(r, branchOwner).length === 0) continue;
                 await nameRow(fullIdx[k]);
-                await tx.branch.upsert({
+                fullBranchWritten = true;
+                // Gap 4: what this row writes on the shop, for its audit row.
+                const branchWrite: Record<string, unknown> = {
+                  branchName: r.nameGiven ? r.branchName : undefined,
+                  regionId: r.routeResolved ? r.regionId : undefined,
+                  routeId: r.routeResolved ? r.routeId : undefined,
+                  address: r.sheetAddress ?? undefined,
+                  dayOfVisit: (r.dayOfVisit as DayOfWeek | null) ?? undefined,
+                  status: (r.status as CustomerStatus | null) ?? undefined,
+                };
+                const written = await tx.branch.upsert({
                   where: { branchCode: r.branchCode },
                   // Item 20 (owner decision): a blank cell keeps the stored value.
                   // This wrote the fallbacks unconditionally, so a re-import with an
@@ -2911,6 +3101,38 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     lastEditedById: me.id,
                   },
                 });
+                if (branchOwner) {
+                  const fields = differingCells(branchWrite, branchOwner);
+                  if (fields.length > 0) {
+                    await auditEntity(fullIdx[k]!, { type: 'Branch', id: written.id }, {
+                      kind: 'UPDATE',
+                      fields,
+                      stored: branchOwner,
+                      write: branchWrite,
+                    });
+                  }
+                } else {
+                  await auditEntity(fullIdx[k]!, { type: 'Branch', id: written.id }, {
+                    kind: 'CREATE',
+                    values: {
+                      branchCode: written.branchCode,
+                      customerId: written.customerId,
+                      branchName: written.branchName,
+                      routeId: written.routeId,
+                      regionId: written.regionId,
+                      address: written.address,
+                      dayOfVisit: written.dayOfVisit,
+                      status: written.status,
+                    },
+                  });
+                }
+              }
+              // Gap 4: the customer's own row was left as it was, but a shop of it
+              // changed: its updatedAt moves (and nothing else of it), because the
+              // master export's "updated since" reads the CUSTOMER's updatedAt
+              // (services/exports.ts) — as the refresh lane already does.
+              if (customerUnchanged && fullBranchWritten) {
+                await tx.customer.update({ where: { id: customerId }, data: { updatedAt: new Date() } });
               }
               // Merged, not replaced: the lead row may already carry the
               // sub-channel note (F16), which this used to wipe.
@@ -2925,6 +3147,8 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                 resolved: laneIdx.map((i) => resolvedBranches[i]),
                 me: me.id,
                 beforeWrite: (k) => nameRow(laneIdx[k]),
+                afterWrite: (k, branchId, change) =>
+                  auditEntity(laneIdx[k]!, { type: 'Branch', id: branchId }, change),
               });
               // The customer's own writes below are the lead row's again.
               await nameRow(leadIdx);
@@ -2945,10 +3169,16 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
               const liveActive = await tx.branch.count({
                 where: { customerId, deletedAt: null, status: 'ACTIVE' },
               });
-              await tx.customer.update({
-                where: { id: customerId },
-                data: { status: liveActive > 0 ? 'ACTIVE' : statedStatus },
-              });
+              const settled: CustomerStatus = liveActive > 0 ? 'ACTIVE' : statedStatus;
+              // Gap 4: not written when it is already the stored status (the upsert
+              // above never writes a status other than ACTIVE, so an existing
+              // customer's is still the one read under the lock): no updatedAt bump.
+              if (!existing || settled !== existing.status) {
+                await tx.customer.update({
+                  where: { id: customerId },
+                  data: { status: settled },
+                });
+              }
             }
             // Owner decision 7 (2026-10-07), on every lane: a branch this load
             // closed or reopened moves the customer as any other path does
@@ -3032,6 +3262,13 @@ async function promoteCustomerBatchCore(formData: FormData): Promise<PromoteSlic
                     },
                   });
                   if (wrote.count === 1) {
+                    // Gap 4: the fill is a change of the customer, said with its row.
+                    await auditEntity(chosen.i, { type: 'Customer', id: customerId }, {
+                      kind: 'UPDATE',
+                      fields: ['primaryPhone', 'primaryPhoneNorm'],
+                      stored: { primaryPhone: null, primaryPhoneNorm: phoneNow },
+                      write: { primaryPhone: fill, primaryPhoneNorm: fill },
+                    });
                     await tx.customer.updateMany({
                       where: { id: customerId, temixSyncState: { in: ['SYNCED', 'UPLOADED'] } },
                       data: { temixSyncState: 'PENDING_UPLOAD', temixSyncPendingSince: new Date() },

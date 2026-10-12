@@ -78,6 +78,13 @@ import { omanWhen, submissionIdSchema, type SubmitReceipt } from '@/lib/submissi
 import { UNWIRED_LIVE } from '@/lib/photo-attach';
 import { isSignedFormStep, parseChain } from '@/lib/approval-chains';
 import { settleRequestAlerts } from '@/lib/notifications';
+import { revisionPayload, revisionPayloadSha256 } from '@/lib/edit-revision';
+
+/** Gap 27: at most this many customers sharing the phone are named in the submit's audit row. */
+const PHONE_MATCH_LIMIT = 10;
+
+/** The refusals of an exact duplicate at submit (lib/create-guards.ts). */
+const DUPLICATE_REFUSALS = new Set(['DUPLICATE_CR', 'DUPLICATE_CUSTOMER']);
 
 async function requireUser() {
   return requireActor(); // F15: refuses a session that must change its password
@@ -375,11 +382,20 @@ async function submitCreateOnce(
   }
 
   // Phone-only duplicates never block (P1.3) — advisory log for stewards.
+  // Gap 27 (lossless paths): and what was known at submit is kept in the submit's
+  // audit row (duplicateSignals): the live customers on this phone (ids, at most
+  // ten) and whether a live customer holds this CR number — so a later merge can
+  // show what was known when the customer was created. The 30-day logs could not.
+  let phoneMatchCustomerIds: string[] = [];
   if (primaryPhoneNorm) {
-    const phoneDup = await prisma.customer.findFirst({
+    const phoneDups = await prisma.customer.findMany({
       where: { primaryPhoneNorm, deletedAt: null },
       select: { id: true, nmwcCode: true },
+      orderBy: { id: 'asc' },
+      take: PHONE_MATCH_LIMIT,
     });
+    phoneMatchCustomerIds = phoneDups.map((d) => d.id);
+    const phoneDup = phoneDups[0];
     if (phoneDup) {
       logger.info(
         { actor: session.id, dupId: phoneDup.id, dupNmwc: phoneDup.nmwcCode },
@@ -387,6 +403,10 @@ async function submitCreateOnce(
       );
     }
   }
+  const crMatch = crNumberNorm
+    ? (await prisma.customer.count({ where: { crNumberNorm, deletedAt: null } })) > 0
+    : false;
+  const duplicateSignals = { phoneMatchCustomerIds, crMatch };
 
   const submittedAt = new Date();
   const chain = resolveChain(EditProcess.CREATE, c.paymentTerms);
@@ -448,6 +468,7 @@ async function submitCreateOnce(
   const env = await getAuditEnvelope(session.id);
 
   const cause = { actorId: session.id, source: src.edit(existing?.id ?? 'new') };
+  let revisionSha256: string | null = null;
   const edit = await withChangeContext(prisma, cause, async (tx) => {
     // Hard-block exact duplicates — serialized on the FULL identity surface
     // (CR leg + name/phone/region triple leg) so two racing submits cannot
@@ -577,7 +598,8 @@ async function submitCreateOnce(
 
     // Claim referenced attachments for this edit; release (soft-delete) any
     // previously claimed photo the salesman removed from the form — mirrors
-    // detachPhoto semantics so the GC pipeline picks them up. Owner decisions
+    // detachPhoto semantics so the GC pipeline picks them up. Gap 15: the
+    // fingerprint (hash) is kept, and each release has its SOFT_DELETE row. Owner decisions
     // 2026-10-11: the same for the credit documents, so a request switched to
     // CASH releases them; and the pages of a signed credit application are not
     // in any payload, so resubmitting after a correction releases them — the new
@@ -599,14 +621,69 @@ async function submitCreateOnce(
         );
       }
     }
-    await tx.attachment.updateMany({
+    const released = await tx.attachment.findMany({
       where: {
         editId: editRow.id,
         deletedAt: null,
         ...(attachmentIds.length ? { id: { notIn: attachmentIds } } : {}),
       },
-      data: { deletedAt: submittedAt, hash: null },
+      select: { id: true, kind: true, capturedById: true, capturedAt: true, hash: true },
+      orderBy: { id: 'asc' },
     });
+    if (released.length > 0) {
+      await tx.attachment.updateMany({
+        where: { id: { in: released.map((a) => a.id) }, deletedAt: null },
+        data: { deletedAt: submittedAt },
+      });
+      for (const a of released) {
+        await writeAudit(tx, env, {
+          action: 'SOFT_DELETE',
+          entityType: 'Attachment',
+          entityId: a.id,
+          reason: 'released: no longer on the new-customer request when it was sent again',
+          before: {
+            kind: a.kind,
+            editId: editRow.id,
+            capturedById: a.capturedById,
+            capturedAt: a.capturedAt.toISOString(),
+            hash: a.hash,
+          } as Prisma.InputJsonValue,
+        });
+      }
+    }
+
+    // Gap 12 (lossless paths): what this round contained, as sent — kept for
+    // ever in EditRevision, so a later round cannot overwrite what an earlier
+    // approver saw. Drafts are read back for their ids (the order finalize
+    // numbers the shops in). Personal values as fingerprints only.
+    if (!isDraft) {
+      const drafts = await tx.editBranchDraft.findMany({
+        where: { editId: editRow.id },
+        orderBy: { id: 'asc' },
+      });
+      const payload = revisionPayload({
+        customer: customerDraftFields,
+        branches: drafts,
+        documents: byKind.map((r) => ({ id: r.id, kind: r.expect })),
+      });
+      revisionSha256 = revisionPayloadSha256(payload);
+      await tx.editRevision.create({
+        data: {
+          editId: editRow.id,
+          cycle: editRow.cycle,
+          process: EditProcess.CREATE,
+          submittedAt,
+          submittedById: session.id,
+          paymentTerms: c.paymentTerms,
+          requestedCreditLimit: creditFields.requestedCreditLimit,
+          requestedPaymentTermDays: creditFields.requestedPaymentTermDays,
+          approvalChain: chain as unknown as Prisma.InputJsonValue,
+          payload: payload as Prisma.InputJsonValue,
+          payloadSha256: revisionSha256,
+          source: src.edit(editRow.id),
+        },
+      });
+    }
 
     await writeAudit(tx, env, {
       action: existing ? 'UPDATE' : 'CREATE',
@@ -618,6 +695,10 @@ async function submitCreateOnce(
         paymentTerms: c.paymentTerms,
         branches: branchDraftRows.length,
         cycle: editRow.cycle,
+        // Gap 27: what was known about possible duplicates when it was sent.
+        duplicateSignals,
+        // Gap 12: the round as sent (EditRevision), by its fingerprint.
+        ...(revisionSha256 ? { revisionSha256 } : {}),
       } as unknown as Prisma.InputJsonValue,
     });
 
@@ -651,7 +732,23 @@ async function submitCreateOnce(
     // Above Prisma's 5s default: the draft write fans out (~20 statements for
     // a 10-branch request) and the identity lock may wait on a concurrent
     // finalize holding the same keys.
-  }, { timeout: 20_000, maxWait: 5_000 });
+  }, { timeout: 20_000, maxWait: 5_000 }).catch(async (err: unknown) => {
+    // Gap 27 (lossless paths): a submit refused as an exact duplicate leaves a
+    // record — who tried, which rule refused it, and what was known — in its own
+    // short transaction, since the refused one rolled back. Best-effort: the
+    // refusal is the answer either way. Ids and rule names only.
+    if (!isDraft && err instanceof ConflictError && DUPLICATE_REFUSALS.has(err.code)) {
+      await recordRefusedDuplicate(env, session.id, {
+        editId: existing?.id ?? null,
+        submissionId: submissionId ?? null,
+        rule: err.code,
+        duplicateSignals,
+      }).catch((e: unknown) =>
+        logger.warn({ err: (e as Error).message?.slice(0, 80), by: session.id }, 'create.duplicate_attempt_unrecorded')
+      );
+    }
+    throw err;
+  });
 
   logger.info(
     {
@@ -673,6 +770,38 @@ async function submitCreateOnce(
     submittedAt: edit.submittedAt?.toISOString() ?? null,
     replayed: false,
   };
+}
+
+/**
+ * Gap 27: a new-customer submit refused as an exact duplicate, recorded as a
+ * REJECT row on its own entity type ('CustomerCreateAttempt'), keyed by the
+ * request when it has one, else by the submission id the phone minted.
+ */
+async function recordRefusedDuplicate(
+  env: Awaited<ReturnType<typeof getAuditEnvelope>>,
+  actorId: string,
+  attempt: {
+    editId: string | null;
+    submissionId: string | null;
+    rule: string;
+    duplicateSignals: { phoneMatchCustomerIds: string[]; crMatch: boolean };
+  }
+): Promise<void> {
+  const key = attempt.editId ?? attempt.submissionId ?? `${actorId}:${Date.now()}`;
+  await withChangeContext(prisma, { actorId, source: src.edit(attempt.editId ?? 'new') }, async (tx) => {
+    await writeAudit(tx, env, {
+      action: 'REJECT',
+      entityType: 'CustomerCreateAttempt',
+      entityId: key,
+      reason: 'refused: duplicate',
+      after: {
+        rule: attempt.rule,
+        editId: attempt.editId,
+        submissionId: attempt.submissionId,
+        duplicateSignals: attempt.duplicateSignals,
+      } as Prisma.InputJsonValue,
+    });
+  });
 }
 
 const WITHDRAWN_MESSAGE =

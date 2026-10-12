@@ -42,6 +42,7 @@ import { submissionIdSchema, type SubmitReceipt } from '@/lib/submission';
 import { notifySalesmanRequest } from '@/lib/notify-hierarchy';
 import { notifyUsers, settleRequestAlerts } from '@/lib/notifications';
 import { UNWIRED_LIVE } from '@/lib/photo-attach';
+import { closureFromHistory, evidenceEntry, readEvidenceEntry, sentRequestAudit } from '@/lib/request-evidence';
 
 async function require(role?: Role[]) {
   const user = await requireActor(); // F15: refuses a session that must change its password
@@ -239,7 +240,9 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   if (unwired === null) {
     throw new ValidationError({ attachmentId: EVIDENCE_USED_ELSEWHERE_MESSAGE });
   }
-  const env = unwired ? await getAuditEnvelope(me.id) : null;
+  // Gap 19: every sent request has its CREATE row in the ledger, so the envelope
+  // is read for every submit, before the transaction (DG-06).
+  const env = await getAuditEnvelope(me.id);
 
   const reactSubmittedAt = new Date();
   // F1 / A1.7: the request and the notifications of it commit together, so a
@@ -252,7 +255,7 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
   // names everything after the request exists.
   const cause = { actorId: me.id, source: src.photo(att.id) };
   const edit = await withChangeContext(prisma, cause, async (tx) => {
-    if (env) await wireEvidence(tx, env, att.id, branch.id, me.id);
+    if (unwired) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {
         target: EditTarget.BRANCH,
@@ -275,13 +278,22 @@ async function requestReactivationOnce(formData: FormData, me: SessionUser): Pro
         fieldChanges: [
           { field: `branch.${branch.id}.status`, before: 'CLOSED', after: 'ACTIVE' },
         ] as unknown as Prisma.InputJsonValue,
-        attachmentChanges: [
-          { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
-        ] as unknown as Prisma.InputJsonValue,
+        // Gap 20 (lossless paths): what the evidence was checked against — the
+        // shop's closure time and the photo's capture time — kept with the
+        // request (and frozen with it), since the approval moves the closure time.
+        attachmentChanges: [evidenceEntry(att, branch.lastStatusChangeAt)] as unknown as Prisma.InputJsonValue,
         submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
       },
     });
     await setChangeContext(tx, { actorId: me.id, source: src.edit(e.id) });
+    // Gap 19: the request as sent, in the ledger.
+    await writeAudit(tx, env, {
+      action: 'CREATE',
+      entityType: 'CustomerEdit',
+      entityId: e.id,
+      reason: 'reactivation requested',
+      after: sentRequestAudit(e),
+    });
     // A Manager decides a reactivation: his supervisor if he is a Manager over
     // the branch's region, else every active Manager of it (REACTIVATION_REQUESTED,
     // linked to /reactivations); the region's Accountant for information.
@@ -381,7 +393,8 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
   if (unwired === null) {
     throw new ValidationError({ attachmentId: EVIDENCE_USED_ELSEWHERE_MESSAGE });
   }
-  const env = unwired ? await getAuditEnvelope(me.id) : null;
+  // Gap 19: as for a reactivation — read for every submit, before the transaction.
+  const env = await getAuditEnvelope(me.id);
 
   // Submit as a regular CustomerEdit so a Supervisor approves the closure.
   const closeSubmittedAt = new Date();
@@ -391,7 +404,7 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
   // names everything after the request exists.
   const cause = { actorId: me.id, source: src.photo(att.id) };
   const edit = await withChangeContext(prisma, cause, async (tx) => {
-    if (env) await wireEvidence(tx, env, att.id, branch.id, me.id);
+    if (unwired) await wireEvidence(tx, env, att.id, branch.id, me.id);
     const e = await tx.customerEdit.create({
       data: {
         target: EditTarget.BRANCH,
@@ -411,13 +424,20 @@ async function markBranchClosedOnce(formData: FormData, me: SessionUser): Promis
         fieldChanges: [
           { field: `branch.${branch.id}.status`, before: branch.status, after: 'CLOSED' },
         ] as unknown as Prisma.InputJsonValue,
-        attachmentChanges: [
-          { kind: att.kind, attachmentId: att.id, action: 'EVIDENCE' },
-        ] as unknown as Prisma.InputJsonValue,
+        // Gap 20: the shop's last status change and the photo's capture time, as checked.
+        attachmentChanges: [evidenceEntry(att, branch.lastStatusChangeAt)] as unknown as Prisma.InputJsonValue,
         submissionId: submissionIdSchema.safeParse(formData.get('submissionId')).data,
       },
     });
     await setChangeContext(tx, { actorId: me.id, source: src.edit(e.id) });
+    // Gap 19: the request as sent, in the ledger.
+    await writeAudit(tx, env, {
+      action: 'CREATE',
+      entityType: 'CustomerEdit',
+      entityId: e.id,
+      reason: 'close-shop requested',
+      after: sentRequestAudit(e),
+    });
     // The Supervisor step decides a close: his supervisor if he can act on it,
     // else the active Managers of the branch's region (EDIT_SUBMITTED, linked to
     // the review page); the region's Accountant for information.
@@ -451,6 +471,9 @@ async function approveReactivationCore(formData: FormData) {
   const me = await require([Role.MANAGER]);
   const editId = String(formData.get('editId') ?? '');
   if (!editId) throw new ValidationError({ editId: 'required' });
+  // Gap 20: the Manager's own words, when the form sends them (optional). The
+  // REACTIVATE row carried only the salesman's reason for asking.
+  const managerReason = String(formData.get('reason') ?? '').trim().slice(0, 1000) || null;
 
   const edit = await prisma.customerEdit.findUnique({
     where: { id: editId },
@@ -544,6 +567,29 @@ async function approveReactivationCore(formData: FormData) {
       attachmentChanges: edit.attachmentChanges,
       queue: 'reactivations',
     });
+    // Gap 20 (lossless paths): what the evidence was checked against, before
+    // this write moves the shop's closure time. A request sent before the
+    // closure time was stored with it, or a shop with none, falls back to the
+    // shop's dated history: when its current CLOSED stretch began.
+    const atRequest = readEvidenceEntry(edit.attachmentChanges);
+    let closedAt: string | null = atRequest.branchLastStatusChangeAt ?? null;
+    let closureReference: 'lastStatusChangeAt' | 'history' | 'none' = closedAt ? 'lastStatusChangeAt' : 'none';
+    if (!closedAt) {
+      const rows = await tx.branchHistory.findMany({
+        where: { branchId: edit.branchId! },
+        orderBy: [{ validFrom: 'desc' }, { id: 'desc' }],
+        select: { status: true, changeKind: true, validFrom: true },
+        take: 200,
+      });
+      const fromHistory = closureFromHistory(rows);
+      if (fromHistory) {
+        closedAt = fromHistory.toISOString();
+        closureReference = 'history';
+      }
+    }
+    const evidence = atRequest.attachmentId
+      ? await tx.attachment.findUnique({ where: { id: atRequest.attachmentId }, select: { capturedAt: true } })
+      : null;
     await tx.branch.update({
       where: { id: edit.branchId! },
       data: {
@@ -583,6 +629,19 @@ async function approveReactivationCore(formData: FormData) {
       entityType: 'Branch',
       entityId: edit.branchId!,
       reason: edit.decisionReason ?? undefined,
+      // Gap 20 (lossless paths): the request, its evidence and what the evidence
+      // was checked against, so the reopening is a linked, complete record.
+      // Acceptance is unchanged: these are recorded, not newly enforced.
+      after: {
+        editId,
+        evidenceAttachmentId: atRequest.attachmentId,
+        evidenceCapturedAt: atRequest.evidenceCapturedAt ?? evidence?.capturedAt.toISOString() ?? null,
+        branchLastStatusChangeAtAtRequest: atRequest.branchLastStatusChangeAt ?? null,
+        closedAt,
+        closureReference,
+        requestReason: edit.decisionReason ?? null,
+        managerReason,
+      } as Prisma.InputJsonValue,
     });
     // Launch fix (2026-10-07): the decision answers every Manager's
     // REACTIVATION_REQUESTED (and any breach ping), and the salesman is told —

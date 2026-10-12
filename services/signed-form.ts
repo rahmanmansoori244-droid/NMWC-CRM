@@ -272,10 +272,34 @@ async function submitSignedFormCore(input: unknown): Promise<SignedFormReceipt> 
         // A page claimed by an earlier upload and not in this list is released
         // (soft-deleted, as a resubmit releases a dropped photo): after a Finance
         // Manager send-back, what he dropped is gone and what he kept stays.
-        await tx.attachment.updateMany({
+        // Gap 15 (lossless paths): the fingerprint is kept, and each released
+        // page has its SOFT_DELETE row.
+        const released = await tx.attachment.findMany({
           where: { editId, kind: SIGNED_FORM_KIND, deletedAt: null, id: { notIn: attachmentIds } },
-          data: { deletedAt: now, hash: null },
+          select: { id: true, capturedById: true, capturedAt: true, hash: true },
+          orderBy: { id: 'asc' },
         });
+        if (released.length > 0) {
+          await tx.attachment.updateMany({
+            where: { id: { in: released.map((a) => a.id) }, deletedAt: null },
+            data: { deletedAt: now },
+          });
+          for (const a of released) {
+            await writeAudit(tx, env, {
+              action: 'SOFT_DELETE',
+              entityType: 'Attachment',
+              entityId: a.id,
+              reason: 'released: a page of the signed application left out of the new upload',
+              before: {
+                kind: SIGNED_FORM_KIND,
+                editId,
+                capturedById: a.capturedById,
+                capturedAt: a.capturedAt.toISOString(),
+                hash: a.hash,
+              } as Prisma.InputJsonValue,
+            });
+          }
+        }
         await tx.editApproval.create({
           data: {
             editId,

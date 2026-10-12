@@ -37,6 +37,12 @@ const LIB_BUILDERS: Record<string, string[]> = {
 type Fn = { name: string; exported: boolean; calls: Set<string>; audits: boolean };
 
 const EXPORT_AUDIT = /writeAudit\(\s*[^,]+,\s*[^,]+,\s*\{\s*action:\s*'EXPORT'/;
+/**
+ * Lossless paths (gap 14): the three exports write their EXPORT row through
+ * lib/export-record.ts recordExport, with the ExportJob row in one transaction.
+ * Calling it counts as writing the row; the test below holds recordExport to it.
+ */
+const RECORD_EXPORT = /\brecordExport\(/;
 
 function sourceFiles(dir: string): string[] {
   return (readdirSync(dir, { recursive: true }) as string[])
@@ -59,7 +65,8 @@ function functionsOf(file: string): Fn[] {
       ts.forEachChild(n, walk);
     };
     walk(body);
-    out.push({ name, exported: isExported, calls, audits: EXPORT_AUDIT.test(body.getText(sf)) });
+    const text = body.getText(sf);
+    out.push({ name, exported: isExported, calls, audits: EXPORT_AUDIT.test(text) || RECORD_EXPORT.test(text) });
   };
   for (const s of sf.statements) {
     if (ts.isFunctionDeclaration(s) && s.name && s.body) describe(s.name.text, exported(s), s.body);
@@ -96,6 +103,11 @@ function obligations(): Map<string, boolean> {
 }
 
 describe('X-TEMIX-2: every workbook export writes an EXPORT audit row', () => {
+  it('recordExport writes the EXPORT row itself (lossless paths, gap 14)', () => {
+    const fn = functionsOf('lib/export-record.ts').find((x) => x.name === 'recordExport');
+    expect(fn?.audits && EXPORT_AUDIT.test(readFileSync('lib/export-record.ts', 'utf8'))).toBe(true);
+  });
+
   it('the lib builders are the registered ones — a new one must be registered to be guarded', () => {
     const found: Record<string, string[]> = {};
     for (const file of sourceFiles('lib')) {

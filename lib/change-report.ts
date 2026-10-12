@@ -533,6 +533,8 @@ export async function buildChangeReport(
 
   let changedRows = 0;
   let writtenRows = 0;
+  // Gap 14 (lossless paths): which customers the file holds, for its ExportJob row.
+  const rowCustomerIds = new Set<string>();
   const s = (v: unknown) => escapeFormulaCell(v == null ? '' : v);
 
   const approvals = approvalIndex(changeRows);
@@ -546,6 +548,7 @@ export async function buildChangeReport(
     const hasMarks = marks.size > 0;
     if (filters.onlyChanged && !hasMarks) continue;
     if (hasMarks) changedRows += 1;
+    rowCustomerIds.add(b.customerId);
 
     const approved = [...marks.entries()].filter(([, m]) => m.state === 'APPROVED');
     const pending = [...marks.entries()].filter(([, m]) => m.state === 'PENDING');
@@ -728,8 +731,16 @@ export async function buildChangeReport(
     { rows: writtenRows, changed: changedRows, edits: scopedEdits.length, by: me.id },
     'export.change_report'
   );
+  const idByCode = new Map([...customerNameById].map(([id, v]) => [v.code, id] as const));
+  const fileCustomerIds = new Set(rowCustomerIds);
+  for (const r of changeRows) {
+    const id = idByCode.get(r.cust_code);
+    if (id) fileCustomerIds.add(id);
+  }
   return {
     bytes,
+    // Every customer on the branch sheet or the Changes sheet.
+    customerIds: [...fileCustomerIds],
     filename: `nmwc-field-updates-${stamp}.xlsx`,
     rowCount: writtenRows,
     changedRows,

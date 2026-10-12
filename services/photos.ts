@@ -354,10 +354,9 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       const prev = (await tx.customer.findUniqueOrThrow({ where: { id: c.id }, select: { crPhotoId: true } }))
         .crPhotoId;
       if (prev && prev !== att.id) {
-        await tx.attachment.update({
-          where: { id: prev },
-          data: { deletedAt: new Date(), hash: null },
-        });
+        // Gap 15 (lossless paths): the replaced photo keeps its fingerprint
+        // (dedupe reads live rows only), and its removal has its own row.
+        await softDeleteReplaced(tx, env, prev, { slot: 'CR', replacedBy: att.id });
       }
       await tx.customer.update({
         where: { id: c.id },
@@ -375,7 +374,11 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         entityType: 'Customer',
         entityId: c.id,
         before: { crPhotoId: prev } as unknown as Prisma.InputJsonValue,
-        after: { crPhotoId: att.id } as unknown as Prisma.InputJsonValue,
+        after: {
+          crPhotoId: att.id,
+          // Gap 15: which photo this one replaced (null: the slot was empty).
+          replacedAttachmentId: prev && prev !== att.id ? prev : null,
+        } as unknown as Prisma.InputJsonValue,
         reason: 'CR photo attached',
       });
       return true;
@@ -478,21 +481,20 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
       const updateBranch: Prisma.BranchUpdateInput = { lastEditedById: session.user.id };
       // NEW-PHOTO-003: soft-delete the prior shop/signboard photo on
       // replacement so storage doesn't balloon and dedupe stays correct.
+      // Gap 15 (lossless paths): it keeps its fingerprint, and the slot write
+      // names it (replacedAttachmentId) with a SOFT_DELETE row of its own.
+      let replaced: string | null = null;
       if (data.slot === 'SHOP') {
         if (now.shopPhotoId && now.shopPhotoId !== att.id) {
-          await tx.attachment.update({
-            where: { id: now.shopPhotoId },
-            data: { deletedAt: new Date(), hash: null },
-          });
+          replaced = now.shopPhotoId;
+          await softDeleteReplaced(tx, env, now.shopPhotoId, { slot: 'SHOP', replacedBy: att.id });
         }
         updateBranch.shopPhoto = { connect: { id: att.id } };
         await tx.branch.update({ where: { id: b.id }, data: updateBranch });
       } else if (data.slot === 'SIGNBOARD') {
         if (now.signboardPhotoId && now.signboardPhotoId !== att.id) {
-          await tx.attachment.update({
-            where: { id: now.signboardPhotoId },
-            data: { deletedAt: new Date(), hash: null },
-          });
+          replaced = now.signboardPhotoId;
+          await softDeleteReplaced(tx, env, now.signboardPhotoId, { slot: 'SIGNBOARD', replacedBy: att.id });
         }
         updateBranch.signboardPhoto = { connect: { id: att.id } };
         await tx.branch.update({ where: { id: b.id }, data: updateBranch });
@@ -518,7 +520,11 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
         action: isAdmin && att.capturedById !== session.user.id ? 'FORCE_OVERRIDE' : 'UPDATE',
         entityType: 'Branch',
         entityId: b.id,
-        after: { slot: data.slot, attachmentId: att.id } as unknown as Prisma.InputJsonValue,
+        after: {
+          slot: data.slot,
+          attachmentId: att.id,
+          replacedAttachmentId: replaced,
+        } as unknown as Prisma.InputJsonValue,
         reason: 'photo attached',
       });
       return true;
@@ -544,6 +550,55 @@ async function attachPhotoCore(input: z.input<typeof attachSchema>) {
  * doesn't blank a slot on a customer the actor never had scope over.
  * The photo slot reaches it through app/api/photos/detach.
  */
+/** A capture time as the audit row holds it. */
+function isoOrNull(d: Date | string | null | undefined): string | null {
+  if (!d) return null;
+  const t = d instanceof Date ? d : new Date(d);
+  return Number.isNaN(t.getTime()) ? null : t.toISOString();
+}
+
+/**
+ * Gap 15 (lossless paths): a photo replaced on its slot is soft-deleted, keeping
+ * its fingerprint, with a SOFT_DELETE row naming what it was and what replaced it.
+ */
+async function softDeleteReplaced(
+  tx: Prisma.TransactionClient,
+  env: Awaited<ReturnType<typeof getAuditEnvelope>>,
+  attachmentId: string,
+  how: { slot: 'CR' | 'SHOP' | 'SIGNBOARD'; replacedBy: string }
+): Promise<void> {
+  const prev = await tx.attachment.update({
+    where: { id: attachmentId },
+    data: { deletedAt: new Date() },
+    select: {
+      kind: true,
+      customerId: true,
+      branchId: true,
+      editId: true,
+      capturedById: true,
+      capturedAt: true,
+      hash: true,
+    },
+  });
+  await writeAudit(tx, env, {
+    action: 'SOFT_DELETE',
+    entityType: 'Attachment',
+    entityId: attachmentId,
+    reason: 'photo replaced on its slot',
+    before: {
+      kind: prev?.kind ?? null,
+      slot: how.slot,
+      customerId: prev?.customerId ?? null,
+      branchId: prev?.branchId ?? null,
+      editId: prev?.editId ?? null,
+      capturedById: prev?.capturedById ?? null,
+      capturedAt: isoOrNull(prev?.capturedAt),
+      hash: prev?.hash ?? null,
+    } as unknown as Prisma.InputJsonValue,
+    after: { replacedBy: how.replacedBy } as Prisma.InputJsonValue,
+  });
+}
+
 export async function detachPhotoAction(
   input: { attachmentId: string }
 ): SafeAction<void> {
@@ -699,12 +754,14 @@ async function detachPhotoCore(input: { attachmentId: string }) {
       if (request?.state === EditState.SUBMITTED) throw new ForbiddenError(PHOTO_IN_REVIEW_MESSAGE);
     }
     // UXI-008: real soft-delete column. Keep the r2Key as-is for the GC job
-    // to find the object; clear the hash so dedup queries miss the row. Guarded
-    // on the same wiring: without a lock (a photo on no slot) an attach or a
-    // new-customer request can still claim it between the read and here.
+    // to find the object. Gap 15 (lossless paths): the hash is kept too — dedup
+    // reads live rows only (deletedAt null), and the fingerprint is the photo's
+    // record once photo-gc drops the row. Guarded on the same wiring: without a
+    // lock (a photo on no slot) an attach or a new-customer request can still
+    // claim it between the read and here.
     const gone = await tx.attachment.updateMany({
       where: { id: att.id, deletedAt: null, ...wiring },
-      data: { deletedAt: new Date(), hash: null },
+      data: { deletedAt: new Date() },
     });
     if (gone.count !== 1) throw new ConflictError('PHOTO_CHANGED', PHOTO_CHANGED_MESSAGE);
     if (att.customerId) {
@@ -749,11 +806,33 @@ async function detachPhotoCore(input: { attachmentId: string }) {
         await tx.customer.update({ where: { id: fresh.id }, data: { completenessScore: scoreCustomer(fresh, fresh.branches) } });
       }
     }
+    // Gap 15: what was removed and from where — the slot it held, the
+    // customer, shop or request it was on, who took it, when, and its
+    // fingerprint — not just its id.
+    const slot =
+      att.customerId && now.kind === AttachmentKind.CR
+        ? 'CR'
+        : att.branchExtraId
+          ? 'FREE'
+          : att.branchId
+            ? now.kind
+            : null;
     await writeAudit(tx, env, {
       action: 'UPDATE',
       entityType: 'Attachment',
       entityId: att.id,
       reason: 'photo removed (soft-delete)',
+      before: {
+        kind: now.kind,
+        slot,
+        customerId: now.customerId,
+        branchId: now.branchId,
+        branchExtraId: now.branchExtraId,
+        editId: now.editId,
+        capturedById: now.capturedById,
+        capturedAt: isoOrNull(now.capturedAt),
+        hash: now.hash ?? null,
+      } as unknown as Prisma.InputJsonValue,
     });
   });
   logger.info({ attachmentId: att.id, by: session.user.id }, 'photo.detach');

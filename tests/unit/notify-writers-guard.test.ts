@@ -91,9 +91,13 @@ describe('where the hierarchy is told of a salesman request', () => {
     expect(s.slice(call, s.indexOf('return e;', call))).not.toMatch(/\breason\b/);
   });
 
-  it('UPDATE: after the autocommitted insert, inside the best-effort try, for a salesman only', () => {
+  it('UPDATE: after the insert has committed, inside the best-effort try, for a salesman only', () => {
     const s = fnBody(src('services/edits.ts'), 'submitEditOnce');
-    const insert = s.indexOf('edit = await prisma.customerEdit.create(');
+    // Gap 19 (lossless paths): the insert commits with its evidence row, in its
+    // own transaction; the notification still comes after, never inside it.
+    const insert = s.indexOf('edit = await withChangeContext(prisma, cause, async (tx) => {');
+    const committed = s.indexOf('const e = await tx.customerEdit.create({ data: submitted });', insert);
+    expect(committed, 'the insert, inside that transaction').toBeGreaterThan(insert);
     const guard = s.indexOf('if (!isDraft) {', insert);
     const tryAt = s.indexOf('try {', guard);
     const salesman = s.indexOf('if (me.role === Role.SALESMAN) {', tryAt);

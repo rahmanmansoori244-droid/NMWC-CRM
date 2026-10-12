@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   changes: vi.fn(),
   envelope: vi.fn(),
   audit: vi.fn(),
+  record: vi.fn(),
   error: vi.fn(),
   warn: vi.fn(),
 }));
@@ -18,6 +19,9 @@ vi.mock('@/lib/export-scope', () => ({ requireExportUser: h.requireExportUser })
 vi.mock('@/services/exports', () => ({ buildCustomerExport: h.customers }));
 vi.mock('@/lib/change-report', () => ({ buildChangeReport: h.changes }));
 vi.mock('@/lib/audit', () => ({ getAuditEnvelope: h.envelope, writeAudit: h.audit }));
+// Lossless paths (gap 14): the field-update export writes its ExportJob and EXPORT
+// rows through recordExport, before the bytes are sent.
+vi.mock('@/lib/export-record', () => ({ recordExport: h.record }));
 vi.mock('@/lib/logger', () => ({ logger: { error: h.error, warn: h.warn } }));
 
 import { GET as customersGET } from '@/app/api/exports/customers/route';
@@ -47,6 +51,7 @@ async function expectInvalid(response: Response) {
   expect(h.changes).not.toHaveBeenCalled();
   expect(h.envelope).not.toHaveBeenCalled();
   expect(h.audit).not.toHaveBeenCalled();
+  expect(h.record).not.toHaveBeenCalled();
   expect(h.error).not.toHaveBeenCalled();
   expect(h.warn).not.toHaveBeenCalled();
   expect(console.log).not.toHaveBeenCalled();
@@ -60,8 +65,9 @@ beforeEach(() => {
   h.requireExportUser.mockResolvedValue(actor);
   h.customers.mockResolvedValue({ bytes, filename: 'customers.xlsx' });
   h.changes.mockResolvedValue({
-    bytes, filename: 'changes.xlsx', rowCount: 7, changedRows: 3, changeCount: 5,
+    bytes, filename: 'changes.xlsx', rowCount: 7, changedRows: 3, changeCount: 5, customerIds: ['c1', 'c2'],
   });
+  h.record.mockResolvedValue({ exportJobId: 'job-1', fileSha256: 'f'.repeat(64) });
   h.envelope.mockResolvedValue({ actorId: actor.id, ip: null, userAgent: null });
   h.audit.mockResolvedValue(undefined);
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -187,6 +193,7 @@ for (const endpoint of endpoints) {
       expect(h.customers).not.toHaveBeenCalled();
       expect(h.changes).not.toHaveBeenCalled();
       expect(h.audit).not.toHaveBeenCalled();
+      expect(h.record).not.toHaveBeenCalled();
     });
 
     it('still returns the generated workbook and private download headers', async () => {
@@ -200,11 +207,16 @@ for (const endpoint of endpoints) {
         expect(response.headers.get('x-row-count')).toBe('7');
         expect(response.headers.get('x-changed-rows')).toBe('3');
         expect(h.envelope).toHaveBeenCalledWith(actor.id);
-        expect(h.audit).toHaveBeenCalledWith(null, {
+        expect(h.record).toHaveBeenCalledWith({
           actorId: actor.id, ip: null, userAgent: null,
         }, expect.objectContaining({
-          action: 'EXPORT', entityType: 'Export',
+          kind: 'field-updates',
           reason: 'field-updates 7 rows / 3 changed / 5 changes',
+          // The exact bytes sent, and the customers they hold.
+          bytes,
+          filename: 'changes.xlsx',
+          customerIds: ['c1', 'c2'],
+          rowCount: 7,
         }));
       }
     });
@@ -313,7 +325,7 @@ describe('change-report filter compatibility', () => {
   });
 
   it('still withholds the workbook if its export audit fails', async () => {
-    h.audit.mockRejectedValue(new Error('audit unavailable'));
+    h.record.mockRejectedValue(new Error('audit unavailable'));
     const response = await changesGET(request('changes'));
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'Export failed' });
@@ -342,12 +354,16 @@ describe('both exports read a picked day as the same Oman day', () => {
     expect(new Date('2026-10-07T21:30:00.000Z').getTime()).toBeGreaterThanOrEqual(updatedSince.getTime());
   });
 
-  it('records the field-update export under the Oman day', async () => {
+  it('records the field-update export under the file the report named (its Oman day, lib/change-report.ts)', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-07T21:30:00.000Z'));
+    h.changes.mockResolvedValue({
+      bytes, filename: 'nmwc-field-updates-2026-10-08.xlsx', rowCount: 7, changedRows: 3, changeCount: 5, customerIds: [],
+    });
     expect((await changesGET(request('changes'))).status).toBe(200);
-    expect(h.audit).toHaveBeenCalledWith(null, expect.anything(), expect.objectContaining({
-      entityId: 'field-updates-2026-10-08',
+    // Gap 14: the EXPORT row is keyed by its ExportJob; the day is in the file name it records.
+    expect(h.record).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      filename: 'nmwc-field-updates-2026-10-08.xlsx',
     }));
   });
 });

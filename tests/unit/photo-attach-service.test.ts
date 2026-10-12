@@ -414,9 +414,10 @@ describe('detach, through the route', () => {
     // Read removed or not first (a removed one is PHOTO_GONE, after the checks); live, under the lock.
     expect(db.attachment.findFirst.mock.calls).toEqual([[{ where: { id: ATT } }], [{ where: { id: ATT, deletedAt: null } }]]);
     // X-PHOTO-1: removed only where the checks found it — guarded on its wiring.
+    // Gap 15 (lossless paths): the fingerprint is kept — dedupe reads live rows only.
     expect(db.attachment.updateMany).toHaveBeenCalledWith({
       where: { id: ATT, deletedAt: null, customerId: null, branchId: B1, branchExtraId: null, editId: null },
-      data: { deletedAt: expect.any(Date), hash: null },
+      data: { deletedAt: expect.any(Date) },
     });
     expect(db.attachment.update).not.toHaveBeenCalled();
     expect(audit.writeAudit).toHaveBeenCalledTimes(1);
@@ -482,10 +483,12 @@ describe('N06: attach claims the photo under the lock, before anything else is w
         for (const order of f.mock.invocationCallOrder) expect(order).toBeGreaterThan(claimAt);
       }
       if (target.slot !== 'FREE') {
-        // The photo it replaces is still soft-deleted — after the claim.
+        // The photo it replaces is still soft-deleted — after the claim — and
+        // keeps its fingerprint (gap 15).
         expect(db.attachment.update).toHaveBeenCalledWith({
           where: { id: PREV },
-          data: { deletedAt: expect.any(Date), hash: null },
+          data: { deletedAt: expect.any(Date) },
+          select: expect.any(Object),
         });
       }
     }
@@ -498,7 +501,9 @@ describe('N06: attach claims the photo under the lock, before anything else is w
     const [{ where }] = db.attachment.updateMany.mock.calls[0] as [{ where: Record<string, unknown> }];
     expect(where).not.toHaveProperty('capturedById');
     expect(where).toMatchObject({ id: ATT, deletedAt: null, branchId: null, editId: null, kind: 'SHOP' });
-    expect(audit.writeAudit.mock.calls[0][2]).toMatchObject({ action: 'FORCE_OVERRIDE' });
+    // The slot write's own row (a replaced photo has its SOFT_DELETE row first, gap 15).
+    const slotRow = audit.writeAudit.mock.calls.map((c) => c[2]).find((p) => p.entityType === 'Branch');
+    expect(slotRow).toMatchObject({ action: 'FORCE_OVERRIDE' });
   });
 
   describe.each([
@@ -697,7 +702,7 @@ describe('X-PHOTO-1: Remove reads the photo again under the lock', () => {
     expect(res).toMatchObject({ ok: false, code: 'PHOTO_CHANGED' });
     expect(db.attachment.updateMany).toHaveBeenCalledWith({
       where: { id: ATT, deletedAt: null, customerId: null, branchId: null, branchExtraId: null, editId: null },
-      data: { deletedAt: expect.any(Date), hash: null },
+      data: { deletedAt: expect.any(Date) },
     });
     nothingWritten();
   });

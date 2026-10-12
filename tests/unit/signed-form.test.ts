@@ -80,6 +80,12 @@ const tx = {
       h.calls.push([args.data.editId ? 'claimPages' : 'releasePages', args]);
       return { count: args.data.editId ? (h.pageClaimCount ?? h.pages.length) : 1 };
     },
+    // Gap 15: the pages a new upload leaves out are read first (one here), then
+    // released by id, keeping their fingerprint, each with its SOFT_DELETE row.
+    findMany: async (args: unknown) => {
+      h.calls.push(['releaseRead', args]);
+      return [{ id: 'p-old', capturedById: 'sal1', capturedAt: new Date('2026-10-09T06:00:00Z'), hash: 'h-old' }];
+    },
   },
   editApproval: {
     create: async (args: unknown) => {
@@ -333,9 +339,11 @@ describe('a confirm that lands', () => {
       OR: [{ editId: null }, { editId: EDIT }],
     });
     expect(claimPages!.data).toEqual({ editId: EDIT });
+    const [releaseRead] = called('releaseRead') as Array<{ where: Record<string, unknown> }>;
+    expect(releaseRead!.where).toEqual({ editId: EDIT, kind: 'CREDIT_FORM', deletedAt: null, id: { notIn: [P1, P2] } });
     const [release] = called('releasePages') as Array<{ where: Record<string, unknown>; data: Record<string, unknown> }>;
-    expect(release!.where).toEqual({ editId: EDIT, kind: 'CREDIT_FORM', deletedAt: null, id: { notIn: [P1, P2] } });
-    expect(release!.data).toMatchObject({ hash: null });
+    expect(release!.where).toEqual({ id: { in: ['p-old'] }, deletedAt: null });
+    expect(release!.data).toEqual({ deletedAt: expect.any(Date) });
 
     // A FORM_UPLOADED decision row with the stage as it was; an UPDATE audit row — never a self-approval.
     const [decision] = called('decisionRow') as Array<{ data: Record<string, unknown> }>;
@@ -349,6 +357,20 @@ describe('a confirm that lands', () => {
       stageEnteredAt: STAGE,
     });
     expect(called('writeAudit')).toEqual([
+      // Gap 15: the page the new upload left out, released with its own row.
+      {
+        action: 'SOFT_DELETE',
+        entityType: 'Attachment',
+        entityId: 'p-old',
+        reason: 'released: a page of the signed application left out of the new upload',
+        before: {
+          kind: 'CREDIT_FORM',
+          editId: EDIT,
+          capturedById: 'sal1',
+          capturedAt: '2026-10-09T06:00:00.000Z',
+          hash: 'h-old',
+        },
+      },
       {
         action: 'UPDATE',
         entityType: 'CustomerEdit',

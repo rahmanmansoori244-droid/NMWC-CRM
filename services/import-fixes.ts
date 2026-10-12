@@ -37,6 +37,7 @@ import {
 import { revalidatePath } from 'next/cache';
 import { normalizeCR } from '@/lib/cr';
 import { getAuditEnvelope, writeAudit, type AuditEnvelope } from '@/lib/audit';
+import { correctionAudit } from '@/lib/import-lineage';
 import {
   checkCustomerRow,
   rowCrNorm,
@@ -55,6 +56,7 @@ import {
 import {
   acceptCells,
   canReleasePhone,
+  cellValue,
   changedCells,
   correctedRow,
   fixWindowClosed,
@@ -485,10 +487,17 @@ async function correctCore(formData: FormData): Promise<FixResult> {
       row.id
     );
     const r = await recheck(tx, batch, targets, correctionsFor, row.id);
-    // Column names only. The values are customer data, and this ledger keeps
-    // them for ever; the row itself holds them until the retention sweep.
+    // Gap 7: which cells were corrected, from what to what — kept after the
+    // 90-day sweep empties the row. Non-personal cells (codes, channel, visit day,
+    // status) keep their values; a personal one (name, address, phone, CR number,
+    // contact, note) only its fingerprints: this ledger keeps everything for ever.
     await audit(tx, env, 'UPDATE', row.id, 'Import row corrected by the Data Steward', {
       columns: Object.keys(changed).sort(),
+      cells: correctionAudit(
+        changed,
+        Object.fromEntries(Object.keys(changed).map((c) => [c, cellValue(correctedRow(row.raw, mine), c)]))
+      ),
+      batchId: batch.id,
       ...r,
     });
     return r;

@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
   findMany: vi.fn(),
   count: vi.fn(),
   writeAudit: vi.fn(),
+  // Lossless paths (gap 14): the export's ExportJob row, written with its EXPORT row.
+  jobCreate: vi.fn(async () => ({ id: 'job-1' })),
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
@@ -39,6 +41,8 @@ vi.mock('@/lib/db', () => ({
       findUnique: async () => null,
     },
     customer: { count: h.count, findMany: h.findMany },
+    $transaction: async (fn: (tx: unknown) => unknown) =>
+      fn({ $executeRaw: async () => 1, exportJob: { create: h.jobCreate } }),
   },
 }));
 
@@ -105,7 +109,15 @@ describe('exportFilteredCustomersAction — the Oman day (launch fix)', () => {
     vi.setSystemTime(new Date('2026-10-07T21:30:00.000Z'));
     const res = await exportWith('route=ROUTE_B');
     expect(res.ok && res.data.filename).toBe('customers-2026-10-08.xlsx');
-    expect(h.writeAudit.mock.calls[0][2]).toMatchObject({ action: 'EXPORT', entityId: 'customers-2026-10-08' });
+    // Gap 14: the EXPORT row is keyed by its ExportJob, which records the file by name,
+    // the filters with the role's scope, and the customers it held.
+    expect(h.writeAudit.mock.calls[0][2]).toMatchObject({ action: 'EXPORT', entityId: 'job-1' });
+    expect((h.jobCreate.mock.calls[0] as unknown as [{ data: Record<string, unknown> }])[0].data).toMatchObject({
+      kind: 'customers-filtered',
+      filename: 'customers-2026-10-08.xlsx',
+      filters: { urlParams: 'route=ROUTE_B', scope: { role: 'MANAGER', managedRegionIds: ['R1'] } },
+      customerIds: [],
+    });
   });
 });
 

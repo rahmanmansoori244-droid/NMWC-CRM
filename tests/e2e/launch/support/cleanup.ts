@@ -74,8 +74,12 @@ type Foreign = {
 
 const CHUNK = 400;
 const LOCALHOST_IPS = ['::1', '127.0.0.1', '::ffff:127.0.0.1'];
-/** Audit rows whose entity is the actor's own act, not another record. */
-const ACTOR_OWNED_AUDIT = ['Export'];
+/**
+ * Audit rows whose entity is the actor's own act, not another record: an export,
+ * and a new-customer submit refused as a duplicate (lossless paths, gap 27), which
+ * names the attempt, not a customer.
+ */
+const ACTOR_OWNED_AUDIT = ['Export', 'CustomerCreateAttempt'];
 /**
  * Audit actions that are the actor's own act whatever record they name. A world
  * user's view of a photo (PHOTO_VIEW, data audit 2026-10-10 gap 2) is the world's
@@ -490,8 +494,10 @@ async function deleteRows(
   });
   for (const c of chunks(notes.map((x) => x.id))) add('Notification', (await p.notification.deleteMany({ where: { id: { in: c } } })).count);
 
-  // 2. Photo slot pointers, so the attachments can go.
-  for (const c of chunks(customers)) await p.customer.updateMany({ where: { id: { in: c } }, data: { crPhotoId: null } });
+  // 2. Photo slot pointers, so the attachments can go; and a world customer's
+  //    merge pointer (lossless paths, gap 8: RESTRICT), so the merged-into one can.
+  for (const c of chunks(customers))
+    await p.customer.updateMany({ where: { id: { in: c } }, data: { crPhotoId: null, mergedIntoId: null } });
   for (const c of chunks(branches))
     await p.branch.updateMany({ where: { id: { in: c } }, data: { shopPhotoId: null, signboardPhotoId: null } });
 
@@ -503,9 +509,14 @@ async function deleteRows(
     });
   }
 
-  // 4. Temix batches and export jobs of the world.
+  // 4. Temix batches and export jobs of the world. ExportJob is append-only
+  //    (lossless paths, gap 14): its rows go in the maintenance window, before the
+  //    world users they name (RESTRICT).
   add('TemixSyncBatch', (await p.temixSyncBatch.deleteMany({ where: { id: { in: [...f.temixBatches] } } })).count);
-  add('ExportJob', (await p.exportJob.deleteMany({ where: { id: { in: [...f.exportJobs] } } })).count);
+  await inMaintenance(async (tx) => {
+    for (const c of chunks([...f.exportJobs]))
+      add('ExportJob', (await tx.exportJob.deleteMany({ where: { id: { in: c } } })).count);
+  });
 
   // 5. Attachments (not the ones whose object the R2 guard refused), branches, customers, imports.
   const attIds = [...f.attachments.entries()].filter(([, a]) => !refusedKeys.has(a.r2Key)).map(([id]) => id);
@@ -575,6 +586,8 @@ async function deleteRows(
     users,
     routes,
     regions,
+    attachments: [...f.attachments.keys()],
+    edits,
   });
   await inMaintenance(async (tx) => {
     for (const c of chunks(gone.branches))
@@ -589,11 +602,25 @@ async function deleteRows(
     }
     for (const c of chunks(gone.regions))
       add('RegionHistory', (await tx.regionHistory.deleteMany({ where: { regionId: { in: c } } })).count);
+    // Lossless paths: the photo history (gap 15) and the rounds of the world's
+    // new-customer requests (gap 12).
+    for (const c of chunks(gone.attachments))
+      add('AttachmentHistory', (await tx.attachmentHistory.deleteMany({ where: { attachmentId: { in: c } } })).count);
+    for (const c of chunks(gone.edits))
+      add('EditRevision', (await tx.editRevision.deleteMany({ where: { editId: { in: c } } })).count);
   });
   return n;
 }
 
-type WorldIds = { branches: string[]; customers: string[]; users: string[]; routes: string[]; regions: string[] };
+type WorldIds = {
+  branches: string[];
+  customers: string[];
+  users: string[];
+  routes: string[];
+  regions: string[];
+  attachments: string[];
+  edits: string[];
+};
 
 /** Of these world ids, the ones whose live row no longer exists. */
 async function goneIds(p: PrismaClient, w: WorldIds): Promise<WorldIds> {
@@ -609,6 +636,8 @@ async function goneIds(p: PrismaClient, w: WorldIds): Promise<WorldIds> {
     users: await live(w.users, (c) => p.user.findMany({ where: { id: { in: c } }, ...sel })),
     routes: await live(w.routes, (c) => p.route.findMany({ where: { id: { in: c } }, ...sel })),
     regions: await live(w.regions, (c) => p.region.findMany({ where: { id: { in: c } }, ...sel })),
+    attachments: await live(w.attachments, (c) => p.attachment.findMany({ where: { id: { in: c } }, ...sel })),
+    edits: await live(w.edits, (c) => p.customerEdit.findMany({ where: { id: { in: c } }, ...sel })),
   };
 }
 
@@ -693,6 +722,8 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     RouteOwnerHistory,
     RouteHistory,
     RegionHistory,
+    AttachmentHistory,
+    EditRevision,
   ] = await Promise.all([
     p.user.count({ where: { OR: [{ id: { in: users } }, { username: ci(sfx) }, { fullName: ci(sfx) }] } }),
     p.region.count({ where: { OR: [{ id: { in: [...f.regions] } }, { code: ci(sfx) }, { name: ci(sfx) }] } }),
@@ -736,6 +767,9 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     p.routeOwnerHistory.count({ where: { routeId: { in: [...f.routes] } } }),
     p.routeHistory.count({ where: { routeId: { in: [...f.routes] } } }),
     p.regionHistory.count({ where: { regionId: { in: [...f.regions] } } }),
+    // Lossless paths: the world's photos' history and its requests' rounds.
+    p.attachmentHistory.count({ where: { attachmentId: { in: [...f.attachments.keys()] } } }),
+    p.editRevision.count({ where: { editId: { in: [...f.edits] } } }),
   ]);
   const foreign = known?.foreign ?? (await foreignRows(f, p));
   const r2Objects = hasR2 ? (await listFixtureObjects(f)).filter((k) => !foreign.keys.has(k)).length : 0;
@@ -763,6 +797,8 @@ export async function residue(reg: RegistryData, known?: { f: Fixture; foreign?:
     RouteOwnerHistory,
     RouteHistory,
     RegionHistory,
+    AttachmentHistory,
+    EditRevision,
     r2Objects,
     ...foreign.counts,
   };

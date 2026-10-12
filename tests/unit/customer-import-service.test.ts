@@ -47,6 +47,8 @@ const h = vi.hoisted(() => ({
   db: {} as Record<string, unknown>,
   info: vi.fn(),
   notify: vi.fn(async () => {}),
+  // Gap 4: the per-customer and per-shop audit rows the promote writes.
+  audit: vi.fn(async () => {}),
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -55,7 +57,7 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: () => {}, revalidateTag: () => {} }));
 vi.mock('@/lib/audit', () => ({
   getAuditEnvelope: async (actorId: string) => ({ actorId, ip: null, userAgent: null }),
-  writeAudit: async () => {},
+  writeAudit: h.audit,
 }));
 vi.mock('@/lib/rate-limit', () => ({ checkLimit: async () => ({ ok: true }) }));
 vi.mock('@/lib/alert', () => ({ sendAlert: async () => {} }));
@@ -1004,9 +1006,16 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
     const out = await promote();
     expect(out).toMatchObject({ promoted: 1, failed: 0 });
     expect(rejected).toEqual([]);
-    // Found by its customer code; created by a finalize: its own CREATE audit row.
+    // Found by its customer code; created by a finalize: its own CREATE audit row —
+    // not the CREATE row an import now writes for a customer it creates (gap 4),
+    // which carries an 'import …' reason.
     expect(auditRead().mock.calls[0]![0]).toEqual({
-      where: { action: 'CREATE', entityType: 'Customer', entityId: 'cust-1' },
+      where: {
+        action: 'CREATE',
+        entityType: 'Customer',
+        entityId: 'cust-1',
+        OR: [{ reason: null }, { NOT: { reason: { startsWith: 'import ' } } }],
+      },
       select: { id: true },
     });
     // The code alone: not the payment terms, not the credit figures the row carries.
@@ -1142,12 +1151,14 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: the first Te
     const out = await promote();
     expect(out).toMatchObject({ promoted: 1, failed: 0 });
     expect(auditRead()).not.toHaveBeenCalled();
+    // Gap 4: only what differs from the stored customer is written — the code it
+    // already holds is not.
     expect(customerUpdate()!.data).toMatchObject({
-      temixCode: 'TX900',
-      paymentTerms: 'CREDIT',
       creditLimit: 999999,
       paymentTermDays: 120,
     });
+    expect(customerUpdate()!.data).not.toHaveProperty('temixCode');
+    expect(customerUpdate()!.data).not.toHaveProperty('paymentTerms');
     expect(h.notify).not.toHaveBeenCalled();
   });
 
@@ -1201,5 +1212,88 @@ describe('promoteCustomerBatchAction — owner decision 2026-10-08: a NEW custom
     expect(out).toMatchObject({ promoted: 1, failed: 0 });
     expect(temixLocks).toEqual([]);
     expect(order).toContain('customer.upsert');
+  });
+});
+
+describe('gap 4 (lossless paths): a customer or shop the row leaves as it is is not written; a change is said once, with its row', () => {
+  const SAME = {
+    ...STORED,
+    deletedAt: null,
+    legalName: 'Name From Sheet',
+    primaryPhone: '+96891111111',
+    primaryPhoneNorm: '+96891111111',
+    crNumber: null,
+    contactPerson: 'Someone',
+    status: 'ACTIVE',
+  };
+  const shop = (over: Partial<StoredBranch> = {}): StoredBranch => ({
+    id: 'br-1',
+    customerId: 'cust-1',
+    deletedAt: null,
+    customer: { nmwcCode: 'ARC1' },
+    branchName: 'New shop',
+    routeId: 'rtU',
+    regionId: 'rgU',
+    address: 'Way 9, Muscat',
+    dayOfVisit: null,
+    status: 'ACTIVE',
+    ...over,
+  });
+  const rows = () => h.audit.mock.calls.map((c) => (c as unknown[])[2] as Record<string, unknown>);
+
+  it('a row that restates the stored customer and shop writes neither: no version, editor or updatedAt bump', async () => {
+    h.audit.mockClear();
+    setup(SAME, [parsed()], [], { branches: { 'ARC1-02': shop() } });
+    const out = await promote();
+    expect(out).toMatchObject({ promoted: 1, failed: 0 });
+    for (const w of ['customer.upsert', 'customer.update', 'branch.upsert', 'branch.update', 'branch.create']) {
+      expect(order, w).not.toContain(w);
+    }
+    expect(rows().filter((r) => r.entityType === 'Customer' || r.entityType === 'Branch')).toEqual([]);
+    // The row itself still leaves CLEAN.
+    expect(order).toContain('importRow.promoted');
+  });
+
+  it('a changed name and visit day: only those are written, each said with its batch, row and lane', async () => {
+    h.audit.mockClear();
+    setup(SAME, [parsed({ custName: 'Name Corrected', dayOfVisit: 'MON' })], [], { branches: { 'ARC1-02': shop() } });
+    (tx.branch as Record<string, Fn>).upsert.mockResolvedValue({ id: 'br-1' });
+    await promote();
+    const upsert = (tx.customer as Record<string, Fn>).upsert.mock.calls[0]![0] as { update: Record<string, unknown> };
+    expect(upsert.update).toEqual({ legalName: 'Name Corrected', lastEditedById: 'stew', version: { increment: 1 } });
+    const customerRow = rows().find((r) => r.entityType === 'Customer')!;
+    expect(customerRow).toMatchObject({
+      action: 'UPDATE',
+      entityId: 'cust-1',
+      before: { legalName: 'Name From Sheet' },
+      after: { legalName: 'Name Corrected', batchId: 'batch-9', importRowId: 'row-0', rowNumber: 2, lane: 'full' },
+      reason: 'import batch-9 row 2 (full)',
+    });
+    const branchRow = rows().find((r) => r.entityType === 'Branch')!;
+    expect(branchRow).toMatchObject({
+      action: 'UPDATE',
+      entityId: 'br-1',
+      before: { dayOfVisit: null },
+      after: { dayOfVisit: 'MON', lane: 'full' },
+    });
+    // The history names the row too (lib/change-context.ts).
+    expect(contexts).toContain('import:batch-9:2:full');
+  });
+
+  it('a new customer names the sheet row that created it, and its CREATE row says so', async () => {
+    h.audit.mockClear();
+    setup(null, [parsed()]);
+    (tx.customer as Record<string, Fn>).upsert.mockImplementation(async (a: { create: Record<string, unknown> }) => ({
+      id: 'new-cust',
+      ...a.create,
+    }));
+    await promote();
+    const upsert = (tx.customer as Record<string, Fn>).upsert.mock.calls[0]![0] as { create: Record<string, unknown> };
+    expect(upsert.create).toMatchObject({ importBatchId: 'batch-9', importRowId: 'row-0' });
+    expect(rows().find((r) => r.entityType === 'Customer')).toMatchObject({
+      action: 'CREATE',
+      entityId: 'new-cust',
+      after: { nmwcCode: 'ARC1', importRowId: 'row-0', rowNumber: 2, lane: 'full' },
+    });
   });
 });

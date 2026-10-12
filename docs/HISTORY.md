@@ -1,8 +1,10 @@
 # The dated history
 
-What the CRM remembers about its customers, shops, accounts, routes and regions,
-from when to when, and why. Data audit 2026-10-10, gaps 5, 6, 17 and 24; migration
-`prisma/migrations/20261013100100_history_foundation`.
+What the CRM remembers about its customers, shops, accounts, routes, regions and
+photos, from when to when, and why. Data audit 2026-10-10, gaps 5, 6, 17 and 24;
+migration `prisma/migrations/20261013100100_history_foundation`. The write paths
+that used to lose what they changed (gaps 4, 7, 8, 12, 14, 15, 19, 20 and 27) are
+in §9, migration `20261014100000_lossless_paths`.
 
 The owner's rule (2026-10-11): everything is logged, history is appended and never
 rewritten, and it is kept for ever. Effective dates matter from the day this
@@ -108,12 +110,13 @@ into an append-only table.
 
 | Table | Key | Values kept | Recorded by name only |
 |---|---|---|---|
-| `CustomerHistory` | `customerId` | `nmwcCode`, `paymentTerms`, `creditLimit`, `paymentTermDays`, `temixCode`, `status`, `channelId`, `subChannelId`, `crPhotoId`, `deletedAt` | `legalName`, `crNumber`, `primaryPhone`, `altPhone`, `contactPerson`, `contactRole`, `email`, `notes` |
+| `CustomerHistory` | `customerId` | `nmwcCode`, `paymentTerms`, `creditLimit`, `paymentTermDays`, `temixCode`, `status`, `channelId`, `subChannelId`, `crPhotoId`, `deletedAt`, `mergedIntoId` (§9; null on rows written before it) | `legalName`, `crNumber`, `primaryPhone`, `altPhone`, `contactPerson`, `contactRole`, `email`, `notes` |
 | `BranchHistory` | `branchId` | `branchCode`, `customerId`, `routeId`, `regionId`, `dayOfVisit`, `status`, `deletedAt`, `coolersCount`, `standsCount`, `emptyBottlesCount`, `equipmentConfirmed`, `hasGps` (whether a point is on file), `shopPhotoId`, `signboardPhotoId` | `branchName`, `address`, `areaDescription`, `gps` (the four GPS columns), `openingHours`, `deliveryWindow` |
 | `UserHistory` | `userId` | `username` (as it was), `role`, `isActive`, `supervisorId`, `ownedRouteId`, `regionIds` (sorted) | `fullName`, `email`, `phone` |
 | `RouteOwnerHistory` | `routeId` | `ownerId` (null = nobody): who held the route | — |
 | `RouteHistory` | `routeId` | `code`, `name`, `regionId`, `isActive` | — |
 | `RegionHistory` | `regionId` | `code`, `name`, `isActive` | — |
+| `AttachmentHistory` | `attachmentId` | `kind`, `customerId`, `branchId`, `branchExtraId`, `editId`, `deletedAt`, `hash` (the image's SHA-256), `capturedById`, `capturedAt` (§9) | — (the capture GPS is never copied) |
 
 **No personal value of a customer or an employee's contact details is copied into
 the history.** It is kept for ever and cannot be erased, so it records that the
@@ -271,3 +274,52 @@ nothing (the same no-bump rule as the master import).
 - **Cost per write:** one extra statement per write transaction (`set_config`); a
   changed row adds one index lookup and one insert. An import names each row it
   writes (one more statement per row).
+
+## 9. Lossless write paths (gaps 4, 7, 8, 12, 14, 15, 19, 20, 27)
+
+Migration `20261014100000_lossless_paths`. The history above records what a
+watched column became; these paths also lost *where a value came from* or *what a
+request was*. Each is now kept, append-only.
+
+| Gap | What is kept now | Where |
+|---|---|---|
+| 4 — the customer-master import | A customer or shop the row leaves as it is is **not written** (no version, editor or `updatedAt` bump; a shop change moves only the customer's `updatedAt`, for the export's "updated since"). Each customer and shop it creates or changes has an `AuditLog` `CREATE`/`UPDATE` row with the before and after of the changed fields and the lineage `{batchId, importRowId, rowNumber, lane}`, reason `import <batch> row <n> (<lane>)`; the history rows say `import:<batch>:<row>:<lane>`. | `services/imports.ts`, `lib/import-lineage.ts` |
+| 7 — which file and row | `ImportBatch.fileSha256` and `fileBytes` (the file itself is not kept); `Customer.importRowId` names the row that created it; a Steward's correction of a held-back row records each corrected cell — old and new value for codes, channel, visit day and status, SHA-256 fingerprints for a name, address, phone, CR number, contact or note. The 90-day sweep empties the row's payload; the history's source, the audit rows and the batch's file fingerprint survive it. | `services/import-fixes.ts` |
+| 8 — merges | `Customer.mergedIntoId` (set by the merge, filled for earlier merges from their MERGE rows, dated when they happened); `CustomerEdit.originalCustomerId`, set once by the database (trigger `customeredit_original_customer`) and never moved by a merge. The MERGE row lists `movedBranchIds`, `movedAttachmentIds`, `repointedEditIds`, `autoClosedEditIds` and the loser's non-personal standing (`loserSnapshot`), and always keeps the typed reason; each request the merge closed has its own `REJECT` row; moved shops get `version + 1`. Searching a merged code, or opening its old page, leads to the customer it was merged into. | `services/duplicates.ts`, `lib/merged-customers.ts` |
+| 12 — a new-customer request's rounds | `EditRevision`: one row per submit (never a draft), in the submit's transaction — cycle, terms, credit figures, the chain, and a payload of the channel, each shop's route, region, visit day, counts and photo ids, and the documents by kind; the name, CR number, phones, contact, e-mail, notes and each shop's name, address, hours and GPS point as fingerprints only. `payloadSha256` says whether two rounds sent the same thing. A send-back's category is on its `EditApproval` row (`category`) and its `REJECT` row (`decisionCategory`). | `services/creates.ts`, `lib/edit-revision.ts` |
+| 14 — exports | Every export writes an `ExportJob` (kind, the filters and role scope, `customerIds`, `filename`, `fileSha256` of the exact bytes) and its `EXPORT` row (entityId = the job's id) in one transaction before the bytes are sent. `ExportJob` is append-only. The file itself is never stored. | `lib/export-record.ts` |
+| 15 — photos | `AttachmentHistory`, written by the database like the tables above, with a BASELINE for every photo row that existed and a DELETE tombstone when photo-gc drops a row. A removed or replaced photo keeps its `hash` (dedupe reads live rows only). A slot write names the photo it replaced (`replacedAttachmentId`) and the replaced one gets a `SOFT_DELETE` row; so does a photo released by a new-customer resubmit or a signed-application page left out of a new upload. Remove's audit row says what was removed and from where. | `services/photos.ts` |
+| 19 — approval evidence | Once a request has left DRAFT or NEEDS_CORRECTION, what it asked for (`fieldChanges`, `attachmentChanges`), who sent it and when, its process, target, gate, chain, credit figures, cycle, shop and submission id **cannot change** (trigger `customeredit_evidence_guard`), and a request cannot be deleted (`customeredit_no_delete`, `_no_truncate`); the owner's maintenance window is the only way past. Every update, close-shop and reactivation submit writes a `CustomerEdit` `CREATE` row with the request as sent. An `APPROVE` row adds what was `applied`, what was `alreadyLive`, what the submitter's role was `lockedOut` of, and the gate's shops; a direct write lists every applied change, customer and shop. | `services/edits.ts`, `services/reactivations.ts`, `lib/request-evidence.ts` |
+| 20 — reopening | A close or reactivation request stores the photo's capture time and the shop's closure time it was checked against (`attachmentChanges`). The `REACTIVATE` row records the request, the evidence, the closure time and where it came from (`closureReference`: the request, the shop's dated history, or none) and the Manager's reason when the form sends one. Acceptance rules are unchanged. | `services/reactivations.ts` |
+| 27 — a new customer's shops | At finalize each draft names the shop it became (`EditBranchDraft.branchId`), shops are numbered in draft id order, and each shop has a `Branch` `CREATE` row (draft, route, region, visit day, GPS present, counts, the request). A submit's audit row carries `duplicateSignals` (live customers on the phone, at most ten; whether the CR is a live customer's); a submit refused as an exact duplicate leaves a `REJECT` row on `CustomerCreateAttempt`. | `lib/create-finalize.ts`, `services/creates.ts` |
+
+Examples:
+
+```sql
+-- Which import file and row last set this shop's route?
+SELECT h."validFrom", h."source", b."filename", b."fileSha256"
+  FROM "BranchHistory" h
+  LEFT JOIN "ImportBatch" b ON b."id" = split_part(h."source", ':', 2)
+ WHERE h."branchId" = '<id>' AND 'routeId' = ANY (h."changedFields") AND h."sourceKind" = 'import'
+ ORDER BY h."validFrom" DESC, h."id" DESC LIMIT 1;
+
+-- Which photo was in the shop slot on 1 Nov 2026, and is its fingerprint still known?
+SELECT b.shop_photo_id, a."hash", a."changeKind"
+  FROM nmwc_branches_on(DATE '2026-11-01') b
+  LEFT JOIN LATERAL (SELECT * FROM "AttachmentHistory" x WHERE x."attachmentId" = b.shop_photo_id
+                     ORDER BY x."validFrom" DESC, x."id" DESC LIMIT 1) a ON true
+ WHERE b.branch_id = '<id>';
+
+-- What did round 1 of a new-customer request contain?
+SELECT "cycle", "submittedAt", "paymentTerms", "requestedCreditLimit", "payload"
+  FROM "EditRevision" WHERE "editId" = '<id>' ORDER BY "cycle", "id";
+
+-- Which exports held customer X?
+SELECT j."id", j."kind", j."filename", j."fileSha256", j."completedAt", j."requestedById"
+  FROM "ExportJob" j WHERE '<customerId>' = ANY (j."customerIds") ORDER BY j."startedAt";
+```
+
+Kept for ever like the rest of the history: `AttachmentHistory`, `EditRevision`,
+`ExportJob`. `ExportJob.customerIds` of a full master export is about 14,000 ids
+(~0.4 MB); a daily master export would add ~130 MB a year — see
+`docs/compliance/DATA-RETENTION-SCHEDULE.md`.

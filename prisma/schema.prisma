@@ -350,10 +350,18 @@ model Customer {
   lastEditedById String?
   deletedAt      DateTime?
 
+  // Gap 8 (lossless paths, 20261014100000): the customer a duplicate merge folded
+  // this one into. Set with the soft delete, never cleared; search and the
+  // customer page follow it to the survivor. RESTRICT: a survivor cannot be
+  // hard-deleted while a merged customer points at it.
+  mergedIntoId String?
+
   channel    Channel?    @relation(fields: [channelId], references: [id])
   subChannel SubChannel? @relation(fields: [subChannelId], references: [id])
   importRow  ImportRow?  @relation(fields: [importRowId], references: [id])
   crPhoto    Attachment? @relation("CrPhoto", fields: [crPhotoId], references: [id])
+  mergedInto Customer?   @relation("CustomerMerge", fields: [mergedIntoId], references: [id], onDelete: Restrict)
+  mergedFrom Customer[]  @relation("CustomerMerge")
 
   branches Branch[]
   edits    CustomerEdit[]
@@ -364,6 +372,7 @@ model Customer {
   @@index([paymentTerms])
   @@index([temixCode])
   @@index([temixSyncState])
+  @@index([mergedIntoId])
 }
 
 model Branch {
@@ -421,6 +430,8 @@ model Branch {
 
   extraPhotos Attachment[]   @relation("BranchExtraPhotos")
   edits       CustomerEdit[]
+  // Gap 27: the new-customer request draft this shop was born from (set at finalize).
+  birthDrafts EditBranchDraft[] @relation("DraftBranch")
 
   @@index([routeId, status, deletedAt])
   @@index([customerId])
@@ -459,6 +470,12 @@ model CustomerEdit {
   // change the answer. Written once, on his SUBMITTED row; null for drafts,
   // direct writes, close/reactivation requests and rows written before it.
   submitGate        Json?
+
+  // Gap 8 (lossless paths): the customer the request was first about, set once by
+  // the database (trigger customeredit_original_customer) from the first non-null
+  // customerId and never changed after. A merge repoints customerId to the
+  // survivor; this keeps what the request was really about.
+  originalCustomerId String?
 
   // Phase 1: net-new CREATE support (customerId is null for a CREATE request;
   // the proposed payload lives in EditCustomerDraft + EditBranchDraft[]).
@@ -505,6 +522,7 @@ model CustomerEdit {
   @@index([branchId, state])
   @@index([pendingRole, state])
   @@index([state, slaDueAt])
+  @@index([originalCustomerId])
   @@unique([submittedById, submissionId])
 }
 
@@ -579,6 +597,12 @@ model ImportBatch {
   // the function limit) so a killed worker can never strand the batch.
   promoteLeaseBy    String?
   promoteLeaseUntil DateTime?
+
+  // Gap 7 (lossless paths): the uploaded workbook's SHA-256 (hex) and size, so
+  // which file set a value survives the 90-day sweep of the rows. The file itself
+  // is not kept. Null on batches uploaded before 20261014100000.
+  fileSha256 String?
+  fileBytes  Int?
 
   uploadedBy User        @relation("ImportUploader", fields: [uploadedById], references: [id])
   rows       ImportRow[]
@@ -666,6 +690,10 @@ model RateLimit {
 }
 
 // ── EXPORT ──────────────────────────────────────────
+// Gap 14 (lossless paths, 20261014100000): one row per export that left the
+// building, written with its EXPORT audit row in one transaction before the
+// bytes are sent. APPEND-ONLY: the runtime role may insert, never update or
+// delete (trigger and grants). The file itself is never stored.
 model ExportJob {
   id            String          @id @default(cuid())
   requestedById String
@@ -677,6 +705,13 @@ model ExportJob {
   startedAt     DateTime        @default(now())
   completedAt   DateTime?
   errorMessage  String?
+  // 'customer-master' | 'customers-filtered' | 'field-updates' (lib/export-record.ts)
+  kind          String?
+  // SHA-256 (hex) of the bytes sent, so a file found outside can be matched to it.
+  fileSha256    String?
+  filename      String?
+  // Which customers the file held (ids, each once).
+  customerIds   String[]
 
   requestedBy User @relation("ExportRequester", fields: [requestedById], references: [id])
 }
@@ -768,6 +803,8 @@ model CustomerHistory {
   subChannelId       String?
   crPhotoId          String?
   deletedAt          DateTime?
+  // Lossless paths (20261014100000): null on every row written before it.
+  mergedIntoId       String?
 
   @@index([customerId, validFrom(sort: Desc), id(sort: Desc)])
   @@index([txId])
@@ -901,6 +938,67 @@ model RegionHistory {
   @@index([txId])
 }
 
+// Gap 15 (lossless paths, 20261014100000): every photo and document row, as the
+// dated history keeps a shop: which customer, shop, extra slot or request it was
+// on, when it was removed, and its fingerprint (hash). Written by the database,
+// with a DELETE tombstone when photo-gc drops the row, so a replaced or removed
+// photo keeps its link and fingerprint for ever. The capture GPS is never copied.
+model AttachmentHistory {
+  id                 BigInt         @id @default(autoincrement())
+  changeKind         HistoryChange
+  changedFields      String[]
+  validFrom          DateTime
+  recordedAt         DateTime
+  effectiveRequested DateTime?
+  actorId            String?
+  source             String
+  sourceKind         String
+  txId               BigInt
+  dbUser             String
+  attachmentId       String
+  kind               AttachmentKind
+  customerId         String?
+  branchId           String?
+  branchExtraId      String?
+  editId             String?
+  deletedAt          DateTime?
+  // The SHA-256 the phone computed of the image (Attachment.hash).
+  hash               String?
+  capturedById       String
+  capturedAt         DateTime
+
+  @@index([attachmentId, validFrom(sort: Desc), id(sort: Desc)])
+  @@index([customerId, validFrom])
+  @@index([branchId, validFrom])
+  @@index([hash])
+  @@index([txId])
+}
+
+// Gap 12 (lossless paths, 20261014100000): what each round of a new-customer
+// request contained when it was sent. A sent-back request is re-sent on the same
+// row, so the row only ever shows the last round; this keeps every one. Written
+// by the submit transaction (services/creates.ts), APPEND-ONLY like AuditLog.
+// Personal values (names, CR number, phones, contact, e-mail, notes, address,
+// GPS) are kept as SHA-256 fingerprints only (lib/fingerprint.ts), never as values.
+model EditRevision {
+  id                       BigInt        @id @default(autoincrement())
+  editId                   String
+  cycle                    Int
+  process                  EditProcess
+  submittedAt              DateTime
+  submittedById            String
+  paymentTerms             PaymentTerms?
+  requestedCreditLimit     Decimal?      @db.Decimal(14, 3)
+  requestedPaymentTermDays Int?
+  approvalChain            Json?
+  payload                  Json
+  payloadSha256            String
+  recordedAt               DateTime      @default(now())
+  source                   String?
+
+  @@index([editId, cycle])
+}
+
 // ── Phase 1: CREATE-request drafts, multi-step approval, SLA/notifications, Temix sync ──
 
 // Typed payload for a not-yet-existing customer. A CREATE CustomerEdit
@@ -958,12 +1056,16 @@ model EditBranchDraft {
   shopPhotoAttachmentId      String?
   signboardPhotoAttachmentId String?
   extraPhotoAttachmentIds    Json? // string[] of unbound Attachment ids
+  // Gap 27 (lossless paths): the shop this draft became, set at finalize.
+  branchId                   String?
 
   edit   CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
   region Region       @relation("DraftRegion", fields: [regionId], references: [id])
   route  Route        @relation("DraftRoute", fields: [routeId], references: [id])
+  branch Branch?      @relation("DraftBranch", fields: [branchId], references: [id], onDelete: SetNull)
 
   @@index([editId])
+  @@index([branchId])
 }
 
 // Per-step approval decision — APPEND-ONLY. Under the owner-confirmed step-back
@@ -986,6 +1088,9 @@ model EditApproval {
   stageEnteredAt DateTime?
   slaDueAt       DateTime?
   workingMinutes Int?
+  // Gap 12 (lossless paths): the send-back reason category chosen with a
+  // rejection. Null on approvals and on rows written before 20261014100000.
+  category       String?
 
   edit  CustomerEdit @relation(fields: [editId], references: [id], onDelete: Cascade)
   actor User         @relation("StepActor", fields: [actorId], references: [id])

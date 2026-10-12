@@ -39,7 +39,15 @@ const FILES = [
   'services/customer-export.ts',
   'app/api/exports/changes/route.ts',
   'app/api/cron/sla-escalate/route.ts',
+  // Lossless paths (gap 14): the three exports' ExportJob and EXPORT rows.
+  'lib/export-record.ts',
 ];
+
+/**
+ * The exports write their EXPORT row through lib/export-record.ts recordExport
+ * (with the ExportJob row, in one transaction), which writes it with writeAudit.
+ */
+const EXPORT_FILES = ['services/exports.ts', 'services/customer-export.ts', 'app/api/exports/changes/route.ts'];
 
 const SRC: Record<string, string> = {};
 for (const f of FILES) SRC[f] = readFileSync(f, 'utf8');
@@ -128,8 +136,13 @@ describe('every audit write goes through lib/audit', () => {
     expect(offenders).toEqual([]);
   });
 
-  it.each(FILES)('%s routes its audit writes through writeAudit', (f) => {
+  it.each(FILES.filter((f) => !EXPORT_FILES.includes(f)))('%s routes its audit writes through writeAudit', (f) => {
     expect(/\bwriteAudit\(/.test(stripCommentsAndStrings(SRC[f]))).toBe(true);
+  });
+
+  it.each(EXPORT_FILES)('%s records its export through recordExport, which writes the row with writeAudit', (f) => {
+    expect(/\brecordExport\(/.test(stripCommentsAndStrings(SRC[f]))).toBe(true);
+    expect(/\bwriteAudit\(/.test(stripCommentsAndStrings(SRC['lib/export-record.ts']))).toBe(true);
   });
 });
 

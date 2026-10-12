@@ -11,7 +11,8 @@ import {
 } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { buildWorkbook } from '@/lib/excel';
-import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { getAuditEnvelope } from '@/lib/audit';
+import { recordExport } from '@/lib/export-record';
 import { omanDateISO } from '@/lib/tz';
 import {
   applyCustomerFilters,
@@ -231,10 +232,26 @@ async function exportFilteredCustomersCore(
   // fault to DB_UNAVAILABLE with a retryable message; anything else (in practice
   // only an actorId FK violation) re-throws and the action surfaces as an error
   // rather than a silent unaudited export.
-  await writeAudit(null, await getAuditEnvelope(me.id), {
-    action: 'EXPORT', // B6: was IMPORT — see services/exports.ts
-    entityType: 'Export',
-    entityId: `customers-${stamp}`,
+  // Gap 14 (lossless paths): the ExportJob and its EXPORT row — the filters and
+  // role scope, the customers, the SHA-256 of the bytes — in one transaction
+  // before the file goes out.
+  const filename = `customers-${stamp}.xlsx`;
+  await recordExport(await getAuditEnvelope(me.id), {
+    kind: 'customers-filtered',
+    filters: {
+      urlParams: usp.toString(),
+      scope: {
+        role: meRow.role,
+        forceEmpty: listScope.forceEmpty,
+        ownedRouteId: meRow.ownedRouteId,
+        teamRouteIds: meRow.reports.map((r) => r.ownedRouteId).filter((id): id is string => !!id),
+        managedRegionIds: meRow.managedRegions.map((r) => r.id),
+      },
+    },
+    customerIds: customers.map((c) => c.id),
+    bytes: buf,
+    filename,
+    rowCount: exportRows.length,
     reason: `filtered ${exportRows.length}`,
   });
   logger.info({ count: exportRows.length, by: me.id }, 'export.customers_filtered');
@@ -245,7 +262,7 @@ async function exportFilteredCustomersCore(
   const base64 = Buffer.from(new Uint8Array(buf)).toString('base64');
   return {
     base64,
-    filename: `customers-${stamp}.xlsx`,
+    filename,
     rowCount: exportRows.length,
   };
 }

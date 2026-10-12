@@ -16,7 +16,13 @@
  *   RUN_GOLIVE_FLOW=1 node scripts/qa/run-with-env.mjs vitest run tests/integration/golive-update-flow.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import {
+  purgeAuditLog,
+  purgeCustomerEdits,
+  purgeEditApprovals,
+  purgeExportJobs,
+  withAuditMaintenance,
+} from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { editPayload } from '../support/edit-payload';
 import { randomUUID, createHash } from 'node:crypto';
@@ -253,6 +259,8 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
     await purgeEditApprovals(prisma, { where: { editId: { in: editIds } } });
     await purgeCustomerEdits(prisma, { where: { id: { in: editIds } } });
     await purgeAuditLog(prisma, { where: { actorId: { in: ids.userIds } } });
+    // Every export is recorded (lossless paths, gap 14), append-only, and names its user.
+    await purgeExportJobs(prisma, { where: { requestedById: { in: ids.userIds } } });
     await prisma.rateLimit.deleteMany({ where: { key: { in: ids.userIds.flatMap((u) => [`edit:${u}`, `edit-draft:${u}`, `photo:${u}`]) } } });
     // Photo slots reference attachments (and vice versa): clear the slots first.
     await prisma.customer.updateMany({ where: { id: { in: allCustomerIds } }, data: { crPhotoId: null } });
@@ -1872,7 +1880,11 @@ describe.skipIf(!ENABLED)('GO-LIVE UPDATE FLOW (salesman → manager → report)
       await expect(check()).rejects.toMatchObject({ code: 'DUPLICATE_CR' });
       await prisma.user.update({ where: { id: ids.otherSalesmanId }, data: { isActive: false } });
       await expect(check()).resolves.toBeUndefined();
-      await prisma.customerEdit.update({ where: { id: left.id }, data: { state: 'NEEDS_CORRECTION', submittedAt: new Date() } });
+      // A sent request's submittedAt is evidence (lossless paths, gap 19): the
+      // fixture moves it in the owner's maintenance window.
+      await withAuditMaintenance(prisma, (tx) =>
+        tx.customerEdit.update({ where: { id: left.id }, data: { state: 'NEEDS_CORRECTION', submittedAt: new Date() } })
+      );
       await expect(check()).resolves.toBeUndefined();
       await prisma.customerEdit.update({ where: { id: left.id }, data: { state: 'SUBMITTED' } });
       await expect(check()).rejects.toMatchObject({

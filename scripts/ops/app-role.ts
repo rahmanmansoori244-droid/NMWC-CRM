@@ -36,7 +36,13 @@
 import { PrismaClient } from '@prisma/client';
 import { assertNotProduction } from '../lib/assert-not-production';
 import { setChangeContext, src } from '../../lib/change-context';
-import { HISTORY_DEFINER_FUNCTIONS, HISTORY_TABLES, historySequence } from '../../lib/history-tables';
+import {
+  APPEND_ONLY_APP_TABLES,
+  GUARD_FUNCTIONS,
+  HISTORY_DEFINER_FUNCTIONS,
+  HISTORY_TABLES,
+  historySequence,
+} from '../../lib/history-tables';
 
 const ROLE = 'nmwc_app';
 const PROD_MARKER = 'ep-sweet-haze';
@@ -182,15 +188,52 @@ async function status() {
             ? `history tables: read-only for ${ROLE} (${present.length})`
             : `${historyWrong} history table problem(s): run \`grant\``
       );
+
+      // Lossless paths (gaps 12 and 14): the ledgers the application writes —
+      // insert yes, update and delete never.
+      const ledgers = await appendOnlyTablesPresent(owner);
+      let ledgerWrong = 0;
+      for (const t of ledgers) {
+        const [p] = await owner.$queryRawUnsafe<{ sel: boolean; ins: boolean; upd: boolean; del: boolean }[]>(
+          `SELECT has_table_privilege('${ROLE}', '"${t}"', 'SELECT') AS sel,
+                  has_table_privilege('${ROLE}', '"${t}"', 'INSERT') AS ins,
+                  has_table_privilege('${ROLE}', '"${t}"', 'UPDATE') AS upd,
+                  has_table_privilege('${ROLE}', '"${t}"', 'DELETE') AS del`
+        );
+        const bad = !p.sel || !p.ins || p.upd || p.del;
+        if (bad) ledgerWrong += 1;
+        console.log(
+          `  ${t}: SELECT ${p.sel ? 'granted' : 'MISSING'}, INSERT ${p.ins ? 'granted' : 'MISSING'}, UPDATE ${p.upd ? 'GRANTED' : 'refused'}, DELETE ${p.del ? 'GRANTED' : 'refused'}${bad ? '  <-- run `grant`' : ''}`
+        );
+      }
+      console.log(
+        ledgers.length === 0
+          ? 'insert-only ledgers: not migrated yet'
+          : ledgerWrong === 0
+            ? `insert-only ledgers: insert-only for ${ROLE} (${ledgers.length})`
+            : `${ledgerWrong} insert-only ledger problem(s): run \`grant\``
+      );
     }
   } finally {
     await owner.$disconnect();
   }
 }
 
+/** The insert-only ledgers the application writes (none before migration 20261014100000). */
+async function appendOnlyTablesPresent(client: PrismaClient): Promise<string[]> {
+  const rows = await client.$queryRawUnsafe<{ relname: string }[]>(
+    `SELECT c.relname FROM pg_class c
+      WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'
+        AND c.relname IN (${APPEND_ONLY_APP_TABLES.map((t) => `'${t}'`).join(', ')})
+        AND EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid AND t.tgname = lower(c.relname) || '_append_only')
+      ORDER BY c.relname`
+  );
+  return rows.map((r) => r.relname);
+}
+
 /** The history's trigger functions EXECUTE is revoked on, as this database has them. */
 async function historyFunctionsPresent(client: PrismaClient): Promise<string[]> {
-  const names = [...HISTORY_DEFINER_FUNCTIONS, 'nmwc_history_insert_guard'];
+  const names = [...HISTORY_DEFINER_FUNCTIONS, ...GUARD_FUNCTIONS];
   const rows = await client.$queryRawUnsafe<{ proname: string }[]>(
     `SELECT proname FROM pg_proc
       WHERE pronamespace = 'public'::regnamespace AND proname IN (${names.map((f) => `'${f}'`).join(', ')})
@@ -237,10 +280,15 @@ async function grant() {
     // migrated to 20261013100100 has none, and naming a missing table would
     // abort the whole grant.
     const history = await historyTablesPresent(owner);
-    // The history's definer-rights trigger functions and its insert guard: no role
-    // but their owner may attach them to a table. The migration revokes EXECUTE from
+    // The history's definer-rights trigger functions and its guards: no role but
+    // their owner may attach them to a table. The migration revokes EXECUTE from
     // PUBLIC, but a restore made with --no-privileges brings the default back.
     const guarded = await historyFunctionsPresent(owner);
+    // Lossless paths (gaps 12 and 14): EditRevision and ExportJob are insert-only
+    // for the role. The blanket GRANT below would hand UPDATE back, so it is taken
+    // back after it; EditRevision's sequence stays usable (nextval on insert) but
+    // not settable.
+    const ledgers = await appendOnlyTablesPresent(owner);
     const stmts = [
       `GRANT CONNECT ON DATABASE "${db}" TO "${ROLE}"`,
       `GRANT USAGE ON SCHEMA public TO "${ROLE}"`,
@@ -267,6 +315,11 @@ async function grant() {
       ...history.map((t) => `REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "${t}" FROM "${ROLE}"`),
       ...history.map((t) => `REVOKE ALL ON SEQUENCE "${historySequence(t)}" FROM "${ROLE}"`),
       ...guarded.map((f) => `REVOKE EXECUTE ON FUNCTION ${f}() FROM PUBLIC`),
+      // the insert-only ledgers the application writes (see above)
+      ...ledgers.map((t) => `REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON "${t}" FROM "${ROLE}"`),
+      ...(ledgers.includes('EditRevision')
+        ? [`REVOKE UPDATE ON SEQUENCE "${historySequence('EditRevision')}" FROM "${ROLE}"`]
+        : []),
       // tables and sequences created by FUTURE migrations (run by the owner) inherit the grants
       // No DELETE here on purpose: a table added by a future migration must not
       // become deletable by the runtime credential without somebody deciding so.
@@ -483,6 +536,35 @@ async function verify() {
               throw new Error(`history capture: expected ${JSON.stringify(want)}, got ${JSON.stringify(rows)}`);
             }
             console.log(`  ✓ history: ${history.length} tables read-only; a branch's create and visit-day change recorded by the database, once each`);
+          }
+
+          // Lossless paths (gaps 12, 14 and 19): the ledgers the application
+          // writes take an insert and refuse every change, and a request once sent
+          // keeps what it asked for. All rolled back with the rest.
+          const ledgers = await appendOnlyTablesPresent(app);
+          if (ledgers.length === 0) {
+            console.log('  - insert-only ledgers not migrated yet: probes skipped');
+          } else {
+            for (const t of ledgers) {
+              await expectRefused(tx, `${t} UPDATE by ACL (zero rows)`, () =>
+                tx.$executeRawUnsafe(`UPDATE "${t}" SET "id" = "id" WHERE false`)
+              );
+              await expectRefused(tx, `${t} DELETE by ACL (zero rows)`, () =>
+                tx.$executeRawUnsafe(`DELETE FROM "${t}" WHERE false`)
+              );
+            }
+            const editId = `verify-edit-${Date.now()}`;
+            await tx.$executeRaw`INSERT INTO "CustomerEdit" ("id","target","state","submittedById","submittedAt","fieldChanges","attachmentChanges","process","updatedAt")
+              VALUES (${editId}, 'CUSTOMER', 'SUBMITTED', ${actor.id}, now(), '[]', '[]', 'CREATE', now())`;
+            if (ledgers.includes('EditRevision')) {
+              await tx.$executeRaw`INSERT INTO "EditRevision" ("editId","cycle","process","submittedAt","submittedById","payload","payloadSha256")
+                VALUES (${editId}, 1, 'CREATE', now(), ${actor.id}, '{}', 'verify')`;
+            }
+            await expectRefused(tx, 'a sent request: rewriting what it asked for', () =>
+              tx.$executeRaw`UPDATE "CustomerEdit" SET "fieldChanges" = '[{"field":"customer.notes"}]' WHERE "id" = ${editId}`
+            );
+            await tx.$executeRaw`UPDATE "CustomerEdit" SET "state" = 'REJECTED', "reviewedById" = ${actor.id}, "reviewedAt" = now() WHERE "id" = ${editId}`;
+            console.log(`  ✓ insert-only ledgers (${ledgers.join(', ')}): insert yes, change no; a sent request keeps what it asked for and still moves state`);
           }
           await expectRefused(tx, 'DDL (ALTER TABLE)', () => tx.$executeRawUnsafe(`ALTER TABLE "RateLimit" ADD COLUMN "x" INTEGER`));
           await expectRefused(tx, 'read _prisma_migrations', () => tx.$queryRawUnsafe(`SELECT count(*) FROM "_prisma_migrations"`));

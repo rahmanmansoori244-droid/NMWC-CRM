@@ -322,10 +322,13 @@ export async function finalizeCreateInTx(
     },
   });
 
-  // 5. Branches (codes are parent-derived ordinals: NMWC-YYYY-NNNNNN-01, -02…).
-  const branches: Array<{ id: string; draft: EditBranchDraft }> = [];
-  for (let i = 0; i < edit.branchDrafts.length; i += 1) {
-    const b = edit.branchDrafts[i]!;
+  // 5. Branches (codes are parent-derived ordinals: NMWC-YYYY-NNNNNN-01, -02…),
+  //    numbered in draft id order — the order the drafts were written in — so
+  //    which draft became -01 is fixed and recorded (gap 27).
+  const branches: Array<{ id: string; branchCode: string; draft: EditBranchDraft }> = [];
+  const draftsInOrder = [...edit.branchDrafts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (let i = 0; i < draftsInOrder.length; i += 1) {
+    const b = draftsInOrder[i]!;
     const branch = await tx.branch.create({
       data: {
         customerId: customer.id,
@@ -350,7 +353,30 @@ export async function finalizeCreateInTx(
         lastEditedById: env.actorId,
       },
     });
-    branches.push({ id: branch.id, draft: b });
+    branches.push({ id: branch.id, branchCode: branch.branchCode, draft: b });
+    // Gap 27 (lossless paths): the draft names the shop it became, and the shop
+    // has its own birth row — its route, region, visit day, GPS and counts as
+    // created, and the request it came from. The location itself is not copied.
+    await tx.editBranchDraft.update({ where: { id: b.id }, data: { branchId: branch.id } });
+    await writeAudit(tx, env, {
+      action: 'CREATE',
+      entityType: 'Branch',
+      entityId: branch.id,
+      after: {
+        branchCode: branch.branchCode,
+        customerId: customer.id,
+        draftId: b.id,
+        routeId: branch.routeId,
+        regionId: branch.regionId,
+        dayOfVisit: branch.dayOfVisit,
+        gpsPresent: branch.gpsLat != null && branch.gpsLng != null,
+        coolersCount: branch.coolersCount,
+        standsCount: branch.standsCount,
+        emptyBottlesCount: branch.emptyBottlesCount,
+        equipmentConfirmed: branch.equipmentConfirmed,
+        viaEditId: edit.id,
+      } as unknown as Prisma.InputJsonValue,
+    });
   }
 
   // 6. Bind photos to their real slots. editId stays set for provenance

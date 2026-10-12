@@ -7,7 +7,8 @@ import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { buildWorkbookStreamed } from '@/lib/excel';
 import { CUSTOMER_MASTER_COLUMNS, customerMasterRows } from '@/lib/customer-master-rows';
-import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { getAuditEnvelope } from '@/lib/audit';
+import { recordExport } from '@/lib/export-record';
 import { omanDateISO } from '@/lib/tz';
 
 async function requireExport() {
@@ -124,12 +125,15 @@ export async function buildCustomerExport(filters: ExportFilters) {
   }
 
   // One row per branch (mirrors the import shape), read a page at a time.
+  // Gap 14: the customers of the rows written are collected on the way.
+  const customerIds = new Set<string>();
   const { bytes, rowCount } = await buildWorkbookStreamed(
     CUSTOMER_MASTER_COLUMNS,
-    customerMasterRows(where),
+    customerMasterRows(where, undefined, (id) => customerIds.add(id)),
     'Customer Master'
   );
   const stamp = omanDateISO(); // the Oman day, as the field-update report names its file
+  const filename = `nmwc-customer-master-${stamp}.xlsx`;
 
   // DG-06/07: no longer best-effort. For a read-only export the AuditLog row is
   // the ONLY record that the master left the building — there is no ImportBatch
@@ -137,21 +141,29 @@ export async function buildCustomerExport(filters: ExportFilters) {
   // export with nothing in the ledger. Letting it throw makes this fail-closed:
   // the caller (app/api/exports/customers/route.ts) logs and returns 500, and
   // the bytes are never sent. No ledger row therefore implies no export.
-  await writeAudit(null, await getAuditEnvelope(me.id), {
-    // B6: this said IMPORT ("there is no EXPORT in our enum yet") long after
-    // EXPORT was added to the enum, so "who exported the customer master" —
-    // the first question of any personal-data incident — could not be
-    // answered from the ledger.
-    action: 'EXPORT',
-    entityType: 'Export',
-    entityId: stamp,
+  // B6: the row said IMPORT long after EXPORT was added to the enum, so "who
+  // exported the customer master" — the first question of any personal-data
+  // incident — could not be answered from the ledger. Gap 14 (lossless paths):
+  // the ExportJob and its EXPORT row say which customers the file held and the
+  // SHA-256 of the exact bytes sent, written together before they are sent.
+  await recordExport(await getAuditEnvelope(me.id), {
+    kind: 'customer-master',
+    filters: {
+      ...filters,
+      updatedSince: filters.updatedSince ? filters.updatedSince.toISOString() : undefined,
+      scope: { role: me.role, allowedRegionIds, allowedRouteIds },
+    },
+    customerIds,
+    bytes,
+    filename,
+    rowCount,
     reason: `customers ${rowCount}`,
   });
   logger.info({ count: rowCount, by: me.id }, 'export.customers');
 
   return {
     bytes,
-    filename: `nmwc-customer-master-${stamp}.xlsx`,
+    filename,
     rowCount,
   };
 }

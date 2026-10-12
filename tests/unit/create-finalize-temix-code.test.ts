@@ -100,6 +100,8 @@ beforeEach(() => {
       update: step('customer.update'),
     },
     branch: { create: step('branch.create', { id: 'b-new' }), update: step('branch.update') },
+    // Gap 27: the draft names the shop it became.
+    editBranchDraft: { update: step('draft.link') },
     customerEdit: { update: step('edit.link') },
   };
 });
@@ -128,10 +130,18 @@ describe('owner decision 2026-10-08: the Temix code the Accountant typed', () =>
 
   it('the approval audit row and the customer CREATE row both record it', async () => {
     await finalize();
-    const rows = h.writeAudit.mock.calls.map(([, , row]) => row as { action: string; after: Record<string, unknown> });
+    const all = h.writeAudit.mock.calls.map(
+      ([, , row]) => row as { action: string; entityType: string; after: Record<string, unknown> }
+    );
+    // Gap 27 (lossless paths): each shop has its own birth row first, naming its draft.
+    const births = all.filter((r) => r.entityType === 'Branch');
+    expect(births.map((r) => r.action)).toEqual(['CREATE']);
+    expect(births[0]!.after).toMatchObject({ customerId: 'c-new', viaEditId: edit.id });
+    const rows = all.filter((r) => r.entityType !== 'Branch');
     expect(rows.map((r) => r.action)).toEqual(['FINALIZE', 'CREATE']);
     expect(rows[0]!.after).toMatchObject({ customerId: 'c-new', nmwcCode: 'NMWC-2026-000123', temixCode: 'CAA0367' });
     expect(rows[1]!.after).toMatchObject({ nmwcCode: 'NMWC-2026-000123', temixCode: 'CAA0367' });
+    expect(calls).toContain('draft.link');
   });
 
   it('checked under its lock, after the photo checks and before a customer code is spent', async () => {

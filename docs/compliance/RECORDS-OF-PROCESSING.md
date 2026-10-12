@@ -92,7 +92,7 @@ Retention periods are the ones the system actually enforces — see `DATA-RETENT
 | **Purpose** | Load approved customers into the ERP; give managers a working copy of their region's master. |
 | **Personal data** | The full A1 set, as an `.xlsx` workbook. The field-update report additionally embeds each branch's coordinates as a clickable Google Maps link. |
 | **Recipients** | **Temix** (the ERP) — a recipient of the entire customer master, by design, on a recurring basis. **[OWNER]** State where Temix runs, who operates it, and under what agreement. The workbook is carried between systems by a Steward, so a copy also exists on that person's device. |
-| **Retention** | The CRM keeps only a record that an export happened (`AuditLog`, action `EXPORT`); copies outside the system are uncontrolled. |
+| **Retention** | The CRM keeps a record of every export (`ExportJob`, append-only, with its `AuditLog` `EXPORT` row): who, when, the filters and role scope, which customers it held (ids), the file name and the SHA-256 of the exact bytes — never the file itself (gap 14, `docs/HISTORY.md` §9), so a copy found outside can be matched to its export. Copies outside the system are uncontrolled. |
 | **Lawful basis** | **[COUNSEL]** |
 
 ### A6 — Operating the service

@@ -16,7 +16,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { purgeAuditLog } from '../support/audit';
+import { purgeAuditLog, purgeExportJobs } from '../support/audit';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -96,6 +96,8 @@ describe.skipIf(!ENABLED)('F17: the filtered export shows the branch the filter 
       const custs = await prisma.customer.findMany({ where: { nmwcCode: { startsWith: P } }, select: { id: true } });
       const ids = custs.map((c) => c.id);
       await purgeAuditLog(prisma, { where: { actorId: manager } });
+      // Every export is recorded (lossless paths, gap 14), append-only.
+      await purgeExportJobs(prisma, { where: { requestedById: manager } });
       await prisma.branch.deleteMany({ where: { customerId: { in: ids } } });
       await prisma.customer.deleteMany({ where: { id: { in: ids } } });
       await prisma.user.deleteMany({ where: { id: manager } });

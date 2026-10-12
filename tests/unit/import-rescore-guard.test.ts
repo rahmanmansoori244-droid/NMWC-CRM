@@ -68,6 +68,9 @@ describe('services/imports.ts: branch writes, scores and row notes', () => {
     const note = src.indexOf('rowNotes[plainIdx[0]] = {');
     expect(note).toBeGreaterThan(src.indexOf('if (clearSub) {'));
     expect(note).toBeLessThan(src.indexOf('for (const i of fullIdx) rowNotes[i]'));
-    expect(callsOf('tx.customer.upsert')[0]).toMatch(/subChannelId: clearSub \? null : undefined,/);
+    // Gap 4 (lossless paths): the write is built once (customerWrite), and the
+    // upsert sends only the cells of it that differ from the stored customer.
+    expect(src).toMatch(/const customerWrite: Record<string, unknown> = \{[\s\S]*?subChannelId: clearSub \? null : undefined,/);
+    expect(callsOf('tx.customer.upsert')[0]).toMatch(/customerChanged \?\? Object\.keys\(customerWrite\)/);
   });
 });

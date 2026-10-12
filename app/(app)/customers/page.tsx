@@ -18,6 +18,7 @@ import {
 } from '@/lib/customer-filters';
 import { listSavedViewsForCurrentUser } from '@/services/saved-views';
 import { customerCountFast } from '@/lib/customer-count';
+import { mergedCodeMatches } from '@/lib/merged-customers';
 import {
   getAllActiveChannels,
   getAllActiveRegions,
@@ -218,6 +219,23 @@ export default async function CustomersPage({
     listSavedViewsForCurrentUser().catch(() => []),
   ]);
 
+  // Gap 8 (lossless paths): a search for the code of a customer merged away
+  // leads to the one it was merged into — named only when the viewer's own
+  // scope reaches that customer.
+  const mergedHits = filters.q && !listScope.forceEmpty ? await mergedCodeMatches(prisma, filters.q) : [];
+  const mergedShown: typeof mergedHits = [];
+  for (const m of mergedHits) {
+    const reachable = await prisma.customer.count({
+      where: {
+        AND: [
+          { id: m.survivor.id, deletedAt: null },
+          ...(branchSomeBase ? [{ branches: { some: branchSomeBase } }] : []),
+        ],
+      },
+    });
+    if (reachable > 0) mergedShown.push(m);
+  }
+
   // In-memory scope filtering on the cached reference data.
   // Compute scope route IDs once and reuse.
   // Launch fix: an ACCOUNTANT is region-scoped like a MANAGER
@@ -337,6 +355,19 @@ export default async function CustomersPage({
       />
 
       <section className="px-4 py-4 sm:px-6">
+        {mergedShown.length > 0 && (
+          <ul className="mb-3 space-y-1 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {mergedShown.map((m) => (
+              <li key={m.id}>
+                {m.code} was merged into{' '}
+                <Link href={`/customers/${m.survivor.id}`} className="font-medium underline">
+                  {m.survivor.nmwcCode} — {m.survivor.legalName}
+                </Link>
+                .
+              </li>
+            ))}
+          </ul>
+        )}
         {customers.length === 0 ? (
           <EmptyState
             title="No customers match"

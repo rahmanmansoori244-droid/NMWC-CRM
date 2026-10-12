@@ -29,6 +29,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { logger } from '@/lib/logger';
 import { getAuditEnvelope, writeAudit, type AuditEnvelope } from '@/lib/audit';
+import { approvalOutcome, sentRequestAudit } from '@/lib/request-evidence';
 import {
   followBranchStatus,
   mergeStatusEvents,
@@ -1015,6 +1016,11 @@ async function submitEditOnce(
         const customerBefore = Object.fromEntries(
           CUSTOMER_EDIT_FIELDS.map((f) => [f, toBaseValue(now[f])])
         );
+        // Gap 19 (lossless paths): the row carried the customer's fields only, and
+        // a direct write to a shop (status, visit day, GPS, equipment) was in the
+        // editable request table alone. Every applied change, customer and shop,
+        // with the value it replaced, is now in the ledger too.
+        const appliedList = apply.map((c) => ({ field: c.field, before: c.before ?? null, after: c.after ?? null }));
         await writeAudit(tx, env, {
           action: 'UPDATE',
           entityType: 'Customer',
@@ -1029,7 +1035,11 @@ async function submitEditOnce(
           // recover. The prefix is a stable `reason LIKE 'direct-write:%'` anchor.
           reason: `direct-write: applied by ${me.role} with no approval chain`,
           before: customerBefore as unknown as Prisma.InputJsonValue,
-          after: write.customer as unknown as Prisma.InputJsonValue,
+          after: {
+            ...write.customer,
+            applied: appliedList,
+            editId: e.id,
+          } as unknown as Prisma.InputJsonValue,
         });
         return e;
       },
@@ -1043,7 +1053,9 @@ async function submitEditOnce(
     const answered = isDraft
       ? []
       : await openReturnedIds(prisma, me.id, { customerId: customer.id, updatesOnly: true });
-    const answeredEnv = answered.length > 0 ? await getAuditEnvelope(me.id) : null;
+    // Gap 19 (lossless paths): every sent request has its CREATE row in the
+    // ledger, so the envelope is read here, before the transaction, for any submit.
+    const submitEnv = isDraft ? null : await getAuditEnvelope(me.id);
     const submitted: Prisma.CustomerEditUncheckedCreateInput = {
       target: EditTarget.CUSTOMER,
       customerId: customer.id,
@@ -1065,19 +1077,25 @@ async function submitEditOnce(
           submissionId,
           ...chainFields,
         });
-      } else if (!answeredEnv) {
-        // One autocommitted insert, as before gap 24: a request row is not a
-        // master write (no history table watches CustomerEdit), and the
-        // salesman's submit is the hottest write path there is.
-        edit = await prisma.customerEdit.create({ data: submitted });
       } else {
-        // F13: the trail on each request it answers commits with it, or neither does.
+        // Gap 19 (lossless paths): the request and its evidence row commit
+        // together — the request as sent, in the append-only ledger (it was one
+        // autocommitted insert, with no ledger row at all). F13: the trail on
+        // each request it answers commits with it too, or none of it does.
         const cause = { actorId: me.id, source: src.edit('new') };
+        const env = submitEnv!;
         edit = await withChangeContext(prisma, cause, async (tx) => {
           const e = await tx.customerEdit.create({ data: submitted });
           await setChangeContext(tx, { actorId: me.id, source: src.edit(e.id) });
+          await writeAudit(tx, env, {
+            action: 'CREATE',
+            entityType: 'CustomerEdit',
+            entityId: e.id,
+            reason: 'request sent',
+            after: sentRequestAudit(e),
+          });
           for (const id of answered) {
-            await writeAudit(tx, answeredEnv, {
+            await writeAudit(tx, env, {
               action: 'UPDATE',
               entityType: 'CustomerEdit',
               entityId: id,
@@ -2102,6 +2120,18 @@ async function approveEditCore(formData: FormData) {
           changes: fieldChanges.length,
           fieldChanges: fieldChanges as unknown as Prisma.InputJsonValue,
           droppedBranchIds: droppedBranchIds.length > 0 ? droppedBranchIds : undefined,
+          // Gap 19 (lossless paths): what this approval actually wrote, what was
+          // already live (written by someone else — an import, a direct write),
+          // what the submitter's role was locked out of, and the shops the
+          // mandatory-field gate was checked on. A change an import made can no
+          // longer read as the approver's.
+          ...approvalOutcome({
+            requested: fieldChanges,
+            considered,
+            apply: classified.apply,
+            converged: classified.converged,
+            gateBranchIds: gateBranches && !isStatusOnlyEdit ? gateBranches.map((b) => b.id) : null,
+          }),
         } as unknown as Prisma.InputJsonValue,
       });
       await settleRequestAlerts(tx, { editId, submittedById: edit.submittedById });
@@ -2282,7 +2312,8 @@ async function rejectEditCore(formData: FormData) {
   const session = await requireUser();
   const editId = String(formData.get('editId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim();
-  const category = String(formData.get('category') ?? 'other').trim();
+  // Gap 12: kept on the decision row and the REJECT row, so bounded.
+  const category = String(formData.get('category') ?? 'other').trim().slice(0, 64) || 'other';
   if (!editId) throw new ValidationError({ editId: 'required' });
   if (reason.length < 5 || reason.length > 1000) {
     throw new ValidationError({ reason: 'Reason must be 5–1000 characters.' });
@@ -2396,6 +2427,9 @@ async function rejectEditCore(formData: FormData) {
         decision: 'REJECTED',
         actorId: session.id,
         reason,
+        // Gap 12 (lossless paths): the send-back category, kept with the
+        // decision (CustomerEdit.decisionCategory holds only the latest).
+        category,
         ...stageSnapshot(edit, rejectedAt),
       },
     });
@@ -2464,6 +2498,7 @@ async function rejectEditCore(formData: FormData) {
         target: target.kind,
         fromStep: rejectStepIndex,
         cycle: edit.cycle,
+        decisionCategory: category,
       } as unknown as Prisma.InputJsonValue,
     });
     // Notifications (inside the tx — a lost claim race must not notify). The

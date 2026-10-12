@@ -119,6 +119,8 @@ export const src = {
   routes: (action: string, id: string) => join('routes', action, id),
   /** The Temix upload queue: generate, loaded, requeue. */
   temix: (action: string, batchId: string) => join('temix', action, batchId),
+  /** An export leaving the building: its ExportJob and EXPORT rows (lossless paths, gap 14). */
+  export: (kind: string) => join('export', kind),
   /** Sign-in and sign-out. */
   auth: (event: string) => join('auth', event),
   /** A person changing their own password. */

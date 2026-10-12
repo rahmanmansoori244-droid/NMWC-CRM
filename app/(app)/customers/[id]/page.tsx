@@ -18,6 +18,7 @@ import { omanWhen } from '@/lib/submission';
 import { ArchiveCustomerButton } from './ArchiveCustomerButton';
 import { ROUTE_INACTIVE_MESSAGE } from '@/lib/errors';
 import { canPrint } from '@/lib/print';
+import { survivorOf } from '@/lib/merged-customers';
 import { MapPin, Phone, Mail, User as UserIcon, Camera, Calendar, Image as ImageIcon, Pencil, Printer } from 'lucide-react';
 
 export const metadata = { title: 'Customer · NMWC' };
@@ -60,8 +61,6 @@ export default async function CustomerProfilePage({
       },
     },
   });
-  if (!customer) notFound();
-
   // QA-001 fix — scope check before exposing the customer to the caller.
   const scope = await loadScope(session.user.id);
   const sessionUser = {
@@ -69,6 +68,46 @@ export default async function CustomerProfilePage({
     role: session.user.role,
     username: session.user.username,
   };
+
+  if (!customer) {
+    // Gap 8 (lossless paths): the old page of a customer merged away says where
+    // it went, when the viewer can see the customer it was merged into.
+    const survivor = await survivorOf(prisma, id);
+    const reachable = survivor
+      ? await prisma.customer.findFirst({
+          where: { id: survivor.id, deletedAt: null },
+          select: { branches: { where: { deletedAt: null }, select: { routeId: true, regionId: true, deletedAt: true } } },
+        })
+      : null;
+    if (!survivor || !reachable || !canSeeCustomer(sessionUser, reachable, scope)) notFound();
+    const merged = await prisma.customer.findUnique({ where: { id }, select: { nmwcCode: true } });
+    return (
+      <main>
+        <PageHeader title="Customer merged" subtitle={merged?.nmwcCode ?? undefined} />
+        <section className="px-4 py-4 sm:px-6">
+          <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {merged?.nmwcCode ?? 'This customer'} was merged into{' '}
+            <Link href={`/customers/${survivor.id}`} className="font-medium underline">
+              {survivor.nmwcCode} — {survivor.legalName}
+            </Link>
+            . Its shops, documents and requests are there now.
+            {session.user.role === Role.STEWARD && (
+              <>
+                {' '}
+                <Link
+                  href={`/audit?action=MERGE&q=${encodeURIComponent(survivor.id)}`}
+                  className="underline"
+                >
+                  See the merge in the audit log
+                </Link>
+                .
+              </>
+            )}
+          </p>
+        </section>
+      </main>
+    );
+  }
   // Convert "out of scope" into a clean 404 to avoid leaking ID validity.
   if (!canSeeCustomer(sessionUser, customer, scope)) notFound();
 

@@ -339,6 +339,8 @@ export const AUDIT_ENTITY_TYPES = [
   'TemixSyncBatch',
   'TemixRequeue',
   'CustomerPair',
+  // Lossless paths (gap 27): a new-customer submit refused as a duplicate.
+  'CustomerCreateAttempt',
   'VisitDaysFromSheets',
   'QuarantinedVisitDays',
   'CreditLimitZeroing',

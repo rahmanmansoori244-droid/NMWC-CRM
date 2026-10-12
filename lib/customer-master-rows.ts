@@ -58,7 +58,10 @@ export const CUSTOMER_MASTER_COLUMNS = [
  */
 export async function* customerMasterRows(
   where: Prisma.BranchWhereInput,
-  pageSize = CUSTOMER_MASTER_PAGE_SIZE
+  pageSize = CUSTOMER_MASTER_PAGE_SIZE,
+  // Gap 14 (lossless paths): told the customer of every row written, so the
+  // export's record can say which customers the file held.
+  onCustomer?: (customerId: string) => void
 ): AsyncGenerator<Record<string, unknown>> {
   const pages = keysetPages(
     (last: { regionId: string; branchCode: string } | undefined) =>
@@ -81,6 +84,7 @@ export async function* customerMasterRows(
         select: {
           regionId: true,
           branchCode: true,
+          customerId: true,
           branchName: true,
           address: true,
           areaDescription: true,
@@ -122,6 +126,7 @@ export async function* customerMasterRows(
   );
   for await (const page of pages) {
     for (const b of page) {
+      onCustomer?.(b.customerId);
       yield {
         cust_code: b.customer.nmwcCode,
         cust_name: b.customer.legalName,

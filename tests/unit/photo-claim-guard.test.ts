@@ -243,7 +243,7 @@ describe('X-PHOTO-1: Remove reads again under the lock and soft-deletes only gua
     const tx = txs[0];
     expect(tx).not.toMatch(/tx\.attachment\.update\(/);
     expect(tx).toMatch(
-      /const gone = await tx\.attachment\.updateMany\(\{\s*where: \{ id: att\.id, deletedAt: null, \.\.\.wiring \},\s*data: \{ deletedAt: new Date\(\), hash: null \},?\s*\}\);\s*if \(gone\.count !== 1\) throw new ConflictError\('PHOTO_CHANGED'/
+      /const gone = await tx\.attachment\.updateMany\(\{\s*where: \{ id: att\.id, deletedAt: null, \.\.\.wiring \},\s*data: \{ deletedAt: new Date\(\) \},?\s*\}\);\s*if \(gone\.count !== 1\) throw new ConflictError\('PHOTO_CHANGED'/
     );
     expect(detach).toMatch(
       /const wiring = \{\s*customerId: att\.customerId,\s*branchId: att\.branchId,\s*branchExtraId: att\.branchExtraId,\s*editId: att\.editId,?\s*\};/

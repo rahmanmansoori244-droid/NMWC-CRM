@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
   findMany: vi.fn(),
   count_: vi.fn(),
   writeAudit: vi.fn(),
+  // Lossless paths (gap 14): the export's ExportJob row, written with its EXPORT row.
+  jobCreate: vi.fn(async () => ({ id: 'job-1' })),
 }));
 
 vi.mock('@/lib/auth', () => ({ auth: async () => ({ user: h.user }) }));
@@ -31,6 +33,8 @@ vi.mock('@/lib/db', () => ({
     user: { findMany: async () => h.teamRoutes.map((r) => ({ ownedRouteId: r })) },
     region: { findMany: async () => h.managedRegions.map((id) => ({ id })) },
     branch: { count: h.count_, findMany: h.findMany },
+    $transaction: async (fn: (tx: unknown) => unknown) =>
+      fn({ $executeRaw: async () => 1, exportJob: { create: h.jobCreate } }),
   },
 }));
 
@@ -42,6 +46,7 @@ import { parseWorkbook } from '@/lib/excel';
 const branch = (i: number) => ({
   regionId: 'r1',
   branchCode: `B-${String(i).padStart(5, '0')}`,
+  customerId: `cust-${i % 7}`,
   branchName: `Branch ${i}`,
   address: `Way ${i}`,
   areaDescription: null,
@@ -102,6 +107,7 @@ beforeEach(() => {
   h.teamRoutes = [];
   h.managedRegions = [];
   h.findMany.mockReset();
+  h.jobCreate.mockClear();
   h.count_.mockReset();
   h.writeAudit.mockReset();
   h.rows = [];
@@ -233,7 +239,13 @@ describe('buildCustomerExport', () => {
     const out = await buildCustomerExport({});
     expect(out.rowCount).toBe(25_100);
     expect(h.writeAudit).toHaveBeenCalledTimes(1);
-    expect(h.writeAudit.mock.calls[0]![2]).toMatchObject({ action: 'EXPORT', reason: 'customers 25100' });
+    expect(h.writeAudit.mock.calls[0]![2]).toMatchObject({ action: 'EXPORT', reason: 'customers 25100', entityId: 'job-1' });
+    // Gap 14: which customers the file held, and the SHA-256 of the exact bytes.
+    const job = (h.jobCreate.mock.calls[0] as unknown as [{ data: Record<string, unknown> }])[0].data;
+    expect(job).toMatchObject({ kind: 'customer-master', status: 'DONE', rowCount: 25_100, requestedById: h.user.id });
+    expect(job.customerIds).toEqual(['cust-0', 'cust-1', 'cust-2', 'cust-3', 'cust-4', 'cust-5', 'cust-6']);
+    const { createHash } = await import('node:crypto');
+    expect(job.fileSha256).toBe(createHash('sha256').update(out.bytes).digest('hex'));
     const [sheet] = await parseWorkbook(out.bytes);
     expect(sheet!.headers).toEqual([...CUSTOMER_MASTER_COLUMNS]);
     expect(sheet!.rows).toHaveLength(25_100);
@@ -250,7 +262,11 @@ describe('buildCustomerExport', () => {
       h.count_.mockResolvedValue(0);
       const out = await buildCustomerExport({});
       expect(out.filename).toBe('nmwc-customer-master-2026-10-08.xlsx');
-      expect(h.writeAudit.mock.calls[0]![2]).toMatchObject({ entityId: '2026-10-08' });
+      // Gap 14: the EXPORT row is keyed by its ExportJob, which records the file by name.
+      expect(h.writeAudit.mock.calls[0]![2]).toMatchObject({ entityId: 'job-1' });
+      expect((h.jobCreate.mock.calls[0] as unknown as [{ data: Record<string, unknown> }])[0].data).toMatchObject({
+        filename: 'nmwc-customer-master-2026-10-08.xlsx',
+      });
     } finally {
       vi.useRealTimers();
       vi.unstubAllEnvs();

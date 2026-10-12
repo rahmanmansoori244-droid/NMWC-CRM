@@ -51,7 +51,7 @@
  *     tests/integration/credit-chain-e2e.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, withAuditMaintenance } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { guaranteeDigest, parseDecisionToken } from '@/lib/decision-token';
 import { CREDIT_BULK_REFUSED_MESSAGE, TEMIX_CODE_BULK_REFUSED_MESSAGE } from '@/lib/bulk-run';
@@ -223,9 +223,15 @@ describe.skipIf(!ENABLED)('CREDIT create chain SUP→FM→GM→ACC (R19/R17/R26)
   }
   const allDocIds = (d: Record<string, string[]>) => Object.values(d).flat();
   let mainDocs: Record<string, string[]> = {};
-  /** A request frozen before the change: the 4-step chain, as its column holds it. */
+  /**
+   * A request frozen before the change: the 4-step chain, as its column holds it.
+   * A sent request's chain is evidence (lossless paths, gap 19): the fixture
+   * rewrites it in the owner's maintenance window.
+   */
   const freezeLegacy = (id: string) =>
-    prisma.customerEdit.update({ where: { id }, data: { approvalChain: LEGACY_CREDIT_CHAIN as unknown as object } });
+    withAuditMaintenance(prisma, (tx) =>
+      tx.customerEdit.update({ where: { id }, data: { approvalChain: LEGACY_CREDIT_CHAIN as unknown as object } })
+    );
 
   it('submits the CREDIT request and freezes the 6-step chain', async () => {
     asUser(ids.salesman, 'SALESMAN');

@@ -148,7 +148,8 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
   const loserId = String(formData.get('loserId') ?? '');
   // QA-018: explicit confirmation token required when the merge crosses regions.
   const confirmCrossRegion = String(formData.get('confirmCrossRegion') ?? '') === 'yes';
-  const reason = String(formData.get('reason') ?? '').trim();
+  // Gap 8: kept on every MERGE row now, so bounded like a rejection's reason.
+  const reason = String(formData.get('reason') ?? '').trim().slice(0, 1000);
   if (!winnerId || !loserId || winnerId === loserId) {
     throw new ValidationError({ _form: 'Pick a winner and a different loser.' });
   }
@@ -270,10 +271,52 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
       const movedOpen = await tx.branch.count({
         where: { customerId: loser.id, deletedAt: null, status: CustomerStatus.ACTIVE },
       });
-      // Move branches
+      // Gap 8 (lossless paths): what this merge moves, read under the locks, so
+      // the MERGE row can say exactly which shops, documents and requests went
+      // to the winner — and what the loser was — for as long as the ledger is
+      // kept. Ids and non-personal values only.
+      const loserState = await tx.customer.findUniqueOrThrow({
+        where: { id: loser.id },
+        select: {
+          nmwcCode: true,
+          paymentTerms: true,
+          creditLimit: true,
+          paymentTermDays: true,
+          temixCode: true,
+          temixSyncState: true,
+          lastTemixUploadAt: true,
+          status: true,
+          channelId: true,
+          subChannelId: true,
+        },
+      });
+      const movedBranchIds = (
+        await tx.branch.findMany({
+          where: { customerId: loser.id, deletedAt: null },
+          select: { id: true },
+          orderBy: { id: 'asc' },
+        })
+      ).map((b) => b.id);
+      const movedAttachmentIds = (
+        await tx.attachment.findMany({
+          where: { customerId: loser.id, deletedAt: null },
+          select: { id: true },
+          orderBy: { id: 'asc' },
+        })
+      ).map((a) => a.id);
+      const repointedEditIds = (
+        await tx.customerEdit.findMany({
+          where: { customerId: loser.id },
+          select: { id: true },
+          orderBy: { id: 'asc' },
+        })
+      ).map((e) => e.id);
+      // Move branches. Gap 8: their version moves too, as any other write of a
+      // branch does (B-05), so an approval that read one before the merge fails
+      // instead of writing over the move.
       await tx.branch.updateMany({
         where: { customerId: loser.id, deletedAt: null },
-        data: { customerId: winner.id, lastEditedById: session.id },
+        data: { customerId: winner.id, lastEditedById: session.id, version: { increment: 1 } },
       });
       await followBranchStatus(
         tx,
@@ -315,6 +358,20 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
         select: { id: true, submittedById: true },
       });
       for (const e of autoClosed) {
+        // Gap 8: each request the merge closed has its own REJECT row, as any
+        // other closed request does.
+        await writeAudit(tx, env, {
+          action: 'REJECT',
+          entityType: 'CustomerEdit',
+          entityId: e.id,
+          reason: `Auto-closed: customer ${loser.nmwcCode} merged into ${winner.nmwcCode}.`,
+          after: {
+            state: EditState.REJECTED,
+            closedBy: 'merge',
+            loserId: loser.id,
+            winnerId: winner.id,
+          } as Prisma.InputJsonValue,
+        });
         await settleRequestAlerts(tx, { editId: e.id, submittedById: e.submittedById });
         await notifyUsers(tx, [e.submittedById], {
           kind: 'EDIT_NEEDS_CORRECTION',
@@ -408,6 +465,8 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
         where: { id: loser.id, deletedAt: null, temixSyncState: loserFresh.temixSyncState },
         data: {
           deletedAt: new Date(),
+          // Gap 8: search and the customer page follow this to the winner.
+          mergedIntoId: winner.id,
           lastEditedById: session.id,
           temixSyncState: loserTemixState,
           temixSyncPendingSince: loserTemixState === 'DEACTIVATE_PENDING' ? new Date() : null,
@@ -446,17 +505,39 @@ async function mergeCustomersCore(formData: FormData): Promise<{ winnerId: strin
           winner: { id: winner.id, nmwcCode: winner.nmwcCode },
           crossRegion: isCrossRegion,
         } as unknown as Prisma.InputJsonValue,
-        ...(sharedWith.length > 0
-          ? {
-              after: {
-                temixDeactivation: 'skipped-shared-code',
-                temixCodeHeldBy: sharedWith,
-              } as Prisma.InputJsonValue,
-            }
-          : {}),
+        // Gap 8 (lossless paths): exactly what moved, and what the loser was —
+        // enough to explain, or undo by hand, the merge years later. No name,
+        // phone or CR number: the loser's non-personal standing only.
+        after: {
+          ...(sharedWith.length > 0
+            ? { temixDeactivation: 'skipped-shared-code', temixCodeHeldBy: sharedWith }
+            : {}),
+          movedBranchIds,
+          movedAttachmentIds,
+          repointedEditIds,
+          autoClosedEditIds: autoClosed.map((e) => e.id),
+          loserCrPhotoId: loserCr.crPhotoId,
+          loserSnapshot: {
+            nmwcCode: loserState.nmwcCode,
+            paymentTerms: loserState.paymentTerms,
+            creditLimit: loserState.creditLimit?.toString() ?? null,
+            paymentTermDays: loserState.paymentTermDays,
+            temixCode: loserState.temixCode,
+            temixSyncState: loserState.temixSyncState,
+            lastTemixUploadAt: loserState.lastTemixUploadAt?.toISOString() ?? null,
+            status: loserState.status,
+            channelId: loserState.channelId,
+            subChannelId: loserState.subChannelId,
+          },
+          loserTemixStateAfter: loserTemixState,
+        } as unknown as Prisma.InputJsonValue,
+        // Gap 8: the Steward's typed reason is kept on every merge; it was
+        // thrown away when both customers were in the same region.
         reason: isCrossRegion
           ? `Cross-region merge: ${loser.nmwcCode} -> ${winner.nmwcCode}. ${reason}`
-          : `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,
+          : reason
+            ? `Merged ${loser.nmwcCode} into ${winner.nmwcCode}. ${reason}`
+            : `Merged ${loser.nmwcCode} into ${winner.nmwcCode}`,
       });
     },
     {

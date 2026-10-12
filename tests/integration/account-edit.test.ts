@@ -276,7 +276,8 @@ describe.skipIf(!ENABLED)(
 
     afterAll(async () => {
       if (!prisma) return;
-      if (ids.edit) await prisma.customerEdit.deleteMany({ where: { id: ids.edit } });
+      // A request is never deleted outside the owner's maintenance window (gap 19).
+      if (ids.edit) await purgeCustomerEdits(prisma, { where: { id: ids.edit } });
       // The review's new-customer requests, and what their submits wrote.
       if (ids.busy) {
         const eds = (

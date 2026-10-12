@@ -173,6 +173,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'Customer.version': { subject: 'none', note: 'optimistic-concurrency counter' },
   'Customer.importBatchId': { subject: 'none', note: STRUCTURAL },
   'Customer.importRowId': { subject: 'none', note: STRUCTURAL },
+  'Customer.mergedIntoId': { subject: 'none', note: 'the customer a duplicate merge folded this one into (lossless paths, gap 8); structural' },
   'Customer.crPhotoId': { subject: 'none', note: 'reference to the CR document image in R2' },
   'Customer.creditLimit': { subject: 'business-or-person', kind: 'financial' },
   'Customer.paymentTermDays': { subject: 'business-or-person', kind: 'financial' },
@@ -223,6 +224,10 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'CustomerEdit.id': { subject: 'none', note: STRUCTURAL },
   'CustomerEdit.target': { subject: 'none' },
   'CustomerEdit.customerId': { subject: 'none', note: STRUCTURAL },
+  'CustomerEdit.originalCustomerId': {
+    subject: 'none',
+    note: 'the customer the request was first about, set once by the database (lossless paths, gap 8); structural',
+  },
   'CustomerEdit.branchId': { subject: 'none', note: STRUCTURAL },
   'CustomerEdit.state': { subject: 'none' },
   'CustomerEdit.submittedById': { subject: 'employee', kind: 'behaviour', note: 'who proposed the change' },
@@ -305,6 +310,11 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'ImportBatch.rejectedRows': { subject: 'none' },
   'ImportBatch.promoteLeaseBy': { subject: 'employee', kind: 'identifier', note: 'which Steward holds the promote lease' },
   'ImportBatch.promoteLeaseUntil': { subject: 'none', note: RECORD_META },
+  'ImportBatch.fileSha256': {
+    subject: 'none',
+    note: 'SHA-256 of the uploaded workbook as a whole (gap 7): identifies the file, not its contents — no value can be read back from it',
+  },
+  'ImportBatch.fileBytes': { subject: 'none', note: 'size of the uploaded workbook' },
   'ImportRow.id': { subject: 'none', note: STRUCTURAL },
   'ImportRow.batchId': { subject: 'none', note: STRUCTURAL },
   'ImportRow.rowNumber': { subject: 'none' },
@@ -357,10 +367,18 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'RateLimit.lastRefill': { subject: 'none', note: RECORD_META },
   'RateLimit.updatedAt': { subject: 'none', note: RECORD_META },
 
-  // ---- ExportJob (declared, not yet used by any code path) -----------------
+  // ---- ExportJob: the record of every export (lossless paths, gap 14; append-only)
   'ExportJob.id': { subject: 'none', note: STRUCTURAL },
   'ExportJob.requestedById': { subject: 'employee', kind: 'behaviour' },
-  'ExportJob.filters': { subject: 'customer', kind: 'free text', note: 'would embed the search term used' },
+  'ExportJob.filters': {
+    subject: 'customer',
+    kind: 'free text',
+    note: 'the filters and role scope of the export; the filtered list carries the search term typed, which can be a name or a phone',
+  },
+  'ExportJob.kind': { subject: 'none', note: 'which export: customer-master, customers-filtered or field-updates' },
+  'ExportJob.fileSha256': { subject: 'none', note: 'SHA-256 of the exact bytes sent: identifies the file, not its contents' },
+  'ExportJob.filename': { subject: 'none', note: 'the file name the export was sent under (a date, never a customer)' },
+  'ExportJob.customerIds': { subject: 'none', note: 'identifiers of the customers the file held; the file itself is never stored' },
   'ExportJob.status': { subject: 'none' },
   'ExportJob.r2Key': { subject: 'none', kind: 'image reference' },
   'ExportJob.rowCount': { subject: 'none' },
@@ -417,6 +435,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'CustomerHistory.subChannelId': { subject: 'none', note: STRUCTURAL },
   'CustomerHistory.crPhotoId': { subject: 'none', kind: 'image reference', note: 'which CR document was on file' },
   'CustomerHistory.deletedAt': { subject: 'none', note: 'soft-delete marker as it was' },
+  'CustomerHistory.mergedIntoId': { subject: 'none', note: 'the customer it had been merged into then; structural' },
   ...historyCommon('BranchHistory'),
   'BranchHistory.branchId': { subject: 'business-or-person', kind: 'identifier' },
   'BranchHistory.branchCode': { subject: 'business-or-person', kind: 'identifier' },
@@ -459,6 +478,39 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'RegionHistory.code': { subject: 'none' },
   'RegionHistory.name': { subject: 'none', note: 'geographic area of operations' },
   'RegionHistory.isActive': { subject: 'none' },
+  // Lossless paths (20261014100000): photos and documents, and new-customer request rounds.
+  ...historyCommon('AttachmentHistory'),
+  'AttachmentHistory.attachmentId': { subject: 'none', kind: 'image reference' },
+  'AttachmentHistory.kind': { subject: 'none', note: 'which slot or document kind it was' },
+  'AttachmentHistory.customerId': { subject: 'none', note: STRUCTURAL },
+  'AttachmentHistory.branchId': { subject: 'none', note: STRUCTURAL },
+  'AttachmentHistory.branchExtraId': { subject: 'none', note: STRUCTURAL },
+  'AttachmentHistory.editId': { subject: 'none', note: STRUCTURAL },
+  'AttachmentHistory.deletedAt': { subject: 'none', note: 'when it was removed or replaced, as it was' },
+  'AttachmentHistory.hash': {
+    subject: 'none',
+    note: 'the SHA-256 the phone computed of the image: matches the same picture, cannot show it. The capture GPS is never copied',
+  },
+  'AttachmentHistory.capturedById': { subject: 'employee', kind: 'identifier', note: 'who took the photo' },
+  'AttachmentHistory.capturedAt': { subject: 'employee', kind: 'behaviour', note: 'when this person took it' },
+  'EditRevision.id': { subject: 'none', note: 'the strict order of the rounds' },
+  'EditRevision.editId': { subject: 'none', note: STRUCTURAL },
+  'EditRevision.cycle': { subject: 'none' },
+  'EditRevision.process': { subject: 'none' },
+  'EditRevision.submittedAt': { subject: 'employee', kind: 'behaviour' },
+  'EditRevision.submittedById': { subject: 'employee', kind: 'behaviour', note: 'who sent this round' },
+  'EditRevision.paymentTerms': { subject: 'business-or-person', kind: 'financial' },
+  'EditRevision.requestedCreditLimit': { subject: 'business-or-person', kind: 'financial' },
+  'EditRevision.requestedPaymentTermDays': { subject: 'business-or-person', kind: 'financial' },
+  'EditRevision.approvalChain': { subject: 'employee', kind: 'snapshot', note: 'the roles and step order frozen with this round' },
+  'EditRevision.payload': {
+    subject: 'customer',
+    kind: 'snapshot',
+    note: 'the round as sent: channel, terms, per shop its route, region, visit day, counts and photo ids, documents by kind; the name, CR number, phones, contact, e-mail, notes, shop name, address, hours and GPS point only as unkeyed SHA-256 fingerprints (lib/fingerprint.ts) — for a short CR number or a phone the value can be recovered by brute force',
+  },
+  'EditRevision.payloadSha256': { subject: 'none', note: 'SHA-256 of the payload: two rounds that sent the same thing match' },
+  'EditRevision.recordedAt': { subject: 'none', note: RECORD_META },
+  'EditRevision.source': { subject: 'none', kind: 'identifier', note: 'the request that wrote it (lib/change-context.ts)' },
 
   // ---- Edit drafts: proposed values, same shape as the live records --------
   'EditCustomerDraft.id': { subject: 'none', note: STRUCTURAL },
@@ -497,6 +549,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'EditBranchDraft.shopPhotoAttachmentId': { subject: 'none', kind: 'image reference' },
   'EditBranchDraft.signboardPhotoAttachmentId': { subject: 'none', kind: 'image reference' },
   'EditBranchDraft.extraPhotoAttachmentIds': { subject: 'none', kind: 'image reference' },
+  'EditBranchDraft.branchId': { subject: 'none', note: 'the shop this draft became at finalize (gap 27); structural' },
 
   // ---- EditApproval: the per-step decision ledger (append-only) ------------
   'EditApproval.id': { subject: 'none', note: STRUCTURAL },
@@ -518,6 +571,7 @@ export const PII_CLASSIFICATION: Record<string, Classification> = {
   'EditApproval.stageEnteredAt': { subject: 'employee', kind: 'behaviour' },
   'EditApproval.slaDueAt': { subject: 'employee', kind: 'behaviour' },
   'EditApproval.workingMinutes': { subject: 'employee', kind: 'behaviour', note: 'how long this named person took to decide' },
+  'EditApproval.category': { subject: 'none', note: 'the send-back reason category picked from a fixed list (gap 12)' },
 
   // ---- Notification --------------------------------------------------------
   'Notification.id': { subject: 'none', note: STRUCTURAL },

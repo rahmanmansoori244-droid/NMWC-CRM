@@ -30,6 +30,9 @@ export const ORPHAN_SCOPES = [
   { table: 'RouteOwnerHistory', key: 'routeId', live: 'Route' },
   { table: 'RouteHistory', key: 'routeId', live: 'Route' },
   { table: 'RegionHistory', key: 'regionId', live: 'Region' },
+  // Lossless paths (20261014100000): a photo's history, a new-customer request's rounds.
+  { table: 'AttachmentHistory', key: 'attachmentId', live: 'Attachment' },
+  { table: 'EditRevision', key: 'editId', live: 'CustomerEdit' },
 ] as const;
 
 /** The WHERE clause that finds a scope's orphans (no live row with that id). */

@@ -124,7 +124,9 @@ async function clearSyntheticData() {
       "UserHistory",
       "RouteOwnerHistory",
       "RouteHistory",
-      "RegionHistory"
+      "RegionHistory",
+      "AttachmentHistory",
+      "EditRevision"
     RESTART IDENTITY CASCADE;
   `),
   ]);

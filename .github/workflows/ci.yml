@@ -195,6 +195,10 @@ jobs:
           # Gap 6: the dated history the database writes (history-capture,
           # history-asof). NMWC_APP_URL above makes the runtime-role probe run too.
           RUN_HISTORY: '1'
+          # Lossless paths (gaps 4, 7, 8, 12, 14, 15, 19, 20, 27): import-lineage,
+          # merge-record, edit-revision, edit-evidence-guard, export-record,
+          # photo-history, finalize-birth.
+          RUN_LOSSLESS: '1'
 
   # GAP-07 (re-benchmark 2026-09-24): the browser suite was invoked ONLY by a
   # person typing `npm run test:e2e`. It shows: login.spec.ts asserted

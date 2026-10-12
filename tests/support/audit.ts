@@ -59,6 +59,15 @@ export function purgeCustomerEdits(prisma: PrismaClient, args: Prisma.CustomerEd
   return withAuditMaintenance(prisma, (tx) => tx.customerEdit.deleteMany(args));
 }
 
+/**
+ * Export records (lossless paths, gap 14): ExportJob is append-only, and its rows
+ * name the user who exported (RESTRICT), so a suite that exports purges them
+ * before deleting that user.
+ */
+export function purgeExportJobs(prisma: PrismaClient, args: Prisma.ExportJobDeleteManyArgs) {
+  return withAuditMaintenance(prisma, (tx) => tx.exportJob.deleteMany(args));
+}
+
 /** The world ids whose dated history a suite's teardown removes (gap 6, docs/HISTORY.md). */
 export type HistoryIds = {
   customerIds?: string[];
@@ -66,6 +75,9 @@ export type HistoryIds = {
   userIds?: string[];
   routeIds?: string[];
   regionIds?: string[];
+  /** Lossless paths: photo history (gap 15) and new-customer request rounds (gap 12). */
+  attachmentIds?: string[];
+  editIds?: string[];
 };
 
 /**
@@ -83,5 +95,7 @@ export function purgeHistory(prisma: PrismaClient, ids: HistoryIds) {
     routeOwner: (await tx.routeOwnerHistory.deleteMany({ where: { routeId: inList(ids.routeIds) } })).count,
     route: (await tx.routeHistory.deleteMany({ where: { routeId: inList(ids.routeIds) } })).count,
     region: (await tx.regionHistory.deleteMany({ where: { regionId: inList(ids.regionIds) } })).count,
+    attachment: (await tx.attachmentHistory.deleteMany({ where: { attachmentId: inList(ids.attachmentIds) } })).count,
+    revision: (await tx.editRevision.deleteMany({ where: { editId: inList(ids.editIds) } })).count,
   }));
 }

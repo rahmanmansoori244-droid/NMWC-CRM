@@ -130,6 +130,8 @@ beforeEach(() => {
       update: async () => ({}),
     },
     branch: { create: async () => ({ id: 'b-new' }), update: async () => ({}) },
+    // Gap 27: the draft names the shop it became.
+    editBranchDraft: { update: async () => ({}) },
     customerEdit: { update: async () => ({}) },
   };
 });

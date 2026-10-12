@@ -43,6 +43,8 @@ import { parsePrismaSchema, implicitJoinTables } from '../../lib/compliance/pris
 import { describeError } from './describe-error';
 import { setChangeContext, src } from '../../lib/change-context';
 import {
+  APPEND_ONLY_APP_TABLES,
+  GUARD_FUNCTIONS,
   HISTORY_DEFINER_FUNCTIONS,
   HISTORY_FUNCTIONS,
   HISTORY_TABLES,
@@ -63,8 +65,9 @@ const EXPECTED_TRIGGERS = [
   'editapproval_no_truncate',
   'branch_region_consistency_check',
   'editbranchdraft_region_consistency_check',
-  // The dated history (20261013100100_history_foundation): the capture triggers,
-  // the AuditLog context stamp and the guards on every history table.
+  // The dated history (20261013100100_history_foundation, 20261014100000_lossless_paths):
+  // the capture triggers, the AuditLog context stamp, the guards on every history
+  // table, a sent request's evidence guard and the insert-only ledgers' guards.
   ...HISTORY_TRIGGERS,
 ];
 const EXPECTED_FUNCTIONS = ['nmwc_forbid_audit_mutation', 'enforce_branch_region_consistency'] as const;
@@ -666,6 +669,8 @@ async function main() {
       _prisma_migrations: [],
       // The dated history: written only by the database's own triggers.
       ...Object.fromEntries(HISTORY_TABLES.map((t) => [t, ['SELECT']])),
+      // The ledgers the application writes (lossless paths): insert, never change.
+      ...Object.fromEntries(APPEND_ONLY_APP_TABLES.map((t) => [t, ['SELECT', 'INSERT']])),
     };
 
     if (expectAppRole && Number(roleCount) > 0) {
@@ -685,7 +690,7 @@ async function main() {
       }
       // The history's definer-rights trigger functions: a --no-privileges restore
       // gives PUBLIC its default EXECUTE back until `grant` revokes it again.
-      for (const fn of HISTORY_DEFINER_FUNCTIONS) {
+      for (const fn of [...HISTORY_DEFINER_FUNCTIONS, ...GUARD_FUNCTIONS]) {
         const [{ held }] = await q<{ held: boolean }>(
           `SELECT has_function_privilege('nmwc_app', '${fn}()', 'EXECUTE') AS held`
         );

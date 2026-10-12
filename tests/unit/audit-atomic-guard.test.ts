@@ -33,9 +33,9 @@ const EVENT_ONLY: Record<string, { count: number; why: string }> = {
     count: 1,
     why: 'LOGOUT: bumps sessionsRevokedAt, then records the sign-out; the row is swallowed on purpose so signing out always works (B-04)',
   },
-  'services/exports.ts': { count: 1, why: 'EXPORT: records a read, and fails closed before the file is returned' },
-  'services/customer-export.ts': { count: 1, why: 'EXPORT: records a read, fails closed before the file is returned' },
-  'app/api/exports/changes/route.ts': { count: 1, why: 'EXPORT: records a read, fails closed before the file is returned' },
+  // The three exports (EXPORT rows) are no longer here: lib/export-record.ts
+  // writes each with its ExportJob row in one transaction (lossless paths, gap 14),
+  // still before the file is returned.
   'services/temix.ts': { count: 1, why: 'EXPORT of a Temix batch re-download (X-TEMIX-2): records a read' },
   'app/api/photos/[id]/route.ts': {
     count: 1,

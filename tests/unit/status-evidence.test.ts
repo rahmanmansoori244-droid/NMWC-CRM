@@ -61,7 +61,9 @@ const tx = vi.hoisted(() => ({
   $executeRaw: vi.fn(async () => 1),
   customerEdit: { updateMany: vi.fn() },
   editApproval: { create: vi.fn() },
-  attachment: { findMany: vi.fn() },
+  attachment: { findMany: vi.fn(), findUnique: vi.fn() },
+  // Gap 20: a reopening with no closure time on its request reads the shop's history.
+  branchHistory: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
   branch: {
     findUnique: vi.fn(),
     findMany: vi.fn(),
@@ -343,6 +345,45 @@ describe('approving a reactivation (F10 + X-STATUS-1)', () => {
       expect.objectContaining({ where: { id: B1 }, data: expect.objectContaining({ status: 'ACTIVE' }) })
     );
     expect(audit.writeAudit).toHaveBeenCalledWith(tx, expect.anything(), expect.objectContaining({ action: 'REACTIVATE' }));
+  });
+
+  it('gap 20 (lossless paths): the REACTIVATE row links the request, its evidence and the closure it was checked against', async () => {
+    tx.branchHistory.findMany.mockClear();
+    const closedAt = '2026-09-01T08:00:00.000Z';
+    const captured = '2026-10-09T08:00:00.000Z';
+    db.customerEdit.findUnique.mockResolvedValue(
+      reactivation({
+        attachmentChanges: [
+          { kind: 'FREE', attachmentId: 'a-ev', action: 'EVIDENCE', evidenceCapturedAt: captured, branchLastStatusChangeAt: closedAt },
+        ],
+      })
+    );
+    tx.attachment.findMany.mockResolvedValue([photo({ id: 'a-ev' })]);
+    expect((await approveReactivationAction(form({ editId: 'e-r', reason: 'Seen open on my visit' }))).ok).toBe(true);
+    const row = audit.writeAudit.mock.calls.map((c) => c[2]).find((r) => r.action === 'REACTIVATE' && r.entityType === 'Branch');
+    expect(row.after).toEqual({
+      editId: 'e-r',
+      evidenceAttachmentId: 'a-ev',
+      evidenceCapturedAt: captured,
+      branchLastStatusChangeAtAtRequest: closedAt,
+      closedAt,
+      closureReference: 'lastStatusChangeAt',
+      requestReason: 'Shop open again under the same owner.',
+      managerReason: 'Seen open on my visit',
+    });
+    // The closure time was taken from the request, not looked up.
+    expect(tx.branchHistory.findMany).not.toHaveBeenCalled();
+  });
+
+  it('gap 20: a request from before, with no closure time on it, finds the closure in the shop’s dated history', async () => {
+    tx.branchHistory.findMany.mockResolvedValue([
+      { status: 'CLOSED', changeKind: 'UPDATE', validFrom: new Date('2026-09-15T00:00:00.000Z') },
+      { status: 'ACTIVE', changeKind: 'BASELINE', validFrom: new Date('2026-01-01T00:00:00.000Z') },
+    ]);
+    expect((await approveReactivationAction(form({ editId: 'e-r' }))).ok).toBe(true);
+    const row = audit.writeAudit.mock.calls.map((c) => c[2]).find((r) => r.action === 'REACTIVATE' && r.entityType === 'Branch');
+    expect(row.after).toMatchObject({ closedAt: '2026-09-15T00:00:00.000Z', closureReference: 'history', managerReason: null });
+    tx.branchHistory.findMany.mockReset().mockResolvedValue([]);
   });
 
   it('owner decision 7: the customer reopens with its shop — another branch still closed no longer keeps it CLOSED', async () => {

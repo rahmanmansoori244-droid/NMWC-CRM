@@ -67,11 +67,22 @@ function recordingTx() {
       findUniqueOrThrow: rec('customerEdit.findUniqueOrThrow', { id: EDIT, cycle: 2, submittedAt: new Date() }),
     },
     editCustomerDraft: { create: rec('editCustomerDraft.create'), upsert: rec('editCustomerDraft.upsert') },
-    editBranchDraft: { createMany: rec('editBranchDraft.createMany'), deleteMany: rec('editBranchDraft.deleteMany') },
+    editBranchDraft: {
+      createMany: rec('editBranchDraft.createMany'),
+      deleteMany: rec('editBranchDraft.deleteMany'),
+      // Gap 12: the round's drafts are read back for EditRevision.
+      findMany: rec('editBranchDraft.findMany', []),
+    },
+    editRevision: { create: rec('editRevision.create') },
     attachment: {
       updateMany: rec('attachment.updateMany', (a: { where: { id?: { in?: string[] } } }) => ({
         count: a.where.id?.in?.length ?? 0,
       })),
+      // Gap 15: the photos a submit releases are read first (one here), each
+      // with its SOFT_DELETE row, and keep their fingerprint.
+      findMany: rec('attachment.findMany', [
+        { id: 'att-released', kind: 'CREDIT_FORM', capturedById: ME, capturedAt: new Date('2026-10-09T06:00:00Z'), hash: 'h-old' },
+      ]),
     },
   };
 }
@@ -88,7 +99,8 @@ vi.mock('@/lib/db', () => ({
     attachment: {
       findMany: async ({ where }: { where: { id: { in: string[] } } }) => h.atts.filter((a) => where.id.in.includes(a.id)),
     },
-    customer: { findFirst: async () => null },
+    // Gap 27: the duplicate signals read at submit (none here).
+    customer: { findFirst: async () => null, findMany: async () => [], count: async () => 0 },
     subChannel: { findUnique: async () => ({ channelId: 'ckchannel00000000000000001', isActive: true }) },
     customerEdit: { findUnique: async () => h.existing },
     $transaction: async (fn: (tx: unknown) => unknown) => {
@@ -200,16 +212,41 @@ describe('a CREDIT request', () => {
     expect(chain.map((s) => s.role)).toEqual(['SUPERVISOR', 'SALES_DIRECTOR', 'SALESMAN', 'FINANCE_MANAGER', 'GM', 'ACCOUNTANT']);
   });
 
+  it('gap 12: the round as sent is kept in EditRevision — terms, chain and documents, personal values as fingerprints', async () => {
+    await submitCreateAction(body());
+    const [rev] = written('editRevision.create') as Array<{ data: Record<string, unknown> }>;
+    expect(rev!.data).toMatchObject({
+      editId: EDIT,
+      cycle: 1,
+      process: 'CREATE',
+      submittedById: ME,
+      paymentTerms: 'CREDIT',
+      source: `edit:${EDIT}`,
+      payloadSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect((rev!.data.approvalChain as Array<{ role: string }>).map((s) => s.role)).toContain('FINANCE_MANAGER');
+    const payload = rev!.data.payload as { customer: { fingerprints: Record<string, string | null> }; documents: Array<{ kind: string }> };
+    expect(payload.customer.fingerprints.email).toMatch(/^[0-9a-f]{64}$/);
+    expect(payload.documents.map((d) => d.kind)).toEqual(expect.arrayContaining(['CR', 'ID_CARD', 'TAX_CARD']));
+    expect(JSON.stringify(payload)).not.toContain('accounts@alnoor.om');
+  });
+
+  it('a draft keeps no round', async () => {
+    await submitCreateAction({ ...body(), isDraft: true });
+    expect(written('editRevision.create')).toEqual([]);
+  });
+
   it('claims every page of the four documents with the other photos, his own, on no record', async () => {
     await submitCreateAction(body());
-    const [claim, release] = written('attachment.updateMany') as Array<{ where: Record<string, unknown>; data: unknown }>;
+    const [claim] = written('attachment.updateMany') as Array<{ where: Record<string, unknown>; data: unknown }>;
     expect((claim!.where.id as { in: string[] }).in.sort()).toEqual(
       [P.cr, P.shop, P.sign, P.idCard, P.idBack, P.mem, P.vat, P.tax].sort()
     );
     expect(claim!.where).toMatchObject({ capturedById: ME, deletedAt: null, customerId: null, branchId: null });
     expect(claim!.data).toEqual({ editId: EDIT });
     // …and releases what the request held that this payload does not name.
-    expect(release!.where).toMatchObject({ editId: EDIT, deletedAt: null });
+    const [releaseRead] = written('attachment.findMany') as Array<{ where: Record<string, unknown> }>;
+    expect(releaseRead!.where).toMatchObject({ editId: EDIT, deletedAt: null });
   });
 
   it('is held without its e-mail or any document, each said beside it, and nothing is written', async () => {
@@ -287,23 +324,27 @@ describe('a request sent back for correction, sent again', () => {
   it('releases everything it held that this payload does not name — the old signed-application pages among them', async () => {
     const res = await submitCreateAction(body({ editId: EDIT, guarantees: [P.guarantee] }));
     expect(res, JSON.stringify(res)).toMatchObject({ ok: true, data: { state: 'SUBMITTED' } });
-    const [, release] = written('attachment.updateMany') as Array<{ where: Record<string, unknown>; data: Record<string, unknown> }>;
+    const [releaseRead] = written('attachment.findMany') as Array<{ where: Record<string, unknown> }>;
     // The CREDIT_FORM pages are in no payload, so they are not in the kept list.
-    expect(release!.where).toEqual({
+    expect(releaseRead!.where).toEqual({
       editId: EDIT,
       deletedAt: null,
       id: { notIn: expect.arrayContaining([P.cr, P.idCard, P.idBack, P.mem, P.vat, P.tax, P.guarantee]) },
     });
-    expect(release!.data).toMatchObject({ hash: null });
+    // Released by id, keeping the fingerprint (gap 15), each with its SOFT_DELETE row.
+    const [, release] = written('attachment.updateMany') as Array<{ where: Record<string, unknown>; data: Record<string, unknown> }>;
+    expect(release!.where).toEqual({ id: { in: ['att-released'] }, deletedAt: null });
+    expect(release!.data).toEqual({ deletedAt: expect.any(Date) });
     expect(written('editCustomerDraft.upsert')[0]!.update).toMatchObject({ email: 'accounts@alnoor.om' });
   });
 
   it('switched to cash: the credit documents are released and the e-mail is not kept', async () => {
     const res = await submitCreateAction(body({ editId: EDIT, terms: 'CASH', docs: {} }));
     expect(res, JSON.stringify(res)).toMatchObject({ ok: true });
-    const [claim, release] = written('attachment.updateMany') as Array<{ where: Record<string, unknown> }>;
+    const [claim] = written('attachment.updateMany') as Array<{ where: Record<string, unknown> }>;
+    const [releaseRead] = written('attachment.findMany') as Array<{ where: Record<string, unknown> }>;
     expect((claim!.where.id as { in: string[] }).in.sort()).toEqual([P.cr, P.shop, P.sign].sort());
-    expect((release!.where.id as { notIn: string[] }).notIn).not.toContain(P.idCard);
+    expect((releaseRead!.where.id as { notIn: string[] }).notIn).not.toContain(P.idCard);
     expect(written('editCustomerDraft.upsert')[0]!.update).toMatchObject({ email: null });
   });
 });

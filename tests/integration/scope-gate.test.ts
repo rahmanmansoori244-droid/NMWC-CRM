@@ -27,7 +27,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
-import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals } from '../support/audit';
+import { purgeAuditLog, purgeCustomerEdits, purgeEditApprovals, withAuditMaintenance } from '../support/audit';
 import { freshDecisionToken } from '../support/decision-token';
 import { editPayload, type EditPatch } from '../support/edit-payload';
 
@@ -365,7 +365,11 @@ describe.skipIf(!ENABLED)('owner decisions 2–4: the submit gate, the approval 
       expect(await approve(editId)).toMatchObject({ ok: false, code: 'FORBIDDEN' });
 
       // A request without that record (sent before F05): his route now, region B.
-      await prisma.customerEdit.update({ where: { id: editId }, data: { submitGate: Prisma.DbNull } });
+      // A sent request's gate is evidence (lossless paths, gap 19): rewritten in the
+      // owner's maintenance window, as a fixture of a request sent before F05.
+      await withAuditMaintenance(prisma, (tx) =>
+        tx.customerEdit.update({ where: { id: editId }, data: { submitGate: Prisma.DbNull } })
+      );
       expect(await queueOf([ids.regionA])).toEqual([]);
       expect(await queueOf([ids.regionB])).toEqual([editId]);
 

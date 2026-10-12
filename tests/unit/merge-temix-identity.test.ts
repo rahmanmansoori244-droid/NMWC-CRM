@@ -37,6 +37,9 @@ const h = vi.hoisted(() => ({
   holderAsks: [] as unknown[],
   writes: [] as Array<{ op: string; args: Record<string, unknown> }>,
   writeAudit: vi.fn(),
+  // Gap 8: what the merge reads under its locks — the loser's live shops,
+  // customer-bound documents, requests, and the open ones it closes.
+  moved: { branches: [] as string[], atts: [] as string[], edits: [] as string[], closed: [] as string[] },
 }));
 
 vi.mock('@/lib/auth', () => ({
@@ -86,11 +89,26 @@ vi.mock('@/lib/db', () => {
       updateMany: rec('customer.updateMany', { count: 1 }),
     },
     // No open shop moves (owner decision 7's reopening on a merge: tests/integration/customer-status-follows.test.ts).
-    branch: { count: async () => 0, updateMany: rec('branch.updateMany', { count: 1 }) },
+    // Gap 8: what the merge moves is read under the locks (none here).
+    branch: {
+      count: async () => 0,
+      findMany: async () => h.moved.branches.map((id) => ({ id })),
+      updateMany: rec('branch.updateMany', { count: 1 }),
+    },
     // No open request on the loser: the auto-close matches nothing, so its
     // read-back (launch fix 2026-10-07: settle and tell) finds nothing either.
-    customerEdit: { updateMany: rec('customerEdit.updateMany', { count: 0 }), findMany: async () => [] },
-    attachment: { updateMany: rec('attachment.updateMany', { count: 0 }) },
+    customerEdit: {
+      updateMany: rec('customerEdit.updateMany', { count: 0 }),
+      findMany: async ({ where }: { where: { state?: string } }) =>
+        where.state === 'REJECTED'
+          ? h.moved.closed.map((id) => ({ id, submittedById: 'u-sales' }))
+          : h.moved.edits.map((id) => ({ id })),
+    },
+    attachment: {
+      findMany: async () => h.moved.atts.map((id) => ({ id })),
+      updateMany: rec('attachment.updateMany', { count: 0 }),
+    },
+    notification: { updateMany: async () => ({ count: 0 }), create: async () => ({}), createMany: async () => ({ count: 0 }) },
   };
   return {
     prisma: {
@@ -124,7 +142,41 @@ beforeEach(() => {
   h.holderAsks = [];
   h.others = {};
   h.loserCodeInTx = undefined;
+  h.moved = { branches: [], atts: [], edits: [], closed: [] };
   h.writeAudit.mockResolvedValue(undefined);
+});
+
+describe('gap 8 (lossless paths): the merge says what moved, and where the loser went', () => {
+  it('the loser points at the winner; its shops move with a version bump; the MERGE row lists everything', async () => {
+    h.moved = { branches: ['br-1', 'br-2'], atts: ['att-g'], edits: ['e-old', 'e-open'], closed: ['e-open'] };
+    const fd = new FormData();
+    h.ids = { W: { nmwcCode: 'N1', temixCode: 'T1' }, L: { nmwcCode: 'N2', temixCode: 'T2' } };
+    fd.set('winnerId', 'W');
+    fd.set('loserId', 'L');
+    fd.set('reason', 'Same shop, registered twice');
+    const res = await mergeCustomersAction(fd);
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    expect(loserClaim().args.data).toMatchObject({ mergedIntoId: 'W' });
+    const move = h.writes.find((w) => w.op === 'branch.updateMany')!;
+    expect(move.args.data).toEqual({ customerId: 'W', lastEditedById: 'stew', version: { increment: 1 } });
+    const rows = h.writeAudit.mock.calls.map((c) => c[2] as Record<string, unknown>);
+    // One REJECT row per request the merge closed, before the MERGE row.
+    expect(rows.filter((r) => r.action === 'REJECT')).toEqual([
+      expect.objectContaining({ entityType: 'CustomerEdit', entityId: 'e-open', after: expect.objectContaining({ closedBy: 'merge', loserId: 'L', winnerId: 'W' }) }),
+    ]);
+    const mergeRow = rows.find((r) => r.action === 'MERGE')!;
+    expect(mergeRow.after).toMatchObject({
+      movedBranchIds: ['br-1', 'br-2'],
+      movedAttachmentIds: ['att-g'],
+      repointedEditIds: ['e-old', 'e-open'],
+      autoClosedEditIds: ['e-open'],
+      loserSnapshot: { nmwcCode: 'N2', temixCode: 'T2' },
+    });
+    // No name, phone or CR number of the loser in what the merge adds.
+    expect(JSON.stringify(mergeRow.after)).not.toContain('Shop L');
+    // The typed reason is kept on a same-region merge too.
+    expect(mergeRow.reason).toBe('Merged N2 into N1. Same shop, registered twice');
+  });
 });
 
 describe('mergeCustomersAction — F11', () => {
@@ -143,7 +195,7 @@ describe('mergeCustomersAction — F11', () => {
     ).toBe(true);
     expect(h.writeAudit).toHaveBeenCalledTimes(1);
     expect(h.writeAudit.mock.calls[0][2]).toMatchObject({ action: 'MERGE' });
-    expect(h.writeAudit.mock.calls[0][2].after).toEqual({
+    expect(h.writeAudit.mock.calls[0][2].after).toMatchObject({
       temixDeactivation: 'skipped-shared-code',
       temixCodeHeldBy: ['N1'],
     });
@@ -154,7 +206,7 @@ describe('mergeCustomersAction — F11', () => {
     const res = await merge({ nmwcCode: 'N1', temixCode: 'T9' }, { nmwcCode: 'N2', temixCode: 'T1' });
     expect(res.ok, JSON.stringify(res)).toBe(true);
     expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'SYNCED', temixSyncPendingSince: null });
-    expect(h.writeAudit.mock.calls[0][2].after).toEqual({
+    expect(h.writeAudit.mock.calls[0][2].after).toMatchObject({
       temixDeactivation: 'skipped-shared-code',
       temixCodeHeldBy: ['N3'],
     });
@@ -197,7 +249,7 @@ describe('mergeCustomersAction — F11', () => {
     const res = await merge({ nmwcCode: 'N1', temixCode: 'T1' }, { nmwcCode: 'N2', temixCode: 'T2' });
     expect(res.ok).toBe(true);
     expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING' });
-    expect(h.writeAudit.mock.calls[0][2].after).toBeUndefined();
+    expect(h.writeAudit.mock.calls[0][2].after).not.toHaveProperty('temixDeactivation');
   });
 
   // Review of 8cb2509: an uncoded row's deactivation goes out keyed on its
@@ -212,7 +264,7 @@ describe('mergeCustomersAction — F11', () => {
     );
     expect(res.ok, JSON.stringify(res)).toBe(true);
     expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'SYNCED', temixSyncPendingSince: null });
-    expect(h.writeAudit.mock.calls[0][2].after).toEqual({
+    expect(h.writeAudit.mock.calls[0][2].after).toMatchObject({
       temixDeactivation: 'skipped-shared-code',
       temixCodeHeldBy: ['N3'],
     });
@@ -226,7 +278,7 @@ describe('mergeCustomersAction — F11', () => {
     const res = await merge({ nmwcCode: 'N1', temixCode: 'T9' }, { nmwcCode: 'N2', temixCode: null });
     expect(res.ok, JSON.stringify(res)).toBe(true);
     expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'DEACTIVATE_PENDING' });
-    expect(h.writeAudit.mock.calls[0][2].after).toBeUndefined();
+    expect(h.writeAudit.mock.calls[0][2].after).not.toHaveProperty('temixDeactivation');
   });
 
   it('an uncoded loser Temix never heard of: leaves the queue as before, holders not asked, no skip noted', async () => {
@@ -238,7 +290,7 @@ describe('mergeCustomersAction — F11', () => {
     expect(res.ok, JSON.stringify(res)).toBe(true);
     expect(loserClaim().args.data).toMatchObject({ temixSyncState: 'SYNCED', temixSyncPendingSince: null });
     expect(h.holderAsks).toEqual([]);
-    expect(h.writeAudit.mock.calls[0][2].after).toBeUndefined();
+    expect(h.writeAudit.mock.calls[0][2].after).not.toHaveProperty('temixDeactivation');
   });
 });
 

@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireExportUser } from '@/lib/export-scope';
-import { getAuditEnvelope, writeAudit } from '@/lib/audit';
+import { getAuditEnvelope } from '@/lib/audit';
+import { recordExport } from '@/lib/export-record';
 import { buildChangeReport } from '@/lib/change-report';
 import { ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { readExportFilterLists } from '@/lib/export-filter-lists';
 // `until=2026-09-13` means the whole of that Oman day (inclusive).
-import { endOfOmanDay, omanDateISO, startOfOmanDay } from '@/lib/tz';
+import { endOfOmanDay, startOfOmanDay } from '@/lib/tz';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -76,10 +77,23 @@ export async function GET(req: NextRequest) {
     // catch turns a failure into a logged 500 — so the change report, which
     // carries addresses, phones and contact names, cannot be delivered without
     // a ledger row naming who took it.
-    await writeAudit(null, await getAuditEnvelope(me.id), {
-      action: 'EXPORT',
-      entityType: 'Export',
-      entityId: `field-updates-${omanDateISO()}`,
+    // Gap 14 (lossless paths): with its ExportJob — filters, role, customers,
+    // the SHA-256 of these bytes — before they are sent.
+    await recordExport(await getAuditEnvelope(me.id), {
+      kind: 'field-updates',
+      filters: {
+        since: f.since ?? null,
+        until: f.until ?? null,
+        regionIds: f.regionIds ?? [],
+        routeIds: f.routeIds ?? [],
+        onlyChanged: truthy(f.onlyChanged),
+        includePending: f.includePending == null ? true : truthy(f.includePending),
+        scope: { role: me.role },
+      },
+      customerIds: out.customerIds,
+      bytes: out.bytes,
+      filename: out.filename,
+      rowCount: out.rowCount,
       reason: `field-updates ${out.rowCount} rows / ${out.changedRows} changed / ${out.changeCount} changes`,
     });
     return new NextResponse(out.bytes, {

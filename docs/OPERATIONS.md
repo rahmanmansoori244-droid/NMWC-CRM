@@ -85,6 +85,7 @@ npx prisma migrate deploy
 ```
 
 - **The history foundation (`20261013100100_history_foundation`) locks the five master tables while it runs.** It writes a first page of history for every customer, shop, account, route and region (about 31k rows on production, 1–3 s on Neon) under `SHARE ROW EXCLUSIVE` locks, so writes to those tables wait for it; `lock_timeout` is 10 s, so a busy table fails the deploy fast (re-run it) rather than queueing behind it. Deploy it outside working hours. Re-run `scripts/ops/app-role.ts grant` afterwards (it takes INSERT/UPDATE on the history tables and their sequences back from `nmwc_app` if the role existed before the migration ran; the migration does it too when the role exists) and check `status`. Then `npx tsx scripts/ops/history-report.ts --expect-host <host>`: the baseline is in and nothing is unattributed. Every write path now names its cause (`lib/change-context.ts`); `docs/HISTORY.md` is the reference.
+- **The lossless paths (`20261014100000_lossless_paths`) come after it, and lock `Customer`, `CustomerEdit`, `EditApproval`, `EditBranchDraft`, `ExportJob`, `ImportBatch` and `CustomerHistory` (ACCESS EXCLUSIVE) and `Attachment` (SHARE ROW EXCLUSIVE) while it runs** — reads of those tables wait too. It adds columns, writes a first page of photo history (one row per photo), fills `CustomerEdit.originalCustomerId` and the merged customers' `mergedIntoId`: seconds. Deploy it outside working hours, after the history foundation. Then re-run `scripts/ops/app-role.ts grant` and `status`: `EditRevision` and `ExportJob` must read insert-only and `AttachmentHistory` read-only. From then on: a request, once sent, cannot be rewritten or deleted (a fixture or a correction goes through the maintenance window, §5e); every export is recorded with its customers and file fingerprint before it is sent; an import writes nothing for a customer or shop it leaves as it is.
 - **Migrations ARE applied by the Vercel build.** `package.json` `build` runs `prisma generate && next typegen && tsc --noEmit && next lint && prisma migrate deploy && next build --no-lint`, so any migration on the deployed commit is applied to the database in `DIRECT_URL` as part of the deploy — but only after the typecheck and lint have passed. A deploy that failed in `next typegen`, `tsc` or `next lint` applied nothing; one that failed inside `next build` HAS applied its migrations. (This line previously said the opposite; it was wrong, and it matters — a rollback of the application does not roll back the schema, and a restore followed by a deploy will re-apply migrations.)
 
 ## 5b. First-time post-deploy operator checklist
@@ -958,6 +959,16 @@ through `nmwc_history_insert_guard()`, unless the owner has opened this window. 
 history is kept for ever; on production nothing purges it. Deleting a customer, shop,
 account, route or region (owner, in the window) writes a DELETE tombstone into its
 history — the record of the delete.
+
+**And, since `20261014100000_lossless_paths` (docs/HISTORY.md §9), the request and
+export records:** `AttachmentHistory` is protected like the six above;
+`EditRevision` and `ExportJob` refuse UPDATE, DELETE and TRUNCATE (the application
+only inserts them); a `CustomerEdit` can no longer be deleted or truncated, and once
+it has left DRAFT / NEEDS_CORRECTION what it asked for, who sent it and when cannot
+change — all unless the owner has opened this window. Hard-deleting a user who
+exported needs their `ExportJob` rows removed in the window first (RESTRICT); a
+customer another one was merged into cannot be hard-deleted while that one points at
+it (`Customer.mergedIntoId`, RESTRICT).
 
 Legitimate uses so far: test-fixture clean-up on isolated branches
 (`tests/support/audit.ts`, including `purgeHistory`; the launch e2e clean-up's step 10;

@@ -7,7 +7,7 @@
 
 Every column the database stores, classified by whose personal data it is. This file is generated: the classification lives beside the code in `lib/compliance/pii-classification.ts`, and `tests/unit/pii-classification.test.ts` fails if a column is added without a decision. It is the factual annex to `docs/compliance/DATA-RESIDENCY-REGISTER.md`.
 
-**414 stored columns across 30 tables** — Customer contact: 28 · Employee: 82 · Customer entity (personal if a sole establishment): 47 · Not personal data: 257.
+**460 stored columns across 32 tables** — Customer contact: 29 · Employee: 88 · Customer entity (personal if a sole establishment): 50 · Not personal data: 293.
 
 ## Columns holding personal data
 
@@ -159,7 +159,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | Column | Subject | Kind | Note |
 |---|---|---|---|
 | `requestedById` | Employee | behaviour |  |
-| `filters` | Customer contact | free text | would embed the search term used |
+| `filters` | Customer contact | free text | the filters and role scope of the export; the filtered list carries the search term typed, which can be a name or a phone |
 
 ### AuditLog
 
@@ -229,6 +229,26 @@ Every column the database stores, classified by whose personal data it is. This 
 | Column | Subject | Kind | Note |
 |---|---|---|---|
 | `actorId` | Employee | identifier | who caused the change (null for a job or an unnamed script) |
+
+### AttachmentHistory
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `actorId` | Employee | identifier | who caused the change (null for a job or an unnamed script) |
+| `capturedById` | Employee | identifier | who took the photo |
+| `capturedAt` | Employee | behaviour | when this person took it |
+
+### EditRevision
+
+| Column | Subject | Kind | Note |
+|---|---|---|---|
+| `submittedAt` | Employee | behaviour |  |
+| `submittedById` | Employee | behaviour | who sent this round |
+| `paymentTerms` | Customer entity (personal if a sole establishment) | financial |  |
+| `requestedCreditLimit` | Customer entity (personal if a sole establishment) | financial |  |
+| `requestedPaymentTermDays` | Customer entity (personal if a sole establishment) | financial |  |
+| `approvalChain` | Employee | snapshot | the roles and step order frozen with this round |
+| `payload` | Customer contact | snapshot | the round as sent: channel, terms, per shop its route, region, visit day, counts and photo ids, documents by kind; the name, CR number, phones, contact, e-mail, notes, shop name, address, hours and GPS point only as unkeyed SHA-256 fingerprints (lib/fingerprint.ts) — for a short CR number or a phone the value can be recovered by brute force |
 
 ### EditCustomerDraft
 
@@ -339,6 +359,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | Customer | `createdAt` | DateTime | record timestamp, not an attribute of a person |
 | Customer | `updatedAt` | DateTime | record timestamp, not an attribute of a person |
 | Customer | `deletedAt` | DateTime | soft-delete marker |
+| Customer | `mergedIntoId` | String | the customer a duplicate merge folded this one into (lossless paths, gap 8); structural |
 | Branch | `customerId` | String | foreign key / structural value |
 | Branch | `regionId` | String | foreign key / structural value |
 | Branch | `routeId` | String | foreign key / structural value |
@@ -367,6 +388,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | CustomerEdit | `newRouteId` | String | foreign key / structural value |
 | CustomerEdit | `submissionId` | String | a random id the phone mints for each submit, so a retry is never written twice (item 22); identifies the request, not a person or a device |
 | CustomerEdit | `submitGate` | Json | the ids of the branches a salesman submit was checked against (F05); structural |
+| CustomerEdit | `originalCustomerId` | String | the customer the request was first about, set once by the database (lossless paths, gap 8); structural |
 | CustomerEdit | `process` | EditProcess | structural / operational value |
 | CustomerEdit | `currentStepIndex` | Int | structural / operational value |
 | CustomerEdit | `pendingRole` | Role | structural / operational value |
@@ -396,6 +418,8 @@ Every column the database stores, classified by whose personal data it is. This 
 | ImportBatch | `promotedRows` | Int | structural / operational value |
 | ImportBatch | `rejectedRows` | Int | structural / operational value |
 | ImportBatch | `promoteLeaseUntil` | DateTime | record timestamp, not an attribute of a person |
+| ImportBatch | `fileSha256` | String | SHA-256 of the uploaded workbook as a whole (gap 7): identifies the file, not its contents — no value can be read back from it |
+| ImportBatch | `fileBytes` | Int | size of the uploaded workbook |
 | ImportRow | `id` | String | foreign key / structural value |
 | ImportRow | `batchId` | String | foreign key / structural value |
 | ImportRow | `rowNumber` | Int | structural / operational value |
@@ -428,6 +452,10 @@ Every column the database stores, classified by whose personal data it is. This 
 | ExportJob | `startedAt` | DateTime | record timestamp, not an attribute of a person |
 | ExportJob | `completedAt` | DateTime | record timestamp, not an attribute of a person |
 | ExportJob | `errorMessage` | String | structural / operational value |
+| ExportJob | `kind` | String | which export: customer-master, customers-filtered or field-updates |
+| ExportJob | `fileSha256` | String | SHA-256 of the exact bytes sent: identifies the file, not its contents |
+| ExportJob | `filename` | String | the file name the export was sent under (a date, never a customer) |
+| ExportJob | `customerIds` | String[] | identifiers of the customers the file held; the file itself is never stored |
 | AuditLog | `id` | String | foreign key / structural value |
 | AuditLog | `entityType` | String | structural / operational value |
 | AuditLog | `entityId` | String | foreign key / structural value |
@@ -447,6 +475,7 @@ Every column the database stores, classified by whose personal data it is. This 
 | CustomerHistory | `subChannelId` | String | foreign key / structural value |
 | CustomerHistory | `crPhotoId` | String | which CR document was on file |
 | CustomerHistory | `deletedAt` | DateTime | soft-delete marker as it was |
+| CustomerHistory | `mergedIntoId` | String | the customer it had been merged into then; structural |
 | BranchHistory | `id` | BigInt | the strict order of the history |
 | BranchHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
 | BranchHistory | `changedFields` | String[] | field NAMES only — never a value |
@@ -517,6 +546,31 @@ Every column the database stores, classified by whose personal data it is. This 
 | RegionHistory | `code` | String | structural / operational value |
 | RegionHistory | `name` | String | geographic area of operations |
 | RegionHistory | `isActive` | Boolean | structural / operational value |
+| AttachmentHistory | `id` | BigInt | the strict order of the history |
+| AttachmentHistory | `changeKind` | HistoryChange | BASELINE, CREATE, UPDATE or DELETE |
+| AttachmentHistory | `changedFields` | String[] | field NAMES only — never a value |
+| AttachmentHistory | `validFrom` | DateTime | when the change took effect |
+| AttachmentHistory | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| AttachmentHistory | `effectiveRequested` | DateTime | the effective time the writer asked for |
+| AttachmentHistory | `source` | String | what caused it: a request, import row, script run or job (lib/change-context.ts), never text a person typed |
+| AttachmentHistory | `sourceKind` | String | structural / operational value |
+| AttachmentHistory | `txId` | BigInt | database transaction id (joins AuditLog.txId) |
+| AttachmentHistory | `dbUser` | String | the database login (the runtime role or the owner), not a person |
+| AttachmentHistory | `attachmentId` | String | structural / operational value |
+| AttachmentHistory | `kind` | AttachmentKind | which slot or document kind it was |
+| AttachmentHistory | `customerId` | String | foreign key / structural value |
+| AttachmentHistory | `branchId` | String | foreign key / structural value |
+| AttachmentHistory | `branchExtraId` | String | foreign key / structural value |
+| AttachmentHistory | `editId` | String | foreign key / structural value |
+| AttachmentHistory | `deletedAt` | DateTime | when it was removed or replaced, as it was |
+| AttachmentHistory | `hash` | String | the SHA-256 the phone computed of the image: matches the same picture, cannot show it. The capture GPS is never copied |
+| EditRevision | `id` | BigInt | the strict order of the rounds |
+| EditRevision | `editId` | String | foreign key / structural value |
+| EditRevision | `cycle` | Int | structural / operational value |
+| EditRevision | `process` | EditProcess | structural / operational value |
+| EditRevision | `payloadSha256` | String | SHA-256 of the payload: two rounds that sent the same thing match |
+| EditRevision | `recordedAt` | DateTime | record timestamp, not an attribute of a person |
+| EditRevision | `source` | String | the request that wrote it (lib/change-context.ts) |
 | EditCustomerDraft | `id` | String | foreign key / structural value |
 | EditCustomerDraft | `editId` | String | foreign key / structural value |
 | EditCustomerDraft | `channelId` | String | foreign key / structural value |
@@ -533,10 +587,12 @@ Every column the database stores, classified by whose personal data it is. This 
 | EditBranchDraft | `shopPhotoAttachmentId` | String | structural / operational value |
 | EditBranchDraft | `signboardPhotoAttachmentId` | String | structural / operational value |
 | EditBranchDraft | `extraPhotoAttachmentIds` | Json | structural / operational value |
+| EditBranchDraft | `branchId` | String | the shop this draft became at finalize (gap 27); structural |
 | EditApproval | `id` | String | foreign key / structural value |
 | EditApproval | `editId` | String | foreign key / structural value |
 | EditApproval | `cycle` | Int | structural / operational value |
 | EditApproval | `stepIndex` | Int | structural / operational value |
+| EditApproval | `category` | String | the send-back reason category picked from a fixed list (gap 12) |
 | Notification | `id` | String | foreign key / structural value |
 | Notification | `kind` | NotificationKind | structural / operational value |
 | Notification | `editId` | String | foreign key / structural value |
