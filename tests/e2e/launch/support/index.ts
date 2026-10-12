@@ -95,6 +95,7 @@ export {
   noRegionNotice,
   notificationsFor,
   reloadUntil,
+  rowText,
   snapshot,
   watchPage,
   type KnownBugId,

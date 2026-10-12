@@ -110,6 +110,11 @@ describe.skipIf(!ENABLED)(
         orderBy: { at: 'desc' },
       });
     const auditCount = (entityId: string) => prisma.auditLog.count({ where: { entityId } });
+    // The whole audit row as text, for "no personal value anywhere in it". It carries
+    // the database transaction id (AuditLog.txId, a BigInt since the history
+    // foundation), which JSON.stringify cannot write on its own.
+    const rowText = (row: unknown) =>
+      JSON.stringify(row, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v));
 
     beforeAll(async () => {
       if ((process.env.DATABASE_URL ?? '').includes('ep-sweet-haze'))
@@ -577,7 +582,7 @@ describe.skipIf(!ENABLED)(
       expect((await user(ids.joiner)).phone).toBe('+968 9123 4567');
       const row = await lastAudit(ids.joiner);
       expect(row?.after).toEqual({ changed: ['phone'] });
-      expect(JSON.stringify(row)).not.toContain('9123');
+      expect(rowText(row)).not.toContain('9123');
 
       const before = await auditCount(ids.joiner);
       const nothing = await users.updateUserAccountAction(fd({ ...same, phone: '' }));
@@ -728,7 +733,7 @@ describe.skipIf(!ENABLED)(
       expect((await user(ids.busy)).email).toBe(address.toLowerCase());
       const row = await lastAudit(ids.busy);
       expect(row?.after).toEqual({ changed: ['email'] });
-      expect(JSON.stringify(row).toLowerCase()).not.toContain(`busy.${sfx}@`);
+      expect(rowText(row).toLowerCase()).not.toContain(`busy.${sfx}@`);
 
       const clash = await users.updateUserAccountAction(
         fd({

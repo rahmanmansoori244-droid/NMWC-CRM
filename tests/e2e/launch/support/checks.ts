@@ -469,6 +469,15 @@ export async function exportRecordsFor(o: {
   return jobs.map((job) => ({ job, audit: audits.find((a) => a.entityId === job.id) ?? null }));
 }
 
+/**
+ * A database row as text, for "no personal value anywhere in it" checks. Audit
+ * rows carry the database transaction id (AuditLog.txId, a BigInt since the
+ * history foundation), which JSON.stringify cannot write on its own.
+ */
+export function rowText(row: unknown): string {
+  return JSON.stringify(row, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v)) ?? '';
+}
+
 /** Audit rows by entity, actor and/or action, oldest first. */
 export async function auditFor(o: { entityId?: string; actorId?: string; action?: AuditAction; entityType?: string }): Promise<AuditLog[]> {
   const where = Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));

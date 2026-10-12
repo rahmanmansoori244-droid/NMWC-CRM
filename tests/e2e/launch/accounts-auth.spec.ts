@@ -57,6 +57,7 @@ import {
   projectDevice,
   requireLaunchEnv,
   resetLimits,
+  rowText,
   seedUpdateEdit,
   snapshot,
   type DeviceKind,
@@ -2085,7 +2086,7 @@ test.describe('accounts: notification e-mail addresses on /users', { tag: ['@des
     for (const a of audits) {
       expect(a.actorId).toBe(stw.id);
       expect(a.after).toEqual({ changed: ['email'] });
-      expect(JSON.stringify(a).toLowerCase(), 'no address in the audit row').not.toContain(stored);
+      expect(rowText(a).toLowerCase(), 'no address in the audit row').not.toContain(stored);
     }
   });
 
@@ -2397,7 +2398,7 @@ test.describe('accounts: the Steward’s Edit account', { tag: ['@desktop'] }, (
     expect(after).toMatchObject({ phone, ownedRouteId: null, isActive: false });
     const edit = (await auditFor({ entityId: dis.id, action: 'UPDATE' })).find((a) => a.reason === 'account_edit');
     expect(edit?.after).toEqual({ changed: ['phone'] });
-    expect(JSON.stringify(edit), 'the number is never copied into the audit').not.toContain(phone.slice(-7));
+    expect(rowText(edit), 'the number is never copied into the audit').not.toContain(phone.slice(-7));
   });
 });
 
