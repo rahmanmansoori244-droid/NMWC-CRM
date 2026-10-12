@@ -26,6 +26,15 @@ function ownerUrl(): string | null {
   return url;
 }
 
+/**
+ * Interactive-transaction limits for suites that run against UAT from Oman. A
+ * round trip there is about 0.3 s, so Prisma's defaults (5 s to finish, 2 s to get
+ * a connection) are used up by a dozen statements or a cold connect, and the
+ * transaction is closed under the test. Generous on purpose: a real lock wait
+ * still fails on its own lock_timeout.
+ */
+export const REMOTE_TX = { timeout: 60_000, maxWait: 15_000 } as const;
+
 /** Run `fn` inside a transaction that may mutate the append-only audit tables. */
 export async function withAuditMaintenance<T>(
   prisma: PrismaClient,
@@ -36,7 +45,7 @@ export async function withAuditMaintenance<T>(
     client.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(`SET LOCAL nmwc.audit_maintenance = 'on'`);
       return fn(tx);
-    });
+    }, REMOTE_TX);
   if (!url) return run(prisma);
   const owner = new PrismaClient({ datasourceUrl: url });
   try {

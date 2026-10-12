@@ -54,6 +54,16 @@ import {
 const PROD_MARKER = 'ep-sweet-haze';
 
 /**
+ * The functional probes' transaction limits. Prisma's defaults (5 s to finish,
+ * 2 s for a connection) hold in CI and the restore drill, next to the database,
+ * but not from a PC far from it: at about 0.3 s a round trip (UAT from Oman) the
+ * history probe's dozen statements outlast 5 s and the probe is cut off as a
+ * transaction timeout (P2028), which then reads as a failed check. Each probe
+ * still sets its own 2 s lock_timeout, so a real lock wait fails fast.
+ */
+const PROBE_TX = { timeout: 60_000, maxWait: 15_000 } as const;
+
+/**
  * Database objects the migrations create. Kept explicit rather than derived, so
  * that a migration adding a trigger has to be acknowledged here — and the
  * self-check below fails CI if one is added without updating this list.
@@ -485,7 +495,7 @@ async function main() {
             `UPDATE "AuditLog" SET "reason" = 'restore-drill-tamper' WHERE "id" = (SELECT "id" FROM "AuditLog" ORDER BY "at" DESC LIMIT 1)`
           );
           throw new Error('NOT_REFUSED');
-        });
+        }, PROBE_TX);
       } catch (err) {
         const msg = (err as Error).message;
         auditRefused = /append-only|insufficient_privilege|permission denied/i.test(msg);
@@ -528,7 +538,7 @@ async function main() {
            VALUES ('${sfx}-b','RVB${sfx}','RV Branch','${sfx}-c','${sfx}-rt','${sfx}-rb','Restore drill probe address',now())`
         );
         throw new Error('NOT_REFUSED');
-      });
+      }, PROBE_TX);
     } catch (err) {
       const msg = (err as Error).message;
       regionRefused = /B-19|region/i.test(msg) && !msg.includes('NOT_REFUSED');
@@ -595,9 +605,12 @@ async function main() {
         }
         await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT rewrite');
         throw probeDone;
-      });
+      }, PROBE_TX);
     } catch (err) {
       if (err !== probeDone) {
+        // A failure after the rows were read must not keep a passing verdict next
+        // to a "failed" detail: the capture is judged on a probe that finished.
+        captureOk = false;
         captured = `the probe failed with ${describeError(err)}`;
       }
     }
@@ -642,7 +655,7 @@ async function main() {
         }
         await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT move');
         throw routeProbeDone;
-      });
+      }, PROBE_TX);
     } catch (err) {
       if (err !== routeProbeDone) routeRuleDetail = `the probe failed with ${describeError(err)}`;
     }

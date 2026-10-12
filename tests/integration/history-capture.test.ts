@@ -25,7 +25,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { setChangeContext, src, withChangeContext } from '@/lib/change-context';
-import { purgeHistory, withAuditMaintenance } from '../support/audit';
+import { purgeHistory, REMOTE_TX, withAuditMaintenance } from '../support/audit';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
 
@@ -68,7 +68,7 @@ describe.skipIf(!ENABLED)('the dated history is written by the database', () => 
     >;
   const ctx = (source = TEST_SOURCE, actorId: string | null = ids.actor) => ({ actorId, source });
   const write = <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>, c = ctx()) =>
-    withChangeContext(db, c, fn);
+    withChangeContext(db, c, fn, REMOTE_TX);
 
   beforeAll(async () => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';

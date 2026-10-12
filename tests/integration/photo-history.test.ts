@@ -44,8 +44,10 @@ describe.skipIf(!ENABLED)('a photo keeps its link and fingerprint (gap 15)', () 
     steward: `${sfx}-st`,
     customer: `${sfx}-c`,
     branch: `${sfx}-b`,
-    photo: `${sfx}-p1`,
-    gone: `${sfx}-p2`,
+    // cuid-shaped (a 'c', then no dash): Remove validates the photo id with zod's
+    // cuid() before any work, and refuses a dashed id as VALIDATION_FAILED.
+    photo: `c${sfx}p1`,
+    gone: `c${sfx}p2`,
   };
   const write = <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>, source = src.test('photo-history')) =>
     withChangeContext(db, { actorId: ids.steward, source }, fn);

@@ -28,7 +28,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import { src, withChangeContext, type ChangeContext } from '@/lib/change-context';
-import { purgeHistory, withAuditMaintenance } from '../support/audit';
+import { purgeHistory, REMOTE_TX, withAuditMaintenance } from '../support/audit';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
 
@@ -64,7 +64,7 @@ describe.skipIf(!ENABLED)('the history answers the owner’s as-of questions', (
     r4: `R4${SFX}`,
   };
   const run = <T>(c: ChangeContext, fn: (tx: Prisma.TransactionClient) => Promise<T>) =>
-    withChangeContext(db, c, fn);
+    withChangeContext(db, c, fn, REMOTE_TX);
 
   beforeAll(async () => {
     const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL ?? '';
